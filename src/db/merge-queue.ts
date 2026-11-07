@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
+import { orm } from "./orm";
+import { mergeQueueEntry } from "./schema";
 
 /**
  * A task's place in its lane of its repository's merge queue. A lane is a Linear project, or `''`
@@ -174,4 +176,11 @@ export function wakeMergesBehind(db: Database, now: number): void {
        AND json_extract(payload, '$.mergeWait.reason') IN ('ahead','dependencies')`,
     [now, JOB_KIND.merge],
   );
+}
+
+export function mergeQueueReadyTimes(db: Database): { itemId: string; readyAt: number }[] {
+  return orm(db)
+    .select({ itemId: mergeQueueEntry.itemId, readyAt: mergeQueueEntry.readyAt })
+    .from(mergeQueueEntry)
+    .all();
 }

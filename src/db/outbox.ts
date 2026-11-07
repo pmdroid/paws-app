@@ -1,5 +1,6 @@
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   DEFAULT_BACKOFF_BASE_MS,
   DEFAULT_BACKOFF_CAP_MS,
@@ -9,6 +10,8 @@ import {
 } from "../core";
 import { enqueueJobOnce, errorText } from "./jobs";
 import { journal } from "./journal";
+import { orm } from "./orm";
+import { outbox as outboxTable } from "./schema";
 import { immediate } from "./tx";
 
 export const OUTBOX_TARGETS = ["linear", "slack", "github"] as const;
@@ -844,4 +847,23 @@ function mapOutbox(row: OutboxSqlRow): OutboxRow {
     lockedUntil: row.locked_until,
     error: row.error,
   };
+}
+
+export function linearSessionClosed(db: Database, sessionId: string, generation: number): boolean {
+  return (
+    orm(db)
+      .select({ one: sql`1` })
+      .from(outboxTable)
+      .where(
+        and(
+          eq(outboxTable.target, "linear"),
+          eq(outboxTable.orderingKey, sessionId),
+          eq(outboxTable.deliveryGeneration, generation),
+          inArray(outboxTable.deliveryKind, ["terminal", "stop"]),
+          ne(outboxTable.status, "dropped"),
+        ),
+      )
+      .limit(1)
+      .get() !== undefined
+  );
 }

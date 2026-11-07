@@ -5,6 +5,9 @@ import {
   getLinearSessionGeneration,
   itemWaitSince,
   keepItemWaits,
+  lastItemEvent,
+  lastPausedBy,
+  linearSessionClosed,
   type ItemHold,
 } from "../db";
 
@@ -50,11 +53,7 @@ const BUSY: readonly WorkItemState[] = [
 ];
 
 function restartReason(db: Database, itemId: string) {
-  const last = db
-    .query<{ kind: string; reason: string | null }, [string]>(
-      "SELECT kind,reason FROM work_item_event WHERE item_id=? ORDER BY id DESC LIMIT 1",
-    )
-    .get(itemId);
+  const last = lastItemEvent(db, itemId);
   return last?.kind === "restart" &&
     (last.reason === "findings" ||
       last.reason === "ci" ||
@@ -65,14 +64,7 @@ function restartReason(db: Database, itemId: string) {
 }
 
 function pausedBy(db: Database, itemId: string): string | null {
-  return (
-    db
-      .query<{ name: string }, [string]>(
-        `SELECT u.name FROM workspace_access_audit a JOIN workspace_user u ON u.id=a.user_id
-         WHERE a.action='execution.pause' AND a.subject=? ORDER BY a.id DESC LIMIT 1`,
-      )
-      .get(itemId)?.name ?? null
-  );
+  return lastPausedBy(db, itemId);
 }
 
 export function itemWaits(
@@ -157,15 +149,7 @@ export function postWaitKeepalives(db: Database, waits: readonly ItemWait[], now
     const body = waitingLine(wait);
     if (mark < 1 || body === null) continue;
     const generation = getLinearSessionGeneration(db, wait.sessionId);
-    if (
-      db
-        .query(
-          `SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=? AND delivery_generation=?
-           AND delivery_kind IN ('terminal','stop') AND status!='dropped' LIMIT 1`,
-        )
-        .get(wait.sessionId, generation)
-    )
-      continue;
+    if (linearSessionClosed(db, wait.sessionId, generation)) continue;
     enqueueOutboxOnce(db, {
       target: "linear",
       op: "activity",

@@ -5,6 +5,7 @@ import {
   getItemPullRequest,
   getWorkItem,
   immediate,
+  itemJobRunning,
   listMergeQueues,
   rebaseReturnedFor,
   recordRebaseReturn,
@@ -147,11 +148,5 @@ function behindFront(db: Database, repository: string): string[] {
 }
 
 function mergeRunning(db: Database, itemId: string): boolean {
-  return (
-    db
-      .query(
-        "SELECT 1 FROM job WHERE queue = ? AND status = 'running' AND json_extract(payload, '$.itemId') = ?",
-      )
-      .get(JOB_KIND.merge, itemId) !== null
-  );
+  return itemJobRunning(db, JOB_KIND.merge, itemId);
 }

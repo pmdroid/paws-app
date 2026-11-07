@@ -3,22 +3,36 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import {
   JOB_KIND,
-  delegationHasOpenWork,
   holdsExecution,
   isTerminalWorkItemState,
   type RepositoryBinding,
   type WorkBrief,
-  type WorkItemState,
 } from "../core";
 import {
   closeExpiredRunnerLeases,
   enqueueJob,
   enqueueJobOnce,
   enqueueOutboxOnce,
+  cancelAdmittedJob,
+  cancelPendingItemJobs,
+  dropSchedulerAdmission,
   hotFiles,
   immediate,
+  itemLinearIdentifier,
+  latestItemJobId,
+  listSchedulerAdmissions,
+  listTaskBlocks,
+  mergeQueueReadyTimes,
+  pendingRunnerWaits,
+  releaseIdleSessionItem,
+  runnerTaskSlots,
+  runPendingJobNow,
+  saveItemScheduling,
+  saveSchedulerAdmission,
+  schedulerItems,
+  schedulingProjectLead,
+  type SchedulerItem,
   latestCandidatePaths,
-  mergeLaneSql,
   requeueOrphanedWork,
   runnerCapacityWait,
   saveItemHolds,
@@ -28,8 +42,6 @@ import {
   type PinnedSlot,
   type JobLoop,
   repositoryKey,
-  runnerLeaseCutoff,
-  CI_WAITING,
 } from "../db";
 import { blockingIssues, readyItems } from "../intake";
 import { createAdmission, type ItemAdmission } from "./admission";
@@ -37,36 +49,7 @@ import { itemWaits, overlapLine, postWaitKeepalives, type ItemWait } from "./wai
 
 const TICK = "scheduler.tick";
 const RUNNER_SEEN_MS = 60_000;
-type Item = {
-  id: string;
-  delegationId: string;
-  issueId: string;
-  identifier: string | null;
-  position: number;
-  absent: number;
-  state: WorkItemState;
-  version: number;
-  createdAt: number;
-  cancelRequested: number;
-  liveRun: number;
-  liveJob: number;
-  placed: number;
-  placing: number;
-  setupHeld: number;
-  workspaceId: string | null;
-  sessionId: string | null;
-  priority: number | null;
-  owner: string | null;
-  repo: string | null;
-  turn: string;
-  /** Place in its repository's merge queue, or null outside it. */
-  mergePosition: number | null;
-  /**
-   * When the item became merge-queue work: ready to merge, or sent back to the agent from the
-   * merge queue and queued again. Null for any other item.
-   */
-  mergeAt: number | null;
-};
+type Item = SchedulerItem;
 type Admission = {
   itemId: string;
   repositoryKey: string;
@@ -132,21 +115,10 @@ function overlapGate(db: Database, now: number) {
   const paths = hot.size ? latestCandidatePaths(db) : new Map<string, string[]>();
   const blocks = new Map<string, string[]>();
   if (hot.size)
-    for (const edge of db
-      .query<{ blocker: string; blocked: string }, []>(
-        "SELECT blocker_linear_issue_id AS blocker,blocked_linear_issue_id AS blocked FROM task_block",
-      )
-      .all())
+    for (const edge of listTaskBlocks(db))
       blocks.set(edge.blocker, [...(blocks.get(edge.blocker) ?? []), edge.blocked]);
   const places = new Map(
-    (hot.size
-      ? db
-          .query<{ itemId: string; readyAt: number }, []>(
-            "SELECT item_id AS itemId,ready_at AS readyAt FROM merge_queue_entry",
-          )
-          .all()
-      : []
-    ).map((entry) => [entry.itemId, entry.readyAt]),
+    (hot.size ? mergeQueueReadyTimes(db) : []).map((entry) => [entry.itemId, entry.readyAt]),
   );
   /** Whether `other` merges before `item` in the serial lane, by the order the queue uses. */
   const mergesFirst = (other: Item, item: Item): boolean => {
@@ -237,33 +209,20 @@ export function saveSchedulingContext(
   if (!Number.isInteger(priority) || priority < 0 || priority > 4)
     throw new Error("Invalid Linear priority");
   const paths = input.paths == null ? null : schedulerPaths(input.paths);
-  db.run(
-    `INSERT INTO work_item_scheduling(item_id,project_id,project_known,priority,paths,project_lead_id)
-    VALUES(?,?,?,?,?,?)
-    ON CONFLICT(item_id) DO UPDATE SET project_id=excluded.project_id,project_known=excluded.project_known,
-    priority=excluded.priority,paths=excluded.paths,
-    project_lead_id=CASE WHEN ? THEN excluded.project_lead_id ELSE work_item_scheduling.project_lead_id END`,
-    [
-      input.itemId,
-      input.projectId ?? null,
-      Number(input.projectId !== undefined),
-      priority,
-      paths === null ? null : JSON.stringify(paths),
-      input.projectId === null ? null : (input.projectLeadId ?? null),
-      Number(input.projectLeadId !== undefined || input.projectId === null),
-    ],
-  );
+  saveItemScheduling(db, {
+    itemId: input.itemId,
+    projectId: input.projectId ?? null,
+    projectKnown: Number(input.projectId !== undefined),
+    priority,
+    paths: paths === null ? null : JSON.stringify(paths),
+    projectLeadId: input.projectId === null ? null : (input.projectLeadId ?? null),
+    replaceLead: Number(input.projectLeadId !== undefined || input.projectId === null),
+  });
 }
 
 /** Linear user id of the item's project lead as last saved from Linear, or null. */
 export function projectLeadId(db: Database, itemId: string): string | null {
-  return (
-    db
-      .query<{ lead: string | null }, [string]>(
-        "SELECT project_lead_id AS lead FROM work_item_scheduling WHERE item_id=?",
-      )
-      .get(itemId)?.lead ?? null
-  );
+  return schedulingProjectLead(db, itemId);
 }
 
 export function hintedPaths(brief: string | null): string[] {
@@ -280,60 +239,11 @@ export function hintedPaths(brief: string | null): string[] {
   }
 }
 
-function allItems(db: Database, now: number): Item[] {
-  return db
-    .query<
-      Item,
-      [number, number, number]
-    >(`SELECT i.id,i.delegation_id AS delegationId,i.linear_issue_id AS issueId,
-    i.linear_identifier AS identifier,i.position,
-    EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=i.id AND f.present=0) AS absent,
-    i.state,i.version,i.created_at AS createdAt,i.cancel_requested AS cancelRequested,
-    EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning')) AS liveRun,
-    EXISTS(SELECT 1 FROM job held WHERE json_extract(held.payload,'$.itemId')=i.id
-      AND held.status='running' AND (held.locked_until IS NULL OR held.locked_until>?)
-      AND (held.queue IN ('item.start','run.resume','run.reverify','github.merge')
-        OR held.queue LIKE 'github.merge.%')) AS liveJob,
-    EXISTS(SELECT 1 FROM run p JOIN runner_work w ON w.run_id=p.id WHERE p.item_id=i.id
-      AND ((w.ended_at IS NULL AND w.lease_until>?) OR p.status IN ('active','provisioning'))) AS placed,
-    EXISTS(SELECT 1 FROM job start WHERE json_extract(start.payload,'$.itemId')=i.id
-      AND start.status='running' AND (start.locked_until IS NULL OR start.locked_until>?)
-      AND start.queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}')) AS placing,
-    EXISTS(SELECT 1 FROM runner_setup_hold h WHERE h.item_id=i.id) AS setupHeld,
-    w.id AS workspaceId,s.session_id AS sessionId,c.priority,r.owner,r.repo,
-    COALESCE('user:'||i.owner_user_id,'') AS turn,
-    CASE WHEN e.item_id IS NULL THEN NULL ELSE (SELECT count(*) FROM merge_queue_entry o
-      JOIN work_item ow ON ow.id=o.item_id WHERE o.repository=e.repository
-      AND ow.state IN ('merge_queue','verifying') AND ow.cancel_requested=0
-      AND (o.ready_at<e.ready_at OR (o.ready_at=e.ready_at AND o.item_id<=e.item_id))) END AS mergePosition,
-    COALESCE(e.ready_at,CASE WHEN i.state='queued' THEN (SELECT ev.at FROM work_item_event ev
-      WHERE ev.id=(SELECT MAX(last.id) FROM work_item_event last WHERE last.item_id=i.id)
-      AND ev.kind='restart' AND (ev.from_state='merge_queue' OR (ev.from_state='verifying'
-        AND (SELECT p.from_state FROM work_item_event p WHERE p.item_id=i.id AND p.id<ev.id
-          AND p.to_state='verifying' AND p.from_state<>'verifying' ORDER BY p.id DESC LIMIT 1)='merge_queue'))) END) AS mergeAt
-    FROM work_item i
-    LEFT JOIN merge_queue_entry e ON e.item_id=i.id AND i.state IN ('merge_queue','verifying')
-    LEFT JOIN linear_session s ON s.session_id=i.session_key
-    LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
-    LEFT JOIN work_item_scheduling c ON c.item_id=i.id
-    LEFT JOIN work_item_repository r ON r.item_id=i.id
-    WHERE ${delegationHasOpenWork("i.delegation_id")} OR i.state IN ('running','verifying','recovering','awaiting_input','paused','merge_queue')
-    OR EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning'))`)
-    .all(now, runnerLeaseCutoff(now), now);
-}
-
 function taskSlots(
   db: Database,
   now: number,
 ): { total: number; busy: number; open: Map<string, number> } | null {
-  const runners = db
-    .query<{ id: string; capacity: number; used: number }, [number, number, number]>(
-      `SELECT r.id,COALESCE((SELECT MIN(c.capacity,COALESCE(c.desired,16)) FROM runner_capacity c WHERE c.runner_id=r.id),1) AS capacity,
-       (SELECT count(*) FROM runner_work w WHERE w.runner_id=r.id AND ((w.ended_at IS NULL AND w.lease_until>?) OR EXISTS(SELECT 1 FROM run held WHERE held.id=w.run_id AND held.status IN ('active','provisioning') AND NOT ${CI_WAITING("held")}))) +
-       (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?) AS used
-       FROM runner r WHERE r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>?`,
-    )
-    .all(runnerLeaseCutoff(now), now, now - RUNNER_SEEN_MS);
+  const runners = runnerTaskSlots(db, now, now - RUNNER_SEEN_MS);
   if (!runners.length) return null;
   return {
     total: runners.reduce((total, runner) => total + runner.capacity, 0),
@@ -362,31 +272,8 @@ type PinnedWait = {
  * any of the runners it waits for.
  */
 function pinnedWaits(db: Database, now: number): PinnedWait[] {
-  return db
-    .query<
-      {
-        itemId: string;
-        jobId: number;
-        runnerId: string | null;
-        online: number;
-        merging: number;
-        payload: string;
-      },
-      [number]
-    >(
-      `SELECT i.id AS itemId,j.id AS jobId,w.runner_id AS runnerId,r.id IS NOT NULL AS online,
-       EXISTS(SELECT 1 FROM merge_queue_entry e WHERE e.item_id=i.id) AS merging,j.payload
-       FROM work_item i
-       JOIN job j ON j.id=(SELECT q.id FROM job q WHERE q.status='pending'
-         AND q.queue IN ('${JOB_KIND.resume}','${JOB_KIND.reverify}')
-         AND json_extract(q.payload,'$.itemId')=i.id ORDER BY q.id DESC LIMIT 1)
-       LEFT JOIN runner_work w ON w.run_id=i.current_run_id
-       LEFT JOIN runner r ON r.id=w.runner_id
-         AND r.status='active' AND r.revoked_at IS NULL AND r.last_seen_at>?
-       WHERE i.state IN ('recovering','verifying','merge_queue') AND i.cancel_requested=0`,
-    )
-    .all(now - RUNNER_SEEN_MS)
-    .flatMap(({ payload, runnerId, online, merging, ...wait }): PinnedWait[] => {
+  return pendingRunnerWaits(db, now - RUNNER_SEEN_MS).flatMap(
+    ({ payload, runnerId, online, merging, ...wait }): PinnedWait[] => {
       const capacity = runnerCapacityWait(JSON.parse(payload));
       if (!capacity || now - capacity.since >= (capacity.holdMs ?? Infinity)) return [];
       const pinned = online && runnerId !== null && capacity.runnerIds.includes(runnerId);
@@ -395,7 +282,8 @@ function pinnedWaits(db: Database, now: number): PinnedWait[] {
       return merging && capacity.runnerIds.length
         ? [{ ...wait, runnerIds: capacity.runnerIds }]
         : [];
-    });
+    },
+  );
 }
 
 function holdsSession(item: Item): boolean {
@@ -452,11 +340,7 @@ function depths(db: Database, items: Item[]): Map<string, number> {
     if (isTerminalWorkItemState(item.state) && ids.has(item.issueId)) continue;
     ids.set(item.issueId, item.id);
   }
-  const edges = db
-    .query<{ blocker: string; blocked: string }, []>(
-      "SELECT blocker_linear_issue_id AS blocker,blocked_linear_issue_id AS blocked FROM task_block",
-    )
-    .all();
+  const edges = listTaskBlocks(db);
   const children = new Map<string, string[]>();
   for (const edge of edges) {
     const parent = ids.get(edge.blocker),
@@ -495,14 +379,7 @@ function yieldIdleMergeSessions(
       )
     )
       continue;
-    db.run(
-      `UPDATE linear_session SET active_item_id=NULL WHERE active_item_id=?
-       AND NOT EXISTS(SELECT 1 FROM run WHERE item_id=? AND status IN ('active','provisioning'))
-       AND NOT EXISTS(SELECT 1 FROM job WHERE status='running' AND (locked_until IS NULL OR locked_until>?)
-         AND json_extract(payload,'$.itemId')=?
-         AND (queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}') OR ${mergeLaneSql("job")}))`,
-      [item.id, item.id, now, item.id],
-    );
+    releaseIdleSessionItem(db, item.id, now);
   }
 }
 
@@ -560,7 +437,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
   const result = immediate(db, () => {
     closeExpiredRunnerLeases(db, now);
     requeueOrphanedWork(db, now);
-    const items = allItems(db, now);
+    const items = schedulerItems(db, now);
     const byId = new Map(items.map((item) => [item.id, item]));
     const starts = items
       // A runner-setup hold waits for the delegator, not for a slot: it is neither started nor
@@ -574,12 +451,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     const ready = new Set(starts.filter(({ start }) => start.ok).map(({ item }) => item.id));
     yieldIdleMergeSessions(db, items, ready, admission, now);
     if (options.sessionFor) reportDependencyCycles(db, items, admission, options.sessionFor, now);
-    const saved = db
-      .query<Admission & { jobId: number; status: string; lockedUntil: number | null }, []>(
-        `SELECT a.item_id AS itemId,a.job_id AS jobId,a.repository_key AS repositoryKey,
-       a.session_id AS sessionId,j.status,j.locked_until AS lockedUntil FROM scheduler_admission a JOIN job j ON j.id=a.job_id`,
-      )
-      .all();
+    const saved = listSchedulerAdmissions(db);
     const held: Admission[] = [];
     for (const row of saved) {
       const item = byId.get(row.itemId);
@@ -601,28 +473,29 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
           continue;
         }
       }
-      db.run(
-        `UPDATE job SET status='cancelled',finished_at=?,locked_by=NULL,locked_until=NULL
-        WHERE id=? AND (status='pending' OR (status='running' AND locked_until<=?))`,
-        [now, row.jobId, now],
-      );
-      db.run("DELETE FROM scheduler_admission WHERE item_id=?", [row.itemId]);
+      cancelAdmittedJob(db, row.jobId, now);
+      dropSchedulerAdmission(db, row.itemId);
     }
     for (const item of items)
       if (holdsSession(item) && !held.some((entry) => entry.itemId === item.id)) {
         const entry = footprint(item, options);
-        const job = db
-          .query<{ id: number }, [string]>(
-            `SELECT id FROM job WHERE status IN ('pending','running')
-            AND queue IN ('${JOB_KIND.start}','${JOB_KIND.resume}','${JOB_KIND.reverify}')
-            AND json_extract(payload,'$.itemId')=? ORDER BY id DESC LIMIT 1`,
-          )
-          .get(item.id);
-        if (job)
-          db.run(
-            `INSERT OR IGNORE INTO scheduler_admission(item_id,job_id,project_key,repository_key,session_id,paths,hot,created_at)
-            VALUES(?,?,?,?,?,?,?,?)`,
-            [item.id, job.id, "*", entry.repositoryKey, entry.sessionId, "[]", 0, now],
+        const jobId = latestItemJobId(
+          db,
+          item.id,
+          [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify],
+          ["pending", "running"],
+        );
+        if (jobId !== null)
+          saveSchedulerAdmission(
+            db,
+            {
+              itemId: item.id,
+              jobId,
+              repositoryKey: entry.repositoryKey,
+              sessionId: entry.sessionId,
+              now,
+            },
+            true,
           );
         held.push(entry);
       }
@@ -666,11 +539,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         if (open > 0 && free <= 0) continue;
         reservedSlots.set(pin.jobId, { runnerId, order: pinned });
         if (open <= 0) continue;
-        db.run("UPDATE job SET run_at=? WHERE id=? AND status='pending' AND run_at>?", [
-          now,
-          pin.jobId,
-          now,
-        ]);
+        runPendingJobNow(db, pin.jobId, now);
         free -= 1;
       }
     };
@@ -724,29 +593,22 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         overlaps.set(item.id, overlap);
         continue;
       }
-      db.run(
-        `UPDATE job SET status='cancelled',finished_at=? WHERE queue=?
-        AND status='pending' AND json_extract(payload,'$.itemId')=?`,
-        [now, JOB_KIND.start, item.id],
-      );
+      cancelPendingItemJobs(db, JOB_KIND.start, item.id, now);
       const handoff = options.handoffForItem?.(item.id);
-      const resume = db
-        .query<{ id: number }, [string]>(
-          "SELECT id FROM job WHERE queue='run.resume' AND status='pending' AND json_extract(payload,'$.itemId')=? ORDER BY id DESC LIMIT 1",
-        )
-        .get(item.id);
       const jobId =
-        resume?.id ??
+        latestItemJobId(db, item.id, ["run.resume"], ["pending"]) ??
         enqueueJob(db, {
           queue: JOB_KIND.start,
           payload: { itemId: item.id, ...(handoff ? { handoff } : {}) },
           now,
         });
-      db.run(
-        `INSERT INTO scheduler_admission(item_id,job_id,project_key,repository_key,session_id,paths,hot,created_at)
-        VALUES(?,?,?,?,?,?,?,?)`,
-        [item.id, jobId, "*", next.repositoryKey, next.sessionId, "[]", 0, now],
-      );
+      saveSchedulerAdmission(db, {
+        itemId: item.id,
+        jobId,
+        repositoryKey: next.repositoryKey,
+        sessionId: next.sessionId,
+        now,
+      });
       held.push(next);
       occupants.push(item);
       admitted.push(item.id);
@@ -795,11 +657,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     const changes = saveItemHolds(db, holds).map((change) => {
       const name =
         byId.get(change.itemId)?.identifier ??
-        db
-          .query<{ name: string | null }, [string]>(
-            "SELECT linear_identifier AS name FROM work_item WHERE id=?",
-          )
-          .get(change.itemId)?.name ??
+        itemLinearIdentifier(db, change.itemId) ??
         change.itemId;
       if (change.held?.reason === "blocked" && !change.held.blockers.length)
         journal(`scheduler inconsistency: item ${name} is held as blocked but has no open blocker`);

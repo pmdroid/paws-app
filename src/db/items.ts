@@ -1,5 +1,6 @@
 import { pendingRestartHandoff } from "./restart";
 import type { Database } from "bun:sqlite";
+import { desc, eq } from "drizzle-orm";
 import { halt } from "./halt";
 import { wakeMergesBehind } from "./merge-queue";
 import { readCheckpoint } from "./checkpoint";
@@ -43,6 +44,8 @@ import { getLinearSessionGeneration } from "./linear-sessions";
 import { withOpenFindings } from "./open-findings";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { endMergeCall, getConfirmedRemoteMerge, mergeStopRequested } from "./remote-merges";
+import { orm } from "./orm";
+import { workItem, workItemEvent } from "./schema";
 import { immediate } from "./tx";
 import { runnerLeaseCutoff } from "./runner-lease";
 
@@ -1170,4 +1173,39 @@ function mapItem(row: ItemSql): WorkItemRecord {
 function parseCheckpoint(value: string | null): Checkpoint | null {
   if (value === null) return null;
   return readCheckpoint(value);
+}
+
+export function itemDelegationId(db: Database, itemId: string): string | null {
+  return (
+    orm(db)
+      .select({ id: workItem.delegationId })
+      .from(workItem)
+      .where(eq(workItem.id, itemId))
+      .get()?.id ?? null
+  );
+}
+
+export function itemLinearIdentifier(db: Database, itemId: string): string | null {
+  return (
+    orm(db)
+      .select({ name: workItem.linearIdentifier })
+      .from(workItem)
+      .where(eq(workItem.id, itemId))
+      .get()?.name ?? null
+  );
+}
+
+export function lastItemEvent(
+  db: Database,
+  itemId: string,
+): { kind: string; reason: string | null } | null {
+  return (
+    orm(db)
+      .select({ kind: workItemEvent.kind, reason: workItemEvent.reason })
+      .from(workItemEvent)
+      .where(eq(workItemEvent.itemId, itemId))
+      .orderBy(desc(workItemEvent.id))
+      .limit(1)
+      .get() ?? null
+  );
 }

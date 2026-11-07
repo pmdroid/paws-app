@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { orm } from "./orm";
+import { taskBlock } from "./schema";
 import { immediate } from "./tx";
 
 export type TaskBlock = {
@@ -40,4 +42,11 @@ export function listTaskBlockers(db: Database, blockedLinearIssueId: string): st
     )
     .all(blockedLinearIssueId)
     .map((row) => row.blocker_linear_issue_id);
+}
+
+export function listTaskBlocks(db: Database): { blocker: string; blocked: string }[] {
+  return orm(db)
+    .select({ blocker: taskBlock.blockerLinearIssueId, blocked: taskBlock.blockedLinearIssueId })
+    .from(taskBlock)
+    .all();
 }
