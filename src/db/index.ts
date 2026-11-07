@@ -1182,6 +1182,9 @@ export {
   closeFallbackAttempts,
   fallbackHistory,
   recordFallbackAttempt,
+  closeFallbackAttemptsSteps,
+  fallbackHistorySteps,
+  recordFallbackAttemptSteps,
   type FallbackHistory,
   type FallbackOutcome,
 } from "./run-fallback";

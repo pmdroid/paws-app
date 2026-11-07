@@ -66,3 +66,28 @@ export function seed(db: Db, ...inserts: ((q: Q) => PromiseLike<unknown>)[]): Pr
 export function json(db: Db, value: unknown): unknown {
   return db.dialect === "sqlite" ? JSON.stringify(value) : value;
 }
+
+/** A runner `box` in workspace `acme` with a codex account `account` bound to it as `binding`. */
+export function* insertRunnerBindingSteps(q: Q) {
+  yield* q.exec(
+    q.orm.insert(q.t.runner).values({
+      id: "box",
+      workspaceId: "acme",
+      ownerUserId: "owner",
+      name: "box",
+      status: "active",
+      createdAt: 0,
+    }),
+  );
+  yield* q.exec(
+    q.orm.insert(q.t.agentAccountBinding).values({
+      id: "binding",
+      workspaceId: "acme",
+      accountId: "account",
+      agent: "codex",
+      runnerId: "box",
+      quotaScope: "unknown",
+      createdAt: 0,
+    }),
+  );
+}
