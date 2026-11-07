@@ -78,42 +78,16 @@ src/db/improvements.ts | ? db.run( | not yet converted to Drizzle
 src/db/improvements.ts | : db.run( | not yet converted to Drizzle
 src/db/improvements.ts | return db .query< | not yet converted to Drizzle
 src/db/intake-queue.ts | return db .query<IntakeQueueEntry, []>( | not yet converted to Drizzle
-src/db/items.ts | const table = db .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'item_continuation'") | not yet converted to Drizzle
-src/db/items.ts | const row = db.query<ItemSql, [string]>(`SELECT ${itemColumns(db)} WHERE id = ?`).get(id); | not yet converted to Drizzle
-src/db/items.ts | return db .query<ItemSql, []>(`SELECT ${itemColumns(db)} ORDER BY created_at, id`) | not yet converted to Drizzle
-src/db/items.ts | return db .query<ItemSql, string[]>( | not yet converted to Drizzle
 src/db/items.ts | const updated = db.run( | not yet converted to Drizzle
-src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | db .query<{ item_id: string; at: number }, []>( | not yet converted to Drizzle
-src/db/items.ts | return db .query< | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET session_key = ? WHERE id = ?", [patch.sessionKey, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run(`UPDATE work_item SET ${LIMIT_COLUMN[stage]} = ? WHERE id = ?`, [value, id]); | not yet converted to Drizzle
-src/db/items.ts | const row = db .query<{ reason: string | null }, [string]>( | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET checkpoint = ? WHERE id = ?", [ | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET recovery_attempts = ? WHERE id = ?", [attempts, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET recovery_attempts = 1, resumed_at = ? WHERE id = ?", [now, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET current_run_id = ? WHERE id = ?", [runId, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET last_mono_ms = ? WHERE id = ?", [mono, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | db.run( | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
 src/db/items.ts | const open = db .query<{ waitingMs: number }, [string, number]>( | not yet converted to Drizzle
 src/db/items.ts | db.run("DELETE FROM agent_wait WHERE run_id=?", [run.runId]); | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | const row = db .query< | not yet converted to Drizzle
 src/db/items.ts | db .query( | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET accepted_head = ? WHERE id = ?", [head, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run(`UPDATE work_item SET ${limit} = MAX(${limit}, ${STAGE_COLUMN[stage]}) + ? WHERE id = ?`, [ | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | db.run(`UPDATE work_item SET ${STAGE_COLUMN[stage]} = 0 WHERE id = ?`, [id]); | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | return db .query<{ id: number; handoff: string | null }, [string, string]>( | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE job SET last_error = 'time_limit_carried' WHERE id = ?", [entry.jobId]); | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | return db .query<{ itemId: string }, [string, string]>( | not yet converted to Drizzle
-src/db/items.ts | db .query("SELECT 1 FROM outbox WHERE idempotency_key LIKE ? AND created_at>=?") | not yet converted to Drizzle
-src/db/items.ts | return db.run( | not yet converted to Drizzle
 src/db/items.ts | db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]); | not yet converted to Drizzle
 src/db/items.ts | db .query(`SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=? | not yet converted to Drizzle
 src/db/legacy-migrate.ts | db.run(` | frozen legacy migration (src/db/README.md)
