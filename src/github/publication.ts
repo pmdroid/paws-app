@@ -2,7 +2,7 @@ import { statfsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { HostDiskFullError, isDiskFullText } from "../core";
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { gitTempDirectory } from "./temp";
 import { GitCommandError, type GitExec } from "./types";
 
@@ -228,6 +228,9 @@ async function stageCandidate(
         .split("\n")
         .filter(Boolean)
     : [];
+  const named =
+    source === "HEAD" &&
+    !(await run(["for-each-ref", "--format=%(refname)", HEAD_BRANCH], candidate)).stdout.trim();
   await rm(bundle, { force: true });
   try {
     await run(
@@ -236,7 +239,7 @@ async function stageCandidate(
         "create",
         bundle,
         ...(source === "HEAD"
-          ? [`--exclude=${HEAD_BRANCH}`, "--branches", "--tags", head]
+          ? [`--exclude=${HEAD_BRANCH}`, "--branches", "--tags", named ? "HEAD" : head]
           : [source]),
         ...shared.map((id) => `^${id}`),
       ],
@@ -248,6 +251,11 @@ async function stageCandidate(
     await run(["--git-dir", repository, "update-ref", "--no-deref", "HEAD", head]);
     return false;
   }
+  const carried =
+    named &&
+    (await run(["bundle", "list-heads", bundle], candidate)).stdout
+      .split("\n")
+      .some((line) => line.endsWith(" HEAD"));
   try {
     await run([
       "--git-dir",
@@ -255,7 +263,12 @@ async function stageCandidate(
       "fetch",
       bundle,
       ...(source === "HEAD"
-        ? ["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", `^${HEAD_BRANCH}`]
+        ? [
+            "+refs/heads/*:refs/heads/*",
+            "+refs/tags/*:refs/tags/*",
+            `^${HEAD_BRANCH}`,
+            ...(carried ? [`+HEAD:${STAGED_CANDIDATE}`] : []),
+          ]
         : [`+${source}:${STAGED_CANDIDATE}`]),
     ]);
   } catch (error) {
@@ -278,6 +291,7 @@ async function stagePersistent(
   repository: string,
   bundle: string,
   source: string,
+  target: string | undefined,
 ) {
   try {
     await stageCandidate(
@@ -290,8 +304,17 @@ async function stagePersistent(
     );
     return;
   } catch (error) {
-    if (!(error instanceof UnusableRepositoryError)) throw error;
-    journalCaught(error, "publication.stageCandidate", null, "rebuilding the repository");
+    const missing =
+      error instanceof GitCommandError
+        ? /nonexistent object ([0-9a-f]{40,64})/.exec(error.stderr)?.[1]
+        : undefined;
+    if (missing)
+      journal(
+        `publication: ${target ?? "candidate"} staged ${missing}, an object the publication repository lacks; rebuilding it and staging once more`,
+      );
+    else if (error instanceof UnusableRepositoryError)
+      journalCaught(error, "publication.stageCandidate", null, "rebuilding the repository");
+    else throw error;
   }
   await resetRepository(run, repository);
   await stageCandidate(run, candidate, repository, bundle, [], source);
@@ -382,7 +405,15 @@ async function publish(
     else if (command !== "clone") await run(["init", "--bare", "--template=", repository]);
     if (command === "push") {
       try {
-        if (persistent) await stagePersistent(run, options.cwd, repository, bundle, source);
+        if (persistent)
+          await stagePersistent(
+            run,
+            options.cwd,
+            repository,
+            bundle,
+            source,
+            pushed?.at(-1)?.replace(/^refs\/heads\//, ""),
+          );
         else if (await stageCandidate(run, options.cwd, repository, bundle, [], source))
           publicationArgs = publicationArgs.toSpliced(operation + 3, 0, "--no-thin");
       } catch (error) {
