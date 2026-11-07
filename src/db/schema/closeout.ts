@@ -222,6 +222,13 @@ export const visualReviewMark = sqliteTable(
   (table) => [index("visual_review_mark_question").on(table.questionId)],
 );
 
+export const evidenceObject = sqliteTable("evidence_object", {
+  id: text().primaryKey().notNull(),
+  prefix: text().notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  storedAt: integer("stored_at").notNull(),
+});
+
 export const candidateRisk = sqliteTable(
   "candidate_risk",
   {

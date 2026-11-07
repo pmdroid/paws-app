@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { eq } from "drizzle-orm";
+import { eq, isNull } from "drizzle-orm";
 import { orm } from "./orm";
-import { evidence } from "./schema";
+import { evidence, evidenceObject, visualReviewMark } from "./schema";
 
 export type EvidenceMediaType =
   | "video/webm"
@@ -54,4 +54,42 @@ export function latestEvidence(rows: readonly StoredEvidence[]): StoredEvidence[
 
 export function setEvidenceAssetUrl(db: Database, id: string, assetUrl: string): void {
   orm(db).update(evidence).set({ assetUrl }).where(eq(evidence.id, id)).run();
+}
+
+export type EvidenceObject = typeof evidenceObject.$inferSelect;
+
+export function saveEvidenceObject(db: Database, row: EvidenceObject): void {
+  orm(db).insert(evidenceObject).values(row).onConflictDoNothing().run();
+}
+
+export function getEvidenceObject(db: Database, id: string): EvidenceObject | null {
+  return orm(db).select().from(evidenceObject).where(eq(evidenceObject.id, id)).get() ?? null;
+}
+
+export function deleteEvidenceObject(db: Database, id: string): void {
+  orm(db).delete(evidenceObject).where(eq(evidenceObject.id, id)).run();
+}
+
+export function localEvidenceFiles(
+  db: Database,
+): { id: string; itemId: string; headCommit: string; checkId: string }[] {
+  const columns = {
+    itemId: evidence.itemId,
+    headCommit: evidence.headCommit,
+    checkId: evidence.checkId,
+  };
+  const files = orm(db)
+    .select({ id: evidence.id, ...columns })
+    .from(evidence)
+    .leftJoin(evidenceObject, eq(evidenceObject.id, evidence.id))
+    .where(isNull(evidenceObject.id))
+    .all();
+  const marks = orm(db)
+    .select({ id: visualReviewMark.id, ...columns })
+    .from(visualReviewMark)
+    .innerJoin(evidence, eq(evidence.id, visualReviewMark.evidenceId))
+    .leftJoin(evidenceObject, eq(evidenceObject.id, visualReviewMark.id))
+    .where(isNull(evidenceObject.id))
+    .all();
+  return [...files, ...marks];
 }

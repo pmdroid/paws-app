@@ -626,12 +626,17 @@ export {
 } from "./artifacts";
 
 export {
+  deleteEvidenceObject,
   getEvidence,
+  getEvidenceObject,
   latestEvidence,
   listEvidence,
+  localEvidenceFiles,
   saveEvidence,
+  saveEvidenceObject,
   setEvidenceAssetUrl,
   type EvidenceMediaType,
+  type EvidenceObject,
   type StoredEvidence,
 } from "./evidence";
 export {
