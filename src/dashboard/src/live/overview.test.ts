@@ -207,7 +207,7 @@ describe("overview resource", () => {
       /\bstdout\b/,
       /FROM evidence\b/,
       /FROM ci_round\b/,
-      /FROM agent_closeout_event\b/,
+      /FROM "?agent_closeout_event\b/i,
       /FROM closeout_round\b/,
       /FROM run_agent_setup\b/,
       /FROM visual_review_mark\b/,
@@ -216,7 +216,7 @@ describe("overview resource", () => {
     for (const pattern of unrelated)
       expect(overview.filter((sql) => pattern.test(sql))).toEqual([]);
     expect(detail.some((sql) => /SELECT \* FROM closeout_step/.test(sql))).toBe(true);
-    expect(detail.some((sql) => /FROM agent_closeout_event\b/.test(sql))).toBe(true);
+    expect(detail.some((sql) => /FROM "?agent_closeout_event\b/i.test(sql))).toBe(true);
     expect(detail.some((sql) => /FROM work_item_merge_settings\b/.test(sql))).toBe(true);
     expect(overview.length).toBeLessThan(detail.length);
     expect(body).not.toContain("check output that only the issue page reads");

@@ -1,10 +1,8 @@
 import type { Database } from "bun:sqlite";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, isNull, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
 import { legacyAgentBindingId } from "./agent-accounts";
-import { orm } from "./orm";
-import { agentAccount, agentAccountBinding, agentAccountHealth as health, runner } from "./schema";
-import { immediate } from "./tx";
+import { settled, sqliteDb, type Q } from "./db";
 
 export type AccountHealthKind = "quota" | "auth" | "provider" | "model";
 export type AccountHealthState =
@@ -77,24 +75,26 @@ type Binding = {
   live: number;
 };
 
-function bindingFor(db: Database, bindingId: string): Binding | null {
-  const b = agentAccountBinding;
-  const found = orm(db)
-    .select({
-      id: b.id,
-      workspaceId: b.workspaceId,
-      accountId: b.accountId,
-      agent: b.agent,
-      runnerId: b.runnerId,
-      quotaScope: b.quotaScope,
-      live: sql<number>`(${b.removedAt} IS NULL AND ${agentAccount.removedAt} IS NULL
-        AND ${agentAccount.enabled}=1 AND ${runner.revokedAt} IS NULL AND ${runner.status}<>'revoked')`,
-    })
-    .from(b)
-    .innerJoin(agentAccount, eq(agentAccount.id, b.accountId))
-    .innerJoin(runner, eq(runner.id, b.runnerId))
-    .where(eq(b.id, bindingId))
-    .get();
+function* bindingForSteps(q: Q, bindingId: string) {
+  const { agentAccount, agentAccountBinding: b, runner } = q.t;
+  const found = yield* q.one(
+    q.orm
+      .select({
+        id: b.id,
+        workspaceId: b.workspaceId,
+        accountId: b.accountId,
+        agent: b.agent,
+        runnerId: b.runnerId,
+        quotaScope: b.quotaScope,
+        live: sql<number>`CASE WHEN ${b.removedAt} IS NULL AND ${agentAccount.removedAt} IS NULL
+          AND ${agentAccount.enabled}=1 AND ${runner.revokedAt} IS NULL
+          AND ${runner.status}<>'revoked' THEN 1 ELSE 0 END`.mapWith(Number),
+      })
+      .from(b)
+      .innerJoin(agentAccount, eq(agentAccount.id, b.accountId))
+      .innerJoin(runner, eq(runner.id, b.runnerId))
+      .where(eq(b.id, bindingId)),
+  );
   return (found as Binding | undefined) ?? null;
 }
 
@@ -107,12 +107,14 @@ function scopeOf(binding: Binding, kind: AccountHealthKind) {
     : { scope: "binding" as const, scopeId: binding.id };
 }
 
-function row(db: Database, kind: AccountHealthKind, scopeId: string, model: string) {
-  const found = orm(db)
-    .select()
-    .from(health)
-    .where(and(eq(health.kind, kind), eq(health.scopeId, scopeId), eq(health.model, model)))
-    .get();
+function* rowSteps(q: Q, kind: AccountHealthKind, scopeId: string, model: string) {
+  const { agentAccountHealth: health } = q.t;
+  const found = yield* q.one(
+    q.orm
+      .select()
+      .from(health)
+      .where(and(eq(health.kind, kind), eq(health.scopeId, scopeId), eq(health.model, model))),
+  );
   return (found as AccountHealth | undefined) ?? null;
 }
 
@@ -124,66 +126,64 @@ const KIND: Record<Exclude<AccountHealthState, "ok">, AccountHealthKind> = {
   unsupported_model: "model",
 };
 
-export function recordAccountObservation(
-  db: Database,
-  observation: AccountObservation,
-): Partial<Record<AccountHealthKind, AccountObservationOutcome>> {
-  return immediate(db, () => {
-    const binding = bindingFor(db, observation.bindingId);
-    if (!binding) throw new Error("Agent account binding is unavailable");
-    const kinds: readonly AccountHealthKind[] =
-      observation.state === "ok"
-        ? observation.clears.filter((kind) => kind !== "model" || observation.model)
-        : [KIND[observation.state]];
-    const outcomes: Partial<Record<AccountHealthKind, AccountObservationOutcome>> = {};
-    const failure = observation.state !== "ok" && observation.state !== "low";
-    for (const kind of kinds) {
-      if (observation.state === "ok" && !binding.live) {
-        outcomes[kind] = "removed";
-        continue;
-      }
-      const { scope, scopeId } = scopeOf(binding, kind);
-      const model = kind === "model" ? (observation.model ?? "") : "";
-      const current = row(db, kind, scopeId, model);
-      if (current?.sourceId === observation.sourceId) {
-        outcomes[kind] = "duplicate";
-        continue;
-      }
-      if (
-        current &&
-        (observation.observedAt < current.observedAt ||
-          (observation.observedAt === current.observedAt && !failure))
-      ) {
-        outcomes[kind] = "stale";
-        continue;
-      }
-      const state = observation.state;
-      const failures = failure ? (current?.state === state ? current.failures : 0) + 1 : 0;
-      const resetsAt = state === "exhausted" ? observation.resetsAt : null;
-      const nextCheckAt =
-        state === "auth_required"
-          ? null
-          : state === "unsupported_model"
-            ? observation.observedAt + ACCOUNT_MODEL_RECHECK_MS
-            : resetsAt !== null
-              ? resetsAt + ACCOUNT_RESET_SLACK_MS
-              : failure
-                ? observation.observedAt + accountRecheckDelay(scopeId, failures)
-                : observation.observedAt;
-      const update = {
-        scope,
-        state,
-        source: observation.source,
-        sourceId: observation.sourceId,
-        bindingId: binding.id,
-        runnerId: binding.runnerId,
-        observedAt: observation.observedAt,
-        resetsAt,
-        nextCheckAt,
-        failures: Math.min(failures, 1000),
-        updatedAt: observation.now,
-      };
-      orm(db)
+export function* recordAccountObservationSteps(q: Q, observation: AccountObservation) {
+  const { agentAccountHealth: health } = q.t;
+  const binding = yield* bindingForSteps(q, observation.bindingId);
+  if (!binding) throw new Error("Agent account binding is unavailable");
+  const kinds: readonly AccountHealthKind[] =
+    observation.state === "ok"
+      ? observation.clears.filter((kind) => kind !== "model" || observation.model)
+      : [KIND[observation.state]];
+  const outcomes: Partial<Record<AccountHealthKind, AccountObservationOutcome>> = {};
+  const failure = observation.state !== "ok" && observation.state !== "low";
+  for (const kind of kinds) {
+    if (observation.state === "ok" && !binding.live) {
+      outcomes[kind] = "removed";
+      continue;
+    }
+    const { scope, scopeId } = scopeOf(binding, kind);
+    const model = kind === "model" ? (observation.model ?? "") : "";
+    const current = yield* rowSteps(q, kind, scopeId, model);
+    if (current?.sourceId === observation.sourceId) {
+      outcomes[kind] = "duplicate";
+      continue;
+    }
+    if (
+      current &&
+      (observation.observedAt < current.observedAt ||
+        (observation.observedAt === current.observedAt && !failure))
+    ) {
+      outcomes[kind] = "stale";
+      continue;
+    }
+    const state = observation.state;
+    const failures = failure ? (current?.state === state ? current.failures : 0) + 1 : 0;
+    const resetsAt = state === "exhausted" ? observation.resetsAt : null;
+    const nextCheckAt =
+      state === "auth_required"
+        ? null
+        : state === "unsupported_model"
+          ? observation.observedAt + ACCOUNT_MODEL_RECHECK_MS
+          : resetsAt !== null
+            ? resetsAt + ACCOUNT_RESET_SLACK_MS
+            : failure
+              ? observation.observedAt + accountRecheckDelay(scopeId, failures)
+              : observation.observedAt;
+    const update = {
+      scope,
+      state,
+      source: observation.source,
+      sourceId: observation.sourceId,
+      bindingId: binding.id,
+      runnerId: binding.runnerId,
+      observedAt: observation.observedAt,
+      resetsAt,
+      nextCheckAt,
+      failures: Math.min(failures, 1000),
+      updatedAt: observation.now,
+    };
+    yield* q.exec(
+      q.orm
         .insert(health)
         .values({
           kind,
@@ -193,12 +193,35 @@ export function recordAccountObservation(
           agent: binding.agent,
           ...update,
         })
-        .onConflictDoUpdate({ target: [health.kind, health.scopeId, health.model], set: update })
-        .run();
-      outcomes[kind] = "applied";
-    }
-    return outcomes;
-  });
+        .onConflictDoUpdate({ target: [health.kind, health.scopeId, health.model], set: update }),
+    );
+    outcomes[kind] = "applied";
+  }
+  return outcomes;
+}
+
+export function recordAccountObservation(
+  db: Database,
+  observation: AccountObservation,
+): Partial<Record<AccountHealthKind, AccountObservationOutcome>> {
+  return settled(sqliteDb(db).transaction((q) => recordAccountObservationSteps(q, observation)));
+}
+
+export function* bindingAccountHealthSteps(q: Q, bindingId: string, model?: string | null) {
+  const binding = yield* bindingForSteps(q, bindingId);
+  if (!binding) return [];
+  const found: AccountHealth[] = [];
+  for (const kind of ["provider", "auth", "model", "quota"] as const) {
+    if (kind === "model" && !model) continue;
+    const health = yield* rowSteps(
+      q,
+      kind,
+      scopeOf(binding, kind).scopeId,
+      kind === "model" ? model! : "",
+    );
+    if (health) found.push(health);
+  }
+  return found;
 }
 
 export function bindingAccountHealth(
@@ -206,13 +229,26 @@ export function bindingAccountHealth(
   bindingId: string,
   model?: string | null,
 ): AccountHealth[] {
-  const binding = bindingFor(db, bindingId);
-  if (!binding) return [];
-  return (["provider", "auth", "model", "quota"] as const).flatMap((kind) => {
-    if (kind === "model" && !model) return [];
-    const found = row(db, kind, scopeOf(binding, kind).scopeId, kind === "model" ? model! : "");
-    return found ? [found] : [];
-  });
+  return settled(sqliteDb(db).run((q) => bindingAccountHealthSteps(q, bindingId, model)));
+}
+
+export function* legacyBindingAccountHealthSteps(
+  q: Q,
+  runnerId: string,
+  agent: string,
+  model?: string | null,
+) {
+  const id = legacyAgentBindingId(runnerId, agent as RunnerCodingAgent);
+  const { agentAccountBinding: b, runner } = q.t;
+  if (yield* q.one(q.orm.select({ id: b.id }).from(b).where(eq(b.id, id))))
+    return yield* bindingAccountHealthSteps(q, id, model);
+  const workspace = yield* q.one(
+    q.orm.select({ id: runner.workspaceId }).from(runner).where(eq(runner.id, runnerId)),
+  );
+  const provider = workspace
+    ? yield* rowSteps(q, "provider", `${workspace.id}:${agent}`, "")
+    : null;
+  return provider ? [provider] : [];
 }
 
 export function legacyBindingAccountHealth(
@@ -221,17 +257,38 @@ export function legacyBindingAccountHealth(
   agent: string,
   model?: string | null,
 ): AccountHealth[] {
-  const id = legacyAgentBindingId(runnerId, agent as RunnerCodingAgent);
-  const b = agentAccountBinding;
-  if (orm(db).select({ id: b.id }).from(b).where(eq(b.id, id)).get())
-    return bindingAccountHealth(db, id, model);
-  const workspace = orm(db)
-    .select({ id: runner.workspaceId })
-    .from(runner)
-    .where(eq(runner.id, runnerId))
-    .get();
-  const provider = workspace ? row(db, "provider", `${workspace.id}:${agent}`, "") : null;
-  return provider ? [provider] : [];
+  return settled(
+    sqliteDb(db).run((q) => legacyBindingAccountHealthSteps(q, runnerId, agent, model)),
+  );
+}
+
+/** Attempts still running on the binding's account (or the binding itself) that began at or after `since`. */
+export function* accountAttemptsInFlightSteps(
+  q: Q,
+  bindingId: string,
+  since: number,
+  scope: "account" | "binding",
+) {
+  const { agentAccountBinding: b, retroDispatch: d, runnerCommandAccount: c } = q.t;
+  const u = q.t.runnerExecutionUsage;
+  const owned = scope === "account" ? eq(c.accountId, b.accountId) : eq(c.bindingId, b.id);
+  const usage = yield* q.one(
+    q.orm
+      .select({ count: count() })
+      .from(u)
+      .innerJoin(c, eq(c.commandId, u.commandId))
+      .innerJoin(b, eq(b.id, bindingId))
+      .where(and(isNull(u.endedAt), gte(u.startedAt, since), owned)),
+  );
+  const retros = yield* q.one(
+    q.orm
+      .select({ count: count() })
+      .from(d)
+      .innerJoin(c, eq(c.commandId, d.commandId))
+      .innerJoin(b, eq(b.id, bindingId))
+      .where(and(isNull(d.releasedAt), gte(d.createdAt, since), owned)),
+  );
+  return (usage?.count ?? 0) + (retros?.count ?? 0);
 }
 
 export function accountAttemptsInFlight(
@@ -240,18 +297,30 @@ export function accountAttemptsInFlight(
   since: number,
   scope: "account" | "binding",
 ): number {
-  return orm(db).all<{ count: number }>(
-    sql`SELECT COUNT(*) AS count FROM (
-         SELECT u.command_id FROM runner_execution_usage u
-         WHERE u.ended_at IS NULL AND u.started_at>=${since}
-         UNION ALL
-         SELECT d.command_id FROM retro_dispatch d
-         WHERE d.released_at IS NULL AND d.created_at>=${since}
-       ) a
-       JOIN runner_command_account c ON c.command_id=a.command_id
-       JOIN agent_account_binding b ON b.id=${bindingId}
-       WHERE ${sql.raw(scope === "account" ? "c.account_id=b.account_id" : "c.binding_id=b.id")}`,
-  )[0]!.count;
+  return settled(sqliteDb(db).run((q) => accountAttemptsInFlightSteps(q, bindingId, since, scope)));
+}
+
+export function* resumeAccountHealthNowSteps(
+  q: Q,
+  agent: string,
+  runnerId: string | null,
+  now: number,
+) {
+  const { agentAccountHealth: health } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(health)
+      .set({ nextCheckAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(health.agent, agent),
+          eq(health.kind, "quota"),
+          eq(health.state, "exhausted"),
+          gt(health.nextCheckAt, now),
+          runnerId === null ? undefined : eq(health.runnerId, runnerId),
+        ),
+      ),
+  );
 }
 
 export function resumeAccountHealthNow(
@@ -260,17 +329,5 @@ export function resumeAccountHealthNow(
   runnerId: string | null,
   now: number,
 ): void {
-  orm(db)
-    .update(health)
-    .set({ nextCheckAt: now, updatedAt: now })
-    .where(
-      and(
-        eq(health.agent, agent),
-        eq(health.kind, "quota"),
-        eq(health.state, "exhausted"),
-        gt(health.nextCheckAt, now),
-        runnerId === null ? undefined : eq(health.runnerId, runnerId),
-      ),
-    )
-    .run();
+  settled(sqliteDb(db).run((q) => resumeAccountHealthNowSteps(q, agent, runnerId, now)));
 }
