@@ -41,6 +41,10 @@ import {
   clearRunnerSessionMove,
   noteRunnerSessionMove,
   recordItemCandidate,
+  releaseRunnerReservation,
+  reserveRunnerSlot,
+  runnerReservationHolder,
+  unassignedRunnerReservations,
 } from "../db";
 import {
   ArtifactRejectedError,
@@ -373,6 +377,7 @@ export function createRemoteAgentRunner(options: {
   /** How long a run may go without a runner event before Paws stops it, confirmed or not. */
   hungRunMs?: number;
   placement?: RunnerPlacement;
+  instanceId?: string;
   agentRead?: {
     open(input: {
       commandId: string;
@@ -390,7 +395,10 @@ export function createRemoteAgentRunner(options: {
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
+  const instanceId = options.instanceId ?? randomUUID();
   const reservations = new Map<string, string>();
+  const reserved = (runId: string) =>
+    reservations.has(runId) || runnerReservationHolder(db, runId, now()) !== null;
   const readers = new Set<string>();
   /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
   const toldLost = new Set<string>();
@@ -510,7 +518,7 @@ export function createRemoteAgentRunner(options: {
             ...placement,
             reserved: unassigned(runId ?? undefined),
           });
-          if (!runId || reservations.has(runId)) return [];
+          if (!runId || reserved(runId)) return [];
           const pending = unassigned(runId);
           return candidates
             .filter((runner) => {
@@ -617,7 +625,7 @@ export function createRemoteAgentRunner(options: {
   }
   /** Reservations per runner whose run has no runner_work row there yet. */
   function unassigned(excludeRunId = "") {
-    const counts = new Map<string, number>();
+    const counts = unassignedRunnerReservations(db, now(), instanceId, excludeRunId);
     const assigned = new Map(
       db
         .query<{ runId: string; runnerId: string }, [string]>(
@@ -679,7 +687,6 @@ export function createRemoteAgentRunner(options: {
       ];
     placement.signal?.throwIfAborted();
     offered.push(...new Set(candidates.map((runner) => runner.id)));
-    const pending = unassigned(item.currentRunId);
     for (const runner of candidates) {
       if (runner.id === placement.handedOverFrom) {
         rejected.push(`${runner.id}: handed the session over`);
@@ -692,26 +699,47 @@ export function createRemoteAgentRunner(options: {
         rejected.push(`${runner.id}: excluded after failed attempt`);
         continue;
       }
-      const reserved = pending.get(runner.id) ?? 0;
-      if (reservations.has(item.currentRunId)) {
+      if (reserved(item.currentRunId)) {
         rejected.push(`${runner.id}: the run is already being placed`);
         continue;
       }
-      const held =
-        runnerSlotsHeldBetweenCommands(db, runner.id, now(), item.currentRunId) +
-        pinnedSlotsReserved(db, runner.id, itemId, now());
-      if (!runnerHasCapacity(db, runner.id, now(), item.currentRunId, reserved + held)) {
+      const free = () =>
+        runnerHasCapacity(
+          db,
+          runner.id,
+          now(),
+          item.currentRunId!,
+          (unassigned(item.currentRunId!).get(runner.id) ?? 0) +
+            runnerSlotsHeldBetweenCommands(db, runner.id, now(), item.currentRunId!) +
+            pinnedSlotsReserved(db, runner.id, itemId, now()),
+        );
+      if (!free()) {
         rejected.push(`${runner.id}${NO_FREE_CAPACITY}`);
         continue;
       }
       try {
-        immediate(db, () => {
+        const taken = immediate(db, () => {
+          if (!free()) return NO_FREE_CAPACITY;
+          if (
+            !reserveRunnerSlot(db, {
+              runId: item.currentRunId!,
+              runnerId: runner.id,
+              instanceId,
+              now: now(),
+            })
+          )
+            return ": the run is already being placed";
           const mode = getTaskMode(db, itemId);
           if (isResponseTaskMode(mode))
             work.scopeTask(item.currentRunId!, runner.workspaceId, work.identity(runner.id).userId);
           else work.scope(item.currentRunId!, runner.workspaceId);
           releasePinnedSlot(db, itemId);
+          return null;
         });
+        if (taken) {
+          rejected.push(`${runner.id}${taken}`);
+          continue;
+        }
         reservations.set(item.currentRunId, runner.id);
         return { ...runner, runId: item.currentRunId };
       } catch (error) {
@@ -767,7 +795,7 @@ export function createRemoteAgentRunner(options: {
         command.prompt === `${closeoutPrompt}\n\n${readPrompt}`);
     if (closeoutPrompt !== undefined && (command.type !== type || !sameCloseout)) {
       // The run holds one command at a time, so the stale one would block the new assignment.
-      if (!reservations.has(runId)) {
+      if (!reserved(runId)) {
         try {
           const issuedAt = now();
           work.enqueue({
@@ -787,7 +815,11 @@ export function createRemoteAgentRunner(options: {
       return undefined;
     }
     if (command.type !== type) return undefined;
-    if (reservations.has(runId)) throw new RunnerCapacityWait([row.runnerId]);
+    if (
+      reservations.has(runId) ||
+      !reserveRunnerSlot(db, { runId, runnerId: row.runnerId, instanceId, now: now() })
+    )
+      throw new RunnerCapacityWait([row.runnerId]);
     reservations.set(runId, row.runnerId);
     return {
       selected: {
@@ -1722,7 +1754,11 @@ export function createRemoteAgentRunner(options: {
               };
               try {
                 immediate(db, () => {
-                  if (!runnerHasCapacity(db, selected.id, now(), selected.runId))
+                  const others =
+                    unassignedRunnerReservations(db, now(), instanceId, selected.runId).get(
+                      selected.id,
+                    ) ?? 0;
+                  if (!runnerHasCapacity(db, selected.id, now(), selected.runId, others))
                     throw new RetryableRunnerError(
                       selected.id,
                       "Runner became busy before assignment",
@@ -1732,6 +1768,7 @@ export function createRemoteAgentRunner(options: {
                       true,
                     );
                   work.assign(assigned);
+                  releaseRunnerReservation(db, selected.runId, instanceId);
                   options.placement?.started({
                     commandId: assigned.id,
                     runnerId: selected.id,
@@ -2576,6 +2613,7 @@ export function createRemoteAgentRunner(options: {
             if (readCommand) await options.agentRead?.close(readCommand);
             // Keep attachment fenced through cleanup, then free the slot before returning.
             reservations.delete(selected.runId);
+            releaseRunnerReservation(db, selected.runId, instanceId);
           }
         }
       };
