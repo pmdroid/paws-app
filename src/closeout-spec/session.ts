@@ -88,6 +88,7 @@ export type CloseoutSession = {
    * was recorded at. Reads only `HEAD`, not the changed files.
    */
   lastRecorded(): Promise<string | undefined>;
+  settled(): Promise<void>;
 };
 
 export type CloseoutSessionOptions = {
@@ -233,6 +234,7 @@ export function createCloseoutSession(
     }
     return run;
   };
+  const inFlight = new Set<Promise<string>>();
 
   const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
     const run = chain.then(work, work);
@@ -333,10 +335,10 @@ export function createCloseoutSession(
         listed = prepared;
         if (request?.probes || options.rulesFirst) await judgeRules(prepared);
         const broken = ruleBreak(prepared);
-        const report = {
-          ...reportOf(prepared, memory),
-          ...(broken ? { pending: [], blocked: broken } : {}),
-        };
+        const listing = reportOf(prepared, memory);
+        for (const entry of listing.required as { id: string; running?: boolean }[])
+          if (running.has(entry.id)) entry.running = true;
+        const report = { ...listing, ...(broken ? { pending: [], blocked: broken } : {}) };
         if (request?.progress && checkedHead !== undefined)
           notifyReport(options, checkedHead, prepared, report);
         last = { report: boundedReport(report), head: checkedHead };
@@ -353,7 +355,12 @@ export function createCloseoutSession(
         return ruleBreak(prepared) ?? prepared;
       });
       if (typeof ready === "string") return ready;
-      return runId(workspace, ready, memory, id, options, once, { halt, since });
+      const run = runId(workspace, ready, memory, id, options, once, { halt, since });
+      inFlight.add(run);
+      return run.finally(() => inFlight.delete(run));
+    },
+    settled: async () => {
+      while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
     },
     recorded: async () => {
       let prepared = listed;
