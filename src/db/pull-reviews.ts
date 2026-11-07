@@ -1,11 +1,14 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { enqueueJobOnce } from "./jobs";
+import { orm } from "./orm";
 import {
   DEFAULT_PULL_FEEDBACK_WAIT,
   deferPullFeedback,
   type PullFeedbackWait,
 } from "./pull-comments";
+import { job, pullReview } from "./schema";
 
 export type PullReviewState = "changes_requested" | "commented";
 export type PullReviewOutcome = "restarted" | "asked" | "posted" | "dropped";
@@ -23,18 +26,7 @@ export type PullReviewRecord = {
   outcome: PullReviewOutcome | null;
 };
 
-type Row = {
-  review_id: number;
-  item_id: string;
-  state: PullReviewState;
-  pull_number: number;
-  head: string | null;
-  reviewer: string | null;
-  body: string;
-  received_at: number;
-  handled_at: number | null;
-  outcome: PullReviewOutcome | null;
-};
+type Row = typeof pullReview.$inferSelect;
 
 export function pullReviewJobKey(reviewId: number): string {
   return `pull-review:${reviewId}`;
@@ -50,21 +42,22 @@ export function recordPullReview(
   review: Omit<PullReviewRecord, "handledAt" | "outcome">,
   wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
 ): boolean {
-  const inserted = db.run(
-    `INSERT INTO pull_review (review_id, item_id, state, pull_number, head, reviewer, body, received_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(review_id) DO NOTHING`,
-    [
-      review.reviewId,
-      review.itemId,
-      review.state,
-      review.pullNumber,
-      review.head,
-      review.reviewer,
-      review.body,
-      review.receivedAt,
-    ],
-  );
-  if (inserted.changes === 0) return false;
+  const inserted = orm(db)
+    .insert(pullReview)
+    .values({
+      reviewId: review.reviewId,
+      itemId: review.itemId,
+      state: review.state,
+      pullNumber: review.pullNumber,
+      head: review.head,
+      reviewer: review.reviewer,
+      body: review.body,
+      receivedAt: review.receivedAt,
+    })
+    .onConflictDoNothing({ target: pullReview.reviewId })
+    .returning({ reviewId: pullReview.reviewId })
+    .all();
+  if (inserted.length === 0) return false;
   // A review waits out the same quiet minute as comments, so the bot reviews and comments that
   // follow it reach the agent in the same restart.
   deferPullFeedback(db, review.itemId, review.receivedAt, wait);
@@ -80,20 +73,24 @@ export function recordPullReview(
 }
 
 export function getPullReview(db: Database, reviewId: number): PullReviewRecord | null {
-  const row = db
-    .query<Row, [number]>("SELECT * FROM pull_review WHERE review_id = ?")
-    .get(reviewId);
-  return row === null ? null : mapRow(row);
+  const row = orm(db).select().from(pullReview).where(eq(pullReview.reviewId, reviewId)).get();
+  return row === undefined ? null : mapRow(row);
 }
 
 /** Changes-requested reviews of this item that have not reached the agent or the team yet. */
 export function pendingChangeRequests(db: Database, itemId: string): PullReviewRecord[] {
-  return db
-    .query<Row, [string]>(
-      `SELECT * FROM pull_review WHERE item_id = ? AND state = 'changes_requested'
-       AND handled_at IS NULL ORDER BY review_id`,
+  return orm(db)
+    .select()
+    .from(pullReview)
+    .where(
+      and(
+        eq(pullReview.itemId, itemId),
+        eq(pullReview.state, "changes_requested"),
+        isNull(pullReview.handledAt),
+      ),
     )
-    .all(itemId)
+    .orderBy(asc(pullReview.reviewId))
+    .all()
     .map(mapRow);
 }
 
@@ -104,27 +101,26 @@ export function wakePullReviews(
   now: number,
   wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
 ): void {
-  const latest = db
-    .query<{ at: number | null }, [string, string, string]>(
-      `SELECT MAX(at) AS at FROM (
-         SELECT received_at AS at FROM pull_review WHERE item_id = ? AND handled_at IS NULL
-         UNION ALL SELECT received_at FROM pull_comment WHERE item_id = ? AND handled_at IS NULL
-         UNION ALL SELECT observed_at FROM pull_ci_failure WHERE item_id = ? AND handled_at IS NULL)`,
+  const latest = orm(db).all<{ at: number | null }>(
+    sql`SELECT MAX(at) AS at FROM (
+         SELECT received_at AS at FROM pull_review WHERE item_id = ${itemId} AND handled_at IS NULL
+         UNION ALL SELECT received_at FROM pull_comment WHERE item_id = ${itemId} AND handled_at IS NULL
+         UNION ALL SELECT observed_at FROM pull_ci_failure WHERE item_id = ${itemId} AND handled_at IS NULL)`,
+  )[0]?.at;
+  orm(db)
+    .update(job)
+    .set({
+      runAt: sql`MIN(${job.runAt}, MAX(${now}, MIN(${job.createdAt} + ${Math.max(wait.maxMs, wait.quietMs)}, ${latest == null ? now : latest + wait.quietMs})))`,
+    })
+    .where(
+      and(
+        eq(job.queue, JOB_KIND.pullReview),
+        eq(job.status, "pending"),
+        sql`${job.jobKey} IN (SELECT 'pull-review:' || review_id FROM pull_review
+                              WHERE item_id = ${itemId} AND handled_at IS NULL)`,
+      ),
     )
-    .get(itemId, itemId, itemId)?.at;
-  db.run(
-    `UPDATE job SET run_at = MIN(run_at, MAX(?, MIN(created_at + ?, ?)))
-     WHERE queue = ? AND status = 'pending'
-       AND job_key IN (SELECT 'pull-review:' || review_id FROM pull_review
-                       WHERE item_id = ? AND handled_at IS NULL)`,
-    [
-      now,
-      Math.max(wait.maxMs, wait.quietMs),
-      latest == null ? now : latest + wait.quietMs,
-      JOB_KIND.pullReview,
-      itemId,
-    ],
-  );
+    .run();
 }
 
 export function settlePullReview(
@@ -134,24 +130,26 @@ export function settlePullReview(
   now: number,
 ): boolean {
   return (
-    db.run(
-      "UPDATE pull_review SET handled_at = ?, outcome = ? WHERE review_id = ? AND handled_at IS NULL",
-      [now, outcome, reviewId],
-    ).changes > 0
+    orm(db)
+      .update(pullReview)
+      .set({ handledAt: now, outcome })
+      .where(and(eq(pullReview.reviewId, reviewId), isNull(pullReview.handledAt)))
+      .returning({ reviewId: pullReview.reviewId })
+      .all().length > 0
   );
 }
 
 function mapRow(row: Row): PullReviewRecord {
   return {
-    reviewId: row.review_id,
-    itemId: row.item_id,
-    state: row.state,
-    pullNumber: row.pull_number,
+    reviewId: row.reviewId,
+    itemId: row.itemId,
+    state: row.state as PullReviewState,
+    pullNumber: row.pullNumber,
     head: row.head,
     reviewer: row.reviewer,
     body: row.body,
-    receivedAt: row.received_at,
-    handledAt: row.handled_at,
-    outcome: row.outcome,
+    receivedAt: row.receivedAt,
+    handledAt: row.handledAt,
+    outcome: row.outcome as PullReviewOutcome | null,
   };
 }

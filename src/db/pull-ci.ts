@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { CiRoundCheck } from "./ci-rounds";
+import { orm } from "./orm";
 import { gatherPullFeedback, type PullFeedbackWait } from "./pull-comments";
+import { pullCiFailure } from "./schema";
 
 export type PullCiOutcome = "restarted" | "asked" | "dropped" | "cleared";
 
@@ -23,17 +26,7 @@ export type PullCiFailureRecord = {
   outcome: PullCiOutcome | null;
 };
 
-type Row = {
-  item_id: string;
-  head: string;
-  pull_number: number;
-  item_version: number;
-  failed_checks: string;
-  checks: string;
-  observed_at: number;
-  handled_at: number | null;
-  outcome: PullCiOutcome | null;
-};
+type Row = typeof pullCiFailure.$inferSelect;
 
 export type PullCiObservation = "recorded" | "known";
 
@@ -45,32 +38,46 @@ export function recordPullCiFailure(
   wait: PullFeedbackWait,
 ): PullCiObservation {
   settleOtherHeads(db, failure.itemId, failure.head, failure.observedAt);
-  const existing = db
-    .query<Row, [string, string]>("SELECT * FROM pull_ci_failure WHERE item_id = ? AND head = ?")
-    .get(failure.itemId, failure.head);
-  const values = [
-    failure.pullNumber,
-    failure.itemVersion,
-    JSON.stringify(failure.failedChecks),
-    JSON.stringify(failure.checks),
-  ];
-  if (existing !== null && (existing.handled_at === null || TERMINAL.has(existing.outcome!))) {
-    if (existing.handled_at === null)
-      db.run(
-        `UPDATE pull_ci_failure SET pull_number = ?, item_version = ?, failed_checks = ?, checks = ?
-         WHERE item_id = ? AND head = ?`,
-        [...values, failure.itemId, failure.head],
-      );
+  const existing = selectFailure(db, failure.itemId, failure.head);
+  const values = {
+    pullNumber: failure.pullNumber,
+    itemVersion: failure.itemVersion,
+    failedChecks: JSON.stringify(failure.failedChecks),
+    checks: JSON.stringify(failure.checks),
+  };
+  if (
+    existing !== undefined &&
+    (existing.handledAt === null || TERMINAL.has(existing.outcome as PullCiOutcome))
+  ) {
+    if (existing.handledAt === null)
+      orm(db)
+        .update(pullCiFailure)
+        .set(values)
+        .where(and(eq(pullCiFailure.itemId, failure.itemId), eq(pullCiFailure.head, failure.head)))
+        .run();
     return "known";
   }
-  db.run(
-    `INSERT INTO pull_ci_failure (pull_number, item_version, failed_checks, checks, item_id, head, observed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (item_id, head) DO UPDATE SET pull_number = excluded.pull_number,
-       item_version = excluded.item_version, failed_checks = excluded.failed_checks,
-       checks = excluded.checks, observed_at = excluded.observed_at, handled_at = NULL, outcome = NULL`,
-    [...values, failure.itemId, failure.head, failure.observedAt],
-  );
+  orm(db)
+    .insert(pullCiFailure)
+    .values({
+      ...values,
+      itemId: failure.itemId,
+      head: failure.head,
+      observedAt: failure.observedAt,
+    })
+    .onConflictDoUpdate({
+      target: [pullCiFailure.itemId, pullCiFailure.head],
+      set: {
+        pullNumber: sql`excluded.pull_number`,
+        itemVersion: sql`excluded.item_version`,
+        failedChecks: sql`excluded.failed_checks`,
+        checks: sql`excluded.checks`,
+        observedAt: sql`excluded.observed_at`,
+        handledAt: null,
+        outcome: null,
+      },
+    })
+    .run();
   gatherPullFeedback(
     db,
     failure.itemId,
@@ -83,20 +90,26 @@ export function recordPullCiFailure(
 
 export function clearPullCiFailures(db: Database, itemId: string, head: string, now: number): void {
   settleOtherHeads(db, itemId, head, now);
-  db.run(
-    `UPDATE pull_ci_failure SET handled_at = ?, outcome = 'cleared'
-     WHERE item_id = ? AND head = ? AND handled_at IS NULL`,
-    [now, itemId, head],
-  );
+  orm(db)
+    .update(pullCiFailure)
+    .set({ handledAt: now, outcome: "cleared" })
+    .where(
+      and(
+        eq(pullCiFailure.itemId, itemId),
+        eq(pullCiFailure.head, head),
+        isNull(pullCiFailure.handledAt),
+      ),
+    )
+    .run();
 }
 
 export function pendingPullCiFailures(db: Database, itemId: string): PullCiFailureRecord[] {
-  return db
-    .query<Row, [string]>(
-      `SELECT * FROM pull_ci_failure WHERE item_id = ? AND handled_at IS NULL
-       ORDER BY observed_at, head`,
-    )
-    .all(itemId)
+  return orm(db)
+    .select()
+    .from(pullCiFailure)
+    .where(and(eq(pullCiFailure.itemId, itemId), isNull(pullCiFailure.handledAt)))
+    .orderBy(asc(pullCiFailure.observedAt), asc(pullCiFailure.head))
+    .all()
     .map(mapRow);
 }
 
@@ -105,10 +118,8 @@ export function getPullCiFailure(
   itemId: string,
   head: string,
 ): PullCiFailureRecord | null {
-  const row = db
-    .query<Row, [string, string]>("SELECT * FROM pull_ci_failure WHERE item_id = ? AND head = ?")
-    .get(itemId, head);
-  return row === null ? null : mapRow(row);
+  const row = selectFailure(db, itemId, head);
+  return row === undefined ? null : mapRow(row);
 }
 
 export function settlePullCiFailures(
@@ -119,32 +130,53 @@ export function settlePullCiFailures(
 ): number {
   let settled = 0;
   for (const failure of failures)
-    settled += db.run(
-      `UPDATE pull_ci_failure SET handled_at = ?, outcome = ?
-       WHERE item_id = ? AND head = ? AND handled_at IS NULL`,
-      [now, outcome, failure.itemId, failure.head],
-    ).changes;
+    settled += orm(db)
+      .update(pullCiFailure)
+      .set({ handledAt: now, outcome })
+      .where(
+        and(
+          eq(pullCiFailure.itemId, failure.itemId),
+          eq(pullCiFailure.head, failure.head),
+          isNull(pullCiFailure.handledAt),
+        ),
+      )
+      .returning({ itemId: pullCiFailure.itemId })
+      .all().length;
   return settled;
 }
 
 function settleOtherHeads(db: Database, itemId: string, head: string, now: number): void {
-  db.run(
-    `UPDATE pull_ci_failure SET handled_at = ?, outcome = 'dropped'
-     WHERE item_id = ? AND head != ? AND handled_at IS NULL`,
-    [now, itemId, head],
-  );
+  orm(db)
+    .update(pullCiFailure)
+    .set({ handledAt: now, outcome: "dropped" })
+    .where(
+      and(
+        eq(pullCiFailure.itemId, itemId),
+        ne(pullCiFailure.head, head),
+        isNull(pullCiFailure.handledAt),
+      ),
+    )
+    .run();
+}
+
+function selectFailure(db: Database, itemId: string, head: string): Row | undefined {
+  return orm(db)
+    .select()
+    .from(pullCiFailure)
+    .where(and(eq(pullCiFailure.itemId, itemId), eq(pullCiFailure.head, head)))
+    .get();
 }
 
 function mapRow(row: Row): PullCiFailureRecord {
   return {
-    itemId: row.item_id,
+    itemId: row.itemId,
     head: row.head,
-    pullNumber: row.pull_number,
-    itemVersion: row.item_version,
-    failedChecks: JSON.parse(row.failed_checks) as PullCiFailedCheck[],
+    pullNumber: row.pullNumber,
+    itemVersion: row.itemVersion,
+    failedChecks: JSON.parse(row.failedChecks) as PullCiFailedCheck[],
     checks: JSON.parse(row.checks) as CiRoundCheck[],
-    observedAt: row.observed_at,
-    handledAt: row.handled_at,
-    outcome: row.outcome,
+    observedAt: row.observedAt,
+    handledAt: row.handledAt,
+    outcome: row.outcome as PullCiOutcome | null,
   };
 }
