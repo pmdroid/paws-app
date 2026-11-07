@@ -355,6 +355,13 @@ export {
 } from "./migration-files";
 export type { Migration } from "./migration";
 export { openDatabase } from "./open";
+export { connectPostgres, openPostgres, type PostgresDb } from "./postgres";
+export {
+  checkPostgres,
+  checkSqlite,
+  type MigrationReport,
+  type PostgresConnection,
+} from "./db-check";
 export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
 export { orm, type Orm } from "./orm";
 export * as schema from "./schema";
