@@ -29,6 +29,8 @@ import {
   replaceLeasedJobPayload,
   refreshVerificationJobVersion,
   type RestartHandoff,
+  getItemCandidate,
+  recordItemCandidate,
 } from "../db";
 import { journal, journalCaught } from "../journal";
 import { rerunItemCi } from "./ci-rerun";
@@ -68,6 +70,7 @@ import {
   ensureCandidateRef,
   adoptLegacyCandidate,
   removeCandidateRef,
+  restoreCandidateRef,
   FOLLOW_UP_INTERRUPTION,
   type RunAgentOptions,
   type RunAgentResult,
@@ -4265,6 +4268,13 @@ export class Orchestrator {
               ? ["-C", worktree, "reset", "--hard", head]
               : ["-C", worktree, "update-ref", ref, head, at],
           );
+          if (ref !== "HEAD")
+            recordItemCandidate(this.db, {
+              itemId: item.id,
+              sha: head,
+              branch: item.branchName,
+              recordedAt: this.now(),
+            });
           reason = "the checks run changed the commit";
         } else if (result.cancelled) reason = "the run was cancelled";
         else if (result.stopReason !== "end_turn" || result.errorMessage)
@@ -8990,7 +9000,7 @@ export class Orchestrator {
     const worktree = this.options.remoteExecution
       ? {
           path: this.runnerWorkspace(runId),
-          repo: (await ensureCandidateRef(placement)).mirrorPath,
+          repo: await this.ensureRecordedCandidate(item, placement, signal),
         }
       : await createWorktree({
           ...placement,
@@ -9229,8 +9239,40 @@ export class Orchestrator {
       : { repo: worktreePath(this.options.pawsRoot, itemPathId(item)), ref: "HEAD" };
   }
 
+  private async ensureRecordedCandidate(
+    item: WorkItemRecord,
+    placement: Parameters<typeof ensureCandidateRef>[0] & { remoteUrl: string },
+    signal: AbortSignal,
+  ): Promise<string> {
+    await this.restoreCandidate(item, signal);
+    const candidate = await ensureCandidateRef(placement);
+    if (getItemCandidate(this.db, item.id)?.sha !== candidate.head)
+      recordItemCandidate(this.db, {
+        itemId: item.id,
+        sha: candidate.head,
+        branch: item.branchName,
+        recordedAt: this.now(),
+      });
+    return candidate.mirrorPath;
+  }
+
+  private async restoreCandidate(item: WorkItemRecord, signal?: AbortSignal): Promise<void> {
+    const repository = this.repositoryForItem(item);
+    const recorded = getItemCandidate(this.db, item.id);
+    if (!this.options.remoteExecution || !repository || !recorded) return;
+    const networkGit = signal ? this.repositoryGit(item, repository, signal, "read") : undefined;
+    await restoreCandidateRef({
+      ...repository,
+      itemId: itemPathId(item),
+      pawsRoot: this.options.pawsRoot,
+      sha: recorded.sha,
+      ...(networkGit ? { networkGit } : {}),
+    });
+  }
+
   private async legacyItemHead(item: WorkItemRecord): Promise<{ repo: string; ref: string }> {
     const repository = this.repositoryForItem(item);
+    await this.restoreCandidate(item, this.signalForItem(item.id));
     if (this.options.remoteExecution && repository)
       await adoptLegacyCandidate({
         ...repository,

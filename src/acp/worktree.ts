@@ -1,6 +1,7 @@
 import { journalCaught } from "../journal";
 import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
+import { randomUUID } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { git } from "./git";
@@ -270,6 +271,52 @@ export async function ensureCandidateRef(options: {
     // An empty old value creates the ref only if it is still absent.
     await git(["--git-dir", gitDir, "update-ref", ref, head, ""]);
     return { mirrorPath: gitDir, ref, head };
+  });
+}
+
+export async function restoreCandidateRef(options: {
+  owner: string;
+  repo: string;
+  remoteUrl: string;
+  itemId: string;
+  pawsRoot: string;
+  sha: string;
+  networkGit?: (args: string[]) => Promise<string>;
+}): Promise<void> {
+  if (!/^[a-f0-9]{40}$/.test(options.sha))
+    throw new Error(`Recorded candidate head ${options.sha} is not a commit SHA.`);
+  const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
+  const ref = candidateRef(options.itemId);
+  if ((await revParse(gitDir, `${ref}^{commit}`)) === options.sha) return;
+  if (!(await exists(gitDir))) await ensureBareMirror(options);
+  await onMirror(gitDir, async () => {
+    if (!(await revParse(gitDir, `${options.sha}^{commit}`))) {
+      const scratch = `refs/paws/imports/${randomUUID()}`;
+      try {
+        await (options.networkGit ?? git)([
+          "--git-dir",
+          gitDir,
+          "fetch",
+          "--no-tags",
+          "--no-write-fetch-head",
+          "--",
+          options.remoteUrl,
+          `${options.sha}:${scratch}`,
+        ]);
+      } catch (error) {
+        throw new Error(
+          `Candidate head ${options.sha} of ${options.itemId} is missing on GitHub in ${options.owner}/${options.repo}.`,
+          { cause: error },
+        );
+      } finally {
+        await git(["--git-dir", gitDir, "update-ref", "-d", scratch]).catch(() => undefined);
+      }
+      if (!(await revParse(gitDir, `${options.sha}^{commit}`)))
+        throw new Error(
+          `Candidate head ${options.sha} of ${options.itemId} is missing on GitHub in ${options.owner}/${options.repo}.`,
+        );
+    }
+    await git(["--git-dir", gitDir, "update-ref", ref, options.sha]);
   });
 }
 
