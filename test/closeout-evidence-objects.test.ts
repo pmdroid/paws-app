@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { handleStatusRequest, itemReviews } from "../src/dashboard";
@@ -10,6 +10,7 @@ import {
   publishCloseoutEvidence,
   uploadLocalCloseoutEvidence,
 } from "../src/evidence";
+import { publishingCloseoutProgress } from "../src/loop";
 import { createFakeRunFileObjects, withSealedRunFileObjects } from "../src/run-files";
 import { tempDb, tempHome } from "./helpers";
 
@@ -21,10 +22,10 @@ const DIGEST = `sha256:${HEX}`;
 const RECORD = `evidence/${HEX}/${HEAD}/independent-review/1.json`;
 const LOG = `logs/${HEX}/${HEAD}/test/1.log`;
 
-function closeoutRun(db: Database, home: string): string {
+function closeoutRun(db: Database, home: string, item = ITEM): string {
   const root = join(home, "closeout", "evidence");
   const write = (path: string, body: string) => {
-    const file = join(root, ITEM, ...path.split("/"));
+    const file = join(root, item, ...path.split("/"));
     mkdirSync(join(file, ".."), { recursive: true });
     writeFileSync(file, body);
   };
@@ -43,10 +44,10 @@ function closeoutRun(db: Database, home: string): string {
   );
   write(LOG, "acme test output\n");
   write("retry.lock", "");
-  const identity = { taskId: ITEM, base: BASE, head: HEAD, policyDigest: DIGEST, policyPath: null };
+  const identity = { taskId: item, base: BASE, head: HEAD, policyDigest: DIGEST, policyPath: null };
   upsertCloseoutStep(
     db,
-    ITEM,
+    item,
     identity,
     {
       id: "independent-review",
@@ -71,7 +72,7 @@ function closeoutRun(db: Database, home: string): string {
     },
     1,
   );
-  finishCloseoutProgress(db, ITEM, identity, "rejected", 1);
+  finishCloseoutProgress(db, item, identity, "rejected", 1);
   return root;
 }
 
@@ -153,4 +154,101 @@ test("existing Closeout records are uploaded once on startup and read from S3 af
   expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(0);
   expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM)).toBe(2);
   expect(itemReviews(db, ITEM, homeB, {})).toHaveLength(1);
+});
+
+test("a finished check's files are stored before its step is recorded, while the gate still runs", async () => {
+  const { db, homeB, storageA, storageB } = setup();
+  const calls: string[] = [];
+  const progress = publishingCloseoutProgress(
+    {
+      begin: () => calls.push("begin"),
+      step: (_identity, step) => calls.push(`step ${step.state}`),
+      output: () => calls.push("output"),
+      finish: () => calls.push("finish"),
+    },
+    async () => {
+      calls.push("publish");
+      await publishCloseoutEvidence(db, storageA, ITEM);
+    },
+  );
+  const identity = { taskId: ITEM, base: BASE, head: HEAD, policyDigest: DIGEST, policyPath: null };
+  const step = (state: "running" | "passed") => ({
+    id: "independent-review",
+    kind: "review" as const,
+    state,
+    command: "",
+    detail: null,
+    attempt: 1,
+    timeoutSeconds: null,
+    startedAt: 1,
+    finishedAt: null,
+    exitCode: null,
+    timedOut: false,
+    timeoutReason: null,
+    truncated: false,
+    logPath: null,
+    evidencePath: RECORD,
+    findings: null,
+    ordinal: 0,
+  });
+  progress.begin(identity);
+  progress.step(identity, step("running"));
+  progress.output(identity, "independent-review", "stdout", "acme", false);
+  progress.step(identity, step("passed"));
+  await progress.settled();
+  expect(calls).toEqual(["begin", "step running", "output", "publish", "step passed"]);
+  expect(await hydrateItemCloseoutEvidence(db, storageB, ITEM)).toBe(2);
+  expect(itemReviews(db, ITEM, homeB, {})).toHaveLength(1);
+});
+
+test("a failed step write is raised once the queued steps settle", async () => {
+  const progress = publishingCloseoutProgress(
+    {
+      begin: () => {
+        throw new Error("acme database busy");
+      },
+      step: () => {},
+      output: () => {},
+      finish: () => {},
+    },
+    async () => {},
+  );
+  progress.begin({ taskId: ITEM, base: BASE, head: HEAD, policyDigest: DIGEST, policyPath: null });
+  expect(progress.settled()).rejects.toThrow("acme database busy");
+});
+
+test("restored records keep their modification times, and a newer stored copy replaces an older one", async () => {
+  const { db, storageA, storageB } = setup();
+  const record = join(storageA.root, ITEM, ...RECORD.split("/"));
+  utimesSync(record, 1_700_000_000, 1_700_000_000);
+  await publishCloseoutEvidence(db, storageA, ITEM);
+  await hydrateCloseoutEvidence(db, storageB, [ITEM]);
+  const restored = join(storageB.root, ITEM, ...RECORD.split("/"));
+  expect(Math.floor(statSync(restored).mtimeMs)).toBe(1_700_000_000_000);
+
+  const log = join(storageA.root, ITEM, ...LOG.split("/"));
+  await Bun.sleep(5);
+  writeFileSync(log, "acme partial\nacme done\n");
+  expect(await publishCloseoutEvidence(db, storageA, ITEM)).toBe(1);
+  expect(await hydrateCloseoutEvidence(db, storageB, [ITEM])).toBe(1);
+  expect(readFileSync(join(storageB.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
+    "acme partial\nacme done\n",
+  );
+  await Bun.sleep(5);
+  writeFileSync(log, "acme newer local\n");
+  expect(await hydrateCloseoutEvidence(db, storageA, [ITEM])).toBe(0);
+  expect(readFileSync(log, "utf8")).toBe("acme newer local\n");
+});
+
+test("every visible item with the issue's identifier has its Closeout records restored", async () => {
+  const { db, homeA, storageA, storageB } = setup();
+  insertQueuedItem(db, { id: "item-acme-2", sessionKey: "session-acme", now: 1 });
+  insertQueuedItem(db, { id: "item-acme-3", sessionKey: "session-other", now: 1 });
+  db.run("UPDATE work_item SET linear_identifier = 'ACME-1'");
+  closeoutRun(db, homeA, "item-acme-2");
+  closeoutRun(db, homeA, "item-acme-3");
+  await uploadLocalCloseoutEvidence(db, storageA);
+  expect(await hydrateItemCloseoutEvidence(db, storageB, "ACME-1", ["session-acme"])).toBe(4);
+  expect(existsSync(join(storageB.root, "item-acme-2", ...RECORD.split("/")))).toBe(true);
+  expect(existsSync(join(storageB.root, "item-acme-3"))).toBe(false);
 });

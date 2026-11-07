@@ -545,7 +545,7 @@ import {
 import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
-import { createDbCloseoutProgress } from "./closeout-progress";
+import { createDbCloseoutProgress, publishingCloseoutProgress } from "./closeout-progress";
 import { checkPolicyRunners } from "./policy-runners";
 import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
@@ -4134,6 +4134,11 @@ export class Orchestrator {
       reviewerAgent === "grok" || reviewerAgent === "opencode"
         ? createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) })
         : createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
+    const recorded = createDbCloseoutProgress(this.db, item.id, () => this.now());
+    const publishing = this.closeoutEvidence()?.objects?.()
+      ? publishingCloseoutProgress(recorded, () => this.pushCloseoutEvidence(item))
+      : null;
+    const progress = publishing ?? recorded;
     const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,
@@ -4178,7 +4183,7 @@ export class Orchestrator {
       reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
       ...this.closeoutHome(item),
       ...recovery,
-      progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
+      progress,
     });
     const request = {
       taskId: itemPathId(item),
@@ -4211,6 +4216,7 @@ export class Orchestrator {
     } finally {
       activity.flush();
       if (live) live.progress = null;
+      await publishing?.settled();
       await this.pushCloseoutEvidence(item);
     }
   }

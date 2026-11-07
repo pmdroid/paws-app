@@ -38,3 +38,40 @@ export function createDbCloseoutProgress(
     },
   };
 }
+
+export function publishingCloseoutProgress(
+  inner: CloseoutProgress,
+  publish: () => Promise<void>,
+): CloseoutProgress & { settled(): Promise<void> } {
+  let chain: Promise<void> = Promise.resolve();
+  let failure: { error: unknown } | null = null;
+  const queue = (action: () => void | Promise<void>) => {
+    chain = chain.then(action).catch((error: unknown) => {
+      failure ??= { error };
+    });
+  };
+  return {
+    begin: (identity) => queue(() => inner.begin(identity)),
+    step: (identity, step) =>
+      queue(async () => {
+        if (
+          step.state !== "pending" &&
+          step.state !== "running" &&
+          (step.logPath !== null || step.evidencePath !== null)
+        )
+          await publish();
+        inner.step(identity, step);
+      }),
+    output: (identity, stepId, stream, text, truncated) =>
+      queue(() => inner.output(identity, stepId, stream, text, truncated)),
+    finish: (identity, decision) =>
+      queue(async () => {
+        await publish();
+        inner.finish(identity, decision);
+      }),
+    async settled() {
+      await chain;
+      if (failure !== null) throw failure.error;
+    },
+  };
+}

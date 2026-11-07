@@ -237,6 +237,7 @@ export const closeoutEvidenceObject = sqliteTable(
     prefix: text().notNull(),
     sizeBytes: integer("size_bytes").notNull(),
     sha256: text().notNull(),
+    modifiedAt: integer("modified_at").notNull(),
     storedAt: integer("stored_at").notNull(),
   },
   (table) => [primaryKey({ columns: [table.task, table.path] })],

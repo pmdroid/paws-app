@@ -146,6 +146,7 @@ export function saveCloseoutEvidenceObject(db: Database, row: CloseoutEvidenceOb
         prefix: row.prefix,
         sizeBytes: row.sizeBytes,
         sha256: row.sha256,
+        modifiedAt: row.modifiedAt,
         storedAt: row.storedAt,
       },
     })
@@ -157,21 +158,22 @@ export function closeoutTasksOfItem(
   ref: string,
   sessionIds?: readonly string[],
 ): string[] {
-  const item = orm(db)
+  const items = orm(db)
     .select({ id: workItem.id, sessionKey: workItem.sessionKey })
     .from(workItem)
     .where(or(eq(workItem.id, ref), eq(workItem.linearIdentifier, ref)))
-    .get();
-  if (
-    !item ||
-    (sessionIds !== undefined &&
-      (item.sessionKey === null || !sessionIds.includes(item.sessionKey)))
-  )
-    return [];
+    .all()
+    .filter(
+      (item) =>
+        sessionIds === undefined ||
+        (item.sessionKey !== null && sessionIds.includes(item.sessionKey)),
+    )
+    .map((item) => item.id);
+  if (items.length === 0) return [];
   return orm(db)
     .selectDistinct({ task: closeoutProgress.taskId })
     .from(closeoutProgress)
-    .where(eq(closeoutProgress.itemId, item.id))
+    .where(inArray(closeoutProgress.itemId, items))
     .all()
     .map((row) => row.task);
 }

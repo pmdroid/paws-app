@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
   closeoutTasksOfItem,
@@ -66,8 +66,14 @@ export async function publishCloseoutEvidence(
     const path = parts.join("/");
     if (!safePath(path)) continue;
     const file = Bun.file(join(directory, ...parts));
+    const info = await stat(join(directory, ...parts));
+    const modifiedAt = Math.floor(info.mtimeMs);
     const previous = getCloseoutEvidenceObject(db, task, path);
-    if (previous?.sha256 === (await sha256Of(file.stream()))) continue;
+    if (previous?.sizeBytes === info.size && previous.modifiedAt === modifiedAt) continue;
+    if (previous?.sha256 === (await sha256Of(file.stream()))) {
+      saveCloseoutEvidenceObject(db, { ...previous, modifiedAt });
+      continue;
+    }
     const prefix = ["closeout-evidence", task, ...parts, randomUUID()].join("/");
     const hash = createHash("sha256");
     async function* hashed() {
@@ -78,7 +84,15 @@ export async function publishCloseoutEvidence(
     }
     const sizeBytes = await writeEvidenceChunks(objects, prefix, hashed());
     const sha256 = hash.digest("hex");
-    saveCloseoutEvidenceObject(db, { task, path, prefix, sizeBytes, sha256, storedAt: now() });
+    saveCloseoutEvidenceObject(db, {
+      task,
+      path,
+      prefix,
+      sizeBytes,
+      sha256,
+      modifiedAt,
+      storedAt: now(),
+    });
     if (previous) await removeEvidenceChunks(objects, previous.prefix, previous.sizeBytes);
     published++;
   }
@@ -97,13 +111,8 @@ export async function hydrateCloseoutEvidence(
   for (const row of listCloseoutEvidenceObjects(db, tasks)) {
     if (!safeTask(row.task) || !safePath(row.path)) continue;
     const target = join(storage.root, row.task, ...row.path.split("/"));
-    if (
-      await lstat(target).then(
-        () => true,
-        () => false,
-      )
-    )
-      continue;
+    const local = await lstat(target).catch(() => null);
+    if (local !== null && Math.floor(local.mtimeMs) >= row.modifiedAt) continue;
     const temporary = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
     try {
       const parts: Uint8Array[] = [];
@@ -116,6 +125,7 @@ export async function hydrateCloseoutEvidence(
         throw new Error("Closeout evidence object failed its integrity check");
       await mkdir(dirname(target), { recursive: true, mode: 0o700 });
       await writeFile(temporary, Buffer.concat(parts), { flag: "wx", mode: 0o600 });
+      await utimes(temporary, row.modifiedAt / 1000, row.modifiedAt / 1000);
       await rename(temporary, target);
       restored++;
     } catch (error) {
