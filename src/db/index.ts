@@ -263,7 +263,6 @@ export {
   type JobLoopLiveness,
 } from "./loop";
 export {
-  deleteInstance,
   lastInstanceHeartbeat,
   stopInstance,
   heartbeatInstance,
@@ -276,7 +275,6 @@ export {
   roleRunsJobs,
   type Instance,
   type InstanceRole,
-  deleteInstanceSteps,
   heartbeatInstanceSteps,
   jobInstanceElsewhereSteps,
   lastInstanceHeartbeatSteps,

@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
 import {
-  deleteInstanceSteps,
   heartbeatInstanceSteps,
   jobInstanceElsewhereSteps,
   lastInstanceHeartbeatSteps,
@@ -42,7 +41,5 @@ forEachDialect((connect) => {
     expect((await db.run((q) => liveInstancesSteps(q, 4_000))).map((row) => row.id)).toEqual([
       web.id,
     ]);
-    await db.run((q) => deleteInstanceSteps(q, web.id));
-    expect(await db.run((q) => liveInstancesSteps(q, 4_000))).toEqual([]);
   });
 });

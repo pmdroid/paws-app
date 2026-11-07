@@ -101,14 +101,6 @@ export function lastInstanceHeartbeat(db: Database): number | null {
   return settled(sqliteDb(db).run(lastInstanceHeartbeatSteps));
 }
 
-export function* deleteInstanceSteps(q: Q, id: string) {
-  yield* q.exec(q.orm.delete(q.t.instance).where(eq(q.t.instance.id, id)));
-}
-
-export function deleteInstance(db: Database, id: string): void {
-  settled(sqliteDb(db).run((q) => deleteInstanceSteps(q, id)));
-}
-
 export function* liveInstancesSteps(q: Q, now: number) {
   const { instance } = q.t;
   const rows = yield* q.all(
