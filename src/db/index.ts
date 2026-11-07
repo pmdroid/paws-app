@@ -20,6 +20,11 @@ export {
   type ItemPullRequest,
 } from "./stop-response";
 export {
+  getItemCandidate,
+  recordItemCandidate,
+  type ItemCandidate,
+} from "./item-candidate";
+export {
   getPullReview,
   pendingChangeRequests,
   pullReviewJobKey,
