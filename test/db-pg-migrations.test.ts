@@ -26,7 +26,9 @@ function drizzleKit(home: string) {
     { cwd: home, stdout: "pipe", stderr: "pipe" },
   );
   expect(run.exitCode).toBe(0);
-  return readdirSync(join(home, "drizzle-pg")).filter((name) => name.endsWith(".sql"));
+  return readdirSync(join(home, "drizzle-pg"))
+    .filter((name) => name.endsWith(".sql"))
+    .sort();
 }
 
 describe("Postgres drizzle-kit migrations", () => {
@@ -77,7 +79,9 @@ describe("Postgres drizzle-kit migrations", () => {
 
   test("the Postgres schema has no change without a migration", () => {
     expect(drizzleKit(tempHome())).toEqual(
-      readdirSync(PG_MIGRATIONS_FOLDER).filter((name) => name.endsWith(".sql")),
+      readdirSync(PG_MIGRATIONS_FOLDER)
+        .filter((name) => name.endsWith(".sql"))
+        .sort(),
     );
   });
 });
