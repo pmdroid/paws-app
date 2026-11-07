@@ -9,6 +9,7 @@ import {
   startLoops,
   type InstanceRole,
 } from "../src/db";
+import { createInboxStore, createIntakePollSource, startCatchUpPoller } from "../src/linear";
 import { tempHome } from "./helpers";
 
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -199,6 +200,72 @@ describe("roles", () => {
     } finally {
       worker.kill("SIGKILL");
       web?.kill("SIGKILL");
+    }
+  }, 40_000);
+  test("two instances' catch-up pollers share one due time and poll once per interval", async () => {
+    const { first, second } = sharedDatabase();
+    let clock = 1_700_000_000_000;
+    let requests = 0;
+    const source = createIntakePollSource(
+      {
+        async query() {
+          requests += 1;
+          return {
+            viewer: { id: "acme-app" },
+            issues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            agentActivities: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+          };
+        },
+      },
+      { teamId: "acme-team" },
+    );
+    const [web, worker] = [first, second].map((db) =>
+      startCatchUpPoller({
+        source,
+        store: createInboxStore(db),
+        onEvent: () => {},
+        timer: false,
+        now: () => clock,
+      }),
+    );
+    await web!.pollDue();
+    const afterFirst = requests;
+    await worker!.pollDue();
+    expect(afterFirst).toBeGreaterThan(0);
+    expect(requests).toBe(afterFirst);
+    clock += 60_000;
+    await worker!.pollDue();
+    expect(requests).toBeGreaterThan(afterFirst);
+    await Promise.all([web!.stop(), worker!.stop()]);
+    first.close();
+    second.close();
+  });
+
+  test("a second worker leaves a refresh that already ran for its next interval", async () => {
+    const home = tempHome();
+    const first = spawnPaws(home, "worker");
+    let second: ReturnType<typeof spawnPaws> | undefined;
+    const db = openDatabase(join(home, "paws.db"));
+    const runAt = () =>
+      db
+        .query<{ run_at: number; status: string }, []>(
+          "SELECT run_at, status FROM job WHERE queue = 'repository.catalog.refresh'",
+        )
+        .get();
+    try {
+      await readyUrl(first);
+      await waitFor(() => (runAt()?.run_at ?? 0) > Date.now() + 60_000);
+      const scheduled = runAt();
+      expect(scheduled?.status).toBe("pending");
+      second = spawnPaws(home, "worker");
+      await readyUrl(second);
+      await Bun.sleep(1_500);
+      expect(runAt()).toEqual(scheduled);
+    } finally {
+      db.close();
+      first.kill("SIGKILL");
+      second?.kill("SIGKILL");
     }
   }, 40_000);
 });

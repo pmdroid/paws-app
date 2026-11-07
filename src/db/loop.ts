@@ -2,7 +2,7 @@ import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
 import { and, isNotNull, notInArray } from "drizzle-orm";
-import { liveInstances, roleRunsJobs } from "./instances";
+import { jobInstanceElsewhere } from "./instances";
 import { journal } from "./journal";
 import { orm } from "./orm";
 import { job as jobTable } from "./schema";
@@ -155,10 +155,7 @@ export class JobLoop {
   private removeUnknownRecurring(): { id: number; queue: string }[] {
     const registered = [...this.handlers.keys()];
     try {
-      const others = liveInstances(this.db, this.clock.now()).filter(
-        (live) => live.id !== this.options.instanceId && roleRunsJobs(live.role),
-      );
-      if (others.length > 0) return [];
+      if (jobInstanceElsewhere(this.db, this.options.instanceId, this.clock.now())) return [];
       return orm(this.db)
         .delete(jobTable)
         .where(

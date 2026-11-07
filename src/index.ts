@@ -98,7 +98,6 @@ import {
   workspaceMemberUsable,
   enqueueCommand,
   enqueueJobOnce,
-  getJob,
   getLinearSession,
   getWorkItem,
   workItemForSession,
@@ -142,9 +141,11 @@ import {
   COMMAND_DELIVERY_MS,
   bindInstance,
   INSTANCE_HEARTBEAT_MS,
+  jobInstanceElsewhere,
   MEMBERSHIP_BACKSTOP_MS,
   registerInstance,
   roleRunsJobs,
+  runPendingJobNow,
   recoverOnStartup,
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
@@ -206,6 +207,8 @@ import {
   sessionCreatedKey,
   type AcceptedLinearEvent,
   type IntakeDecision,
+  POLL_DUE_CURSOR,
+  POLL_INTERVAL_FAILING_MS,
   type LinearRunning,
 } from "./linear";
 import {
@@ -514,6 +517,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     queue: string;
     everyMs: number;
     atStartup?: boolean;
+    startup?: () => void;
     run: (signal: AbortSignal) => Promise<unknown>;
   }[] = [];
   if (options?.refreshRepositories)
@@ -598,7 +602,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const linear = openLinear({
     db,
     signal: abort.signal,
-    poll: roleRunsJobs(runtime.role),
     countItemRequest: (itemId, caller) => countLinearRequest(db, itemId, caller),
     secretsDir: paths.secretsDir,
     isAuthorized: () =>
@@ -1317,6 +1320,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   }
 
   let running: LinearRunning = linear ? linear.start() : down();
+  if (linear)
+    periodic.push({
+      queue: "linear.catch-up",
+      everyMs: POLL_INTERVAL_FAILING_MS,
+      atStartup: true,
+      startup: () => inbox.setCursor(POLL_DUE_CURSOR, 0),
+      run: () => running.pollDue(),
+    });
 
   const tracker = linear?.tracker ?? null;
   const managed = Boolean(workspace && linear?.tracker && linear.issueLifecycle);
@@ -1852,19 +1863,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         created.jobs.register(FAILED_ISSUE_SWEEP_JOB, async (_job, context) => {
           await sweepFailed(context.signal);
         });
-        const sweep = getJob(
-          db,
-          enqueueJobOnce(db, {
-            queue: FAILED_ISSUE_SWEEP_JOB,
-            jobKey: FAILED_ISSUE_SWEEP_JOB,
-            recurringEveryMs: FAILED_ISSUE_SWEEP_MS,
-            now: Date.now(),
-          }),
-        );
-        if (roleRunsJobs(runtime.role) && sweep?.status === "pending" && sweep.runAt > Date.now())
-          void sweepFailed(abort.signal).catch((error) =>
-            journalCaught(error, "index.sweepFailedIssues", null),
-          );
+        const sweep = enqueueJobOnce(db, {
+          queue: FAILED_ISSUE_SWEEP_JOB,
+          jobKey: FAILED_ISSUE_SWEEP_JOB,
+          recurringEveryMs: FAILED_ISSUE_SWEEP_MS,
+          now: Date.now(),
+        });
+        if (roleRunsJobs(runtime.role) && !jobInstanceElsewhere(db, instance.id, Date.now()))
+          runPendingJobNow(db, sweep, Date.now());
       }
       created.jobs.register(POLICY_BLOCK_CHECK_JOB, () => attached.checkPolicyBlocks());
       enqueueJobOnce(db, {
@@ -1944,29 +1950,22 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: RETRO_DISPATCH_TIMING.tickMs,
         now: Date.now(),
       });
+      const alone = !jobInstanceElsewhere(db, instance.id, Date.now());
       for (const work of periodic) {
         created.jobs.register(work.queue, async (_job, context) => {
           await work.run(context.signal);
         });
-        const queued = getJob(
-          db,
-          enqueueJobOnce(db, {
-            queue: work.queue,
-            jobKey: work.queue,
-            recurringEveryMs: work.everyMs,
-            runAt: work.atStartup ? undefined : Date.now() + work.everyMs,
-            now: Date.now(),
-          }),
-        );
-        if (
-          work.atStartup &&
-          roleRunsJobs(runtime.role) &&
-          queued?.status === "pending" &&
-          queued.runAt > Date.now()
-        )
-          void work
-            .run(abort.signal)
-            .catch((error) => journalCaught(error, `index.periodic.${work.queue}`, null));
+        const id = enqueueJobOnce(db, {
+          queue: work.queue,
+          jobKey: work.queue,
+          recurringEveryMs: work.everyMs,
+          runAt: work.atStartup ? undefined : Date.now() + work.everyMs,
+          now: Date.now(),
+        });
+        if (work.atStartup && alone && roleRunsJobs(runtime.role)) {
+          work.startup?.();
+          runPendingJobNow(db, id, Date.now());
+        }
       }
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
       enqueueJobOnce(db, {
@@ -2182,6 +2181,7 @@ function ownerCap(configFile: string): number | null {
 function down(): LinearRunning {
   return {
     catchUp: async () => undefined,
+    pollDue: async () => undefined,
     stop: async () => undefined,
   };
 }

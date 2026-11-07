@@ -94,3 +94,11 @@ function processRuns(pid: number): boolean {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
+
+export function jobInstanceElsewhere(
+  db: Database,
+  selfId: string | undefined,
+  now: number,
+): boolean {
+  return liveInstances(db, now).some((live) => live.id !== selfId && roleRunsJobs(live.role));
+}
