@@ -36,7 +36,7 @@ The hand-written migrations (`src/db/migrations.ts` and the files in `src/db/mig
 
 ## Postgres
 
-Postgres is an option next to SQLite; SQLite stays the default, and nothing connects to Postgres yet. `src/db/schema-pg/` (pg-core) mirrors `src/db/schema/` file for file and table for table: the same column names in the same order, nullability, defaults, primary, foreign and unique keys, indexes, partial indexes and `CHECK`s. Its migrations are in [drizzle-pg/](drizzle-pg/), generated with their own config:
+Postgres is an option next to SQLite; SQLite stays the default. `openPostgres(url)` (`postgres.ts`) opens a Drizzle database on Bun's Postgres client, and `paws db check` uses it to apply the Postgres migrations and report; Paws itself does not run on Postgres yet ([Postgres (preview)](../../docs/postgres.md)). `src/db/schema-pg/` (pg-core) mirrors `src/db/schema/` file for file and table for table: the same column names in the same order, nullability, defaults, primary, foreign and unique keys, indexes, partial indexes and `CHECK`s. Its migrations are in [drizzle-pg/](drizzle-pg/), generated with their own config:
 
 ```sh
 bun x drizzle-kit generate --config drizzle.pg.config.ts --name pull_comment_author

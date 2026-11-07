@@ -60,6 +60,9 @@ import {
 } from "./run-files";
 import {
   closeoutPolicyRoot,
+  describeDatabaseUrl,
+  POSTGRES_NOT_YET,
+  redactDatabaseUrl,
   DEFAULT_COMMENT_WAIT,
   DEFAULT_IGNORED_COMMENT_BOTS,
   ensureLayout,
@@ -122,6 +125,10 @@ import {
   countLinearRequest,
   migrate,
   openDatabase,
+  checkPostgres,
+  checkSqlite,
+  connectPostgres,
+  type PostgresConnection,
   readSavedSettings,
   readSetting,
   updateSetting,
@@ -381,6 +388,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     throw new Error("PAWS_EXECUTION must be remote.");
   const runtime = loadRuntime(envSource);
   if (runtime.configError !== null) throw new Error(runtime.configError);
+  if (runtime.databaseUrl !== null) throw new Error(POSTGRES_NOT_YET);
   const publicDashboard = envSource.PAWS_PUBLIC_DASHBOARD === "1";
   const tls = publicDashboard ? validatePublicTls(envSource) : loadPublicTls(envSource);
   const runnerConfig = loadRunnerControl(envSource, runtime.env);
@@ -2323,6 +2331,7 @@ const CLI_HELP = `usage: paws
 Commands:
   paws                          start Paws on 127.0.0.1:8787
   paws doctor                   check prerequisites, including the GitHub App
+  paws db check                 connect to the database, apply migrations and report
   paws install                  set up the env file, config.toml and the user service
   paws install secrets          set the GitHub App, Linear, webhook and other secrets
   paws review-score [--since D] count review escapes, found after merge and after the PR
@@ -2339,6 +2348,52 @@ async function doctorMain(): Promise<number> {
   const checks = doctorChecks(await realProbe(process.env));
   console.log(formatDoctor(checks));
   return checks.every((item) => item.ok) ? 0 : 1;
+}
+
+export async function dbCheckMain(
+  source: EnvSource,
+  connect: (url: string) => PostgresConnection = connectPostgres,
+  print: (line: string) => void = console.log,
+  fail: (line: string) => void = console.error,
+): Promise<number> {
+  const runtime = loadRuntime(source);
+  if (runtime.configError !== null) {
+    fail(`paws db check failed: ${runtime.configError}`);
+    return 1;
+  }
+  const url = runtime.databaseUrl;
+  if (url === null) {
+    const path = pawsPaths(runtime.env.home).db;
+    print("SQLite is in use: neither [database] url nor PAWS_DATABASE_URL is set.");
+    try {
+      const report = checkSqlite(path);
+      print(
+        report === null
+          ? `ok · SQLite ${path} · no database yet; migrations apply at start`
+          : `ok · SQLite ${path} · ${report.applied} of ${report.known} migrations applied`,
+      );
+      return 0;
+    } catch (error) {
+      fail(`paws db check failed on SQLite ${path}: ${(error as Error).message}`);
+      return 1;
+    }
+  }
+  const where = describeDatabaseUrl(url);
+  let connection: PostgresConnection | null = null;
+  try {
+    connection = connect(url);
+    const report = await checkPostgres(connection);
+    print(
+      `ok · Postgres ${where} · server ${report.serverVersion} · ${report.applied} of ${report.known} migrations applied`,
+    );
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    fail(`paws db check failed on Postgres ${where}: ${redactDatabaseUrl(message, url)}`);
+    return 1;
+  } finally {
+    await connection?.close().catch(() => undefined);
+  }
 }
 
 /** `paws review-score [--since YYYY-MM-DD] [--escapes path]`: the independent reviewer's escapes. */
@@ -2487,6 +2542,13 @@ if (import.meta.main) {
   }
   if (command === "doctor") {
     process.exit(await doctorMain());
+  }
+  if (command === "db") {
+    if (argv.length !== 2 || argv[1] !== "check") {
+      console.error("usage: paws db check");
+      process.exit(1);
+    }
+    process.exit(await dbCheckMain(process.env));
   }
   if (command === "install" && argv[1] === "secrets")
     process.exit(await runInstallCli(argv.slice(1), process.env));
