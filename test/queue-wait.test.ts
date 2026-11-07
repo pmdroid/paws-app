@@ -11,6 +11,7 @@ import {
   ensureLinearSession,
   getQueuePosition,
   getWorkItem,
+  immediate,
   insertQueuedItem,
   listOutbox,
   listQueuePositions,
@@ -397,13 +398,19 @@ forEachDialect((open) => {
   });
 });
 
-test("on SQLite the functions settle before they return, and settled() refuses a pending promise", () => {
+test("on SQLite the functions settle before they return, and settled() refuses a pending promise", async () => {
   const db = tempDb();
   try {
     insertQueuedItem(db, { id: "a", now: 0 });
     settled(saveQueuePositions(sqliteDb(db), ["a"], { busy: 1, total: 1 }, 1));
     expect(settled(getQueuePosition(sqliteDb(db), "a"))?.position).toBe(1);
     expect(() => settled(new Promise(() => {}))).toThrow("pending");
+    let inner: Promise<void> | undefined;
+    immediate(db, () => {
+      inner = sqliteDb(db).transaction(() => saveQueuePositions(sqliteDb(db), [], null, 3));
+    });
+    await expect(inner!).rejects.toThrow("synchronous immediate()");
+    expect(settled(getQueuePosition(sqliteDb(db), "a"))?.position).toBe(1);
     expect(() =>
       settled(saveQueuePositions(sqliteDb(db), ["missing"], { busy: 1, total: 1 }, 2)),
     ).toThrow("FOREIGN KEY");

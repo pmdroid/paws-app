@@ -64,7 +64,10 @@ function openSqliteDb(database: Database): SqliteDb {
     orm: handle,
     sync,
     transaction: async (fn) => {
-      if (database.inTransaction && !active) return savepoint(fn);
+      if (database.inTransaction && !active)
+        throw new Error(
+          "db.transaction() can't run inside a synchronous immediate(); that transaction commits before the body awaits",
+        );
       const previous = tail;
       let release = () => {};
       tail = new Promise((resolve) => (release = resolve));
