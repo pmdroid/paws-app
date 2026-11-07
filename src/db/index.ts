@@ -316,6 +316,10 @@ export {
 } from "./migration-files";
 export type { Migration } from "./migration";
 export { openDatabase } from "./open";
+export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
+export { orm, type Orm } from "./orm";
+export * as schema from "./schema";
+export { rawSchema } from "./schema/raw";
 export { journal, setJournalSink } from "./journal";
 export {
   advanceOutboxSession,

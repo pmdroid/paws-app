@@ -17,3 +17,5 @@ export const migration: Migration = {
 Paws applies the frozen list, then these files sorted by id. A branch that merges after a later id was applied still runs, because `migrate()` applies every id it has not recorded. So a migration must not rely on another file-based migration that is not already on `main`.
 
 Shipped files are never edited or renamed.
+
+After adding a migration, run `bun scripts/db-schema.ts` to regenerate the Drizzle schema; `test/db-schema-drift.test.ts` fails until the schema matches ([../README.md](../README.md)).

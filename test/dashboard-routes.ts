@@ -375,7 +375,11 @@ function productionFiles(root: string): string[] {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
-        if (!["testing", "test", "migrations"].includes(entry.name)) walk(path);
+        if (
+          !["testing", "test", "migrations"].includes(entry.name) &&
+          path !== join(root, "src/db/schema")
+        )
+          walk(path);
       } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$|^migrations?\b/.test(entry.name))
         files.push(path);
     }

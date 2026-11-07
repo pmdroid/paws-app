@@ -16,7 +16,8 @@
     "@agentclientprotocol/codex-acp",
     "@xai-official/grok",
     "@opencode/cli",
-    "@tailwindcss/cli"
+    "@tailwindcss/cli",
+    "drizzle-kit"
   ],
   "ignoreExportsUsedInFile": true
 }
