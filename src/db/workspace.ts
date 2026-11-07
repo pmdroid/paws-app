@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 import { endRevokedRunnerAuthoritySteps } from "./runner-lease";
+import type { workspaceSession } from "./schema-pg";
 
 export type WorkspaceRole = "admin" | "member";
 type WorkspaceRecord = {
@@ -29,15 +30,7 @@ export function membershipFresh(member: WorkspaceMember, now: number): boolean {
   return member.checkedAt <= now && now - member.checkedAt < MEMBERSHIP_BACKSTOP_MS;
 }
 
-export type WorkspaceSession = {
-  tokenHash: string;
-  userId: string;
-  workspaceId: string;
-  csrfToken: string;
-  authenticatedAt: number;
-  lastSeenAt: number;
-  expiresAt: number;
-};
+export type WorkspaceSession = typeof workspaceSession.$inferSelect;
 
 function* findWorkspaceSteps(q: Q, column: "id" | "linearOrganizationId", value: string) {
   const { workspace } = q.t;
@@ -365,15 +358,7 @@ export function* readWorkspaceSessionSteps(q: Q, tokenHash: string, now: number,
   const { workspaceSession } = q.t;
   const session = yield* q.one(
     q.orm
-      .select({
-        tokenHash: workspaceSession.tokenHash,
-        userId: workspaceSession.userId,
-        workspaceId: workspaceSession.workspaceId,
-        csrfToken: workspaceSession.csrfToken,
-        authenticatedAt: workspaceSession.authenticatedAt,
-        lastSeenAt: workspaceSession.lastSeenAt,
-        expiresAt: workspaceSession.expiresAt,
-      })
+      .select()
       .from(workspaceSession)
       .where(and(eq(workspaceSession.tokenHash, tokenHash), gt(workspaceSession.expiresAt, now))),
   );
