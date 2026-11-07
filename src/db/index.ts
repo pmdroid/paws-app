@@ -363,6 +363,7 @@ export {
   type OutboxRow,
   type OutboxStatus,
   type OutboxTarget,
+  pullRequestReadyQueued,
 } from "./outbox";
 export {
   deadDeliveryIsFinalStop,
@@ -420,6 +421,7 @@ export {
   type OpenQuestionRecord,
   type WorkItemBlockRecord,
   type WorkItemFact,
+  openQuestionKind,
 } from "./reads";
 export {
   applyLinearIssueProject,
@@ -435,6 +437,10 @@ export {
   runnerSessionMove,
   type RunnerSessionMove,
   type RunnerSessionMoveStatus,
+  latestSealedSnapshot,
+  lastRunCommandAccount,
+  currentRunnerAgentVersion,
+  type SealedSessionSnapshot,
 } from "./runner-session-moves";
 export {
   createRunnerEnrollment,
@@ -461,6 +467,14 @@ export {
   type RunnerAgentLimit,
   type RunnerEnrollment,
   type StoredRunnerCertificate,
+  storedRunnerName,
+  runnerHostVersion,
+  runnerTargetForRestore,
+  runnerStanding,
+  runnerOwner,
+  recentRunners,
+  enabledRunnerIds,
+  runnerHelperBusy,
 } from "./runners";
 export {
   appendCloseoutOutput,
@@ -566,6 +580,9 @@ export {
   advanceLinearSessionGeneration,
   type StoredLinearSession,
   type StoredLinearTurn,
+  linearSessionClientId,
+  linearSessionInWorkspace,
+  sessionActiveRuns,
 } from "./linear-sessions";
 
 export {
@@ -791,6 +808,8 @@ export {
   resumeUsagePauseNow,
   startUsagePause,
   usagePause,
+  earliestRunnerCooldown,
+  runnerAgentLoginReady,
 } from "./usage-pause";
 export type { UsagePause } from "./usage-pause";
 export {
@@ -1177,3 +1196,17 @@ export {
   type DependencyItem,
   type DependencySnapshot,
 } from "./item-dependencies";
+export {
+  itemOpenRunnerWorkRuns,
+  itemOpenRunnerWork,
+  itemRunnerCancelWork,
+  pendingRunnerCancel,
+  itemRunnerWorkReports,
+  openRunnerWorkCommand,
+  runnerHandoverSent,
+  runnerWorkEnded,
+  lastRunnerEventSequence,
+  runnerEventsAfter,
+  runnerResultPayload,
+  runnerWorkActive,
+} from "./runner-work";

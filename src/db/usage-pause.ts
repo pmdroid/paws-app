@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { runnerAgentPolicy } from "./schema";
 import { systemClock } from "../core";
 import { resumeAccountHealthNow } from "./agent-account-health";
 import { accrueAwake } from "./items";
@@ -79,4 +82,42 @@ export function resumeUsagePauseNow(db: Database, runId: string, now: number): b
 /** A pause lives in the process that waits for it; a restart starts from no waits. */
 export function clearUsagePauses(db: Database): void {
   db.run("DELETE FROM usage_pause");
+}
+
+export function earliestRunnerCooldown(
+  db: Database,
+  input: { agent: string; now: number; runnerIds: readonly string[] },
+): { runnerId: string; until: number } | null {
+  return (
+    orm(db)
+      .select({ runnerId: runnerAgentPolicy.runnerId, until: runnerAgentPolicy.cooldownUntil })
+      .from(runnerAgentPolicy)
+      .where(
+        and(
+          eq(runnerAgentPolicy.agent, input.agent),
+          gt(runnerAgentPolicy.cooldownUntil, input.now),
+          inArray(runnerAgentPolicy.runnerId, [...input.runnerIds]),
+        ),
+      )
+      .orderBy(asc(runnerAgentPolicy.cooldownUntil), asc(runnerAgentPolicy.runnerId))
+      .limit(1)
+      .get() ?? null
+  );
+}
+
+export function runnerAgentLoginReady(db: Database, runnerId: string, agent: string): boolean {
+  return (
+    orm(db)
+      .select({ one: sql`1` })
+      .from(runnerAgentPolicy)
+      .where(
+        and(
+          eq(runnerAgentPolicy.runnerId, runnerId),
+          eq(runnerAgentPolicy.agent, agent),
+          eq(runnerAgentPolicy.ready, 1),
+          eq(runnerAgentPolicy.authExpired, 0),
+        ),
+      )
+      .get() !== undefined
+  );
 }
