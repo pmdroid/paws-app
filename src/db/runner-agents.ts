@@ -1,12 +1,14 @@
 import type { Database } from "bun:sqlite";
-import { immediate } from "./tx";
-import { auditWorkspaceAccess } from "./workspace";
-import { agentCatalogSummary, readAgentVersion } from "./agent-versions";
+import { and, eq, exists, ne, isNull, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
+import { readJson, writeJson } from "./json-column";
+import { auditWorkspaceAccessSteps } from "./workspace";
+import { agentCatalogSummarySteps, readAgentVersionSteps } from "./agent-versions";
 
 type ReportedStatus = "current" | "previous" | "installing" | "waiting" | "failed";
 
 /** A coding agent version as a runner reported it in its heartbeat. */
-export type RunnerAgentReport = {
+type RunnerAgentReport = {
   agent: string;
   version: string;
   status: ReportedStatus;
@@ -19,10 +21,10 @@ export type RunnerAgentReport = {
 export type CatalogPackage = { name: string; version: string; integrity: string };
 
 /** The native build package and its platform packages the catalog checked for an agent version. */
-export type CatalogPackages = (agent: string, nativeVersion: string | null) => CatalogPackage[];
+type CatalogPackages = (agent: string, nativeVersion: string | null) => CatalogPackage[];
 
 /** The version someone chose on the Runners page, sent to the runner until it runs it. */
-export type RunnerAgentTargetRow = {
+type RunnerAgentTargetRow = {
   id: string;
   agent: string;
   version: string;
@@ -66,49 +68,88 @@ export function recordRunnerAgents(
   agents: readonly RunnerAgentReport[],
   reportedAt: number,
 ): void {
-  db.run("DELETE FROM runner_agent WHERE runner_id=?", [runnerId]);
-  const insert = db.prepare(
-    `INSERT INTO runner_agent(runner_id,agent,version,status,error,sessions,target_id,reported_at)
-     VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(runner_id,agent,status) DO NOTHING`,
-  );
+  settled(sqliteDb(db).run((q) => recordRunnerAgentsSteps(q, runnerId, agents, reportedAt)));
+}
+
+export function* recordRunnerAgentsSteps(
+  q: Q,
+  runnerId: string,
+  agents: readonly RunnerAgentReport[],
+  reportedAt: number,
+) {
+  const { runnerAgent, runnerAgentTarget } = q.t;
+  yield* q.exec(q.orm.delete(runnerAgent).where(eq(runnerAgent.runnerId, runnerId)));
   for (const agent of agents)
-    insert.run(
-      runnerId,
-      agent.agent,
-      agent.version,
-      agent.status,
-      agent.status === "failed" ? (agent.error ?? null) : null,
-      agent.status === "waiting" ? (agent.sessions ?? null) : null,
-      agent.target ?? null,
-      reportedAt,
+    yield* q.exec(
+      q.orm
+        .insert(runnerAgent)
+        .values({
+          runnerId,
+          agent: agent.agent,
+          version: agent.version,
+          status: agent.status,
+          error: agent.status === "failed" ? (agent.error ?? null) : null,
+          sessions: agent.status === "waiting" ? (agent.sessions ?? null) : null,
+          targetId: agent.target ?? null,
+          reportedAt,
+        })
+        .onConflictDoNothing({
+          target: [runnerAgent.runnerId, runnerAgent.agent, runnerAgent.status],
+        }),
     );
-  db.run(
-    `DELETE FROM runner_agent_target WHERE runner_id=? AND EXISTS (
-       SELECT 1 FROM runner_agent a WHERE a.runner_id=runner_agent_target.runner_id
-       AND a.agent=runner_agent_target.agent AND a.status='current'
-       AND a.version=runner_agent_target.version)`,
-    [runnerId],
+  yield* q.exec(
+    q.orm.delete(runnerAgentTarget).where(
+      and(
+        eq(runnerAgentTarget.runnerId, runnerId),
+        exists(
+          q.orm
+            .select({ one: sql`1` })
+            .from(runnerAgent)
+            .where(
+              and(
+                eq(runnerAgent.runnerId, runnerAgentTarget.runnerId),
+                eq(runnerAgent.agent, runnerAgentTarget.agent),
+                eq(runnerAgent.status, "current"),
+                eq(runnerAgent.version, runnerAgentTarget.version),
+              ),
+            ),
+        ),
+      ),
+    ),
   );
 }
 
 type TargetRecord = RunnerAgentTargetRow & { requestedAt: number };
 
-function targets(db: Database, runnerId: string): TargetRecord[] {
-  return db
-    .query<Omit<TargetRecord, "packages"> & { packages: string }, [string]>(
-      `SELECT id,agent,version,integrity,native_version AS nativeVersion,packages,
-       requested_at AS requestedAt FROM runner_agent_target WHERE runner_id=? ORDER BY agent`,
-    )
-    .all(runnerId)
-    .map((row) => ({ ...row, packages: JSON.parse(row.packages) as CatalogPackage[] }));
+function* targets(q: Q, runnerId: string) {
+  const { runnerAgentTarget } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: runnerAgentTarget.id,
+        agent: runnerAgentTarget.agent,
+        version: runnerAgentTarget.version,
+        integrity: runnerAgentTarget.integrity,
+        nativeVersion: runnerAgentTarget.nativeVersion,
+        packages: runnerAgentTarget.packages,
+        requestedAt: runnerAgentTarget.requestedAt,
+      })
+      .from(runnerAgentTarget)
+      .where(eq(runnerAgentTarget.runnerId, runnerId))
+      .orderBy(runnerAgentTarget.agent),
+  );
+  return rows.map((row): TargetRecord => ({
+    ...row,
+    packages: readJson<CatalogPackage[]>(row.packages),
+  }));
 }
 
 /**
  * Why Paws no longer sends a target, or null. It must still be eligible in the catalog with the
  * integrity it was chosen with.
  */
-function blocked(db: Database, target: TargetRecord): string | null {
-  const row = readAgentVersion(db, target.agent, target.version);
+function* blocked(q: Q, target: TargetRecord) {
+  const row = yield* readAgentVersionSteps(q, target.agent, target.version);
   if (!row || row.status !== "eligible" || row.integrity !== target.integrity)
     return `Paws no longer offers ${name(target.agent)} ${target.version}${row?.reason ? `: ${row.reason}` : "."}`;
   return null;
@@ -116,36 +157,39 @@ function blocked(db: Database, target: TargetRecord): string | null {
 
 /** The targets the heartbeat reply carries: each one the catalog still allows. */
 export function runnerAgentTargets(db: Database, runnerId: string): RunnerAgentTargetRow[] {
-  return targets(db, runnerId)
-    .filter((target) => blocked(db, target) === null)
-    .map(({ id, agent, version, integrity, nativeVersion, packages }) => ({
-      id,
-      agent,
-      version,
-      integrity,
-      nativeVersion,
-      packages,
-    }));
+  return settled(sqliteDb(db).run((q) => runnerAgentTargetsSteps(q, runnerId)));
+}
+
+export function* runnerAgentTargetsSteps(q: Q, runnerId: string) {
+  const allowed: RunnerAgentTargetRow[] = [];
+  for (const target of yield* targets(q, runnerId)) {
+    if ((yield* blocked(q, target)) !== null) continue;
+    const { id, agent, version, integrity, nativeVersion, packages } = target;
+    allowed.push({ id, agent, version, integrity, nativeVersion, packages });
+  }
+  return allowed;
 }
 
 export function listRunnerAgents(db: Database, runnerId: string): RunnerAgentView[] {
-  const rows = db
-    .query<
-      {
-        agent: string;
-        version: string;
-        status: ReportedStatus;
-        error: string | null;
-        sessions: number | null;
-        targetId: string | null;
-        reportedAt: number;
-      },
-      [string]
-    >(
-      `SELECT agent,version,status,error,sessions,target_id AS targetId,reported_at AS reportedAt
-       FROM runner_agent WHERE runner_id=?`,
-    )
-    .all(runnerId);
+  return settled(sqliteDb(db).run((q) => listRunnerAgentsSteps(q, runnerId)));
+}
+
+export function* listRunnerAgentsSteps(q: Q, runnerId: string) {
+  const { runnerAgent } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        agent: runnerAgent.agent,
+        version: runnerAgent.version,
+        status: sql<ReportedStatus>`${runnerAgent.status}`,
+        error: runnerAgent.error,
+        sessions: runnerAgent.sessions,
+        targetId: runnerAgent.targetId,
+        reportedAt: runnerAgent.reportedAt,
+      })
+      .from(runnerAgent)
+      .where(eq(runnerAgent.runnerId, runnerId)),
+  );
   const views = new Map<string, RunnerAgentView>();
   const view = (agent: string) => {
     let entry = views.get(agent);
@@ -158,14 +202,14 @@ export function listRunnerAgents(db: Database, runnerId: string): RunnerAgentVie
     entry.reportedAt = Math.max(entry.reportedAt ?? 0, row.reportedAt);
     if (row.status === "current") entry.current = row.version;
   }
-  for (const target of targets(db, runnerId)) {
+  for (const target of yield* targets(q, runnerId)) {
     const reported = rows.find(
       (row) =>
         row.agent === target.agent &&
         row.targetId === target.id &&
         (row.status === "installing" || row.status === "waiting" || row.status === "failed"),
     );
-    const refusal = blocked(db, target);
+    const refusal = yield* blocked(q, target);
     view(target.agent).pending = {
       version: target.version,
       status: refusal ? "failed" : ((reported?.status as "installing") ?? "requested"),
@@ -179,55 +223,72 @@ export function listRunnerAgents(db: Database, runnerId: string): RunnerAgentVie
 
 type Request = { workspaceId: string; userId: string; now: number; id: string };
 
-function activeRunner(db: Database, runnerId: string, workspaceId: string): void {
-  const row = db
-    .query<{ id: string }, [string, string]>(
-      `SELECT id FROM runner WHERE id=? AND workspace_id=? AND revoked_at IS NULL AND status<>'revoked'`,
-    )
-    .get(runnerId, workspaceId);
+function* activeRunner(q: Q, runnerId: string, workspaceId: string) {
+  const { runner } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: runner.id })
+      .from(runner)
+      .where(
+        and(
+          eq(runner.id, runnerId),
+          eq(runner.workspaceId, workspaceId),
+          isNull(runner.revokedAt),
+          ne(runner.status, "revoked"),
+        ),
+      ),
+  );
   if (!row) throw new Error("Runner is unavailable.");
 }
 
-function currentVersion(db: Database, runnerId: string, agent: string) {
-  return (
-    db
-      .query<{ version: string }, [string, string]>(
-        "SELECT version FROM runner_agent WHERE runner_id=? AND agent=? AND status='current'",
-      )
-      .get(runnerId, agent)?.version ?? null
+function* currentVersion(q: Q, runnerId: string, agent: string) {
+  const { runnerAgent } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ version: runnerAgent.version })
+      .from(runnerAgent)
+      .where(
+        and(
+          eq(runnerAgent.runnerId, runnerId),
+          eq(runnerAgent.agent, agent),
+          eq(runnerAgent.status, "current"),
+        ),
+      ),
   );
+  return row?.version ?? null;
 }
 
-function saveTarget(
-  db: Database,
+function* saveTarget(
+  q: Q,
   runnerId: string,
   target: RunnerAgentTargetRow,
   request: Omit<Request, "id">,
-): void {
+) {
   // The runner refuses a target without the native and platform packages to check.
   if (!target.packages.length)
     throw new RunnerAgentUpdateError(
       `Paws has no checked native build for ${name(target.agent)} ${target.version}, so it cannot send this version.`,
     );
-  db.run(
-    `INSERT INTO runner_agent_target(runner_id,agent,id,version,integrity,native_version,packages,requested_by,requested_at)
-     VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(runner_id,agent) DO UPDATE SET id=excluded.id,
-       version=excluded.version,integrity=excluded.integrity,native_version=excluded.native_version,
-       packages=excluded.packages,requested_by=excluded.requested_by,
-       requested_at=excluded.requested_at`,
-    [
-      runnerId,
-      target.agent,
-      target.id,
-      target.version,
-      target.integrity,
-      target.nativeVersion,
-      JSON.stringify(target.packages),
-      request.userId,
-      request.now,
-    ],
+  const { runnerAgentTarget } = q.t;
+  const values = {
+    id: target.id,
+    version: target.version,
+    integrity: target.integrity,
+    nativeVersion: target.nativeVersion,
+    packages: writeJson(q, target.packages),
+    requestedBy: request.userId,
+    requestedAt: request.now,
+  };
+  yield* q.exec(
+    q.orm
+      .insert(runnerAgentTarget)
+      .values({ runnerId, agent: target.agent, ...values })
+      .onConflictDoUpdate({
+        target: [runnerAgentTarget.runnerId, runnerAgentTarget.agent],
+        set: values,
+      }),
   );
-  auditWorkspaceAccess(db, {
+  yield* auditWorkspaceAccessSteps(q, {
     workspaceId: request.workspaceId,
     userId: request.userId,
     action: "runner.agent_update",
@@ -237,105 +298,134 @@ function saveTarget(
 }
 
 /** Ask a runner to run `version` of `agent`. Only an eligible catalog version can be chosen. */
-export function requestRunnerAgentUpdate(
-  db: Database,
-  input: Request & {
-    runnerId: string;
-    agent: string;
-    version: string;
-    catalogPackages: CatalogPackages;
-  },
-): void {
-  immediate(db, () => {
-    activeRunner(db, input.runnerId, input.workspaceId);
-    const current = currentVersion(db, input.runnerId, input.agent);
-    if (current === null)
-      throw new RunnerAgentUpdateError(
-        `This runner does not report ${name(input.agent)}. Update the runner package first.`,
-      );
-    const row = readAgentVersion(db, input.agent, input.version);
-    if (!row || row.status !== "eligible")
-      throw new RunnerAgentUpdateError(
-        `${name(input.agent)} ${input.version} is not an eligible version${row?.reason ? `: ${row.reason}` : "."}`,
-      );
-    if (current === input.version)
-      throw new RunnerAgentUpdateError(
-        `This runner already runs ${name(input.agent)} ${input.version}.`,
-      );
-    saveTarget(
-      db,
-      input.runnerId,
-      {
-        id: input.id,
-        agent: input.agent,
-        version: input.version,
-        integrity: row.integrity,
-        nativeVersion: row.nativeVersion,
-        packages: input.catalogPackages(input.agent, row.nativeVersion),
-      },
-      input,
+type UpdateRequest = Request & {
+  runnerId: string;
+  agent: string;
+  version: string;
+  catalogPackages: CatalogPackages;
+};
+
+export function requestRunnerAgentUpdate(db: Database, input: UpdateRequest): void {
+  settled(sqliteDb(db).transaction((q) => requestRunnerAgentUpdateSteps(q, input)));
+}
+
+export function* requestRunnerAgentUpdateSteps(q: Q, input: UpdateRequest) {
+  yield* activeRunner(q, input.runnerId, input.workspaceId);
+  const current = yield* currentVersion(q, input.runnerId, input.agent);
+  if (current === null)
+    throw new RunnerAgentUpdateError(
+      `This runner does not report ${name(input.agent)}. Update the runner package first.`,
     );
-  });
+  const row = yield* readAgentVersionSteps(q, input.agent, input.version);
+  if (!row || row.status !== "eligible")
+    throw new RunnerAgentUpdateError(
+      `${name(input.agent)} ${input.version} is not an eligible version${row?.reason ? `: ${row.reason}` : "."}`,
+    );
+  if (current === input.version)
+    throw new RunnerAgentUpdateError(
+      `This runner already runs ${name(input.agent)} ${input.version}.`,
+    );
+  yield* saveTarget(
+    q,
+    input.runnerId,
+    {
+      id: input.id,
+      agent: input.agent,
+      version: input.version,
+      integrity: row.integrity,
+      nativeVersion: row.nativeVersion,
+      packages: input.catalogPackages(input.agent, row.nativeVersion),
+    },
+    input,
+  );
 }
 
 /**
  * Ask every active runner in the workspace to run the newest eligible version of each agent it
  * reports. Returns how many agents were asked to update.
  */
-export function requestAllRunnerAgentUpdates(
-  db: Database,
-  input: Omit<Request, "id"> & { id: () => string; catalogPackages: CatalogPackages },
-): number {
-  return immediate(db, () => {
-    const offered = new Map(
-      agentCatalogSummary(db)
-        .filter((entry) => entry.offered !== null)
-        .map((entry) => [entry.agent, entry.offered!] as const),
-    );
-    const rows = db
-      .query<{ runnerId: string; agent: string; version: string }, [string]>(
-        `SELECT a.runner_id AS runnerId,a.agent,a.version FROM runner_agent a JOIN runner r ON r.id=a.runner_id
-         WHERE r.workspace_id=? AND r.revoked_at IS NULL AND r.status<>'revoked' AND a.status='current'
-         ORDER BY a.runner_id,a.agent`,
+type UpdateAllRequest = Omit<Request, "id"> & {
+  id: () => string;
+  catalogPackages: CatalogPackages;
+};
+
+export function requestAllRunnerAgentUpdates(db: Database, input: UpdateAllRequest): number {
+  return settled(sqliteDb(db).transaction((q) => requestAllRunnerAgentUpdatesSteps(q, input)));
+}
+
+export function* requestAllRunnerAgentUpdatesSteps(q: Q, input: UpdateAllRequest) {
+  const { runner, runnerAgent, runnerAgentTarget } = q.t;
+  const offered = new Map(
+    (yield* agentCatalogSummarySteps(q))
+      .filter((entry) => entry.offered !== null)
+      .map((entry) => [entry.agent, entry.offered!] as const),
+  );
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        runnerId: runnerAgent.runnerId,
+        agent: runnerAgent.agent,
+        version: runnerAgent.version,
+      })
+      .from(runnerAgent)
+      .innerJoin(runner, eq(runner.id, runnerAgent.runnerId))
+      .where(
+        and(
+          eq(runner.workspaceId, input.workspaceId),
+          isNull(runner.revokedAt),
+          ne(runner.status, "revoked"),
+          eq(runnerAgent.status, "current"),
+        ),
       )
-      .all(input.workspaceId);
-    let count = 0;
-    for (const row of rows) {
-      const version = offered.get(row.agent);
-      // Only forward: a runner already on a newer version (one still inside its 48 hours, say)
-      // is never moved back to the catalog's newest eligible one.
-      if (!version || Bun.semver.order(version, row.version) <= 0) continue;
-      const pending = db
-        .query<{ id: string; version: string }, [string, string]>(
-          "SELECT id,version FROM runner_agent_target WHERE runner_id=? AND agent=?",
-        )
-        .get(row.runnerId, row.agent);
-      // A request on its way is left alone; a failed one is asked again under a new id, which
-      // the installer treats as a new request.
-      const failed =
-        pending !== null &&
-        db
-          .query<{ one: number }, [string, string, string]>(
-            "SELECT 1 AS one FROM runner_agent WHERE runner_id=? AND agent=? AND status='failed' AND target_id=?",
-          )
-          .get(row.runnerId, row.agent, pending.id) !== null;
-      if (pending?.version === version && !failed) continue;
-      const catalog = readAgentVersion(db, row.agent, version)!;
-      saveTarget(
-        db,
-        row.runnerId,
-        {
-          id: input.id(),
-          agent: row.agent,
-          version,
-          integrity: catalog.integrity,
-          nativeVersion: catalog.nativeVersion,
-          packages: input.catalogPackages(row.agent, catalog.nativeVersion),
-        },
-        input,
-      );
-      count++;
-    }
-    return count;
-  });
+      .orderBy(runnerAgent.runnerId, runnerAgent.agent),
+  );
+  let count = 0;
+  for (const row of rows) {
+    const version = offered.get(row.agent);
+    // Only forward: a runner already on a newer version (one still inside its 48 hours, say)
+    // is never moved back to the catalog's newest eligible one.
+    if (!version || Bun.semver.order(version, row.version) <= 0) continue;
+    const pending = yield* q.one(
+      q.orm
+        .select({ id: runnerAgentTarget.id, version: runnerAgentTarget.version })
+        .from(runnerAgentTarget)
+        .where(
+          and(eq(runnerAgentTarget.runnerId, row.runnerId), eq(runnerAgentTarget.agent, row.agent)),
+        ),
+    );
+    // A request on its way is left alone; a failed one is asked again under a new id, which
+    // the installer treats as a new request.
+    const failed =
+      pending !== undefined &&
+      (yield* q.one(
+        q.orm
+          .select({ one: sql`1` })
+          .from(runnerAgent)
+          .where(
+            and(
+              eq(runnerAgent.runnerId, row.runnerId),
+              eq(runnerAgent.agent, row.agent),
+              eq(runnerAgent.status, "failed"),
+              eq(runnerAgent.targetId, pending.id),
+            ),
+          ),
+      )) !== undefined;
+    if (pending?.version === version && !failed) continue;
+    const catalog = (yield* readAgentVersionSteps(q, row.agent, version))!;
+    yield* saveTarget(
+      q,
+      row.runnerId,
+      {
+        id: input.id(),
+        agent: row.agent,
+        version,
+        integrity: catalog.integrity,
+        nativeVersion: catalog.nativeVersion,
+        packages: input.catalogPackages(row.agent, catalog.nativeVersion),
+      },
+      input,
+    );
+    count++;
+  }
+  return count;
 }

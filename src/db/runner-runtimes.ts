@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { asc, eq, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 import { orm } from "./orm";
 import { runnerRuntime } from "./schema";
 
@@ -44,16 +45,22 @@ export function recordRunnerRuntimes(
 }
 
 export function listRunnerRuntimes(db: Database, runnerId: string): RunnerRuntimeStatus[] {
-  return orm(db)
-    .select({
-      tool: runnerRuntime.tool,
-      version: runnerRuntime.version,
-      status: sql<RunnerRuntimeStatus["status"]>`${runnerRuntime.status}`,
-      error: runnerRuntime.error,
-      reportedAt: runnerRuntime.reportedAt,
-    })
-    .from(runnerRuntime)
-    .where(eq(runnerRuntime.runnerId, runnerId))
-    .orderBy(asc(runnerRuntime.tool), asc(runnerRuntime.version))
-    .all();
+  return settled(sqliteDb(db).run((q) => listRunnerRuntimesSteps(q, runnerId)));
+}
+
+export function* listRunnerRuntimesSteps(q: Q, runnerId: string) {
+  const { runnerRuntime: runtime } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        tool: runtime.tool,
+        version: runtime.version,
+        status: sql<RunnerRuntimeStatus["status"]>`${runtime.status}`,
+        error: runtime.error,
+        reportedAt: runtime.reportedAt,
+      })
+      .from(runtime)
+      .where(eq(runtime.runnerId, runnerId))
+      .orderBy(asc(runtime.tool), asc(runtime.version)),
+  );
 }

@@ -1,5 +1,17 @@
 import type { Database } from "bun:sqlite";
-import { and, eq, exists, gt, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   creditedLeaseUntil,
   OFFLINE_LEASE_RUNNER_VERSION,
@@ -9,6 +21,7 @@ import {
   runnerReleaseAtLeast,
 } from "../runner-protocol";
 import { ownerGone } from "./instances";
+import { settled, sqliteDb, type Q } from "./db";
 import { orm } from "./orm";
 import {
   instance,
@@ -37,21 +50,30 @@ export function runnerLeaseLive(leaseUntil: number, now: number): boolean {
 }
 
 export function endRevokedRunnerAuthority(db: Database, now: number): void {
+  settled(sqliteDb(db).run((q) => endRevokedRunnerAuthoritySteps(q, now)));
+}
+
+export function* endRevokedRunnerAuthoritySteps(q: Q, now: number) {
+  const { runner: runners, runnerWork: work } = q.t;
   const cutoff = runnerLeaseCutoff(now);
-  const q = orm(db);
-  q.update(runnerWork)
-    .set({ leaseUntil: cutoff })
-    .where(
-      and(
-        isNull(runnerWork.endedAt),
-        gt(runnerWork.leaseUntil, cutoff),
-        sql`${runnerWork.runnerId} IN ${q
-          .select({ id: runner.id })
-          .from(runner)
-          .where(or(isNotNull(runner.revokedAt), eq(runner.status, "revoked")))}`,
+  yield* q.exec(
+    q.orm
+      .update(work)
+      .set({ leaseUntil: cutoff })
+      .where(
+        and(
+          isNull(work.endedAt),
+          gt(work.leaseUntil, cutoff),
+          inArray(
+            work.runnerId,
+            q.orm
+              .select({ id: runners.id })
+              .from(runners)
+              .where(or(isNotNull(runners.revokedAt), eq(runners.status, "revoked"))),
+          ),
+        ),
       ),
-    )
-    .run();
+  );
 }
 
 /** The result of the work's current command. Queries select from runner_work. */
