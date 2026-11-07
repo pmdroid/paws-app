@@ -170,6 +170,14 @@ When Closeout stops and the question is a Linear question (`closeout-help`, aske
 
 The item's question card in the dashboard shows Retry Closeout as a button that posts through `/api/questions/answer`.
 
+### GitHub refuses the merge
+
+When GitHub refuses the squash with a status other than 401, 403, 408, 409 or 5xx (usually 405), the merge lane first reads the pull request again. If GitHub reports it `behind` its base and the branch does not contain main, that counts as main moving: the lane reads main again and rebases through the `[merge] main_moved` path, and nobody is asked. Otherwise the lane asks a `ci-help` question with reason `merge_denied` (`mergeDeniedQuestion` in `src/merge/merge-denied.ts`). The question gives the status, GitHub's `message` and first `errors[].message` (at most 500 characters), the pull request link and the head. It says what usually fixes the refusal: approving the review, or changing branch protection or the allowed merge methods. The item leaves the merge queue and waits in `awaiting_input`.
+
+- **Retry merge**, or a reply that is exactly `retry`, applies `closeout_accepted` and queues the merge again on the accepted head (`mergeAcceptedWork`). No agent turn runs and Closeout does not run again. The dashboard shows it as an option button.
+- Any other reply is guidance, and `restart()` sends the task back to its agent.
+- The third refusal of the same head fails the item with GitHub's message in the failure reason. A 401 or 403 fails it as before.
+
 ### Measuring the story
 
 The outbox records every post, so these queries show whether sessions follow the rule. The live run of them is tracked in PAS-744.

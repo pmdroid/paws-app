@@ -250,11 +250,13 @@ export function askHelp(
   { db, item, caps }: MergeContext,
   body: string,
   reason = "merge_help",
+  options?: readonly string[],
 ): boolean {
   return askMergeHelp(db, {
     itemId: item.id,
     body,
     reason,
+    ...(options ? { options } : {}),
     now: caps.now(),
     session: caps.session,
     ask: caps.ask,

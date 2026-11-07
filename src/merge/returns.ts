@@ -114,6 +114,7 @@ export function askMergeHelp(
     session: (item: WorkItemRecord) => string | null;
     ask: typeof ask;
     reason?: string;
+    options?: readonly string[];
   },
 ): boolean {
   return immediate(db, () => {
@@ -129,6 +130,7 @@ export function askMergeHelp(
       {
         now: input.now,
         reason: input.reason ?? "merge_help",
+        ...(input.options ? { options: input.options } : {}),
       },
     );
     return true;
