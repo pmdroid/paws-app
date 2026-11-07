@@ -2,8 +2,14 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { saveEvidence, type StoredEvidence } from "../db";
+import { immediate, saveEvidence, saveEvidenceObject, type StoredEvidence } from "../db";
 import { mediaKind, sniffMedia, SNIFF_BYTES } from "./media";
+import {
+  evidenceObjectPrefix,
+  removeEvidenceChunks,
+  writeEvidenceChunks,
+  type EvidenceObjects,
+} from "./objects";
 import { ulid } from "./ulid";
 
 export type EvidenceLimits = { video: number; image: number };
@@ -26,6 +32,7 @@ export type EvidenceInput = {
 export type EvidenceStoreOptions = {
   db: Database;
   root: string;
+  objects?: EvidenceObjects;
   limits?: EvidenceLimits;
   now?: () => number;
 };
@@ -59,34 +66,26 @@ export function createEvidenceStore(options: EvidenceStoreOptions): EvidenceStor
       checkInput(input);
       if (input.source.size === 0) throw new EvidenceRejectedError("type", "The file is empty.");
       if (input.source.size > largest) throw tooLarge(largest);
-      await mkdir(options.root, { recursive: true, mode: 0o700 });
-      await chmod(options.root, 0o700);
       const createdAt = now();
       const id = ulid(createdAt);
-      const partial = join(options.root, `.${id}.part`);
-      const target = evidencePath(options.root, id);
       const hash = createHash("sha256");
       const head = new Uint8Array(SNIFF_BYTES);
       let headLength = 0;
       let size = 0;
-      const file = await open(partial, "wx", 0o600);
-      try {
-        try {
-          for await (const chunk of input.source.stream()) {
-            size += chunk.byteLength;
-            if (size > largest) throw tooLarge(largest);
-            if (headLength < SNIFF_BYTES) {
-              const take = chunk.subarray(0, SNIFF_BYTES - headLength);
-              head.set(take, headLength);
-              headLength += take.byteLength;
-            }
-            hash.update(chunk);
-            await file.write(chunk);
+      async function* checked() {
+        for await (const chunk of input.source.stream()) {
+          size += chunk.byteLength;
+          if (size > largest) throw tooLarge(largest);
+          if (headLength < SNIFF_BYTES) {
+            const take = chunk.subarray(0, SNIFF_BYTES - headLength);
+            head.set(take, headLength);
+            headLength += take.byteLength;
           }
-          await file.sync();
-        } finally {
-          await file.close();
+          hash.update(chunk);
+          yield chunk;
         }
+      }
+      const verified = (): StoredEvidence => {
         const mediaType = sniffMedia(head.subarray(0, headLength));
         if (mediaType === null)
           throw new EvidenceRejectedError(
@@ -95,9 +94,7 @@ export function createEvidenceStore(options: EvidenceStoreOptions): EvidenceStor
           );
         if (size === 0) throw new EvidenceRejectedError("type", "The file is empty.");
         if (size > limits[mediaKind(mediaType)]) throw tooLarge(limits[mediaKind(mediaType)]);
-        await chmod(partial, 0o600);
-        await rename(partial, target);
-        const evidence: StoredEvidence = {
+        return {
           id,
           itemId: input.itemId,
           runId: input.runId,
@@ -110,6 +107,38 @@ export function createEvidenceStore(options: EvidenceStoreOptions): EvidenceStor
           headCommit: input.headCommit.toLowerCase(),
           createdAt,
         };
+      };
+      const objects = options.objects?.();
+      if (objects) {
+        const prefix = evidenceObjectPrefix(input, id);
+        const sizeBytes = await writeEvidenceChunks(objects, prefix, checked());
+        try {
+          const evidence = verified();
+          immediate(options.db, () => {
+            saveEvidence(options.db, evidence);
+            saveEvidenceObject(options.db, { id, prefix, sizeBytes, storedAt: createdAt });
+          });
+          return evidence;
+        } catch (error) {
+          await removeEvidenceChunks(objects, prefix, sizeBytes);
+          throw error;
+        }
+      }
+      await mkdir(options.root, { recursive: true, mode: 0o700 });
+      await chmod(options.root, 0o700);
+      const partial = join(options.root, `.${id}.part`);
+      const target = evidencePath(options.root, id);
+      const file = await open(partial, "wx", 0o600);
+      try {
+        try {
+          for await (const chunk of checked()) await file.write(chunk);
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+        const evidence = verified();
+        await chmod(partial, 0o600);
+        await rename(partial, target);
         try {
           saveEvidence(options.db, evidence);
         } catch (error) {

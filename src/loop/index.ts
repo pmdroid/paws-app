@@ -135,3 +135,4 @@ export {
 
 export { RiskDisplayReader } from "./risk-display";
 export { HOST_DISK_FULL_THOUGHT } from "./disk-full";
+export { publishingCloseoutProgress } from "./closeout-progress";

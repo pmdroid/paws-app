@@ -11,6 +11,7 @@ export {
   createS3RunnerFileObjects,
   missingRunFileObject,
   withLocalRunFileFallback,
+  withSealedRunFileObjects,
   createFakeRunFileObjects,
   type RunFileObjects,
 } from "./objects";

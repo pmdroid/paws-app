@@ -626,12 +626,23 @@ export {
 } from "./artifacts";
 
 export {
+  closeoutTasksOfItem,
+  getCloseoutEvidenceObject,
+  insertCloseoutEvidenceObject,
+  listCloseoutEvidenceObjects,
+  saveCloseoutEvidenceObject,
+  type CloseoutEvidenceObject,
+  deleteEvidenceObject,
   getEvidence,
+  getEvidenceObject,
   latestEvidence,
   listEvidence,
+  localEvidenceFiles,
   saveEvidence,
+  saveEvidenceObject,
   setEvidenceAssetUrl,
   type EvidenceMediaType,
+  type EvidenceObject,
   type StoredEvidence,
 } from "./evidence";
 export {

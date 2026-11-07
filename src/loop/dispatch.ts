@@ -23,8 +23,7 @@ import {
 } from "../db";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 import { visualReviewBody } from "../questions";
 import {
   AFTER_PULL_REQUEST_RESPONSE,
@@ -34,7 +33,7 @@ import {
 import { planFiledResponse } from "./plan-proposal";
 
 /** What `linear.evidence` rows need to upload a Closeout file: the transfer and the store root. */
-export type EvidenceUploads = { files: LinearFileTransfer; root: string };
+export type EvidenceUploads = { files: LinearFileTransfer } & EvidenceStorage;
 
 const KINDS = new Set<ActivityKind>(["thought", "action", "elicitation", "response", "error"]);
 
@@ -255,7 +254,7 @@ async function uploadEvidence(
   if (evidence.assetUrl) return;
   try {
     if (!uploads) throw new Error("Linear file uploads are unavailable");
-    const bytes = new Uint8Array(await readFile(join(uploads.root, evidence.id)));
+    const bytes = await readEvidenceBytes(db, uploads, evidence.id);
     if (
       bytes.byteLength !== evidence.sizeBytes ||
       createHash("sha256").update(bytes).digest("hex") !== evidence.sha256

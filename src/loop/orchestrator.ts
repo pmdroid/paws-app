@@ -139,6 +139,12 @@ import {
   POLICY_SCHEMA_SUMMARY,
 } from "../closeout";
 import {
+  hydrateCloseoutEvidence,
+  publishCloseoutEvidence,
+  type EvidenceObjects,
+  type EvidenceStorage,
+} from "../evidence";
+import {
   CommandBus,
   riskLine,
   type RiskClassification,
@@ -539,7 +545,7 @@ import {
 import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
-import { createDbCloseoutProgress } from "./closeout-progress";
+import { createDbCloseoutProgress, publishingCloseoutProgress } from "./closeout-progress";
 import { checkPolicyRunners } from "./policy-runners";
 import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
@@ -669,7 +675,13 @@ export type OrchestratorOptions = {
    * Closeout videos and screenshots. Links are `<publicUrl>/evidence/<id>`. With `root` and
    * `files`, the files are also uploaded to Linear and shown inline.
    */
-  evidence?: { store: EvidenceSink; publicUrl: string; root?: string } | null;
+  evidence?: {
+    store: EvidenceSink;
+    publicUrl: string;
+    root?: string;
+    objects?: EvidenceObjects;
+  } | null;
+  closeoutEvidenceObjects?: EvidenceObjects;
   /** The HTTPS dashboard origin (`PAWS_PUBLIC_URL`). Without it Paws cannot ask with a link. */
   publicUrl?: string | null;
   catchUp?: () => Promise<void>;
@@ -2114,6 +2126,7 @@ export class Orchestrator {
       },
       fixRoundLimit: (item) => this.fixRoundLimit(item),
       closeoutFindings: async (item) => {
+        await this.pullCloseoutEvidence(item);
         const started = closeoutHeadsStarted(this.db, item.id);
         try {
           return await storedReviewFindings(
@@ -2325,14 +2338,14 @@ export class Orchestrator {
       });
     }
     const files = this.options.files;
-    const root = this.options.evidence?.root;
+    const storage = this.evidenceStorage();
     await deliverLinearOutbox(
       message,
       tracker,
       () => this.catchUpFn(),
       context,
       this.db,
-      files && root ? { files, root } : undefined,
+      files && storage ? { files, ...storage } : undefined,
     );
   }
 
@@ -4121,6 +4134,11 @@ export class Orchestrator {
       reviewerAgent === "grok" || reviewerAgent === "opencode"
         ? createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) })
         : createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
+    const recorded = createDbCloseoutProgress(this.db, item.id, () => this.now());
+    const publishing = this.closeoutEvidence()?.objects?.()
+      ? publishingCloseoutProgress(recorded, () => this.pushCloseoutEvidence(item))
+      : null;
+    const progress = publishing ?? recorded;
     const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,
@@ -4165,7 +4183,7 @@ export class Orchestrator {
       reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
       ...this.closeoutHome(item),
       ...recovery,
-      progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
+      progress,
     });
     const request = {
       taskId: itemPathId(item),
@@ -4176,6 +4194,7 @@ export class Orchestrator {
       headSha: head,
       attempt: 1,
     };
+    await this.pullCloseoutEvidence(item, true);
     try {
       const verdict = await gate[decide ? "decide" : "run"](request);
       if (stoppedOnRule === undefined) return verdict;
@@ -4197,6 +4216,8 @@ export class Orchestrator {
     } finally {
       activity.flush();
       if (live) live.progress = null;
+      await publishing?.settled();
+      await this.pushCloseoutEvidence(item);
     }
   }
 
@@ -4430,6 +4451,7 @@ export class Orchestrator {
   private async startCloseoutRound(item: WorkItemRecord, head: string): Promise<void> {
     if (head === "" || head === item.checkpoint?.wipCommit) return;
     if (listCloseoutRounds(this.db, item.id).some((round) => round.head === head)) return;
+    await this.pullCloseoutEvidence(item);
     let retryBaseline: string[];
     try {
       retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
@@ -4672,6 +4694,7 @@ export class Orchestrator {
     }
     const sessionId = this.activitySession(item);
     if (sessionId === null) throw new Error("Closeout recovery has no tracker session");
+    await this.pullCloseoutEvidence(item);
     let retryBaseline: string[] = [];
     try {
       retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
@@ -4757,6 +4780,7 @@ export class Orchestrator {
   /** Records on the verifying run how many review rounds the item has needed so far. */
   private async recordReviewRounds(item: WorkItemRecord, runId: string | null): Promise<void> {
     if (runId === null) return;
+    await this.pullCloseoutEvidence(item);
     try {
       const { rounds } = await readReviewRounds(itemPathId(item), [], this.options.pawsRoot);
       if (rounds.length > 0) recordReviewRounds(this.db, runId, rounds.length);
@@ -4783,6 +4807,7 @@ export class Orchestrator {
     help: CloseoutHelp,
   ): Promise<boolean> {
     if (!linkAskAvailable(this.options.publicUrl) || item.sessionKey !== sessionId) return false;
+    await this.pullCloseoutEvidence(item);
     let rounds: ReviewRounds;
     try {
       rounds = await readReviewRounds(
@@ -5301,6 +5326,7 @@ export class Orchestrator {
       live.controller.signal,
     );
     if (this.stopped(item.id)) return { kind: "obsolete" };
+    await this.pullCloseoutEvidence(item);
     const publicUrl = this.options.evidence?.publicUrl ?? this.options.publicUrl ?? null;
     const open: OpenItems = {
       findings: await openFindings(
@@ -5346,7 +5372,7 @@ export class Orchestrator {
     const screenshots = await pullRequestScreenshots({
       db: this.db,
       itemId: item.id,
-      root: this.options.evidence?.root,
+      storage: this.evidenceStorage(),
       owner: repository.owner,
       repo: repository.repo,
       store: (files) =>
@@ -5800,6 +5826,7 @@ export class Orchestrator {
     repository: RepositoryBinding,
   ): Promise<string> {
     if (this.suggestedFindingsMode(`${repository.owner}/${repository.repo}`) === "off") return "";
+    await this.pullCloseoutEvidence(item);
     const findings = undecidedSuggestions(
       await acceptedSuggestions(this.db, item, this.options.pawsRoot).catch((error: unknown) => {
         journalCaught(
@@ -7605,6 +7632,7 @@ export class Orchestrator {
     const before = getWorkItem(this.db, item.id);
     const branchHead = getItemBranchState(this.db, item.id)?.head ?? null;
     const ci = rebase ? null : await this.followUpCi(item);
+    await this.pullCloseoutEvidence(item);
     const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
 
     immediate(this.db, () => {
@@ -8304,7 +8332,7 @@ export class Orchestrator {
         item.id,
         due.requirement.id,
         due.evidenceIds,
-        evidence.root,
+        this.evidenceStorage(),
       );
       const outcome = immediate(this.db, () => {
         const now = dueVisualReview(this.db, item.id, requirements, approvals);
@@ -8670,15 +8698,42 @@ export class Orchestrator {
         ? (input: { workspace: string; prompt: string; signal: AbortSignal }) =>
             loader({ ...input, sessionId, turnId })
         : undefined;
-    const root = this.options.evidence?.root;
-    if (!root) return linear;
-    const marks = createReviewMarkLoader({ db: this.db, root, itemId: item.id, turnId });
+    const storage = this.evidenceStorage();
+    if (!storage) return linear;
+    const marks = createReviewMarkLoader({ db: this.db, storage, itemId: item.id, turnId });
     return async (input: { workspace: string; prompt: string; signal: AbortSignal }) => {
       const marked = await marks(input);
       if (!linear) return marked;
       const loaded = await linear({ ...input, prompt: marked.prompt });
       return { prompt: loaded.prompt, inputFiles: [...marked.inputFiles, ...loaded.inputFiles] };
     };
+  }
+
+  private closeoutEvidence(): EvidenceStorage | null {
+    const objects = this.options.closeoutEvidenceObjects;
+    return objects ? { root: join(this.options.pawsRoot, "closeout", "evidence"), objects } : null;
+  }
+
+  private async pullCloseoutEvidence(item: WorkItemRecord, strict = false): Promise<void> {
+    const storage = this.closeoutEvidence();
+    if (storage === null) return;
+    const restored = hydrateCloseoutEvidence(this.db, storage, [itemPathId(item)], { strict });
+    if (strict) await restored;
+    else
+      await restored.catch((error: unknown) =>
+        journalCaught(error, "orchestrator.pullCloseoutEvidence", item.id),
+      );
+  }
+
+  private async pushCloseoutEvidence(item: WorkItemRecord): Promise<void> {
+    const storage = this.closeoutEvidence();
+    if (storage === null) return;
+    await publishCloseoutEvidence(this.db, storage, itemPathId(item));
+  }
+
+  private evidenceStorage(): EvidenceStorage | undefined {
+    const evidence = this.options.evidence;
+    return evidence?.root ? { root: evidence.root, objects: evidence.objects } : undefined;
   }
 
   private blockConversation(itemId: string): void {
