@@ -3,7 +3,12 @@ export {
   writeCredentialCiphertext,
   type CredentialKey,
 } from "./credentials";
-export { replaceLeasedJobPayload, refreshVerificationJobVersion } from "./job-payload";
+export {
+  replaceLeasedJobPayload,
+  replaceLeasedJobPayloadSteps,
+  refreshVerificationJobVersion,
+  refreshVerificationJobVersionSteps,
+} from "./job-payload";
 export {
   drainCommands,
   enqueueCommand,
@@ -985,7 +990,33 @@ export { halt } from "./halt";
 export { latestHumanTurn, restart, fixRounds, restartLimit, type RestartHandoff } from "./restart";
 export { restartHold, type RestartHold } from "./restart-hold";
 
-export { jobVersionCurrent } from "./jobs";
+export {
+  jobVersionCurrent,
+  actionableDueSteps,
+  cancelAdmittedJobSteps,
+  cancelOpenJobsSteps,
+  cancelPendingItemJobsSteps,
+  claimNextJobSteps,
+  completeJobSteps,
+  enqueueJobOnceSteps,
+  enqueueJobSteps,
+  extendJobLeaseSteps,
+  failJobSteps,
+  getJobSteps,
+  hasLiveJobSteps,
+  isJobCurrentSteps,
+  itemJobRunningSteps,
+  jobVersionCurrentSteps,
+  latestItemJobIdSteps,
+  leasedJobsForItemSteps,
+  listJobsSteps,
+  nextClaimableRunAtSteps,
+  noteJobErrorSteps,
+  parkLeasedJobSteps,
+  reenqueueJobSteps,
+  retryLeasedJobSteps,
+  runPendingJobNowSteps,
+} from "./jobs";
 
 export { saveHumanRetryWindow, humanRetryBaseline } from "./closeout-rounds";
 
