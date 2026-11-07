@@ -190,26 +190,6 @@ src/db/retro-activity.ts | findingGroups: db .query< | not yet converted to Driz
 src/db/retro-activity.ts | escapes: db .query< | not yet converted to Drizzle
 src/db/retro-activity.ts | rebaseReturns: db .query<RetroActivityRebaseReturn, [string, number]>( | not yet converted to Drizzle
 src/db/retro-activity.ts | ciRounds: db .query<Omit<RetroActivityCiRound, "failedChecks"> & { checks: string }, [string, number]>( | not yet converted to Drizzle
-src/db/retros.ts | (db .query<{ revision: number | null }, [string]>( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | const row = db .query<SettingsRow, [string, number]>( | not yet converted to Drizzle
-src/db/retros.ts | const row = db .query<SettingsRow, [string]>( | not yet converted to Drizzle
-src/db/retros.ts | const row = db.query<RetroRow, [string]>("SELECT * FROM retro WHERE id = ?").get(id); | not yet converted to Drizzle
-src/db/retros.ts | return db .query<RetroRow, [string]>( | not yet converted to Drizzle
-src/db/retros.ts | const existing = db .query<RetroRow, [string, number, number]>( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | return db .query<RetroRepositoryCursor, [string]>( | not yet converted to Drizzle
-src/db/retros.ts | return db .query<{ repository: string; cursor: number; retroId: string; updatedAt: number }, [string]>( | not yet converted to Drizzle
-src/db/retros.ts | const holder = db .query<{ retroId: string }, [string, string]>( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | const watermark = db .query<{ cursor: number }, [string, string]>( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | const inserted = db.run( | not yet converted to Drizzle
-src/db/retros.ts | return db .query<RetroEvidence, [string]>( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | return db .query<RetroCoverageGap, [string]>( | not yet converted to Drizzle
-src/db/retros.ts | db.run( | not yet converted to Drizzle
-src/db/retros.ts | return db .query<RetroArtifactRecord, [string, string]>( | not yet converted to Drizzle
 src/db/retros.ts | db.run("UPDATE retro_repository SET end_cursor = ? WHERE retro_id = ? AND repository = ?", [ | not yet converted to Drizzle
 src/db/retros.ts | db.run( | not yet converted to Drizzle
 src/db/retros.ts | db.run( | not yet converted to Drizzle
