@@ -154,8 +154,8 @@ export function shiftRunnerLeasesForDowntime(
       .leftJoin(runnerHostStatus, eq(runnerHostStatus.runnerId, runner.id))
       .where(and(isNull(runner.revokedAt), ne(runner.status, "revoked")))
       .all()
-      .filter((runner) => runnerReleaseAtLeast(runner.version, OFFLINE_LEASE_RUNNER_VERSION))
-      .map((runner) => runner.id),
+      .filter((host) => runnerReleaseAtLeast(host.version, OFFLINE_LEASE_RUNNER_VERSION))
+      .map((host) => host.id),
   );
   if (eligible.size === 0) return 0;
   const rows = orm(db)
