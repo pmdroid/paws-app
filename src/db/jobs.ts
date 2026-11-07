@@ -1,6 +1,18 @@
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, gt, inArray, lte, or, sql as drizzleSql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  ne,
+  or,
+  sql as drizzleSql,
+  type SQL,
+} from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import {
   DEFAULT_BACKOFF_BASE_MS,
@@ -14,7 +26,7 @@ import {
 } from "../core";
 import { journal } from "./journal";
 import { orm } from "./orm";
-import { job as jobTable } from "./schema";
+import { jobActivation, job as jobTable, workItem } from "./schema";
 import { immediate } from "./tx";
 
 export const JOB_STATUSES = ["pending", "running", "done", "dead", "cancelled"] as const;
@@ -53,25 +65,7 @@ export type Job = {
   fireCount: number;
 };
 
-type JobRow = {
-  id: number;
-  activation_id: number;
-  queue: string;
-  job_key: string | null;
-  payload: string;
-  priority: number;
-  run_at: number;
-  status: JobStatus;
-  attempts: number;
-  max_attempts: number;
-  locked_by: string | null;
-  locked_until: number | null;
-  last_error: string | null;
-  created_at: number;
-  finished_at: number | null;
-  recurring_every_ms: number | null;
-  fire_count: number;
-};
+type JobRow = typeof jobTable.$inferSelect;
 
 export type ClaimOptions = {
   workerId?: string;
@@ -82,6 +76,44 @@ export type ClaimOptions = {
 };
 
 const EXCLUSIVE_QUEUES = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify] as const;
+
+const jobItemId = drizzleSql`json_extract(payload,'$.itemId')`;
+const jobPayload = drizzleSql`job.payload`;
+
+function itemVersionOf(payload: SQL): SQL<number | null> {
+  return drizzleSql`(SELECT version FROM work_item WHERE id=json_extract(${payload},'$.itemId'))`;
+}
+
+function claimable(now: number): SQL | undefined {
+  return or(
+    eq(jobTable.status, "pending"),
+    and(
+      eq(jobTable.status, "running"),
+      or(isNull(jobTable.lockedUntil), lte(jobTable.lockedUntil, now)),
+    ),
+  );
+}
+
+function updateLeased(
+  db: Database,
+  job: Job,
+  set: Partial<{ [K in keyof JobRow]: JobRow[K] | SQL }>,
+  extra?: SQL,
+): number {
+  return orm(db)
+    .update(jobTable)
+    .set(set)
+    .where(
+      and(
+        eq(jobTable.id, job.id),
+        eq(jobTable.status, "running"),
+        eq(jobTable.lockedBy, job.lockedBy ?? drizzleSql`NULL`),
+        extra,
+      ),
+    )
+    .returning({ id: jobTable.id })
+    .all().length;
+}
 
 const jobReadyListeners = new Set<(db: Database) => void>();
 
@@ -156,6 +188,14 @@ function claimWhereSql(queueCount: number): string {
   );
 }
 
+function claimCandidateSql(queueCount: number): string {
+  return (
+    "SELECT candidate.id FROM job AS candidate WHERE " +
+    claimWhereSql(queueCount) +
+    "ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1"
+  );
+}
+
 /**
  * One `UPDATE … RETURNING`. Lower priority numbers run first, then earlier run_at.
  * A running row whose lease has expired is reclaimable. No semicolon: one statement.
@@ -168,10 +208,17 @@ function claimWhereSql(queueCount: number): string {
 export function claimJobSql(queueCount: number): string {
   return (
     "UPDATE job SET status = 'running', locked_by = ?, locked_until = ?, attempts = attempts + 1 " +
-    "WHERE id = (" +
-    "SELECT candidate.id FROM job AS candidate WHERE " +
-    claimWhereSql(queueCount) +
-    "ORDER BY candidate.priority ASC, candidate.run_at ASC, candidate.id ASC LIMIT 1) RETURNING *"
+    `WHERE id = (${claimCandidateSql(queueCount)}) RETURNING *`
+  );
+}
+
+function bindSql(text: string, params: readonly (string | number)[]): SQL {
+  const parts = text.split("?");
+  if (parts.length !== params.length + 1) throw new Error("placeholder count does not match");
+  return drizzleSql.join(
+    parts.map((part, index) =>
+      index === 0 ? drizzleSql.raw(part) : drizzleSql`${params[index - 1]}${drizzleSql.raw(part)}`,
+    ),
   );
 }
 
@@ -180,39 +227,28 @@ export function actionableDue(
   db: Database,
   now: number,
 ): { count: number; oldestRunAt: number | null } {
-  const row = db
-    .query<{ count: number; oldest: number | null }, [number, number, number, number]>(
+  const [row] = orm(db).all<{ count: number; oldest: number | null }>(
+    bindSql(
       `SELECT count(*) AS count, min(candidate.run_at) AS oldest
        FROM job AS candidate WHERE ${claimWhereSql(0)}`,
-    )
-    .get(now, now, now, now);
+      [now, now, now, now],
+    ),
+  );
   return { count: row?.count ?? 0, oldestRunAt: row?.oldest ?? null };
 }
 
 /** Insert in the same transaction as the state change that needs the work. */
 export function enqueueJob(db: Database, job: NewJob): number {
   const now = job.now ?? Date.now();
-  const row = db
-    .query<
-      { id: number },
-      [string, string | null, string, number, number, number, number, number | null]
-    >(
-      `INSERT INTO job (
-         queue, job_key, payload, priority, run_at, max_attempts, created_at, recurring_every_ms, item_version
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, (SELECT version FROM work_item WHERE id=json_extract(?3,'$.itemId')))
-       RETURNING id`,
-    )
-    .get(
-      job.queue,
-      job.jobKey ?? null,
-      JSON.stringify(job.payload ?? {}),
-      job.priority ?? 5,
-      job.runAt ?? now,
-      job.maxAttempts ?? 10,
-      now,
-      job.recurringEveryMs ?? null,
-    );
-  if (row === null) {
+  const payload = JSON.stringify(job.payload ?? {});
+  const [row] = orm(db).all<{ id: number }>(
+    drizzleSql`INSERT INTO job (
+       queue, job_key, payload, priority, run_at, max_attempts, created_at, recurring_every_ms, item_version
+     ) VALUES (${job.queue}, ${job.jobKey ?? null}, ${payload}, ${job.priority ?? 5}, ${job.runAt ?? now},
+       ${job.maxAttempts ?? 10}, ${now}, ${job.recurringEveryMs ?? null}, ${itemVersionOf(drizzleSql`${payload}`)})
+     RETURNING id`,
+  );
+  if (row === undefined) {
     throw new Error("enqueueJob did not return an id");
   }
   emitJobReady(db);
@@ -265,38 +301,44 @@ export function reenqueueJob(
       return { id: previous.id, pending: previous.status === "pending" };
     const payload = payloadFor ? payloadFor(previous) : job.payload;
     if (!previous) return { id: enqueueJob(db, { ...job, payload }), pending: true };
-    const activation = db
-      .query<{ id: number }, [number]>("INSERT INTO job_activation(job_id) VALUES (?) RETURNING id")
-      .get(previous.id)!;
+    const activation = orm(db)
+      .insert(jobActivation)
+      .values({ jobId: previous.id })
+      .returning({ id: jobActivation.id })
+      .get()!;
     const now = job.now ?? Date.now();
-    db.run(
-      `UPDATE job SET status='pending', payload=?1, attempts=0, run_at=?2,
-         item_version=(SELECT version FROM work_item WHERE id=json_extract(?1,'$.itemId')),
-         activation_id=?4, priority=?5, max_attempts=?6, recurring_every_ms=?7,
-         locked_by=NULL, locked_until=NULL, last_error=NULL, finished_at=NULL
-       WHERE id=?3`,
-      [
-        JSON.stringify(payload ?? {}),
-        job.runAt ?? now,
-        previous.id,
-        activation.id,
-        job.priority ?? 5,
-        job.maxAttempts ?? 10,
-        job.recurringEveryMs ?? null,
-      ],
-    );
+    const next = JSON.stringify(payload ?? {});
+    orm(db)
+      .update(jobTable)
+      .set({
+        status: "pending",
+        payload: next,
+        attempts: 0,
+        runAt: job.runAt ?? now,
+        itemVersion: itemVersionOf(drizzleSql`${next}`),
+        activationId: activation.id,
+        priority: job.priority ?? 5,
+        maxAttempts: job.maxAttempts ?? 10,
+        recurringEveryMs: job.recurringEveryMs ?? null,
+        lockedBy: null,
+        lockedUntil: null,
+        lastError: null,
+        finishedAt: null,
+      })
+      .where(eq(jobTable.id, previous.id))
+      .run();
     emitJobReady(db);
     return { id: previous.id, pending: true };
   });
 }
 
 export function getJob(db: Database, id: number): Job | null {
-  const row = db.query<JobRow, [number]>("SELECT * FROM job WHERE id = ?").get(id);
-  return row === null ? null : mapJob(row);
+  const row = orm(db).select().from(jobTable).where(eq(jobTable.id, id)).get();
+  return row === undefined ? null : mapJob(row);
 }
 
 export function listJobs(db: Database): Job[] {
-  return db.query<JobRow, []>("SELECT * FROM job ORDER BY id").all().map(mapJob);
+  return orm(db).select().from(jobTable).orderBy(jobTable.id).all().map(mapJob);
 }
 
 /**
@@ -310,17 +352,14 @@ export function nextClaimableRunAt(
   const queues = options.queues;
   if (queues !== undefined && queues.length === 0) return null;
   const now = options.now ?? Date.now();
-  const row = db
-    .query<{ run_at: number | null }, Array<number | string>>(
-      `SELECT MIN(run_at) AS run_at FROM job
-       WHERE (
-         status = 'pending'
-         OR (status = 'running' AND (locked_until IS NULL OR locked_until <= ?))
-       )
-       ${queues === undefined ? "" : `AND queue IN (${queues.map(() => "?").join(", ")})`}`,
+  const row = orm(db)
+    .select({ runAt: drizzleSql<number | null>`MIN(${jobTable.runAt})` })
+    .from(jobTable)
+    .where(
+      and(claimable(now), queues === undefined ? undefined : inArray(jobTable.queue, [...queues])),
     )
-    .get(now, ...(queues ?? []));
-  return row?.run_at ?? null;
+    .get();
+  return row?.runAt ?? null;
 }
 
 export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | null {
@@ -329,40 +368,51 @@ export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | nu
   const now = options.now ?? Date.now();
   const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
   const workerId = `${options.workerId ?? "paws"}:${randomUUID()}`;
-  const sql = claimJobSql(queues?.length ?? 0);
-  const binds: (string | number)[] = [workerId, now + leaseMs, now];
-  if (queues !== undefined) binds.push(...queues);
-  // Reclaim threshold, then the cutoff for a lease that still blocks a second item.
-  binds.push(now, now, now);
-  const row = db.query<JobRow, Array<string | number>>(sql).get(...binds);
-  return row === null ? null : mapJob(row);
+  const candidate = bindSql(claimCandidateSql(queues?.length ?? 0), [
+    now,
+    ...(queues ?? []),
+    // Reclaim threshold, then the cutoff for a lease that still blocks a second item.
+    now,
+    now,
+    now,
+  ]);
+  const row = orm(db)
+    .update(jobTable)
+    .set({
+      status: "running",
+      lockedBy: workerId,
+      lockedUntil: now + leaseMs,
+      attempts: drizzleSql`${jobTable.attempts} + 1`,
+    })
+    .where(eq(jobTable.id, drizzleSql`(${candidate})`))
+    .returning()
+    .get();
+  return row === undefined ? null : mapJob(row);
 }
 
 /** Succeeds only for the worker that holds the lease. A recurring row arms its next fire. */
 export function completeJob(db: Database, job: Job, now = Date.now()): boolean {
   if (job.recurringEveryMs !== null) {
-    const result = db.run(
-      `UPDATE job
-       SET status = 'pending',
-           run_at = ?,
-           attempts = 0,
-           locked_by = NULL,
-           locked_until = NULL,
-           finished_at = NULL,
-           last_error = NULL,
-           fire_count = fire_count + 1
-       WHERE id = ? AND status = 'running' AND locked_by = ?`,
-      [now + job.recurringEveryMs, job.id, job.lockedBy],
+    return (
+      updateLeased(db, job, {
+        status: "pending",
+        runAt: now + job.recurringEveryMs,
+        attempts: 0,
+        lockedBy: null,
+        lockedUntil: null,
+        finishedAt: null,
+        lastError: null,
+        fireCount: drizzleSql`${jobTable.fireCount} + 1`,
+      }) > 0
     );
-    return result.changes > 0;
   }
-  const result = db.run(
-    `UPDATE job
-     SET status = 'done', finished_at = ?, locked_by = NULL, locked_until = NULL
-     WHERE id = ? AND status = 'running' AND locked_by = ?`,
-    [now, job.id, job.lockedBy],
-  );
-  if (result.changes === 0) return false;
+  const changed = updateLeased(db, job, {
+    status: "done",
+    finishedAt: now,
+    lockedBy: null,
+    lockedUntil: null,
+  });
+  if (changed === 0) return false;
   journalOutcome({ ...job, status: "done" });
   return true;
 }
@@ -376,19 +426,16 @@ export function failJob(
   const now = options.now ?? Date.now();
   const message = errorText(error);
   if (job.recurringEveryMs !== null && job.attempts >= job.maxAttempts) {
-    const result = db.run(
-      `UPDATE job
-       SET status = 'pending',
-           run_at = ?,
-           attempts = 0,
-           locked_by = NULL,
-           locked_until = NULL,
-           finished_at = NULL,
-           last_error = ?
-       WHERE id = ? AND status = 'running' AND locked_by = ?`,
-      [now + job.recurringEveryMs, message, job.id, job.lockedBy],
-    );
-    return result.changes > 0 ? getJob(db, job.id) : null;
+    const changed = updateLeased(db, job, {
+      status: "pending",
+      runAt: now + job.recurringEveryMs,
+      attempts: 0,
+      lockedBy: null,
+      lockedUntil: null,
+      finishedAt: null,
+      lastError: message,
+    });
+    return changed > 0 ? getJob(db, job.id) : null;
   }
   if (job.attempts < job.maxAttempts) {
     const delay = Math.max(
@@ -399,21 +446,24 @@ export function failJob(
       ),
       retryAfterMs(error) ?? 0,
     );
-    const result = db.run(
-      `UPDATE job
-       SET status = 'pending', run_at = ?, locked_by = NULL, locked_until = NULL, last_error = ?, item_version=(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId'))
-       WHERE id = ? AND status = 'running' AND locked_by = ?`,
-      [now + delay, message, job.id, job.lockedBy],
-    );
-    return result.changes > 0 ? getJob(db, job.id) : null;
+    const changed = updateLeased(db, job, {
+      status: "pending",
+      runAt: now + delay,
+      lockedBy: null,
+      lockedUntil: null,
+      lastError: message,
+      itemVersion: itemVersionOf(jobPayload),
+    });
+    return changed > 0 ? getJob(db, job.id) : null;
   }
-  const result = db.run(
-    `UPDATE job
-     SET status = 'dead', finished_at = ?, locked_by = NULL, locked_until = NULL, last_error = ?
-     WHERE id = ? AND status = 'running' AND locked_by = ?`,
-    [now, message, job.id, job.lockedBy],
-  );
-  if (result.changes === 0) return null;
+  const changed = updateLeased(db, job, {
+    status: "dead",
+    finishedAt: now,
+    lockedBy: null,
+    lockedUntil: null,
+    lastError: message,
+  });
+  if (changed === 0) return null;
   journalOutcome({ ...job, status: "dead", lastError: message });
   return getJob(db, job.id);
 }
@@ -435,20 +485,23 @@ export function hasLiveJob(
   exceptJobId?: number,
 ): boolean {
   return (
-    db
-      .query(
-        "SELECT 1 FROM job WHERE status = 'running' AND locked_until > ? AND json_extract(payload, '$.itemId') = ? AND id != ?",
+    orm(db)
+      .select({ one: drizzleSql`1` })
+      .from(jobTable)
+      .where(
+        and(
+          eq(jobTable.status, "running"),
+          gt(jobTable.lockedUntil, now),
+          eq(jobItemId, itemId),
+          ne(jobTable.id, exceptJobId ?? -1),
+        ),
       )
-      .get(now, itemId, exceptJobId ?? -1) !== null
+      .get() !== undefined
   );
 }
 
 export function extendJobLease(db: Database, job: Job, now: number, leaseMs: number): boolean {
-  const result = db.run(
-    `UPDATE job SET locked_until = ? WHERE id = ? AND status = 'running' AND locked_by = ?`,
-    [now + leaseMs, job.id, job.lockedBy],
-  );
-  return result.changes > 0;
+  return updateLeased(db, job, { lockedUntil: now + leaseMs }) > 0;
 }
 
 export function parkLeasedJob(
@@ -456,42 +509,39 @@ export function parkLeasedJob(
   job: Job,
   input: { runAt: number; payload: unknown; attempts: number; now: number },
 ): boolean {
-  const result = db.run(
-    `UPDATE job
-     SET status = 'pending',
-         run_at = CASE WHEN run_at > ? THEN MIN(run_at, ?) ELSE ? END,
-         attempts = ?,
-         locked_by = NULL,
-         locked_until = NULL,
-         payload = ?,
-         item_version=(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId'))
-     WHERE id = ? AND status = 'running' AND locked_by = ? AND locked_until > ?`,
-    [
-      job.runAt,
-      input.runAt,
-      input.runAt,
-      Math.max(0, input.attempts),
-      JSON.stringify(input.payload),
-      job.id,
-      job.lockedBy,
-      input.now,
-    ],
+  return (
+    updateLeased(
+      db,
+      job,
+      {
+        status: "pending",
+        runAt: drizzleSql`CASE WHEN ${jobTable.runAt} > ${job.runAt} THEN MIN(${jobTable.runAt}, ${input.runAt}) ELSE ${input.runAt} END`,
+        attempts: Math.max(0, input.attempts),
+        lockedBy: null,
+        lockedUntil: null,
+        payload: JSON.stringify(input.payload),
+        itemVersion: itemVersionOf(jobPayload),
+      },
+      gt(jobTable.lockedUntil, input.now),
+    ) > 0
   );
-  return result.changes > 0;
 }
 
 export function retryLeasedJob(db: Database, job: Job, runAt: number, error: string): boolean {
-  const result = db.run(
-    `UPDATE job
-     SET status = 'pending', run_at = ?, locked_by = NULL, locked_until = NULL, last_error = ?, item_version=(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId'))
-     WHERE id = ? AND status = 'running' AND locked_by = ?`,
-    [runAt, error, job.id, job.lockedBy],
+  return (
+    updateLeased(db, job, {
+      status: "pending",
+      runAt,
+      lockedBy: null,
+      lockedUntil: null,
+      lastError: error,
+      itemVersion: itemVersionOf(jobPayload),
+    }) > 0
   );
-  return result.changes > 0;
 }
 
 export function noteJobError(db: Database, id: number, message: string): void {
-  db.run("UPDATE job SET last_error = ? WHERE id = ?", [message, id]);
+  orm(db).update(jobTable).set({ lastError: message }).where(eq(jobTable.id, id)).run();
 }
 
 /**
@@ -515,24 +565,28 @@ export function cancelOpenJobs(
   const merge = input.mergeLane === true ? 1 : 0;
   const exceptId = input.exceptId ?? null;
   if (itemId === null && merge === 0) return 0;
-  const rows = db
-    .query<JobRow, Array<string | number | null>>(
-      `UPDATE job
-     SET status = 'cancelled',
-         last_error = ?,
-         locked_by = NULL,
-         locked_until = NULL,
-         finished_at = ?
-     WHERE status IN ('pending', 'running')
-       AND queue != 'core.command'
-       AND (? IS NULL OR id != ?)
-       AND (
-         (? IS NOT NULL AND json_extract(payload, '$.itemId') = ?)
-         OR (? = 1 AND ${mergeLaneSql("job")})
-       )
-     RETURNING *`,
+  const rows = orm(db)
+    .update(jobTable)
+    .set({
+      status: "cancelled",
+      lastError: input.reason,
+      lockedBy: null,
+      lockedUntil: null,
+      finishedAt: now,
+    })
+    .where(
+      and(
+        inArray(jobTable.status, ["pending", "running"]),
+        ne(jobTable.queue, "core.command"),
+        exceptId === null ? undefined : ne(jobTable.id, exceptId),
+        or(
+          itemId === null ? undefined : eq(jobItemId, itemId),
+          merge === 1 ? drizzleSql.raw(mergeLaneSql("job")) : undefined,
+        ),
+      ),
     )
-    .all(input.reason, now, exceptId, exceptId, itemId, itemId, merge);
+    .returning()
+    .all();
   for (const row of rows) journalOutcome(mapJob(row));
   return rows.length;
 }
@@ -554,29 +608,29 @@ function journalOutcome(job: Job): void {
 }
 
 function findByKey(db: Database, jobKey: string): Job | null {
-  const row = db.query<JobRow, [string]>("SELECT * FROM job WHERE job_key=?").get(jobKey);
+  const row = orm(db).select().from(jobTable).where(eq(jobTable.jobKey, jobKey)).get();
   return row ? mapJob(row) : null;
 }
 
 function mapJob(row: JobRow): Job {
   return {
     id: row.id,
-    activationId: row.activation_id,
+    activationId: row.activationId,
     queue: row.queue,
-    jobKey: row.job_key,
+    jobKey: row.jobKey,
     payload: JSON.parse(row.payload) as unknown,
     priority: row.priority,
-    runAt: row.run_at,
-    status: row.status,
+    runAt: row.runAt,
+    status: row.status as JobStatus,
     attempts: row.attempts,
-    maxAttempts: row.max_attempts,
-    lockedBy: row.locked_by,
-    lockedUntil: row.locked_until,
-    lastError: row.last_error,
-    createdAt: row.created_at,
-    finishedAt: row.finished_at,
-    recurringEveryMs: row.recurring_every_ms,
-    fireCount: row.fire_count,
+    maxAttempts: row.maxAttempts,
+    lockedBy: row.lockedBy,
+    lockedUntil: row.lockedUntil,
+    lastError: row.lastError,
+    createdAt: row.createdAt,
+    finishedAt: row.finishedAt,
+    recurringEveryMs: row.recurringEveryMs,
+    fireCount: row.fireCount,
   };
 }
 
@@ -592,16 +646,14 @@ export function errorText(error: unknown): string {
 
 /** The item's version when this job was created, checked before starting side effects. */
 export function jobVersionCurrent(db: Database, job: Pick<Job, "id" | "activationId">): boolean {
-  const row = db
-    .query<{ expected: number | null; current: number | null }, [number, number]>(
-      `SELECT j.item_version AS expected, i.version AS current FROM job j LEFT JOIN work_item i
-      ON i.id=json_extract(j.payload,'$.itemId') WHERE j.id=? AND j.activation_id=?`,
-    )
-    .get(job.id, job.activationId);
-  return row !== null && (row.expected === null || row.expected === row.current);
+  const row = orm(db)
+    .select({ expected: jobTable.itemVersion, current: workItem.version })
+    .from(jobTable)
+    .leftJoin(workItem, eq(workItem.id, drizzleSql`json_extract(${jobTable.payload},'$.itemId')`))
+    .where(and(eq(jobTable.id, job.id), eq(jobTable.activationId, job.activationId)))
+    .get();
+  return row !== undefined && (row.expected === null || row.expected === row.current);
 }
-
-const jobItemId = drizzleSql`json_extract(payload,'$.itemId')`;
 
 export function latestItemJobId(
   db: Database,
