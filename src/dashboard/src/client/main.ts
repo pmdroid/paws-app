@@ -455,7 +455,8 @@ function paint(): void {
   const settingsRoot = document.querySelector<HTMLElement>("#agent-settings");
   if (settingsRoot) settings.mount(settingsRoot, currentEngine());
   const checkoutRoot = document.querySelector<HTMLElement>("#checkout-settings");
-  if (checkoutRoot) checkoutSettings.mount(checkoutRoot, currentEngine());
+  if (checkoutRoot && settingsPage(model.route) === "workspace")
+    checkoutSettings.mount(checkoutRoot, currentEngine());
   const skillsRoot = document.querySelector<HTMLElement>("#skill-settings");
   if (skillsRoot) skillSettings.mount(skillsRoot, currentEngine());
   const mergeRoot = document.querySelector<HTMLElement>("#merge-settings");

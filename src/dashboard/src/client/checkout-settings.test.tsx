@@ -39,13 +39,11 @@ function markup(html: string) {
 }
 
 describe("repository checkout section", () => {
-  test("comes first on the Agents page", () => {
-    const page = renderSettingsPage("agents");
-    expect(page.indexOf('id="checkout-settings"')).toBeGreaterThan(-1);
-    expect(page.indexOf('id="checkout-settings"')).toBeLessThan(
-      page.indexOf('id="agent-settings"'),
+  test("is not on the Agents page", () => {
+    expect(renderSettingsPage("agents")).not.toContain("checkout-settings");
+    expect(renderSettingsPage("workspace")).toContain(
+      "Manage repository access, what agents see of each repository, and member account links.",
     );
-    expect(renderSettingsPage("merging")).not.toContain("checkout-settings");
   });
 
   test("renders a card per repository with its badge, rows and notes", () => {
