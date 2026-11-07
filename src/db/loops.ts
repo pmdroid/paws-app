@@ -24,6 +24,7 @@ export function startLoops(input: {
   outbox: OutboxDispatcher;
 } {
   const clock = input.clock ?? systemClock;
+  const runsJobs = roleRunsJobs(input.role ?? "all");
   const jobs = new JobLoop(input.db, clock, {
     workerId: input.instanceId,
     instanceId: input.instanceId,
@@ -33,10 +34,11 @@ export function startLoops(input: {
   });
   const outbox = new OutboxDispatcher(input.db, clock, {
     workerId: `outbox:${input.instanceId}`,
+    claims: runsJobs,
     progressIntervalMs: LINEAR_PROGRESS_INTERVAL_MS,
   });
   input.prepare?.({ jobs, outbox });
-  const task = roleRunsJobs(input.role ?? "all")
+  const task = runsJobs
     ? Promise.all([jobs.run(input.signal), outbox.run(input.signal)])
     : Promise.resolve();
   void task.catch((caughtError1) => {

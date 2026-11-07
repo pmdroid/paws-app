@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { loadRuntime } from "../src/config";
+import { OUTBOX_ACTIVITY } from "../src/core";
 import {
   enqueueJobOnce,
+  enqueueOutbox,
   migrate,
   openDatabase,
   registerInstance,
@@ -268,4 +270,41 @@ describe("roles", () => {
       second?.kill("SIGKILL");
     }
   }, 40_000);
+  test("a web instance's outbox claims nothing, even on a direct tick", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    enqueueOutbox(db, {
+      target: OUTBOX_ACTIVITY.target,
+      op: OUTBOX_ACTIVITY.op,
+      orderingKey: "acme-session",
+      payload: {},
+      idempotencyKey: "acme-web-1",
+    });
+    const delivered: number[] = [];
+    const run = async (role: InstanceRole) => {
+      const controller = new AbortController();
+      const loops = startLoops({
+        db,
+        instanceId: `01JACME${role.toUpperCase()}`,
+        role,
+        signal: controller.signal,
+        prepare({ outbox }) {
+          outbox.setHandler((row) => {
+            delivered.push(row.id);
+          });
+        },
+      });
+      const claimed = loops.outbox.tick();
+      if (role !== "web") await waitFor(() => delivered.length > 0);
+      await loops.outbox.idle();
+      controller.abort();
+      await loops.stop();
+      return claimed.length;
+    };
+    expect(await run("web")).toBe(0);
+    expect(delivered).toEqual([]);
+    await run("all");
+    expect(delivered).toHaveLength(1);
+    db.close();
+  });
 });
