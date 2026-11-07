@@ -90,41 +90,42 @@ export type LinearItemUsage = { item: string; requests: number };
 
 export type LinearLedger = {
   admit(caller: string, priority?: LinearPriority, operation?: string): LinearRateLimitError | null;
+  reserve(caller: string, priority?: LinearPriority): Promise<LinearRateLimitError | null>;
   observe(
     caller: string,
     budget: LinearRateBudget,
     item?: string,
     itemId?: string,
     operation?: string,
-  ): void;
-  limited(caller: string, error: LinearRateLimitError): LinearRateLimitError;
-  settle(): void;
+  ): Promise<void>;
+  limited(caller: string, error: LinearRateLimitError): Promise<LinearRateLimitError>;
+  settle(): Promise<void>;
   usage(): LinearUsage;
   now(): number;
 };
 
 export type LinearSharedBudget = {
-  read(): {
+  read(): Promise<{
     windowStartMs: number;
     spent: number;
     holdUntilMs: number | null;
     requestLimit: number | null;
-  } | null;
-  spend(
-    now: number,
-    windowMs: number,
-    limit: number | null,
-    share: number,
-    ttlMs: number,
-  ): string | null;
-  release(id: string, now: number, windowMs: number, counted: boolean): void;
+  } | null>;
+  spend(spend: {
+    now: number;
+    windowMs: number;
+    limit: number | null;
+    share: number;
+    ttlMs: number;
+  }): Promise<string | null>;
+  release(id: string, now: number, windowMs: number, counted: boolean): Promise<void>;
   sync(
     now: number,
     windowMs: number,
     limit: number,
     window: { startMs: number; spent: number } | null,
-  ): void;
-  hold(now: number, untilMs: number): void;
+  ): Promise<void>;
+  hold(now: number, untilMs: number): Promise<void>;
 };
 
 type LedgerEntry = { at: number; caller: string; item: string | null } & LinearCallerUsage;
@@ -231,23 +232,33 @@ export function createLinearLedger(
     return 0;
   };
   const reservations: string[] = [];
-  const refresh = () => {
-    const row = options.shared?.read() ?? null;
+  const refresh = async () => {
+    const row = (await options.shared?.read()) ?? null;
     if (row !== null && row.holdUntilMs !== null)
       holdUntilMs = Math.max(holdUntilMs ?? 0, row.holdUntilMs);
     return row;
   };
-  const spendMs = (priority: LinearPriority) => {
+  const refreshLater = () => {
+    if (options.shared !== undefined)
+      refresh().catch((error: unknown) => log(`linear budget refresh failed: ${String(error)}`));
+  };
+  const spendMs = async (priority: LinearPriority) => {
     const shared = options.shared;
     if (shared === undefined) return 0;
     const limit = budget?.requestsLimit ?? null;
     const share = sharedShare(priority);
-    const id = shared.spend(now(), LINEAR_USAGE_WINDOW_MS, limit, share, RESERVATION_MS);
+    const id = await shared.spend({
+      now: now(),
+      windowMs: LINEAR_USAGE_WINDOW_MS,
+      limit,
+      share,
+      ttlMs: RESERVATION_MS,
+    });
     if (id !== null) {
       reservations.push(id);
       return 0;
     }
-    const row = refresh();
+    const row = await refresh();
     const held = holdMs();
     if (held > 0 || row === null) return Math.max(1, held);
     const known = limit ?? row.requestLimit;
@@ -256,14 +267,14 @@ export function createLinearLedger(
       return windowLeft;
     return IN_FLIGHT_WAIT_MS;
   };
-  const release = (counted: boolean) => {
+  const release = async (counted: boolean) => {
     const id = reservations.shift();
-    if (id !== undefined) options.shared?.release(id, now(), LINEAR_USAGE_WINDOW_MS, counted);
+    if (id !== undefined) await options.shared?.release(id, now(), LINEAR_USAGE_WINDOW_MS, counted);
   };
   const jitter = (delayMs: number) =>
     Math.round(random() * Math.min(5_000, Math.max(250, delayMs / 10)));
   const usage = (): LinearUsage => {
-    refresh();
+    refreshLater();
     prune();
     const totals: Record<string, LinearCallerUsage> = {};
     const items = new Map<string, number>();
@@ -300,19 +311,24 @@ export function createLinearLedger(
   };
   return {
     admit(caller, priority = "normal", operation) {
-      if (operation === undefined) refresh();
+      if (operation === undefined) refreshLater();
       const endpoint = operation === undefined ? undefined : operations.get(operation);
-      let left = Math.max(
+      const left = Math.max(
         holdMs(),
         reserveMs(budget, priority, now()),
         endpointHoldMs(endpoint === undefined ? undefined : endpoints.get(endpoint), now()),
       );
-      if (left === 0 && operation !== undefined) left = spendMs(priority);
       if (left === 0) return null;
       record(caller, { held: 1 });
       return new LinearRateLimitError(left + jitter(left), budget ?? emptyBudget());
     },
-    observe(caller, seen, item, itemId, operation) {
+    async reserve(caller, priority = "normal") {
+      const left = await spendMs(priority);
+      if (left === 0) return null;
+      record(caller, { held: 1 });
+      return new LinearRateLimitError(left + jitter(left), budget ?? emptyBudget());
+    },
+    async observe(caller, seen, item, itemId, operation) {
       record(caller, { requests: 1, complexity: seen.complexity ?? 0 }, item);
       if (itemId !== undefined) options.countItem?.(itemId, caller);
       const { endpoint, ...limits } = seen;
@@ -327,13 +343,13 @@ export function createLinearLedger(
           ? null
           : { startMs: reset - LINEAR_USAGE_WINDOW_MS, spent: Math.max(0, limit - remaining) };
       if (limit !== null && limit > 0)
-        options.shared?.sync(now(), LINEAR_USAGE_WINDOW_MS, limit, window);
-      release(window !== null && window.startMs + LINEAR_USAGE_WINDOW_MS > now());
+        await options.shared?.sync(now(), LINEAR_USAGE_WINDOW_MS, limit, window);
+      await release(window !== null && window.startMs + LINEAR_USAGE_WINDOW_MS > now());
     },
-    limited(caller, error) {
+    async limited(caller, error) {
       if (error.endpoint === null) {
         holdUntilMs = Math.max(holdUntilMs ?? 0, now() + error.retryAfterMs);
-        options.shared?.hold(now(), holdUntilMs);
+        await options.shared?.hold(now(), holdUntilMs);
       }
       record(caller, { rateLimited: 1 });
       log(rateLimitLine(caller, error, usage()));
@@ -341,7 +357,7 @@ export function createLinearLedger(
       return new LinearRateLimitError(left + jitter(left), error.budget, error.endpoint);
     },
     settle() {
-      release(false);
+      return release(false);
     },
     usage,
     now,
