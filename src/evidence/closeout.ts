@@ -55,8 +55,9 @@ export async function publishCloseoutEvidence(
   db: Database,
   storage: EvidenceStorage,
   taskId: string,
-  now: () => number = Date.now,
+  options: { now?: () => number; keepStored?: boolean } = {},
 ): Promise<number> {
+  const now = options.now ?? Date.now;
   const objects = storage.objects?.();
   const task = closeoutTaskDirectory(taskId);
   if (!objects || !safeTask(task)) return 0;
@@ -69,6 +70,7 @@ export async function publishCloseoutEvidence(
     const info = await stat(join(directory, ...parts));
     const modifiedAt = Math.floor(info.mtimeMs);
     const previous = getCloseoutEvidenceObject(db, task, path);
+    if (previous && options.keepStored) continue;
     if (previous?.sizeBytes === info.size && previous.modifiedAt === modifiedAt) continue;
     if (previous?.sha256 === (await sha256Of(file.stream()))) {
       saveCloseoutEvidenceObject(db, { ...previous, modifiedAt });
@@ -103,11 +105,13 @@ export async function hydrateCloseoutEvidence(
   db: Database,
   storage: EvidenceStorage,
   taskIds: readonly string[],
+  options: { strict?: boolean } = {},
 ): Promise<number> {
   const objects = storage.objects?.();
   if (!objects) return 0;
   const tasks = taskIds.map(closeoutTaskDirectory).filter(safeTask);
   let restored = 0;
+  let unrestored: { error: unknown } | null = null;
   for (const row of listCloseoutEvidenceObjects(db, tasks)) {
     if (!safeTask(row.task) || !safePath(row.path)) continue;
     const target = join(storage.root, row.task, ...row.path.split("/"));
@@ -131,8 +135,10 @@ export async function hydrateCloseoutEvidence(
     } catch (error) {
       await rm(temporary, { force: true });
       journalCaught(error, "evidence.hydrateCloseoutEvidence", null);
+      unrestored ??= { error };
     }
   }
+  if (options.strict && unrestored !== null) throw unrestored.error;
   return restored;
 }
 
@@ -173,7 +179,7 @@ export async function uploadLocalCloseoutEvidence(
   for (const entry of entries) {
     if (!entry.isDirectory() || !safeTask(entry.name)) continue;
     try {
-      uploaded += await publishCloseoutEvidence(db, storage, entry.name);
+      uploaded += await publishCloseoutEvidence(db, storage, entry.name, { keepStored: true });
     } catch (error) {
       journalCaught(error, "evidence.uploadLocalCloseoutEvidence", null);
     }

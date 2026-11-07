@@ -252,3 +252,78 @@ test("every visible item with the issue's identifier has its Closeout records re
   expect(existsSync(join(storageB.root, "item-acme-2", ...RECORD.split("/")))).toBe(true);
   expect(existsSync(join(storageB.root, "item-acme-3"))).toBe(false);
 });
+
+test("a check whose evidence can't be stored is recorded as failed, never as passed", async () => {
+  const identity = { taskId: ITEM, base: BASE, head: HEAD, policyDigest: DIGEST, policyPath: null };
+  const recorded = (publish: () => Promise<void>) => {
+    const calls: string[] = [];
+    const progress = publishingCloseoutProgress(
+      {
+        begin: () => {},
+        step: (_identity, step) => calls.push(`step ${step.state} ${step.detail ?? ""}`.trim()),
+        output: () => {},
+        finish: (_identity, decision) => calls.push(`finish ${decision}`),
+      },
+      publish,
+    );
+    progress.step(identity, {
+      id: "test",
+      kind: "command",
+      state: "passed",
+      command: "bun test",
+      detail: null,
+      attempt: 1,
+      timeoutSeconds: null,
+      startedAt: 1,
+      finishedAt: 2,
+      exitCode: 0,
+      timedOut: false,
+      timeoutReason: null,
+      truncated: false,
+      logPath: LOG,
+      evidencePath: null,
+      findings: null,
+      ordinal: 0,
+    });
+    progress.finish(identity, "accepted");
+    return { calls, progress };
+  };
+
+  const broken = recorded(async () => {
+    throw new Error("acme bucket unavailable");
+  });
+  await expect(broken.progress.settled()).rejects.toThrow("acme bucket unavailable");
+  expect(broken.calls).toEqual([
+    "step failed Paws could not store this check's evidence in the object store.",
+    "finish blocked",
+  ]);
+
+  let failures = 1;
+  const flaky = recorded(async () => {
+    if (failures-- > 0) throw new Error("acme bucket hiccup");
+  });
+  await flaky.progress.settled();
+  expect(flaky.calls).toEqual(["step passed", "finish accepted"]);
+});
+
+test("the startup upload keeps a path already in the store instead of replacing it", async () => {
+  const { db, storageA, storageB } = setup();
+  await publishCloseoutEvidence(db, storageA, ITEM);
+  await Bun.sleep(5);
+  writeFileSync(join(storageA.root, ITEM, ...LOG.split("/")), "acme stale local copy\n");
+  expect(await uploadLocalCloseoutEvidence(db, storageA)).toBe(0);
+  await hydrateCloseoutEvidence(db, storageB, [ITEM]);
+  expect(readFileSync(join(storageB.root, ITEM, ...LOG.split("/")), "utf8")).toBe(
+    "acme test output\n",
+  );
+});
+
+test("a strict restore fails when a file can't be restored; a lenient one carries on", async () => {
+  const { db, s3, storageA, storageB } = setup();
+  await publishCloseoutEvidence(db, storageA, ITEM);
+  const [first] = [...s3.objects.keys()];
+  s3.objects.set(first!, new Uint8Array(64));
+  await expect(hydrateCloseoutEvidence(db, storageB, [ITEM], { strict: true })).rejects.toThrow();
+  const storageC = { ...storageB, root: join(tempHome(), "closeout", "evidence") };
+  expect(await hydrateCloseoutEvidence(db, storageC, [ITEM])).toBe(1);
+});

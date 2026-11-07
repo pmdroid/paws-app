@@ -4194,7 +4194,7 @@ export class Orchestrator {
       headSha: head,
       attempt: 1,
     };
-    await this.pullCloseoutEvidence(item);
+    await this.pullCloseoutEvidence(item, true);
     try {
       const verdict = await gate[decide ? "decide" : "run"](request);
       if (stoppedOnRule === undefined) return verdict;
@@ -8714,20 +8714,21 @@ export class Orchestrator {
     return objects ? { root: join(this.options.pawsRoot, "closeout", "evidence"), objects } : null;
   }
 
-  private async pullCloseoutEvidence(item: WorkItemRecord): Promise<void> {
+  private async pullCloseoutEvidence(item: WorkItemRecord, strict = false): Promise<void> {
     const storage = this.closeoutEvidence();
     if (storage === null) return;
-    await hydrateCloseoutEvidence(this.db, storage, [itemPathId(item)]).catch((error: unknown) =>
-      journalCaught(error, "orchestrator.pullCloseoutEvidence", item.id),
-    );
+    const restored = hydrateCloseoutEvidence(this.db, storage, [itemPathId(item)], { strict });
+    if (strict) await restored;
+    else
+      await restored.catch((error: unknown) =>
+        journalCaught(error, "orchestrator.pullCloseoutEvidence", item.id),
+      );
   }
 
   private async pushCloseoutEvidence(item: WorkItemRecord): Promise<void> {
     const storage = this.closeoutEvidence();
     if (storage === null) return;
-    await publishCloseoutEvidence(this.db, storage, itemPathId(item)).catch((error: unknown) =>
-      journalCaught(error, "orchestrator.pushCloseoutEvidence", item.id),
-    );
+    await publishCloseoutEvidence(this.db, storage, itemPathId(item));
   }
 
   private evidenceStorage(): EvidenceStorage | undefined {
