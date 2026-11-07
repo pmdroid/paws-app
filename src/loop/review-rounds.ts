@@ -28,6 +28,7 @@ export function askReviewRounds(
     item: WorkItemRecord;
     help: CloseoutHelp;
     rounds: LinkAskRounds;
+    findings?: string;
     publicUrl: string | null;
     now: number;
   },
@@ -41,6 +42,7 @@ export function askReviewRounds(
       kind: "rounds",
       head: input.help.head,
       detail: reviewRoundsDetail(input.rounds),
+      ...(input.findings ? { findings: input.findings } : {}),
       rounds: input.rounds,
       publicUrl: input.publicUrl,
       now: input.now,
