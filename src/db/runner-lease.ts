@@ -116,8 +116,9 @@ type InstanceSpan = { id: string; startedAt: number; heartbeatAt: number };
 
 /**
  * How long no instance served the runs `owner` held. It starts where instances alive without a
- * break since the owner's last heartbeat stopped, and ends when the next instance started, `now`
- * at the latest. `self` is alive at `now`. Null when instances were alive throughout.
+ * break since the owner's last heartbeat stopped, and adds up every stretch until `now` when no
+ * instance was alive. `until` is `aliveAt` plus that time. `self` is alive at `now`. Null when
+ * instances were alive throughout.
  */
 function ownerDowntime(
   spans: readonly InstanceSpan[],
@@ -138,16 +139,25 @@ function ownerDowntime(
         extended = true;
       }
   }
-  let until = now;
-  for (const span of others) if (span.startedAt > aliveAt) until = Math.min(until, span.startedAt);
-  return until > aliveAt ? { aliveAt, until } : null;
+  let uncovered = 0;
+  let coveredTo = aliveAt;
+  const later = others
+    .filter((span) => span.startedAt > aliveAt && span.startedAt < now)
+    .sort((a, b) => a.startedAt - b.startedAt);
+  for (const span of later) {
+    uncovered += Math.max(0, span.startedAt - coveredTo);
+    coveredTo = Math.max(coveredTo, Math.min(span.heartbeatAt, now));
+  }
+  uncovered += Math.max(0, now - coveredTo);
+  return uncovered > 0 ? { aliveAt, until: aliveAt + uncovered } : null;
 }
 
 /**
  * When `self` takes over the runs of gone instances, move the lease of their open runner work
  * forward by the time no instance was alive, so that downtime does not count against it. The
- * downtime runs from the owning instance's last heartbeat, or the end of instances alive since
- * without a break, to the takeover, and is none when another instance was alive throughout. Work without an owner counts the newest other instance
+ * downtime is the time no instance was alive between the owning instance's last heartbeat, or
+ * the end of instances alive since without a break, and the takeover; it is none when another
+ * instance was alive throughout. Work without an owner counts the newest other instance
  * as its owner. The new deadline is `creditedLeaseUntil`, capped by `budgetMs` and by each
  * command's `expiresAt`. Work the runner gave up on stays given up: a row with a result, an
  * acknowledged cancel, or a lease already past the grace when its owner was last alive is not
