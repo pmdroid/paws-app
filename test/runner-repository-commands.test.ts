@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   bindWorkItemRepository,
   insertQueuedItem,
@@ -29,8 +32,8 @@ const repository = {
   remoteUrl: "https://github.com/fixture/repository.git",
 };
 
-function fixture() {
-  const db = openDatabase(":memory:");
+function fixture(path = ":memory:") {
+  const db = openDatabase(path);
   migrate(db);
   let now = Date.now();
   const userId = putWorkspaceUser(db, {
@@ -199,7 +202,7 @@ test("a grant and a credential go only to the delivered runner while the command
 test("a posted result completes waitForRepositoryCommand and replays only unchanged", async () => {
   const f = fixture();
   const id = f.enqueue();
-  const waiting = waitForRepositoryCommand(id);
+  const waiting = waitForRepositoryCommand(f.db, id);
   const early = await f.post(`/v1/repository-commands/${id}/result`, "runner-a", {
     outcome: "rebased",
     head: "c".repeat(40),
@@ -232,7 +235,7 @@ test("a command past expiresAt is expired and its credential route refuses", asy
   f.advance(60_000);
   expect((await f.credential(id, issued.body.token))!.status).toBe(403);
   expect(repositoryCommandState(f.db, id)).toBe("expired");
-  expect(await waitForRepositoryCommand(id)).toEqual({ outcome: "expired" });
+  expect(await waitForRepositoryCommand(f.db, id)).toEqual({ outcome: "expired" });
   expect((await f.grant(id)).status).toBe(403);
   const late = await f.post(`/v1/repository-commands/${id}/result`, "runner-a", {
     outcome: "rebased",
@@ -315,4 +318,41 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
     outcome: "failed",
     reason: "Runner is not accepting repository commands.",
   });
+});
+
+test("a rebase whose result arrives on another instance resolves within a second", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "paws-repository-commands-"));
+  try {
+    const f = fixture(join(dir, "paws.sqlite"));
+    const other = openDatabase(join(dir, "paws.sqlite"));
+    const otherHttp = createRepositoryCommandsHttp({ db: other, now: f.now });
+    const rebased = rebaseOnRunner(f.db, {
+      runnerId: "runner-a",
+      workspaceId: f.workspace,
+      itemId: f.item.id,
+      repository,
+      branch: f.item.branchName,
+      head: "a".repeat(40),
+      main: "b".repeat(40),
+      bot,
+      now: f.now(),
+    });
+    const [command] = await f.poll("runner-a");
+    const posted = await otherHttp(
+      new Request(`https://paws.invalid/v1/repository-commands/${command!.id}/result`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ outcome: "rebased", head: "c".repeat(40) }),
+      }),
+      "runner-a",
+    );
+    expect(await posted!.json()).toEqual({ duplicate: false });
+    const started = performance.now();
+    expect(await rebased).toEqual({ outcome: "rebased", head: "c".repeat(40) });
+    expect(performance.now() - started).toBeLessThan(1_000);
+    other.close();
+    f.db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
