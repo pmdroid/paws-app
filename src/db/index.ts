@@ -198,14 +198,20 @@ export {
 } from "./plan-proposals";
 export {
   closeLinkAsk,
+  closeLinkAskSteps,
   getLinkAsk,
+  getLinkAskSteps,
   insertLinkAsk,
+  insertLinkAskSteps,
   listLinkAsks,
+  listLinkAsksSteps,
   LINK_ASK_DECISIONS,
   LINK_ASK_KINDS,
   LINK_ASK_NOTE_REQUIRED,
   openLinkAsks,
+  openLinkAsksSteps,
   recordLinkAskDecision,
+  recordLinkAskDecisionSteps,
   type LinkAsk,
   type LinkAskRounds,
   type OpenReviewFinding,
@@ -939,10 +945,15 @@ export { getLinearConversationSourceSteps } from "./linear-session-url";
 export {
   CLEANUP_BLOCKED_NOTICE,
   blockConversation,
+  blockConversationSteps,
   clearConversationBlock,
+  clearConversationBlockSteps,
   getConversation,
+  getConversationSteps,
   listBlockedConversations,
+  listBlockedConversationsSteps,
   saveConversation,
+  saveConversationSteps,
 } from "./acp-conversations";
 export {
   beginMergeCall,
