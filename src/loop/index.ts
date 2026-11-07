@@ -140,6 +140,7 @@ export { HOST_DISK_FULL_THOUGHT } from "./disk-full";
 export { publishingCloseoutProgress } from "./closeout-progress";
 export {
   CONVERSATION_TIMEOUT_REPLY,
+  START_WORK_RESPONSE,
   deliverLinearComments,
   linearCommentBrief,
   type LinearCommentPolicy,

@@ -919,3 +919,46 @@ test("Move running work needs a draining runner and an admin", async () => {
   db.run("UPDATE runner SET status='active' WHERE id=?", [runners.a]);
   await finish(onA, running);
 });
+
+test("the work turn after start_work waits for a slot on the session's runner, then resumes the same session", async () => {
+  const { db, runners } = context;
+  const record = context.item();
+  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  const first = context.turn(record, []);
+  const earlier = (await context.next(runners.a)) as RunCommand;
+  context.submit(earlier, runners.a, { candidateSha: context.base });
+  expect(await first.running).toMatchObject({ stopReason: "end_turn" });
+  // restart() ends the conversation's run; the work turn starts the item's next run.
+  db.run("UPDATE run SET status='ended' WHERE id=?", [record.runId]);
+  db.run("UPDATE work_item SET state='queued' WHERE id=?", [record.id]);
+  const next = { id: record.id, runId: beginImplementRun(db, record.id, context.now).run.id };
+
+  // Another item takes A's only work slot; B stays paused.
+  const busy = context.item(true);
+  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  const other = context.turn(busy, []);
+  const busyOnA = (await context.next(runners.a)) as RunCommand;
+  expect(busyOnA.runId).toBe(busy.runId);
+
+  // With every work slot busy the turn takes none: the resume job waits in line for a slot.
+  const waiting = context.turn(next, []);
+  expect(String(await waiting.running)).toBe(
+    `RunnerCapacityWait: Waiting for a free slot on runner ${runners.a}`,
+  );
+  expect(await context.next(runners.a, 50)).toBeNull();
+  expect(await context.next(runners.b, 50)).toBeNull();
+
+  context.submit(busyOnA, runners.a, { candidateSha: context.base });
+  await other.running;
+  db.run("UPDATE run SET status='ended' WHERE id=?", [busy.runId]);
+  const work = context.turn(next, []);
+  const onA = (await context.next(runners.a)) as RunCommand;
+  expect(onA).toMatchObject({
+    type: "run",
+    runId: next.runId,
+    resumeSessionId: "claude-session",
+  });
+  expect(onA.checkpoint).not.toBe(false);
+  context.submit(onA, runners.a, { candidateSha: context.base });
+  expect(await work.running).toMatchObject({ stopReason: "end_turn" });
+});
