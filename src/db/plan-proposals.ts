@@ -1,7 +1,10 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, isNull } from "drizzle-orm";
 import { validateSubIssueDrafts, type FiledSubIssue, type SubIssueDraft } from "../core";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { applyWorkItemEvent, cancelAdvancingJobs, getWorkItem } from "./items";
 import { markRun } from "./runs";
+import { jsonText } from "./json-text";
 import { getTaskMode } from "./tasks";
 import { immediate } from "./tx";
 
@@ -17,78 +20,91 @@ export type PlanProposal = {
   filedAt: number | null;
 };
 
-type PlanProposalRow = {
-  question_id: string;
-  item_id: string;
-  parent_issue_id: string;
+type PlanProposalInput = {
+  questionId: string;
+  itemId: string;
+  parentIssueId: string;
   repository: string | null;
-  drafts: string;
-  created_at: number;
-  filed: string | null;
-  filed_at: number | null;
+  drafts: readonly SubIssueDraft[];
+  now: number;
 };
 
-export function savePlanProposal(
-  db: Database,
-  input: {
-    questionId: string;
-    itemId: string;
-    parentIssueId: string;
-    repository: string | null;
-    drafts: readonly SubIssueDraft[];
-    now: number;
-  },
-): PlanProposal {
+const jsonIn = (q: Q, value: unknown) => (q.dialect === "sqlite" ? JSON.stringify(value) : value);
+
+export function* savePlanProposalSteps(q: Q, input: PlanProposalInput): Steps<PlanProposal> {
   const drafts = validateSubIssueDrafts(input.drafts);
-  db.run(
-    `INSERT INTO plan_proposal (question_id, item_id, parent_issue_id, repository, drafts, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      input.questionId,
-      input.itemId,
-      input.parentIssueId,
-      input.repository,
-      JSON.stringify(drafts),
-      input.now,
-    ],
+  yield* q.exec(
+    q.orm.insert(q.t.planProposal).values({
+      questionId: input.questionId,
+      itemId: input.itemId,
+      parentIssueId: input.parentIssueId,
+      repository: input.repository,
+      drafts: jsonIn(q, drafts),
+      createdAt: input.now,
+    }),
   );
-  return getPlanProposal(db, input.questionId)!;
+  return (yield* getPlanProposalSteps(q, input.questionId))!;
 }
 
-export function getPlanProposal(db: Database, questionId: string): PlanProposal | null {
-  const row = db
-    .query<PlanProposalRow, [string]>("SELECT * FROM plan_proposal WHERE question_id = ?")
-    .get(questionId);
-  return row === null
+export function savePlanProposal(db: Database, input: PlanProposalInput): PlanProposal {
+  return settled(sqliteDb(db).run((q) => savePlanProposalSteps(q, input)));
+}
+
+export function* getPlanProposalSteps(q: Q, questionId: string): Steps<PlanProposal | null> {
+  const { planProposal } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        questionId: planProposal.questionId,
+        itemId: planProposal.itemId,
+        parentIssueId: planProposal.parentIssueId,
+        repository: planProposal.repository,
+        drafts: jsonText(q, planProposal.drafts),
+        createdAt: planProposal.createdAt,
+        filed: jsonText(q, planProposal.filed),
+        filedAt: planProposal.filedAt,
+      })
+      .from(planProposal)
+      .where(eq(planProposal.questionId, questionId)),
+  );
+  return row === undefined
     ? null
     : {
-        questionId: row.question_id,
-        itemId: row.item_id,
-        parentIssueId: row.parent_issue_id,
-        repository: row.repository,
+        ...row,
         drafts: validateSubIssueDrafts(JSON.parse(row.drafts)),
-        createdAt: row.created_at,
         filed: row.filed === null ? null : (JSON.parse(row.filed) as FiledSubIssue[]),
-        filedAt: row.filed_at,
       };
 }
 
-/** Record what the tracker filed. The first record wins, so a retried delivery keeps it. */
+export function getPlanProposal(db: Database, questionId: string): PlanProposal | null {
+  return settled(sqliteDb(db).run((q) => getPlanProposalSteps(q, questionId)));
+}
+
+export function* recordPlanFiledSteps(
+  q: Q,
+  questionId: string,
+  filed: readonly FiledSubIssue[],
+  now: number,
+): Steps<PlanProposal> {
+  const { planProposal } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(planProposal)
+      .set({ filed: jsonIn(q, filed), filedAt: now })
+      .where(and(eq(planProposal.questionId, questionId), isNull(planProposal.filed))),
+  );
+  const proposal = yield* getPlanProposalSteps(q, questionId);
+  if (proposal === null) throw new Error(`Plan proposal ${questionId} is missing`);
+  return proposal;
+}
+
 export function recordPlanFiled(
   db: Database,
   questionId: string,
   filed: readonly FiledSubIssue[],
   now: number,
 ): PlanProposal {
-  return immediate(db, () => {
-    db.run(
-      "UPDATE plan_proposal SET filed = ?, filed_at = ? WHERE question_id = ? AND filed IS NULL",
-      [JSON.stringify(filed), now, questionId],
-    );
-    const proposal = getPlanProposal(db, questionId);
-    if (proposal === null) throw new Error(`Plan proposal ${questionId} is missing`);
-    return proposal;
-  });
+  return settled(sqliteDb(db).transaction((q) => recordPlanFiledSteps(q, questionId, filed, now)));
 }
 
 export function completePlanTask(db: Database, itemId: string, now: number): void {

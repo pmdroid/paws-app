@@ -165,8 +165,11 @@ export {
 export {
   completePlanTask,
   getPlanProposal,
+  getPlanProposalSteps,
   recordPlanFiled,
+  recordPlanFiledSteps,
   savePlanProposal,
+  savePlanProposalSteps,
   type PlanProposal,
 } from "./plan-proposals";
 export {

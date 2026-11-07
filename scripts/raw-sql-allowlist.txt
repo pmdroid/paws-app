@@ -162,9 +162,6 @@ src/db/outbox.ts | db .query<{ open: number }, [string]>( | retryOutbox and its 
 src/db/outbox.ts | db .query<{ origin: string | null }, [string, string]>( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
 src/db/outbox.ts | if (db.query<{ id: number }, [string]>("SELECT id FROM job WHERE job_key = ?").get(key)) | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
 src/db/outbox.ts | db.run(`UPDATE outbox SET status = 'dropped', error = ? WHERE id = ? AND status = 'dead'`, [ | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
-src/db/plan-proposals.ts | db.run( | not yet converted to Drizzle
-src/db/plan-proposals.ts | const row = db .query<PlanProposalRow, [string]>("SELECT * FROM plan_proposal WHERE question_id = ?") | not yet converted to Drizzle
-src/db/plan-proposals.ts | db.run( | not yet converted to Drizzle
 src/db/pull-request-drafts.ts | db.run( | not yet converted to Drizzle
 src/db/pull-request-drafts.ts | db .query<{ updated_at: number }, [string]>( | not yet converted to Drizzle
 src/db/pull-request-drafts.ts | db .query<PullRequestDraft, [string]>( | not yet converted to Drizzle
