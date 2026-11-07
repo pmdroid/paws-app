@@ -262,6 +262,7 @@ import {
   recordAgentCloseout,
   immediate,
   claimRun,
+  drainInstanceCommands,
   insertRun,
   listInFlightItems,
   listCloseoutRecoveries,
@@ -813,6 +814,7 @@ export class Orchestrator {
     string,
     {
       itemId: string;
+      version: number;
       sessionId: string | null;
       generation: number;
       controller: AbortController;
@@ -6646,6 +6648,28 @@ export class Orchestrator {
     return resumed;
   }
 
+  deliverInstanceCommands(): number {
+    const self = this.options.instanceId;
+    if (self === undefined) return 0;
+    return drainInstanceCommands(
+      this.db,
+      self,
+      ({ command, stoppedAtVersion }) => {
+        const live = [...this.live.values()].filter((entry) => entry.itemId === command.itemId);
+        const stopped = live.filter((entry) => entry.version < stoppedAtVersion);
+        if (stopped.length === 0) return;
+        if (stopped.length < live.length) {
+          for (const entry of stopped) entry.controller.abort();
+          return;
+        }
+        void this.interruptItem(command.itemId).catch((error) => {
+          journalCaught(error, "orchestrator.deliverInstanceCommands", command.itemId);
+        });
+      },
+      this.now(),
+    );
+  }
+
   async interruptItem(itemId: string): Promise<void> {
     await this.joinChangedItems([itemId]);
   }
@@ -7407,6 +7431,7 @@ export class Orchestrator {
     const sessionId = item === null ? null : this.activitySession(item);
     const live = {
       itemId,
+      version: item?.version ?? 0,
       sessionId,
       generation: sessionId === null ? 0 : getLinearSessionGeneration(this.db, sessionId),
       controller,

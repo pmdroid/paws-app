@@ -12,6 +12,12 @@ export {
   takeOverItem,
 } from "./commands";
 export {
+  COMMAND_DELIVERY_MS,
+  bindInstance,
+  commandDeliveryQueue,
+  drainInstanceCommands,
+} from "./command-delivery";
+export {
   getItemBranchState,
   getItemPullRequest,
   recordItemBranchState,

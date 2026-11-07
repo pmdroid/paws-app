@@ -9,6 +9,7 @@ import {
   transition,
   type LinearCommand,
 } from "../core";
+import { forwardCommand } from "./command-delivery";
 import { applyWorkItemEvent, getWorkItem, type WorkItemRecord } from "./items";
 import {
   claimNextJob,
@@ -57,6 +58,20 @@ export function applyLinearCommand(
    * close job first posts `comment` on it, as an issue canceled in Linear does.
    */
   options: CommandOptions = {},
+): { applied: boolean; deferred?: boolean } {
+  return immediate(db, () => {
+    const result = applyCommandRows(db, command, now, response, options);
+    if (result.applied) forwardCommand(db, command, now);
+    return result;
+  });
+}
+
+function applyCommandRows(
+  db: Database,
+  command: LinearCommand,
+  now: number,
+  response: string | undefined,
+  options: CommandOptions,
 ): { applied: boolean; deferred?: boolean } {
   return immediate(db, () => {
     const item = getWorkItem(db, command.itemId);
