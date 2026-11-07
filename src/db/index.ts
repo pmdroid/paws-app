@@ -560,8 +560,11 @@ export {
 } from "./reads";
 export {
   applyLinearIssueProject,
+  applyLinearIssueProjectSteps,
   getWorkItemLinearProjectId,
+  getWorkItemLinearProjectIdSteps,
   saveWorkItemLinearProject,
+  saveWorkItemLinearProjectSteps,
   type WorkItemLinearProject,
 } from "./linear-project";
 export { immediate } from "./tx";
@@ -908,7 +911,7 @@ export {
   blockLinearSessionCleanup,
   blockLinearSessionCleanupSteps,
 } from "./session-cleanup";
-export { prepareLinearActivity } from "./linear-delivery";
+export { prepareLinearActivity, prepareLinearActivitySteps } from "./linear-delivery";
 
 export {
   auditWorkspaceAccess,
@@ -1041,9 +1044,13 @@ export { carriedAcceptFor, recordCarriedAccept } from "./merge-carried-accept";
 export { getTaskMergeSettings, keepTaskMergeSettings } from "./merge-settings";
 export {
   getTaskLinearRead,
+  getTaskLinearReadSteps,
   keepTaskLinearRead,
+  keepTaskLinearReadSteps,
   linearActivitiesListedAt,
+  linearActivitiesListedAtSteps,
   markLinearActivitiesListed,
+  markLinearActivitiesListedSteps,
 } from "./linear-reads";
 export type { TaskMergeSettings } from "./merge-settings";
 export {
@@ -1072,8 +1079,11 @@ export {
 export type { UsagePause } from "./usage-pause";
 export {
   countLinearRequest,
+  countLinearRequestSteps,
   linearRequestsByCaller,
+  linearRequestsByCallerSteps,
   linearRequestsByItem,
+  linearRequestsByItemSteps,
 } from "./linear-requests";
 export {
   listRunnerRuntimes,
@@ -1134,6 +1144,7 @@ export {
   LINEAR_WEBHOOK_SILENCE_MS,
   describeLinearWebhookWarning,
   linearWebhookWarning,
+  linearWebhookWarningSteps,
   type LinearWebhookWarning,
 } from "./linear-webhook";
 export {

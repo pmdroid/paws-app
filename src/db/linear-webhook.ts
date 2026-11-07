@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, isNotNull, notInArray } from "drizzle-orm";
 import { TERMINAL_WORK_ITEM_STATES } from "../core";
+import { settled, sqliteDb, type Q } from "./db";
 
 export const LINEAR_WEBHOOK_SILENCE_MS = 60 * 60_000;
 
@@ -12,20 +14,33 @@ export type LinearWebhookWarning = {
   missedMs: number | null;
 };
 
-export function linearWebhookWarning(db: Database, nowMs: number): LinearWebhookWarning | null {
-  const lastVerifiedMs = cursor(db, "linear:webhook");
+export function* linearWebhookWarningSteps(q: Q, nowMs: number) {
+  const lastVerifiedMs = yield* cursorSteps(q, "linear:webhook");
   if (lastVerifiedMs === null) return null;
-  const missedMs = cursor(db, "linear:webhook-missed");
+  const missedMs = yield* cursorSteps(q, "linear:webhook-missed");
   if (missedMs !== null && missedMs > lastVerifiedMs)
-    return { reason: "missed", lastVerifiedMs, missedMs };
+    return { reason: "missed", lastVerifiedMs, missedMs } satisfies LinearWebhookWarning;
   if (nowMs - lastVerifiedMs <= LINEAR_WEBHOOK_SILENCE_MS) return null;
-  const terminal = TERMINAL_WORK_ITEM_STATES.map(() => "?").join(", ");
-  const active = db
-    .query(
-      `SELECT 1 FROM work_item WHERE session_key IS NOT NULL AND state NOT IN (${terminal}) LIMIT 1`,
-    )
-    .get(...TERMINAL_WORK_ITEM_STATES);
-  return active === null ? null : { reason: "silent", lastVerifiedMs, missedMs };
+  const { workItem } = q.t;
+  const active = yield* q.one(
+    q.orm
+      .select({ id: workItem.id })
+      .from(workItem)
+      .where(
+        and(
+          isNotNull(workItem.sessionKey),
+          notInArray(workItem.state, [...TERMINAL_WORK_ITEM_STATES]),
+        ),
+      )
+      .limit(1),
+  );
+  return active === undefined
+    ? null
+    : ({ reason: "silent", lastVerifiedMs, missedMs } satisfies LinearWebhookWarning);
+}
+
+export function linearWebhookWarning(db: Database, nowMs: number): LinearWebhookWarning | null {
+  return settled(sqliteDb(db).run((q) => linearWebhookWarningSteps(q, nowMs)));
 }
 
 export function describeLinearWebhookWarning(warning: LinearWebhookWarning): string {
@@ -34,10 +49,13 @@ export function describeLinearWebhookWarning(warning: LinearWebhookWarning): str
     : "Linear may have disabled the Paws webhook: no verified delivery for over an hour while sessions are active.";
 }
 
-function cursor(db: Database, name: string): number | null {
-  return (
-    db
-      .query<{ cursor_ms: number }, [string]>("SELECT cursor_ms FROM sync_cursor WHERE name = ?")
-      .get(name)?.cursor_ms ?? null
+function* cursorSteps(q: Q, name: string) {
+  const { syncCursor } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ cursorMs: syncCursor.cursorMs })
+      .from(syncCursor)
+      .where(eq(syncCursor.name, name)),
   );
+  return row?.cursorMs ?? null;
 }

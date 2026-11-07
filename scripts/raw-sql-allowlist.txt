@@ -168,12 +168,6 @@ src/db/legacy-migrate.ts | db.run("INSERT INTO schema_migration (id, applied_at)
 src/db/legacy-migrate.ts | db.run(`PRAGMA foreign_keys = ${foreignKeys ? "ON" : "OFF"}`); | frozen legacy migration (src/db/README.md)
 src/db/linear-comments.ts | db.run( | not yet converted to Drizzle
 src/db/linear-comments.ts | const gathering = db .query<{ n: number }, [string, string]>( | not yet converted to Drizzle
-src/db/linear-delivery.ts | const result = db.run( | not yet converted to Drizzle
-src/db/linear-project.ts | db .query<{ id: string | null }, [string]>( | not yet converted to Drizzle
-src/db/linear-project.ts | db.run(`UPDATE work_item SET ${SET_PROJECT} WHERE id=?3`, [...values(project), itemId]); | not yet converted to Drizzle
-src/db/linear-project.ts | return db.run(`UPDATE work_item SET ${SET_PROJECT} WHERE linear_issue_id=?3`, [ | not yet converted to Drizzle
-src/db/linear-webhook.ts | const active = db .query( | not yet converted to Drizzle
-src/db/linear-webhook.ts | db .query<{ cursor_ms: number }, [string]>("SELECT cursor_ms FROM sync_cursor WHERE name = ?") | not yet converted to Drizzle
 src/db/link-asks.ts | db.run( | not yet converted to Drizzle
 src/db/link-asks.ts | const row = db .query<LinkAskRow, [string]>("SELECT * FROM link_ask WHERE question_id = ?") | not yet converted to Drizzle
 src/db/link-asks.ts | return db .query<LinkAskRow, [string]>( | not yet converted to Drizzle

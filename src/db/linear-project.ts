@@ -1,28 +1,40 @@
 import type { Database } from "bun:sqlite";
+import { eq, sql, type SQL } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 
 /** The Linear project an issue belongs to. A null name means the read did not include it. */
 export type WorkItemLinearProject = { id: string; name: string | null };
 
-// A missing name keeps the stored one only while the project id stays the same.
-const SET_PROJECT = `linear_project_id=?1,
-  linear_project_name=CASE WHEN ?2 IS NOT NULL THEN ?2
-    WHEN linear_project_id IS ?1 THEN linear_project_name ELSE NULL END`;
-
-function values(project: WorkItemLinearProject | null): [string | null, string | null] {
+function projectSet(project: WorkItemLinearProject | null) {
   const id = project?.id.trim() || null;
   const name = id === null ? null : project?.name?.trim() || null;
-  return [id, name];
+  const sameProject = id === null ? sql`linear_project_id IS NULL` : sql`linear_project_id = ${id}`;
+  // A missing name keeps the stored one only while the project id stays the same.
+  const linearProjectName: string | SQL =
+    name ?? sql`CASE WHEN ${sameProject} THEN linear_project_name ELSE NULL END`;
+  return { linearProjectId: id, linearProjectName };
+}
+
+export function* getWorkItemLinearProjectIdSteps(q: Q, itemId: string) {
+  const { workItem } = q.t;
+  const row = yield* q.one(
+    q.orm.select({ id: workItem.linearProjectId }).from(workItem).where(eq(workItem.id, itemId)),
+  );
+  return row?.id ?? null;
 }
 
 /** The item's Linear project id, or null when the issue has none or Paws has not read it. */
 export function getWorkItemLinearProjectId(db: Database, itemId: string): string | null {
-  return (
-    db
-      .query<{ id: string | null }, [string]>(
-        "SELECT linear_project_id AS id FROM work_item WHERE id=?",
-      )
-      .get(itemId)?.id ?? null
-  );
+  return settled(sqliteDb(db).run((q) => getWorkItemLinearProjectIdSteps(q, itemId)));
+}
+
+export function* saveWorkItemLinearProjectSteps(
+  q: Q,
+  itemId: string,
+  project: WorkItemLinearProject | null,
+) {
+  const { workItem } = q.t;
+  yield* q.exec(q.orm.update(workItem).set(projectSet(project)).where(eq(workItem.id, itemId)));
 }
 
 /** Records the item's Linear project from the issue snapshot Paws already read. */
@@ -31,7 +43,23 @@ export function saveWorkItemLinearProject(
   itemId: string,
   project: WorkItemLinearProject | null,
 ): void {
-  db.run(`UPDATE work_item SET ${SET_PROJECT} WHERE id=?3`, [...values(project), itemId]);
+  settled(sqliteDb(db).run((q) => saveWorkItemLinearProjectSteps(q, itemId, project)));
+}
+
+export function* applyLinearIssueProjectSteps(
+  q: Q,
+  linearIssueId: string,
+  project: WorkItemLinearProject | null,
+) {
+  const { workItem } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .update(workItem)
+      .set(projectSet(project))
+      .where(eq(workItem.linearIssueId, linearIssueId))
+      .returning({ id: workItem.id }),
+  );
+  return rows.length;
 }
 
 /** Moves every item for a Linear issue to the project an issue webhook reported. */
@@ -40,8 +68,5 @@ export function applyLinearIssueProject(
   linearIssueId: string,
   project: WorkItemLinearProject | null,
 ): number {
-  return db.run(`UPDATE work_item SET ${SET_PROJECT} WHERE linear_issue_id=?3`, [
-    ...values(project),
-    linearIssueId,
-  ]).changes;
+  return settled(sqliteDb(db).run((q) => applyLinearIssueProjectSteps(q, linearIssueId, project)));
 }

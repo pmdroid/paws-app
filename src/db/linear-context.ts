@@ -95,7 +95,7 @@ type LinearActivitySnapshotInput = {
 };
 
 export function* saveLinearActivitySnapshotSteps(q: Q, input: LinearActivitySnapshotInput) {
-  const snapshot = (q.dialect === "sqlite" ? input.snapshot : JSON.parse(input.snapshot)) as string;
+  const snapshot = q.dialect === "sqlite" ? input.snapshot : sql`${input.snapshot}::jsonb`;
   yield* q.exec(
     q.orm
       .insert(q.t.linearActivitySnapshot)
