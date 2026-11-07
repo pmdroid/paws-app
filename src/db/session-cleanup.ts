@@ -1,12 +1,18 @@
 import type { Database } from "bun:sqlite";
+import { eq, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { linearSessionCleanupBlock } from "./schema";
 
 export function blockLinearSessionCleanup(db: Database, sessionId: string): void {
-  db.run("INSERT OR IGNORE INTO linear_session_cleanup_block(session_id) VALUES (?)", [sessionId]);
+  orm(db).insert(linearSessionCleanupBlock).values({ sessionId }).onConflictDoNothing().run();
 }
 
 export function assertLinearSessionCleanup(db: Database, sessionId?: string): void {
-  const blocked = sessionId
-    ? db.query("SELECT 1 FROM linear_session_cleanup_block WHERE session_id = ?").get(sessionId)
-    : db.query("SELECT 1 FROM linear_session_cleanup_block LIMIT 1").get();
+  const blocked = orm(db)
+    .select({ one: sql`1` })
+    .from(linearSessionCleanupBlock)
+    .where(sessionId ? eq(linearSessionCleanupBlock.sessionId, sessionId) : undefined)
+    .limit(1)
+    .get();
   if (blocked) throw new Error("ACP process cleanup could not be verified");
 }

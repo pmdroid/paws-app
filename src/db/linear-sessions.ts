@@ -1,11 +1,32 @@
 import type { Database } from "bun:sqlite";
-import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
 import { JOB_KIND } from "../core";
 import { listInFlightItems } from "./items";
 import { mergeLaneSql } from "./jobs";
 import { orm } from "./orm";
-import { linearSession, workItem, workspace } from "./schema";
 import { advanceOutboxSession, enqueueOutboxOnce } from "./outbox";
+import {
+  linearSession,
+  linearStopReceipt,
+  linearTurn,
+  workItem,
+  workspace,
+  workspaceUser,
+} from "./schema";
 import { immediate } from "./tx";
 
 export type StoredLinearSession = {
@@ -32,48 +53,33 @@ export type StoredLinearTurn = {
   state: "pending" | "applied" | "cancelled";
 };
 
-type SessionRow = {
-  session_id: string;
-  issue_id: string | null;
-  organization_id: string | null;
-  app_user_id: string | null;
-  creator_id: string | null;
-  active_item_id: string | null;
-  generation: number;
-  stopped_at: number | null;
-};
-type TurnRow = {
-  event_key: string;
-  activity_id: string | null;
-  session_id: string;
-  actor_id: string | null;
-  body: string;
-  payload: string;
-  created_at_ms: number;
-  ordinal: number;
-  item_id: string | null;
-  state: StoredLinearTurn["state"];
-};
-
 export function getLinearSession(db: Database, sessionId: string): StoredLinearSession | null {
-  const row = db
-    .query<SessionRow, [string]>(
-      `SELECT session_id, issue_id, organization_id, app_user_id, creator_id, active_item_id, generation, stopped_at
-       FROM linear_session WHERE session_id = ?`,
-    )
-    .get(sessionId);
+  const row = orm(db)
+    .select({
+      sessionId: linearSession.sessionId,
+      issueId: linearSession.issueId,
+      organizationId: linearSession.organizationId,
+      appUserId: linearSession.appUserId,
+      creatorId: linearSession.creatorId,
+      activeItemId: linearSession.activeItemId,
+      generation: linearSession.generation,
+      stoppedAt: linearSession.stoppedAt,
+    })
+    .from(linearSession)
+    .where(eq(linearSession.sessionId, sessionId))
+    .get();
   if (!row) return null;
   const linked = workItemForSession(db, sessionId);
   return {
-    sessionId: row.session_id,
-    issueId: row.issue_id,
-    organizationId: row.organization_id,
-    appUserId: row.app_user_id,
-    creatorId: row.creator_id,
+    sessionId: row.sessionId,
+    issueId: row.issueId,
+    organizationId: row.organizationId,
+    appUserId: row.appUserId,
+    creatorId: row.creatorId,
     delegationId: linked?.delegationId ?? null,
-    activeItemId: row.active_item_id,
+    activeItemId: row.activeItemId,
     generation: row.generation,
-    stoppedAt: row.stopped_at,
+    stoppedAt: row.stoppedAt,
   };
 }
 
@@ -94,22 +100,26 @@ export function ensureLinearSession(
       if (existing?.[field] && input[field] && existing[field] !== input[field])
         throw new Error(`Linear session ${field} ownership changed`);
     }
-    db.run(
-      `INSERT INTO linear_session (session_id, issue_id, organization_id, app_user_id, creator_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET
-      issue_id = COALESCE(linear_session.issue_id, excluded.issue_id),
-      organization_id = COALESCE(linear_session.organization_id, excluded.organization_id),
-      app_user_id = COALESCE(linear_session.app_user_id, excluded.app_user_id),
-      creator_id = COALESCE(linear_session.creator_id, excluded.creator_id)`,
-      [
-        input.sessionId,
-        input.issueId ?? null,
-        input.organizationId ?? null,
-        input.appUserId ?? null,
-        input.creatorId ?? null,
-        input.now ?? Date.now(),
-      ],
-    );
+    orm(db)
+      .insert(linearSession)
+      .values({
+        sessionId: input.sessionId,
+        issueId: input.issueId ?? null,
+        organizationId: input.organizationId ?? null,
+        appUserId: input.appUserId ?? null,
+        creatorId: input.creatorId ?? null,
+        createdAt: input.now ?? Date.now(),
+      })
+      .onConflictDoUpdate({
+        target: linearSession.sessionId,
+        set: {
+          issueId: sql`COALESCE(${linearSession.issueId}, excluded.issue_id)`,
+          organizationId: sql`COALESCE(${linearSession.organizationId}, excluded.organization_id)`,
+          appUserId: sql`COALESCE(${linearSession.appUserId}, excluded.app_user_id)`,
+          creatorId: sql`COALESCE(${linearSession.creatorId}, excluded.creator_id)`,
+        },
+      })
+      .run();
     return getLinearSession(db, input.sessionId)!;
   });
 }
@@ -125,67 +135,90 @@ export function bindLinearSessionTask(
     if (!current) throw new Error("Linear session has not been recorded");
     if (current.delegationId && current.delegationId !== delegationId) {
       const active =
-        db
-          .query<{ n: number }, [string]>(
-            "SELECT COUNT(*) AS n FROM work_item WHERE delegation_id = ? AND state NOT IN ('merged','cancelled','completed')",
+        orm(db)
+          .select({ n: count() })
+          .from(workItem)
+          .where(
+            and(
+              eq(workItem.delegationId, current.delegationId),
+              notInArray(workItem.state, ["merged", "cancelled", "completed"]),
+            ),
           )
-          .get(current.delegationId)?.n ?? 0;
+          .get()?.n ?? 0;
       if (active) throw new Error("Linear session already owns active work");
-      db.run("UPDATE linear_session SET active_item_id = NULL WHERE session_id = ?", [sessionId]);
+      orm(db)
+        .update(linearSession)
+        .set({ activeItemId: null })
+        .where(eq(linearSession.sessionId, sessionId))
+        .run();
     }
-    db.run(
-      "UPDATE work_item SET session_key = ? WHERE delegation_id = ? AND (session_key IS NULL OR session_key = ?)",
-      [sessionId, delegationId, sessionId],
-    );
+    orm(db)
+      .update(workItem)
+      .set({ sessionKey: sessionId })
+      .where(
+        and(
+          eq(workItem.delegationId, delegationId),
+          or(isNull(workItem.sessionKey), eq(workItem.sessionKey, sessionId)),
+        ),
+      )
+      .run();
     const actorId = options.actorId ?? current.creatorId;
     const owner = actorId
-      ? db
-          .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id = ?")
-          .get(actorId)
+      ? orm(db)
+          .select({ id: workspaceUser.id })
+          .from(workspaceUser)
+          .where(eq(workspaceUser.linearUserId, actorId))
+          .get()
       : null;
-    const columns = db
-      .query<{ name: string }, []>("PRAGMA table_info(work_item)")
-      .all()
+    const columns = orm(db)
+      .all<{ name: string }>(sql`PRAGMA table_info(work_item)`)
       .map((column) => column.name);
     const ownerColumn = columns.includes("owner_user_id");
+    const delegated = and(
+      eq(workItem.delegationId, delegationId),
+      eq(workItem.sessionKey, sessionId),
+    );
     if (columns.includes("delegated_by"))
-      db.run(
-        "UPDATE work_item SET delegated_by = COALESCE(delegated_by, ?) WHERE delegation_id = ? AND session_key = ?",
-        [actorId, delegationId, sessionId],
-      );
+      orm(db)
+        .update(workItem)
+        .set({ delegatedBy: sql`COALESCE(${workItem.delegatedBy}, ${actorId})` })
+        .where(delegated)
+        .run();
     if (owner && ownerColumn)
-      db.run(
-        "UPDATE work_item SET owner_user_id = ? WHERE delegation_id = ? AND session_key = ? AND owner_user_id IS NULL",
-        [owner.id, delegationId, sessionId],
-      );
+      orm(db)
+        .update(workItem)
+        .set({ ownerUserId: owner.id })
+        .where(and(delegated, isNull(workItem.ownerUserId)))
+        .run();
   });
 }
 
 export function activateLinearItem(db: Database, sessionId: string, itemId: string): void {
   immediate(db, () => {
     const session = getLinearSession(db, sessionId);
-    const item = db
-      .query<{ delegation_id: string; session_key: string | null }, [string]>(
-        "SELECT delegation_id, session_key FROM work_item WHERE id = ?",
-      )
-      .get(itemId);
+    const item = orm(db)
+      .select({ delegationId: workItem.delegationId, sessionKey: workItem.sessionKey })
+      .from(workItem)
+      .where(eq(workItem.id, itemId))
+      .get();
     if (
       !session ||
       !item ||
-      (session.delegationId !== null && session.delegationId !== item.delegation_id)
+      (session.delegationId !== null && session.delegationId !== item.delegationId)
     )
       throw new Error("Linear task route changed");
     if (session.activeItemId && session.activeItemId !== itemId) {
       if (listInFlightItems(db).some((entry) => entry.id === session.activeItemId))
         throw new Error("Previous Linear task is still active");
     }
-    if (item.session_key && item.session_key !== sessionId)
+    if (item.sessionKey && item.sessionKey !== sessionId)
       throw new Error("Active task cannot be rerouted to another Linear session");
-    db.run("UPDATE linear_session SET active_item_id = ? WHERE session_id = ?", [
-      itemId,
-      sessionId,
-    ]);
-    db.run("UPDATE work_item SET session_key = ? WHERE id = ?", [sessionId, itemId]);
+    orm(db)
+      .update(linearSession)
+      .set({ activeItemId: itemId })
+      .where(eq(linearSession.sessionId, sessionId))
+      .run();
+    orm(db).update(workItem).set({ sessionKey: sessionId }).where(eq(workItem.id, itemId)).run();
   });
 }
 
@@ -193,20 +226,24 @@ export function workItemForSession(
   db: Database,
   sessionId: string,
 ): { id: string; delegationId: string; state: string } | null {
-  const row = db
-    .query<{ id: string; delegation_id: string; state: string }, [string]>(
-      `SELECT id, delegation_id, state FROM work_item
-       WHERE session_key = ?
-       ORDER BY CASE
-         WHEN state IN ('running','verifying','recovering','awaiting_input','paused','merge_queue') THEN 0
-         WHEN state IN ('queued','planning') THEN 1
-         WHEN state IN ('failed','manual') THEN 2
-         ELSE 3 END,
-                created_at DESC, position DESC, id DESC
-       LIMIT 1`,
-    )
-    .get(sessionId);
-  return row ? { id: row.id, delegationId: row.delegation_id, state: row.state } : null;
+  return (
+    orm(db)
+      .select({ id: workItem.id, delegationId: workItem.delegationId, state: workItem.state })
+      .from(workItem)
+      .where(eq(workItem.sessionKey, sessionId))
+      .orderBy(
+        sql`CASE
+          WHEN ${workItem.state} IN ('running','verifying','recovering','awaiting_input','paused','merge_queue') THEN 0
+          WHEN ${workItem.state} IN ('queued','planning') THEN 1
+          WHEN ${workItem.state} IN ('failed','manual') THEN 2
+          ELSE 3 END`,
+        desc(workItem.createdAt),
+        desc(workItem.position),
+        desc(workItem.id),
+      )
+      .limit(1)
+      .get() ?? null
+  );
 }
 
 /** The delegator rule shared by item reads and bulk access revocation. Aliases are internal SQL. */
@@ -215,15 +252,15 @@ export function delegatedLinearUserIdSql(item: string, session: string): string 
 }
 
 export function delegatedLinearUserId(db: Database, itemId: string): string | null {
+  const w = alias(workItem, "w");
+  const s = alias(linearSession, "s");
   return (
-    db
-      .query<{ actorId: string | null }, [string]>(
-        `SELECT ${delegatedLinearUserIdSql("w", "s")} AS actorId
-         FROM work_item w
-         LEFT JOIN linear_session s ON s.session_id = w.session_key
-         WHERE w.id = ?`,
-      )
-      .get(itemId)?.actorId ?? null
+    orm(db)
+      .select({ actorId: sql<string | null>`${sql.raw(delegatedLinearUserIdSql("w", "s"))}` })
+      .from(w)
+      .leftJoin(s, eq(s.sessionId, w.sessionKey))
+      .where(eq(w.id, itemId))
+      .get()?.actorId ?? null
   );
 }
 
@@ -242,44 +279,51 @@ export function recordLinearTurn(
 ): StoredLinearTurn {
   return immediate(db, () => {
     ensureLinearSession(db, { sessionId: input.sessionId, now: input.now });
-    db.run(
-      `INSERT INTO linear_turn (event_key,activity_id,session_id,actor_id,body,payload,created_at_ms,received_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-      [
-        input.eventKey,
-        input.activityId,
-        input.sessionId,
-        input.actorId,
-        input.body,
-        input.payload,
-        input.createdAtMs,
-        input.now ?? Date.now(),
-      ],
-    );
-    const row = db
-      .query<TurnRow, [string, string | null]>(
-        "SELECT * FROM linear_turn WHERE event_key = ? OR activity_id = ?",
+    orm(db)
+      .insert(linearTurn)
+      .values({
+        eventKey: input.eventKey,
+        activityId: input.activityId,
+        sessionId: input.sessionId,
+        actorId: input.actorId,
+        body: input.body,
+        payload: input.payload,
+        createdAtMs: input.createdAtMs,
+        receivedAt: input.now ?? Date.now(),
+      })
+      .onConflictDoNothing()
+      .run();
+    const row = orm(db)
+      .select()
+      .from(linearTurn)
+      .where(
+        or(
+          eq(linearTurn.eventKey, input.eventKey),
+          sql`${linearTurn.activityId} = ${input.activityId}`,
+        ),
       )
-      .get(input.eventKey, input.activityId)!;
-    if (row.session_id !== input.sessionId)
+      .get()!;
+    if (row.sessionId !== input.sessionId)
       throw new Error("Linear activity belongs to another session");
-    if (!row.actor_id && input.actorId) {
-      db.run("UPDATE linear_turn SET actor_id = ? WHERE event_key = ?", [
-        input.actorId,
-        row.event_key,
-      ]);
-      row.actor_id = input.actorId;
+    if (!row.actorId && input.actorId) {
+      orm(db)
+        .update(linearTurn)
+        .set({ actorId: input.actorId })
+        .where(eq(linearTurn.eventKey, row.eventKey))
+        .run();
+      row.actorId = input.actorId;
     }
     return mapTurn(row);
   });
 }
 
 export function listPendingLinearTurns(db: Database, sessionId: string): StoredLinearTurn[] {
-  return db
-    .query<TurnRow, [string]>(
-      "SELECT * FROM linear_turn WHERE session_id = ? AND state = 'pending' ORDER BY created_at_ms, ordinal",
-    )
-    .all(sessionId)
+  return orm(db)
+    .select()
+    .from(linearTurn)
+    .where(and(eq(linearTurn.sessionId, sessionId), eq(linearTurn.state, "pending")))
+    .orderBy(asc(linearTurn.createdAtMs), asc(linearTurn.ordinal))
+    .all()
     .map(mapTurn);
 }
 
@@ -290,17 +334,24 @@ export function applyLinearTurns(
   itemId: string,
 ): void {
   immediate(db, () => {
-    const linked = db
-      .query<{ session_key: string | null }, [string]>(
-        "SELECT session_key FROM work_item WHERE id = ?",
-      )
-      .get(itemId);
-    if (linked?.session_key !== sessionId) throw new Error("Linear turn route is no longer active");
+    const linked = orm(db)
+      .select({ sessionKey: workItem.sessionKey })
+      .from(workItem)
+      .where(eq(workItem.id, itemId))
+      .get();
+    if (linked?.sessionKey !== sessionId) throw new Error("Linear turn route is no longer active");
     for (const key of eventKeys)
-      db.run(
-        "UPDATE linear_turn SET state = 'applied', item_id = ? WHERE event_key = ? AND session_id = ? AND state = 'pending'",
-        [itemId, key, sessionId],
-      );
+      orm(db)
+        .update(linearTurn)
+        .set({ state: "applied", itemId })
+        .where(
+          and(
+            eq(linearTurn.eventKey, key),
+            eq(linearTurn.sessionId, sessionId),
+            eq(linearTurn.state, "pending"),
+          ),
+        )
+        .run();
   });
 }
 
@@ -316,41 +367,49 @@ export function advanceLinearSessionGeneration(
   return immediate(db, () => {
     ensureLinearSession(db, { sessionId, now: options.now });
     const generation = advanceOutboxSession(db, "linear", sessionId, options);
-    db.run("UPDATE linear_session SET generation = ?, stopped_at = ? WHERE session_id = ?", [
-      generation,
-      options.stop ? (options.now ?? Date.now()) : null,
-      sessionId,
-    ]);
+    orm(db)
+      .update(linearSession)
+      .set({ generation, stoppedAt: options.stop ? (options.now ?? Date.now()) : null })
+      .where(eq(linearSession.sessionId, sessionId))
+      .run();
     if (options.stop)
-      db.run(
-        "UPDATE linear_turn SET state = 'cancelled' WHERE session_id = ? AND state = 'pending' AND created_at_ms <= ?",
-        [sessionId, options.now ?? Date.now()],
-      );
+      orm(db)
+        .update(linearTurn)
+        .set({ state: "cancelled" })
+        .where(
+          and(
+            eq(linearTurn.sessionId, sessionId),
+            eq(linearTurn.state, "pending"),
+            lte(linearTurn.createdAtMs, options.now ?? Date.now()),
+          ),
+        )
+        .run();
     return generation;
   });
 }
 
-function mapTurn(row: TurnRow): StoredLinearTurn {
+function mapTurn(row: typeof linearTurn.$inferSelect): StoredLinearTurn {
   return {
-    eventKey: row.event_key,
-    activityId: row.activity_id,
-    sessionId: row.session_id,
-    actorId: row.actor_id,
+    eventKey: row.eventKey,
+    activityId: row.activityId,
+    sessionId: row.sessionId,
+    actorId: row.actorId,
     body: row.body,
     payload: row.payload,
-    createdAtMs: row.created_at_ms,
+    createdAtMs: row.createdAtMs,
     ordinal: row.ordinal,
-    itemId: row.item_id,
-    state: row.state,
+    itemId: row.itemId,
+    state: row.state as StoredLinearTurn["state"],
   };
 }
 
 export function listLinearTurnsForItem(db: Database, itemId: string): StoredLinearTurn[] {
-  return db
-    .query<TurnRow, [string]>(
-      "SELECT * FROM linear_turn WHERE item_id = ? AND state = 'applied' ORDER BY created_at_ms,ordinal",
-    )
-    .all(itemId)
+  return orm(db)
+    .select()
+    .from(linearTurn)
+    .where(and(eq(linearTurn.itemId, itemId), eq(linearTurn.state, "applied")))
+    .orderBy(asc(linearTurn.createdAtMs), asc(linearTurn.ordinal))
+    .all()
     .map(mapTurn);
 }
 
@@ -361,11 +420,16 @@ export function getLinearTurnGeneration(
   activityId: string | null,
 ): number | null {
   return (
-    db
-      .query<{ announced_generation: number | null }, [string, string, string | null]>(
-        "SELECT announced_generation FROM linear_turn WHERE session_id = ? AND (event_key = ? OR activity_id = ?)",
+    orm(db)
+      .select({ announcedGeneration: linearTurn.announcedGeneration })
+      .from(linearTurn)
+      .where(
+        and(
+          eq(linearTurn.sessionId, sessionId),
+          or(eq(linearTurn.eventKey, eventKey), sql`${linearTurn.activityId} = ${activityId}`),
+        ),
       )
-      .get(sessionId, eventKey, activityId)?.announced_generation ?? null
+      .get()?.announcedGeneration ?? null
   );
 }
 
@@ -376,29 +440,35 @@ export function announceLinearTurn(
   now = Date.now(),
 ): boolean {
   return immediate(db, () => {
-    const turn = db
-      .query<
-        { announced_generation: number | null; state: string; created_at_ms: number },
-        [string, string]
-      >(
-        "SELECT announced_generation,state,created_at_ms FROM linear_turn WHERE event_key = ? AND session_id = ?",
-      )
-      .get(eventKey, sessionId);
-    if (!turn || turn.state !== "pending" || turn.announced_generation !== null) return false;
+    const turn = orm(db)
+      .select({
+        announcedGeneration: linearTurn.announcedGeneration,
+        state: linearTurn.state,
+        createdAtMs: linearTurn.createdAtMs,
+      })
+      .from(linearTurn)
+      .where(and(eq(linearTurn.eventKey, eventKey), eq(linearTurn.sessionId, sessionId)))
+      .get();
+    if (!turn || turn.state !== "pending" || turn.announcedGeneration !== null) return false;
     const session = getLinearSession(db, sessionId);
     if (
       session?.stoppedAt !== null &&
       session?.stoppedAt !== undefined &&
-      turn.created_at_ms <= session.stoppedAt
+      turn.createdAtMs <= session.stoppedAt
     ) {
-      db.run("UPDATE linear_turn SET state = 'cancelled' WHERE event_key = ?", [eventKey]);
+      orm(db)
+        .update(linearTurn)
+        .set({ state: "cancelled" })
+        .where(eq(linearTurn.eventKey, eventKey))
+        .run();
       return false;
     }
     const generation = advanceLinearSessionGeneration(db, sessionId, { now });
-    db.run("UPDATE linear_turn SET announced_generation = ? WHERE event_key = ?", [
-      generation,
-      eventKey,
-    ]);
+    orm(db)
+      .update(linearTurn)
+      .set({ announcedGeneration: generation })
+      .where(eq(linearTurn.eventKey, eventKey))
+      .run();
     enqueueOutboxOnce(db, {
       target: "linear",
       op: "activity",
@@ -425,10 +495,17 @@ export function discardLinearTurns(
 ): void {
   immediate(db, () => {
     for (const eventKey of eventKeys)
-      db.run(
-        "UPDATE linear_turn SET state = 'cancelled' WHERE session_id = ? AND event_key = ? AND state = 'pending'",
-        [sessionId, eventKey],
-      );
+      orm(db)
+        .update(linearTurn)
+        .set({ state: "cancelled" })
+        .where(
+          and(
+            eq(linearTurn.sessionId, sessionId),
+            eq(linearTurn.eventKey, eventKey),
+            eq(linearTurn.state, "pending"),
+          ),
+        )
+        .run();
   });
 }
 
@@ -440,9 +517,13 @@ export function acceptLinearStop(
 ): number | null {
   return immediate(db, () => {
     if (
-      db
-        .query("SELECT 1 FROM linear_stop_receipt WHERE session_id = ? AND event_key = ?")
-        .get(sessionId, eventKey)
+      orm(db)
+        .select({ one: sql`1` })
+        .from(linearStopReceipt)
+        .where(
+          and(eq(linearStopReceipt.sessionId, sessionId), eq(linearStopReceipt.eventKey, eventKey)),
+        )
+        .get()
     )
       return null;
     const session = ensureLinearSession(db, { sessionId, now });
@@ -450,10 +531,10 @@ export function acceptLinearStop(
       session.stoppedAt === null
         ? advanceLinearSessionGeneration(db, sessionId, { stop: true, now })
         : session.generation;
-    db.run(
-      "INSERT INTO linear_stop_receipt (session_id,event_key,generation,created_at) VALUES (?, ?, ?, ?)",
-      [sessionId, eventKey, generation, now],
-    );
+    orm(db)
+      .insert(linearStopReceipt)
+      .values({ sessionId, eventKey, generation, createdAt: now })
+      .run();
     return generation;
   });
 }
