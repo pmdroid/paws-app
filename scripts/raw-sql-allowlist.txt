@@ -20,13 +20,6 @@ src/db/acp-conversations.ts | db.run( | not yet converted to Drizzle
 src/db/acp-conversations.ts | db.run( | not yet converted to Drizzle
 src/db/acp-conversations.ts | db.run( | not yet converted to Drizzle
 src/db/acp-conversations.ts | return db .query<{ itemId: string; blockedAt: number }, []>( | not yet converted to Drizzle
-src/db/ci-reruns.ts | db .query<{ one: number }, [string, string]>( | not yet converted to Drizzle
-src/db/ci-reruns.ts | db.run( | not yet converted to Drizzle
-src/db/ci-reruns.ts | return db .query<CiRerunRow, [string]>("SELECT * FROM ci_rerun WHERE item_id = ? ORDER BY at, head_sha") | not yet converted to Drizzle
-src/db/ci-rounds.ts | db.run( | not yet converted to Drizzle
-src/db/ci-rounds.ts | ? db.query<CiRoundRow, []>(`SELECT * FROM ci_round ORDER BY recorded_at, rowid`).all() | not yet converted to Drizzle
-src/db/ci-rounds.ts | : db .query<CiRoundRow, [string]>( | not yet converted to Drizzle
-src/db/ci-rounds.ts | const row = db .query<{ n: number | null }, [string, number]>( | not yet converted to Drizzle
 src/db/closeout-bypass.ts | db.run( | not yet converted to Drizzle
 src/db/closeout-bypass.ts | return db .query<Row, [string]>( | not yet converted to Drizzle
 src/db/closeout-bypass.ts | const updated = db.run( | not yet converted to Drizzle
@@ -148,7 +141,6 @@ src/db/link-asks.ts | return db .query<LinkAskRow, [string]>( | not yet converte
 src/db/link-asks.ts | return db .query<LinkAskRow, [string]>( | not yet converted to Drizzle
 src/db/link-asks.ts | db.run( | not yet converted to Drizzle
 src/db/link-asks.ts | db.run( | not yet converted to Drizzle
-src/db/merge-settings.ts | const row = db .query< | not yet converted to Drizzle
 src/db/migrations.ts | const item = db .query<{ id: string }, []>( | not yet converted to Drizzle
 src/db/migrations.ts | const item = db .query<{ id: string; identifier: string }, []>( | not yet converted to Drizzle
 src/db/migrations.ts | const item = db .query<{ id: string; identifier: string; state: string }, []>( | not yet converted to Drizzle
@@ -162,11 +154,6 @@ src/db/outbox.ts | db .query<{ open: number }, [string]>( | retryOutbox and its 
 src/db/outbox.ts | db .query<{ origin: string | null }, [string, string]>( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
 src/db/outbox.ts | if (db.query<{ id: number }, [string]>("SELECT id FROM job WHERE job_key = ?").get(key)) | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
 src/db/outbox.ts | db.run(`UPDATE outbox SET status = 'dropped', error = ? WHERE id = ? AND status = 'dead'`, [ | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
-src/db/pull-request-drafts.ts | db.run( | not yet converted to Drizzle
-src/db/pull-request-drafts.ts | db .query<{ updated_at: number }, [string]>( | not yet converted to Drizzle
-src/db/pull-request-drafts.ts | db .query<PullRequestDraft, [string]>( | not yet converted to Drizzle
-src/db/pull-request-drafts.ts | db.run( | not yet converted to Drizzle
-src/db/pull-request-drafts.ts | db .query<PullRequestText, [string]>( | not yet converted to Drizzle
 src/db/repository-catalog.ts | return db .query<CatalogEntry, []>( | not yet converted to Drizzle
 src/db/repository-catalog.ts | db.run("DELETE FROM repository_catalog"); | not yet converted to Drizzle
 src/db/repository-catalog.ts | db.run( | not yet converted to Drizzle
