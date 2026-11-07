@@ -40,6 +40,7 @@ export class RunnerArtifactRejectedError extends Error {
     this.name = "RunnerArtifactRejectedError";
   }
 }
+class RunnerArtifactStorageError extends Error {}
 function hash(bytes: Uint8Array | string) {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -274,7 +275,9 @@ export function createRunnerArtifactStore(options: {
         } catch (error) {
           if (error instanceof SealedRunnerFileConflictError)
             throw new Error("Runner artifact is immutable", { cause: error });
-          throw error;
+          if (error instanceof RunnerArtifactRejectedError) throw error;
+          journalCaught(error, "runner-artifacts.upload.write", null);
+          throw new RunnerArtifactStorageError("Runner artifact storage is unavailable");
         }
         return { ok: true };
       }
@@ -349,7 +352,7 @@ export function createRunnerArtifactStore(options: {
         return Response.json(
           { error: "Runner artifact access is denied" },
           {
-            status: runnerFailureStatus(error),
+            status: error instanceof RunnerArtifactStorageError ? 503 : runnerFailureStatus(error),
             headers: { "cache-control": "no-store" },
           },
         );

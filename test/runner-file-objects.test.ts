@@ -319,4 +319,42 @@ describe("runner inputs and artifacts in the shared store", () => {
     expect(row.sha256).not.toBe(createHash("sha256").update(secret).digest("hex"));
     expect(row.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
+
+  test("an artifact upload during a storage outage answers 503, not a refusal", async () => {
+    const { db, work, access } = fixture();
+    const objects = createFakeRunFileObjects();
+    objects.write = async () => {
+      throw Object.assign(new Error("acme bucket unreachable"), { code: "ECONNRESET" });
+    };
+    const root = mkdtempSync(join(tmpdir(), "paws-acme-outage-"));
+    const artifacts = createRunnerArtifactStore({
+      root: join(root, "artifacts"),
+      work,
+      remote: { files: createSealedRunnerFiles({ db, objects, key: KEY }), db },
+    });
+    const bytes = Buffer.from("acme evidence");
+    const artifact: RunnerArtifact = {
+      id: randomUUID(),
+      path: "evidence/acme.txt",
+      displayName: "Acme",
+      mimeType: "text/plain",
+      sizeBytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      attachToIssue: false,
+    };
+    const response = await artifacts.fetch(
+      new Request(`https://runner.invalid/v1/runs/${access.runId}/artifacts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${"a".repeat(43)}` },
+        body: JSON.stringify({
+          generation: 1,
+          artifact,
+          index: 0,
+          data: bytes.toString("base64"),
+        }),
+      }),
+      access.runnerId,
+    );
+    expect(response!.status).toBe(503);
+  });
 });
