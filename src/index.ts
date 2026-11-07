@@ -65,6 +65,7 @@ import {
   pawsPaths,
   readMergeSettings,
   readQueueSettings,
+  useSettingsStore,
   type EnvSource,
   type PawsEnv,
   type PawsPaths,
@@ -110,6 +111,9 @@ import {
   countLinearRequest,
   migrate,
   openDatabase,
+  readSetting,
+  updateSetting,
+  CONFIG_SETTINGS_KEY,
   setAsideLegacyDatabase,
   prepareShutdown,
   markPawsAlive,
@@ -419,6 +423,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db.close();
     throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
+  const releaseSettings = useSettingsStore(paths.configFile, {
+    read: () => readSetting(db, CONFIG_SETTINGS_KEY),
+    update: (change) => updateSetting(db, CONFIG_SETTINGS_KEY, change),
+  });
   const reconnectLinear = publicDashboard
     ? createBrowserOnboarding({
         db,
@@ -1201,6 +1209,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     });
   } catch (error) {
     abort.abort();
+    releaseSettings();
     if (runnerConfig !== null)
       void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
     else if (workspace === undefined) db.close();
@@ -1901,6 +1910,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           }),
         close: () => {
           clearInterval(aliveTimer);
+          releaseSettings();
           db.close();
         },
       });

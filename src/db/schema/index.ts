@@ -11,4 +11,5 @@ export * from "./linear";
 export * from "./outbox";
 export * from "./retros";
 export * from "./runners";
+export * from "./settings";
 export * from "./workspace";

@@ -3,10 +3,10 @@ import { journalCaught } from "../journal";
 import {
   loadConfigFile,
   parseBriefTemplates,
+  readConfigText,
   writeBriefTemplates,
   type BriefTemplates,
 } from "../config";
-import { existsSync, readFileSync } from "node:fs";
 import {
   BRIEF_PLACEHOLDERS,
   BRIEF_RUN_SAMPLES,
@@ -160,7 +160,7 @@ async function previewBrief(request: Request, options: BriefSettingsOptions): Pr
 }
 
 function stored(path: string): BriefTemplates {
-  return parseBriefTemplates(existsSync(path) ? readFileSync(path, "utf8") : "");
+  return parseBriefTemplates(readConfigText(path));
 }
 
 function listing(options: BriefSettingsOptions) {

@@ -1,14 +1,4 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname } from "node:path";
+import { updateConfigText } from "./settings-store";
 import { z } from "zod";
 import { setImplementerText, type ImplementerName, type PawsConfigFile } from "./file";
 import { setMergeSettingsText, type StoredMerge } from "./merge";
@@ -245,24 +235,11 @@ export function writeAgentSettings(
   merge?: StoredMerge,
   queue?: QueueSettings,
 ): void {
-  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const agents = renderAgentSettingsText(current, input);
-  const merged = merge === undefined ? agents : setMergeSettingsText(agents, merge);
-  replaceConfigText(path, queue === undefined ? merged : setQueueSettingsText(merged, queue));
-}
-
-/** Atomically replace `config.toml`, keeping its mode at most 0600. */
-export function replaceConfigText(path: string, next: string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const mode = existsSync(path) ? statSync(path).mode & 0o600 : 0o600;
-  const temp = `${path}.${crypto.randomUUID()}.tmp`;
-  try {
-    writeFileSync(temp, next, { mode });
-    chmodSync(temp, mode);
-    renameSync(temp, path);
-  } finally {
-    rmSync(temp, { force: true });
-  }
+  updateConfigText(path, (current) => {
+    const agents = renderAgentSettingsText(current, input);
+    const merged = merge === undefined ? agents : setMergeSettingsText(agents, merge);
+    return queue === undefined ? merged : setQueueSettingsText(merged, queue);
+  });
 }
 
 function renderProfile(section: string, profile: AgentProfile): string {

@@ -1,6 +1,5 @@
 import { journalCaught } from "../journal";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
 import {
   DEFAULT_CI_FIX_ATTEMPTS,
   DEFAULT_QUEUE_START_TIMEOUT_HOURS,
@@ -9,6 +8,7 @@ import {
   parseMergeSettings,
   parseQueueSettings,
   readAgentSettings,
+  readConfigText,
   readMergeSettings,
   readQueueSettings,
   storedMerge,
@@ -32,7 +32,7 @@ export type AgentSettingsOptions = {
 };
 
 function settingsRevision(configPath: string): string {
-  const text = existsSync(configPath) ? readFileSync(configPath) : "";
+  const text = readConfigText(configPath);
   return createHash("sha256").update(text).digest("hex").slice(0, 32);
 }
 

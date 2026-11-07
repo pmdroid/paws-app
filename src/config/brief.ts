@@ -1,6 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
 import { briefTemplateProblem } from "../core";
-import { replaceConfigText } from "./agents";
+import { updateConfigText } from "./settings-store";
 import type { PawsConfigFile } from "./file";
 
 /** A workspace template and optional per-repository overrides. Null means the built-in brief. */
@@ -92,10 +91,11 @@ export function setBriefTemplatesText(current: string, templates: BriefTemplates
 }
 
 export function writeBriefTemplates(path: string, templates: BriefTemplates): void {
-  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const next = setBriefTemplatesText(current, normalizeTemplates(templates));
-  parseBriefTemplates(next);
-  replaceConfigText(path, next.endsWith("\n") || next === "" ? next : `${next}\n`);
+  updateConfigText(path, (current) => {
+    const next = setBriefTemplatesText(current, normalizeTemplates(templates));
+    parseBriefTemplates(next);
+    return next.endsWith("\n") || next === "" ? next : `${next}\n`;
+  });
 }
 
 function normalizeTemplates(templates: BriefTemplates): BriefTemplates {

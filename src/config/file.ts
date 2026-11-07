@@ -32,6 +32,7 @@ import {
   type MergeRepositories,
   type MergeRule,
 } from "./merge";
+import { readConfigText } from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import { assignMemberVmKey, renderMemberVmSettings, type MemberVmSize } from "./member-vm";
 import { renderQueueSettings } from "./queue";
@@ -177,8 +178,8 @@ export function emptyConfigFile(): PawsConfigFile {
 }
 
 export function loadConfigFile(path: string): PawsConfigFile {
-  if (!existsSync(path)) return emptyConfigFile();
-  return parseConfigToml(readFileSync(path, "utf8"));
+  const text = readConfigText(path);
+  return text === "" ? emptyConfigFile() : parseConfigToml(text);
 }
 
 const RETIRED_UPDATE_SECTION = "update";
