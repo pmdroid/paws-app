@@ -2,12 +2,11 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, max } from "drizzle-orm";
+import { and, desc, eq, max, notInArray, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
-import { recordImprovementProposal, type ImprovementActionStep } from "./improvements";
+import { recordImprovementProposalSteps, type ImprovementActionStep } from "./improvements";
 import { jsonValue } from "./json-text";
 import type * as pgSchema from "./schema-pg";
-import { immediate } from "./tx";
 import { ulid } from "./ulid";
 
 export type RetroState =
@@ -652,110 +651,194 @@ export function* readRetroArtifactSteps(
   return { ok: true, bytes, artifact };
 }
 
-export function freezeRetroInput(
-  db: Database,
-  input: { retroId: string; endCursors: Record<string, number>; now: number },
-): Retro {
-  return immediate(db, () => {
-    const retro = getRetro(db, input.retroId);
-    if (retro === null || retro.state !== "collecting")
-      throw new Error(`Retro ${input.retroId} is not collecting evidence`);
-    const digest = retroArtifact(db, retro.id, "digest");
-    const manifest = retroArtifact(db, retro.id, "manifest");
-    if (digest === null || manifest === null)
-      throw new Error(`Retro ${retro.id} needs its digest and manifest before it is frozen`);
-    const cursors = retroRepositories(db, retro.id);
-    if (cursors.length !== retro.repositories.length)
-      throw new Error(`Retro ${retro.id} has not started collection for every repository`);
-    for (const cursor of cursors) {
-      const end = Object.entries(input.endCursors).find(
-        ([repository]) => repository.toLowerCase() === cursor.repository.toLowerCase(),
-      )?.[1];
-      if (end === undefined || end < cursor.startCursor)
-        throw new Error(`Retro ${retro.id} needs an end cursor for ${cursor.repository}`);
-      db.run("UPDATE retro_repository SET end_cursor = ? WHERE retro_id = ? AND repository = ?", [
-        end,
-        retro.id,
-        cursor.repository,
-      ]);
-    }
-    db.run(
-      `UPDATE retro SET state = 'queued', digest_sha256 = ?, manifest_sha256 = ?, updated_at = ?
-       WHERE id = ? AND state = 'collecting'`,
-      [digest.sha256, manifest.sha256, input.now, retro.id],
-    );
-    return getRetro(db, retro.id)!;
-  });
+type Freeze = { retroId: string; endCursors: Record<string, number>; now: number };
+
+export function freezeRetroInput(db: Database, input: Freeze): Retro {
+  return settled(sqliteDb(db).transaction((q) => freezeRetroInputSteps(q, input)));
 }
 
-export function startRetroAttempt(
-  db: Database,
-  input: { retroId: string; owner: string; now: number; leaseMs: number; maxAttempts?: number },
-): { attempt: number } | null {
-  return immediate(db, () => {
-    const retro = getRetro(db, input.retroId);
-    if (retro === null) return null;
-    const expired = retro.state === "generating" && (retro.ownerExpiresAt ?? 0) <= input.now;
-    if (retro.state !== "queued" && retro.state !== "failed" && !expired) return null;
-    if (input.maxAttempts !== undefined && retro.attempt >= input.maxAttempts) return null;
-    if (expired)
-      db.run(
-        `UPDATE retro_attempt SET outcome = 'expired', finished_at = ?
-         WHERE retro_id = ? AND attempt = ? AND outcome = 'running'`,
-        [input.now, retro.id, retro.attempt],
-      );
-    const attempt = retro.attempt + 1;
-    db.run(
-      `UPDATE retro SET state = 'generating', attempt = ?, owner = ?, owner_expires_at = ?,
-         error = NULL, updated_at = ? WHERE id = ? AND attempt = ?`,
-      [attempt, input.owner, input.now + input.leaseMs, input.now, retro.id, retro.attempt],
+export function* freezeRetroInputSteps(q: Q, input: Freeze) {
+  const { retro: retroTable, retroRepository } = q.t;
+  const retro = yield* getRetroSteps(q, input.retroId);
+  if (retro === null || retro.state !== "collecting")
+    throw new Error(`Retro ${input.retroId} is not collecting evidence`);
+  const digest = yield* retroArtifactSteps(q, retro.id, "digest");
+  const manifest = yield* retroArtifactSteps(q, retro.id, "manifest");
+  if (digest === null || manifest === null)
+    throw new Error(`Retro ${retro.id} needs its digest and manifest before it is frozen`);
+  const cursors = yield* retroRepositoriesSteps(q, retro.id);
+  if (cursors.length !== retro.repositories.length)
+    throw new Error(`Retro ${retro.id} has not started collection for every repository`);
+  for (const cursor of cursors) {
+    const end = Object.entries(input.endCursors).find(
+      ([repository]) => repository.toLowerCase() === cursor.repository.toLowerCase(),
+    )?.[1];
+    if (end === undefined || end < cursor.startCursor)
+      throw new Error(`Retro ${retro.id} needs an end cursor for ${cursor.repository}`);
+    yield* q.exec(
+      q.orm
+        .update(retroRepository)
+        .set({ endCursor: end })
+        .where(
+          and(
+            eq(retroRepository.retroId, retro.id),
+            eq(retroRepository.repository, cursor.repository),
+          ),
+        ),
     );
-    db.run(
-      `INSERT INTO retro_attempt (retro_id, attempt, owner, started_at, lease_expires_at, outcome)
-       VALUES (?, ?, ?, ?, ?, 'running')`,
-      [retro.id, attempt, input.owner, input.now, input.now + input.leaseMs],
-    );
-    return { attempt };
-  });
-}
-
-function ownsAttempt(db: Database, retroId: string, attempt: number, owner: string): boolean {
-  return (
-    db
-      .query(
-        "SELECT 1 FROM retro WHERE id = ? AND state = 'generating' AND attempt = ? AND owner = ?",
-      )
-      .get(retroId, attempt, owner) !== null
+  }
+  yield* q.exec(
+    q.orm
+      .update(retroTable)
+      .set({
+        state: "queued",
+        digestSha256: digest.sha256,
+        manifestSha256: manifest.sha256,
+        updatedAt: input.now,
+      })
+      .where(and(eq(retroTable.id, retro.id), eq(retroTable.state, "collecting"))),
   );
+  return (yield* getRetroSteps(q, retro.id))!;
 }
 
-export function failRetroAttempt(
-  db: Database,
-  input: { retroId: string; attempt: number; owner: string; error: string; now: number },
-): boolean {
-  return immediate(db, () => {
-    if (!ownsAttempt(db, input.retroId, input.attempt, input.owner)) return false;
-    db.run(
-      `UPDATE retro SET state = 'failed', owner = NULL, owner_expires_at = NULL, error = ?,
-         updated_at = ? WHERE id = ?`,
-      [input.error, input.now, input.retroId],
+type AttemptStart = {
+  retroId: string;
+  owner: string;
+  now: number;
+  leaseMs: number;
+  maxAttempts?: number;
+};
+
+export function startRetroAttempt(db: Database, input: AttemptStart): { attempt: number } | null {
+  return settled(sqliteDb(db).transaction((q) => startRetroAttemptSteps(q, input)));
+}
+
+export function* startRetroAttemptSteps(
+  q: Q,
+  input: AttemptStart,
+): Steps<{ attempt: number } | null> {
+  const { retro: retroTable, retroAttempt } = q.t;
+  const retro = yield* getRetroSteps(q, input.retroId);
+  if (retro === null) return null;
+  const expired = retro.state === "generating" && (retro.ownerExpiresAt ?? 0) <= input.now;
+  if (retro.state !== "queued" && retro.state !== "failed" && !expired) return null;
+  if (input.maxAttempts !== undefined && retro.attempt >= input.maxAttempts) return null;
+  if (expired)
+    yield* q.exec(
+      q.orm
+        .update(retroAttempt)
+        .set({ outcome: "expired", finishedAt: input.now })
+        .where(
+          and(
+            eq(retroAttempt.retroId, retro.id),
+            eq(retroAttempt.attempt, retro.attempt),
+            eq(retroAttempt.outcome, "running"),
+          ),
+        ),
     );
-    db.run(
-      `UPDATE retro_attempt SET outcome = 'failed', error = ?, finished_at = ?
-       WHERE retro_id = ? AND attempt = ?`,
-      [input.error, input.now, input.retroId, input.attempt],
-    );
-    return true;
-  });
+  const attempt = retro.attempt + 1;
+  yield* q.exec(
+    q.orm
+      .update(retroTable)
+      .set({
+        state: "generating",
+        attempt,
+        owner: input.owner,
+        ownerExpiresAt: input.now + input.leaseMs,
+        error: null,
+        updatedAt: input.now,
+      })
+      .where(and(eq(retroTable.id, retro.id), eq(retroTable.attempt, retro.attempt))),
+  );
+  yield* q.exec(
+    q.orm.insert(retroAttempt).values({
+      retroId: retro.id,
+      attempt,
+      owner: input.owner,
+      startedAt: input.now,
+      leaseExpiresAt: input.now + input.leaseMs,
+      outcome: "running",
+    }),
+  );
+  return { attempt };
+}
+
+function* ownsAttemptSteps(q: Q, retroId: string, attempt: number, owner: string) {
+  const { retro } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: retro.id })
+      .from(retro)
+      .where(
+        and(
+          eq(retro.id, retroId),
+          eq(retro.state, "generating"),
+          eq(retro.attempt, attempt),
+          eq(retro.owner, owner),
+        ),
+      ),
+  );
+  return row !== undefined;
+}
+
+type AttemptFailure = {
+  retroId: string;
+  attempt: number;
+  owner: string;
+  error: string;
+  now: number;
+};
+
+export function failRetroAttempt(db: Database, input: AttemptFailure): boolean {
+  return settled(sqliteDb(db).transaction((q) => failRetroAttemptSteps(q, input)));
+}
+
+export function* failRetroAttemptSteps(q: Q, input: AttemptFailure) {
+  const { retro, retroAttempt } = q.t;
+  if (!(yield* ownsAttemptSteps(q, input.retroId, input.attempt, input.owner))) return false;
+  yield* q.exec(
+    q.orm
+      .update(retro)
+      .set({
+        state: "failed",
+        owner: null,
+        ownerExpiresAt: null,
+        error: input.error,
+        updatedAt: input.now,
+      })
+      .where(eq(retro.id, input.retroId)),
+  );
+  yield* q.exec(
+    q.orm
+      .update(retroAttempt)
+      .set({ outcome: "failed", error: input.error, finishedAt: input.now })
+      .where(and(eq(retroAttempt.retroId, input.retroId), eq(retroAttempt.attempt, input.attempt))),
+  );
+  return true;
 }
 
 export function listRetroAttempts(db: Database, retroId: string): RetroAttempt[] {
-  return db
-    .query<RetroAttempt, [string]>(
-      `SELECT attempt, owner, started_at AS startedAt, lease_expires_at AS leaseExpiresAt,
-         finished_at AS finishedAt, outcome, error FROM retro_attempt WHERE retro_id = ? ORDER BY attempt`,
-    )
-    .all(retroId);
+  return settled(sqliteDb(db).run((q) => listRetroAttemptsSteps(q, retroId)));
+}
+
+export function* listRetroAttemptsSteps(q: Q, retroId: string) {
+  const { retroAttempt } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        attempt: retroAttempt.attempt,
+        owner: retroAttempt.owner,
+        startedAt: retroAttempt.startedAt,
+        leaseExpiresAt: retroAttempt.leaseExpiresAt,
+        finishedAt: retroAttempt.finishedAt,
+        outcome: retroAttempt.outcome,
+        error: retroAttempt.error,
+      })
+      .from(retroAttempt)
+      .where(eq(retroAttempt.retroId, retroId))
+      .orderBy(retroAttempt.attempt),
+  );
+  return rows as RetroAttempt[];
 }
 
 export type RetroPublication =
@@ -770,170 +853,236 @@ export type RetroPublication =
         | "duplicate_item";
     };
 
-export function publishRetro(
-  db: Database,
-  input: {
-    retroId: string;
-    attempt: number;
-    owner: string;
-    result: unknown;
-    items: RetroItemInput[];
-    now: number;
-  },
-): RetroPublication {
+type Publication = {
+  retroId: string;
+  attempt: number;
+  owner: string;
+  result: unknown;
+  items: RetroItemInput[];
+  now: number;
+};
+
+export function publishRetro(db: Database, input: Publication): RetroPublication {
+  return settled(sqliteDb(db).transaction((q) => publishRetroSteps(q, input)));
+}
+
+export function* publishRetroSteps(q: Q, input: Publication): Steps<RetroPublication> {
+  const { retro: retroTable, retroAttempt, retroItem, retroCollectionLock } = q.t;
+  if (!(yield* ownsAttemptSteps(q, input.retroId, input.attempt, input.owner)))
+    return { ok: false, reason: "not_owner" };
+  const retro = (yield* getRetroSteps(q, input.retroId))!;
+  if ((yield* listRetroCoverageGapsSteps(q, retro.id)).length > 0)
+    return { ok: false, reason: "coverage_gap" };
+  const evidence = new Set(
+    (yield* listRetroEvidenceSteps(q, retro.id)).map((entry) => entry.evidenceId),
+  );
+  if (input.items.some((item) => item.evidenceIds.some((id) => !evidence.has(id))))
+    return { ok: false, reason: "unknown_evidence" };
+  if (new Set(input.items.map((item) => item.itemId)).size !== input.items.length)
+    return { ok: false, reason: "duplicate_item" };
   try {
-    return immediate(db, () => {
-      if (!ownsAttempt(db, input.retroId, input.attempt, input.owner))
-        return { ok: false, reason: "not_owner" } as const;
-      const retro = getRetro(db, input.retroId)!;
-      if (listRetroCoverageGaps(db, retro.id).length > 0)
-        return { ok: false, reason: "coverage_gap" } as const;
-      const evidence = new Set(listRetroEvidence(db, retro.id).map((entry) => entry.evidenceId));
-      if (input.items.some((item) => item.evidenceIds.some((id) => !evidence.has(id))))
-        return { ok: false, reason: "unknown_evidence" } as const;
-      if (new Set(input.items.map((item) => item.itemId)).size !== input.items.length)
-        return { ok: false, reason: "duplicate_item" } as const;
-      for (const cursor of retroRepositories(db, retro.id)) {
-        const advanced = db.run(
-          `INSERT INTO retro_watermark (workspace_id, repository, cursor, retro_id, updated_at)
-           SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (
-             SELECT 1 FROM retro_watermark WHERE workspace_id = ? AND repository = ?)
-           ON CONFLICT DO NOTHING`,
-          [
-            retro.workspaceId,
-            cursor.repository,
-            cursor.endCursor,
-            retro.id,
-            input.now,
-            retro.workspaceId,
-            cursor.repository,
-          ],
-        ).changes;
-        if (advanced === 1) continue;
-        const moved = db.run(
-          `UPDATE retro_watermark SET cursor = ?, retro_id = ?, updated_at = ?
-           WHERE workspace_id = ? AND repository = ? AND cursor = ?`,
-          [
-            cursor.endCursor,
-            retro.id,
-            input.now,
-            retro.workspaceId,
-            cursor.repository,
-            cursor.startCursor,
-          ],
-        ).changes;
-        if (moved !== 1) throw new WatermarkMoved();
-      }
-      const text = JSON.stringify(input.result);
-      input.items.forEach((item, position) => {
-        const { improvementId } = recordImprovementProposal(db, {
-          workspaceId: retro.workspaceId,
-          repository: item.repository,
-          source: { kind: "retro_item", key: `${retro.id}/${item.itemId}` },
-          proposal: {
-            title: item.title,
-            problem: item.problem,
-            proposedChange: item.proposedChange,
-            actionStep: item.actionStep,
-            verificationCriterion: item.verificationCriterion,
-            evidence: item.evidenceIds.map((id) => `retro:${retro.id}:${id}`),
-          },
-          now: input.now,
-        });
-        db.run(
-          `INSERT INTO retro_item (retro_id, item_id, position, repository, area, action_step, title,
-             problem, proposed_change, verification_criterion, evidence_ids, improvement_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            retro.id,
-            item.itemId,
-            position,
-            item.repository,
-            item.area,
-            item.actionStep,
-            item.title,
-            item.problem,
-            item.proposedChange,
-            item.verificationCriterion,
-            JSON.stringify(item.evidenceIds),
-            improvementId,
-          ],
-        );
-      });
-      db.run(
-        `UPDATE retro SET state = 'published', result = ?, result_sha256 = ?, owner = NULL,
-           owner_expires_at = NULL, error = NULL, published_at = ?, updated_at = ? WHERE id = ?`,
-        [text, sha256(text), input.now, input.now, retro.id],
-      );
-      db.run(
-        `UPDATE retro_attempt SET outcome = 'succeeded', finished_at = ?
-         WHERE retro_id = ? AND attempt = ?`,
-        [input.now, retro.id, input.attempt],
-      );
-      db.run("DELETE FROM retro_collection_lock WHERE retro_id = ?", [retro.id]);
-      return { ok: true, retro: getRetro(db, retro.id)!, items: listRetroItems(db, retro.id) };
-    });
+    yield* q.transaction((tx) => advanceWatermarksSteps(tx, retro, input.now));
   } catch (error) {
     if (error instanceof WatermarkMoved) return { ok: false, reason: "watermark_moved" };
     throw error;
+  }
+  const text = JSON.stringify(input.result);
+  for (const [position, item] of input.items.entries()) {
+    const { improvementId } = yield* recordImprovementProposalSteps(q, {
+      workspaceId: retro.workspaceId,
+      repository: item.repository,
+      source: { kind: "retro_item", key: `${retro.id}/${item.itemId}` },
+      proposal: {
+        title: item.title,
+        problem: item.problem,
+        proposedChange: item.proposedChange,
+        actionStep: item.actionStep,
+        verificationCriterion: item.verificationCriterion,
+        evidence: item.evidenceIds.map((id) => `retro:${retro.id}:${id}`),
+      },
+      now: input.now,
+    });
+    yield* q.exec(
+      q.orm.insert(retroItem).values({
+        retroId: retro.id,
+        itemId: item.itemId,
+        position,
+        repository: item.repository,
+        area: item.area,
+        actionStep: item.actionStep,
+        title: item.title,
+        problem: item.problem,
+        proposedChange: item.proposedChange,
+        verificationCriterion: item.verificationCriterion,
+        evidenceIds: jsonValue(q, item.evidenceIds),
+        improvementId,
+      }),
+    );
+  }
+  yield* q.exec(
+    q.orm
+      .update(retroTable)
+      .set({
+        state: "published",
+        result: jsonValue(q, input.result),
+        resultSha256: sha256(text),
+        owner: null,
+        ownerExpiresAt: null,
+        error: null,
+        publishedAt: input.now,
+        updatedAt: input.now,
+      })
+      .where(eq(retroTable.id, retro.id)),
+  );
+  yield* q.exec(
+    q.orm
+      .update(retroAttempt)
+      .set({ outcome: "succeeded", finishedAt: input.now })
+      .where(and(eq(retroAttempt.retroId, retro.id), eq(retroAttempt.attempt, input.attempt))),
+  );
+  yield* q.exec(q.orm.delete(retroCollectionLock).where(eq(retroCollectionLock.retroId, retro.id)));
+  return {
+    ok: true,
+    retro: (yield* getRetroSteps(q, retro.id))!,
+    items: yield* listRetroItemsSteps(q, retro.id),
+  };
+}
+
+function* advanceWatermarksSteps(q: Q, retro: Retro, now: number) {
+  const { retroWatermark: watermark } = q.t;
+  for (const cursor of yield* retroRepositoriesSteps(q, retro.id)) {
+    const advanced = yield* q.all(
+      q.orm
+        .insert(watermark)
+        .values({
+          workspaceId: retro.workspaceId,
+          repository: cursor.repository,
+          cursor: cursor.endCursor as number,
+          retroId: retro.id,
+          updatedAt: now,
+        })
+        .onConflictDoNothing()
+        .returning({ repository: watermark.repository }),
+    );
+    if (advanced.length === 1) continue;
+    const moved = yield* q.all(
+      q.orm
+        .update(watermark)
+        .set({ cursor: cursor.endCursor as number, retroId: retro.id, updatedAt: now })
+        .where(
+          and(
+            eq(watermark.workspaceId, retro.workspaceId),
+            eq(watermark.repository, cursor.repository),
+            eq(watermark.cursor, cursor.startCursor),
+          ),
+        )
+        .returning({ repository: watermark.repository }),
+    );
+    if (moved.length !== 1) throw new WatermarkMoved();
   }
 }
 
 class WatermarkMoved extends Error {}
 
-export function closeRetro(
-  db: Database,
-  input: { retroId: string; state: "abandoned" | "coverage_failed"; error: string; now: number },
-): boolean {
-  return immediate(db, () => {
-    const changed = db.run(
-      `UPDATE retro SET state = ?, error = ?, owner = NULL, owner_expires_at = NULL, updated_at = ?
-       WHERE id = ? AND state NOT IN ('published','abandoned','coverage_failed')`,
-      [input.state, input.error, input.now, input.retroId],
-    ).changes;
-    if (changed === 1) {
-      db.run(
-        `UPDATE retro_attempt SET outcome = 'failed', error = ?, finished_at = ?
-         WHERE retro_id = ? AND outcome = 'running'`,
-        [input.error, input.now, input.retroId],
-      );
-      db.run("DELETE FROM retro_collection_lock WHERE retro_id = ?", [input.retroId]);
-    }
-    return changed === 1;
-  });
+type Close = {
+  retroId: string;
+  state: "abandoned" | "coverage_failed";
+  error: string;
+  now: number;
+};
+
+export function closeRetro(db: Database, input: Close): boolean {
+  return settled(sqliteDb(db).transaction((q) => closeRetroSteps(q, input)));
+}
+
+export function* closeRetroSteps(q: Q, input: Close) {
+  const { retro, retroAttempt, retroCollectionLock } = q.t;
+  const changed = yield* q.all(
+    q.orm
+      .update(retro)
+      .set({
+        state: input.state,
+        error: input.error,
+        owner: null,
+        ownerExpiresAt: null,
+        updatedAt: input.now,
+      })
+      .where(
+        and(
+          eq(retro.id, input.retroId),
+          notInArray(retro.state, ["published", "abandoned", "coverage_failed"]),
+        ),
+      )
+      .returning({ id: retro.id }),
+  );
+  if (changed.length === 1) {
+    yield* q.exec(
+      q.orm
+        .update(retroAttempt)
+        .set({ outcome: "failed", error: input.error, finishedAt: input.now })
+        .where(and(eq(retroAttempt.retroId, input.retroId), eq(retroAttempt.outcome, "running"))),
+    );
+    yield* q.exec(
+      q.orm.delete(retroCollectionLock).where(eq(retroCollectionLock.retroId, input.retroId)),
+    );
+  }
+  return changed.length === 1;
 }
 
 export function listRetroItems(db: Database, retroId: string): RetroItem[] {
-  return db
-    .query<Omit<RetroItem, "evidenceIds"> & { evidenceIds: string }, [string]>(
-      `SELECT retro_id AS retroId, item_id AS itemId, position, repository, area,
-         action_step AS actionStep, title, problem, proposed_change AS proposedChange,
-         verification_criterion AS verificationCriterion, evidence_ids AS evidenceIds,
-         improvement_id AS improvementId
-       FROM retro_item WHERE retro_id = ? ORDER BY position`,
-    )
-    .all(retroId)
-    .map((row) => ({ ...row, evidenceIds: JSON.parse(row.evidenceIds) as string[] }));
+  return settled(sqliteDb(db).run((q) => listRetroItemsSteps(q, retroId)));
 }
 
-export function recordRetroScheduleRun(
-  db: Database,
-  input: {
-    workspaceId: string;
-    occurrenceAt: number;
-    retroId: string;
-    nextDueAt: number | null;
-    now: number;
-  },
-): void {
-  db.run(
-    `INSERT INTO retro_schedule_runtime (workspace_id, last_occurrence_at, last_retro_id,
-       next_due_at, updated_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT (workspace_id) DO UPDATE SET last_occurrence_at = excluded.last_occurrence_at,
-       last_retro_id = excluded.last_retro_id, next_due_at = excluded.next_due_at,
-       updated_at = excluded.updated_at
-     WHERE coalesce(last_occurrence_at, -1) <= excluded.last_occurrence_at`,
-    [input.workspaceId, input.occurrenceAt, input.retroId, input.nextDueAt, input.now],
+export function* listRetroItemsSteps(q: Q, retroId: string) {
+  const { retroItem } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(retroItem)
+      .where(eq(retroItem.retroId, retroId))
+      .orderBy(retroItem.position),
+  );
+  return rows.map((row): RetroItem => ({
+    ...row,
+    actionStep: row.actionStep as ImprovementActionStep,
+    evidenceIds: jsonOut<string[]>(q, row.evidenceIds),
+  }));
+}
+
+type ScheduleRun = {
+  workspaceId: string;
+  occurrenceAt: number;
+  retroId: string;
+  nextDueAt: number | null;
+  now: number;
+};
+
+export function recordRetroScheduleRun(db: Database, input: ScheduleRun): void {
+  settled(sqliteDb(db).run((q) => recordRetroScheduleRunSteps(q, input)));
+}
+
+export function* recordRetroScheduleRunSteps(q: Q, input: ScheduleRun) {
+  const { retroScheduleRuntime: runtime } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(runtime)
+      .values({
+        workspaceId: input.workspaceId,
+        lastOccurrenceAt: input.occurrenceAt,
+        lastRetroId: input.retroId,
+        nextDueAt: input.nextDueAt,
+        updatedAt: input.now,
+      })
+      .onConflictDoUpdate({
+        target: runtime.workspaceId,
+        set: {
+          lastOccurrenceAt: sql`excluded.last_occurrence_at`,
+          lastRetroId: sql`excluded.last_retro_id`,
+          nextDueAt: sql`excluded.next_due_at`,
+          updatedAt: sql`excluded.updated_at`,
+        },
+        setWhere: sql`coalesce(${runtime.lastOccurrenceAt}, -1) <= excluded.last_occurrence_at`,
+      }),
   );
 }
 
@@ -941,43 +1090,53 @@ export function retroScheduleRuntime(
   db: Database,
   workspaceId: string,
 ): RetroScheduleRuntime | null {
-  return db
-    .query<RetroScheduleRuntime, [string]>(
-      `SELECT workspace_id AS workspaceId, last_occurrence_at AS lastOccurrenceAt,
-         last_retro_id AS lastRetroId, next_due_at AS nextDueAt, blocked_reason AS blockedReason,
-         blocked_since AS blockedSince, updated_at AS updatedAt
-       FROM retro_schedule_runtime WHERE workspace_id = ?`,
-    )
-    .get(workspaceId);
+  return settled(sqliteDb(db).run((q) => retroScheduleRuntimeSteps(q, workspaceId)));
 }
 
-export function recordRetroScheduleState(
-  db: Database,
-  input: {
-    workspaceId: string;
-    nextDueAt: number | null;
-    blockedReason: string | null;
-    now: number;
-  },
-): void {
-  db.run(
-    `INSERT INTO retro_schedule_runtime (workspace_id, next_due_at, blocked_reason, blocked_since,
-       updated_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT (workspace_id) DO UPDATE SET next_due_at = excluded.next_due_at,
-       blocked_reason = excluded.blocked_reason,
-       blocked_since = CASE WHEN excluded.blocked_reason IS NULL THEN NULL
-         WHEN retro_schedule_runtime.blocked_reason IS excluded.blocked_reason
-           THEN retro_schedule_runtime.blocked_since
-         ELSE excluded.blocked_since END,
-       updated_at = excluded.updated_at
-     WHERE retro_schedule_runtime.next_due_at IS NOT excluded.next_due_at
-       OR retro_schedule_runtime.blocked_reason IS NOT excluded.blocked_reason`,
-    [
-      input.workspaceId,
-      input.nextDueAt,
-      input.blockedReason,
-      input.blockedReason === null ? null : input.now,
-      input.now,
-    ],
+export function* retroScheduleRuntimeSteps(q: Q, workspaceId: string) {
+  const { retroScheduleRuntime: runtime } = q.t;
+  const row = yield* q.one(
+    q.orm.select().from(runtime).where(eq(runtime.workspaceId, workspaceId)),
+  );
+  return row ?? null;
+}
+
+type ScheduleState = {
+  workspaceId: string;
+  nextDueAt: number | null;
+  blockedReason: string | null;
+  now: number;
+};
+
+export function recordRetroScheduleState(db: Database, input: ScheduleState): void {
+  settled(sqliteDb(db).run((q) => recordRetroScheduleStateSteps(q, input)));
+}
+
+export function* recordRetroScheduleStateSteps(q: Q, input: ScheduleState) {
+  const { retroScheduleRuntime: runtime } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(runtime)
+      .values({
+        workspaceId: input.workspaceId,
+        nextDueAt: input.nextDueAt,
+        blockedReason: input.blockedReason,
+        blockedSince: input.blockedReason === null ? null : input.now,
+        updatedAt: input.now,
+      })
+      .onConflictDoUpdate({
+        target: runtime.workspaceId,
+        set: {
+          nextDueAt: sql`excluded.next_due_at`,
+          blockedReason: sql`excluded.blocked_reason`,
+          blockedSince: sql`CASE WHEN excluded.blocked_reason IS NULL THEN NULL
+            WHEN ${runtime.blockedReason} IS NOT DISTINCT FROM excluded.blocked_reason
+              THEN ${runtime.blockedSince}
+            ELSE excluded.blocked_since END`,
+          updatedAt: sql`excluded.updated_at`,
+        },
+        setWhere: sql`${runtime.nextDueAt} IS DISTINCT FROM excluded.next_due_at
+          OR ${runtime.blockedReason} IS DISTINCT FROM excluded.blocked_reason`,
+      }),
   );
 }
