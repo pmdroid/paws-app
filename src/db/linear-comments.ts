@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { enqueueJobOnce } from "./jobs";
 import type { PullFeedbackWait } from "./pull-comments";
-import { immediate } from "./tx";
 
 export type LinearCommentState =
   | "received"
@@ -51,212 +52,253 @@ export type LinearCommentRecord = Omit<LinearCommentReceipt, "removed"> & {
 
 export type LinearCommentChange = "inserted" | "updated" | "removed" | "unchanged";
 
-type Row = {
-  comment_id: string;
-  issue_id: string;
-  organization_id: string | null;
-  team_id: string | null;
-  author_id: string | null;
-  actor_id: string | null;
-  actor_type: string | null;
-  bot_actor: string | null;
-  on_behalf_of: string | null;
-  parent_id: string | null;
-  body: string;
-  created_at_ms: number;
-  updated_at_ms: number;
-  received_at: number;
-  source: "webhook" | "poll";
-  edited: number;
-  removed_at: number | null;
-  state: LinearCommentState;
-  reason: string | null;
-  authority: LinearCommentAuthority | null;
-  item_id: string | null;
-  session_id: string | null;
-  generation: number | null;
-  item_version: number | null;
-  via: LinearCommentVia | null;
-  settled_at: number | null;
-};
-
 const OPEN_STATES: readonly LinearCommentState[] = ["received", "queued"];
 
+export function* getLinearCommentSteps(q: Q, commentId: string): Steps<LinearCommentRecord | null> {
+  const { linearComment } = q.t;
+  const row = yield* q.one(
+    q.orm.select().from(linearComment).where(eq(linearComment.commentId, commentId)),
+  );
+  return row === undefined ? null : mapRow(row);
+}
+
 export function getLinearComment(db: Database, commentId: string): LinearCommentRecord | null {
-  const row = db
-    .query<Row, [string]>("SELECT * FROM linear_comment WHERE comment_id = ?")
-    .get(commentId);
-  return row === null ? null : mapRow(row);
+  return settled(sqliteDb(db).run((q) => getLinearCommentSteps(q, commentId)));
+}
+
+type RecordedLinearComment = { record: LinearCommentRecord; change: LinearCommentChange };
+
+export function* recordLinearCommentSteps(
+  q: Q,
+  receipt: LinearCommentReceipt,
+  now: number,
+): Steps<RecordedLinearComment> {
+  const { linearComment } = q.t;
+  const byId = eq(linearComment.commentId, receipt.commentId);
+  const existing = yield* getLinearCommentSteps(q, receipt.commentId);
+  if (existing === null) {
+    yield* q.exec(
+      q.orm.insert(linearComment).values({
+        commentId: receipt.commentId,
+        issueId: receipt.issueId,
+        organizationId: receipt.organizationId,
+        teamId: receipt.teamId,
+        authorId: receipt.authorId,
+        actorId: receipt.actorId,
+        actorType: receipt.actorType,
+        botActor: receipt.botActor,
+        onBehalfOf: receipt.onBehalfOf,
+        parentId: receipt.parentId,
+        body: receipt.body,
+        createdAtMs: receipt.createdAtMs,
+        updatedAtMs: receipt.updatedAtMs,
+        receivedAt: now,
+        source: receipt.source,
+        removedAt: receipt.removed ? now : null,
+        state: receipt.removed ? "removed" : "received",
+        reason: receipt.removed ? "deleted" : null,
+        settledAt: receipt.removed ? now : null,
+      }),
+    );
+    return {
+      record: (yield* getLinearCommentSteps(q, receipt.commentId))!,
+      change: receipt.removed ? "removed" : "inserted",
+    };
+  }
+  if (existing.removedAt !== null) return { record: existing, change: "unchanged" };
+  if (receipt.removed) {
+    yield* q.exec(
+      q.orm
+        .update(linearComment)
+        .set(
+          OPEN_STATES.includes(existing.state)
+            ? { removedAt: now, state: "removed", reason: "deleted", settledAt: now }
+            : { removedAt: now },
+        )
+        .where(byId),
+    );
+    return { record: (yield* getLinearCommentSteps(q, receipt.commentId))!, change: "removed" };
+  }
+  if (receipt.updatedAtMs <= existing.updatedAtMs) return { record: existing, change: "unchanged" };
+  const open = OPEN_STATES.includes(existing.state);
+  yield* q.exec(
+    q.orm
+      .update(linearComment)
+      .set(
+        open
+          ? { body: receipt.body, updatedAtMs: receipt.updatedAtMs, edited: 1 }
+          : { updatedAtMs: receipt.updatedAtMs, edited: 1 },
+      )
+      .where(byId),
+  );
+  return {
+    record: (yield* getLinearCommentSteps(q, receipt.commentId))!,
+    change: open ? "updated" : "unchanged",
+  };
 }
 
 export function recordLinearComment(
   db: Database,
   receipt: LinearCommentReceipt,
   now: number,
-): { record: LinearCommentRecord; change: LinearCommentChange } {
-  return immediate(db, () => {
-    const existing = getLinearComment(db, receipt.commentId);
-    if (existing === null) {
-      db.run(
-        `INSERT INTO linear_comment (
-           comment_id, issue_id, organization_id, team_id, author_id, actor_id, actor_type,
-           bot_actor, on_behalf_of, parent_id, body, created_at_ms, updated_at_ms, received_at,
-           source, removed_at, state, reason, settled_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          receipt.commentId,
-          receipt.issueId,
-          receipt.organizationId,
-          receipt.teamId,
-          receipt.authorId,
-          receipt.actorId,
-          receipt.actorType,
-          receipt.botActor,
-          receipt.onBehalfOf,
-          receipt.parentId,
-          receipt.body,
-          receipt.createdAtMs,
-          receipt.updatedAtMs,
-          now,
-          receipt.source,
-          receipt.removed ? now : null,
-          receipt.removed ? "removed" : "received",
-          receipt.removed ? "deleted" : null,
-          receipt.removed ? now : null,
-        ],
-      );
-      return {
-        record: getLinearComment(db, receipt.commentId)!,
-        change: receipt.removed ? "removed" : "inserted",
-      };
-    }
-    if (existing.removedAt !== null) return { record: existing, change: "unchanged" };
-    if (receipt.removed) {
-      if (OPEN_STATES.includes(existing.state))
-        db.run(
-          `UPDATE linear_comment SET removed_at = ?, state = 'removed', reason = 'deleted', settled_at = ?
-           WHERE comment_id = ?`,
-          [now, now, receipt.commentId],
-        );
-      else
-        db.run("UPDATE linear_comment SET removed_at = ? WHERE comment_id = ?", [
-          now,
-          receipt.commentId,
-        ]);
-      return { record: getLinearComment(db, receipt.commentId)!, change: "removed" };
-    }
-    if (receipt.updatedAtMs <= existing.updatedAtMs)
-      return { record: existing, change: "unchanged" };
-    if (OPEN_STATES.includes(existing.state)) {
-      db.run(
-        "UPDATE linear_comment SET body = ?, updated_at_ms = ?, edited = 1 WHERE comment_id = ?",
-        [receipt.body, receipt.updatedAtMs, receipt.commentId],
-      );
-      return { record: getLinearComment(db, receipt.commentId)!, change: "updated" };
-    }
-    db.run("UPDATE linear_comment SET updated_at_ms = ?, edited = 1 WHERE comment_id = ?", [
-      receipt.updatedAtMs,
-      receipt.commentId,
-    ]);
-    return { record: getLinearComment(db, receipt.commentId)!, change: "unchanged" };
-  });
+): RecordedLinearComment {
+  return settled(sqliteDb(db).transaction((q) => recordLinearCommentSteps(q, receipt, now)));
+}
+
+type LinearCommentOutcome = {
+  state: Exclude<LinearCommentState, "received" | "queued">;
+  reason?: string;
+  now: number;
+};
+
+export function* settleLinearCommentsSteps(
+  q: Q,
+  commentIds: readonly string[],
+  outcome: LinearCommentOutcome,
+): Steps<void> {
+  const { linearComment } = q.t;
+  for (const commentId of commentIds)
+    yield* q.exec(
+      q.orm
+        .update(linearComment)
+        .set({
+          state: outcome.state,
+          reason: sql`COALESCE(${outcome.reason ?? null}, ${linearComment.reason})`,
+          settledAt: outcome.now,
+        })
+        .where(
+          and(
+            eq(linearComment.commentId, commentId),
+            inArray(linearComment.state, [...OPEN_STATES]),
+          ),
+        ),
+    );
 }
 
 export function settleLinearComments(
   db: Database,
   commentIds: readonly string[],
-  outcome: {
-    state: Exclude<LinearCommentState, "received" | "queued">;
-    reason?: string;
-    now: number;
-  },
+  outcome: LinearCommentOutcome,
 ): void {
-  immediate(db, () => {
-    for (const commentId of commentIds)
-      db.run(
-        `UPDATE linear_comment SET state = ?, reason = COALESCE(?, reason), settled_at = ?
-         WHERE comment_id = ? AND state IN ('received','queued')`,
-        [outcome.state, outcome.reason ?? null, outcome.now, commentId],
-      );
-  });
+  settled(sqliteDb(db).transaction((q) => settleLinearCommentsSteps(q, commentIds, outcome)));
+}
+
+type LinearCommentRoute = {
+  itemId: string;
+  sessionId: string;
+  generation: number;
+  authority: LinearCommentAuthority;
+  reason?: string | null;
+};
+
+export function* queueLinearCommentSteps(
+  q: Q,
+  commentId: string,
+  route: LinearCommentRoute,
+): Steps<boolean> {
+  const { linearComment } = q.t;
+  const queued = yield* q.all(
+    q.orm
+      .update(linearComment)
+      .set({
+        state: "queued",
+        itemId: route.itemId,
+        sessionId: route.sessionId,
+        generation: route.generation,
+        authority: route.authority,
+        reason: route.reason ?? null,
+      })
+      .where(and(eq(linearComment.commentId, commentId), eq(linearComment.state, "received")))
+      .returning({ commentId: linearComment.commentId }),
+  );
+  return queued.length > 0;
 }
 
 export function queueLinearComment(
   db: Database,
   commentId: string,
-  route: {
-    itemId: string;
-    sessionId: string;
-    generation: number;
-    authority: LinearCommentAuthority;
-    reason?: string | null;
-  },
+  route: LinearCommentRoute,
 ): boolean {
-  return (
-    db.run(
-      `UPDATE linear_comment SET state = 'queued', item_id = ?, session_id = ?, generation = ?,
-         authority = ?, reason = ?
-       WHERE comment_id = ? AND state = 'received'`,
-      [
-        route.itemId,
-        route.sessionId,
-        route.generation,
-        route.authority,
-        route.reason ?? null,
-        commentId,
-      ],
-    ).changes > 0
-  );
+  return settled(sqliteDb(db).run((q) => queueLinearCommentSteps(q, commentId, route)));
+}
+
+type LinearCommentDelivery = { via: LinearCommentVia; itemVersion: number; now: number };
+
+export function* markLinearCommentsDeliveredSteps(
+  q: Q,
+  commentIds: readonly string[],
+  delivery: LinearCommentDelivery,
+): Steps<void> {
+  const { linearComment } = q.t;
+  for (const commentId of commentIds)
+    yield* q.exec(
+      q.orm
+        .update(linearComment)
+        .set({
+          state: delivery.via === "answer" ? "answered" : "delivered",
+          via: delivery.via,
+          itemVersion: delivery.itemVersion,
+          settledAt: delivery.now,
+        })
+        .where(and(eq(linearComment.commentId, commentId), eq(linearComment.state, "queued"))),
+    );
 }
 
 export function markLinearCommentsDelivered(
   db: Database,
   commentIds: readonly string[],
-  delivery: { via: LinearCommentVia; itemVersion: number; now: number },
+  delivery: LinearCommentDelivery,
 ): void {
-  immediate(db, () => {
-    for (const commentId of commentIds)
-      db.run(
-        `UPDATE linear_comment SET state = ?, via = ?, item_version = ?, settled_at = ?
-         WHERE comment_id = ? AND state = 'queued'`,
-        [
-          delivery.via === "answer" ? "answered" : "delivered",
-          delivery.via,
-          delivery.itemVersion,
-          delivery.now,
-          commentId,
-        ],
-      );
-  });
+  settled(
+    sqliteDb(db).transaction((q) => markLinearCommentsDeliveredSteps(q, commentIds, delivery)),
+  );
+}
+
+export function* receivedLinearCommentsSteps(q: Q): Steps<LinearCommentRecord[]> {
+  const { linearComment } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(linearComment)
+      .where(eq(linearComment.state, "received"))
+      .orderBy(asc(linearComment.createdAtMs), asc(linearComment.commentId)),
+  );
+  return rows.map(mapRow);
 }
 
 export function receivedLinearComments(db: Database): LinearCommentRecord[] {
-  return db
-    .query<Row, []>(
-      "SELECT * FROM linear_comment WHERE state = 'received' ORDER BY created_at_ms, comment_id",
-    )
-    .all()
-    .map(mapRow);
+  return settled(sqliteDb(db).run(receivedLinearCommentsSteps));
+}
+
+export function* pendingLinearCommentsSteps(q: Q, itemId: string): Steps<LinearCommentRecord[]> {
+  const { linearComment } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(linearComment)
+      .where(and(eq(linearComment.itemId, itemId), eq(linearComment.state, "queued")))
+      .orderBy(asc(linearComment.createdAtMs), asc(linearComment.commentId)),
+  );
+  return rows.map(mapRow);
 }
 
 export function pendingLinearComments(db: Database, itemId: string): LinearCommentRecord[] {
-  return db
-    .query<Row, [string]>(
-      `SELECT * FROM linear_comment WHERE item_id = ? AND state = 'queued'
-       ORDER BY created_at_ms, comment_id`,
-    )
-    .all(itemId)
-    .map(mapRow);
+  return settled(sqliteDb(db).run((q) => pendingLinearCommentsSteps(q, itemId)));
+}
+
+export function* linearCommentAuthorSteps(q: Q, commentId: string): Steps<string | null> {
+  const { linearComment } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ authorId: linearComment.authorId })
+      .from(linearComment)
+      .where(eq(linearComment.commentId, commentId)),
+  );
+  return row?.authorId ?? null;
 }
 
 export function linearCommentAuthor(db: Database, commentId: string): string | null {
-  return (
-    db
-      .query<{ author_id: string | null }, [string]>(
-        "SELECT author_id FROM linear_comment WHERE comment_id = ?",
-      )
-      .get(commentId)?.author_id ?? null
-  );
+  return settled(sqliteDb(db).run((q) => linearCommentAuthorSteps(q, commentId)));
 }
 
 export function gatherLinearComments(
@@ -292,33 +334,33 @@ export function gatherLinearComments(
   });
 }
 
-function mapRow(row: Row): LinearCommentRecord {
+function mapRow(row: Q["t"]["linearComment"]["$inferSelect"]): LinearCommentRecord {
   return {
-    commentId: row.comment_id,
-    issueId: row.issue_id,
-    organizationId: row.organization_id,
-    teamId: row.team_id,
-    authorId: row.author_id,
-    actorId: row.actor_id,
-    actorType: row.actor_type,
-    botActor: row.bot_actor,
-    onBehalfOf: row.on_behalf_of,
-    parentId: row.parent_id,
+    commentId: row.commentId,
+    issueId: row.issueId,
+    organizationId: row.organizationId,
+    teamId: row.teamId,
+    authorId: row.authorId,
+    actorId: row.actorId,
+    actorType: row.actorType,
+    botActor: row.botActor,
+    onBehalfOf: row.onBehalfOf,
+    parentId: row.parentId,
     body: row.body,
-    createdAtMs: row.created_at_ms,
-    updatedAtMs: row.updated_at_ms,
-    receivedAt: row.received_at,
-    source: row.source,
+    createdAtMs: row.createdAtMs,
+    updatedAtMs: row.updatedAtMs,
+    receivedAt: row.receivedAt,
+    source: row.source as LinearCommentReceipt["source"],
     edited: row.edited === 1,
-    removedAt: row.removed_at,
-    state: row.state,
+    removedAt: row.removedAt,
+    state: row.state as LinearCommentState,
     reason: row.reason,
-    authority: row.authority,
-    itemId: row.item_id,
-    sessionId: row.session_id,
+    authority: row.authority as LinearCommentAuthority | null,
+    itemId: row.itemId,
+    sessionId: row.sessionId,
     generation: row.generation,
-    itemVersion: row.item_version,
-    via: row.via,
-    settledAt: row.settled_at,
+    itemVersion: row.itemVersion,
+    via: row.via as LinearCommentVia | null,
+    settledAt: row.settledAt,
   };
 }
