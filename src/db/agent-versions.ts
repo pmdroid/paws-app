@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { agentCatalogRefresh, agentVersion, npmPackage, npmPackageVersion } from "./schema";
 import { immediate } from "./tx";
 
 /** What Paws keeps from one version in an npm registry document. */
@@ -43,11 +46,15 @@ export type AgentVersionRow = {
 };
 
 export function readNpmPackage(db: Database, name: string): StoredNpmPackage | null {
-  const row = db
-    .query<{ etag: string | null; fetchedAt: number; versions: string }, [string]>(
-      "SELECT etag, fetched_at AS fetchedAt, versions FROM npm_package WHERE package = ?",
-    )
-    .get(name);
+  const row = orm(db)
+    .select({
+      etag: npmPackage.etag,
+      fetchedAt: npmPackage.fetchedAt,
+      versions: npmPackage.versions,
+    })
+    .from(npmPackage)
+    .where(eq(npmPackage.package, name))
+    .get();
   if (!row) return null;
   return {
     etag: row.etag,
@@ -68,27 +75,32 @@ export function saveNpmPackage(
   now: number,
 ): void {
   immediate(db, () => {
-    db.run(
-      `INSERT INTO npm_package(package, etag, fetched_at, versions) VALUES (?, ?, ?, ?)
-       ON CONFLICT(package) DO UPDATE SET etag = excluded.etag, fetched_at = excluded.fetched_at,
-         versions = excluded.versions`,
-      [name, etag, now, JSON.stringify(versions)],
-    );
-    const insert = db.prepare(
-      `INSERT INTO npm_package_version(package, version, integrity, first_seen_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(package, version) DO UPDATE SET
-         changed_integrity = excluded.integrity, changed_at = ?
-       WHERE npm_package_version.changed_integrity IS NULL
-         AND npm_package_version.integrity <> excluded.integrity`,
-    );
+    const stored = { etag, fetchedAt: now, versions: JSON.stringify(versions) };
+    orm(db)
+      .insert(npmPackage)
+      .values({ package: name, ...stored })
+      .onConflictDoUpdate({ target: npmPackage.package, set: stored })
+      .run();
     for (const [version, metadata] of Object.entries(versions))
-      if (metadata.integrity !== null) insert.run(name, version, metadata.integrity, now, now);
+      if (metadata.integrity !== null)
+        orm(db)
+          .insert(npmPackageVersion)
+          .values({ package: name, version, integrity: metadata.integrity, firstSeenAt: now })
+          .onConflictDoUpdate({
+            target: [npmPackageVersion.package, npmPackageVersion.version],
+            set: { changedIntegrity: metadata.integrity, changedAt: now },
+            setWhere: and(
+              isNull(npmPackageVersion.changedIntegrity),
+              sql`${npmPackageVersion.integrity} <> excluded.integrity`,
+            ),
+          })
+          .run();
   });
 }
 
 /** Record a 304: the stored document is still current. */
 export function touchNpmPackage(db: Database, name: string, now: number): void {
-  db.run("UPDATE npm_package SET fetched_at = ? WHERE package = ?", [now, name]);
+  orm(db).update(npmPackage).set({ fetchedAt: now }).where(eq(npmPackage.package, name)).run();
 }
 
 export function readNpmIntegrity(
@@ -97,37 +109,37 @@ export function readNpmIntegrity(
   version: string,
 ): NpmIntegrityRecord | null {
   return (
-    db
-      .query<NpmIntegrityRecord, [string, string]>(
-        `SELECT integrity, first_seen_at AS firstSeenAt, changed_integrity AS changedIntegrity
-         FROM npm_package_version WHERE package = ? AND version = ?`,
-      )
-      .get(name, version) ?? null
+    orm(db)
+      .select({
+        integrity: npmPackageVersion.integrity,
+        firstSeenAt: npmPackageVersion.firstSeenAt,
+        changedIntegrity: npmPackageVersion.changedIntegrity,
+      })
+      .from(npmPackageVersion)
+      .where(and(eq(npmPackageVersion.package, name), eq(npmPackageVersion.version, version)))
+      .get() ?? null
   );
 }
 
 /** Replace the catalog rows of one agent. A version no longer reported keeps its last row. */
 export function saveAgentVersions(db: Database, rows: readonly AgentVersionRow[]): void {
   immediate(db, () => {
-    const upsert = db.prepare(
-      `INSERT INTO agent_version(agent, version, published_at, integrity, status, first_seen_at, reason,
-         native_version, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(agent, version) DO UPDATE SET published_at = excluded.published_at,
-         integrity = agent_version.integrity, status = excluded.status, reason = excluded.reason,
-         native_version = excluded.native_version, checked_at = excluded.checked_at`,
-    );
     for (const row of rows)
-      upsert.run(
-        row.agent,
-        row.version,
-        row.publishedAt,
-        row.integrity,
-        row.status,
-        row.firstSeenAt,
-        row.reason,
-        row.nativeVersion,
-        row.checkedAt,
-      );
+      orm(db)
+        .insert(agentVersion)
+        .values(row)
+        .onConflictDoUpdate({
+          target: [agentVersion.agent, agentVersion.version],
+          // The first integrity seen stays.
+          set: {
+            publishedAt: row.publishedAt,
+            status: row.status,
+            reason: row.reason,
+            nativeVersion: row.nativeVersion,
+            checkedAt: row.checkedAt,
+          },
+        })
+        .run();
   });
 }
 
@@ -137,47 +149,55 @@ export function readAgentVersion(
   version: string,
 ): AgentVersionRow | null {
   return (
-    db
-      .query<AgentVersionRow, [string, string]>(
-        `${SELECT_AGENT_VERSION} WHERE agent = ? AND version = ?`,
-      )
-      .get(agent, version) ?? null
+    orm(db)
+      .select(AGENT_VERSION)
+      .from(agentVersion)
+      .where(and(eq(agentVersion.agent, agent), eq(agentVersion.version, version)))
+      .get() ?? null
   );
 }
 
 /** The catalog, newest publication first within each agent. */
 export function listAgentVersions(db: Database, agent?: string): AgentVersionRow[] {
-  const order = "ORDER BY agent, published_at DESC, version DESC";
-  return agent === undefined
-    ? db.query<AgentVersionRow, []>(`${SELECT_AGENT_VERSION} ${order}`).all()
-    : db
-        .query<AgentVersionRow, [string]>(`${SELECT_AGENT_VERSION} WHERE agent = ? ${order}`)
-        .all(agent);
+  return orm(db)
+    .select(AGENT_VERSION)
+    .from(agentVersion)
+    .where(agent === undefined ? undefined : eq(agentVersion.agent, agent))
+    .orderBy(asc(agentVersion.agent), desc(agentVersion.publishedAt), desc(agentVersion.version))
+    .all();
 }
 
 /** When the last complete refresh of the agent catalog ran, or null before the first one. */
 export function lastAgentCatalogRefresh(db: Database): number | null {
   return (
-    db
-      .query<{ at: number }, []>(
-        "SELECT completed_at AS at FROM agent_catalog_refresh WHERE id = 1",
-      )
+    orm(db)
+      .select({ at: agentCatalogRefresh.completedAt })
+      .from(agentCatalogRefresh)
+      .where(eq(agentCatalogRefresh.id, 1))
       .get()?.at ?? null
   );
 }
 
 /** Record a refresh in which every agent was evaluated on fresh npm reads. */
 export function markAgentCatalogRefreshed(db: Database, at: number): void {
-  db.run(
-    `INSERT INTO agent_catalog_refresh(id, completed_at) VALUES (1, ?)
-     ON CONFLICT(id) DO UPDATE SET completed_at = excluded.completed_at`,
-    [at],
-  );
+  orm(db)
+    .insert(agentCatalogRefresh)
+    .values({ id: 1, completedAt: at })
+    .onConflictDoUpdate({ target: agentCatalogRefresh.id, set: { completedAt: at } })
+    .run();
 }
 
-const SELECT_AGENT_VERSION = `SELECT agent, version, published_at AS publishedAt, integrity, status,
-  first_seen_at AS firstSeenAt, reason, native_version AS nativeVersion, checked_at AS checkedAt
-  FROM agent_version`;
+const AGENT_VERSION = {
+  agent: agentVersion.agent,
+  version: agentVersion.version,
+  publishedAt: agentVersion.publishedAt,
+  integrity: agentVersion.integrity,
+  status: sql<AgentVersionStatus>`${agentVersion.status}`,
+  firstSeenAt: agentVersion.firstSeenAt,
+  reason: agentVersion.reason,
+  nativeVersion: agentVersion.nativeVersion,
+  checkedAt: agentVersion.checkedAt,
+};
 
 /** What the Runners page shows per agent: the newest version on offer and each refusal with its reason. */
 export type AgentCatalogSummary = {
