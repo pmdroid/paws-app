@@ -261,17 +261,12 @@ export function* applyLinearUserChangeSteps(q: Q, input: LinearUserChange) {
       teamIds: member.teamIds,
       now: Math.max(input.now, member.checkedAt),
     });
-  const { workspaceMember } = q.t;
+  const { workspaceMember: row } = q.t;
   yield* q.exec(
     q.orm
-      .update(workspaceMember)
+      .update(row)
       .set({ checkedAt: 0 })
-      .where(
-        and(
-          eq(workspaceMember.workspaceId, member.workspaceId),
-          eq(workspaceMember.userId, member.userId),
-        ),
-      ),
+      .where(and(eq(row.workspaceId, member.workspaceId), eq(row.userId, member.userId))),
   );
   return true;
 }
@@ -293,7 +288,7 @@ export function createWorkspaceBootstrap(db: Database, input: WorkspaceBootstrap
 type WorkspaceBootstrapClaim = WorkspaceRecord & { tokenHash: string; userId: string; now: number };
 
 export function* consumeWorkspaceBootstrapSteps(q: Q, input: WorkspaceBootstrapClaim) {
-  const { workspace, workspaceBootstrap: bootstrap, workspaceMember } = q.t;
+  const { workspace, workspaceBootstrap: bootstrap, workspaceMember: member } = q.t;
   const claimed = yield* q.all(
     q.orm
       .update(bootstrap)
@@ -320,7 +315,7 @@ export function* consumeWorkspaceBootstrapSteps(q: Q, input: WorkspaceBootstrapC
     }),
   );
   yield* q.exec(
-    q.orm.insert(workspaceMember).values({
+    q.orm.insert(member).values({
       workspaceId: input.id,
       userId: input.userId,
       role: "admin",
