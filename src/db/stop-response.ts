@@ -3,22 +3,11 @@ import { and, desc, eq, ilike, like, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import type { WorkItemRecord } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
+import type { itemBranchState, itemPullRequest } from "./schema";
 
-export type ItemBranchState = {
-  itemId: string;
-  runId: string;
-  head: string;
-  base: string;
-  commits: number;
-  recordedAt: number;
-};
+export type ItemBranchState = typeof itemBranchState.$inferSelect;
 
-export type ItemPullRequest = {
-  itemId: string;
-  pullNumber: number;
-  pullUrl: string | null;
-  openedAt: number;
-};
+export type ItemPullRequest = typeof itemPullRequest.$inferSelect;
 
 export function* recordItemBranchStateSteps(q: Q, state: ItemBranchState): Steps<void> {
   const { itemBranchState } = q.t;

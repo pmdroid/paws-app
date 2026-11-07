@@ -3,11 +3,12 @@ import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import type { WorkItemRecord } from "./items";
 import { emitJobReady, reenqueueJobSteps } from "./jobs";
+import type { restartHold as restartHoldTable } from "./schema";
 
 export const RESTART_QUESTION =
   "Paws lost this task's run more than once, through a restart or a runner that stopped answering. Start it again from its branch in a fresh session? Stop the session to leave it.";
 
-export type RestartHold = { itemId: string; sessionId: string; requestedAt: number };
+export type RestartHold = typeof restartHoldTable.$inferSelect;
 
 const HELD_STATES: readonly string[] = ["recovering", "awaiting_input"];
 

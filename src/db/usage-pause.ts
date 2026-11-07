@@ -9,15 +9,7 @@ import { usagePause as usagePauseTable } from "./schema";
 import { immediate } from "./tx";
 
 /** A run waiting for its agent's usage limit to reset. */
-export type UsagePause = {
-  runId: string;
-  itemId: string;
-  agent: string;
-  runnerId: string | null;
-  resetsAt: number | null;
-  resumeAt: number;
-  pausedAt: number;
-};
+export type UsagePause = typeof usagePauseTable.$inferSelect;
 
 export function startUsagePause(db: Database, pause: UsagePause, mono = systemClock.mono()): void {
   immediate(db, () => {
