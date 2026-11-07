@@ -70,9 +70,11 @@ export type {
 } from "./repositories";
 export { isMergeConflictRequest } from "./merge-conflict-request";
 export { createInboxStore } from "./inbox";
-export type { CommitResult, InboxStore, QueuedLinearEvent } from "./inbox";
+export type { CommitResult, InboxClaim, InboxStore, QueuedLinearEvent } from "./inbox";
 export {
   INTAKE_CONCURRENCY,
+  INTAKE_LEASE_MS,
+  INTAKE_POLL_MS,
   INTAKE_RETRY_MS,
   createIntakeQueue,
   createLinearIntake,

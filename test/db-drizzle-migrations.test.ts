@@ -14,6 +14,7 @@ import { tempHome } from "./helpers";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const NOW = new Date("2026-11-07T03:04:05.678Z");
+const SHIPPED = readdirSync(MIGRATIONS_FOLDER).filter((name) => name.endsWith(".sql"));
 
 function legacyDatabase(home: string) {
   const path = join(home, "paws.db");
@@ -48,11 +49,11 @@ function drizzleKit(home: string, ...args: string[]) {
 }
 
 describe("drizzle-kit migrations", () => {
-  test("record 0000_baseline on a new database, once", () => {
+  test("record each shipped migration on a new database, once", () => {
     const db = openDatabase(":memory:");
     migrate(db);
     migrate(db);
-    expect(db.query("SELECT hash FROM __drizzle_migrations").all()).toHaveLength(1);
+    expect(db.query("SELECT hash FROM __drizzle_migrations").all()).toHaveLength(SHIPPED.length);
     expect(db.query("SELECT 1 FROM sqlite_master WHERE name = 'schema_migration'").get()).toBe(
       null,
     );
@@ -70,23 +71,21 @@ describe("drizzle-kit migrations", () => {
   });
 
   test("the schema has no change without a migration", () => {
-    expect(drizzleKit(tempHome())).toEqual(
-      readdirSync(MIGRATIONS_FOLDER).filter((name) => name.endsWith(".sql")),
-    );
+    expect(drizzleKit(tempHome())).toEqual(SHIPPED);
   });
 
-  test("a migration drizzle-kit generates after the baseline applies on a fresh database", () => {
+  test("a migration drizzle-kit generates after the shipped ones applies on a fresh database", () => {
     const home = tempHome();
     const out = join(home, "drizzle");
-    expect(drizzleKit(home, "--custom", "--name=probe")).toEqual([
-      "0000_baseline.sql",
-      "0001_probe.sql",
-    ]);
-    writeFileSync(join(out, "0001_probe.sql"), "ALTER TABLE work_item ADD COLUMN probe TEXT;\n");
+    const probe = `${String(SHIPPED.length).padStart(4, "0")}_probe.sql`;
+    expect(drizzleKit(home, "--custom", "--name=probe")).toEqual([...SHIPPED, probe]);
+    writeFileSync(join(out, probe), "ALTER TABLE work_item ADD COLUMN probe TEXT;\n");
 
     const db = openDatabase(":memory:");
     migrate(db, { migrationsFolder: out });
-    expect(db.query("SELECT hash FROM __drizzle_migrations").all()).toHaveLength(2);
+    expect(db.query("SELECT hash FROM __drizzle_migrations").all()).toHaveLength(
+      SHIPPED.length + 1,
+    );
     expect(
       db.query("SELECT name FROM pragma_table_info('work_item') WHERE name = 'probe'").get(),
     ).toEqual({ name: "probe" });
@@ -123,7 +122,9 @@ describe("a database from the legacy migrations", () => {
     const fresh = openDatabase(path);
     migrate(fresh);
     expect(fresh.query("SELECT count(*) AS n FROM sync_cursor").get()).toEqual({ n: 0 });
-    expect(fresh.query("SELECT count(*) AS n FROM __drizzle_migrations").get()).toEqual({ n: 1 });
+    expect(fresh.query("SELECT count(*) AS n FROM __drizzle_migrations").get()).toEqual({
+      n: SHIPPED.length,
+    });
     fresh.close();
 
     expect(setAsideLegacyDatabase(path, new Date(NOW.getTime() + 60_000))).toBe(null);

@@ -850,6 +850,15 @@ export type {
 export { deleteHook, listHooks, saveHook } from "./hooks";
 export { listIntakeQueue, type IntakeQueueEntry } from "./intake-queue";
 export {
+  claimInboxEvent,
+  claimNextInboxEvent,
+  clearSyncCursor,
+  incrementSyncCounter,
+  releaseInboxClaim,
+  renewInboxClaim,
+  type ClaimedInboxRow,
+} from "./inbox-claim";
+export {
   LINEAR_WEBHOOK_FIX,
   LINEAR_WEBHOOK_SILENCE_MS,
   describeLinearWebhookWarning,

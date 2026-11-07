@@ -45,9 +45,9 @@ export type LinearWebhookDeps = {
   now?: () => number;
 };
 
-const failures = new WeakMap<InboxStore, number>();
-
 export const WEBHOOK_CURSOR = "linear:webhook";
+
+export const WEBHOOK_FAILURES_CURSOR = "linear:webhook-failures";
 
 export const WEBHOOK_MISSED_CURSOR = "linear:webhook-missed";
 
@@ -58,7 +58,7 @@ export function lastVerifiedWebhookMs(store: InboxStore): number | null {
 
 /** Signed deliveries rejected since the last verified one. */
 export function webhookVerificationFailures(store: InboxStore): number {
-  return failures.get(store) ?? 0;
+  return store.getCursor(WEBHOOK_FAILURES_CURSOR) ?? 0;
 }
 
 /**
@@ -144,7 +144,7 @@ export async function handleLinearWebhook(
     return Response.json({ ok: false, reason: "not_persisted" }, { status: 500 });
   }
   deps.store.setCursor(WEBHOOK_CURSOR, deps.now?.() ?? Date.now());
-  failures.delete(deps.store);
+  deps.store.clearCursor(WEBHOOK_FAILURES_CURSOR);
   const committed = deps.store.commit(event);
   if (deps.intake?.accepts(event)) {
     if (committed.inserted) deps.intake.arrive(event);
@@ -172,7 +172,7 @@ function schedule(deps: LinearWebhookDeps, event: AcceptedLinearEvent): void {
 }
 
 function noteFailure(store: InboxStore | undefined): void {
-  if (store !== undefined) failures.set(store, webhookVerificationFailures(store) + 1);
+  store?.countCursor(WEBHOOK_FAILURES_CURSOR);
 }
 
 function reject(reason: string): Response {

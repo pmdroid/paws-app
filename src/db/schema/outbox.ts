@@ -76,6 +76,8 @@ export const inboxEvent = sqliteTable(
     attempts: integer().default(0).notNull(),
     nextAttemptAt: integer("next_attempt_at"),
     lastError: text("last_error"),
+    lockedBy: text("locked_by"),
+    lockedUntil: integer("locked_until"),
   },
   (table) => [
     uniqueIndex("inbox_event_delivery")
