@@ -320,10 +320,15 @@ export {
 export type { CatalogEntry } from "./repository-catalog";
 export {
   getPullRequestDraft,
+  getPullRequestDraftSteps,
   getPullRequestText,
+  getPullRequestTextSteps,
   pullRequestDraftSavedAt,
+  pullRequestDraftSavedAtSteps,
   savePullRequestDraft,
+  savePullRequestDraftSteps,
   savePullRequestText,
+  savePullRequestTextSteps,
   type PullRequestDraft,
   type PullRequestText,
 } from "./pull-request-drafts";
@@ -691,12 +696,23 @@ export {
 export { listCloseoutRounds, startCloseoutRound, type CloseoutRound } from "./closeout-rounds";
 export {
   countCiFixes,
+  countCiFixesSteps,
   listCiRounds,
+  listCiRoundsSteps,
   recordCiRound,
+  recordCiRoundSteps,
   type CiRound,
   type CiRoundCheck,
 } from "./ci-rounds";
-export { hasCiRerun, listCiReruns, recordCiRerun, type CiRerun } from "./ci-reruns";
+export {
+  hasCiRerun,
+  hasCiRerunSteps,
+  listCiReruns,
+  listCiRerunsSteps,
+  recordCiRerun,
+  recordCiRerunSteps,
+  type CiRerun,
+} from "./ci-reruns";
 export {
   countRebaseReturns,
   listRebaseReturns,
@@ -901,10 +917,15 @@ export {
 } from "./acp-conversations";
 export {
   beginMergeCall,
+  beginMergeCallSteps,
   endMergeCall,
+  endMergeCallSteps,
   getConfirmedRemoteMerge,
+  getConfirmedRemoteMergeSteps,
   mergeCallInFlight,
+  mergeCallInFlightSteps,
   recordConfirmedRemoteMerge,
+  recordConfirmedRemoteMergeSteps,
   type ConfirmedRemoteMerge,
 } from "./remote-merges";
 
@@ -1096,8 +1117,18 @@ export {
   unassignedRunnerReservationsSteps,
 } from "./runner-reservations";
 export type { ItemHold, ItemHoldChange, ItemHoldReason } from "./item-hold";
-export { carriedAcceptFor, recordCarriedAccept } from "./merge-carried-accept";
-export { getTaskMergeSettings, keepTaskMergeSettings } from "./merge-settings";
+export {
+  carriedAcceptFor,
+  carriedAcceptForSteps,
+  recordCarriedAccept,
+  recordCarriedAcceptSteps,
+} from "./merge-carried-accept";
+export {
+  getTaskMergeSettings,
+  getTaskMergeSettingsSteps,
+  keepTaskMergeSettings,
+  keepTaskMergeSettingsSteps,
+} from "./merge-settings";
 export {
   getTaskLinearRead,
   getTaskLinearReadSteps,
@@ -1111,16 +1142,26 @@ export {
 export type { TaskMergeSettings } from "./merge-settings";
 export {
   inMergeQueue,
+  inMergeQueueSteps,
   joinMergeQueue,
+  joinMergeQueueSteps,
   keepMergeQueuePlace,
+  keepMergeQueuePlaceSteps,
   leaveMergeQueue,
+  leaveMergeQueueSteps,
   listMergeQueues,
+  listMergeQueuesSteps,
   mergeQueueReadyTimes,
+  mergeQueueReadyTimesSteps,
   markMergeQueueNotified,
+  markMergeQueueNotifiedSteps,
   mergeQueuePosition,
   releaseMergeQueuePlace,
+  releaseMergeQueuePlaceSteps,
   returnToMergeQueue,
+  returnToMergeQueueSteps,
   restartedFromMergeQueue,
+  restartedFromMergeQueueSteps,
 } from "./merge-queue";
 export type { MergeQueuePosition } from "./merge-queue";
 export {
@@ -1342,8 +1383,8 @@ export {
   type RiskAutoContext,
 } from "./risk-auto-context";
 
-export { wakeMergesBehind } from "./merge-queue";
-export { mergeStopRequested } from "./remote-merges";
+export { wakeMergesBehind, wakeMergesBehindSteps } from "./merge-queue";
+export { mergeStopRequested, mergeStopRequestedSteps } from "./remote-merges";
 export {
   repositoryCommandSettlement,
   repositoryCommandSettlementSteps,

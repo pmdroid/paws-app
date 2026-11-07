@@ -10,3 +10,15 @@ export function jsonText(q: Q, column: AnyColumn): SQL<string> {
 export function jsonValue(q: Q, value: unknown): unknown {
   return q.dialect === "postgres" ? value : JSON.stringify(value);
 }
+
+export function jsonField(q: Q, column: AnyColumn, ...path: string[]): SQL<string | null> {
+  if (q.dialect === "sqlite")
+    return sql`json_extract(${column}, ${sql.raw(`'$.${path.join(".")}'`)})`;
+  const last = path.length - 1;
+  const steps = path.map((key, index) => `${index === last ? "->>" : "->"}'${key}'`).join("");
+  return sql`(${column}${sql.raw(steps)})`;
+}
+
+export function parsedJson<T>(q: Q, stored: unknown): T {
+  return (q.dialect === "sqlite" ? JSON.parse(stored as string) : stored) as T;
+}

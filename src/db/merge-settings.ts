@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { orm } from "./orm";
-import { workItemMergeSettings } from "./schema";
+import { eq } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 
 export type TaskMergeSettings = {
   order: "queue" | "ci-green" | "github-queue";
@@ -9,6 +9,26 @@ export type TaskMergeSettings = {
   resolved: Record<string, unknown>;
 };
 
+export function* keepTaskMergeSettingsSteps(
+  q: Q,
+  itemId: string,
+  settings: TaskMergeSettings,
+  now: number,
+) {
+  yield* q.exec(
+    q.orm
+      .insert(q.t.workItemMergeSettings)
+      .values({
+        itemId,
+        mergeOrder: settings.order,
+        mainMoved: settings.mainMoved,
+        resolvedJson: JSON.stringify(settings.resolved),
+        resolvedAt: now,
+      })
+      .onConflictDoNothing(),
+  );
+}
+
 /** Keep the first resolution: a task merges with the settings it started with. */
 export function keepTaskMergeSettings(
   db: Database,
@@ -16,36 +36,30 @@ export function keepTaskMergeSettings(
   settings: TaskMergeSettings,
   now: number,
 ): void {
-  orm(db)
-    .insert(workItemMergeSettings)
-    .values({
-      itemId,
-      mergeOrder: settings.order,
-      mainMoved: settings.mainMoved,
-      resolvedJson: JSON.stringify(settings.resolved),
-      resolvedAt: now,
-    })
-    .onConflictDoNothing()
-    .run();
+  settled(sqliteDb(db).run((q) => keepTaskMergeSettingsSteps(q, itemId, settings, now)));
+}
+
+export function* getTaskMergeSettingsSteps(q: Q, itemId: string) {
+  const { workItemMergeSettings } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        mergeOrder: workItemMergeSettings.mergeOrder,
+        mainMoved: workItemMergeSettings.mainMoved,
+        resolvedJson: workItemMergeSettings.resolvedJson,
+      })
+      .from(workItemMergeSettings)
+      .where(eq(workItemMergeSettings.itemId, itemId)),
+  );
+  return row === undefined
+    ? null
+    : {
+        order: row.mergeOrder as TaskMergeSettings["order"],
+        mainMoved: row.mainMoved as TaskMergeSettings["mainMoved"],
+        resolved: JSON.parse(row.resolvedJson) as Record<string, unknown>,
+      };
 }
 
 export function getTaskMergeSettings(db: Database, itemId: string): TaskMergeSettings | null {
-  // Raw: src/dashboard/src/live/overview.test.ts asserts this SQL text on db.query.
-  const row = db
-    .query<
-      {
-        merge_order: TaskMergeSettings["order"];
-        main_moved: TaskMergeSettings["mainMoved"];
-        resolved_json: string;
-      },
-      [string]
-    >("SELECT merge_order,main_moved,resolved_json FROM work_item_merge_settings WHERE item_id=?")
-    .get(itemId);
-  return row === null
-    ? null
-    : {
-        order: row.merge_order,
-        mainMoved: row.main_moved,
-        resolved: JSON.parse(row.resolved_json),
-      };
+  return settled(sqliteDb(db).run((q) => getTaskMergeSettingsSteps(q, itemId)));
 }
