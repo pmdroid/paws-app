@@ -478,15 +478,23 @@ export {
 } from "./outbox";
 export {
   deadDeliveryIsFinalStop,
+  deadDeliveryIsFinalStopSteps,
   deadDeliveryItemId,
+  deadDeliveryItemIdSteps,
   dropDeadElicitations,
+  dropDeadElicitationsSteps,
   QUESTION_LINKS,
   questionHasLinkedRecords,
+  questionHasLinkedRecordsSteps,
   recordQuestionReask,
+  recordQuestionReaskSteps,
   redeliverQuestion,
+  redeliverQuestionSteps,
   listDeadDeliveries,
+  listDeadDeliveriesSteps,
   parseDeadDeliveryRef,
   retryDeadDelivery,
+  retryDeadDeliverySteps,
   type DeadDelivery,
   type DeadDeliveryRef,
 } from "./dead-deliveries";
