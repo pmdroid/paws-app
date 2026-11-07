@@ -37,6 +37,8 @@ import {
   runnerCapacityWait,
   saveItemHolds,
   saveQueuePositions,
+  settled,
+  sqliteDb,
   savePinnedSlots,
   type ItemHold,
   type PinnedSlot,
@@ -623,12 +625,14 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       ...waiting.filter(({ capped }) => !capped),
       ...waiting.filter(({ capped }) => capped),
     ].map(({ item }) => item.id);
-    saveQueuePositions(
-      db,
-      line,
-      slots ? { busy: slots.total - Math.max(free, 0), total: slots.total } : null,
-      now,
-      new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
+    settled(
+      saveQueuePositions(
+        sqliteDb(db),
+        line,
+        slots ? { busy: slots.total - Math.max(free, 0), total: slots.total } : null,
+        now,
+        new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
+      ),
     );
     const holds: ItemHold[] = [
       ...starts.flatMap(({ item, start }): ItemHold[] =>

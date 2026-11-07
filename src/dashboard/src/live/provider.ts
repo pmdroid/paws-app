@@ -85,6 +85,8 @@ import {
   listMergeQueues,
   runnerCapacityWait,
   listQueuePositions,
+  settled,
+  sqliteDb,
   listRuns,
   runAgentSetup,
   runRunnerName,
@@ -953,7 +955,9 @@ function readIssueScope(db: Database, options: LiveStatusOptions, only?: string)
   const openQuestions = listOpenQuestions(db);
   const env = options.env ?? process.env;
   const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
-  const queue = new Map(listQueuePositions(db).map((entry) => [entry.itemId, entry]));
+  const queue = new Map(
+    settled(listQueuePositions(sqliteDb(db))).map((entry) => [entry.itemId, entry]),
+  );
   const queues = listMergeQueues(db);
   const merging = mergePlaces(queues, visible);
   const linearRequests = linearRequestsByItem(db);
