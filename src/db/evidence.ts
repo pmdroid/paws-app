@@ -58,8 +58,15 @@ export function setEvidenceAssetUrl(db: Database, id: string, assetUrl: string):
 
 export type EvidenceObject = typeof evidenceObject.$inferSelect;
 
-export function saveEvidenceObject(db: Database, row: EvidenceObject): void {
-  orm(db).insert(evidenceObject).values(row).onConflictDoNothing().run();
+export function saveEvidenceObject(db: Database, row: EvidenceObject): boolean {
+  return (
+    orm(db)
+      .insert(evidenceObject)
+      .values(row)
+      .onConflictDoNothing()
+      .returning({ id: evidenceObject.id })
+      .all().length > 0
+  );
 }
 
 export function getEvidenceObject(db: Database, id: string): EvidenceObject | null {

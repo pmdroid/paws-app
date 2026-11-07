@@ -132,4 +132,46 @@ describe("evidence in the run file object store", () => {
     expect(new Uint8Array(await (await b.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
     expect(await readEvidenceBytes(db, { root: b.root, objects }, saved.id)).toEqual(VIDEO);
   });
+
+  test("migrated evidence still reads from its local copy once S3 is turned off", async () => {
+    const { db, s3, save } = setup();
+    let configured = false;
+    const objects = () => (configured ? s3 : null);
+    const a = instance(db, objects);
+    const saved = await save(a.store, VIDEO);
+    configured = true;
+    expect(await uploadLocalEvidence(db, { root: a.root, objects })).toBe(1);
+    configured = false;
+    const response = await a.get(saved.id);
+    expect(response.status).toBe(200);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(VIDEO);
+  });
+
+  test("two instances migrating the same file keep one complete copy", async () => {
+    const { db, s3, save } = setup();
+    let configured = false;
+    const objects = () => (configured ? s3 : null);
+    const a = instance(db, objects);
+    const saved = await save(a.store, VIDEO);
+    configured = true;
+    let failing = false;
+    const flaky = {
+      ...s3,
+      async write(key: string, bytes: Uint8Array) {
+        if (failing) throw new Error("acme upload failed");
+        await s3.write(key, bytes);
+      },
+    };
+    const both = await Promise.all([
+      uploadLocalEvidence(db, { root: a.root, objects }),
+      uploadLocalEvidence(db, { root: a.root, objects: () => flaky }),
+    ]);
+    expect(both.reduce((left, right) => left + right)).toBe(1);
+    failing = true;
+    expect(await uploadLocalEvidence(db, { root: a.root, objects: () => flaky })).toBe(0);
+    rmSync(join(a.root, saved.id));
+    expect(new Uint8Array(await (await a.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
+    const prefix = getEvidenceObject(db, saved.id)!.prefix;
+    expect([...s3.objects.keys()].every((key) => key.startsWith(`${prefix}/`))).toBe(true);
+  });
 });

@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -100,13 +101,12 @@ export async function openEvidenceFile(
   range?: { start: number; end: number },
 ): Promise<{ size: number; body: Blob | ReadableStream<Uint8Array> } | null> {
   const row = getEvidenceObject(db, id);
-  if (row === null) {
+  const objects = row === null ? null : storage.objects?.();
+  if (row === null || !objects) {
     const file = Bun.file(join(storage.root, id));
     if (!(await file.exists())) return null;
     return { size: file.size, body: range ? file.slice(range.start, range.end + 1) : file };
   }
-  const objects = storage.objects?.();
-  if (!objects) return null;
   const chunks = readChunks(objects, row, range?.start ?? 0, range?.end ?? row.sizeBytes - 1);
   let first: IteratorResult<Uint8Array>;
   try {
@@ -166,11 +166,11 @@ export async function uploadLocalEvidence(
   for (const file of localEvidenceFiles(db)) {
     const local = Bun.file(join(storage.root, file.id));
     if (!(await local.exists())) continue;
-    const prefix = evidenceObjectPrefix(file, file.id);
+    const prefix = `${evidenceObjectPrefix(file, file.id)}/${randomUUID()}`;
     try {
       const sizeBytes = await writeEvidenceChunks(objects, prefix, local.stream());
-      saveEvidenceObject(db, { id: file.id, prefix, sizeBytes, storedAt: now() });
-      uploaded++;
+      if (saveEvidenceObject(db, { id: file.id, prefix, sizeBytes, storedAt: now() })) uploaded++;
+      else await removeEvidenceChunks(objects, prefix, sizeBytes);
     } catch (error) {
       journalCaught(error, "evidence.uploadLocalEvidence", file.itemId);
     }
