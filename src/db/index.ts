@@ -459,7 +459,6 @@ export {
   markRun,
   runOwner,
   recordReviewRounds,
-  reviewRoundsOf,
   releaseRunCapacity,
   saveRunResult,
   saveRunCommitPolicy,
@@ -475,7 +474,6 @@ export {
   pinRunCheckoutSteps,
   recordReviewRoundsSteps,
   releaseRunCapacitySteps,
-  reviewRoundsOfSteps,
   runOwnerSteps,
   saveRunCommitPolicySteps,
   saveRunResultSteps,
@@ -505,7 +503,6 @@ export {
   requestRunnerSessionMove,
   runnerSessionMove,
   type RunnerSessionMove,
-  type RunnerSessionMoveStatus,
   latestSealedSnapshot,
   lastRunCommandAccount,
   currentRunnerAgentVersion,
@@ -516,7 +513,6 @@ export {
   noteRunnerSessionMoveSteps,
   requestRunnerSessionMoveSteps,
   runnerSessionMoveSteps,
-  type SealedSessionSnapshot,
 } from "./runner-session-moves";
 export {
   createRunnerEnrollment,
@@ -871,7 +867,6 @@ export {
   takeRunnerSetupResumeSteps,
   takeRunnerSetupResume,
 } from "./runner-setup-hold";
-export type { RunnerSetupHold } from "./runner-setup-hold";
 export {
   RUNNER_RESERVATION_MS,
   releaseRunnerReservation,
