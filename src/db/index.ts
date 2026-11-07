@@ -463,9 +463,14 @@ export {
   runnerLeaseCutoff,
   runnerLeaseLive,
   runnerWorkSettled,
+  runnerWorkSettledSteps,
   shiftRunnerLeasesForDowntime,
+  shiftRunnerLeasesForDowntimeSteps,
   runnerHoldsRunWork,
+  runnerHoldsRunWorkSteps,
   runnerWorkHasResult,
+  runnerWorkHasResultSteps,
+  endRevokedRunnerAuthoritySteps,
 } from "./runner-lease";
 export { beginImplementRun, enterMergeQueue, insertQueuedItem } from "./seed";
 export {
