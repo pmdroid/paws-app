@@ -49,18 +49,18 @@ export function listRunnerRuntimes(db: Database, runnerId: string): RunnerRuntim
 }
 
 export function* listRunnerRuntimesSteps(q: Q, runnerId: string) {
-  const { runnerRuntime } = q.t;
+  const { runnerRuntime: runtime } = q.t;
   return yield* q.all(
     q.orm
       .select({
-        tool: runnerRuntime.tool,
-        version: runnerRuntime.version,
-        status: sql<RunnerRuntimeStatus["status"]>`${runnerRuntime.status}`,
-        error: runnerRuntime.error,
-        reportedAt: runnerRuntime.reportedAt,
+        tool: runtime.tool,
+        version: runtime.version,
+        status: sql<RunnerRuntimeStatus["status"]>`${runtime.status}`,
+        error: runtime.error,
+        reportedAt: runtime.reportedAt,
       })
-      .from(runnerRuntime)
-      .where(eq(runnerRuntime.runnerId, runnerId))
-      .orderBy(asc(runnerRuntime.tool), asc(runnerRuntime.version)),
+      .from(runtime)
+      .where(eq(runtime.runnerId, runnerId))
+      .orderBy(asc(runtime.tool), asc(runtime.version)),
   );
 }

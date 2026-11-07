@@ -54,22 +54,22 @@ export function endRevokedRunnerAuthority(db: Database, now: number): void {
 }
 
 export function* endRevokedRunnerAuthoritySteps(q: Q, now: number) {
-  const { runner, runnerWork } = q.t;
+  const { runner: runners, runnerWork: work } = q.t;
   const cutoff = runnerLeaseCutoff(now);
   yield* q.exec(
     q.orm
-      .update(runnerWork)
+      .update(work)
       .set({ leaseUntil: cutoff })
       .where(
         and(
-          isNull(runnerWork.endedAt),
-          gt(runnerWork.leaseUntil, cutoff),
+          isNull(work.endedAt),
+          gt(work.leaseUntil, cutoff),
           inArray(
-            runnerWork.runnerId,
+            work.runnerId,
             q.orm
-              .select({ id: runner.id })
-              .from(runner)
-              .where(or(isNotNull(runner.revokedAt), eq(runner.status, "revoked"))),
+              .select({ id: runners.id })
+              .from(runners)
+              .where(or(isNotNull(runners.revokedAt), eq(runners.status, "revoked"))),
           ),
         ),
       ),
