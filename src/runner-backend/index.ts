@@ -45,6 +45,8 @@ import {
   reserveRunnerSlot,
   runnerReservationHolder,
   unassignedRunnerReservations,
+  settled,
+  sqliteDb,
 } from "../db";
 import {
   ArtifactRejectedError,
@@ -398,7 +400,8 @@ export function createRemoteAgentRunner(options: {
   const instanceId = options.instanceId ?? randomUUID();
   const reservations = new Map<string, string>();
   const reserved = (runId: string) =>
-    reservations.has(runId) || runnerReservationHolder(db, runId, now()) !== null;
+    reservations.has(runId) ||
+    settled(runnerReservationHolder(sqliteDb(db), runId, now())) !== null;
   const readers = new Set<string>();
   /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
   const toldLost = new Set<string>();
@@ -625,7 +628,9 @@ export function createRemoteAgentRunner(options: {
   }
   /** Reservations per runner whose run has no runner_work row there yet. */
   function unassigned(excludeRunId = "") {
-    const counts = unassignedRunnerReservations(db, now(), instanceId, excludeRunId);
+    const counts = settled(
+      unassignedRunnerReservations(sqliteDb(db), now(), instanceId, excludeRunId),
+    );
     const assigned = new Map(
       db
         .query<{ runId: string; runnerId: string }, [string]>(
@@ -721,12 +726,14 @@ export function createRemoteAgentRunner(options: {
         const taken = immediate(db, () => {
           if (!free()) return NO_FREE_CAPACITY;
           if (
-            !reserveRunnerSlot(db, {
-              runId: item.currentRunId!,
-              runnerId: runner.id,
-              instanceId,
-              now: now(),
-            })
+            !settled(
+              reserveRunnerSlot(sqliteDb(db), {
+                runId: item.currentRunId!,
+                runnerId: runner.id,
+                instanceId,
+                now: now(),
+              }),
+            )
           )
             return ": the run is already being placed";
           const mode = getTaskMode(db, itemId);
@@ -817,7 +824,9 @@ export function createRemoteAgentRunner(options: {
     if (command.type !== type) return undefined;
     if (
       reservations.has(runId) ||
-      !reserveRunnerSlot(db, { runId, runnerId: row.runnerId, instanceId, now: now() })
+      !settled(
+        reserveRunnerSlot(sqliteDb(db), { runId, runnerId: row.runnerId, instanceId, now: now() }),
+      )
     )
       throw new RunnerCapacityWait([row.runnerId]);
     reservations.set(runId, row.runnerId);
@@ -1755,9 +1764,9 @@ export function createRemoteAgentRunner(options: {
               try {
                 immediate(db, () => {
                   const others =
-                    unassignedRunnerReservations(db, now(), instanceId, selected.runId).get(
-                      selected.id,
-                    ) ?? 0;
+                    settled(
+                      unassignedRunnerReservations(sqliteDb(db), now(), instanceId, selected.runId),
+                    ).get(selected.id) ?? 0;
                   if (!runnerHasCapacity(db, selected.id, now(), selected.runId, others))
                     throw new RetryableRunnerError(
                       selected.id,
@@ -1768,7 +1777,7 @@ export function createRemoteAgentRunner(options: {
                       true,
                     );
                   work.assign(assigned);
-                  releaseRunnerReservation(db, selected.runId, instanceId);
+                  settled(releaseRunnerReservation(sqliteDb(db), selected.runId, instanceId));
                   options.placement?.started({
                     commandId: assigned.id,
                     runnerId: selected.id,
@@ -2613,7 +2622,7 @@ export function createRemoteAgentRunner(options: {
             if (readCommand) await options.agentRead?.close(readCommand);
             // Keep attachment fenced through cleanup, then free the slot before returning.
             reservations.delete(selected.runId);
-            releaseRunnerReservation(db, selected.runId, instanceId);
+            settled(releaseRunnerReservation(sqliteDb(db), selected.runId, instanceId));
           }
         }
       };
