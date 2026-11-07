@@ -45,5 +45,5 @@ for (const scenario of RUNNER_ORCHESTRATION_SCENARIOS)
   }, 60_000);
 
 test("remote orchestration observes every scenario", () => {
-  expect(observations).toHaveLength(32);
+  expect(observations).toHaveLength(34);
 });

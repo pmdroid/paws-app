@@ -55,6 +55,7 @@ export {
   CloseoutResultMissingError,
   loggedSessionCloseout,
   loggedSessionProbe,
+  missingResultReason,
   readSessionCloseout,
   sessionCloseoutAccepted,
   sessionCloseoutPath,
