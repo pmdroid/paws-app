@@ -91,3 +91,14 @@ export function* insertRunnerBindingSteps(q: Q) {
     }),
   );
 }
+
+/** A JSON value as the column stores it: text on SQLite, jsonb on Postgres. */
+export function jsonValue(q: Q, value: unknown): string {
+  return (q.dialect === "sqlite" ? JSON.stringify(value) : value) as string;
+}
+
+export function insertLinearSession(db: Db, sessionId: string, issueId: string | null = null) {
+  return db.run(function* (q) {
+    yield* q.exec(q.orm.insert(q.t.linearSession).values({ sessionId, issueId, createdAt: 0 }));
+  });
+}

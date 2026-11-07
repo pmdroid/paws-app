@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 
 export type LinearInputRecord = {
   sessionId: string;
@@ -10,16 +12,30 @@ export type LinearInputRecord = {
   sha256: string;
 };
 
+export function* recordLinearInputSteps(q: Q, input: LinearInputRecord) {
+  yield* q.exec(q.orm.insert(q.t.linearInput).values(input).onConflictDoNothing());
+}
+
 export function recordLinearInput(db: Database, input: LinearInputRecord): void {
-  db.query(`INSERT OR IGNORE INTO linear_input (session_id, turn_id, asset_id, asset_url, mime_type, size, sha256)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
-    input.sessionId,
-    input.turnId,
-    input.assetId,
-    input.assetUrl,
-    input.mimeType,
-    input.size,
-    input.sha256,
+  settled(sqliteDb(db).run((q) => recordLinearInputSteps(q, input)));
+}
+
+export function* listLinearInputsSteps(q: Q, sessionId: string, turnId: string) {
+  const { linearInput } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        sessionId: linearInput.sessionId,
+        turnId: linearInput.turnId,
+        assetId: linearInput.assetId,
+        assetUrl: linearInput.assetUrl,
+        mimeType: linearInput.mimeType,
+        size: linearInput.size,
+        sha256: linearInput.sha256,
+      })
+      .from(linearInput)
+      .where(and(eq(linearInput.sessionId, sessionId), eq(linearInput.turnId, turnId)))
+      .orderBy(asc(linearInput.assetId)),
   );
 }
 
@@ -28,9 +44,5 @@ export function listLinearInputs(
   sessionId: string,
   turnId: string,
 ): LinearInputRecord[] {
-  return db
-    .query<LinearInputRecord, [string, string]>(`SELECT session_id AS sessionId, turn_id AS turnId,
-    asset_id AS assetId, asset_url AS assetUrl, mime_type AS mimeType, size, sha256 FROM linear_input
-    WHERE session_id = ? AND turn_id = ? ORDER BY asset_id`)
-    .all(sessionId, turnId);
+  return settled(sqliteDb(db).run((q) => listLinearInputsSteps(q, sessionId, turnId)));
 }

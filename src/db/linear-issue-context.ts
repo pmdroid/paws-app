@@ -1,38 +1,65 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 
-export function linearSessionsForIssueContext(db: Database, issueId: string): string[] {
-  return db
-    .query<{ session_id: string }, [string, string]>(
-      `SELECT session_id FROM linear_session WHERE issue_id = ?
-    UNION SELECT session_key AS session_id FROM work_item WHERE linear_issue_id = ? AND session_key IS NOT NULL`,
-    )
-    .all(issueId, issueId)
-    .map((row) => row.session_id);
+export function* linearSessionsForIssueContextSteps(q: Q, issueId: string) {
+  const { linearSession, workItem } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ sessionId: linearSession.sessionId })
+      .from(linearSession)
+      .where(eq(linearSession.issueId, issueId))
+      .union(
+        q.orm
+          .select({ sessionId: sql<string>`${workItem.sessionKey}` })
+          .from(workItem)
+          .where(and(eq(workItem.linearIssueId, issueId), isNotNull(workItem.sessionKey))),
+      ),
+  );
+  return rows.map((row) => row.sessionId).sort();
 }
 
-export function saveLinearIssueContext(
-  db: Database,
-  input: {
-    sessionId: string;
-    issueId: string;
-    observedAt: number;
-    context: string;
-  },
-): void {
-  db.run(
-    `INSERT INTO linear_issue_context (session_id,issue_id,observed_at,context) VALUES (?,?,?,?)
-    ON CONFLICT(session_id,issue_id) DO UPDATE SET observed_at = excluded.observed_at,context = excluded.context
-    WHERE excluded.observed_at >= linear_issue_context.observed_at`,
-    [input.sessionId, input.issueId, input.observedAt, input.context],
+export function linearSessionsForIssueContext(db: Database, issueId: string): string[] {
+  return settled(sqliteDb(db).run((q) => linearSessionsForIssueContextSteps(q, issueId)));
+}
+
+type LinearIssueContextInput = {
+  sessionId: string;
+  issueId: string;
+  observedAt: number;
+  context: string;
+};
+
+export function* saveLinearIssueContextSteps(q: Q, input: LinearIssueContextInput) {
+  const { linearIssueContext } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(linearIssueContext)
+      .values(input)
+      .onConflictDoUpdate({
+        target: [linearIssueContext.sessionId, linearIssueContext.issueId],
+        set: { observedAt: sql`excluded.observed_at`, context: sql`excluded.context` },
+        setWhere: sql`excluded.observed_at >= linear_issue_context.observed_at`,
+      }),
   );
 }
 
+export function saveLinearIssueContext(db: Database, input: LinearIssueContextInput): void {
+  settled(sqliteDb(db).run((q) => saveLinearIssueContextSteps(q, input)));
+}
+
+export function* getLinearIssueContextSteps(q: Q, sessionId: string) {
+  const { linearIssueContext } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ context: linearIssueContext.context })
+      .from(linearIssueContext)
+      .where(eq(linearIssueContext.sessionId, sessionId))
+      .orderBy(asc(linearIssueContext.issueId)),
+  );
+  return rows.map((row) => row.context).join("\n\n");
+}
+
 export function getLinearIssueContext(db: Database, sessionId: string): string {
-  return db
-    .query<{ context: string }, [string]>(
-      "SELECT context FROM linear_issue_context WHERE session_id = ? ORDER BY issue_id",
-    )
-    .all(sessionId)
-    .map((row) => row.context)
-    .join("\n\n");
+  return settled(sqliteDb(db).run((q) => getLinearIssueContextSteps(q, sessionId)));
 }

@@ -168,23 +168,10 @@ src/db/legacy-migrate.ts | db.run("INSERT INTO schema_migration (id, applied_at)
 src/db/legacy-migrate.ts | db.run(`PRAGMA foreign_keys = ${foreignKeys ? "ON" : "OFF"}`); | frozen legacy migration (src/db/README.md)
 src/db/linear-comments.ts | db.run( | not yet converted to Drizzle
 src/db/linear-comments.ts | const gathering = db .query<{ n: number }, [string, string]>( | not yet converted to Drizzle
-src/db/linear-context.ts | db.run( | not yet converted to Drizzle
-src/db/linear-context.ts | const row = db .query<{ context: string; snapshot_context: string | null }, [string]>( | not yet converted to Drizzle
-src/db/linear-context.ts | db .query<{ hydrated: number }, [string]>( | not yet converted to Drizzle
-src/db/linear-context.ts | db.run( | not yet converted to Drizzle
-src/db/linear-context.ts | db.run( | not yet converted to Drizzle
-src/db/linear-context.ts | return db .query<{ snapshot: string }, [string]>( | not yet converted to Drizzle
 src/db/linear-delivery.ts | const result = db.run( | not yet converted to Drizzle
-src/db/linear-inputs.ts | db.query(`INSERT OR IGNORE INTO linear_input (session_id, turn_id, asset_id, asset_url, mime_type, size, sha256) | not yet converted to Drizzle
-src/db/linear-inputs.ts | return db .query<LinearInputRecord, [string, string]>(`SELECT session_id AS sessionId, turn_id AS turnId, | not yet converted to Drizzle
-src/db/linear-issue-context.ts | return db .query<{ session_id: string }, [string, string]>( | not yet converted to Drizzle
-src/db/linear-issue-context.ts | db.run( | not yet converted to Drizzle
-src/db/linear-issue-context.ts | return db .query<{ context: string }, [string]>( | not yet converted to Drizzle
 src/db/linear-project.ts | db .query<{ id: string | null }, [string]>( | not yet converted to Drizzle
 src/db/linear-project.ts | db.run(`UPDATE work_item SET ${SET_PROJECT} WHERE id=?3`, [...values(project), itemId]); | not yet converted to Drizzle
 src/db/linear-project.ts | return db.run(`UPDATE work_item SET ${SET_PROJECT} WHERE linear_issue_id=?3`, [ | not yet converted to Drizzle
-src/db/linear-session-url.ts | const row = db .query<{ url: string }, [string]>(`SELECT CASE WHEN json_valid(payload) THEN | not yet converted to Drizzle
-src/db/linear-session-url.ts | db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== null | not yet converted to Drizzle
 src/db/linear-webhook.ts | const active = db .query( | not yet converted to Drizzle
 src/db/linear-webhook.ts | db .query<{ cursor_ms: number }, [string]>("SELECT cursor_ms FROM sync_cursor WHERE name = ?") | not yet converted to Drizzle
 src/db/link-asks.ts | db.run( | not yet converted to Drizzle

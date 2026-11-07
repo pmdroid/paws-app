@@ -712,11 +712,17 @@ export {
 
 export {
   saveLinearSessionContext,
+  saveLinearSessionContextSteps,
   hasLinearSessionSnapshotContext,
+  hasLinearSessionSnapshotContextSteps,
   saveLinearSessionSnapshotContext,
+  saveLinearSessionSnapshotContextSteps,
   getLinearSessionContext,
+  getLinearSessionContextSteps,
   saveLinearActivitySnapshot,
+  saveLinearActivitySnapshotSteps,
   listLinearActivitySnapshots,
+  listLinearActivitySnapshotsSteps,
 } from "./linear-context";
 export {
   getLinearSession,
@@ -840,7 +846,14 @@ export {
   openVisualReviewFilesSteps,
   saveVisualReviewMarksSteps,
 } from "./visual-reviews";
-export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./linear-inputs";
+export {
+  recordLinearInput,
+  recordLinearInputSteps,
+  listLinearInputs,
+  listLinearInputsSteps,
+  type LinearInputRecord,
+} from "./linear-inputs";
+export { getLinearConversationSourceSteps } from "./linear-session-url";
 export {
   CLEANUP_BLOCKED_NOTICE,
   blockConversation,
@@ -949,8 +962,11 @@ export { resolveDashboardAlias, resolveDashboardAliasSteps } from "./dashboard-a
 
 export {
   linearSessionsForIssueContext,
+  linearSessionsForIssueContextSteps,
   saveLinearIssueContext,
+  saveLinearIssueContextSteps,
   getLinearIssueContext,
+  getLinearIssueContextSteps,
 } from "./linear-issue-context";
 export {
   saveWorkspaceIdentityLink,
