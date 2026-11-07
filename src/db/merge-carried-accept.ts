@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, eq } from "drizzle-orm";
+import { orm } from "./orm";
+import { mergeCarriedAccept } from "./schema";
 
 /**
  * Under `[merge] main_moved` `ci` or `overlap`, the merge lane rebased `acceptedHead`, which
@@ -9,20 +12,24 @@ export function recordCarriedAccept(
   db: Database,
   input: { itemId: string; head: string; acceptedHead: string; base: string; now: number },
 ): void {
-  db.run(
-    `INSERT OR REPLACE INTO merge_carried_accept(item_id, head, accepted_head, base, recorded_at)
-     VALUES (?, ?, ?, ?, ?)`,
-    [input.itemId, input.head, input.acceptedHead, input.base, input.now],
-  );
+  const values = { acceptedHead: input.acceptedHead, base: input.base, recordedAt: input.now };
+  orm(db)
+    .insert(mergeCarriedAccept)
+    .values({ itemId: input.itemId, head: input.head, ...values })
+    .onConflictDoUpdate({
+      target: [mergeCarriedAccept.itemId, mergeCarriedAccept.head],
+      set: values,
+    })
+    .run();
 }
 
 /** The accepted head the lane rebased into `head`, or null when `head` is not a carried rebase. */
 export function carriedAcceptFor(db: Database, itemId: string, head: string): string | null {
   return (
-    db
-      .query<{ acceptedHead: string }, [string, string]>(
-        `SELECT accepted_head AS acceptedHead FROM merge_carried_accept WHERE item_id = ? AND head = ?`,
-      )
-      .get(itemId, head)?.acceptedHead ?? null
+    orm(db)
+      .select({ acceptedHead: mergeCarriedAccept.acceptedHead })
+      .from(mergeCarriedAccept)
+      .where(and(eq(mergeCarriedAccept.itemId, itemId), eq(mergeCarriedAccept.head, head)))
+      .get()?.acceptedHead ?? null
   );
 }
