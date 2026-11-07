@@ -97,6 +97,7 @@ function fixtureGitHub(input: {
   ciPending?: boolean;
 }): {
   client: GitHubClient;
+  ci: { pending: boolean };
   calls: GitHubCall[];
   closed: Set<number>;
   merged: Map<number, string>;
@@ -106,6 +107,7 @@ function fixtureGitHub(input: {
   const calls: GitHubCall[] = [];
   const closed = new Set<number>();
   const merged = new Map<number, string>();
+  const ci = { pending: input.ciPending ?? false };
   const comments = new Map<number, { body: string; html_url: string }[]>();
   const pullJson = (number: number) => ({
     number,
@@ -120,7 +122,7 @@ function fixtureGitHub(input: {
     if (path === "/graphql") {
       const { head } = (request.body as { variables: { head: string } }).variables;
       const body = fakeMergeReadiness(head);
-      if (input.ciPending) {
+      if (ci.pending) {
         body.data.repository.object.statusCheckRollup.state = "PENDING";
         body.data.repository.object.statusCheckRollup.contexts.nodes[0]!.conclusion = null;
       }
@@ -131,6 +133,8 @@ function fixtureGitHub(input: {
     const number = Number(/\/(?:pulls|issues)\/(\d+)/.exec(path)?.[1]);
     if (method === "POST" && path.endsWith("/pulls")) {
       const body = request.body as { title: string; head: string; base: string; body: string };
+      if (pulls.opened.some((pull, index) => pull.head === body.head && !closed.has(index + 1)))
+        return { status: 422, body: { message: "A pull request already exists" } };
       const pull = await pulls.open({ repository, ...body });
       return { status: 201, body: { number: pull.number, html_url: pull.url, body: body.body } };
     }
@@ -153,8 +157,13 @@ function fixtureGitHub(input: {
       comments.set(number, list);
       return { status: 201, body: list.at(-1) };
     }
+    if (method === "GET" && /\/pulls\/\d+$/.test(path)) {
+      const pull = pullJson(number);
+      const sha = await git("-C", input.origin, "rev-parse", `refs/heads/${pull.head.ref}`);
+      return { status: 200, body: { ...pull, head: { ...pull.head, sha }, mergeable: true } };
+    }
     if (method === "PATCH" && /\/pulls\/\d+$/.test(path)) {
-      closed.add(number);
+      if ((request.body as { state?: string }).state === "closed") closed.add(number);
       return { status: 200, body: pullJson(number) };
     }
     if (method === "PUT" && /\/pulls\/\d+\/merge$/.test(path)) {
@@ -186,7 +195,7 @@ function fixtureGitHub(input: {
       }
     },
   };
-  return { client, calls, closed, merged, opened: pulls.opened };
+  return { client, ci, calls, closed, merged, opened: pulls.opened };
 }
 
 export const ACME = {
@@ -204,10 +213,15 @@ export type ProofContext = {
   launches: LaunchInput[];
   itemState(): string | null;
   itemBranch(): string | null;
+  itemRunId(): string | null;
   transitions(): { from: string; to: string; event: string }[];
   originMainFiles(): Promise<string[]>;
+  originMainLog(): Promise<string[]>;
+  /** Someone else pushes a commit to origin main. */
+  pushToMain(path: string, content: string, message: string): Promise<void>;
   heldWork(): { activeRuns: number; reservations: number; runningJobs: number };
   delegate(): Promise<void>;
+  answerInLinear(answer: string): Promise<void>;
   stopInLinear(): Promise<void>;
   cancelInLinear(): Promise<void>;
   waitFor(what: string, done: () => boolean, timeoutMs?: number): Promise<boolean>;
@@ -218,11 +232,13 @@ export type Proof = {
   covers: string[];
   summary: string;
   ciPending?: boolean;
+  /** `.agents/closeout.yaml` for this scenario, instead of the default. */
+  policy?: string;
   agent(input: LaunchInput): FakeStep[];
   run(context: ProofContext): Promise<void>;
 };
 
-const policy = `specVersion: "0.1"
+const defaultPolicy = `specVersion: "0.1"
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
@@ -243,7 +259,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
   await git("init", "--bare", "-b", "main", bare);
   await git("clone", bare, seed);
   mkdirSync(join(seed, ".agents"), { recursive: true });
-  writeFileSync(join(seed, ".agents/closeout.yaml"), policy);
+  writeFileSync(join(seed, ".agents/closeout.yaml"), proof.policy ?? defaultPolicy);
   writeFileSync(join(seed, "README.md"), "# Acme widgets\n");
   await git("-C", seed, "add", ".");
   await git("-C", seed, "commit", "-m", "Seed acme widgets");
@@ -325,9 +341,21 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     launches,
     itemState: () => items()[0]?.state ?? null,
     itemBranch: () => items()[0]?.branchName ?? null,
+    itemRunId: () => items()[0]?.currentRunId ?? null,
     transitions,
     async originMainFiles() {
       return (await git("-C", bare, "ls-tree", "-r", "--name-only", "main")).split("\n");
+    },
+    async originMainLog() {
+      return (await git("-C", bare, "log", "--format=%s", "main")).split("\n");
+    },
+    async pushToMain(path, content, message) {
+      act(`Push "${message}" to origin main`);
+      await git("-C", seed, "pull", "-q", "--ff-only", "origin", "main");
+      writeFileSync(join(seed, path), content);
+      await git("-C", seed, "add", path);
+      await git("-C", seed, "commit", "-q", "-m", message);
+      await git("-C", seed, "push", "-q", "origin", "HEAD:main");
     },
     heldWork: () => ({
       activeRuns: count("SELECT count(*) AS n FROM run WHERE status IN ('active', 'provisioning')"),
@@ -337,6 +365,14 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     async delegate() {
       act(`Delegate ${ACME.identifier} to Paws in Linear`);
       await event("created");
+    },
+    async answerInLinear(answer) {
+      act(`Answer the question in the ${ACME.identifier} agent session: ${answer}`);
+      await event("prompted", {
+        activityId: `proof-answer-${actions.length}`,
+        actorId: "acme-user",
+        body: answer,
+      });
     },
     async stopInLinear() {
       act(`Press Stop in the ${ACME.identifier} agent session`);
@@ -365,6 +401,8 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
         if (done()) return true;
+        // The process's recurring scheduler tick, without its 30 second wait.
+        orchestrator.reconcileExecution();
         await jobs.tick();
         outbox.tick();
         await Bun.sleep(20);
