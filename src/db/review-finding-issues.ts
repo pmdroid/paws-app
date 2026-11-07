@@ -1,6 +1,15 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { reviewFindingKey as coreFindingKey } from "../core";
+import { orm } from "./orm";
+import {
+  improvement,
+  improvementSource,
+  reviewFinding,
+  reviewFindingIssue,
+  reviewFindingIssueClaim,
+} from "./schema";
 import { immediate } from "./tx";
 
 /** Where a finding points: its path and its line, or `first-last`. */
@@ -51,35 +60,10 @@ export function reviewFindingKey(input: {
     .digest("hex");
 }
 
-type Row = {
-  key: string;
-  repository: string;
-  path: string;
-  lines: string;
-  linear_issue_id: string;
-  identifier: string;
-  url: string | null;
-  item_id: string | null;
-  filed_by: string | null;
-  filed_at: number;
-};
-
-const fromRow = (row: Row): ReviewFindingIssue => ({
-  key: row.key,
-  repository: row.repository,
-  path: row.path,
-  lines: row.lines,
-  linearIssueId: row.linear_issue_id,
-  identifier: row.identifier,
-  url: row.url,
-  itemId: row.item_id,
-  filedBy: row.filed_by,
-  filedAt: row.filed_at,
-});
-
 export function getReviewFindingIssue(db: Database, key: string): ReviewFindingIssue | null {
-  const row = db.query<Row, [string]>("SELECT * FROM review_finding_issue WHERE key=?").get(key);
-  return row === null ? null : fromRow(row);
+  return (
+    orm(db).select().from(reviewFindingIssue).where(eq(reviewFindingIssue.key, key)).get() ?? null
+  );
 }
 
 /** The filed issues of `keys`, by key. */
@@ -91,12 +75,12 @@ export function reviewFindingIssues(
   const found = new Map<string, ReviewFindingIssue>();
   for (let start = 0; start < unique.length; start += 500) {
     const chunk = unique.slice(start, start + 500);
-    const rows = db
-      .query<Row, string[]>(
-        `SELECT * FROM review_finding_issue WHERE key IN (${chunk.map(() => "?").join(",")})`,
-      )
-      .all(...chunk);
-    for (const row of rows) found.set(row.key, fromRow(row));
+    const rows = orm(db)
+      .select()
+      .from(reviewFindingIssue)
+      .where(inArray(reviewFindingIssue.key, chunk))
+      .all();
+    for (const row of rows) found.set(row.key, row);
   }
   return found;
 }
@@ -106,23 +90,11 @@ export function saveReviewFindingIssue(
   db: Database,
   issue: ReviewFindingIssue,
 ): ReviewFindingIssue {
-  db.run(
-    `INSERT INTO review_finding_issue
-    (key, repository, path, lines, linear_issue_id, identifier, url, item_id, filed_by, filed_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO NOTHING`,
-    [
-      issue.key,
-      issue.repository,
-      issue.path,
-      issue.lines,
-      issue.linearIssueId,
-      issue.identifier,
-      issue.url,
-      issue.itemId,
-      issue.filedBy,
-      issue.filedAt,
-    ],
-  );
+  orm(db)
+    .insert(reviewFindingIssue)
+    .values(issue)
+    .onConflictDoNothing({ target: reviewFindingIssue.key })
+    .run();
   return getReviewFindingIssue(db, issue.key)!;
 }
 
@@ -138,21 +110,32 @@ export function claimReviewFindingIssue(
 ): boolean {
   const findingKey = coreFindingKey(input.finding);
   return immediate(db, () => {
-    const accepted = db
-      .query(
-        `SELECT 1 FROM review_finding AS finding
-         JOIN improvement_source AS source ON source.source_kind = 'daily_finding'
-           AND instr(source.source_key, '#' || finding.id || ':') > 0
-         JOIN improvement ON improvement.id = source.improvement_id
-         WHERE finding.dedupe_key = ? AND improvement.review_state = 'accepted' LIMIT 1`,
+    const accepted = orm(db)
+      .select({ one: sql`1` })
+      .from(reviewFinding)
+      .innerJoin(
+        improvementSource,
+        and(
+          eq(improvementSource.sourceKind, "daily_finding"),
+          sql`instr(${improvementSource.sourceKey}, '#' || ${reviewFinding.id} || ':') > 0`,
+        ),
       )
-      .get(findingKey);
-    if (accepted !== null) return false;
-    db.run(
-      `INSERT INTO review_finding_issue_claim (key, finding_key, item_id, claimed_by, claimed_at)
-       VALUES (?, ?, ?, ?, ?) ON CONFLICT(key) DO NOTHING`,
-      [input.key, findingKey, input.itemId, input.by, input.now],
-    );
+      .innerJoin(improvement, eq(improvement.id, improvementSource.improvementId))
+      .where(and(eq(reviewFinding.dedupeKey, findingKey), eq(improvement.reviewState, "accepted")))
+      .limit(1)
+      .get();
+    if (accepted !== undefined) return false;
+    orm(db)
+      .insert(reviewFindingIssueClaim)
+      .values({
+        key: input.key,
+        findingKey,
+        itemId: input.itemId,
+        claimedBy: input.by,
+        claimedAt: input.now,
+      })
+      .onConflictDoNothing({ target: reviewFindingIssueClaim.key })
+      .run();
     return true;
   });
 }
@@ -171,12 +154,13 @@ export function reviewFindingIssueClaims(
 ): Map<string, ReviewFindingIssueClaim> {
   const claims = new Map<string, ReviewFindingIssueClaim>();
   if (findings.length === 0) return claims;
-  const rows = db
-    .query<{ findingKey: string; key: string }, [string]>(
-      `SELECT finding_key AS findingKey, key FROM review_finding_issue_claim
-       WHERE finding_key IN (SELECT value FROM json_each(?))`,
+  const rows = orm(db)
+    .select({ findingKey: reviewFindingIssueClaim.findingKey, key: reviewFindingIssueClaim.key })
+    .from(reviewFindingIssueClaim)
+    .where(
+      sql`${reviewFindingIssueClaim.findingKey} IN (SELECT value FROM json_each(${JSON.stringify(findings.map((f) => f.key))}))`,
     )
-    .all(JSON.stringify(findings.map((f) => f.key)));
+    .all();
   const byFinding = new Map(rows.map((row) => [row.findingKey, row.key]));
   for (const finding of findings) {
     const issueKey =

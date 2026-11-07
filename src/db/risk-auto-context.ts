@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, ne, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { riskAutoContext } from "./schema";
 import { immediate } from "./tx";
 
 /** Inputs observed by the lane, never an automatic approval. */
@@ -22,16 +25,22 @@ export function saveRiskAutoContext(
 ): void {
   immediate(db, () => {
     if (context === null) {
-      db.run("DELETE FROM risk_auto_context WHERE item_id = ?", [itemId]);
+      orm(db).delete(riskAutoContext).where(eq(riskAutoContext.itemId, itemId)).run();
       return;
     }
-    db.run("DELETE FROM risk_auto_context WHERE item_id = ? AND head != ?", [itemId, head]);
-    db.run(
-      `INSERT INTO risk_auto_context (item_id, head, context) VALUES (?, ?, ?)
-      ON CONFLICT (item_id, head) DO UPDATE SET context = excluded.context
-      WHERE context != excluded.context`,
-      [itemId, head, JSON.stringify(context)],
-    );
+    orm(db)
+      .delete(riskAutoContext)
+      .where(and(eq(riskAutoContext.itemId, itemId), ne(riskAutoContext.head, head)))
+      .run();
+    orm(db)
+      .insert(riskAutoContext)
+      .values({ itemId, head, context: JSON.stringify(context) })
+      .onConflictDoUpdate({
+        target: [riskAutoContext.itemId, riskAutoContext.head],
+        set: { context: sql`excluded.context` },
+        setWhere: sql`${riskAutoContext.context} != excluded.context`,
+      })
+      .run();
   });
 }
 
@@ -39,11 +48,13 @@ export function getRiskAutoContext(
   db: Database,
   itemId: string,
 ): { head: string; context: RiskAutoContext } | null {
-  const row = db
-    .query<{ head: string; context: string }, [string]>(
-      "SELECT head, context FROM risk_auto_context WHERE item_id = ? ORDER BY rowid DESC LIMIT 1",
-    )
-    .get(itemId);
+  const row = orm(db)
+    .select({ head: riskAutoContext.head, context: riskAutoContext.context })
+    .from(riskAutoContext)
+    .where(eq(riskAutoContext.itemId, itemId))
+    .orderBy(sql`rowid DESC`)
+    .limit(1)
+    .get();
   if (!row) return null;
   const value = contextOf(row.context);
   return { head: row.head, context: value };
@@ -83,10 +94,13 @@ function contextOf(text: string): RiskAutoContext {
 export function listRiskAutoContexts(
   db: Database,
 ): Array<{ itemId: string; head: string; context: RiskAutoContext }> {
-  return db
-    .query<{ itemId: string; head: string; context: string }, []>(
-      "SELECT item_id AS itemId, head, context FROM risk_auto_context",
-    )
+  return orm(db)
+    .select({
+      itemId: riskAutoContext.itemId,
+      head: riskAutoContext.head,
+      context: riskAutoContext.context,
+    })
+    .from(riskAutoContext)
     .all()
     .map((row) => ({ ...row, context: contextOf(row.context) }));
 }

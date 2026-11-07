@@ -1,4 +1,16 @@
 import type { Database } from "bun:sqlite";
+import { and, desc, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import {
+  findingGroup,
+  findingGroupingOff,
+  findingGroupRun,
+  linearSession,
+  reviewFindingItem,
+  workItem,
+  workspace,
+  workspaceMember,
+} from "./schema";
 import { workspaceMemberUsableSql } from "./workspace";
 
 export type FindingGroup = {
@@ -28,15 +40,36 @@ export type FindingGroupRun = {
   error: string | null;
   skipReason?: string | null;
 };
+const groupColumns = {
+  id: findingGroup.id,
+  workspaceId: findingGroup.workspaceId,
+  repository: findingGroup.repository,
+  teamId: findingGroup.teamId,
+  title: findingGroup.title,
+  summary: findingGroup.summary,
+  scope: findingGroup.scope,
+  suggestedIssue: findingGroup.suggestedIssue,
+  members: findingGroup.memberIds,
+  createdAt: findingGroup.createdAt,
+  runId: findingGroup.runId,
+  status: sql<FindingGroup["status"]>`${findingGroup.status}`,
+  statusReason: findingGroup.statusReason,
+  filedIssue: findingGroup.filedIssue,
+  action: sql<FindingGroup["action"]>`${findingGroup.action}`,
+};
+
 export function listFindingGroups(db: Database, workspaceId: string, limit = -1): FindingGroup[] {
-  return db
-    .query<Omit<FindingGroup, "memberIds"> & { members: string }, [string, number]>(`
-    SELECT id,workspace_id AS workspaceId,repository,team_id AS teamId,title,summary,scope,
-      suggested_issue AS suggestedIssue,member_ids AS members,created_at AS createdAt,
-      run_id AS runId,status,status_reason AS statusReason,filed_issue AS filedIssue,action
-    FROM finding_group WHERE workspace_id=? ORDER BY (status='open') DESC,created_at DESC,id LIMIT ?
-  `)
-    .all(workspaceId, limit)
+  return orm(db)
+    .select(groupColumns)
+    .from(findingGroup)
+    .where(eq(findingGroup.workspaceId, workspaceId))
+    .orderBy(
+      sql`(${findingGroup.status}='open') DESC`,
+      desc(findingGroup.createdAt),
+      findingGroup.id,
+    )
+    .limit(limit)
+    .all()
     .map(({ members, ...row }) => ({ ...row, memberIds: JSON.parse(members) as number[] }));
 }
 export function getFindingGroup(
@@ -44,14 +77,11 @@ export function getFindingGroup(
   workspaceId: string,
   id: string,
 ): FindingGroup | null {
-  const row = db
-    .query<
-      Omit<FindingGroup, "memberIds"> & { members: string },
-      [string, string]
-    >(`SELECT id,workspace_id AS workspaceId,repository,team_id AS teamId,title,summary,scope,
-    suggested_issue AS suggestedIssue,member_ids AS members,created_at AS createdAt,run_id AS runId,status,status_reason AS statusReason,filed_issue AS filedIssue,action
-    FROM finding_group WHERE workspace_id=? AND id=?`)
-    .get(workspaceId, id);
+  const row = orm(db)
+    .select(groupColumns)
+    .from(findingGroup)
+    .where(and(eq(findingGroup.workspaceId, workspaceId), eq(findingGroup.id, id)))
+    .get();
   if (!row) return null;
   const { members, ...group } = row;
   return { ...group, memberIds: JSON.parse(members) as number[] };
@@ -59,63 +89,105 @@ export function getFindingGroup(
 
 /** Untouched groups follow individual finding decisions immediately. Claimed writes reconcile first. */
 export function removeFindingFromOpenGroups(db: Database, workspaceId: string, id: number): void {
-  db.run(
-    `UPDATE finding_group SET member_ids=(SELECT json_group_array(value) FROM json_each(member_ids) WHERE value<>?)
-    WHERE workspace_id=? AND status='open' AND action IS NULL AND EXISTS(SELECT 1 FROM json_each(member_ids) WHERE value=?)`,
-    [id, workspaceId, id],
+  const untouched = and(
+    eq(findingGroup.workspaceId, workspaceId),
+    eq(findingGroup.status, "open"),
+    isNull(findingGroup.action),
   );
-  db.run(
-    "DELETE FROM finding_group WHERE workspace_id=? AND status='open' AND action IS NULL AND json_array_length(member_ids)=0",
-    [workspaceId],
-  );
+  orm(db)
+    .update(findingGroup)
+    .set({
+      memberIds: sql`(SELECT json_group_array(value) FROM json_each(${findingGroup.memberIds}) WHERE value<>${id})`,
+    })
+    .where(
+      and(
+        untouched,
+        sql`EXISTS(SELECT 1 FROM json_each(${findingGroup.memberIds}) WHERE value=${id})`,
+      ),
+    )
+    .run();
+  orm(db)
+    .delete(findingGroup)
+    .where(and(untouched, sql`json_array_length(${findingGroup.memberIds})=0`))
+    .run();
 }
 
 export function lastFindingGroupRun(db: Database, workspaceId: string): FindingGroupRun | null {
-  return db
-    .query<FindingGroupRun, [string]>(`
-    SELECT id,started_at AS startedAt,finished_at AS finishedAt,status,tokens,
-      group_count AS groupCount,error,skip_reason AS skipReason FROM finding_group_run WHERE workspace_id=?
-    ORDER BY started_at DESC,rowid DESC LIMIT 1
-  `)
-    .get(workspaceId);
+  return (
+    orm(db)
+      .select({
+        id: findingGroupRun.id,
+        startedAt: findingGroupRun.startedAt,
+        finishedAt: findingGroupRun.finishedAt,
+        status: sql<FindingGroupRun["status"]>`${findingGroupRun.status}`,
+        tokens: findingGroupRun.tokens,
+        groupCount: findingGroupRun.groupCount,
+        error: findingGroupRun.error,
+        skipReason: findingGroupRun.skipReason,
+      })
+      .from(findingGroupRun)
+      .where(eq(findingGroupRun.workspaceId, workspaceId))
+      .orderBy(desc(findingGroupRun.startedAt), sql`rowid DESC`)
+      .limit(1)
+      .get() ?? null
+  );
 }
 /** The workspace and team of each finding's reporting sessions. Never infer a team from model text. */
 export function findingGroupSources(
   db: Database,
   workspaceId: string,
 ): { id: number; teamId: string; sessionId: string }[] {
-  return db
-    .query<{ id: number; teamId: string; sessionId: string }, [string]>(`
-    SELECT DISTINCT f.finding_id AS id,s.team_id AS teamId,s.session_id AS sessionId
-    FROM review_finding_item f JOIN work_item i ON i.id=f.item_id
-    JOIN linear_session s ON s.session_id=i.session_key
-    JOIN workspace w ON w.linear_organization_id=s.organization_id
-    WHERE w.id=? AND s.team_id IS NOT NULL ORDER BY s.session_id
-  `)
-    .all(workspaceId);
+  return orm(db)
+    .selectDistinct({
+      id: reviewFindingItem.findingId,
+      teamId: sql<string>`${linearSession.teamId}`,
+      sessionId: linearSession.sessionId,
+    })
+    .from(reviewFindingItem)
+    .innerJoin(workItem, eq(workItem.id, reviewFindingItem.itemId))
+    .innerJoin(linearSession, eq(linearSession.sessionId, workItem.sessionKey))
+    .innerJoin(workspace, eq(workspace.linearOrganizationId, linearSession.organizationId))
+    .where(and(eq(workspace.id, workspaceId), isNotNull(linearSession.teamId)))
+    .orderBy(linearSession.sessionId)
+    .all();
 }
 
 export function findingGroupingAdmins(db: Database, workspaceId: string): { userId: string }[] {
-  return db
-    .query<{ userId: string }, [string]>(
-      `SELECT user_id AS userId FROM workspace_member m WHERE workspace_id=? AND ${workspaceMemberUsableSql("m")} AND role IN ('owner','admin') ORDER BY user_id`,
+  return orm(db)
+    .select({ userId: workspaceMember.userId })
+    .from(workspaceMember)
+    .where(
+      and(
+        eq(workspaceMember.workspaceId, workspaceId),
+        sql.raw(workspaceMemberUsableSql("workspace_member")),
+        inArray(workspaceMember.role, ["owner", "admin"]),
+      ),
     )
-    .all(workspaceId);
+    .orderBy(workspaceMember.userId)
+    .all();
 }
 
 /** An expired command cannot return evidence after a coordinator restart. */
 export function recoverFindingGroupRuns(db: Database, now: number): void {
-  db.run(
-    "UPDATE finding_group_run SET status='failed',finished_at=?,error='Grouping interrupted before completion' WHERE status='running' AND started_at<=?",
-    [now, now - 11 * 60_000],
-  );
+  orm(db)
+    .update(findingGroupRun)
+    .set({ status: "failed", finishedAt: now, error: "Grouping interrupted before completion" })
+    .where(
+      and(eq(findingGroupRun.status, "running"), lte(findingGroupRun.startedAt, now - 11 * 60_000)),
+    )
+    .run();
 }
 
 export function findingGroupingEnabled(db: Database, workspaceId: string): boolean {
-  return !db.query("SELECT 1 FROM finding_grouping_off WHERE workspace_id=?").get(workspaceId);
+  return !orm(db)
+    .select({ workspaceId: findingGroupingOff.workspaceId })
+    .from(findingGroupingOff)
+    .where(eq(findingGroupingOff.workspaceId, workspaceId))
+    .get();
 }
 
 export function setFindingGrouping(db: Database, workspaceId: string, on: boolean): void {
-  if (on) db.run("DELETE FROM finding_grouping_off WHERE workspace_id=?", [workspaceId]);
-  else db.run("INSERT OR IGNORE INTO finding_grouping_off VALUES(?)", [workspaceId]);
+  if (on)
+    orm(db).delete(findingGroupingOff).where(eq(findingGroupingOff.workspaceId, workspaceId)).run();
+  else orm(db).insert(findingGroupingOff).values({ workspaceId }).onConflictDoNothing().run();
 }
