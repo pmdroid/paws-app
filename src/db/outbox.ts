@@ -14,10 +14,10 @@ import { journal } from "./journal";
 import type * as pgSchema from "./schema-pg";
 import { immediate } from "./tx";
 
-export const OUTBOX_TARGETS = ["linear", "slack", "github"] as const;
+const OUTBOX_TARGETS = ["linear", "slack", "github"] as const;
 export type OutboxTarget = (typeof OUTBOX_TARGETS)[number];
 
-export const OUTBOX_STATUSES = ["pending", "sent", "dead", "dropped"] as const;
+const OUTBOX_STATUSES = ["pending", "sent", "dead", "dropped"] as const;
 export type OutboxStatus = (typeof OUTBOX_STATUSES)[number];
 
 export const DEFAULT_OUTBOX_MAX_ATTEMPTS = 5;
@@ -93,7 +93,7 @@ export type OutboxRow = {
   error: string | null;
 };
 
-export type OutboxClaimOptions = {
+type OutboxClaimOptions = {
   blockedKeys?: readonly string[];
   progressIntervalMs?: number;
   workerId?: string;
@@ -500,7 +500,7 @@ export function retryOutbox(
   });
 }
 
-export type DispatchOptions = OutboxClaimOptions & {
+type DispatchOptions = OutboxClaimOptions & {
   deliver?: (row: OutboxRow) => void;
 };
 
@@ -727,7 +727,7 @@ function followingThoughts(head: OutboxRow, others: readonly OutboxRow[]): Outbo
 }
 
 /** Suffix of the one fresh delivery a dead elicitation gets. */
-export const ELICITATION_REDELIVERY_SUFFIX = ":redelivery";
+const ELICITATION_REDELIVERY_SUFFIX = ":redelivery";
 /** Suffix of the delivery that replaces a twice-dead elicitation of a question with linked records. */
 export const ELICITATION_REASK_SUFFIX = ":reask";
 
@@ -743,7 +743,7 @@ export const OUTBOX_ITEM_SQL = (row: string, dialect: Dialect = "sqlite") => `CO
     AND i.session_key = ${row}.ordering_key ORDER BY i.created_at DESC, i.id DESC LIMIT 1)
 )`;
 
-export function outboxItemId(db: Database, id: number): string | null {
+function outboxItemId(db: Database, id: number): string | null {
   return settled(sqliteDb(db).run((q) => outboxItemIdSteps(q, id)));
 }
 
