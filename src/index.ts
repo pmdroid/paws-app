@@ -122,6 +122,7 @@ import {
   listReviewEscapes,
   clearUsagePauses,
   countLinearRequest,
+  linearBudgetStore,
   migrate,
   openDatabase,
   checkPostgres,
@@ -158,6 +159,7 @@ import {
   runnerHasCapacity,
   applyLinearIssueProject,
   workspaceMember,
+  sqliteDb,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import { installHostMain } from "./install-host";
@@ -601,6 +603,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db,
     signal: abort.signal,
     countItemRequest: (itemId, caller) => countLinearRequest(db, itemId, caller),
+    budget: linearBudgetStore(sqliteDb(db), runtime.linearClientId ?? "linear"),
     secretsDir: paths.secretsDir,
     isAuthorized: () =>
       !isLinearAppRevoked(db, {

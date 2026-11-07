@@ -12,7 +12,12 @@ import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
 import { createLinearFileTransfer, type LinearFileTransfer } from "./files";
 import { callerClient, createLinearClient, defaultCallerClient } from "./graphql";
-import { createLinearLedger, type LinearLedger, type LinearUsage } from "./budget";
+import {
+  createLinearLedger,
+  type LinearLedger,
+  type LinearSharedBudget,
+  type LinearUsage,
+} from "./budget";
 import { createInboxStore } from "./inbox";
 import { createLinearIntake, type IntakeQueue } from "./intake-queue";
 import {
@@ -79,6 +84,7 @@ export function openLinear(options: {
   /** Applies `{ type: 'stop' }`. Default enqueues the command job for the loop to drain. */
   submitCommand?: (command: LinearCommand) => void;
   countItemRequest?: (itemId: string, caller: string) => void;
+  budget?: LinearSharedBudget;
   fetch?: FetchLike;
 }): OpenLinear {
   const stopping = new AbortController();
@@ -98,7 +104,10 @@ export function openLinear(options: {
     isAuthorized: accessAllowed,
     fetch: options.fetch,
   });
-  const ledger = createLinearLedger({ countItem: options.countItemRequest });
+  const ledger = createLinearLedger({
+    countItem: options.countItemRequest,
+    shared: options.budget,
+  });
   const client = auth.hasToken()
     ? createLinearClient({ auth, fetch: options.fetch, ledger })
     : null;

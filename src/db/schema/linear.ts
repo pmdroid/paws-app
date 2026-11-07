@@ -287,6 +287,24 @@ export const linearOutboxBackoff = sqliteTable(
   () => [check("linear_outbox_backoff_check_1", sql`id=1`)],
 );
 
+export const linearRequestBudget = sqliteTable("linear_request_budget", {
+  workspace: text().primaryKey().notNull(),
+  windowStart: integer("window_start").notNull(),
+  spent: integer().notNull(),
+  holdUntil: integer("hold_until"),
+  requestLimit: integer("request_limit"),
+});
+
+export const linearRequestReservation = sqliteTable(
+  "linear_request_reservation",
+  {
+    id: text().primaryKey().notNull(),
+    workspace: text().notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (table) => [index("linear_request_reservation_workspace").on(table.workspace, table.expiresAt)],
+);
+
 export const linearActivityListing = sqliteTable("linear_activity_listing", {
   sessionId: text("session_id").primaryKey().notNull(),
   generation: integer().notNull(),
