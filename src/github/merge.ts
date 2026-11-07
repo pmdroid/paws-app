@@ -423,7 +423,7 @@ function denialReason(body: unknown): string | undefined {
   const parts = [body.message, detail].filter(
     (part): part is string => typeof part === "string" && part.trim() !== "",
   );
-  const reason = [...new Set(parts.map((part) => part.trim()))].join(" ");
+  const reason = [...new Set(parts.map((part) => part.trim()))].join(": ");
   return reason === "" ? undefined : reason.slice(0, DENIAL_REASON_LIMIT);
 }
 
