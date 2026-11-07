@@ -345,9 +345,9 @@ forEachDialect((connect) => {
         }),
     );
 
-    const online = await db.run((q) => pendingRunnerWaitsSteps(q, 10));
+    const reachable = await db.run((q) => pendingRunnerWaitsSteps(q, 10));
     expect(
-      online.map(({ payload, ...wait }) => ({ ...wait, payload: JSON.parse(payload) })),
+      reachable.map(({ payload, ...wait }) => ({ ...wait, payload: JSON.parse(payload) })),
     ).toEqual([
       {
         itemId: "waiting",
@@ -358,8 +358,8 @@ forEachDialect((connect) => {
         payload: { itemId: "waiting", n: 2 },
       },
     ]);
-    const offline = await db.run((q) => pendingRunnerWaitsSteps(q, NOW));
-    expect(offline.map(({ runnerId, online }) => ({ runnerId, online }))).toEqual([
+    const unreachable = await db.run((q) => pendingRunnerWaitsSteps(q, NOW));
+    expect(unreachable.map(({ runnerId, online }) => ({ runnerId, online }))).toEqual([
       { runnerId: "box", online: 0 },
     ]);
   });
