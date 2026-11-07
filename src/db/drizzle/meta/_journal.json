@@ -64,6 +64,13 @@
       "when": 1794047219366,
       "tag": "0008_run_owner",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1794048497819,
+      "tag": "0009_instance_stopped_at",
+      "breakpoints": true
     }
   ]
 }

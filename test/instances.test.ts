@@ -78,10 +78,16 @@ describe("instances", () => {
       const db = openDatabase(join(home, "paws.db"));
       try {
         const rows = db
-          .query<{ id: string; heartbeat_at: number }, []>("SELECT id, heartbeat_at FROM instance")
+          .query<{ id: string; heartbeat_at: number; stopped_at: number | null }, []>(
+            "SELECT id, heartbeat_at, stopped_at FROM instance",
+          )
           .all();
-        expect(rows.map((row) => row.id)).toEqual([secondHealth.instance]);
-        const killedAt = rows[0]!.heartbeat_at;
+        // A clean stop keeps the row and its last heartbeat for the lease downtime credit.
+        const stopped = rows.find((row) => row.id === firstHealth.instance)!;
+        expect(stopped.stopped_at).toBe(stopped.heartbeat_at);
+        const killed = rows.find((row) => row.id === secondHealth.instance)!;
+        expect(killed.stopped_at).toBeNull();
+        const killedAt = killed.heartbeat_at;
         expect(liveInstances(db, killedAt + INSTANCE_DEAD_MS - 1).map((row) => row.id)).toEqual([
           secondHealth.instance,
         ]);

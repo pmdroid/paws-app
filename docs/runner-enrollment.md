@@ -277,6 +277,11 @@ support before upgrading runners. The 30-minute budget counts monotonic awake wo
 sleep, wall-clock jumps and idle waits do not spend it. The stop deadline remains
 capped by 30 minutes and command expiry. Helpers retain their signed deadlines.
 
+Paws credits a lease only for the time no instance served it. The instance that takes over
+a gone instance's runs moves their leases forward by the time from the owner's last
+heartbeat until the first instance alive after it. With another instance alive
+throughout, the runner keeps renewing through it and no credit is given.
+
 A missing lease or fence stops the worker immediately. Network failures use the
 offline budget. Events and results remain local until accepted, including across
 runner restarts. Pending results remain in heartbeats until delivered. Only a

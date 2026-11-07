@@ -30,12 +30,15 @@ function drizzleKit(home: string) {
 }
 
 describe("Postgres drizzle-kit migrations", () => {
-  test("0000_baseline applies to a fresh PGlite database, once, with every table", async () => {
+  test("the migrations apply to a fresh PGlite database, once each, with every table", async () => {
     const db = await pgliteDb();
     try {
       await migrate(db, { migrationsFolder: PG_MIGRATIONS_FOLDER });
       const applied = await db.$client.query("SELECT hash FROM drizzle.__drizzle_migrations");
-      expect(applied.rows).toHaveLength(1);
+      const journal = JSON.parse(
+        readFileSync(join(PG_MIGRATIONS_FOLDER, "meta", "_journal.json"), "utf8"),
+      ) as { entries: unknown[] };
+      expect(applied.rows).toHaveLength(journal.entries.length);
       const tables = await db.$client.query<{ table_name: string }>(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",
       );

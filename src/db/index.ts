@@ -249,6 +249,8 @@ export {
 } from "./loop";
 export {
   deleteInstance,
+  lastInstanceHeartbeat,
+  stopInstance,
   heartbeatInstance,
   INSTANCE_DEAD_MS,
   INSTANCE_HEARTBEAT_MS,
@@ -423,10 +425,7 @@ export {
   takeOverGoneRuns,
 } from "./recovery";
 export {
-  markPawsAlive,
-  PAWS_ALIVE_INTERVAL_MS,
   PAWS_ALIVE_LEASE_SKEW_MS,
-  pawsAliveAt,
   runnerLeaseCutoff,
   runnerLeaseLive,
   runnerWorkSettled,

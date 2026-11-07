@@ -134,9 +134,7 @@ import {
   CONFIG_SETTINGS_KEY,
   setAsideLegacyDatabase,
   prepareShutdown,
-  markPawsAlive,
-  PAWS_ALIVE_INTERVAL_MS,
-  deleteInstance,
+  stopInstance,
   heartbeatInstance,
   COMMAND_DELIVERY_MS,
   bindInstance,
@@ -746,7 +744,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
       releaseSettings();
-      deleteInstance(db, instance.id);
+      stopInstance(db, instance.id, Date.now());
       db.close();
       throw new Error("Public dashboard requires a connected Linear app installation.");
     }
@@ -800,7 +798,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     } catch (error) {
       abort.abort();
       releaseSettings();
-      deleteInstance(db, instance.id);
+      stopInstance(db, instance.id, Date.now());
       db.close();
       throw error;
     }
@@ -1311,7 +1309,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   } catch (error) {
     abort.abort();
     releaseSettings();
-    deleteInstance(db, instance.id);
+    stopInstance(db, instance.id, Date.now());
     if (runnerConfig !== null)
       void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
     else if (workspace === undefined) db.close();
@@ -1991,15 +1989,6 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     },
   });
 
-  // Startup reads the last mark to tell how long Paws was down (runner leases do not count it).
-  const aliveTimer = setInterval(() => {
-    try {
-      markPawsAlive(db, Date.now());
-    } catch (error) {
-      journalCaught(error, "index.startPaws.markPawsAlive", null);
-    }
-  }, PAWS_ALIVE_INTERVAL_MS);
-  aliveTimer.unref?.();
   const instanceTimer = setInterval(() => {
     try {
       heartbeatInstance(db, instance.id, Date.now());
@@ -2067,12 +2056,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             instance.id,
           ),
         close: () => {
-          clearInterval(aliveTimer);
           releaseSettings();
           clearInterval(instanceTimer);
           clearInterval(commandTimer);
           try {
-            deleteInstance(db, instance.id);
+            stopInstance(db, instance.id, Date.now());
           } finally {
             db.close();
           }

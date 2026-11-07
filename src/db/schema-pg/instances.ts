@@ -12,6 +12,7 @@ export const instance = pgTable(
     heartbeatAt: bigint("heartbeat_at", { mode: "number" }).notNull(),
     version: text(),
     pid: bigint({ mode: "number" }),
+    stoppedAt: bigint("stopped_at", { mode: "number" }),
   },
   (table) => [
     index("instance_heartbeat").on(table.heartbeatAt),
