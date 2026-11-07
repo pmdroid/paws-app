@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import {
   aliasedTable,
+  type AnyColumn,
   and,
   asc,
   count,
@@ -123,6 +124,8 @@ const binding = (row: Q["t"]["agentAccountBinding"]["$inferSelect"]): AgentAccou
   quotaScope: row.quotaScope as AgentAccountBinding["quotaScope"],
 });
 
+const added = (q: Q, id: AnyColumn) => (q.dialect === "sqlite" ? sql`rowid` : asc(id));
+
 export function legacyAgentAccountId(workspaceId: string, agent: RunnerCodingAgent): string {
   return `${LEGACY_ACCOUNT_PREFIX}${agent}_${workspaceId}`;
 }
@@ -193,7 +196,7 @@ export function* listAgentAccountsSteps(q: Q, workspaceId: string) {
       .select(accountColumns(q))
       .from(a)
       .where(eq(a.workspaceId, workspaceId))
-      .orderBy(asc(a.agent), desc(a.legacy), asc(a.createdAt), asc(a.id)),
+      .orderBy(asc(a.agent), desc(a.legacy), asc(a.createdAt), added(q, a.id)),
   );
   return rows.map(account);
 }
@@ -215,7 +218,7 @@ export function* listAgentBindingsSteps(q: Q, workspaceId: string, accountId?: s
           accountId === undefined ? undefined : eq(b.accountId, accountId),
         ),
       )
-      .orderBy(asc(b.accountId), asc(b.createdAt), asc(b.id)),
+      .orderBy(asc(b.accountId), asc(b.createdAt), added(q, b.id)),
   );
   return rows.map(binding);
 }
@@ -739,7 +742,7 @@ export function* liveAccountBindingSteps(q: Q, runnerId: string, accountId: stri
       .select()
       .from(b)
       .where(and(eq(b.runnerId, runnerId), eq(b.accountId, accountId), isNull(b.removedAt)))
-      .orderBy(asc(b.createdAt), asc(b.id))
+      .orderBy(asc(b.createdAt), added(q, b.id))
       .limit(1),
   );
   return row ? binding(row) : null;
