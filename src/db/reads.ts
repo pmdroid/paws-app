@@ -93,12 +93,10 @@ export function* listWorkItemFactsSteps(q: Q) {
       .leftJoin(workspaceUser, eq(workspaceUser.id, workItem.ownerUserId))
       .orderBy(desc(workItem.createdAt), desc(workItem.id)),
   );
-  return rows.map(
-    (row): WorkItemFact => ({
-      ...row,
-      projectName: typeof row.projectName === "string" ? row.projectName : null,
-    }),
-  );
+  return rows.map((row): WorkItemFact => ({
+    ...row,
+    projectName: typeof row.projectName === "string" ? row.projectName : null,
+  }));
 }
 
 export function listWorkItemFacts(db: Database): WorkItemFact[] {
@@ -122,12 +120,10 @@ export function* listOpenQuestionsSteps(q: Q) {
       .where(and(eq(question.status, "open"), isNull(question.cancelledAt)))
       .orderBy(asc(question.createdAt), asc(question.id)),
   );
-  return rows.map(
-    (row): OpenQuestionRecord => ({
-      ...row,
-      options: row.options === null ? [] : stringList(row.options),
-    }),
-  );
+  return rows.map((row): OpenQuestionRecord => ({
+    ...row,
+    options: row.options === null ? [] : stringList(row.options),
+  }));
 }
 
 /** Unanswered questions, oldest first. */
