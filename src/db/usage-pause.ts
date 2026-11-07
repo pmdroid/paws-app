@@ -1,10 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
-import { orm } from "./orm";
-import { runnerAgentPolicy } from "./schema";
 import { systemClock } from "../core";
 import { resumeAccountHealthNow } from "./agent-account-health";
 import { accrueAwake } from "./items";
+import { orm } from "./orm";
+import { runnerAgentPolicy, usagePause as usagePauseTable } from "./schema";
 import { immediate } from "./tx";
 
 /** A run waiting for its agent's usage limit to reset. */
@@ -18,33 +18,50 @@ export type UsagePause = {
   pausedAt: number;
 };
 
-const COLUMNS =
-  "run_id AS runId,item_id AS itemId,agent,runner_id AS runnerId,resets_at AS resetsAt,resume_at AS resumeAt,paused_at AS pausedAt";
-
 export function startUsagePause(db: Database, pause: UsagePause, mono = systemClock.mono()): void {
   immediate(db, () => {
     accrueAwake(db, pause.itemId, mono, pause.pausedAt);
-    db.run(
-      `INSERT INTO usage_pause(run_id,item_id,agent,runner_id,resets_at,resume_at,paused_at) VALUES(?,?,?,?,?,?,?)
-     ON CONFLICT(run_id) DO UPDATE SET agent=excluded.agent,runner_id=excluded.runner_id,
-     resets_at=excluded.resets_at,resume_at=excluded.resume_at,paused_at=excluded.paused_at`,
-      [
-        pause.runId,
-        pause.itemId,
-        pause.agent,
-        pause.runnerId,
-        pause.resetsAt,
-        pause.resumeAt,
-        pause.pausedAt,
-      ],
-    );
+    orm(db)
+      .insert(usagePauseTable)
+      .values({
+        runId: pause.runId,
+        itemId: pause.itemId,
+        agent: pause.agent,
+        runnerId: pause.runnerId,
+        resetsAt: pause.resetsAt,
+        resumeAt: pause.resumeAt,
+        pausedAt: pause.pausedAt,
+      })
+      .onConflictDoUpdate({
+        target: usagePauseTable.runId,
+        set: {
+          agent: pause.agent,
+          runnerId: pause.runnerId,
+          resetsAt: pause.resetsAt,
+          resumeAt: pause.resumeAt,
+          pausedAt: pause.pausedAt,
+        },
+      })
+      .run();
   });
 }
 
 export function usagePause(db: Database, runId: string): UsagePause | null {
-  return db
-    .query<UsagePause, [string]>(`SELECT ${COLUMNS} FROM usage_pause WHERE run_id=?`)
-    .get(runId);
+  return (
+    orm(db)
+      .select({
+        runId: usagePauseTable.runId,
+        itemId: usagePauseTable.itemId,
+        agent: usagePauseTable.agent,
+        runnerId: usagePauseTable.runnerId,
+        resetsAt: usagePauseTable.resetsAt,
+        resumeAt: usagePauseTable.resumeAt,
+        pausedAt: usagePauseTable.pausedAt,
+      })
+      .from(usagePauseTable)
+      .where(eq(usagePauseTable.runId, runId))
+      .get() ?? null
+  );
 }
 
 export function endUsagePause(
@@ -56,7 +73,7 @@ export function endUsagePause(
   immediate(db, () => {
     const pause = usagePause(db, runId);
     if (pause) accrueAwake(db, pause.itemId, mono, now);
-    db.run("DELETE FROM usage_pause WHERE run_id=?", [runId]);
+    orm(db).delete(usagePauseTable).where(eq(usagePauseTable.runId, runId)).run();
   });
 }
 
@@ -66,13 +83,22 @@ export function resumeUsagePauseNow(db: Database, runId: string, now: number): b
     .transaction(() => {
       const pause = usagePause(db, runId);
       if (!pause) return false;
-      db.run("UPDATE usage_pause SET resume_at=? WHERE run_id=?", [now, runId]);
-      const runner = pause.runnerId === null ? "" : " AND runner_id=?";
-      const args = pause.runnerId === null ? [pause.agent] : [pause.agent, pause.runnerId];
-      db.run(
-        `UPDATE runner_agent_policy SET cooldown_until=0 WHERE agent=? AND cooldown_until>0${runner}`,
-        args,
-      );
+      orm(db)
+        .update(usagePauseTable)
+        .set({ resumeAt: now })
+        .where(eq(usagePauseTable.runId, runId))
+        .run();
+      orm(db)
+        .update(runnerAgentPolicy)
+        .set({ cooldownUntil: 0 })
+        .where(
+          and(
+            eq(runnerAgentPolicy.agent, pause.agent),
+            gt(runnerAgentPolicy.cooldownUntil, 0),
+            pause.runnerId === null ? undefined : eq(runnerAgentPolicy.runnerId, pause.runnerId),
+          ),
+        )
+        .run();
       resumeAccountHealthNow(db, pause.agent, pause.runnerId, now);
       return true;
     })
@@ -81,7 +107,7 @@ export function resumeUsagePauseNow(db: Database, runId: string, now: number): b
 
 /** A pause lives in the process that waits for it; a restart starts from no waits. */
 export function clearUsagePauses(db: Database): void {
-  db.run("DELETE FROM usage_pause");
+  orm(db).delete(usagePauseTable).run();
 }
 
 export function earliestRunnerCooldown(

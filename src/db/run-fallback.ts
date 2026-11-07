@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { run, runFallbackAttempt, runnerCommand, runnerCommandAccount, runnerWork } from "./schema";
 import { immediate } from "./tx";
 
 export type FallbackOutcome = "failed" | "handed_over" | "usage_limit";
@@ -24,48 +27,70 @@ export function recordFallbackAttempt(
   },
 ): boolean {
   return immediate(db, () => {
-    if (!db.query("SELECT 1 FROM run WHERE id=?").get(input.runId)) return false;
+    const q = orm(db);
+    if (
+      !q
+        .select({ one: sql`1` })
+        .from(run)
+        .where(eq(run.id, input.runId))
+        .get()
+    )
+      return false;
     const generation =
-      db
-        .query<{ generation: number }, [string, string]>(
-          "SELECT generation FROM runner_work WHERE run_id=? AND runner_id=?",
-        )
-        .get(input.runId, input.runnerId)?.generation ?? 0;
-    const account = db
-      .query<{ accountId: string; bindingId: string }, [string, string, number]>(
-        `SELECT a.account_id AS accountId,a.binding_id AS bindingId FROM runner_command c
-         JOIN runner_command_account a ON a.command_id=c.id
-         WHERE c.run_id=? AND c.runner_id=? AND c.generation=? AND c.kind IN ('run','review','task')
-         ORDER BY c.ordinal DESC LIMIT 1`,
+      q
+        .select({ generation: runnerWork.generation })
+        .from(runnerWork)
+        .where(and(eq(runnerWork.runId, input.runId), eq(runnerWork.runnerId, input.runnerId)))
+        .get()?.generation ?? 0;
+    const account = q
+      .select({
+        accountId: runnerCommandAccount.accountId,
+        bindingId: runnerCommandAccount.bindingId,
+      })
+      .from(runnerCommand)
+      .innerJoin(runnerCommandAccount, eq(runnerCommandAccount.commandId, runnerCommand.id))
+      .where(
+        and(
+          eq(runnerCommand.runId, input.runId),
+          eq(runnerCommand.runnerId, input.runnerId),
+          eq(runnerCommand.generation, generation),
+          inArray(runnerCommand.kind, ["run", "review", "task"]),
+        ),
       )
-      .get(input.runId, input.runnerId, generation);
+      .orderBy(desc(runnerCommand.ordinal))
+      .limit(1)
+      .get();
     const ordinal =
-      db
-        .query<{ ordinal: number }, [string, string]>(
-          "SELECT COALESCE(MAX(ordinal),0) AS ordinal FROM run_fallback_attempt WHERE run_id=? AND call_id=?",
+      q
+        .select({ ordinal: sql<number>`COALESCE(MAX(${runFallbackAttempt.ordinal}),0)` })
+        .from(runFallbackAttempt)
+        .where(
+          and(
+            eq(runFallbackAttempt.runId, input.runId),
+            eq(runFallbackAttempt.callId, input.callId),
+          ),
         )
-        .get(input.runId, input.callId)!.ordinal + 1;
+        .get()!.ordinal + 1;
     if (ordinal > MAX_FALLBACK_ATTEMPTS) return false;
     return (
-      db
-        .query(
-          `INSERT OR IGNORE INTO run_fallback_attempt(run_id,call_id,ordinal,policy_key,outcome,
-           runner_id,generation,excluded_key,account_id,binding_id,recorded_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-        )
-        .run(
-          input.runId,
-          input.callId,
+      q
+        .insert(runFallbackAttempt)
+        .values({
+          runId: input.runId,
+          callId: input.callId,
           ordinal,
-          input.policyKey,
-          input.outcome,
-          input.runnerId,
+          policyKey: input.policyKey,
+          outcome: input.outcome,
+          runnerId: input.runnerId,
           generation,
-          input.excludedKey,
-          account?.accountId ?? null,
-          account?.bindingId ?? null,
-          input.now,
-        ).changes > 0
+          excludedKey: input.excludedKey,
+          accountId: account?.accountId ?? null,
+          bindingId: account?.bindingId ?? null,
+          recordedAt: input.now,
+        })
+        .onConflictDoNothing()
+        .returning({ ordinal: runFallbackAttempt.ordinal })
+        .get() !== undefined
     );
   });
 }
@@ -76,12 +101,19 @@ export function fallbackHistory(
   callId: string,
   policyKey: string,
 ): FallbackHistory {
-  const rows = db
-    .query<{ outcome: FallbackOutcome; excludedKey: string }, [string, string, string]>(
-      `SELECT outcome,excluded_key AS excludedKey FROM run_fallback_attempt
-       WHERE run_id=? AND call_id=? AND policy_key=? AND closed_at IS NULL ORDER BY ordinal`,
+  const rows = orm(db)
+    .select({ outcome: runFallbackAttempt.outcome, excludedKey: runFallbackAttempt.excludedKey })
+    .from(runFallbackAttempt)
+    .where(
+      and(
+        eq(runFallbackAttempt.runId, runId),
+        eq(runFallbackAttempt.callId, callId),
+        eq(runFallbackAttempt.policyKey, policyKey),
+        isNull(runFallbackAttempt.closedAt),
+      ),
     )
-    .all(runId, callId, policyKey);
+    .orderBy(asc(runFallbackAttempt.ordinal))
+    .all();
   const excluded: string[] = [];
   for (const row of rows)
     if (row.excludedKey && !excluded.includes(row.excludedKey)) excluded.push(row.excludedKey);
@@ -98,8 +130,15 @@ export function closeFallbackAttempts(
   callId: string,
   now: number,
 ): void {
-  db.run(
-    "UPDATE run_fallback_attempt SET closed_at=? WHERE run_id=? AND call_id=? AND closed_at IS NULL",
-    [now, runId, callId],
-  );
+  orm(db)
+    .update(runFallbackAttempt)
+    .set({ closedAt: now })
+    .where(
+      and(
+        eq(runFallbackAttempt.runId, runId),
+        eq(runFallbackAttempt.callId, callId),
+        isNull(runFallbackAttempt.closedAt),
+      ),
+    )
+    .run();
 }

@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { enqueueJob } from "./jobs";
+import { orm } from "./orm";
+import { job, runnerSetupHold, runnerSetupResume } from "./schema";
 
 /**
  * A queued item held because its delegator has no runner Paws may use. The scheduler skips it,
@@ -19,23 +22,31 @@ export type RunnerSetupHold = {
   notifiedAt: number | null;
 };
 
+const HOLD = {
+  itemId: runnerSetupHold.itemId,
+  ownerUserId: runnerSetupHold.ownerUserId,
+  reason: sql<RunnerSetupHold["reason"]>`${runnerSetupHold.reason}`,
+  runnerId: runnerSetupHold.runnerId,
+  agent: runnerSetupHold.agent,
+  runId: runnerSetupHold.runId,
+  since: runnerSetupHold.since,
+  notifiedAt: runnerSetupHold.notifiedAt,
+};
+
 export function getRunnerSetupHold(db: Database, itemId: string): RunnerSetupHold | null {
-  return db
-    .query<RunnerSetupHold, [string]>(
-      `SELECT item_id AS itemId,owner_user_id AS ownerUserId,reason,runner_id AS runnerId,agent,
-       run_id AS runId,since,notified_at AS notifiedAt FROM runner_setup_hold WHERE item_id=?`,
-    )
-    .get(itemId);
+  return (
+    orm(db).select(HOLD).from(runnerSetupHold).where(eq(runnerSetupHold.itemId, itemId)).get() ??
+    null
+  );
 }
 
 export function listRunnerSetupHolds(db: Database, ownerUserId?: string): RunnerSetupHold[] {
-  const select = `SELECT item_id AS itemId,owner_user_id AS ownerUserId,reason,runner_id AS runnerId,
-       agent,run_id AS runId,since,notified_at AS notifiedAt FROM runner_setup_hold`;
-  return ownerUserId === undefined
-    ? db.query<RunnerSetupHold, []>(`${select} ORDER BY since,item_id`).all()
-    : db
-        .query<RunnerSetupHold, [string]>(`${select} WHERE owner_user_id=? ORDER BY since,item_id`)
-        .all(ownerUserId);
+  return orm(db)
+    .select(HOLD)
+    .from(runnerSetupHold)
+    .where(ownerUserId === undefined ? undefined : eq(runnerSetupHold.ownerUserId, ownerUserId))
+    .orderBy(asc(runnerSetupHold.since), asc(runnerSetupHold.itemId))
+    .all();
 }
 
 /**
@@ -54,30 +65,29 @@ export function holdForRunnerSetup(
     now: number;
   },
 ): RunnerSetupHold {
-  db.run(
-    `INSERT INTO runner_setup_hold(item_id,owner_user_id,reason,runner_id,agent,run_id,since)
-     VALUES(?,?,?,?,?,?,?)
-     ON CONFLICT(item_id) DO UPDATE SET owner_user_id=excluded.owner_user_id,
-     reason=excluded.reason,runner_id=excluded.runner_id,agent=excluded.agent,
-     run_id=COALESCE(excluded.run_id,runner_setup_hold.run_id)`,
-    [
-      input.itemId,
-      input.ownerUserId,
-      input.reason,
-      input.runnerId ?? null,
-      input.agent ?? null,
-      input.runId ?? null,
-      input.now,
-    ],
-  );
+  const hold = {
+    ownerUserId: input.ownerUserId,
+    reason: input.reason,
+    runnerId: input.runnerId ?? null,
+    agent: input.agent ?? null,
+  };
+  orm(db)
+    .insert(runnerSetupHold)
+    .values({ itemId: input.itemId, ...hold, runId: input.runId ?? null, since: input.now })
+    .onConflictDoUpdate({
+      target: runnerSetupHold.itemId,
+      set: { ...hold, runId: sql`COALESCE(excluded.run_id,${runnerSetupHold.runId})` },
+    })
+    .run();
   return getRunnerSetupHold(db, input.itemId)!;
 }
 
 export function markRunnerSetupNotified(db: Database, itemId: string, now: number): void {
-  db.run("UPDATE runner_setup_hold SET notified_at=? WHERE item_id=? AND notified_at IS NULL", [
-    now,
-    itemId,
-  ]);
+  orm(db)
+    .update(runnerSetupHold)
+    .set({ notifiedAt: now })
+    .where(and(eq(runnerSetupHold.itemId, itemId), isNull(runnerSetupHold.notifiedAt)))
+    .run();
 }
 
 /**
@@ -87,14 +97,22 @@ export function markRunnerSetupNotified(db: Database, itemId: string, now: numbe
  */
 export function releaseRunnerSetupHold(db: Database, itemId: string, now?: number): boolean {
   const hold = getRunnerSetupHold(db, itemId);
-  if (!hold || db.run("DELETE FROM runner_setup_hold WHERE item_id=?", [itemId]).changes === 0)
-    return false;
+  if (!hold) return false;
+  const deleted = orm(db)
+    .delete(runnerSetupHold)
+    .where(eq(runnerSetupHold.itemId, itemId))
+    .returning({ itemId: runnerSetupHold.itemId })
+    .get();
+  if (deleted === undefined) return false;
   if (hold.runId !== null && now !== undefined)
-    db.run(
-      `INSERT INTO runner_setup_resume(item_id,run_id,released_at) VALUES(?,?,?)
-       ON CONFLICT(item_id) DO UPDATE SET run_id=excluded.run_id,released_at=excluded.released_at`,
-      [itemId, hold.runId, now],
-    );
+    orm(db)
+      .insert(runnerSetupResume)
+      .values({ itemId, runId: hold.runId, releasedAt: now })
+      .onConflictDoUpdate({
+        target: runnerSetupResume.itemId,
+        set: { runId: hold.runId, releasedAt: now },
+      })
+      .run();
   return true;
 }
 
@@ -103,11 +121,11 @@ export function releaseRunnerSetupHold(db: Database, itemId: string, now?: numbe
  * instead of opening a new one. Consumes the record either way.
  */
 export function takeRunnerSetupResume(db: Database, itemId: string, runId: string): boolean {
-  const row = db
-    .query<{ runId: string }, [string]>(
-      "DELETE FROM runner_setup_resume WHERE item_id=? RETURNING run_id AS runId",
-    )
-    .get(itemId);
+  const row = orm(db)
+    .delete(runnerSetupResume)
+    .where(eq(runnerSetupResume.itemId, itemId))
+    .returning({ runId: runnerSetupResume.runId })
+    .get();
   return row?.runId === runId;
 }
 
@@ -116,12 +134,18 @@ export function takeRunnerSetupResume(db: Database, itemId: string, runId: strin
  * rule the triggers of migration 144 follow.
  */
 export function enqueueRunnerSetupCheck(db: Database, ownerUserId: string, now: number): void {
-  const pending = db
-    .query(
-      `SELECT 1 FROM job WHERE queue=? AND status='pending'
-       AND json_extract(payload,'$.ownerUserId')=? LIMIT 1`,
+  const pending = orm(db)
+    .select({ one: sql`1` })
+    .from(job)
+    .where(
+      and(
+        eq(job.queue, JOB_KIND.runnerSetupCheck),
+        eq(job.status, "pending"),
+        sql`json_extract(${job.payload},'$.ownerUserId') = ${ownerUserId}`,
+      ),
     )
-    .get(JOB_KIND.runnerSetupCheck, ownerUserId);
+    .limit(1)
+    .get();
   if (pending) return;
   enqueueJob(db, {
     queue: JOB_KIND.runnerSetupCheck,
