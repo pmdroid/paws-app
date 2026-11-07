@@ -863,6 +863,12 @@ export {
   listRunnerSetupHolds,
   markRunnerSetupNotified,
   releaseRunnerSetupHold,
+  getRunnerSetupHoldSteps,
+  holdForRunnerSetupSteps,
+  listRunnerSetupHoldsSteps,
+  markRunnerSetupNotifiedSteps,
+  releaseRunnerSetupHoldSteps,
+  takeRunnerSetupResumeSteps,
   takeRunnerSetupResume,
 } from "./runner-setup-hold";
 export type { RunnerSetupHold } from "./runner-setup-hold";
