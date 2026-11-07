@@ -539,6 +539,13 @@ export {
   latestSealedSnapshot,
   lastRunCommandAccount,
   currentRunnerAgentVersion,
+  clearRunnerSessionMoveSteps,
+  currentRunnerAgentVersionSteps,
+  lastRunCommandAccountSteps,
+  latestSealedSnapshotSteps,
+  noteRunnerSessionMoveSteps,
+  requestRunnerSessionMoveSteps,
+  runnerSessionMoveSteps,
   type SealedSessionSnapshot,
 } from "./runner-session-moves";
 export {
