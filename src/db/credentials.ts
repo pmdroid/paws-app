@@ -1,28 +1,35 @@
 import type { Database } from "bun:sqlite";
 import { and, eq } from "drizzle-orm";
-import { orm } from "./orm";
-import { credential } from "./schema";
+import { settled, sqliteDb, type Q } from "./db";
 
 export type CredentialKey = { kind: "linear" | "slack"; workspace: string };
 
-export function readCredentialCiphertext(db: Database, key: CredentialKey): string | null {
-  return (
-    orm(db)
+export function* readCredentialCiphertextSteps(q: Q, key: CredentialKey) {
+  const { credential } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({ ciphertext: credential.ciphertext })
       .from(credential)
-      .where(and(eq(credential.kind, key.kind), eq(credential.workspace, key.workspace)))
-      .get()?.ciphertext ?? null
+      .where(and(eq(credential.kind, key.kind), eq(credential.workspace, key.workspace))),
   );
+  return row?.ciphertext ?? null;
 }
 
-export function writeCredentialCiphertext(
-  db: Database,
+export function readCredentialCiphertext(db: Database, key: CredentialKey): string | null {
+  return settled(sqliteDb(db).run((q) => readCredentialCiphertextSteps(q, key)));
+}
+
+type CredentialWrite = { now?: number; onlyIfMissing?: boolean };
+
+export function* writeCredentialCiphertextSteps(
+  q: Q,
   key: CredentialKey,
   ciphertext: string,
-  options: { now?: number; onlyIfMissing?: boolean } = {},
-): boolean {
+  options: CredentialWrite = {},
+) {
+  const { credential } = q.t;
   const updatedAt = options.now ?? Date.now();
-  const insert = orm(db)
+  const insert = q.orm
     .insert(credential)
     .values({ kind: key.kind, workspace: key.workspace, ciphertext, updatedAt });
   const written = options.onlyIfMissing
@@ -31,5 +38,17 @@ export function writeCredentialCiphertext(
         target: [credential.kind, credential.workspace],
         set: { ciphertext, updatedAt },
       });
-  return written.returning({ kind: credential.kind }).all().length > 0;
+  const rows = yield* q.all(written.returning({ kind: credential.kind }));
+  return rows.length > 0;
+}
+
+export function writeCredentialCiphertext(
+  db: Database,
+  key: CredentialKey,
+  ciphertext: string,
+  options: CredentialWrite = {},
+): boolean {
+  return settled(
+    sqliteDb(db).run((q) => writeCredentialCiphertextSteps(q, key, ciphertext, options)),
+  );
 }
