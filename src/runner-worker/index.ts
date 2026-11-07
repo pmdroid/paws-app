@@ -1266,6 +1266,9 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.suggestedFindings?.length
         ? { suggestedFindings: command.suggestedFindings }
         : {}),
+      ...(command.type === "run" && command.reviewFindings?.length
+        ? { reviewFindings: command.reviewFindings }
+        : {}),
       ...(command.type === "run" && command.ciRerun && options.answer
         ? {
             ciRerun: remoteCiRerun(

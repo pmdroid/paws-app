@@ -15,7 +15,14 @@ import {
   setReviewFindingStatus,
   upsertCloseoutStep,
 } from "../src/db";
-import { backfillReviewFindings, recordAcceptedFindings, type TaskReviewReader } from "../src/loop";
+import { formatFixFeedback } from "../src/closeout";
+import {
+  backfillReviewFindings,
+  failedReviewFindings,
+  recordAcceptedFindings,
+  reviewFindingGroups,
+  type TaskReviewReader,
+} from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
 
 const BASE = "b".repeat(40);
@@ -43,6 +50,7 @@ function accept(
     failOn?: "P0" | "P1" | "P2" | "P3" | null;
     preExisting?: number[];
     review?: string;
+    rejected?: boolean;
   },
 ): void {
   const review = input.review ?? "independent-review";
@@ -80,7 +88,7 @@ function accept(
     {
       id: review,
       kind: "review",
-      state: "passed",
+      state: input.rejected ? "failed" : "passed",
       command: "",
       detail: null,
       attempt: 1,
@@ -100,7 +108,13 @@ function accept(
     },
     input.at,
   );
-  finishCloseoutProgress(db, input.itemId, identity, "accepted", input.at);
+  finishCloseoutProgress(
+    db,
+    input.itemId,
+    identity,
+    input.rejected ? "rejected" : "accepted",
+    input.at,
+  );
 }
 
 function item(db: Database, id: string): void {
@@ -462,4 +476,72 @@ test("finding report filters work by head alone and item", () => {
   } finally {
     db.close();
   }
+});
+
+test("a review that fails with a P1 hands the agent its location and explanation", async () => {
+  const db = tempDb();
+  const home = tempHome();
+  try {
+    item(db, "item-r");
+    accept(db, home, {
+      itemId: "item-r",
+      head: "d".repeat(40),
+      at: 100,
+      findings: [STALE, MINOR, BLOCKING],
+      preExisting: [0],
+      rejected: true,
+    });
+    const failed = await failedReviewFindings(db, "item-r", home);
+    expect(reviewFindingGroups(failed)).toEqual([
+      {
+        reviewId: "independent-review",
+        lines: [
+          "P1 at src/legacy.ts:4: unchecked null: the handler reads the user before the check. (e) Pre-existing code the change did not edit: not required, does not block.",
+          "P1 at src/new.ts:20: race: two writers commit the same row. (e)",
+        ],
+      },
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("an accepted head hands the agent no failed findings", async () => {
+  const db = tempDb();
+  const home = tempHome();
+  try {
+    item(db, "item-s");
+    accept(db, home, { itemId: "item-s", head: "e".repeat(40), at: 100, findings: [BLOCKING] });
+    expect(await failedReviewFindings(db, "item-s", home)).toEqual([]);
+  } finally {
+    db.close();
+  }
+});
+
+test("finding lines cut each explanation at 1,000 characters and list at most 20", () => {
+  const findings = Array.from({ length: 23 }, (_, index) => ({
+    severity: "P1" as const,
+    location: `src/a.ts:${index + 1}`,
+    explanation: "x".repeat(1500),
+    evidence: "e",
+  }));
+  const groups = reviewFindingGroups([{ itemId: "independent-review", findings }]);
+  expect(groups).toHaveLength(1);
+  expect(groups[0]!.lines).toHaveLength(21);
+  expect(groups[0]!.lines[0]).toBe(`P1 at src/a.ts:1: ${"x".repeat(1000)}… (e)`);
+  expect(groups[0]!.lines.at(-1)).toBe("3 more findings not shown.");
+  const feedback = formatFixFeedback(
+    {
+      specVersion: "0.1",
+      decision: "rejected",
+      gate: "beforePR",
+      base: BASE,
+      head: "f".repeat(40),
+      policy: { path: null, digest: DIGEST },
+      items: [],
+    } as unknown as Parameters<typeof formatFixFeedback>[0],
+    [{ itemId: "independent-review", findings }],
+  );
+  expect(feedback.split("\n").filter((line) => line.startsWith("- review "))).toHaveLength(20);
+  expect(feedback).toEndWith("- 3 more findings not shown.");
 });

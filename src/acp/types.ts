@@ -113,6 +113,7 @@ export interface RunAgentOptions {
   closeoutFocus?: CloseoutFocus;
   pullRequestDraft?: PullRequestDraft;
   suggestedFindings?: readonly SuggestedFindingLine[];
+  reviewFindings?: readonly ReviewFindingGroup[];
   hostAccess?: boolean;
   prepareOnly?: boolean;
   role: AgentRole;
@@ -229,6 +230,8 @@ export interface ExecuteItemResult {
   branch: string;
   run: RunAgentResult;
 }
+
+export type ReviewFindingGroup = { reviewId: string; lines: readonly string[] };
 
 export type SuggestedFindingLine = {
   id: string;

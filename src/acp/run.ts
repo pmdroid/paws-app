@@ -415,6 +415,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         ...(options.suggestedFindings?.length
           ? { suggestedFindings: options.suggestedFindings }
           : {}),
+        ...(options.reviewFindings?.length ? { reviewFindings: options.reviewFindings } : {}),
         signal: runAbort.signal,
         onAsk: (question) => emit({ type: "ask_team", question, phase: "asked" }),
         onAnswer: (question, answer) =>

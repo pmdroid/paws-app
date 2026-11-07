@@ -82,6 +82,7 @@ import {
   QUESTION_ENDS_TURN_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
   SUGGESTED_FINDINGS_RUNNER_VERSION,
+  REVIEW_FINDINGS_RUNNER_VERSION,
   GITHUB_READ_RUNNER_VERSION,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
@@ -1737,6 +1738,16 @@ export function createRemoteAgentRunner(options: {
                       input.suggestedFindings?.length &&
                       versionAtLeast(runnerVersion, SUGGESTED_FINDINGS_RUNNER_VERSION)
                         ? { suggestedFindings: input.suggestedFindings.slice(0, 50) }
+                        : {}),
+                      ...(input.role !== "reviewer" &&
+                      input.reviewFindings?.length &&
+                      versionAtLeast(runnerVersion, REVIEW_FINDINGS_RUNNER_VERSION)
+                        ? {
+                            reviewFindings: input.reviewFindings.slice(0, 20).map((group) => ({
+                              reviewId: group.reviewId,
+                              lines: group.lines.slice(0, 21).map((line) => line.slice(0, 4000)),
+                            })),
+                          }
                         : {}),
                       ...(githubRead ? { githubRead: true as const } : {}),
                       ...(input.role !== "reviewer" &&

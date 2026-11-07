@@ -144,6 +144,7 @@ export {
   type RunAgentOptions,
   type RunAgentResult,
   type RunOutcome,
+  type ReviewFindingGroup,
   type SuggestedFindingLine,
 } from "./types";
 export {

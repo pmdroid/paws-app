@@ -104,10 +104,12 @@ export {
 } from "./link-ask";
 export { VISUAL_REVIEW_NEEDS_LINK, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
 export {
+  failedReviewFindings,
   inertMarkdown,
   openFindingsLine,
   openFindingsSection,
   pawsIssueUrl,
+  reviewFindingGroups,
   type OpenFinding,
   type OpenItems,
 } from "./open-findings";

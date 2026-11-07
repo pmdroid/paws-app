@@ -207,6 +207,7 @@ export function openLinkAsk(
     detail: string;
     answerers: readonly string[];
     rounds?: LinkAskRounds;
+    findings?: string;
     now: number;
   },
 ): { question: StoredQuestion; linkAsk: LinkAsk } {
@@ -215,7 +216,12 @@ export function openLinkAsk(
     db,
     input.asker,
     "link",
-    linkAskBody({ kind: input.kind, title, detail: input.detail, link: input.link }),
+    linkAskBody({
+      kind: input.kind,
+      title,
+      detail: [input.detail, input.findings].filter(Boolean).join("\n"),
+      link: input.link,
+    }),
     {
       reason: `link:${input.kind}`,
       context: JSON.stringify({ link: input.link, label: LINK_ASK_ACTIONS[input.kind] }),

@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { McpServerStdio } from "@agentclientprotocol/sdk";
 import type { AgentRole } from "./adapters";
-import type { AcpEventOrigin, SuggestedFindingLine } from "./types";
+import type { AcpEventOrigin, ReviewFindingGroup, SuggestedFindingLine } from "./types";
 import {
   artifactMimeType,
   ArtifactRejectedError,
@@ -195,6 +195,7 @@ interface HostToolBridgeOptions {
   closeoutFocus?: CloseoutFocus;
   pullRequestDraft?: PullRequestDraft;
   suggestedFindings?: readonly SuggestedFindingLine[];
+  reviewFindings?: readonly ReviewFindingGroup[];
   signal: AbortSignal;
   onAsk?: (question: string) => void | Promise<void>;
   onAnswer?: (question: string, answer: string) => void | Promise<void>;
@@ -226,6 +227,32 @@ function withSuggested(
     })),
     suggested_note:
       "Suggested findings did not block and are not checks. Decide on each one in your final message's Finding decisions section.",
+  });
+}
+
+function withReviewFindings(
+  report: string,
+  groups: readonly ReviewFindingGroup[] | undefined,
+): string {
+  if (!groups?.length) return report;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(report);
+  } catch (error) {
+    journalCaught(error, "ask-team.withReviewFindings.parse", null);
+    return report;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return report;
+  const { required } = parsed as { required?: unknown };
+  if (!Array.isArray(required)) return report;
+  return JSON.stringify({
+    ...parsed,
+    required: required.map((entry: unknown) => {
+      if (typeof entry !== "object" || entry === null) return entry;
+      const { id, kind } = entry as { id?: unknown; kind?: unknown };
+      const group = kind === "review" ? groups.find((found) => found.reviewId === id) : undefined;
+      return group ? { ...entry, findings: group.lines } : entry;
+    }),
   });
 }
 
@@ -407,7 +434,10 @@ async function handleConnection(
                 closeoutModel(parsed.arguments),
               );
         if (parsed.tool === "get_closeout")
-          answer = withSuggested(answer, options.suggestedFindings);
+          answer = withSuggested(
+            withReviewFindings(answer, options.reviewFindings),
+            options.suggestedFindings,
+          );
       } finally {
         options.onHookEnd?.();
       }

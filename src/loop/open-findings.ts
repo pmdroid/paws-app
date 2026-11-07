@@ -1,7 +1,19 @@
 import type { Database } from "bun:sqlite";
-import { reviewRecordsAt, type Finding } from "../closeout";
+import type { ReviewFindingGroup } from "../acp";
+import {
+  omittedFindings,
+  reviewFindingLines,
+  reviewRecordsAt,
+  type Finding,
+  type ReviewFindings,
+} from "../closeout";
 import { riskLine, type RiskClassification } from "../core";
-import { acceptedCloseoutReviews, type AcceptedCloseoutReviews, type WorkItemRecord } from "../db";
+import {
+  acceptedCloseoutReviews,
+  failedCloseoutReviews,
+  type AcceptedCloseoutReviews,
+  type WorkItemRecord,
+} from "../db";
 import { dashboardIssuePath } from "../dashboard-links";
 
 const SEVERITIES: readonly Finding["severity"][] = ["P0", "P1", "P2", "P3"];
@@ -89,6 +101,43 @@ export function nonBlockingFindings(
       ];
     });
   });
+}
+
+export async function failedReviewFindings(
+  db: Database,
+  itemId: string,
+  pawsRoot: string,
+): Promise<ReviewFindings[]> {
+  const failed = failedCloseoutReviews(db, itemId);
+  if (failed === null || failed.reviews.length === 0) return [];
+  const records = await reviewRecordsAt(failed.taskId, failed.head, pawsRoot);
+  return acceptedReviewRecords(failed.reviews, records).map(({ review, record }) => {
+    const marked = new Set(review.preExisting ?? []);
+    const preExisting = record.findings.filter((_, index) => marked.has(index));
+    return {
+      itemId: review.id,
+      findings: record.findings.filter(
+        (finding, index) =>
+          marked.has(index) ||
+          review.failOn === null ||
+          review.failOn === undefined ||
+          meets(finding.severity, review.failOn),
+      ),
+      ...(preExisting.length > 0 ? { preExisting } : {}),
+    };
+  });
+}
+
+export function reviewFindingGroups(reviews: readonly ReviewFindings[]): ReviewFindingGroup[] {
+  const { lines, omitted } = reviewFindingLines(reviews);
+  const groups: Array<{ reviewId: string; lines: string[] }> = [];
+  for (const { itemId, line } of lines) {
+    const last = groups.at(-1);
+    if (last?.reviewId === itemId) last.lines.push(line);
+    else groups.push({ reviewId: itemId, lines: [line] });
+  }
+  if (omitted > 0) groups.at(-1)?.lines.push(omittedFindings(omitted));
+  return groups;
 }
 
 /** `<publicUrl>/dashboard/issues/<identifier>`, or null without a public URL. */
