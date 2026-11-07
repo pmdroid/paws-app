@@ -241,6 +241,16 @@ export {
   type JobHandler,
   type JobLoopLiveness,
 } from "./loop";
+export {
+  deleteInstance,
+  heartbeatInstance,
+  INSTANCE_DEAD_MS,
+  INSTANCE_HEARTBEAT_MS,
+  liveInstances,
+  registerInstance,
+  type Instance,
+  type InstanceRole,
+} from "./instances";
 export { startLoops } from "./loops";
 export { legacyMigrate } from "./legacy-migrate";
 export {

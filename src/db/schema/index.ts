@@ -5,6 +5,7 @@ export * from "./closeout";
 export * from "./credentials";
 export * from "./github";
 export * from "./improvements";
+export * from "./instances";
 export * from "./items";
 export * from "./jobs";
 export * from "./linear";
