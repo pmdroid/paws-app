@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, gte, max, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
+import { jsonValue, parsedJson } from "./json-text";
 
 export type CiRoundCheck = {
   name: string;
@@ -26,67 +29,84 @@ export type CiRound = {
   recordedAt: number;
 };
 
-type CiRoundRow = {
-  item_id: string;
-  head: string;
-  run_id: string | null;
-  next: CiRound["next"];
-  fix: number | null;
-  fix_limit: number;
-  checks: string;
-  recorded_at: number;
-};
-
 /** One round per head. A head read again replaces its checks and outcome. */
-export function recordCiRound(db: Database, round: CiRound): void {
-  db.run(
-    `INSERT INTO ci_round (item_id, head, run_id, next, fix, fix_limit, checks, recorded_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (item_id, head) DO UPDATE SET
-       run_id = excluded.run_id, next = excluded.next, fix = excluded.fix,
-       fix_limit = excluded.fix_limit, checks = excluded.checks, recorded_at = excluded.recorded_at`,
-    [
-      round.itemId,
-      round.head,
-      round.runId,
-      round.next,
-      round.fix,
-      round.fixLimit,
-      JSON.stringify(round.checks),
-      round.recordedAt,
-    ],
+export function* recordCiRoundSteps(q: Q, round: CiRound) {
+  const { ciRound } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(ciRound)
+      .values({
+        itemId: round.itemId,
+        head: round.head,
+        runId: round.runId,
+        next: round.next,
+        fix: round.fix,
+        fixLimit: round.fixLimit,
+        checks: jsonValue(q, round.checks),
+        recordedAt: round.recordedAt,
+      })
+      .onConflictDoUpdate({
+        target: [ciRound.itemId, ciRound.head],
+        set: {
+          runId: sql`excluded.run_id`,
+          next: sql`excluded.next`,
+          fix: sql`excluded.fix`,
+          fixLimit: sql`excluded.fix_limit`,
+          checks: sql`excluded.checks`,
+          recordedAt: sql`excluded.recorded_at`,
+        },
+      }),
   );
 }
 
+export function recordCiRound(db: Database, round: CiRound): void {
+  settled(sqliteDb(db).run((q) => recordCiRoundSteps(q, round)));
+}
+
 /** Oldest first. */
-export function listCiRounds(db: Database, itemId?: string): CiRound[] {
-  const rows =
-    itemId === undefined
-      ? db.query<CiRoundRow, []>(`SELECT * FROM ci_round ORDER BY recorded_at, rowid`).all()
-      : db
-          .query<CiRoundRow, [string]>(
-            `SELECT * FROM ci_round WHERE item_id = ? ORDER BY recorded_at, rowid`,
-          )
-          .all(itemId);
-  return rows.map((row) => ({
-    itemId: row.item_id,
+export function* listCiRoundsSteps(q: Q, itemId?: string) {
+  const { ciRound } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(ciRound)
+      .where(itemId === undefined ? undefined : eq(ciRound.itemId, itemId))
+      .orderBy(asc(ciRound.recordedAt), asc(ciRound.itemId), asc(ciRound.head)),
+  );
+  return rows.map((row): CiRound => ({
+    itemId: row.itemId,
     head: row.head,
-    runId: row.run_id,
-    next: row.next,
+    runId: row.runId,
+    next: row.next as CiRound["next"],
     fix: row.fix,
-    fixLimit: row.fix_limit,
-    checks: JSON.parse(row.checks) as CiRoundCheck[],
-    recordedAt: row.recorded_at,
+    fixLimit: row.fixLimit,
+    checks: parsedJson<CiRoundCheck[]>(q, row.checks),
+    recordedAt: row.recordedAt,
   }));
 }
 
-export function countCiFixes(db: Database, itemId: string, sinceJobId: number): number {
-  const row = db
-    .query<{ n: number | null }, [string, number]>(
-      `SELECT MAX(fix) AS n FROM ci_round
-       WHERE item_id = ? AND next = 'agent'
-         AND recorded_at >= COALESCE((SELECT created_at FROM job WHERE id = ?), 0)`,
-    )
-    .get(itemId, sinceJobId);
+export function listCiRounds(db: Database, itemId?: string): CiRound[] {
+  return settled(sqliteDb(db).run((q) => listCiRoundsSteps(q, itemId)));
+}
+
+export function* countCiFixesSteps(q: Q, itemId: string, sinceJobId: number) {
+  const { ciRound, job } = q.t;
+  const since = q.orm.select({ createdAt: job.createdAt }).from(job).where(eq(job.id, sinceJobId));
+  const row = yield* q.one(
+    q.orm
+      .select({ n: max(ciRound.fix) })
+      .from(ciRound)
+      .where(
+        and(
+          eq(ciRound.itemId, itemId),
+          eq(ciRound.next, "agent"),
+          gte(ciRound.recordedAt, sql`COALESCE((${since}), 0)`),
+        ),
+      ),
+  );
   return Number(row?.n ?? 0);
+}
+
+export function countCiFixes(db: Database, itemId: string, sinceJobId: number): number {
+  return settled(sqliteDb(db).run((q) => countCiFixesSteps(q, itemId, sinceJobId)));
 }
