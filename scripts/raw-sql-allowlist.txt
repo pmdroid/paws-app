@@ -175,42 +175,16 @@ src/db/item-activity.ts | : db .query<{ name: string; live: number }, [number, s
 src/db/item-activity.ts | const jobs = db .query<JobRow, [string, string, string, string]>( | not yet converted to Drizzle
 src/db/item-activity.ts | db .query<{ since: number }, [string]>("SELECT since FROM item_wait WHERE item_id=?") | not yet converted to Drizzle
 src/db/item-activity.ts | db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(id)?.name ?? | not yet converted to Drizzle
-src/db/items.ts | const table = db .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'item_continuation'") | not yet converted to Drizzle
-src/db/items.ts | const row = db.query<ItemSql, [string]>(`SELECT ${itemColumns(db)} WHERE id = ?`).get(id); | not yet converted to Drizzle
-src/db/items.ts | return db .query<ItemSql, []>(`SELECT ${itemColumns(db)} ORDER BY created_at, id`) | not yet converted to Drizzle
-src/db/items.ts | return db .query<ItemSql, string[]>( | not yet converted to Drizzle
 src/db/items.ts | const updated = db.run( | not yet converted to Drizzle
-src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | db .query<{ item_id: string; at: number }, []>( | not yet converted to Drizzle
-src/db/items.ts | return db .query< | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET session_key = ? WHERE id = ?", [patch.sessionKey, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run(`UPDATE work_item SET ${LIMIT_COLUMN[stage]} = ? WHERE id = ?`, [value, id]); | not yet converted to Drizzle
-src/db/items.ts | const row = db .query<{ reason: string | null }, [string]>( | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET checkpoint = ? WHERE id = ?", [ | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET recovery_attempts = ? WHERE id = ?", [attempts, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET recovery_attempts = 1, resumed_at = ? WHERE id = ?", [now, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET current_run_id = ? WHERE id = ?", [runId, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET last_mono_ms = ? WHERE id = ?", [mono, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | db.run( | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
 src/db/items.ts | const open = db .query<{ waitingMs: number }, [string, number]>( | not yet converted to Drizzle
 src/db/items.ts | db.run("DELETE FROM agent_wait WHERE run_id=?", [run.runId]); | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | const row = db .query< | not yet converted to Drizzle
 src/db/items.ts | db .query( | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE work_item SET accepted_head = ? WHERE id = ?", [head, id]); | not yet converted to Drizzle
-src/db/items.ts | db.run(`UPDATE work_item SET ${limit} = MAX(${limit}, ${STAGE_COLUMN[stage]}) + ? WHERE id = ?`, [ | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | db.run(`UPDATE work_item SET ${STAGE_COLUMN[stage]} = 0 WHERE id = ?`, [id]); | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | return db .query<{ id: number; handoff: string | null }, [string, string]>( | not yet converted to Drizzle
-src/db/items.ts | db.run("UPDATE job SET last_error = 'time_limit_carried' WHERE id = ?", [entry.jobId]); | not yet converted to Drizzle
 src/db/items.ts | db.run( | not yet converted to Drizzle
-src/db/items.ts | return db .query<{ itemId: string }, [string, string]>( | not yet converted to Drizzle
-src/db/items.ts | db .query("SELECT 1 FROM outbox WHERE idempotency_key LIKE ? AND created_at>=?") | not yet converted to Drizzle
-src/db/items.ts | return db.run( | not yet converted to Drizzle
 src/db/items.ts | db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]); | not yet converted to Drizzle
 src/db/items.ts | db .query(`SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=? | not yet converted to Drizzle
 src/db/jobs.ts | const row = db.query<Record<string, unknown>, Array<string | number>>(sql).get(...binds); | not yet converted to Drizzle
