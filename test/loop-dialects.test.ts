@@ -42,17 +42,15 @@ forEachDialect((connect) => {
     open.push(handle);
     const { db } = handle;
     await seed(db, (q) =>
-      q.orm
-        .insert(q.t.job)
-        .values({
-          id: 1,
-          queue: "gone",
-          runAt: 0,
-          createdAt: 0,
-          status: "running",
-          lockedBy: "w1",
-          lockedUntil: 50,
-        }),
+      q.orm.insert(q.t.job).values({
+        id: 1,
+        queue: "gone",
+        runAt: 0,
+        createdAt: 0,
+        status: "running",
+        lockedBy: "w1",
+        lockedUntil: 50,
+      }),
     );
     const claimed = (await db.run((q) => getJobSteps(q, 1)))!;
     const other: Job = { ...claimed, lockedBy: "w2" };
