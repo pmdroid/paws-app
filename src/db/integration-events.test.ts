@@ -3,7 +3,7 @@ import { listGitHubDeliveries, migrate, openDatabase, recordGitHubDelivery } fro
 
 const DAY = 24 * 60 * 60 * 1000;
 
-test("a GitHub delivery keeps its id, event and time but not its payload", () => {
+test("a GitHub delivery keeps its id, event, time and payload", () => {
   const db = openDatabase(":memory:");
   migrate(db);
   expect(
@@ -17,11 +17,11 @@ test("a GitHub delivery keeps its id, event and time but not its payload", () =>
     recordGitHubDelivery(db, { deliveryId: "d-1", event: "check_run", payload: "{}" }, 2_000),
   ).toBe(false);
   expect(listGitHubDeliveries(db)).toEqual([
-    { deliveryId: "d-1", event: "check_run", payload: "", receivedAt: 1_000 },
+    { deliveryId: "d-1", event: "check_run", payload: "x".repeat(20_000), receivedAt: 1_000 },
   ]);
 });
 
-test("GitHub deliveries older than three days are deleted", () => {
+test("GitHub deliveries and their payloads older than three days are deleted", () => {
   const db = openDatabase(":memory:");
   migrate(db);
   const now = 10 * DAY;

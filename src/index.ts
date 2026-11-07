@@ -9,7 +9,7 @@ import { startBrowserOnboarding } from "./onboarding-start";
 import { createBrowserOnboarding } from "./onboarding";
 import { runRunnerCli } from "./runner-cli";
 import { createAccountManagement } from "./account-management";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createOnboardingReadiness } from "./onboarding-readiness";
@@ -65,6 +65,8 @@ import {
   pawsPaths,
   readMergeSettings,
   readQueueSettings,
+  useSavedSettingsReader,
+  useSettingsStore,
   type EnvSource,
   type PawsEnv,
   type PawsPaths,
@@ -110,6 +112,10 @@ import {
   countLinearRequest,
   migrate,
   openDatabase,
+  readSavedSettings,
+  readSetting,
+  updateSetting,
+  CONFIG_SETTINGS_KEY,
   setAsideLegacyDatabase,
   prepareShutdown,
   markPawsAlive,
@@ -419,6 +425,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     db.close();
     throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
+  const releaseSettings = useSettingsStore(paths.configFile, {
+    read: () => readSetting(db, CONFIG_SETTINGS_KEY),
+    update: (change) => updateSetting(db, CONFIG_SETTINGS_KEY, change),
+  });
   const reconnectLinear = publicDashboard
     ? createBrowserOnboarding({
         db,
@@ -682,6 +692,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (linear?.memberships) members = cacheLinearMemberships(linear.memberships);
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
+      releaseSettings();
       db.close();
       throw new Error("Public dashboard requires a connected Linear app installation.");
     }
@@ -733,6 +744,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       });
     } catch (error) {
       abort.abort();
+      releaseSettings();
       db.close();
       throw error;
     }
@@ -1201,6 +1213,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     });
   } catch (error) {
     abort.abort();
+    releaseSettings();
     if (runnerConfig !== null)
       void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
     else if (workspace === undefined) db.close();
@@ -1901,6 +1914,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           }),
         close: () => {
           clearInterval(aliveTimer);
+          releaseSettings();
           db.close();
         },
       });
@@ -2312,7 +2326,19 @@ async function probesMain(argv: string[]): Promise<number> {
   }
 }
 
+export function useSavedSettings(): () => void {
+  return useSavedSettingsReader((configPath) => {
+    try {
+      return readSavedSettings(join(dirname(configPath), "paws.db"));
+    } catch (error) {
+      journalCaught(error, "index.useSavedSettings", null);
+      return null;
+    }
+  });
+}
+
 if (import.meta.main) {
+  useSavedSettings();
   const argv = process.argv.slice(2);
   const command = argv[0];
   if (command === "probes") process.exit(await probesMain(argv.slice(1)));

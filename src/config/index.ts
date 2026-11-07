@@ -24,6 +24,8 @@ export type {
   PawsSetupConfig,
   TrackerKind,
 } from "./file";
+export { readConfigText, useSavedSettingsReader, useSettingsStore } from "./settings-store";
+export type { SettingsStore } from "./settings-store";
 export { checkMemberVmValue, isMemberVmPool, renderMemberVmSettings } from "./member-vm";
 export type { MemberVmKey, MemberVmSize } from "./member-vm";
 export { ensureLayout, pawsPaths, sweepTmpDir } from "./paths";

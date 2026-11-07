@@ -2,6 +2,13 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-07: Settings saves go to the database, and GitHub deliveries keep their payload
+
+### Changed
+
+- **The Settings page no longer writes `config.toml`.** A save goes to the database's `setting` table, so every Paws process sharing the database reads it on its next use. `config.toml` is the starting point while the table is empty. After the first save, edit agents, merging, queue, time limits, checkout and brief settings on the Settings page; Paws ignores those sections of `config.toml` from then on. See the [configuration reference](docs/configuration.md).
+- A GitHub delivery's payload is kept with its delivery id and deleted with it after three days.
+
 ## 2026-11-07: drizzle-kit owns migrations, and the upgrade resets the database
 
 ### Changed

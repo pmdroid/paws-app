@@ -556,6 +556,7 @@ export {
   listGitHubDeliveries,
   type IntegrationEvent,
 } from "./integration-events";
+export { CONFIG_SETTINGS_KEY, readSavedSettings, readSetting, updateSetting } from "./settings";
 
 export {
   saveLinearSessionContext,

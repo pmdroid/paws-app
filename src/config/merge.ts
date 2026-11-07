@@ -1,7 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { HIGH_RISK_GLOBS_MAX, highRiskGlobError } from "../core";
-import { replaceConfigText } from "./agents";
+import { updateConfigText } from "./settings-store";
 import type { PawsConfigFile } from "./file";
 
 export const DEFAULT_CI_FIX_ATTEMPTS = 3;
@@ -769,15 +768,13 @@ export function writeMergePolicy(
   wait?: CommentWaitInput,
   ignored?: Record<string, IgnoredComments>,
 ): void {
-  const text = existsSync(path) ? readFileSync(path, "utf8") : "";
   const withPaths =
     riskPaths === undefined
       ? current.repositories
       : withHighRiskPaths(current.repositories ?? {}, riskPaths);
   const repositories =
     ignored === undefined ? withPaths : withIgnoredComments(withPaths ?? {}, ignored);
-  replaceConfigText(
-    path,
+  updateConfigText(path, (text) =>
     setMergeSettingsText(text, {
       ...policy.default,
       ...(current.lane === undefined ? {} : { lane: current.lane }),

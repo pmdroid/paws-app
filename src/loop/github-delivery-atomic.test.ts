@@ -153,16 +153,16 @@ for (const [name, point, kind] of failures) {
 }
 test("failure after receipt insertion leaves the delivery retryable", () => {
   const { db, delivery } = setup();
-  const run = db.run.bind(db);
   try {
-    db.run = (sql, ...args) => {
-      const result = run(sql, ...args);
-      if (sql.includes("INSERT INTO github_delivery")) throw new Error("after receipt");
-      return result;
-    };
+    db.run(
+      "INSERT INTO github_delivery (delivery_id, event, payload, received_at) VALUES ('expired', 'push', '{}', -300000000)",
+    );
+    db.run(
+      "CREATE TEMP TRIGGER fail_prune BEFORE DELETE ON github_delivery BEGIN SELECT RAISE(ABORT, 'after receipt'); END",
+    );
     expect(() => acceptGitHubDelivery(db, delivery("review"), 1_000)).toThrow("after receipt");
-    expect(listGitHubDeliveries(db)).toEqual([]);
-    db.run = run;
+    expect(listGitHubDeliveries(db).map((row) => row.deliveryId)).toEqual(["expired"]);
+    db.run("DROP TRIGGER fail_prune");
     expect(acceptGitHubDelivery(db, delivery("review"), 1_000)).toBe(true);
     expect(pendingChangeRequests(db, "first")).toHaveLength(2);
   } finally {
