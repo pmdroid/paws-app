@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { enqueueJob } from "./jobs";
+import { orm } from "./orm";
+import { job, question, runner, runnerRepositories } from "./schema";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
 
@@ -13,17 +16,20 @@ export function recordRunnerRepositories(
   at: number,
 ): void {
   const reported = repositories === null ? null : JSON.stringify(repositories);
-  const before = db
-    .query<{ host: string | null }, [string]>(
-      "SELECT repositories AS host FROM runner_repositories WHERE runner_id=?",
-    )
-    .get(runnerId);
-  db.run(
-    `INSERT INTO runner_repositories(runner_id,repositories,reported_at) VALUES(?,?,?)
-     ON CONFLICT(runner_id) DO UPDATE SET repositories=excluded.repositories,reported_at=excluded.reported_at`,
-    [runnerId, reported, at],
-  );
-  if (before === null || before.host !== reported)
+  const before = orm(db)
+    .select({ host: runnerRepositories.repositories })
+    .from(runnerRepositories)
+    .where(eq(runnerRepositories.runnerId, runnerId))
+    .get();
+  orm(db)
+    .insert(runnerRepositories)
+    .values({ runnerId, repositories: reported, reportedAt: at })
+    .onConflictDoUpdate({
+      target: runnerRepositories.runnerId,
+      set: { repositories: reported, reportedAt: at },
+    })
+    .run();
+  if (before === undefined || before.host !== reported)
     enqueueRepositoryCheck(db, runnerId, `runner:${runnerId}`, at);
 }
 
@@ -38,19 +44,32 @@ export function setRunnerAdminRepositories(
   },
 ): void {
   immediate(db, () => {
-    const runner = db
-      .query<{ id: string }, [string, string]>(
-        "SELECT id FROM runner WHERE id=? AND workspace_id=? AND revoked_at IS NULL",
+    const found = orm(db)
+      .select({ id: runner.id })
+      .from(runner)
+      .where(
+        and(
+          eq(runner.id, input.runnerId),
+          eq(runner.workspaceId, input.workspaceId),
+          isNull(runner.revokedAt),
+        ),
       )
-      .get(input.runnerId, input.workspaceId);
-    if (!runner) throw new Error("Runner is unavailable.");
+      .get();
+    if (!found) throw new Error("Runner is unavailable.");
     const chosen = input.repositories === null ? null : JSON.stringify(input.repositories);
-    db.run(
-      `INSERT INTO runner_repositories(runner_id,repositories,reported_at,admin_repositories)
-       VALUES(?,NULL,0,?)
-       ON CONFLICT(runner_id) DO UPDATE SET admin_repositories=excluded.admin_repositories`,
-      [input.runnerId, chosen],
-    );
+    orm(db)
+      .insert(runnerRepositories)
+      .values({
+        runnerId: input.runnerId,
+        repositories: null,
+        reportedAt: 0,
+        adminRepositories: chosen,
+      })
+      .onConflictDoUpdate({
+        target: runnerRepositories.runnerId,
+        set: { adminRepositories: chosen },
+      })
+      .run();
     auditWorkspaceAccess(db, {
       workspaceId: input.workspaceId,
       userId: input.userId,
@@ -63,11 +82,11 @@ export function setRunnerAdminRepositories(
 }
 
 export function runnerRepositoryLists(db: Database, runnerId: string): RunnerRepositoryLists {
-  const row = db
-    .query<{ host: string | null; admin: string | null }, [string]>(
-      "SELECT repositories AS host,admin_repositories AS admin FROM runner_repositories WHERE runner_id=?",
-    )
-    .get(runnerId);
+  const row = orm(db)
+    .select({ host: runnerRepositories.repositories, admin: runnerRepositories.adminRepositories })
+    .from(runnerRepositories)
+    .where(eq(runnerRepositories.runnerId, runnerId))
+    .get();
   return {
     admin: row?.admin == null ? null : (JSON.parse(row.admin) as string[]),
     host: row?.host == null ? null : (JSON.parse(row.host) as string[]),
@@ -104,18 +123,31 @@ function enqueueRepositoryCheck(
   answeredBy: string,
   at: number,
 ): void {
-  const waiting = db
-    .query(
-      `SELECT 1 FROM question WHERE kind='runner-repository' AND status='open'
-       AND cancelled_at IS NULL LIMIT 1`,
+  const waiting = orm(db)
+    .select({ one: sql`1` })
+    .from(question)
+    .where(
+      and(
+        eq(question.kind, "runner-repository"),
+        eq(question.status, "open"),
+        isNull(question.cancelledAt),
+      ),
     )
+    .limit(1)
     .get();
-  const pending = db
-    .query(
-      `SELECT 1 FROM job WHERE queue=? AND status='pending'
-       AND json_extract(payload,'$.runnerId')=? AND json_extract(payload,'$.answeredBy')=? LIMIT 1`,
+  const pending = orm(db)
+    .select({ one: sql`1` })
+    .from(job)
+    .where(
+      and(
+        eq(job.queue, JOB_KIND.runnerRepositoryCheck),
+        eq(job.status, "pending"),
+        sql`json_extract(${job.payload},'$.runnerId') = ${runnerId}`,
+        sql`json_extract(${job.payload},'$.answeredBy') = ${answeredBy}`,
+      ),
     )
-    .get(JOB_KIND.runnerRepositoryCheck, runnerId, answeredBy);
+    .limit(1)
+    .get();
   if (!waiting || pending) return;
   enqueueJob(db, {
     queue: JOB_KIND.runnerRepositoryCheck,

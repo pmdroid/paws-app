@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, exists, gt, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
 import {
   creditedLeaseUntil,
   OFFLINE_LEASE_RUNNER_VERSION,
@@ -8,6 +9,15 @@ import {
   RUNNER_OFFLINE_BUDGET_MS,
   runnerReleaseAtLeast,
 } from "../runner-protocol";
+import { orm } from "./orm";
+import {
+  pawsAlive,
+  runner,
+  runnerCommand,
+  runnerHostStatus,
+  runnerResult,
+  runnerWork,
+} from "./schema";
 
 export { PAWS_ALIVE_INTERVAL_MS, PAWS_ALIVE_LEASE_SKEW_MS };
 
@@ -26,19 +36,57 @@ export function runnerLeaseLive(leaseUntil: number, now: number): boolean {
 }
 
 export function endRevokedRunnerAuthority(db: Database, now: number): void {
-  db.run(
-    `UPDATE runner_work SET lease_until=?1 WHERE ended_at IS NULL AND lease_until>?1
-    AND runner_id IN (SELECT id FROM runner WHERE revoked_at IS NOT NULL OR status='revoked')`,
-    [runnerLeaseCutoff(now)],
-  );
+  const cutoff = runnerLeaseCutoff(now);
+  const q = orm(db);
+  q.update(runnerWork)
+    .set({ leaseUntil: cutoff })
+    .where(
+      and(
+        isNull(runnerWork.endedAt),
+        gt(runnerWork.leaseUntil, cutoff),
+        sql`${runnerWork.runnerId} IN ${q
+          .select({ id: runner.id })
+          .from(runner)
+          .where(or(isNotNull(runner.revokedAt), eq(runner.status, "revoked")))}`,
+      ),
+    )
+    .run();
 }
 
-/** Settled results and acknowledged cancellations no longer hold work. Queries alias work as w. */
-const UNSETTLED_RUNNER_WORK_SQL = `AND NOT EXISTS(SELECT 1 FROM runner_result r
-    WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id)
-  AND NOT EXISTS(SELECT 1 FROM runner_command c WHERE c.run_id=w.run_id
-    AND c.generation=w.generation AND c.runner_id=w.runner_id AND c.kind='cancel'
-    AND c.acknowledged_at IS NOT NULL)`;
+/** The result of the work's current command. Queries select from runner_work. */
+function currentResult(db: Database) {
+  return orm(db)
+    .select({ one: sql`1` })
+    .from(runnerResult)
+    .where(
+      and(
+        eq(runnerResult.runId, runnerWork.runId),
+        eq(runnerResult.generation, runnerWork.generation),
+        eq(runnerResult.commandId, runnerWork.commandId),
+      ),
+    );
+}
+
+/** Settled results and acknowledged cancellations no longer hold work. */
+function unsettledRunnerWork(db: Database) {
+  return and(
+    notExists(currentResult(db)),
+    notExists(
+      orm(db)
+        .select({ one: sql`1` })
+        .from(runnerCommand)
+        .where(
+          and(
+            eq(runnerCommand.runId, runnerWork.runId),
+            eq(runnerCommand.generation, runnerWork.generation),
+            eq(runnerCommand.runnerId, runnerWork.runnerId),
+            eq(runnerCommand.kind, "cancel"),
+            isNotNull(runnerCommand.acknowledgedAt),
+          ),
+        ),
+    ),
+  );
+}
 
 /**
  * Whether Paws may release the runner slot of `runId` without fencing work the runner still does.
@@ -48,26 +96,36 @@ const UNSETTLED_RUNNER_WORK_SQL = `AND NOT EXISTS(SELECT 1 FROM runner_result r
  */
 export function runnerWorkSettled(db: Database, runId: string, now: number): boolean {
   return (
-    db
-      .query(
-        `SELECT 1 FROM runner_work w WHERE w.run_id=?1 AND w.ended_at IS NULL AND w.lease_until>?2
-         ${UNSETTLED_RUNNER_WORK_SQL}`,
+    orm(db)
+      .select({ one: sql`1` })
+      .from(runnerWork)
+      .where(
+        and(
+          eq(runnerWork.runId, runId),
+          isNull(runnerWork.endedAt),
+          gt(runnerWork.leaseUntil, runnerLeaseCutoff(now)),
+          unsettledRunnerWork(db),
+        ),
       )
-      .get(runId, runnerLeaseCutoff(now)) === null
+      .get() === undefined
   );
 }
 
 /** Record that Paws is alive at `now`. Startup reads it to tell how long Paws was down. */
 export function markPawsAlive(db: Database, now: number): void {
-  db.run(
-    "INSERT INTO paws_alive(id,at) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET at=excluded.at",
-    [now],
-  );
+  orm(db)
+    .insert(pawsAlive)
+    .values({ id: 1, at: now })
+    .onConflictDoUpdate({ target: pawsAlive.id, set: { at: now } })
+    .run();
 }
 
 /** When Paws last recorded that it was alive, or null when it never has. */
 export function pawsAliveAt(db: Database): number | null {
-  return db.query<{ at: number }, []>("SELECT at FROM paws_alive WHERE id=1").get()?.at ?? null;
+  return (
+    orm(db).select({ at: pawsAlive.at }).from(pawsAlive).where(eq(pawsAlive.id, 1)).get()?.at ??
+    null
+  );
 }
 
 /**
@@ -90,26 +148,26 @@ export function shiftRunnerLeasesForDowntime(
   const shift = Math.min(Math.max(0, now - aliveAt), Math.max(0, budgetMs));
   if (shift === 0) return 0;
   const eligible = new Set(
-    db
-      .query<{ id: string; version: string | null }, []>(
-        `SELECT r.id AS id, h.runner_version AS version FROM runner r
-         LEFT JOIN runner_host_status h ON h.runner_id=r.id
-         WHERE r.revoked_at IS NULL AND r.status<>'revoked'`,
-      )
+    orm(db)
+      .select({ id: runner.id, version: runnerHostStatus.runnerVersion })
+      .from(runner)
+      .leftJoin(runnerHostStatus, eq(runnerHostStatus.runnerId, runner.id))
+      .where(and(isNull(runner.revokedAt), ne(runner.status, "revoked")))
       .all()
-      .filter((runner) => runnerReleaseAtLeast(runner.version, OFFLINE_LEASE_RUNNER_VERSION))
-      .map((runner) => runner.id),
+      .filter((host) => runnerReleaseAtLeast(host.version, OFFLINE_LEASE_RUNNER_VERSION))
+      .map((host) => host.id),
   );
   if (eligible.size === 0) return 0;
-  const rows = db
-    .query<{ runId: string; runnerId: string; leaseUntil: number; expiresAt: number }, []>(
-      `SELECT w.run_id AS runId, w.runner_id AS runnerId, w.lease_until AS leaseUntil,
-              c.expires_at AS expiresAt
-       FROM runner_work w
-       JOIN runner_command c ON c.id=w.command_id
-       WHERE w.ended_at IS NULL
-       ${UNSETTLED_RUNNER_WORK_SQL}`,
-    )
+  const rows = orm(db)
+    .select({
+      runId: runnerWork.runId,
+      runnerId: runnerWork.runnerId,
+      leaseUntil: runnerWork.leaseUntil,
+      expiresAt: runnerCommand.expiresAt,
+    })
+    .from(runnerWork)
+    .innerJoin(runnerCommand, eq(runnerCommand.id, runnerWork.commandId))
+    .where(and(isNull(runnerWork.endedAt), unsettledRunnerWork(db)))
     .all();
   for (const row of rows) {
     if (!eligible.has(row.runnerId)) continue;
@@ -122,7 +180,7 @@ export function shiftRunnerLeasesForDowntime(
       skewMs: PAWS_ALIVE_LEASE_SKEW_MS,
     });
     if (leaseUntil !== row.leaseUntil)
-      db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [leaseUntil, row.runId]);
+      orm(db).update(runnerWork).set({ leaseUntil }).where(eq(runnerWork.runId, row.runId)).run();
   }
   return shift;
 }
@@ -135,21 +193,32 @@ export function runnerHoldsRunWork(
   cancelled = false,
 ): boolean {
   return (
-    db
-      .query(`SELECT 1 FROM runner_work w WHERE w.run_id=?1 AND w.ended_at IS NULL
-    AND (w.lease_until>?2 OR (?3=0 AND EXISTS(SELECT 1 FROM runner_result r
-      WHERE r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id)))`)
-      .get(runId, runnerLeaseCutoff(now), cancelled ? 1 : 0) !== null
+    orm(db)
+      .select({ one: sql`1` })
+      .from(runnerWork)
+      .where(
+        and(
+          eq(runnerWork.runId, runId),
+          isNull(runnerWork.endedAt),
+          or(
+            gt(runnerWork.leaseUntil, runnerLeaseCutoff(now)),
+            cancelled ? undefined : exists(currentResult(db)),
+          ),
+        ),
+      )
+      .get() !== undefined
   );
 }
 
 /** The current command delivered a result that its owning run has not imported yet. */
 export function runnerWorkHasResult(db: Database, runId: string): boolean {
   return (
-    db
-      .query(`SELECT 1 FROM runner_work w JOIN runner_result r
-    ON r.run_id=w.run_id AND r.generation=w.generation AND r.command_id=w.command_id
-    WHERE w.run_id=? AND w.ended_at IS NULL`)
-      .get(runId) !== null
+    orm(db)
+      .select({ one: sql`1` })
+      .from(runnerWork)
+      .where(
+        and(eq(runnerWork.runId, runId), isNull(runnerWork.endedAt), exists(currentResult(db))),
+      )
+      .get() !== undefined
   );
 }
