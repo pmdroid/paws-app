@@ -258,6 +258,23 @@ test("a recorded candidate SHA that GitHub lacks is an error that names it", asy
   }
 });
 
+test("a GitHub remote is never fetched without the repository's authenticated git", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "paws-candidate-access-"));
+  try {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const restore = restoreCandidateRef({
+      ...repository,
+      remoteUrl: "https://github.com/acme/app.git",
+      itemId: "01ACME",
+      pawsRoot: path.join(root, "b"),
+      sha,
+    });
+    await expect(restore).rejects.toThrow(`Candidate head ${sha} of 01ACME needs GitHub access`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a local candidate ahead of the recorded SHA stays; one behind moves to it", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "paws-candidate-cache-"));
   try {

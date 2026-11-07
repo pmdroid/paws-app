@@ -1238,31 +1238,21 @@ export function createRemoteAgentRunner(options: {
             (await (async () => {
               const scoped = taskScope ?? work.scope(selected.runId, selected.workspaceId);
               // A runner's saved WIP comes first; then the head it gives must be on GitHub.
-              const recordStart = async () => {
-                if (taskScope || !scoped.repository || !scoped.item.branchName) return;
-                const sha = await candidateHead(scoped.repository).catch(() => null);
-                if (sha)
-                  recordItemCandidate(db, {
-                    itemId,
-                    sha,
-                    branch: scoped.item.branchName,
-                    recordedAt: now(),
-                  });
-              };
-              let restoreCheckpoint: Awaited<ReturnType<typeof importCheckpoint>>;
-              let lostNote: string | undefined;
-              try {
-                restoreCheckpoint =
-                  !taskScope && input.role === "implementer" && input.networkGit
-                    ? await importCheckpoint(input.networkGit)
-                    : undefined;
-                lostNote =
-                  !taskScope && input.role === "implementer" && input.networkGit
-                    ? await remoteStart(scoped, input.networkGit)
-                    : undefined;
-              } finally {
-                await recordStart();
-              }
+              let restoreCheckpoint =
+                !taskScope && input.role === "implementer" && input.networkGit
+                  ? await importCheckpoint(input.networkGit)
+                  : undefined;
+              const lostNote =
+                !taskScope && input.role === "implementer" && input.networkGit
+                  ? await remoteStart(scoped, input.networkGit)
+                  : undefined;
+              if (!taskScope && scoped.repository && scoped.item.branchName)
+                recordItemCandidate(db, {
+                  itemId,
+                  sha: await candidateHead(scoped.repository),
+                  branch: scoped.item.branchName,
+                  recordedAt: now(),
+                });
               phase("start_commit");
               // A runner command does not carry the caller's session, so a resume replays.
               const replayed = input.resume?.replayPrompt ?? input.prompt;
@@ -2391,22 +2381,22 @@ export function createRemoteAgentRunner(options: {
               networkGit: input.networkGit,
               signal,
             });
-            const importedHead = await candidateHead(assigned.repository);
-            recordItemCandidate(db, {
-              itemId,
-              sha: importedHead,
-              branch: scoped.item.branchName,
-              recordedAt: now(),
-            });
             signal.throwIfAborted();
             work.current(assigned.runId, assigned.generation);
-            if (importedHead !== complete.candidateSha)
+            if ((await candidateHead(assigned.repository)) !== complete.candidateSha)
               throw new Error("Fetched runner candidate HEAD does not match");
             await assertDescendsFromAny(
               (args) => git(["--git-dir", imported.mirror, ...args]),
               mainSha ? [baseSha!, mainSha] : [baseSha!],
               complete.candidateSha,
             );
+            work.current(assigned.runId, assigned.generation);
+            recordItemCandidate(db, {
+              itemId,
+              sha: complete.candidateSha,
+              branch: scoped.item.branchName,
+              recordedAt: now(),
+            });
             if (complete.stopReason !== "end_turn" || complete.errorMessage)
               saveCheckpoint(db, itemId, {
                 ...getWorkItem(db, itemId)?.checkpoint,

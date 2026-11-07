@@ -3,7 +3,7 @@ import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { checkoutPatterns, exclusionPatterns } from "../worktree-checkout";
 import { randomUUID } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { git } from "./git";
 import { branchName, candidateRef, mirrorPath, worktreePath } from "./paths";
 
@@ -289,7 +289,15 @@ export async function restoreCandidateRef(options: {
   const ref = candidateRef(options.itemId);
   const missing = `Candidate head ${options.sha} of ${options.itemId} is missing on GitHub in ${options.owner}/${options.repo}.`;
   if ((await revParse(gitDir, `${ref}^{commit}`)) === options.sha) return;
-  if (!(await exists(gitDir))) await ensureBareMirror(options);
+  const network = () => {
+    const run = options.networkGit ?? (isAbsolute(options.remoteUrl) ? git : undefined);
+    if (!run)
+      throw new Error(
+        `Candidate head ${options.sha} of ${options.itemId} needs GitHub access to fetch.`,
+      );
+    return run;
+  };
+  if (!(await exists(gitDir))) await ensureBareMirror({ ...options, networkGit: network() });
   await onMirror(gitDir, async () => {
     const local = await revParse(gitDir, `${ref}^{commit}`);
     if (local === options.sha) return;
@@ -309,9 +317,10 @@ export async function restoreCandidateRef(options: {
       if (ahead) return;
     }
     if (!held) {
+      const fetch = network();
       const scratch = `refs/paws/imports/${randomUUID()}`;
       try {
-        await (options.networkGit ?? git)([
+        await fetch([
           "--git-dir",
           gitDir,
           "fetch",

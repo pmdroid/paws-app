@@ -9260,7 +9260,12 @@ export class Orchestrator {
     const repository = this.repositoryForItem(item);
     const recorded = getItemCandidate(this.db, item.id);
     if (!this.options.remoteExecution || !repository || !recorded) return;
-    const networkGit = signal ? this.repositoryGit(item, repository, signal, "read") : undefined;
+    const networkGit = this.repositoryGit(
+      item,
+      repository,
+      signal ?? AbortSignal.timeout(120_000),
+      "read",
+    );
     await restoreCandidateRef({
       ...repository,
       itemId: itemPathId(item),
