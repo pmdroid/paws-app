@@ -35,7 +35,7 @@ import {
   readStoredFindings,
   type ProbesCommand,
 } from "./probe-collector";
-import { deriveEnvelopeKey, importCredentialFile, readSecretFile } from "./credentials";
+import { importCredentialFile, loadSecretKey, readSecretFile } from "./credentials";
 import { createS3RunnerFileObjects } from "./run-files";
 import type { Database } from "bun:sqlite";
 import {
@@ -766,7 +766,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     return s3
       ? {
           objects: createS3RunnerFileObjects(s3),
-          key: deriveEnvelopeKey(paths.secretsDir, "runner-files"),
+          key: loadSecretKey(join(paths.secretsDir, "runner-file.key"), "Runner file"),
         }
       : undefined;
   };

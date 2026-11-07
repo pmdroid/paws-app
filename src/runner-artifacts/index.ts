@@ -116,8 +116,14 @@ export function createRunnerArtifactStore(options: {
       closeSync(root);
     }
   }
-  const objectKey = (runId: string, commandId: string, artifactId: string, index: number) =>
-    `runner-artifacts/${runId}/${commandId}/${artifactId}/${index}`;
+  const objectKey = (runId: string, commandId: string, artifactId: string, index: number) => {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(runId) ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(commandId)
+    )
+      throw new Error("Invalid runner command ID");
+    return `runner-artifacts/${runId}/${commandId}/${artifactId}/${index}`;
+  };
   const digest = (artifact: RunnerArtifact) => hash(JSON.stringify(artifact));
   const limited = () =>
     new RunnerArtifactRejectedError(

@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   forgetRunnerFileObject,
@@ -36,7 +36,7 @@ export function createSealedRunnerFiles(options: {
         throw new Error("Runner file chunk is too large");
       immediate(db, () => {
         admit?.();
-        const sha256 = createHash("sha256").update(bytes).digest("hex");
+        const sha256 = createHmac("sha256", key).update(bytes).digest("hex");
         if (!recordRunnerFileObject(db, { ...file, key: objectKey, sha256, createdAt: now() }))
           throw new SealedRunnerFileConflictError("Runner file is immutable");
       });

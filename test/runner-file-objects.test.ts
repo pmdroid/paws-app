@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deriveEnvelopeKey } from "../src/credentials";
 import { beginImplementRun, insertQueuedItem, migrate, openDatabase } from "../src/db";
 import { createFakeRunFileObjects, createSealedRunnerFiles } from "../src/run-files";
 import { createRunnerArtifactStore, RUNNER_ARTIFACT_CHUNK_BYTES } from "../src/runner-artifacts";
@@ -307,13 +306,17 @@ describe("runner inputs and artifacts in the shared store", () => {
     expect(stored.length).toBe(bytes.length + 28);
   });
 
-  test("the runner file key is derived from the envelope key, never the envelope key itself", () => {
-    const secrets = join(mkdtempSync(join(tmpdir(), "paws-acme-secrets-")), "secrets");
-    const key = deriveEnvelopeKey(secrets, "runner-files");
-    expect(key).toHaveLength(32);
-    expect(deriveEnvelopeKey(secrets, "runner-files")).toEqual(key);
-    expect(key.equals(readFileSync(join(secrets, ".envelope-key")))).toBe(false);
-    expect(deriveEnvelopeKey(secrets, "acme-other").equals(key)).toBe(false);
-    expect(() => deriveEnvelopeKey(secrets, "../acme")).toThrow();
+  test("the database keeps no plain hash of a stored chunk", async () => {
+    const { db, command, access, instance } = fixture();
+    const a = instance();
+    const secret = Buffer.from("acme-short-secret");
+    command.inputFiles = await a.inputs.stage(
+      command.id,
+      [{ path: "acme.txt", mimeType: "text/plain", bytes: secret }],
+      access.runId,
+    );
+    const row = db.query("SELECT sha256 FROM runner_file_object").get() as { sha256: string };
+    expect(row.sha256).not.toBe(createHash("sha256").update(secret).digest("hex"));
+    expect(row.sha256).toMatch(/^[a-f0-9]{64}$/);
   });
 });

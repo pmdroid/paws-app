@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -73,13 +73,6 @@ export function sealSecret(secretsDir: string, name: string, value: string): str
 
 export function openSecret(secretsDir: string, name: string, text: string): string {
   return decodeSecretEnvelope(name, text, envelopeKey(secretsDir));
-}
-
-export function deriveEnvelopeKey(dir: string, purpose: string): Buffer {
-  if (!/^[a-z][a-z0-9-]{0,63}$/.test(purpose)) throw new Error("Invalid envelope key purpose.");
-  return Buffer.from(
-    hkdfSync("sha256", envelopeKey(dir), Buffer.alloc(0), `paws-envelope-subkey\0${purpose}`, 32),
-  );
 }
 
 function envelopeKey(dir: string): Buffer {
