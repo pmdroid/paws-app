@@ -58,11 +58,14 @@ async function fixture() {
     return real(local, options);
   };
   const publication = publicationExec(fake, undefined, store);
-  const push = (branch: string, remote = WIDGETS) =>
-    publication([...PREFIX, "push", remote, `HEAD:refs/heads/${branch}`], {
-      cwd: worktree,
-      env: gitEnv(token),
-    });
+  const push = (branch: string, remote = WIDGETS, force = false) =>
+    publication(
+      [...PREFIX, "push", ...(force ? ["--force"] : []), remote, `HEAD:refs/heads/${branch}`],
+      {
+        cwd: worktree,
+        env: gitEnv(token),
+      },
+    );
   const fetchMain = (remote = WIDGETS) =>
     publication([...PREFIX, "fetch", remote, "+refs/heads/main:refs/paws/upstream-main"], {
       cwd: worktree,
@@ -321,4 +324,64 @@ test("a candidate ref pushed from a bare mirror bundles that ref alone", async (
   expect(
     (await exec("git", ["--git-dir", remote, "branch", "--list", "unrelated"])).stdout.trim(),
   ).toBe("");
+});
+
+/** Move main on the remote with a commit the candidate does not have, then fetch it as the lane does. */
+async function moveMain(f: Awaited<ReturnType<typeof fixture>>) {
+  const upstream = path.join(f.root, "upstream");
+  await exec("git", ["clone", "--quiet", f.remotes[WIDGETS]!, upstream]);
+  await writeFile(path.join(upstream, "other"), "advance\n");
+  await exec("git", ["add", "."], { cwd: upstream });
+  await exec("git", ["commit", "-m", "advance main"], { cwd: upstream });
+  await exec("git", ["push", "origin", "main"], { cwd: upstream });
+  await f.fetchMain();
+}
+
+async function rebaseDetached(f: Awaited<ReturnType<typeof fixture>>) {
+  await f.git("checkout", "--quiet", "--detach");
+  await f.git("rebase", "--quiet", "refs/paws/upstream-main");
+  return f.git("rev-parse", "HEAD");
+}
+
+async function remoteBranch(f: Awaited<ReturnType<typeof fixture>>, branch: string) {
+  return (
+    await exec("git", ["--git-dir", f.remotes[WIDGETS]!, "rev-parse", `refs/heads/${branch}`])
+  ).stdout.trim();
+}
+
+test("a detached head rebased onto a moved main is staged when every branch is known", async () => {
+  const f = await fixture();
+  await f.commit("first");
+  await f.push("paws/acme-1");
+  await moveMain(f);
+  const rebased = await rebaseDetached(f);
+
+  await f.push("paws/acme-1", WIDGETS, true);
+
+  expect(await remoteBranch(f, "paws/acme-1")).toBe(rebased);
+});
+
+test("a detached rebased head is staged when its branches are objects the repository already has", async () => {
+  const f = await fixture();
+  await f.commit("first");
+  await f.push("paws/acme-1");
+  // A second item's checkout of the same repository moves main in the shared publication repository.
+  const other = path.join(f.root, "other");
+  await exec("git", ["clone", "--quiet", f.remotes[WIDGETS]!, other]);
+  await writeFile(path.join(other, "gadget"), "acme-2\n");
+  await exec("git", ["add", "."], { cwd: other });
+  await exec("git", ["commit", "-m", "acme-2"], { cwd: other });
+  await f.publication([...PREFIX, "push", WIDGETS, "HEAD:refs/heads/paws/acme-2"], {
+    cwd: other,
+    env: gitEnv(token),
+  });
+  await moveMain(f);
+  const rebased = await rebaseDetached(f);
+  f.calls.length = 0;
+
+  await f.push("paws/acme-1", WIDGETS, true).catch(() => undefined);
+
+  const fetched = f.calls.find((call) => call.args.includes("fetch"))!;
+  expect(fetched.args.find((arg) => arg.endsWith("candidate.bundle"))).toBeDefined();
+  expect(await remoteBranch(f, "paws/acme-1")).toBe(rebased);
 });

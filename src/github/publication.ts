@@ -228,6 +228,9 @@ async function stageCandidate(
         .split("\n")
         .filter(Boolean)
     : [];
+  const named =
+    source === "HEAD" &&
+    !(await run(["for-each-ref", "--format=%(refname)", HEAD_BRANCH], candidate)).stdout.trim();
   await rm(bundle, { force: true });
   try {
     await run(
@@ -236,7 +239,7 @@ async function stageCandidate(
         "create",
         bundle,
         ...(source === "HEAD"
-          ? [`--exclude=${HEAD_BRANCH}`, "--branches", "--tags", head]
+          ? [`--exclude=${HEAD_BRANCH}`, "--branches", "--tags", named ? "HEAD" : head]
           : [source]),
         ...shared.map((id) => `^${id}`),
       ],
@@ -248,6 +251,11 @@ async function stageCandidate(
     await run(["--git-dir", repository, "update-ref", "--no-deref", "HEAD", head]);
     return false;
   }
+  const carried =
+    named &&
+    (await run(["bundle", "list-heads", bundle], candidate)).stdout
+      .split("\n")
+      .some((line) => line.endsWith(" HEAD"));
   try {
     await run([
       "--git-dir",
@@ -255,7 +263,12 @@ async function stageCandidate(
       "fetch",
       bundle,
       ...(source === "HEAD"
-        ? ["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", `^${HEAD_BRANCH}`]
+        ? [
+            "+refs/heads/*:refs/heads/*",
+            "+refs/tags/*:refs/tags/*",
+            `^${HEAD_BRANCH}`,
+            ...(carried ? [`+HEAD:${STAGED_CANDIDATE}`] : []),
+          ]
         : [`+${source}:${STAGED_CANDIDATE}`]),
     ]);
   } catch (error) {
