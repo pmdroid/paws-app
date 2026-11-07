@@ -1,70 +1,59 @@
 import { and, eq, gt, lte, ne, sql } from "drizzle-orm";
-import type { Db } from "./db";
-import { runnerReservation, runnerWork } from "./schema";
-import * as pg from "./schema-pg";
+import type { Db, Q } from "./db";
 
 export const RUNNER_RESERVATION_MS = 120_000;
 
-const UNASSIGNED = sql`NOT EXISTS(SELECT 1 FROM ${runnerWork} w WHERE w.run_id=${runnerReservation.runId} AND w.runner_id=${runnerReservation.runnerId})`;
-const PG_UNASSIGNED = sql`NOT EXISTS(SELECT 1 FROM ${pg.runnerWork} w WHERE w.run_id=${pg.runnerReservation.runId} AND w.runner_id=${pg.runnerReservation.runnerId})`;
+type Reservation = { runId: string; runnerId: string; instanceId: string; now: number };
 
-export function reserveRunnerSlot(
-  db: Db,
-  input: { runId: string; runnerId: string; instanceId: string; now: number },
-): Promise<boolean> {
+export function* reserveRunnerSlotSteps(q: Q, input: Reservation) {
+  const { runnerReservation } = q.t;
   const row = {
     runId: input.runId,
     runnerId: input.runnerId,
     instanceId: input.instanceId,
     expiresAt: input.now + RUNNER_RESERVATION_MS,
   };
-  if (db.dialect === "sqlite")
-    return db.sync((handle) => {
-      handle.delete(runnerReservation).where(lte(runnerReservation.expiresAt, input.now)).run();
-      return (
-        handle
-          .insert(runnerReservation)
-          .values(row)
-          .onConflictDoUpdate({
-            target: runnerReservation.runId,
-            set: { runnerId: row.runnerId, expiresAt: row.expiresAt },
-            setWhere: eq(runnerReservation.instanceId, input.instanceId),
-          })
-          .returning({ runId: runnerReservation.runId })
-          .all().length > 0
-      );
-    });
-  return db.orm.transaction(async (tx) => {
-    await tx.delete(pg.runnerReservation).where(lte(pg.runnerReservation.expiresAt, input.now));
-    const taken = await tx
-      .insert(pg.runnerReservation)
+  yield* q.exec(q.orm.delete(runnerReservation).where(lte(runnerReservation.expiresAt, input.now)));
+  const taken = yield* q.all(
+    q.orm
+      .insert(runnerReservation)
       .values(row)
       .onConflictDoUpdate({
-        target: pg.runnerReservation.runId,
+        target: runnerReservation.runId,
         set: { runnerId: row.runnerId, expiresAt: row.expiresAt },
-        setWhere: eq(pg.runnerReservation.instanceId, input.instanceId),
+        setWhere: eq(runnerReservation.instanceId, input.instanceId),
       })
-      .returning({ runId: pg.runnerReservation.runId });
-    return taken.length > 0;
-  });
+      .returning({ runId: runnerReservation.runId }),
+  );
+  return taken.length > 0;
+}
+
+export function reserveRunnerSlot(db: Db, input: Reservation): Promise<boolean> {
+  return db.transaction((q) => reserveRunnerSlotSteps(q, input));
+}
+
+export function* releaseRunnerReservationSteps(q: Q, runId: string, instanceId: string) {
+  const { runnerReservation } = q.t;
+  yield* q.exec(
+    q.orm
+      .delete(runnerReservation)
+      .where(and(eq(runnerReservation.runId, runId), eq(runnerReservation.instanceId, instanceId))),
+  );
 }
 
 export function releaseRunnerReservation(db: Db, runId: string, instanceId: string): Promise<void> {
-  if (db.dialect === "sqlite")
-    return db.sync((handle) => {
-      handle
-        .delete(runnerReservation)
-        .where(
-          and(eq(runnerReservation.runId, runId), eq(runnerReservation.instanceId, instanceId)),
-        )
-        .run();
-    });
-  return db.orm
-    .delete(pg.runnerReservation)
-    .where(
-      and(eq(pg.runnerReservation.runId, runId), eq(pg.runnerReservation.instanceId, instanceId)),
-    )
-    .then(() => undefined);
+  return db.run((q) => releaseRunnerReservationSteps(q, runId, instanceId));
+}
+
+export function* runnerReservationHolderSteps(q: Q, runId: string, now: number) {
+  const { runnerReservation } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ instanceId: runnerReservation.instanceId })
+      .from(runnerReservation)
+      .where(and(eq(runnerReservation.runId, runId), gt(runnerReservation.expiresAt, now))),
+  );
+  return row?.instanceId ?? null;
 }
 
 export function runnerReservationHolder(
@@ -72,20 +61,35 @@ export function runnerReservationHolder(
   runId: string,
   now: number,
 ): Promise<string | null> {
-  if (db.dialect === "sqlite")
-    return db.sync(
-      (handle) =>
-        handle
-          .select({ instanceId: runnerReservation.instanceId })
-          .from(runnerReservation)
-          .where(and(eq(runnerReservation.runId, runId), gt(runnerReservation.expiresAt, now)))
-          .get()?.instanceId ?? null,
-    );
-  return db.orm
-    .select({ instanceId: pg.runnerReservation.instanceId })
-    .from(pg.runnerReservation)
-    .where(and(eq(pg.runnerReservation.runId, runId), gt(pg.runnerReservation.expiresAt, now)))
-    .then((rows) => rows[0]?.instanceId ?? null);
+  return db.run((q) => runnerReservationHolderSteps(q, runId, now));
+}
+
+export function* unassignedRunnerReservationsSteps(
+  q: Q,
+  now: number,
+  exceptInstanceId: string,
+  excludeRunId = "",
+) {
+  const { runnerReservation } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        runnerId: runnerReservation.runnerId,
+        count: sql<number>`count(*)`.mapWith(Number),
+      })
+      .from(runnerReservation)
+      .where(
+        and(
+          gt(runnerReservation.expiresAt, now),
+          ne(runnerReservation.runId, excludeRunId),
+          ne(runnerReservation.instanceId, exceptInstanceId),
+          sql`NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=runner_reservation.run_id
+            AND w.runner_id=runner_reservation.runner_id)`,
+        ),
+      )
+      .groupBy(runnerReservation.runnerId),
+  );
+  return new Map(rows.map((row) => [row.runnerId, row.count]));
 }
 
 export function unassignedRunnerReservations(
@@ -94,40 +98,5 @@ export function unassignedRunnerReservations(
   exceptInstanceId: string,
   excludeRunId = "",
 ): Promise<Map<string, number>> {
-  if (db.dialect === "sqlite")
-    return db.sync(
-      (handle) =>
-        new Map(
-          handle
-            .select({ runnerId: runnerReservation.runnerId, count: sql<number>`count(*)` })
-            .from(runnerReservation)
-            .where(
-              and(
-                gt(runnerReservation.expiresAt, now),
-                ne(runnerReservation.runId, excludeRunId),
-                ne(runnerReservation.instanceId, exceptInstanceId),
-                UNASSIGNED,
-              ),
-            )
-            .groupBy(runnerReservation.runnerId)
-            .all()
-            .map((row) => [row.runnerId, row.count]),
-        ),
-    );
-  return db.orm
-    .select({
-      runnerId: pg.runnerReservation.runnerId,
-      count: sql<number>`count(*)::int`,
-    })
-    .from(pg.runnerReservation)
-    .where(
-      and(
-        gt(pg.runnerReservation.expiresAt, now),
-        ne(pg.runnerReservation.runId, excludeRunId),
-        ne(pg.runnerReservation.instanceId, exceptInstanceId),
-        PG_UNASSIGNED,
-      ),
-    )
-    .groupBy(pg.runnerReservation.runnerId)
-    .then((rows) => new Map(rows.map((row) => [row.runnerId, row.count])));
+  return db.run((q) => unassignedRunnerReservationsSteps(q, now, exceptInstanceId, excludeRunId));
 }

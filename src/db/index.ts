@@ -854,9 +854,13 @@ export type { RunnerSetupHold } from "./runner-setup-hold";
 export {
   RUNNER_RESERVATION_MS,
   releaseRunnerReservation,
+  releaseRunnerReservationSteps,
   reserveRunnerSlot,
+  reserveRunnerSlotSteps,
   runnerReservationHolder,
+  runnerReservationHolderSteps,
   unassignedRunnerReservations,
+  unassignedRunnerReservationsSteps,
 } from "./runner-reservations";
 export type { ItemHold, ItemHoldChange, ItemHoldReason } from "./item-hold";
 export { carriedAcceptFor, recordCarriedAccept } from "./merge-carried-accept";

@@ -7,7 +7,9 @@ import {
   reserveRunnerSlot,
   runnerReservationHolder,
   schema,
+  reserveRunnerSlotSteps,
   unassignedRunnerReservations,
+  unassignedRunnerReservationsSteps,
   type Db,
 } from "../src/db";
 import { forEachDialect, type DialectDb } from "./dialects";
@@ -95,5 +97,22 @@ forEachDialect((connect) => {
     expect(await runnerReservationHolder(db, "run-1", later)).toBe("acme-b");
     await releaseRunnerReservation(db, "run-1", "acme-b");
     expect(await runnerReservationHolder(db, "run-1", later)).toBeNull();
+  });
+
+  test("a reservation counts until its own run has work on that runner", async () => {
+    const handle = await connect();
+    open.push(handle);
+    const { db } = handle;
+    await withoutForeignKeys(db);
+    const now = 1_800_000_000_000;
+    for (const runId of ["run-1", "run-2", "run-3"])
+      await db.run((q) =>
+        reserveRunnerSlotSteps(q, { runId, runnerId: "acme-box", instanceId: "acme-a", now }),
+      );
+    await assign(db, "run-1", "acme-box");
+    await assign(db, "run-2", "acme-other");
+    expect(await db.run((q) => unassignedRunnerReservationsSteps(q, now, "acme-b"))).toEqual(
+      new Map([["acme-box", 2]]),
+    );
   });
 });
