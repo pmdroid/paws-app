@@ -347,6 +347,7 @@ import {
   delegatedLinearUserId,
   resetAwakeTime,
   rebaseReturnedFor,
+  gatherLinearComments,
   getLinearComment,
   receivedLinearComments,
   settleLinearComments,
@@ -495,6 +496,7 @@ import {
 } from "./pending-feedback";
 import {
   authorizeLinearComment,
+  canConverse,
   commitLinearCommentRoute,
   deliverLinearComments,
   routeLinearComment,
@@ -503,6 +505,7 @@ import {
   type LinearCommentBrief,
   type LinearCommentCapabilities,
   type LinearCommentPolicy,
+  type LinearConversations,
 } from "./linear-comments";
 import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
 import { suggestedFindingsSection } from "./pull-comments";
@@ -667,6 +670,7 @@ export type OrchestratorOptions = {
   recheckLinearEvent?: (event: AcceptedLinearEvent) => boolean | Promise<boolean>;
   remoteFollowUp?: (itemId: string, body: string) => boolean | Promise<boolean>;
   linearComments?: LinearCommentPolicy;
+  conversations?: () => Promise<LinearConversations | null>;
   outboxWaitMs?: number;
   authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
   linearIntakeScope?: (sessionId: string, snapshot: EpicSnapshot) => EpicSnapshot;
@@ -1129,6 +1133,8 @@ export class Orchestrator {
         });
       },
       flush: () => this.flush(),
+      ...(this.options.conversations ? { conversations: this.options.conversations } : {}),
+      resumeSession: (sessionId) => this.resumeLinearSession(sessionId, false),
     };
   }
 
@@ -1845,11 +1851,13 @@ export class Orchestrator {
       await this.flush();
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
+      if (await this.waitingForConversation(job, context)) return;
       if (this.waitingForRunnerSlot(job)) return;
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.resume, async (job, context) => {
+      if (await this.waitingForConversation(job, context)) return;
       if (this.waitingForRunnerSlot(job)) return;
       if (await this.mergeInsteadOfTurn(job, context)) return;
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
@@ -1862,7 +1870,8 @@ export class Orchestrator {
         !item ||
         !this.reverifyEligible(item) ||
         !context.isCurrent() ||
-        !this.reverifyJobCurrent(job, item)
+        !this.reverifyJobCurrent(job, item) ||
+        (await this.waitingForConversation(job, context))
       )
         return;
       await this.failOnLastAttempt(job, context, "reverify", async () => {
@@ -2757,6 +2766,17 @@ export class Orchestrator {
   private runnerWaitMs(wait: RunnerCapacityWaitState, recoveringResume = false): number {
     const baseMs = placementWaitMs(wait.attempt, this.options.placementPollMs);
     return recoveringResume ? baseMs - resumeRetrySpreadMs(baseMs, this.options.random) : baseMs;
+  }
+
+  private async waitingForConversation(
+    job: Job,
+    context: { isCurrent(): boolean },
+  ): Promise<boolean> {
+    const itemId = readString(job.payload, "itemId");
+    const talk = itemId === null ? null : await this.options.conversations?.();
+    if (!talk || talk.open(itemId!).length === 0 || !context.isCurrent()) return false;
+    waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+    return true;
   }
 
   private waitingForRunnerSlot(job: Job, beforePark?: () => Job): boolean {
@@ -7600,7 +7620,7 @@ export class Orchestrator {
     return resumed;
   }
 
-  private async resumeLinearSession(sessionId: string): Promise<void> {
+  private async resumeLinearSession(sessionId: string, talk = true): Promise<void> {
     const active = [...this.live.values()].filter((live) =>
       this.itemsForSession(sessionId).some((item) => item.id === live.itemId),
     );
@@ -7609,6 +7629,7 @@ export class Orchestrator {
     if (this.shuttingDown) throw new Error("Paws is shutting down; user update remains pending");
     let turns = listPendingLinearTurns(this.db, sessionId);
     if (!turns.length) return;
+    if (talk && active.length === 0 && (await this.handToConversation(sessionId))) return;
     if (this.tracker === null)
       throw new Error("Linear is disconnected; user update remains pending");
     let session = getLinearSession(this.db, sessionId);
@@ -7757,6 +7778,23 @@ export class Orchestrator {
         });
     });
     await this.flush();
+  }
+
+  private async handToConversation(sessionId: string): Promise<boolean> {
+    const routed = workItemForSession(this.db, sessionId);
+    const item = routed ? getWorkItem(this.db, routed.id) : null;
+    if (!item || !this.options.linearComments || !canConverse(item) || this.isLive(item.id))
+      return false;
+    const talk = await this.options.conversations?.();
+    if (!talk || talk.lane(item.id) === "closed") return false;
+    gatherLinearComments(
+      this.db,
+      item.id,
+      this.now(),
+      { quietMs: 0, maxMs: 0 },
+      `linear-turns:${item.id}:${listPendingLinearTurns(this.db, sessionId)[0]?.eventKey ?? ""}`,
+    );
+    return true;
   }
 
   private async followUpCi(item: WorkItemRecord): Promise<FollowUpCi | null> {

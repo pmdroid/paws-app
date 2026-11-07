@@ -138,3 +138,10 @@ export {
 export { RiskDisplayReader } from "./risk-display";
 export { HOST_DISK_FULL_THOUGHT } from "./disk-full";
 export { publishingCloseoutProgress } from "./closeout-progress";
+export {
+  CONVERSATION_TIMEOUT_REPLY,
+  deliverLinearComments,
+  linearCommentBrief,
+  type LinearCommentPolicy,
+  type LinearConversations,
+} from "./linear-comments";

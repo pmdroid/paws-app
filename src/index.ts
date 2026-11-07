@@ -346,6 +346,7 @@ import {
 } from "./runner-transcript-config";
 import {
   createRemoteAgentRunner,
+  createConversationTurns,
   createRemoteSessionAgentRunner,
   createFindingGroupHelper,
   fetchRunnerCandidate,
@@ -1458,6 +1459,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           ? {
               remoteFollowUp: async (itemId: string, body: string) =>
                 (await runnerReady)?.results.deliverFollowUp(itemId, body) ?? false,
+              conversations: async () => {
+                const coordinator = await runnerReady;
+                return coordinator
+                  ? createConversationTurns({ db, helpers: coordinator.helpers })
+                  : null;
+              },
               ownerHasRunner: (itemId: string, agent: string, now: number) =>
                 itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>

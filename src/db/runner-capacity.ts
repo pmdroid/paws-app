@@ -386,6 +386,40 @@ export function yieldFindingGroupHelpers(db: Database, runnerId: string, now: nu
   });
 }
 
+export function runnerConversationLane(
+  db: Database,
+  runnerId: string,
+  now: number,
+): "closed" | "full" | "free" {
+  const limit =
+    orm(db)
+      .select({ limit: runnerCapacity.conversation })
+      .from(runnerCapacity)
+      .where(eq(runnerCapacity.runnerId, runnerId))
+      .get()?.limit ?? 0;
+  const version = orm(db)
+    .select({ version: runnerHostStatus.runnerVersion })
+    .from(runnerHostStatus)
+    .where(eq(runnerHostStatus.runnerId, runnerId))
+    .get()?.version;
+  if (limit <= 0 || !runnerReleaseAtLeast(version, CONVERSATION_RUNNER_VERSION)) return "closed";
+  return runnerHelperAvailability(db, runnerId, now, true, true).available ? "free" : "full";
+}
+
+export function unfinishedConversationHelpers(db: Database) {
+  return orm(db)
+    .select({
+      id: runnerHelper.id,
+      sessionId: runnerHelper.sessionId,
+      envelope: runnerHelper.envelope,
+      result: runnerHelper.result,
+      expiresAt: runnerHelper.expiresAt,
+    })
+    .from(runnerHelper)
+    .where(and(eq(runnerHelper.purpose, "conversation"), isNull(runnerHelper.endedAt)))
+    .all();
+}
+
 export function conversationsInUse(
   db: Database,
   runnerIds: readonly string[],
