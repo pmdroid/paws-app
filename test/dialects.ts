@@ -54,3 +54,28 @@ export async function withoutForeignKeys(db: Db): Promise<void> {
   if (db.dialect === "sqlite") await db.sync((orm) => orm.run(sql`PRAGMA foreign_keys = OFF`));
   else await db.orm.execute(sql`SET session_replication_role = replica`);
 }
+
+/** A runner `box` in workspace `acme` with a codex account `account` bound to it as `binding`. */
+export function* insertRunnerBindingSteps(q: Q) {
+  yield* q.exec(
+    q.orm.insert(q.t.runner).values({
+      id: "box",
+      workspaceId: "acme",
+      ownerUserId: "owner",
+      name: "box",
+      status: "active",
+      createdAt: 0,
+    }),
+  );
+  yield* q.exec(
+    q.orm.insert(q.t.agentAccountBinding).values({
+      id: "binding",
+      workspaceId: "acme",
+      accountId: "account",
+      agent: "codex",
+      runnerId: "box",
+      quotaScope: "unknown",
+      createdAt: 0,
+    }),
+  );
+}
