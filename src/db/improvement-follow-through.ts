@@ -1,5 +1,20 @@
 import type { Database } from "bun:sqlite";
-import { immediate } from "./tx";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  lte,
+  ne,
+  notExists,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { jsonText, jsonValue } from "./json-text";
 
 export type ImprovementIssueSyncStatus = "available" | "missing" | "unauthorized" | "unavailable";
 
@@ -14,100 +29,125 @@ export type ImprovementIssueSync = {
   confirmedAt: number | null;
 };
 
-type SyncRow = {
-  improvement_id: string;
-  issue_id: string;
-  status: ImprovementIssueSyncStatus;
-  state_type: string | null;
-  team_id: string | null;
-  delegated: number | null;
-  observed_at: number;
-  confirmed_at: number | null;
-};
+const typed = (value: string | number | null, type: "text" | "bigint") =>
+  sql`CAST(${value} AS ${sql.raw(type)})`;
 
-const syncFromRow = (row: SyncRow): ImprovementIssueSync => ({
-  improvementId: row.improvement_id,
-  issueId: row.issue_id,
-  status: row.status,
-  stateType: row.state_type,
-  teamId: row.team_id,
-  delegated: row.delegated === null ? null : row.delegated === 1,
-  observedAt: row.observed_at,
-  confirmedAt: row.confirmed_at,
-});
+export function* improvementIssueSyncSteps(
+  q: Q,
+  improvementId: string,
+): Steps<ImprovementIssueSync | null> {
+  const { improvementIssueSync: sync } = q.t;
+  const row = yield* q.one(q.orm.select().from(sync).where(eq(sync.improvementId, improvementId)));
+  return row
+    ? {
+        ...row,
+        status: row.status as ImprovementIssueSyncStatus,
+        delegated: row.delegated === null ? null : row.delegated === 1,
+      }
+    : null;
+}
 
 export function improvementIssueSync(
   db: Database,
   improvementId: string,
 ): ImprovementIssueSync | null {
-  const row = db
-    .query<SyncRow, [string]>("SELECT * FROM improvement_issue_sync WHERE improvement_id = ?")
-    .get(improvementId);
-  return row ? syncFromRow(row) : null;
+  return settled(sqliteDb(db).run((q) => improvementIssueSyncSteps(q, improvementId)));
 }
 
-export function recordImprovementIssueSync(
-  db: Database,
-  input: {
-    improvementId: string;
-    issueId: string;
-    status: ImprovementIssueSyncStatus;
-    stateType?: string;
-    teamId?: string;
-    delegated?: boolean;
-    observedAt: number;
-  },
-): boolean {
+type IssueSyncInput = {
+  improvementId: string;
+  issueId: string;
+  status: ImprovementIssueSyncStatus;
+  stateType?: string;
+  teamId?: string;
+  delegated?: boolean;
+  observedAt: number;
+};
+
+export function* recordImprovementIssueSyncSteps(q: Q, input: IssueSyncInput): Steps<boolean> {
+  const { improvement, improvementIssueSync: sync } = q.t;
   const available = input.status === "available";
-  return (
-    db.run(
-      `INSERT INTO improvement_issue_sync (improvement_id, issue_id, status, state_type, team_id,
-         delegated, observed_at, confirmed_at)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
-       WHERE EXISTS (SELECT 1 FROM improvement WHERE id = ?1 AND issue_id = ?2)
-       ON CONFLICT(improvement_id) DO UPDATE SET status = excluded.status,
-         issue_id = excluded.issue_id,
-         state_type = CASE WHEN excluded.status = 'available' THEN excluded.state_type ELSE state_type END,
-         team_id = coalesce(excluded.team_id, team_id),
-         delegated = CASE WHEN excluded.status = 'available' THEN excluded.delegated ELSE delegated END,
-         observed_at = excluded.observed_at,
-         confirmed_at = coalesce(excluded.confirmed_at, confirmed_at)
-       WHERE excluded.observed_at > improvement_issue_sync.observed_at
-         OR improvement_issue_sync.issue_id <> excluded.issue_id`,
-      [
-        input.improvementId,
-        input.issueId,
-        input.status,
-        available ? (input.stateType ?? null) : null,
-        input.teamId ?? null,
-        available && input.delegated !== undefined ? (input.delegated ? 1 : 0) : null,
-        input.observedAt,
-        available ? input.observedAt : null,
-      ],
-    ).changes === 1
+  const delegated = available && input.delegated !== undefined ? (input.delegated ? 1 : 0) : null;
+  const rows = yield* q.all(
+    q.orm
+      .insert(sync)
+      .select(
+        sql`SELECT ${typed(input.improvementId, "text")}, ${typed(input.issueId, "text")},
+          ${typed(input.status, "text")}, ${typed(available ? (input.stateType ?? null) : null, "text")},
+          ${typed(input.teamId ?? null, "text")}, ${typed(delegated, "bigint")},
+          ${typed(input.observedAt, "bigint")}, ${typed(available ? input.observedAt : null, "bigint")}
+        WHERE EXISTS (SELECT 1 FROM ${improvement} WHERE ${improvement.id} = ${input.improvementId}
+          AND ${improvement.issueId} = ${input.issueId})`,
+      )
+      .onConflictDoUpdate({
+        target: sync.improvementId,
+        set: {
+          status: sql`excluded.status`,
+          issueId: sql`excluded.issue_id`,
+          stateType: sql`CASE WHEN excluded.status = 'available' THEN excluded.state_type ELSE ${sync.stateType} END`,
+          teamId: sql`coalesce(excluded.team_id, ${sync.teamId})`,
+          delegated: sql`CASE WHEN excluded.status = 'available' THEN excluded.delegated ELSE ${sync.delegated} END`,
+          observedAt: sql`excluded.observed_at`,
+          confirmedAt: sql`coalesce(excluded.confirmed_at, ${sync.confirmedAt})`,
+        },
+        setWhere: sql`excluded.observed_at > ${sync.observedAt} OR ${sync.issueId} <> excluded.issue_id`,
+      })
+      .returning({ improvementId: sync.improvementId }),
   );
+  return rows.length === 1;
+}
+
+export function recordImprovementIssueSync(db: Database, input: IssueSyncInput): boolean {
+  return settled(sqliteDb(db).run((q) => recordImprovementIssueSyncSteps(q, input)));
+}
+
+export function* followThroughCandidatesSteps(
+  q: Q,
+  limit: number,
+): Steps<{ id: string; workspaceId: string; issueId: string }[]> {
+  const { improvement, improvementSweep } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: improvement.id,
+        workspaceId: improvement.workspaceId,
+        issueId: improvement.issueId,
+      })
+      .from(improvement)
+      .leftJoin(improvementSweep, eq(improvementSweep.improvementId, improvement.id))
+      .where(and(eq(improvement.reviewState, "accepted"), sql`${improvement.issueId} IS NOT NULL`))
+      .orderBy(sql`coalesce(${improvementSweep.checkedAt}, 0)`, asc(improvement.id))
+      .limit(limit),
+  );
+  return rows.map((row) => ({ ...row, issueId: row.issueId! }));
 }
 
 export function followThroughCandidates(
   db: Database,
   limit: number,
 ): { id: string; workspaceId: string; issueId: string }[] {
-  return db
-    .query<{ id: string; workspaceId: string; issueId: string }, [number]>(
-      `SELECT i.id, i.workspace_id AS workspaceId, i.issue_id AS issueId FROM improvement i
-       LEFT JOIN improvement_sweep s ON s.improvement_id = i.id
-       WHERE i.review_state = 'accepted' AND i.issue_id IS NOT NULL
-       ORDER BY coalesce(s.checked_at, 0), i.id LIMIT ?`,
-    )
-    .all(limit);
+  return settled(sqliteDb(db).run((q) => followThroughCandidatesSteps(q, limit)));
+}
+
+export function* markImprovementCheckedSteps(
+  q: Q,
+  improvementId: string,
+  now: number,
+): Steps<void> {
+  const { improvementSweep } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(improvementSweep)
+      .values({ improvementId, checkedAt: now })
+      .onConflictDoUpdate({
+        target: improvementSweep.improvementId,
+        set: { checkedAt: sql`excluded.checked_at` },
+      }),
+  );
 }
 
 export function markImprovementChecked(db: Database, improvementId: string, now: number): void {
-  db.run(
-    `INSERT INTO improvement_sweep (improvement_id, checked_at) VALUES (?, ?)
-     ON CONFLICT(improvement_id) DO UPDATE SET checked_at = excluded.checked_at`,
-    [improvementId, now],
-  );
+  settled(sqliteDb(db).run((q) => markImprovementCheckedSteps(q, improvementId, now)));
 }
 
 export type ImprovementDelegationState = "requested" | "started" | "existing" | "failed";
@@ -125,134 +165,202 @@ export type ImprovementDelegation = {
   updatedAt: number;
 };
 
-type DelegationRow = {
-  improvement_id: string;
-  issue_id: string;
-  state: ImprovementDelegationState;
-  session_id: string | null;
-  error: string | null;
-  attempts: number;
-  lease_expires_at: number | null;
-  actor: string;
-  requested_at: number;
-  updated_at: number;
-};
+const delegationFromRow = (row: { state: string }) =>
+  ({ ...row, state: row.state as ImprovementDelegationState }) as ImprovementDelegation;
 
-const delegationFromRow = (row: DelegationRow): ImprovementDelegation => ({
-  improvementId: row.improvement_id,
-  issueId: row.issue_id,
-  state: row.state,
-  sessionId: row.session_id,
-  error: row.error,
-  attempts: row.attempts,
-  leaseExpiresAt: row.lease_expires_at,
-  actor: row.actor,
-  requestedAt: row.requested_at,
-  updatedAt: row.updated_at,
-});
+export function* improvementDelegationSteps(
+  q: Q,
+  improvementId: string,
+): Steps<ImprovementDelegation | null> {
+  const { improvementDelegation: delegation } = q.t;
+  const row = yield* q.one(
+    q.orm.select().from(delegation).where(eq(delegation.improvementId, improvementId)),
+  );
+  return row ? delegationFromRow(row) : null;
+}
 
 export function improvementDelegation(
   db: Database,
   improvementId: string,
 ): ImprovementDelegation | null {
-  const row = db
-    .query<DelegationRow, [string]>("SELECT * FROM improvement_delegation WHERE improvement_id = ?")
-    .get(improvementId);
+  return settled(sqliteDb(db).run((q) => improvementDelegationSteps(q, improvementId)));
+}
+
+type DelegationClaim = {
+  improvementId: string;
+  issueId: string;
+  actor: string;
+  now: number;
+  leaseMs: number;
+  again?: boolean;
+};
+
+export function* claimImprovementDelegationSteps(
+  q: Q,
+  input: DelegationClaim,
+): Steps<ImprovementDelegation | null> {
+  const { improvementDelegation: delegation } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .insert(delegation)
+      .values({
+        improvementId: input.improvementId,
+        issueId: input.issueId,
+        state: "requested",
+        attempts: 1,
+        leaseExpiresAt: input.now + input.leaseMs,
+        actor: input.actor,
+        requestedAt: input.now,
+        updatedAt: input.now,
+      })
+      .onConflictDoUpdate({
+        target: delegation.improvementId,
+        set: {
+          state: "requested",
+          issueId: sql`excluded.issue_id`,
+          attempts: sql`${delegation.attempts} + 1`,
+          leaseExpiresAt: sql`excluded.lease_expires_at`,
+          error: null,
+          requestedAt: sql`excluded.requested_at`,
+          actor: sql`excluded.actor`,
+          updatedAt: sql`excluded.updated_at`,
+        },
+        setWhere: or(
+          eq(delegation.state, "failed"),
+          and(eq(delegation.state, "requested"), lte(delegation.leaseExpiresAt, input.now)),
+          input.again ? inArray(delegation.state, ["started", "existing"]) : undefined,
+        ),
+      })
+      .returning(),
+  );
   return row ? delegationFromRow(row) : null;
 }
 
 export function claimImprovementDelegation(
   db: Database,
-  input: {
-    improvementId: string;
-    issueId: string;
-    actor: string;
-    now: number;
-    leaseMs: number;
-    again?: boolean;
-  },
+  input: DelegationClaim,
 ): ImprovementDelegation | null {
-  const row = db
-    .query<DelegationRow, [string, string, string, number, number, number]>(
-      `INSERT INTO improvement_delegation (improvement_id, issue_id, state, attempts,
-         lease_expires_at, actor, requested_at, updated_at)
-       VALUES (?1, ?2, 'requested', 1, ?4 + ?5, ?3, ?4, ?4)
-       ON CONFLICT(improvement_id) DO UPDATE SET state = 'requested', issue_id = excluded.issue_id,
-         attempts = attempts + 1, lease_expires_at = excluded.lease_expires_at, error = NULL,
-         requested_at = excluded.requested_at,
-         actor = excluded.actor, updated_at = excluded.updated_at
-       WHERE improvement_delegation.state = 'failed'
-         OR (improvement_delegation.state = 'requested' AND improvement_delegation.lease_expires_at <= ?4)
-         OR (?6 = 1 AND improvement_delegation.state IN ('started','existing'))
-       RETURNING *`,
-    )
-    .get(
-      input.improvementId,
-      input.issueId,
-      input.actor,
-      input.now,
-      input.leaseMs,
-      input.again ? 1 : 0,
-    );
-  return row ? delegationFromRow(row) : null;
+  return settled(sqliteDb(db).run((q) => claimImprovementDelegationSteps(q, input)));
 }
 
-export function settleImprovementDelegation(
-  db: Database,
-  input: {
-    improvementId: string;
-    attempts: number;
-    state: Exclude<ImprovementDelegationState, "requested">;
-    sessionId?: string;
-    error?: string;
-    now: number;
-  },
-): boolean {
-  return (
-    db.run(
-      `UPDATE improvement_delegation SET state = ?, session_id = coalesce(?, session_id), error = ?,
-         lease_expires_at = NULL, updated_at = ?
-       WHERE improvement_id = ? AND state = 'requested' AND attempts = ?`,
-      [
-        input.state,
-        input.sessionId ?? null,
-        input.error ?? null,
-        input.now,
-        input.improvementId,
-        input.attempts,
-      ],
-    ).changes === 1
+type DelegationSettlement = {
+  improvementId: string;
+  attempts: number;
+  state: Exclude<ImprovementDelegationState, "requested">;
+  sessionId?: string;
+  error?: string;
+  now: number;
+};
+
+export function* settleImprovementDelegationSteps(
+  q: Q,
+  input: DelegationSettlement,
+): Steps<boolean> {
+  const { improvementDelegation: delegation } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .update(delegation)
+      .set({
+        state: input.state,
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+        error: input.error ?? null,
+        leaseExpiresAt: null,
+        updatedAt: input.now,
+      })
+      .where(
+        and(
+          eq(delegation.improvementId, input.improvementId),
+          eq(delegation.state, "requested"),
+          eq(delegation.attempts, input.attempts),
+        ),
+      )
+      .returning({ improvementId: delegation.improvementId }),
   );
+  return rows.length === 1;
+}
+
+export function settleImprovementDelegation(db: Database, input: DelegationSettlement): boolean {
+  return settled(sqliteDb(db).run((q) => settleImprovementDelegationSteps(q, input)));
+}
+
+type OtherDelegationQuery = { improvementId: string; issueId: string; now: number };
+
+export function* otherDelegationForIssueSteps(
+  q: Q,
+  input: OtherDelegationQuery,
+): Steps<ImprovementDelegation | null> {
+  const { improvementDelegation: d, workItem: w } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(d)
+      .where(
+        and(
+          eq(d.issueId, input.issueId),
+          ne(d.improvementId, input.improvementId),
+          or(
+            and(eq(d.state, "requested"), gt(d.leaseExpiresAt, input.now)),
+            and(
+              inArray(d.state, ["started", "existing"]),
+              notExists(
+                q.orm
+                  .select({ one: sql`1` })
+                  .from(w)
+                  .where(
+                    and(
+                      eq(w.linearIssueId, d.issueId),
+                      sql`${w.createdAt} >= ${d.requestedAt}`,
+                      inArray(w.state, ["completed", "merged", "cancelled", "failed"]),
+                    ),
+                  ),
+              ),
+            ),
+          ),
+        ),
+      )
+      .orderBy(desc(d.updatedAt))
+      .limit(1),
+  );
+  return row ? delegationFromRow(row) : null;
 }
 
 export function otherDelegationForIssue(
   db: Database,
-  input: { improvementId: string; issueId: string; now: number },
+  input: OtherDelegationQuery,
 ): ImprovementDelegation | null {
-  const row = db
-    .query<DelegationRow, [string, string, number]>(
-      `SELECT * FROM improvement_delegation d WHERE d.issue_id = ?1 AND d.improvement_id <> ?2
-         AND ((d.state = 'requested' AND d.lease_expires_at > ?3)
-           OR (d.state IN ('started','existing') AND NOT EXISTS (SELECT 1 FROM work_item w
-             WHERE w.linear_issue_id = d.issue_id AND w.created_at >= d.requested_at
-               AND w.state IN ('completed','merged','cancelled','failed'))))
-       ORDER BY d.updated_at DESC LIMIT 1`,
-    )
-    .get(input.issueId, input.improvementId, input.now);
-  return row ? delegationFromRow(row) : null;
+  return settled(sqliteDb(db).run((q) => otherDelegationForIssueSteps(q, input)));
+}
+
+export function* bumpImprovementVersionSteps(q: Q, improvementId: string): Steps<void> {
+  const { improvement } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(improvement)
+      .set({ version: sql`${improvement.version} + 1` })
+      .where(eq(improvement.id, improvementId)),
+  );
 }
 
 export function bumpImprovementVersion(db: Database, improvementId: string): void {
-  db.run("UPDATE improvement SET version = version + 1 WHERE id = ?", [improvementId]);
+  settled(sqliteDb(db).run((q) => bumpImprovementVersionSteps(q, improvementId)));
+}
+
+export function* expiredImprovementDelegationsSteps(
+  q: Q,
+  now: number,
+): Steps<ImprovementDelegation[]> {
+  const { improvementDelegation: delegation } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(delegation)
+      .where(and(eq(delegation.state, "requested"), lte(delegation.leaseExpiresAt, now))),
+  );
+  return rows.map(delegationFromRow);
 }
 
 export function expiredImprovementDelegations(db: Database, now: number): ImprovementDelegation[] {
-  return db
-    .query<DelegationRow, [number]>(
-      "SELECT * FROM improvement_delegation WHERE state = 'requested' AND lease_expires_at <= ?",
-    )
-    .all(now)
-    .map(delegationFromRow);
+  return settled(sqliteDb(db).run((q) => expiredImprovementDelegationsSteps(q, now)));
 }
 
 export type ImprovementActionKind =
@@ -276,120 +384,177 @@ export type ImprovementAction = {
   at: number;
 };
 
-export function recordImprovementAction(
-  db: Database,
-  input: {
-    improvementId: string;
-    expectedVersion: number;
-    action: ImprovementActionKind;
-    prior: Record<string, unknown>;
-    detail: Record<string, unknown>;
-    actor: string;
-    now: number;
-  },
-): number | null {
-  return immediate(db, () => {
-    const version = input.expectedVersion + 1;
-    if (
-      db.run("UPDATE improvement SET version = ? WHERE id = ? AND version = ?", [
-        version,
-        input.improvementId,
-        input.expectedVersion,
-      ]).changes !== 1
-    )
-      return null;
-    db.run(
-      `INSERT INTO improvement_action (improvement_id, action, version, prior, detail, actor, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        input.improvementId,
-        input.action,
-        version,
-        JSON.stringify(input.prior),
-        JSON.stringify(input.detail),
-        input.actor,
-        input.now,
-      ],
-    );
-    return version;
-  });
+type ActionInput = {
+  improvementId: string;
+  expectedVersion: number;
+  action: ImprovementActionKind;
+  prior: Record<string, unknown>;
+  detail: Record<string, unknown>;
+  actor: string;
+  now: number;
+};
+
+export function* recordImprovementActionSteps(q: Q, input: ActionInput): Steps<number | null> {
+  const { improvement, improvementAction } = q.t;
+  const version = input.expectedVersion + 1;
+  const bumped = yield* q.all(
+    q.orm
+      .update(improvement)
+      .set({ version })
+      .where(
+        and(
+          eq(improvement.id, input.improvementId),
+          eq(improvement.version, input.expectedVersion),
+        ),
+      )
+      .returning({ id: improvement.id }),
+  );
+  if (bumped.length !== 1) return null;
+  yield* q.exec(
+    q.orm.insert(improvementAction).values({
+      improvementId: input.improvementId,
+      action: input.action,
+      version,
+      prior: jsonValue(q, input.prior),
+      detail: jsonValue(q, input.detail),
+      actor: input.actor,
+      at: input.now,
+    }),
+  );
+  return version;
+}
+
+export function recordImprovementAction(db: Database, input: ActionInput): number | null {
+  return settled(sqliteDb(db).transaction((q) => recordImprovementActionSteps(q, input)));
+}
+
+export function* listImprovementActionsSteps(
+  q: Q,
+  improvementId: string,
+): Steps<ImprovementAction[]> {
+  const { improvementAction: action } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: action.id,
+        improvementId: action.improvementId,
+        action: action.action,
+        version: action.version,
+        prior: jsonText(q, action.prior),
+        detail: jsonText(q, action.detail),
+        actor: action.actor,
+        at: action.at,
+      })
+      .from(action)
+      .where(eq(action.improvementId, improvementId))
+      .orderBy(asc(action.id)),
+  );
+  return rows.map((row) => ({
+    ...row,
+    action: row.action as ImprovementActionKind,
+    prior: JSON.parse(row.prior) as Record<string, unknown>,
+    detail: JSON.parse(row.detail) as Record<string, unknown>,
+  }));
 }
 
 export function listImprovementActions(db: Database, improvementId: string): ImprovementAction[] {
-  return db
-    .query<
-      {
-        id: number;
-        improvement_id: string;
-        action: ImprovementActionKind;
-        version: number;
-        prior: string;
-        detail: string;
-        actor: string;
-        at: number;
-      },
-      [string]
-    >("SELECT * FROM improvement_action WHERE improvement_id = ? ORDER BY id")
-    .all(improvementId)
-    .map((row) => ({
-      id: row.id,
-      improvementId: row.improvement_id,
-      action: row.action,
-      version: row.version,
-      prior: JSON.parse(row.prior) as Record<string, unknown>,
-      detail: JSON.parse(row.detail) as Record<string, unknown>,
-      actor: row.actor,
-      at: row.at,
-    }));
+  return settled(sqliteDb(db).run((q) => listImprovementActionsSteps(q, improvementId)));
 }
 
-export function annotateImprovementCriterion(
-  db: Database,
-  input: {
-    improvementId: string;
-    proposalVersion: number;
-    criterion: string;
-    actor: string;
-    now: number;
-  },
-): void {
-  db.run(
-    `INSERT INTO improvement_criterion (improvement_id, revision, proposal_version, criterion,
-       actor, at) VALUES (?1, (SELECT coalesce(max(revision), 0) + 1 FROM improvement_criterion
-       WHERE improvement_id = ?1), ?2, ?3, ?4, ?5)`,
-    [input.improvementId, input.proposalVersion, input.criterion, input.actor, input.now],
+type CriterionInput = {
+  improvementId: string;
+  proposalVersion: number;
+  criterion: string;
+  actor: string;
+  now: number;
+};
+
+export function* annotateImprovementCriterionSteps(q: Q, input: CriterionInput): Steps<void> {
+  const { improvementCriterion: criterion } = q.t;
+  yield* q.exec(
+    q.orm.insert(criterion).values({
+      improvementId: input.improvementId,
+      revision: sql`(SELECT coalesce(max(${criterion.revision}), 0) + 1 FROM ${criterion}
+        WHERE ${criterion.improvementId} = ${input.improvementId})`,
+      proposalVersion: input.proposalVersion,
+      criterion: input.criterion,
+      actor: input.actor,
+      at: input.now,
+    }),
   );
 }
 
-export function returnImprovementToReview(
-  db: Database,
-  input: { improvementId: string; version: number; actor: string; now: number },
-): void {
-  immediate(db, () => {
-    db.run(
-      `DELETE FROM improvement_delivery_attempt WHERE delivery_id IN
-         (SELECT id FROM improvement_delivery WHERE improvement_id = ?)`,
-      [input.improvementId],
-    );
-    db.run("DELETE FROM improvement_delivery WHERE improvement_id = ?", [input.improvementId]);
-    db.run("DELETE FROM improvement_issue_sync WHERE improvement_id = ?", [input.improvementId]);
-    db.run("DELETE FROM improvement_delegation WHERE improvement_id = ?", [input.improvementId]);
-    db.run("DELETE FROM improvement_work WHERE improvement_id = ?", [input.improvementId]);
-    db.run(
-      `UPDATE improvement SET review_state = 'needs_review', reviewed_proposal = NULL,
-         reviewed_by = ?, reviewed_at = ?, review_reason = NULL, intent = NULL,
-         intent_issue_id = NULL, evidence_comment = 0, issue_id = NULL, issue_identifier = NULL,
-         issue_url = NULL, issue_confirmed_at = NULL, implementation_state = 'unknown',
-         implementation_at = ?, verification_state = 'unknown', verification_at = ?
-       WHERE id = ? AND version = ?`,
-      [input.actor, input.now, input.now, input.now, input.improvementId, input.version],
-    );
-    db.run(
-      `INSERT INTO improvement_decision (improvement_id, version, review_state, evidence_comment,
-         actor, at) VALUES (?, ?, 'needs_review', 0, ?, ?)`,
-      [input.improvementId, input.version, input.actor, input.now],
-    );
-  });
+export function annotateImprovementCriterion(db: Database, input: CriterionInput): void {
+  settled(sqliteDb(db).run((q) => annotateImprovementCriterionSteps(q, input)));
+}
+
+type ReturnToReview = { improvementId: string; version: number; actor: string; now: number };
+
+export function* returnImprovementToReviewSteps(q: Q, input: ReturnToReview): Steps<void> {
+  const {
+    improvement,
+    improvementDecision,
+    improvementDelegation: delegation,
+    improvementDelivery,
+    improvementDeliveryAttempt,
+    improvementIssueSync: sync,
+    improvementWork,
+  } = q.t;
+  const id = input.improvementId;
+  yield* q.exec(
+    q.orm
+      .delete(improvementDeliveryAttempt)
+      .where(
+        inArray(
+          improvementDeliveryAttempt.deliveryId,
+          q.orm
+            .select({ id: improvementDelivery.id })
+            .from(improvementDelivery)
+            .where(eq(improvementDelivery.improvementId, id)),
+        ),
+      ),
+  );
+  yield* q.exec(q.orm.delete(improvementDelivery).where(eq(improvementDelivery.improvementId, id)));
+  yield* q.exec(q.orm.delete(sync).where(eq(sync.improvementId, id)));
+  yield* q.exec(q.orm.delete(delegation).where(eq(delegation.improvementId, id)));
+  yield* q.exec(q.orm.delete(improvementWork).where(eq(improvementWork.improvementId, id)));
+  yield* q.exec(
+    q.orm
+      .update(improvement)
+      .set({
+        reviewState: "needs_review",
+        reviewedProposal: null,
+        reviewedBy: input.actor,
+        reviewedAt: input.now,
+        reviewReason: null,
+        intent: null,
+        intentIssueId: null,
+        evidenceComment: 0,
+        issueId: null,
+        issueIdentifier: null,
+        issueUrl: null,
+        issueConfirmedAt: null,
+        implementationState: "unknown",
+        implementationAt: input.now,
+        verificationState: "unknown",
+        verificationAt: input.now,
+      })
+      .where(and(eq(improvement.id, id), eq(improvement.version, input.version))),
+  );
+  yield* q.exec(
+    q.orm.insert(improvementDecision).values({
+      improvementId: id,
+      version: input.version,
+      reviewState: "needs_review",
+      evidenceComment: 0,
+      actor: input.actor,
+      at: input.now,
+    }),
+  );
+}
+
+export function returnImprovementToReview(db: Database, input: ReturnToReview): void {
+  settled(sqliteDb(db).transaction((q) => returnImprovementToReviewSteps(q, input)));
 }
 
 export type IssueWork = {
@@ -404,133 +569,208 @@ export type IssueWork = {
   merge: { number: number; url: string | null; sha: string | null; confirmedAt: number } | null;
 };
 
-type WorkRow = {
+function issueWorkQuery(q: Q, join: "bound" | "any", where: SQL | undefined) {
+  const { itemPullRequest: p, remoteMergeFact: m, workItem: w, workItemEvent: e } = q.t;
+  const { improvementWork: b, workItemRepository: r } = q.t;
+  const select = q.orm
+    .select({
+      id: w.id,
+      state: w.state,
+      identifier: w.linearIdentifier,
+      createdAt: w.createdAt,
+      acceptedHead: w.acceptedHead,
+      owner: r.owner,
+      repo: r.repo,
+      updatedAt: sql<
+        number | null
+      >`(SELECT max(${e.at}) FROM ${e} WHERE ${e.itemId} = ${w.id})`.mapWith(Number),
+      pullNumber: p.pullNumber,
+      pullUrl: p.pullUrl,
+      openedAt: p.openedAt,
+      mergeNumber: m.pullNumber,
+      mergeUrl: m.pullUrl,
+      mergeSha: m.mergeSha,
+      confirmedAt: m.confirmedAt,
+    })
+    .from(w)
+    .leftJoin(r, eq(r.itemId, w.id))
+    .leftJoin(p, eq(p.itemId, w.id))
+    .leftJoin(m, eq(m.itemId, w.id));
+  return (join === "bound" ? select.innerJoin(b, eq(b.itemId, w.id)) : select).where(where);
+}
+
+function inRepository(q: Q, repository: string): SQL {
+  const { workItemRepository: r } = q.t;
+  return sql`(${r.itemId} IS NULL OR ${r.owner} || '/' || ${r.repo} = ${repository})`;
+}
+
+function workFromRow(row: {
   id: string;
   state: string;
-  linear_identifier: string;
-  created_at: number;
-  accepted_head: string | null;
+  identifier: string;
+  createdAt: number;
+  acceptedHead: string | null;
   owner: string | null;
   repo: string | null;
-  updated_at: number | null;
-  pull_number: number | null;
-  pull_url: string | null;
-  opened_at: number | null;
-  merge_number: number | null;
-  merge_url: string | null;
-  merge_sha: string | null;
-  confirmed_at: number | null;
-};
-
-const WORK_SELECT = `SELECT w.id, w.state, w.linear_identifier, w.created_at, w.accepted_head,
-    r.owner, r.repo, (SELECT max(at) FROM work_item_event e WHERE e.item_id = w.id) AS updated_at,
-    p.pull_number, p.pull_url, p.opened_at, m.pull_number AS merge_number,
-    m.pull_url AS merge_url, m.merge_sha, m.confirmed_at
-  FROM work_item w
-  LEFT JOIN work_item_repository r ON r.item_id = w.id
-  LEFT JOIN item_pull_request p ON p.item_id = w.id
-  LEFT JOIN remote_merge_fact m ON m.item_id = w.id`;
-
-const IN_REPOSITORY = "(r.item_id IS NULL OR r.owner || '/' || r.repo = ?)";
-
-const workFromRow = (row: WorkRow): IssueWork => ({
-  itemId: row.id,
-  state: row.state,
-  identifier: row.linear_identifier,
-  repository: row.owner && row.repo ? `${row.owner}/${row.repo}` : null,
-  createdAt: row.created_at,
-  updatedAt: row.updated_at ?? row.created_at,
-  acceptedHead: row.accepted_head,
-  pull:
-    row.pull_number === null
-      ? null
-      : { number: row.pull_number, url: row.pull_url, openedAt: row.opened_at ?? 0 },
-  merge:
-    row.merge_number === null
-      ? null
-      : {
-          number: row.merge_number,
-          url: row.merge_url,
-          sha: row.merge_sha,
-          confirmedAt: row.confirmed_at ?? 0,
-        },
-});
+  updatedAt: number | null;
+  pullNumber: number | null;
+  pullUrl: string | null;
+  openedAt: number | null;
+  mergeNumber: number | null;
+  mergeUrl: string | null;
+  mergeSha: string | null;
+  confirmedAt: number | null;
+}): IssueWork {
+  return {
+    itemId: row.id,
+    state: row.state,
+    identifier: row.identifier,
+    repository: row.owner && row.repo ? `${row.owner}/${row.repo}` : null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt ?? row.createdAt,
+    acceptedHead: row.acceptedHead,
+    pull:
+      row.pullNumber === null
+        ? null
+        : { number: row.pullNumber, url: row.pullUrl, openedAt: row.openedAt ?? 0 },
+    merge:
+      row.mergeNumber === null
+        ? null
+        : {
+            number: row.mergeNumber,
+            url: row.mergeUrl,
+            sha: row.mergeSha,
+            confirmedAt: row.confirmedAt ?? 0,
+          },
+  };
+}
 
 export type ImprovementWorkBinding = { issueId: string; itemId: string; boundAt: number };
+
+export function* improvementWorkBindingSteps(
+  q: Q,
+  improvementId: string,
+): Steps<ImprovementWorkBinding | null> {
+  const { improvementWork: b } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ issueId: b.issueId, itemId: b.itemId, boundAt: b.boundAt })
+      .from(b)
+      .where(eq(b.improvementId, improvementId)),
+  );
+  return row ?? null;
+}
 
 export function improvementWorkBinding(
   db: Database,
   improvementId: string,
 ): ImprovementWorkBinding | null {
-  return db
-    .query<ImprovementWorkBinding, [string]>(
-      `SELECT issue_id AS issueId, item_id AS itemId, bound_at AS boundAt FROM improvement_work
-       WHERE improvement_id = ?`,
-    )
-    .get(improvementId);
+  return settled(sqliteDb(db).run((q) => improvementWorkBindingSteps(q, improvementId)));
+}
+
+type BoundImprovement = { id: string; issueId: string; repository: string };
+
+export function* boundImprovementWorkSteps(
+  q: Q,
+  improvement: BoundImprovement,
+): Steps<IssueWork | null> {
+  const { improvementWork: b, workItem: w } = q.t;
+  const row = yield* q.one(
+    issueWorkQuery(
+      q,
+      "bound",
+      and(
+        eq(b.improvementId, improvement.id),
+        eq(b.issueId, improvement.issueId),
+        eq(w.linearIssueId, b.issueId),
+        inRepository(q, improvement.repository),
+      ),
+    ).limit(1),
+  );
+  return row ? workFromRow(row) : null;
 }
 
 export function boundImprovementWork(
   db: Database,
-  improvement: { id: string; issueId: string; repository: string },
+  improvement: BoundImprovement,
 ): IssueWork | null {
-  const row = db
-    .query<WorkRow, [string, string, string]>(
-      `${WORK_SELECT} JOIN improvement_work b ON b.item_id = w.id
-       WHERE b.improvement_id = ? AND b.issue_id = ? AND w.linear_issue_id = b.issue_id
-         AND ${IN_REPOSITORY}`,
-    )
-    .get(improvement.id, improvement.issueId, improvement.repository);
-  return row ? workFromRow(row) : null;
+  return settled(sqliteDb(db).run((q) => boundImprovementWorkSteps(q, improvement)));
 }
 
-export function newestIssueWork(
-  db: Database,
-  input: {
-    issueId: string;
-    repository: string;
-    createdSince: number;
-    linkedAt: number;
-    exceptItemId?: string;
-  },
-): IssueWork | null {
-  const row = db
-    .query<WorkRow, [string, string, number, number, string]>(
-      `${WORK_SELECT} WHERE w.linear_issue_id = ? AND ${IN_REPOSITORY} AND w.created_at >= ?
-         AND (w.created_at >= ? OR w.state NOT IN ('completed','merged','cancelled','failed'))
-         AND w.id <> ? ORDER BY w.created_at DESC, w.rowid DESC LIMIT 1`,
-    )
-    .get(
-      input.issueId,
-      input.repository,
-      input.createdSince,
-      input.linkedAt,
-      input.exceptItemId ?? "",
-    );
-  return row ? workFromRow(row) : null;
-}
+type IssueWorkQuery = {
+  issueId: string;
+  repository: string;
+  createdSince: number;
+  linkedAt: number;
+  exceptItemId?: string;
+};
 
-export function bindImprovementWork(
-  db: Database,
-  input: {
-    improvementId: string;
-    issueId: string;
-    itemId: string;
-    expectedItemId: string | null;
-    now: number;
-  },
-): boolean {
-  return (
-    db.run(
-      `INSERT INTO improvement_work (improvement_id, issue_id, item_id, bound_at)
-       SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM improvement WHERE id = ?1 AND issue_id = ?2)
-         AND (?5 IS NULL OR EXISTS (SELECT 1 FROM improvement_work WHERE improvement_id = ?1))
-       ON CONFLICT(improvement_id) DO UPDATE SET issue_id = excluded.issue_id,
-         item_id = excluded.item_id, bound_at = excluded.bound_at
-       WHERE improvement_work.item_id = ?5`,
-      [input.improvementId, input.issueId, input.itemId, input.now, input.expectedItemId],
-    ).changes === 1
+export function* newestIssueWorkSteps(q: Q, input: IssueWorkQuery): Steps<IssueWork | null> {
+  const { workItem: w } = q.t;
+  const row = yield* q.one(
+    issueWorkQuery(
+      q,
+      "any",
+      and(
+        eq(w.linearIssueId, input.issueId),
+        inRepository(q, input.repository),
+        sql`${w.createdAt} >= ${input.createdSince}`,
+        or(
+          sql`${w.createdAt} >= ${input.linkedAt}`,
+          sql`${w.state} NOT IN ('completed','merged','cancelled','failed')`,
+        ),
+        ne(w.id, input.exceptItemId ?? ""),
+      ),
+    )
+      .orderBy(desc(w.createdAt), desc(w.id))
+      .limit(1),
   );
+  return row ? workFromRow(row) : null;
+}
+
+export function newestIssueWork(db: Database, input: IssueWorkQuery): IssueWork | null {
+  return settled(sqliteDb(db).run((q) => newestIssueWorkSteps(q, input)));
+}
+
+type WorkBindingInput = {
+  improvementId: string;
+  issueId: string;
+  itemId: string;
+  expectedItemId: string | null;
+  now: number;
+};
+
+export function* bindImprovementWorkSteps(q: Q, input: WorkBindingInput): Steps<boolean> {
+  const { improvement, improvementWork: b } = q.t;
+  const insert = q.orm.insert(b).select(
+    sql`SELECT ${typed(input.improvementId, "text")}, ${typed(input.issueId, "text")},
+        ${typed(input.itemId, "text")}, ${typed(input.now, "bigint")}
+      WHERE EXISTS (SELECT 1 FROM ${improvement} WHERE ${improvement.id} = ${input.improvementId}
+        AND ${improvement.issueId} = ${input.issueId})${
+          input.expectedItemId === null
+            ? sql``
+            : sql` AND EXISTS (SELECT 1 FROM ${b} WHERE ${b.improvementId} = ${input.improvementId})`
+        }`,
+  );
+  const rows = yield* q.all(
+    (input.expectedItemId === null
+      ? insert.onConflictDoNothing({ target: b.improvementId })
+      : insert.onConflictDoUpdate({
+          target: b.improvementId,
+          set: {
+            issueId: sql`excluded.issue_id`,
+            itemId: sql`excluded.item_id`,
+            boundAt: sql`excluded.bound_at`,
+          },
+          setWhere: eq(b.itemId, input.expectedItemId),
+        })
+    ).returning({ improvementId: b.improvementId }),
+  );
+  return rows.length === 1;
+}
+
+export function bindImprovementWork(db: Database, input: WorkBindingInput): boolean {
+  return settled(sqliteDb(db).run((q) => bindImprovementWorkSteps(q, input)));
 }
 
 export type CloseoutStepResult = {
@@ -544,18 +784,37 @@ export type CloseoutStepResult = {
   finishedAt: number | null;
 };
 
+export function* closeoutStepResultSteps(
+  q: Q,
+  progressId: string,
+  stepId: string,
+): Steps<CloseoutStepResult | null> {
+  const { closeoutProgress: p, closeoutStep: s } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        progressId: s.progressId,
+        stepId: s.stepId,
+        itemId: p.itemId,
+        head: p.head,
+        kind: s.kind,
+        state: s.state,
+        command: s.command,
+        finishedAt: s.finishedAt,
+      })
+      .from(s)
+      .innerJoin(p, eq(p.id, s.progressId))
+      .where(and(eq(s.progressId, progressId), eq(s.stepId, stepId)))
+      .orderBy(desc(s.attempt))
+      .limit(1),
+  );
+  return row ?? null;
+}
+
 export function closeoutStepResult(
   db: Database,
   progressId: string,
   stepId: string,
 ): CloseoutStepResult | null {
-  return db
-    .query<CloseoutStepResult, [string, string]>(
-      `SELECT s.progress_id AS progressId, s.step_id AS stepId, p.item_id AS itemId, p.head,
-         s.kind, s.state, s.command, s.finished_at AS finishedAt
-       FROM closeout_step s JOIN closeout_progress p ON p.id = s.progress_id
-       WHERE s.progress_id = ? AND s.step_id = ?
-       ORDER BY s.attempt DESC LIMIT 1`,
-    )
-    .get(progressId, stepId);
+  return settled(sqliteDb(db).run((q) => closeoutStepResultSteps(q, progressId, stepId)));
 }
