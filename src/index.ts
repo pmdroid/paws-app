@@ -54,6 +54,7 @@ import { policyCheckPaths } from "./closeout";
 import {
   createEvidenceStore,
   EvidenceRejectedError,
+  uploadLocalCloseoutEvidence,
   uploadLocalEvidence,
   type EvidenceObjects,
 } from "./evidence";
@@ -808,6 +809,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   void uploadLocalEvidence(db, { root: paths.evidenceDir, objects: evidenceObjects }).catch(
     (error: unknown) => journalCaught(error, "index.startPaws.uploadLocalEvidence", null),
   );
+  const closeoutEvidence = {
+    root: join(paths.home, "closeout", "evidence"),
+    objects: evidenceObjects,
+  };
+  void uploadLocalCloseoutEvidence(db, closeoutEvidence).catch((error: unknown) =>
+    journalCaught(error, "index.startPaws.uploadLocalCloseoutEvidence", null),
+  );
   let runner: RunnerCoordinator | undefined;
   let runnerStopping = false;
   let retroDispatcher: RetroDispatcher | undefined;
@@ -1149,6 +1157,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       closeoutHome: paths.home,
       evidenceDir: paths.evidenceDir,
       evidenceObjects,
+      closeoutEvidence,
       visualReviewChanges: async (input) =>
         orchestrator ? orchestrator.requestVisualReviewChanges(input) : "rejected",
       linkAsks: (request, principal, sessionIds) =>
@@ -1588,6 +1597,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         commitPolicyForItem,
         files: linear?.files,
         secretsDir: paths.secretsDir,
+        closeoutEvidenceObjects: evidenceObjects,
         evidence: runtime.publicUrl
           ? {
               publicUrl: runtime.publicUrl,

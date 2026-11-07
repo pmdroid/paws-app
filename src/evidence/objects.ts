@@ -130,9 +130,9 @@ export async function openEvidenceFile(
   return { size: row.sizeBytes, body };
 }
 
-async function* readChunks(
+export async function* readChunks(
   objects: RunFileObjects,
-  row: EvidenceObject,
+  row: Pick<EvidenceObject, "prefix" | "sizeBytes">,
   start: number,
   end: number,
 ) {

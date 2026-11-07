@@ -229,6 +229,19 @@ export const evidenceObject = sqliteTable("evidence_object", {
   storedAt: integer("stored_at").notNull(),
 });
 
+export const closeoutEvidenceObject = sqliteTable(
+  "closeout_evidence_object",
+  {
+    task: text().notNull(),
+    path: text().notNull(),
+    prefix: text().notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    sha256: text().notNull(),
+    storedAt: integer("stored_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.task, table.path] })],
+);
+
 export const candidateRisk = sqliteTable(
   "candidate_risk",
   {

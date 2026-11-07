@@ -626,6 +626,11 @@ export {
 } from "./artifacts";
 
 export {
+  closeoutTasksOfItem,
+  getCloseoutEvidenceObject,
+  listCloseoutEvidenceObjects,
+  saveCloseoutEvidenceObject,
+  type CloseoutEvidenceObject,
   deleteEvidenceObject,
   getEvidence,
   getEvidenceObject,

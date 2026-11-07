@@ -1,7 +1,14 @@
 import type { Database } from "bun:sqlite";
-import { eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { orm } from "./orm";
-import { evidence, evidenceObject, visualReviewMark } from "./schema";
+import {
+  closeoutEvidenceObject,
+  closeoutProgress,
+  evidence,
+  evidenceObject,
+  visualReviewMark,
+  workItem,
+} from "./schema";
 
 export type EvidenceMediaType =
   | "video/webm"
@@ -99,4 +106,72 @@ export function localEvidenceFiles(
     .where(isNull(evidenceObject.id))
     .all();
   return [...files, ...marks];
+}
+
+export type CloseoutEvidenceObject = typeof closeoutEvidenceObject.$inferSelect;
+
+export function listCloseoutEvidenceObjects(
+  db: Database,
+  tasks: readonly string[],
+): CloseoutEvidenceObject[] {
+  if (tasks.length === 0) return [];
+  return orm(db)
+    .select()
+    .from(closeoutEvidenceObject)
+    .where(inArray(closeoutEvidenceObject.task, [...tasks]))
+    .all();
+}
+
+export function getCloseoutEvidenceObject(
+  db: Database,
+  task: string,
+  path: string,
+): CloseoutEvidenceObject | null {
+  return (
+    orm(db)
+      .select()
+      .from(closeoutEvidenceObject)
+      .where(and(eq(closeoutEvidenceObject.task, task), eq(closeoutEvidenceObject.path, path)))
+      .get() ?? null
+  );
+}
+
+export function saveCloseoutEvidenceObject(db: Database, row: CloseoutEvidenceObject): void {
+  orm(db)
+    .insert(closeoutEvidenceObject)
+    .values(row)
+    .onConflictDoUpdate({
+      target: [closeoutEvidenceObject.task, closeoutEvidenceObject.path],
+      set: {
+        prefix: row.prefix,
+        sizeBytes: row.sizeBytes,
+        sha256: row.sha256,
+        storedAt: row.storedAt,
+      },
+    })
+    .run();
+}
+
+export function closeoutTasksOfItem(
+  db: Database,
+  ref: string,
+  sessionIds?: readonly string[],
+): string[] {
+  const item = orm(db)
+    .select({ id: workItem.id, sessionKey: workItem.sessionKey })
+    .from(workItem)
+    .where(or(eq(workItem.id, ref), eq(workItem.linearIdentifier, ref)))
+    .get();
+  if (
+    !item ||
+    (sessionIds !== undefined &&
+      (item.sessionKey === null || !sessionIds.includes(item.sessionKey)))
+  )
+    return [];
+  return orm(db)
+    .selectDistinct({ task: closeoutProgress.taskId })
+    .from(closeoutProgress)
+    .where(eq(closeoutProgress.itemId, item.id))
+    .all()
+    .map((row) => row.task);
 }

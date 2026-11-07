@@ -7,3 +7,10 @@ export { handleVisualReviewChanges, VISUAL_REVIEW_CHANGES_PATH } from "./review-
 export type { VisualReviewChanges, VisualReviewChangesOptions } from "./review-marks";
 export { readEvidenceBytes, uploadLocalEvidence } from "./objects";
 export type { EvidenceObjects, EvidenceStorage } from "./objects";
+export {
+  closeoutEvidenceItemOf,
+  hydrateCloseoutEvidence,
+  hydrateItemCloseoutEvidence,
+  publishCloseoutEvidence,
+  uploadLocalCloseoutEvidence,
+} from "./closeout";

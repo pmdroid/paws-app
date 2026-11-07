@@ -138,7 +138,12 @@ import {
   mergeResultPolicyError,
   POLICY_SCHEMA_SUMMARY,
 } from "../closeout";
-import type { EvidenceObjects, EvidenceStorage } from "../evidence";
+import {
+  hydrateCloseoutEvidence,
+  publishCloseoutEvidence,
+  type EvidenceObjects,
+  type EvidenceStorage,
+} from "../evidence";
 import {
   CommandBus,
   riskLine,
@@ -676,6 +681,7 @@ export type OrchestratorOptions = {
     root?: string;
     objects?: EvidenceObjects;
   } | null;
+  closeoutEvidenceObjects?: EvidenceObjects;
   /** The HTTPS dashboard origin (`PAWS_PUBLIC_URL`). Without it Paws cannot ask with a link. */
   publicUrl?: string | null;
   catchUp?: () => Promise<void>;
@@ -2120,6 +2126,7 @@ export class Orchestrator {
       },
       fixRoundLimit: (item) => this.fixRoundLimit(item),
       closeoutFindings: async (item) => {
+        await this.pullCloseoutEvidence(item);
         const started = closeoutHeadsStarted(this.db, item.id);
         try {
           return await storedReviewFindings(
@@ -4182,6 +4189,7 @@ export class Orchestrator {
       headSha: head,
       attempt: 1,
     };
+    await this.pullCloseoutEvidence(item);
     try {
       const verdict = await gate[decide ? "decide" : "run"](request);
       if (stoppedOnRule === undefined) return verdict;
@@ -4203,6 +4211,7 @@ export class Orchestrator {
     } finally {
       activity.flush();
       if (live) live.progress = null;
+      await this.pushCloseoutEvidence(item);
     }
   }
 
@@ -4436,6 +4445,7 @@ export class Orchestrator {
   private async startCloseoutRound(item: WorkItemRecord, head: string): Promise<void> {
     if (head === "" || head === item.checkpoint?.wipCommit) return;
     if (listCloseoutRounds(this.db, item.id).some((round) => round.head === head)) return;
+    await this.pullCloseoutEvidence(item);
     let retryBaseline: string[];
     try {
       retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
@@ -4678,6 +4688,7 @@ export class Orchestrator {
     }
     const sessionId = this.activitySession(item);
     if (sessionId === null) throw new Error("Closeout recovery has no tracker session");
+    await this.pullCloseoutEvidence(item);
     let retryBaseline: string[] = [];
     try {
       retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
@@ -4763,6 +4774,7 @@ export class Orchestrator {
   /** Records on the verifying run how many review rounds the item has needed so far. */
   private async recordReviewRounds(item: WorkItemRecord, runId: string | null): Promise<void> {
     if (runId === null) return;
+    await this.pullCloseoutEvidence(item);
     try {
       const { rounds } = await readReviewRounds(itemPathId(item), [], this.options.pawsRoot);
       if (rounds.length > 0) recordReviewRounds(this.db, runId, rounds.length);
@@ -4789,6 +4801,7 @@ export class Orchestrator {
     help: CloseoutHelp,
   ): Promise<boolean> {
     if (!linkAskAvailable(this.options.publicUrl) || item.sessionKey !== sessionId) return false;
+    await this.pullCloseoutEvidence(item);
     let rounds: ReviewRounds;
     try {
       rounds = await readReviewRounds(
@@ -5307,6 +5320,7 @@ export class Orchestrator {
       live.controller.signal,
     );
     if (this.stopped(item.id)) return { kind: "obsolete" };
+    await this.pullCloseoutEvidence(item);
     const publicUrl = this.options.evidence?.publicUrl ?? this.options.publicUrl ?? null;
     const open: OpenItems = {
       findings: await openFindings(
@@ -5806,6 +5820,7 @@ export class Orchestrator {
     repository: RepositoryBinding,
   ): Promise<string> {
     if (this.suggestedFindingsMode(`${repository.owner}/${repository.repo}`) === "off") return "";
+    await this.pullCloseoutEvidence(item);
     const findings = undecidedSuggestions(
       await acceptedSuggestions(this.db, item, this.options.pawsRoot).catch((error: unknown) => {
         journalCaught(
@@ -7611,6 +7626,7 @@ export class Orchestrator {
     const before = getWorkItem(this.db, item.id);
     const branchHead = getItemBranchState(this.db, item.id)?.head ?? null;
     const ci = rebase ? null : await this.followUpCi(item);
+    await this.pullCloseoutEvidence(item);
     const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
 
     immediate(this.db, () => {
@@ -8685,6 +8701,27 @@ export class Orchestrator {
       const loaded = await linear({ ...input, prompt: marked.prompt });
       return { prompt: loaded.prompt, inputFiles: [...marked.inputFiles, ...loaded.inputFiles] };
     };
+  }
+
+  private closeoutEvidence(): EvidenceStorage | null {
+    const objects = this.options.closeoutEvidenceObjects;
+    return objects ? { root: join(this.options.pawsRoot, "closeout", "evidence"), objects } : null;
+  }
+
+  private async pullCloseoutEvidence(item: WorkItemRecord): Promise<void> {
+    const storage = this.closeoutEvidence();
+    if (storage === null) return;
+    await hydrateCloseoutEvidence(this.db, storage, [itemPathId(item)]).catch((error: unknown) =>
+      journalCaught(error, "orchestrator.pullCloseoutEvidence", item.id),
+    );
+  }
+
+  private async pushCloseoutEvidence(item: WorkItemRecord): Promise<void> {
+    const storage = this.closeoutEvidence();
+    if (storage === null) return;
+    await publishCloseoutEvidence(this.db, storage, itemPathId(item)).catch((error: unknown) =>
+      journalCaught(error, "orchestrator.pushCloseoutEvidence", item.id),
+    );
   }
 
   private evidenceStorage(): EvidenceStorage | undefined {

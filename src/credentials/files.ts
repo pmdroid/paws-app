@@ -75,10 +75,6 @@ export function openSecret(secretsDir: string, name: string, text: string): stri
   return decodeSecretEnvelope(name, text, envelopeKey(secretsDir));
 }
 
-/**
- * A 32-byte key for `purpose`, derived from the envelope key in `secretsDir`. Every instance with
- * the same envelope key derives the same one.
- */
 export function envelopeSubkey(secretsDir: string, purpose: string): Buffer {
   return Buffer.from(hkdfSync("sha256", envelopeKey(secretsDir), Buffer.alloc(0), purpose, 32));
 }

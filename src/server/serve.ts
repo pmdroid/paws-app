@@ -33,7 +33,10 @@ import {
   handleEvidenceRequest,
   handleVisualReviewChanges,
   VISUAL_REVIEW_CHANGES_PATH,
+  closeoutEvidenceItemOf,
+  hydrateItemCloseoutEvidence,
   type EvidenceObjects,
+  type EvidenceStorage,
   type VisualReviewChanges,
 } from "../evidence";
 import {
@@ -165,6 +168,7 @@ export type ServerOptions = {
   evidenceRoot?: string;
   evidenceDir?: string;
   evidenceObjects?: EvidenceObjects;
+  closeoutEvidence?: EvidenceStorage;
   visualReviewChanges?: VisualReviewChanges;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
@@ -273,6 +277,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
           ...(evidenceRoot ? { evidenceRoot } : {}),
           ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
           ...(options.evidenceObjects ? { evidenceObjects: options.evidenceObjects } : {}),
+          ...(options.closeoutEvidence ? { closeoutEvidence: options.closeoutEvidence } : {}),
           ...(options.visualReviewChanges
             ? { visualReviewChanges: options.visualReviewChanges }
             : {}),
@@ -327,6 +332,7 @@ type Secrets = {
   evidenceRoot?: string;
   evidenceDir?: string;
   evidenceObjects?: EvidenceObjects;
+  closeoutEvidence?: EvidenceStorage;
   visualReviewChanges?: VisualReviewChanges;
 };
 
@@ -700,6 +706,14 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }));
     if (settings !== null) return settings;
   }
+  const closeoutItem = secrets.closeoutEvidence ? closeoutEvidenceItemOf(request) : null;
+  if (closeoutItem !== null && secrets.db)
+    await hydrateItemCloseoutEvidence(
+      secrets.db,
+      secrets.closeoutEvidence!,
+      closeoutItem,
+      sessionIds,
+    ).catch((error: unknown) => journalCaught(error, "serve.hydrateItemCloseoutEvidence", null));
   const status = await handleStatusRequest(request, {
     csrfToken,
     resourceCache: dashboardResources,
