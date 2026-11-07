@@ -1300,17 +1300,18 @@ export function createRemoteAgentRunner(options: {
               if (prepared.prompt.length > 65_536 && !options.inputs)
                 throw new Error("Remote conversation context transfer is unavailable");
               const inputFiles = files.length
-                ? options.inputs!.stage(
+                ? await options.inputs!.stage(
                     commandId,
                     files.map((file) => ({
                       ...file,
                       path: relative(input.worktreePath, file.path).split(sep).join("/"),
                     })),
+                    selected.runId,
                   )
                 : undefined;
               const promptContext =
                 prepared.prompt.length > 65_536
-                  ? options.inputs!.stagePrompt(commandId, prepared.prompt)
+                  ? await options.inputs!.stagePrompt(commandId, prepared.prompt, selected.runId)
                   : undefined;
               phase("prompt");
               // A run that leaves its pinned runner may continue its saved agent session there.
@@ -2110,7 +2111,7 @@ export function createRemoteAgentRunner(options: {
               } else if (event.type === "artifact" && !answered) {
                 if (!input.publishArtifact || !options.artifacts)
                   throw new Error("Remote artifact publication is unavailable");
-                const snapshot = options.artifacts.snapshot(
+                const snapshot = await options.artifacts.snapshot(
                   assigned.runId,
                   assigned.generation,
                   event.artifact,

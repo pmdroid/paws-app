@@ -453,7 +453,7 @@ export async function probeRunnerBackend(
       sha256: createHash("sha256").update(artifactBytes).digest("hex"),
       attachToIssue: true,
     };
-    artifacts.upload({
+    await artifacts.upload({
       runnerId,
       runId: assigned.runId,
       token: grant.token,
@@ -483,7 +483,7 @@ export async function probeRunnerBackend(
       attachToIssue: false,
       evidence: { checkId: "browser-proof", attempt: 2, headCommit: "c".repeat(40) },
     };
-    artifacts.upload({
+    await artifacts.upload({
       runnerId,
       runId: assigned.runId,
       token: grant.token,
@@ -946,7 +946,7 @@ export async function probeRunnerBackend(
       sha256: createHash("sha256").update(replayBytes).digest("hex"),
       attachToIssue: false,
     };
-    artifacts.upload({
+    await artifacts.upload({
       runnerId,
       runId: replayCommand.runId,
       token: replayGrant.token,
@@ -1363,7 +1363,7 @@ export async function probeRunnerBackend(
           event: { type: "question", text: "Which format?", options: [] },
         });
         if (purpose === "artifact") {
-          artifacts.upload({
+          await artifacts.upload({
             runnerId,
             runId: command.runId,
             token: taskGrant.token,
@@ -1614,7 +1614,7 @@ export async function probeRunnerBackend(
           descriptor.path,
           fileId === 0 ? "private/supplied.bin" : "private/prepared.txt",
         );
-        const chunk = inputs.read(
+        const chunk = await inputs.read(
           { runnerId, runId: dispatched.runId, token: inputGrant.token },
           { commandId: dispatched.id, generation: dispatched.generation, fileId, offset: 0 },
         );
@@ -1632,7 +1632,7 @@ export async function probeRunnerBackend(
         const chunks: Buffer[] = [];
         let offset = 0;
         while (offset < dispatched.promptContext.sizeBytes) {
-          const chunk = inputs.readContext(
+          const chunk = await inputs.readContext(
             { runnerId, runId: dispatched.runId, token: inputGrant.token },
             { commandId: dispatched.id, generation: dispatched.generation, offset },
           );
@@ -1676,7 +1676,7 @@ export async function probeRunnerBackend(
         },
       });
       await pendingInput;
-      assert.throws(() =>
+      await assert.rejects(async () =>
         inputs.read(
           { runnerId, runId: dispatched.runId, token: inputGrant.token },
           { commandId: dispatched.id, generation: dispatched.generation, fileId: 0, offset: 0 },
@@ -2768,7 +2768,7 @@ export async function probeRunnerBackend(
       sha256: createHash("sha256").update(retainedBytes).digest("hex"),
       attachToIssue: true,
     };
-    artifacts.upload({
+    await artifacts.upload({
       runnerId: hostIds[0]!,
       runId: artifactCommand.runId,
       token: artifactToken.token,

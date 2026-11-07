@@ -155,18 +155,18 @@ export async function probeRunnerInputs(
     { path: ".paws-linear-inputs/turn/日本語.bin", mimeType: "application/octet-stream", bytes },
     { path: "empty.txt", mimeType: "text/plain", bytes: Buffer.alloc(0) },
   ];
-  command.inputFiles = inputs.stage(command.id, supplied);
+  command.inputFiles = await inputs.stage(command.id, supplied);
   if (contextPrompt !== undefined) {
-    command.promptContext = inputs.stagePrompt(command.id, contextPrompt);
-    assert.deepEqual(inputs.stagePrompt(command.id, contextPrompt), command.promptContext);
-    assert.throws(() => inputs.stagePrompt(command.id, contextPrompt + "changed"));
+    command.promptContext = await inputs.stagePrompt(command.id, contextPrompt);
+    assert.deepEqual(await inputs.stagePrompt(command.id, contextPrompt), command.promptContext);
+    await assert.rejects(async () => inputs.stagePrompt(command.id, contextPrompt + "changed"));
   }
   bytes.fill(0);
   assert.deepEqual(
-    inputs.stage(command.id, [{ ...supplied[0]!, bytes: original }, supplied[1]!]),
+    await inputs.stage(command.id, [{ ...supplied[0]!, bytes: original }, supplied[1]!]),
     command.inputFiles,
   );
-  assert.throws(() => inputs.stage(command.id, supplied));
+  await assert.rejects(async () => inputs.stage(command.id, supplied));
   assert.equal(RunnerCommandSchema.parse(command).type, "run");
   assert.equal(RunnerCommandSchema.parse({ ...command, type: "review" }).type, "review");
   work.assign(command);
@@ -293,15 +293,17 @@ export async function probeRunnerInputs(
       "A/.GiT/config",
       "nul\0file",
     ]) {
-      assert.throws(() => inputs.stage(workspaceId(), [{ ...supplied[1]!, path: inputPath }]));
+      await assert.rejects(async () =>
+        inputs.stage(workspaceId(), [{ ...supplied[1]!, path: inputPath }]),
+      );
     }
-    assert.throws(() =>
+    await assert.rejects(async () =>
       inputs.stage(workspaceId(), [
         { ...supplied[1]!, path: "a" },
         { ...supplied[1]!, path: "a/b" },
       ]),
     );
-    assert.throws(() =>
+    await assert.rejects(async () =>
       inputs.stage(workspaceId(), [
         { ...supplied[1]!, path: "same" },
         { ...supplied[1]!, path: "same" },
@@ -311,13 +313,13 @@ export async function probeRunnerInputs(
       ...supplied[1]!,
       path: `${id}.txt`,
     }));
-    assert.equal(inputs.stage(workspaceId(), twentyOne).length, 21);
-    assert.throws(() =>
+    assert.equal((await inputs.stage(workspaceId(), twentyOne)).length, 21);
+    await assert.rejects(async () =>
       inputs.stage(workspaceId(), [...twentyOne, { ...supplied[1]!, path: "21.txt" }]),
     );
     const maximum = { ...supplied[1]!, bytes: Buffer.alloc(20 * 1024 * 1024) };
-    assert.equal(inputs.stage(workspaceId(), [maximum])[0]!.sizeBytes, 20 * 1024 * 1024);
-    assert.throws(() =>
+    assert.equal((await inputs.stage(workspaceId(), [maximum]))[0]!.sizeBytes, 20 * 1024 * 1024);
+    await assert.rejects(async () =>
       inputs.stage(workspaceId(), [{ ...maximum, bytes: Buffer.alloc(20 * 1024 * 1024 + 1) }]),
     );
     assert.throws(() => RunnerInputFilesSchema.parse([{ ...command.inputFiles![0], id: 1 }]));
@@ -338,7 +340,9 @@ export async function probeRunnerInputs(
       assert.notEqual((await send(changed)).status, 200);
     assert.notEqual((await send(payload, { token: "A".repeat(43) })).status, 200);
     assert.notEqual((await send(payload, { runId: "wrong-run" })).status, 200);
-    assert.throws(() => inputs.read({ runnerId: "wrong-runner", runId: run.id, token }, payload));
+    await assert.rejects(async () =>
+      inputs.read({ runnerId: "wrong-runner", runId: run.id, token }, payload),
+    );
     const directory = join(storageRoot, createHash("sha256").update(command.id).digest("hex"));
     const file = join(directory, "0.bytes");
     assert.equal(readFileSync(file).equals(original), true);
@@ -425,8 +429,10 @@ export async function probeRunnerInputs(
       assert.equal((await send(contextPayload, { channel: "context" })).status, 403);
       unlinkSync(promptFile);
       renameSync(savedPrompt, promptFile);
-      assert.throws(() => inputs.stagePrompt(workspaceId(), "\uD800"));
-      assert.throws(() => inputs.stagePrompt(workspaceId(), "x".repeat(64 * 1024 * 1024 + 1)));
+      await assert.rejects(async () => inputs.stagePrompt(workspaceId(), "\uD800"));
+      await assert.rejects(async () =>
+        inputs.stagePrompt(workspaceId(), "x".repeat(64 * 1024 * 1024 + 1)),
+      );
       assert.throws(() => RunnerCommandSchema.parse({ ...command, prompt: contextPrompt }));
       observe(
         "prompt context enforces signed command/range/grant, UTF-8 and separate byte limits while repaired storage retries exactly",

@@ -285,7 +285,9 @@ export async function probeRunnerCoordinatorData(
     await daemon.uploadArtifact(run.id, artifactChunk(1), grant.token);
     await daemon.uploadArtifact(run.id, artifactChunk(0), grant.token);
     assert.deepEqual(
-      Buffer.from(await coordinator.artifacts.snapshot(run.id, 1, artifact).bytes.arrayBuffer()),
+      Buffer.from(
+        await (await coordinator.artifacts.snapshot(run.id, 1, artifact)).bytes.arrayBuffer(),
+      ),
       bytes,
     );
     const executionId = workspaceId(now);
@@ -351,7 +353,9 @@ export async function probeRunnerCoordinatorData(
     });
     assert.equal((await daemon.finishTranscript(run.id, finish, grant.token)).uri, receipt.uri);
     assert.deepEqual(
-      Buffer.from(await coordinator.artifacts.snapshot(run.id, 1, artifact).bytes.arrayBuffer()),
+      Buffer.from(
+        await (await coordinator.artifacts.snapshot(run.id, 1, artifact)).bytes.arrayBuffer(),
+      ),
       bytes,
     );
     const mintsBeforeDenial = mints;

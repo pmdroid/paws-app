@@ -35,7 +35,8 @@ import {
   readStoredFindings,
   type ProbesCommand,
 } from "./probe-collector";
-import { importCredentialFile, readSecretFile } from "./credentials";
+import { importCredentialFile, loadEnvelopeKey, readSecretFile } from "./credentials";
+import { createS3RunnerFileObjects } from "./run-files";
 import type { Database } from "bun:sqlite";
 import {
   ArtifactRejectedError,
@@ -760,6 +761,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     const s3 = options?.runnerTranscriptObjects ? null : loadRunnerTranscriptS3(runtime.env.home);
     return s3 ? withLocalAgentSessionFallback(local, createS3AgentSessionObjects(s3)) : local;
   };
+  const runnerFileObjects = () => {
+    const s3 = options?.runnerTranscriptObjects ? null : loadRunnerTranscriptS3(runtime.env.home);
+    return s3
+      ? { objects: createS3RunnerFileObjects(s3), key: loadEnvelopeKey(paths.secretsDir) }
+      : undefined;
+  };
   let runner: RunnerCoordinator | undefined;
   let runnerStopping = false;
   let retroDispatcher: RetroDispatcher | undefined;
@@ -786,6 +793,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             objects: transcriptObjects,
             key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
           },
+          runnerFiles: runnerFileObjects(),
           eventKey: loadRunnerEventKey(join(paths.secretsDir, RUNNER_EVENT_KEY_FILE)),
           agentSessions: placeOnRunner
             ? {

@@ -18,7 +18,7 @@ try {
   const hash = createHash("sha256");
   let sizeBytes = 0;
   for (let offset = 0; offset < input.sizeBytes; offset += RUNNER_INPUT_CHUNK_BYTES) {
-    const chunk = store.readContext(
+    const chunk = await store.readContext(
       { runnerId: input.runnerId, runId: input.runId, token: input.token },
       { commandId: input.commandId, generation: input.generation, offset },
     );
