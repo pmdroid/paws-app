@@ -9272,13 +9272,13 @@ export class Orchestrator {
 
   private async legacyItemHead(item: WorkItemRecord): Promise<{ repo: string; ref: string }> {
     const repository = this.repositoryForItem(item);
-    await this.restoreCandidate(item, this.signalForItem(item.id));
     if (this.options.remoteExecution && repository)
       await adoptLegacyCandidate({
         ...repository,
         itemId: itemPathId(item),
         pawsRoot: this.options.pawsRoot,
       });
+    await this.restoreCandidate(item, this.signalForItem(item.id));
     return this.itemHead(item);
   }
 
