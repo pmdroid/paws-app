@@ -104,7 +104,11 @@ export async function probeRunnerDaemon(
       if (path === "/v1/heartbeat") {
         const body = await request.json();
         heartbeatBodies.push(body);
-        if (/"waiting"|"runtimes"|"agents"|"repositories"|"accounts"/.test(JSON.stringify(body)))
+        if (
+          /"waiting"|"runtimes"|"agents"|"repositories"|"accounts"|"conversationConcurrency"/.test(
+            JSON.stringify(body),
+          )
+        )
           return Response.json({}, { status: 403 });
         return deliver(heartbeatResponse);
       }
@@ -441,6 +445,19 @@ export async function probeRunnerDaemon(
       await configured.heartbeat();
       assert.equal((heartbeatBodies.at(-1) as { capacity: number }).capacity, 2);
       assert.equal(configured.capacity(), 4);
+      assert.equal(configured.conversationCapacity(), 0);
+      const talking = openRunnerDaemon({ ...config, concurrency: 1, conversationConcurrency: 2 });
+      try {
+        assert.equal(talking.conversationCapacity(), 2);
+        const sent = heartbeatBodies.length;
+        await talking.heartbeat();
+        const attempts = heartbeatBodies.slice(sent) as Record<string, unknown>[];
+        assert.equal(attempts[0]!.conversationConcurrency, 2);
+        assert.deepEqual(attempts.at(-1), { capacity: 1, ceiling: 1 });
+      } finally {
+        talking.close();
+      }
+      assert.throws(() => openRunnerDaemon({ ...config, conversationConcurrency: 17 }));
       const pending = {
         name: "impeccable",
         version: "2.5.0",

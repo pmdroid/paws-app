@@ -656,6 +656,7 @@ export function createRunnerWork(options: {
       terminated?: readonly { runId: string; generation: number; commandId: string }[],
       liveAfter?: number,
       accounts?: RunnerAccountCapability,
+      conversations?: number,
     ) {
       const running =
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
@@ -672,7 +673,7 @@ export function createRunnerWork(options: {
           runnerReleaseAtLeast(host.runnerVersion ?? storedVersion, OFFLINE_LEASE_RUNNER_VERSION)
             ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt }
             : undefined;
-        const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling);
+        const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling, conversations);
         const at = now();
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         if (Object.values(host).some((value) => value !== undefined))

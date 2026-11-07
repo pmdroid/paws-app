@@ -1,5 +1,9 @@
 import type { RunnerCapacityWaitState } from "./items";
+import { CONVERSATION_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
 import type { Database } from "bun:sqlite";
+import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { runnerCapacity, runnerHelper, runnerHostStatus } from "./schema";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
@@ -7,6 +11,8 @@ import { auditWorkspaceAccess } from "./workspace";
 export const CI_WAITING = (run: string) =>
   `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND json_extract(ci.payload,'$.itemId')=${run}.item_id
     AND json_extract(ci.payload,'$.awakeWait.kind')='ci')`;
+
+export const WORK_HELPER = (helper: string) => `${helper}.purpose IS NOT 'conversation'`;
 
 export const TEARDOWN_UNRESOLVED = `(w.ended_at IS NOT NULL AND w.teardown_confirmed_at IS NULL
   AND NOT EXISTS(SELECT 1 FROM runner_result exited WHERE exited.run_id=w.run_id
@@ -50,7 +56,8 @@ export function runnerOccupancy(
       `SELECT COALESCE((SELECT MIN(capacity,COALESCE(desired,16)) FROM runner_capacity WHERE runner_id=?),1) AS capacity,
      (SELECT count(*) FROM runner_work w WHERE w.runner_id=? AND ((w.ended_at IS NULL AND w.lease_until>? AND w.run_id<>?)
        OR ${TEARDOWN_UNRESOLVED})) +
-     (SELECT count(*) FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?) +
+     (SELECT count(*) FROM runner_helper h WHERE h.runner_id=? AND h.ended_at IS NULL AND h.expires_at>?
+       AND ${WORK_HELPER("h")}) +
      (SELECT count(*) FROM retro_dispatch WHERE runner_id=? AND released_at IS NULL) AS occupied`,
     )
     .get(runnerId, runnerId, runnerLeaseCutoff(now), excludeRunId, runnerId, now, runnerId)!;
@@ -121,6 +128,7 @@ export function recordRunnerCapacity(
   runnerId: string,
   capacity: number,
   ceiling?: number,
+  conversations?: number,
 ): number | undefined {
   if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 16)
     throw new Error("Invalid runner capacity");
@@ -129,10 +137,16 @@ export function recordRunnerCapacity(
     (!Number.isSafeInteger(ceiling) || ceiling < 1 || ceiling > 16 || capacity > ceiling)
   )
     throw new Error("Invalid runner capacity ceiling");
+  if (
+    conversations !== undefined &&
+    (!Number.isSafeInteger(conversations) || conversations < 0 || conversations > 16)
+  )
+    throw new Error("Invalid runner conversation capacity");
   db.run(
-    `INSERT INTO runner_capacity(runner_id,capacity,ceiling) VALUES(?,?,?)
-    ON CONFLICT(runner_id) DO UPDATE SET capacity=excluded.capacity,ceiling=excluded.ceiling`,
-    [runnerId, capacity, ceiling ?? null],
+    `INSERT INTO runner_capacity(runner_id,capacity,ceiling,conversation) VALUES(?,?,?,?)
+    ON CONFLICT(runner_id) DO UPDATE SET capacity=excluded.capacity,ceiling=excluded.ceiling,
+    conversation=excluded.conversation`,
+    [runnerId, capacity, ceiling ?? null, conversations ?? null],
   );
   if (ceiling === undefined) return undefined;
   const desired = db
@@ -281,10 +295,31 @@ export function runnerHelperAvailability(
   runnerId: string,
   now: number,
   foreground: boolean,
+  conversation = false,
 ) {
+  if (conversation) {
+    const limit =
+      orm(db)
+        .select({ limit: runnerCapacity.conversation })
+        .from(runnerCapacity)
+        .where(eq(runnerCapacity.runnerId, runnerId))
+        .get()?.limit ?? 0;
+    const version = orm(db)
+      .select({ version: runnerHostStatus.runnerVersion })
+      .from(runnerHostStatus)
+      .where(eq(runnerHostStatus.runnerId, runnerId))
+      .get()?.version;
+    return {
+      available:
+        runnerReleaseAtLeast(version, CONVERSATION_RUNNER_VERSION) &&
+        (conversationsInUse(db, [runnerId], now).get(runnerId) ?? 0) < limit,
+      preempts: false,
+    };
+  }
   const rows = db
     .query<{ envelope: string; result: string | null }, [string, number]>(
-      "SELECT envelope,result FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
+      `SELECT h.envelope,h.result FROM runner_helper h WHERE h.runner_id=? AND h.ended_at IS NULL
+       AND h.expires_at>? AND ${WORK_HELPER("h")}`,
     )
     .all(runnerId, now);
   const maintenance = rows.filter((row) => {
@@ -333,4 +368,28 @@ export function yieldFindingGroupHelpers(db: Database, runnerId: string, now: nu
       );
     }
   });
+}
+
+export function conversationsInUse(
+  db: Database,
+  runnerIds: readonly string[],
+  now: number,
+): Map<string, number> {
+  if (runnerIds.length === 0) return new Map();
+  return new Map(
+    orm(db)
+      .select({ runnerId: runnerHelper.runnerId, used: count() })
+      .from(runnerHelper)
+      .where(
+        and(
+          inArray(runnerHelper.runnerId, [...runnerIds]),
+          isNull(runnerHelper.endedAt),
+          gt(runnerHelper.expiresAt, now),
+          sql`NOT ${sql.raw(WORK_HELPER("runner_helper"))}`,
+        ),
+      )
+      .groupBy(runnerHelper.runnerId)
+      .all()
+      .map((row) => [row.runnerId, row.used]),
+  );
 }

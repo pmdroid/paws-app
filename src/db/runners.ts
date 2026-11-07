@@ -5,6 +5,7 @@ import { orm } from "./orm";
 import { runner as runnerTable, runnerHelper, runnerHostStatus } from "./schema";
 import { endRevokedRunnerAuthority, runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
+import { conversationsInUse, WORK_HELPER } from "./runner-capacity";
 import {
   AGENT_USER_RUNNER_VERSION,
   runnerReleaseAtLeast,
@@ -102,6 +103,7 @@ export type RunnerOverview = RunnerRecord & {
   slots: { used: number; total: number };
   /** Desired is set in Paws; applied and ceiling are what the runner last reported. */
   concurrency: { desired: number | null; applied: number; ceiling: number | null } | null;
+  conversations: { used: number; total: number } | null;
   /** Sessions holding a live work lease on this runner, oldest first. */
   running: RunnerSession[];
   skills: RunnerSkillView[];
@@ -273,11 +275,17 @@ export function listRunnerOverview(
     applied: number | null;
     ceiling: number | null;
     desired: number | null;
+    conversation: number | null;
     ownerName: string | null;
     hasRunWork: number;
   };
   const sessions = listRunnerSessions(db, workspaceId, now);
   const pins = listSkills(db);
+  const conversations = conversationsInUse(
+    db,
+    listRunners(db, workspaceId).map((runner) => runner.id),
+    now,
+  );
   return db
     .query<Row, [number, number, number, string]>(
       `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerUserId,r.name,r.status,r.fence,
@@ -294,9 +302,10 @@ export function listRunnerOverview(
        AND c.acknowledged_at IS NULL AND c.expires_at>?)) AS busy,
     (SELECT count(*) FROM runner_work w JOIN run u ON u.id=w.run_id WHERE w.runner_id=r.id
      AND ((w.ended_at IS NULL AND w.lease_until>?) OR u.status IN ('active','provisioning'))) +
-    (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?) AS used,
+    (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?
+     AND ${WORK_HELPER("x")}) AS used,
     COALESCE(MIN(c.capacity,COALESCE(c.desired,16)),1) AS total,
-    c.capacity AS applied,c.ceiling,c.desired,o.name AS ownerName
+    c.capacity AS applied,c.ceiling,c.desired,c.conversation,o.name AS ownerName
     FROM runner r LEFT JOIN runner_host_status h ON h.runner_id=r.id
     LEFT JOIN runner_capacity c ON c.runner_id=r.id
     LEFT JOIN workspace_user o ON o.id=r.owner_user_id
@@ -344,6 +353,10 @@ export function listRunnerOverview(
           : null),
       idle: row.busy === 0,
       slots: { used: row.used, total: row.total },
+      conversations:
+        row.conversation === null
+          ? null
+          : { used: conversations.get(row.id) ?? 0, total: row.conversation },
       concurrency:
         row.applied === null
           ? null
@@ -699,6 +712,7 @@ export function runnerHelperBusy(db: Database, now: number): boolean {
           isNull(runnerTable.revokedAt),
           isNull(runnerHelper.endedAt),
           gt(runnerHelper.expiresAt, now),
+          sql.raw(WORK_HELPER("runner_helper")),
         ),
       )
       .get() !== undefined

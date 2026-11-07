@@ -263,6 +263,7 @@ export const runnerHelper = sqliteTable(
     acknowledgedAt: integer("acknowledged_at"),
     endedAt: integer("ended_at"),
     result: text(),
+    purpose: text(),
   },
   (table) => [
     index("runner_helper_pending").on(table.runnerId, table.acknowledgedAt, table.expiresAt),
@@ -299,6 +300,7 @@ export const runnerCapacity = sqliteTable(
     capacity: integer().notNull(),
     ceiling: integer(),
     desired: integer(),
+    conversation: integer(),
   },
   () => [
     check("runner_capacity_check_1", sql`capacity BETWEEN 1 AND 16`),

@@ -9,7 +9,9 @@ import {
   consumeWorkspaceBootstrap,
   insertQueuedItem,
   legacyMigrate,
+  migrationTags,
   migrations,
+  MIGRATIONS_FOLDER,
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
@@ -236,6 +238,11 @@ export async function probeRunnerTaskAuthority(
         pendingDeliveries: legacyOutbox.length,
       },
     );
+    for (const tag of migrationTags().slice(1))
+      for (const statement of readFileSync(join(MIGRATIONS_FOLDER, `${tag}.sql`), "utf8").split(
+        "--> statement-breakpoint",
+      ))
+        db.run(statement);
     const repository = {
       owner: "fixture",
       repo: "repository",

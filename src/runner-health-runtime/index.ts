@@ -34,7 +34,10 @@ type Entry = {
   result?: RunnerHealthResult | RunnerHelperResult;
   login?: RunnerLoginUpdate;
   stopped?: Promise<void>;
+  pulsing?: Promise<void>;
 };
+const conversation = (command: Pick<RunnerCommand, "type"> & { purpose?: string }) =>
+  command.type === "helper" && command.purpose === "conversation";
 const worker = z.object({
   executionId: z.string(),
   commandId: z.string(),
@@ -81,6 +84,7 @@ export async function openRunnerHealthRuntime(options: {
   spool: RunnerSpool;
   results: RunnerResults;
   agentUser?: RunnerAgentUser;
+  conversations?: () => number;
   broker?: RunnerBrokerClient;
   now?: () => number;
   monotonic?: () => number;
@@ -115,6 +119,7 @@ export async function openRunnerHealthRuntime(options: {
   const now = options.now ?? Date.now;
   const monotonic = options.monotonic ?? (() => performance.now());
   let active: Entry | undefined;
+  const talks = new Map<string, Entry>();
   try {
     for (const row of db
       .query<{ id: string; payload: string; phase: string; result: string | null }, []>(
@@ -147,11 +152,19 @@ export async function openRunnerHealthRuntime(options: {
         row.result &&
         command.expiresAt > now()
       ) {
-        if (active) throw new Error("Multiple runner helper receipts are unfinished");
+        if (active && !conversation(command))
+          throw new Error("Multiple runner helper receipts are unfinished");
         const result = RunnerHelperResultSchema.parse(JSON.parse(row.result));
         if (result.executionId !== row.id || result.commandId !== command.id)
           throw new Error("Runner helper receipt identity mismatch");
-        active = { id: row.id, command, result, deadline: monotonic() + command.expiresAt - now() };
+        const entry = {
+          id: row.id,
+          command,
+          result,
+          deadline: monotonic() + command.expiresAt - now(),
+        };
+        if (conversation(command)) talks.set(row.id, entry);
+        else active = entry;
       } else db.run("UPDATE health_execution SET phase='interrupted' WHERE id=?", [row.id]);
     }
     await broker.sweep?.();
@@ -162,7 +175,6 @@ export async function openRunnerHealthRuntime(options: {
   let closed = false;
   let ticking: Promise<void> | undefined;
   let stopping: Promise<void> | undefined;
-  let pulsing: Promise<void> | undefined;
   const report = (error?: unknown) =>
     options.onError?.(error instanceof Error ? error : new Error("Runner health operation failed"));
   function readLogin(id: string): RunnerLoginUpdate | null {
@@ -226,12 +238,11 @@ export async function openRunnerHealthRuntime(options: {
     )
       throw new Error("Runner health command has expired");
   }
-  function pulse() {
-    if (pulsing) return pulsing;
-    if (closed || !active) return Promise.resolve();
-    const entry = active;
+  function pulse(entry: Entry | undefined = active) {
+    if (entry?.pulsing) return entry.pulsing;
+    if (closed || !entry) return Promise.resolve();
     const started = monotonic();
-    pulsing = (async () => {
+    entry.pulsing = (async () => {
       if (entry.command.type === "helper") {
         if (!options.daemon.helperLease) throw new Error("Runner helper lease is unavailable");
         const lease = await options.daemon.helperLease(entry.command.id);
@@ -244,155 +255,163 @@ export async function openRunnerHealthRuntime(options: {
         monotonic() + Math.max(0, entry.command.expiresAt - now()),
       );
     })().finally(() => {
-      pulsing = undefined;
+      entry.pulsing = undefined;
     });
-    return pulsing;
+    return entry.pulsing;
   }
-  async function step(admit: boolean) {
-    if (active?.stopped) {
-      await active.stopped;
+  async function advance(entry: Entry): Promise<"released" | "finished" | "held"> {
+    if (entry.stopped) {
+      await entry.stopped;
       if (
         !closed &&
-        active.command.type === "login" &&
-        active.command.expiresAt > now() &&
+        entry.command.type === "login" &&
+        entry.command.expiresAt > now() &&
         options.daemon.status().phase === "paired"
       ) {
-        active.stopped = undefined;
-        active.deadline = monotonic() + active.command.expiresAt - now();
-      } else active = undefined;
+        entry.stopped = undefined;
+        entry.deadline = monotonic() + entry.command.expiresAt - now();
+      } else return "released";
     }
-    if (active) {
-      const entry = active;
-      try {
-        check(entry);
-        if (entry.command.type === "helper") await pulse();
-        check(entry);
-        if (entry.command.type === "login") {
-          if (!options.daemon.exchangeLogin)
-            throw new Error("Runner sign-in transport is unavailable");
-          let update = entry.login ?? {
-            state: "starting" as const,
-            terminal: "",
-            authorization: null,
-            inputId: null,
-          };
-          if (update.state !== "connected" && update.state !== "failed")
-            update = readLogin(entry.id) ?? update;
-          if (entry.login?.inputId && entry.login.inputId !== update.inputId)
-            removeRunnerAnswers(options.spool, entry.id);
-          entry.login = update;
-          if (update.state === "connected" || update.state === "failed") {
-            saveLogin(entry, update.state);
-            update = entry.login!;
-            await broker.stop(entry.id);
-          }
-          check(entry);
-          const reply = await options.daemon.exchangeLogin(entry.command.id, update);
-          check(entry);
-          if (reply.cancelled || update.state === "connected" || update.state === "failed") {
-            await interrupt(entry);
-            db.run("UPDATE health_execution SET phase='complete' WHERE id=?", [entry.id]);
-            active = undefined;
-          } else if (reply.input) {
-            if (reply.input.id !== update.inputId) throw new Error("Login input binding changed");
-            publishRunnerAnswer(options.spool, entry.id, {
-              requestId: reply.input.id,
-              answer: JSON.stringify(reply.input.value),
-            });
-          }
-          return;
-        }
-        if (!entry.result) {
-          let raw: Buffer;
-          try {
-            raw = readRunnerResultFile(options.results, entry.id, "result.json");
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-              journalCaught(
-                error,
-                "runner-health-runtime.step.readRunnerResultFile",
-                null,
-                "optional file may be absent",
-              );
-              return;
-            }
-            throw error;
-          }
-          try {
-            JSON.parse(raw.toString("utf8"));
-          } catch (caughtError3) {
-            journalCaught(caughtError3, "runner-health-runtime.step.parse", null);
-            return;
-          }
+    try {
+      check(entry);
+      if (entry.command.type === "helper") await pulse(entry);
+      check(entry);
+      if (entry.command.type === "login") {
+        if (!options.daemon.exchangeLogin)
+          throw new Error("Runner sign-in transport is unavailable");
+        let update = entry.login ?? {
+          state: "starting" as const,
+          terminal: "",
+          authorization: null,
+          inputId: null,
+        };
+        if (update.state !== "connected" && update.state !== "failed")
+          update = readLogin(entry.id) ?? update;
+        if (entry.login?.inputId && entry.login.inputId !== update.inputId)
+          removeRunnerAnswers(options.spool, entry.id);
+        entry.login = update;
+        if (update.state === "connected" || update.state === "failed") {
+          saveLogin(entry, update.state);
+          update = entry.login!;
           await broker.stop(entry.id);
-          check(entry);
-          const payload = JSON.parse(
-            readRunnerResultFile(options.results, entry.id, "result.json").toString("utf8"),
-          );
-          if (entry.command.type === "helper") {
-            const result = helperWorker.parse(payload);
-            if (result.executionId !== entry.id || result.commandId !== entry.command.id)
-              throw new Error("Runner helper result identity mismatch");
-            entry.result = RunnerHelperResultSchema.parse({
-              ...result.run,
-              executionId: entry.id,
-              commandId: entry.command.id,
-              ...(entry.command.account ? { account: entry.command.account } : {}),
-              text: result.text,
-            });
-            db.run("UPDATE health_execution SET phase='publishing',result=? WHERE id=?", [
-              JSON.stringify(entry.result),
-              entry.id,
-            ]);
-          } else {
-            const result = worker.parse(payload);
-            if (
-              result.executionId !== entry.id ||
-              result.commandId !== entry.command.id ||
-              result.run.role !== "implementer"
-            )
-              throw new Error("Runner health result identity mismatch");
-            if (
-              (entry.command.type === "probe" && result.login) ||
-              (entry.command.type === "login_check" && result.login?.agent !== entry.command.agent)
-            )
-              throw new Error("Runner health result does not match the command");
-            entry.result = RunnerHealthResultSchema.parse({
-              ...result.run,
-              executionId: entry.id,
-              commandId: entry.command.id,
-              ...(entry.command.account ? { account: entry.command.account } : {}),
-              ...(result.login ? { login: result.login } : {}),
-            });
+        }
+        check(entry);
+        const reply = await options.daemon.exchangeLogin(entry.command.id, update);
+        check(entry);
+        if (reply.cancelled || update.state === "connected" || update.state === "failed") {
+          await interrupt(entry);
+          db.run("UPDATE health_execution SET phase='complete' WHERE id=?", [entry.id]);
+          return "finished";
+        } else if (reply.input) {
+          if (reply.input.id !== update.inputId) throw new Error("Login input binding changed");
+          publishRunnerAnswer(options.spool, entry.id, {
+            requestId: reply.input.id,
+            answer: JSON.stringify(reply.input.value),
+          });
+        }
+        return "held";
+      }
+      if (!entry.result) {
+        let raw: Buffer;
+        try {
+          raw = readRunnerResultFile(options.results, entry.id, "result.json");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            journalCaught(
+              error,
+              "runner-health-runtime.step.readRunnerResultFile",
+              null,
+              "optional file may be absent",
+            );
+            return "held";
           }
+          throw error;
         }
         try {
-          if (entry.command.type === "helper") {
-            await pulse();
-            check(entry);
-            if (!options.daemon.postHelperResult)
-              throw new Error("Runner helper result transport is unavailable");
-            await options.daemon.postHelperResult(RunnerHelperResultSchema.parse(entry.result));
-          } else await options.daemon.postHealth(RunnerHealthResultSchema.parse(entry.result));
-        } catch (error) {
-          if (error instanceof RunnerRequestError && [403, 409].includes(error.status)) throw error;
-          journalCaught(error, "runner-health-runtime.step.pulse", null);
-          report();
-          return;
+          JSON.parse(raw.toString("utf8"));
+        } catch (caughtError3) {
+          journalCaught(caughtError3, "runner-health-runtime.step.parse", null);
+          return "held";
         }
+        await broker.stop(entry.id);
         check(entry);
-        db.run("UPDATE health_execution SET phase='complete' WHERE id=?", [entry.id]);
-        active = undefined;
-      } catch (caughtError4) {
-        journalCaught(caughtError4, "runner-health-runtime.step.check", null);
-        await interrupt(entry);
-        report();
+        const payload = JSON.parse(
+          readRunnerResultFile(options.results, entry.id, "result.json").toString("utf8"),
+        );
+        if (entry.command.type === "helper") {
+          const result = helperWorker.parse(payload);
+          if (result.executionId !== entry.id || result.commandId !== entry.command.id)
+            throw new Error("Runner helper result identity mismatch");
+          entry.result = RunnerHelperResultSchema.parse({
+            ...result.run,
+            executionId: entry.id,
+            commandId: entry.command.id,
+            ...(entry.command.account ? { account: entry.command.account } : {}),
+            text: result.text,
+          });
+          db.run("UPDATE health_execution SET phase='publishing',result=? WHERE id=?", [
+            JSON.stringify(entry.result),
+            entry.id,
+          ]);
+        } else {
+          const result = worker.parse(payload);
+          if (
+            result.executionId !== entry.id ||
+            result.commandId !== entry.command.id ||
+            result.run.role !== "implementer"
+          )
+            throw new Error("Runner health result identity mismatch");
+          if (
+            (entry.command.type === "probe" && result.login) ||
+            (entry.command.type === "login_check" && result.login?.agent !== entry.command.agent)
+          )
+            throw new Error("Runner health result does not match the command");
+          entry.result = RunnerHealthResultSchema.parse({
+            ...result.run,
+            executionId: entry.id,
+            commandId: entry.command.id,
+            ...(entry.command.account ? { account: entry.command.account } : {}),
+            ...(result.login ? { login: result.login } : {}),
+          });
+        }
       }
-      return;
+      try {
+        if (entry.command.type === "helper") {
+          await pulse(entry);
+          check(entry);
+          if (!options.daemon.postHelperResult)
+            throw new Error("Runner helper result transport is unavailable");
+          await options.daemon.postHelperResult(RunnerHelperResultSchema.parse(entry.result));
+        } else await options.daemon.postHealth(RunnerHealthResultSchema.parse(entry.result));
+      } catch (error) {
+        if (error instanceof RunnerRequestError && [403, 409].includes(error.status)) throw error;
+        journalCaught(error, "runner-health-runtime.step.pulse", null);
+        report();
+        return "held";
+      }
+      check(entry);
+      db.run("UPDATE health_execution SET phase='complete' WHERE id=?", [entry.id]);
+      return "finished";
+    } catch (caughtError4) {
+      journalCaught(caughtError4, "runner-health-runtime.step.check", null);
+      await interrupt(entry);
+      report();
     }
-    if (!admit || closed) return;
+    return "held";
+  }
+  async function step(admit: boolean) {
+    for (const entry of [...talks.values()])
+      if ((await advance(entry)) !== "held") talks.delete(entry.id);
+    let slot = true;
+    if (active) {
+      const outcome = await advance(active);
+      if (outcome !== "held") active = undefined;
+      slot = outcome === "released";
+    }
+    const room = talks.size < (options.conversations?.() ?? 0);
+    if (!admit || closed || (!slot && !room)) return;
     await options.daemon.pollHelperCommands?.();
-    await options.daemon.pollCommands();
+    if (slot) await options.daemon.pollCommands();
     if (closed) return;
     for (const input of options.daemon.pendingCommands()) {
       if (
@@ -402,6 +421,8 @@ export async function openRunnerHealthRuntime(options: {
         input.type !== "helper"
       )
         continue;
+      const talk = conversation(input);
+      if (talk ? !room : !slot) continue;
       if (
         input.type === "helper" &&
         (!options.daemon.helperLease || !options.daemon.postHelperResult)
@@ -436,10 +457,11 @@ export async function openRunnerHealthRuntime(options: {
           monotonic() +
           Math.min(command.type === "login" ? 600_000 : 60_000, command.expiresAt - now()),
       };
-      active = entry;
+      if (talk) talks.set(id, entry);
+      else active = entry;
       try {
         check(entry);
-        if (command.type === "helper") await pulse();
+        if (command.type === "helper") await pulse(entry);
         check(entry);
         if (command.type === "login") {
           const reply = await options.daemon.exchangeLogin!(command.id, {
@@ -457,7 +479,7 @@ export async function openRunnerHealthRuntime(options: {
         if (receipt.alreadyAdmitted)
           throw new Error("Runner execution identity was already consumed");
         check(entry);
-        if (command.type === "helper") await pulse();
+        if (command.type === "helper") await pulse(entry);
         check(entry);
         db.run("UPDATE health_execution SET phase='running' WHERE id=?", [id]);
         await options.daemon
@@ -471,30 +493,43 @@ export async function openRunnerHealthRuntime(options: {
       return;
     }
   }
+  const entries = () => [...(active ? [active] : []), ...talks.values()];
   const heartbeat = setInterval(() => {
-    const entry = active;
-    void pulse()
-      .catch(async (caughtError6) => {
-        journalCaught(caughtError6, "runner-health-runtime.openRunnerHealthRuntime.pulse", null);
-        if (active === entry && entry?.command.type === "helper") await interrupt(entry);
-        report();
-      })
-      .catch(journalRejection("runner-health-runtime.openRunnerHealthRuntime.catch", report, null));
+    for (const entry of entries())
+      void pulse(entry)
+        .catch(async (caughtError6) => {
+          journalCaught(caughtError6, "runner-health-runtime.openRunnerHealthRuntime.pulse", null);
+          if (
+            (active === entry || talks.get(entry.id) === entry) &&
+            entry.command.type === "helper"
+          )
+            await interrupt(entry);
+          report();
+        })
+        .catch(
+          journalRejection("runner-health-runtime.openRunnerHealthRuntime.catch", report, null),
+        );
   }, 15_000);
   const watchdog = setInterval(() => {
-    if (!active || active.stopped) return;
-    try {
-      check(active);
-    } catch (caughtError7) {
-      journalCaught(caughtError7, "runner-health-runtime.openRunnerHealthRuntime.check", null);
-      void interrupt(active).catch(
-        journalRejection("runner-health-runtime.openRunnerHealthRuntime.interrupt", report, null),
-      );
+    for (const entry of entries()) {
+      if (entry.stopped) continue;
+      try {
+        check(entry);
+      } catch (caughtError7) {
+        journalCaught(caughtError7, "runner-health-runtime.openRunnerHealthRuntime.check", null);
+        void interrupt(entry).catch(
+          journalRejection("runner-health-runtime.openRunnerHealthRuntime.interrupt", report, null),
+        );
+      }
     }
   }, 250);
   return {
     status: () => ({
       active: active ? { executionId: active.id, commandId: active.command.id } : null,
+      conversations: [...talks.values()].map((entry) => ({
+        executionId: entry.id,
+        commandId: entry.command.id,
+      })),
     }),
     tick(admit = true) {
       if (closed) return Promise.reject(new Error("Runner health runtime is closed"));
@@ -508,8 +543,9 @@ export async function openRunnerHealthRuntime(options: {
         closed = true;
         clearInterval(watchdog);
         clearInterval(heartbeat);
-        if (active) await interrupt(active);
-        await Promise.allSettled([ticking, pulsing]);
+        const held = entries();
+        await Promise.all(held.map((entry) => interrupt(entry)));
+        await Promise.allSettled([ticking, ...held.map((entry) => entry.pulsing)]);
         db.close();
       })();
       return stopping;
