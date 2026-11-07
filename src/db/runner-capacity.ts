@@ -1,6 +1,9 @@
 import type { RunnerCapacityWaitState } from "./items";
 import { CONVERSATION_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
 import type { Database } from "bun:sqlite";
+import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { runnerCapacity, runnerHelper, runnerHostStatus } from "./schema";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { auditWorkspaceAccess } from "./workspace";
@@ -295,21 +298,21 @@ export function runnerHelperAvailability(
   conversation = false,
 ) {
   if (conversation) {
-    const lane = db
-      .query<
-        { limit: number | null; version: string | null; used: number },
-        [string, string, string, number]
-      >(
-        `SELECT (SELECT conversation FROM runner_capacity WHERE runner_id=?) AS "limit",
-         (SELECT runner_version FROM runner_host_status WHERE runner_id=?) AS version,
-         (SELECT count(*) FROM runner_helper h WHERE h.runner_id=? AND h.ended_at IS NULL
-           AND h.expires_at>? AND NOT ${WORK_HELPER("h")}) AS used`,
-      )
-      .get(runnerId, runnerId, runnerId, now)!;
+    const limit =
+      orm(db)
+        .select({ limit: runnerCapacity.conversation })
+        .from(runnerCapacity)
+        .where(eq(runnerCapacity.runnerId, runnerId))
+        .get()?.limit ?? 0;
+    const version = orm(db)
+      .select({ version: runnerHostStatus.runnerVersion })
+      .from(runnerHostStatus)
+      .where(eq(runnerHostStatus.runnerId, runnerId))
+      .get()?.version;
     return {
       available:
-        runnerReleaseAtLeast(lane.version, CONVERSATION_RUNNER_VERSION) &&
-        lane.used < (lane.limit ?? 0),
+        runnerReleaseAtLeast(version, CONVERSATION_RUNNER_VERSION) &&
+        (conversationsInUse(db, [runnerId], now).get(runnerId) ?? 0) < limit,
       preempts: false,
     };
   }
@@ -365,4 +368,28 @@ export function yieldFindingGroupHelpers(db: Database, runnerId: string, now: nu
       );
     }
   });
+}
+
+export function conversationsInUse(
+  db: Database,
+  runnerIds: readonly string[],
+  now: number,
+): Map<string, number> {
+  if (runnerIds.length === 0) return new Map();
+  return new Map(
+    orm(db)
+      .select({ runnerId: runnerHelper.runnerId, used: count() })
+      .from(runnerHelper)
+      .where(
+        and(
+          inArray(runnerHelper.runnerId, [...runnerIds]),
+          isNull(runnerHelper.endedAt),
+          gt(runnerHelper.expiresAt, now),
+          sql`NOT ${sql.raw(WORK_HELPER("runner_helper"))}`,
+        ),
+      )
+      .groupBy(runnerHelper.runnerId)
+      .all()
+      .map((row) => [row.runnerId, row.used]),
+  );
 }

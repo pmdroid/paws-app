@@ -5,7 +5,7 @@ import { orm } from "./orm";
 import { runner as runnerTable, runnerHelper, runnerHostStatus } from "./schema";
 import { endRevokedRunnerAuthority, runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
-import { WORK_HELPER } from "./runner-capacity";
+import { conversationsInUse, WORK_HELPER } from "./runner-capacity";
 import {
   AGENT_USER_RUNNER_VERSION,
   runnerReleaseAtLeast,
@@ -276,14 +276,18 @@ export function listRunnerOverview(
     ceiling: number | null;
     desired: number | null;
     conversation: number | null;
-    conversationsUsed: number;
     ownerName: string | null;
     hasRunWork: number;
   };
   const sessions = listRunnerSessions(db, workspaceId, now);
   const pins = listSkills(db);
+  const conversations = conversationsInUse(
+    db,
+    listRunners(db, workspaceId).map((runner) => runner.id),
+    now,
+  );
   return db
-    .query<Row, [number, number, number, number, string]>(
+    .query<Row, [number, number, number, string]>(
       `SELECT r.id,r.workspace_id AS workspaceId,r.owner_user_id AS ownerUserId,r.name,r.status,r.fence,
     (EXISTS(SELECT 1 FROM runner_work w WHERE w.runner_id=r.id)
      OR EXISTS(SELECT 1 FROM runner_command c WHERE c.runner_id=r.id AND c.kind IN ('run','review','check','task'))
@@ -300,8 +304,6 @@ export function listRunnerOverview(
      AND ((w.ended_at IS NULL AND w.lease_until>?) OR u.status IN ('active','provisioning'))) +
     (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?
      AND ${WORK_HELPER("x")}) AS used,
-    (SELECT count(*) FROM runner_helper x WHERE x.runner_id=r.id AND x.ended_at IS NULL AND x.expires_at>?
-     AND NOT ${WORK_HELPER("x")}) AS conversationsUsed,
     COALESCE(MIN(c.capacity,COALESCE(c.desired,16)),1) AS total,
     c.capacity AS applied,c.ceiling,c.desired,c.conversation,o.name AS ownerName
     FROM runner r LEFT JOIN runner_host_status h ON h.runner_id=r.id
@@ -309,7 +311,7 @@ export function listRunnerOverview(
     LEFT JOIN workspace_user o ON o.id=r.owner_user_id
     WHERE r.workspace_id=? ORDER BY r.created_at,r.id`,
     )
-    .all(now, runnerLeaseCutoff(now), now, now, workspaceId)
+    .all(now, runnerLeaseCutoff(now), now, workspaceId)
     .map((row) => ({
       id: row.id,
       workspaceId: row.workspaceId,
@@ -352,7 +354,9 @@ export function listRunnerOverview(
       idle: row.busy === 0,
       slots: { used: row.used, total: row.total },
       conversations:
-        row.conversation === null ? null : { used: row.conversationsUsed, total: row.conversation },
+        row.conversation === null
+          ? null
+          : { used: conversations.get(row.id) ?? 0, total: row.conversation },
       concurrency:
         row.applied === null
           ? null
