@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { orm } from "./orm";
+import { workItemMergeSettings } from "./schema";
 
 export type TaskMergeSettings = {
   order: "queue" | "ci-green" | "github-queue";
@@ -14,14 +16,21 @@ export function keepTaskMergeSettings(
   settings: TaskMergeSettings,
   now: number,
 ): void {
-  db.run(
-    `INSERT OR IGNORE INTO work_item_merge_settings(item_id,merge_order,main_moved,resolved_json,resolved_at)
-     VALUES(?,?,?,?,?)`,
-    [itemId, settings.order, settings.mainMoved, JSON.stringify(settings.resolved), now],
-  );
+  orm(db)
+    .insert(workItemMergeSettings)
+    .values({
+      itemId,
+      mergeOrder: settings.order,
+      mainMoved: settings.mainMoved,
+      resolvedJson: JSON.stringify(settings.resolved),
+      resolvedAt: now,
+    })
+    .onConflictDoNothing()
+    .run();
 }
 
 export function getTaskMergeSettings(db: Database, itemId: string): TaskMergeSettings | null {
+  // Raw: src/dashboard/src/live/overview.test.ts asserts this SQL text on db.query.
   const row = db
     .query<
       {

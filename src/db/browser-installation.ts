@@ -1,18 +1,17 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, gt, lte } from "drizzle-orm";
+import { orm } from "./orm";
+import { browserInstallationRequest } from "./schema";
 
 export function saveBrowserInstallation(
   db: Database,
   input: { stateHash: string; browserHash: string; identity: string; expiresAt: number },
 ): void {
-  db.run("DELETE FROM browser_installation_request WHERE expires_at<=?", [
-    input.expiresAt - 600_000,
-  ]);
-  db.run("INSERT INTO browser_installation_request VALUES(?,?,?,?)", [
-    input.stateHash,
-    input.browserHash,
-    input.identity,
-    input.expiresAt,
-  ]);
+  orm(db)
+    .delete(browserInstallationRequest)
+    .where(lte(browserInstallationRequest.expiresAt, input.expiresAt - 600_000))
+    .run();
+  orm(db).insert(browserInstallationRequest).values(input).run();
 }
 
 export function consumeBrowserInstallation(
@@ -22,10 +21,16 @@ export function consumeBrowserInstallation(
   now: number,
 ): string | null {
   return (
-    db
-      .query<{ identity: string }, [string, string, number]>(
-        "DELETE FROM browser_installation_request WHERE state_hash=? AND browser_hash=? AND expires_at>? RETURNING identity",
+    orm(db)
+      .delete(browserInstallationRequest)
+      .where(
+        and(
+          eq(browserInstallationRequest.stateHash, stateHash),
+          eq(browserInstallationRequest.browserHash, browserHash),
+          gt(browserInstallationRequest.expiresAt, now),
+        ),
       )
-      .get(stateHash, browserHash, now)?.identity ?? null
+      .returning({ identity: browserInstallationRequest.identity })
+      .get()?.identity ?? null
   );
 }

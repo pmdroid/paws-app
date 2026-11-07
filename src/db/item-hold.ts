@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { asc, eq } from "drizzle-orm";
+import { orm } from "./orm";
+import { itemHold } from "./schema";
 
 export type ItemHoldReason =
   | "blocked"
@@ -22,15 +25,16 @@ export type ItemHold = {
 export type ItemHoldChange = { itemId: string; held: ItemHold | null };
 
 export function listItemHolds(db: Database): ItemHold[] {
-  return db
-    .query<{ itemId: string; reason: ItemHoldReason; blockers: string; files: string }, []>(
-      "SELECT item_id AS itemId,reason,blockers,files FROM item_hold ORDER BY item_id",
-    )
+  return orm(db)
+    .select()
+    .from(itemHold)
+    .orderBy(asc(itemHold.itemId))
     .all()
     .map(({ files, ...row }) => {
       const paths = JSON.parse(files) as string[];
       return {
-        ...row,
+        itemId: row.itemId,
+        reason: row.reason as ItemHoldReason,
         blockers: JSON.parse(row.blockers) as string[],
         ...(paths.length ? { files: paths } : {}),
       };
@@ -43,7 +47,7 @@ export function saveItemHolds(db: Database, holds: readonly ItemHold[]): ItemHol
   const changes: ItemHoldChange[] = [];
   for (const itemId of before.keys())
     if (!kept.has(itemId)) {
-      db.run("DELETE FROM item_hold WHERE item_id=?", [itemId]);
+      orm(db).delete(itemHold).where(eq(itemHold.itemId, itemId)).run();
       changes.push({ itemId, held: null });
     }
   for (const hold of holds) {
@@ -56,12 +60,14 @@ export function saveItemHolds(db: Database, holds: readonly ItemHold[]): ItemHol
       JSON.stringify(old.files ?? []) === files
     )
       continue;
-    db.run(
-      `INSERT INTO item_hold(item_id,reason,blockers,files) VALUES(?,?,?,?)
-       ON CONFLICT(item_id) DO UPDATE SET reason=excluded.reason,blockers=excluded.blockers,
-       files=excluded.files`,
-      [hold.itemId, hold.reason, blockers, files],
-    );
+    orm(db)
+      .insert(itemHold)
+      .values({ itemId: hold.itemId, reason: hold.reason, blockers, files })
+      .onConflictDoUpdate({
+        target: itemHold.itemId,
+        set: { reason: hold.reason, blockers, files },
+      })
+      .run();
     changes.push({ itemId: hold.itemId, held: hold });
   }
   return changes;

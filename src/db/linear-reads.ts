@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, eq } from "drizzle-orm";
+import { orm } from "./orm";
+import { linearActivityListing, workItemLinearRead } from "./schema";
 
 export type TaskLinearReadKind = "project_overview" | "repository_hints" | "repository_suggestions";
 
@@ -9,29 +12,33 @@ export function keepTaskLinearRead(
   value: unknown,
   now: number,
 ): void {
-  db.run(
-    `INSERT INTO work_item_linear_read(item_id,kind,value_json,read_at) VALUES(?,?,?,?)
-     ON CONFLICT(item_id,kind) DO UPDATE SET value_json=excluded.value_json,read_at=excluded.read_at`,
-    [itemId, kind, JSON.stringify(value), now],
-  );
+  const valueJson = JSON.stringify(value);
+  orm(db)
+    .insert(workItemLinearRead)
+    .values({ itemId, kind, valueJson, readAt: now })
+    .onConflictDoUpdate({
+      target: [workItemLinearRead.itemId, workItemLinearRead.kind],
+      set: { valueJson, readAt: now },
+    })
+    .run();
 }
 
 export function getTaskLinearRead(db: Database, itemId: string, kind: TaskLinearReadKind): unknown {
-  const row = db
-    .query<{ value_json: string }, [string, string]>(
-      "SELECT value_json FROM work_item_linear_read WHERE item_id=? AND kind=?",
-    )
-    .get(itemId, kind);
-  return row === null ? undefined : JSON.parse(row.value_json);
+  const row = orm(db)
+    .select({ valueJson: workItemLinearRead.valueJson })
+    .from(workItemLinearRead)
+    .where(and(eq(workItemLinearRead.itemId, itemId), eq(workItemLinearRead.kind, kind)))
+    .get();
+  return row === undefined ? undefined : JSON.parse(row.valueJson);
 }
 
 export function linearActivitiesListedAt(db: Database, sessionId: string): number | null {
   return (
-    db
-      .query<{ generation: number }, [string]>(
-        "SELECT generation FROM linear_activity_listing WHERE session_id=?",
-      )
-      .get(sessionId)?.generation ?? null
+    orm(db)
+      .select({ generation: linearActivityListing.generation })
+      .from(linearActivityListing)
+      .where(eq(linearActivityListing.sessionId, sessionId))
+      .get()?.generation ?? null
   );
 }
 
@@ -40,9 +47,9 @@ export function markLinearActivitiesListed(
   sessionId: string,
   generation: number,
 ): void {
-  db.run(
-    `INSERT INTO linear_activity_listing(session_id,generation) VALUES(?,?)
-     ON CONFLICT(session_id) DO UPDATE SET generation=excluded.generation`,
-    [sessionId, generation],
-  );
+  orm(db)
+    .insert(linearActivityListing)
+    .values({ sessionId, generation })
+    .onConflictDoUpdate({ target: linearActivityListing.sessionId, set: { generation } })
+    .run();
 }

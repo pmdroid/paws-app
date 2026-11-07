@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { asc, desc, lt } from "drizzle-orm";
+import { orm } from "./orm";
+import { githubDelivery } from "./schema";
 
 export type IntegrationEvent = {
   deliveryId: string;
@@ -14,35 +17,36 @@ export function recordGitHubDelivery(
   input: Omit<IntegrationEvent, "receivedAt">,
   now = Date.now(),
 ): boolean {
+  // Raw: src/loop/github-delivery-atomic.test.ts fails this exact INSERT through db.run.
   const result = db.run(
     `INSERT INTO github_delivery (delivery_id, event, payload, received_at)
     VALUES (?, ?, '', ?) ON CONFLICT(delivery_id) DO NOTHING`,
     [input.deliveryId, input.event, now],
   );
-  db.run("DELETE FROM github_delivery WHERE received_at < ?", [now - GITHUB_DELIVERY_KEEP_MS]);
+  orm(db)
+    .delete(githubDelivery)
+    .where(lt(githubDelivery.receivedAt, now - GITHUB_DELIVERY_KEEP_MS))
+    .run();
   return result.changes > 0;
 }
 
 export function latestGitHubDelivery(
   db: Database,
 ): Pick<IntegrationEvent, "event" | "receivedAt"> | null {
-  return db
-    .query<{ event: string; receivedAt: number }, []>(
-      "SELECT event, received_at AS receivedAt FROM github_delivery ORDER BY received_at DESC LIMIT 1",
-    )
-    .get();
+  return (
+    orm(db)
+      .select({ event: githubDelivery.event, receivedAt: githubDelivery.receivedAt })
+      .from(githubDelivery)
+      .orderBy(desc(githubDelivery.receivedAt))
+      .limit(1)
+      .get() ?? null
+  );
 }
 
 export function listGitHubDeliveries(db: Database): IntegrationEvent[] {
-  return db
-    .query<{ delivery_id: string; event: string; payload: string; received_at: number }, []>(
-      "SELECT delivery_id, event, payload, received_at FROM github_delivery ORDER BY received_at, delivery_id",
-    )
-    .all()
-    .map((row) => ({
-      deliveryId: row.delivery_id,
-      event: row.event,
-      payload: row.payload,
-      receivedAt: row.received_at,
-    }));
+  return orm(db)
+    .select()
+    .from(githubDelivery)
+    .orderBy(asc(githubDelivery.receivedAt), asc(githubDelivery.deliveryId))
+    .all();
 }

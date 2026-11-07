@@ -1,26 +1,34 @@
 import type { Database } from "bun:sqlite";
+import { asc, eq, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { linearItemCallerRequest, linearItemRequest } from "./schema";
 
 export function countLinearRequest(db: Database, itemId: string, caller: string): void {
   db.transaction(() => {
-    db.run(
-      `INSERT INTO linear_item_request(item_id,requests) VALUES(?,1)
-       ON CONFLICT(item_id) DO UPDATE SET requests=requests+1`,
-      [itemId],
-    );
-    db.run(
-      `INSERT INTO linear_item_caller_request(item_id,caller,requests) VALUES(?,?,1)
-       ON CONFLICT(item_id,caller) DO UPDATE SET requests=requests+1`,
-      [itemId, caller],
-    );
+    orm(db)
+      .insert(linearItemRequest)
+      .values({ itemId, requests: 1 })
+      .onConflictDoUpdate({
+        target: linearItemRequest.itemId,
+        set: { requests: sql`${linearItemRequest.requests}+1` },
+      })
+      .run();
+    orm(db)
+      .insert(linearItemCallerRequest)
+      .values({ itemId, caller, requests: 1 })
+      .onConflictDoUpdate({
+        target: [linearItemCallerRequest.itemId, linearItemCallerRequest.caller],
+        set: { requests: sql`${linearItemCallerRequest.requests}+1` },
+      })
+      .run();
   })();
 }
 
 export function linearRequestsByItem(db: Database): Map<string, number> {
   return new Map(
-    db
-      .query<{ itemId: string; requests: number }, []>(
-        "SELECT item_id AS itemId,requests FROM linear_item_request",
-      )
+    orm(db)
+      .select({ itemId: linearItemRequest.itemId, requests: linearItemRequest.requests })
+      .from(linearItemRequest)
       .all()
       .map((row) => [row.itemId, row.requests]),
   );
@@ -28,11 +36,15 @@ export function linearRequestsByItem(db: Database): Map<string, number> {
 
 export function linearRequestsByCaller(db: Database, itemId: string): Record<string, number> {
   return Object.fromEntries(
-    db
-      .query<{ caller: string; requests: number }, [string]>(
-        "SELECT caller,requests FROM linear_item_caller_request WHERE item_id=? ORDER BY caller",
-      )
-      .all(itemId)
+    orm(db)
+      .select({
+        caller: linearItemCallerRequest.caller,
+        requests: linearItemCallerRequest.requests,
+      })
+      .from(linearItemCallerRequest)
+      .where(eq(linearItemCallerRequest.itemId, itemId))
+      .orderBy(asc(linearItemCallerRequest.caller))
+      .all()
       .map((row) => [row.caller, row.requests]),
   );
 }

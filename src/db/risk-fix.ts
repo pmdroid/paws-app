@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, desc, eq, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { riskFix } from "./schema";
 
 /**
  * What a fix changed on a high-risk pull request since the head a person approved. `paths` are
@@ -19,64 +22,59 @@ export type RiskFix = {
 
 /** Records the comparison for a head. A repeat for the same head replaces it. */
 export function saveRiskFix(db: Database, fix: RiskFix): void {
-  db.run(
-    `INSERT INTO risk_fix (item_id, head_sha, approved_head, approved_question_id, changed, paths, recorded_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (item_id, head_sha) DO UPDATE SET
-       approved_head = excluded.approved_head, approved_question_id = excluded.approved_question_id,
-       changed = excluded.changed, paths = excluded.paths, recorded_at = excluded.recorded_at`,
-    [
-      fix.itemId,
-      fix.head,
-      fix.approvedHead,
-      fix.approvedQuestionId,
-      JSON.stringify(fix.changed),
-      JSON.stringify(fix.paths),
-      fix.recordedAt,
-    ],
-  );
+  const values = {
+    approvedHead: fix.approvedHead,
+    approvedQuestionId: fix.approvedQuestionId,
+    changed: JSON.stringify(fix.changed),
+    paths: JSON.stringify(fix.paths),
+    recordedAt: fix.recordedAt,
+  };
+  orm(db)
+    .insert(riskFix)
+    .values({ itemId: fix.itemId, headSha: fix.head, ...values })
+    .onConflictDoUpdate({ target: [riskFix.itemId, riskFix.headSha], set: values })
+    .run();
 }
 
 /** Forgets the comparison for a head, as when Paws can no longer read the fix. */
 export function deleteRiskFix(db: Database, itemId: string, head: string): void {
-  db.run("DELETE FROM risk_fix WHERE item_id = ? AND head_sha = ?", [itemId, head]);
+  orm(db)
+    .delete(riskFix)
+    .where(and(eq(riskFix.itemId, itemId), eq(riskFix.headSha, head)))
+    .run();
 }
 
-type Row = {
-  itemId: string;
-  head: string;
-  approvedHead: string;
-  approvedQuestionId: string;
-  changed: string;
-  paths: string;
-  recordedAt: number;
-};
-
-const SELECT = `SELECT item_id AS itemId, head_sha AS head, approved_head AS approvedHead,
-  approved_question_id AS approvedQuestionId, changed, paths, recorded_at AS recordedAt
-  FROM risk_fix`;
+type Row = typeof riskFix.$inferSelect;
 
 export function getRiskFix(db: Database, itemId: string, head: string): RiskFix | null {
-  const row = db
-    .query<Row, [string, string]>(`${SELECT} WHERE item_id = ? AND head_sha = ?`)
-    .get(itemId, head);
+  const row = orm(db)
+    .select()
+    .from(riskFix)
+    .where(and(eq(riskFix.itemId, itemId), eq(riskFix.headSha, head)))
+    .get();
   return row ? fromRow(row) : null;
 }
 
 /** The most recently recorded fix of the item. */
 export function latestRiskFix(db: Database, itemId: string): RiskFix | null {
-  const row = db
-    .query<Row, [string]>(
-      `${SELECT} WHERE item_id = ? ORDER BY recorded_at DESC, rowid DESC LIMIT 1`,
-    )
-    .get(itemId);
+  const row = orm(db)
+    .select()
+    .from(riskFix)
+    .where(eq(riskFix.itemId, itemId))
+    .orderBy(desc(riskFix.recordedAt), sql`rowid DESC`)
+    .limit(1)
+    .get();
   return row ? fromRow(row) : null;
 }
 
 function fromRow(row: Row): RiskFix {
   return {
-    ...row,
+    itemId: row.itemId,
+    head: row.headSha,
+    approvedHead: row.approvedHead,
+    approvedQuestionId: row.approvedQuestionId,
     changed: JSON.parse(row.changed) as string[],
     paths: JSON.parse(row.paths) as string[],
+    recordedAt: row.recordedAt,
   };
 }

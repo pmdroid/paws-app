@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { asc, eq, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { runnerRuntime } from "./schema";
 
 /** A runtime as a runner last reported it in its heartbeat. */
 export type RunnerRuntimeStatus = {
@@ -22,28 +25,35 @@ export function recordRunnerRuntimes(
   }[],
   reportedAt: number,
 ): void {
-  db.run("DELETE FROM runner_runtime WHERE runner_id=?", [runnerId]);
-  for (const runtime of runtimes)
-    db.run(
-      `INSERT INTO runner_runtime(runner_id,tool,version,status,error,reported_at) VALUES(?,?,?,?,?,?)
-       ON CONFLICT(runner_id,tool,version) DO UPDATE SET status=excluded.status,
-         error=excluded.error,reported_at=excluded.reported_at`,
-      [
-        runnerId,
-        runtime.tool,
-        runtime.version,
-        runtime.status,
-        runtime.status === "failed" ? (runtime.error ?? null) : null,
-        reportedAt,
-      ],
-    );
+  orm(db).delete(runnerRuntime).where(eq(runnerRuntime.runnerId, runnerId)).run();
+  for (const runtime of runtimes) {
+    const values = {
+      status: runtime.status,
+      error: runtime.status === "failed" ? (runtime.error ?? null) : null,
+      reportedAt,
+    };
+    orm(db)
+      .insert(runnerRuntime)
+      .values({ runnerId, tool: runtime.tool, version: runtime.version, ...values })
+      .onConflictDoUpdate({
+        target: [runnerRuntime.runnerId, runnerRuntime.tool, runnerRuntime.version],
+        set: values,
+      })
+      .run();
+  }
 }
 
 export function listRunnerRuntimes(db: Database, runnerId: string): RunnerRuntimeStatus[] {
-  return db
-    .query<RunnerRuntimeStatus, [string]>(
-      `SELECT tool,version,status,error,reported_at AS reportedAt FROM runner_runtime
-       WHERE runner_id=? ORDER BY tool,version`,
-    )
-    .all(runnerId);
+  return orm(db)
+    .select({
+      tool: runnerRuntime.tool,
+      version: runnerRuntime.version,
+      status: sql<RunnerRuntimeStatus["status"]>`${runnerRuntime.status}`,
+      error: runnerRuntime.error,
+      reportedAt: runnerRuntime.reportedAt,
+    })
+    .from(runnerRuntime)
+    .where(eq(runnerRuntime.runnerId, runnerId))
+    .orderBy(asc(runnerRuntime.tool), asc(runnerRuntime.version))
+    .all();
 }

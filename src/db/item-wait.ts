@@ -1,19 +1,28 @@
 import type { Database } from "bun:sqlite";
+import { eq, ne, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { itemWait } from "./schema";
 
 export function itemWaitSince(db: Database, itemId: string, version: number, now: number): number {
-  db.run(
-    `INSERT INTO item_wait(item_id,version,since) VALUES(?,?,?)
-     ON CONFLICT(item_id) DO UPDATE SET version=excluded.version,since=excluded.since
-     WHERE item_wait.version<>excluded.version`,
-    [itemId, version, now],
-  );
-  return db
-    .query<{ since: number }, [string]>("SELECT since FROM item_wait WHERE item_id=?")
-    .get(itemId)!.since;
+  orm(db)
+    .insert(itemWait)
+    .values({ itemId, version, since: now })
+    .onConflictDoUpdate({
+      target: itemWait.itemId,
+      set: { version, since: now },
+      setWhere: ne(itemWait.version, sql`excluded.version`),
+    })
+    .run();
+  return orm(db)
+    .select({ since: itemWait.since })
+    .from(itemWait)
+    .where(eq(itemWait.itemId, itemId))
+    .get()!.since;
 }
 
 export function keepItemWaits(db: Database, itemIds: readonly string[]): void {
-  db.run("DELETE FROM item_wait WHERE item_id NOT IN (SELECT value FROM json_each(?))", [
-    JSON.stringify(itemIds),
-  ]);
+  orm(db)
+    .delete(itemWait)
+    .where(sql`${itemWait.itemId} NOT IN (SELECT value FROM json_each(${JSON.stringify(itemIds)}))`)
+    .run();
 }

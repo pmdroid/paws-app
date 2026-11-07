@@ -1,53 +1,46 @@
 import type { Database } from "bun:sqlite";
+import { eq, sql } from "drizzle-orm";
 import type { HookAgent, HookEvent, WorkspaceHook } from "../core";
-
-type Row = {
-  id: string;
-  event: HookEvent;
-  matcher: string | null;
-  command: string;
-  timeout_seconds: number;
-  agents: string;
-  skill: string | null;
-};
+import { orm } from "./orm";
+import { agentHook } from "./schema";
 
 /** Every registered hook, oldest first, so each agent runs them in the order they were added. */
 export function listHooks(db: Database): WorkspaceHook[] {
-  return db
-    .query<Row, []>(
-      "SELECT id,event,matcher,command,timeout_seconds,agents,skill FROM agent_hook ORDER BY created_at, rowid",
-    )
+  return orm(db)
+    .select()
+    .from(agentHook)
+    .orderBy(agentHook.createdAt, sql`rowid`)
     .all()
     .map((row) => ({
       id: row.id,
-      event: row.event,
+      event: row.event as HookEvent,
       matcher: row.matcher,
       command: row.command,
-      timeoutSeconds: row.timeout_seconds,
+      timeoutSeconds: row.timeoutSeconds,
       agents: JSON.parse(row.agents) as HookAgent[],
       skill: row.skill,
     }));
 }
 
 export function saveHook(db: Database, hook: WorkspaceHook, now: number): void {
-  db.run(
-    "INSERT INTO agent_hook(id,event,matcher,command,timeout_seconds,agents,skill,created_at) VALUES(?,?,?,?,?,?,?,?)",
-    [
-      hook.id,
-      hook.event,
-      hook.matcher,
-      hook.command,
-      hook.timeoutSeconds,
-      JSON.stringify(hook.agents),
-      hook.skill,
-      now,
-    ],
-  );
+  orm(db)
+    .insert(agentHook)
+    .values({
+      id: hook.id,
+      event: hook.event,
+      matcher: hook.matcher,
+      command: hook.command,
+      timeoutSeconds: hook.timeoutSeconds,
+      agents: JSON.stringify(hook.agents),
+      skill: hook.skill,
+      createdAt: now,
+    })
+    .run();
 }
 
 /** Removes the hook. Runs that already started keep it until they end. */
 export function deleteHook(db: Database, id: string): WorkspaceHook | null {
   const hook = listHooks(db).find((entry) => entry.id === id) ?? null;
-  if (hook) db.run("DELETE FROM agent_hook WHERE id=?", [id]);
+  if (hook) orm(db).delete(agentHook).where(eq(agentHook.id, id)).run();
   return hook;
 }

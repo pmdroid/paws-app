@@ -1,5 +1,17 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, gt, sql } from "drizzle-orm";
 import type { Job } from "./jobs";
+import { changes, orm } from "./orm";
+import { job as jobTable } from "./schema";
+
+function leased(job: Job, now: number) {
+  return and(
+    eq(jobTable.id, job.id),
+    eq(jobTable.status, "running"),
+    eq(jobTable.lockedBy, job.lockedBy ?? sql`NULL`),
+    gt(jobTable.lockedUntil, now),
+  );
+}
 
 /** Replace transient payload bookkeeping without refreshing the job's item-version fence. */
 export function replaceLeasedJobPayload(
@@ -9,10 +21,12 @@ export function replaceLeasedJobPayload(
   now: number,
 ): boolean {
   return (
-    db.run(
-      "UPDATE job SET payload=? WHERE id=? AND status='running' AND locked_by=? AND locked_until>?",
-      [JSON.stringify(payload), job.id, job.lockedBy, now],
-    ).changes > 0
+    changes(
+      orm(db)
+        .update(jobTable)
+        .set({ payload: JSON.stringify(payload) })
+        .where(leased(job, now)),
+    ) > 0
   );
 }
 
@@ -24,12 +38,19 @@ export function refreshVerificationJobVersion(
   now: number,
 ): boolean {
   return (
-    db.run(
-      `UPDATE job SET item_version=(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId'))
-    WHERE id=? AND status='running' AND locked_by=? AND locked_until>?
-    AND EXISTS(SELECT 1 FROM work_item i WHERE i.id=json_extract(job.payload,'$.itemId')
-      AND i.current_run_id=? AND i.cancel_requested=0 AND i.state IN ('verifying','merge_queue'))`,
-      [job.id, job.lockedBy, now, runId],
-    ).changes > 0
+    changes(
+      orm(db)
+        .update(jobTable)
+        .set({
+          itemVersion: sql`(SELECT version FROM work_item WHERE id=json_extract(job.payload,'$.itemId'))`,
+        })
+        .where(
+          and(
+            leased(job, now),
+            sql`EXISTS(SELECT 1 FROM work_item i WHERE i.id=json_extract(job.payload,'$.itemId')
+              AND i.current_run_id=${runId} AND i.cancel_requested=0 AND i.state IN ('verifying','merge_queue'))`,
+          ),
+        ),
+    ) > 0
   );
 }

@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { closeoutPolicyBlock, question } from "./schema";
 
 export type PolicyBlock = {
   questionId: string;
@@ -12,56 +15,49 @@ export type PolicyBlock = {
   createdAt: number;
 };
 
-type Row = {
-  question_id: string;
-  item_id: string;
-  repository: string;
-  cause: "policy_unreadable";
-  error: string;
-  policy_path: string;
-  main_sha: string;
-  changed_by_sha: string | null;
-  created_at: number;
-};
-
-const map = (row: Row): PolicyBlock => ({
-  questionId: row.question_id,
-  itemId: row.item_id,
+const map = (row: typeof closeoutPolicyBlock.$inferSelect): PolicyBlock => ({
+  questionId: row.questionId,
+  itemId: row.itemId,
   repository: row.repository,
-  cause: row.cause,
+  cause: row.cause as PolicyBlock["cause"],
   error: row.error,
-  policyPath: row.policy_path,
-  main: row.main_sha,
-  changedBy: row.changed_by_sha,
-  createdAt: row.created_at,
+  policyPath: row.policyPath,
+  main: row.mainSha,
+  changedBy: row.changedBySha,
+  createdAt: row.createdAt,
 });
 
 export function savePolicyBlock(db: Database, block: PolicyBlock): void {
-  db.run(
-    `INSERT OR REPLACE INTO closeout_policy_block
-       (question_id, item_id, repository, cause, error, policy_path, main_sha, changed_by_sha, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      block.questionId,
-      block.itemId,
-      block.repository,
-      block.cause,
-      block.error,
-      block.policyPath,
-      block.main,
-      block.changedBy,
-      block.createdAt,
-    ],
-  );
+  const values = {
+    itemId: block.itemId,
+    repository: block.repository,
+    cause: block.cause,
+    error: block.error,
+    policyPath: block.policyPath,
+    mainSha: block.main,
+    changedBySha: block.changedBy,
+    createdAt: block.createdAt,
+  };
+  orm(db)
+    .insert(closeoutPolicyBlock)
+    .values({ questionId: block.questionId, ...values })
+    .onConflictDoUpdate({ target: closeoutPolicyBlock.questionId, set: values })
+    .run();
 }
 
 export function listOpenPolicyBlocks(db: Database, repository?: string): PolicyBlock[] {
-  return db
-    .query<Row, [string | null]>(
-      `SELECT b.* FROM closeout_policy_block b JOIN question q ON q.id = b.question_id
-       WHERE q.status = 'open' AND q.cancelled_at IS NULL AND (?1 IS NULL OR b.repository = ?1)
-       ORDER BY b.created_at, b.rowid`,
+  return orm(db)
+    .select({ block: closeoutPolicyBlock })
+    .from(closeoutPolicyBlock)
+    .innerJoin(question, eq(question.id, closeoutPolicyBlock.questionId))
+    .where(
+      and(
+        eq(question.status, "open"),
+        isNull(question.cancelledAt),
+        repository === undefined ? undefined : eq(closeoutPolicyBlock.repository, repository),
+      ),
     )
-    .all(repository ?? null)
-    .map(map);
+    .orderBy(closeoutPolicyBlock.createdAt, sql`closeout_policy_block.rowid`)
+    .all()
+    .map(({ block }) => map(block));
 }
