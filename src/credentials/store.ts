@@ -28,11 +28,12 @@ export function importCredentialFile(
   secretsDir: string,
   kind: CredentialKind,
   path: string,
+  prepare: (value: string) => string = (value) => value,
 ): boolean {
   if (readCredentialCiphertext(db, { kind, workspace: INSTALLATION }) !== null) return false;
   const value = readSecretFile(path, false);
   if (value === null || value.trim().length === 0) return false;
-  return writeCredential(db, secretsDir, kind, value, { onlyIfMissing: true });
+  return writeCredential(db, secretsDir, kind, prepare(value), { onlyIfMissing: true });
 }
 
 function context(key: CredentialKey): string {

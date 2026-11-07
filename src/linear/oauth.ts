@@ -1,6 +1,11 @@
 import { LinearHttpError } from "./graphql";
 import type { Database } from "bun:sqlite";
-import { readCredential, refreshCredential, writeCredential } from "../credentials";
+import {
+  importCredentialFile,
+  readCredential,
+  refreshCredential,
+  writeCredential,
+} from "../credentials";
 
 /** Scopes for an install that can be delegated and mentioned. */
 export const LINEAR_APP_SCOPES = "read,write,app:assignable,app:mentionable";
@@ -11,6 +16,7 @@ export const LINEAR_ACTOR = "app" as const;
 const TOKEN_URL = "https://api.linear.app/oauth/token";
 const AUTHORIZE_URL = "https://linear.app/oauth/authorize";
 const REFRESH_SKEW_MS = 60_000;
+const BOOTSTRAP_LIFETIME_MS = 23 * 60 * 60 * 1000;
 
 export type EnvSource = Record<string, string | undefined>;
 
@@ -110,7 +116,7 @@ export function createLinearAuth(options: {
       {
         accessToken,
         refreshToken: options.bootstrapRefreshToken ?? null,
-        expiresAtMs: options.bootstrapRefreshToken ? 0 : now() + 23 * 60 * 60 * 1000,
+        expiresAtMs: options.bootstrapRefreshToken ? 0 : now() + BOOTSTRAP_LIFETIME_MS,
         scope: LINEAR_APP_SCOPES,
         actor: LINEAR_ACTOR,
       },
@@ -278,9 +284,31 @@ export function writeStoredToken(
   return writeToken(db, secretsDir, token, onlyIfMissing);
 }
 
+export function importLinearTokenFile(
+  db: Database,
+  secretsDir: string,
+  path: string,
+  now = Date.now(),
+): boolean {
+  return importCredentialFile(db, secretsDir, "linear", path, (text) => {
+    let token: StoredLinearToken;
+    try {
+      token = parseToken(text);
+    } catch {
+      return text;
+    }
+    if (token.refreshToken === null && token.expiresAtMs === 0)
+      token.expiresAtMs = now + BOOTSTRAP_LIFETIME_MS;
+    return JSON.stringify(token);
+  });
+}
+
 function readToken(db: Database, secretsDir: string): StoredLinearToken | null {
   const text = readCredential(db, secretsDir, "linear");
-  if (text === null) return null;
+  return text === null ? null : parseToken(text);
+}
+
+function parseToken(text: string): StoredLinearToken {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

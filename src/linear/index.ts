@@ -87,6 +87,7 @@ export {
   LINEAR_APP_SCOPES,
   createLinearAuth,
   exchangeLinearCode,
+  importLinearTokenFile,
   linearAuthorizeUrl,
   readLinearEnv,
   readStoredToken,

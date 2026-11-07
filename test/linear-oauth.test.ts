@@ -1,3 +1,4 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
@@ -6,6 +7,7 @@ import {
   createLinearAuth,
   createLinearClient,
   exchangeLinearCode,
+  importLinearTokenFile,
   linearAuthorizeUrl,
   readStoredToken,
   writeStoredToken,
@@ -72,6 +74,31 @@ describe("linear oauth", () => {
     const again = await auth.ensureFresh();
     expect(again).toBe("access-2");
     expect(calls).toHaveLength(1);
+  });
+
+  test("an imported access-only token file keeps the bootstrap lifetime", async () => {
+    const db = tempDb();
+    const secretsDir = join(tempHome(), "secrets");
+    mkdirSync(secretsDir, { recursive: true });
+    const path = join(secretsDir, "acme-linear.json");
+    writeFileSync(path, JSON.stringify({ accessToken: "acme-access" }), { mode: 0o600 });
+    expect(importLinearTokenFile(db, secretsDir, path, 1_000)).toBe(true);
+    expect(readStoredToken(db, secretsDir)).toMatchObject({
+      accessToken: "acme-access",
+      refreshToken: null,
+      expiresAtMs: 1_000 + 23 * 60 * 60 * 1000,
+    });
+    const auth = createLinearAuth({
+      db,
+      secretsDir,
+      clientId: "acme-client",
+      clientSecret: "acme-secret",
+      fetch: async () => {
+        throw new Error("No refresh is needed.");
+      },
+      now: () => 2_000,
+    });
+    expect(await auth.ensureFresh()).toBe("acme-access");
   });
 
   test("a 401 refreshes once and retries the GraphQL call", async () => {

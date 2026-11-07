@@ -160,6 +160,7 @@ import {
   linearCallerFor,
   linearItem,
   openLinear,
+  importLinearTokenFile,
   readStoredToken,
   parseLinearAdministration,
   parseLinearIssueClosed,
@@ -390,7 +391,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   setAsideLegacyDatabase(paths.db);
   const db = openDatabase(paths.db);
   migrate(db);
-  importCredentialFile(db, paths.secretsDir, "linear", runtime.linearTokenFile);
+  importLinearTokenFile(db, paths.secretsDir, runtime.linearTokenFile);
   importCredentialFile(db, paths.secretsDir, "slack", join(paths.secretsDir, "slack-oauth.json"));
   clearUsagePauses(db);
   const linearRevoked = () =>
