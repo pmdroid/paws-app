@@ -287,10 +287,28 @@ export async function restoreCandidateRef(options: {
     throw new Error(`Recorded candidate head ${options.sha} is not a commit SHA.`);
   const gitDir = mirrorPath(options.pawsRoot, options.owner, options.repo);
   const ref = candidateRef(options.itemId);
+  const missing = `Candidate head ${options.sha} of ${options.itemId} is missing on GitHub in ${options.owner}/${options.repo}.`;
   if ((await revParse(gitDir, `${ref}^{commit}`)) === options.sha) return;
   if (!(await exists(gitDir))) await ensureBareMirror(options);
   await onMirror(gitDir, async () => {
-    if (!(await revParse(gitDir, `${options.sha}^{commit}`))) {
+    const local = await revParse(gitDir, `${ref}^{commit}`);
+    if (local === options.sha) return;
+    const held = await revParse(gitDir, `${options.sha}^{commit}`);
+    if (held && local) {
+      const ahead = await git([
+        "--git-dir",
+        gitDir,
+        "merge-base",
+        "--is-ancestor",
+        options.sha,
+        local,
+      ]).then(
+        () => true,
+        () => false,
+      );
+      if (ahead) return;
+    }
+    if (!held) {
       const scratch = `refs/paws/imports/${randomUUID()}`;
       try {
         await (options.networkGit ?? git)([
@@ -304,19 +322,13 @@ export async function restoreCandidateRef(options: {
           `${options.sha}:${scratch}`,
         ]);
       } catch (error) {
-        throw new Error(
-          `Candidate head ${options.sha} of ${options.itemId} is missing on GitHub in ${options.owner}/${options.repo}.`,
-          { cause: error },
-        );
+        throw new Error(missing, { cause: error });
       } finally {
         await git(["--git-dir", gitDir, "update-ref", "-d", scratch]).catch(() => undefined);
       }
-      if (!(await revParse(gitDir, `${options.sha}^{commit}`)))
-        throw new Error(
-          `Candidate head ${options.sha} of ${options.itemId} is missing on GitHub in ${options.owner}/${options.repo}.`,
-        );
+      if (!(await revParse(gitDir, `${options.sha}^{commit}`))) throw new Error(missing);
     }
-    await git(["--git-dir", gitDir, "update-ref", ref, options.sha]);
+    await git(["--git-dir", gitDir, "update-ref", ref, options.sha, local ?? ""]);
   });
 }
 

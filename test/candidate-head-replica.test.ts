@@ -9,6 +9,8 @@ import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import {
   candidateRef,
+  ensureBareMirror,
+  ensureCandidateRef,
   mirrorPath,
   restoreCandidateRef,
   runAgent,
@@ -251,6 +253,44 @@ test("a recorded candidate SHA that GitHub lacks is an error that names it", asy
     await expect(restore).rejects.toThrow(
       `Candidate head ${missing} of 01ACME is missing on GitHub`,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a local candidate ahead of the recorded SHA stays; one behind moves to it", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "paws-candidate-cache-"));
+  try {
+    const bare = await originWithPolicy(root, path.join(root, "check-ran"));
+    const pawsRoot = path.join(root, "a");
+    const place = { ...repository, remoteUrl: bare, itemId: "01ACME", pawsRoot };
+    const {
+      mirrorPath: mirror,
+      ref,
+      head: main,
+    } = await ensureBareMirror(place).then(() => ensureCandidateRef(place));
+    const tree = await git("--git-dir", mirror, "rev-parse", `${main}^{tree}`);
+    const ahead = await git(
+      "--git-dir",
+      mirror,
+      "-c",
+      "user.name=acme",
+      "-c",
+      "user.email=acme@example.com",
+      "commit-tree",
+      tree,
+      "-p",
+      main,
+      "-m",
+      "ahead",
+    );
+    await git("--git-dir", mirror, "update-ref", ref, ahead);
+    await restoreCandidateRef({ ...place, sha: main });
+    expect(await git("--git-dir", mirror, "rev-parse", ref)).toBe(ahead);
+
+    await git("--git-dir", mirror, "update-ref", ref, main);
+    await restoreCandidateRef({ ...place, sha: ahead });
+    expect(await git("--git-dir", mirror, "rev-parse", ref)).toBe(ahead);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
