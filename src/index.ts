@@ -35,7 +35,7 @@ import {
   readStoredFindings,
   type ProbesCommand,
 } from "./probe-collector";
-import { importCredentialFile, loadEnvelopeKey, readSecretFile } from "./credentials";
+import { deriveEnvelopeKey, importCredentialFile, readSecretFile } from "./credentials";
 import { createS3RunnerFileObjects } from "./run-files";
 import type { Database } from "bun:sqlite";
 import {
@@ -764,7 +764,10 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const runnerFileObjects = () => {
     const s3 = options?.runnerTranscriptObjects ? null : loadRunnerTranscriptS3(runtime.env.home);
     return s3
-      ? { objects: createS3RunnerFileObjects(s3), key: loadEnvelopeKey(paths.secretsDir) }
+      ? {
+          objects: createS3RunnerFileObjects(s3),
+          key: deriveEnvelopeKey(paths.secretsDir, "runner-files"),
+        }
       : undefined;
   };
   let runner: RunnerCoordinator | undefined;

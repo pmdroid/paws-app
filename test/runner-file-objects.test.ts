@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deriveEnvelopeKey } from "../src/credentials";
 import { beginImplementRun, insertQueuedItem, migrate, openDatabase } from "../src/db";
 import { createFakeRunFileObjects, createSealedRunnerFiles } from "../src/run-files";
 import { createRunnerArtifactStore, RUNNER_ARTIFACT_CHUNK_BYTES } from "../src/runner-artifacts";
@@ -304,5 +305,15 @@ describe("runner inputs and artifacts in the shared store", () => {
     const snapshot = await a.artifacts.snapshot(access.runId, 1, artifact);
     expect(Buffer.from(await snapshot.bytes.arrayBuffer())).toEqual(bytes);
     expect(stored.length).toBe(bytes.length + 28);
+  });
+
+  test("the runner file key is derived from the envelope key, never the envelope key itself", () => {
+    const secrets = join(mkdtempSync(join(tmpdir(), "paws-acme-secrets-")), "secrets");
+    const key = deriveEnvelopeKey(secrets, "runner-files");
+    expect(key).toHaveLength(32);
+    expect(deriveEnvelopeKey(secrets, "runner-files")).toEqual(key);
+    expect(key.equals(readFileSync(join(secrets, ".envelope-key")))).toBe(false);
+    expect(deriveEnvelopeKey(secrets, "acme-other").equals(key)).toBe(false);
+    expect(() => deriveEnvelopeKey(secrets, "../acme")).toThrow();
   });
 });

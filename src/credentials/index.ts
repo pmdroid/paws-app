@@ -1,4 +1,4 @@
-export { readSecretFile, writeSecretFile, decodeSecretEnvelope, loadEnvelopeKey } from "./files";
+export { readSecretFile, writeSecretFile, decodeSecretEnvelope, deriveEnvelopeKey } from "./files";
 export { refreshCredential } from "./refresh";
 export { loadSecretKey } from "./key";
 export {
