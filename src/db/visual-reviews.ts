@@ -1,5 +1,8 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { jsonText } from "./json-text";
 import { getLinearConversationSource } from "./linear-session-url";
 
 export type VisualReviewRecord = {
@@ -26,40 +29,57 @@ export type VisualReviewCarriedFile = {
   match: "identical" | "similar";
 };
 
-export function listVisualReviews(db: Database, itemId: string): VisualReviewRecord[] {
-  return db
-    .query<
-      Omit<VisualReviewRecord, "evidenceIds" | "carried"> & {
-        evidenceIds: string;
-        carried: string | null;
-      },
-      [string]
-    >(
-      `SELECT v.question_id AS questionId, v.check_id AS checkId, v.evidence_ids AS evidenceIds,
-         v.created_at AS createdAt, v.outcome, COALESCE(u.name, v.answered_by) AS answeredBy,
-         v.answered_at AS answeredAt, v.feedback, v.head_commit AS headCommit, v.carried
-       FROM visual_review v LEFT JOIN workspace_user u ON u.linear_user_id = v.answered_by
-       WHERE v.item_id = ? AND v.kind = 'review' ORDER BY v.created_at, v.rowid`,
-    )
-    .all(itemId)
-    .map((row) => ({
+export function* listVisualReviewsSteps(q: Q, itemId: string): Steps<VisualReviewRecord[]> {
+  const { visualReview, workspaceUser } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        questionId: visualReview.questionId,
+        checkId: visualReview.checkId,
+        evidenceIds: jsonText(q, visualReview.evidenceIds),
+        createdAt: visualReview.createdAt,
+        outcome: visualReview.outcome,
+        answeredBy: sql<string | null>`COALESCE(${workspaceUser.name}, ${visualReview.answeredBy})`,
+        answeredAt: visualReview.answeredAt,
+        feedback: visualReview.feedback,
+        headCommit: visualReview.headCommit,
+        carried: jsonText(q, visualReview.carried),
+      })
+      .from(visualReview)
+      .leftJoin(workspaceUser, eq(workspaceUser.linearUserId, visualReview.answeredBy))
+      .where(and(eq(visualReview.itemId, itemId), eq(visualReview.kind, "review")))
+      // Reviews created in the same millisecond keep question id order, the table's key.
+      .orderBy(asc(visualReview.createdAt), asc(visualReview.questionId)),
+  );
+  const reviews: VisualReviewRecord[] = [];
+  for (const row of rows)
+    reviews.push({
       ...row,
+      outcome: row.outcome as VisualReviewRecord["outcome"],
       evidenceIds: JSON.parse(row.evidenceIds) as string[],
-      carried: carriedFiles(db, row.carried),
-    }));
+      carried: yield* carriedFilesSteps(q, row.carried),
+    });
+  return reviews;
 }
 
-function carriedFiles(db: Database, value: string | null): VisualReviewCarriedFile[] {
+export function listVisualReviews(db: Database, itemId: string): VisualReviewRecord[] {
+  return settled(sqliteDb(db).run((q) => listVisualReviewsSteps(q, itemId)));
+}
+
+function* carriedFilesSteps(q: Q, value: string | null) {
   if (!value) return [];
-  return (JSON.parse(value) as VisualReviewCarriedFile[]).map((entry) => ({
-    ...entry,
-    approvedBy:
-      db
-        .query<{ name: string }, [string]>(
-          "SELECT name FROM workspace_user WHERE linear_user_id = ? AND name <> ''",
-        )
-        .get(entry.approvedBy)?.name ?? entry.approvedBy,
-  }));
+  const { workspaceUser } = q.t;
+  const files: VisualReviewCarriedFile[] = [];
+  for (const entry of JSON.parse(value) as VisualReviewCarriedFile[]) {
+    const user = yield* q.one(
+      q.orm
+        .select({ name: workspaceUser.name })
+        .from(workspaceUser)
+        .where(and(eq(workspaceUser.linearUserId, entry.approvedBy), ne(workspaceUser.name, ""))),
+    );
+    files.push({ ...entry, approvedBy: user?.name ?? entry.approvedBy });
+  }
+  return files;
 }
 
 export function linearConversationUrl(
@@ -88,50 +108,83 @@ export type VisualReviewMark = {
   createdAt: number;
 };
 
-const MARK_COLUMNS = `m.id, m.question_id AS questionId, m.evidence_id AS evidenceId,
-  m.size_bytes AS sizeBytes, m.sha256, m.created_at AS createdAt`;
+function markColumns(q: Q) {
+  const { visualReviewMark } = q.t;
+  return {
+    id: visualReviewMark.id,
+    questionId: visualReviewMark.questionId,
+    evidenceId: visualReviewMark.evidenceId,
+    sizeBytes: visualReviewMark.sizeBytes,
+    sha256: visualReviewMark.sha256,
+    createdAt: visualReviewMark.createdAt,
+  };
+}
+
+export function* saveVisualReviewMarksSteps(q: Q, marks: readonly VisualReviewMark[]) {
+  for (const mark of marks) yield* q.exec(q.orm.insert(q.t.visualReviewMark).values(mark));
+}
 
 export function saveVisualReviewMarks(db: Database, marks: readonly VisualReviewMark[]): void {
-  for (const mark of marks)
-    db.run(
-      "INSERT INTO visual_review_mark (id, question_id, evidence_id, size_bytes, sha256, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-      [mark.id, mark.questionId, mark.evidenceId, mark.sizeBytes, mark.sha256, mark.createdAt],
-    );
+  settled(sqliteDb(db).run((q) => saveVisualReviewMarksSteps(q, marks)));
+}
+
+export function* listVisualReviewMarksSteps(q: Q, questionId: string) {
+  const { visualReviewMark } = q.t;
+  const marks: VisualReviewMark[] = yield* q.all(
+    q.orm
+      .select(markColumns(q))
+      .from(visualReviewMark)
+      .where(eq(visualReviewMark.questionId, questionId))
+      // Marks of the same millisecond keep id order: ids are ULIDs.
+      .orderBy(asc(visualReviewMark.createdAt), asc(visualReviewMark.id)),
+  );
+  return marks;
 }
 
 export function listVisualReviewMarks(db: Database, questionId: string): VisualReviewMark[] {
-  return db
-    .query<VisualReviewMark, [string]>(
-      `SELECT ${MARK_COLUMNS} FROM visual_review_mark m WHERE m.question_id = ? ORDER BY m.created_at, m.rowid`,
-    )
-    .all(questionId);
+  return settled(sqliteDb(db).run((q) => listVisualReviewMarksSteps(q, questionId)));
+}
+
+export function* getVisualReviewMarkSteps(q: Q, id: string) {
+  const { visualReview, visualReviewMark } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ ...markColumns(q), itemId: visualReview.itemId })
+      .from(visualReviewMark)
+      .innerJoin(visualReview, eq(visualReview.questionId, visualReviewMark.questionId))
+      .where(eq(visualReviewMark.id, id)),
+  );
+  return row ?? null;
 }
 
 export function getVisualReviewMark(
   db: Database,
   id: string,
 ): (VisualReviewMark & { itemId: string }) | null {
-  return db
-    .query<VisualReviewMark & { itemId: string }, [string]>(
-      `SELECT ${MARK_COLUMNS}, v.item_id AS itemId
-       FROM visual_review_mark m JOIN visual_review v ON v.question_id = m.question_id
-       WHERE m.id = ?`,
-    )
-    .get(id);
+  return settled(sqliteDb(db).run((q) => getVisualReviewMarkSteps(q, id)));
 }
 
-export function openVisualReviewFiles(
-  db: Database,
-  questionId: string,
-): { itemId: string; evidenceIds: string[] } | null {
-  const row = db
-    .query<{ itemId: string; evidenceIds: string; carried: string | null }, [string]>(
-      `SELECT v.item_id AS itemId, v.evidence_ids AS evidenceIds, v.carried
-       FROM visual_review v JOIN question q ON q.id = v.question_id
-       WHERE v.question_id = ? AND v.kind = 'review' AND q.status = 'open' AND q.cancelled_at IS NULL`,
-    )
-    .get(questionId);
-  if (row === null) return null;
+export function* openVisualReviewFilesSteps(q: Q, questionId: string) {
+  const { question, visualReview } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        itemId: visualReview.itemId,
+        evidenceIds: jsonText(q, visualReview.evidenceIds),
+        carried: jsonText(q, visualReview.carried),
+      })
+      .from(visualReview)
+      .innerJoin(question, eq(question.id, visualReview.questionId))
+      .where(
+        and(
+          eq(visualReview.questionId, questionId),
+          eq(visualReview.kind, "review"),
+          eq(question.status, "open"),
+          isNull(question.cancelledAt),
+        ),
+      ),
+  );
+  if (row === undefined) return null;
   // Screens that carried an approval over were not asked about.
   const carried = new Set(
     (JSON.parse(row.carried ?? "[]") as { evidenceId: string }[]).map((entry) => entry.evidenceId),
@@ -140,4 +193,11 @@ export function openVisualReviewFiles(
     itemId: row.itemId,
     evidenceIds: (JSON.parse(row.evidenceIds) as string[]).filter((id) => !carried.has(id)),
   };
+}
+
+export function openVisualReviewFiles(
+  db: Database,
+  questionId: string,
+): { itemId: string; evidenceIds: string[] } | null {
+  return settled(sqliteDb(db).run((q) => openVisualReviewFilesSteps(q, questionId)));
 }
