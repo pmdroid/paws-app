@@ -1,23 +1,42 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, inArray } from "drizzle-orm";
-import { orm } from "./orm";
-import { runnerRepositoryCommand } from "./schema";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 type RepositoryCommandSettlement =
   | { state: "pending" | "delivered" }
   | { state: "done"; result: string }
   | { state: "expired" };
 
-function read(db: Database, id: string) {
-  return orm(db)
-    .select({
-      state: runnerRepositoryCommand.state,
-      result: runnerRepositoryCommand.result,
-      expiresAt: runnerRepositoryCommand.expiresAt,
-    })
-    .from(runnerRepositoryCommand)
-    .where(eq(runnerRepositoryCommand.id, id))
-    .get();
+function* readSteps(q: Q, id: string) {
+  const command = q.t.runnerRepositoryCommand;
+  return yield* q.one(
+    q.orm
+      .select({ state: command.state, result: command.result, expiresAt: command.expiresAt })
+      .from(command)
+      .where(eq(command.id, id)),
+  );
+}
+
+export function* repositoryCommandSettlementSteps(
+  q: Q,
+  id: string,
+  at: number,
+): Steps<RepositoryCommandSettlement | null> {
+  const command = q.t.runnerRepositoryCommand;
+  let row = yield* readSteps(q, id);
+  if (!row) return null;
+  if ((row.state === "pending" || row.state === "delivered") && row.expiresAt <= at) {
+    yield* q.exec(
+      q.orm
+        .update(command)
+        .set({ state: "expired", grantHash: null })
+        .where(and(eq(command.id, id), inArray(command.state, ["pending", "delivered"]))),
+    );
+    row = (yield* readSteps(q, id))!;
+  }
+  if (row.state === "done" && row.result !== null) return { state: "done", result: row.result };
+  if (row.state === "pending" || row.state === "delivered") return { state: row.state };
+  return { state: "expired" };
 }
 
 export function repositoryCommandSettlement(
@@ -25,22 +44,5 @@ export function repositoryCommandSettlement(
   id: string,
   at: number,
 ): RepositoryCommandSettlement | null {
-  let row = read(db, id);
-  if (!row) return null;
-  if ((row.state === "pending" || row.state === "delivered") && row.expiresAt <= at) {
-    orm(db)
-      .update(runnerRepositoryCommand)
-      .set({ state: "expired", grantHash: null })
-      .where(
-        and(
-          eq(runnerRepositoryCommand.id, id),
-          inArray(runnerRepositoryCommand.state, ["pending", "delivered"]),
-        ),
-      )
-      .run();
-    row = read(db, id)!;
-  }
-  if (row.state === "done" && row.result !== null) return { state: "done", result: row.result };
-  if (row.state === "pending" || row.state === "delivered") return { state: row.state };
-  return { state: "expired" };
+  return settled(sqliteDb(db).run((q) => repositoryCommandSettlementSteps(q, id, at)));
 }

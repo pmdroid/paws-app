@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { asc, eq } from "drizzle-orm";
-import { orm } from "./orm";
-import { closeoutPolicyOutage } from "./schema";
+import { eq } from "drizzle-orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 export type PolicyOutage = {
   repository: string;
@@ -14,53 +13,52 @@ export type PolicyOutage = {
   questionItemId: string | null;
 };
 
-const columns = {
-  repository: closeoutPolicyOutage.repository,
-  startedAt: closeoutPolicyOutage.startedAt,
-  error: closeoutPolicyOutage.error,
-  policyPath: closeoutPolicyOutage.policyPath,
-  main: closeoutPolicyOutage.mainSha,
-  changedBy: closeoutPolicyOutage.changedBySha,
-  questionId: closeoutPolicyOutage.questionId,
-  questionItemId: closeoutPolicyOutage.questionItemId,
-};
+function columns(q: Q) {
+  const outage = q.t.closeoutPolicyOutage;
+  return {
+    repository: outage.repository,
+    startedAt: outage.startedAt,
+    error: outage.error,
+    policyPath: outage.policyPath,
+    main: outage.mainSha,
+    changedBy: outage.changedBySha,
+    questionId: outage.questionId,
+    questionItemId: outage.questionItemId,
+  };
+}
 
-export function getPolicyOutage(db: Database, repository: string): PolicyOutage | null {
+export function* getPolicyOutageSteps(q: Q, repository: string): Steps<PolicyOutage | null> {
+  const outage = q.t.closeoutPolicyOutage;
   return (
-    orm(db)
-      .select(columns)
-      .from(closeoutPolicyOutage)
-      .where(eq(closeoutPolicyOutage.repository, repository))
-      .get() ?? null
+    (yield* q.one(
+      q.orm.select(columns(q)).from(outage).where(eq(outage.repository, repository)),
+    )) ?? null
   );
 }
 
-export function listPolicyOutages(db: Database): PolicyOutage[] {
-  return orm(db)
-    .select(columns)
-    .from(closeoutPolicyOutage)
-    .orderBy(asc(closeoutPolicyOutage.startedAt), asc(closeoutPolicyOutage.repository))
-    .all();
+export function getPolicyOutage(db: Database, repository: string): PolicyOutage | null {
+  return settled(sqliteDb(db).run((q) => getPolicyOutageSteps(q, repository)));
 }
 
-export function recordPolicyOutage(
-  db: Database,
-  input: {
-    repository: string;
-    error: string;
-    policyPath: string;
-    main: string;
-    changedBy: string | null;
-    now: number;
-  },
-): PolicyOutage {
-  const current = getPolicyOutage(db, input.repository);
+type PolicyOutageInput = {
+  repository: string;
+  error: string;
+  policyPath: string;
+  main: string;
+  changedBy: string | null;
+  now: number;
+};
+
+export function* recordPolicyOutageSteps(q: Q, input: PolicyOutageInput): Steps<PolicyOutage> {
+  const outage = q.t.closeoutPolicyOutage;
+  const current = yield* getPolicyOutageSteps(q, input.repository);
   if (current && current.error === input.error && current.changedBy === input.changedBy) {
-    orm(db)
-      .update(closeoutPolicyOutage)
-      .set({ mainSha: input.main })
-      .where(eq(closeoutPolicyOutage.repository, input.repository))
-      .run();
+    yield* q.exec(
+      q.orm
+        .update(outage)
+        .set({ mainSha: input.main })
+        .where(eq(outage.repository, input.repository)),
+    );
   } else {
     const row = {
       repository: input.repository,
@@ -72,13 +70,29 @@ export function recordPolicyOutage(
       questionId: null,
       questionItemId: null,
     };
-    orm(db)
-      .insert(closeoutPolicyOutage)
-      .values(row)
-      .onConflictDoUpdate({ target: closeoutPolicyOutage.repository, set: row })
-      .run();
+    yield* q.exec(
+      q.orm.insert(outage).values(row).onConflictDoUpdate({ target: outage.repository, set: row }),
+    );
   }
-  return getPolicyOutage(db, input.repository)!;
+  return (yield* getPolicyOutageSteps(q, input.repository))!;
+}
+
+export function recordPolicyOutage(db: Database, input: PolicyOutageInput): PolicyOutage {
+  return settled(sqliteDb(db).run((q) => recordPolicyOutageSteps(q, input)));
+}
+
+export function* setPolicyOutageQuestionSteps(
+  q: Q,
+  repository: string,
+  question: { id: string; itemId: string } | null,
+) {
+  const outage = q.t.closeoutPolicyOutage;
+  yield* q.exec(
+    q.orm
+      .update(outage)
+      .set({ questionId: question?.id ?? null, questionItemId: question?.itemId ?? null })
+      .where(eq(outage.repository, repository)),
+  );
 }
 
 export function setPolicyOutageQuestion(
@@ -86,20 +100,16 @@ export function setPolicyOutageQuestion(
   repository: string,
   question: { id: string; itemId: string } | null,
 ): void {
-  orm(db)
-    .update(closeoutPolicyOutage)
-    .set({ questionId: question?.id ?? null, questionItemId: question?.itemId ?? null })
-    .where(eq(closeoutPolicyOutage.repository, repository))
-    .run();
+  settled(sqliteDb(db).run((q) => setPolicyOutageQuestionSteps(q, repository, question)));
+}
+
+export function* endPolicyOutageSteps(q: Q, repository: string): Steps<PolicyOutage | null> {
+  const outage = q.t.closeoutPolicyOutage;
+  const current = yield* getPolicyOutageSteps(q, repository);
+  if (current) yield* q.exec(q.orm.delete(outage).where(eq(outage.repository, repository)));
+  return current;
 }
 
 export function endPolicyOutage(db: Database, repository: string): PolicyOutage | null {
-  const current = getPolicyOutage(db, repository);
-  if (current) {
-    orm(db)
-      .delete(closeoutPolicyOutage)
-      .where(eq(closeoutPolicyOutage.repository, repository))
-      .run();
-  }
-  return current;
+  return settled(sqliteDb(db).run((q) => endPolicyOutageSteps(q, repository)));
 }

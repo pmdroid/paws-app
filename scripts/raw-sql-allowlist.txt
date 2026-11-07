@@ -89,12 +89,6 @@ src/db/closeout-rounds.ts | const row = db .query<{ baseline: string }, [string]
 src/db/decisions.ts | const open = db .query<{ id: number }, [string, string]>( | not yet converted to Drizzle
 src/db/decisions.ts | db.run( | not yet converted to Drizzle
 src/db/decisions.ts | const last = db .query<{ payload: string }, [string, string]>( | not yet converted to Drizzle
-src/db/hot-files.ts | db.run( | not yet converted to Drizzle
-src/db/hot-files.ts | const row = db .query<{ paths: string }, [string, string]>( | not yet converted to Drizzle
-src/db/hot-files.ts | db .query<{ itemId: string; paths: string }, []>( | not yet converted to Drizzle
-src/db/hot-files.ts | const row = db .query<{ paths: string }, [string, string, number, string]>( | not yet converted to Drizzle
-src/db/hot-files.ts | const returns = db .query< | not yet converted to Drizzle
-src/db/hot-files.ts | const merges = db .query<{ itemId: string; owner: string; repo: string; at: number }, [number]>( | not yet converted to Drizzle
 src/db/improvement-follow-through.ts | const row = db .query<SyncRow, [string]>("SELECT * FROM improvement_issue_sync WHERE improvement_id = ?") | not yet converted to Drizzle
 src/db/improvement-follow-through.ts | db.run( | not yet converted to Drizzle
 src/db/improvement-follow-through.ts | return db .query<{ id: string; workspaceId: string; issueId: string }, [number]>( | not yet converted to Drizzle
@@ -271,10 +265,6 @@ src/db/reads.ts | return db .query<BlockSql, [string | null, string | null]>( | 
 src/db/reads.ts | return db .query<FactSql, []>( | not yet converted to Drizzle
 src/db/reads.ts | return db .query<QuestionSql, []>( | not yet converted to Drizzle
 src/db/reads.ts | db .query<DeliveredLinearIssueState, [string, string]>( | not yet converted to Drizzle
-src/db/rebase-returns.ts | db.run( | not yet converted to Drizzle
-src/db/rebase-returns.ts | const row = db .query<{ n: number }, [string, number]>( | not yet converted to Drizzle
-src/db/rebase-returns.ts | return db .query< | not yet converted to Drizzle
-src/db/rebase-returns.ts | db .query("SELECT 1 FROM rebase_return WHERE item_id = ? AND candidate = ? LIMIT 1") | not yet converted to Drizzle
 src/db/repository-catalog.ts | return db .query<CatalogEntry, []>( | not yet converted to Drizzle
 src/db/repository-catalog.ts | db.run("DELETE FROM repository_catalog"); | not yet converted to Drizzle
 src/db/repository-catalog.ts | db.run( | not yet converted to Drizzle
