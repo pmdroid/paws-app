@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { throwawayEnvironment } from "./throwaway-environment";
 
@@ -20,6 +20,22 @@ const all = readdirSync(proofs)
 for (const name of named) if (!all.includes(name)) throw new Error(`No proof scenario ${name}`);
 
 type Assertion = { name: string; passed: boolean; observed: unknown };
+
+const LOG_BUNDLE_BYTES = 64 * 1024;
+const CALL_SECTIONS = ["## Linear activity", "## Linear issue changes", "## GitHub calls"];
+
+function forLog(markdown: string): string {
+  if (Buffer.byteLength(markdown) <= LOG_BUNDLE_BYTES) return markdown;
+  return markdown
+    .split(/\n(?=## )/)
+    .map((section) => {
+      const [heading = "", ...rows] = section.split("\n");
+      if (!CALL_SECTIONS.includes(heading)) return section;
+      const cut = rows.filter((row) => row.startsWith("- ")).length;
+      return `${heading}\n- ${cut} cut to keep the log under 64 KB\n`;
+    })
+    .join("\n");
+}
 
 function git(...command: string[]) {
   const result = Bun.spawnSync(["git", ...command], { cwd: repo });
@@ -45,7 +61,9 @@ if (base) {
 console.log(
   `${selected.length > 0 ? `Proof scenarios: ${selected.join(", ")}` : "No proof scenario covers these paths"}\nEvidence: ${evidence}`,
 );
+mkdirSync(evidence, { recursive: true });
 const failed: string[] = [];
+const unbundled = new Set<string>();
 for (const name of selected) {
   const bundle = join(evidence, `proof-${name}`);
   rmSync(`${bundle}.md`, { force: true });
@@ -61,11 +79,17 @@ for (const name of selected) {
   const exit = await child.exited;
   clearTimeout(timer);
   rmSync(home, { recursive: true, force: true });
-  console.log(`${exit === 0 ? "PASS" : "FAIL"} ${name} (${root})`);
-  if (existsSync(`${bundle}.md`)) console.log(readFileSync(`${bundle}.md`, "utf8"));
-  if (exit !== 0) failed.push(name);
+  const markdown = existsSync(`${bundle}.md`) ? readFileSync(`${bundle}.md`, "utf8") : undefined;
+  if (exit === 0 && markdown === undefined) unbundled.add(name);
+  console.log(`${exit === 0 && markdown !== undefined ? "PASS" : "FAIL"} ${name} (${root})`);
+  if (markdown !== undefined) console.log(forLog(markdown));
+  if (exit !== 0 || markdown === undefined) failed.push(name);
 }
 for (const name of failed) {
+  if (unbundled.has(name)) {
+    console.error(`FAIL ${name}: no proof bundle`);
+    continue;
+  }
   const bundle = join(evidence, `proof-${name}.json`);
   const { assertions = [] } = existsSync(bundle)
     ? (JSON.parse(readFileSync(bundle, "utf8")) as { assertions?: Assertion[] })
