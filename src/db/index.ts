@@ -881,6 +881,7 @@ export { prepareLinearActivity } from "./linear-delivery";
 
 export {
   auditWorkspaceAccess,
+  auditWorkspaceAccessSteps,
   lastPausedBy,
   listWorkspaceAudit,
   consumeWorkspaceBootstrap,
@@ -900,6 +901,7 @@ export {
   WORKSPACE_REVOKED_RESPONSE,
   workspaceForOrganization,
   workspaceMember,
+  workspaceMemberSteps,
   workspaceLinearMember,
 } from "./workspace";
 export type {
