@@ -1,48 +1,31 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
+import { isBlockerSatisfied, isTerminalWorkItemState } from "../core";
 import {
-  delegationHasOpenWork,
-  isBlockerSatisfied,
-  isTerminalWorkItemState,
-  parentIssueIdSql,
-  type WorkItemState,
-  type TaskMode,
-} from "../core";
-import { enqueueOutboxOnce, getConfirmedRemoteMerge, saveTaskBlocks } from "../db";
+  delegationHasItemWithoutSnapshot,
+  delegationHasReconciliationWork,
+  enqueueOutboxOnce,
+  getConfirmedRemoteMerge,
+  itemSpecificationPresent,
+  latestIssueIdentifier,
+  listBlocksOf,
+  listPresentDelegationItems,
+  readDependencyScope,
+  readDependencySnapshot,
+  saveDependencySnapshot,
+  saveTaskBlocks,
+  type DependencyIdentity,
+  type DependencyItem,
+  type DependencySnapshot,
+} from "../db";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { orderByBlocks } from "./order";
 import { managedBlockerSatisfied } from "./blocker-policy";
 
 type Target = { itemId: string; workspaceId: string };
-type Item = {
-  id: string;
-  delegationId: string;
-  linearIssueId: string;
-  identifier: string;
-  title: string;
-  state: WorkItemState;
-  cancelRequested: number;
-  mode: TaskMode | null;
-  brief: string | null;
-};
-type Identity = {
-  delegationIssueId: string;
-  sessionId: string;
-  organizationId: string;
-  clientId: string;
-  appUserId: string;
-  sessionGeneration: number;
-  teamId: string;
-  ownerActorId: string | null;
-  creatorId: string | null;
-};
-type Snapshot = {
-  generation: number;
-  scope: string;
-  linearStates: string;
-  linearIdentifiers: string;
-  workspaceId: string;
-};
+type Item = DependencyItem;
+type Identity = DependencyIdentity;
+type Snapshot = DependencySnapshot;
 type Scope = {
   item: Item;
   siblings: Item[];
@@ -63,47 +46,11 @@ export type DependencyReadiness = {
   cycleHeldItemIds: string[];
 };
 
-const itemColumns = `i.id,i.delegation_id AS delegationId,i.linear_issue_id AS linearIssueId,
-  i.linear_identifier AS identifier,i.title,i.state,i.cancel_requested AS cancelRequested,
-  t.mode,i.brief`;
-
 function scope(db: Database, target: Target): Scope | null {
-  const located = db
-    .query<{ present: number }, [string]>(
-      `SELECT COALESCE(p.present,1) AS present FROM work_item i
-       LEFT JOIN work_item_specification p ON p.item_id=i.id WHERE i.id=?`,
-    )
-    .get(target.itemId);
-  if (!located) throw new Error("Dependency workspace or task ownership changed");
-  if (located.present === 0) return null;
-  const row = db
-    .query<Item & Identity, [string, string]>(
-      `SELECT ${itemColumns},${parentIssueIdSql("i")} AS delegationIssueId,s.session_id AS sessionId,
-       s.organization_id AS organizationId,s.oauth_client_id AS clientId,s.app_user_id AS appUserId,
-       s.generation AS sessionGeneration,s.team_id AS teamId,
-       COALESCE((SELECT u.linear_user_id FROM workspace_user u
-         JOIN work_item oi ON oi.owner_user_id=u.id
-         WHERE oi.delegation_id=i.delegation_id AND oi.session_key=s.session_id
-         ORDER BY oi.created_at, oi.position, oi.id LIMIT 1),
-       (SELECT oi.delegated_by FROM work_item oi
-         WHERE oi.delegation_id=i.delegation_id AND oi.session_key=s.session_id AND oi.delegated_by IS NOT NULL
-         ORDER BY oi.created_at, oi.position, oi.id LIMIT 1), s.creator_id) AS ownerActorId,
-       s.creator_id AS creatorId
-       FROM work_item i
-       JOIN linear_session s ON s.session_id=(
-         SELECT si.session_key FROM work_item si
-         JOIN linear_session ls ON ls.session_id=si.session_key AND ls.stopped_at IS NULL
-         WHERE si.delegation_id=i.delegation_id
-         ORDER BY si.created_at, si.position, si.id LIMIT 1)
-       JOIN workspace w ON w.linear_organization_id=s.organization_id
-       LEFT JOIN work_item_task t ON t.item_id=i.id
-       LEFT JOIN work_item_specification p ON p.item_id=i.id
-       WHERE i.id=? AND w.id=? AND ${delegationHasOpenWork("i.delegation_id")}
-       AND s.stopped_at IS NULL
-       AND s.oauth_client_id IS NOT NULL AND s.app_user_id IS NOT NULL
-       AND s.team_id IS NOT NULL AND COALESCE(p.present,1)=1`,
-    )
-    .get(target.itemId, target.workspaceId);
+  const located = itemSpecificationPresent(db, target.itemId);
+  if (located === null) throw new Error("Dependency workspace or task ownership changed");
+  if (located === 0) return null;
+  const row = readDependencyScope(db, target.itemId, target.workspaceId);
   if (!row) throw new Error("Dependency workspace or task ownership changed");
   const {
     delegationIssueId,
@@ -128,14 +75,7 @@ function scope(db: Database, target: Target): Scope | null {
     ownerActorId,
     creatorId,
   };
-  const siblings = db
-    .query<Item, [string]>(
-      `SELECT ${itemColumns} FROM work_item i
-       LEFT JOIN work_item_task t ON t.item_id=i.id
-       LEFT JOIN work_item_specification p ON p.item_id=i.id
-       WHERE i.delegation_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
-    )
-    .all(item.delegationId);
+  const siblings = listPresentDelegationItems(db, item.delegationId);
   if (new Set(siblings.map((entry) => entry.linearIssueId)).size !== siblings.length)
     throw new Error("Dependency task identities are incomplete");
   return {
@@ -163,38 +103,18 @@ function scope(db: Database, target: Target): Scope | null {
 }
 
 function snapshot(db: Database, target: Target): Snapshot | null {
-  const saved = db
-    .query<Snapshot, [string]>(
-      `SELECT generation,scope,linear_states AS linearStates,linear_identifiers AS linearIdentifiers,
-       workspace_id AS workspaceId FROM item_dependency_snapshot WHERE item_id=?`,
-    )
-    .get(target.itemId);
+  const saved = readDependencySnapshot(db, target.itemId);
   if (saved && saved.workspaceId !== target.workspaceId)
     throw new Error("Dependency workspace or task ownership changed");
   return saved;
 }
 
 export function delegationSnapshotsComplete(db: Database, delegationId: string): boolean {
-  return (
-    db
-      .query(
-        `SELECT 1 FROM work_item i WHERE i.delegation_id=? AND i.state NOT IN ('completed','merged','cancelled')
-         AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
-         AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot s WHERE s.item_id=i.id)`,
-      )
-      .get(delegationId) === null
-  );
+  return !delegationHasItemWithoutSnapshot(db, delegationId);
 }
 
 export function hasPendingDelegationChanges(db: Database, delegationId: string): boolean {
-  return (
-    db
-      .query(
-        `SELECT 1 FROM item_reconciliation_request r JOIN work_item i ON i.id=r.item_id WHERE i.delegation_id=?
-         UNION ALL SELECT 1 FROM item_reconciliation_effect e JOIN work_item i ON i.id=e.item_id WHERE i.delegation_id=? LIMIT 1`,
-      )
-      .get(delegationId, delegationId) !== null
-  );
+  return delegationHasReconciliationWork(db, delegationId);
 }
 
 export function readyItems(db: Database, target: Target): DependencyReadiness {
@@ -205,17 +125,6 @@ export function canAdvanceItem(db: Database, target: Target): boolean {
   return db
     .transaction(() => readReadyItems(db, target, true).readyItemIds.includes(target.itemId))
     .deferred();
-}
-
-function blocksFor(db: Database, issueIds: string[]): DependencyEdge[] {
-  if (issueIds.length === 0) return [];
-  return db
-    .query<DependencyEdge, string[]>(
-      `SELECT blocker_linear_issue_id AS blockerLinearIssueId,
-       blocked_linear_issue_id AS blockedLinearIssueId FROM task_block
-       WHERE blocked_linear_issue_id IN (${issueIds.map(() => "?").join(",")})`,
-    )
-    .all(...issueIds);
 }
 
 function readReadyItems(db: Database, target: Target, includeHeld: boolean): DependencyReadiness {
@@ -241,7 +150,7 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
   if (!saved || saved.scope !== current.token || hasPendingDelegationChanges(db, item.delegationId))
     return held();
   const issueIds = current.siblings.map((entry) => entry.linearIssueId);
-  const blocks = blocksFor(db, issueIds);
+  const blocks = listBlocksOf(db, issueIds);
   const owned = new Set(issueIds);
   const internal = blocks.filter((edge) => owned.has(edge.blockerLinearIssueId));
   const ordered = orderByBlocks(current.siblings, internal);
@@ -276,17 +185,8 @@ export function itemBlockers(db: Database, target: Target): string[] {
       const identifiers = new Map<string, string>(JSON.parse(saved.linearIdentifiers));
       const siblings = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
       const named = (id: string): string =>
-        siblings.get(id)?.identifier ??
-        identifiers.get(id) ??
-        db
-          .query<{ identifier: string }, [string]>(
-            `SELECT linear_identifier AS identifier FROM work_item
-             WHERE linear_issue_id=? AND linear_identifier IS NOT NULL
-             ORDER BY created_at DESC,id DESC LIMIT 1`,
-          )
-          .get(id)?.identifier ??
-        id;
-      return blocksFor(db, [current.item.linearIssueId])
+        siblings.get(id)?.identifier ?? identifiers.get(id) ?? latestIssueIdentifier(db, id) ?? id;
+      return listBlocksOf(db, [current.item.linearIssueId])
         .map((edge) => edge.blockerLinearIssueId)
         .filter((id) => !satisfied(id))
         .map(named);
@@ -412,22 +312,14 @@ function writeItemDependencies(
       )
         throw new Error("Dependency snapshot changed");
       saveTaskBlocks(db, [current.item.linearIssueId], edges);
-      db.run(
-        `INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states,linear_identifiers,external_evidence)
-         VALUES(?,?,?,?,?,?,?) ON CONFLICT(item_id) DO UPDATE SET
-         generation=excluded.generation,scope=excluded.scope,linear_states=excluded.linear_states,
-         linear_identifiers=excluded.linear_identifiers,external_evidence=excluded.external_evidence
-         WHERE item_dependency_snapshot.workspace_id=excluded.workspace_id`,
-        [
-          itemId,
-          workspaceId,
-          expectedGeneration + 1,
-          current.token,
-          JSON.stringify([...states]),
-          JSON.stringify([...identifiers]),
-          "{}",
-        ],
-      );
+      saveDependencySnapshot(db, {
+        itemId,
+        workspaceId,
+        generation: expectedGeneration + 1,
+        scope: current.token,
+        linearStates: JSON.stringify([...states]),
+        linearIdentifiers: JSON.stringify([...identifiers]),
+      });
       const waiting = [...states]
         .filter(([, state]) => state !== "completed")
         .map(([id]) => identifiers.get(id) ?? id)

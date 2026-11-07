@@ -673,3 +673,15 @@ export function runPendingJobNow(db: Database, id: number, now: number): void {
     .where(and(eq(jobTable.id, id), eq(jobTable.status, "pending"), gt(jobTable.runAt, now)))
     .run();
 }
+
+export function leasedJobsForItem(
+  db: Database,
+  queue: string,
+  itemId: string,
+  now: number,
+): { id: number; attempts: number; worker: string }[] {
+  return orm(db).all<{ id: number; attempts: number; worker: string }>(
+    drizzleSql`SELECT id,attempts,locked_by AS worker FROM job WHERE queue=${queue} AND status='running'
+         AND json_extract(payload,'$.itemId')=${itemId} AND locked_by IS NOT NULL AND locked_until>${now}`,
+  );
+}
