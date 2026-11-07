@@ -1,10 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { legacyMigrate, migrations, openDatabase } from "../src/db";
-import { migrateDryRun } from "../scripts/migrate-dry-run";
+import { legacyMigrate, openDatabase } from "../src/db";
 
 const dropped = ["linear_github_auth", "linear_github_task_account"] as const;
 
@@ -93,24 +89,5 @@ test("an open legacy sign-in stops 135 with its item until it is cancelled", () 
     for (const name of dropped) expect(tables(db), name).not.toContain(name);
   } finally {
     db.close();
-  }
-});
-
-test("a dry run applies 135 to a copy of the production tip", () => {
-  const dir = mkdtempSync(join(tmpdir(), "paws-dry-run-"));
-  const path = join(dir, "paws.db");
-  try {
-    productionTip("verified", path).close();
-    const ids = migrations.map((migration) => migration.id);
-    expect(migrateDryRun(path).applied).toEqual(ids.slice(ids.indexOf("135_drop_github_sign_in")));
-    const db = openDatabase(path);
-    try {
-      expect(applied(db)).toBe(false);
-      expect(tables(db)).toContain("linear_github_auth");
-    } finally {
-      db.close();
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
   }
 });

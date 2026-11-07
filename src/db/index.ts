@@ -237,7 +237,13 @@ export {
 } from "./loop";
 export { startLoops } from "./loops";
 export { legacyMigrate } from "./legacy-migrate";
-export { MIGRATIONS_FOLDER, migrate, setAsideLegacyDatabase } from "./migrate";
+export {
+  appliedMigrations,
+  MIGRATIONS_FOLDER,
+  migrate,
+  migrationTags,
+  setAsideLegacyDatabase,
+} from "./migrate";
 export {
   bindWorkItemRepository,
   getWorkItemRepository,

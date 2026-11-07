@@ -8,7 +8,7 @@ import {
   bindWorkItemRepository,
   consumeWorkspaceBootstrap,
   insertQueuedItem,
-  migrate,
+  legacyMigrate,
   migrations,
   openDatabase,
   putWorkspaceUser,
@@ -194,11 +194,11 @@ export async function probeRunnerTaskAuthority(
       before,
     );
     assert.deepEqual(db.query("SELECT * FROM outbox ORDER BY id").all(), legacyOutbox);
-    migrate(db);
+    legacyMigrate(db);
     const fullCatalog = catalog();
     const fullLedger = db.query("SELECT * FROM schema_migration ORDER BY id").all();
     assert.equal(fullLedger.length, migrations.length);
-    migrate(db);
+    legacyMigrate(db);
     assert.deepEqual(catalog(), fullCatalog);
     assert.deepEqual(db.query("SELECT * FROM schema_migration ORDER BY id").all(), fullLedger);
     assert.deepEqual(

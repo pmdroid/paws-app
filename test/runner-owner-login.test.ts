@@ -3,7 +3,7 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { Database } from "bun:sqlite";
 import {
   insertQueuedItem,
-  migrate,
+  legacyMigrate,
   migrations,
   putWorkspaceUser,
   syncWorkspaceMember,
@@ -22,7 +22,7 @@ function fixture() {
   const db = new Database(":memory:");
   databases.push(db);
   db.run("PRAGMA foreign_keys=ON");
-  migrate(db);
+  legacyMigrate(db);
   let at = Date.now();
   const workspace = workspaceId();
   db.run("INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES(?,?,?,?)", [
@@ -341,7 +341,7 @@ test("migration 091 drops member accounts and asks their runners to sign in agai
   db.run(
     "INSERT INTO runner_agent_usage(runner_id,member_id,agent,limits_json,observed_at) VALUES('plain','','codex','[]',2)",
   );
-  migrate(db);
+  legacyMigrate(db);
   expect(
     db.query("SELECT name FROM sqlite_master WHERE name='runner_member_account'").get(),
   ).toBeNull();

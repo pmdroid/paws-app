@@ -25,7 +25,7 @@ import {
 import { attachOrchestrator, questionEffects } from "../src/loop";
 import { answer, findOpenQuestion } from "../src/questions";
 import { workspaceAdmission } from "./fake-workspace";
-import { migratedDatabase, tempDb, tempHome } from "./helpers";
+import { legacyMigratedDatabase, legacyTempDb, tempHome } from "./helpers";
 
 const LATER = 2 * 60 * 60_000;
 const ORPHAN_LATER = 60 * 60_000;
@@ -43,7 +43,7 @@ function seed(db: Database): void {
 }
 
 function fixture(): Database {
-  const db = tempDb();
+  const db = legacyTempDb();
   seed(db);
   return db;
 }
@@ -97,7 +97,7 @@ function loseDelivery(db: Database, how: "cancelled" | "completed", now: number)
 describe("restart hold", () => {
   test("three startups across file reopens keep one decision and no execution", () => {
     const path = join(tempHome(), "paws.db");
-    let db = migratedDatabase(path);
+    let db = legacyMigratedDatabase(path);
     seed(db);
     expect(recoverOnStartup(db, 100).map((decision) => decision.type)).toEqual(["ask_restart"]);
     expect(getWorkItem(db, "item")?.state).toBe("recovering");

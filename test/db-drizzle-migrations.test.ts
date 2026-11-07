@@ -9,6 +9,7 @@ import {
   setAsideLegacyDatabase,
 } from "../src/db";
 import { setJournalSink } from "../src/journal";
+import { migrateDryRun } from "../scripts/migrate-dry-run";
 import { tempHome } from "./helpers";
 
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -148,5 +149,25 @@ describe("a database from the legacy migrations", () => {
     expect(() => setAsideLegacyDatabase(path, NOW)).toThrow("already exists");
     expect(readFileSync(`${path}.pre-drizzle-20261107T030405Z`, "utf8")).toBe("earlier");
     expect(existsSync(path)).toBe(true);
+  });
+});
+
+describe("migrate:dry-run", () => {
+  test("reports nothing to apply on a migrated copy and refuses a legacy database untouched", () => {
+    const home = tempHome();
+    const current = join(home, "current.db");
+    const db = openDatabase(current);
+    migrate(db);
+    db.close();
+    expect(migrateDryRun(current)).toEqual({ applied: [] });
+
+    const legacy = join(home, "legacy.db");
+    const old = openDatabase(legacy);
+    legacyMigrate(old);
+    old.run("PRAGMA wal_checkpoint(TRUNCATE)");
+    old.close();
+    const before = readFileSync(legacy);
+    expect(() => migrateDryRun(legacy)).toThrow("from before drizzle-kit migrations");
+    expect(readFileSync(legacy)).toEqual(before);
   });
 });

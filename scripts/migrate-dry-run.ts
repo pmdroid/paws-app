@@ -10,10 +10,10 @@
  * deletes the copy.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { MIGRATIONS_FOLDER, migrate, openDatabase } from "../src/db";
+import { appliedMigrations, migrate, migrationTags, openDatabase } from "../src/db";
 
 export function migrateDryRun(source: string): { applied: string[] } {
   if (!existsSync(source)) throw new Error(`No database at ${source}`);
@@ -32,12 +32,12 @@ export function migrateDryRun(source: string): { applied: string[] } {
         throw new Error(
           "This database is from before drizzle-kit migrations; Paws sets it aside and starts on a fresh one",
         );
-      const before = appliedCount(db);
+      const before = appliedMigrations(db).applied;
       migrate(db);
       const problems = db.query("PRAGMA foreign_key_check").all();
       if (problems.length > 0)
         throw new Error(`Foreign key check failed: ${JSON.stringify(problems)}`);
-      return { applied: migrationTags().slice(before, appliedCount(db)) };
+      return { applied: migrationTags().slice(before, appliedMigrations(db).applied) };
     } finally {
       db.close();
     }
@@ -48,17 +48,6 @@ export function migrateDryRun(source: string): { applied: string[] } {
 
 function isLegacy(db: Database): boolean {
   return db.query("SELECT 1 FROM sqlite_master WHERE name = 'schema_migration'").get() !== null;
-}
-
-function appliedCount(db: Database): number {
-  const table = db.query("SELECT 1 FROM sqlite_master WHERE name = '__drizzle_migrations'").get();
-  if (!table) return 0;
-  return db.query<{ n: number }, []>("SELECT count(*) AS n FROM __drizzle_migrations").get()!.n;
-}
-
-function migrationTags(): string[] {
-  const journal = JSON.parse(readFileSync(join(MIGRATIONS_FOLDER, "meta/_journal.json"), "utf8"));
-  return (journal.entries as { tag: string }[]).map((entry) => entry.tag);
 }
 
 if (import.meta.main) {

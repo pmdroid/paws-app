@@ -21,7 +21,7 @@ import {
   listOutbox,
   markCloseoutAccepted,
   markJobAwakeWait,
-  migrate,
+  legacyMigrate,
   openDatabase,
   recoverOnStartup,
   saveCheckpoint,
@@ -49,7 +49,7 @@ function verifyingJob(db: ReturnType<typeof openDatabase>, itemId: string, now: 
 function acceptedItem(maxAwakeMs: number) {
   const clock = new FakeClock(20_000);
   const db = openDatabase(":memory:");
-  migrate(db);
+  legacyMigrate(db);
   const item = insertQueuedItem(db, {
     id: "eng-7",
     sessionKey: "ses",
@@ -73,7 +73,7 @@ function acceptedItem(maxAwakeMs: number) {
 
 test("the job loop bills only active agent and Closeout work across every waiting stage", async () => {
   const db = openDatabase(":memory:");
-  migrate(db);
+  legacyMigrate(db);
   const clock = new FakeClock(20_000);
   const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
   const jobs = new JobLoop(db, clock, { leaseMs: 24 * 60 * MINUTE });
@@ -153,7 +153,7 @@ test("the job loop bills only active agent and Closeout work across every waitin
 
 test("a live remote turn still counts without a local execution job", () => {
   const db = openDatabase(":memory:");
-  migrate(db);
+  legacyMigrate(db);
   const clock = new FakeClock(20_000);
   const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
   const { run } = beginImplementRun(db, item.id, clock.now());
@@ -173,7 +173,7 @@ test("a live remote turn still counts without a local execution job", () => {
 
 test("an idle running item and a control job do not spend the awake budget", () => {
   const db = openDatabase(":memory:");
-  migrate(db);
+  legacyMigrate(db);
   const clock = new FakeClock(20_000);
   const item = insertQueuedItem(db, { maxAwakeMs: MINUTE, now: clock.now() });
   beginImplementRun(db, item.id, clock.now());
@@ -192,7 +192,7 @@ test("an idle running item and a control job do not spend the awake budget", () 
 
 test("a job retry backoff in running counts nothing and work resumes at the next claim", async () => {
   const db = openDatabase(":memory:");
-  migrate(db);
+  legacyMigrate(db);
   const clock = new FakeClock(20_000);
   const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
   beginImplementRun(db, item.id, clock.now());
@@ -290,7 +290,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
   test("without an accepted candidate or a session the cap fails and says how the time was spent", () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
-    migrate(db);
+    legacyMigrate(db);
     const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: 0 });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
     beginImplementRun(db, item.id, clock.now());
@@ -310,7 +310,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
   test("verifying with no job working on it is not counted as Closeout time", async () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
-    migrate(db);
+    legacyMigrate(db);
     const item = insertQueuedItem(db, {
       sessionKey: "ses",
       maxAwakeMs: 60 * MINUTE,
@@ -382,7 +382,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     test(`a ${state} slot wait settles before claim and bills work after claim`, () => {
       const clock = new FakeClock(20_000);
       const db = openDatabase(":memory:");
-      migrate(db);
+      legacyMigrate(db);
       const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
       const { run } = beginImplementRun(db, item.id, clock.now());
       if (state === "recovering") applyWorkItemEvent(db, item.id, "lease_expired");
@@ -421,7 +421,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
   function remoteTurn() {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
-    migrate(db);
+    legacyMigrate(db);
     const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 60 * MINUTE, now: 0 });
     const enqueued = enqueueJob(db, {
       queue: JOB_KIND.start,
@@ -502,7 +502,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
   test("a Closeout run waiting on CI does not accrue closeout time", () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
-    migrate(db);
+    legacyMigrate(db);
     const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 60 * MINUTE, now: 0 });
     beginImplementRun(db, item.id, clock.now());
     accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
@@ -532,7 +532,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
   test("a CI wait clears its pending job and cannot leak into a new claim", () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
-    migrate(db);
+    legacyMigrate(db);
     const item = insertQueuedItem(db, { now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
     applyWorkItemEvent(db, item.id, "turn_ended");
@@ -568,7 +568,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
   test("an expired CI mark is ignored after reclaim and cannot clear a new owner's wait", () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
-    migrate(db);
+    legacyMigrate(db);
     const item = insertQueuedItem(db, { now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
     applyWorkItemEvent(db, item.id, "turn_ended");
@@ -603,7 +603,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
   test("a task Closeout accepted before the upgrade is still protected after a restart", () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
-    migrate(db);
+    legacyMigrate(db);
     const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 30 * MINUTE, now: 0 });
     beginImplementRun(db, item.id, clock.now());
     applyWorkItemEvent(db, item.id, "turn_ended");
@@ -614,7 +614,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     db.run("DELETE FROM schema_migration WHERE id = '117_work_item_awake_breakdown'");
     db.run("UPDATE work_item SET awake_ms = ? WHERE id = ?", [29 * MINUTE, item.id]);
 
-    migrate(db);
+    legacyMigrate(db);
     expect(getWorkItem(db, item.id)?.acceptedHead).toBe("accepted");
     applyWorkItemEvent(db, item.id, "reverify_requested");
     recoverOnStartup(db, clock.now());
@@ -629,7 +629,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
   test("a task an older Paws already moved back to verifying is protected after the upgrade", () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
-    migrate(db);
+    legacyMigrate(db);
     const accepted = insertQueuedItem(db, {
       id: "eng-1",
       sessionKey: "a",
@@ -665,7 +665,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     db.run("DELETE FROM schema_migration WHERE id = '117_work_item_awake_breakdown'");
     db.run("UPDATE work_item SET awake_ms = ? WHERE id = ?", [29 * MINUTE, accepted.id]);
 
-    migrate(db);
+    legacyMigrate(db);
     expect(getWorkItem(db, accepted.id)?.acceptedHead).toBe("accepted");
     expect(getWorkItem(db, fresh.id)?.acceptedHead).toBeNull();
     accrueAwake(db, accepted.id, clock.mono(), clock.now());

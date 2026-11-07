@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync, renameSync } from "node:fs";
+import { existsSync, readFileSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { migrate as drizzleMigrate } from "drizzle-orm/bun-sqlite/migrator";
 import { journal } from "../journal";
@@ -9,6 +9,23 @@ export const MIGRATIONS_FOLDER = fileURLToPath(new URL("./drizzle", import.meta.
 
 export function migrate(db: Database, options: { migrationsFolder?: string } = {}): void {
   drizzleMigrate(orm(db), { migrationsFolder: options.migrationsFolder ?? MIGRATIONS_FOLDER });
+}
+
+export function migrationTags(migrationsFolder: string = MIGRATIONS_FOLDER): string[] {
+  const file = JSON.parse(readFileSync(`${migrationsFolder}/meta/_journal.json`, "utf8")) as {
+    entries: { tag: string }[];
+  };
+  return file.entries.map((entry) => entry.tag);
+}
+
+export function appliedMigrations(db: Database): { latest: string | null; applied: number } {
+  const recorded = db
+    .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '__drizzle_migrations'")
+    .get();
+  const applied = recorded
+    ? db.query<{ n: number }, []>("SELECT count(*) AS n FROM __drizzle_migrations").get()!.n
+    : 0;
+  return { latest: applied === 0 ? null : (migrationTags()[applied - 1] ?? null), applied };
 }
 
 const SIDE_FILES = ["-wal", "-shm"];

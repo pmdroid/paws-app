@@ -11,8 +11,8 @@ import {
   RUNNER_TRANSCRIPT_ENCRYPT_JOB,
   runnerTranscriptsEncrypted,
 } from "../src/runner-transcripts";
-import { migrate } from "../src/db";
-import { tempDb, tempHome } from "./helpers";
+import { legacyMigrate } from "../src/db";
+import { legacyTempDb, tempHome } from "./helpers";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const MARKER = Buffer.from("PLAINTEXT_TRANSCRIPT_MARKER_51c9");
@@ -43,7 +43,7 @@ describe("encrypting runner transcripts stored before encryption", () => {
    * before the migration runs.
    */
   beforeEach(async () => {
-    db = tempDb();
+    db = legacyTempDb();
     db.exec("PRAGMA foreign_keys=OFF");
     key = randomBytes(32);
     home = tempHome();
@@ -69,7 +69,7 @@ describe("encrypting runner transcripts stored before encryption", () => {
       }
     }
     db.run("DELETE FROM schema_migration WHERE id=?", [MIGRATION]);
-    migrate(db);
+    legacyMigrate(db);
   });
   afterEach(() => {
     db.close();
@@ -137,7 +137,7 @@ describe("encrypting runner transcripts stored before encryption", () => {
   });
 
   test("a database with no plaintext chunks gets no job", () => {
-    const fresh = tempDb();
+    const fresh = legacyTempDb();
     try {
       expect(jobs(fresh)).toEqual([]);
       expect(runnerTranscriptsEncrypted(fresh)).toBe(true);
