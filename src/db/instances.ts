@@ -69,11 +69,6 @@ export function liveInstances(db: Database, now: number): Instance[] {
     .all() as Instance[];
 }
 
-/**
- * Whether a run owned by `owner` is left without a live owner, seen from instance `self`: the owner
- * has no heartbeat within `INSTANCE_DEAD_MS`, or it ran on self's host under a process id that no
- * longer runs (a crash just before a restart). Self is never gone.
- */
 export function ownerGone(db: Database, self: string, now: number): (owner: string) => boolean {
   const rows = orm(db).select(columns).from(instance).all() as Instance[];
   const host = rows.find((row) => row.id === self)?.host;
@@ -87,7 +82,6 @@ export function ownerGone(db: Database, self: string, now: number): (owner: stri
 }
 
 function processRuns(pid: number): boolean {
-  // Another instance row with this process's id on this host was an earlier process.
   if (pid === process.pid) return false;
   try {
     process.kill(pid, 0);

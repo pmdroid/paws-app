@@ -78,7 +78,6 @@ export function listRuns(db: Database, itemId?: string): StoredRun[] {
     .map(mapRun);
 }
 
-/** The instance that runs `runId`'s turns, or null for a run no instance has claimed. */
 export function runOwner(db: Database, runId: string): string | null {
   return (
     orm(db)
@@ -89,7 +88,6 @@ export function runOwner(db: Database, runId: string): string | null {
   );
 }
 
-/** Record `ownerInstance` as the instance that runs `runId`'s turns from now on. */
 export function claimRun(db: Database, runId: string, ownerInstance: string): void {
   orm(db)
     .insert(runOwnerTable)

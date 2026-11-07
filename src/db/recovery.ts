@@ -51,16 +51,13 @@ const STARTUP_STATES = [
 
 const STARTUP_RESUME_SPACING_MS = 5_000;
 
-/** The leased job that takes over a gone instance's runs while Paws runs, and how often it runs. */
 export const RUN_TAKEOVER_JOB = "run.takeover";
 export const RUN_TAKEOVER_MS = 30_000;
 
 /**
  * On process start, resume a live run once or ask whether to start it again. An item in the merge
  * queue keeps its place; one whose merge call may have been in flight asks GitHub before it moves.
- * Paws downtime, up to `offlineBudgetMs`, does not count against an open runner lease. Given
- * `instanceId`, only items whose run has no owner or a gone owner recover, and this instance takes
- * their runs over; a live instance's runs stay with it.
+ * Paws downtime, up to `offlineBudgetMs`, does not count against an open runner lease.
  */
 export function recoverOnStartup(
   db: Database,
@@ -74,7 +71,6 @@ export function recoverOnStartup(
   });
 }
 
-/** Take over and recover, as on startup, the runs of instances that stopped without releasing them. */
 export function takeOverGoneRuns(
   db: Database,
   instanceId: string,
@@ -151,10 +147,6 @@ function recoverItems(
   return decisions;
 }
 
-/**
- * Whether instance `self` acts on an item: its run's owner is gone, or, with `unowned`, the item
- * has no run or its run no owner.
- */
 function takeoverFilter(
   db: Database,
   self: string,
@@ -244,8 +236,7 @@ function hasPendingResume(db: Database, itemId: string, reason: string): boolean
  * holds keeps its state: an agent turn, or a verifying item's Closeout review or
  * check run. An item waiting in
  * the merge queue keeps its state and its place for the next start to pick up; one
- * whose run is still active is left for a re-verify. Given `instanceId`, only items
- * whose run this instance owns, or no instance owns, are touched.
+ * whose run is still active is left for a re-verify.
  */
 export function prepareShutdown(
   db: Database,

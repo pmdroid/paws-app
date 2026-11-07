@@ -640,7 +640,6 @@ export type { RepositoryBinding } from "../core";
 
 export type OrchestratorOptions = {
   db: Database;
-  /** The instance this process registered. Runs it starts or continues record it as their owner. */
   instanceId?: string;
   jobs: JobLoop;
   outbox: OutboxDispatcher;

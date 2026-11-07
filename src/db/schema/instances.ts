@@ -19,7 +19,6 @@ export const instance = sqliteTable(
   ],
 );
 
-/** The instance that runs a run's turns. No reference to `instance`: a stopped instance's row goes. */
 export const runOwner = sqliteTable(
   "run_owner",
   {
