@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { migrate, migrations, openDatabase } from "../src/db";
+import { legacyMigrate, migrations, openDatabase } from "../src/db";
 import { tempDb } from "./helpers";
 
 const droppedTables = [
@@ -71,7 +71,7 @@ test("migration 065 keeps every work item row and its delegation id", () => {
         "SELECT id, epic_id AS delegationId FROM work_item ORDER BY id",
       )
       .all();
-    migrate(db, { until: "129_parent_delegation" });
+    legacyMigrate(db, { until: "129_parent_delegation" });
     expect(
       db.query("SELECT 1 FROM schema_migration WHERE id = '065_drop_epic'").get(),
     ).toBeTruthy();
@@ -136,7 +136,7 @@ test("migration 065 keeps the parent issue in a child brief that lacks it", () =
     db.run(
       "INSERT INTO epic(id,linear_issue_id,linear_identifier,title,state,created_at) VALUES('solo-epic','solo','DEP-9','Solo','running',1)",
     );
-    migrate(db);
+    legacyMigrate(db);
     const parents = db
       .query<{ id: string; parent: string | null; issue: string | null }, []>(
         "SELECT id, json_extract(brief,'$.epic.issueId') AS parent, json_extract(brief,'$.issue.issueId') AS issue FROM work_item ORDER BY id",

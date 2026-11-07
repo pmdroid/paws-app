@@ -15,7 +15,7 @@ import {
   listJobs,
   listRuns,
   listWorkItemEventRows,
-  migrate,
+  legacyMigrate,
   openDatabase,
   recoverOnStartup,
   requeueOrphanedWork,
@@ -25,7 +25,7 @@ import {
 import { attachOrchestrator, questionEffects } from "../src/loop";
 import { answer, findOpenQuestion } from "../src/questions";
 import { workspaceAdmission } from "./fake-workspace";
-import { migratedDatabase, tempDb, tempHome } from "./helpers";
+import { legacyMigratedDatabase, legacyTempDb, tempHome } from "./helpers";
 
 const LATER = 2 * 60 * 60_000;
 const ORPHAN_LATER = 60 * 60_000;
@@ -43,7 +43,7 @@ function seed(db: Database): void {
 }
 
 function fixture(): Database {
-  const db = tempDb();
+  const db = legacyTempDb();
   seed(db);
   return db;
 }
@@ -97,7 +97,7 @@ function loseDelivery(db: Database, how: "cancelled" | "completed", now: number)
 describe("restart hold", () => {
   test("three startups across file reopens keep one decision and no execution", () => {
     const path = join(tempHome(), "paws.db");
-    let db = migratedDatabase(path);
+    let db = legacyMigratedDatabase(path);
     seed(db);
     expect(recoverOnStartup(db, 100).map((decision) => decision.type)).toEqual(["ask_restart"]);
     expect(getWorkItem(db, "item")?.state).toBe("recovering");
@@ -105,7 +105,7 @@ describe("restart hold", () => {
 
     for (const [index, now] of [200, LATER, LATER * 2, LATER * 3].entries()) {
       db = openDatabase(path);
-      migrate(db);
+      legacyMigrate(db);
       if (index % 2 === 0) loseDelivery(db, "cancelled", now - 1);
       expect(recoverOnStartup(db, now).map((decision) => decision.type)).toEqual(["ask_restart"]);
       expect(restartHold(db, getWorkItem(db, "item")!)).not.toBeNull();
@@ -222,7 +222,7 @@ describe("restart hold", () => {
 
   test("migration keeps a restart decision that was already waiting", () => {
     const db = openDatabase(":memory:");
-    migrate(db, { until: "20261101T0739_job_activation" });
+    legacyMigrate(db, { until: "20261101T0739_job_activation" });
     seed(db);
     db.run("UPDATE work_item SET state='recovering' WHERE id='item'");
     const version = getWorkItem(db, "item")!.version;
@@ -233,7 +233,7 @@ describe("restart hold", () => {
       now: 2,
     });
     cancelOpenJobs(db, { itemId: "item", reason: "startup", now: 3 });
-    migrate(db);
+    legacyMigrate(db);
     expect(restartHold(db, getWorkItem(db, "item")!)).toMatchObject({ sessionId: "session" });
     recoverOnStartup(db, LATER);
     expect(executions(db)).toEqual([]);

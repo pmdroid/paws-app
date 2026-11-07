@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { migrate } from "../src/db";
+import { legacyMigrate } from "../src/db";
 
 test("owner becomes admin, observer becomes an inactive member, member and admin stay", () => {
   const db = new Database(":memory:");
   try {
-    migrate(db, { until: "20261028T0052_runner_transcript_chunk_key" });
+    legacyMigrate(db, { until: "20261028T0052_runner_transcript_chunk_key" });
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','o','W',1)",
     );
@@ -31,7 +31,7 @@ test("owner becomes admin, observer becomes an inactive member, member and admin
         [`t-${role}`, role],
       );
     }
-    migrate(db, { until: "20261028T0223_workspace_two_roles" });
+    legacyMigrate(db, { until: "20261028T0223_workspace_two_roles" });
     expect(
       db
         .query(

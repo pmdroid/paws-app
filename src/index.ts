@@ -109,6 +109,7 @@ import {
   countLinearRequest,
   migrate,
   openDatabase,
+  setAsideLegacyDatabase,
   prepareShutdown,
   markPawsAlive,
   PAWS_ALIVE_INTERVAL_MS,
@@ -386,6 +387,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   sweepTmpDir(paths);
   useGitTempDirectory(paths.tmpDir);
   usePublicationRepositories(paths.publicationDir);
+  setAsideLegacyDatabase(paths.db);
   const db = openDatabase(paths.db);
   migrate(db);
   clearUsagePauses(db);
@@ -2218,6 +2220,7 @@ function reviewScoreMain(args: string[]): number {
   }
   const paths = pawsPaths(loadEnv(process.env).home);
   ensureLayout(paths);
+  setAsideLegacyDatabase(paths.db);
   const db = openDatabase(paths.db);
   try {
     migrate(db);

@@ -110,9 +110,9 @@ items:
       - "src/worktree-checkout/**"
 rules:
   - id: migrations-append-only
-    summary: The frozen migration list and shipped migration files never change; a new file is named for a UTC time.
+    summary: Shipped drizzle-kit migrations never change and new ones append to the journal; the legacy migrations take no new files.
     probe: .agents/probes/migrations-append-only.ts
-    paths: ["src/db/**"]
+    paths: ["src/db/drizzle/**", "src/db/migrations.ts", "src/db/migrations/**"]
     failOn: P0
     onFail: fix
   - id: restart-and-ask-from-loop

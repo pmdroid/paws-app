@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { migrate } from "../src/db";
+import { legacyMigrate } from "../src/db";
 
 const sha = (seed: string) => `sha512-${seed.repeat(86)}==`;
 const pin = JSON.stringify([{ name: "@openai/codex", version: "0.9.0", integrity: sha("N") }]);
@@ -8,7 +8,7 @@ const pin = JSON.stringify([{ name: "@openai/codex", version: "0.9.0", integrity
 /** A database just before 133 with three stored agent targets. Foreign keys stay off, so no runner row is needed. */
 function before133(): Database {
   const db = new Database(":memory:");
-  migrate(db, { until: "132_runner_agent" });
+  legacyMigrate(db, { until: "132_runner_agent" });
   // Columns as 132 created them: the fourth from the end marks a switch back to an installed version.
   const insert = db.prepare("INSERT INTO runner_agent_target VALUES(?,?,?,?,?,?,?,?,?,?)");
   insert.run("r", "codex", "update", "0.9.0", sha("A"), "0.9.0", pin, 0, "u", 1);
@@ -20,7 +20,7 @@ function before133(): Database {
 test("133 keeps updates with their integrity and checked packages, and drops every other target", () => {
   const db = before133();
   try {
-    migrate(db, { until: "133_runner_agent_target_updates_only" });
+    legacyMigrate(db, { until: "133_runner_agent_target_updates_only" });
     expect(db.query("SELECT runner_id,agent,id,integrity FROM runner_agent_target").all()).toEqual([
       { runner_id: "r", agent: "codex", id: "update", integrity: sha("A") },
     ]);

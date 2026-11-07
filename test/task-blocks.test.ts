@@ -4,7 +4,7 @@ import {
   getWorkItem,
   insertQueuedItem,
   listTaskBlockers,
-  migrate,
+  legacyMigrate,
   migrations,
   openDatabase,
   saveTaskBlocks,
@@ -122,7 +122,7 @@ describe("task blocks", () => {
       "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES('older-run','m-older','work','claude','active',1,1)",
     );
     const job = enqueueJob(db, { queue: "item.start", payload: { itemId: "m-older" }, now: 1 });
-    migrate(db, { until: "129_parent_delegation" });
+    legacyMigrate(db, { until: "129_parent_delegation" });
     expect(listTaskBlockers(db, "shared-issue")).toEqual(["inside-blocker", "outside-blocker"]);
     expect(
       db.query<{ status: string }, []>("SELECT status FROM run WHERE id='older-run'").get()?.status,

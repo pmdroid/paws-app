@@ -168,7 +168,6 @@ export const rawSchema = {
     "runner_work",
     "runner_work_grant",
     "scheduler_admission",
-    "schema_migration",
     "suggested_finding",
     "suggestion_turn",
     "sync_cursor",

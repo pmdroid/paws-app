@@ -14,7 +14,7 @@ import {
   insertQueuedItem,
   jobVersionCurrent,
   listRebaseReturns,
-  migrate,
+  legacyMigrate,
   openDatabase,
   recordRebaseReturn,
   reenqueueJob,
@@ -214,7 +214,7 @@ test.each(["linear", "push"] as const)(
   "activation migration preserves %s returns, human windows, and job IDs",
   (reason) => {
     const db = openDatabase(":memory:");
-    migrate(db, {
+    legacyMigrate(db, {
       until:
         reason === "push"
           ? "20261101T0640_push_conflict_returns"
@@ -236,7 +236,7 @@ test.each(["linear", "push"] as const)(
      VALUES (?, 'legacy', 'head', ?, 'main', '["changed.ts"]', 10)`,
       [id, reason],
     );
-    migrate(db);
+    legacyMigrate(db);
     expect(getJob(db, id)?.activationId).toBe(id);
     expect(latestUserTurn(db, "legacy")).toBe(id);
     expect(humanRetryBaseline(db, "legacy")).toEqual(["old"]);

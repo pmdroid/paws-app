@@ -10,7 +10,7 @@ Trace changed behavior through its callers and tests. Report only concrete defec
 Check these rules when the change touches them:
 
 - Modules import each other only through their `index.ts`.
-- Migrations in `src/db/migrations.ts` are append-only.
+- drizzle-kit migrations in `src/db/drizzle/` are append-only, and the legacy migrations take no new files.
 - Webhook handlers return 401 for a body that has not passed verification.
 - Secrets are never logged, committed, or placed in the agent environment.
 - `transition()` in `src/core` stays pure, and no second state machine appears.
