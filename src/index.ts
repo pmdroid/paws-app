@@ -135,7 +135,6 @@ import {
   setAsideLegacyDatabase,
   prepareShutdown,
   stopInstance,
-  deleteInstance,
   heartbeatInstance,
   COMMAND_DELIVERY_MS,
   bindInstance,
@@ -745,7 +744,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (publicDashboard) {
     if (linear?.memberships === null || linear?.memberships === undefined) {
       releaseSettings();
-      deleteInstance(db, instance.id);
+      stopInstance(db, instance.id, Date.now());
       db.close();
       throw new Error("Public dashboard requires a connected Linear app installation.");
     }
@@ -799,7 +798,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     } catch (error) {
       abort.abort();
       releaseSettings();
-      deleteInstance(db, instance.id);
+      stopInstance(db, instance.id, Date.now());
       db.close();
       throw error;
     }
@@ -1310,7 +1309,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   } catch (error) {
     abort.abort();
     releaseSettings();
-    deleteInstance(db, instance.id);
+    stopInstance(db, instance.id, Date.now());
     if (runnerConfig !== null)
       void Promise.all([workspace?.stop(), stopRunner()]).then(() => db.close());
     else if (workspace === undefined) db.close();

@@ -351,6 +351,33 @@ test("a second instance started during the outage credits only the time before i
   }
 }, 30_000);
 
+test("an instance that outlived the owner and then stopped credits only the time after it stopped", async () => {
+  const f = await fixture();
+  const b = f.second();
+  try {
+    f.admit();
+    const before = f.leaseUntil();
+    const other = registerInstance(b, {
+      role: "all",
+      host: "acme-b",
+      version: null,
+      now: f.clock.at,
+    });
+    // The owner dies now; the other instance stops 20 seconds later without taking over.
+    f.clock.at += 20_000;
+    stopInstance(b, other.id, f.clock.at);
+    const stoppedAt = f.clock.at;
+    f.clock.at += 20 * MINUTE;
+    f.crash();
+    recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id);
+    expect(runOwner(f.db, f.run.id)).toBe(f.instance.id);
+    expect(f.leaseUntil()).toBe(before + f.clock.at - stoppedAt);
+  } finally {
+    b.close();
+    f.close();
+  }
+}, 30_000);
+
 test("Paws down longer than the budget: the run resumes as today", async () => {
   const f = await fixture();
   try {

@@ -115,28 +115,39 @@ export function runnerWorkSettled(db: Database, runId: string, now: number): boo
 type InstanceSpan = { id: string; startedAt: number; heartbeatAt: number };
 
 /**
- * How long no instance served the runs `owner` held: from its last heartbeat until the first
- * instance alive after it started, `now` at the latest. Null when another instance was alive then.
+ * How long no instance served the runs `owner` held. It starts where instances alive without a
+ * break since the owner's last heartbeat stopped, and ends when the next instance started, `now`
+ * at the latest. `self` is alive at `now`. Null when instances were alive throughout.
  */
 function ownerDowntime(
   spans: readonly InstanceSpan[],
   owner: string,
+  self: string | undefined,
   now: number,
 ): { aliveAt: number; until: number } | null {
-  const aliveAt = spans.find((span) => span.id === owner)?.heartbeatAt;
+  let aliveAt = spans.find((span) => span.id === owner)?.heartbeatAt;
   if (aliveAt === undefined) return null;
+  const others = spans
+    .filter((span) => span.id !== owner)
+    .map((span) => (span.id === self ? { ...span, heartbeatAt: now } : span));
+  for (let extended = true; extended;) {
+    extended = false;
+    for (const span of others)
+      if (span.startedAt <= aliveAt && span.heartbeatAt > aliveAt) {
+        aliveAt = span.heartbeatAt;
+        extended = true;
+      }
+  }
   let until = now;
-  for (const span of spans)
-    if (span.id !== owner && span.heartbeatAt >= aliveAt)
-      until = Math.min(until, Math.max(aliveAt, span.startedAt));
+  for (const span of others) if (span.startedAt > aliveAt) until = Math.min(until, span.startedAt);
   return until > aliveAt ? { aliveAt, until } : null;
 }
 
 /**
  * When `self` takes over the runs of gone instances, move the lease of their open runner work
  * forward by the time no instance was alive, so that downtime does not count against it. The
- * downtime runs from the owning instance's last heartbeat to the takeover, and is none when
- * another instance was alive throughout. Work without an owner counts the newest other instance
+ * downtime runs from the owning instance's last heartbeat, or the end of instances alive since
+ * without a break, to the takeover, and is none when another instance was alive throughout. Work without an owner counts the newest other instance
  * as its owner. The new deadline is `creditedLeaseUntil`, capped by `budgetMs` and by each
  * command's `expiresAt`. Work the runner gave up on stays given up: a row with a result, an
  * acknowledged cancel, or a lease already past the grace when its owner was last alive is not
@@ -186,7 +197,7 @@ export function shiftRunnerLeasesForDowntime(
   for (const row of rows) {
     const owner = row.owner ?? newest?.id;
     if (owner === undefined || !gone(owner)) continue;
-    const down = ownerDowntime(spans, owner, now);
+    const down = ownerDowntime(spans, owner, self, now);
     if (down === null) continue;
     const leaseUntil = creditedLeaseUntil({
       leaseUntil: row.leaseUntil,
