@@ -560,8 +560,11 @@ export {
 } from "./reads";
 export {
   applyLinearIssueProject,
+  applyLinearIssueProjectSteps,
   getWorkItemLinearProjectId,
+  getWorkItemLinearProjectIdSteps,
   saveWorkItemLinearProject,
+  saveWorkItemLinearProjectSteps,
   type WorkItemLinearProject,
 } from "./linear-project";
 export { immediate } from "./tx";
@@ -697,8 +700,11 @@ export {
 } from "./hot-files";
 export {
   recordGitHubDelivery,
+  recordGitHubDeliverySteps,
   latestGitHubDelivery,
+  latestGitHubDeliverySteps,
   listGitHubDeliveries,
+  listGitHubDeliveriesSteps,
   type IntegrationEvent,
 } from "./integration-events";
 export {
@@ -712,11 +718,17 @@ export {
 
 export {
   saveLinearSessionContext,
+  saveLinearSessionContextSteps,
   hasLinearSessionSnapshotContext,
+  hasLinearSessionSnapshotContextSteps,
   saveLinearSessionSnapshotContext,
+  saveLinearSessionSnapshotContextSteps,
   getLinearSessionContext,
+  getLinearSessionContextSteps,
   saveLinearActivitySnapshot,
+  saveLinearActivitySnapshotSteps,
   listLinearActivitySnapshots,
+  listLinearActivitySnapshotsSteps,
 } from "./linear-context";
 export {
   getLinearSession,
@@ -840,7 +852,14 @@ export {
   openVisualReviewFilesSteps,
   saveVisualReviewMarksSteps,
 } from "./visual-reviews";
-export { recordLinearInput, listLinearInputs, type LinearInputRecord } from "./linear-inputs";
+export {
+  recordLinearInput,
+  recordLinearInputSteps,
+  listLinearInputs,
+  listLinearInputsSteps,
+  type LinearInputRecord,
+} from "./linear-inputs";
+export { getLinearConversationSourceSteps } from "./linear-session-url";
 export {
   CLEANUP_BLOCKED_NOTICE,
   blockConversation,
@@ -895,7 +914,7 @@ export {
   blockLinearSessionCleanup,
   blockLinearSessionCleanupSteps,
 } from "./session-cleanup";
-export { prepareLinearActivity } from "./linear-delivery";
+export { prepareLinearActivity, prepareLinearActivitySteps } from "./linear-delivery";
 
 export {
   auditWorkspaceAccess,
@@ -949,8 +968,10 @@ export { resolveDashboardAlias, resolveDashboardAliasSteps } from "./dashboard-a
 
 export {
   linearSessionsForIssueContext,
+  linearSessionsForIssueContextSteps,
   saveLinearIssueContext,
-  getLinearIssueContext,
+  saveLinearIssueContextSteps,
+  getLinearIssueContextSteps,
 } from "./linear-issue-context";
 export {
   saveWorkspaceIdentityLink,
@@ -1025,9 +1046,13 @@ export { carriedAcceptFor, recordCarriedAccept } from "./merge-carried-accept";
 export { getTaskMergeSettings, keepTaskMergeSettings } from "./merge-settings";
 export {
   getTaskLinearRead,
+  getTaskLinearReadSteps,
   keepTaskLinearRead,
+  keepTaskLinearReadSteps,
   linearActivitiesListedAt,
+  linearActivitiesListedAtSteps,
   markLinearActivitiesListed,
+  markLinearActivitiesListedSteps,
 } from "./linear-reads";
 export type { TaskMergeSettings } from "./merge-settings";
 export {
@@ -1056,8 +1081,11 @@ export {
 export type { UsagePause } from "./usage-pause";
 export {
   countLinearRequest,
+  countLinearRequestSteps,
   linearRequestsByCaller,
+  linearRequestsByCallerSteps,
   linearRequestsByItem,
+  linearRequestsByItemSteps,
 } from "./linear-requests";
 export {
   listRunnerRuntimes,
@@ -1103,14 +1131,20 @@ export type {
   SkillSource,
 } from "./skills";
 export { deleteHook, listHooks, saveHook } from "./hooks";
-export { listIntakeQueue, type IntakeQueueEntry } from "./intake-queue";
+export { listIntakeQueue, listIntakeQueueSteps, type IntakeQueueEntry } from "./intake-queue";
 export {
   claimInboxEvent,
+  claimInboxEventSteps,
   claimNextInboxEvent,
+  claimNextInboxEventSteps,
   clearSyncCursor,
+  clearSyncCursorSteps,
   incrementSyncCounter,
+  incrementSyncCounterSteps,
   releaseInboxClaim,
+  releaseInboxClaimSteps,
   renewInboxClaim,
+  renewInboxClaimSteps,
   type ClaimedInboxRow,
 } from "./inbox-claim";
 export {
@@ -1118,6 +1152,7 @@ export {
   LINEAR_WEBHOOK_SILENCE_MS,
   describeLinearWebhookWarning,
   linearWebhookWarning,
+  linearWebhookWarningSteps,
   type LinearWebhookWarning,
 } from "./linear-webhook";
 export {

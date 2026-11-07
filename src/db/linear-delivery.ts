@@ -1,7 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { getOutbox, type OutboxRow } from "./outbox";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
+import { getOutboxSteps, type OutboxRow } from "./outbox";
 
-export function prepareLinearActivity(db: Database, message: OutboxRow): OutboxRow {
+export function* prepareLinearActivitySteps(q: Q, message: OutboxRow) {
   if (
     message.target !== "linear" ||
     !["activity", "elicitation"].includes(message.op) ||
@@ -13,10 +15,33 @@ export function prepareLinearActivity(db: Database, message: OutboxRow): OutboxR
     return message;
   const payload = message.payload as Record<string, unknown>;
   if (payload["id"] !== undefined) return message;
-  const result = db.run(
-    "UPDATE outbox SET payload = json_set(payload, '$.id', ?) WHERE id = ? AND status = 'pending' AND attempts = ? AND locked_by IS ?",
-    [crypto.randomUUID(), message.id, message.attempts, message.lockedBy],
+  const { outbox } = q.t;
+  const id = crypto.randomUUID();
+  const rows = yield* q.all(
+    q.orm
+      .update(outbox)
+      .set({
+        payload:
+          q.dialect === "sqlite"
+            ? sql`json_set(${outbox.payload}, '$.id', ${id})`
+            : sql`jsonb_set(${outbox.payload}, '{id}', to_jsonb(${id}::text))`,
+      })
+      .where(
+        and(
+          eq(outbox.id, message.id),
+          eq(outbox.status, "pending"),
+          eq(outbox.attempts, message.attempts),
+          message.lockedBy === null
+            ? isNull(outbox.lockedBy)
+            : eq(outbox.lockedBy, message.lockedBy),
+        ),
+      )
+      .returning({ id: outbox.id }),
   );
-  if (result.changes !== 1) throw new Error("The Linear activity changed before delivery");
-  return getOutbox(db, message.id)!;
+  if (rows.length !== 1) throw new Error("The Linear activity changed before delivery");
+  return (yield* getOutboxSteps(q, message.id))!;
+}
+
+export function prepareLinearActivity(db: Database, message: OutboxRow): OutboxRow {
+  return settled(sqliteDb(db).run((q) => prepareLinearActivitySteps(q, message)));
 }
