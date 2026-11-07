@@ -42,7 +42,9 @@ function drizzleKit(home: string, ...args: string[]) {
     { cwd: home, stdout: "pipe", stderr: "pipe" },
   );
   expect(run.exitCode).toBe(0);
-  return readdirSync(join(home, "drizzle")).filter((name) => name.endsWith(".sql"));
+  return readdirSync(join(home, "drizzle"))
+    .filter((name) => name.endsWith(".sql"))
+    .sort();
 }
 
 describe("drizzle-kit migrations", () => {
