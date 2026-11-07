@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, gte, isNull } from "drizzle-orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 /** What started a fix round after the pull request: failed CI, a changes-requested review, or comments. */
 export type ReviewEscapeTrigger = "ci" | "review" | "comment";
@@ -42,40 +44,35 @@ export type ReviewEscapeRecord = {
   settledAt: number | null;
 };
 
-type Row = {
-  id: number;
-  trigger_key: string;
-  item_id: string;
-  trigger: ReviewEscapeTrigger;
-  accepted_head: string;
-  pull_number: number | null;
-  detail: string;
-  recorded_at: number;
-  fix_head: string | null;
-  files: string | null;
-  is_escape: number | null;
-  not_escape_reason: NotEscapeReason | null;
-  settled_at: number | null;
-};
+type Row = Q["t"]["reviewEscape"]["$inferSelect"];
 
 const COMMENT_CHARS = 500;
+
+/** A JSON value as the dialect stores it: text on SQLite, jsonb on Postgres. */
+function stored(q: Q, value: unknown): unknown {
+  return q.dialect === "sqlite" ? JSON.stringify(value) : value;
+}
+
+function parsed<T>(q: Q, value: unknown): T {
+  return (q.dialect === "sqlite" ? JSON.parse(value as string) : value) as T;
+}
+
+type ReviewEscapeCandidate = {
+  triggerKey: string;
+  itemId: string;
+  trigger: ReviewEscapeTrigger;
+  acceptedHead: string;
+  pullNumber: number | null;
+  detail: ReviewEscapeDetail;
+  recordedAt: number;
+};
 
 /**
  * Record a candidate review escape for a fix round that started on an accepted head, once per
  * trigger key. False when the key was already recorded. Call inside the restart's transaction.
  */
-export function recordReviewEscape(
-  db: Database,
-  candidate: {
-    triggerKey: string;
-    itemId: string;
-    trigger: ReviewEscapeTrigger;
-    acceptedHead: string;
-    pullNumber: number | null;
-    detail: ReviewEscapeDetail;
-    recordedAt: number;
-  },
-): boolean {
+export function* recordReviewEscapeSteps(q: Q, candidate: ReviewEscapeCandidate): Steps<boolean> {
+  const { reviewEscape } = q.t;
   const detail: ReviewEscapeDetail = {
     ...candidate.detail,
     ...(candidate.detail.comments
@@ -87,83 +84,115 @@ export function recordReviewEscape(
         }
       : {}),
   };
-  return (
-    db.run(
-      `INSERT INTO review_escape (trigger_key, item_id, trigger, accepted_head, pull_number, detail, recorded_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(trigger_key) DO NOTHING`,
-      [
-        candidate.triggerKey,
-        candidate.itemId,
-        candidate.trigger,
-        candidate.acceptedHead,
-        candidate.pullNumber,
-        JSON.stringify(detail),
-        candidate.recordedAt,
-      ],
-    ).changes > 0
+  const inserted = yield* q.all(
+    q.orm
+      .insert(reviewEscape)
+      .values({
+        triggerKey: candidate.triggerKey,
+        itemId: candidate.itemId,
+        trigger: candidate.trigger,
+        acceptedHead: candidate.acceptedHead,
+        pullNumber: candidate.pullNumber,
+        detail: stored(q, detail),
+        recordedAt: candidate.recordedAt,
+      })
+      .onConflictDoNothing({ target: reviewEscape.triggerKey })
+      .returning({ id: reviewEscape.id }),
   );
+  return inserted.length > 0;
+}
+
+export function recordReviewEscape(db: Database, candidate: ReviewEscapeCandidate): boolean {
+  return settled(sqliteDb(db).run((q) => recordReviewEscapeSteps(q, candidate)));
 }
 
 /** This item's candidates whose fix Closeout has not accepted yet, oldest first. */
-export function openReviewEscapes(db: Database, itemId: string): ReviewEscapeRecord[] {
-  return db
-    .query<Row, [string]>(
-      "SELECT * FROM review_escape WHERE item_id = ? AND settled_at IS NULL ORDER BY id",
-    )
-    .all(itemId)
-    .map(mapRow);
+export function* openReviewEscapesSteps(q: Q, itemId: string): Steps<ReviewEscapeRecord[]> {
+  const { reviewEscape } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(reviewEscape)
+      .where(and(eq(reviewEscape.itemId, itemId), isNull(reviewEscape.settledAt)))
+      .orderBy(reviewEscape.id),
+  );
+  return rows.map((row) => mapRow(q, row));
 }
 
+export function openReviewEscapes(db: Database, itemId: string): ReviewEscapeRecord[] {
+  return settled(sqliteDb(db).run((q) => openReviewEscapesSteps(q, itemId)));
+}
+
+type ReviewEscapeSettlement = {
+  fixHead: string;
+  files: readonly string[];
+  escape: boolean;
+  notEscapeReason: NotEscapeReason | null;
+  now: number;
+};
+
 /** Settle an open candidate with the fix Closeout accepted. False when it was already settled. */
+export function* settleReviewEscapeSteps(
+  q: Q,
+  id: number,
+  settlement: ReviewEscapeSettlement,
+): Steps<boolean> {
+  const { reviewEscape } = q.t;
+  const changed = yield* q.all(
+    q.orm
+      .update(reviewEscape)
+      .set({
+        fixHead: settlement.fixHead,
+        files: stored(q, settlement.files),
+        isEscape: settlement.escape ? 1 : 0,
+        notEscapeReason: settlement.escape ? null : settlement.notEscapeReason,
+        settledAt: settlement.now,
+      })
+      .where(and(eq(reviewEscape.id, id), isNull(reviewEscape.settledAt)))
+      .returning({ id: reviewEscape.id }),
+  );
+  return changed.length > 0;
+}
+
 export function settleReviewEscape(
   db: Database,
   id: number,
-  settled: {
-    fixHead: string;
-    files: readonly string[];
-    escape: boolean;
-    notEscapeReason: NotEscapeReason | null;
-    now: number;
-  },
+  settlement: ReviewEscapeSettlement,
 ): boolean {
-  return (
-    db.run(
-      `UPDATE review_escape SET fix_head = ?, files = ?, is_escape = ?, not_escape_reason = ?, settled_at = ?
-       WHERE id = ? AND settled_at IS NULL`,
-      [
-        settled.fixHead,
-        JSON.stringify(settled.files),
-        settled.escape ? 1 : 0,
-        settled.escape ? null : settled.notEscapeReason,
-        settled.now,
-        id,
-      ],
-    ).changes > 0
-  );
+  return settled(sqliteDb(db).run((q) => settleReviewEscapeSteps(q, id, settlement)));
 }
 
 /** Every candidate recorded at or after `since`, oldest first. */
-export function listReviewEscapes(db: Database, since = 0): ReviewEscapeRecord[] {
-  return db
-    .query<Row, [number]>("SELECT * FROM review_escape WHERE recorded_at >= ? ORDER BY id")
-    .all(since)
-    .map(mapRow);
+export function* listReviewEscapesSteps(q: Q, since = 0): Steps<ReviewEscapeRecord[]> {
+  const { reviewEscape } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(reviewEscape)
+      .where(gte(reviewEscape.recordedAt, since))
+      .orderBy(reviewEscape.id),
+  );
+  return rows.map((row) => mapRow(q, row));
 }
 
-function mapRow(row: Row): ReviewEscapeRecord {
+export function listReviewEscapes(db: Database, since = 0): ReviewEscapeRecord[] {
+  return settled(sqliteDb(db).run((q) => listReviewEscapesSteps(q, since)));
+}
+
+function mapRow(q: Q, row: Row): ReviewEscapeRecord {
   return {
     id: row.id,
-    triggerKey: row.trigger_key,
-    itemId: row.item_id,
-    trigger: row.trigger,
-    acceptedHead: row.accepted_head,
-    pullNumber: row.pull_number,
-    detail: JSON.parse(row.detail) as ReviewEscapeDetail,
-    recordedAt: row.recorded_at,
-    fixHead: row.fix_head,
-    files: row.files === null ? null : (JSON.parse(row.files) as string[]),
-    escape: row.is_escape === null ? null : row.is_escape === 1,
-    notEscapeReason: row.not_escape_reason,
-    settledAt: row.settled_at,
+    triggerKey: row.triggerKey,
+    itemId: row.itemId,
+    trigger: row.trigger as ReviewEscapeTrigger,
+    acceptedHead: row.acceptedHead,
+    pullNumber: row.pullNumber,
+    detail: parsed<ReviewEscapeDetail>(q, row.detail),
+    recordedAt: row.recordedAt,
+    fixHead: row.fixHead,
+    files: row.files === null ? null : parsed<string[]>(q, row.files),
+    escape: row.isEscape === null ? null : row.isEscape === 1,
+    notEscapeReason: row.notEscapeReason as NotEscapeReason | null,
+    settledAt: row.settledAt,
   };
 }
