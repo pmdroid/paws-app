@@ -1,5 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { eq, sql } from "drizzle-orm";
 import type { HookEvent } from "../core";
+import { settled, sqliteDb, type Q } from "./db";
+import { readJson } from "./json-column";
 
 /** Agents that load skills from their home directory. Every one of them supports skills today. */
 export const SKILL_AGENTS = ["claude", "codex", "grok"] as const;
@@ -56,10 +59,22 @@ function pin(row: Row): SkillPin {
 
 /** Every skill, removed ones included so runners can uninstall them. */
 export function listSkills(db: Database): SkillPin[] {
-  return db
-    .query<Row, []>(`SELECT ${COLUMNS} FROM agent_skill ORDER BY removed_at IS NOT NULL, name`)
-    .all()
-    .map(pin);
+  return settled(sqliteDb(db).run(listSkillsSteps));
+}
+
+export function* listSkillsSteps(q: Q) {
+  const { agentSkill } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(agentSkill)
+      .orderBy(sql`${agentSkill.removedAt} IS NOT NULL`, agentSkill.name),
+  );
+  return rows.map((row): SkillPin => ({
+    ...row,
+    source: readJson<SkillSource>(row.source),
+    agents: readJson<SkillAgent[]>(row.agents),
+  }));
 }
 
 export function getSkill(db: Database, name: string): SkillPin | null {
@@ -151,11 +166,26 @@ export function recordRunnerSkills(
 }
 
 export function listRunnerSkills(db: Database, runnerId: string): RunnerSkillStatus[] {
-  return db
-    .query<RunnerSkillStatus, [string]>(
-      "SELECT name,version,sha256,status,error,waiting,reported_at AS reportedAt FROM runner_skill WHERE runner_id=? ORDER BY name",
-    )
-    .all(runnerId);
+  return settled(sqliteDb(db).run((q) => listRunnerSkillsSteps(q, runnerId)));
+}
+
+function* listRunnerSkillsSteps(q: Q, runnerId: string) {
+  const { runnerSkill } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        name: runnerSkill.name,
+        version: runnerSkill.version,
+        sha256: runnerSkill.sha256,
+        status: sql<RunnerSkillStatus["status"]>`${runnerSkill.status}`,
+        error: runnerSkill.error,
+        waiting: runnerSkill.waiting,
+        reportedAt: runnerSkill.reportedAt,
+      })
+      .from(runnerSkill)
+      .where(eq(runnerSkill.runnerId, runnerId))
+      .orderBy(runnerSkill.name),
+  );
 }
 
 export type RunnerSkillState = "up_to_date" | "installing" | "out_of_date" | "failed";
@@ -175,10 +205,16 @@ export function runnerSkillStates(
   runnerId: string,
   pins: readonly SkillPin[] = listSkills(db),
 ): RunnerSkillView[] {
-  const reported = new Map(listRunnerSkills(db, runnerId).map((row) => [row.name, row]));
+  return settled(sqliteDb(db).run((q) => runnerSkillStatesSteps(q, runnerId, pins)));
+}
+
+export function* runnerSkillStatesSteps(q: Q, runnerId: string, pins: readonly SkillPin[]) {
+  const reported = new Map(
+    (yield* listRunnerSkillsSteps(q, runnerId)).map((row) => [row.name, row]),
+  );
   return pins
     .filter((entry) => entry.removedAt === null)
-    .map((entry) => {
+    .map((entry): RunnerSkillView => {
       const row = reported.get(entry.name);
       const current = row?.sha256 === entry.sha256;
       const state: RunnerSkillState =

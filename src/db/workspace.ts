@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 import { orm } from "./orm";
 import { workspaceAccessAudit, workspaceUser } from "./schema";
 import { immediate } from "./tx";
@@ -290,19 +291,27 @@ export function deleteWorkspaceSession(db: Database, tokenHash: string): void {
   db.run("DELETE FROM workspace_session WHERE token_hash=?", [tokenHash]);
 }
 
-export function auditWorkspaceAccess(
-  db: Database,
-  input: {
-    workspaceId: string | null;
-    userId: string | null;
-    action: string;
-    subject: string;
-    now: number;
-  },
-): void {
-  db.run(
-    "INSERT INTO workspace_access_audit(workspace_id,user_id,action,subject,created_at) VALUES(?,?,?,?,?)",
-    [input.workspaceId, input.userId, input.action, input.subject, input.now],
+type WorkspaceAccessAudit = {
+  workspaceId: string | null;
+  userId: string | null;
+  action: string;
+  subject: string;
+  now: number;
+};
+
+export function auditWorkspaceAccess(db: Database, input: WorkspaceAccessAudit): void {
+  settled(sqliteDb(db).run((q) => auditWorkspaceAccessSteps(q, input)));
+}
+
+export function* auditWorkspaceAccessSteps(q: Q, input: WorkspaceAccessAudit) {
+  yield* q.exec(
+    q.orm.insert(q.t.workspaceAccessAudit).values({
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      action: input.action,
+      subject: input.subject,
+      createdAt: input.now,
+    }),
   );
 }
 
