@@ -132,6 +132,7 @@ import {
   PAWS_ALIVE_INTERVAL_MS,
   deleteInstance,
   heartbeatInstance,
+  COMMAND_DELIVERY_MS,
   INSTANCE_HEARTBEAT_MS,
   registerInstance,
   recoverOnStartup,
@@ -1939,6 +1940,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     }
   }, INSTANCE_HEARTBEAT_MS);
   instanceTimer.unref?.();
+  const commandTimer = setInterval(() => {
+    try {
+      orchestrator?.deliverInstanceCommands();
+    } catch (error) {
+      journalCaught(error, "index.startPaws.deliverInstanceCommands", null);
+    }
+  }, COMMAND_DELIVERY_MS);
+  commandTimer.unref?.();
 
   let stopping: Promise<void> | undefined;
   return {
@@ -1993,6 +2002,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           clearInterval(aliveTimer);
           releaseSettings();
           clearInterval(instanceTimer);
+          clearInterval(commandTimer);
           try {
             deleteInstance(db, instance.id);
           } finally {

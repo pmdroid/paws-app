@@ -262,6 +262,8 @@ import {
   recordAgentCloseout,
   immediate,
   claimRun,
+  drainInstanceCommands,
+  forwardCommand,
   insertRun,
   listInFlightItems,
   listCloseoutRecoveries,
@@ -911,6 +913,13 @@ export class Orchestrator {
     this.bus.subscribe((command) => {
       this.githubAuth?.revoke(command.itemId);
       this.abortItem(command.itemId);
+      const self = this.options.instanceId;
+      if (self === undefined) return;
+      try {
+        forwardCommand(this.db, command, self, this.now());
+      } catch (error) {
+        journalCaught(error, "orchestrator.bus.forwardCommand", command.itemId);
+      }
     });
     this.register();
   }
@@ -6644,6 +6653,21 @@ export class Orchestrator {
     });
     if (resumed) this.reconcileExecution();
     return resumed;
+  }
+
+  deliverInstanceCommands(): number {
+    const self = this.options.instanceId;
+    if (self === undefined) return 0;
+    return drainInstanceCommands(
+      this.db,
+      self,
+      (command) => {
+        void this.interruptItem(command.itemId).catch((error) => {
+          journalCaught(error, "orchestrator.deliverInstanceCommands", command.itemId);
+        });
+      },
+      this.now(),
+    );
   }
 
   async interruptItem(itemId: string): Promise<void> {
