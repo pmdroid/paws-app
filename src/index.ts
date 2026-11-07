@@ -35,8 +35,12 @@ import {
   readStoredFindings,
   type ProbesCommand,
 } from "./probe-collector";
-import { importCredentialFile, loadSecretKey, readSecretFile } from "./credentials";
-import { createS3RunnerFileObjects } from "./run-files";
+import {
+  envelopeSubkey,
+  importCredentialFile,
+  loadSecretKey,
+  readSecretFile,
+} from "./credentials";
 import type { Database } from "bun:sqlite";
 import {
   ArtifactRejectedError,
@@ -53,7 +57,11 @@ import {
   uploadLocalEvidence,
   type EvidenceObjects,
 } from "./evidence";
-import { createS3RunFileObjects, loadEvidenceKey, withSealedRunFileObjects } from "./run-files";
+import {
+  createS3RunFileObjects,
+  createS3RunnerFileObjects,
+  withSealedRunFileObjects,
+} from "./run-files";
 import {
   closeoutPolicyRoot,
   DEFAULT_COMMENT_WAIT,
@@ -794,7 +802,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     (() => {
       const s3 = options?.runnerTranscriptObjects ? null : loadRunnerTranscriptS3(runtime.env.home);
       if (!s3) return null;
-      const key = loadEvidenceKey(join(paths.secretsDir, "evidence.key"));
+      const key = envelopeSubkey(paths.secretsDir, "paws-evidence-objects");
       return withSealedRunFileObjects(createS3RunFileObjects("evidence", s3), key);
     });
   void uploadLocalEvidence(db, { root: paths.evidenceDir, objects: evidenceObjects }).catch(

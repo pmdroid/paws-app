@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { envelopeSubkey } from "../src/credentials";
 import { getEvidenceObject, insertQueuedItem, migrate, openDatabase } from "../src/db";
 import {
   createEvidenceStore,
@@ -196,5 +197,29 @@ describe("evidence in the run file object store", () => {
     flipped[40]! ^= 1;
     s3.objects.set(first!, flipped);
     expect((await a.get(saved.id)).status).toBe(404);
+  });
+
+  test("two instances with their own sealed stores and the same envelope key share evidence", async () => {
+    const { db, s3, save } = setup();
+    const secrets = (name: string) => {
+      const home = mkdtempSync(join(tmpdir(), `paws-acme-${name}-`));
+      homes.push(home);
+      return join(home, "secrets");
+    };
+    const [secretsA, secretsB, secretsC] = [secrets("a"), secrets("b"), secrets("c")];
+    const keyA = envelopeSubkey(secretsA, "paws-evidence-objects");
+    mkdirSync(secretsB, { recursive: true, mode: 0o700 });
+    copyFileSync(join(secretsA, ".envelope-key"), join(secretsB, ".envelope-key"));
+    const a = instance(db, () => withSealedRunFileObjects(s3, keyA));
+    const b = instance(db, () =>
+      withSealedRunFileObjects(s3, envelopeSubkey(secretsB, "paws-evidence-objects")),
+    );
+    const saved = await save(a.store, VIDEO);
+    expect(new Uint8Array(await (await b.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
+
+    const other = instance(db, () =>
+      withSealedRunFileObjects(s3, envelopeSubkey(secretsC, "paws-evidence-objects")),
+    );
+    expect((await other.get(saved.id)).status).toBe(404);
   });
 });
