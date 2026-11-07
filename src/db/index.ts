@@ -349,6 +349,12 @@ export {
   setPushOutageQuestion,
   takePushOutageProbe,
   type PushOutage,
+  endPushOutageSteps,
+  getPushOutageSteps,
+  listPushOutagesSteps,
+  recordPushOutageSteps,
+  setPushOutageQuestionSteps,
+  takePushOutageProbeSteps,
 } from "./push-outage";
 export {
   endPolicyOutage,
@@ -357,14 +363,29 @@ export {
   recordPolicyOutage,
   setPolicyOutageQuestion,
   type PolicyOutage,
+  endPolicyOutageSteps,
+  getPolicyOutageSteps,
+  listPolicyOutagesSteps,
+  recordPolicyOutageSteps,
+  setPolicyOutageQuestionSteps,
 } from "./policy-outage";
-export { listOpenPolicyBlocks, savePolicyBlock, type PolicyBlock } from "./policy-block";
+export {
+  listOpenPolicyBlocks,
+  listOpenPolicyBlocksSteps,
+  savePolicyBlock,
+  savePolicyBlockSteps,
+  type PolicyBlock,
+} from "./policy-block";
 export {
   clearPolicyRunnerWarning,
   listPolicyRunnerWarnings,
   policyKeysLowestRunnerLacks,
   savePolicyRunnerWarning,
   type PolicyRunnerWarning,
+  clearPolicyRunnerWarningSteps,
+  listPolicyRunnerWarningsSteps,
+  policyKeysLowestRunnerLacksSteps,
+  savePolicyRunnerWarningSteps,
 } from "./policy-runner-warning";
 export { frozenMigrations } from "./migrations";
 export {
@@ -643,6 +664,10 @@ export {
   recordRebaseReturn,
   type RebaseReturn,
   type RebaseReturnRecord,
+  countRebaseReturnsSteps,
+  listRebaseReturnsSteps,
+  rebaseReturnedForSteps,
+  recordRebaseReturnSteps,
 } from "./rebase-returns";
 export {
   HOT_FILE_WINDOW_MS,
@@ -652,6 +677,10 @@ export {
   repositoryKey,
   saveCandidatePaths,
   type HotFile,
+  getCandidatePathsSteps,
+  hotFilesSteps,
+  latestCandidatePathsSteps,
+  saveCandidatePathsSteps,
 } from "./hot-files";
 export {
   recordGitHubDelivery,
@@ -1163,7 +1192,10 @@ export {
 
 export { wakeMergesBehind } from "./merge-queue";
 export { mergeStopRequested } from "./remote-merges";
-export { repositoryCommandSettlement } from "./repository-commands";
+export {
+  repositoryCommandSettlement,
+  repositoryCommandSettlementSteps,
+} from "./repository-commands";
 
 export { pendingRestartHandoff } from "./restart";
 export {

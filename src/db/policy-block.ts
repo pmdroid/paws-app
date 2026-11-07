@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { and, eq, isNull, sql } from "drizzle-orm";
-import { orm } from "./orm";
-import { closeoutPolicyBlock, question } from "./schema";
+import { and, eq, isNull } from "drizzle-orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
+import type * as pg from "./schema-pg";
 
 export type PolicyBlock = {
   questionId: string;
@@ -15,7 +15,7 @@ export type PolicyBlock = {
   createdAt: number;
 };
 
-const map = (row: typeof closeoutPolicyBlock.$inferSelect): PolicyBlock => ({
+const map = (row: typeof pg.closeoutPolicyBlock.$inferSelect): PolicyBlock => ({
   questionId: row.questionId,
   itemId: row.itemId,
   repository: row.repository,
@@ -27,7 +27,8 @@ const map = (row: typeof closeoutPolicyBlock.$inferSelect): PolicyBlock => ({
   createdAt: row.createdAt,
 });
 
-export function savePolicyBlock(db: Database, block: PolicyBlock): void {
+export function* savePolicyBlockSteps(q: Q, block: PolicyBlock) {
+  const { closeoutPolicyBlock } = q.t;
   const values = {
     itemId: block.itemId,
     repository: block.repository,
@@ -38,26 +39,42 @@ export function savePolicyBlock(db: Database, block: PolicyBlock): void {
     changedBySha: block.changedBy,
     createdAt: block.createdAt,
   };
-  orm(db)
-    .insert(closeoutPolicyBlock)
-    .values({ questionId: block.questionId, ...values })
-    .onConflictDoUpdate({ target: closeoutPolicyBlock.questionId, set: values })
-    .run();
+  yield* q.exec(
+    q.orm
+      .insert(closeoutPolicyBlock)
+      .values({ questionId: block.questionId, ...values })
+      .onConflictDoUpdate({ target: closeoutPolicyBlock.questionId, set: values }),
+  );
+}
+
+export function savePolicyBlock(db: Database, block: PolicyBlock): void {
+  settled(sqliteDb(db).run((q) => savePolicyBlockSteps(q, block)));
+}
+
+/** Oldest first; blocks created in the same millisecond in item order. */
+export function* listOpenPolicyBlocksSteps(q: Q, repository?: string): Steps<PolicyBlock[]> {
+  const { closeoutPolicyBlock, question } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ block: closeoutPolicyBlock })
+      .from(closeoutPolicyBlock)
+      .innerJoin(question, eq(question.id, closeoutPolicyBlock.questionId))
+      .where(
+        and(
+          eq(question.status, "open"),
+          isNull(question.cancelledAt),
+          repository === undefined ? undefined : eq(closeoutPolicyBlock.repository, repository),
+        ),
+      )
+      .orderBy(
+        closeoutPolicyBlock.createdAt,
+        closeoutPolicyBlock.itemId,
+        closeoutPolicyBlock.questionId,
+      ),
+  );
+  return rows.map(({ block }) => map(block));
 }
 
 export function listOpenPolicyBlocks(db: Database, repository?: string): PolicyBlock[] {
-  return orm(db)
-    .select({ block: closeoutPolicyBlock })
-    .from(closeoutPolicyBlock)
-    .innerJoin(question, eq(question.id, closeoutPolicyBlock.questionId))
-    .where(
-      and(
-        eq(question.status, "open"),
-        isNull(question.cancelledAt),
-        repository === undefined ? undefined : eq(closeoutPolicyBlock.repository, repository),
-      ),
-    )
-    .orderBy(closeoutPolicyBlock.createdAt, sql`closeout_policy_block.rowid`)
-    .all()
-    .map(({ block }) => map(block));
+  return settled(sqliteDb(db).run((q) => listOpenPolicyBlocksSteps(q, repository)));
 }
