@@ -22,17 +22,15 @@ export function seedRunner(
 
 export function seedRun(db: Db, id: string, itemId: string, status = "active") {
   return seed(db, (q) =>
-    q.orm
-      .insert(q.t.run)
-      .values({
-        id,
-        itemId,
-        kind: "implement",
-        agent: "codex",
-        status,
-        createdAt: 0,
-        updatedAt: 0,
-      }),
+    q.orm.insert(q.t.run).values({
+      id,
+      itemId,
+      kind: "implement",
+      agent: "codex",
+      status,
+      createdAt: 0,
+      updatedAt: 0,
+    }),
   );
 }
 
@@ -71,15 +69,13 @@ export function seedCommand(
 ) {
   const { envelope = {}, ...rest } = row;
   return seed(db, (q) =>
-    q.orm
-      .insert(q.t.runnerCommand)
-      .values({
-        id,
-        generation: 1,
-        expiresAt: Number.MAX_SAFE_INTEGER,
-        envelope: json(db, envelope),
-        ...rest,
-      }),
+    q.orm.insert(q.t.runnerCommand).values({
+      id,
+      generation: 1,
+      expiresAt: Number.MAX_SAFE_INTEGER,
+      envelope: json(db, envelope),
+      ...rest,
+    }),
   );
 }
 
