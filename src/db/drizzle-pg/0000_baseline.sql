@@ -792,6 +792,7 @@ CREATE TABLE "instance" (
 	"started_at" bigint NOT NULL,
 	"heartbeat_at" bigint NOT NULL,
 	"version" text,
+	"pid" bigint,
 	CONSTRAINT "instance_role" CHECK (role IN ('all', 'web', 'worker'))
 );
 --> statement-breakpoint
@@ -1882,6 +1883,11 @@ CREATE TABLE "run_fallback_attempt" (
 	CONSTRAINT "run_fallback_attempt_check_6" CHECK (length(excluded_key)<=300)
 );
 --> statement-breakpoint
+CREATE TABLE "run_owner" (
+	"run_id" text PRIMARY KEY NOT NULL,
+	"owner_instance" text NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "run_review_rounds" (
 	"run_id" text PRIMARY KEY NOT NULL,
 	"rounds" bigint NOT NULL,
@@ -2842,6 +2848,7 @@ ALTER TABLE "run" ADD CONSTRAINT "run_item_id_work_item_id_fk" FOREIGN KEY ("ite
 ALTER TABLE "run_agent_setup" ADD CONSTRAINT "run_agent_setup_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_agent_setup" ADD CONSTRAINT "run_agent_setup_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_fallback_attempt" ADD CONSTRAINT "run_fallback_attempt_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "run_owner" ADD CONSTRAINT "run_owner_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "run_review_rounds" ADD CONSTRAINT "run_review_rounds_run_id_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."run"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner" ADD CONSTRAINT "runner_workspace_id_owner_user_id_workspace_member_workspace_id_user_id_fk" FOREIGN KEY ("workspace_id","owner_user_id") REFERENCES "public"."workspace_member"("workspace_id","user_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "runner_account_capability" ADD CONSTRAINT "runner_account_capability_runner_id_runner_id_fk" FOREIGN KEY ("runner_id") REFERENCES "public"."runner"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -3003,6 +3010,7 @@ CREATE INDEX "review_finding_item_item" ON "review_finding_item" USING btree ("i
 CREATE INDEX "review_reply_item_open" ON "review_reply" USING btree ("item_id","replied_at");--> statement-breakpoint
 CREATE INDEX "run_item" ON "run" USING btree ("item_id","created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "run_fallback_attempt_open" ON "run_fallback_attempt" USING btree ("run_id","call_id","runner_id","generation","excluded_key","outcome") WHERE closed_at IS NULL;--> statement-breakpoint
+CREATE INDEX "run_owner_instance" ON "run_owner" USING btree ("owner_instance");--> statement-breakpoint
 CREATE INDEX "runner_certificate_identity" ON "runner_certificate" USING btree ("runner_id");--> statement-breakpoint
 CREATE INDEX "runner_command_pending" ON "runner_command" USING btree ("runner_id","acknowledged_at","ordinal");--> statement-breakpoint
 CREATE INDEX "runner_command_account_binding" ON "runner_command_account" USING btree ("binding_id");--> statement-breakpoint

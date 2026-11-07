@@ -1,5 +1,5 @@
 {
-  "id": "9ad6fc45-01d7-4e7f-b835-02bc7d25de0d",
+  "id": "095be9fb-5f0f-40e7-91ca-bca98cf3781e",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -5497,6 +5497,12 @@
         "version": {
           "name": "version",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pid": {
+          "name": "pid",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": false
         }
@@ -13198,6 +13204,57 @@
           "value": "length(excluded_key)<=300"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.run_owner": {
+      "name": "run_owner",
+      "schema": "",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner_instance": {
+          "name": "owner_instance",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "run_owner_instance": {
+          "name": "run_owner_instance",
+          "columns": [
+            {
+              "expression": "owner_instance",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "run_owner_run_id_run_id_fk": {
+          "name": "run_owner_run_id_run_id_fk",
+          "tableFrom": "run_owner",
+          "tableTo": "run",
+          "columnsFrom": ["run_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.run_review_rounds": {
