@@ -153,12 +153,12 @@ export function readAgentVersion(
 }
 
 export function* readAgentVersionSteps(q: Q, agent: string, version: string) {
-  const { agentVersion } = q.t;
+  const { agentVersion: versions } = q.t;
   const row = yield* q.one(
     q.orm
       .select(agentVersionColumns(q))
-      .from(agentVersion)
-      .where(and(eq(agentVersion.agent, agent), eq(agentVersion.version, version))),
+      .from(versions)
+      .where(and(eq(versions.agent, agent), eq(versions.version, version))),
   );
   return row ?? null;
 }
@@ -169,16 +169,16 @@ export function listAgentVersions(db: Database, agent?: string): AgentVersionRow
 }
 
 function* listAgentVersionsSteps(q: Q, agent?: string) {
-  const { agentVersion } = q.t;
+  const { agentVersion: versions } = q.t;
   return yield* q.all(
     q.orm
       .select(agentVersionColumns(q))
-      .from(agentVersion)
-      .where(agent === undefined ? undefined : eq(agentVersion.agent, agent))
+      .from(versions)
+      .where(agent === undefined ? undefined : eq(versions.agent, agent))
       .orderBy(
-        asc(agentVersion.agent),
-        sql`${agentVersion.publishedAt} DESC NULLS LAST`,
-        desc(agentVersion.version),
+        asc(versions.agent),
+        sql`${versions.publishedAt} DESC NULLS LAST`,
+        desc(versions.version),
       ),
   );
 }
@@ -203,17 +203,17 @@ export function markAgentCatalogRefreshed(db: Database, at: number): void {
     .run();
 }
 
-function agentVersionColumns({ t: { agentVersion } }: Q) {
+function agentVersionColumns({ t: { agentVersion: versions } }: Q) {
   return {
-    agent: agentVersion.agent,
-    version: agentVersion.version,
-    publishedAt: agentVersion.publishedAt,
-    integrity: agentVersion.integrity,
-    status: sql<AgentVersionStatus>`${agentVersion.status}`,
-    firstSeenAt: agentVersion.firstSeenAt,
-    reason: agentVersion.reason,
-    nativeVersion: agentVersion.nativeVersion,
-    checkedAt: agentVersion.checkedAt,
+    agent: versions.agent,
+    version: versions.version,
+    publishedAt: versions.publishedAt,
+    integrity: versions.integrity,
+    status: sql<AgentVersionStatus>`${versions.status}`,
+    firstSeenAt: versions.firstSeenAt,
+    reason: versions.reason,
+    nativeVersion: versions.nativeVersion,
+    checkedAt: versions.checkedAt,
   };
 }
 

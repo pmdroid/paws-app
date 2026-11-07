@@ -88,15 +88,15 @@ export function runnerRepositoryLists(db: Database, runnerId: string): RunnerRep
 }
 
 export function* runnerRepositoryListsSteps(q: Q, runnerId: string) {
-  const { runnerRepositories } = q.t;
+  const { runnerRepositories: repositories } = q.t;
   const row = yield* q.one(
     q.orm
       .select({
-        host: runnerRepositories.repositories,
-        admin: runnerRepositories.adminRepositories,
+        host: repositories.repositories,
+        admin: repositories.adminRepositories,
       })
-      .from(runnerRepositories)
-      .where(eq(runnerRepositories.runnerId, runnerId)),
+      .from(repositories)
+      .where(eq(repositories.runnerId, runnerId)),
   );
   return {
     admin: row?.admin == null ? null : readJson<string[]>(row.admin),
