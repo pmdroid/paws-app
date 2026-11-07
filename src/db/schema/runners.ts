@@ -834,6 +834,7 @@ export const runnerFileObject = sqliteTable(
     kind: text().notNull(),
     name: text().notNull(),
     digest: text().notNull(),
+    sha256: text().notNull(),
     createdAt: integer("created_at").notNull(),
   },
   (table) => [

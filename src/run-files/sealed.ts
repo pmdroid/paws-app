@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   forgetRunnerFileObject,
@@ -15,7 +15,7 @@ export const RUNNER_FILE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class SealedRunnerFileConflictError extends Error {}
 
-export type SealedRunnerFile = Omit<RunnerFileObject, "key" | "createdAt">;
+export type SealedRunnerFile = Omit<RunnerFileObject, "key" | "sha256" | "createdAt">;
 
 function additionalData(key: string, digest: string) {
   return Buffer.from(`paws-runner-file\0${key}\0${digest}`, "utf8");
@@ -36,7 +36,8 @@ export function createSealedRunnerFiles(options: {
         throw new Error("Runner file chunk is too large");
       immediate(db, () => {
         admit?.();
-        if (!recordRunnerFileObject(db, { ...file, key: objectKey, createdAt: now() }))
+        const sha256 = createHash("sha256").update(bytes).digest("hex");
+        if (!recordRunnerFileObject(db, { ...file, key: objectKey, sha256, createdAt: now() }))
           throw new SealedRunnerFileConflictError("Runner file is immutable");
       });
       const nonce = randomBytes(12);

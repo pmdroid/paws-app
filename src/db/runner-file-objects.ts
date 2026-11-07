@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
 import { orm } from "./orm";
-import { run, runnerFileObject } from "./schema";
+import { run, runnerCommand, runnerFileObject } from "./schema";
 
 export type RunnerFileObject = {
   key: string;
@@ -10,16 +10,17 @@ export type RunnerFileObject = {
   kind: "input" | "artifact";
   name: string;
   digest: string;
+  sha256: string;
   createdAt: number;
 };
 
 export function recordRunnerFileObject(db: Database, row: RunnerFileObject): boolean {
   const existing = orm(db)
-    .select({ digest: runnerFileObject.digest })
+    .select({ digest: runnerFileObject.digest, sha256: runnerFileObject.sha256 })
     .from(runnerFileObject)
     .where(eq(runnerFileObject.key, row.key))
     .get();
-  if (existing) return existing.digest === row.digest;
+  if (existing) return existing.digest === row.digest && existing.sha256 === row.sha256;
   orm(db).insert(runnerFileObject).values(row).run();
   return true;
 }
@@ -51,6 +52,17 @@ export function prunableRunnerFileObjects(db: Database, before: number, limit = 
     .limit(limit)
     .all()
     .map((row) => row.key);
+}
+
+export function runnerCommandRuns(db: Database): { id: string; runId: string }[] {
+  return orm(db)
+    .select({ id: runnerCommand.id, runId: runnerCommand.runId })
+    .from(runnerCommand)
+    .where(
+      and(isNotNull(runnerCommand.runId), inArray(runnerCommand.kind, ["run", "review", "task"])),
+    )
+    .all()
+    .flatMap((row) => (row.runId ? [{ id: row.id, runId: row.runId }] : []));
 }
 
 export function forgetRunnerFileObject(db: Database, key: string): void {
