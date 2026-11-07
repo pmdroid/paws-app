@@ -1,8 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, gt, isNull, max } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
-import { orm } from "./orm";
-import { instance } from "./schema";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { ulid } from "./ulid";
 
 export const INSTANCE_HEARTBEAT_MS = 10_000;
@@ -24,20 +22,23 @@ export type Instance = {
   pid: number | null;
 };
 
-const columns = {
-  id: instance.id,
-  role: instance.role,
-  host: instance.host,
-  startedAt: instance.startedAt,
-  heartbeatAt: instance.heartbeatAt,
-  version: instance.version,
-  pid: instance.pid,
-};
+function columns(q: Q) {
+  const { instance } = q.t;
+  return {
+    id: instance.id,
+    role: instance.role,
+    host: instance.host,
+    startedAt: instance.startedAt,
+    heartbeatAt: instance.heartbeatAt,
+    version: instance.version,
+    pid: instance.pid,
+  };
+}
 
-export function registerInstance(
-  db: Database,
+export function* registerInstanceSteps(
+  q: Q,
   input: { role: InstanceRole; host: string; version: string | null; now: number; pid?: number },
-): Instance {
+): Steps<Instance> {
   const row: Instance = {
     id: ulid(input.now),
     role: input.role,
@@ -47,18 +48,38 @@ export function registerInstance(
     version: input.version,
     pid: input.pid ?? null,
   };
-  orm(db).insert(instance).values(row).run();
+  yield* q.exec(q.orm.insert(q.t.instance).values(row));
   return row;
 }
 
-export function heartbeatInstance(db: Database, id: string, now: number): boolean {
-  const updated = orm(db)
-    .update(instance)
-    .set({ heartbeatAt: now })
-    .where(eq(instance.id, id))
-    .returning({ id: instance.id })
-    .all();
+export function registerInstance(
+  db: Database,
+  input: { role: InstanceRole; host: string; version: string | null; now: number; pid?: number },
+): Instance {
+  return settled(sqliteDb(db).run((q) => registerInstanceSteps(q, input)));
+}
+
+export function* heartbeatInstanceSteps(q: Q, id: string, now: number) {
+  const { instance } = q.t;
+  const updated = yield* q.all(
+    q.orm
+      .update(instance)
+      .set({ heartbeatAt: now })
+      .where(eq(instance.id, id))
+      .returning({ id: instance.id }),
+  );
   return updated.length > 0;
+}
+
+export function heartbeatInstance(db: Database, id: string, now: number): boolean {
+  return settled(sqliteDb(db).run((q) => heartbeatInstanceSteps(q, id, now)));
+}
+
+export function* stopInstanceSteps(q: Q, id: string, now: number) {
+  const { instance } = q.t;
+  yield* q.exec(
+    q.orm.update(instance).set({ heartbeatAt: now, stoppedAt: now }).where(eq(instance.id, id)),
+  );
 }
 
 /**
@@ -66,34 +87,42 @@ export function heartbeatInstance(db: Database, id: string, now: number): boolea
  * its runs can credit runner leases for the time no instance was alive.
  */
 export function stopInstance(db: Database, id: string, now: number): void {
-  orm(db)
-    .update(instance)
-    .set({ heartbeatAt: now, stoppedAt: now })
-    .where(eq(instance.id, id))
-    .run();
+  settled(sqliteDb(db).run((q) => stopInstanceSteps(q, id, now)));
+}
+
+export function* lastInstanceHeartbeatSteps(q: Q) {
+  const { instance } = q.t;
+  const row = yield* q.one(q.orm.select({ at: max(instance.heartbeatAt) }).from(instance));
+  return row?.at ?? null;
 }
 
 /** The latest heartbeat of any instance, stopped or not, or null when none registered. */
 export function lastInstanceHeartbeat(db: Database): number | null {
-  return (
-    orm(db)
-      .select({ at: max(instance.heartbeatAt) })
-      .from(instance)
-      .get()?.at ?? null
-  );
+  return settled(sqliteDb(db).run(lastInstanceHeartbeatSteps));
+}
+
+export function* deleteInstanceSteps(q: Q, id: string) {
+  yield* q.exec(q.orm.delete(q.t.instance).where(eq(q.t.instance.id, id)));
 }
 
 export function deleteInstance(db: Database, id: string): void {
-  orm(db).delete(instance).where(eq(instance.id, id)).run();
+  settled(sqliteDb(db).run((q) => deleteInstanceSteps(q, id)));
+}
+
+export function* liveInstancesSteps(q: Q, now: number) {
+  const { instance } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select(columns(q))
+      .from(instance)
+      .where(and(gt(instance.heartbeatAt, now - INSTANCE_DEAD_MS), isNull(instance.stoppedAt)))
+      .orderBy(desc(instance.heartbeatAt), instance.id),
+  );
+  return rows as Instance[];
 }
 
 export function liveInstances(db: Database, now: number): Instance[] {
-  return orm(db)
-    .select(columns)
-    .from(instance)
-    .where(and(gt(instance.heartbeatAt, now - INSTANCE_DEAD_MS), isNull(instance.stoppedAt)))
-    .orderBy(desc(instance.heartbeatAt), instance.id)
-    .all() as Instance[];
+  return settled(sqliteDb(db).run((q) => liveInstancesSteps(q, now)));
 }
 
 export function* ownerGoneSteps(q: Q, self: string, now: number) {
@@ -133,10 +162,15 @@ function processRuns(pid: number): boolean {
   }
 }
 
+export function* jobInstanceElsewhereSteps(q: Q, selfId: string | undefined, now: number) {
+  const live = yield* liveInstancesSteps(q, now);
+  return live.some((entry) => entry.id !== selfId && roleRunsJobs(entry.role));
+}
+
 export function jobInstanceElsewhere(
   db: Database,
   selfId: string | undefined,
   now: number,
 ): boolean {
-  return liveInstances(db, now).some((live) => live.id !== selfId && roleRunsJobs(live.role));
+  return settled(sqliteDb(db).run((q) => jobInstanceElsewhereSteps(q, selfId, now)));
 }
