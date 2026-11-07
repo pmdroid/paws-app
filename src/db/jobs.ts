@@ -1,5 +1,6 @@
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
+import { and, desc, eq, gt, inArray, lte, or, sql as drizzleSql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import {
   DEFAULT_BACKOFF_BASE_MS,
@@ -12,6 +13,8 @@ import {
   retryBackoffMs,
 } from "../core";
 import { journal } from "./journal";
+import { orm } from "./orm";
+import { job as jobTable } from "./schema";
 import { immediate } from "./tx";
 
 export const JOB_STATUSES = ["pending", "running", "done", "dead", "cancelled"] as const;
@@ -596,4 +599,77 @@ export function jobVersionCurrent(db: Database, job: Pick<Job, "id" | "activatio
     )
     .get(job.id, job.activationId);
   return row !== null && (row.expected === null || row.expected === row.current);
+}
+
+const jobItemId = drizzleSql`json_extract(payload,'$.itemId')`;
+
+export function latestItemJobId(
+  db: Database,
+  itemId: string,
+  queues: readonly string[],
+  statuses: readonly string[],
+): number | null {
+  return (
+    orm(db)
+      .select({ id: jobTable.id })
+      .from(jobTable)
+      .where(
+        and(
+          inArray(jobTable.status, statuses),
+          inArray(jobTable.queue, queues),
+          eq(jobItemId, itemId),
+        ),
+      )
+      .orderBy(desc(jobTable.id))
+      .limit(1)
+      .get()?.id ?? null
+  );
+}
+
+export function itemJobRunning(db: Database, queue: string, itemId: string): boolean {
+  return (
+    orm(db)
+      .select({ one: drizzleSql`1` })
+      .from(jobTable)
+      .where(and(eq(jobTable.queue, queue), eq(jobTable.status, "running"), eq(jobItemId, itemId)))
+      .limit(1)
+      .get() !== undefined
+  );
+}
+
+export function cancelPendingItemJobs(
+  db: Database,
+  queue: string,
+  itemId: string,
+  now: number,
+): void {
+  orm(db)
+    .update(jobTable)
+    .set({ status: "cancelled", finishedAt: now })
+    .where(and(eq(jobTable.queue, queue), eq(jobTable.status, "pending"), eq(jobItemId, itemId)))
+    .run();
+}
+
+export function cancelAdmittedJob(db: Database, id: number, now: number): void {
+  orm(db)
+    .update(jobTable)
+    .set({ status: "cancelled", finishedAt: now, lockedBy: null, lockedUntil: null })
+    .where(
+      and(
+        eq(jobTable.id, id),
+        or(
+          eq(jobTable.status, "pending"),
+          and(eq(jobTable.status, "running"), lte(jobTable.lockedUntil, now)),
+        ),
+      ),
+    )
+    .run();
+}
+
+export function runPendingJobNow(db: Database, id: number, now: number): void {
+  orm(db)
+    .update(jobTable)
+    .set({ runAt: now })
+    .where(and(eq(jobTable.id, id), eq(jobTable.status, "pending"), gt(jobTable.runAt, now)))
+    .run();
 }
