@@ -218,10 +218,10 @@ if (mode === "prepare") {
         prompt: "Execute the assigned fixture",
       };
       if (index < 2) {
-        command.inputFiles = coordinator.inputs.stage(command.id, [
+        command.inputFiles = await coordinator.inputs.stage(command.id, [
           { path: inputPath, mimeType: "application/octet-stream", bytes: inputBytes },
         ]);
-        command.promptContext = coordinator.inputs.stagePrompt(command.id, fullPrompt);
+        command.promptContext = await coordinator.inputs.stagePrompt(command.id, fullPrompt);
       }
       coordinator.work.assign(command);
       config.commands.push(command);
@@ -256,9 +256,9 @@ if (mode === "prepare") {
         if (event.type === "artifact") {
           assert.equal(
             Buffer.from(
-              await coordinator.artifacts
-                .snapshot(command.runId, 1, event.artifact)
-                .bytes.arrayBuffer(),
+              await (
+                await coordinator.artifacts.snapshot(command.runId, 1, event.artifact)
+              ).bytes.arrayBuffer(),
             ).toString(),
             "assigned base\n",
           );

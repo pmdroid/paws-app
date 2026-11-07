@@ -824,3 +824,22 @@ export const runnerExecutionUsage = sqliteTable(
     ),
   ],
 );
+
+export const runnerFileObject = sqliteTable(
+  "runner_file_object",
+  {
+    key: text().primaryKey().notNull(),
+    runId: text("run_id").notNull(),
+    commandId: text("command_id").notNull(),
+    kind: text().notNull(),
+    name: text().notNull(),
+    digest: text().notNull(),
+    sha256: text().notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("runner_file_object_run").on(table.runId),
+    index("runner_file_object_command").on(table.commandId, table.kind),
+    check("runner_file_object_check_1", sql`kind IN ('input','artifact')`),
+  ],
+);

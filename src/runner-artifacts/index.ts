@@ -24,6 +24,13 @@ import {
   type RunnerArtifactChunk,
 } from "../runner-protocol";
 import { runnerFailureStatus, type RunnerWork } from "../runner-work";
+import type { Database } from "bun:sqlite";
+import { runnerFileObjectNames } from "../db";
+import {
+  missingRunFileObject,
+  SealedRunnerFileConflictError,
+  type SealedRunnerFiles,
+} from "../run-files";
 
 export const RUNNER_ARTIFACT_CHUNK_BYTES = 524288;
 /** An authorized upload Paws will not keep. The message is safe to show the runner. */
@@ -33,6 +40,7 @@ export class RunnerArtifactRejectedError extends Error {
     this.name = "RunnerArtifactRejectedError";
   }
 }
+class RunnerArtifactStorageError extends Error {}
 function hash(bytes: Uint8Array | string) {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -77,7 +85,11 @@ function immutable(path: string, bytes: Buffer) {
     rmSync(temporary, { force: true });
   }
 }
-export function createRunnerArtifactStore(options: { root: string; work: RunnerWork }) {
+export function createRunnerArtifactStore(options: {
+  root: string;
+  work: RunnerWork;
+  remote?: { files: SealedRunnerFiles; db: Database };
+}) {
   if (!isAbsolute(options.root)) throw new Error("Runner artifact root must be absolute");
   mkdirSync(options.root, { recursive: true, mode: 0o700 });
   function directory(commandId: string) {
@@ -105,8 +117,127 @@ export function createRunnerArtifactStore(options: { root: string; work: RunnerW
       closeSync(root);
     }
   }
+  const objectKey = (runId: string, commandId: string, artifactId: string, index: number) => {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(runId) ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(commandId)
+    )
+      throw new Error("Invalid runner command ID");
+    return `runner-artifacts/${runId}/${commandId}/${artifactId}/${index}`;
+  };
+  const digest = (artifact: RunnerArtifact) => hash(JSON.stringify(artifact));
+  const limited = () =>
+    new RunnerArtifactRejectedError(
+      `Paws keeps at most ${RUNNER_ARTIFACT_COUNT_LIMIT} artifacts per run`,
+    );
+  async function remoteSnapshot(
+    remote: NonNullable<typeof options.remote>,
+    runId: string,
+    commandId: string,
+    artifact: RunnerArtifact,
+  ) {
+    const chunks: Buffer[] = [];
+    const count = Math.max(1, Math.ceil(artifact.sizeBytes / RUNNER_ARTIFACT_CHUNK_BYTES));
+    for (let index = 0; index < count; index++) {
+      let bytes: Buffer;
+      try {
+        bytes = await remote.files.read(
+          objectKey(runId, commandId, artifact.id, index),
+          digest(artifact),
+        );
+      } catch (error) {
+        if (index === 0 && missingRunFileObject(error)) return null;
+        throw error;
+      }
+      if (
+        bytes.length !==
+        Math.min(
+          RUNNER_ARTIFACT_CHUNK_BYTES,
+          artifact.sizeBytes - index * RUNNER_ARTIFACT_CHUNK_BYTES,
+        )
+      )
+        throw new Error("Runner artifact chunk changed");
+      chunks.push(bytes);
+    }
+    return chunks;
+  }
+  function localChunks(commandId: string, artifact: RunnerArtifact) {
+    const fd = directory(commandId);
+    try {
+      const root = `/proc/self/fd/${fd}`;
+      if (
+        !privateRead(join(root, `${artifact.id}.json`), 8192).equals(
+          Buffer.from(JSON.stringify(artifact)),
+        )
+      )
+        throw new Error("Runner artifact metadata changed");
+      const chunks: Buffer[] = [];
+      const count = Math.max(1, Math.ceil(artifact.sizeBytes / RUNNER_ARTIFACT_CHUNK_BYTES));
+      for (let index = 0; index < count; index++) {
+        const bytes = privateRead(
+          join(root, `${artifact.id}.${index}.bytes`),
+          RUNNER_ARTIFACT_CHUNK_BYTES,
+        );
+        if (
+          bytes.length !==
+          Math.min(
+            RUNNER_ARTIFACT_CHUNK_BYTES,
+            artifact.sizeBytes - index * RUNNER_ARTIFACT_CHUNK_BYTES,
+          )
+        )
+          throw new Error("Runner artifact chunk changed");
+        chunks.push(bytes);
+      }
+      return chunks;
+    } finally {
+      closeSync(fd);
+    }
+  }
   const api = {
-    upload(input: { runnerId: string; runId: string; token: string; chunk: RunnerArtifactChunk }) {
+    async migrateLocal(commands: readonly { id: string; runId: string }[]) {
+      const remote = options.remote;
+      if (!remote) return 0;
+      const present = new Set(readdirSync(options.root));
+      let moved = 0;
+      for (const command of commands) {
+        const folder = hash(command.id);
+        if (!present.has(folder)) continue;
+        try {
+          for (const name of readdirSync(join(options.root, folder))) {
+            if (!name.endsWith(".json")) continue;
+            const artifact = RunnerArtifactSchema.parse(
+              JSON.parse(privateRead(join(options.root, folder, name), 8192).toString("utf8")),
+            );
+            const chunks = localChunks(command.id, artifact);
+            if (hash(Buffer.concat(chunks)) !== artifact.sha256)
+              throw new Error("Runner artifact content changed");
+            for (const [index, bytes] of chunks.entries())
+              await remote.files.write(
+                objectKey(command.runId, command.id, artifact.id, index),
+                {
+                  runId: command.runId,
+                  commandId: command.id,
+                  kind: "artifact",
+                  name: artifact.id,
+                  digest: digest(artifact),
+                },
+                bytes,
+              );
+          }
+          rmSync(join(options.root, folder), { recursive: true, force: true });
+          moved++;
+        } catch (error) {
+          journalCaught(error, "runner-artifacts.migrateLocal", null);
+        }
+      }
+      return moved;
+    },
+    async upload(input: {
+      runnerId: string;
+      runId: string;
+      token: string;
+      chunk: RunnerArtifactChunk;
+    }) {
       const value = RunnerArtifactChunkSchema.parse(input.chunk);
       assertNonSecretArtifactPath(value.artifact.path);
       const { command } = options.work.authorize({ ...input, generation: value.generation });
@@ -122,6 +253,34 @@ export function createRunnerArtifactStore(options: { root: string; work: RunnerW
         bytes.toString("base64") !== value.data
       )
         throw new Error("Runner artifact chunk is invalid");
+      const remote = options.remote;
+      if (remote) {
+        try {
+          await remote.files.write(
+            objectKey(input.runId, command.id, value.artifact.id, value.index),
+            {
+              runId: input.runId,
+              commandId: command.id,
+              kind: "artifact",
+              name: value.artifact.id,
+              digest: digest(value.artifact),
+            },
+            bytes,
+            () => {
+              const names = runnerFileObjectNames(remote.db, command.id, "artifact");
+              if (!names.includes(value.artifact.id) && names.length >= RUNNER_ARTIFACT_COUNT_LIMIT)
+                throw limited();
+            },
+          );
+        } catch (error) {
+          if (error instanceof SealedRunnerFileConflictError)
+            throw new Error("Runner artifact is immutable", { cause: error });
+          if (error instanceof RunnerArtifactRejectedError) throw error;
+          journalCaught(error, "runner-artifacts.upload.write", null);
+          throw new RunnerArtifactStorageError("Runner artifact storage is unavailable");
+        }
+        return { ok: true };
+      }
       const fd = directory(command.id);
       try {
         const root = `/proc/self/fd/${fd}`;
@@ -131,9 +290,7 @@ export function createRunnerArtifactStore(options: { root: string; work: RunnerW
           !names.includes(metadata) &&
           names.filter((name) => name.endsWith(".json")).length >= RUNNER_ARTIFACT_COUNT_LIMIT
         )
-          throw new RunnerArtifactRejectedError(
-            `Paws keeps at most ${RUNNER_ARTIFACT_COUNT_LIMIT} artifacts per run`,
-          );
+          throw limited();
         immutable(join(root, metadata), Buffer.from(JSON.stringify(value.artifact)));
         immutable(join(root, `${value.artifact.id}.${value.index}.bytes`), bytes);
         fsyncSync(fd);
@@ -142,48 +299,26 @@ export function createRunnerArtifactStore(options: { root: string; work: RunnerW
       }
       return { ok: true };
     },
-    snapshot(runId: string, generation: number, descriptor: RunnerArtifact): ArtifactSnapshot {
+    async snapshot(
+      runId: string,
+      generation: number,
+      descriptor: RunnerArtifact,
+    ): Promise<ArtifactSnapshot> {
       const artifact = RunnerArtifactSchema.parse(descriptor);
       const { command } = options.work.current(runId, generation);
-      const fd = directory(command.id);
-      try {
-        const root = `/proc/self/fd/${fd}`;
-        if (
-          !privateRead(join(root, `${artifact.id}.json`), 8192).equals(
-            Buffer.from(JSON.stringify(artifact)),
-          )
-        )
-          throw new Error("Runner artifact metadata changed");
-        const chunks: Buffer[] = [];
-        const count = Math.max(1, Math.ceil(artifact.sizeBytes / RUNNER_ARTIFACT_CHUNK_BYTES));
-        for (let index = 0; index < count; index++) {
-          const bytes = privateRead(
-            join(root, `${artifact.id}.${index}.bytes`),
-            RUNNER_ARTIFACT_CHUNK_BYTES,
-          );
-          if (
-            bytes.length !==
-            Math.min(
-              RUNNER_ARTIFACT_CHUNK_BYTES,
-              artifact.sizeBytes - index * RUNNER_ARTIFACT_CHUNK_BYTES,
-            )
-          )
-            throw new Error("Runner artifact chunk changed");
-          chunks.push(bytes);
-        }
-        const bytes = Buffer.concat(chunks);
-        if (hash(bytes) !== artifact.sha256) throw new Error("Runner artifact content changed");
-        return {
-          path: artifact.path,
-          displayName: artifact.displayName,
-          mimeType: artifact.mimeType,
-          sizeBytes: artifact.sizeBytes,
-          sha256: artifact.sha256,
-          bytes: new Blob([bytes], { type: artifact.mimeType }),
-        };
-      } finally {
-        closeSync(fd);
-      }
+      const chunks =
+        (options.remote && (await remoteSnapshot(options.remote, runId, command.id, artifact))) ??
+        localChunks(command.id, artifact);
+      const bytes = Buffer.concat(chunks);
+      if (hash(bytes) !== artifact.sha256) throw new Error("Runner artifact content changed");
+      return {
+        path: artifact.path,
+        displayName: artifact.displayName,
+        mimeType: artifact.mimeType,
+        sizeBytes: artifact.sizeBytes,
+        sha256: artifact.sha256,
+        bytes: new Blob([bytes], { type: artifact.mimeType }),
+      };
     },
     async fetch(request: Request, runnerId: string): Promise<Response | null> {
       const match = /^\/v1\/runs\/([^/]+)\/artifacts$/.exec(new URL(request.url).pathname);
@@ -198,7 +333,7 @@ export function createRunnerArtifactStore(options: { root: string; work: RunnerW
           throw new Error("Artifact grant and JSON are required");
         const chunk = RunnerArtifactChunkSchema.parse(await body(request));
         return Response.json(
-          api.upload({
+          await api.upload({
             runnerId,
             runId: decodeURIComponent(match[1]!),
             token: authorization.slice(7),
@@ -217,7 +352,7 @@ export function createRunnerArtifactStore(options: { root: string; work: RunnerW
         return Response.json(
           { error: "Runner artifact access is denied" },
           {
-            status: runnerFailureStatus(error),
+            status: error instanceof RunnerArtifactStorageError ? 503 : runnerFailureStatus(error),
             headers: { "cache-control": "no-store" },
           },
         );

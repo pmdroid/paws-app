@@ -248,10 +248,10 @@ if (mode === "agent") {
         prompt: "Complete the assigned " + purpose,
         ...(repository ? { repository: binding } : {}),
       };
-      command.inputFiles = service.inputs.stage(command.id, [
+      command.inputFiles = await service.inputs.stage(command.id, [
         { path: inputPath, mimeType: "application/octet-stream", bytes: inputBytes },
       ]);
-      command.promptContext = service.inputs.stagePrompt(command.id, fullPrompt);
+      command.promptContext = await service.inputs.stagePrompt(command.id, fullPrompt);
       service.work.assign(command);
       configuration.commands.push(command);
     }

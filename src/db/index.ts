@@ -1224,3 +1224,11 @@ export {
   runnerResultPayload,
   runnerWorkActive,
 } from "./runner-work";
+export {
+  forgetRunnerFileObject,
+  prunableRunnerFileObjects,
+  recordRunnerFileObject,
+  runnerCommandRuns,
+  runnerFileObjectNames,
+  type RunnerFileObject,
+} from "./runner-file-objects";

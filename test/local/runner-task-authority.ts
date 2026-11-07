@@ -287,7 +287,7 @@ export async function probeRunnerTaskAuthority(
           prompt: "Respond in Linear",
           ...(withRepository ? { repository } : {}),
         };
-        command.inputFiles = coordinator.inputs.stage(command.id, [
+        command.inputFiles = await coordinator.inputs.stage(command.id, [
           {
             path: ".paws-linear-inputs/task/data.txt",
             mimeType: "text/plain",
@@ -297,7 +297,10 @@ export async function probeRunnerTaskAuthority(
         const preparedTaskPrompt =
           "Full prepared task prompt 日本語" +
           (downloadInputs && purpose === "answer" && !withRepository ? "x".repeat(20_972_002) : "");
-        command.promptContext = coordinator.inputs.stagePrompt(command.id, preparedTaskPrompt);
+        command.promptContext = await coordinator.inputs.stagePrompt(
+          command.id,
+          preparedTaskPrompt,
+        );
         assert.equal(scope.purpose, purpose);
         assert.equal(scope.repository !== undefined, withRepository);
         assert.throws(() =>
@@ -359,15 +362,21 @@ export async function probeRunnerTaskAuthority(
           const readContext = coordinator.inputs.readContext;
           try {
             for (const alter of [
-              (value: ReturnType<typeof readContext>) => ({ ...value, commandId: "other-command" }),
-              (value: ReturnType<typeof readContext>) => ({ ...value, offset: value.offset + 1 }),
-              (value: ReturnType<typeof readContext>) => ({ ...value, data: "AAAA" }),
-              (value: ReturnType<typeof readContext>) => {
+              (value: Awaited<ReturnType<typeof readContext>>) => ({
+                ...value,
+                commandId: "other-command",
+              }),
+              (value: Awaited<ReturnType<typeof readContext>>) => ({
+                ...value,
+                offset: value.offset + 1,
+              }),
+              (value: Awaited<ReturnType<typeof readContext>>) => ({ ...value, data: "AAAA" }),
+              (value: Awaited<ReturnType<typeof readContext>>) => {
                 const bytes = Buffer.alloc(Buffer.from(value.data, "base64").length, 120);
                 return { ...value, data: bytes.toString("base64"), sha256: hash(bytes) };
               },
             ]) {
-              coordinator.inputs.readContext = (...args) => alter(readContext(...args));
+              coordinator.inputs.readContext = async (...args) => alter(await readContext(...args));
               await assert.rejects(
                 daemon.readInputs(command, async () => grant.token, new AbortController().signal),
               );
@@ -393,15 +402,16 @@ export async function probeRunnerTaskAuthority(
         const inputRequest = { commandId: command.id, generation: 1, offset: 0 };
         assert.equal(
           Buffer.from(
-            coordinator.inputs.read(access, { ...inputRequest, fileId: 0 }).data,
+            (await coordinator.inputs.read(access, { ...inputRequest, fileId: 0 })).data,
             "base64",
           ).toString("utf8"),
           "Private task attachment",
         );
         assert.equal(
-          Buffer.from(coordinator.inputs.readContext(access, inputRequest).data, "base64").toString(
-            "utf8",
-          ),
+          Buffer.from(
+            (await coordinator.inputs.readContext(access, inputRequest)).data,
+            "base64",
+          ).toString("utf8"),
           Buffer.from(preparedTaskPrompt).subarray(0, 524_288).toString("utf8"),
         );
         const minted = mints.length;
@@ -481,7 +491,7 @@ export async function probeRunnerTaskAuthority(
           );
           assert.deepEqual(
             Buffer.from(
-              await coordinator.artifacts.snapshot(run.id, 1, artifact).bytes.arrayBuffer(),
+              await (await coordinator.artifacts.snapshot(run.id, 1, artifact)).bytes.arrayBuffer(),
             ),
             bytes,
           );
