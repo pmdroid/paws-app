@@ -367,7 +367,7 @@ type AgentSetupInput = {
 };
 
 export function* recordRunAgentSetupSteps(q: Q, input: AgentSetupInput) {
-  const { runAgentSetup } = q.t;
+  const setup = q.t.runAgentSetup;
   const pins = new Map(
     (yield* listSkillsSteps(q))
       .filter(
@@ -385,7 +385,7 @@ export function* recordRunAgentSetupSteps(q: Q, input: AgentSetupInput) {
   // `skills` and `hooks` are text columns on both dialects.
   yield* q.exec(
     q.orm
-      .insert(runAgentSetup)
+      .insert(setup)
       .values({
         runId: input.runId,
         runnerId: input.runnerId,
@@ -394,7 +394,7 @@ export function* recordRunAgentSetupSteps(q: Q, input: AgentSetupInput) {
         recordedAt: input.at,
       })
       .onConflictDoUpdate({
-        target: runAgentSetup.runId,
+        target: setup.runId,
         set: {
           runnerId: sql`excluded.runner_id`,
           skills: sql`excluded.skills`,
@@ -410,17 +410,17 @@ export function recordRunAgentSetup(db: Database, input: AgentSetupInput): void 
 }
 
 export function* runAgentSetupSteps(q: Q, runId: string): Steps<RunAgentSetup | null> {
-  const { runAgentSetup } = q.t;
+  const setup = q.t.runAgentSetup;
   const row = yield* q.one(
     q.orm
       .select({
-        runnerId: runAgentSetup.runnerId,
-        skills: runAgentSetup.skills,
-        hooks: runAgentSetup.hooks,
-        recordedAt: runAgentSetup.recordedAt,
+        runnerId: setup.runnerId,
+        skills: setup.skills,
+        hooks: setup.hooks,
+        recordedAt: setup.recordedAt,
       })
-      .from(runAgentSetup)
-      .where(eq(runAgentSetup.runId, runId)),
+      .from(setup)
+      .where(eq(setup.runId, runId)),
   );
   return row
     ? {
