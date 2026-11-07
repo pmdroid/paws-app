@@ -26,7 +26,7 @@ function git(cwd: string, ...args: string[]): string {
 
 type Fixture = { root: string; checkout: string; session: string };
 
-function fixture(): Fixture {
+function createFixture(): Fixture {
   const root = mkdtempSync(join(tmpdir(), "paws-conversation-helper-"));
   const checkout = join(root, "work", "run-acme-1");
   mkdirSync(checkout, { recursive: true });
@@ -45,7 +45,7 @@ function fixture(): Fixture {
 }
 
 async function withFixture(body: (fixture: Fixture) => Promise<void>): Promise<void> {
-  const created = fixture();
+  const created = createFixture();
   try {
     await body(created);
   } finally {
