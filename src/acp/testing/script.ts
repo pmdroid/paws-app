@@ -35,6 +35,7 @@ export type FakeStep =
   | { type: "open_pull_request"; title: string; body: string }
   | { type: "post_update"; text: string }
   | { type: "reply"; text: string }
+  | { type: "start_work"; plan: string }
   | {
       type: "publish_artifact";
       path: string;

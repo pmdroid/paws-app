@@ -83,6 +83,13 @@ type ReplyResult = { posted: true } | { posted: false; reason: string };
 export interface ReplyHook {
   post(text: string, origin?: AcpEventOrigin): Promise<ReplyResult>;
 }
+
+export const START_WORK_PLAN_MAX_LENGTH = 4000;
+
+/** Ends a conversation turn and queues the item for a work turn on the same session. */
+export interface StartWorkHook {
+  start(plan: string): Promise<void>;
+}
 export const POST_UPDATE_INTERVAL_MS = 60_000;
 
 export type PostUpdateResult = { posted: true } | { posted: false; waitSeconds: number };
@@ -178,6 +185,7 @@ interface HostToolBridgeOptions {
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
   reply?: ReplyHook;
+  startWork?: StartWorkHook;
   publishArtifact?: PublishArtifactHook;
   closeoutProgress?: CloseoutProgressHook;
   artifactLimits?: ArtifactLimits;
@@ -344,6 +352,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.pullRequest ? "open_pull_request" : "",
             options.postUpdate ? "post_update" : "",
             options.reply ? "reply" : "",
+            options.startWork ? "start_work" : "",
             closeout ? "get_closeout" : "",
             closeout && allowCloseoutRun ? "run_closeout" : "",
             options.ciRerun ? "rerun_ci" : "",
@@ -513,6 +522,21 @@ async function handleConnection(
       const result = await options.reply.post(parseReply(parsed.arguments ?? {}));
       socket.end(
         `${JSON.stringify({ id, answer: result.posted ? "Posted in the Linear conversation." : `Not posted: ${result.reason}` })}\n`,
+      );
+      return;
+    }
+    if (parsed.tool === "start_work") {
+      if (!options.startWork) throw new Error("start_work is unavailable");
+      const plan = parseStartWorkPlan(parsed.arguments ?? {});
+      if (plan === null) {
+        socket.end(
+          `${JSON.stringify({ id, answer: `Not started: plan needs 1 to ${START_WORK_PLAN_MAX_LENGTH} characters. Shorten it and call start_work again, or answer with reply.` })}\n`,
+        );
+        return;
+      }
+      await options.startWork.start(plan);
+      socket.end(
+        `${JSON.stringify({ id, answer: "Work queued. This conversation turn ends now; the work turn resumes this session with edits allowed when a work slot is free." })}\n`,
       );
       return;
     }
@@ -776,6 +800,11 @@ function parseReply(value: { text?: unknown }): string {
   if (text.length < 1 || text.length > REPLY_MAX_LENGTH)
     throw new Error(`reply needs text of 1 to ${REPLY_MAX_LENGTH} characters`);
   return text;
+}
+
+function parseStartWorkPlan(value: { plan?: unknown }): string | null {
+  const plan = typeof value.plan === "string" ? value.plan.trim() : "";
+  return plan.length >= 1 && plan.length <= START_WORK_PLAN_MAX_LENGTH ? plan : null;
 }
 
 function progressListener(hook: CloseoutProgressHook): (event: CloseoutSessionEvent) => void {

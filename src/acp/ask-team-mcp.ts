@@ -154,6 +154,25 @@ const REPLY_TOOL = {
   },
 };
 
+const START_WORK_TOOL = {
+  name: "start_work",
+  description:
+    "Move this conversation to a work turn. Call it only when the person asked for a change or agreed to one. Your turn ends at once; Paws queues the item for a work slot and the work turn resumes this session with edits allowed. The plan is posted to the person.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      plan: {
+        type: "string",
+        minLength: 1,
+        maxLength: 4000,
+        description: "What you will change and why.",
+      },
+    },
+    required: ["plan"],
+    additionalProperties: false,
+  },
+};
+
 const GET_CLOSEOUT_TOOL = {
   name: "get_closeout",
   description:
@@ -287,6 +306,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
           PULL_REQUEST_TOOL,
           POST_UPDATE_TOOL,
           REPLY_TOOL,
+          START_WORK_TOOL,
           GET_CLOSEOUT_TOOL,
           RUN_CLOSEOUT_TOOL,
           RERUN_CI_TOOL,

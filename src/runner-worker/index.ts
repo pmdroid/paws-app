@@ -238,7 +238,10 @@ export const HANDOVER_STEP_TIMEOUT_MS = 60_000;
 export const CONVERSATION_RESULT_MARGIN_MS = 30_000;
 
 const CONVERSATION_PREAMBLE =
-  "A person wrote about this item. This turn is read-only: read the checkout and answer with the reply tool. Edits, commits and pushes are refused.";
+  "A person wrote about this item. This turn is read-only: read the checkout and answer with the reply tool. Edits, commits and pushes are refused. Call start_work only when the person asked for a change or agreed to one; it ends this turn, and a work turn resumes this session with edits allowed. Never claim to have changed code in this turn.";
+
+/** Time for start_work's answer to reach the agent before its conversation turn stops. */
+const START_WORK_GRACE_MS = 500;
 
 export const HANDOVER_COMMIT_MESSAGE =
   "Save work in progress to hand the session to another runner";
@@ -426,6 +429,7 @@ export interface RunnerWorkerResult {
   reviewText?: string;
   text?: string;
   replies?: string[];
+  startWork?: string;
   login?: {
     agent: "claude" | "codex" | "grok" | "opencode";
     authenticated: boolean;
@@ -840,6 +844,8 @@ export async function executeRunnerCommand(
   const updates = createUpdateLimiter();
   const replies = new Map<string, number>();
   const sentReplies: string[] = [];
+  let startWorkPlan: string | undefined;
+  const workStart = new AbortController();
   let githubRead: GitHubReadConfig | undefined;
   const readRedactor = () =>
     command.type === "run" && command.githubRead
@@ -1513,6 +1519,14 @@ export async function executeRunnerCommand(
               },
             }
           : undefined,
+      startWork: talk
+        ? {
+            async start(plan) {
+              startWorkPlan ??= plan;
+              void delay(START_WORK_GRACE_MS).then(() => workStart.abort(FOLLOW_UP_INTERRUPTION));
+            },
+          }
+        : undefined,
       askTeam:
         command.type === "helper"
           ? undefined
@@ -1867,7 +1881,7 @@ export async function executeRunnerCommand(
         ? {
             ...agent,
             signal: AbortSignal.any([
-              ...(talk ? [lifetime.signal] : []),
+              ...(talk ? [lifetime.signal, workStart.signal] : []),
               ...(handover ? [interrupt.signal] : []),
               ...(checkpoints ? [halt.signal] : []),
               ...(questionEndsTurn ? [questionEnd.signal] : []),
@@ -1918,6 +1932,8 @@ export async function executeRunnerCommand(
     clearTimeout(lifetimeTimer);
     if (lifetime.signal.aborted && !options.signal?.aborted)
       run = { ...run, stopReason: "timeout", timedOut: true, cancelled: false, interrupted: false };
+    else if (workStart.signal.aborted && !options.signal?.aborted)
+      run = { ...run, stopReason: "end_turn", cancelled: false, interrupted: false };
     watch.abort();
     const interrupted = (await handover) === true;
     // A checkpoint in progress finishes before the turn's own commit and result.
@@ -1980,6 +1996,7 @@ export async function executeRunnerCommand(
     const result: RunnerWorkerResult = { executionId: job.executionId, commandId: command.id, run };
     if (command.type === "helper") result.text = reviewText;
     if (sentReplies.length) result.replies = sentReplies;
+    if (startWorkPlan) result.startWork = startWorkPlan;
     if (command.type === "login_check") {
       const checked =
         command.agent === "claude" || command.agent === "codex"
@@ -2166,6 +2183,7 @@ export async function executeRunnerCommand(
               commandId: true,
               text: true,
               replies: true,
+              startWork: true,
             })
               .strip()
               .parse(run),

@@ -600,3 +600,22 @@ test.skipIf(!linux)(
     expect(existsSync(join(context.output, "session.json"))).toBe(false);
   },
 );
+
+test.skipIf(!linux)("an implement turn is not offered start_work and goes on", async () => {
+  const context = await fixture();
+  const result = await context.execute([
+    context.sessionFile,
+    { type: "start_work", plan: "Change the acme checkout button." },
+    { type: "write_file", path: join(context.checkout, "after.txt"), content: "after\n" },
+    { type: "end" },
+  ]);
+  const trace = JSON.parse(readFileSync(join(context.root, "trace.json"), "utf8"));
+  const tools = trace.mcpServers[0].env
+    .find((entry: { name: string }) => entry.name === "PAWS_HOST_TOOLS")
+    .value.split(",");
+  expect(tools).toContain("reply");
+  expect(tools).not.toContain("start_work");
+  expect(trace.updates[0]).toMatchObject({ ok: false });
+  expect(result.run).toMatchObject({ stopReason: "end_turn", cancelled: false });
+  expect(existsSync(join(context.checkout, "after.txt"))).toBe(true);
+});
