@@ -64,7 +64,7 @@ export type LinearCommentStep = "done" | "wait" | "restarted";
 export type LinearConversationTurn = {
   commandId: string;
   sessionId: string;
-  result: { text: string; replies?: string[]; timedOut: boolean } | null;
+  result: { text: string; replies?: string[]; startWork?: string; timedOut: boolean } | null;
   expired: boolean;
 };
 
@@ -88,6 +88,12 @@ export type LinearCommentCapabilities = {
 const HELD_STATES = new Set(["paused", "manual", "failed"]);
 const CONVERSATION_STATES = new Set(["queued", "merge_queue"]);
 const CONVERSATION_PROMPT_CHARS = 60_000;
+
+export const START_WORK_RESPONSE = "Starting work: ";
+const START_WORK_REFUSED =
+  "I could not start the work: the item moved on while we talked. Reply to try again.";
+const START_WORK_HANDOFF =
+  "In the conversation you called start_work with this plan. This is the work turn: edits, commits and Closeout are allowed. Carry out the plan.";
 
 export const CONVERSATION_TIMEOUT_REPLY = "I stopped checking after 15 minutes. Reply to continue.";
 const CONVERSATION_EMPTY_REPLY = "I could not answer this time. Reply to try again.";
@@ -292,7 +298,7 @@ export async function deliverLinearComments(
   const item = getWorkItem(db, itemId);
   const talk = (await caps.conversations?.()) ?? null;
   if (talk !== null) {
-    if (postConversationReplies(db, itemId, talk, caps.now())) await caps.flush();
+    if (await postConversationReplies(db, itemId, talk, caps)) await caps.flush();
     if (talk.open(itemId).length > 0) return "wait";
   }
   const all = pendingLinearComments(db, itemId);
@@ -446,17 +452,37 @@ function startConversation(
   });
 }
 
-function postConversationReplies(
+async function postConversationReplies(
   db: Database,
   itemId: string,
   talk: LinearConversations,
-  now: number,
-): boolean {
+  caps: LinearCommentCapabilities,
+): Promise<boolean> {
+  const now = caps.now();
   let posted = false;
   for (const turn of talk.open(itemId)) {
     if (turn.result === null && !turn.expired) continue;
-    const bodies = conversationReplies(turn.result);
+    const plan = turn.result?.startWork;
+    const left = plan ? await leftMergeQueue(db, itemId, caps) : true;
     immediate(db, () => {
+      const item = getWorkItem(db, itemId);
+      const started =
+        plan !== undefined &&
+        left &&
+        item !== null &&
+        canConverse(item) &&
+        restart(db, item, {
+          reason: "follow_up",
+          body: `${START_WORK_HANDOFF}\n\n${plan}`,
+          jobKey: `start-work:${turn.commandId}`,
+          now,
+        }) !== null;
+      const bodies = plan
+        ? [
+            ...(turn.result!.replies ?? []),
+            started ? `${START_WORK_RESPONSE}${plan}` : START_WORK_REFUSED,
+          ]
+        : conversationReplies(turn.result);
       bodies.forEach((body, index) =>
         enqueueOutboxOnce(db, {
           target: "linear",
@@ -477,6 +503,19 @@ function postConversationReplies(
     posted = true;
   }
   return posted;
+}
+
+/** A plan's work turn needs the pull request out of GitHub's merge queue first, as a comment does. */
+async function leftMergeQueue(
+  db: Database,
+  itemId: string,
+  caps: LinearCommentCapabilities,
+): Promise<boolean> {
+  const item = getWorkItem(db, itemId);
+  const pull = item?.state === "merge_queue" ? getItemPullRequest(db, itemId) : null;
+  if (item === null || pull === null) return true;
+  const left = await caps.leaveMergeQueue(item, pull.pullNumber);
+  return left === "left" || left === "not_queued";
 }
 
 function conversationReplies(result: LinearConversationTurn["result"]): string[] {

@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -106,6 +114,7 @@ async function converse(
     commandId: saved.commandId,
     text: saved.text,
     ...(saved.replies ? { replies: saved.replies } : {}),
+    ...(saved.startWork ? { startWork: saved.startWork } : {}),
   });
   return { result, published, calls: JSON.parse(readFileSync(recorded, "utf8")) };
 }
@@ -170,6 +179,7 @@ test(
         .find((entry: { name: string }) => entry.name === "PAWS_HOST_TOOLS")
         .value.split(",");
       expect(tools).toContain("reply");
+      expect(tools).toContain("start_work");
       for (const tool of ["ask_team", "run_closeout", "open_pull_request", "publish_artifact"])
         expect(tools).not.toContain(tool);
       expect(calls.updates).toEqual([{ ok: true, text: expect.any(String) }]);
@@ -253,3 +263,123 @@ test("a conversation helper refuses to start without the item's checkout", () =>
     );
     expect(existsSync(fixture.checkout)).toBe(false);
   }));
+
+const PLAN = "Add a test that the acme checkout retries a card once on a gateway timeout.";
+const hostTools = (calls: { mcpServers: { env: { name: string; value: string }[] }[] }) =>
+  calls.mcpServers[0]!.env.find((entry) => entry.name === "PAWS_HOST_TOOLS")!.value.split(",");
+
+test(
+  "start_work ends the conversation turn with its plan and keeps the session",
+  () =>
+    withFixture(async (fixture) => {
+      const head = git(fixture.checkout, "rev-parse", "HEAD");
+      const { published, calls } = await converse(fixture, command(), {
+        steps: [
+          { type: "reply", text: "I will add the retry test." },
+          { type: "start_work", plan: PLAN },
+          chunk("Waiting for the work turn."),
+          { type: "hang" },
+        ],
+      });
+
+      expect(calls.updates[1]).toEqual({ ok: true, text: expect.stringContaining("Work queued") });
+      expect(published).toMatchObject({
+        startWork: PLAN,
+        replies: ["I will add the retry test."],
+        stopReason: "end_turn",
+        timedOut: false,
+        cancelled: false,
+        agentExited: true,
+        sessionId: "session-acme",
+      });
+      expect(existsSync(fixture.session)).toBe(true);
+      expect(git(fixture.checkout, "rev-parse", "HEAD")).toBe(head);
+      expect(git(fixture.checkout, "status", "--porcelain")).toBe("");
+    }),
+  15_000,
+);
+
+test(
+  "a plan over 4000 characters is refused with a message and the conversation turn goes on",
+  () =>
+    withFixture(async (fixture) => {
+      const { published, calls } = await converse(fixture, command(), {
+        steps: [
+          { type: "start_work", plan: "x".repeat(4001) },
+          { type: "reply", text: "The plan was too long; here is the short answer instead." },
+          { type: "end" },
+        ],
+      });
+
+      expect(calls.updates[0]).toEqual({
+        ok: true,
+        text: expect.stringContaining("Not started: plan needs 1 to 4000 characters"),
+      });
+      expect(published.startWork).toBeUndefined();
+      expect(published.replies).toEqual([
+        "The plan was too long; here is the short answer instead.",
+      ]);
+      expect(published.stopReason).toBe("end_turn");
+    }),
+  15_000,
+);
+
+test(
+  "a task turn is not offered start_work",
+  () =>
+    withFixture(async ({ root }) => {
+      const executionId = "1".repeat(26);
+      const worktree = join(root, "work", executionId);
+      mkdirSync(worktree, { mode: 0o770 });
+      chmodSync(worktree, 0o770);
+      const now = Date.now();
+      const task: Extract<RunnerCommand, { type: "task" }> = {
+        id: randomUUID(),
+        type: "task",
+        runnerId: "runner",
+        workspaceId: "workspace",
+        runId: "run-acme-task",
+        itemId: "item-acme",
+        generation: 1,
+        sessionId: "linear-session",
+        sessionGeneration: 1,
+        taskModeGeneration: 1,
+        purpose: "answer",
+        issuedAt: now,
+        expiresAt: now + 60_000,
+        profile: { agent: "claude", model: "fixture-model" },
+        prompt: "What does the acme checkout page do?",
+        inputFiles: [],
+      };
+      const scriptPath = join(root, "task-script.json");
+      const recorded = join(root, "task-agent.json");
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: "fixture-model",
+          steps: [{ type: "start_work", plan: PLAN }, { type: "end" }],
+        }),
+      );
+      await executeRunnerCommand({
+        job: { executionId, command: task },
+        outputDirectory: join(root, "output"),
+        workRoot: join(root, "work"),
+        home: join(root, "home"),
+        resultsGid: process.getgid!(),
+        launch: {
+          command: process.execPath,
+          args: [
+            "--no-env-file",
+            fileURLToPath(new URL("../src/acp/testing/fake-agent.ts", import.meta.url)),
+            recorded,
+            scriptPath,
+          ],
+          env: { PATH: "/usr/bin:/bin" },
+        },
+      });
+      const calls = JSON.parse(readFileSync(recorded, "utf8"));
+      expect(hostTools(calls)).not.toContain("start_work");
+      expect(calls.updates[0]).toMatchObject({ ok: false });
+    }),
+  15_000,
+);

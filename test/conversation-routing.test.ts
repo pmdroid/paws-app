@@ -30,6 +30,7 @@ import type { AcceptedLinearEvent } from "../src/linear";
 import {
   CONVERSATION_TIMEOUT_REPLY,
   Orchestrator,
+  START_WORK_RESPONSE,
   deliverLinearComments,
   linearCommentBrief,
   type LinearCommentPolicy,
@@ -220,7 +221,10 @@ function setup(options: { version?: string; conversations?: number } = {}) {
         )
         .all()
         .map((row) => ({ ...row, command: helpers.current(row.id).command })),
-    answer: (commandId: string, result: { text: string; replies?: string[]; timedOut?: boolean }) =>
+    answer: (
+      commandId: string,
+      result: { text: string; replies?: string[]; startWork?: string; timedOut?: boolean },
+    ) =>
       helpers.submit("runner", {
         executionId: "01K9ACME00000000000000000A",
         commandId,
@@ -232,6 +236,7 @@ function setup(options: { version?: string; conversations?: number } = {}) {
         agentExited: true,
         text: result.text,
         ...(result.replies ? { replies: result.replies } : {}),
+        ...(result.startWork ? { startWork: result.startWork } : {}),
       }),
     responses: (session: string) =>
       listOutbox(db, session)
@@ -424,4 +429,48 @@ test("session replies past the prompt budget wait for the next conversation", as
   const [second] = f.conversations();
   expect(second!.command.prompt).toContain("Second:");
   expect(listPendingLinearTurns(f.db, acme.session)).toEqual([]);
+});
+
+test("start_work in a conversation restarts the item with the plan and posts it, holding no slot while it waits", async () => {
+  const f = setup();
+  f.item("acme-busy", "running");
+  const acme = f.item("acme-1");
+  const slots = f.taskSlots();
+  expect(slots[0]!.used).toBeGreaterThanOrEqual(slots[0]!.capacity);
+  await f.say("acme-1", "c-1", "Please add a test for the card retry.");
+  expect(await f.deliver("acme-1")).toBe("wait");
+  const [started] = f.conversations();
+
+  const plan = "Add a test that checkout retries a card once on a gateway timeout.";
+  f.answer(started!.id, { text: "", replies: ["I will add that test."], startWork: plan });
+  expect(await f.deliver("acme-1")).toBe("done");
+  expect(await f.deliver("acme-1")).toBe("done");
+
+  expect(f.responses(acme.session)).toEqual([
+    "I will add that test.",
+    `${START_WORK_RESPONSE}${plan}`,
+  ]);
+  const [resume] = f.resumes();
+  expect(f.resumes()).toHaveLength(1);
+  expect(resume!.payload).toMatchObject({ itemId: "acme-1", reason: "follow_up" });
+  expect((resume!.payload as { handoff: string }).handoff).toContain(plan);
+  expect(getWorkItem(f.db, "acme-1")!.state).toBe("queued");
+  // Waiting in line holds neither a conversation nor a work slot: only acme-busy holds one.
+  expect(f.conversations()).toEqual([]);
+  expect(f.taskSlots()[0]).toMatchObject({ used: 1, capacity: 1 });
+});
+
+test("start_work after the item moved on posts that the work did not start", async () => {
+  const f = setup();
+  const acme = f.item("acme-1");
+  await f.say("acme-1", "c-1", "Please rename the flag.");
+  expect(await f.deliver("acme-1")).toBe("wait");
+  const [started] = f.conversations();
+  f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id='acme-1'");
+  f.answer(started!.id, { text: "", startWork: "Rename the flag." });
+  expect(await f.deliver("acme-1")).toBe("done");
+  expect(f.resumes()).toEqual([]);
+  expect(f.responses(acme.session)).toEqual([
+    "I could not start the work: the item moved on while we talked. Reply to try again.",
+  ]);
 });

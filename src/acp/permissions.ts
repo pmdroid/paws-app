@@ -47,6 +47,7 @@ const HOOK_TOOLS = new Set([
   "open_pull_request",
   "post_update",
   "reply",
+  "start_work",
   "get_closeout",
   "run_closeout",
 ]);

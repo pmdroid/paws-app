@@ -53,9 +53,11 @@ const helperWorker = z.object({
     commandId: true,
     text: true,
     replies: true,
+    startWork: true,
   }).strip(),
   text: RunnerHelperResultSchema.shape.text,
   replies: RunnerHelperResultSchema.shape.replies,
+  startWork: RunnerHelperResultSchema.shape.startWork,
 });
 
 function executionId(now: number) {
@@ -355,6 +357,7 @@ export async function openRunnerHealthRuntime(options: {
             ...(entry.command.account ? { account: entry.command.account } : {}),
             text: result.text,
             ...(result.replies ? { replies: result.replies } : {}),
+            ...(result.startWork ? { startWork: result.startWork } : {}),
           });
           db.run("UPDATE health_execution SET phase='publishing',result=? WHERE id=?", [
             JSON.stringify(entry.result),

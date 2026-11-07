@@ -18,6 +18,7 @@ import type {
   PostUpdateHook,
   PullRequestHook,
   ReplyHook,
+  StartWorkHook,
   UpdatePlanHook,
 } from "./ask-team";
 import type { ArtifactLimits, PublishArtifactHook } from "./artifacts";
@@ -168,6 +169,8 @@ export interface RunAgentOptions {
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
   reply?: ReplyHook;
+  /** Offered only in conversation turns. */
+  startWork?: StartWorkHook;
   publishArtifact?: PublishArtifactHook;
   closeoutProgress?: CloseoutProgressHook;
   artifactLimits?: ArtifactLimits;
