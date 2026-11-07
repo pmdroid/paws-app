@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, migrations, openDatabase } from "../src/db";
+import { legacyMigrate, migrations, openDatabase } from "../src/db";
 import { migrateDryRun } from "../scripts/migrate-dry-run";
 
 const dropped = ["linear_github_auth", "linear_github_task_account"] as const;
@@ -27,7 +27,7 @@ function applied(db: Database): boolean {
  */
 function productionTip(signIn: "verified" | "pending", path = ":memory:"): Database {
   const db = openDatabase(path);
-  migrate(db, { until: "134_runner_enrollment" });
+  legacyMigrate(db, { until: "134_runner_enrollment" });
   const item = (id: string, state: string, position: number) =>
     db.run(
       `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
@@ -62,7 +62,7 @@ function productionTip(signIn: "verified" | "pending", path = ":memory:"): Datab
 test("135 drops the GitHub sign-in tables and keeps questions and installation holds", () => {
   const db = productionTip("verified");
   try {
-    migrate(db);
+    legacyMigrate(db);
     expect(applied(db)).toBe(true);
     for (const name of dropped) expect(tables(db), name).not.toContain(name);
     expect(db.query("SELECT id, kind FROM question ORDER BY id").all()).toEqual([
@@ -81,12 +81,14 @@ test("135 drops the GitHub sign-in tables and keeps questions and installation h
 test("an open legacy sign-in stops 135 with its item until it is cancelled", () => {
   const db = productionTip("pending");
   try {
-    expect(() => migrate(db)).toThrow(/Work item signed \(SIGNED\) is waiting on a GitHub sign-in/);
+    expect(() => legacyMigrate(db)).toThrow(
+      /Work item signed \(SIGNED\) is waiting on a GitHub sign-in/,
+    );
     expect(applied(db)).toBe(false);
     for (const name of dropped) expect(tables(db), name).toContain(name);
 
     db.run("UPDATE work_item SET state='cancelled', cancel_requested=1 WHERE id='signed'");
-    migrate(db);
+    legacyMigrate(db);
     expect(applied(db)).toBe(true);
     for (const name of dropped) expect(tables(db), name).not.toContain(name);
   } finally {

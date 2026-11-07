@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { getWorkItem, migrate, migrations } from "../src/db";
+import { getWorkItem, legacyMigrate, migrations } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import { createFakeTracker, type EpicSnapshot } from "../src/linear";
 import { tempDb } from "./helpers";
@@ -101,8 +101,8 @@ test("the append-only brief migration upgrades existing items without inventing 
     db.run(
       "INSERT INTO work_item (id, epic_id, linear_issue_id, linear_identifier, title, state, branch_name, position, version, created_at) VALUES ('item', 'epic', 'child', 'ENG-2', 'Child', 'queued', 'paws/eng-2', 0, 0, 1)",
     );
-    migrate(db);
-    migrate(db);
+    legacyMigrate(db);
+    legacyMigrate(db);
     expect(getWorkItem(db, "item")?.brief).toBeNull();
     expect(getWorkItem(db, "item")?.title).toBe("Child");
   } finally {

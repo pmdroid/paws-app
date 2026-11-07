@@ -109,7 +109,7 @@ Import another module only through its `index.ts`. `test/boundaries.test.ts` fai
 
 `src/core` does not open SQLite and does not talk to Linear. `transition()` is pure. The single writer that commits a transition, outbox rows, and jobs in one `BEGIN IMMEDIATE` transaction comes later; call `transition()` and do not add a second state machine.
 
-SQLite, when opened, uses WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`, and `temp_store=MEMORY`. The migration list in `src/db/migrations.ts` is frozen at `155_pull_comment`: do not edit its entries or add to it. A new migration is one file under `src/db/migrations/`, named for the current UTC time and what it does (`20261026T0512_pull_comment_author.ts`), exporting `migration` with that id (see `src/db/migrations/README.md`). Paws applies the frozen list, then the files sorted by id. Shipped migration files are never edited.
+SQLite, when opened, uses WAL, `synchronous=FULL`, `foreign_keys=ON`, `busy_timeout=5000`, and `temp_store=MEMORY`. Migrations are drizzle-kit migrations in `src/db/drizzle/`, append-only and generated from the schema in `src/db/schema/`: change the schema, then run `bun x drizzle-kit generate --name <what_it_does>`. Use a custom migration (`bun x drizzle-kit generate --custom --name <what_it_does>`) with hand-written SQL only for what drizzle-kit can't express: `STRICT`, triggers, data backfills. Shipped migrations, their snapshots and journal entries are never edited (see `src/db/README.md`). The legacy migrations (`src/db/migrations.ts`, `src/db/migrations/`) are frozen.
 
 External adapters are async. Database helpers are sync because `bun:sqlite` is sync. Keep transactions short.
 

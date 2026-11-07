@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { insertQueuedItem, listMergeQueues, migrate, openDatabase } from "./index";
+import { insertQueuedItem, listMergeQueues, legacyMigrate, openDatabase } from "./index";
 
 test("normalizing old queue rows preserves order, kept places and notification metadata", () => {
   const db = openDatabase(":memory:");
-  migrate(db, { until: "20261029T1559_opencode_agent_rows" });
+  legacyMigrate(db, { until: "20261029T1559_opencode_agent_rows" });
   for (const [id, repository] of [
     ["first", "Acme/APP"],
     ["second", "acme/app"],
@@ -18,7 +18,7 @@ test("normalizing old queue rows preserves order, kept places and notification m
   const before = db
     .query("SELECT id,item_id,ready_at,kept,notified_position FROM merge_queue_entry ORDER BY id")
     .all();
-  migrate(db);
+  legacyMigrate(db);
   expect(
     db
       .query("SELECT id,item_id,ready_at,kept,notified_position FROM merge_queue_entry ORDER BY id")
@@ -28,7 +28,7 @@ test("normalizing old queue rows preserves order, kept places and notification m
     ["first", "acme/app", 1],
     ["second", "acme/app", 2],
   ]);
-  migrate(db);
+  legacyMigrate(db);
   expect(listMergeQueues(db)).toHaveLength(2);
   db.close();
 });

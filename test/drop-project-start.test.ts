@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, migrations, openDatabase } from "../src/db";
+import { legacyMigrate, migrations, openDatabase } from "../src/db";
 import { migrateDryRun } from "../scripts/migrate-dry-run";
 
 const dropped = [
@@ -39,7 +39,7 @@ function beforeDrop(
   path = ":memory:",
 ): Database {
   const db = openDatabase(path);
-  migrate(db, { until: "129_parent_delegation" });
+  legacyMigrate(db, { until: "129_parent_delegation" });
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
   );
@@ -95,7 +95,7 @@ test("a database whose only project items are finished or failed drops the proje
         "SELECT id,delegation_id,state,owner_user_id,linear_project_name FROM work_item ORDER BY id",
       )
       .all();
-    migrate(db);
+    legacyMigrate(db);
     expect(applied(db)).toBe(true);
     for (const name of dropped) expect(tables(db), name).not.toContain(name);
     expect(columns(db, "work_item")).not.toContain("project_approval_id");
@@ -126,7 +126,7 @@ test("an active project item stops the migration with its id until it is cancell
     ["active", "awaiting_input"],
   ]);
   try {
-    expect(() => migrate(db)).toThrow(/Work item active \(ACTIVE, awaiting_input\)/);
+    expect(() => legacyMigrate(db)).toThrow(/Work item active \(ACTIVE, awaiting_input\)/);
     expect(applied(db)).toBe(false);
     for (const name of dropped) expect(tables(db), name).toContain(name);
     expect(columns(db, "work_item")).toContain("project_approval_id");
@@ -135,7 +135,7 @@ test("an active project item stops the migration with its id until it is cancell
     );
 
     db.run("UPDATE work_item SET state='cancelled' WHERE id='active'");
-    migrate(db);
+    legacyMigrate(db);
     expect(applied(db)).toBe(true);
     expect(tables(db)).not.toContain("project_approval");
   } finally {

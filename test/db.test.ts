@@ -7,14 +7,14 @@ import {
   enqueueOutbox,
   getJob,
   getOutbox,
-  migrate,
+  legacyMigrate,
   openDatabase,
 } from "../src/db";
 import { tempHome } from "./helpers";
 
 function openTemp() {
   const db = openDatabase(join(tempHome(), "paws.db"));
-  migrate(db);
+  legacyMigrate(db);
   return db;
 }
 
@@ -42,15 +42,15 @@ describe("sqlite", () => {
   test("removes legacy pairing requests while retaining enrollment storage", () => {
     const db = openDatabase(":memory:");
     try {
-      migrate(db, { until: "145_work_item_event" });
+      legacyMigrate(db, { until: "145_work_item_event" });
       db.run(`INSERT INTO runner_pairing(id,claim_hash,code_hash,csr,request_fingerprint,name,expires_at)
         VALUES('pending','claim','code','csr','fingerprint','Legacy host',9999999999999)`);
       const tablesBefore = db
         .query("SELECT name FROM sqlite_master WHERE name='runner_enrollment'")
         .all();
       expect(tablesBefore).toHaveLength(1);
-      migrate(db);
-      migrate(db);
+      legacyMigrate(db);
+      legacyMigrate(db);
       expect(db.query("SELECT name FROM sqlite_master WHERE name='runner_pairing'").all()).toEqual(
         [],
       );
@@ -65,7 +65,7 @@ describe("sqlite", () => {
 
   test("migrate is idempotent and creates job and outbox", () => {
     const db = openTemp();
-    migrate(db);
+    legacyMigrate(db);
     const names = db
       .query<{ name: string }, []>(
         "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",

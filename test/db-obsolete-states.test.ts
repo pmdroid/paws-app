@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 import { WORK_ITEM_STATES } from "../src/core";
-import { beginImplementRun, insertQueuedItem, migrate, openDatabase } from "../src/db";
+import { beginImplementRun, insertQueuedItem, legacyMigrate, openDatabase } from "../src/db";
 
 const PREVIOUS = "147_job_item_version_and_question_reason";
 
 test("removing obsolete states preserves work items, references, indexes and setup triggers", () => {
   const db = openDatabase(":memory:");
   try {
-    migrate(db, { until: PREVIOUS });
+    legacyMigrate(db, { until: PREVIOUS });
     insertQueuedItem(db, { id: "spent" });
     const { run } = beginImplementRun(db, "spent", 100);
     db.run(`UPDATE work_item SET state='exhausted', task_key='task', accepted_head='head',
@@ -27,8 +27,8 @@ test("removing obsolete states preserves work items, references, indexes and set
         "SELECT type,name,sql FROM sqlite_master WHERE tbl_name='work_item' AND type<>'table' ORDER BY name",
       )
       .all();
-    migrate(db);
-    migrate(db);
+    legacyMigrate(db);
+    legacyMigrate(db);
     expect(db.query("SELECT * FROM work_item ORDER BY id").all()).toEqual(
       before.map((row) => ({
         ...row,
@@ -74,10 +74,10 @@ test("removing obsolete states preserves work items, references, indexes and set
 test("an unexpected signoff row stops migration without losing data", () => {
   const db = openDatabase(":memory:");
   try {
-    migrate(db, { until: PREVIOUS });
+    legacyMigrate(db, { until: PREVIOUS });
     insertQueuedItem(db, { id: "unexpected" });
     db.run("UPDATE work_item SET state='awaiting_signoff' WHERE id='unexpected'");
-    expect(() => migrate(db)).toThrow("unexpectedly awaiting sign-off");
+    expect(() => legacyMigrate(db)).toThrow("unexpectedly awaiting sign-off");
     expect(db.query("SELECT state FROM work_item").get()).toEqual({ state: "awaiting_signoff" });
     expect(db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
