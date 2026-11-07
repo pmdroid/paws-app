@@ -1,4 +1,4 @@
-import { readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { throwawayEnvironment } from "./throwaway-environment";
 
@@ -18,6 +18,8 @@ const all = readdirSync(proofs)
   .map((file) => file.slice(0, -3))
   .sort();
 for (const name of named) if (!all.includes(name)) throw new Error(`No proof scenario ${name}`);
+
+type Assertion = { name: string; passed: boolean; observed: unknown };
 
 function git(...command: string[]) {
   const result = Bun.spawnSync(["git", ...command], { cwd: repo });
@@ -40,9 +42,14 @@ if (base) {
   const matches = await Promise.all(selected.map((name) => covered(name, changed)));
   selected = selected.filter((_, index) => matches[index]);
 }
-console.log(`Proof scenarios: ${selected.join(", ") || "none"}\nEvidence: ${evidence}`);
+console.log(
+  `${selected.length > 0 ? `Proof scenarios: ${selected.join(", ")}` : "No proof scenario covers these paths"}\nEvidence: ${evidence}`,
+);
 const failed: string[] = [];
 for (const name of selected) {
+  const bundle = join(evidence, `proof-${name}`);
+  rmSync(`${bundle}.md`, { force: true });
+  rmSync(`${bundle}.json`, { force: true });
   const { root, home, env } = throwawayEnvironment();
   const child = Bun.spawn([process.execPath, "--no-env-file", "test/proofs/harness.ts", name], {
     cwd: repo,
@@ -55,6 +62,19 @@ for (const name of selected) {
   clearTimeout(timer);
   rmSync(home, { recursive: true, force: true });
   console.log(`${exit === 0 ? "PASS" : "FAIL"} ${name} (${root})`);
+  if (existsSync(`${bundle}.md`)) console.log(readFileSync(`${bundle}.md`, "utf8"));
   if (exit !== 0) failed.push(name);
+}
+for (const name of failed) {
+  const bundle = join(evidence, `proof-${name}.json`);
+  const { assertions = [] } = existsSync(bundle)
+    ? (JSON.parse(readFileSync(bundle, "utf8")) as { assertions?: Assertion[] })
+    : {};
+  const missed = assertions.filter((entry) => !entry.passed);
+  console.error(
+    `FAIL ${name}${missed.length === 0 ? ": the scenario stopped before its result" : ""}`,
+  );
+  for (const entry of missed)
+    console.error(`  ${entry.name}: ${JSON.stringify(entry.observed)?.slice(0, 500)}`);
 }
 process.exitCode = failed.length > 0 ? 1 : 0;

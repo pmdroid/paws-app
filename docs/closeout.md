@@ -333,6 +333,23 @@ test/merge-lane.test.ts  imports src/merge/index.ts
 full suite (556 files): package.json changed
 ``` `bun scripts/affected-tests.ts --list <base> <head>` prints the selection without running it. `--bail`, or `PAWS_TEST_BAIL=1`, adds `--bail=1` to the test command.
 
+### Proof scenarios
+
+In this repository, the `proof` check runs `bun run verify:proof --changed origin/main` when the change touches `src/loop/**`, `src/db/commands.ts`, `src/merge/**`, `src/linear/**`, `src/github/**`, `src/runner-backend/**` or `src/scheduler/**`. A change outside those paths skips it. The runner picks the scenarios in `test/proofs/` whose `covers` globs match a file changed since the merge base and runs each in a throwaway home with fake Linear, fake GitHub and the scripted ACP agent. The timeout is 15 minutes, and CI does not run it.
+
+- **A scenario covers the change:** each scenario's `proof-<name>.md` bundle (actions, Linear and GitHub calls, transitions and assertions) goes into the check's log, which Closeout stores as the check's evidence. No person approves it.
+- **No scenario covers the change:** the check passes and its log says `No proof scenario covers these paths`.
+- **A scenario fails:** the check fails. The failed assertions and what they observed come last in the log, so they reach the agent in its fix feedback.
+
+The implement prompt asks the agent to add or update a scenario when it changes how an item moves through Paws. To write one, add `test/proofs/<name>.ts` that default-exports a `Proof` from `test/proofs/harness.ts`:
+
+- `covers`: globs of the source files whose change should run the scenario.
+- `summary`: one sentence on the behaviour it shows.
+- `agent(input)`: the scripted agent's steps for each turn, such as an `fs_write` in `input.worktree`.
+- `run(proof)`: the person's actions (`proof.delegate()`, `proof.stopInLinear()`, …), `proof.waitFor()` for the loop to reach a state, and `proof.expect(assertion, passed, observed)` for each claim, checked against `proof.linear`, `proof.github` and `proof.itemState()`.
+
+`bun run verify:proof <name>` runs it and writes `proof-<name>.md` and `proof-<name>.json` to `PAWS_EVIDENCE_DIR` (default `./proof-evidence`).
+
 ## Review escapes
 
 A review escape is a bug that Closeout's independent review accepted and a later pull request had to fix. `evals/review-escapes.jsonl` collects the confirmed ones, so a change to the reviewer can be scored against real misses instead of guessed.
