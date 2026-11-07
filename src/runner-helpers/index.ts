@@ -123,6 +123,7 @@ export function createRunnerHelpers(options: {
       profile: RunnerProfile;
       prompt: string;
       account?: RunnerAccount;
+      conversation?: HelperCommand["conversation"];
     }) {
       return immediate(db, () => {
         const session = getLinearSession(db, input.sessionId);

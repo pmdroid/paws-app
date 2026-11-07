@@ -71,6 +71,15 @@ function fixture(version: string | null, conversations?: number) {
       purpose,
       profile: { agent: "claude", model: null },
       prompt: "What does the acme checkout do?",
+      ...(purpose === "conversation"
+        ? {
+            conversation: {
+              itemId: "item-acme",
+              runId: "run-acme",
+              resumeSessionId: `claude-${sessionId}`,
+            },
+          }
+        : {}),
     }).command;
   cleanup.push(() => {
     db.close();

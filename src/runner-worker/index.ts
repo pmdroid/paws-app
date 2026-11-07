@@ -235,6 +235,11 @@ export { CHECKPOINT_COMMIT_MESSAGE };
  */
 export const HANDOVER_STEP_TIMEOUT_MS = 60_000;
 
+export const CONVERSATION_RESULT_MARGIN_MS = 30_000;
+
+const CONVERSATION_PREAMBLE =
+  "A person wrote about this item. This turn is read-only: read the checkout and answer with the reply tool. Edits, commits and pushes are refused.";
+
 export const HANDOVER_COMMIT_MESSAGE =
   "Save work in progress to hand the session to another runner";
 
@@ -420,6 +425,7 @@ export interface RunnerWorkerResult {
   candidateSha?: string;
   reviewText?: string;
   text?: string;
+  replies?: string[];
   login?: {
     agent: "claude" | "codex" | "grok" | "opencode";
     authenticated: boolean;
@@ -745,6 +751,7 @@ export async function executeRunnerCommand(
   if (process.getuid?.() === 0) throw new Error("Runner agents must run as a non-root user");
   const repository = command.type === "run" || command.type === "review";
   const task = command.type === "task";
+  const talk = command.type === "helper" ? command.conversation : undefined;
   const phase =
     (repository || task) && options.resume !== true
       ? startPhaseClock({
@@ -832,6 +839,7 @@ export async function executeRunnerCommand(
   let activityOmitted = false;
   const updates = createUpdateLimiter();
   const replies = new Map<string, number>();
+  const sentReplies: string[] = [];
   let githubRead: GitHubReadConfig | undefined;
   const readRedactor = () =>
     command.type === "run" && command.githubRead
@@ -910,7 +918,7 @@ export async function executeRunnerCommand(
     // A run checks out at one path on every runner so cwd-keyed agent sessions keep their key.
     const worktree = join(
       options.workRoot,
-      command.type === "run" ? command.runId : job.executionId,
+      command.type === "run" ? command.runId : (talk?.runId ?? job.executionId),
     );
     if (command.type === "run" && !resumed) removeLeftoverCheckout(worktree);
     if (task) {
@@ -1048,6 +1056,15 @@ export async function executeRunnerCommand(
           .split("\n")
           .filter(Boolean))
           await invokeGit(["-C", worktree, "update-ref", "-d", ref]);
+    } else if (talk) {
+      let info;
+      try {
+        info = lstatSync(worktree);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        throw new Error("The item's checkout is not on this runner", { cause: error });
+      }
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Unsafe runner workspace");
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
     }
@@ -1145,6 +1162,7 @@ export async function executeRunnerCommand(
       repository || task || command.type === "helper"
         ? (options.inputs?.prompt ?? command.prompt)
         : "Check agent connection.";
+    const conversationPrompt = talk ? `${CONVERSATION_PREAMBLE}\n\n${prompt}` : undefined;
     if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
     // A moved run unpacks its saved session at the same paths before the agent starts. Paws
     // learns once whether the agent loaded it; otherwise the run starts a new session.
@@ -1219,7 +1237,7 @@ export async function executeRunnerCommand(
         ? restoreRequest
           ? restored && restoreRequest.sessionId
           : command.resumeSessionId
-        : undefined;
+        : talk?.resumeSessionId;
     const agent: RunAgentOptions = {
       ...options.launch,
       hostAccess: true,
@@ -1279,15 +1297,19 @@ export async function executeRunnerCommand(
           }
         : {}),
       prepareOnly: !repository && command.type !== "helper" && !task,
-      itemId: repository || task ? command.itemId : job.executionId,
+      itemId: repository || task ? command.itemId : (talk?.itemId ?? job.executionId),
       runId: job.executionId,
+      ...(talk
+        ? { timeoutMs: Math.max(1, command.expiresAt - Date.now() - CONVERSATION_RESULT_MARGIN_MS) }
+        : {}),
       prompt: resumed
         ? RESUME_PROMPT
-        : earlierSession
-          ? `This continues your earlier session in a fresh checkout at ${worktree}, which holds the latest commit.\n\n${currentRequest(prompt)}`
-          : prompt,
+        : (conversationPrompt ??
+          (earlierSession
+            ? `This continues your earlier session in a fresh checkout at ${worktree}, which holds the latest commit.\n\n${currentRequest(prompt)}`
+            : prompt)),
       ...(earlierSession && !resumed
-        ? { resume: { sessionId: earlierSession, replayPrompt: prompt } }
+        ? { resume: { sessionId: earlierSession, replayPrompt: conversationPrompt ?? prompt } }
         : {}),
       ...(resumed
         ? {
@@ -1330,6 +1352,8 @@ export async function executeRunnerCommand(
                 ? { restored: true }
                 : { restored: false, reason: "load" },
             );
+          if (talk && event.type === "session_update" && event.update.sessionUpdate === "tool_call")
+            reviewText = "";
           if (
             (command.type === "review" || command.type === "helper") &&
             event.type === "session_update" &&
@@ -1473,7 +1497,7 @@ export async function executeRunnerCommand(
             }
           : undefined,
       reply:
-        command.type === "run"
+        command.type === "run" || talk
           ? {
               async post(text) {
                 const parsed = RunnerEventSchema.safeParse({ type: "reply", text });
@@ -1486,6 +1510,7 @@ export async function executeRunnerCommand(
                     reason: `at most ${REPLIES_PER_TURN} replies per turn`,
                   };
                 replies.set(job.executionId, sent + 1);
+                if (talk) sentReplies.push(parsed.data.text);
                 emit(parsed.data);
                 return { posted: true as const };
               },
@@ -1946,6 +1971,7 @@ export async function executeRunnerCommand(
       throw new Error("Runner response exceeds size limit");
     const result: RunnerWorkerResult = { executionId: job.executionId, commandId: command.id, run };
     if (command.type === "helper") result.text = reviewText;
+    if (sentReplies.length) result.replies = sentReplies;
     if (command.type === "login_check") {
       const checked =
         command.agent === "claude" || command.agent === "codex"
@@ -2131,6 +2157,7 @@ export async function executeRunnerCommand(
               executionId: true,
               commandId: true,
               text: true,
+              replies: true,
             })
               .strip()
               .parse(run),

@@ -304,6 +304,30 @@ test("helper commands accept only bounded session-owned routing purposes", () =>
     expect(RunnerCommandSchema.safeParse({ ...helper, ...changed }).success).toBe(false);
 });
 
+test("a conversation helper names the item, its run's checkout and the session to resume", () => {
+  const conversation = { itemId: "item-acme", runId: "run-acme", resumeSessionId: "session-acme" };
+  const helper = {
+    ...common,
+    type: "helper",
+    expiresAt: common.issuedAt + 900_000,
+    sessionId: "session",
+    sessionGeneration: 2,
+    purpose: "conversation",
+    profile,
+    prompt: "What does the acme checkout do?",
+    conversation,
+  };
+  expect(RunnerCommandSchema.safeParse(helper).success).toBe(true);
+  for (const refused of [
+    { ...helper, conversation: undefined },
+    { ...helper, purpose: "classify", expiresAt: common.issuedAt + 60_000 },
+    { ...helper, conversation: { ...conversation, resumeSessionId: "../other" } },
+    { ...helper, conversation: { ...conversation, readOnly: false } },
+    { ...helper, expiresAt: common.issuedAt + 900_001 },
+  ])
+    expect(RunnerCommandSchema.safeParse(refused).success).toBe(false);
+});
+
 test("a review command names a Claude or Codex model and a base other than the checkout head", () => {
   const review = {
     ...run,

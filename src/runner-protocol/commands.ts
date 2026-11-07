@@ -336,6 +336,7 @@ export const RunnerCommandSchema = z
       profile: RunnerProfileSchema,
       prompt: z.string().min(1).max(65_536),
       account: work.account,
+      conversation: z.strictObject({ itemId: id, runId: id, resumeSessionId: id }).optional(),
     }),
     z.strictObject({
       ...common,
@@ -419,6 +420,11 @@ export const RunnerCommandSchema = z
     (command) =>
       command.type !== "helper" ||
       command.expiresAt - command.issuedAt <= runnerHelperLifetime(command.purpose),
+  )
+  .refine(
+    (command) =>
+      command.type !== "helper" ||
+      (command.purpose === "conversation") === (command.conversation !== undefined),
   );
 
 export function runnerHelperLifetime(
