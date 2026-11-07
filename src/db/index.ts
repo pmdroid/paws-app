@@ -256,6 +256,7 @@ export {
   INSTANCE_HEARTBEAT_MS,
   jobInstanceElsewhere,
   liveInstances,
+  ownerGoneSteps,
   registerInstance,
   roleRunsJobs,
   type Instance,
