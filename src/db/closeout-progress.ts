@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, desc, eq, inArray, isNotNull } from "drizzle-orm";
+import { orm } from "./orm";
+import { closeoutProgress, closeoutStep } from "./schema";
 import { immediate } from "./tx";
 
 export const CLOSEOUT_OUTPUT_CAP_BYTES = 64 * 1024;
@@ -649,4 +652,46 @@ export function setRunningCloseoutStepDetail(
       [now, itemId, head, stepId],
     );
   });
+}
+
+export function failedCloseoutReviews(
+  db: Database,
+  itemId: string,
+): AcceptedCloseoutReviews | null {
+  const run = orm(db)
+    .select({
+      id: closeoutProgress.id,
+      taskId: closeoutProgress.taskId,
+      head: closeoutProgress.head,
+    })
+    .from(closeoutProgress)
+    .where(and(eq(closeoutProgress.itemId, itemId), isNotNull(closeoutProgress.decision)))
+    .orderBy(desc(closeoutProgress.updatedAt), desc(closeoutProgress.id))
+    .limit(1)
+    .get();
+  if (run === undefined) return null;
+  const reviews = orm(db)
+    .select({
+      id: closeoutStep.stepId,
+      attempt: closeoutStep.attempt,
+      failOn: closeoutStep.reviewFailOn,
+      preExisting: closeoutStep.reviewPreExisting,
+    })
+    .from(closeoutStep)
+    .where(
+      and(
+        eq(closeoutStep.progressId, run.id),
+        eq(closeoutStep.kind, "review"),
+        inArray(closeoutStep.state, ["failed", "exhausted"]),
+      ),
+    )
+    .orderBy(closeoutStep.ordinal, closeoutStep.stepId)
+    .all()
+    .map((step) => ({
+      id: step.id,
+      attempt: step.attempt,
+      failOn: step.failOn as NonNullable<CloseoutStepWrite["failOn"]> | null,
+      preExisting: indexes(step.preExisting),
+    }));
+  return { taskId: run.taskId, head: run.head, reviews };
 }

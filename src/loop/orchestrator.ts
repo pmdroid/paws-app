@@ -114,6 +114,7 @@ import {
   visualReviewRequirements,
   bypassable,
   readReviewRounds,
+  reviewFindingText,
   snapshotRetryBaseline,
   storedReviewFindings,
   loggedSessionCloseout,
@@ -125,6 +126,7 @@ import {
   usesPullRequestDraft,
   type PullRequestDraft,
   type GateResult,
+  type ReviewFindings,
   type ReviewRounds,
   type CloseoutGate,
   type CloseoutGateOptions,
@@ -620,10 +622,12 @@ import { createRepositoryGit } from "./repository-git";
 import { readFixDiff, settleReviewEscapes } from "./review-escapes";
 import { recordAcceptedFindings } from "./review-findings";
 import {
+  failedReviewFindings,
   openFindings,
   openFindingsLine,
   openFindingsSection,
   pawsIssueUrl,
+  reviewFindingGroups,
   type OpenItems,
 } from "./open-findings";
 import type { RuntimeList } from "../runtimes";
@@ -4286,7 +4290,10 @@ export class Orchestrator {
           ...(deps.home ? { home: deps.home } : {}),
           ...(deps.signal ? { signal: deps.signal } : {}),
         };
-        const result = await runner!({ ...options, ...this.trustedRunInputs(item, options) });
+        const result = await runner!({
+          ...options,
+          ...(await this.trustedRunInputs(item, options)),
+        });
         assertCurrent();
         const { ref } = this.itemHead(item);
         const at = (await git(["-C", worktree, "rev-parse", ref])).trim();
@@ -4835,14 +4842,16 @@ export class Orchestrator {
     const exhausted = result?.decision?.items.find(
       (check) => check.kind === "review" && check.state === "exhausted",
     );
+    const findings = reviewFindingText(await this.failedReviewFindings(item));
     this.assertJobCurrent(item.id);
     const question = askReviewRounds(this.db, {
       item,
       help,
+      findings,
       rounds: {
         ...rounds,
         limit: reviewRoundLimit(exhausted?.message),
-        handoff: result?.handoff ?? help.summary,
+        handoff: result?.handoff ?? [help.summary, findings].filter(Boolean).join("\n"),
       },
       publicUrl: this.options.publicUrl ?? null,
       now: this.now(),
@@ -8793,7 +8802,11 @@ export class Orchestrator {
         !input.prepareOnly
           ? await this.commitPolicy(item)
           : undefined;
-      return backend({ ...input, commitPolicy: policy, ...this.trustedRunInputs(item, input) });
+      return backend({
+        ...input,
+        commitPolicy: policy,
+        ...(await this.trustedRunInputs(item, input)),
+      });
     });
     this.conversations.set(item.id, runner);
     if (item.sessionKey && getLinearSession(this.db, item.sessionKey))
@@ -8854,7 +8867,11 @@ export class Orchestrator {
           input.role === "implementer" && !input.prepareOnly
             ? await this.commitPolicy(item)
             : undefined;
-        return runner({ ...input, commitPolicy: policy, ...this.trustedRunInputs(item, input) });
+        return runner({
+          ...input,
+          commitPolicy: policy,
+          ...(await this.trustedRunInputs(item, input)),
+        });
       },
       agentRunner: this.remoteAgentForItem(item.id),
       ...(this.options.home ? { home: this.options.home } : {}),
@@ -9187,12 +9204,19 @@ export class Orchestrator {
   }
 
   /** The Closeout policy and the runtime list, both read from origin/main and never the work tree. */
-  private trustedRunInputs(
+  private async trustedRunInputs(
     item: WorkItemRecord,
     input: RunAgentOptions,
-  ): Pick<
-    RunAgentOptions,
-    "closeoutPolicy" | "runtimes" | "githubRead" | "ciRerun" | "suggestedFindings"
+  ): Promise<
+    Pick<
+      RunAgentOptions,
+      | "closeoutPolicy"
+      | "runtimes"
+      | "githubRead"
+      | "ciRerun"
+      | "suggestedFindings"
+      | "reviewFindings"
+    >
   > {
     const repository = this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
@@ -9208,9 +9232,11 @@ export class Orchestrator {
     const pull = getItemPullRequest(this.db, item.id);
     const github = pull ? this.githubForRepository(repository) : null;
     const suggested = input.readOnly ? [] : waitingSuggestions(this.db, item.id);
+    const failed = input.readOnly ? [] : reviewFindingGroups(await this.failedReviewFindings(item));
     return {
       ...runtimes,
       ...(suggested.length ? { suggestedFindings: suggested } : {}),
+      ...(failed.length ? { reviewFindings: failed } : {}),
       ...(!input.readOnly && this.agentReadAllowed(item, `${repository.owner}/${repository.repo}`)
         ? { githubRead: { prompt: GITHUB_READ_PROMPT } }
         : {}),
@@ -9249,6 +9275,16 @@ export class Orchestrator {
           : load;
       },
     };
+  }
+
+  private async failedReviewFindings(item: WorkItemRecord): Promise<ReviewFindings[]> {
+    try {
+      await this.pullCloseoutEvidence(item);
+      return await failedReviewFindings(this.db, item.id, this.options.pawsRoot);
+    } catch (caught) {
+      journalCaught(caught, "orchestrator.failedReviewFindings", item.id);
+      return [];
+    }
   }
 
   private agentReadAllowed(item: WorkItemRecord, repository: string): boolean {

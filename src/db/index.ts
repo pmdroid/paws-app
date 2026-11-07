@@ -536,6 +536,7 @@ export {
   acceptedCloseoutReviews,
   acceptedCloseoutRuns,
   ensureCloseoutProgress,
+  failedCloseoutReviews,
   finishCloseoutProgress,
   latestCloseoutIdentity,
   closeoutHeadsStarted,

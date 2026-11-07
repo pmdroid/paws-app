@@ -256,6 +256,15 @@ export const RunnerCommandSchema = z
         )
         .max(50)
         .optional(),
+      reviewFindings: z
+        .array(
+          z.strictObject({
+            reviewId: z.string().min(1).max(200),
+            lines: z.array(z.string().min(1).max(4000)).min(1).max(21),
+          }),
+        )
+        .max(20)
+        .optional(),
       githubRead: z.literal(true).optional(),
       ciRerun: z.literal(true).optional(),
       questionEndsTurn: z.literal(true).optional(),
