@@ -1354,9 +1354,6 @@ export {
   setAgentAccountEnabledSteps,
   type AgentAccount,
   type AgentAccountBinding,
-  type AccountAdmission,
-  type AgentAccountErrorCode,
-  type CommandAccount,
 } from "./agent-accounts";
 export {
   ACCOUNT_MODEL_RECHECK_MS,

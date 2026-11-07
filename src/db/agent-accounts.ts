@@ -55,7 +55,7 @@ export type AgentAccountBinding = {
   removedAt: number | null;
 };
 
-export type CommandAccount = {
+type CommandAccount = {
   commandId: string;
   workspaceId: string;
   runnerId: string;
@@ -66,7 +66,7 @@ export type CommandAccount = {
   recordedAt: number;
 };
 
-export type AgentAccountErrorCode =
+type AgentAccountErrorCode =
   | "not_found"
   | "foreign_workspace"
   | "duplicate"
@@ -693,7 +693,7 @@ export function commandAccount(db: Database, commandId: string): CommandAccount 
   return settled(sqliteDb(db).run((q) => commandAccountSteps(q, commandId)));
 }
 
-export type AccountAdmission = {
+type AccountAdmission = {
   agent: RunnerCodingAgent;
   eligible: string[];
   skipped: { accountId: string; reason: AgentAccountErrorCode }[];
