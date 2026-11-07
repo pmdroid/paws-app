@@ -62,6 +62,42 @@ Triggers, `STRICT` and the `decision_memory_search` FTS table have no Postgres c
 
 `pgliteDb()` in `test/pglite.ts` returns a Drizzle database on PGlite (in-process Postgres) with the Postgres migrations applied. `test/db-dialect-drift.test.ts` fails, naming the table and column, when the two schemas differ in tables, column names or order, nullability or primary keys; `test/db-pg-migrations.test.ts` applies `0000_baseline` to PGlite and fails when the Postgres schema has a change no migration carries.
 
+## The async `Db` interface
+
+`bun:sqlite` answers at once, Postgres drivers answer later, so Paws's database layer becomes async one module at a time. A converted module takes a `Db` from `src/db/db.ts` instead of a `bun:sqlite` `Database`:
+
+- `sqliteDb(database)` wraps today's database, one per connection. `db.sync((orm) => …)` runs synchronous Drizzle queries when it is called and returns an already-settled promise, so SQLite behaves exactly as before.
+- `postgresDb(pg)` wraps a Drizzle Postgres database: `postgresDb(openPostgres(url))`, or PGlite in tests. Its queries are awaited.
+- `db.transaction(async (tx) => …)` is `BEGIN IMMEDIATE` on SQLite and a Postgres transaction otherwise. Run the body's queries on `tx`; `tx.transaction()` is a savepoint. Independent SQLite transactions on one connection wait for each other, so calling `db.transaction()` instead of `tx.transaction()` inside a body waits forever. Called inside a synchronous `immediate()`, it rejects before running its body, because `immediate()` would commit while the body awaits. While a SQLite transaction awaits, other code on the connection runs inside it, so keep its body to database calls.
+
+Each function narrows on `db.dialect` and writes the query once per dialect, against `schema` on SQLite and `pgSchema` on Postgres, keeping its name and parameters; its return type becomes a promise of what it returned. `src/db/queue-wait.ts` is the first module converted this way.
+
+### Converting a module
+
+1. Change `database: Database` to `db: Db` and return `Promise<T>`. On SQLite, put the existing Drizzle queries inside `db.sync()`. Share a SQLite helper between functions as a plain function on `Orm`; chaining promises with `.then` or `await` on SQLite defers the result past the caller.
+2. Add the Postgres branch with the same queries on `pgSchema`, awaited. A function that writes several rows runs them in `db.orm.transaction()`.
+3. An async caller awaits the function. A caller that is still synchronous, such as `dispatch()` inside its `immediate()` transaction, unwraps it with `settled(f(sqliteDb(database), …))`. `settled()` throws if the promise has not settled, which happens only off SQLite. When that caller becomes async, replace `settled(…)` with `await`.
+
+### Tests on both dialects
+
+`forEachDialect()` in `test/dialects.ts` runs a suite once on SQLite and once on PGlite. Each test opens its own database and closes it:
+
+```ts
+forEachDialect((open) => {
+  test("an item's wait starts once per version", async () => {
+    const { db, close } = await open();
+    try {
+      await insertWorkItem(db, "waiting");
+      expect(await queueWaitSince(db, "waiting", 1, 100)).toBe(100);
+    } finally {
+      await close();
+    }
+  });
+});
+```
+
+Seed rows through Drizzle on both schemas (`insertWorkItem()` does the work item), not through a SQLite-only helper. Tests that drive a still-synchronous caller stay SQLite-only.
+
 ## Drift test
 
 ```sh

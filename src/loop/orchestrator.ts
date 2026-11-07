@@ -232,6 +232,8 @@ import {
   getQueuePosition,
   clearQueueWait,
   queueWaitSince,
+  settled,
+  sqliteDb,
   getRun,
   CLEANUP_BLOCKED_NOTICE,
   blockConversation as blockStoredConversation,
@@ -6885,7 +6887,7 @@ export class Orchestrator {
     for (const id of itemIds) {
       const item = getWorkItem(this.db, id);
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      clearQueueWait(this.db, item.id);
+      settled(clearQueueWait(sqliteDb(this.db), item.id));
       const need = this.options.runnerSetupNeed?.(item.id, agentFor(item), now) ?? null;
       if (need) {
         immediate(this.db, () => {
@@ -6981,7 +6983,10 @@ export class Orchestrator {
       )
         continue;
       const name = item.linearIdentifier ?? "this issue";
-      if (now - queueWaitSince(this.db, item.id, item.version, now) >= hours * 3_600_000) {
+      if (
+        now - settled(queueWaitSince(sqliteDb(this.db), item.id, item.version, now)) >=
+        hours * 3_600_000
+      ) {
         failWorkItem(
           this.db,
           item,
@@ -6993,7 +6998,7 @@ export class Orchestrator {
       }
       const sessionId = this.activitySession(item);
       if (sessionId === null) continue;
-      const position = getQueuePosition(this.db, item.id);
+      const position = settled(getQueuePosition(sqliteDb(this.db), item.id));
       enqueueOutboxOnce(this.db, {
         target: OUTBOX_ACTIVITY.target,
         op: OUTBOX_ACTIVITY.op,

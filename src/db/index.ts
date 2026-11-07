@@ -366,6 +366,7 @@ export {
 } from "./db-check";
 export { closingParen, createTableParts, splitTopLevel, unquoteName } from "./ddl";
 export { orm, type Orm } from "./orm";
+export { postgresDb, settled, sqliteDb, type Db, type PgDb, type PgOrm, type SqliteDb } from "./db";
 export * as schema from "./schema";
 export * as pgSchema from "./schema-pg";
 export { rawSchema } from "./schema/raw";

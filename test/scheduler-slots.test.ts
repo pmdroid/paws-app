@@ -9,6 +9,8 @@ import {
   putWorkspaceUser,
   runnerSlotFree,
   syncWorkspaceMember,
+  settled,
+  sqliteDb,
 } from "../src/db";
 import { tempDb } from "./helpers";
 import { workspaceDispatch } from "./fake-workspace";
@@ -147,7 +149,7 @@ test("the queue line reports the slots the scheduler counts as busy", () => {
   const { db } = fixture();
   try {
     const admitted = workspaceDispatch(db, { now: NOW });
-    const position = getQueuePosition(db, "next-4");
+    const position = settled(getQueuePosition(sqliteDb(db), "next-4"));
     expect(position).toMatchObject({ busySlots: 2 + admitted.length, totalSlots: 5 });
     expect(queueLine(position!)).toBe("Queued, 1st in line. 5 of 5 runner slots are busy.");
   } finally {
