@@ -5,21 +5,87 @@ const ALLOWED_FILES = new Set(["src/db/migrate.ts", "src/db/open.ts"]);
 const TEST_FILE = /(^|\/)(test|fixtures)\/|\.test\.tsx?$/;
 const RECEIVER = /^(?:db|database|\w*Db|\w*Database)$/;
 const OPENED = /\b(?:const|let)\s+(\w+)\s*=\s*(?:new Database|openDatabase)\(/g;
-const CALL = /(?<![\w$.])((?:[\w$]+\.)*([\w$]+)\s*\.(?:query|run|prepare|exec))\s*\(\s*(sql`)?/g;
+const CALL =
+  /(?<![\w$.])((?:[\w$]+\.)*([\w$]+)\s*\.(?:query|run|prepare|exec))\s*(?:<[^()]*?>\s*)?\(\s*(sql`)?/g;
+const REGEX_BEFORE = /(?:[(,=:[!&|?{};+\-*%<>~^]|^|\breturn)$/;
+
+export function maskCode(source: string): string {
+  const out = source.split("");
+  const templates: number[] = [];
+  let depth = 0;
+  let i = 0;
+  const blank = (from: number, to: number) => {
+    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+  const skipQuoted = (start: number, quote: string): number => {
+    let k = start + 1;
+    while (k < source.length && source[k] !== quote && source[k] !== "\n")
+      k += source[k] === "\\" ? 2 : 1;
+    blank(start + 1, k);
+    return k + 1;
+  };
+  const skipTemplate = (start: number): number => {
+    let k = start;
+    while (k < source.length && source[k] !== "`" && !(source[k] === "$" && source[k + 1] === "{"))
+      k += source[k] === "\\" ? 2 : 1;
+    blank(start, k);
+    if (source[k] === "`") return k + 1;
+    templates.push(depth);
+    depth = 0;
+    return k + 2;
+  };
+  while (i < source.length) {
+    const c = source[i]!;
+    const next = source[i + 1];
+    if (c === "/" && next === "/") {
+      const end = source.indexOf("\n", i);
+      blank(i, end === -1 ? source.length : end);
+      i = end === -1 ? source.length : end;
+    } else if (c === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2);
+      const stop = end === -1 ? source.length : end + 2;
+      blank(i, stop);
+      i = stop;
+    } else if (c === "'" || c === '"') i = skipQuoted(i, c);
+    else if (c === "`") i = skipTemplate(i + 1);
+    else if (c === "/" && REGEX_BEFORE.test(source.slice(0, i).trimEnd().slice(-6))) {
+      let k = i + 1;
+      let inClass = false;
+      while (k < source.length && source[k] !== "\n" && (inClass || source[k] !== "/")) {
+        if (source[k] === "[") inClass = true;
+        else if (source[k] === "]") inClass = false;
+        k += source[k] === "\\" ? 2 : 1;
+      }
+      blank(i + 1, k);
+      i = k + 1;
+    } else if (c === "{") {
+      depth++;
+      i++;
+    } else if (c === "}" && depth === 0 && templates.length > 0) {
+      depth = templates.pop()!;
+      i = skipTemplate(i + 1);
+    } else {
+      if (c === "}") depth--;
+      i++;
+    }
+  }
+  return out.join("");
+}
 
 export type RawCall = { path: string; line: number; content: string };
 export type Entry = { path: string; content: string; reason: string };
 
 export function rawCalls(path: string, source: string): RawCall[] {
   if (TEST_FILE.test(path) || ALLOWED_FILES.has(path)) return [];
-  const opened = new Set([...source.matchAll(OPENED)].map((match) => match[1]!));
+  const code = maskCode(source);
+  const opened = new Set([...code.matchAll(OPENED)].map((match) => match[1]!));
   const lines = source.split("\n");
   const calls: RawCall[] = [];
-  for (const match of source.matchAll(CALL)) {
+  for (const match of code.matchAll(CALL)) {
     const [, call, name, drizzleSql] = match;
     if (!RECEIVER.test(name!) && !opened.has(name!)) continue;
     if (drizzleSql && path.startsWith("src/db/")) continue;
-    const start = source.slice(0, match.index).split("\n").length;
+    const start = code.slice(0, match.index).split("\n").length;
     const method = start + call!.split("\n").length - 1;
     const content = lines.slice(start - 1, method).map((line) => line.trim());
     calls.push({ path, line: method, content: content.join(" ") });

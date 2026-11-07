@@ -28,6 +28,27 @@ test("a raw query in src/loop fails the check, naming the file and line", () => 
   expect(result.stderr).toContain("src/loop/fixture.ts:3: raw bun:sqlite call");
 });
 
+test("a typed raw query fails the check", () => {
+  const result = run({
+    "src/loop/typed.ts":
+      'export const ids = (db: Database) =>\n  db.query<{ id: string; n: number }, []>("SELECT id FROM work_item").all();\n',
+  });
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("src/loop/typed.ts:2: raw bun:sqlite call");
+});
+
+test("calls inside comments, strings and templates are not database access", () => {
+  const source = [
+    '// db.query("SELECT 1");',
+    "/* db.run(x) */",
+    "const text = \"db.query('SELECT 1')\";",
+    "const help = `run ${name}: db.exec(sql)`;",
+    "const pattern = /db.run\\(/;",
+    'db.prepare("SELECT 1");',
+  ].join("\n");
+  expect(rawCalls("src/loop/a.ts", source).map((call) => call.line)).toEqual([6]);
+});
+
 test("an allowlisted line passes and is printed; an unused entry is only a note", () => {
   const result = run(
     { "src/loop/fixture.ts": 'db.run("DELETE FROM t");\n' },
