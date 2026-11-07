@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { orm } from "./orm";
+import { reviewReply } from "./schema";
 
 /**
  * Where Paws answers one comment it handed to the agent. `thread`: an inline review thread, answered
@@ -28,25 +31,6 @@ export type ReviewReplyRecord = {
   resolvedAt: number | null;
 };
 
-type Row = {
-  id: number;
-  item_id: string;
-  restart_key: string;
-  number: number;
-  pull_number: number;
-  target: ReviewReplyTarget;
-  comment_id: number | null;
-  thread_id: string | null;
-  author: string | null;
-  excerpt: string;
-  recorded_at: number;
-  outcome: ReviewReplyOutcome | null;
-  reply: string | null;
-  reported_at: number | null;
-  replied_at: number | null;
-  resolved_at: number | null;
-};
-
 export type NewReviewReply = Pick<
   ReviewReplyRecord,
   "number" | "pullNumber" | "target" | "commentId" | "threadId" | "author" | "excerpt"
@@ -61,37 +45,43 @@ export function recordReviewReplies(
   db: Database,
   input: { itemId: string; restartKey: string; replies: readonly NewReviewReply[]; now: number },
 ): void {
-  db.run(`DELETE FROM review_reply WHERE item_id = ? AND outcome IS NULL AND replied_at IS NULL`, [
-    input.itemId,
-  ]);
+  orm(db)
+    .delete(reviewReply)
+    .where(
+      and(
+        eq(reviewReply.itemId, input.itemId),
+        isNull(reviewReply.outcome),
+        isNull(reviewReply.repliedAt),
+      ),
+    )
+    .run();
   for (const reply of input.replies)
-    db.run(
-      `INSERT INTO review_reply (item_id, restart_key, number, pull_number, target, comment_id,
-         thread_id, author, excerpt, recorded_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(restart_key, number) DO NOTHING`,
-      [
-        input.itemId,
-        input.restartKey,
-        reply.number,
-        reply.pullNumber,
-        reply.target,
-        reply.commentId,
-        reply.threadId,
-        reply.author,
-        reply.excerpt,
-        input.now,
-      ],
-    );
+    orm(db)
+      .insert(reviewReply)
+      .values({
+        itemId: input.itemId,
+        restartKey: input.restartKey,
+        number: reply.number,
+        pullNumber: reply.pullNumber,
+        target: reply.target,
+        commentId: reply.commentId,
+        threadId: reply.threadId,
+        author: reply.author,
+        excerpt: reply.excerpt,
+        recordedAt: input.now,
+      })
+      .onConflictDoNothing({ target: [reviewReply.restartKey, reviewReply.number] })
+      .run();
 }
 
 /** This item's handed-off comments the agent has not reported on yet, by number. */
 export function unreportedReviewReplies(db: Database, itemId: string): ReviewReplyRecord[] {
-  return db
-    .query<Row, [string]>(
-      `SELECT * FROM review_reply WHERE item_id = ? AND outcome IS NULL ORDER BY number`,
-    )
-    .all(itemId)
-    .map(mapRow);
+  return orm(db)
+    .select()
+    .from(reviewReply)
+    .where(and(eq(reviewReply.itemId, itemId), isNull(reviewReply.outcome)))
+    .orderBy(reviewReply.number)
+    .all() as ReviewReplyRecord[];
 }
 
 /**
@@ -110,10 +100,16 @@ export function reportReviewReplies(
   let stored = 0;
   for (const open of unreportedReviewReplies(db, itemId)) {
     const report = reports.get(open.number);
-    stored += db.run(
-      `UPDATE review_reply SET outcome = ?, reply = ?, reported_at = ? WHERE id = ? AND outcome IS NULL`,
-      [report?.outcome ?? "unreported", report?.reply ?? null, now, open.id],
-    ).changes;
+    stored += orm(db)
+      .update(reviewReply)
+      .set({
+        outcome: report?.outcome ?? "unreported",
+        reply: report?.reply ?? null,
+        reportedAt: now,
+      })
+      .where(and(eq(reviewReply.id, open.id), isNull(reviewReply.outcome)))
+      .returning({ id: reviewReply.id })
+      .all().length;
   }
   return stored;
 }
@@ -124,13 +120,19 @@ export function unpostedReviewReplies(
   itemId: string,
   pullNumber: number,
 ): ReviewReplyRecord[] {
-  return db
-    .query<Row, [string, number]>(
-      `SELECT * FROM review_reply WHERE item_id = ? AND pull_number = ? AND outcome IS NOT NULL
-         AND replied_at IS NULL ORDER BY recorded_at, number`,
+  return orm(db)
+    .select()
+    .from(reviewReply)
+    .where(
+      and(
+        eq(reviewReply.itemId, itemId),
+        eq(reviewReply.pullNumber, pullNumber),
+        isNotNull(reviewReply.outcome),
+        isNull(reviewReply.repliedAt),
+      ),
     )
-    .all(itemId, pullNumber)
-    .map(mapRow);
+    .orderBy(reviewReply.recordedAt, reviewReply.number)
+    .all() as ReviewReplyRecord[];
 }
 
 export function markReviewReplyPosted(
@@ -139,29 +141,12 @@ export function markReviewReplyPosted(
   now: number,
   resolved: boolean,
 ): void {
-  db.run(
-    `UPDATE review_reply SET replied_at = COALESCE(replied_at, ?), resolved_at = ? WHERE id = ?`,
-    [now, resolved ? now : null, id],
-  );
-}
-
-function mapRow(row: Row): ReviewReplyRecord {
-  return {
-    id: row.id,
-    itemId: row.item_id,
-    restartKey: row.restart_key,
-    number: row.number,
-    pullNumber: row.pull_number,
-    target: row.target,
-    commentId: row.comment_id,
-    threadId: row.thread_id,
-    author: row.author,
-    excerpt: row.excerpt,
-    recordedAt: row.recorded_at,
-    outcome: row.outcome,
-    reply: row.reply,
-    reportedAt: row.reported_at,
-    repliedAt: row.replied_at,
-    resolvedAt: row.resolved_at,
-  };
+  orm(db)
+    .update(reviewReply)
+    .set({
+      repliedAt: sql`COALESCE(${reviewReply.repliedAt}, ${now})`,
+      resolvedAt: resolved ? now : null,
+    })
+    .where(eq(reviewReply.id, id))
+    .run();
 }
