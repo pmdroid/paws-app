@@ -15,7 +15,7 @@ bun run paws          # 127.0.0.1:8787, data in ~/.paws
 bun run check         # lint, fmt:check, typecheck, test, build:dashboard, links, raw-sql, knip
 ```
 
-Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`), `links` (documentation links, orphaned docs and source paths), `raw-sql` (raw `bun:sqlite` calls outside `scripts/raw-sql-allowlist.txt`), `knip` (unused files, dependencies and duplicate exports). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests four files at a time (`bun test --parallel=4`); Closeout's `test` check runs only the tests the change affects (`scripts/affected-tests.ts`); CI always runs the full suite.
+Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`), `links` (documentation links, orphaned docs and source paths), `raw-sql` (raw `bun:sqlite` calls outside `scripts/raw-sql-allowlist.txt`), `knip` (unused files, dependencies and duplicate exports). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests four files at a time (`bun test --parallel=4`) under `scripts/test-watchdog.ts`, which fails a shard after three minutes without progress and names the files still running; Closeout's `test` check runs only the tests the change affects (`scripts/affected-tests.ts`); CI always runs the full suite.
 
 Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported from each module.
 
