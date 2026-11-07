@@ -81,9 +81,19 @@ test("without a saved draft neither variable is set", async () => {
   writePolicy(root, [
     command("no-draft", ["bash", "-c", 'test -z "${PAWS_PR_TITLE+x}${PAWS_PR_BODY_FILE+x}"']),
   ]);
-  const session = createCloseoutSession(root, { policy: async () => workspacePolicyFiles(root) });
-  await session.report();
-  expect(await session.run("no-draft")).toBe("no-draft passed.");
+  const inherited = { title: process.env.PAWS_PR_TITLE, body: process.env.PAWS_PR_BODY_FILE };
+  delete process.env.PAWS_PR_TITLE;
+  delete process.env.PAWS_PR_BODY_FILE;
+  try {
+    const session = createCloseoutSession(root, {
+      policy: async () => workspacePolicyFiles(root),
+    });
+    await session.report();
+    expect(await session.run("no-draft")).toBe("no-draft passed.");
+  } finally {
+    if (inherited.title !== undefined) process.env.PAWS_PR_TITLE = inherited.title;
+    if (inherited.body !== undefined) process.env.PAWS_PR_BODY_FILE = inherited.body;
+  }
 });
 
 test("a new title makes the checks that name PAWS_PR_TITLE pending; others keep their result", async () => {
