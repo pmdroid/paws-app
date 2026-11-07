@@ -756,11 +756,22 @@ export {
 
 export {
   getTaskClassification,
+  getTaskClassificationSteps,
   saveTaskClassification,
+  saveTaskClassificationSteps,
   resolveTaskClassification,
+  resolveTaskClassificationSteps,
   type StoredTaskClassification,
 } from "./task-requests";
-export { listTaskBlockers, listTaskBlocks, saveTaskBlocks, type TaskBlock } from "./task-blocks";
+export {
+  listTaskBlockers,
+  listTaskBlockersSteps,
+  listTaskBlocks,
+  listTaskBlocksSteps,
+  saveTaskBlocks,
+  saveTaskBlocksSteps,
+  type TaskBlock,
+} from "./task-blocks";
 export {
   dropSchedulerAdmission,
   listSchedulerAdmissions,
