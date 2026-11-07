@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 
-export type DashboardAliasKind = "runs" | "sessions" | "verdicts";
+type DashboardAliasKind = "runs" | "sessions" | "verdicts";
 
 export function* resolveDashboardAliasSteps(
   q: Q,

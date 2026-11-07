@@ -876,7 +876,6 @@ export {
 export type { WorkspaceOAuthRequest } from "./workspace-auth";
 export { sessionRepositoriesAllowed, workspaceSessionIds } from "./workspace-scope";
 export { resolveDashboardAlias, resolveDashboardAliasSteps } from "./dashboard-aliases";
-export type { DashboardAliasKind } from "./dashboard-aliases";
 
 export {
   linearSessionsForIssueContext,
