@@ -246,14 +246,15 @@ describe("transactional outbox", () => {
     migrate(real);
     let fail = true;
     const db = new Proxy(real, {
-      get(target, property, receiver) {
-        if (property === "query") {
+      get(target, property) {
+        if (property === "prepare") {
           return (sql: string) => {
-            const statement = target.query(sql);
-            if (!fail || !sql.includes("UPDATE outbox SET locked_by")) return statement;
+            const statement = target.prepare(sql);
+            if (!fail || !sql.includes('update "outbox" set "attempts" = "outbox"."attempts" + 1'))
+              return statement;
             return new Proxy(statement, {
               get(statementTarget, statementProperty, statementReceiver) {
-                if (statementProperty === "all") {
+                if (statementProperty === "all" || statementProperty === "values") {
                   return () => {
                     fail = false;
                     throw new Error("SQLITE_BUSY: database is locked");
@@ -265,7 +266,7 @@ describe("transactional outbox", () => {
             });
           };
         }
-        const value = Reflect.get(target, property, receiver);
+        const value = Reflect.get(target, property);
         return typeof value === "function" ? value.bind(target) : value;
       },
     }) as Database;
