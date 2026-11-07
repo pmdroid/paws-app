@@ -26,11 +26,20 @@ export function runningFiles(directory: string): RunningFile[] {
   return files.sort((a, b) => a.since - b.since);
 }
 
-function children(pid: number): string {
-  const result = spawnSync("ps", ["-o", "pid,etime,args", "--ppid", String(pid)], {
-    encoding: "utf8",
-  });
-  return result.stdout?.trim().split("\n").slice(1).join("\n") ?? "";
+function ps(args: string[]): string[] {
+  const result = spawnSync("ps", args, { encoding: "utf8" });
+  return result.stdout?.trim().split("\n").slice(1) ?? [];
+}
+
+function workerState(pid: number): string[] {
+  return [
+    ...ps(["-L", "-o", "tid,stat,wchan:32,comm", "-p", String(pid)]).map(
+      (line) => `thread ${line.trim()}`,
+    ),
+    ...ps(["-o", "pid,stat,etime,args", "--ppid", String(pid)]).map(
+      (line) => `child ${line.trim()}`,
+    ),
+  ];
 }
 
 export function stallReport(files: RunningFile[], quietMs: number, now = Date.now()): string {
@@ -42,8 +51,7 @@ export function stallReport(files: RunningFile[], quietMs: number, now = Date.no
     lines.push(
       `  ${relative(process.cwd(), file)} (worker ${pid}, running ${Math.round((now - since) / 1000)} s)`,
     );
-    const processes = children(pid);
-    if (processes) lines.push(...processes.split("\n").map((line) => `    ${line.trim()}`));
+    lines.push(...workerState(pid).map((line) => `    ${line}`));
   }
   return lines.join("\n");
 }
