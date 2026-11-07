@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { and, desc, eq, inArray, lt, lte, notInArray, sql, type SQL } from "drizzle-orm";
 import { findingPlace, reviewFindingKey, type ReviewFindingStatus } from "../core";
-import { immediate } from "./tx";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 export type ReviewFindingSeverity = "P0" | "P1" | "P2" | "P3";
 /** In code the change did not touch, or reported only because it is below the review's `failOn`. */
@@ -65,29 +66,16 @@ export type ReviewFindingFilter = {
   pathPrefix?: string;
 };
 
-type Row = {
-  id: number;
-  dedupe_key: string;
+type Row = Q["t"]["reviewFinding"]["$inferSelect"];
+
+type RecordReviewFindings = {
+  itemId: string;
+  /** `owner/repo`. */
   repository: string;
-  path: string;
-  lines: string;
-  severity: ReviewFindingSeverity;
-  review: string;
-  text: string;
-  bug_class: string;
-  why: ReviewFindingWhy;
-  first_item_id: string;
-  first_head: string;
-  first_seen_at: number;
-  last_item_id: string;
-  last_head: string;
-  last_seen_at: number;
-  item_count: number;
-  status: ReviewFindingStatus;
-  status_by: string | null;
-  status_at: number | null;
-  status_reason: string | null;
-  filed_issue: string | null;
+  head: string;
+  seenAt: number;
+  findings: readonly ReviewFindingReport[];
+  reviewed: readonly { review: string; paths: readonly string[] }[];
 };
 
 /**
@@ -99,222 +87,274 @@ type Row = {
  * that review on one of those paths that this head no longer reports, and was last seen before
  * `seenAt`, becomes gone.
  */
-export function recordReviewFindings(
-  db: Database,
-  input: {
-    itemId: string;
-    /** `owner/repo`. */
-    repository: string;
-    head: string;
-    seenAt: number;
-    findings: readonly ReviewFindingReport[];
-    reviewed: readonly { review: string; paths: readonly string[] }[];
-  },
-): { recorded: number; gone: number } {
-  return immediate(db, () => {
-    const keys = new Set<string>();
-    for (const finding of input.findings) {
-      const key = reviewFindingKey({
-        repository: input.repository,
-        location: finding.location,
-        text: finding.text,
-      });
-      if (keys.has(key)) continue;
-      keys.add(key);
-      upsert(db, input, finding, key);
-    }
-    let gone = 0;
-    for (const review of input.reviewed) {
-      const paths = [...new Set(review.paths.map((path) => findingPlace(path).path))];
-      if (paths.length === 0) continue;
-      gone += db.run(
-        `UPDATE review_finding SET status = 'gone', status_by = NULL, status_at = ?1,
-           status_reason = 'A later accepted review of this path no longer reported it.'
-         WHERE status = 'open' AND repository = ?2 AND review = ?3 AND last_seen_at < ?1
-           AND path IN (SELECT value FROM json_each(?4))
-           AND dedupe_key NOT IN (SELECT value FROM json_each(?5))`,
-        [
-          input.seenAt,
-          input.repository,
-          review.review,
-          JSON.stringify(paths),
-          JSON.stringify([...keys]),
-        ],
-      ).changes;
-    }
-    return { recorded: keys.size, gone };
-  });
+export function* recordReviewFindingsSteps(
+  q: Q,
+  input: RecordReviewFindings,
+): Steps<{ recorded: number; gone: number }> {
+  const { reviewFinding } = q.t;
+  const keys = new Set<string>();
+  for (const finding of input.findings) {
+    const key = reviewFindingKey({
+      repository: input.repository,
+      location: finding.location,
+      text: finding.text,
+    });
+    if (keys.has(key)) continue;
+    keys.add(key);
+    yield* upsert(q, input, finding, key);
+  }
+  let gone = 0;
+  for (const review of input.reviewed) {
+    const paths = [...new Set(review.paths.map((path) => findingPlace(path).path))];
+    if (paths.length === 0) continue;
+    const changed = yield* q.all(
+      q.orm
+        .update(reviewFinding)
+        .set({
+          status: "gone",
+          statusBy: null,
+          statusAt: input.seenAt,
+          statusReason: "A later accepted review of this path no longer reported it.",
+        })
+        .where(
+          and(
+            eq(reviewFinding.status, "open"),
+            eq(reviewFinding.repository, input.repository),
+            eq(reviewFinding.review, review.review),
+            lt(reviewFinding.lastSeenAt, input.seenAt),
+            inArray(reviewFinding.path, paths),
+            notInArray(reviewFinding.dedupeKey, [...keys]),
+          ),
+        )
+        .returning({ id: reviewFinding.id }),
+    );
+    gone += changed.length;
+  }
+  return { recorded: keys.size, gone };
 }
 
-function upsert(
+export function recordReviewFindings(
   db: Database,
+  input: RecordReviewFindings,
+): { recorded: number; gone: number } {
+  return settled(sqliteDb(db).transaction((q) => recordReviewFindingsSteps(q, input)));
+}
+
+function* upsert(
+  q: Q,
   input: { itemId: string; repository: string; head: string; seenAt: number },
   finding: ReviewFindingReport,
   key: string,
-): void {
+): Steps<void> {
+  const { reviewFinding } = q.t;
   const place = findingPlace(finding.location);
-  const existing = db
-    .query<Pick<Row, "id" | "first_seen_at" | "last_seen_at" | "status">, [string]>(
-      "SELECT id, first_seen_at, last_seen_at, status FROM review_finding WHERE dedupe_key = ?",
-    )
-    .get(key);
-  if (existing === null) {
-    const row = db
-      .query<{ id: number }, (string | number | null)[]>(
-        `INSERT INTO review_finding (
-           dedupe_key, repository, path, lines, first_line, severity, review, text, bug_class, why,
-           first_item_id, first_head, first_seen_at, last_item_id, last_head, last_seen_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-      )
-      .get(
-        key,
-        input.repository,
-        place.path,
-        place.lines,
-        place.firstLine,
-        finding.severity,
-        finding.review,
-        finding.text,
-        finding.bugClass,
-        finding.why,
-        input.itemId,
-        input.head,
-        input.seenAt,
-        input.itemId,
-        input.head,
-        input.seenAt,
-      )!;
-    linkItem(db, row.id, input);
+  const existing = yield* q.one(
+    q.orm
+      .select({
+        id: reviewFinding.id,
+        firstSeenAt: reviewFinding.firstSeenAt,
+        lastSeenAt: reviewFinding.lastSeenAt,
+        status: reviewFinding.status,
+      })
+      .from(reviewFinding)
+      .where(eq(reviewFinding.dedupeKey, key)),
+  );
+  if (existing === undefined) {
+    const row = yield* q.one(
+      q.orm
+        .insert(reviewFinding)
+        .values({
+          dedupeKey: key,
+          repository: input.repository,
+          path: place.path,
+          lines: place.lines,
+          firstLine: place.firstLine,
+          severity: finding.severity,
+          review: finding.review,
+          text: finding.text,
+          bugClass: finding.bugClass,
+          why: finding.why,
+          firstItemId: input.itemId,
+          firstHead: input.head,
+          firstSeenAt: input.seenAt,
+          lastItemId: input.itemId,
+          lastHead: input.head,
+          lastSeenAt: input.seenAt,
+        })
+        .returning({ id: reviewFinding.id }),
+    );
+    yield* linkItem(q, row!.id, input);
     return;
   }
-  const latest = input.seenAt >= existing.last_seen_at;
-  if (latest)
-    db.run(
-      `UPDATE review_finding SET severity = ?, review = ?, text = ?, bug_class = ?, why = ?,
-         last_item_id = ?, last_head = ?, last_seen_at = ? WHERE id = ?`,
-      [
-        finding.severity,
-        finding.review,
-        finding.text,
-        finding.bugClass,
-        finding.why,
-        input.itemId,
-        input.head,
-        input.seenAt,
-        existing.id,
-      ],
+  const byId = eq(reviewFinding.id, existing.id);
+  if (input.seenAt >= existing.lastSeenAt)
+    yield* q.exec(
+      q.orm
+        .update(reviewFinding)
+        .set({
+          severity: finding.severity,
+          review: finding.review,
+          text: finding.text,
+          bugClass: finding.bugClass,
+          why: finding.why,
+          lastItemId: input.itemId,
+          lastHead: input.head,
+          lastSeenAt: input.seenAt,
+        })
+        .where(byId),
     );
-  if (input.seenAt < existing.first_seen_at)
-    db.run(
-      "UPDATE review_finding SET first_item_id = ?, first_head = ?, first_seen_at = ? WHERE id = ?",
-      [input.itemId, input.head, input.seenAt, existing.id],
+  if (input.seenAt < existing.firstSeenAt)
+    yield* q.exec(
+      q.orm
+        .update(reviewFinding)
+        .set({ firstItemId: input.itemId, firstHead: input.head, firstSeenAt: input.seenAt })
+        .where(byId),
     );
-  if (existing.status === "gone" && input.seenAt > existing.last_seen_at)
-    db.run(
-      `UPDATE review_finding SET status = 'open', status_by = NULL, status_at = ?,
-         status_reason = 'A later accepted review reported it again.' WHERE id = ?`,
-      [input.seenAt, existing.id],
+  if (existing.status === "gone" && input.seenAt > existing.lastSeenAt)
+    yield* q.exec(
+      q.orm
+        .update(reviewFinding)
+        .set({
+          status: "open",
+          statusBy: null,
+          statusAt: input.seenAt,
+          statusReason: "A later accepted review reported it again.",
+        })
+        .where(byId),
     );
-  if (linkItem(db, existing.id, input))
-    db.run("UPDATE review_finding SET item_count = item_count + 1 WHERE id = ?", [existing.id]);
+  if (yield* linkItem(q, existing.id, input))
+    yield* q.exec(
+      q.orm
+        .update(reviewFinding)
+        .set({ itemCount: sql`${reviewFinding.itemCount} + 1` })
+        .where(byId),
+    );
 }
 
 /** Links the item to the finding; true when the item had not reported it before. */
-function linkItem(
-  db: Database,
+function* linkItem(
+  q: Q,
   findingId: number,
   input: { itemId: string; head: string; seenAt: number },
-): boolean {
-  const inserted = db.run(
-    `INSERT OR IGNORE INTO review_finding_item (finding_id, item_id, head_sha, seen_at)
-     VALUES (?, ?, ?, ?)`,
-    [findingId, input.itemId, input.head, input.seenAt],
-  ).changes;
-  if (inserted > 0) return true;
-  db.run(
-    `UPDATE review_finding_item SET head_sha = ?, seen_at = ?
-     WHERE finding_id = ? AND item_id = ? AND seen_at <= ?`,
-    [input.head, input.seenAt, findingId, input.itemId, input.seenAt],
+): Steps<boolean> {
+  const { reviewFindingItem } = q.t;
+  const inserted = yield* q.all(
+    q.orm
+      .insert(reviewFindingItem)
+      .values({ findingId, itemId: input.itemId, headSha: input.head, seenAt: input.seenAt })
+      .onConflictDoNothing()
+      .returning({ findingId: reviewFindingItem.findingId }),
+  );
+  if (inserted.length > 0) return true;
+  yield* q.exec(
+    q.orm
+      .update(reviewFindingItem)
+      .set({ headSha: input.head, seenAt: input.seenAt })
+      .where(
+        and(
+          eq(reviewFindingItem.findingId, findingId),
+          eq(reviewFindingItem.itemId, input.itemId),
+          lte(reviewFindingItem.seenAt, input.seenAt),
+        ),
+      ),
   );
   return false;
 }
 
 /** The findings that match `filter`, newest last seen first. */
+export function* listReviewFindingsSteps(
+  q: Q,
+  filter: ReviewFindingFilter = {},
+): Steps<ReviewFindingRecord[]> {
+  const { reviewFinding, reviewFindingItem } = q.t;
+  const where: (SQL | undefined)[] = [];
+  if (filter.itemId || filter.head)
+    where.push(
+      inArray(
+        reviewFinding.id,
+        q.orm
+          .select({ id: reviewFindingItem.findingId })
+          .from(reviewFindingItem)
+          .where(
+            and(
+              filter.itemId ? eq(reviewFindingItem.itemId, filter.itemId) : undefined,
+              filter.head ? eq(reviewFindingItem.headSha, filter.head) : undefined,
+            ),
+          ),
+      ),
+    );
+  if (filter.repository) where.push(eq(reviewFinding.repository, filter.repository));
+  if (filter.severity) where.push(eq(reviewFinding.severity, filter.severity));
+  if (filter.review) where.push(eq(reviewFinding.review, filter.review));
+  if (filter.status) where.push(eq(reviewFinding.status, filter.status));
+  if (filter.pathPrefix)
+    where.push(
+      sql`substr(${reviewFinding.path}, 1, ${[...filter.pathPrefix].length}) = ${filter.pathPrefix}`,
+    );
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(reviewFinding)
+      .where(and(...where))
+      .orderBy(desc(reviewFinding.lastSeenAt), desc(reviewFinding.id)),
+  );
+  return rows.map(mapRow);
+}
+
 export function listReviewFindings(
   db: Database,
   filter: ReviewFindingFilter = {},
 ): ReviewFindingRecord[] {
-  const where: string[] = [];
-  const params: string[] = [];
-  const reports: string[] = [];
-  if (filter.itemId) {
-    reports.push("l.item_id = ?");
-    params.push(filter.itemId);
-  }
-  if (filter.head) {
-    reports.push("l.head_sha = ?");
-    params.push(filter.head);
-  }
-  if (reports.length)
-    where.push(
-      `id IN (SELECT l.finding_id FROM review_finding_item l WHERE ${reports.join(" AND ")})`,
-    );
-  if (filter.repository) {
-    where.push("repository = ?");
-    params.push(filter.repository);
-  }
-  if (filter.severity) {
-    where.push("severity = ?");
-    params.push(filter.severity);
-  }
-  if (filter.review) {
-    where.push("review = ?");
-    params.push(filter.review);
-  }
-  if (filter.status) {
-    where.push("status = ?");
-    params.push(filter.status);
-  }
-  if (filter.pathPrefix) {
-    where.push("substr(path, 1, length(?)) = ?");
-    params.push(filter.pathPrefix, filter.pathPrefix);
-  }
-  return db
-    .query<Row, string[]>(
-      `SELECT * FROM review_finding ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-       ORDER BY last_seen_at DESC, id DESC`,
-    )
-    .all(...params)
-    .map(mapRow);
+  return settled(sqliteDb(db).run((q) => listReviewFindingsSteps(q, filter)));
+}
+
+export function* getReviewFindingSteps(q: Q, id: number): Steps<ReviewFindingRecord | null> {
+  const { reviewFinding } = q.t;
+  const row = yield* q.one(q.orm.select().from(reviewFinding).where(eq(reviewFinding.id, id)));
+  return row === undefined ? null : mapRow(row);
 }
 
 export function getReviewFinding(db: Database, id: number): ReviewFindingRecord | null {
-  const row = db.query<Row, [number]>("SELECT * FROM review_finding WHERE id = ?").get(id);
-  return row === null ? null : mapRow(row);
+  return settled(sqliteDb(db).run((q) => getReviewFindingSteps(q, id)));
+}
+
+export function* getReviewFindingByKeySteps(q: Q, key: string): Steps<ReviewFindingRecord | null> {
+  const { reviewFinding } = q.t;
+  const row = yield* q.one(
+    q.orm.select().from(reviewFinding).where(eq(reviewFinding.dedupeKey, key)),
+  );
+  return row === undefined ? null : mapRow(row);
 }
 
 /** The finding with `reviewFindingKey` `key`, as filing an issue from it finds it. */
 export function getReviewFindingByKey(db: Database, key: string): ReviewFindingRecord | null {
-  const row = db.query<Row, [string]>("SELECT * FROM review_finding WHERE dedupe_key = ?").get(key);
-  return row === null ? null : mapRow(row);
+  return settled(sqliteDb(db).run((q) => getReviewFindingByKeySteps(q, key)));
 }
 
 /** The items that reported each finding in `ids`, latest first. */
-export function reviewFindingItems(
-  db: Database,
+export function* reviewFindingItemsSteps(
+  q: Q,
   ids: readonly number[],
-): Map<number, ReviewFindingItem[]> {
+): Steps<Map<number, ReviewFindingItem[]>> {
+  const { reviewFindingItem, workItem } = q.t;
   const byFinding = new Map<number, ReviewFindingItem[]>();
   if (ids.length === 0) return byFinding;
-  const rows = db
-    .query<ReviewFindingItem, [string]>(
-      `SELECT l.finding_id AS findingId, l.item_id AS itemId, w.linear_identifier AS identifier,
-         w.title, w.session_key AS sessionKey, l.head_sha AS head, l.seen_at AS seenAt
-       FROM review_finding_item l JOIN work_item w ON w.id = l.item_id
-       WHERE l.finding_id IN (SELECT value FROM json_each(?))
-       ORDER BY l.seen_at DESC, l.item_id`,
-    )
-    .all(JSON.stringify(ids));
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        findingId: reviewFindingItem.findingId,
+        itemId: reviewFindingItem.itemId,
+        identifier: workItem.linearIdentifier,
+        title: workItem.title,
+        sessionKey: workItem.sessionKey,
+        head: reviewFindingItem.headSha,
+        seenAt: reviewFindingItem.seenAt,
+      })
+      .from(reviewFindingItem)
+      .innerJoin(workItem, eq(workItem.id, reviewFindingItem.itemId))
+      .where(inArray(reviewFindingItem.findingId, [...ids]))
+      .orderBy(desc(reviewFindingItem.seenAt), reviewFindingItem.itemId),
+  );
   for (const row of rows) {
     const list = byFinding.get(row.findingId) ?? [];
     list.push(row);
@@ -323,79 +363,124 @@ export function reviewFindingItems(
   return byFinding;
 }
 
+export function reviewFindingItems(
+  db: Database,
+  ids: readonly number[],
+): Map<number, ReviewFindingItem[]> {
+  return settled(sqliteDb(db).run((q) => reviewFindingItemsSteps(q, ids)));
+}
+
+type ReviewFindingStatusChange =
+  | { id: number; status: "dismissed"; reason: string; by: string; now: number }
+  | { id: number; status: "open"; by: string; now: number };
+
 /**
  * A member dismisses a finding with a reason, or reopens a dismissed one. Null when the finding
  * does not exist or is not in a state that change applies to: only an open or gone finding is
  * dismissed, and only a dismissed one reopens.
  */
+export function* setReviewFindingStatusSteps(
+  q: Q,
+  input: ReviewFindingStatusChange,
+): Steps<ReviewFindingRecord | null> {
+  const { reviewFinding } = q.t;
+  const from = input.status === "dismissed" ? ["open", "gone"] : ["dismissed"];
+  const changed = yield* q.all(
+    q.orm
+      .update(reviewFinding)
+      .set({
+        status: input.status,
+        statusBy: input.by,
+        statusAt: input.now,
+        statusReason: input.status === "dismissed" ? input.reason : null,
+      })
+      .where(and(eq(reviewFinding.id, input.id), inArray(reviewFinding.status, from)))
+      .returning({ id: reviewFinding.id }),
+  );
+  return changed.length > 0 ? yield* getReviewFindingSteps(q, input.id) : null;
+}
+
 export function setReviewFindingStatus(
   db: Database,
-  input:
-    | { id: number; status: "dismissed"; reason: string; by: string; now: number }
-    | { id: number; status: "open"; by: string; now: number },
+  input: ReviewFindingStatusChange,
 ): ReviewFindingRecord | null {
-  const from = input.status === "dismissed" ? ["open", "gone"] : ["dismissed"];
-  const changed = db.run(
-    `UPDATE review_finding SET status = ?, status_by = ?, status_at = ?, status_reason = ?
-     WHERE id = ? AND status IN (SELECT value FROM json_each(?))`,
-    [
-      input.status,
-      input.by,
-      input.now,
-      input.status === "dismissed" ? input.reason : null,
-      input.id,
-      JSON.stringify(from),
-    ],
-  ).changes;
-  return changed > 0 ? getReviewFinding(db, input.id) : null;
+  return settled(sqliteDb(db).run((q) => setReviewFindingStatusSteps(q, input)));
 }
+
+type ReviewFindingFiling = { key: string; issue: string; by: string | null; now: number };
 
 /**
  * Marks the finding with `reviewFindingKey` `key` filed as the Linear issue `issue`. Filing an
  * issue from the Findings page calls it. Null when no finding has that key.
  */
+export function* markReviewFindingFiledSteps(
+  q: Q,
+  input: ReviewFindingFiling,
+): Steps<ReviewFindingRecord | null> {
+  const { reviewFinding } = q.t;
+  const changed = yield* q.all(
+    q.orm
+      .update(reviewFinding)
+      .set({
+        status: "filed",
+        filedIssue: input.issue,
+        statusBy: input.by,
+        statusAt: input.now,
+        statusReason: null,
+      })
+      .where(eq(reviewFinding.dedupeKey, input.key))
+      .returning({ id: reviewFinding.id }),
+  );
+  return changed.length > 0 ? yield* getReviewFindingByKeySteps(q, input.key) : null;
+}
+
 export function markReviewFindingFiled(
   db: Database,
-  input: { key: string; issue: string; by: string | null; now: number },
+  input: ReviewFindingFiling,
 ): ReviewFindingRecord | null {
-  const changed = db.run(
-    `UPDATE review_finding SET status = 'filed', filed_issue = ?, status_by = ?, status_at = ?,
-       status_reason = NULL WHERE dedupe_key = ?`,
-    [input.issue, input.by, input.now, input.key],
-  ).changes;
-  return changed > 0 ? getReviewFindingByKey(db, input.key) : null;
+  return settled(sqliteDb(db).run((q) => markReviewFindingFiledSteps(q, input)));
 }
 
 function mapRow(row: Row): ReviewFindingRecord {
   return {
     id: row.id,
-    key: row.dedupe_key,
+    key: row.dedupeKey,
     repository: row.repository,
     path: row.path,
     lines: row.lines,
-    severity: row.severity,
+    severity: row.severity as ReviewFindingSeverity,
     review: row.review,
     text: row.text,
-    bugClass: row.bug_class,
-    why: row.why,
-    first: { itemId: row.first_item_id, head: row.first_head, at: row.first_seen_at },
-    last: { itemId: row.last_item_id, head: row.last_head, at: row.last_seen_at },
-    itemCount: row.item_count,
-    status: row.status,
-    statusBy: row.status_by,
-    statusAt: row.status_at,
-    statusReason: row.status_reason,
-    filedIssue: row.filed_issue,
+    bugClass: row.bugClass,
+    why: row.why as ReviewFindingWhy,
+    first: { itemId: row.firstItemId, head: row.firstHead, at: row.firstSeenAt },
+    last: { itemId: row.lastItemId, head: row.lastHead, at: row.lastSeenAt },
+    itemCount: row.itemCount,
+    status: row.status as ReviewFindingStatus,
+    statusBy: row.statusBy,
+    statusAt: row.statusAt,
+    statusReason: row.statusReason,
+    filedIssue: row.filedIssue,
   };
 }
 
 /** Read a bounded member set without scanning the global findings table. */
-export function reviewFindingsByIds(db: Database, ids: readonly number[]): ReviewFindingRecord[] {
+export function* reviewFindingsByIdsSteps(
+  q: Q,
+  ids: readonly number[],
+): Steps<ReviewFindingRecord[]> {
+  const { reviewFinding } = q.t;
   if (!ids.length) return [];
-  return db
-    .query<Row, [string]>(
-      "SELECT * FROM review_finding WHERE id IN (SELECT value FROM json_each(?))",
-    )
-    .all(JSON.stringify(ids))
-    .map(mapRow);
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(reviewFinding)
+      .where(inArray(reviewFinding.id, [...ids]))
+      .orderBy(reviewFinding.id),
+  );
+  return rows.map(mapRow);
+}
+
+export function reviewFindingsByIds(db: Database, ids: readonly number[]): ReviewFindingRecord[] {
+  return settled(sqliteDb(db).run((q) => reviewFindingsByIdsSteps(q, ids)));
 }
