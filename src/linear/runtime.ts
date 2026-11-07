@@ -79,6 +79,7 @@ export function openLinear(options: {
   submitCommand?: (command: LinearCommand) => void;
   countItemRequest?: (itemId: string, caller: string) => void;
   fetch?: FetchLike;
+  poll?: boolean;
 }): OpenLinear {
   const stopping = new AbortController();
   const signal = options.signal
@@ -162,21 +163,22 @@ export function openLinear(options: {
     usage: () => ({ ...ledger.usage(), lastCatchUpMs: store.getCursor(CATCH_UP_CURSOR) }),
     start() {
       if (running !== null) return running;
-      const poller = accessAllowed()
-        ? startPoller({
-            auth,
-            onEvent,
-            intake: intake?.queue,
-            store,
-            fetchImpl: options.fetch,
-            ledger,
-            db: options.db,
-            teamId: settings.teamId,
-            appUserId: settings.appUserId,
-            submitCommand:
-              options.submitCommand ?? ((command) => persistStopCommand(options.db, command)),
-          })
-        : null;
+      const poller =
+        options.poll !== false && accessAllowed()
+          ? startPoller({
+              auth,
+              onEvent,
+              intake: intake?.queue,
+              store,
+              fetchImpl: options.fetch,
+              ledger,
+              db: options.db,
+              teamId: settings.teamId,
+              appUserId: settings.appUserId,
+              submitCommand:
+                options.submitCommand ?? ((command) => persistStopCommand(options.db, command)),
+            })
+          : null;
       if (poller !== null) intake?.queue.wake();
       running = {
         async catchUp() {

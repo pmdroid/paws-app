@@ -142,7 +142,9 @@ import {
   COMMAND_DELIVERY_MS,
   bindInstance,
   INSTANCE_HEARTBEAT_MS,
+  MEMBERSHIP_BACKSTOP_MS,
   registerInstance,
+  roleRunsJobs,
   recoverOnStartup,
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
@@ -378,6 +380,7 @@ export type StartOptions = {
 };
 
 const LOOPBACK = "127.0.0.1";
+const SKILL_UPDATES_KEY = "skills.updates";
 
 /** Open ~/.paws, migrate, recover in-flight work, and listen on 127.0.0.1. */
 export function startPaws(source?: EnvSource, options?: StartOptions): PawsProcess {
@@ -455,7 +458,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     throw new Error("Public dashboard requires the Linear app OAuth client.");
   }
   const instance = registerInstance(db, {
-    role: "all",
+    role: runtime.role,
     host: hostname(),
     version: installedPawsVersion(),
     now: Date.now(),
@@ -507,31 +510,40 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     );
     return lists.flat();
   };
-  if (options?.refreshRepositories) {
-    void refreshRepositoryCatalog(db, listCatalog);
-    const catalogTimer = setInterval(() => void refreshRepositoryCatalog(db, listCatalog), 600_000);
-    catalogTimer.unref?.();
-    abort.signal.addEventListener("abort", () => clearInterval(catalogTimer));
-  }
+  const periodic: {
+    queue: string;
+    everyMs: number;
+    atStartup?: boolean;
+    run: (signal: AbortSignal) => Promise<unknown>;
+  }[] = [];
+  if (options?.refreshRepositories)
+    periodic.push({
+      queue: "repository.catalog.refresh",
+      everyMs: 600_000,
+      atStartup: true,
+      run: () => refreshRepositoryCatalog(db, listCatalog),
+    });
   if (options?.refreshAgentCatalog) {
     const agentCatalog = createAgentCatalog({ db, registry: createNpmRegistry() });
-    const check = () =>
-      void agentCatalog.refreshIfDue(abort.signal).catch((caughtError1) => {
-        journalCaught(caughtError1, "index.startPaws.refreshIfDue", null);
-      });
-    check();
     // Hourly checks keep the daily read on schedule across sleep and restarts.
-    const agentCatalogTimer = setInterval(check, 60 * 60 * 1000);
-    agentCatalogTimer.unref?.();
-    abort.signal.addEventListener("abort", () => clearInterval(agentCatalogTimer));
+    periodic.push({
+      queue: "agent.catalog.refresh",
+      everyMs: 60 * 60 * 1000,
+      atStartup: true,
+      run: (signal) => agentCatalog.refreshIfDue(AbortSignal.any([signal, abort.signal])),
+    });
   }
-  const skillUpdates = createSkillUpdates();
-  const skillUpdateTimer = setInterval(
-    () => void skillUpdates.check(listSkills(db)),
-    SKILL_UPDATE_INTERVAL,
-  );
-  skillUpdateTimer.unref?.();
-  abort.signal.addEventListener("abort", () => clearInterval(skillUpdateTimer));
+  const skillUpdates = createSkillUpdates({
+    store: {
+      read: () => JSON.parse(readSetting(db, SKILL_UPDATES_KEY) ?? "{}") as Record<string, string>,
+      write: (commits) => updateSetting(db, SKILL_UPDATES_KEY, () => JSON.stringify(commits)),
+    },
+  });
+  periodic.push({
+    queue: "skills.updates.check",
+    everyMs: SKILL_UPDATE_INTERVAL,
+    run: () => skillUpdates.check(listSkills(db)),
+  });
   const webhooks = runtime.webhooks;
   const inbox = createInboxStore(db);
 
@@ -586,6 +598,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const linear = openLinear({
     db,
     signal: abort.signal,
+    poll: roleRunsJobs(runtime.role),
     countItemRequest: (itemId, caller) => countLinearRequest(db, itemId, caller),
     secretsDir: paths.secretsDir,
     isAuthorized: () =>
@@ -778,6 +791,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         verifyTeam: (id, signal) => linear.access!.team(id, { signal }),
         readTeams: (signal) => linear.access!.teams!({ signal }),
         retryable: isTransient,
+        refreshIntervalMs: null,
         onError: () => console.error("Paws workspace access refresh failed."),
       });
     } catch (error) {
@@ -787,6 +801,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       db.close();
       throw error;
     }
+    periodic.push({
+      queue: "workspace.memberships.refresh",
+      everyMs: MEMBERSHIP_BACKSTOP_MS,
+      run: async () => workspace?.refresh(),
+    });
   }
   const commitPolicyForItem = async (
     item: WorkItemRecord,
@@ -840,6 +859,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     journalCaught(error, "index.startPaws.uploadLocalCloseoutEvidence", null),
   );
   let runner: RunnerCoordinator | undefined;
+  if (runnerConfig !== null)
+    periodic.push(
+      {
+        queue: "runner.models.refresh",
+        everyMs: 15_000,
+        atStartup: true,
+        run: async () => (await runnerReady)?.models.refresh(),
+      },
+      {
+        queue: "runner.signin.refresh",
+        everyMs: 15_000,
+        atStartup: true,
+        run: async () => (await runnerReady)?.health.refresh(),
+      },
+    );
   let runnerStopping = false;
   let retroDispatcher: RetroDispatcher | undefined;
   const retroCatalog = (principal: { workspaceId: string; userId: string }) =>
@@ -854,8 +888,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       ? Promise.resolve(undefined)
       : openRunnerCoordinator({
           db,
-          discoverModels: true,
-          checkSignIn: true,
+          discoverModels: false,
+          checkSignIn: false,
           root: runnerConfig.root,
           hostname: runnerConfig.hostname,
           port: runnerConfig.port,
@@ -1174,7 +1208,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
       webhooks: webhooks || env.githubWebhookSecret !== null,
       db,
-      jobLoop: () => jobLoop?.liveness() ?? null,
+      jobLoop: roleRunsJobs(runtime.role) ? () => jobLoop?.liveness() ?? null : undefined,
       instanceId: instance.id,
       healthDisk: { paths: { tmpdir: tmpdir(), pawsHome: paths.home } },
       statusEnv: envSource,
@@ -1351,6 +1385,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const loops = startLoops({
     db,
     instanceId: instance.id,
+    role: runtime.role,
     signal: abort.signal,
     prepare(created) {
       // A crashed instance's runs move to a live one without waiting for a restart.
@@ -1826,7 +1861,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             now: Date.now(),
           }),
         );
-        if (sweep?.status === "pending" && sweep.runAt > Date.now())
+        if (roleRunsJobs(runtime.role) && sweep?.status === "pending" && sweep.runAt > Date.now())
           void sweepFailed(abort.signal).catch((error) =>
             journalCaught(error, "index.sweepFailedIssues", null),
           );
@@ -1909,6 +1944,30 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: RETRO_DISPATCH_TIMING.tickMs,
         now: Date.now(),
       });
+      for (const work of periodic) {
+        created.jobs.register(work.queue, async (_job, context) => {
+          await work.run(context.signal);
+        });
+        const queued = getJob(
+          db,
+          enqueueJobOnce(db, {
+            queue: work.queue,
+            jobKey: work.queue,
+            recurringEveryMs: work.everyMs,
+            runAt: work.atStartup ? undefined : Date.now() + work.everyMs,
+            now: Date.now(),
+          }),
+        );
+        if (
+          work.atStartup &&
+          roleRunsJobs(runtime.role) &&
+          queued?.status === "pending" &&
+          queued.runAt > Date.now()
+        )
+          void work
+            .run(abort.signal)
+            .catch((error) => journalCaught(error, `index.periodic.${work.queue}`, null));
+      }
       created.jobs.register("github.auth.recover", () => attached.recoverGitHubAuth());
       enqueueJobOnce(db, {
         queue: "github.auth.recover",
