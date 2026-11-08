@@ -171,6 +171,8 @@ Replacing a named binding's credentials never changes the identity of work alrea
 
 A named sign-in or sign-in check does not change the default sign-in's readiness, quota or usage rows.
 
+The runner runs probes, sign-in checks and sign-ins one at a time, in the order it received them. So Paws sends a sign-in at once, and sends probes and sign-in checks one at a time: none while another of them or a sign-in someone started is still unfinished (`nextRoutineHealthCommand` in `src/db/runner-work.ts`). A sign-in therefore waits at most for the one check already running. Until the runner starts it, the sign-in dialog says it is waiting for the runner and how long ago the person asked.
+
 Agents on a runner all run as the one runner account, so a binding home is isolated from the agents' own configuration, not from a tool call that deliberately reads another path as that account.
 
 Paws records the account and binding of every agent command in `runner_command_account` before it queues the command. Disabling or removing an account keeps those rows. A disabled account takes no new execution commands but can still sign in and be checked. Removing an account removes its bindings too, and the default sign-in account cannot be removed.
