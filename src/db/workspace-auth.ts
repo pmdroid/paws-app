@@ -295,3 +295,18 @@ export function* listWorkspaceRepositoriesSteps(q: Q, workspaceId: string) {
 export function listWorkspaceRepositories(db: Database, workspaceId: string) {
   return settled(sqliteDb(db).run((q) => listWorkspaceRepositoriesSteps(q, workspaceId)));
 }
+
+export function* distinctWorkspaceRepositoriesSteps(q: Q) {
+  const { workspaceRepository: repository } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .selectDistinct({ repository: repository.repository })
+      .from(repository)
+      .orderBy(asc(repository.repository)),
+  );
+  return rows.map((row) => row.repository);
+}
+
+export function distinctWorkspaceRepositories(db: Database): string[] {
+  return settled(sqliteDb(db).run((q) => distinctWorkspaceRepositoriesSteps(q)));
+}

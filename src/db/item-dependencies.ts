@@ -1,5 +1,19 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, desc, eq, inArray, isNotNull, ne, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  exists,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  not,
+  notInArray,
+  sql,
+} from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   delegationHasOpenWork,
   parentIssueIdSql,
@@ -405,4 +419,69 @@ export function listDelegationExternalEvidence(
   return settled(
     sqliteDb(db).run((q) => listDelegationExternalEvidenceSteps(q, workspaceId, delegationId)),
   );
+}
+
+export function* missingSnapshotTargetsSteps(q: Q) {
+  const { workItem, linearSession, workspace: w, workItemSpecification: spec } = q.t;
+  const { itemDependencySnapshot: snapshot } = q.t;
+  const done = ["completed", "merged", "cancelled"];
+  const picked = alias(workItem, "picked");
+  const s = alias(linearSession, "s");
+  const i = alias(workItem, "i");
+  const openSession = alias(linearSession, "open_session");
+  const gap = alias(workItem, "gap");
+  const absent = (item: { id: typeof i.id | typeof gap.id }) =>
+    exists(
+      q.orm
+        .select({ one: sql`1` })
+        .from(spec)
+        .where(and(eq(spec.itemId, item.id), eq(spec.present, 0))),
+    );
+  const first = q.orm
+    .select({ id: i.id })
+    .from(i)
+    .innerJoin(
+      openSession,
+      and(eq(openSession.sessionId, i.sessionKey), isNull(openSession.stoppedAt)),
+    )
+    .where(and(eq(i.delegationId, picked.delegationId), notInArray(i.state, done), not(absent(i))))
+    .orderBy(asc(i.position), asc(i.id))
+    .limit(1);
+  const unsnapshotted = q.orm
+    .select({ one: sql`1` })
+    .from(gap)
+    .where(
+      and(
+        eq(gap.delegationId, picked.delegationId),
+        notInArray(gap.state, done),
+        not(absent(gap)),
+        not(
+          exists(
+            q.orm
+              .select({ one: sql`1` })
+              .from(snapshot)
+              .where(eq(snapshot.itemId, gap.id)),
+          ),
+        ),
+      ),
+    );
+  return yield* q.all(
+    q.orm
+      .select({ itemId: picked.id, workspaceId: w.id })
+      .from(picked)
+      .innerJoin(s, eq(s.sessionId, picked.sessionKey))
+      .innerJoin(w, eq(w.linearOrganizationId, s.organizationId))
+      .where(
+        and(
+          sql`${picked.id} = (${first})`,
+          sql.raw(delegationHasOpenWork("picked.delegation_id")),
+          isNull(s.stoppedAt),
+          exists(unsnapshotted),
+        ),
+      ),
+  );
+}
+
+export function missingSnapshotTargets(db: Database): { itemId: string; workspaceId: string }[] {
+  return settled(sqliteDb(db).run((q) => missingSnapshotTargetsSteps(q)));
 }

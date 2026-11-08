@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, exists, isNull, notInArray, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 import { orm } from "./orm";
 import { workspaceAccessAudit, workspaceUser } from "./schema";
@@ -413,4 +413,91 @@ export function lastPausedBy(db: Database, itemId: string): string | null {
       .limit(1)
       .get()?.name ?? null
   );
+}
+
+export function* firstWorkspaceIdSteps(q: Q) {
+  const { workspace: w } = q.t;
+  const row = yield* q.one(q.orm.select({ id: w.id }).from(w).orderBy(asc(w.id)).limit(1));
+  return row?.id ?? null;
+}
+
+export function firstWorkspaceId(db: Database): string | null {
+  return settled(sqliteDb(db).run((q) => firstWorkspaceIdSteps(q)));
+}
+
+export function* oldestWorkspaceNameSteps(q: Q) {
+  const { workspace: w } = q.t;
+  const row = yield* q.one(
+    q.orm.select({ name: w.name }).from(w).orderBy(asc(w.createdAt)).limit(1),
+  );
+  return row?.name ?? null;
+}
+
+export function oldestWorkspaceName(db: Database): string | null {
+  return settled(sqliteDb(db).run((q) => oldestWorkspaceNameSteps(q)));
+}
+
+export function* workspaceOrganizationIdsSteps(q: Q, limit: number) {
+  const { workspace: w } = q.t;
+  const rows = yield* q.all(
+    q.orm.select({ id: w.linearOrganizationId }).from(w).orderBy(asc(w.id)).limit(limit),
+  );
+  return rows.map((row) => row.id);
+}
+
+export function workspaceOrganizationIds(db: Database, limit: number): string[] {
+  return settled(sqliteDb(db).run((q) => workspaceOrganizationIdsSteps(q, limit)));
+}
+
+export function* listWorkspaceIdsSteps(q: Q) {
+  const { workspace: w } = q.t;
+  return (yield* q.all(q.orm.select({ id: w.id }).from(w))).map((row) => row.id);
+}
+
+export function listWorkspaceIds(db: Database): string[] {
+  return settled(sqliteDb(db).run((q) => listWorkspaceIdsSteps(q)));
+}
+
+export function* openDelegationWorkspaceIdSteps(
+  q: Q,
+  organizationId: string,
+  delegationId: string,
+) {
+  const { workspace: w, workItem: i } = q.t;
+  const openWork = q.orm
+    .select({ one: sql`1` })
+    .from(i)
+    .where(
+      and(
+        eq(i.delegationId, delegationId),
+        notInArray(i.state, ["completed", "merged", "cancelled"]),
+      ),
+    );
+  const row = yield* q.one(
+    q.orm
+      .select({ id: w.id })
+      .from(w)
+      .where(and(eq(w.linearOrganizationId, organizationId), exists(openWork))),
+  );
+  return row?.id ?? null;
+}
+
+export function openDelegationWorkspaceId(
+  db: Database,
+  organizationId: string,
+  delegationId: string,
+): string | null {
+  return settled(
+    sqliteDb(db).run((q) => openDelegationWorkspaceIdSteps(q, organizationId, delegationId)),
+  );
+}
+
+export function* workspaceUserLinearIdSteps(q: Q, userId: string) {
+  const { workspaceUser: u } = q.t;
+  const row = yield* q.one(q.orm.select({ id: u.linearUserId }).from(u).where(eq(u.id, userId)));
+  return row?.id ?? null;
+}
+
+export function workspaceUserLinearId(db: Database, userId: string): string | null {
+  return settled(sqliteDb(db).run((q) => workspaceUserLinearIdSteps(q, userId)));
 }
