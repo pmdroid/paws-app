@@ -1,4 +1,0 @@
-src/decisions/index.ts | ? db .query<Row, [string, string]>(`${SELECT} | not yet converted to Drizzle
-src/decisions/index.ts | db.run("DELETE FROM decision_memory_search WHERE decision_id=?", [id]); | not yet converted to Drizzle
-src/decisions/index.ts | db.run("INSERT INTO decision_memory_search(decision_id,statement,tags) VALUES(?,?,?)", [ | not yet converted to Drizzle
-src/decisions/index.ts | const candidates = db .query<Row, [string, string]>(`${SELECT} JOIN decision_memory_search f ON f.decision_id=d.id | not yet converted to Drizzle

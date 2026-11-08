@@ -1,0 +1,2 @@
+ALTER TABLE "decision_memory" ADD COLUMN "search" "tsvector" GENERATED ALWAYS AS (to_tsvector('simple', regexp_replace(statement || ' ' || tags::text, '[[:punct:]]+', ' ', 'g'))) STORED;--> statement-breakpoint
+CREATE INDEX "decision_memory_search_idx" ON "decision_memory" USING gin ("search");

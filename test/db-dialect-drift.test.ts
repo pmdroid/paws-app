@@ -43,6 +43,9 @@ function shapes(tables: Record<string, unknown>): Map<string, Shape> {
   return result;
 }
 
+/** Postgres's full-text column. SQLite indexes the same text in its FTS5 table, `decision_memory_search`. */
+const POSTGRES_ONLY = new Set(["decision_memory.search"]);
+
 function dialectDrift(sqlite: Record<string, unknown>, pg: Record<string, unknown>): string[] {
   const left = shapes(sqlite);
   const right = shapes(pg);
@@ -58,7 +61,8 @@ function dialectDrift(sqlite: Record<string, unknown>, pg: Record<string, unknow
     for (const column of names(a).filter((other) => !names(b).includes(other)))
       drift.push(`${name}.${column}: only in sqlite`);
     for (const column of names(b).filter((other) => !names(a).includes(other)))
-      drift.push(`${name}.${column}: only in postgres`);
+      if (!POSTGRES_ONLY.has(`${name}.${column}`))
+        drift.push(`${name}.${column}: only in postgres`);
     const shared = (shape: Shape) =>
       shape.columns.filter(
         (column) => names(a).includes(column.name) && names(b).includes(column.name),

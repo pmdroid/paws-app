@@ -1,6 +1,7 @@
 import {
   bigint,
   check,
+  customType,
   index,
   jsonb,
   pgTable,
@@ -11,6 +12,8 @@ import {
 import { sql } from "drizzle-orm";
 import { workspace, workspaceUser } from "./workspace";
 import { workItem } from "./items";
+
+const tsvector = customType<{ data: string }>({ dataType: () => "tsvector" });
 
 export const decisionMemory = pgTable(
   "decision_memory",
@@ -34,8 +37,15 @@ export const decisionMemory = pgTable(
       .notNull()
       .references(() => workspaceUser.id),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+    // Punctuation becomes spaces so `config.toml` is two words, as in SQLite's FTS5 index.
+    search: tsvector().generatedAlwaysAs(
+      sql`to_tsvector('simple', regexp_replace(statement || ' ' || tags::text, '[[:punct:]]+', ' ', 'g'))`,
+    ),
   },
-  (table) => [unique().on(table.questionId)],
+  (table) => [
+    unique().on(table.questionId),
+    index("decision_memory_search_idx").using("gin", table.search),
+  ],
 );
 
 export const decisionSuggestion = pgTable(
