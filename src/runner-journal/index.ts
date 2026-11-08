@@ -195,7 +195,7 @@ export function openExecutionJournal(root: string) {
       }
     );
   }
-  function unsentArtifactPayload(id: string, sequence: number) {
+  function unsentPayload(id: string, sequence: number) {
     return orm
       .select({ payload: delivery.payload })
       .from(delivery)
@@ -851,7 +851,7 @@ export function openExecutionJournal(root: string) {
     },
     /** Marks an unsent artifact as refused by Paws, so the event is sent without its bytes. */
     dropArtifact(id: string, sequence: number, reason: string) {
-      const row = unsentArtifactPayload(id, sequence);
+      const row = unsentPayload(id, sequence);
       const event = row && RunnerEventSchema.parse(JSON.parse(row.payload));
       if (!event || event.type !== "artifact")
         throw new Error("Dropped artifact does not match an unsent artifact");
@@ -861,7 +861,7 @@ export function openExecutionJournal(root: string) {
     },
     /** Marks an unsent checkpoint as not published, so Paws never records its commit. */
     dropCheckpoint(id: string, sequence: number, reason: string) {
-      const row = unsentArtifactPayload(id, sequence);
+      const row = unsentPayload(id, sequence);
       const event = row && RunnerEventSchema.parse(JSON.parse(row.payload));
       if (!event || event.type !== "checkpoint")
         throw new Error("Dropped checkpoint does not match an unsent checkpoint");
