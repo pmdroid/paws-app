@@ -92,6 +92,25 @@ export function schedulingProjectLead(db: Database, itemId: string): string | nu
   return settled(sqliteDb(db).run((q) => schedulingProjectLeadSteps(q, itemId)));
 }
 
+export function* itemPathHintsSteps(q: Q, itemId: string) {
+  const { workItem, workItemScheduling } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        paths: jsonText(q, workItemScheduling.paths) as SQL<string | null>,
+        brief: jsonText(q, workItem.brief) as SQL<string | null>,
+      })
+      .from(workItem)
+      .leftJoin(workItemScheduling, eq(workItemScheduling.itemId, workItem.id))
+      .where(eq(workItem.id, itemId)),
+  );
+  return row ?? null;
+}
+
+export function itemPathHints(db: Database, itemId: string) {
+  return settled(sqliteDb(db).run((q) => itemPathHintsSteps(q, itemId)));
+}
+
 export function* listSchedulerAdmissionsSteps(q: Q) {
   const { job, schedulerAdmission } = q.t;
   return yield* q.all(
