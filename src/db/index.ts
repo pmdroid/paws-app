@@ -173,6 +173,7 @@ export * from "./item-reconciliation";
 export * from "./item-dependencies";
 export * from "./parent-delegations";
 export * from "./runner-work";
+export * from "./member-vms";
 export * from "./runner-file-objects";
 export * from "./work-item-fields";
 export * from "./runner-results";

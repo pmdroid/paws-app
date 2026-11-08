@@ -27,6 +27,7 @@ import {
 } from "../core";
 import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 import { journal } from "./journal";
+import { jsonField } from "./json-text";
 
 export const JOB_STATUSES = ["pending", "running", "done", "dead", "cancelled"] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
@@ -979,4 +980,59 @@ export function leasedJobsForItem(
   now: number,
 ): { id: number; attempts: number; worker: string }[] {
   return run(db, (q) => leasedJobsForItemSteps(q, queue, itemId, now));
+}
+
+export function* openMemberVmJobSteps(q: Q, queue: string, memberVmId: string) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: job.id })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, queue),
+          inArray(job.status, ["pending", "running"]),
+          eq(jsonField(q, job.payload, "memberVmId"), memberVmId),
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+export function openMemberVmJob(db: Database, queue: string, memberVmId: string): boolean {
+  return run(db, (q) => openMemberVmJobSteps(q, queue, memberVmId));
+}
+
+type MemberVmJobCancel = {
+  queue: string;
+  memberVmId: string;
+  statuses: readonly ("pending" | "running")[];
+  now: number;
+};
+
+export function* cancelMemberVmJobsSteps(q: Q, input: MemberVmJobCancel) {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({
+        status: "cancelled",
+        finishedAt: input.now,
+        lockedBy: null,
+        lockedUntil: null,
+        lastError: "member VM deleted",
+      })
+      .where(
+        and(
+          eq(job.queue, input.queue),
+          inArray(job.status, [...input.statuses]),
+          eq(jsonField(q, job.payload, "memberVmId"), input.memberVmId),
+        ),
+      ),
+  );
+}
+
+export function cancelMemberVmJobs(db: Database, input: MemberVmJobCancel): void {
+  run(db, (q) => cancelMemberVmJobsSteps(q, input));
 }

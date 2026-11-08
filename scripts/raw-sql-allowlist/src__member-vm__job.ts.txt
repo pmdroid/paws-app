@@ -1,7 +1,0 @@
-src/member-vm/job.ts | db.run( | not yet converted to Drizzle
-src/member-vm/job.ts | db.run( | not yet converted to Drizzle
-src/member-vm/job.ts | db.run( | not yet converted to Drizzle
-src/member-vm/job.ts | const runner = db .query<{ workspaceId: string; ownerUserId: string; revoked: number }, [string]>( | not yet converted to Drizzle
-src/member-vm/job.ts | : db .query<{ lastSeenAt: number | null; status: string }, [string]>( | not yet converted to Drizzle
-src/member-vm/job.ts | const changed = db.run( | not yet converted to Drizzle
-src/member-vm/job.ts | const changed = db.run( | not yet converted to Drizzle
