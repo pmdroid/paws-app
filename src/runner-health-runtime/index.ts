@@ -5,6 +5,10 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { publishRunnerAnswer, removeRunnerAnswers } from "../runner-answers";
 import { openDatabase } from "../db";
+import { eq, notInArray, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { createHealthStore } from "./health-ddl";
+import { healthExecution } from "./health-schema";
 import { RunnerRequestError, type RunnerDaemon } from "../runner-daemon";
 import {
   createDirectWorkerSupervisor,
@@ -106,16 +110,16 @@ export async function openRunnerHealthRuntime(options: {
   const path = join(options.root, "health.db");
   const db = openDatabase(path);
   chmodSync(path, 0o600);
-  db.run(
-    "CREATE TABLE IF NOT EXISTS health_execution(id TEXT PRIMARY KEY,command_id TEXT UNIQUE NOT NULL,payload TEXT NOT NULL,phase TEXT NOT NULL) STRICT",
-  );
-  if (
-    !db
-      .query<{ name: string }, []>("PRAGMA table_info(health_execution)")
-      .all()
-      .some((row) => row.name === "result")
-  )
-    db.run("ALTER TABLE health_execution ADD COLUMN result TEXT");
+  createHealthStore(db);
+  const q = drizzle(db);
+  const setPhase = (id: string, phase: "running" | "interrupted" | "complete") =>
+    q.update(healthExecution).set({ phase }).where(eq(healthExecution.id, id)).run();
+  const markPublishing = (id: string, result: string) =>
+    q
+      .update(healthExecution)
+      .set({ phase: "publishing", result })
+      .where(eq(healthExecution.id, id))
+      .run();
   const broker =
     options.broker ??
     createDirectWorkerSupervisor({
@@ -129,10 +133,16 @@ export async function openRunnerHealthRuntime(options: {
   let active: Entry | undefined;
   const talks = new Map<string, Entry>();
   try {
-    for (const row of db
-      .query<{ id: string; payload: string; phase: string; result: string | null }, []>(
-        "SELECT id,payload,phase,result FROM health_execution WHERE phase NOT IN ('complete','interrupted') ORDER BY rowid",
-      )
+    for (const row of q
+      .select({
+        id: healthExecution.id,
+        payload: healthExecution.payload,
+        phase: healthExecution.phase,
+        result: healthExecution.result,
+      })
+      .from(healthExecution)
+      .where(notInArray(healthExecution.phase, ["complete", "interrupted"]))
+      .orderBy(sql`rowid`)
       .all()) {
       await broker.stop(row.id);
       const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
@@ -173,7 +183,7 @@ export async function openRunnerHealthRuntime(options: {
         };
         if (conversation(command)) talks.set(row.id, entry);
         else active = entry;
-      } else db.run("UPDATE health_execution SET phase='interrupted' WHERE id=?", [row.id]);
+      } else setPhase(row.id, "interrupted");
     }
     await broker.sweep?.();
   } catch (error) {
@@ -209,10 +219,7 @@ export async function openRunnerHealthRuntime(options: {
   }
   function saveLogin(entry: Entry, state: "connected" | "failed") {
     entry.login = { state, terminal: "", authorization: null, inputId: null };
-    db.run("UPDATE health_execution SET phase='publishing',result=? WHERE id=?", [
-      JSON.stringify(entry.login),
-      entry.id,
-    ]);
+    markPublishing(entry.id, JSON.stringify(entry.login));
   }
   async function interrupt(entry: Entry) {
     entry.stopped ??= (async () => {
@@ -232,7 +239,7 @@ export async function openRunnerHealthRuntime(options: {
           return;
         }
       }
-      db.run("UPDATE health_execution SET phase='interrupted' WHERE id=?", [entry.id]);
+      setPhase(entry.id, "interrupted");
     })();
     await entry.stopped;
   }
@@ -308,7 +315,7 @@ export async function openRunnerHealthRuntime(options: {
         check(entry);
         if (reply.cancelled || update.state === "connected" || update.state === "failed") {
           await interrupt(entry);
-          db.run("UPDATE health_execution SET phase='complete' WHERE id=?", [entry.id]);
+          setPhase(entry.id, "complete");
           return "finished";
         } else if (reply.input) {
           if (reply.input.id !== update.inputId) throw new Error("Login input binding changed");
@@ -359,10 +366,7 @@ export async function openRunnerHealthRuntime(options: {
             ...(result.replies ? { replies: result.replies } : {}),
             ...(result.startWork ? { startWork: result.startWork } : {}),
           });
-          db.run("UPDATE health_execution SET phase='publishing',result=? WHERE id=?", [
-            JSON.stringify(entry.result),
-            entry.id,
-          ]);
+          markPublishing(entry.id, JSON.stringify(entry.result));
         } else {
           const result = worker.parse(payload);
           if (
@@ -400,7 +404,7 @@ export async function openRunnerHealthRuntime(options: {
         return "held";
       }
       check(entry);
-      db.run("UPDATE health_execution SET phase='complete' WHERE id=?", [entry.id]);
+      setPhase(entry.id, "complete");
       return "finished";
     } catch (caughtError4) {
       journalCaught(caughtError4, "runner-health-runtime.step.check", null);
@@ -440,11 +444,11 @@ export async function openRunnerHealthRuntime(options: {
         continue;
       if (input.type === "login" && !options.daemon.exchangeLogin) continue;
       const command = RunnerCommandSchema.parse(input) as Command;
-      const previous = db
-        .query<{ payload: string }, [string]>(
-          "SELECT payload FROM health_execution WHERE command_id=?",
-        )
-        .get(command.id);
+      const previous = q
+        .select({ payload: healthExecution.payload })
+        .from(healthExecution)
+        .where(eq(healthExecution.commandId, command.id))
+        .get();
       if (previous) {
         if (previous.payload !== JSON.stringify(command))
           throw new Error("Runner health command changed");
@@ -456,10 +460,9 @@ export async function openRunnerHealthRuntime(options: {
         continue;
       }
       const id = executionId(now());
-      db.run(
-        "INSERT INTO health_execution(id,command_id,payload,phase) VALUES(?,?,?,'preparing')",
-        [id, command.id, JSON.stringify(command)],
-      );
+      q.insert(healthExecution)
+        .values({ id, commandId: command.id, payload: JSON.stringify(command), phase: "preparing" })
+        .run();
       const entry: Entry = {
         id,
         command,
@@ -491,7 +494,7 @@ export async function openRunnerHealthRuntime(options: {
         check(entry);
         if (command.type === "helper") await pulse(entry);
         check(entry);
-        db.run("UPDATE health_execution SET phase='running' WHERE id=?", [id]);
+        setPhase(id, "running");
         await options.daemon
           .acknowledgeCommand(command.id)
           .catch(journalRejection("runner-health-runtime.step.acknowledgeCommand", report, null));
