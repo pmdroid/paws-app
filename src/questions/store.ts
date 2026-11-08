@@ -1,5 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import {
+  askedQuestionRow,
+  insertQuestionRow,
+  nextQueuedQuestionRow,
+  openQuestionRow,
+  questionEventConsumed,
+  questionRow,
+  type QuestionRow,
+} from "../db";
 import type { QuestionOption } from "./channel";
 
 export type QuestionKind =
@@ -37,25 +46,6 @@ export type StoredQuestion = {
   cancelledAt: number | null;
 };
 
-type QuestionRow = {
-  id: string;
-  item_id: string;
-  run_id: string | null;
-  session_id: string;
-  kind: QuestionKind;
-  reason: string | null;
-  body: string;
-  context: string | null;
-  options: string | null;
-  status: "queued" | "open" | "answered";
-  answer: string | null;
-  answered_by: string | null;
-  answer_event_key: string | null;
-  created_at: number;
-  answered_at: number | null;
-  cancelled_at: number | null;
-};
-
 export type NewQuestion = {
   itemId: string;
   runId?: string | null;
@@ -80,45 +70,32 @@ export function insertQuestion(
 ): StoredQuestion {
   const id = randomUUID();
   const now = input.now ?? Date.now();
-  const options = input.options === undefined ? null : JSON.stringify([...input.options]);
-  db.run(
-    `INSERT INTO question (
-       id, item_id, run_id, session_id, kind, reason, body, context, options, status, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      id,
-      input.itemId,
-      input.runId ?? null,
-      input.sessionId,
-      input.kind,
-      input.reason ?? input.kind,
-      input.body,
-      input.context ?? null,
-      options,
-      input.status,
-      now,
-    ],
-  );
+  insertQuestionRow(db, {
+    id,
+    itemId: input.itemId,
+    runId: input.runId ?? null,
+    sessionId: input.sessionId,
+    kind: input.kind,
+    reason: input.reason ?? input.kind,
+    body: input.body,
+    context: input.context ?? null,
+    options: input.options === undefined ? null : [...input.options],
+    status: input.status,
+    createdAt: now,
+  });
   const stored = getQuestion(db, id);
   if (stored === null) throw new Error("insertQuestion did not store a row");
   return stored;
 }
 
 export function getQuestion(db: Database, id: string): StoredQuestion | null {
-  const row = db.query<QuestionRow, [string]>("SELECT * FROM question WHERE id = ?").get(id);
+  const row = questionRow(db, id);
   return row === null ? null : mapQuestion(row);
 }
 
 /** Latest unanswered question on this Linear agent session. */
 export function findOpenQuestion(db: Database, sessionId: string): StoredQuestion | null {
-  const row = db
-    .query<QuestionRow, [string]>(
-      `SELECT * FROM question
-       WHERE session_id = ? AND status = 'open' AND cancelled_at IS NULL
-       ORDER BY created_at DESC, id DESC
-       LIMIT 1`,
-    )
-    .get(sessionId);
+  const row = openQuestionRow(db, sessionId);
   return row === null ? null : mapQuestion(row);
 }
 
@@ -128,56 +105,36 @@ export function findAskedQuestion(
   runId: string,
   kind: QuestionKind,
 ): StoredQuestion | null {
-  const row = db
-    .query<QuestionRow, [string, string]>(
-      `SELECT * FROM question
-       WHERE run_id = ? AND kind = ? AND status IN ('open', 'queued') AND cancelled_at IS NULL
-       ORDER BY created_at DESC, id DESC
-       LIMIT 1`,
-    )
-    .get(runId, kind);
+  const row = askedQuestionRow(db, runId, kind);
   return row === null ? null : mapQuestion(row);
 }
 
 export function nextQueuedQuestion(db: Database, sessionId: string): StoredQuestion | null {
-  const row = db
-    .query<QuestionRow, [string]>(
-      `SELECT * FROM question
-       WHERE session_id = ? AND status = 'queued' AND cancelled_at IS NULL
-       ORDER BY created_at, rowid
-       LIMIT 1`,
-    )
-    .get(sessionId);
+  const row = nextQueuedQuestionRow(db, sessionId);
   return row === null ? null : mapQuestion(row);
 }
 
 export function questionReplyConsumed(db: Database, sessionId: string, eventKey: string): boolean {
-  return (
-    db
-      .query<{ id: string }, [string, string]>(
-        "SELECT id FROM question WHERE session_id = ? AND answer_event_key = ?",
-      )
-      .get(sessionId, eventKey) !== null
-  );
+  return questionEventConsumed(db, sessionId, eventKey);
 }
 
 function mapQuestion(row: QuestionRow): StoredQuestion {
   return {
     id: row.id,
-    itemId: row.item_id,
-    runId: row.run_id,
-    sessionId: row.session_id,
-    kind: row.kind,
+    itemId: row.itemId,
+    runId: row.runId,
+    sessionId: row.sessionId,
+    kind: row.kind as QuestionKind,
     reason: row.reason ?? row.kind,
     body: row.body,
     context: row.context,
     options: row.options === null ? [] : (JSON.parse(row.options) as QuestionOption[]),
-    status: row.cancelled_at === null ? row.status : "cancelled",
+    status: row.cancelledAt === null ? (row.status as StoredQuestion["status"]) : "cancelled",
     answer: row.answer,
-    answeredBy: row.answered_by,
-    answerEventKey: row.answer_event_key,
-    createdAt: row.created_at,
-    answeredAt: row.answered_at,
-    cancelledAt: row.cancelled_at,
+    answeredBy: row.answeredBy,
+    answerEventKey: row.answerEventKey,
+    createdAt: row.createdAt,
+    answeredAt: row.answeredAt,
+    cancelledAt: row.cancelledAt,
   };
 }
