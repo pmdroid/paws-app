@@ -1,6 +1,0 @@
-src/retros/dispatch.ts | db .query<{ reason: string | null }, [string, number]>( | not yet converted to Drizzle
-src/retros/dispatch.ts | db .query<{ commandId: string }, [string]>( | not yet converted to Drizzle
-src/retros/dispatch.ts | return db .query<RunnerIdentity, [string]>( | not yet converted to Drizzle
-src/retros/dispatch.ts | const version = db .query<{ version: string | null }, [string]>( | not yet converted to Drizzle
-src/retros/dispatch.ts | const previous = db .query<{ commandId: string }, [string, number]>( | not yet converted to Drizzle
-src/retros/dispatch.ts | const rows = db .query<{ id: string }, []>( | not yet converted to Drizzle

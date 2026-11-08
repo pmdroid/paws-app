@@ -1,6 +1,7 @@
 import { workspaceMemberUsableSql, auditWorkspaceAccess } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { orm } from "./orm";
 import { runner as runnerTable, runnerHelper, runnerHostStatus } from "./schema";
 import { endRevokedRunnerAuthority, runnerLeaseCutoff } from "./runner-lease";
@@ -717,4 +718,36 @@ export function runnerHelperBusy(db: Database, now: number): boolean {
       )
       .get() !== undefined
   );
+}
+
+export type RunnerIdentity = {
+  workspaceId: string;
+  ownerId: string;
+  status: string;
+  fence: number;
+  revokedAt: number | null;
+  lastSeenAt: number | null;
+};
+
+/** The runner's workspace, owner, standing and fence. */
+export function runnerIdentity(db: Database, runnerId: string): RunnerIdentity | null {
+  return settled(sqliteDb(db).run((q) => runnerIdentitySteps(q, runnerId)));
+}
+
+export function* runnerIdentitySteps(q: Q, runnerId: string): Steps<RunnerIdentity | null> {
+  const { runner } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        workspaceId: runner.workspaceId,
+        ownerId: runner.ownerUserId,
+        status: runner.status,
+        fence: runner.fence,
+        revokedAt: runner.revokedAt,
+        lastSeenAt: runner.lastSeenAt,
+      })
+      .from(runner)
+      .where(eq(runner.id, runnerId)),
+  );
+  return row ?? null;
 }

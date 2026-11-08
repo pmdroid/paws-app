@@ -1,1 +1,0 @@
-src/retros/prompt.ts | db .query<{ id: string; sessionKey: string | null }, [string]>( | not yet converted to Drizzle

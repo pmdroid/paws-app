@@ -40,6 +40,13 @@ import {
   settleRetroDispatch,
   startRetroAttempt,
   workspaceMember,
+  latestRetroDispatch,
+  previousRetroResultDispatch,
+  retroDispatchReleaseReason,
+  retrosToAdvance,
+  runnerHostVersion,
+  runnerIdentity,
+  type RunnerIdentity,
   type Retro,
   type RetroDispatch,
   type RetroGenerationDiagnostic,
@@ -155,12 +162,7 @@ function retryAt(db: Database, retro: Retro): number | null {
   if (used >= maxAttempts) return null;
   if (openRetroDispatch(db, retro.id) !== null) return null;
   const last = listRetroAttempts(db, retro.id).at(-1);
-  const notStarted =
-    db
-      .query<{ reason: string | null }, [string, number]>(
-        "SELECT release_reason AS reason FROM retro_dispatch WHERE retro_id = ? AND attempt = ?",
-      )
-      .get(retro.id, retro.attempt)?.reason === "not_started";
+  const notStarted = retroDispatchReleaseReason(db, retro.id, retro.attempt) === "not_started";
   const finished = last?.finishedAt ?? retro.updatedAt;
   return finished + retroRetryDelayMs(notStarted ? retroDispatchesNotStarted(db, retro.id) : used);
 }
@@ -170,13 +172,7 @@ export function retroGenerationView(db: Database, retroId: string): RetroGenerat
   if (retro === null) return null;
   const row = retroGeneration(db, retroId);
   const { used, maxAttempts } = budget(db, retro);
-  const dispatch =
-    openRetroDispatch(db, retroId) ??
-    db
-      .query<{ commandId: string }, [string]>(
-        "SELECT command_id AS commandId FROM retro_dispatch WHERE retro_id = ? ORDER BY attempt DESC LIMIT 1",
-      )
-      .get(retroId);
+  const dispatch = openRetroDispatch(db, retroId) ?? latestRetroDispatch(db, retroId);
   const latest = dispatch === null ? null : getRetroDispatch(db, dispatch.commandId);
   const waiting = row !== null && RETRO_WAIT_DIAGNOSTICS.includes(row.diagnostic);
   const state: RetroGenerationState = (() => {
@@ -216,24 +212,6 @@ export function retroGenerationView(db: Database, retroId: string): RetroGenerat
 
 type Candidate = EligibleRunner & { occupied: number; capacity: number; free: boolean };
 
-type RunnerIdentity = {
-  workspaceId: string;
-  ownerId: string;
-  status: string;
-  fence: number;
-  revokedAt: number | null;
-  lastSeenAt: number | null;
-};
-
-function runnerIdentity(db: Database, runnerId: string): RunnerIdentity | null {
-  return db
-    .query<RunnerIdentity, [string]>(
-      `SELECT workspace_id AS workspaceId, owner_user_id AS ownerId, status, fence,
-         revoked_at AS revokedAt, last_seen_at AS lastSeenAt FROM runner WHERE id = ?`,
-    )
-    .get(runnerId);
-}
-
 function runnerHasWorkspaceAuthority(db: Database, identity: RunnerIdentity): boolean {
   const member = workspaceMember(db, identity.workspaceId, identity.ownerId);
   return workspaceMemberUsable(member) && isWorkspaceAdmin(member.role);
@@ -262,11 +240,7 @@ export function retroRunnerCandidates(
     for (const runner of runners) {
       if (!runner.eligible || runner.ownerId !== admin.id || seen.has(runner.id)) continue;
       seen.add(runner.id);
-      const version = db
-        .query<{ version: string | null }, [string]>(
-          "SELECT runner_version AS version FROM runner_host_status WHERE runner_id = ?",
-        )
-        .get(runner.id)?.version;
+      const version = runnerHostVersion(db, runner.id);
       if (!runnerAcceptsRetro(version)) {
         incompatible += 1;
         continue;
@@ -330,16 +304,8 @@ function attemptPrompt(
   frozen: string,
   attempt: number,
 ): Uint8Array {
-  const previous = db
-    .query<{ commandId: string }, [string, number]>(
-      `SELECT command_id AS commandId FROM retro_dispatch
-       WHERE retro_id = ? AND attempt < ? AND result IS NOT NULL ORDER BY attempt DESC LIMIT 1`,
-    )
-    .get(retro.id, attempt);
-  const result =
-    previous === null
-      ? null
-      : (getRetroDispatch(db, previous.commandId)?.result as RunnerRetroResult);
+  const previous = previousRetroResultDispatch(db, retro.id, attempt);
+  const result = previous === null ? null : (previous.result as RunnerRetroResult);
   const output = result?.outcome === "completed" ? (result.output ?? null) : null;
   const problems =
     output === null || retro.digestSha256 === null
@@ -835,15 +801,7 @@ export function createRetroDispatcher(options: {
 
   const api = {
     tick() {
-      const rows = db
-        .query<{ id: string }, []>(
-          `SELECT id FROM retro WHERE (state IN ('queued','generating','failed')
-             AND id NOT IN (SELECT retro_id FROM retro_generation WHERE diagnostic = 'failed'))
-           OR id IN (SELECT retro_id FROM retro_dispatch WHERE released_at IS NULL OR settled_at IS NULL)
-           ORDER BY created_at, id`,
-        )
-        .all();
-      for (const { id } of rows) {
+      for (const id of retrosToAdvance(db)) {
         try {
           const retro = getRetro(db, id);
           if (retro !== null) advance(retro);

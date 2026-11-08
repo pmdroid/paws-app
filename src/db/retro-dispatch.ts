@@ -1,6 +1,18 @@
 import type { Database } from "bun:sqlite";
 import { isDeepStrictEqual } from "node:util";
-import { and, count, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 import type * as pgSchema from "./schema-pg";
 import { ulid } from "./ulid";
@@ -440,4 +452,124 @@ export function* retroGenerationSteps(q: Q, retroId: string) {
   return row === undefined
     ? null
     : ({ ...row, diagnostic: row.diagnostic as RetroGenerationDiagnostic } as RetroGenerationRow);
+}
+
+/** Why the dispatch for one attempt of a retro was released, or null when it was not. */
+export function retroDispatchReleaseReason(
+  db: Database,
+  retroId: string,
+  attempt: number,
+): string | null {
+  return settled(sqliteDb(db).run((q) => retroDispatchReleaseReasonSteps(q, retroId, attempt)));
+}
+
+export function* retroDispatchReleaseReasonSteps(q: Q, retroId: string, attempt: number) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ reason: retroDispatch.releaseReason })
+      .from(retroDispatch)
+      .where(and(eq(retroDispatch.retroId, retroId), eq(retroDispatch.attempt, attempt))),
+  );
+  return row?.reason ?? null;
+}
+
+/** The dispatch of a retro's latest attempt, finished or not. */
+export function latestRetroDispatch(db: Database, retroId: string): RetroDispatch | null {
+  return settled(sqliteDb(db).run((q) => latestRetroDispatchSteps(q, retroId)));
+}
+
+export function* latestRetroDispatchSteps(q: Q, retroId: string) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(retroDispatch)
+      .where(eq(retroDispatch.retroId, retroId))
+      .orderBy(desc(retroDispatch.attempt))
+      .limit(1),
+  );
+  return row === undefined ? null : fromRow(q, row);
+}
+
+/** The latest dispatch before `attempt` that recorded a result. */
+export function previousRetroResultDispatch(
+  db: Database,
+  retroId: string,
+  attempt: number,
+): RetroDispatch | null {
+  return settled(sqliteDb(db).run((q) => previousRetroResultDispatchSteps(q, retroId, attempt)));
+}
+
+export function* previousRetroResultDispatchSteps(q: Q, retroId: string, attempt: number) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(retroDispatch)
+      .where(
+        and(
+          eq(retroDispatch.retroId, retroId),
+          lt(retroDispatch.attempt, attempt),
+          isNotNull(retroDispatch.result),
+        ),
+      )
+      .orderBy(desc(retroDispatch.attempt))
+      .limit(1),
+  );
+  return row === undefined ? null : fromRow(q, row);
+}
+
+/** Whether any dispatch of the retro is still unreleased or unsettled. */
+export function retroHasUnfinishedDispatch(db: Database, retroId: string): boolean {
+  return settled(sqliteDb(db).run((q) => retroHasUnfinishedDispatchSteps(q, retroId)));
+}
+
+export function* retroHasUnfinishedDispatchSteps(q: Q, retroId: string) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(retroDispatch)
+      .where(and(eq(retroDispatch.retroId, retroId), unfinished(q)))
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+/**
+ * Retros the dispatcher advances, oldest first: those still to generate, unless their generation
+ * failed for good, and those with a dispatch still to release or settle.
+ */
+export function retrosToAdvance(db: Database): string[] {
+  return settled(sqliteDb(db).run((q) => retrosToAdvanceSteps(q)));
+}
+
+export function* retrosToAdvanceSteps(q: Q) {
+  const { retro, retroGeneration: generation, retroDispatch } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: retro.id })
+      .from(retro)
+      .where(
+        or(
+          and(
+            inArray(retro.state, ["queued", "generating", "failed"]),
+            notInArray(
+              retro.id,
+              q.orm
+                .select({ id: generation.retroId })
+                .from(generation)
+                .where(eq(generation.diagnostic, "failed")),
+            ),
+          ),
+          inArray(
+            retro.id,
+            q.orm.select({ id: retroDispatch.retroId }).from(retroDispatch).where(unfinished(q)),
+          ),
+        ),
+      )
+      .orderBy(retro.createdAt, retro.id),
+  );
+  return rows.map((row) => row.id);
 }

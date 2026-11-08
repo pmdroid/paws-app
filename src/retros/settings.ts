@@ -4,6 +4,7 @@ import {
   getRetro,
   immediate,
   latestRetroSettingsRevision,
+  retroIdForWindow,
   saveRetroSettingsRevision,
   type Retro,
   type RetroOrigin,
@@ -409,12 +410,8 @@ export function freezeRetroRun(
   },
 ): RetroRunFreeze {
   return immediate(db, (): RetroRunFreeze => {
-    const existing = db
-      .query<{ id: string }, [string, number, number]>(
-        "SELECT id FROM retro WHERE workspace_id = ? AND window_start = ? AND window_end = ?",
-      )
-      .get(input.workspaceId, input.windowStart, input.windowEnd);
-    if (existing) return { ok: true, retro: getRetro(db, existing.id)!, created: false };
+    const existing = retroIdForWindow(db, input.workspaceId, input.windowStart, input.windowEnd);
+    if (existing !== null) return { ok: true, retro: getRetro(db, existing)!, created: false };
     const latest = latestRetroSettingsRevision(db, input.workspaceId);
     if (latest === null)
       return { ok: false, reason: "no_settings", message: "Save retro settings first." };
