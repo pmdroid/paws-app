@@ -78,7 +78,10 @@ export function* itemActivityFactsSteps(
   const live =
     work !== undefined && work.endedAt === null && work.leaseUntil > runnerLeaseCutoff(now);
   const held = yield* q.one(
-    q.orm.select({ since: itemWait.since }).from(itemWait).where(eq(itemWait.itemId, item.id)),
+    q.orm
+      .select({ since: itemWait.since })
+      .from(itemWait)
+      .where(and(eq(itemWait.itemId, item.id), eq(itemWait.kind, "item"))),
   );
   return {
     liveRunner: live ? work.name : null,

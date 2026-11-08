@@ -183,20 +183,6 @@ export const itemReconciliationEffect = sqliteTable(
   ],
 );
 
-export const queueWait = sqliteTable(
-  "queue_wait",
-  {
-    itemId: text("item_id")
-      .notNull()
-      .references(() => workItem.id),
-    version: integer().notNull(),
-    since: integer().notNull(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.itemId, table.version], name: "queue_wait_item_id_version_pk" }),
-  ],
-);
-
 export const usagePause = sqliteTable("usage_pause", {
   runId: text("run_id")
     .primaryKey()
@@ -467,14 +453,21 @@ export const itemPullRequest = sqliteTable(
   () => [check("item_pull_request_check_1", sql`pull_number > 0`)],
 );
 
-export const itemWait = sqliteTable("item_wait", {
-  itemId: text("item_id")
-    .primaryKey()
-    .notNull()
-    .references(() => workItem.id),
-  version: integer().notNull(),
-  since: integer().notNull(),
-});
+export const itemWait = sqliteTable(
+  "item_wait",
+  {
+    itemId: text("item_id")
+      .notNull()
+      .references(() => workItem.id),
+    kind: text().notNull(),
+    version: integer().notNull(),
+    since: integer().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.itemId, table.kind], name: "item_wait_item_id_kind_pk" }),
+    check("item_wait_check_1", sql`kind IN ('queue','item')`),
+  ],
+);
 
 export const workItemTask = sqliteTable(
   "work_item_task",

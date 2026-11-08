@@ -106,7 +106,6 @@ export const rawSchema = {
     "push_outage",
     "question",
     "queue_position",
-    "queue_wait",
     "rebase_return",
     "remote_merge_fact",
     "repository_catalog",

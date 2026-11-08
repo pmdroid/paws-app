@@ -157,20 +157,6 @@ export const itemReconciliationEffect = pgTable(
   ],
 );
 
-export const queueWait = pgTable(
-  "queue_wait",
-  {
-    itemId: text("item_id")
-      .notNull()
-      .references(() => workItem.id),
-    version: bigint({ mode: "number" }).notNull(),
-    since: bigint({ mode: "number" }).notNull(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.itemId, table.version], name: "queue_wait_item_id_version_pk" }),
-  ],
-);
-
 export const usagePause = pgTable("usage_pause", {
   runId: text("run_id")
     .primaryKey()
@@ -431,13 +417,21 @@ export const itemPullRequest = pgTable(
   () => [check("item_pull_request_check_1", sql`pull_number > 0`)],
 );
 
-export const itemWait = pgTable("item_wait", {
-  itemId: text("item_id")
-    .primaryKey()
-    .references(() => workItem.id),
-  version: bigint({ mode: "number" }).notNull(),
-  since: bigint({ mode: "number" }).notNull(),
-});
+export const itemWait = pgTable(
+  "item_wait",
+  {
+    itemId: text("item_id")
+      .notNull()
+      .references(() => workItem.id),
+    kind: text().notNull(),
+    version: bigint({ mode: "number" }).notNull(),
+    since: bigint({ mode: "number" }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.itemId, table.kind], name: "item_wait_item_id_kind_pk" }),
+    check("item_wait_check_1", sql`kind IN ('queue','item')`),
+  ],
+);
 
 export const workItemTask = pgTable(
   "work_item_task",
