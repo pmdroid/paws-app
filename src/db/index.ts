@@ -1172,7 +1172,14 @@ export {
   saveQueuePositions,
 } from "./queue-wait";
 export type { QueuePosition } from "./queue-wait";
-export { listItemHolds, listItemHoldsSteps, saveItemHolds, saveItemHoldsSteps } from "./item-hold";
+export {
+  listItemHolds,
+  listItemHoldsSteps,
+  listOverlapHoldAges,
+  listOverlapHoldAgesSteps,
+  saveItemHolds,
+  saveItemHoldsSteps,
+} from "./item-hold";
 export { itemActivityFacts, itemActivityFactsSteps, type ItemActivityFacts } from "./item-activity";
 export { itemWaitSince, itemWaitSinceSteps, keepItemWaits, keepItemWaitsSteps } from "./item-wait";
 export {

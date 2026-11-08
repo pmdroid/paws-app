@@ -6923,7 +6923,7 @@ export class Orchestrator {
       } else if (wait.kind === "overlap") {
         progress.wait(
           `Wait for ${wait.blocker} to merge`,
-          `${name} held: ${overlapLine(wait.blocker, wait.files)}`,
+          `${name} held: ${overlapLine(wait.blocker, wait.files, wait.start)}`,
         );
       } else if (wait.kind === "runner" && wait.restart) {
         const limit = this.fixAttemptLimit(item, wait.restart);

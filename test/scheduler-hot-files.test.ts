@@ -5,6 +5,7 @@ import {
   hotFiles,
   insertQueuedItem,
   listItemHolds,
+  listOverlapHoldAges,
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
   saveCandidatePaths,
@@ -329,6 +330,107 @@ test("a later candidate does not change the files of an earlier conflict", () =>
       recordedAt: NOW - 10_000,
     });
     expect(hotFiles(db, NOW).map((file) => file.path)).toEqual([PROVIDER]);
+  } finally {
+    db.close();
+  }
+});
+
+test("held items that change the same hot file start oldest first", () => {
+  const db = tempDb();
+  try {
+    conflicted(db, [PROVIDER]);
+    item(db, "holder", [PROVIDER]);
+    setState(db, "holder", "running");
+    item(db, "a", [PROVIDER], 3);
+    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    item(db, "b", [PROVIDER], 1);
+    item(db, "c", [PROVIDER], 4);
+    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
+    expect(listOverlapHoldAges(db)).toEqual(
+      new Map([
+        ["a", NOW],
+        ["b", NOW + 1],
+        ["c", NOW + 1],
+      ]),
+    );
+
+    setState(db, "holder", "merged");
+    const log: string[] = [];
+    expect(workspaceDispatch(db, { now: NOW + 2, log: (line: string) => log.push(line) })).toEqual([
+      "a",
+    ]);
+    expect(listItemHolds(db)).toEqual([
+      { itemId: "b", reason: "overlap", blockers: ["a"], files: [PROVIDER] },
+      { itemId: "c", reason: "overlap", blockers: ["a"], files: [PROVIDER] },
+    ]);
+    expect(log).toContain("item b held: waiting for a to start (both change provider.ts)");
+
+    setState(db, "a", "running");
+    expect(workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
+    expect(listItemHolds(db).map((hold) => [hold.itemId, hold.blockers])).toEqual([
+      ["b", ["a"]],
+      ["c", ["a"]],
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("an item keeps its hold age across a restart from failed and a conflict restart", () => {
+  const db = tempDb();
+  try {
+    conflicted(db, [PROVIDER]);
+    item(db, "holder", [PROVIDER]);
+    setState(db, "holder", "running");
+    item(db, "a", [PROVIDER], 3);
+    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    setState(db, "holder", "merged");
+    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual(["a"]);
+    setState(db, "a", "running");
+    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
+    expect(listItemHolds(db)).toEqual([]);
+    expect(listOverlapHoldAges(db).get("a")).toBe(NOW);
+
+    setState(db, "a", "failed");
+    expect(workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
+    item(db, "second", [PROVIDER]);
+    setState(db, "second", "running");
+    setState(db, "a", "queued");
+    item(db, "c", [PROVIDER], 1);
+    expect(workspaceDispatch(db, { now: NOW + 4 })).toEqual([]);
+    expect(listOverlapHoldAges(db).get("a")).toBe(NOW);
+    setState(db, "second", "merged");
+    expect(workspaceDispatch(db, { now: NOW + 5 })).toEqual(["a"]);
+
+    setState(db, "a", "merge_queue");
+    expect(workspaceDispatch(db, { now: NOW + 6 })).toEqual([]);
+    setState(db, "a", "queued");
+    expect(workspaceDispatch(db, { now: NOW + 7 })).toEqual(["a"]);
+    expect(listItemHolds(db)).toEqual([
+      { itemId: "c", reason: "overlap", blockers: ["a"], files: [PROVIDER] },
+    ]);
+    expect(listOverlapHoldAges(db).get("a")).toBe(NOW);
+
+    setState(db, "a", "merged");
+    expect(workspaceDispatch(db, { now: NOW + 8 })).toEqual(["c"]);
+    expect(listOverlapHoldAges(db).has("a")).toBe(false);
+  } finally {
+    db.close();
+  }
+});
+
+test("an item without a candidate is never held, even behind an older held item", () => {
+  const db = tempDb();
+  try {
+    conflicted(db, [PROVIDER]);
+    item(db, "holder", [PROVIDER]);
+    setState(db, "holder", "running");
+    item(db, "a", [PROVIDER], 3);
+    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    item(db, "unknown", null, 4);
+    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual(["unknown"]);
+    expect(listItemHolds(db).map((hold) => hold.itemId)).toEqual(["a"]);
+    expect(listOverlapHoldAges(db).has("unknown")).toBe(false);
   } finally {
     db.close();
   }

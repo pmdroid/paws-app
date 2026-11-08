@@ -2,7 +2,7 @@ import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { setJournalSink } from "../src/journal";
-import { listItemHolds, legacyMigrate, migrations, openDatabase, saveItemHolds } from "../src/db";
+import { listItemHolds, legacyMigrate, migrations, openDatabase } from "../src/db";
 import { recordItemDependencies } from "../src/intake";
 import { createAdmission, dispatch, type ItemAdmission } from "../src/scheduler";
 import { createLiveStatusProvider } from "../src/dashboard";
@@ -236,13 +236,12 @@ test("migration 124 keeps the stored holds and accepts the workspace reason", ()
     item(db, "PAS-9");
     db.run("INSERT INTO item_hold VALUES('PAS-8','blocked','[\"PAS-7\"]')");
     legacyMigrate(db);
-    saveItemHolds(db, [
-      { itemId: "PAS-8", reason: "blocked", blockers: ["PAS-7"] },
-      { itemId: "PAS-9", reason: "workspace", blockers: [] },
-    ]);
-    expect(listItemHolds(db)).toEqual([
-      { itemId: "PAS-8", reason: "blocked", blockers: ["PAS-7"] },
-      { itemId: "PAS-9", reason: "workspace", blockers: [] },
+    db.run("INSERT INTO item_hold(item_id,reason,blockers) VALUES('PAS-9','workspace','[]')");
+    expect(
+      db.query("SELECT item_id, reason, blockers FROM item_hold ORDER BY item_id").all(),
+    ).toEqual([
+      { item_id: "PAS-8", reason: "blocked", blockers: '["PAS-7"]' },
+      { item_id: "PAS-9", reason: "workspace", blockers: "[]" },
     ]);
   } finally {
     db.close();
