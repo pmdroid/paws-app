@@ -1,4 +1,4 @@
-export { startServer } from "./serve";
+export { serverStore, startServer } from "./serve";
 export type { ServerOptions } from "./serve";
 export { createHostedGitHubConnect } from "./github-connect";
 

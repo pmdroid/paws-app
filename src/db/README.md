@@ -96,6 +96,10 @@ export function queueWaitSince(db: Db, itemId: string, version: number, now: num
 
 `src/db/queue-wait.ts` is the worked example. `src/db/linear-budget.ts` still writes each query once per dialect through `db.orm` and `db.sync()`; its conversion issue moves it to `db.run()` and removes `sync()`.
 
+### The store
+
+Startup (`startPaws()` in `src/index.ts`) opens the database and creates one `Db` over it, `store = sqliteDb(db)`, and passes it beside `db` to every holder of the database: `PawsProcess.store`, `startLoops()` (`JobLoop.store`, `OutboxDispatcher.store`), `attachOrchestrator()` (`Orchestrator.store`), `startServer()` (`store` in the route context, from `serverStore()`) and `createRemoteAgentRunner()` (its `store`). A holder given only `db`, as most tests do, takes `sqliteDb(db)`, which is the same handle because `sqliteDb()` keeps one per connection. Converted code reaches the database through its holder's `store` (`await this.store.run((q) => fooSteps(q, …))`, `this.store.transaction(…)`) and does not call `sqliteDb()` itself; when startup runs on Postgres, `store` is the Postgres handle.
+
 ### Converting a module
 
 1. Change `database: Database` to `db: Db`, return `Promise<T>`, and move the body into `db.run(function* (q) { … })`, or `db.transaction()` when it writes more than one statement. Build each query on `q.orm` and `q.t` and `yield*` it through `q.all`, `q.one` or `q.exec`.

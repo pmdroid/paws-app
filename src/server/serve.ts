@@ -68,7 +68,9 @@ import {
   getWorkItem,
   hotFiles,
   listWorkspaceRepositoryNames,
+  sqliteDb,
   workspaceSessionIds,
+  type Db,
 } from "../db";
 import {
   handleWorkspaceGitHubIntegration,
@@ -158,6 +160,8 @@ export type ServerOptions = {
   webhooks?: boolean;
   /** Engine database. The dashboard resources read it. Omit it for empty live resources. */
   db?: Database;
+  /** The async `Db` over `db` for converted routes. Defaults to `sqliteDb(db)`. */
+  store?: Db;
   /** Clock for local health checks. */
   healthNow?: () => number;
   /** Job-loop liveness, read by `/health` apart from the listener accepting connections. */
@@ -196,6 +200,11 @@ export type ServerOptions = {
   };
 };
 
+/** The `Db` the routes reach: the one startup passes, or `sqliteDb(db)`. */
+export function serverStore(options: Pick<ServerOptions, "db" | "store">): Db | undefined {
+  return options.store ?? (options.db ? sqliteDb(options.db) : undefined);
+}
+
 export function startServer(options: ServerOptions = {}): Bun.Server<undefined> {
   const hostname = options.hostname ?? DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
@@ -206,6 +215,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const linearWebhook = options.linearWebhook;
   const webhooks = options.webhooks ?? webhookChecksNeeded();
   const db = options.db;
+  const store = serverStore(options);
   const health = createHealthReport({
     db,
     linearWebhook: webhooks && Boolean(linearWebhookSecret),
@@ -274,6 +284,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
             : {}),
           ...(options.skillSettings ? { skillSettings: options.skillSettings } : {}),
           ...(db ? { db } : {}),
+          ...(store ? { store } : {}),
           ...(statusEnv ? { statusEnv } : {}),
           ...(closeoutHome ? { closeoutHome } : {}),
           ...(evidenceRoot ? { evidenceRoot } : {}),
@@ -329,6 +340,7 @@ type Secrets = {
   agentSettings?: ServerOptions["agentSettings"] & { csrfToken: string };
   skillSettings?: ServerOptions["skillSettings"];
   db?: Database;
+  store?: Db;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;

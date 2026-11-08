@@ -1,6 +1,7 @@
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_POLL_MS, sleep, type Clock } from "../core";
+import { sqliteDb, type Db } from "./db";
 import {
   claimOutboxHeads,
   coalesceOutbox,
@@ -25,11 +26,14 @@ export class OutboxDispatcher {
   private handler: OutboxHandler | null = null;
   private readonly pending = new Map<Promise<void>, OutboxRow>();
   private readonly active = new Map<number, { row: OutboxRow; controller: AbortController }>();
+  /** The async `Db` for converted code: `sqliteDb(db)` unless startup passes one. */
+  readonly store: Db;
 
   constructor(
     readonly db: Database,
     readonly clock: Clock,
     readonly options: {
+      store?: Db;
       workerId?: string;
       claims?: boolean;
       pollMs?: number;
@@ -37,7 +41,9 @@ export class OutboxDispatcher {
       backoffBaseMs?: number;
       progressIntervalMs?: number;
     } = {},
-  ) {}
+  ) {
+    this.store = options.store ?? sqliteDb(db);
+  }
 
   get pollMs(): number {
     return this.options.pollMs ?? DEFAULT_POLL_MS;
