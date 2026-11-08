@@ -3,6 +3,7 @@ import {
   enqueueOutboxOnce,
   getLinkAsk,
   insertLinkAsk,
+  questionRow,
   type LinkAsk,
   type LinkAskDecision,
   type LinkAskKind,
@@ -261,11 +262,7 @@ export function addLinkAskUrl(db: Database, question: StoredQuestion, now: numbe
 /** Takes the link off the session once the ask closed. */
 export function removeLinkAskUrl(db: Database, questionId: string, now: number): void {
   const ask = getLinkAsk(db, questionId);
-  const sessionId = db
-    .query<{ sessionId: string }, [string]>(
-      "SELECT session_id AS sessionId FROM question WHERE id = ?",
-    )
-    .get(questionId)?.sessionId;
+  const sessionId = questionRow(db, questionId)?.sessionId;
   if (ask === null || sessionId === undefined) return;
   enqueueOutboxOnce(db, {
     target: "linear",

@@ -1277,3 +1277,24 @@ export function* outboxKeyExistsSteps(q: Q, idempotencyKey: string) {
 export function outboxKeyExists(db: Database, idempotencyKey: string): boolean {
   return settled(sqliteDb(db).run((q) => outboxKeyExistsSteps(q, idempotencyKey)));
 }
+
+export function* dropQuestionElicitationsSteps(q: Q, questionId: string, reason: string) {
+  const { outbox } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(outbox)
+      .set({ status: "dropped", error: reason })
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          eq(outbox.op, "elicitation"),
+          inArray(outbox.status, ["pending", "dead"]),
+          eq(jsonField(q, outbox.payload, "questionId"), questionId),
+        ),
+      ),
+  );
+}
+
+export function dropQuestionElicitations(db: Database, questionId: string, reason: string): void {
+  settled(sqliteDb(db).run((q) => dropQuestionElicitationsSteps(q, questionId, reason)));
+}
