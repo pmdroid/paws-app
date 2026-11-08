@@ -23,24 +23,19 @@ import { jsonField, jsonText } from "./json-text";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { auditWorkspaceAccessSteps } from "./workspace";
 
-export const CI_WAITING = (run: string) =>
-  `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND json_extract(ci.payload,'$.itemId')=${run}.item_id
-    AND json_extract(ci.payload,'$.awakeWait.kind')='ci')`;
-
 export const ciWaitingSql = (q: Q, run: string): SQL =>
   sql.raw(
     q.dialect === "sqlite"
-      ? CI_WAITING(run)
+      ? `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND json_extract(ci.payload,'$.itemId')=${run}.item_id
+    AND json_extract(ci.payload,'$.awakeWait.kind')='ci')`
       : `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND (ci.payload->>'itemId')=${run}.item_id
     AND (ci.payload->'awakeWait'->>'kind')='ci')`,
   );
 
-export const WORK_HELPER = (helper: string) => `${helper}.purpose IS NOT 'conversation'`;
-
 export const workHelperSql = (q: Q, helper: string): SQL =>
   sql.raw(
     q.dialect === "sqlite"
-      ? WORK_HELPER(helper)
+      ? `${helper}.purpose IS NOT 'conversation'`
       : `${helper}.purpose IS DISTINCT FROM 'conversation'`,
   );
 
@@ -746,12 +741,4 @@ export function* conversationsInUseSteps(
       .groupBy(helper.runnerId),
   );
   return new Map(rows.map((row) => [row.runnerId, row.used]));
-}
-
-export function conversationsInUse(
-  db: Database,
-  runnerIds: readonly string[],
-  now: number,
-): Map<string, number> {
-  return settled(sqliteDb(db).run((q) => conversationsInUseSteps(q, runnerIds, now)));
 }
