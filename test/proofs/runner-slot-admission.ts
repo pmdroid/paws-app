@@ -4,7 +4,13 @@ import { workspaceWithRunners, REPOSITORY, NOW } from "../runner-slot-fixture";
 import type { Proof } from "./harness";
 
 export default {
-  covers: ["src/scheduler/**", "src/runner-placement/**", "src/db/runner-capacity.ts"],
+  covers: [
+    "src/scheduler/scheduler.ts",
+    "src/scheduler/waits.ts",
+    "src/runner-placement/fit.ts",
+    "src/runner-placement/eligible.ts",
+    "src/db/runner-capacity.ts",
+  ],
   summary:
     "Two items can start on the two-slot runner that allows their repository; the third remains queued with placement's refusal until another runner allows the repository.",
   agent: () => [],
