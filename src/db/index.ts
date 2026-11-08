@@ -26,10 +26,16 @@ export {
   drainInstanceCommands,
 } from "./command-delivery";
 export {
+  enqueueEndedSessionFaceSteps,
   getItemBranchState,
+  getItemBranchStateSteps,
   getItemPullRequest,
+  getItemPullRequestSteps,
   recordItemBranchState,
+  recordItemBranchStateSteps,
   recordItemPullRequest,
+  recordItemPullRequestSteps,
+  stoppedResponseSteps,
   type ItemBranchState,
   type ItemPullRequest,
 } from "./stop-response";
@@ -1266,6 +1272,10 @@ export {
   usagePauseSteps,
   earliestRunnerCooldown,
   runnerAgentLoginReady,
+  clearUsagePausesSteps,
+  earliestRunnerCooldownSteps,
+  resumeUsagePauseNowSteps,
+  runnerAgentLoginReadySteps,
 } from "./usage-pause";
 export type { UsagePause } from "./usage-pause";
 export {
@@ -1400,8 +1410,25 @@ export {
 } from "./runner-agents";
 export { listWaitingProfileRuns } from "./runs";
 export { halt } from "./halt";
-export { latestHumanTurn, restart, fixRounds, restartLimit, type RestartHandoff } from "./restart";
-export { restartHold, type RestartHold } from "./restart-hold";
+export {
+  latestHumanTurn,
+  latestHumanTurnSteps,
+  restart,
+  fixRounds,
+  fixRoundsSteps,
+  restartLimit,
+  restartLimitSteps,
+  pendingRestartHandoffSteps,
+  type RestartHandoff,
+} from "./restart";
+export {
+  ensureRestartQuestionSteps,
+  holdRestartSteps,
+  restartHold,
+  restartHoldSteps,
+  restartQuestionStandsSteps,
+  type RestartHold,
+} from "./restart-hold";
 
 export {
   jobVersionCurrent,
