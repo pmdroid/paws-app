@@ -31,6 +31,19 @@ import {
   type RestartHandoff,
   getItemCandidate,
   recordItemCandidate,
+  activateLinearItemSteps,
+  bindLinearSessionTaskSteps,
+  configureWorkItemSteps,
+  discardLinearTurnsSteps,
+  getLinearCommentSteps,
+  getLinearSessionSteps,
+  getTaskModeSteps,
+  getWorkItemSteps,
+  isWorkItemRepositoryQuestionSteps,
+  recordLinearTurnSteps,
+  saveLinearSessionContextSteps,
+  settleLinearCommentsSteps,
+  workItemForSessionSteps,
 } from "../db";
 import { journal, journalCaught } from "../journal";
 import { rerunItemCi } from "./ci-rerun";
@@ -252,7 +265,6 @@ import {
   getWorkItemRepositoryAnswer,
   getWorkItemRepositoryChoice,
   rememberWorkItemRepositoryChoice,
-  isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
   getWorkItem,
   suggestedFindings,
@@ -296,9 +308,7 @@ import {
   ensureLinearSession,
   activateLinearItem,
   workItemForSession,
-  recordLinearTurn,
   applyLinearTurns,
-  saveLinearSessionContext,
   getLinearSessionContext,
   hasLinearSessionSnapshotContext,
   saveLinearSessionSnapshotContext,
@@ -349,7 +359,6 @@ import {
   gatherLinearComments,
   getLinearComment,
   receivedLinearComments,
-  settleLinearComments,
   recordLinearComment,
   getWorkItemLinearProjectId,
   listOpenPolicyBlocks,
@@ -601,7 +610,7 @@ import { deliverLinearOutbox } from "./dispatch";
 import { durableConversation } from "./conversation";
 import { createLinearSessionProgress } from "./session-progress";
 import { renderWorkContext, withLeftForLater } from "../core";
-import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
+import { recordLinearSessionEventSteps, sessionTaskKey } from "./linear-routing";
 import {
   createEvidenceArtifactPublisher,
   enqueueEvidenceCard,
@@ -1002,7 +1011,7 @@ export class Orchestrator {
       return;
     }
     if (event.action === "prompted" && !event.body?.trim()) return;
-    if (event.action === "prompted" && this.commentAlreadyHandedOff(event)) return;
+    if (event.action === "prompted" && (await this.commentAlreadyHandedOff(event))) return;
     await this.taskAccess()?.assertOpenIssue(event);
     let turnEventKey = event.dedupeKey;
     if (
@@ -1011,9 +1020,9 @@ export class Orchestrator {
       event.body !== null &&
       (!findOpenQuestion(this.db, event.sessionId) ||
         this.hasPublishedPullRequest(event.sessionId) ||
-        this.sessionPaused(event.sessionId))
+        (await this.sessionPaused(event.sessionId)))
     ) {
-      const turn = this.recordTurn(event);
+      const turn = await this.recordTurn(event);
       if (turn) turnEventKey = turn.eventKey;
       if (
         turn?.state === "pending" &&
@@ -1114,17 +1123,18 @@ export class Orchestrator {
     }
   }
 
-  private commentAlreadyHandedOff(event: AcceptedLinearEvent): boolean {
+  private async commentAlreadyHandedOff(event: AcceptedLinearEvent): Promise<boolean> {
     const source = linearSourceCommentId(event);
     if (source === null) return false;
-    return immediate(this.db, () => {
-      const comment = getLinearComment(this.db, source);
+    const now = () => this.now();
+    return await this.store.transaction(function* (q) {
+      const comment = yield* getLinearCommentSteps(q, source);
       if (comment === null) return false;
       if (comment.state === "received" || comment.state === "queued") {
-        settleLinearComments(this.db, [source], {
+        yield* settleLinearCommentsSteps(q, [source], {
           state: "ignored",
           reason: "agent_session",
-          now: this.now(),
+          now: now(),
         });
         return false;
       }
@@ -1250,39 +1260,56 @@ export class Orchestrator {
     });
   }
 
-  private recordTurn(event: AcceptedLinearEvent) {
+  private async recordTurn(event: AcceptedLinearEvent) {
     if (!event.sessionId || event.body === null) return null;
-    recordLinearSessionEvent(this.db, event, this.now());
-    return recordLinearTurn(this.db, {
-      eventKey: event.dedupeKey,
-      activityId: event.activityId,
-      sessionId: event.sessionId,
-      actorId: "actorId" in event && typeof event.actorId === "string" ? event.actorId : null,
-      body: event.body,
-      payload: event.payload,
-      createdAtMs:
-        "activityCreatedAtMs" in event && typeof event.activityCreatedAtMs === "number"
-          ? event.activityCreatedAtMs
-          : event.updatedAtMs,
-      now: this.now(),
-    });
+    const sessionId = event.sessionId;
+    const body = event.body;
+    await this.store.transaction((q) => recordLinearSessionEventSteps(q, event, this.now()));
+    return await this.store.transaction((q) =>
+      recordLinearTurnSteps(q, {
+        eventKey: event.dedupeKey,
+        activityId: event.activityId,
+        sessionId,
+        actorId: "actorId" in event && typeof event.actorId === "string" ? event.actorId : null,
+        body,
+        payload: event.payload,
+        createdAtMs:
+          "activityCreatedAtMs" in event && typeof event.activityCreatedAtMs === "number"
+            ? event.activityCreatedAtMs
+            : event.updatedAtMs,
+        now: this.now(),
+      }),
+    );
   }
 
   private async handleLinearEvent(event: AcceptedLinearEvent): Promise<void> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
     if (event.action === "prompted") {
       const question =
-        event.sessionId && !this.sessionPaused(event.sessionId)
+        event.sessionId && !(await this.sessionPaused(event.sessionId))
           ? findOpenQuestion(this.db, event.sessionId)
           : null;
-      const questionItem = question ? getWorkItem(this.db, question.itemId) : null;
+      const questionItem = question
+        ? await this.store.run((q) => getWorkItemSteps(q, question.itemId))
+        : null;
       if (event.sessionId && event.body) {
-        const session = recordLinearSessionEvent(this.db, event, this.now());
-        if (questionItem && session && !workItemForSession(this.db, event.sessionId)) {
-          bindLinearSessionTask(this.db, event.sessionId, questionItem.delegationId);
-          activateLinearItem(this.db, event.sessionId, questionItem.id);
+        const sessionId = event.sessionId;
+        const session = await this.store.transaction((q) =>
+          recordLinearSessionEventSteps(q, event, this.now()),
+        );
+        if (
+          questionItem &&
+          session &&
+          !(await this.store.run((q) => workItemForSessionSteps(q, sessionId)))
+        ) {
+          await this.store.transaction((q) =>
+            bindLinearSessionTaskSteps(q, sessionId, questionItem.delegationId),
+          );
+          await this.store.transaction((q) =>
+            activateLinearItemSteps(q, sessionId, questionItem.id),
+          );
         }
-        const turn = this.recordTurn(event);
+        const turn = await this.recordTurn(event);
         if (turn?.state !== "pending") return;
         event = { ...event, dedupeKey: turn.eventKey, body: turn.body, payload: turn.payload };
       }
@@ -1290,38 +1317,47 @@ export class Orchestrator {
         await this.resumeLinearSession(event.sessionId);
         return;
       }
-      const outcome = await this.deliverPrompt(
-        event,
-        Boolean(
-          event.sessionId &&
-          questionItem &&
-          question &&
-          !isWorkItemRepositoryQuestion(this.db, questionItem.id, question.id) &&
-          isResponseTaskMode(getTaskMode(this.db, questionItem.id)),
-        ),
+      const responseMode = Boolean(
+        event.sessionId &&
+        questionItem &&
+        question &&
+        !(await this.store.run((q) =>
+          isWorkItemRepositoryQuestionSteps(q, questionItem.id, question.id),
+        )) &&
+        isResponseTaskMode(await this.store.run((q) => getTaskModeSteps(q, questionItem.id))),
       );
+      const outcome = await this.deliverPrompt(event, responseMode);
       if (event.sessionId) {
-        if (outcome === "rejected") discardLinearTurns(this.db, event.sessionId, [event.dedupeKey]);
-        if (outcome === "redirect") await this.resumeLinearSession(event.sessionId);
+        const sessionId = event.sessionId;
+        const eventKey = event.dedupeKey;
+        if (outcome === "rejected")
+          await this.store.transaction((q) => discardLinearTurnsSteps(q, sessionId, [eventKey]));
+        if (outcome === "redirect") await this.resumeLinearSession(sessionId);
       }
       return;
     }
     if (event.action !== "created" || event.issueId === null) return;
     let startFresh = asksForFreshStart(event.body);
     if (event.sessionId !== null) {
+      const sessionId = event.sessionId;
       const context = parseLinearSessionContext(event.payload);
       const comment = context.comment as { body?: unknown } | null;
       if (typeof comment?.body === "string" && asksForFreshStart(comment.body)) startFresh = true;
-      saveLinearSessionContext(
-        this.db,
-        event.sessionId,
-        renderLinearSessionContext(context),
-        context.promptContext ? 2 : 1,
+      await this.store.run((q) =>
+        saveLinearSessionContextSteps(
+          q,
+          sessionId,
+          renderLinearSessionContext(context),
+          context.promptContext ? 2 : 1,
+        ),
       );
     }
     const tracker = this.tracker;
     if (tracker === null) throw new Error("Linear is not connected");
-    const session = recordLinearSessionEvent(this.db, event, this.now());
+    const session =
+      event.sessionId === null
+        ? null
+        : await this.store.transaction((q) => recordLinearSessionEventSteps(q, event, this.now()));
     const taskKey = session ? sessionTaskKey(this.db, session) : null;
     if (session?.stoppedAt !== null && session?.stoppedAt !== undefined) return;
     if (session && !startFresh && (await this.resumeRedelegatedItem(event.issueId, session)))
@@ -1333,7 +1369,9 @@ export class Orchestrator {
         startFresh,
       });
     } catch (error) {
-      const current = session ? getLinearSession(this.db, session.sessionId) : null;
+      const current = session
+        ? await this.store.run((q) => getLinearSessionSteps(q, session.sessionId))
+        : null;
       if (session && (current?.stoppedAt !== null || current.generation !== session.generation)) {
         journalCaught(
           error,
@@ -1352,10 +1390,10 @@ export class Orchestrator {
       const caps = this.options.caps;
       if (caps !== undefined) {
         for (const saved of result.items) {
-          configureWorkItem(this.db, saved.id, {
-            maxAwakeMs: caps.maxAwakeMs,
-            limits: this.timeLimits(saved.id),
-          });
+          const limits = this.timeLimits(saved.id);
+          await this.store.run((q) =>
+            configureWorkItemSteps(q, saved.id, { maxAwakeMs: caps.maxAwakeMs, limits }),
+          );
         }
       }
       this.dispatch();
@@ -7502,8 +7540,8 @@ export class Orchestrator {
     );
   }
 
-  private sessionPaused(sessionId: string): boolean {
-    return workItemForSession(this.db, sessionId)?.state === "paused";
+  private async sessionPaused(sessionId: string): Promise<boolean> {
+    return (await this.store.run((q) => workItemForSessionSteps(q, sessionId)))?.state === "paused";
   }
 
   private async resumeRedelegatedItem(
