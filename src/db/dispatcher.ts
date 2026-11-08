@@ -26,6 +26,8 @@ export type OutboxHandler = (
 export class OutboxDispatcher {
   private handler: OutboxHandler | null = null;
   private readonly pending = new Map<Promise<void>, OutboxRow>();
+  /** Ticks still claiming. `idle()` waits for them so it covers what they claim. */
+  private readonly claiming = new Set<Promise<unknown>>();
   private readonly active = new Map<number, { row: OutboxRow; controller: AbortController }>();
   /** The async `Db` for converted code: `sqliteDb(db)` unless startup passes one. */
   readonly store: Db;
@@ -54,7 +56,15 @@ export class OutboxDispatcher {
     this.handler = handler;
   }
 
-  async tick(): Promise<OutboxRow[]> {
+  tick(): Promise<OutboxRow[]> {
+    const claim = this.claim();
+    const settled = claim.catch(() => undefined);
+    this.claiming.add(settled);
+    void settled.finally(() => this.claiming.delete(settled));
+    return claim;
+  }
+
+  private async claim(): Promise<OutboxRow[]> {
     if (this.handler === null || this.options.claims === false) return [];
     for (const { row, controller } of [...this.active.values()]) {
       if (!(await this.store.run((q) => isOutboxCurrentSteps(q, row))))
@@ -80,6 +90,7 @@ export class OutboxDispatcher {
   }
 
   async idle(match: (row: OutboxRow) => boolean = () => true): Promise<void> {
+    await Promise.all(this.claiming);
     await Promise.all([...this.pending].flatMap(([task, row]) => (match(row) ? [task] : [])));
   }
 

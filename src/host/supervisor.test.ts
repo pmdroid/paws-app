@@ -397,16 +397,22 @@ describe("host suspension and clock gaps", () => {
     const { clock, db, host } = boot();
     const jobs = new JobLoop(db, clock, { leaseMs: 24 * 60 * 60_000 });
     let finish = () => {};
+    let started = () => {};
     jobs.register(
       JOB_KIND.reverify,
       () =>
         new Promise<void>((resolve) => {
           finish = resolve;
+          started();
         }),
     );
-    const verify = () => {
+    const verify = async () => {
       enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: "eng-9" }, now: clock.now() });
-      return jobs.tick([JOB_KIND.reverify]);
+      const handling = new Promise<void>((resolve) => (started = resolve));
+      // The claim is awaited; the handler then holds the job until finish().
+      const running = jobs.tick([JOB_KIND.reverify]);
+      await handling;
+      return { running };
     };
     try {
       startRun(db, clock);
@@ -416,7 +422,7 @@ describe("host suspension and clock gaps", () => {
       applyWorkItemEvent(db, "eng-9", "turn_ended");
       // Two idle hours pass without a tick, then a job claims the item.
       clock.advance(2 * 60 * 60_000);
-      const running = verify();
+      const { running } = await verify();
       clock.advance(20 * 60_000);
       host.tick();
       // The job ends between ticks, and the item sits in verifying for two hours.
