@@ -394,6 +394,50 @@ test("a completed sign-in queues one login check for that agent", () => {
   ]);
 });
 
+test("a sign-in goes to the runner before sign-in checks queued ahead of it", () => {
+  const f = fixture();
+  const runnerId = f.runner();
+  const login = createRunnerLogin({ db: f.db, work: f.work, now: f.now });
+  for (const agent of ["codex", "grok"] as const)
+    f.work.enqueue({
+      id: crypto.randomUUID(),
+      type: "login_check",
+      runnerId,
+      workspaceId: f.owner.workspaceId,
+      agent,
+      issuedAt: f.now(),
+      expiresAt: f.now() + 120_000,
+    });
+  const session = login.start(f.owner, runnerId, "claude");
+  const delivered = () =>
+    f.work.commands(runnerId).map((envelope) => {
+      const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
+        id: string;
+        type: string;
+        agent: string;
+      };
+      return { id: command.id, label: `${command.type} ${command.agent}` };
+    });
+  expect(delivered().map(({ label }) => label)).toEqual(["login claude"]);
+
+  f.work.acknowledge(runnerId, session.id);
+  expect(delivered()).toEqual([]);
+  login.exchange(runnerId, session.id, {
+    state: "connected",
+    terminal: "",
+    authorization: null,
+    inputId: null,
+  });
+  const [codex] = delivered();
+  expect(codex?.label).toBe("login_check codex");
+  expect(delivered().map(({ label }) => label)).toEqual(["login_check codex"]);
+
+  f.work.acknowledge(runnerId, codex!.id);
+  expect(delivered()).toEqual([]);
+  f.answer({ id: codex!.id, runnerId, agent: "codex" });
+  expect(delivered().map(({ label }) => label)).toEqual(["login_check grok"]);
+});
+
 test("a login check readies the runner's agent or marks it signed out", () => {
   const f = fixture();
   const runnerId = f.runner();

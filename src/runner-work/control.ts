@@ -28,6 +28,7 @@ import {
   workspaceSessionIds,
   runnerCancelPending,
   runTeardownOwner,
+  nextRoutineHealthCommand,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
@@ -584,6 +585,8 @@ export function createRunnerWork(options: {
     commands(runnerId: string): SignedRunnerCommand[] {
       runner(runnerId);
       const result: SignedRunnerCommand[] = [];
+      // A sign-in someone is waiting on goes out before probes and sign-in checks queued earlier.
+      const routine = nextRoutineHealthCommand(db, runnerId, now());
       let ordinal = 0;
       while (result.length < 16) {
         const rows = db
@@ -605,6 +608,11 @@ export function createRunnerWork(options: {
           const payload = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString("utf8"),
           ) as RunnerCommand;
+          if (
+            (payload.type === "probe" || payload.type === "login_check") &&
+            row.ordinal !== routine
+          )
+            continue;
           if (payload.type === "run" || payload.type === "review" || payload.type === "task") {
             try {
               live(runnerId, row.runId!, row.generation!, now());
