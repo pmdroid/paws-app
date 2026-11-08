@@ -156,6 +156,7 @@ export * from "./halt";
 export * from "./restart";
 export * from "./restart-hold";
 export * from "./workspace-revocation";
+export * from "./workspace-assignments";
 export * from "./finding-groups";
 export * from "./review-finding-issues";
 export * from "./risk-auto-context";
