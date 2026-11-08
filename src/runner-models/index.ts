@@ -1,9 +1,18 @@
 import {
-  workspaceMemberUsableSql,
-  workspaceMemberUsable,
+  agentModelSources,
+  cachedAgentModels,
+  finishAgentModelProbe,
   immediate,
-  runnerLeaseCutoff,
+  insertAgentModelProbe,
+  lastAgentModelProbeAt,
+  pendingAgentModelProbes,
+  runnerHasOpenWork,
+  runnerHealthCommandOutstanding,
+  runnerStanding,
+  saveAgentModelCatalog,
   workspaceMember,
+  workspaceMemberUsable,
+  type AgentModelSource,
 } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
@@ -11,24 +20,9 @@ import type { Database } from "bun:sqlite";
 import type { RunnerWork } from "../runner-work";
 import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
 
-type Agent = "claude" | "codex" | "grok" | "opencode";
+type Agent = AgentModelSource["agent"];
 type Choice = { id: string; name: string };
-type Source = {
-  runnerId: string;
-  workspaceId: string;
-  userId: string;
-  agent: Agent;
-};
-type Cached = Source & { model: string; resultJson: string; updatedAt: number };
-type Pending = {
-  commandId: string;
-  runnerId: string;
-  userId: string;
-  agent: Agent;
-  model: string;
-  resultJson: string | null;
-  expiresAt: number;
-};
+type Source = AgentModelSource;
 export type AgentModelCatalog = {
   agent: Agent;
   /** Labelled for people: a 1M entry is named "<model> · 1M context" and flagged. */
@@ -43,11 +37,6 @@ const refreshMs = 6 * 60 * 60_000;
 const retryMs = 10 * 60_000;
 const concrete = (id: string) =>
   !["default", "auto", "claude", "codex", "grok", "opencode"].includes(id.toLowerCase());
-const eligible = `SELECT r.id AS runnerId,r.workspace_id AS workspaceId,r.owner_user_id AS userId,p.agent
- FROM runner r JOIN runner_agent_policy p ON p.runner_id=r.id
- JOIN workspace_member owner ON owner.workspace_id=r.workspace_id AND owner.user_id=r.owner_user_id
- WHERE r.status<>'revoked' AND r.revoked_at IS NULL AND p.ready=1 AND p.auth_expired=0 AND p.cooldown_until<=?
- AND ${workspaceMemberUsableSql("owner")}`;
 
 export function createRunnerModels(options: {
   db: Database;
@@ -57,26 +46,12 @@ export function createRunnerModels(options: {
   const { db, work } = options;
   const now = options.now ?? Date.now;
   const sources = (at = now()) =>
-    db
-      .query<Source, [number]>(eligible)
-      .all(at)
-      .filter((source) => work.supportsAgent(source.runnerId, source.agent));
+    agentModelSources(db, at).filter((source) => work.supportsAgent(source.runnerId, source.agent));
   function cached(source: Source) {
-    return db
-      .query<Pick<Cached, "model" | "resultJson" | "updatedAt">, [string, string, string]>(
-        "SELECT model,result_json AS resultJson,updated_at AS updatedAt FROM agent_model_catalog WHERE runner_id=? AND user_id=? AND agent=? ORDER BY updated_at DESC",
-      )
-      .all(source.runnerId, source.userId, source.agent)
-      .map((row) => ({ ...source, ...row }));
+    return cachedAgentModels(db, source).map((row) => ({ ...source, ...row }));
   }
   function receive() {
-    const pending = db
-      .query<
-        Pending,
-        []
-      >(`SELECT p.command_id AS commandId,p.runner_id AS runnerId,p.user_id AS userId,p.agent,p.model,h.result_json AS resultJson,c.expires_at AS expiresAt
-      FROM agent_model_probe p JOIN runner_command c ON c.id=p.command_id LEFT JOIN runner_health_result h ON h.command_id=p.command_id WHERE p.finished_at IS NULL`)
-      .all();
+    const pending = pendingAgentModelProbes(db);
     for (const probe of pending) {
       if (!probe.resultJson && probe.expiresAt > now()) continue;
       immediate(db, () => {
@@ -92,16 +67,17 @@ export function createRunnerModels(options: {
             result.models?.length &&
             (!probe.model || result.identity?.model === probe.model)
           ) {
-            db.run(
-              `INSERT INTO agent_model_catalog VALUES(?,?,?,?,?,?) ON CONFLICT(runner_id,user_id,agent,model) DO UPDATE SET result_json=excluded.result_json,updated_at=excluded.updated_at`,
-              [probe.runnerId, probe.userId, probe.agent, probe.model, probe.resultJson, now()],
-            );
+            saveAgentModelCatalog(db, {
+              runnerId: probe.runnerId,
+              userId: probe.userId,
+              agent: probe.agent,
+              model: probe.model,
+              resultJson: probe.resultJson,
+              updatedAt: now(),
+            });
           }
         }
-        db.run("UPDATE agent_model_probe SET finished_at=? WHERE command_id=?", [
-          now(),
-          probe.commandId,
-        ]);
+        finishAgentModelProbe(db, probe.commandId, now());
       });
     }
   }
@@ -110,28 +86,15 @@ export function createRunnerModels(options: {
     const available = sources().sort((a, b) => lastRequest(a) - lastRequest(b));
     for (const source of available) {
       const { runnerId, userId, agent } = source;
+      const standing = runnerStanding(db, runnerId);
       if (
-        !db
-          .query("SELECT 1 FROM runner WHERE id=? AND status='active' AND last_seen_at>?")
-          .get(runnerId, now() - 60_000)
+        standing?.status !== "active" ||
+        standing.lastSeenAt === null ||
+        standing.lastSeenAt <= now() - 60_000
       )
         continue;
-      if (
-        db
-          .query(
-            "SELECT 1 FROM runner_work WHERE runner_id=? AND ended_at IS NULL AND lease_until>? UNION ALL SELECT 1 FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
-          )
-          .get(runnerId, runnerLeaseCutoff(now()), runnerId, now())
-      )
-        continue;
-      if (
-        db
-          .query(
-            "SELECT 1 FROM runner_command c LEFT JOIN runner_health_result h ON h.command_id=c.id WHERE c.runner_id=? AND c.kind IN ('probe','login_check','login') AND c.expires_at>? AND h.command_id IS NULL AND NOT EXISTS(SELECT 1 FROM runner_login l WHERE l.id=c.id AND l.state IN ('connected','failed','cancelled','expired'))",
-          )
-          .get(runnerId, now())
-      )
-        continue;
+      if (runnerHasOpenWork(db, runnerId, now())) continue;
+      if (runnerHealthCommandOutstanding(db, runnerId, now())) continue;
       const rows = cached(source);
       const header = rows.find((row) => row.model === "");
       const catalog = header ? RunnerHealthResultSchema.parse(JSON.parse(header.resultJson)) : null;
@@ -158,25 +121,20 @@ export function createRunnerModels(options: {
           issuedAt: now(),
           expiresAt: now() + 120_000,
         });
-        db.run("INSERT INTO agent_model_probe VALUES(?,?,?,?,?,?,NULL)", [
+        insertAgentModelProbe(db, {
           commandId,
           runnerId,
           userId,
           agent,
-          due,
-          now(),
-        ]);
+          model: due,
+          requestedAt: now(),
+        });
       });
       return;
     }
   }
   function lastRequest(source: Source, model?: string): number {
-    const row = db
-      .query<{ at: number | null }, [string, string, string, string, string]>(
-        "SELECT MAX(requested_at) AS at FROM agent_model_probe WHERE runner_id=? AND user_id=? AND agent=? AND (?='*' OR model=?)",
-      )
-      .get(source.runnerId, source.userId, source.agent, model ?? "*", model ?? "*");
-    return row?.at ?? 0;
+    return lastAgentModelProbeAt(db, source, model);
   }
   function read(principal: { workspaceId: string; userId: string }): AgentModelCatalog[] {
     if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))

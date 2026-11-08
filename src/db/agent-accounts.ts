@@ -838,3 +838,82 @@ export function accountSlotsInUse(
     sqliteDb(db).run((q) => accountSlotsInUseSteps(q, accountId, at, exceptCommandId)),
   );
 }
+
+export function* storedAgentBindingIdSteps(q: Q, id: string) {
+  const { agentAccountBinding: b } = q.t;
+  const row = yield* q.one(q.orm.select({ id: b.id }).from(b).where(eq(b.id, id)));
+  return row?.id ?? null;
+}
+
+export function storedAgentBindingId(db: Database, id: string): string | null {
+  return settled(sqliteDb(db).run((q) => storedAgentBindingIdSteps(q, id)));
+}
+
+export type RunnerNamedBinding = {
+  bindingId: string;
+  accountId: string;
+  agent: RunnerCodingAgent;
+  label: string;
+  enabled: number;
+};
+
+export function* runnerNamedBindingsSteps(q: Q, runnerId: string, workspaceId: string) {
+  const { agentAccountBinding: b, agentAccount: a } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        bindingId: b.id,
+        accountId: b.accountId,
+        agent: sql<RunnerCodingAgent>`${b.agent}`,
+        label: a.label,
+        enabled: a.enabled,
+      })
+      .from(b)
+      .innerJoin(a, eq(a.id, b.accountId))
+      .where(
+        and(
+          eq(b.runnerId, runnerId),
+          eq(b.workspaceId, workspaceId),
+          eq(b.legacy, 0),
+          isNull(b.removedAt),
+          isNull(a.removedAt),
+        ),
+      )
+      .orderBy(asc(a.agent), asc(a.createdAt), asc(b.createdAt)),
+  );
+}
+
+export function runnerNamedBindings(
+  db: Database,
+  runnerId: string,
+  workspaceId: string,
+): RunnerNamedBinding[] {
+  return settled(sqliteDb(db).run((q) => runnerNamedBindingsSteps(q, runnerId, workspaceId)));
+}
+
+export function* bindingRunningCountSteps(q: Q, bindingId: string, at: number) {
+  const { runnerWork: w, runnerHelper: h, runnerCommandAccount: c } = q.t;
+  const work = yield* q.one(
+    q.orm
+      .select({ count: count() })
+      .from(w)
+      .innerJoin(c, eq(c.commandId, w.commandId))
+      .where(
+        and(eq(c.bindingId, bindingId), isNull(w.endedAt), gt(w.leaseUntil, runnerLeaseCutoff(at))),
+      ),
+  );
+  const helpers = yield* q.one(
+    q.orm
+      .select({ count: count() })
+      .from(h)
+      .innerJoin(c, eq(c.commandId, h.id))
+      .where(
+        and(eq(c.bindingId, bindingId), isNull(h.endedAt), isNull(h.result), gt(h.expiresAt, at)),
+      ),
+  );
+  return work!.count + helpers!.count;
+}
+
+export function bindingRunningCount(db: Database, bindingId: string, at: number): number {
+  return settled(sqliteDb(db).run((q) => bindingRunningCountSteps(q, bindingId, at)));
+}
