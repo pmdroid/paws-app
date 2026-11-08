@@ -1,26 +1,15 @@
 import {
+  workspaceMemberUsableSql,
   workspaceMemberUsable,
   auditWorkspaceAccess,
   commandAccount,
   getRunner,
-  insertRunnerHealthResult,
-  pendingRunnerHealthCheckCount,
-  recentRunnerHealthChecks,
   recordAccountObservation,
   immediate,
   recordRunnerAgentUsage,
   runnerAgentCheckStates,
-  runnerAgentPolicyState,
   runnerAgentUsage,
-  runnerHealthCommandEnvelope,
-  runnerHealthResultJson,
   runnerLaneHelperWaiting,
-  runnerLoginCheckHistory,
-  runnerStanding,
-  runnersWithUsableOwner,
-  setRunnerAgentQuota,
-  setRunnerAgentSignedIn,
-  touchRunnerLastSeen,
   workspaceMember,
   type RunnerAgentLimit,
 } from "../db";
@@ -101,9 +90,13 @@ export function createRunnerHealth(options: {
     return { member, runner };
   }
   function command(commandId: string, runnerId: string) {
-    const stored = runnerHealthCommandEnvelope(db, commandId, runnerId);
-    if (stored === null) throw new Error("Runner health command is unavailable");
-    const envelope = JSON.parse(stored) as { payload: string };
+    const row = db
+      .query<{ envelope: string }, [string, string]>(
+        "SELECT envelope FROM runner_command WHERE id=? AND runner_id=? AND kind IN ('probe','login_check')",
+      )
+      .get(commandId, runnerId);
+    if (!row) throw new Error("Runner health command is unavailable");
+    const envelope = JSON.parse(row.envelope) as { payload: string };
     const value = RunnerCommandSchema.parse(
       JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")),
     );
@@ -116,12 +109,29 @@ export function createRunnerHealth(options: {
     return value;
   }
   function pendingChecks(runnerId: string, at: number) {
-    return pendingRunnerHealthCheckCount(db, runnerId, at);
+    return db
+      .query<{ count: number }, [string, number]>(
+        "SELECT COUNT(*) AS count FROM runner_command c LEFT JOIN runner_health_result h ON h.command_id=c.id WHERE c.runner_id=? AND c.kind IN ('probe','login_check') AND c.expires_at>? AND h.command_id IS NULL",
+      )
+      .get(runnerId, at)!.count;
   }
   /** Latest sign-in checks per agent. Bounded so old command rows are not rescanned. */
   function history(runnerId: string, at: number) {
     const latest = new Map<string, History>();
-    const rows = runnerLoginCheckHistory(db, runnerId);
+    const rows = db
+      .query<
+        {
+          id: string;
+          envelope: string;
+          expiresAt: number;
+          receivedAt: number | null;
+          resultJson: string | null;
+        },
+        [string]
+      >(
+        "SELECT c.id,c.envelope,c.expires_at AS expiresAt,h.received_at AS receivedAt,h.result_json AS resultJson FROM runner_command c LEFT JOIN runner_health_result h ON h.command_id=c.id WHERE c.runner_id=? AND c.kind='login_check' ORDER BY c.ordinal DESC LIMIT 256",
+      )
+      .all(runnerId);
     for (const row of rows) {
       const envelope = JSON.parse(row.envelope) as { payload: string };
       const value = JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")) as {
@@ -196,7 +206,14 @@ export function createRunnerHealth(options: {
      */
     refresh() {
       const at = now();
-      const runners = runnersWithUsableOwner(db, at - RECENTLY_SEEN_MS);
+      const runners = db
+        .query<{ id: string; workspaceId: string }, [number]>(
+          `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
+          JOIN workspace_member o ON o.workspace_id=r.workspace_id AND o.user_id=r.owner_user_id
+          WHERE r.status='active' AND r.revoked_at IS NULL AND ${workspaceMemberUsableSql("o")} AND r.last_seen_at>?
+          ORDER BY r.id`,
+        )
+        .all(at - RECENTLY_SEEN_MS);
       const errors: unknown[] = [];
       for (const runner of runners) {
         try {
@@ -247,7 +264,19 @@ export function createRunnerHealth(options: {
       return runnerAgents.map((agent): AgentSignIn => {
         const entry = last(agent);
         const checkedAt = entry?.result?.receivedAt ?? null;
-        const policy = runnerAgentPolicyState(db, runner.id, agent);
+        const policy = db
+          .query<
+            {
+              extraUsage: number;
+              quotaState: string;
+              resetsAt: number | null;
+              cooldownUntil: number;
+            },
+            [string, string]
+          >(
+            "SELECT extra_usage AS extraUsage,quota_state AS quotaState,resets_at AS resetsAt,cooldown_until AS cooldownUntil FROM runner_agent_policy WHERE runner_id=? AND agent=?",
+          )
+          .get(runner.id, agent);
         const extraUsage = policy?.extraUsage === 1;
         const extra = extraUsage ? { extraUsage: true as const } : {};
         if (entry?.inFlight) return { agent, status: "checking", checkedAt, ...extra };
@@ -311,17 +340,21 @@ export function createRunnerHealth(options: {
         )
           throw new Error("Runner health result contradicts its command");
         const value = JSON.stringify(result);
-        const previous = runnerHealthResultJson(db, result.commandId);
-        if (previous !== null) {
-          if (previous !== value) throw new Error("Runner health result changed");
+        const previous = db
+          .query<{ result_json: string }, [string]>(
+            "SELECT result_json FROM runner_health_result WHERE command_id=?",
+          )
+          .get(result.commandId);
+        if (previous) {
+          if (previous.result_json !== value) throw new Error("Runner health result changed");
           return { duplicate: true };
         }
-        insertRunnerHealthResult(db, {
-          commandId: result.commandId,
+        db.run("INSERT INTO runner_health_result VALUES(?,?,?,?)", [
+          result.commandId,
           runnerId,
-          resultJson: value,
-          receivedAt: at,
-        });
+          value,
+          at,
+        ]);
         const legacy = !assigned.account;
         const owner = assigned.type === "login_check" ? commandAccount(db, assigned.id) : null;
         const observe = (
@@ -353,7 +386,10 @@ export function createRunnerHealth(options: {
           observe(result.login.authenticated ? "ok" : "auth_required", "auth") &&
           legacy
         )
-          setRunnerAgentSignedIn(db, runnerId, assigned.agent, result.login.authenticated);
+          db.run(
+            "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?1,?2,?3,1-?3) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=?3,auth_expired=1-?3",
+            [runnerId, assigned.agent, result.login.authenticated ? 1 : 0],
+          );
         if (legacy && result.agentLimits)
           recordRunnerAgentUsage(db, {
             runnerId,
@@ -362,7 +398,12 @@ export function createRunnerHealth(options: {
             observedAt: at,
           });
         if (assigned.type === "login_check" && result.login?.authenticated && result.agentLimits) {
-          const extraUsage = runnerAgentPolicyState(db, runnerId, assigned.agent)?.extraUsage === 1;
+          const extraUsage =
+            db
+              .query<{ extraUsage: number }, [string, string]>(
+                "SELECT extra_usage AS extraUsage FROM runner_agent_policy WHERE runner_id=? AND agent=?",
+              )
+              .get(runnerId, assigned.agent)?.extraUsage === 1;
           const spent = result.agentLimits.filter((limit) => limit.usedPercent >= 100);
           const until = spent.length
             ? Math.max(...spent.map((limit) => limit.resetsAt ?? at + 15 * 60_000))
@@ -371,13 +412,18 @@ export function createRunnerHealth(options: {
           const low = result.agentLimits.some((limit) => limit.usedPercent >= 80);
           const cools = spent.length > 0 && !extraUsage;
           if (observe(cools ? "exhausted" : low ? "low" : "ok", "quota", resetsAt) && legacy)
-            setRunnerAgentQuota(db, runnerId, assigned.agent, {
-              quotaState: cools ? "exhausted" : spent.length ? "spent_extra" : "ok",
-              resetsAt: until,
-              cooldownUntil: cools ? until! : 0,
-            });
+            db.run(
+              "UPDATE runner_agent_policy SET quota_state=?,resets_at=?,cooldown_until=? WHERE runner_id=? AND agent=?",
+              [
+                cools ? "exhausted" : spent.length ? "spent_extra" : "ok",
+                until,
+                cools ? until! : 0,
+                runnerId,
+                assigned.agent,
+              ],
+            );
         }
-        touchRunnerLastSeen(db, runnerId, at);
+        db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         return { duplicate: false };
       });
     },
@@ -391,18 +437,36 @@ export function createRunnerHealth(options: {
         throw new Error("Runner identity is unavailable");
       if (command(commandId, runnerId).expiresAt <= now())
         throw new Error("Runner health command has expired");
-      const stored = runnerHealthResultJson(db, commandId, runnerId);
-      return stored === null ? null : RunnerHealthResultSchema.parse(JSON.parse(stored));
+      const row = db
+        .query<{ result_json: string }, [string, string]>(
+          "SELECT result_json FROM runner_health_result WHERE runner_id=? AND command_id=?",
+        )
+        .get(runnerId, commandId);
+      return row ? RunnerHealthResultSchema.parse(JSON.parse(row.result_json)) : null;
     },
     list(principal: WorkspacePrincipal, runnerId: string) {
       visible(principal, runnerId);
-      const checks = recentRunnerHealthChecks(db, runnerId).map((row) => ({
-        command: command(row.id, runnerId),
-        expiresAt: row.expiresAt,
-        receivedAt: row.receivedAt,
-        result: row.resultJson ? RunnerHealthResultSchema.parse(JSON.parse(row.resultJson)) : null,
-      }));
-      const lastSeenAt = runnerStanding(db, runnerId)!.lastSeenAt;
+      const checks = db
+        .query<
+          { id: string; expiresAt: number; receivedAt: number | null; resultJson: string | null },
+          [string]
+        >(
+          "SELECT c.id,c.expires_at AS expiresAt,h.received_at AS receivedAt,h.result_json AS resultJson FROM runner_command c LEFT JOIN runner_health_result h ON h.command_id=c.id WHERE c.runner_id=? AND c.kind IN ('probe','login_check') ORDER BY c.rowid DESC LIMIT 12",
+        )
+        .all(runnerId)
+        .map((row) => ({
+          command: command(row.id, runnerId),
+          expiresAt: row.expiresAt,
+          receivedAt: row.receivedAt,
+          result: row.resultJson
+            ? RunnerHealthResultSchema.parse(JSON.parse(row.resultJson))
+            : null,
+        }));
+      const lastSeenAt = db
+        .query<{ lastSeenAt: number | null }, [string]>(
+          "SELECT last_seen_at AS lastSeenAt FROM runner WHERE id=?",
+        )
+        .get(runnerId)!.lastSeenAt;
       return { lastSeenAt, checks };
     },
     async browser(request: Request, principal: WorkspacePrincipal): Promise<Response | null> {

@@ -534,33 +534,3 @@ export function setRunnerAgentSignedIn(
 ): void {
   settled(sqliteDb(db).run((q) => setRunnerAgentSignedInSteps(q, runnerId, agent, signedIn)));
 }
-
-type RunnerAgentQuota = {
-  quotaState: string;
-  resetsAt: number | null;
-  cooldownUntil: number;
-};
-
-export function* setRunnerAgentQuotaSteps(
-  q: Q,
-  runnerId: string,
-  agent: string,
-  quota: RunnerAgentQuota,
-) {
-  const { runnerAgentPolicy: p } = q.t;
-  yield* q.exec(
-    q.orm
-      .update(p)
-      .set(quota)
-      .where(and(eq(p.runnerId, runnerId), eq(p.agent, agent))),
-  );
-}
-
-export function setRunnerAgentQuota(
-  db: Database,
-  runnerId: string,
-  agent: string,
-  quota: RunnerAgentQuota,
-): void {
-  settled(sqliteDb(db).run((q) => setRunnerAgentQuotaSteps(q, runnerId, agent, quota)));
-}
