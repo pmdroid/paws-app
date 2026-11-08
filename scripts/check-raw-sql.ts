@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const ALLOWED_FILES = new Set(["src/db/migrate.ts", "src/db/open.ts"]);
+const ALLOWED_FILES = new Set(["src/db/migrate.ts", "src/db/open.ts", "src/runner-journal/ddl.ts"]);
 const TEST_FILE = /(^|\/)(test|fixtures)\/|\.test\.tsx?$/;
 const RECEIVER = /^(?:db|database|\w*Db|\w*Database)$/;
 const OPENED = /\b(?:const|let)\s+(\w+)\s*=\s*(?:new Database|openDatabase)\(/g;
