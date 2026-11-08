@@ -1,4 +1,9 @@
-import { workspaceMemberUsable, workspaceMember } from "../db";
+import {
+  setMemberVmPool,
+  workspaceMember,
+  workspaceMemberUsable,
+  workspaceUserContact,
+} from "../db";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
@@ -278,7 +283,7 @@ export function createMemberVmHttp(options: {
           journalCaught(error, "http.createMemberVmHttp.adoptVm", null);
           return exeDevError(error, `exe.dev did not move ${row.vmName}.`);
         }
-        db.run("UPDATE member_vm SET pool=?,updated_at=? WHERE id=?", [body.pool, now(), row.id]);
+        setMemberVmPool(db, row.id, body.pool, now());
       } else if (path === "/api/runners/vm/retry") retryMemberVm(db, { ...member, now: at });
       else if (path === "/api/runners/vm/delete") {
         const body = await deleteBody(request);
@@ -323,10 +328,7 @@ function exeDevError(error: unknown, fallback: string): Response {
 }
 
 function memberName(db: Database, userId: string): string | null {
-  return (
-    db.query<{ name: string }, [string]>("SELECT name FROM workspace_user WHERE id=?").get(userId)
-      ?.name ?? null
-  );
+  return workspaceUserContact(db, userId)?.name ?? null;
 }
 
 /** Create VM's body: none, `{}` or `{ pool }`. */
