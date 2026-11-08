@@ -1212,3 +1212,18 @@ export function* linearOutboxKeyedSteps(q: Q, prefix: string) {
 export function linearOutboxKeyed(db: Database, prefix: string): boolean {
   return settled(sqliteDb(db).run((q) => linearOutboxKeyedSteps(q, prefix)));
 }
+
+export function* outboxKeyExistsSteps(q: Q, idempotencyKey: string) {
+  const { outbox } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(outbox)
+      .where(eq(outbox.idempotencyKey, idempotencyKey)),
+  );
+  return row !== undefined;
+}
+
+export function outboxKeyExists(db: Database, idempotencyKey: string): boolean {
+  return settled(sqliteDb(db).run((q) => outboxKeyExistsSteps(q, idempotencyKey)));
+}
