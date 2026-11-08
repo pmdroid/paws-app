@@ -817,7 +817,7 @@ const helperResult = (commandId: string) => ({
   executionId: workspaceId(),
   commandId,
   role: "implementer" as const,
-  stopReason: "end_turn",
+  stopReason: "end_turn" as const,
   cancelled: false,
   timedOut: false,
   authRequired: false,
@@ -857,8 +857,8 @@ test("twelve resuming items keep one unacknowledged helper per runner and none f
       }
   };
   const all = Promise.all(sessions.map(resume));
-  let done = false;
-  void all.finally(() => (done = true)).catch(() => undefined);
+  const progress = { done: false };
+  void all.finally(() => (progress.done = true)).catch(() => undefined);
   while (new Set(openHelpers().map((row) => row.runnerId)).size < 2) await Bun.sleep(1);
   await Bun.sleep(20);
   expect(openHelpers()).toHaveLength(2);
@@ -867,7 +867,7 @@ test("twelve resuming items keep one unacknowledged helper per runner and none f
   // The runners' lanes stay taken, so these requests expire before either runner gets to them.
   f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
   let peak = 0;
-  while (!done) {
+  while (!progress.done) {
     peak = Math.max(peak, unacknowledgedPerRunner());
     for (const { id, runnerId } of openHelpers()) {
       f.helpers.acknowledge(runnerId, id);
