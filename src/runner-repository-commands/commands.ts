@@ -1,10 +1,21 @@
 import type { Database } from "bun:sqlite";
 import {
+  cancelOpenRepositoryCommand,
+  completeRepositoryCommand,
+  expireDueRepositoryCommands,
+  expireRepositoryCommand,
   getWorkItem,
   getWorkItemRepository,
   immediate,
+  insertRepositoryCommand,
+  markRepositoryCommandDelivered,
+  pendingRepositoryCommands,
+  repositoryCommandReachedRunner,
+  repositoryCommandRow,
   repositoryCommandSettlement,
-  workspaceMemberUsableSql,
+  runnerHostVersion,
+  setRepositoryCommandGrant,
+  usableRunner,
 } from "../db";
 import { journalCaught } from "../journal";
 import {
@@ -30,19 +41,6 @@ const POLL_INTERVAL_MS = 250;
 export class RepositoryCommandDeniedError extends Error {
   override readonly name = "RepositoryCommandDeniedError";
 }
-
-type Row = {
-  id: string;
-  runnerId: string;
-  payload: string;
-  state: "pending" | "delivered" | "done" | "expired";
-  result: string | null;
-  grantHash: string | null;
-  grantExpiresAt: number | null;
-  expiresAt: number;
-};
-const columns =
-  "id,runner_id AS runnerId,payload,state,result,grant_hash AS grantHash,grant_expires_at AS grantExpiresAt,expires_at AS expiresAt";
 
 type Waiter = {
   promise: Promise<RepositoryCommandOutcome>;
@@ -82,24 +80,12 @@ function parse(payload: string): RunnerRepositoryCommand {
 }
 
 function expire(db: Database, at: number) {
-  const expired = db
-    .query<{ id: string }, [number]>(
-      "UPDATE runner_repository_command SET state='expired',grant_hash=NULL WHERE state IN ('pending','delivered') AND expires_at<=? RETURNING id",
-    )
-    .all(at);
-  for (const { id } of expired) settle(db, id, { outcome: "expired" });
+  for (const id of expireDueRepositoryCommands(db, at)) settle(db, id, { outcome: "expired" });
 }
 
 function activeRunner(db: Database, runnerId: string, workspace: string) {
-  return (
-    db
-      .query(
-        `SELECT 1 FROM runner r
-        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
-        WHERE r.id=? AND r.workspace_id=? AND r.revoked_at IS NULL AND r.status='active' AND ${workspaceMemberUsableSql("m")}`,
-      )
-      .get(runnerId, workspace) !== null
-  );
+  const runner = usableRunner(db, runnerId);
+  return runner?.workspaceId === workspace && runner.status === "active";
 }
 
 function itemMatches(db: Database, command: RunnerRepositoryCommand) {
@@ -122,39 +108,27 @@ export function enqueueRepositoryCommand(db: Database, input: RepositoryCommandI
   return immediate(db, () => {
     if (!activeRunner(db, command.runnerId, command.workspaceId))
       throw new RepositoryCommandDeniedError("Runner is not accepting repository commands.");
-    const version = db
-      .query<{ version: string | null }, [string]>(
-        "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-      )
-      .get(command.runnerId)?.version;
+    const version = runnerHostVersion(db, command.runnerId);
     if (!runnerReleaseAtLeast(version, REPOSITORY_COMMAND_RUNNER_VERSION))
       throw new RepositoryCommandDeniedError(
         `Repository commands need runner ${REPOSITORY_COMMAND_RUNNER_VERSION.join(".")} or later.`,
       );
     if (!itemMatches(db, command))
       throw new RepositoryCommandDeniedError("Repository command does not match its work item.");
-    db.run(
-      `INSERT INTO runner_repository_command(id,runner_id,item_id,payload,state,expires_at,created_at)
-      VALUES(?,?,?,?,'pending',?,?)`,
-      [
-        command.id,
-        command.runnerId,
-        command.itemId,
-        JSON.stringify(command),
-        command.expiresAt,
-        at,
-      ],
-    );
+    insertRepositoryCommand(db, {
+      id: command.id,
+      runnerId: command.runnerId,
+      itemId: command.itemId,
+      payload: JSON.stringify(command),
+      expiresAt: command.expiresAt,
+      createdAt: at,
+    });
     waiter(db, command.id);
     setTimeout(
       () => {
         try {
-          const row = db
-            .query<{ state: Row["state"] }, [string]>(
-              "UPDATE runner_repository_command SET state=CASE WHEN state IN ('pending','delivered') THEN 'expired' ELSE state END,grant_hash=NULL WHERE id=? RETURNING state",
-            )
-            .get(command.id);
-          if (row?.state !== "done") settle(db, command.id, { outcome: "expired" });
+          if (expireRepositoryCommand(db, command.id) !== "done")
+            settle(db, command.id, { outcome: "expired" });
         } catch (error) {
           journalCaught(error, "runner-repository-commands.enqueue.expire", null);
           settle(db, command.id, { outcome: "expired" });
@@ -217,25 +191,14 @@ export function deliverRepositoryCommands(
   if (limit <= 0) return [];
   expire(db, at);
   return immediate(db, () => {
-    const rows = db
-      .query<Row, [string, number, number]>(
-        `SELECT ${columns} FROM runner_repository_command
-        WHERE runner_id=? AND state='pending' AND expires_at>? ORDER BY created_at,id LIMIT ?`,
-      )
-      .all(runnerId, at, limit);
-    for (const row of rows)
-      db.run("UPDATE runner_repository_command SET state='delivered',delivered_at=? WHERE id=?", [
-        at,
-        row.id,
-      ]);
+    const rows = pendingRepositoryCommands(db, runnerId, at, limit);
+    for (const row of rows) markRepositoryCommandDelivered(db, row.id, at);
     return rows.map((row) => parse(row.payload));
   });
 }
 
 function current(db: Database, runnerId: string, commandId: string, at: number) {
-  const row = db
-    .query<Row, [string]>(`SELECT ${columns} FROM runner_repository_command WHERE id=?`)
-    .get(commandId);
+  const row = repositoryCommandRow(db, commandId);
   if (!row || row.runnerId !== runnerId || row.state !== "delivered" || row.expiresAt <= at)
     throw new RepositoryCommandDeniedError("Repository command is not current.");
   const command = parse(row.payload);
@@ -254,11 +217,7 @@ export function issueRepositoryCommandGrant(
     const { command } = current(db, input.runnerId, input.commandId, at);
     const token = workspaceSecret();
     const expiresAt = Math.min(command.expiresAt, at + REPOSITORY_COMMAND_GRANT_MS);
-    db.run("UPDATE runner_repository_command SET grant_hash=?,grant_expires_at=? WHERE id=?", [
-      workspaceTokenHash(token),
-      expiresAt,
-      command.id,
-    ]);
+    setRepositoryCommandGrant(db, command.id, workspaceTokenHash(token), expiresAt);
     return { token, expiresAt };
   });
 }
@@ -290,9 +249,7 @@ export function recordRepositoryCommandResult(
   const stored = JSON.stringify(result);
   expire(db, at);
   const recorded = immediate(db, () => {
-    const row = db
-      .query<Row, [string]>(`SELECT ${columns} FROM runner_repository_command WHERE id=?`)
-      .get(input.commandId);
+    const row = repositoryCommandRow(db, input.commandId);
     if (!row || row.runnerId !== input.runnerId)
       throw new RepositoryCommandDeniedError("Repository command is unknown.");
     if (row.state === "done") {
@@ -302,10 +259,7 @@ export function recordRepositoryCommandResult(
     }
     if (row.state !== "delivered" || row.expiresAt <= at)
       throw new RepositoryCommandDeniedError("Repository command is not current.");
-    db.run(
-      "UPDATE runner_repository_command SET state='done',result=?,done_at=?,grant_hash=NULL WHERE id=?",
-      [stored, at, row.id],
-    );
+    completeRepositoryCommand(db, row.id, stored, at);
     return true;
   });
   if (recorded) settle(db, input.commandId, result);
@@ -313,33 +267,16 @@ export function recordRepositoryCommandResult(
 }
 
 export function repositoryCommandDeliveredTo(db: Database, runnerId: string, id: string) {
-  return (
-    db
-      .query(
-        "SELECT 1 FROM runner_repository_command WHERE id=? AND runner_id=? AND state<>'pending'",
-      )
-      .get(id, runnerId) !== null
-  );
+  return repositoryCommandReachedRunner(db, id, runnerId);
 }
 
 export function repositoryCommandState(db: Database, id: string, at = Date.now()) {
   expire(db, at);
-  return (
-    db
-      .query<{ state: Row["state"] }, [string]>(
-        "SELECT state FROM runner_repository_command WHERE id=?",
-      )
-      .get(id)?.state ?? null
-  );
+  return repositoryCommandRow(db, id)?.state ?? null;
 }
 
 function cancelRepositoryCommand(db: Database, id: string) {
-  const cancelled = db
-    .query(
-      "UPDATE runner_repository_command SET state='expired',grant_hash=NULL WHERE id=? AND state IN ('pending','delivered') RETURNING id",
-    )
-    .get(id);
-  if (cancelled) settle(db, id, { outcome: "expired" });
+  if (cancelOpenRepositoryCommand(db, id)) settle(db, id, { outcome: "expired" });
 }
 
 const REPOSITORY_REBASE_TIMEOUT_MS = 10 * 60_000;
