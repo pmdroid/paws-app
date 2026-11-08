@@ -21,6 +21,7 @@ import {
   saveCheckpoint,
   unreportedReviewReplies,
   type PullFeedbackWait,
+  sqliteDb,
 } from "../db";
 import {
   createFakeMergeQueue,
@@ -207,7 +208,12 @@ function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
   const evaluate = async (): Promise<MergeStep> => {
     jobs += 1;
     const job = getJob(db, mergeJob)!;
-    return advanceMerge(db, { itemId: "eng-1", payload: job.payload, jobId: jobs }, lane);
+    return advanceMerge(
+      db,
+      sqliteDb(db),
+      { itemId: "eng-1", payload: job.payload, jobId: jobs },
+      lane,
+    );
   };
   const finished = new Set<number>();
   const feedbackJobs = () =>

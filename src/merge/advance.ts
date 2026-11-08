@@ -3,28 +3,31 @@ import { JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   beginMergeCall,
-  mergeStopRequested,
-  carriedAcceptFor,
-  closeoutPolicyDigests,
+  mergeStopRequestedSteps,
+  carriedAcceptForSteps,
+  closeoutPolicyDigestsSteps,
   completeMergedItem,
-  countMergeDenials,
+  countMergeDenialsSteps,
   endMergeCall,
+  endMergeCallSteps,
   enqueueJobOnce,
-  getConfirmedRemoteMerge,
-  getWorkItem,
-  hasCiRerun,
+  getConfirmedRemoteMergeSteps,
+  getWorkItemSteps,
+  hasCiRerunSteps,
   immediate,
-  leaveMergeQueue,
+  leaveMergeQueueSteps,
   MERGE_DENIED_REASON,
-  mergeCallInFlight,
-  recordCarriedAccept,
-  recordConfirmedRemoteMerge,
+  mergeCallInFlightSteps,
+  recordCarriedAcceptSteps,
+  recordConfirmedRemoteMergeSteps,
   recordRebaseReturn,
   type CiRound,
   type ConfirmedRemoteMerge,
+  type Db,
   type TaskMergeSettings,
   type WorkItemRecord,
-  recordItemCandidate,
+  recordItemCandidateSteps,
+  wakeMergesBehindSteps,
 } from "../db";
 import {
   adoptRunnerRebase,
@@ -146,7 +149,7 @@ export type MergeCapabilities = OrderCapabilities & {
 const CANCELLED_CI_RERUN = "cancelled or timed-out CI job";
 
 async function rerunCancelledCi(
-  db: Database,
+  store: Db,
   item: WorkItemRecord,
   caps: MergeCapabilities,
   turn: LaneTurn,
@@ -154,13 +157,17 @@ async function rerunCancelledCi(
 ): Promise<MergeStep | null> {
   if (turn.kind !== "blocked" || turn.block !== "ci_failed") return null;
   const { readiness, head, base } = turn.pull;
-  if (!caps.rerunCi || readiness.onlyCancelled !== true || hasCiRerun(db, item.id, head))
+  if (
+    !caps.rerunCi ||
+    readiness.onlyCancelled !== true ||
+    (await store.run((q) => hasCiRerunSteps(q, item.id, head)))
+  )
     return null;
   await caps.rerunCi(item, pullNumber, CANCELLED_CI_RERUN).catch((error: unknown) => {
     journalCaught(error, "advance.rerunCancelledCi", item.id);
   });
   if (caps.stopped()) return { kind: "obsolete" };
-  if (!hasCiRerun(db, item.id, head)) return null;
+  if (!(await store.run((q) => hasCiRerunSteps(q, item.id, head)))) return null;
   const message = `Re-ran cancelled CI jobs on ${head.slice(0, 7)}.`;
   caps.voice.status(item, message, `${item.id}:ci-rerun:${head}`);
   await caps.voice.flush();
@@ -176,10 +183,11 @@ async function rerunCancelledCi(
  */
 export async function advanceMerge(
   db: Database,
+  store: Db,
   input: { itemId: string; payload: unknown; jobId: number },
   caps: MergeCapabilities,
 ): Promise<MergeStep> {
-  const item = getWorkItem(db, input.itemId);
+  const item = await store.run((q) => getWorkItemSteps(q, input.itemId));
   if (
     item === null ||
     item.state === "cancelled" ||
@@ -187,19 +195,19 @@ export async function advanceMerge(
     item.state === "completed"
   )
     return { kind: "obsolete" };
-  if (getConfirmedRemoteMerge(db, item.id)) {
-    endMergeCall(db, item.id);
+  if (await store.run((q) => getConfirmedRemoteMergeSteps(q, item.id))) {
+    await store.run((q) => endMergeCallSteps(q, item.id));
     if (completeMergedItem(db, { itemId: item.id, now: caps.now() })) caps.completed();
     return { kind: "obsolete" };
   }
   // A pull request merged by hand on GitHub merges the item: publishing again would open another.
-  const outside = await mergedOutsideLane(db, item, caps);
+  const outside = await mergedOutsideLane(db, store, item, caps);
   if (outside) return outside;
-  if (mergeCallInFlight(db, item.id)) {
+  if (await store.run((q) => mergeCallInFlightSteps(q, item.id))) {
     reverifyAfterRestart(db, item, input.jobId, caps.now());
     return { kind: "returned" };
   }
-  const merge: MergeContext = { db, item, caps };
+  const merge: MergeContext = { db, store, item, caps };
   const held = await feedbackHold(merge, input.payload);
   if (held) return held;
   const waiting = dependencyWait(item, caps);
@@ -209,7 +217,7 @@ export async function advanceMerge(
   // A high-risk head waits for a person in Paws before it joins any merge queue.
   const riskApproval = await caps.riskApproval(item, published);
   if (caps.stopped()) return { kind: "obsolete" };
-  if (riskApproval === "missing") return holdForRisk(db, item, caps, published);
+  if (riskApproval === "missing") return holdForRisk(store, item, caps, published);
   const { repository, github, pull } = published;
   const { voice } = caps;
   const mergeSettings = await caps.settings(item, published.signal);
@@ -231,7 +239,7 @@ export async function advanceMerge(
       head: published.head,
     });
     if (wait && "kind" in wait) return wait;
-    if (wait?.reason === "ahead" && recheckChanged(db, item, caps, published.worktree)) {
+    if (wait?.reason === "ahead" && (await recheckChanged(store, item, caps, published.worktree))) {
       // A change to a check marked `recheck: true` spent every waiting acceptance; each
       // re-verifies now, in parallel up to the free slots, and keeps its place instead of
       // waiting for its turn at the front.
@@ -279,7 +287,7 @@ export async function advanceMerge(
     read: () => readPullFacts(lane),
     facts: (facts) => {
       mainPolicy = caps.policyDigests(item, published.worktree);
-      return mergeFacts(db, item.id, facts, mainPolicy, mergeSettings.mainMoved, {
+      return mergeFacts(store, item.id, facts, mainPolicy, mergeSettings.mainMoved, {
         head: published.head,
         approval: riskApproval,
       });
@@ -287,12 +295,14 @@ export async function advanceMerge(
     rebase: async (facts) => {
       const rebased = await rebaseOnRunner(item, caps, lane, facts, published.signal);
       if (rebased.rebased && lane.ref)
-        recordItemCandidate(db, {
-          itemId: item.id,
-          sha: rebased.head,
-          branch: rebased.branch,
-          recordedAt: caps.now(),
-        });
+        await store.run((q) =>
+          recordItemCandidateSteps(q, {
+            itemId: item.id,
+            sha: rebased.head,
+            branch: rebased.branch,
+            recordedAt: caps.now(),
+          }),
+        );
       return rebased;
     },
     squash: async (head, facts) => {
@@ -317,7 +327,8 @@ export async function advanceMerge(
         { head, base: facts.base },
         published.summary,
       );
-      if (!squashed.merged && squashed.outcome !== "unknown") endMergeCall(db, item.id);
+      if (!squashed.merged && squashed.outcome !== "unknown")
+        await store.run((q) => endMergeCallSteps(q, item.id));
       return squashed;
     },
   });
@@ -329,7 +340,7 @@ export async function advanceMerge(
     const late = reviewHold(db, item.id, caps.now(), caps.feedbackWait());
     if (late) return late;
   }
-  const rerun = await rerunCancelledCi(db, item, caps, turn, pull.number);
+  const rerun = await rerunCancelledCi(store, item, caps, turn, pull.number);
   if (rerun) return rerun;
   const ciFixLimit = caps.ciFixAttempts(item);
   const result = turn.kind === "merged" || turn.kind === "stopped" ? turn.result : null;
@@ -346,19 +357,21 @@ export async function advanceMerge(
     ciFixLimit,
   });
   if (leaveQueue) {
-    leaveMergeQueue(db, item.id);
-    wakeMergesBehind(db, caps.now());
+    await store.run((q) => leaveMergeQueueSteps(q, item.id));
+    await store.run((q) => wakeMergesBehindSteps(q, caps.now()));
   }
   // The pushed head carries the acceptance whatever happens to this turn next.
-  const acceptedHead = getWorkItem(db, item.id)?.acceptedHead ?? null;
+  const acceptedHead = (await store.run((q) => getWorkItemSteps(q, item.id)))?.acceptedHead ?? null;
   if (step.kind === "carry" && acceptedHead !== null)
-    recordCarriedAccept(db, {
-      itemId: item.id,
-      head: step.head,
-      acceptedHead,
-      base: step.base,
-      now: caps.now(),
-    });
+    await store.run((q) =>
+      recordCarriedAcceptSteps(q, {
+        itemId: item.id,
+        head: step.head,
+        acceptedHead,
+        base: step.base,
+        now: caps.now(),
+      }),
+    );
   if (step.kind === "wait" && step.reason === "ci")
     return caps.stopped() ? { kind: "obsolete" } : step;
   if (turn.kind === "merged") {
@@ -367,18 +380,21 @@ export async function advanceMerge(
       main: turn.result.sha ?? null,
       now: caps.now(),
     });
-    recordConfirmedRemoteMerge(db, {
-      itemId: item.id,
-      repositoryOwner: repository.owner,
-      repositoryName: repository.repo,
-      pullNumber: pull.number,
-      pullUrl: pull.url,
-      mergeSha: turn.result.sha ?? null,
-      confirmedAt: caps.now(),
-    });
+    await store.transaction((q) =>
+      recordConfirmedRemoteMergeSteps(q, {
+        itemId: item.id,
+        repositoryOwner: repository.owner,
+        repositoryName: repository.repo,
+        pullNumber: pull.number,
+        pullUrl: pull.url,
+        mergeSha: turn.result.sha ?? null,
+        confirmedAt: caps.now(),
+      }),
+    );
   }
   // A deferred stop owns the next step after an unsent or unsuccessful squash.
-  if (turn.kind !== "merged" && mergeStopRequested(db, item.id)) return { kind: "obsolete" };
+  if (turn.kind !== "merged" && (await store.run((q) => mergeStopRequestedSteps(q, item.id))))
+    return { kind: "obsolete" };
   if (caps.stopped()) {
     if (turn.kind === "merged" && completeMergedItem(db, { itemId: item.id, now: caps.now() }))
       caps.completed();
@@ -386,7 +402,8 @@ export async function advanceMerge(
   }
   if (turn.kind === "merged") return { kind: "merged" };
   await caps.assertReady(item);
-  if (getWorkItem(db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
+  if ((await store.run((q) => getWorkItemSteps(q, item.id)))?.state === "awaiting_input")
+    return { kind: "obsolete" };
   if (step.kind === "unreadable") throw new Error(step.message);
   if (mergedPolicyError !== undefined) return returnForPolicy(merge, mergedPolicyError, ciFixLimit);
   if (step.kind === "hold_policy" && mainPolicy && "ok" in mainPolicy)
@@ -394,7 +411,7 @@ export async function advanceMerge(
       base: step.base,
       head: step.head,
     });
-  if (step.kind === "ask_risk") return holdForRisk(db, item, caps, published);
+  if (step.kind === "ask_risk") return holdForRisk(store, item, caps, published);
   if (step.kind === "reverify") {
     reverify(merge, step, input.jobId);
     if (step.rebased) await voice.flush();
@@ -468,15 +485,16 @@ export async function advanceMerge(
     round("failed");
   }
   // A person merged the pull request on GitHub during the turn, so the lane found it closed.
-  const late = await mergedOutsideLane(db, item, caps);
+  const late = await mergedOutsideLane(db, store, item, caps);
   if (late) return late;
+  const denials = (head: string) => store.run((q) => countMergeDenialsSteps(q, item.id, head));
   if (
     result?.outcome === "merge_denied" &&
     result.status !== undefined &&
     result.status !== 401 &&
     result.status !== 403 &&
     result.head !== undefined &&
-    countMergeDenials(db, item.id, result.head) + 1 < MERGE_DENIAL_LIMIT &&
+    (await denials(result.head)) + 1 < MERGE_DENIAL_LIMIT &&
     askHelp(
       merge,
       mergeDeniedQuestion({
@@ -659,15 +677,23 @@ function queueName(repository: { owner: string; repo: string }): string {
  */
 async function mergedOutsideLane(
   db: Database,
+  store: Db,
   item: WorkItemRecord,
   caps: MergeCapabilities,
 ): Promise<MergeStep | null> {
   const merge = await caps.mergedOutsideLane(item);
-  if (merge === "unknown") return mergeCallInFlight(db, item.id) ? pendingMergeOutcome() : null;
-  if (merge === null || getWorkItem(db, item.id)?.state !== "merge_queue") return null;
-  recordConfirmedRemoteMerge(db, { ...merge, itemId: item.id, confirmedAt: caps.now() });
-  leaveMergeQueue(db, item.id);
-  wakeMergesBehind(db, caps.now());
+  if (merge === "unknown")
+    return (await store.run((q) => mergeCallInFlightSteps(q, item.id)))
+      ? pendingMergeOutcome()
+      : null;
+  if (merge === null) return null;
+  const current = await store.run((q) => getWorkItemSteps(q, item.id));
+  if (current?.state !== "merge_queue") return null;
+  await store.transaction((q) =>
+    recordConfirmedRemoteMergeSteps(q, { ...merge, itemId: item.id, confirmedAt: caps.now() }),
+  );
+  await store.run((q) => leaveMergeQueueSteps(q, item.id));
+  await store.run((q) => wakeMergesBehindSteps(q, caps.now()));
   journal(
     `item ${item.linearIdentifier} merged outside the merge lane: #${merge.pullNumber} at ${merge.mergeSha ?? "unknown commit"}`,
   );
@@ -729,15 +755,15 @@ function dependencyWait(item: WorkItemRecord, caps: MergeCapabilities): MergeSte
  * marked `recheck: true`, or under a run that did not record those checks. A change to any other
  * check leaves the acceptance standing.
  */
-function recheckChanged(
-  db: Database,
+async function recheckChanged(
+  store: Db,
   item: WorkItemRecord,
   caps: MergeCapabilities,
   worktree: string,
-): boolean {
-  const acceptedHead = getWorkItem(db, item.id)?.acceptedHead ?? null;
+): Promise<boolean> {
+  const acceptedHead = (await store.run((q) => getWorkItemSteps(q, item.id)))?.acceptedHead ?? null;
   if (acceptedHead === null) return false;
-  const accepted = closeoutPolicyDigests(db, item.id, acceptedHead);
+  const accepted = await store.run((q) => closeoutPolicyDigestsSteps(q, item.id, acceptedHead));
   if (accepted === null) return false;
   const current = caps.policyDigests(item, worktree);
   if (current === null || "ok" in current || accepted.digest === current.digest) return false;
@@ -748,24 +774,29 @@ function recheckChanged(
  * The facts `mergeable(S)` judges: GitHub's and Git's read, plus Closeout's accept row for S.
  * Under `ci` and `overlap`, a head the lane rebased from the accepted head carries its row.
  */
-function mergeFacts(
-  db: Database,
+async function mergeFacts(
+  store: Db,
   itemId: string,
   pull: PullFacts,
   read: PolicyRead,
   mainMoved: TaskMergeSettings["mainMoved"],
   risk: { head: string; approval: RiskApproval },
-): MergeFacts {
+): Promise<MergeFacts> {
   const policy = read !== null && !("ok" in read) ? read : null;
-  const acceptedHead = getWorkItem(db, itemId)?.acceptedHead ?? null;
-  const accepted = acceptedHead === null ? null : closeoutPolicyDigests(db, itemId, acceptedHead);
+  const acceptedHead = (await store.run((q) => getWorkItemSteps(q, itemId)))?.acceptedHead ?? null;
+  const accepted =
+    acceptedHead === null
+      ? null
+      : await store.run((q) => closeoutPolicyDigestsSteps(q, itemId, acceptedHead));
   const { readiness } = pull;
   const carried =
     mainMoved !== "closeout" &&
     acceptedHead !== null &&
     acceptedHead !== pull.head &&
-    carriedAcceptFor(db, itemId, pull.head) === acceptedHead;
-  const headVerdict = carried ? closeoutPolicyDigests(db, itemId, pull.head) : null;
+    (await store.run((q) => carriedAcceptForSteps(q, itemId, pull.head))) === acceptedHead;
+  const headVerdict = carried
+    ? await store.run((q) => closeoutPolicyDigestsSteps(q, itemId, pull.head))
+    : null;
   return {
     head: pull.head,
     headMoved: readiness.outcome === "sha_moved",
@@ -808,13 +839,13 @@ function mergeFacts(
 
 /** Takes the item out of the merge queue and asks for the risk approval of S. */
 async function holdForRisk(
-  db: Database,
+  store: Db,
   item: WorkItemRecord,
   caps: MergeCapabilities,
   published: MergePublication,
 ): Promise<MergeStep> {
-  leaveMergeQueue(db, item.id);
-  wakeMergesBehind(db, caps.now());
+  await store.run((q) => leaveMergeQueueSteps(q, item.id));
+  await store.run((q) => wakeMergesBehindSteps(q, caps.now()));
   return caps.askRiskApproval(item, published);
 }
 
