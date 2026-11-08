@@ -1,0 +1,6 @@
+src/index.ts | const workspace = db .query<{ id: string }, [string, string]>( | not yet converted to Drizzle
+src/index.ts | db .query<{ id: string }, []>( | not yet converted to Drizzle
+src/index.ts | const targets = db .query<{ itemId: string; workspaceId: string }, []>( | not yet converted to Drizzle
+src/index.ts | db .query( | not yet converted to Drizzle
+src/index.ts | const linked = db .query<{ id: string }, [string]>( | not yet converted to Drizzle
+src/index.ts | db .query<{ id: string }, []>("SELECT id FROM workspace") | not yet converted to Drizzle

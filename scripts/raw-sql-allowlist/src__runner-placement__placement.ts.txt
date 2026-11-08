@@ -1,0 +1,28 @@
+src/runner-placement/placement.ts | runner: db .query( | not yet converted to Drizzle
+src/runner-placement/placement.ts | host: db.query("SELECT runner_id,sharing FROM runner_policy WHERE runner_id=?").get(id), | not yet converted to Drizzle
+src/runner-placement/placement.ts | capacity: db .query("SELECT capacity,ceiling,desired FROM runner_capacity WHERE runner_id=?") | not yet converted to Drizzle
+src/runner-placement/placement.ts | ? db.query("SELECT * FROM runner_agent_policy WHERE runner_id=? AND agent=?").get(id, agent) | not yet converted to Drizzle
+src/runner-placement/placement.ts | membership: db .query( | not yet converted to Drizzle
+src/runner-placement/placement.ts | teams: db .query( | not yet converted to Drizzle
+src/runner-placement/placement.ts | const workspace = db .query<{ id: string }, [string]>("SELECT id FROM workspace WHERE linear_organization_id=?") | not yet converted to Drizzle
+src/runner-placement/placement.ts | db .query<{ ownerUserId: string | null }, [string]>( | not yet converted to Drizzle
+src/runner-placement/placement.ts | leadUserIds: db .query<{ id: string }, [string]>( | not yet converted to Drizzle
+src/runner-placement/placement.ts | installation: db .query("SELECT oauth_client_id,team_id FROM linear_session WHERE session_id=?") | not yet converted to Drizzle
+src/runner-placement/placement.ts | const history = db.query<{ startedAt: number; endedAt: number }, [string, number, number]>( | not yet converted to Drizzle
+src/runner-placement/placement.ts | const teamId = db .query<{ teamId: string | null }, [string]>( | not yet converted to Drizzle
+src/runner-placement/placement.ts | !db .query(`SELECT 1 WHERE ${teamRepositoryAllowedSql("?1", "?2", "lower(?3)")}`) | not yet converted to Drizzle
+src/runner-placement/placement.ts | ? db .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?") | not yet converted to Drizzle
+src/runner-placement/placement.ts | db .query<{ at: number | null }, [string, string]>( | not yet converted to Drizzle
+src/runner-placement/placement.ts | const runner = db .query<{ cooldownUntil: number; quotaState: string }, [string, string]>( | not yet converted to Drizzle
+src/runner-placement/placement.ts | ? db .query( | not yet converted to Drizzle
+src/runner-placement/placement.ts | ? db .query<{ teamId: string | null; clientId: string | null }, [string]>( | not yet converted to Drizzle
+src/runner-placement/placement.ts | ? db .query<{ runnerId: string; model: string | null }, [string]>( | not yet converted to Drizzle
+src/runner-placement/placement.ts | const runner = db .query<{ ownerId: string; workspaceId: string }, [string]>( | not yet converted to Drizzle
+src/runner-placement/placement.ts | db.run( | not yet converted to Drizzle
+src/runner-placement/placement.ts | db.run( | not yet converted to Drizzle
+src/runner-placement/placement.ts | db.run( | not yet converted to Drizzle
+src/runner-placement/placement.ts | const usage = db .query< | not yet converted to Drizzle
+src/runner-placement/placement.ts | ? db .query<{ model: string | null }, [string]>( | not yet converted to Drizzle
+src/runner-placement/placement.ts | db.run( | not yet converted to Drizzle
+src/runner-placement/placement.ts | db.run( | not yet converted to Drizzle
+src/runner-placement/placement.ts | db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE runner_id=? AND agent=?", [ | not yet converted to Drizzle

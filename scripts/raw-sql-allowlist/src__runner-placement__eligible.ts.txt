@@ -1,0 +1,9 @@
+src/runner-placement/eligible.ts | const rows = db .query<Row, [string, string, number]>( | not yet converted to Drizzle
+src/runner-placement/eligible.ts | db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(signIn.id) | not yet converted to Drizzle
+src/runner-placement/eligible.ts | const scope = db .query< | not yet converted to Drizzle
+src/runner-placement/eligible.ts | ? (db .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?") | not yet converted to Drizzle
+src/runner-placement/eligible.ts | const leadUserIds = db .query<{ id: string }, [string]>( | not yet converted to Drizzle
+src/runner-placement/eligible.ts | db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(runner.id) | not yet converted to Drizzle
+src/runner-placement/eligible.ts | const last = db .query<{ runnerId: string | null; agent: string }, [string]>( | not yet converted to Drizzle
+src/runner-placement/eligible.ts | db .query<{ version: string | null }, [string]>( | not yet converted to Drizzle
+src/runner-placement/eligible.ts | db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(runner.id) | not yet converted to Drizzle

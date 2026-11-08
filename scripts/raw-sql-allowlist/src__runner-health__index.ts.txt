@@ -1,0 +1,14 @@
+src/runner-health/index.ts | const row = db .query<{ envelope: string }, [string, string]>( | not yet converted to Drizzle
+src/runner-health/index.ts | return db .query<{ count: number }, [string, number]>( | not yet converted to Drizzle
+src/runner-health/index.ts | const rows = db .query< | not yet converted to Drizzle
+src/runner-health/index.ts | const runners = db .query<{ id: string; workspaceId: string }, [number]>( | not yet converted to Drizzle
+src/runner-health/index.ts | const policy = db .query< | not yet converted to Drizzle
+src/runner-health/index.ts | const previous = db .query<{ result_json: string }, [string]>( | not yet converted to Drizzle
+src/runner-health/index.ts | db.run("INSERT INTO runner_health_result VALUES(?,?,?,?)", [ | not yet converted to Drizzle
+src/runner-health/index.ts | db.run( | not yet converted to Drizzle
+src/runner-health/index.ts | db .query<{ extraUsage: number }, [string, string]>( | not yet converted to Drizzle
+src/runner-health/index.ts | db.run( | not yet converted to Drizzle
+src/runner-health/index.ts | db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]); | not yet converted to Drizzle
+src/runner-health/index.ts | const row = db .query<{ result_json: string }, [string, string]>( | not yet converted to Drizzle
+src/runner-health/index.ts | const checks = db .query< | not yet converted to Drizzle
+src/runner-health/index.ts | const lastSeenAt = db .query<{ lastSeenAt: number | null }, [string]>( | not yet converted to Drizzle

@@ -1,0 +1,18 @@
+src/db/runner-capacity.ts | return db .query< | not yet converted to Drizzle
+src/db/runner-capacity.ts | const holders = db .query<{ runId: string }, [string, number]>( | not yet converted to Drizzle
+src/db/runner-capacity.ts | return db .query<{ id: string }, [number]>( | not yet converted to Drizzle
+src/db/runner-capacity.ts | db.query("SELECT 1 FROM runner_work WHERE run_id=? LIMIT 1").get(runId) | not yet converted to Drizzle
+src/db/runner-capacity.ts | db.run( | not yet converted to Drizzle
+src/db/runner-capacity.ts | const desired = db .query<{ desired: number | null }, [string]>( | not yet converted to Drizzle
+src/db/runner-capacity.ts | const row = db .query<{ ceiling: number | null }, [string, string]>( | not yet converted to Drizzle
+src/db/runner-capacity.ts | db.run("UPDATE runner_capacity SET desired=? WHERE runner_id=?", [ | not yet converted to Drizzle
+src/db/runner-capacity.ts | db.run( | not yet converted to Drizzle
+src/db/runner-capacity.ts | db.run( | not yet converted to Drizzle
+src/db/runner-capacity.ts | db.run( | not yet converted to Drizzle
+src/db/runner-capacity.ts | const rows = db .query<{ itemId: string; runnerId: string; slotOrder: number }, [number]>( | not yet converted to Drizzle
+src/db/runner-capacity.ts | db .query(`SELECT 1 FROM runner_work w WHERE w.runner_id=? AND ${TEARDOWN_UNRESOLVED}`) | not yet converted to Drizzle
+src/db/runner-capacity.ts | db .query<{ runnerId: string }, [string]>( | not yet converted to Drizzle
+src/db/runner-capacity.ts | const rows = db .query<{ envelope: string; result: string | null }, [string, number]>( | not yet converted to Drizzle
+src/db/runner-capacity.ts | const rows = db .query<{ id: string; envelope: string }, [string, number]>( | not yet converted to Drizzle
+src/db/runner-capacity.ts | db.run( | not yet converted to Drizzle
+src/db/runner-capacity.ts | db.run( | not yet converted to Drizzle

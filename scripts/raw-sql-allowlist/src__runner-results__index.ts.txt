@@ -1,0 +1,14 @@
+src/runner-results/index.ts | const existing = db .query<{ payload: string }, [string, number]>( | not yet converted to Drizzle
+src/runner-results/index.ts | db.run("INSERT INTO runner_result VALUES(?,?,?,?,?)", [ | not yet converted to Drizzle
+src/runner-results/index.ts | const row = db .query<{ payload: string }, [string, number, string]>( | not yet converted to Drizzle
+src/runner-results/index.ts | return db .query<StoredRunnerEvent, [string, number, number]>( | not yet converted to Drizzle
+src/runner-results/index.ts | db .query<{ answer: string }, [string, number, number]>( | not yet converted to Drizzle
+src/runner-results/index.ts | const question = db .query<StoredRunnerEvent, [string, number, number]>( | not yet converted to Drizzle
+src/runner-results/index.ts | const existing = db .query<{ answer: string }, [string, number, number]>( | not yet converted to Drizzle
+src/runner-results/index.ts | db.run("INSERT INTO runner_question_answer VALUES(?,?,?,?,?)", [ | not yet converted to Drizzle
+src/runner-results/index.ts | const unanswered = db .query<StoredRunnerEvent, [string, number]>( | not yet converted to Drizzle
+src/runner-results/index.ts | return db .query<{ sequence: number; answer: string }, [string, number, number]>( | not yet converted to Drizzle
+src/runner-results/index.ts | const row = db .query<{ runId: string; generation: number; version: string | null }, [string, number]>( | not yet converted to Drizzle
+src/runner-results/index.ts | const next = db .query<{ sequence: number }, [string, number]>( | not yet converted to Drizzle
+src/runner-results/index.ts | db.run("INSERT INTO runner_follow_up VALUES(?,?,?,?,?)", [ | not yet converted to Drizzle
+src/runner-results/index.ts | return db .query<{ sequence: number; body: string }, [string, number, number]>( | not yet converted to Drizzle

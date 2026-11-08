@@ -1,0 +1,15 @@
+src/member-vm/delete.ts | db.run( | not yet converted to Drizzle
+src/member-vm/delete.ts | db.run("UPDATE member_vm SET delete_runner_id=? WHERE id=? AND delete_step='drain'", [ | not yet converted to Drizzle
+src/member-vm/delete.ts | const changed = db.run( | not yet converted to Drizzle
+src/member-vm/delete.ts | db.run( | not yet converted to Drizzle
+src/member-vm/delete.ts | const removed = db.run( | not yet converted to Drizzle
+src/member-vm/delete.ts | db.run("DELETE FROM member_vm_enrollment WHERE member_vm_id=?", [row.id]); | not yet converted to Drizzle
+src/member-vm/delete.ts | return db .query<MemberVmBlockingTask, [string, number]>( | not yet converted to Drizzle
+src/member-vm/delete.ts | db .query<{ requested: number }, [string]>( | not yet converted to Drizzle
+src/member-vm/delete.ts | db .query<{ one: number }, [string, number, string]>( | not yet converted to Drizzle
+src/member-vm/delete.ts | db.run( | not yet converted to Drizzle
+src/member-vm/delete.ts | const runners = db .query<{ id: string; name: string }, [string, string, string, number]>( | not yet converted to Drizzle
+src/member-vm/delete.ts | const pending = db .query<{ expiresAt: number }, [string, string, string, number]>( | not yet converted to Drizzle
+src/member-vm/delete.ts | const enrolled = db .query<{ runnerId: string }, [string]>( | not yet converted to Drizzle
+src/member-vm/delete.ts | return db .query<{ id: string; workspaceId: string; status: string }, [string]>( | not yet converted to Drizzle
+src/member-vm/delete.ts | const changed = db.run( | not yet converted to Drizzle

@@ -1,0 +1,3 @@
+src/loop/link-ask.ts | const before = db .query<{ id: number }, [string]>("SELECT id FROM outbox WHERE idempotency_key = ?") | not yet converted to Drizzle
+src/loop/link-ask.ts | db.run("UPDATE question SET handoff_version=0 WHERE id=?", [linkAsk.questionId]); | not yet converted to Drizzle
+src/loop/link-ask.ts | db.run("UPDATE question SET handoff_version = ? WHERE id = ?", [ | not yet converted to Drizzle

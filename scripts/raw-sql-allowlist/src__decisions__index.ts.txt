@@ -1,0 +1,18 @@
+src/decisions/index.ts | return db .query<Scope, [string]>(`SELECT w.id AS workspaceId,s.session_id AS sessionId, | not yet converted to Drizzle
+src/decisions/index.ts | ? db .query<Row, [string, string]>(`${SELECT} | not yet converted to Drizzle
+src/decisions/index.ts | : db .query<Row, [string]>(`${SELECT} | not yet converted to Drizzle
+src/decisions/index.ts | return db .query<{ id: string; body: string; answer: string; author: string; sessionId: string }, []>( | not yet converted to Drizzle
+src/decisions/index.ts | ? db.query<Row, [string]>(`${SELECT} WHERE d.id=?`).get(input.id) | not yet converted to Drizzle
+src/decisions/index.ts | const question = db .query<{ answer: string | null; answered_by: string | null }, [string]>( | not yet converted to Drizzle
+src/decisions/index.ts | db.run( | not yet converted to Drizzle
+src/decisions/index.ts | db.run( | not yet converted to Drizzle
+src/decisions/index.ts | db.run( | not yet converted to Drizzle
+src/decisions/index.ts | db.run("DELETE FROM decision_memory_search WHERE decision_id=?", [id]); | not yet converted to Drizzle
+src/decisions/index.ts | db.run("INSERT INTO decision_memory_search(decision_id,statement,tags) VALUES(?,?,?)", [ | not yet converted to Drizzle
+src/decisions/index.ts | const context = db .query<{ paths: string | null; brief: string | null }, [string]>( | not yet converted to Drizzle
+src/decisions/index.ts | const candidates = db .query<Row, [string, string]>(`${SELECT} JOIN decision_memory_search f ON f.decision_id=d.id | not yet converted to Drizzle
+src/decisions/index.ts | db.run( | not yet converted to Drizzle
+src/decisions/index.ts | const saved = db .query<{ id: string }, [string, string]>( | not yet converted to Drizzle
+src/decisions/index.ts | const saved = db .query<{ decisionId: string; revision: number; statement: string }, [string, string]>( | not yet converted to Drizzle
+src/decisions/index.ts | ? db .query<Row, [string]>(`${SELECT} WHERE d.id=? AND d.retired_at IS NULL`) | not yet converted to Drizzle
+src/decisions/index.ts | db.run("UPDATE decision_suggestion SET accepted_by=?,accepted_at=? WHERE id=?", [ | not yet converted to Drizzle

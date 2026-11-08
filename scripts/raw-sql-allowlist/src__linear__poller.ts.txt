@@ -1,0 +1,4 @@
+src/linear/poller.ts | const threads = options.db .query<{ session_id: string; created_at: number }, []>( | not yet converted to Drizzle
+src/linear/poller.ts | db.run( | not yet converted to Drizzle
+src/linear/poller.ts | const rows = db .query<{ id: string }, [string, string]>( | not yet converted to Drizzle
+src/linear/poller.ts | const rows = db .query<{ id: string }, [string]>( | not yet converted to Drizzle

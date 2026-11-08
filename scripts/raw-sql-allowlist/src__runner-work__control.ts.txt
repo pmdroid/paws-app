@@ -1,0 +1,41 @@
+src/runner-work/control.ts | return db .query<Assignment, [string]>(`SELECT ${columns} FROM runner_work WHERE run_id=?`) | not yet converted to Drizzle
+src/runner-work/control.ts | return db .query<{ workspaceId: string; userId: string; fence: number; status: string }, [string]>( | not yet converted to Drizzle
+src/runner-work/control.ts | const execution = db .query<{ itemId: string; status: string }, [string]>( | not yet converted to Drizzle
+src/runner-work/control.ts | db .query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='checkpoint' AND expires_at>?") | not yet converted to Drizzle
+src/runner-work/control.ts | const mapped = db .query( | not yet converted to Drizzle
+src/runner-work/control.ts | const installation = db .query<{ clientId: string | null }, [string]>( | not yet converted to Drizzle
+src/runner-work/control.ts | !db .query("SELECT 1 FROM workspace WHERE id=? AND linear_organization_id=?") | not yet converted to Drizzle
+src/runner-work/control.ts | db .query( | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("UPDATE runner_work SET lease_until=MAX(lease_until,?) WHERE run_id=?", [ | not yet converted to Drizzle
+src/runner-work/control.ts | db .query("SELECT 1 FROM runner_result WHERE run_id=? AND generation=? AND command_id=?") | not yet converted to Drizzle
+src/runner-work/control.ts | db .query("SELECT 1 FROM runner_command WHERE id=? AND acknowledged_at<=?") | not yet converted to Drizzle
+src/runner-work/control.ts | const row = db .query<{ envelope: string }, [string]>("SELECT envelope FROM runner_command WHERE id=?") | not yet converted to Drizzle
+src/runner-work/control.ts | const grant = db .query( | not yet converted to Drizzle
+src/runner-work/control.ts | const version = db .query<{ version: string | null }, [string]>( | not yet converted to Drizzle
+src/runner-work/control.ts | db.run( | not yet converted to Drizzle
+src/runner-work/control.ts | db .query<{ version: string | null }, [string]>( | not yet converted to Drizzle
+src/runner-work/control.ts | db.run( | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("DELETE FROM runner_work_grant WHERE run_id=?", [command.runId]); | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("UPDATE runner_work SET ended_at=? WHERE run_id=? AND generation=?", [ | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("DELETE FROM runner_work_grant WHERE run_id=?", [work.runId]); | not yet converted to Drizzle
+src/runner-work/control.ts | const rows = db .query< | not yet converted to Drizzle
+src/runner-work/control.ts | db.run( | not yet converted to Drizzle
+src/runner-work/control.ts | const storedVersion = db .query<{ version: string | null }, [string]>( | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]); | not yet converted to Drizzle
+src/runner-work/control.ts | db.run( | not yet converted to Drizzle
+src/runner-work/control.ts | const rows = db .query<Assignment, [string]>( | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("UPDATE runner_work SET confirmed_at=? WHERE run_id=? AND generation=?", [ | not yet converted to Drizzle
+src/runner-work/control.ts | db.run( | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("DELETE FROM runner_work_grant WHERE run_id=?", [row.runId]); | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("UPDATE runner_work SET ended_at=? WHERE run_id=? AND generation=?", [ | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("DELETE FROM runner_work_grant WHERE run_id=?", [row.runId]); | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("UPDATE runner SET terminations_since=COALESCE(terminations_since,?) WHERE id=?", [ | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("UPDATE runner SET live_reported_at=? WHERE id=?", [at, runnerId]); | not yet converted to Drizzle
+src/runner-work/control.ts | db.run( | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("DELETE FROM runner_work_grant WHERE run_id=?", [input.runId]); | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("INSERT INTO runner_work_grant VALUES(?,?,?,?)", [ | not yet converted to Drizzle
+src/runner-work/control.ts | const saved = db .query<StoredRunnerEvent, [string, number, number]>( | not yet converted to Drizzle
+src/runner-work/control.ts | db.run( | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("UPDATE runner_work SET last_sequence=? WHERE run_id=?", [ | not yet converted to Drizzle
+src/runner-work/control.ts | db.run( | not yet converted to Drizzle
+src/runner-work/control.ts | db.run("DELETE FROM runner_work_grant WHERE run_id=?", [runId]); | not yet converted to Drizzle

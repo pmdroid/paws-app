@@ -1,0 +1,8 @@
+src/db/legacy-migrate.ts | db.run(` | frozen legacy migration (src/db/README.md)
+src/db/legacy-migrate.ts | db .query<{ id: string }, []>("SELECT id FROM schema_migration") | frozen legacy migration (src/db/README.md)
+src/db/legacy-migrate.ts | db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys ?? 1; | frozen legacy migration (src/db/README.md)
+src/db/legacy-migrate.ts | if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF"); | frozen legacy migration (src/db/README.md)
+src/db/legacy-migrate.ts | db.run(migration.sql); | frozen legacy migration (src/db/README.md)
+src/db/legacy-migrate.ts | db.query("PRAGMA foreign_key_check").all().length > 0 | frozen legacy migration (src/db/README.md)
+src/db/legacy-migrate.ts | db.run("INSERT INTO schema_migration (id, applied_at) VALUES (?, ?)", [ | frozen legacy migration (src/db/README.md)
+src/db/legacy-migrate.ts | db.run(`PRAGMA foreign_keys = ${foreignKeys ? "ON" : "OFF"}`); | frozen legacy migration (src/db/README.md)

@@ -1,0 +1,5 @@
+src/db/closeout-rounds.ts | db.run( | not yet converted to Drizzle
+src/db/closeout-rounds.ts | ? db.query<RoundRow, []>(`SELECT * FROM closeout_round ORDER BY started_at, rowid`).all() | not yet converted to Drizzle
+src/db/closeout-rounds.ts | : db .query<RoundRow, [string]>( | not yet converted to Drizzle
+src/db/closeout-rounds.ts | db.run( | not yet converted to Drizzle
+src/db/closeout-rounds.ts | const row = db .query<{ baseline: string }, [string]>( | not yet converted to Drizzle

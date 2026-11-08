@@ -1,0 +1,2 @@
+src/member-vm/http.ts | db.run("UPDATE member_vm SET pool=?,updated_at=? WHERE id=?", [body.pool, now(), row.id]); | not yet converted to Drizzle
+src/member-vm/http.ts | db.query<{ name: string }, [string]>("SELECT name FROM workspace_user WHERE id=?").get(userId) | not yet converted to Drizzle

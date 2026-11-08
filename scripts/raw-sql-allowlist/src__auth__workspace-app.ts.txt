@@ -1,0 +1,5 @@
+src/auth/workspace-app.ts | const rows = db .query<{ secret_id: string; generation: number }, []>( | not yet converted to Drizzle
+src/auth/workspace-app.ts | if (rows.length === 0 && !db.query("SELECT 1 FROM workspace LIMIT 1").get()) { | not yet converted to Drizzle
+src/auth/workspace-app.ts | const rows = db .query<{ secret_id: string | null; generation: number; repositories: string }, [string]>( | not yet converted to Drizzle
+src/auth/workspace-app.ts | db.query("SELECT 1 FROM repository_catalog WHERE repository=lower(?)").get(repository) !== | not yet converted to Drizzle
+src/auth/workspace-app.ts | if (db.query("SELECT 1 FROM workspace LIMIT 1").get()) | not yet converted to Drizzle

@@ -101,6 +101,9 @@ Startup (`startPaws()` in `src/index.ts`) opens the database and creates one `Db
 1. Change `database: Database` to `db: Db`, return `Promise<T>`, and move the body into `db.run(function* (q) { … })`, or `db.transaction()` when it writes more than one statement. Build each query on `q.orm` and `q.t` and `yield*` it through `q.all`, `q.one` or `q.exec`.
 2. An async caller awaits the function. A caller that is still synchronous, such as `dispatch()` inside its `immediate()` transaction, unwraps it with `settled(f(sqliteDb(database), …))`. `settled()` throws if the promise has not settled, which happens only off SQLite. When that caller becomes async, replace `settled(…)` with `await`.
 3. Run the module's tests on both dialects.
+4. Remove the module's lines from its own allowlist file, `scripts/raw-sql-allowlist/<path with / as __>.txt` (`src__db__jobs.ts.txt` for `src/db/jobs.ts`), and delete the file once it is empty. `bun run raw-sql` names the file of each stale entry.
+
+A feature module is re-exported whole from `index.ts` with `export * from "./<module>";`, so a new `…Steps` export needs no `index.ts` change. Only infrastructure (`db.ts`, `orm.ts`, `open.ts`, the migrations, `postgres.ts`, `db-check.ts`, `ddl.ts`, `schema`, `schema-pg`) keeps an explicit list. Two modules can't export the same name: `export *` makes that a type error, so rename one. A conversion then edits only its module, its tests and its allowlist file, and conversions of different modules merge without conflicts.
 
 ### Tests on both dialects
 

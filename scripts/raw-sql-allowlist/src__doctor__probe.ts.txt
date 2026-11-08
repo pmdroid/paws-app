@@ -1,0 +1,2 @@
+src/doctor/probe.ts | db .query<{ name: string }, []>("SELECT name FROM workspace ORDER BY created_at LIMIT 1") | not yet converted to Drizzle
+src/doctor/probe.ts | db .query<{ repository: string }, []>( | not yet converted to Drizzle

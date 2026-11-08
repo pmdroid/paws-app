@@ -1,0 +1,1 @@
+src/server/serve.ts | db.query<{ id: string }, []>("SELECT id FROM workspace ORDER BY id LIMIT 1").get()?.id; | not yet converted to Drizzle

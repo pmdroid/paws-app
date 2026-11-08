@@ -1,0 +1,19 @@
+src/db/workspace.ts | return db .query<WorkspaceRecord, [string]>( | not yet converted to Drizzle
+src/db/workspace.ts | return db .query<WorkspaceRecord, [string]>( | not yet converted to Drizzle
+src/db/workspace.ts | db.run( | not yet converted to Drizzle
+src/db/workspace.ts | return db .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id = ?") | not yet converted to Drizzle
+src/db/workspace.ts | const user = db .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?") | not yet converted to Drizzle
+src/db/workspace.ts | db.run( | not yet converted to Drizzle
+src/db/workspace.ts | db.run("DELETE FROM workspace_user_team WHERE workspace_id=? AND user_id=?", [ | not yet converted to Drizzle
+src/db/workspace.ts | db.run("INSERT INTO workspace_user_team(workspace_id,user_id,team_id) VALUES(?,?,?)", [ | not yet converted to Drizzle
+src/db/workspace.ts | db.run("DELETE FROM workspace_session WHERE workspace_id=? AND user_id=?", [ | not yet converted to Drizzle
+src/db/workspace.ts | db.run("UPDATE workspace_member SET checked_at=0 WHERE workspace_id=? AND user_id=?", [ | not yet converted to Drizzle
+src/db/workspace.ts | db.run("INSERT INTO workspace_bootstrap(token_hash,organization_id,expires_at) VALUES(?,?,?)", [ | not yet converted to Drizzle
+src/db/workspace.ts | const claimed = db.run( | not yet converted to Drizzle
+src/db/workspace.ts | db.run("INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES(?,?,?,?)", [ | not yet converted to Drizzle
+src/db/workspace.ts | db.run( | not yet converted to Drizzle
+src/db/workspace.ts | db.run( | not yet converted to Drizzle
+src/db/workspace.ts | const session = db .query<WorkspaceSession, [string, number]>( | not yet converted to Drizzle
+src/db/workspace.ts | db.run("UPDATE workspace_session SET last_seen_at=?,expires_at=? WHERE token_hash=?", [ | not yet converted to Drizzle
+src/db/workspace.ts | db.run("DELETE FROM workspace_session WHERE token_hash=?", [tokenHash]); | not yet converted to Drizzle
+src/db/workspace.ts | const rows = db .query< | not yet converted to Drizzle
