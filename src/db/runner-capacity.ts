@@ -559,7 +559,11 @@ export function* runnerHelperAvailabilitySteps(
   if (conversation) {
     const { limit, supported } = yield* conversationLaneSteps(q, runnerId);
     const inUse = yield* conversationsInUseSteps(q, [runnerId], now);
-    return { available: supported && (inUse.get(runnerId) ?? 0) < limit, preempts: false, held: false };
+    return {
+      available: supported && (inUse.get(runnerId) ?? 0) < limit,
+      preempts: false,
+      held: false,
+    };
   }
   const rows = yield* q.all(
     q.orm
@@ -633,12 +637,7 @@ export function* runnerSignInWaitingSteps(q: Q, runnerId: string, now: number) {
   return signIn !== undefined;
 }
 
-export function* openSessionHelperSteps(
-  q: Q,
-  sessionId: string,
-  generation: number,
-  now: number,
-) {
+export function* openSessionHelperSteps(q: Q, sessionId: string, generation: number, now: number) {
   const { runnerHelper } = q.t;
   const row = yield* q.one(
     q.orm
@@ -660,14 +659,21 @@ export function* openSessionHelperSteps(
 
 export function* runnerHelperAcknowledgedSteps(q: Q, id: string) {
   const { runnerHelper } = q.t;
-  const row = yield* q.one(q.orm
-    .select({ acknowledgedAt: runnerHelper.acknowledgedAt })
-    .from(runnerHelper)
-    .where(eq(runnerHelper.id, id)));
+  const row = yield* q.one(
+    q.orm
+      .select({ acknowledgedAt: runnerHelper.acknowledgedAt })
+      .from(runnerHelper)
+      .where(eq(runnerHelper.id, id)),
+  );
   return row?.acknowledgedAt != null;
 }
 
-export function openSessionHelper(db: Database, sessionId: string, generation: number, now: number) {
+export function openSessionHelper(
+  db: Database,
+  sessionId: string,
+  generation: number,
+  now: number,
+) {
   return settled(sqliteDb(db).run((q) => openSessionHelperSteps(q, sessionId, generation, now)));
 }
 
