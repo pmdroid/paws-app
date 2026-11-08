@@ -1,9 +1,9 @@
 import { workspaceMemberUsableSql, auditWorkspaceAccess } from "./workspace";
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { orm } from "./orm";
-import { runner as runnerTable, runnerHelper, runnerHostStatus } from "./schema";
+import { runner as runnerTable, runnerHostStatus } from "./schema";
 import { endRevokedRunnerAuthority, runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { conversationsInUse, WORK_HELPER } from "./runner-capacity";

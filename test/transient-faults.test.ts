@@ -199,12 +199,26 @@ test.each([
   90_000,
 );
 
+test("15 helper placements against a busy slot do not fail the task or spend its attempts", async () => {
+  const result = await runWithFault({
+    error: () => new RunnerSlotsBusyError(),
+    times: 15,
+    clock: new FakeClock(Date.now()),
+    atClassify: true,
+  });
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.errors, result.detail).toEqual([]);
+  expect(result.states, result.detail).not.toContain("failed");
+}, 90_000);
+
 test("no runner signed in still fails after the attempt budget and names that cause", async () => {
   const message =
     "No paired runner can run claude for this issue right now: agent not signed in. Check runner availability and usage limits, then retry.";
   const result = await runWithFault({
     error: () => new UserFacingError(message),
     times: Infinity,
+    clock: new FakeClock(Date.now()),
+    atClassify: true,
   });
   expect(result.state, result.detail).toBe("failed");
   expect(result.errors, result.detail).toEqual([`Stopped after 10 attempts. ${message}`]);
@@ -374,6 +388,8 @@ async function runWithFault(fault: {
   /** Applies Stop once the fake clock has moved this far. */
   stopAtMs?: number;
   loseJobLease?: boolean;
+  /** Fails the session helper that classifies the task, before any agent turn. */
+  atClassify?: boolean;
 }): Promise<{
   state: string | null;
   states: (string | null)[];
@@ -447,6 +463,10 @@ async function runWithFault(fault: {
     placementPollMs: 1_000,
     clock,
     launch(input) {
+      if (fault.atClassify && input.purpose === "classify" && remaining > 0) {
+        remaining -= 1;
+        throw fault.error();
+      }
       sequence += 1;
       if (input.purpose === "implement") implementations += 1;
       const steps: FakeScript["steps"] =
@@ -489,7 +509,12 @@ async function runWithFault(fault: {
       return listSessionActivities ? listSessionActivities(...args) : [];
     };
   lifecycle.startCodeIssue = async (input, options) => {
-    if (!fault.tracker && remaining > 0 && stateOf(db, "ENG-7") === "running") {
+    if (
+      !fault.tracker &&
+      !fault.atClassify &&
+      remaining > 0 &&
+      stateOf(db, "ENG-7") === "running"
+    ) {
       remaining -= 1;
       if (fault.loseJobLease) {
         db.run("UPDATE job SET locked_until=? WHERE status='running' AND queue IN (?, ?)", [
