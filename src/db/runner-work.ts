@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 import { jsonText } from "./json-text";
+import { workHelperSql } from "./runner-capacity";
 
 export function* itemOpenRunnerWorkRunsSteps(q: Q, itemId: string) {
   const { run, runnerWork } = q.t;
@@ -324,13 +325,58 @@ export function runnerWorkActive(db: Database, runId: string): boolean | null {
   return settled(sqliteDb(db).run((q) => runnerWorkActiveSteps(q, runId)));
 }
 
+/** Whether a helper that takes the runner's single health lane has not finished yet. */
+export function* runnerLaneHelperWaitingSteps(q: Q, runnerId: string, now: number) {
+  const { runnerHelper } = q.t;
+  const helper = yield* q.one(
+    q.orm
+      .select({ id: runnerHelper.id })
+      .from(runnerHelper)
+      .where(
+        and(
+          eq(runnerHelper.runnerId, runnerId),
+          isNull(runnerHelper.endedAt),
+          isNull(runnerHelper.result),
+          gt(runnerHelper.expiresAt, now),
+          workHelperSql(q, "runner_helper"),
+        ),
+      )
+      .limit(1),
+  );
+  return helper !== undefined;
+}
+
+export function runnerLaneHelperWaiting(db: Database, runnerId: string, now: number): boolean {
+  return settled(sqliteDb(db).run((q) => runnerLaneHelperWaitingSteps(q, runnerId, now)));
+}
+
+/** What the routine sign-in checks need to know about each agent on a runner. */
+export function* runnerAgentCheckStatesSteps(q: Q, runnerId: string) {
+  const { runnerAgentPolicy } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        agent: runnerAgentPolicy.agent,
+        authExpired: runnerAgentPolicy.authExpired,
+        lastUsedAt: runnerAgentPolicy.lastUsedAt,
+      })
+      .from(runnerAgentPolicy)
+      .where(eq(runnerAgentPolicy.runnerId, runnerId)),
+  );
+}
+
+export function runnerAgentCheckStates(db: Database, runnerId: string) {
+  return settled(sqliteDb(db).run((q) => runnerAgentCheckStatesSteps(q, runnerId)));
+}
+
 /**
  * The one probe or sign-in check the runner may be sent now, or null while another health
- * command runs or a sign-in someone started waits. The runner keeps delivered commands in
- * arrival order and runs one at a time, so routine checks go out one by one, after sign-ins.
+ * command runs, or a helper or a sign-in someone started waits. The runner keeps delivered
+ * commands in arrival order and runs one at a time, so routine checks go out one by one, last.
  */
 export function* nextRoutineHealthCommandSteps(q: Q, runnerId: string, now: number) {
   const { runnerCommand, runnerHealthResult, runnerLogin } = q.t;
+  if (yield* runnerLaneHelperWaitingSteps(q, runnerId, now)) return null;
   const signIn = yield* q.one(
     q.orm
       .select({ id: runnerCommand.id })
