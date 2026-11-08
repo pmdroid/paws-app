@@ -525,6 +525,27 @@ export function runTeardownOwner(db: Database, runId: string): string | null {
   return settled(sqliteDb(db).run((q) => runTeardownOwnerSteps(q, runId)));
 }
 
+/** The conversation slots a runner offers and whether its release can run conversations. */
+function* conversationLaneSteps(q: Q, runnerId: string) {
+  const { runnerCapacity, runnerHostStatus } = q.t;
+  const capacity = yield* q.one(
+    q.orm
+      .select({ limit: runnerCapacity.conversation })
+      .from(runnerCapacity)
+      .where(eq(runnerCapacity.runnerId, runnerId)),
+  );
+  const status = yield* q.one(
+    q.orm
+      .select({ version: runnerHostStatus.runnerVersion })
+      .from(runnerHostStatus)
+      .where(eq(runnerHostStatus.runnerId, runnerId)),
+  );
+  return {
+    limit: capacity?.limit ?? 0,
+    supported: runnerReleaseAtLeast(status?.version, CONVERSATION_RUNNER_VERSION),
+  };
+}
+
 /** Read-only admission check. Helpers share one runtime slot, independently of work capacity.
  * A foreground helper may replace unfinished grouping, but only its dispatch may fence it. */
 export function* runnerHelperAvailabilitySteps(
@@ -534,28 +555,11 @@ export function* runnerHelperAvailabilitySteps(
   foreground: boolean,
   conversation = false,
 ) {
-  const { runnerCapacity, runnerHelper, runnerHostStatus } = q.t;
+  const { runnerHelper } = q.t;
   if (conversation) {
-    const limit =
-      (yield* q.one(
-        q.orm
-          .select({ limit: runnerCapacity.conversation })
-          .from(runnerCapacity)
-          .where(eq(runnerCapacity.runnerId, runnerId)),
-      ))?.limit ?? 0;
-    const version = (yield* q.one(
-      q.orm
-        .select({ version: runnerHostStatus.runnerVersion })
-        .from(runnerHostStatus)
-        .where(eq(runnerHostStatus.runnerId, runnerId)),
-    ))?.version;
+    const { limit, supported } = yield* conversationLaneSteps(q, runnerId);
     const inUse = yield* conversationsInUseSteps(q, [runnerId], now);
-    return {
-      available:
-        runnerReleaseAtLeast(version, CONVERSATION_RUNNER_VERSION) &&
-        (inUse.get(runnerId) ?? 0) < limit,
-      preempts: false,
-    };
+    return { available: supported && (inUse.get(runnerId) ?? 0) < limit, preempts: false };
   }
   const rows = yield* q.all(
     q.orm
@@ -671,21 +675,8 @@ export function* runnerConversationLaneSteps(
   runnerId: string,
   now: number,
 ): Steps<"closed" | "full" | "free"> {
-  const { runnerCapacity, runnerHostStatus } = q.t;
-  const limit =
-    (yield* q.one(
-      q.orm
-        .select({ limit: runnerCapacity.conversation })
-        .from(runnerCapacity)
-        .where(eq(runnerCapacity.runnerId, runnerId)),
-    ))?.limit ?? 0;
-  const version = (yield* q.one(
-    q.orm
-      .select({ version: runnerHostStatus.runnerVersion })
-      .from(runnerHostStatus)
-      .where(eq(runnerHostStatus.runnerId, runnerId)),
-  ))?.version;
-  if (limit <= 0 || !runnerReleaseAtLeast(version, CONVERSATION_RUNNER_VERSION)) return "closed";
+  const { limit, supported } = yield* conversationLaneSteps(q, runnerId);
+  if (limit <= 0 || !supported) return "closed";
   return (yield* runnerHelperAvailabilitySteps(q, runnerId, now, true, true)).available
     ? "free"
     : "full";
