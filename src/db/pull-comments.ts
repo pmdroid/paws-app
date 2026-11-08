@@ -89,15 +89,6 @@ export function* deferPullFeedbackSteps(
   return moved.length;
 }
 
-export function deferPullFeedback(
-  db: Database,
-  itemId: string,
-  receivedAt: number,
-  wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
-): number {
-  return settled(sqliteDb(db).run((q) => deferPullFeedbackSteps(q, itemId, receivedAt, wait)));
-}
-
 /** The item's pending comment job and the jobs of its open reviews. */
 function pullFeedbackJobs(q: Q, itemId: string) {
   const { job } = q.t;
