@@ -156,3 +156,44 @@ test("the queue line reports the slots the scheduler counts as busy", () => {
     db.close();
   }
 });
+
+test("twelve items ready at once on ten slots start ten and leave two queued", () => {
+  const db = tempDb();
+  try {
+    const userId = putWorkspaceUser(db, {
+      id: "user-1",
+      linearUserId: "user-linear",
+      name: "Owner",
+      email: "owner@example.invalid",
+    });
+    db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 0]);
+    syncWorkspaceMember(db, {
+      workspaceId: "ws-1",
+      userId,
+      role: "admin",
+      active: true,
+      teamIds: [],
+      now: 0,
+    });
+    for (const [id, capacity] of [
+      ["goldbox", 6],
+      ["agentbox", 4],
+    ] as const) {
+      db.run(
+        "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',0,?)",
+        [id, "ws-1", userId, id, NOW],
+      );
+      db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,?)", [id, capacity]);
+    }
+    const ids = Array.from({ length: 12 }, (_, index) => `burst-${index + 10}`);
+    ids.forEach((id, index) => insertQueuedItem(db, { id, now: index + 1 }));
+    const admitted = workspaceDispatch(db, { now: NOW });
+    expect(admitted).toEqual(ids.slice(0, 10));
+    // A second pass before anything is placed finds no slot either.
+    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
+    const states = db.query<{ state: string }, []>("SELECT state FROM work_item").all();
+    expect(states.every(({ state }) => state === "queued")).toBe(true);
+  } finally {
+    db.close();
+  }
+});

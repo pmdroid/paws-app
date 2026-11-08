@@ -2554,6 +2554,25 @@ export class Orchestrator {
       }
       if (job.attempts >= job.maxAttempts)
         this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
+      // A start is only claimed while its item is queued, so its retries continue as a resume.
+      else if (job.queue === JOB_KIND.start && item.state === "running") {
+        this.settleItemAwake(item.id);
+        deferWorkItem(this.db, item, {
+          retry: retryCount(job.payload),
+          delayMs: transientRetryDelayMs(1, error, this.options.retryBaseMs),
+          handoff: readString(job.payload, "handoff"),
+          message: null,
+          now: this.now(),
+        });
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.startRetry",
+          item.id,
+          undefined,
+          this.options.journal,
+        );
+        return;
+      }
       throw error;
     } finally {
       if (

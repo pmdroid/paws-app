@@ -251,8 +251,88 @@ test("a helper still blocked by task work at its deadline reports the runner slo
   fillRunner(f);
   const pending = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
+  // The runner stays online for the whole wait; only its slots are taken.
+  f.db.run("UPDATE runner SET last_seen_at=last_seen_at+60000");
   f.advance(60_000);
   await expect(pending).rejects.toBeInstanceOf(RunnerSlotsBusyError);
+});
+
+const HELPER_SLOT_TAKEN = "helper already running or no free capacity";
+
+test("a helper slot still busy at the deadline is a wait, not a failure", async () => {
+  const f = fixture(() => ({
+    async candidates(input) {
+      input.onRejected?.("runner", HELPER_SLOT_TAKEN);
+      return [];
+    },
+    started() {
+      throw new Error("Must not dispatch");
+    },
+    finished() {
+      return { retryable: false };
+    },
+  }));
+  const pending = f.backend.forSession("session", "classify")(f.input);
+  await Bun.sleep(10);
+  f.advance(60_000);
+  await expect(pending).rejects.toBeInstanceOf(RunnerSlotsBusyError);
+});
+
+test("a helper that times out while other starts queue on its slot is a wait", async () => {
+  let held = false;
+  const f = fixture(() => ({
+    async candidates(input) {
+      if (held) {
+        input.onRejected?.("runner", HELPER_SLOT_TAKEN);
+        return [];
+      }
+      held = true;
+      return [{ id: "runner", workspaceId: "workspace" }];
+    },
+    started() {},
+    finished() {
+      return { retryable: false };
+    },
+  }));
+  const holder = f.backend.forSession("session", "classify")(f.input);
+  await Bun.sleep(10);
+  f.advance(1);
+  const queued = f.backend.forSession("session", "classify")(f.input);
+  await Bun.sleep(10);
+  f.advance(60_000);
+  const outcomes = await Promise.allSettled([holder, queued]);
+  for (const outcome of outcomes) {
+    expect(outcome.status).toBe("rejected");
+    expect((outcome as PromiseRejectedResult).reason).toBeInstanceOf(RunnerSlotsBusyError);
+  }
+});
+
+test.each([
+  ["agent-not-signed-in", "agent not signed in"],
+  ["auth-expired", "auth expired"],
+  ["revoked", "revoked"],
+])("a runner refused for %s fails at once and names the cause", async (reason, named) => {
+  const f = fixture(() => ({
+    async candidates(input) {
+      input.onRejected?.("runner", reason);
+      return [];
+    },
+    started() {
+      throw new Error("Must not dispatch");
+    },
+    finished() {
+      return { retryable: false };
+    },
+  }));
+  const error = await f.backend
+    .forSession(
+      "session",
+      "classify",
+    )(f.input)
+    .catch((caught: unknown) => caught);
+  expect(error).not.toBeInstanceOf(RunnerSlotsBusyError);
+  expect((error as Error).message).toContain(`No paired runner can run codex`);
+  expect((error as Error).message).toContain(named);
 });
 
 test("session helpers reject executable-work and file/tool contracts before dispatch", async () => {

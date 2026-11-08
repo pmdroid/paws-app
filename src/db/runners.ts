@@ -1,9 +1,9 @@
 import { workspaceMemberUsableSql, auditWorkspaceAccess } from "./workspace";
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { orm } from "./orm";
-import { runner as runnerTable, runnerHelper, runnerHostStatus } from "./schema";
+import { runner as runnerTable, runnerHostStatus } from "./schema";
 import { endRevokedRunnerAuthority, runnerLeaseCutoff } from "./runner-lease";
 import { immediate } from "./tx";
 import { conversationsInUse, WORK_HELPER } from "./runner-capacity";
@@ -691,33 +691,6 @@ export function recentRunners(
     )
     .orderBy(desc(runnerTable.lastSeenAt), runnerTable.id)
     .all();
-}
-
-export function enabledRunnerIds(db: Database): { id: string }[] {
-  return orm(db)
-    .select({ id: runnerTable.id })
-    .from(runnerTable)
-    .where(and(eq(runnerTable.status, "active"), isNull(runnerTable.revokedAt)))
-    .all();
-}
-
-export function runnerHelperBusy(db: Database, now: number): boolean {
-  return (
-    orm(db)
-      .select({ one: sql`1` })
-      .from(runnerHelper)
-      .innerJoin(runnerTable, eq(runnerTable.id, runnerHelper.runnerId))
-      .where(
-        and(
-          eq(runnerTable.status, "active"),
-          isNull(runnerTable.revokedAt),
-          isNull(runnerHelper.endedAt),
-          gt(runnerHelper.expiresAt, now),
-          sql.raw(WORK_HELPER("runner_helper")),
-        ),
-      )
-      .get() !== undefined
-  );
 }
 
 export type RunnerIdentity = {
