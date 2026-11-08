@@ -559,7 +559,7 @@ export function* runnerHelperAvailabilitySteps(
   if (conversation) {
     const { limit, supported } = yield* conversationLaneSteps(q, runnerId);
     const inUse = yield* conversationsInUseSteps(q, [runnerId], now);
-    return { available: supported && (inUse.get(runnerId) ?? 0) < limit, preempts: false };
+    return { available: supported && (inUse.get(runnerId) ?? 0) < limit, preempts: false, held: false };
   }
   const rows = yield* q.all(
     q.orm
@@ -591,9 +591,11 @@ export function* runnerHelperAvailabilitySteps(
     );
   }).length;
   const { occupied, capacity } = yield* runnerOccupancySteps(q, runnerId, now);
+  const held = rows.length > maintenance || (yield* runnerSignInWaitingSteps(q, runnerId, now));
   return {
-    available: rows.length === maintenance && occupied - maintenance < capacity,
+    available: !held && occupied - maintenance < capacity,
     preempts: maintenance > 0,
+    held,
   };
 }
 
@@ -609,6 +611,70 @@ export function runnerHelperAvailability(
       runnerHelperAvailabilitySteps(q, runnerId, now, foreground, conversation),
     ),
   );
+}
+
+/** A sign-in someone started is waiting for this runner's health lane or holding it. */
+export function* runnerSignInWaitingSteps(q: Q, runnerId: string, now: number) {
+  const { runnerCommand, runnerLogin } = q.t;
+  const signIn = yield* q.one(
+    q.orm
+      .select({ id: runnerCommand.id })
+      .from(runnerCommand)
+      .innerJoin(runnerLogin, eq(runnerLogin.id, runnerCommand.id))
+      .where(
+        and(
+          eq(runnerCommand.runnerId, runnerId),
+          eq(runnerCommand.kind, "login"),
+          gt(runnerCommand.expiresAt, now),
+          inArray(runnerLogin.state, ["starting", "waiting"]),
+        ),
+      )
+      .limit(1),
+  );
+  return signIn !== undefined;
+}
+
+/** The session's unfinished classify or repository helper, if one is out. */
+export function* openSessionHelperSteps(
+  q: Q,
+  sessionId: string,
+  generation: number,
+  now: number,
+): { id: string } | null {
+  const { runnerHelper } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: runnerHelper.id })
+      .from(runnerHelper)
+      .where(
+        and(
+          eq(runnerHelper.sessionId, sessionId),
+          eq(runnerHelper.sessionGeneration, generation),
+          inArray(runnerHelper.purpose, ["classify", "select_repository"]),
+          isNull(runnerHelper.endedAt),
+          gt(runnerHelper.expiresAt, now),
+        ),
+      )
+      .limit(1),
+  );
+  return row ?? null;
+}
+
+export function* runnerHelperAcknowledgedSteps(q: Q, id: string) {
+  const { runnerHelper } = q.t;
+  const row = yield* q.one(q.orm
+    .select({ acknowledgedAt: runnerHelper.acknowledgedAt })
+    .from(runnerHelper)
+    .where(eq(runnerHelper.id, id)));
+  return row?.acknowledgedAt != null;
+}
+
+export function openSessionHelper(db: Database, sessionId: string, generation: number, now: number) {
+  return settled(sqliteDb(db).run((q) => openSessionHelperSteps(q, sessionId, generation, now)));
+}
+
+export function runnerHelperAcknowledged(db: Database, id: string): boolean {
+  return settled(sqliteDb(db).run((q) => runnerHelperAcknowledgedSteps(q, id)));
 }
 
 /** Foreground session helpers fence unfinished maintenance work before taking its slot.

@@ -4,8 +4,10 @@ export class UserFacingError extends Error {
 }
 
 export class RunnerSlotsBusyError extends UserFacingError {
-  constructor() {
-    super("Queued: every runner slot is busy. Paws starts this issue when a slot frees.");
+  constructor(
+    message = "Queued: every runner slot is busy. Paws starts this issue when a slot frees.",
+  ) {
+    super(message);
   }
 }
 

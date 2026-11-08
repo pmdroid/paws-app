@@ -6,7 +6,9 @@ import {
   immediate,
   insertRunnerHelper,
   linearSessionClientId,
+  openSessionHelper,
   recordCommandAccount,
+  runnerHelperAcknowledged,
   runnerHelperAvailability,
   runnerHelperResultMatches,
   runnerHelperRow,
@@ -38,10 +40,13 @@ import { runnerRequestUnavailable } from "../runner-work";
 
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
 class HelperFencedError extends Error {}
-/** The runner's helper slot or its task slots are taken: the helper can start once one frees. */
+/**
+ * The runner's helper slot or its task slots are taken: the helper can start once one frees.
+ * `heldRunnerId` names the runner when its helper lane is what the request waits for.
+ */
 export class RunnerHelperBusyError extends Error {
   override readonly name = "RunnerHelperBusyError";
-  constructor() {
+  constructor(readonly heldRunnerId?: string) {
     super("Runner is busy");
   }
 }
@@ -124,16 +129,19 @@ export function createRunnerHelpers(options: {
         const runner = scope(input.runnerId, input.sessionId, session.generation, input.purpose);
         if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
         const conversation = input.purpose === "conversation";
-        if (
-          !runnerHelperAvailability(
-            db,
-            input.runnerId,
-            now(),
-            input.purpose !== "finding_groups",
-            conversation,
-          ).available
-        )
-          throw new RunnerHelperBusyError();
+        if (input.purpose === "classify" || input.purpose === "select_repository") {
+          const open = api.open(input.sessionId);
+          if (open) throw new RunnerHelperBusyError(open.runnerId);
+        }
+        const availability = runnerHelperAvailability(
+          db,
+          input.runnerId,
+          now(),
+          input.purpose !== "finding_groups",
+          conversation,
+        );
+        if (availability.held) throw new RunnerHelperBusyError(input.runnerId);
+        if (!availability.available) throw new RunnerHelperBusyError();
         const at = now();
         const command = RunnerCommandSchema.parse({
           ...input,
@@ -183,6 +191,20 @@ export function createRunnerHelpers(options: {
       return result;
     },
     current,
+    /** The session's outstanding classify or repository helper, which a retry reuses. */
+    open(sessionId: string): HelperCommand | null {
+      const session = getLinearSession(db, sessionId);
+      const row = session && openSessionHelper(db, sessionId, session.generation, now());
+      if (!row) return null;
+      try {
+        return current(row.id).command;
+      } catch (error) {
+        if (error instanceof HelperFencedError) return null;
+        throw error;
+      }
+    },
+    /** False while the runner has not picked the helper up, so its lane never reached it. */
+    acknowledged: (id: string) => runnerHelperAcknowledged(db, id),
     acknowledge(runnerId: string, id: string) {
       immediate(db, () => {
         current(id, runnerId);
