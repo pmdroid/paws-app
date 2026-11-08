@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { and, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { JOB_KIND, delegationHasOpenWork, type WorkItemState } from "../core";
 import { settled, sqliteDb, type Q } from "./db";
@@ -90,6 +90,25 @@ export function* schedulingProjectLeadSteps(q: Q, itemId: string) {
 
 export function schedulingProjectLead(db: Database, itemId: string): string | null {
   return settled(sqliteDb(db).run((q) => schedulingProjectLeadSteps(q, itemId)));
+}
+
+/** The people who lead a Linear project anywhere in the delegation, by `workspace_user` id. */
+export function* delegationProjectLeadIdsSteps(q: Q, delegationId: string) {
+  const { workItem: i, workItemScheduling: c, workspaceUser: u } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .selectDistinct({ id: u.id })
+      .from(i)
+      .innerJoin(c, eq(c.itemId, i.id))
+      .innerJoin(u, eq(u.linearUserId, c.projectLeadId))
+      .where(eq(i.delegationId, delegationId))
+      .orderBy(asc(u.id)),
+  );
+  return rows.map((row) => row.id);
+}
+
+export function delegationProjectLeadIds(db: Database, delegationId: string): string[] {
+  return settled(sqliteDb(db).run((q) => delegationProjectLeadIdsSteps(q, delegationId)));
 }
 
 export function* itemPathHintsSteps(q: Q, itemId: string) {

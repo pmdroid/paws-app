@@ -83,6 +83,25 @@ export function getLinearSession(db: Database, sessionId: string): StoredLinearS
   return settled(sqliteDb(db).run((q) => getLinearSessionSteps(q, sessionId)));
 }
 
+/** The Linear team and OAuth client a session was observed under, or null without a session. */
+export function* linearSessionInstallationSteps(q: Q, sessionId: string) {
+  const { linearSession: s } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ teamId: s.teamId, clientId: s.oauthClientId })
+      .from(s)
+      .where(eq(s.sessionId, sessionId)),
+  );
+  return row ?? null;
+}
+
+export function linearSessionInstallation(
+  db: Database,
+  sessionId: string,
+): { teamId: string | null; clientId: string | null } | null {
+  return settled(sqliteDb(db).run((q) => linearSessionInstallationSteps(q, sessionId)));
+}
+
 type LinearSessionInput = {
   sessionId: string;
   issueId?: string | null;

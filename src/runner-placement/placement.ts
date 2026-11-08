@@ -1,6 +1,24 @@
-import { runnerRepositoryRefusal, teamRepositoryAllowedSql } from "../db";
 import type { Database } from "bun:sqlite";
 import {
+  chargeRunnerAgent,
+  delegationProjectLeadIds,
+  finishRunnerExecutionUsage,
+  insertRunnerExecutionUsage,
+  itemOwnerUserId,
+  lastSuccessfulImplementation,
+  linearSessionInstallation,
+  quotaRecheckAt,
+  runnerAgentQuota,
+  runnerExecutionHistory,
+  runnerExecutionReceipt,
+  runnerIdentity,
+  runnerPlacementPolicy,
+  runnerRepositoryRefusal,
+  sessionRepositoriesAllowed,
+  setRunnerAgentCooldown,
+  settleRunnerAgent,
+  workspaceForOrganization,
+  workspaceUserIdForLinearUser,
   workspaceMemberUsable,
   getLinearSession,
   getLinearSessionAccess,
@@ -103,30 +121,7 @@ export function createRunnerPlacement(options: {
     ]);
   }
   function policy(id: string, agent?: string) {
-    return JSON.stringify({
-      runner: db
-        .query(
-          "SELECT id,workspace_id,owner_user_id,status,fence,revoked_at FROM runner WHERE id=?",
-        )
-        .get(id),
-      host: db.query("SELECT runner_id,sharing FROM runner_policy WHERE runner_id=?").get(id),
-      capacity: db
-        .query("SELECT capacity,ceiling,desired FROM runner_capacity WHERE runner_id=?")
-        .get(id),
-      agent: agent
-        ? db.query("SELECT * FROM runner_agent_policy WHERE runner_id=? AND agent=?").get(id, agent)
-        : null,
-      membership: db
-        .query(
-          "SELECT m.* FROM workspace_member m JOIN runner r ON r.workspace_id=m.workspace_id AND r.owner_user_id=m.user_id WHERE r.id=?",
-        )
-        .get(id),
-      teams: db
-        .query(
-          "SELECT t.* FROM workspace_user_team t JOIN runner r ON r.workspace_id=t.workspace_id AND r.owner_user_id=t.user_id WHERE r.id=? ORDER BY team_id",
-        )
-        .all(id),
-    });
+    return JSON.stringify(runnerPlacementPolicy(db, id, agent));
   }
   function scope(input: PlacementRequest) {
     const item = input.itemId ? getWorkItem(db, input.itemId) : null;
@@ -143,32 +138,18 @@ export function createRunnerPlacement(options: {
       throw new Error("Runner session authority is unavailable");
     if (input.sessionId && item && item.sessionKey !== input.sessionId)
       throw new Error("Runner task session changed");
-    const workspace = db
-      .query<{ id: string }, [string]>("SELECT id FROM workspace WHERE linear_organization_id=?")
-      .get(session.organizationId);
-    if (!workspace) throw new Error("Runner workspace is unavailable");
+    const found = workspaceForOrganization(db, session.organizationId);
+    if (!found) throw new Error("Runner workspace is unavailable");
+    const workspace = { id: found.id };
     const repository = item ? getWorkItemRepository(db, item.id) : null;
     const issueId =
       item?.linearIssueId ?? session.issueId ?? (input.findingGroups ? session.sessionId : null);
     if (!issueId) throw new Error("Runner issue authority is unavailable");
     const placement = item
       ? {
-          ownerUserId:
-            db
-              .query<{ ownerUserId: string | null }, [string]>(
-                "SELECT owner_user_id AS ownerUserId FROM work_item WHERE id=?",
-              )
-              .get(item.id)?.ownerUserId ?? null,
+          ownerUserId: itemOwnerUserId(db, item.id),
           // The leads of the Linear projects across the item's delegation lend their shared runners.
-          leadUserIds: db
-            .query<{ id: string }, [string]>(
-              `SELECT DISTINCT u.id FROM work_item i
-               JOIN work_item_scheduling c ON c.item_id=i.id
-               JOIN workspace_user u ON u.linear_user_id=c.project_lead_id
-               WHERE i.delegation_id=? ORDER BY u.id`,
-            )
-            .all(item.delegationId)
-            .map((row) => row.id),
+          leadUserIds: delegationProjectLeadIds(db, item.delegationId),
         }
       : null;
     const ownership = item
@@ -197,9 +178,7 @@ export function createRunnerPlacement(options: {
       repository: current.repository,
       issueId: current.issueId,
       ownership: current.ownership,
-      installation: db
-        .query("SELECT oauth_client_id,team_id FROM linear_session WHERE session_id=?")
-        .get(current.session.sessionId),
+      installation: linearSessionInstallation(db, current.session.sessionId),
     });
   }
   /**
@@ -214,17 +193,13 @@ export function createRunnerPlacement(options: {
     reserved?: ReadonlyMap<string, number>,
   ) {
     const from = at - LOAD_HISTORY_MS;
-    const history = db.query<{ startedAt: number; endedAt: number }, [string, number, number]>(
-      `SELECT started_at AS startedAt,ended_at AS endedAt FROM runner_execution_usage
-       WHERE runner_id=? AND ended_at>? AND ended_at<=?`,
-    );
     return new Map(
       runnerIds.map((id) => {
         const { capacity, occupied } = runnerOccupancy(db, id, at);
         const slots = Math.max(capacity, 1);
         const held = runnerSlotsHeldBetweenCommands(db, id, at);
         let busy = 0;
-        for (const row of history.all(id, from, at))
+        for (const row of runnerExecutionHistory(db, id, from, at))
           busy +=
             Math.max(0, row.endedAt - Math.max(row.startedAt, from)) *
             0.5 ** ((at - row.endedAt) / LOAD_HALF_LIFE_MS);
@@ -240,28 +215,19 @@ export function createRunnerPlacement(options: {
   }
   /** Who the work belongs to and where, for `eligibleRunners`. Throws when nobody may run it. */
   function eligibility(current: ReturnType<typeof scope>) {
-    const teamId = db
-      .query<{ teamId: string | null }, [string]>(
-        "SELECT team_id AS teamId FROM linear_session WHERE session_id=?",
-      )
-      .get(current.session.sessionId)?.teamId;
+    const teamId = linearSessionInstallation(db, current.session.sessionId)?.teamId;
     if (!teamId) throw new Error("Runner issue team is unavailable");
+    const repository = current.repository
+      ? `${current.repository.owner}/${current.repository.repo}`.toLowerCase()
+      : null;
     if (
-      current.repository &&
-      !db
-        .query(`SELECT 1 WHERE ${teamRepositoryAllowedSql("?1", "?2", "lower(?3)")}`)
-        .get(
-          current.workspace.id,
-          teamId,
-          `${current.repository.owner}/${current.repository.repo}`.toLowerCase(),
-        )
+      repository !== null &&
+      !sessionRepositoriesAllowed(db, [current.session.sessionId], [repository]).has(repository)
     )
       throw new Error("Runner repository is outside workspace access");
     const requester = current.ownership
-      ? db
-          .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
-          .get(current.ownership)?.id
-      : undefined;
+      ? workspaceUserIdForLinearUser(db, current.ownership)
+      : null;
     if (!requester || !workspaceMemberUsable(workspaceMember(db, current.workspace.id, requester)))
       throw new Error("Runner requester is not an active workspace member");
     return {
@@ -312,13 +278,7 @@ export function createRunnerPlacement(options: {
     if (quota?.state === "low" && kind !== "quota") observations.push({ ...base, state: "low" });
     for (const observation of observations) recordAccountObservation(db, observation);
     if (kind !== "quota") return null;
-    return (
-      db
-        .query<{ at: number | null }, [string, string]>(
-          "SELECT next_check_at AS at FROM agent_account_health WHERE kind='quota' AND source_id=? AND workspace_id=?",
-        )
-        .get(commandId, owner.workspaceId)?.at ?? null
-    );
+    return quotaRecheckAt(db, commandId, owner.workspaceId);
   }
   function signInFit(
     runner: Pick<EligibleRunner, "id" | "cooldownUntil" | "quotaState"> & { signedIn: boolean },
@@ -366,11 +326,7 @@ export function createRunnerPlacement(options: {
       (recorded.bindingId !== account.bindingId || recorded.accountId !== account.accountId)
     )
       throw new PlacementRaceError("The command does not carry the sign-in placement chose");
-    const runner = db
-      .query<{ cooldownUntil: number; quotaState: string }, [string, string]>(
-        "SELECT cooldown_until AS cooldownUntil,quota_state AS quotaState FROM runner_agent_policy WHERE runner_id=? AND agent=?",
-      )
-      .get(input.runnerId, agent);
+    const runner = runnerAgentQuota(db, input.runnerId, agent);
     const fit = signInFit(
       {
         id: input.runnerId,
@@ -397,21 +353,19 @@ export function createRunnerPlacement(options: {
       // of its Linear project leads.
       // Preparation probes identities without moving a checkout or resuming an agent session.
       const pinnedRunnerId = input.purpose === "prepare" ? undefined : input.pinnedRunnerId;
-      const pinnedOnline =
+      const pinned =
         pinnedRunnerId && pinnedRunnerId !== input.handedOverFrom
-          ? db
-              .query(
-                "SELECT 1 FROM runner WHERE id=? AND status='active' AND revoked_at IS NULL AND last_seen_at>?",
-              )
-              .get(pinnedRunnerId, at - RUNNER_ONLINE_MS) !== null
-          : false;
+          ? runnerIdentity(db, pinnedRunnerId)
+          : null;
+      const pinnedOnline =
+        pinned !== null &&
+        pinned.status === "active" &&
+        pinned.revokedAt === null &&
+        pinned.lastSeenAt !== null &&
+        pinned.lastSeenAt > at - RUNNER_ONLINE_MS;
       const groupingSession =
         input.findingGroups && input.purpose === "helper"
-          ? db
-              .query<{ teamId: string | null; clientId: string | null }, [string]>(
-                "SELECT team_id AS teamId, oauth_client_id AS clientId FROM linear_session WHERE session_id=?",
-              )
-              .get(current.session.sessionId)
+          ? linearSessionInstallation(db, current.session.sessionId)
           : null;
       if (input.findingGroups && !groupingSession?.teamId)
         throw new Error("Runner issue team is unavailable");
@@ -461,13 +415,7 @@ export function createRunnerPlacement(options: {
           return reason === null;
         });
       const lastImplementation = input.itemId
-        ? db
-            .query<{ runnerId: string; model: string | null }, [string]>(
-              `SELECT runner_id AS runnerId,resolved_model AS model FROM runner_execution_usage
-         WHERE item_id=? AND role='implementer' AND purpose='work' AND outcome='success'
-         ORDER BY ended_at DESC,rowid DESC LIMIT 1`,
-            )
-            .get(input.itemId)
+        ? lastSuccessfulImplementation(db, input.itemId)
         : null;
       const ranked = rows.flatMap((runner) => {
         const reject = (reason: string) => {
@@ -661,40 +609,29 @@ export function createRunnerPlacement(options: {
           admission.policy !== policy(input.runnerId, input.profile?.agent)
         )
           throw new PlacementRaceError("Runner selection authority changed before assignment");
-        const runner = db
-          .query<{ ownerId: string; workspaceId: string }, [string]>(
-            "SELECT owner_user_id AS ownerId,workspace_id AS workspaceId FROM runner WHERE id=? AND status='active' AND revoked_at IS NULL",
-          )
-          .get(input.runnerId);
-        if (!runner) throw new PlacementRaceError("Runner identity changed before assignment");
+        const runner = runnerIdentity(db, input.runnerId);
+        if (!runner || runner.status !== "active" || runner.revokedAt !== null)
+          throw new PlacementRaceError("Runner identity changed before assignment");
         if (input.profile) admit(input, admission.account, runner.workspaceId);
-        if (input.profile) {
-          db.run(
-            "INSERT INTO runner_agent_policy(runner_id,agent) VALUES(?,?) ON CONFLICT DO NOTHING",
-            [input.runnerId, input.profile.agent],
-          );
-          db.run(
-            "UPDATE runner_agent_policy SET virtual_finish=virtual_finish+CASE WHEN quota_state='low' THEN 5 ELSE 1 END,last_used_at=? WHERE runner_id=? AND agent=?",
-            [input.startedAt, input.runnerId, input.profile.agent],
-          );
-        }
-        db.run(
-          `INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,run_id,agent,model,role,purpose,started_at,placement_reason)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-          [
-            input.commandId,
-            input.runnerId,
-            runner.ownerId,
-            input.itemId ?? null,
-            input.runId ?? null,
-            input.profile?.agent ?? null,
-            input.profile?.model ?? null,
-            input.role,
-            input.purpose,
-            input.startedAt,
-            admission.reason,
-          ],
-        );
+        if (input.profile)
+          chargeRunnerAgent(db, {
+            runnerId: input.runnerId,
+            agent: input.profile.agent,
+            at: input.startedAt,
+          });
+        insertRunnerExecutionUsage(db, {
+          commandId: input.commandId,
+          runnerId: input.runnerId,
+          ownerUserId: runner.ownerId,
+          itemId: input.itemId ?? null,
+          runId: input.runId ?? null,
+          agent: input.profile?.agent ?? null,
+          model: input.profile?.model ?? null,
+          role: input.role,
+          purpose: input.purpose,
+          startedAt: input.startedAt,
+          placementReason: admission.reason,
+        });
         admissions.delete(key);
       });
       if (input.itemId && input.role === "implementer" && input.purpose === "work")
@@ -702,24 +639,7 @@ export function createRunnerPlacement(options: {
     },
     finished(input) {
       return immediate(db, () => {
-        const usage = db
-          .query<
-            {
-              ownerId: string;
-              purpose: string;
-              agent: string | null;
-              itemId: string | null;
-              role: string;
-              startedAt: number;
-              endedAt: number | null;
-              outcome: string | null;
-              resetsAt: number | null;
-            },
-            [string, string]
-          >(
-            "SELECT owner_user_id AS ownerId,purpose,agent,item_id AS itemId,role,started_at AS startedAt,ended_at AS endedAt,outcome,resets_at AS resetsAt FROM runner_execution_usage WHERE command_id=? AND runner_id=?",
-          )
-          .get(input.commandId, input.runnerId);
+        const usage = runnerExecutionReceipt(db, input.commandId, input.runnerId);
         if (!usage) throw new Error("Runner usage receipt is not bound to an assignment");
         const result = input.result;
         if ((!result && !input.failure) || (result && result.commandId !== input.commandId))
@@ -752,11 +672,7 @@ export function createRunnerPlacement(options: {
               !result.errorMessage));
         const model = result?.identity?.model ?? null;
         const latestImplementation = usage.itemId
-          ? db
-              .query<{ model: string | null }, [string]>(
-                "SELECT resolved_model AS model FROM runner_execution_usage WHERE item_id=? AND role='implementer' AND purpose='work' AND outcome='success' ORDER BY ended_at DESC,rowid DESC LIMIT 1",
-              )
-              .get(usage.itemId)
+          ? lastSuccessfulImplementation(db, usage.itemId)
           : null;
         const modelConflict =
           success &&
@@ -764,59 +680,38 @@ export function createRunnerPlacement(options: {
           usage.role === "reviewer" &&
           model !== null &&
           model === latestImplementation?.model;
-        db.run(
-          "UPDATE runner_execution_usage SET ended_at=?,outcome=?,resolved_model=?,output_bytes=?,resets_at=? WHERE command_id=?",
-          [
-            input.finishedAt,
-            modelConflict
-              ? "model_conflict"
-              : success
-                ? "success"
-                : result?.authRequired
-                  ? "auth_required"
-                  : quota?.state === "exhausted"
-                    ? "quota_exhausted"
-                    : (input.failure ?? "error"),
-            model,
+        finishRunnerExecutionUsage(db, {
+          commandId: input.commandId,
+          endedAt: input.finishedAt,
+          outcome: modelConflict
+            ? "model_conflict"
+            : success
+              ? "success"
+              : result?.authRequired
+                ? "auth_required"
+                : quota?.state === "exhausted"
+                  ? "quota_exhausted"
+                  : (input.failure ?? "error"),
+          resolvedModel: model,
+          outputBytes:
             result && "text" in result
               ? Buffer.byteLength(result.text)
               : result?.reviewText
                 ? Buffer.byteLength(result.reviewText)
                 : 0,
-            quota?.state === "exhausted" ? quota.resetsAt : null,
-            input.commandId,
-          ],
-        );
+          resetsAt: quota?.state === "exhausted" ? quota.resetsAt : null,
+        });
         const runsAsDefault = commandAccount(db, input.commandId)?.named !== true;
-        if (usage.agent && runsAsDefault) {
-          db.run(
-            `UPDATE runner_agent_policy SET
-            ready=CASE WHEN ? THEN 0 WHEN ? THEN 1 ELSE ready END,
-            auth_expired=CASE WHEN ? THEN 1 WHEN ? THEN 0 ELSE auth_expired END,
-            quota_state=CASE WHEN ? IS NOT NULL THEN ? WHEN ? THEN 'ok' ELSE quota_state END,
-            resets_at=CASE WHEN ? IS NOT NULL THEN ? WHEN ? THEN NULL ELSE resets_at END,
-            cooldown_until=CASE WHEN ? IS NOT NULL THEN ? WHEN ? THEN 0 ELSE cooldown_until END,
-            resolved_model=COALESCE(?,resolved_model) WHERE runner_id=? AND agent=?`,
-            [
-              result?.authRequired ? 1 : 0,
-              success ? 1 : 0,
-              result?.authRequired ? 1 : 0,
-              success ? 1 : 0,
-              quota?.state ?? null,
-              quota?.state ?? null,
-              success && usage.purpose !== "prepare" ? 1 : 0,
-              quota?.state ?? null,
-              quota?.resetsAt ?? null,
-              success && usage.purpose !== "prepare" ? 1 : 0,
-              quota?.state ?? null,
-              quota?.cooldownUntil ?? 0,
-              success && usage.purpose !== "prepare" ? 1 : 0,
-              model,
-              input.runnerId,
-              usage.agent,
-            ],
-          );
-        }
+        if (usage.agent && runsAsDefault)
+          settleRunnerAgent(db, {
+            runnerId: input.runnerId,
+            agent: usage.agent,
+            authRequired: result?.authRequired === true,
+            success,
+            quota,
+            clearQuota: success && usage.purpose !== "prepare",
+            model,
+          });
         const recheckAt = observeAccount(input.commandId, {
           classified,
           model: input.profile?.model ?? model,
@@ -831,11 +726,7 @@ export function createRunnerPlacement(options: {
           quota.resetsAt === null &&
           recheckAt
         )
-          db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE runner_id=? AND agent=?", [
-            recheckAt,
-            input.runnerId,
-            usage.agent,
-          ]);
+          setRunnerAgentCooldown(db, input.runnerId, usage.agent, recheckAt);
         return {
           retryable: retryable || modelConflict,
           ...(quota?.state === "exhausted"
