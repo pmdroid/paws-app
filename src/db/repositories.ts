@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { orm } from "./orm";
 import { question, workItemRepository, workItemRepositoryQuestion } from "./schema";
 import { immediate } from "./tx";
@@ -151,21 +152,25 @@ function sameRepository(left: RepositoryBinding, right: RepositoryBinding): bool
   );
 }
 
+export function* isWorkItemRepositoryQuestionSteps(
+  q: Q,
+  itemId: string,
+  questionId: string,
+): Steps<boolean> {
+  const asked = q.t.workItemRepositoryQuestion;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: asked.questionId })
+      .from(asked)
+      .where(and(eq(asked.itemId, itemId), eq(asked.questionId, questionId))),
+  );
+  return row !== undefined;
+}
+
 export function isWorkItemRepositoryQuestion(
   db: Database,
   itemId: string,
   questionId: string,
 ): boolean {
-  return (
-    orm(db)
-      .select({ id: workItemRepositoryQuestion.questionId })
-      .from(workItemRepositoryQuestion)
-      .where(
-        and(
-          eq(workItemRepositoryQuestion.itemId, itemId),
-          eq(workItemRepositoryQuestion.questionId, questionId),
-        ),
-      )
-      .get() !== undefined
-  );
+  return settled(sqliteDb(db).run((q) => isWorkItemRepositoryQuestionSteps(q, itemId, questionId)));
 }
