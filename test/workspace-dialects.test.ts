@@ -1,11 +1,24 @@
 import { afterEach, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import {
+  applyLinearUserChangeSteps,
   auditWorkspaceAccessSteps,
+  consumeWorkspaceBootstrapSteps,
+  createWorkspaceBootstrapSteps,
+  deleteWorkspaceSessionSteps,
+  getWorkspaceSteps,
+  lastPausedBySteps,
+  listWorkspaceAuditSteps,
+  putWorkspaceUserSteps,
+  readWorkspaceSessionSteps,
   saveWorkspaceIdentityLinkSteps,
+  saveWorkspaceSessionSteps,
   sessionRepositoriesAllowedSteps,
+  syncWorkspaceMemberSteps,
+  workspaceForOrganizationSteps,
   workspaceIdentityCandidatesSteps,
   workspaceIdentityLinksSteps,
+  workspaceLinearMemberSteps,
   workspaceMemberSteps,
   workspaceSessionCandidatesSteps,
   type Db,
@@ -18,10 +31,14 @@ afterEach(async () => {
   for (const handle of opened.splice(0)) await handle.close();
 });
 
-async function connect(open: () => Promise<DialectDb>): Promise<Db> {
+async function empty(open: () => Promise<DialectDb>): Promise<Db> {
   const handle = await open();
   opened.push(handle);
-  const db = handle.db;
+  return handle.db;
+}
+
+async function connect(open: () => Promise<DialectDb>): Promise<Db> {
+  const db = await empty(open);
   const people = [
     { id: "u1", name: "Ada", role: "admin", revokedAt: null },
     { id: "u2", name: "Bob", role: "member", revokedAt: null },
@@ -74,6 +91,30 @@ const link = (input: Partial<WorkspaceIdentityLink & { actorId: string }>) => ({
   checkedAt: 10,
   ...input,
 });
+
+function seedWorkspace(db: Db) {
+  return seed(
+    db,
+    (q) =>
+      q.orm
+        .insert(q.t.workspace)
+        .values({ id: "w", linearOrganizationId: "org", name: "Acme", createdAt: 0 }),
+    (q) =>
+      q.orm
+        .insert(q.t.workspaceUser)
+        .values({ id: "u", linearUserId: "lin-u", name: "Ada", email: "ada@example.com" }),
+  );
+}
+
+const storedSession = {
+  tokenHash: "t",
+  userId: "u",
+  workspaceId: "w",
+  csrfToken: "csrf",
+  authenticatedAt: 10,
+  lastSeenAt: 10,
+  expiresAt: 100,
+};
 
 forEachDialect((open) => {
   test("a member loads with their teams and audit rows are written", async () => {
@@ -240,5 +281,208 @@ forEachDialect((open) => {
     expect(await allowed(["s2", "s5"], ["acme/app", "Acme/Cat"])).toEqual(new Set(["Acme/Cat"]));
     expect(await allowed([], ["acme/app"])).toEqual(new Set());
     expect(await allowed(["s1"], [])).toEqual(new Set());
+  });
+
+  test("a bootstrap is claimed once and creates the workspace with its admin", async () => {
+    const db = await empty(open);
+    expect(await db.run((q) => getWorkspaceSteps(q, "w"))).toBeNull();
+    await db.run((q) =>
+      createWorkspaceBootstrapSteps(q, { tokenHash: "b", organizationId: "org", expiresAt: 100 }),
+    );
+    const user = { id: "u", linearUserId: "lin-u", name: "Ada", email: "a@example.com" };
+    expect(await db.run((q) => putWorkspaceUserSteps(q, user))).toBe("u");
+    expect(
+      await db.run((q) => putWorkspaceUserSteps(q, { ...user, id: "other", name: "Ada L" })),
+    ).toBe("u");
+    const claim = { id: "w", organizationId: "org", name: "Acme", tokenHash: "b", userId: "u" };
+    await expect(
+      db.transaction((q) => consumeWorkspaceBootstrapSteps(q, { ...claim, now: 100 })),
+    ).rejects.toThrow("Workspace bootstrap is invalid or expired.");
+    expect(
+      await db.transaction((q) => consumeWorkspaceBootstrapSteps(q, { ...claim, now: 50 })),
+    ).toEqual({ id: "w", organizationId: "org", name: "Acme" });
+    await expect(
+      db.transaction((q) => consumeWorkspaceBootstrapSteps(q, { ...claim, now: 60 })),
+    ).rejects.toThrow("Workspace bootstrap is invalid or expired.");
+    const record = { id: "w", organizationId: "org", name: "Acme" };
+    expect(await db.run((q) => getWorkspaceSteps(q, "w"))).toEqual(record);
+    expect(await db.run((q) => workspaceForOrganizationSteps(q, "org"))).toEqual(record);
+    expect(await db.run((q) => workspaceLinearMemberSteps(q, "w", "lin-u"))).toEqual({
+      workspaceId: "w",
+      userId: "u",
+      linearUserId: "lin-u",
+      name: "Ada L",
+      email: "a@example.com",
+      role: "admin",
+      source: "manual",
+      active: true,
+      revokedAt: null,
+      revokedBy: null,
+      checkedAt: 50,
+      teamIds: [],
+    });
+    expect(await db.run((q) => workspaceLinearMemberSteps(q, "w", "nobody"))).toBeNull();
+    const audit = await db.run((q) => listWorkspaceAuditSteps(q, "w", Number.MAX_SAFE_INTEGER));
+    expect(audit.nextBefore).toBeNull();
+    expect(audit.entries).toEqual([
+      {
+        id: expect.any(Number),
+        actorId: "u",
+        actorName: "Ada L",
+        action: "workspace.bootstrapped",
+        subject: "w",
+        createdAt: 50,
+      },
+    ]);
+  });
+
+  test("a member sync keeps manual roles, skips stale checks and revokes sessions", async () => {
+    const db = await empty(open);
+    await seedWorkspace(db);
+    const sync = { workspaceId: "w", userId: "u", role: "member" as const, active: true };
+    expect(
+      await db.transaction((q) =>
+        syncWorkspaceMemberSteps(q, { ...sync, teamIds: ["b", "a", "a"], now: 10 }),
+      ),
+    ).toBe(true);
+    expect(await db.run((q) => workspaceMemberSteps(q, "w", "u"))).toMatchObject({
+      role: "member",
+      source: "linear",
+      active: true,
+      checkedAt: 10,
+      teamIds: ["a", "b"],
+    });
+    expect(
+      await db.transaction((q) => syncWorkspaceMemberSteps(q, { ...sync, teamIds: [], now: 5 })),
+    ).toBe(false);
+    await db.run((q) =>
+      q.exec(
+        q.orm
+          .update(q.t.workspaceMember)
+          .set({ source: "manual", role: "admin" })
+          .where(eq(q.t.workspaceMember.userId, "u")),
+      ),
+    );
+    await db.transaction((q) => syncWorkspaceMemberSteps(q, { ...sync, teamIds: ["a"], now: 11 }));
+    const manual = await db.run((q) =>
+      q.one(
+        q.orm
+          .select({ role: q.t.workspaceMember.role, manualRole: q.t.workspaceMember.manualRole })
+          .from(q.t.workspaceMember),
+      ),
+    );
+    expect(manual).toEqual({ role: "admin", manualRole: "admin" });
+    await db.run((q) => saveWorkspaceSessionSteps(q, storedSession));
+    expect(
+      await db.transaction((q) =>
+        syncWorkspaceMemberSteps(q, { ...sync, active: false, teamIds: ["a"], now: 20 }),
+      ),
+    ).toBe(true);
+    expect(await db.run((q) => workspaceMemberSteps(q, "w", "u"))).toMatchObject({
+      role: "admin",
+      active: false,
+      checkedAt: 20,
+      teamIds: [],
+    });
+    expect(await db.transaction((q) => readWorkspaceSessionSteps(q, "t", 15, 50))).toBeNull();
+    const audit = await db.run((q) => listWorkspaceAuditSteps(q, "w", Number.MAX_SAFE_INTEGER));
+    expect(audit.entries.map((entry) => [entry.action, entry.createdAt])).toEqual([
+      ["membership.revoked", 20],
+      ["membership.synced", 11],
+      ["membership.synced", 10],
+    ]);
+  });
+
+  test("a Linear user change rechecks the member or removes a guest", async () => {
+    const db = await empty(open);
+    await seedWorkspace(db);
+    const change = { organizationId: "org", userId: "lin-u", active: true, guest: false };
+    expect(
+      await db.transaction((q) =>
+        applyLinearUserChangeSteps(q, { ...change, organizationId: "nope", now: 1 }),
+      ),
+    ).toBe(false);
+    expect(await db.transaction((q) => applyLinearUserChangeSteps(q, { ...change, now: 1 }))).toBe(
+      false,
+    );
+    await db.transaction((q) =>
+      syncWorkspaceMemberSteps(q, {
+        workspaceId: "w",
+        userId: "u",
+        role: "member",
+        active: true,
+        teamIds: ["a"],
+        now: 30,
+      }),
+    );
+    expect(await db.transaction((q) => applyLinearUserChangeSteps(q, { ...change, now: 40 }))).toBe(
+      true,
+    );
+    expect(await db.run((q) => workspaceMemberSteps(q, "w", "u"))).toMatchObject({
+      active: true,
+      checkedAt: 0,
+      teamIds: ["a"],
+    });
+    await db.transaction((q) =>
+      syncWorkspaceMemberSteps(q, {
+        workspaceId: "w",
+        userId: "u",
+        role: "member",
+        active: true,
+        teamIds: ["a"],
+        now: 50,
+      }),
+    );
+    expect(
+      await db.transaction((q) =>
+        applyLinearUserChangeSteps(q, { ...change, guest: true, now: 45 }),
+      ),
+    ).toBe(true);
+    expect(await db.run((q) => workspaceMemberSteps(q, "w", "u"))).toMatchObject({
+      active: false,
+      checkedAt: 50,
+      teamIds: [],
+    });
+  });
+
+  test("a session is extended while live and removed once expired", async () => {
+    const db = await empty(open);
+    await seedWorkspace(db);
+    await db.run((q) => saveWorkspaceSessionSteps(q, storedSession));
+    expect(await db.transaction((q) => readWorkspaceSessionSteps(q, "t", 5, 50))).toBeNull();
+    expect(await db.transaction((q) => readWorkspaceSessionSteps(q, "t", 20, 50))).toEqual({
+      ...storedSession,
+      lastSeenAt: 20,
+      expiresAt: 70,
+    });
+    expect(await db.transaction((q) => readWorkspaceSessionSteps(q, "t", 70, 50))).toBeNull();
+    await db.run((q) => saveWorkspaceSessionSteps(q, storedSession));
+    expect(await db.transaction((q) => readWorkspaceSessionSteps(q, "t", 20, 50))).not.toBeNull();
+    await db.run((q) => deleteWorkspaceSessionSteps(q, "t"));
+    expect(await db.transaction((q) => readWorkspaceSessionSteps(q, "t", 20, 50))).toBeNull();
+  });
+
+  test("the access audit pages by id and names who paused an item", async () => {
+    const db = await empty(open);
+    await seedWorkspace(db);
+    expect(await db.run((q) => lastPausedBySteps(q, "item"))).toBeNull();
+    await db.run(function* (q) {
+      for (let now = 1; now <= 52; now += 1)
+        yield* auditWorkspaceAccessSteps(q, {
+          workspaceId: "w",
+          userId: now === 52 ? null : "u",
+          action: now % 2 === 0 ? "execution.pause" : "execution.resume",
+          subject: "item",
+          now,
+        });
+    });
+    const first = await db.run((q) => listWorkspaceAuditSteps(q, "w", Number.MAX_SAFE_INTEGER));
+    expect(first.entries).toHaveLength(50);
+    expect(first.entries[0]).toMatchObject({ actorId: null, actorName: null, createdAt: 52 });
+    expect(first.nextBefore).toBe(first.entries[49]!.id);
+    const second = await db.run((q) => listWorkspaceAuditSteps(q, "w", first.nextBefore!));
+    expect(second.entries.map((entry) => entry.createdAt)).toEqual([2, 1]);
+    expect(second.nextBefore).toBeNull();
+    expect(await db.run((q) => lastPausedBySteps(q, "item"))).toBe("Ada");
   });
 });
