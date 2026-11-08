@@ -72,16 +72,12 @@ Paws moves to Postgres: embedded PGlite on a single host, a Postgres server thro
 A converted function is a generator that `db.run()` drives:
 
 ```ts
-export function queueWaitSince(db: Db, itemId: string, version: number, now: number) {
+export function clearQueueWait(db: Db, itemId: string): Promise<void> {
   return db.run(function* (q) {
-    const { queueWait } = q.t;
+    const { itemWait } = q.t;
     yield* q.exec(
-      q.orm.insert(queueWait).values({ itemId, version, since: now }).onConflictDoNothing(),
+      q.orm.delete(itemWait).where(and(eq(itemWait.itemId, itemId), eq(itemWait.kind, "queue"))),
     );
-    const row = yield* q.one(
-      q.orm.select({ since: queueWait.since }).from(queueWait).where(eq(queueWait.itemId, itemId)),
-    );
-    return row!.since;
   });
 }
 ```

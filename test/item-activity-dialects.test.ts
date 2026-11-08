@@ -81,7 +81,11 @@ forEachDialect((open) => {
           leaseUntil: 1_000_000,
         }),
       (q) => q.orm.insert(q.t.usagePause).values(pause),
-      (q) => q.orm.insert(q.t.itemWait).values({ itemId: "a", version: 1, since: 7 }),
+      (q) =>
+        q.orm.insert(q.t.itemWait).values([
+          { itemId: "a", kind: "item", version: 1, since: 7 },
+          { itemId: "a", kind: "queue", version: 1, since: 3 },
+        ]),
       job(db, JOB_KIND.resume, { itemId: "a" }, { status: "running", lockedUntil: 200 }),
       job(db, JOB_KIND.start, { itemId: "other" }, { status: "running", lockedUntil: 200 }),
     );

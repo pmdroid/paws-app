@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, ne, sql } from "drizzle-orm";
 import type { Db, Q } from "./db";
 
 export function queueWaitSince(
@@ -8,15 +8,22 @@ export function queueWaitSince(
   now: number,
 ): Promise<number> {
   return db.run(function* (q) {
-    const { queueWait } = q.t;
+    const { itemWait } = q.t;
     yield* q.exec(
-      q.orm.insert(queueWait).values({ itemId, version, since: now }).onConflictDoNothing(),
+      q.orm
+        .insert(itemWait)
+        .values({ itemId, kind: "queue", version, since: now })
+        .onConflictDoUpdate({
+          target: [itemWait.itemId, itemWait.kind],
+          set: { version, since: now },
+          setWhere: ne(itemWait.version, sql`excluded.version`),
+        }),
     );
     const row = yield* q.one(
       q.orm
-        .select({ since: queueWait.since })
-        .from(queueWait)
-        .where(and(eq(queueWait.itemId, itemId), eq(queueWait.version, version))),
+        .select({ since: itemWait.since })
+        .from(itemWait)
+        .where(and(eq(itemWait.itemId, itemId), eq(itemWait.kind, "queue"))),
     );
     return row!.since;
   });
@@ -25,7 +32,10 @@ export function queueWaitSince(
 /** Forget when an item began waiting for a slot, so its start timeout counts from the next wait. */
 export function clearQueueWait(db: Db, itemId: string): Promise<void> {
   return db.run(function* (q) {
-    yield* q.exec(q.orm.delete(q.t.queueWait).where(eq(q.t.queueWait.itemId, itemId)));
+    const { itemWait } = q.t;
+    yield* q.exec(
+      q.orm.delete(itemWait).where(and(eq(itemWait.itemId, itemId), eq(itemWait.kind, "queue"))),
+    );
   });
 }
 

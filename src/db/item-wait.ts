@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { eq, ne, notInArray, sql } from "drizzle-orm";
+import { and, eq, ne, notInArray, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 
 export function* itemWaitSinceSteps(q: Q, itemId: string, version: number, now: number) {
@@ -7,15 +7,18 @@ export function* itemWaitSinceSteps(q: Q, itemId: string, version: number, now: 
   yield* q.exec(
     q.orm
       .insert(itemWait)
-      .values({ itemId, version, since: now })
+      .values({ itemId, kind: "item", version, since: now })
       .onConflictDoUpdate({
-        target: itemWait.itemId,
+        target: [itemWait.itemId, itemWait.kind],
         set: { version, since: now },
         setWhere: ne(itemWait.version, sql`excluded.version`),
       }),
   );
   const row = yield* q.one(
-    q.orm.select({ since: itemWait.since }).from(itemWait).where(eq(itemWait.itemId, itemId)),
+    q.orm
+      .select({ since: itemWait.since })
+      .from(itemWait)
+      .where(and(eq(itemWait.itemId, itemId), eq(itemWait.kind, "item"))),
   );
   return row!.since;
 }
@@ -26,10 +29,11 @@ export function itemWaitSince(db: Database, itemId: string, version: number, now
 
 export function* keepItemWaitsSteps(q: Q, itemIds: readonly string[]) {
   const { itemWait } = q.t;
+  const kind = eq(itemWait.kind, "item");
   yield* q.exec(
-    itemIds.length === 0
-      ? q.orm.delete(itemWait)
-      : q.orm.delete(itemWait).where(notInArray(itemWait.itemId, [...itemIds])),
+    q.orm
+      .delete(itemWait)
+      .where(itemIds.length === 0 ? kind : and(kind, notInArray(itemWait.itemId, [...itemIds]))),
   );
 }
 
