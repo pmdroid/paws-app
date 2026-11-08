@@ -4,15 +4,15 @@ import { accountStatus, loginChallenge, runningNotice, terminalMarkup } from "./
 const idle = { agent: "claude" as const, connected: false, session: null };
 
 test("the dialog reports the runner's own sign-in that the card shows", () => {
-  expect(accountStatus(idle, "signed_in")).toBe("Signed in on this runner");
-  expect(accountStatus(idle, "signed_out")).toBe("Not connected");
-  expect(accountStatus(idle, undefined)).toBe("Not connected");
-  expect(accountStatus({ ...idle, connected: true }, "signed_out")).toBe(
+  expect(accountStatus(idle, "signed_in", "agentbox", 0)).toBe("Signed in on this runner");
+  expect(accountStatus(idle, "signed_out", "agentbox", 0)).toBe("Not connected");
+  expect(accountStatus(idle, undefined, "agentbox", 0)).toBe("Not connected");
+  expect(accountStatus({ ...idle, connected: true }, "signed_out", "agentbox", 0)).toBe(
     "Connected to your account",
   );
 });
 
-test("a sign-in in progress wins over the runner's status", () => {
+test("a starting sign-in names the runner it waits for and the time since the click, over the runner's status", () => {
   expect(
     accountStatus(
       {
@@ -21,14 +21,19 @@ test("a sign-in in progress wins over the runner's status", () => {
           id: "login",
           agent: "claude",
           state: "starting",
-          expiresAt: 0,
+          startedAt: 1_000,
+          expiresAt: 601_000,
           terminal: "",
           authorization: null,
         },
       },
       "signed_in",
+      "agentbox",
+      96_000,
     ),
-  ).toBe("Starting sign-in…");
+  ).toBe(
+    "Waiting for agentbox to start the sign-in (it's finishing a check). 1m 35s since you asked.",
+  );
 });
 
 test("the dialog says before a sign-in that the agent's running tasks switch accounts", () => {

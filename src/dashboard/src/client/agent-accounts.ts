@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import { readCsrfToken } from "./csrf";
 import { renderMarkup } from "./theme";
-import { esc } from "./format";
+import { durationLabel, esc } from "./format";
 import { ansiToHtml } from "./ansi";
 
 type Agent = "claude" | "codex" | "grok" | "opencode";
@@ -9,6 +9,8 @@ type Login = {
   id: string;
   agent: Agent;
   state: "starting" | "waiting" | "connected" | "failed" | "cancelled" | "expired";
+  /** When the person asked for the sign-in. */
+  startedAt: number;
   expiresAt: number;
   terminal: string;
   authorization: { url: string; message: string } | null;
@@ -32,11 +34,16 @@ function pending(login: Login | null): boolean {
   return login?.state === "starting" || login?.state === "waiting";
 }
 
-export function accountStatus(account: Account, runnerStatus: string | undefined): string {
+export function accountStatus(
+  account: Account,
+  runnerStatus: string | undefined,
+  runnerName: string,
+  now: number,
+): string {
   const login = account.session;
   if (pending(login))
     return login?.state === "starting"
-      ? "Starting sign-in…"
+      ? `Waiting for ${runnerName} to start the sign-in (it's finishing a check). ${durationLabel(Math.floor((now - login.startedAt) / 1000) * 1000)} since you asked.`
       : `Waiting for your sign-in. Expires at ${new Date(login!.expiresAt).toLocaleTimeString()}.`;
   if (account.connected) return "Connected to your account";
   if (runnerStatus === "signed_in") return "Signed in on this runner";
@@ -120,6 +127,8 @@ export function openAgentAccounts(
     row.querySelector<HTMLElement>("[data-agent-status]")!.textContent = accountStatus(
       account,
       runnerStatus,
+      runner.name,
+      Date.now(),
     );
     const running = row.querySelector<HTMLElement>("[data-agent-running]")!;
     running.textContent = active ? "" : runningNotice(name, account.running);

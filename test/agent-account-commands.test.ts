@@ -160,10 +160,13 @@ test("an old runner keeps running the default sign-in and never receives a named
   ).toBe(200);
   const accepted = check(named);
   expect(commandAccount(db, accepted)).toMatchObject({ bindingId: binding.id, named: true });
-  expect(queued()).toEqual([
-    { id: legacy, account: undefined },
-    { id: accepted, account: named },
-  ]);
+  // Routine checks go to the runner one at a time: the named one follows the legacy one's result.
+  expect(queued()).toEqual([{ id: legacy, account: undefined }]);
+  db.run(
+    "INSERT INTO runner_health_result(command_id,runner_id,result_json,received_at) VALUES(?,?,'{}',?)",
+    [legacy, runnerId, now],
+  );
+  expect(queued()).toEqual([{ id: accepted, account: named }]);
   expect(
     await heartbeat({
       runnerVersion: "0.1.61",

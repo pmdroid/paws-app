@@ -43,6 +43,8 @@ type Row = {
 const columns =
   "id,runner_id AS runnerId,workspace_id AS workspaceId,user_id AS userId,agent,state,expires_at AS expiresAt,terminal,authorization,input_id AS inputId,binding_id AS bindingId";
 const bindingParameter = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/** How long a sign-in may wait for the person. It starts this long before it expires. */
+const SIGN_IN_MS = 600_000;
 const pending = (row: Row) => row.state === "starting" || row.state === "waiting";
 
 class SignInRefused extends Error {
@@ -103,6 +105,7 @@ export function createRunnerLogin(options: {
       agent: row.agent,
       bindingId: row.bindingId,
       state: row.state,
+      startedAt: row.expiresAt - SIGN_IN_MS,
       expiresAt: row.expiresAt,
       terminal: row.terminal,
       authorization: row.authorization
@@ -253,7 +256,7 @@ export function createRunnerLogin(options: {
             429,
           );
         const id = randomUUID();
-        const expiresAt = at + 600_000;
+        const expiresAt = at + SIGN_IN_MS;
         work.enqueue({
           id,
           type: "login",

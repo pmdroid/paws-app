@@ -323,3 +323,53 @@ export function* runnerWorkActiveSteps(q: Q, runId: string) {
 export function runnerWorkActive(db: Database, runId: string): boolean | null {
   return settled(sqliteDb(db).run((q) => runnerWorkActiveSteps(q, runId)));
 }
+
+/**
+ * The one probe or sign-in check the runner may be sent now, or null while another health
+ * command runs or a sign-in someone started waits. The runner keeps delivered commands in
+ * arrival order and runs one at a time, so routine checks go out one by one, after sign-ins.
+ */
+export function* nextRoutineHealthCommandSteps(q: Q, runnerId: string, now: number) {
+  const { runnerCommand, runnerHealthResult, runnerLogin } = q.t;
+  const signIn = yield* q.one(
+    q.orm
+      .select({ id: runnerCommand.id })
+      .from(runnerCommand)
+      .innerJoin(runnerLogin, eq(runnerLogin.id, runnerCommand.id))
+      .where(
+        and(
+          eq(runnerCommand.runnerId, runnerId),
+          eq(runnerCommand.kind, "login"),
+          gt(runnerCommand.expiresAt, now),
+          inArray(runnerLogin.state, ["starting", "waiting"]),
+        ),
+      )
+      .limit(1),
+  );
+  if (signIn) return null;
+  const routine = yield* q.all(
+    q.orm
+      .select({ ordinal: runnerCommand.ordinal, acknowledgedAt: runnerCommand.acknowledgedAt })
+      .from(runnerCommand)
+      .leftJoin(runnerHealthResult, eq(runnerHealthResult.commandId, runnerCommand.id))
+      .where(
+        and(
+          eq(runnerCommand.runnerId, runnerId),
+          inArray(runnerCommand.kind, ["probe", "login_check"]),
+          gt(runnerCommand.expiresAt, now),
+          isNull(runnerHealthResult.commandId),
+        ),
+      )
+      .orderBy(runnerCommand.ordinal),
+  );
+  if (routine.some((row) => row.acknowledgedAt !== null)) return null;
+  return routine[0]?.ordinal ?? null;
+}
+
+export function nextRoutineHealthCommand(
+  db: Database,
+  runnerId: string,
+  now: number,
+): number | null {
+  return settled(sqliteDb(db).run((q) => nextRoutineHealthCommandSteps(q, runnerId, now)));
+}
