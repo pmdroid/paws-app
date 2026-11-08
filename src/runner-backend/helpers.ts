@@ -65,7 +65,6 @@ export function createRemoteSessionAgentRunner(options: {
       `runner ${runnerId}: holding back helper requests while its helper lane is taken`,
     );
   };
-  // Attempts in this process waiting on each helper. The last one out ends the helper.
   const waiters = new Map<string, number>();
   const earliestCooldown = (runnerIds: readonly string[], agent: string) =>
     runnerIds.length === 0
@@ -119,7 +118,6 @@ export function createRemoteSessionAgentRunner(options: {
           causes.clear();
           slotBusy = false;
           held.clear();
-          // One request per item: a retry picks up the one still out instead of adding another.
           const open =
             purpose === "classify" || purpose === "select_repository"
               ? options.helpers.open(sessionId)
@@ -257,7 +255,6 @@ export function createRemoteSessionAgentRunner(options: {
             try {
               result = options.helpers.result(command.id);
             } catch (error) {
-              // The helper can expire between the deadline check and this read.
               if (now() < deadline) throw error;
               break;
             }
@@ -342,7 +339,6 @@ export function createRemoteSessionAgentRunner(options: {
             }
             await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
           }
-          // A helper the runner never picked up waited for the lane; it says nothing about the item.
           if (purpose !== "finding_groups" && !options.helpers.acknowledged(command.id))
             throw new RunnerSlotsBusyError(HELPER_LANE_BUSY);
           throw new Error("Remote session helper timed out");

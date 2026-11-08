@@ -864,7 +864,6 @@ test("twelve resuming items keep one unacknowledged helper per runner and none f
   expect(openHelpers()).toHaveLength(2);
   expect(unacknowledgedPerRunner()).toBe(1);
 
-  // The runners' lanes stay taken, so these requests expire before either runner gets to them.
   f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
   let peak = 0;
   while (!progress.done) {

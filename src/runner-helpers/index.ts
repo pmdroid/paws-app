@@ -40,10 +40,6 @@ import { runnerRequestUnavailable } from "../runner-work";
 
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
 class HelperFencedError extends Error {}
-/**
- * The runner's helper slot or its task slots are taken: the helper can start once one frees.
- * `heldRunnerId` names the runner when its helper lane is what the request waits for.
- */
 export class RunnerHelperBusyError extends Error {
   override readonly name = "RunnerHelperBusyError";
   constructor(readonly heldRunnerId?: string) {
@@ -191,7 +187,6 @@ export function createRunnerHelpers(options: {
       return result;
     },
     current,
-    /** The session's outstanding classify or repository helper, which a retry reuses. */
     open(sessionId: string): HelperCommand | null {
       const session = getLinearSession(db, sessionId);
       const row = session && openSessionHelper(db, sessionId, session.generation, now());
@@ -203,7 +198,6 @@ export function createRunnerHelpers(options: {
         throw error;
       }
     },
-    /** False while the runner has not picked the helper up, so its lane never reached it. */
     acknowledged: (id: string) => runnerHelperAcknowledged(db, id),
     acknowledge(runnerId: string, id: string) {
       immediate(db, () => {

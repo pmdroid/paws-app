@@ -613,7 +613,6 @@ export function runnerHelperAvailability(
   );
 }
 
-/** A sign-in someone started is waiting for this runner's health lane or holding it. */
 export function* runnerSignInWaitingSteps(q: Q, runnerId: string, now: number) {
   const { runnerCommand, runnerLogin } = q.t;
   const signIn = yield* q.one(
@@ -634,13 +633,12 @@ export function* runnerSignInWaitingSteps(q: Q, runnerId: string, now: number) {
   return signIn !== undefined;
 }
 
-/** The session's unfinished classify or repository helper, if one is out. */
 export function* openSessionHelperSteps(
   q: Q,
   sessionId: string,
   generation: number,
   now: number,
-): { id: string } | null {
+) {
   const { runnerHelper } = q.t;
   const row = yield* q.one(
     q.orm
