@@ -314,21 +314,13 @@ export function* getReviewFindingSteps(q: Q, id: number): Steps<ReviewFindingRec
   return row === undefined ? null : mapRow(row);
 }
 
-export function getReviewFinding(db: Database, id: number): ReviewFindingRecord | null {
-  return settled(sqliteDb(db).run((q) => getReviewFindingSteps(q, id)));
-}
-
+/** The finding with `reviewFindingKey` `key`, as filing an issue from it finds it. */
 export function* getReviewFindingByKeySteps(q: Q, key: string): Steps<ReviewFindingRecord | null> {
   const { reviewFinding } = q.t;
   const row = yield* q.one(
     q.orm.select().from(reviewFinding).where(eq(reviewFinding.dedupeKey, key)),
   );
   return row === undefined ? null : mapRow(row);
-}
-
-/** The finding with `reviewFindingKey` `key`, as filing an issue from it finds it. */
-export function getReviewFindingByKey(db: Database, key: string): ReviewFindingRecord | null {
-  return settled(sqliteDb(db).run((q) => getReviewFindingByKeySteps(q, key)));
 }
 
 /** The items that reported each finding in `ids`, latest first. */

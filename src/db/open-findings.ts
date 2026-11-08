@@ -51,10 +51,6 @@ export function* getOpenFindingsLineSteps(q: Q, itemId: string): Steps<string | 
   return row?.line ? row.line : null;
 }
 
-export function getOpenFindingsLine(db: Database, itemId: string): string | null {
-  return settled(sqliteDb(db).run((q) => getOpenFindingsLineSteps(q, itemId)));
-}
-
 /** A final response with the open-findings line of the item's last published head after it. */
 export function* withOpenFindingsSteps(q: Q, itemId: string, body: string): Steps<string> {
   const line = yield* getOpenFindingsLineSteps(q, itemId);
