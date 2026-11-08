@@ -58,7 +58,7 @@ One rule per kind maps SQLite to Postgres:
 | `json_extract(x, '$.a.b')` in an index             | `(x->'a'->>'b')`                                                                                                                                                            |
 | `IS NOT 'v'`, `NOT GLOB '*[^0-9A-Za-z]*'`          | `IS DISTINCT FROM 'v'`, `!~ '[^0-9A-Za-z]'`                                                                                                                                 |
 
-Triggers, `STRICT` and the `decision_memory_search` FTS table have no Postgres counterpart yet. Postgres cuts identifiers at 63 bytes, so a long generated constraint name is stored shortened.
+Triggers and `STRICT` have no Postgres counterpart yet. The `decision_memory_search` FTS table has none either: Postgres searches decisions through the generated `tsvector` column `decision_memory.search`, the one column SQLite doesn't have. Postgres cuts identifiers at 63 bytes, so a long generated constraint name is stored shortened.
 
 `pgliteDb()` in `test/pglite.ts` returns a Drizzle database on PGlite (in-process Postgres) with the Postgres migrations applied. `test/db-dialect-drift.test.ts` fails, naming the table and column, when the two schemas differ in tables, column names or order, nullability or primary keys; `test/db-pg-migrations.test.ts` applies `0000_baseline` to PGlite and fails when the Postgres schema has a change no migration carries.
 

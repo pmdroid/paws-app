@@ -5,13 +5,19 @@ import {
   correctDecisionMemory,
   decisionRow,
   decisionScope as scope,
-  getLinearSessionAccess,
+  decisionScopeSteps,
+  getLinearSessionAccessSteps,
   insertDecisionMemory,
-  itemPathHints,
+  itemPathHintsSteps,
   listDecisionRows,
   openDecisionSuggestion,
-  recordDecisionSuggestion,
+  recordDecisionSuggestionSteps,
+  replaceDecisionSearch,
   retireDecisionMemory,
+  searchDecisionRows,
+  searchDecisionRowsSteps,
+  settled,
+  sqliteDb,
   unsavedDecisionAnswers,
   workspaceLinearMember,
   workspaceMember,
@@ -19,6 +25,7 @@ import {
   workspaceSessionIds,
   type DecisionRow as Row,
   type DecisionScope as Scope,
+  type Q,
 } from "../db";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
@@ -39,12 +46,6 @@ export type Decision = {
   accepted: number;
 };
 type Actor = { workspaceId: string; userId: string; clientId: string };
-const SELECT = `SELECT d.id,d.workspace_id AS workspaceId,d.question_id AS questionId,d.statement,
- d.scope_globs AS scopeGlobs,d.tags,d.revision,d.retired_at AS retiredAt,q.answered_by AS author,
- (SELECT count(*) FROM decision_suggestion s WHERE s.decision_id=d.id) AS shown,
- (SELECT count(*) FROM decision_suggestion s WHERE s.decision_id=d.id AND s.accepted_at IS NOT NULL) AS accepted
- FROM decision_memory d JOIN question q ON q.id=d.question_id`;
-
 function accessible(db: Database, actor: Actor, source: Scope | null): source is Scope {
   return (
     source !== null &&
@@ -79,11 +80,7 @@ export function listDecisions(db: Database, actor: Actor, search = ""): Decision
   const query = terms(search);
   const rows = search.trim()
     ? query
-      ? db
-          .query<Row, [string, string]>(`${SELECT}
-    JOIN decision_memory_search f ON f.decision_id=d.id
-    WHERE d.workspace_id=? AND decision_memory_search MATCH ? ORDER BY bm25(decision_memory_search) LIMIT 200`)
-          .all(actor.workspaceId, query)
+      ? searchDecisionRows(db, { workspaceId: actor.workspaceId, query, limit: 200 })
       : []
     : listDecisionRows(db, actor.workspaceId);
   return rows.flatMap((row) => {
@@ -175,12 +172,7 @@ export function changeDecision(
         const change = { ...value, id, userId: actor.userId, now };
         if (previous) correctDecisionMemory(db, change);
         else insertDecisionMemory(db, { ...change, workspaceId: actor.workspaceId, questionId });
-        db.run("DELETE FROM decision_memory_search WHERE decision_id=?", [id]);
-        db.run("INSERT INTO decision_memory_search(decision_id,statement,tags) VALUES(?,?,?)", [
-          id,
-          value.statement,
-          value.tags,
-        ]);
+        replaceDecisionSearch(db, { id, statement: value.statement, tags: value.tags });
       }
       auditWorkspaceAccess(db, {
         workspaceId: actor.workspaceId,
@@ -198,51 +190,58 @@ export function changeDecision(
     .immediate();
 }
 export function suggestDecisions(db: Database, questionId: string, text: string) {
-  const target = scope(db, questionId);
+  return settled(sqliteDb(db).run((q) => suggestDecisionsSteps(q, questionId, text)));
+}
+export function* suggestDecisionsSteps(q: Q, questionId: string, text: string) {
+  const target = yield* decisionScopeSteps(q, questionId);
   const query = terms(text);
-  if (!target || !query || getLinearSessionAccess(db, target.sessionId) !== "allowed") return [];
-  const context = itemPathHints(db, target.itemId);
+  if (!target || !query || (yield* getLinearSessionAccessSteps(q, target.sessionId)) !== "allowed")
+    return [];
+  const context = yield* itemPathHintsSteps(q, target.itemId);
   const paths: string[] = context?.paths
     ? JSON.parse(context.paths)
     : hintedPaths(context?.brief ?? null);
-  const candidates = db
-    .query<Row, [string, string]>(`${SELECT} JOIN decision_memory_search f ON f.decision_id=d.id
-    WHERE d.workspace_id=? AND d.retired_at IS NULL AND decision_memory_search MATCH ? ORDER BY bm25(decision_memory_search) LIMIT 30`)
-    .all(target.workspaceId, query);
-  return candidates
-    .flatMap((row) => {
-      const source = scope(db, row.questionId);
-      if (
-        !source ||
-        source.teamId !== target.teamId ||
-        source.clientId !== target.clientId ||
-        source.repository !== target.repository ||
-        getLinearSessionAccess(db, source.sessionId) !== "allowed"
+  const candidates = yield* searchDecisionRowsSteps(q, {
+    workspaceId: target.workspaceId,
+    query,
+    limit: 30,
+    activeOnly: true,
+  });
+  const decisions: Decision[] = [];
+  for (const row of candidates) {
+    if (decisions.length === 3) break;
+    const source = yield* decisionScopeSteps(q, row.questionId);
+    if (
+      !source ||
+      source.teamId !== target.teamId ||
+      source.clientId !== target.clientId ||
+      source.repository !== target.repository ||
+      (yield* getLinearSessionAccessSteps(q, source.sessionId)) !== "allowed"
+    )
+      continue;
+    const decision = mapped(row, source);
+    if (
+      decision.scopeGlobs.includes("**") ||
+      decision.scopeGlobs.includes("**/*") ||
+      paths.some(
+        (path) =>
+          path !== "*" && decision.scopeGlobs.some((glob) => new Bun.Glob(glob).match(path)),
       )
-        return [];
-      const decision = mapped(row, source);
-      if (
-        !decision.scopeGlobs.includes("**") &&
-        !decision.scopeGlobs.includes("**/*") &&
-        !paths.some(
-          (path) =>
-            path !== "*" && decision.scopeGlobs.some((glob) => new Bun.Glob(glob).match(path)),
-        )
-      )
-        return [];
-      return [decision];
-    })
-    .slice(0, 3)
-    .map((decision) => {
-      const suggestionId = recordDecisionSuggestion(db, {
-        id: randomUUID(),
-        questionId,
-        decisionId: decision.id,
-        revision: decision.revision,
-        statement: decision.statement,
-      });
-      return { ...decision, value: `/paws decision ${suggestionId}` };
+    )
+      decisions.push(decision);
+  }
+  const suggestions = [];
+  for (const decision of decisions) {
+    const suggestionId = yield* recordDecisionSuggestionSteps(q, {
+      id: randomUUID(),
+      questionId,
+      decisionId: decision.id,
+      revision: decision.revision,
+      statement: decision.statement,
     });
+    suggestions.push({ ...decision, value: `/paws decision ${suggestionId}` });
+  }
+  return suggestions;
 }
 export function confirmDecision(
   db: Database,
