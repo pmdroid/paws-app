@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, isNull, ne, notExists, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lte, ne, notExists, notInArray, sql } from "drizzle-orm";
 import { delegationIssueIdSql, parentTaskKeySql } from "../core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { hasTableSteps } from "./linear-session-url";
@@ -220,4 +220,97 @@ export function latestRestartEvent(
   itemId: string,
 ): { reason: string; version: number } | null {
   return run(db, (q) => latestRestartEventSteps(q, itemId));
+}
+
+/** The parent task key of the delegation's first item. */
+export function* delegationParentTaskKeySteps(q: Q, delegationId: string) {
+  const { workItem } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ taskKey: sql<string | null>`${sql.raw(parentTaskKeySql("work_item", q.dialect))}` })
+      .from(workItem)
+      .where(eq(workItem.delegationId, delegationId))
+      .orderBy(asc(workItem.createdAt), asc(workItem.position), asc(workItem.id))
+      .limit(1),
+  );
+  return row?.taskKey ?? null;
+}
+
+export function delegationParentTaskKey(db: Database, delegationId: string): string | null {
+  return run(db, (q) => delegationParentTaskKeySteps(q, delegationId));
+}
+
+/** Whether an item other than `itemId` that has not ended is on this branch. */
+export function* branchHeldByOtherItemSteps(q: Q, branchName: string, itemId: string) {
+  const { workItem } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(workItem)
+      .where(
+        and(
+          eq(workItem.branchName, branchName),
+          ne(workItem.id, itemId),
+          notInArray(workItem.state, ["completed", "merged", "cancelled"]),
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+export function branchHeldByOtherItem(db: Database, branchName: string, itemId: string): boolean {
+  return run(db, (q) => branchHeldByOtherItemSteps(q, branchName, itemId));
+}
+
+/** Every item delegated from this Linear issue, newest first. */
+export function* itemsForLinearIssueSteps(q: Q, issueId: string) {
+  const { workItem } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ id: workItem.id, state: workItem.state, createdAt: workItem.createdAt })
+      .from(workItem)
+      .where(eq(workItem.linearIssueId, issueId))
+      .orderBy(desc(workItem.createdAt), asc(workItem.id)),
+  );
+}
+
+export function itemsForLinearIssue(
+  db: Database,
+  issueId: string,
+): { id: string; state: string; createdAt: number }[] {
+  return run(db, (q) => itemsForLinearIssueSteps(q, issueId));
+}
+
+/** The issue's items created by `createdBy`, oldest first, with each one's Linear organization. */
+export function* issueItemsCreatedBySteps(q: Q, issueId: string, createdBy: number) {
+  const { linearSession, workItem } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        id: workItem.id,
+        identifier: workItem.linearIdentifier,
+        state: workItem.state,
+        sessionKey: workItem.sessionKey,
+        organizationId: linearSession.organizationId,
+      })
+      .from(workItem)
+      .leftJoin(linearSession, eq(linearSession.sessionId, workItem.sessionKey))
+      .where(and(eq(workItem.linearIssueId, issueId), lte(workItem.createdAt, createdBy)))
+      .orderBy(asc(workItem.createdAt), asc(workItem.id)),
+  );
+}
+
+export function issueItemsCreatedBy(
+  db: Database,
+  issueId: string,
+  createdBy: number,
+): {
+  id: string;
+  identifier: string;
+  state: string;
+  sessionKey: string | null;
+  organizationId: string | null;
+}[] {
+  return run(db, (q) => issueItemsCreatedBySteps(q, issueId, createdBy));
 }

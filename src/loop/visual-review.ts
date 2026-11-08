@@ -7,6 +7,7 @@ import type { EvidenceApproval, ResolvedEvidence } from "../closeout";
 import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 import { JOB_KIND } from "../core";
 import {
+  setQuestionHandoffVersion,
   type LinkAsk,
   type WorkItemRecord,
   applyWorkItemEvent,
@@ -467,10 +468,7 @@ export function decideVisualReview(
     now,
   });
   if (jobId !== null)
-    db.run("UPDATE question SET handoff_version = ? WHERE id = ?", [
-      getWorkItem(db, item.id)!.version,
-      review.questionId,
-    ]);
+    setQuestionHandoffVersion(db, review.questionId, getWorkItem(db, item.id)!.version);
   return true;
 }
 

@@ -1,1 +1,0 @@
-src/loop/visual-review.ts | db.run("UPDATE question SET handoff_version = ? WHERE id = ?", [ | not yet converted to Drizzle

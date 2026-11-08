@@ -1,4 +1,0 @@
-src/loop/checkpoint-ref.ts | const owned = input.db .query( | not yet converted to Drizzle
-src/loop/checkpoint-ref.ts | const executions = input.db .query<{ runId: string; open: number }, [string]>( | not yet converted to Drizzle
-src/loop/checkpoint-ref.ts | const ended = input.db .query<{ itemId: string }, []>( | not yet converted to Drizzle
-src/loop/checkpoint-ref.ts | input.db.run("DELETE FROM checkpoint_ref_cleanup WHERE item_id=?", [itemId]); | not yet converted to Drizzle

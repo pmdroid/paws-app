@@ -1,5 +1,17 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, count, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { settled, sqliteDb, type Q } from "./db";
 import { emitJobReady, enqueueJobOnceSteps } from "./jobs";
@@ -335,4 +347,36 @@ export function* pullReviewCheckWaitSteps(q: Q, itemId: string) {
 
 export function pullReviewCheckWait(db: Database, itemId: string): ReviewCheckWait | null {
   return settled(sqliteDb(db).run((q) => pullReviewCheckWaitSteps(q, itemId)));
+}
+
+/** The newest item still in flight with this pull request on this repository. */
+export function* openItemIdForPullSteps(q: Q, owner: string, repo: string, pullNumber: number) {
+  const { itemPullRequest, workItem, workItemRepository } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: workItem.id })
+      .from(workItem)
+      .innerJoin(workItemRepository, eq(workItemRepository.itemId, workItem.id))
+      .innerJoin(itemPullRequest, eq(itemPullRequest.itemId, workItem.id))
+      .where(
+        and(
+          sql`lower(${workItemRepository.owner}) = lower(${owner})`,
+          sql`lower(${workItemRepository.repo}) = lower(${repo})`,
+          eq(itemPullRequest.pullNumber, pullNumber),
+          notInArray(workItem.state, ["cancelled", "merged", "completed", "failed", "manual"]),
+        ),
+      )
+      .orderBy(desc(workItem.createdAt))
+      .limit(1),
+  );
+  return row?.id ?? null;
+}
+
+export function openItemIdForPull(
+  db: Database,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+): string | null {
+  return settled(sqliteDb(db).run((q) => openItemIdForPullSteps(q, owner, repo, pullNumber)));
 }

@@ -1,1 +1,0 @@
-src/loop/pull-request-text.ts | db .query<{ summary: string | null }, [string, string]>( | not yet converted to Drizzle

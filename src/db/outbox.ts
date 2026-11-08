@@ -1,6 +1,6 @@
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
-import { and, asc, desc, eq, gt, ilike, inArray, like, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ilike, inArray, like, lt, ne, or, sql } from "drizzle-orm";
 import {
   DEFAULT_BACKOFF_BASE_MS,
   DEFAULT_BACKOFF_CAP_MS,
@@ -1211,6 +1211,61 @@ export function* linearOutboxKeyedSteps(q: Q, prefix: string) {
 
 export function linearOutboxKeyed(db: Database, prefix: string): boolean {
   return settled(sqliteDb(db).run((q) => linearOutboxKeyedSteps(q, prefix)));
+}
+
+/** The current delivery generation of a Linear session, 0 before its first fence. */
+export function* linearSessionGenerationSteps(q: Q, sessionId: string) {
+  return (yield* getFenceSteps(q, "linear", sessionId)).generation;
+}
+
+export function linearSessionGeneration(db: Database, sessionId: string): number {
+  return settled(sqliteDb(db).run((q) => linearSessionGenerationSteps(q, sessionId)));
+}
+
+/**
+ * Whether this generation has its final response: a pull request ready, merged or closed message.
+ * With `rowId`, only a final response queued before that row or already sent counts.
+ */
+export function* sessionHasFinalResponseSteps(
+  q: Q,
+  sessionId: string,
+  generation: number,
+  rowId?: number,
+) {
+  const { outbox } = q.t;
+  const prefixed = likeOf(q);
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          eq(outbox.orderingKey, sessionId),
+          eq(outbox.deliveryGeneration, generation),
+          or(
+            prefixed(outbox.idempotencyKey, "pull-request-ready:%"),
+            prefixed(outbox.idempotencyKey, "merged:%"),
+            prefixed(outbox.idempotencyKey, "closed:%"),
+          ),
+          ne(outbox.status, "dropped"),
+          rowId === undefined ? undefined : or(lt(outbox.id, rowId), eq(outbox.status, "sent")),
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+export function sessionHasFinalResponse(
+  db: Database,
+  sessionId: string,
+  generation: number,
+  rowId?: number,
+): boolean {
+  return settled(
+    sqliteDb(db).run((q) => sessionHasFinalResponseSteps(q, sessionId, generation, rowId)),
+  );
 }
 
 export function* outboxKeyExistsSteps(q: Q, idempotencyKey: string) {
