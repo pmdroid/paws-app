@@ -578,16 +578,21 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       const verdicts = verdictsFor(itemId);
       if (!verdicts || verdicts.refusedEverywhere) return undefined;
       const open = (id: string) => slots!.open.get(id) ?? 0;
-      const free = verdicts.runners
-        .filter((runner) => runner.rejection === null && open(runner.id) > 0)
-        .sort((a, b) => open(b.id) - open(a.id));
+      const free = verdicts.runners.filter(
+        (runner) => runner.rejection === null && open(runner.id) > 0,
+      );
       return free[0]?.id ?? null;
     };
     const takeSlot = (itemId: string): boolean => {
       const runnerId = openRunner(itemId);
       if (runnerId === undefined) return true;
       if (runnerId === null) return false;
-      slots!.open.set(runnerId, slots!.open.get(runnerId)! - 1);
+      // Placement owns ranking and may choose any eligible runner. Until it assigns the
+      // item, account for it on every possible runner; the next pass uses its actual slot.
+      // Choosing one here would let a later item consume the slot placement actually takes.
+      for (const runner of verdictsFor(itemId)!.runners)
+        if (runner.rejection === null)
+          slots!.open.set(runner.id, (slots!.open.get(runner.id) ?? 0) - 1);
       return true;
     };
     const pins = slots

@@ -38,6 +38,8 @@ import {
   recordRunnerAccountCapability,
   recordRunAgentSetup,
   recordRunnerCapacity,
+  runnerStanding,
+  wakeRunnerSlotWaits,
   recordRunnerAgents,
   recordRunnerRepositories,
   recordRunnerRuntimes,
@@ -632,6 +634,7 @@ export function createRunnerWork(options: {
             ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt }
             : undefined;
         const at = now();
+        const reconnected = (runnerStanding(db, runnerId)?.lastSeenAt ?? 0) <= at - 60_000;
         const concurrency = recordRunnerCapacity(
           db,
           runnerId,
@@ -649,6 +652,7 @@ export function createRunnerWork(options: {
         if (agents) recordRunnerAgents(db, runnerId, agents, at);
         if (repositories !== undefined) recordRunnerRepositories(db, runnerId, repositories, at);
         recordRunnerAccountCapability(db, runnerId, accounts, at);
+        if (reconnected) wakeRunnerSlotWaits(db, runnerId, at);
         const targets: RunnerAgentTarget[] | undefined =
           agents &&
           runnerAgentTargets(db, runnerId).flatMap((target) => {

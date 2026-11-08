@@ -4,17 +4,10 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../src/core";
 import {
   applyWorkItemEvent,
-  bindLinearSessionTask,
-  bindWorkItemRepository,
-  consumeWorkspaceBootstrap,
   enqueueJob,
   getJob,
-  getWorkItem,
-  insertQueuedItem,
   insertRun,
   listItemHolds,
-  putWorkspaceUser,
-  recordLinearInstallation,
   recordRunnerCapacity,
   recordRunnerRepositories,
   runnerSlotFree,
@@ -29,72 +22,9 @@ import {
   itemRunnerVerdicts,
 } from "../src/runner-placement";
 import { createRunnerWork } from "../src/runner-work";
-import { dispatch } from "../src/scheduler";
-import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
-import { workspaceAdmission } from "./fake-workspace";
 import { tempDb } from "./helpers";
 
-const REPOSITORY = "pmdroid/paws-app";
-const NOW = 1_800_000_000_000;
-
-function workspaceWithRunners(db: Database) {
-  const userId = putWorkspaceUser(db, {
-    id: workspaceId(),
-    linearUserId: "owner",
-    name: "Owner",
-    email: "owner@example.invalid",
-  });
-  const workspace = consumeWorkspaceBootstrap(db, {
-    id: workspaceId(),
-    organizationId: "org",
-    name: "Fixture",
-    userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", NOW)),
-    now: NOW,
-  });
-  db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, REPOSITORY, "team"]);
-  const pair = (name: string, slots: number, repositories: string[] | null) => {
-    const id = workspaceId();
-    db.run(
-      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
-      [id, workspace.id, userId, name, NOW, NOW],
-    );
-    db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [id]);
-    db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [id]);
-    recordRunnerCapacity(db, id, slots, undefined, undefined, NOW);
-    recordRunnerRepositories(db, id, repositories, NOW);
-    return id;
-  };
-  const queue = (id: string) => {
-    const [owner, repo] = REPOSITORY.split("/") as [string, string];
-    const sessionKey = `session-${id}`;
-    insertQueuedItem(db, { id, now: NOW, sessionKey });
-    bindWorkItemRepository(db, id, {
-      owner,
-      repo,
-      remoteUrl: `https://github.com/${REPOSITORY}.git`,
-    });
-    recordLinearInstallation(db, {
-      organizationId: "org",
-      oauthClientId: "app",
-      appUserId: "app-user",
-      sessionId: sessionKey,
-      teamId: "team",
-      observedAtMs: NOW,
-    });
-    const delegationId = getWorkItem(db, id)!.delegationId;
-    bindLinearSessionTask(db, sessionKey, delegationId, { actorId: "owner" });
-    db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-  };
-  const pass = (reported: RunnerHostRefusal[][] = []) =>
-    dispatch(db, {
-      now: NOW,
-      admission: workspaceAdmission(db),
-      itemRunners: (itemId) => itemRunnerVerdicts(db, { itemId, agent: "claude", now: NOW }),
-      onRunnerHostRefusals: (refusals) => reported.push([...refusals]),
-    });
-  return { pair, queue, pass, workspace, userId };
-}
+import { workspaceWithRunners, REPOSITORY, NOW } from "./runner-slot-fixture";
 
 test("only as many items leave queued as the runner that allows their repository has slots", () => {
   const db = tempDb();
@@ -265,4 +195,65 @@ test("a raised capacity and a resumed runner wake parked items; an unchanged rep
     now: NOW + 3,
   });
   expect(runAt()).toBe(NOW + 3);
+});
+
+test("unplaced flexible work cannot hide the slot placement may take from exclusive work", () => {
+  const db = tempDb();
+  const { pair, queue, pass } = workspaceWithRunners(db);
+  pair("owner", 1, null);
+  const other = pair("shared", 6, [REPOSITORY]);
+  queue("a-flexible");
+  queue("b-exclusive");
+  // Only the owner's runner permits this second repository.
+  db.run("UPDATE work_item_repository SET repo='exclusive' WHERE item_id='b-exclusive'");
+  db.run(
+    "INSERT INTO workspace_repository SELECT workspace_id,'pmdroid/exclusive',team_id FROM workspace_repository LIMIT 1",
+  );
+  expect(
+    itemRunnerVerdicts(db, { itemId: "a-flexible", agent: "claude", now: NOW })!.runners.filter(
+      (r) => r.rejection === null,
+    ),
+  ).toHaveLength(2);
+  expect(
+    itemRunnerVerdicts(db, { itemId: "b-exclusive", agent: "claude", now: NOW })!.runners.find(
+      (r) => r.id === other,
+    )!.rejection,
+  ).not.toBeNull();
+  expect(pass()).toEqual(["a-flexible"]);
+  expect(pass()).toEqual([]); // An outstanding admission still accounts for either placement.
+});
+
+test("an admin repository policy refusal is not a host-config warning", () => {
+  const db = tempDb();
+  const { pair, queue, pass } = workspaceWithRunners(db);
+  const id = pair("admin-limited", 2, [REPOSITORY]);
+  db.run("UPDATE runner_repositories SET admin_repositories='[]' WHERE runner_id=?", [id]);
+  queue("a");
+  const verdict = itemRunnerVerdicts(db, { itemId: "a", agent: "claude", now: NOW })!;
+  expect(verdict.runners[0]!.rejection).toContain("runner's page");
+  expect(verdict.runners[0]!.hostConfig).toBeNull();
+  const reported: RunnerHostRefusal[][] = [];
+  pass(reported);
+  expect(reported.at(-1)).toEqual([]);
+});
+
+test("a reconnect with unchanged reports wakes parked work once, without waking on every heartbeat", () => {
+  const db = tempDb();
+  const { pair, queue } = workspaceWithRunners(db);
+  const id = pair("reconnecting", 2, [REPOSITORY]);
+  queue("parked");
+  const { jobId } = parkedRun(db, "parked", [id], [id]);
+  const now = NOW + 60_000;
+  const work = createRunnerWork({
+    db,
+    keyId: "fixture",
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
+    now: () => now,
+  });
+  work.heartbeat(id, 2, {}, undefined, undefined, undefined, undefined, undefined, [REPOSITORY]);
+  expect(getJob(db, jobId)!.runAt).toBe(now);
+  db.run("UPDATE job SET run_at=? WHERE id=?", [now + 60_000, jobId]);
+  work.heartbeat(id, 2, {}, undefined, undefined, undefined, undefined, undefined, [REPOSITORY]);
+  expect(getJob(db, jobId)!.runAt).toBe(now + 60_000);
 });

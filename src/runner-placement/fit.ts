@@ -100,7 +100,13 @@ export function itemRunnerVerdicts(
             : null,
         );
       const refused = repository && repositoryRejection(db, runner.id, repository);
-      if (refused) return verdict(refused, "repository");
+      if (refused)
+        return verdict(
+          refused,
+          runnerRepositoryRefusal(db, runner.id, repository!)?.list === "host"
+            ? "repository"
+            : null,
+        );
       const fit = signInFit(db, { ...runner, signedIn: true }, scope.workspaceId, {
         agent: input.agent as RunnerCodingAgent,
         model: input.model,
