@@ -1,6 +1,14 @@
 import type { Database } from "bun:sqlite";
 import { checkpointRef, isTerminalWorkItemState, type RepositoryBinding } from "../core";
-import { getWorkItem, getWorkItemRepository, runTeardownOwner } from "../db";
+import {
+  branchHeldByOtherItem,
+  branchRunnerWork,
+  clearCheckpointRefCleanup,
+  endedCheckpointRefItems,
+  getWorkItem,
+  getWorkItemRepository,
+  runTeardownOwner,
+} from "../db";
 import { journalCaught } from "../journal";
 
 export async function deleteEndedCheckpointRef(input: {
@@ -10,21 +18,9 @@ export async function deleteEndedCheckpointRef(input: {
 }): Promise<"deleted" | "absent" | "kept" | "deferred"> {
   const item = getWorkItem(input.db, input.itemId);
   if (!item?.branchName || !isTerminalWorkItemState(item.state)) return "kept";
-  const owned = input.db
-    .query(
-      `SELECT 1 FROM work_item WHERE branch_name = ? AND id != ?
-         AND state NOT IN ('completed','merged','cancelled')`,
-    )
-    .get(item.branchName, item.id);
-  if (owned) return "kept";
-  const executions = input.db
-    .query<{ runId: string; open: number }, [string]>(
-      `SELECT w.run_id AS runId, w.ended_at IS NULL AS open FROM runner_work w
-       JOIN run r ON r.id = w.run_id JOIN work_item i ON i.id = r.item_id
-       WHERE i.branch_name = ?`,
-    )
-    .all(item.branchName);
-  if (executions.some((row) => row.open || runTeardownOwner(input.db, row.runId)))
+  if (branchHeldByOtherItem(input.db, item.branchName, item.id)) return "kept";
+  const executions = branchRunnerWork(input.db, item.branchName);
+  if (executions.some((row) => row.endedAt === null || runTeardownOwner(input.db, row.runId)))
     return "deferred";
   const repository = getWorkItemRepository(input.db, item.id);
   if (!repository) return "kept";
@@ -36,12 +32,7 @@ export async function sweepCheckpointRefs(input: {
   remove: (repository: RepositoryBinding, ref: string) => Promise<boolean>;
   signal?: AbortSignal;
 }): Promise<void> {
-  const ended = input.db
-    .query<{ itemId: string }, []>(
-      "SELECT item_id AS itemId FROM checkpoint_ref_cleanup ORDER BY ended_at, item_id",
-    )
-    .all();
-  for (const { itemId } of ended) {
+  for (const itemId of endedCheckpointRefItems(input.db)) {
     input.signal?.throwIfAborted();
     try {
       const outcome = await deleteEndedCheckpointRef({
@@ -49,8 +40,7 @@ export async function sweepCheckpointRefs(input: {
         itemId,
         remove: input.remove,
       });
-      if (outcome !== "deferred")
-        input.db.run("DELETE FROM checkpoint_ref_cleanup WHERE item_id=?", [itemId]);
+      if (outcome !== "deferred") clearCheckpointRefCleanup(input.db, itemId);
     } catch (error) {
       input.signal?.throwIfAborted();
       journalCaught(error, "checkpoint-ref.sweepCheckpointRefs", itemId, "retried next sweep");

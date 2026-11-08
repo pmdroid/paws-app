@@ -1,2 +1,0 @@
-src/loop/activity-policy.ts | db .query(`SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=? | not yet converted to Drizzle
-src/loop/activity-policy.ts | db .query(`SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=? | not yet converted to Drizzle
