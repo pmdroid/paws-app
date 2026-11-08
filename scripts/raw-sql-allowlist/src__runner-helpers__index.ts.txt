@@ -1,8 +1,0 @@
-src/runner-helpers/index.ts | const row = db .query<{ workspaceId: string; userId: string; fence: number; status: string }, [string]>( | not yet converted to Drizzle
-src/runner-helpers/index.ts | const installation = db .query<{ clientId: string | null }, [string]>( | not yet converted to Drizzle
-src/runner-helpers/index.ts | const row = db .query<Row, [string]>( | not yet converted to Drizzle
-src/runner-helpers/index.ts | db.run( | not yet converted to Drizzle
-src/runner-helpers/index.ts | const rows = db .query<{ id: string }, [string, number]>( | not yet converted to Drizzle
-src/runner-helpers/index.ts | db.run("UPDATE runner_helper SET acknowledged_at=COALESCE(acknowledged_at,?) WHERE id=?", [ | not yet converted to Drizzle
-src/runner-helpers/index.ts | db.run("UPDATE runner_helper SET result=? WHERE id=?", [payload, parsed.commandId]); | not yet converted to Drizzle
-src/runner-helpers/index.ts | db.run("UPDATE runner_helper SET ended_at=COALESCE(ended_at,?) WHERE id=?", [now(), id]); | not yet converted to Drizzle

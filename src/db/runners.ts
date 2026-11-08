@@ -1009,6 +1009,45 @@ export function* recentRunnersSteps(q: Q, seenAfter: number) {
   );
 }
 
+export type UsableRunner = {
+  workspaceId: string;
+  userId: string;
+  fence: number;
+  status: string;
+};
+
+/** The runner, unless it is revoked or its owner can no longer use the workspace. */
+export function* usableRunnerSteps(q: Q, runnerId: string): Steps<UsableRunner | null> {
+  const { runner, workspaceMember: member } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        workspaceId: runner.workspaceId,
+        userId: runner.ownerUserId,
+        fence: runner.fence,
+        status: runner.status,
+      })
+      .from(runner)
+      .innerJoin(
+        member,
+        and(eq(member.workspaceId, runner.workspaceId), eq(member.userId, runner.ownerUserId)),
+      )
+      .where(
+        and(
+          eq(runner.id, runnerId),
+          isNull(runner.revokedAt),
+          ne(runner.status, "revoked"),
+          workspaceMemberUsableWhere(member),
+        ),
+      ),
+  );
+  return row ?? null;
+}
+
+export function usableRunner(db: Database, runnerId: string): UsableRunner | null {
+  return settled(sqliteDb(db).run((q) => usableRunnerSteps(q, runnerId)));
+}
+
 export type RunnerIdentity = {
   workspaceId: string;
   ownerId: string;
