@@ -239,7 +239,7 @@ export function* runnerSlotFreeSteps(q: Q, runnerIds: readonly string[], now: nu
   return false;
 }
 
-export function* wakeRunnerSlotWaitsSteps(q: Q, runnerId: string, now: number): Steps<void> {
+export function* wakeRunnerSlotWaitsSteps(q: Q, runnerId: string, now: number): Steps<boolean> {
   const { job } = q.t;
   const parked = yield* q.all(
     q.orm
@@ -253,10 +253,12 @@ export function* wakeRunnerSlotWaitsSteps(q: Q, runnerId: string, now: number): 
         ),
       ),
   );
+  let woke = false;
   for (const row of parked) {
     const payload = JSON.parse(row.payload) as Record<string, unknown>;
     const wait = runnerCapacityWait(payload);
     if (!wait) continue;
+    woke = true;
     const online = wait.online?.filter((id) => id !== runnerId);
     yield* q.exec(
       q.orm
@@ -271,19 +273,20 @@ export function* wakeRunnerSlotWaitsSteps(q: Q, runnerId: string, now: number): 
         .where(and(eq(job.id, row.id), eq(job.status, "pending"))),
     );
   }
-  yield* q.exec(
-    q.orm
-      .update(job)
-      .set({ runAt: now })
-      .where(
-        and(eq(job.queue, JOB_KIND.schedulerTick), eq(job.status, "pending"), gt(job.runAt, now)),
-      ),
+  const tickIsLater = and(
+    eq(job.queue, JOB_KIND.schedulerTick),
+    eq(job.status, "pending"),
+    gt(job.runAt, now),
   );
+  const tick = yield* q.one(q.orm.select({ id: job.id }).from(job).where(tickIsLater).limit(1));
+  if (!tick) return woke;
+  yield* q.exec(q.orm.update(job).set({ runAt: now }).where(tickIsLater));
+  return true;
 }
 
 export function wakeRunnerSlotWaits(db: Database, runnerId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => wakeRunnerSlotWaitsSteps(q, runnerId, now)));
-  emitJobReady(db);
+  if (settled(sqliteDb(db).run((q) => wakeRunnerSlotWaitsSteps(q, runnerId, now))))
+    emitJobReady(db);
 }
 
 export function runnerSlotFree(

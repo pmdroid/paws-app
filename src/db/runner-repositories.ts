@@ -34,9 +34,9 @@ export function* recordRunnerRepositoriesSteps(
       }),
   );
   if (before !== undefined && sameList(before.host, reported)) return false;
-  yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
-  yield* enqueueRepositoryCheckSteps(q, runnerId, `runner:${runnerId}`, at);
-  return true;
+  const woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
+  const enqueued = yield* enqueueRepositoryCheckSteps(q, runnerId, `runner:${runnerId}`, at);
+  return woke || enqueued;
 }
 
 function sameList(stored: string | null, reported: string | null): boolean {
@@ -116,9 +116,9 @@ export function* setRunnerAdminRepositoriesSteps(
     subject: input.runnerId,
     now: input.now,
   });
-  yield* wakeRunnerSlotWaitsSteps(q, input.runnerId, input.now);
-  yield* enqueueRepositoryCheckSteps(q, input.runnerId, input.userId, input.now);
-  return true;
+  const woke = yield* wakeRunnerSlotWaitsSteps(q, input.runnerId, input.now);
+  const enqueued = yield* enqueueRepositoryCheckSteps(q, input.runnerId, input.userId, input.now);
+  return woke || enqueued;
 }
 
 export function setRunnerAdminRepositories(db: Database, input: RunnerAdminRepositories): void {

@@ -22,7 +22,11 @@ import { jsonField } from "./json-text";
 import { auditWorkspaceAccessSteps, workspaceMemberUsableWhere } from "./workspace";
 import { endRevokedRunnerAuthoritySteps, runnerLeaseCutoff } from "./runner-lease";
 import { emitJobReady } from "./jobs";
-import { conversationsInUseSteps, wakeRunnerSlotWaitsSteps, workHelperSql } from "./runner-capacity";
+import {
+  conversationsInUseSteps,
+  wakeRunnerSlotWaitsSteps,
+  workHelperSql,
+} from "./runner-capacity";
 import {
   AGENT_USER_RUNNER_VERSION,
   runnerReleaseAtLeast,
