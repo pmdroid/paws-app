@@ -3,6 +3,10 @@ import { chmodSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { openDatabase } from "../db";
+import { eq, inArray, ne, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { createRetroStore } from "./retro-ddl";
+import { retroExecution } from "./retro-schema";
 import { RunnerRequestError, type RunnerDaemon } from "../runner-daemon";
 import {
   createDirectWorkerSupervisor,
@@ -22,14 +26,8 @@ import {
 } from "../runner-protocol";
 import { downloadRetroInput, RETRO_RESULT_FILE } from "../runner-worker";
 
-type Phase = "preparing" | "running" | "reporting" | "releasing" | "complete";
-type Row = {
-  id: string;
-  payload: string;
-  phase: Phase;
-  result: string | null;
-  started_at: number | null;
-};
+type Row = typeof retroExecution.$inferSelect;
+type Phase = Row["phase"];
 
 export type RunnerRetroDaemon = Pick<
   RunnerDaemon,
@@ -79,11 +77,8 @@ export async function openRunnerRetroRuntime(options: {
   const path = join(options.root, "retro.db");
   const db = openDatabase(path);
   chmodSync(path, 0o600);
-  db.run(
-    `CREATE TABLE IF NOT EXISTS retro_execution(id TEXT PRIMARY KEY, command_id TEXT UNIQUE NOT NULL,
-     payload TEXT NOT NULL, phase TEXT NOT NULL CHECK(phase IN
-     ('preparing','running','reporting','releasing','complete')), result TEXT, started_at INTEGER) STRICT`,
-  );
+  createRetroStore(db);
+  const q = drizzle(db);
   const broker =
     options.broker ??
     createDirectWorkerSupervisor({
@@ -96,11 +91,11 @@ export async function openRunnerRetroRuntime(options: {
   const report = (error: unknown) =>
     options.onError?.(error instanceof Error ? error : new Error("Runner retro operation failed"));
   const phase = (id: string, next: Phase, result?: RunnerRetroResult) =>
-    db.run("UPDATE retro_execution SET phase=?, result=COALESCE(?, result) WHERE id=?", [
-      next,
-      result === undefined ? null : JSON.stringify(result),
-      id,
-    ]);
+    q
+      .update(retroExecution)
+      .set({ phase: next, ...(result === undefined ? {} : { result: JSON.stringify(result) }) })
+      .where(eq(retroExecution.id, id))
+      .run();
   const commandOf = (row: Row): RunnerRetroCommand =>
     RunnerRetroCommandSchema.parse(JSON.parse(row.payload));
 
@@ -126,10 +121,11 @@ export async function openRunnerRetroRuntime(options: {
   }
 
   try {
-    for (const row of db
-      .query<Row, []>(
-        "SELECT id,payload,phase,result,started_at FROM retro_execution WHERE phase IN ('preparing','running') ORDER BY rowid",
-      )
+    for (const row of q
+      .select()
+      .from(retroExecution)
+      .where(inArray(retroExecution.phase, ["preparing", "running"]))
+      .orderBy(sql`rowid`)
       .all())
       await settleTurn(row, commandOf(row));
     await broker.sweep?.();
@@ -156,11 +152,7 @@ export async function openRunnerRetroRuntime(options: {
   }
 
   const reread = (id: string) =>
-    db
-      .query<Row, [string]>(
-        "SELECT id,payload,phase,result,started_at FROM retro_execution WHERE id=?",
-      )
-      .get(id)!;
+    q.select().from(retroExecution).where(eq(retroExecution.id, id)).get()!;
 
   async function advance(row: Row) {
     const command = commandOf(row);
@@ -169,7 +161,7 @@ export async function openRunnerRetroRuntime(options: {
       row = reread(row.id);
     } else if (row.phase === "running") {
       const deadline =
-        (row.started_at ?? now()) +
+        (row.startedAt ?? now()) +
         command.executionLimit.activeMinutes * 60_000 +
         RUNNER_RETRO_RUNTIME_TIMING.outcomeGraceMs;
       if (!recordedResult(row, command) && broker.alive?.(row.id) !== false && now() <= deadline)
@@ -182,11 +174,9 @@ export async function openRunnerRetroRuntime(options: {
 
   async function admit(command: RunnerRetroCommand) {
     const id = executionId(now());
-    db.run("INSERT INTO retro_execution(id,command_id,payload,phase) VALUES(?,?,?,'preparing')", [
-      id,
-      command.id,
-      JSON.stringify(command),
-    ]);
+    q.insert(retroExecution)
+      .values({ id, commandId: command.id, payload: JSON.stringify(command), phase: "preparing" })
+      .run();
     try {
       await options.daemon.acknowledgeRetroCommand(command.id);
     } catch (error) {
@@ -212,7 +202,10 @@ export async function openRunnerRetroRuntime(options: {
       const receipt = await broker.start(id);
       if (receipt.alreadyAdmitted)
         throw new Error("Runner execution identity was already consumed");
-      db.run("UPDATE retro_execution SET phase='running', started_at=? WHERE id=?", [now(), id]);
+      q.update(retroExecution)
+        .set({ phase: "running", startedAt: now() })
+        .where(eq(retroExecution.id, id))
+        .run();
     } catch (error) {
       journalCaught(error, "runner-retro-runtime.admit.start", null);
       report(error);
@@ -227,10 +220,11 @@ export async function openRunnerRetroRuntime(options: {
   }
 
   async function step() {
-    for (const row of db
-      .query<Row, []>(
-        "SELECT id,payload,phase,result,started_at FROM retro_execution WHERE phase <> 'complete' ORDER BY rowid",
-      )
+    for (const row of q
+      .select()
+      .from(retroExecution)
+      .where(ne(retroExecution.phase, "complete"))
+      .orderBy(sql`rowid`)
       .all()) {
       if (closed) return;
       try {
@@ -253,11 +247,11 @@ export async function openRunnerRetroRuntime(options: {
     }
     for (const command of commands) {
       if (closed) return;
-      const known = db
-        .query<{ payload: string }, [string]>(
-          "SELECT payload FROM retro_execution WHERE command_id=?",
-        )
-        .get(command.id);
+      const known = q
+        .select({ payload: retroExecution.payload })
+        .from(retroExecution)
+        .where(eq(retroExecution.commandId, command.id))
+        .get();
       if (known) {
         if (known.payload !== JSON.stringify(command))
           throw new Error("Runner retro command changed");
@@ -270,12 +264,16 @@ export async function openRunnerRetroRuntime(options: {
 
   return {
     status: () => ({
-      active: db
-        .query<{ id: string; command_id: string; phase: Phase }, []>(
-          "SELECT id, command_id, phase FROM retro_execution WHERE phase <> 'complete' ORDER BY rowid",
-        )
-        .all()
-        .map((row) => ({ executionId: row.id, commandId: row.command_id, phase: row.phase })),
+      active: q
+        .select({
+          executionId: retroExecution.id,
+          commandId: retroExecution.commandId,
+          phase: retroExecution.phase,
+        })
+        .from(retroExecution)
+        .where(ne(retroExecution.phase, "complete"))
+        .orderBy(sql`rowid`)
+        .all(),
     }),
     tick() {
       if (closed) return Promise.reject(new Error("Runner retro runtime is closed"));
@@ -288,10 +286,10 @@ export async function openRunnerRetroRuntime(options: {
       if (closed) return;
       closed = true;
       await Promise.allSettled([ticking]);
-      for (const row of db
-        .query<{ id: string }, []>(
-          "SELECT id FROM retro_execution WHERE phase IN ('preparing','running')",
-        )
+      for (const row of q
+        .select({ id: retroExecution.id })
+        .from(retroExecution)
+        .where(inArray(retroExecution.phase, ["preparing", "running"]))
         .all())
         await broker.stop(row.id).catch((error: unknown) => report(error));
       db.close();
