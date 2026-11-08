@@ -115,6 +115,25 @@ const PULL_REQUEST_TOOL = {
         maxLength: 12000,
         description: "Markdown description: what changed, why, and how you verified it.",
       },
+      remaining: {
+        type: "array",
+        description:
+          "Work left for later pull requests. The item ends when this pull request merges; Paws then files each part as a sub-issue delegated to Paws. More than 3 parts: ask_team instead.",
+        items: {
+          type: "object",
+          properties: {
+            title: { type: "string", minLength: 1, maxLength: 120, description: "One-line title." },
+            scope: {
+              type: "string",
+              minLength: 1,
+              maxLength: 4000,
+              description: "The files and what is left in them.",
+            },
+          },
+          required: ["title", "scope"],
+          additionalProperties: false,
+        },
+      },
     },
     required: ["title", "body"],
     additionalProperties: false,

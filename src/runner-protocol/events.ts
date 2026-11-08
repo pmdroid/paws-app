@@ -163,6 +163,13 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
     type: z.literal("pull_request"),
     title: z.string().min(1).max(256),
     body: z.string().min(1).max(12000),
+    remaining: z
+      .array(
+        z.strictObject({ title: z.string().min(1).max(120), scope: z.string().min(1).max(4000) }),
+      )
+      .min(1)
+      .max(3)
+      .optional(),
   }),
   z.strictObject({ type: z.literal("closeout"), progress: RunnerCloseoutProgressSchema }),
   z.strictObject({ type: z.literal("candidate"), sha: z.string().regex(/^[a-f0-9]{40}$/) }),

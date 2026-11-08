@@ -83,6 +83,10 @@ A repository that checks titles in CI can run the same script before the pull re
 
 `test -n` fails the check while no title is saved yet, so the agent calls `open_pull_request` before `run_closeout`. The script's error output is what the agent sees when the title is wrong (`test/closeout-pull-request-draft.test.ts`).
 
+### Work left for later
+
+An item ends when its pull request merges. An agent that splits its work ships one pull request and lists the rest in `open_pull_request`'s `remaining`: at most 3 parts, each a one-line `title` under 120 characters and a `scope` under 4,000 characters naming the files and what is left. A fourth part is refused, and the agent asks a person instead. Paws saves the parts with the draft and shows them in the pull request description under "Left for later". When the item merges, and never before, Paws files each part through the outbox as a sub-issue of the item's issue, in its project, delegated to Paws, with a body that links the merged pull request and says which issue it continues (`test/remaining-work.test.ts`). On a runner, `remaining` needs runner 0.1.74 or later; an older runner drops it.
+
 ## Evidence checks
 
 An `evidence` check asks the agent for screenshots or videos instead of running a command. This repository requires one when a change touches the status dashboard or the landing page:

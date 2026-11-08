@@ -152,6 +152,7 @@ export function implementPrompt(input: {
     closeoutPrompt(),
     ...(input.closeoutFocus ? [closeoutFocusPrompt(input.closeoutFocus)] : []),
     "When the code change is ready, call open_pull_request with a title and a description of what changed, why, and how you verified it.",
+    "This item ends when its pull request merges. When you split the work into several pull requests, ship one and list the rest in open_pull_request's `remaining` (at most 3 parts, each a title and a scope naming the files and what is left); Paws files each part as a sub-issue delegated to Paws after the merge. For more than 3 parts, call ask_team.",
     "Commit your work yourself in reviewable steps, each with a message that says what changed and why. Paws commits anything you leave uncommitted when you finish.",
   ].join("\n");
   if (input.handoff === undefined || input.handoff.trim() === "") return brief;

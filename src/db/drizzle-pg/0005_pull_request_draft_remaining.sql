@@ -1,0 +1,1 @@
+ALTER TABLE "pull_request_draft" ADD COLUMN "remaining_json" text;

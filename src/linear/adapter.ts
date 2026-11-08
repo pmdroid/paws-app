@@ -57,7 +57,7 @@ export interface TrackerAdapter {
   addRepositoryLabel?: LinearRepositoryAdapter["addRepositoryLabel"];
   /**
    * File approved drafts under the parent with `blocks` relations and the repository label.
-   * Idempotent per `key`; returns the filed issues in draft order. Nothing is delegated.
+   * Idempotent per `key`; returns the filed issues in draft order.
    */
   createSubIssues?(
     request: SubIssueRequest,

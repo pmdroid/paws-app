@@ -31,6 +31,7 @@ import {
   canReportProgress,
 } from "./activity-policy";
 import { planFiledResponse } from "./plan-proposal";
+import { parseRemainingParts } from "../core";
 
 /** What `linear.evidence` rows need to upload a Closeout file: the transfer and the store root. */
 export type EvidenceUploads = { files: LinearFileTransfer } & EvidenceStorage;
@@ -111,6 +112,11 @@ export async function deliverLinearOutbox(
   if (message.op === "linear.sub_issues") {
     if (!db) throw new Error("Sub-issue filing needs the database");
     return fileSubIssues(message, payload, tracker, db, options);
+  }
+  if (message.op === "linear.remaining_issues") {
+    if (!tracker.createSubIssues) throw new Error("Linear sub-issue creation is unavailable");
+    await tracker.createSubIssues(remainingIssuesRequest(message, payload), options);
+    return;
   }
   if (message.op === "activity") {
     const terminal =
@@ -197,6 +203,27 @@ async function fileSubIssues(
       ),
     },
   });
+}
+
+function remainingIssuesRequest(message: OutboxRow, payload: Record<string, unknown>) {
+  const itemId = readString(payload, "itemId");
+  const issueId = readString(payload, "issueId");
+  const identifier = readString(payload, "identifier");
+  const pullUrl = readString(payload, "pullUrl");
+  if (!itemId || !issueId || !identifier || !pullUrl)
+    throw new Error("Left-for-later filing is missing its merged item");
+  return {
+    key: message.idempotencyKey,
+    parentIssueId: issueId,
+    repository: readString(payload, "repository"),
+    delegate: true,
+    drafts: parseRemainingParts(payload["parts"]).map((part) => ({
+      title: part.title,
+      description: `${part.scope}\n\nContinues ${identifier}, whose pull request merged: ${pullUrl}`,
+      acceptanceCriteria: ["Everything the scope above lists is done"],
+      blockedBy: [],
+    })),
+  };
 }
 
 async function postActivity(

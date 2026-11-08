@@ -82,6 +82,7 @@ export const pullRequestDraft = pgTable("pull_request_draft", {
   itemId: text("item_id").primaryKey(),
   title: text().notNull(),
   body: text().notNull(),
+  remainingJson: text("remaining_json"),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
 

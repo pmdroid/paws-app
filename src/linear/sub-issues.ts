@@ -15,11 +15,14 @@ export type SubIssueRequest = {
   drafts: readonly SubIssueDraft[];
   /** `owner/repo` for the repository label, when the plan ran against a repository. */
   repository?: string | null;
+  delegate?: boolean;
 };
 
 const PARENT = `query SubIssueParent($id: String!) {
   issue(id: $id) { id team { id } project { id } }
 }`;
+
+const VIEWER = `query SubIssueDelegate { viewer { id } }`;
 
 const EXISTING = `query SubIssuesFiled($ids: [ID!]!) {
   issues(first: 50, filter: { id: { in: $ids } }) {
@@ -92,6 +95,12 @@ export function createLinearSubIssueMethods(
         throw new Error("Linear returned no parent issue for the sub-issues");
       const project = dig(parent, "project");
       const projectId = isRecord(project) ? readString(project, "id") : null;
+      const viewer = request.delegate
+        ? dig(await client.query(VIEWER, {}, options), "viewer")
+        : null;
+      const delegateId = isRecord(viewer) ? readString(viewer, "id") : null;
+      if (request.delegate && !delegateId)
+        throw new Error("Linear returned no app user to delegate the sub-issues to");
       const ids = drafts.map((_, index) => subIssueId(request.key, index));
       const found = new Map<string, Record<string, unknown>>();
       for (const node of nodes(
@@ -119,6 +128,7 @@ export function createLinearSubIssueMethods(
                   teamId,
                   parentId,
                   ...(projectId ? { projectId } : {}),
+                  ...(delegateId ? { delegateId } : {}),
                   title: draft.title,
                   description: subIssueDescription(draft),
                 },

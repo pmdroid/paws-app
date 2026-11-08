@@ -2241,7 +2241,11 @@ export function createRemoteAgentRunner(options: {
                 signal.throwIfAborted();
               }
               if (event.type === "pull_request")
-                await input.pullRequest?.update({ title: event.title, body: event.body });
+                await input.pullRequest?.update({
+                  title: event.title,
+                  body: event.body,
+                  ...(event.remaining ? { remaining: event.remaining } : {}),
+                });
               if (event.type === "closeout") await input.closeoutProgress?.record(event.progress);
               if (event.type === "plan")
                 await emit(
