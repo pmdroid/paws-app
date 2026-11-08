@@ -20,6 +20,7 @@ import {
   immediate,
   itemLinearIdentifier,
   latestItemJobId,
+  listBlocksOf,
   listSchedulerAdmissions,
   listTaskBlocks,
   mergeQueueReadyTimes,
@@ -397,6 +398,13 @@ function reportDependencyCycles(
     if (!item.absent)
       delegations.set(item.delegationId, [...(delegations.get(item.delegationId) ?? []), item]);
   for (const [delegationId, members] of delegations) {
+    if (
+      !listBlocksOf(
+        db,
+        members.map((member) => member.issueId),
+      ).length
+    )
+      continue;
     const workspaceId = members.find((member) => member.workspaceId)?.workspaceId;
     if (!workspaceId || !admission.canDispatchDelegation(delegationId)) continue;
     let held: Item[];
