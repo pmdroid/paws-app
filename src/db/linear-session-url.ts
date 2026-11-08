@@ -15,7 +15,7 @@ function sessionUrl(q: Q, payload: SQL): { url: SQL<string | null>; present: SQL
   return { url, present: sql`jsonb_typeof(${json}) = 'string' AND length(${url}) > 0` };
 }
 
-function* hasTableSteps(q: Q, name: string) {
+export function* hasTableSteps(q: Q, name: string) {
   const row = yield* q.one(
     q.orm
       .select({ one: sql`1` })

@@ -78,6 +78,21 @@ export function itemSpecificationPresent(db: Database, itemId: string): number |
   return settled(sqliteDb(db).run((q) => itemSpecificationPresentSteps(q, itemId)));
 }
 
+export function* itemSpecificationRevisionSteps(q: Q, itemId: string) {
+  const { workItemSpecification } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ revision: workItemSpecification.revision })
+      .from(workItemSpecification)
+      .where(eq(workItemSpecification.itemId, itemId)),
+  );
+  return row?.revision ?? null;
+}
+
+export function itemSpecificationRevision(db: Database, itemId: string): number | null {
+  return settled(sqliteDb(db).run((q) => itemSpecificationRevisionSteps(q, itemId)));
+}
+
 export function readDependencyScope(
   db: Database,
   itemId: string,

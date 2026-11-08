@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { enqueueJobOnce } from "./jobs";
@@ -284,6 +284,27 @@ export function* pendingLinearCommentsSteps(q: Q, itemId: string): Steps<LinearC
 
 export function pendingLinearComments(db: Database, itemId: string): LinearCommentRecord[] {
   return settled(sqliteDb(db).run((q) => pendingLinearCommentsSteps(q, itemId)));
+}
+
+export function* queuedLinearCommentItemIdsSteps(q: Q, issueId: string): Steps<string[]> {
+  const { linearComment } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .selectDistinct({ itemId: linearComment.itemId })
+      .from(linearComment)
+      .where(
+        and(
+          eq(linearComment.issueId, issueId),
+          eq(linearComment.state, "queued"),
+          isNotNull(linearComment.itemId),
+        ),
+      ),
+  );
+  return rows.map((row) => row.itemId!);
+}
+
+export function queuedLinearCommentItemIds(db: Database, issueId: string): string[] {
+  return settled(sqliteDb(db).run((q) => queuedLinearCommentItemIdsSteps(q, issueId)));
 }
 
 export function* linearCommentAuthorSteps(q: Q, commentId: string): Steps<string | null> {

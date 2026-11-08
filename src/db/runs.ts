@@ -1,9 +1,22 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, eq, gt, isNull, notExists, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  notExists,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import { readCheckpoint } from "./checkpoint";
 import { randomUUID } from "node:crypto";
 import type { Checkpoint, RunKind, RunStatus, GitCommitPolicy } from "../core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { jsonText } from "./json-text";
 
 export type StoredRun = {
   id: string;
@@ -293,4 +306,58 @@ export function* listWaitingProfileRunsSteps(q: Q, now: number): Steps<StoredRun
 /** Existing runs eligible for a Settings profile update. A live work lease owns its snapshot. */
 export function listWaitingProfileRuns(db: Database, now: number): StoredRun[] {
   return settled(sqliteDb(db).run((q) => listWaitingProfileRunsSteps(q, now)));
+}
+
+export function* loseActiveItemRunsSteps(q: Q, itemId: string, now: number) {
+  const { run } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(run)
+      .set({ status: "lost", updatedAt: now })
+      .where(and(eq(run.itemId, itemId), inArray(run.status, ["active", "provisioning"]))),
+  );
+}
+
+export function loseActiveItemRuns(db: Database, itemId: string, now: number): void {
+  settled(sqliteDb(db).run((q) => loseActiveItemRunsSteps(q, itemId, now)));
+}
+
+export type AnsweredRunQuestion = {
+  id: string;
+  itemId: string;
+  body: string;
+  options: string | null;
+  answer: string;
+};
+
+export function* latestRunningAnswerSteps(q: Q, runId: string): Steps<AnsweredRunQuestion | null> {
+  const { question, workItem } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        id: question.id,
+        itemId: question.itemId,
+        body: question.body,
+        options: jsonText(q, question.options),
+        answer: question.answer,
+      })
+      .from(question)
+      .innerJoin(workItem, eq(workItem.id, question.itemId))
+      .where(
+        and(
+          eq(question.runId, runId),
+          eq(question.status, "answered"),
+          isNull(question.cancelledAt),
+          isNotNull(question.answer),
+          eq(workItem.state, "running"),
+        ),
+      )
+      .orderBy(desc(question.answeredAt), desc(question.id))
+      .limit(1),
+  );
+  return row ? { ...row, options: row.options as string | null, answer: row.answer! } : null;
+}
+
+export function latestRunningAnswer(db: Database, runId: string): AnsweredRunQuestion | null {
+  return settled(sqliteDb(db).run((q) => latestRunningAnswerSteps(q, runId)));
 }

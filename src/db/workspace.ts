@@ -75,6 +75,18 @@ export function putWorkspaceUser(
     .get(input.linearUserId)!.id;
 }
 
+export function* workspaceUserIdForLinearUserSteps(q: Q, linearUserId: string) {
+  const { workspaceUser: u } = q.t;
+  const row = yield* q.one(
+    q.orm.select({ id: u.id }).from(u).where(eq(u.linearUserId, linearUserId)),
+  );
+  return row?.id ?? null;
+}
+
+export function workspaceUserIdForLinearUser(db: Database, linearUserId: string): string | null {
+  return settled(sqliteDb(db).run((q) => workspaceUserIdForLinearUserSteps(q, linearUserId)));
+}
+
 export function* workspaceMemberSteps(q: Q, workspaceId: string, userId: string) {
   const { workspaceMember: m, workspaceUser: u, workspaceUserTeam: team } = q.t;
   const row = yield* q.one(
