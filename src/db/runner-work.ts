@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 import { jsonText } from "./json-text";
 import { workHelperSql } from "./runner-capacity";
+import { runnerLeaseCutoff } from "./runner-lease";
 
 export function* itemOpenRunnerWorkRunsSteps(q: Q, itemId: string) {
   const { run, runnerWork } = q.t;
@@ -418,4 +419,118 @@ export function nextRoutineHealthCommand(
   now: number,
 ): number | null {
   return settled(sqliteDb(db).run((q) => nextRoutineHealthCommandSteps(q, runnerId, now)));
+}
+
+export function* runnerAgentOpenWorkCountSteps(q: Q, runnerId: string, agent: string, at: number) {
+  const { runnerWork: w, run } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ count: count() })
+      .from(w)
+      .innerJoin(run, eq(run.id, w.runId))
+      .where(
+        and(
+          eq(w.runnerId, runnerId),
+          eq(run.agent, agent),
+          isNull(w.endedAt),
+          gt(w.leaseUntil, runnerLeaseCutoff(at)),
+        ),
+      ),
+  );
+  return row!.count;
+}
+
+export function runnerAgentOpenWorkCount(
+  db: Database,
+  runnerId: string,
+  agent: string,
+  at: number,
+): number {
+  return settled(sqliteDb(db).run((q) => runnerAgentOpenWorkCountSteps(q, runnerId, agent, at)));
+}
+
+export function* runnerHasOpenWorkSteps(q: Q, runnerId: string, at: number) {
+  const { runnerWork: w, runnerHelper: h } = q.t;
+  const work = yield* q.one(
+    q.orm
+      .select({ runId: w.runId })
+      .from(w)
+      .where(
+        and(eq(w.runnerId, runnerId), isNull(w.endedAt), gt(w.leaseUntil, runnerLeaseCutoff(at))),
+      )
+      .limit(1),
+  );
+  if (work) return true;
+  const helper = yield* q.one(
+    q.orm
+      .select({ id: h.id })
+      .from(h)
+      .where(and(eq(h.runnerId, runnerId), isNull(h.endedAt), gt(h.expiresAt, at)))
+      .limit(1),
+  );
+  return helper !== undefined;
+}
+
+export function runnerHasOpenWork(db: Database, runnerId: string, at: number): boolean {
+  return settled(sqliteDb(db).run((q) => runnerHasOpenWorkSteps(q, runnerId, at)));
+}
+
+export type RunnerAgentPolicyState = {
+  ready: number;
+  authExpired: number;
+  extraUsage: number;
+  quotaState: string;
+  resetsAt: number | null;
+  cooldownUntil: number;
+};
+
+export function* runnerAgentPolicyStateSteps(q: Q, runnerId: string, agent: string) {
+  const { runnerAgentPolicy: p } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        ready: p.ready,
+        authExpired: p.authExpired,
+        extraUsage: p.extraUsage,
+        quotaState: p.quotaState,
+        resetsAt: p.resetsAt,
+        cooldownUntil: p.cooldownUntil,
+      })
+      .from(p)
+      .where(and(eq(p.runnerId, runnerId), eq(p.agent, agent))),
+  );
+  return row ?? null;
+}
+
+export function runnerAgentPolicyState(
+  db: Database,
+  runnerId: string,
+  agent: string,
+): RunnerAgentPolicyState | null {
+  return settled(sqliteDb(db).run((q) => runnerAgentPolicyStateSteps(q, runnerId, agent)));
+}
+
+export function* setRunnerAgentSignedInSteps(
+  q: Q,
+  runnerId: string,
+  agent: string,
+  signedIn: boolean,
+) {
+  const { runnerAgentPolicy: p } = q.t;
+  const state = { ready: signedIn ? 1 : 0, authExpired: signedIn ? 0 : 1 };
+  yield* q.exec(
+    q.orm
+      .insert(p)
+      .values({ runnerId, agent, ...state })
+      .onConflictDoUpdate({ target: [p.runnerId, p.agent], set: state }),
+  );
+}
+
+export function setRunnerAgentSignedIn(
+  db: Database,
+  runnerId: string,
+  agent: string,
+  signedIn: boolean,
+): void {
+  settled(sqliteDb(db).run((q) => setRunnerAgentSignedInSteps(q, runnerId, agent, signedIn)));
 }
