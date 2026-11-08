@@ -433,14 +433,14 @@ forEachDialect((connect) => {
     await seedCapacity(db, "box", { capacity: 2 });
     const availability = (foreground: boolean) =>
       db.run((q) => runnerHelperAvailabilitySteps(q, "box", NOW, foreground));
-    expect(await availability(true)).toEqual({ available: true, preempts: false });
+    expect(await availability(true)).toEqual({ available: true, preempts: false, held: false });
 
     await seedHelper(db, "grouping");
-    expect(await availability(true)).toEqual({ available: true, preempts: true });
-    expect(await availability(false)).toEqual({ available: false, preempts: false });
+    expect(await availability(true)).toEqual({ available: true, preempts: true, held: false });
+    expect(await availability(false)).toEqual({ available: false, preempts: false, held: true });
 
     await seedHelper(db, "other", {}, { type: "helper", purpose: "title" });
-    expect(await availability(true)).toEqual({ available: false, preempts: true });
+    expect(await availability(true)).toEqual({ available: false, preempts: true, held: true });
   });
 
   test("grouping with a stored result is not preempted", async () => {
@@ -448,9 +448,9 @@ forEachDialect((connect) => {
     await seedCapacity(db, "box", { capacity: 2 });
     await seedHelper(db, "finished", { result: { ok: true } });
     const availability = () => db.run((q) => runnerHelperAvailabilitySteps(q, "box", NOW, true));
-    expect(await availability()).toEqual({ available: false, preempts: false });
+    expect(await availability()).toEqual({ available: false, preempts: false, held: true });
     await seedHelper(db, "grouping");
-    expect(await availability()).toEqual({ available: false, preempts: true });
+    expect(await availability()).toEqual({ available: false, preempts: true, held: true });
   });
 
   test("yielding fences only unfinished grouping helpers and closes their usage", async () => {
@@ -521,6 +521,7 @@ forEachDialect((connect) => {
     expect(await db.run((q) => runnerHelperAvailabilitySteps(q, "box", NOW, true, true))).toEqual({
       available: true,
       preempts: false,
+      held: false,
     });
     await seedHelper(db, "talking", { purpose: "conversation" });
     expect(await lane()).toBe("full");
