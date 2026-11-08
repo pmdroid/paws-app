@@ -8,9 +8,9 @@ test("dispatch reports a delegation's dependency cycle and skips readiness reads
   const db = tempDb();
   const readyItems = intake.readyItems;
   const cycleChecks: string[] = [];
-  const ready = spyOn(intake, "readyItems").mockImplementation((db, target) => {
+  const ready = spyOn(intake, "readyItems").mockImplementation((database, target) => {
     if (new Error().stack?.includes("reportDependencyCycles")) cycleChecks.push(target.itemId);
-    return readyItems(db, target);
+    return readyItems(database, target);
   });
   try {
     for (const [id, delegationId] of [
