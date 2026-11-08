@@ -2,7 +2,7 @@ import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
 import { and, eq, isNotNull, notInArray, sql } from "drizzle-orm";
-import { settled as settledValue, sqliteDb, type Q } from "./db";
+import { settled as settledValue, sqliteDb, type Db, type Q } from "./db";
 import { jobInstanceElsewhere } from "./instances";
 import { journal } from "./journal";
 import { accrueAtJobBoundary } from "./items";
@@ -104,11 +104,14 @@ export class JobLoop {
   private lastClaimAt: number | null = null;
   /** Set when a claim throws, so the claimer waits out the lock instead of spinning or dying. */
   private claimFailed = false;
+  /** The async `Db` for converted code: `sqliteDb(db)` unless startup passes one. */
+  readonly store: Db;
 
   constructor(
     readonly db: Database,
     readonly clock: Clock,
     readonly options: {
+      store?: Db;
       workerId?: string;
       instanceId?: string;
       leaseMs?: number;
@@ -116,7 +119,9 @@ export class JobLoop {
       backoffBaseMs?: number;
       concurrency?: number;
     } = {},
-  ) {}
+  ) {
+    this.store = options.store ?? sqliteDb(db);
+  }
 
   get pollMs(): number {
     return this.options.pollMs ?? JOB_IDLE_CLAIM_MS;

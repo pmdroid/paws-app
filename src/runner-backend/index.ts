@@ -47,6 +47,7 @@ import {
   unassignedRunnerReservations,
   settled,
   sqliteDb,
+  type Db,
 } from "../db";
 import {
   ArtifactRejectedError,
@@ -371,6 +372,8 @@ function snapshotCommit(workspace: string, repository: { owner: string; repo: st
 
 export function createRemoteAgentRunner(options: {
   db: Database;
+  /** The async `Db` over `db` for converted code. Defaults to `sqliteDb(db)`. */
+  store?: Db;
   work: RunnerWork;
   results: RunnerResults;
   health: RunnerHealth;
@@ -875,6 +878,7 @@ export function createRemoteAgentRunner(options: {
   const cancelItem = createRemoteCancellation({ ...options, checkpoint: checkpointBeforeStop });
   const handOverItem = createRemoteHandover(options);
   return {
+    store: options.store ?? sqliteDb(db),
     cancelItem,
     handOverItem,
     runInProgress: (runId: string) => readers.has(runId),

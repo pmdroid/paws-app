@@ -160,6 +160,7 @@ import {
   applyLinearIssueProject,
   workspaceMember,
   sqliteDb,
+  type Db,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
 import { installHostMain } from "./install-host";
@@ -363,6 +364,8 @@ export type PawsProcess = {
   env: PawsEnv;
   paths: PawsPaths;
   db: Database;
+  /** The async `Db` over `db`, the one handle every holder of `db` gets beside it. */
+  store: Db;
   server: Bun.Server<undefined>;
   catchUp: () => Promise<void>;
   ready: Promise<void>;
@@ -433,6 +436,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   usePublicationRepositories(paths.publicationDir);
   setAsideLegacyDatabase(paths.db);
   const db = openDatabase(paths.db);
+  const store = sqliteDb(db);
   migrate(db);
   importLinearTokenFile(db, paths.secretsDir, runtime.linearTokenFile);
   importCredentialFile(db, paths.secretsDir, "slack", join(paths.secretsDir, "slack-oauth.json"));
@@ -1022,6 +1026,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         return {
           agents: createRemoteAgentRunner({
             db,
+            store,
             ...coordinator,
             fetchCandidate: fetchRunnerCandidate,
             checkpointBot: repositoryAccess?.checkpointBot,
@@ -1214,6 +1219,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       linearWebhook: linear?.webhook ?? (webhooks ? { store: inbox } : undefined),
       webhooks: webhooks || env.githubWebhookSecret !== null,
       db,
+      store,
       jobLoop: roleRunsJobs(runtime.role) ? () => jobLoop?.liveness() ?? null : undefined,
       instanceId: instance.id,
       healthDisk: { paths: { tmpdir: tmpdir(), pawsHome: paths.home } },
@@ -1398,6 +1404,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   }
   const loops = startLoops({
     db,
+    store,
     instanceId: instance.id,
     role: runtime.role,
     signal: abort.signal,
@@ -1446,6 +1453,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       });
       const attached = attachOrchestrator({
         db,
+        store,
         instanceId: instance.id,
         jobs: created.jobs,
         outbox: created.outbox,
@@ -2022,6 +2030,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     env,
     paths,
     db,
+    store,
     server,
     ready,
     catchUp: async () => {

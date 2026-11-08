@@ -237,6 +237,7 @@ import {
   queueWaitSince,
   settled,
   sqliteDb,
+  type Db,
   getRun,
   CLEANUP_BLOCKED_NOTICE,
   blockConversation as blockStoredConversation,
@@ -651,6 +652,8 @@ export type { RepositoryBinding } from "../core";
 
 export type OrchestratorOptions = {
   db: Database;
+  /** The async `Db` over `db` for converted code. Defaults to `sqliteDb(db)`. */
+  store?: Db;
   instanceId?: string;
   jobs: JobLoop;
   outbox: OutboxDispatcher;
@@ -814,6 +817,7 @@ const LINEAR_ACCESS_CHANGED: IntakeDecision = {
  */
 export class Orchestrator {
   readonly bus = new CommandBus();
+  readonly store: Db;
   private tracker: TrackerAdapter | null;
   private catchUpFn: () => Promise<void>;
   private readonly askedRuns = new Set<string>();
@@ -882,6 +886,7 @@ export class Orchestrator {
   }
 
   constructor(private readonly options: OrchestratorOptions) {
+    this.store = options.store ?? sqliteDb(options.db);
     this.riskDisplayReader = new RiskDisplayReader({
       db: options.db,
       configPath: join(options.pawsRoot, "config.toml"),

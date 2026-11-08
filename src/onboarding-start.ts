@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { initializeRunnerCoordinator } from "./runner-coordinator";
 import type { PawsProcess } from "./index";
 import { ensureLayout, loadRunnerControl, pawsPaths, type RuntimeConfig } from "./config";
-import { migrate, openDatabase } from "./db";
+import { migrate, openDatabase, sqliteDb } from "./db";
 import type { PublicTls } from "./deployment";
 import { createBrowserOnboarding } from "./onboarding";
 import { startServer } from "./server";
@@ -80,6 +80,9 @@ export function startBrowserOnboarding(
     server,
     get db() {
       return active?.db ?? db;
+    },
+    get store() {
+      return active?.store ?? sqliteDb(db);
     },
     ready: Promise.resolve(),
     catchUp: async () => {
