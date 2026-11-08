@@ -1,32 +1,34 @@
 import type { Database } from "bun:sqlite";
 import { eq, sql } from "drizzle-orm";
-import { cancelOpenJobs } from "./jobs";
-import { getWorkItem, type WorkItemRecord } from "./items";
-import { releaseMergeQueuePlace } from "./merge-queue";
-import { runnerWorkSettled } from "./runner-lease";
-import { orm } from "./orm";
-import { markRun, releaseRunCapacity } from "./runs";
-import { schedulerAdmission, workItem } from "./schema";
-import { immediate } from "./tx";
+import { settled, sqliteDb, type Q } from "./db";
+import { cancelOpenJobsSteps } from "./jobs";
+import { getWorkItemSteps, type WorkItemRecord } from "./items";
+import { releaseMergeQueuePlaceSteps } from "./merge-queue";
+import { runnerWorkSettledSteps } from "./runner-lease";
+import { markRunSteps, releaseRunCapacitySteps } from "./runs";
+
+export function* haltSteps(q: Q, item: WorkItemRecord, now: number) {
+  const { schedulerAdmission, workItem } = q.t;
+  const current = yield* getWorkItemSteps(q, item.id);
+  if (!current || current.version !== item.version) return null;
+  yield* q.exec(
+    q.orm
+      .update(workItem)
+      .set({ version: sql`${workItem.version}+1` })
+      .where(eq(workItem.id, item.id)),
+  );
+  yield* cancelOpenJobsSteps(q, { itemId: item.id, reason: "halt", now });
+  if (current.currentRunId !== null) {
+    if (yield* runnerWorkSettledSteps(q, current.currentRunId, now))
+      yield* releaseRunCapacitySteps(q, current.currentRunId, now);
+    else yield* markRunSteps(q, current.currentRunId, "ended", now);
+  }
+  yield* q.exec(q.orm.delete(schedulerAdmission).where(eq(schedulerAdmission.itemId, item.id)));
+  yield* releaseMergeQueuePlaceSteps(q, item.id);
+  return yield* getWorkItemSteps(q, item.id);
+}
 
 /** Fence old work and release all execution capacity. The caller applies its edge in this transaction. */
 export function halt(db: Database, item: WorkItemRecord, now: number): WorkItemRecord | null {
-  return immediate(db, () => {
-    const current = getWorkItem(db, item.id);
-    if (!current || current.version !== item.version) return null;
-    orm(db)
-      .update(workItem)
-      .set({ version: sql`${workItem.version}+1` })
-      .where(eq(workItem.id, item.id))
-      .run();
-    cancelOpenJobs(db, { itemId: item.id, reason: "halt", now });
-    if (current.currentRunId !== null) {
-      if (runnerWorkSettled(db, current.currentRunId, now))
-        releaseRunCapacity(db, current.currentRunId, now);
-      else markRun(db, current.currentRunId, "ended", now);
-    }
-    orm(db).delete(schedulerAdmission).where(eq(schedulerAdmission.itemId, item.id)).run();
-    releaseMergeQueuePlace(db, item.id);
-    return getWorkItem(db, item.id);
-  });
+  return settled(sqliteDb(db).transaction((q) => haltSteps(q, item, now)));
 }
