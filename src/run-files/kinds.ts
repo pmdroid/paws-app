@@ -8,8 +8,6 @@ export const RUN_FILE_KINDS = {
     noun: "transcript",
     keyFile: "runner-transcript.key",
     keyContext: "paws-runner-transcript-key\0",
-    table: "runner_transcript",
-    chunkTable: "runner_transcript_chunk",
     /** Chunks keep the `.jsonl` name they had before encryption; converting one keeps its name. */
     suffix: ".jsonl",
   },
@@ -18,8 +16,6 @@ export const RUN_FILE_KINDS = {
     noun: "agent session",
     keyFile: "agent-session.key",
     keyContext: "paws-agent-session-key\0",
-    table: "agent_session_snapshot",
-    chunkTable: "agent_session_snapshot_chunk",
     suffix: ".bin",
   },
 } as const;

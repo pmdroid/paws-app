@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { immediate } from "../db";
+import {
+  immediate,
+  listRunFileChunks,
+  recordRunFileChunk,
+  runFileChunk,
+  setRunFileChunkKey,
+  type RunFileChunkRow,
+} from "../db";
 import { journalCaught } from "../journal";
 import { openRunFileChunk, runFileKeyId, sealRunFileChunk } from "./key";
 import { RUN_FILE_CHUNK_BYTES, RUN_FILE_KINDS, type RunFileKind } from "./kinds";
@@ -13,7 +20,7 @@ export type RunFile = { runId: string; generation: number; prefix: string };
 /** What the kind's row says about the file, checked in the same transaction as the chunk. */
 export type RunFileState = RunFile & { sizeBytes: number; open: boolean };
 export type RunFileChunk = { generation: number; offset: number; sha256: string; data: string };
-type Chunk = { offset: number; sizeBytes: number; sha256: string; keyId: string | null };
+type Chunk = RunFileChunkRow;
 
 function hash(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -35,7 +42,7 @@ export function createRunFileChunks(options: {
   plaintext?: () => boolean;
 }) {
   const { db, kind, objects, key, refused } = options;
-  const { title, chunkTable } = RUN_FILE_KINDS[kind];
+  const { title } = RUN_FILE_KINDS[kind];
   if (key.length !== 32) throw new Error(`${title} key is invalid.`);
   const keyId = runFileKeyId(kind, key);
 
@@ -46,12 +53,7 @@ export function createRunFileChunks(options: {
     return `${prefix}/${chunk.offset}-${chunk.sha256}`;
   }
   function existing(runId: string, generation: number, offset: number) {
-    return db
-      .query<Chunk, [string, number, number]>(
-        `SELECT offset,size_bytes AS sizeBytes,sha256,key_id AS keyId FROM ${chunkTable}
-        WHERE run_id=? AND generation=? AND offset=?`,
-      )
-      .get(runId, generation, offset);
+    return runFileChunk(db, { kind, runId, generation }, offset);
   }
 
   function matches(bytes: Uint8Array, chunk: Chunk) {
@@ -72,12 +74,7 @@ export function createRunFileChunks(options: {
 
   /** Plaintext chunks in order, each checked against its recorded offset, size and sha256. */
   async function* chunks(file: RunFile, before?: () => void) {
-    const rows = db
-      .query<Chunk, [string, number]>(
-        `SELECT offset,size_bytes AS sizeBytes,sha256,key_id AS keyId FROM ${chunkTable}
-        WHERE run_id=? AND generation=? ORDER BY offset`,
-      )
-      .all(file.runId, file.generation);
+    const rows = listRunFileChunks(db, { kind, runId: file.runId, generation: file.generation });
     let total = 0;
     let plaintext: boolean | undefined;
     for (const chunk of rows) {
@@ -150,14 +147,11 @@ export function createRunFileChunks(options: {
         return immediate(db, () => {
           const current = check();
           if (!current.previous) {
-            db.run(
-              `INSERT INTO ${chunkTable}(run_id,generation,offset,size_bytes,sha256,key_id)
-              VALUES(?,?,?,?,?,?)`,
-              [runId, chunk.generation, chunk.offset, bytes.length, chunk.sha256, keyId],
-            );
-            db.run(
-              `UPDATE ${RUN_FILE_KINDS[kind].table} SET size_bytes=? WHERE run_id=? AND generation=?`,
-              [end, runId, chunk.generation],
+            recordRunFileChunk(
+              db,
+              { kind, runId, generation: chunk.generation },
+              { offset: chunk.offset, sizeBytes: bytes.length, sha256: chunk.sha256, keyId },
+              end,
             );
           }
           return { offset: end, duplicate: !!current.previous };
@@ -195,10 +189,11 @@ export function createRunFileChunks(options: {
       }
       if (!found) return false;
       immediate(db, () =>
-        db.run(
-          `UPDATE ${chunkTable} SET key_id=?
-          WHERE run_id=? AND generation=? AND offset=? AND sha256=? AND key_id IS NULL`,
-          [keyId, file.runId, file.generation, chunk.offset, chunk.sha256],
+        setRunFileChunkKey(
+          db,
+          { kind, runId: file.runId, generation: file.generation },
+          chunk,
+          keyId,
         ),
       );
       return true;
