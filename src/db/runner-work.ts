@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, exists, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 import { jsonText } from "./json-text";
 
@@ -372,4 +372,234 @@ export function nextRoutineHealthCommand(
   now: number,
 ): number | null {
   return settled(sqliteDb(db).run((q) => nextRoutineHealthCommandSteps(q, runnerId, now)));
+}
+
+export type ItemRunResult = {
+  runnerId: string;
+  envelope: string;
+  payload: string;
+  receivedAt: number;
+};
+
+export function* itemRunResultsSteps(q: Q, itemId: string, limit?: number) {
+  const { run, runnerCommand, runnerResult } = q.t;
+  const query = q.orm
+    .select({
+      runnerId: runnerCommand.runnerId,
+      envelope: jsonText(q, runnerCommand.envelope),
+      payload: jsonText(q, runnerResult.payload),
+      receivedAt: runnerResult.receivedAt,
+    })
+    .from(runnerResult)
+    .innerJoin(runnerCommand, eq(runnerCommand.id, runnerResult.commandId))
+    .innerJoin(run, eq(run.id, runnerResult.runId))
+    .where(and(eq(run.itemId, itemId), eq(runnerCommand.kind, "run")))
+    .orderBy(desc(runnerResult.receivedAt), desc(runnerResult.generation));
+  return yield* q.all(limit === undefined ? query : query.limit(limit));
+}
+
+export function itemRunResults(db: Database, itemId: string, limit?: number): ItemRunResult[] {
+  return settled(sqliteDb(db).run((q) => itemRunResultsSteps(q, itemId, limit)));
+}
+
+export function* runnerWorkCommandSteps(q: Q, runId: string) {
+  const { runnerCommand, runnerWork } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        runnerId: runnerWork.runnerId,
+        kind: runnerCommand.kind,
+        envelope: jsonText(q, runnerCommand.envelope),
+      })
+      .from(runnerWork)
+      .leftJoin(runnerCommand, eq(runnerCommand.id, runnerWork.commandId))
+      .where(eq(runnerWork.runId, runId)),
+  );
+  return row ?? null;
+}
+
+export function runnerWorkCommand(
+  db: Database,
+  runId: string,
+): { runnerId: string; kind: string | null; envelope: string | null } | null {
+  return settled(sqliteDb(db).run((q) => runnerWorkCommandSteps(q, runId)));
+}
+
+export function* runnerWorkRunnersSteps(q: Q, runIds: readonly string[]) {
+  const { runnerWork } = q.t;
+  if (runIds.length === 0) return new Map<string, string>();
+  const rows = yield* q.all(
+    q.orm
+      .select({ runId: runnerWork.runId, runnerId: runnerWork.runnerId })
+      .from(runnerWork)
+      .where(inArray(runnerWork.runId, [...runIds])),
+  );
+  return new Map(rows.map((row) => [row.runId, row.runnerId]));
+}
+
+export function runnerWorkRunners(db: Database, runIds: readonly string[]): Map<string, string> {
+  return settled(sqliteDb(db).run((q) => runnerWorkRunnersSteps(q, runIds)));
+}
+
+export function* attachableRunnerWorkSteps(q: Q, runId: string, leaseCutoff: number) {
+  const { runnerCommand, runnerResult, runnerWork } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        runnerId: runnerWork.runnerId,
+        workspaceId: runnerWork.workspaceId,
+        envelope: jsonText(q, runnerCommand.envelope),
+        cursor: runnerWork.consumedSequence,
+        generation: runnerWork.generation,
+      })
+      .from(runnerWork)
+      .innerJoin(runnerCommand, eq(runnerCommand.id, runnerWork.commandId))
+      .where(
+        and(
+          eq(runnerWork.runId, runId),
+          isNull(runnerWork.endedAt),
+          or(
+            gt(runnerWork.leaseUntil, leaseCutoff),
+            exists(
+              q.orm
+                .select({ one: sql`1` })
+                .from(runnerResult)
+                .where(
+                  and(
+                    eq(runnerResult.runId, runnerWork.runId),
+                    eq(runnerResult.generation, runnerWork.generation),
+                    eq(runnerResult.commandId, runnerWork.commandId),
+                  ),
+                ),
+            ),
+          ),
+        ),
+      ),
+  );
+  return row ?? null;
+}
+
+export function attachableRunnerWork(
+  db: Database,
+  runId: string,
+  leaseCutoff: number,
+): {
+  runnerId: string;
+  workspaceId: string;
+  envelope: string;
+  cursor: number;
+  generation: number;
+} | null {
+  return settled(sqliteDb(db).run((q) => attachableRunnerWorkSteps(q, runId, leaseCutoff)));
+}
+
+export function* runnerWorkGenerationSteps(q: Q, runId: string) {
+  const { runnerWork } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ generation: runnerWork.generation })
+      .from(runnerWork)
+      .where(eq(runnerWork.runId, runId)),
+  );
+  return row?.generation ?? null;
+}
+
+export function runnerWorkGeneration(db: Database, runId: string): number | null {
+  return settled(sqliteDb(db).run((q) => runnerWorkGenerationSteps(q, runId)));
+}
+
+export function* runnerWorkLivenessSteps(q: Q, runId: string, generation: number) {
+  const { runnerWork } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ confirmedAt: runnerWork.confirmedAt, lostAt: runnerWork.lostAt })
+      .from(runnerWork)
+      .where(and(eq(runnerWork.runId, runId), eq(runnerWork.generation, generation))),
+  );
+  return row ?? null;
+}
+
+export function runnerWorkLiveness(
+  db: Database,
+  runId: string,
+  generation: number,
+): { confirmedAt: number | null; lostAt: number | null } | null {
+  return settled(sqliteDb(db).run((q) => runnerWorkLivenessSteps(q, runId, generation)));
+}
+
+export type UnreachableWork = {
+  runId: string;
+  generation: number;
+  leaseCutoff: number;
+  seenBefore: number;
+};
+
+export function* runnerWorkUnreachableSteps(q: Q, input: UnreachableWork) {
+  const { runner, runnerWork } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(runnerWork)
+      .innerJoin(runner, eq(runner.id, runnerWork.runnerId))
+      .where(
+        and(
+          eq(runnerWork.runId, input.runId),
+          eq(runnerWork.generation, input.generation),
+          isNull(runnerWork.endedAt),
+          gt(runnerWork.leaseUntil, input.leaseCutoff),
+          sql`COALESCE(${runner.lastSeenAt}, 0) <= ${input.seenBefore}`,
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+export function runnerWorkUnreachable(db: Database, input: UnreachableWork): boolean {
+  return settled(sqliteDb(db).run((q) => runnerWorkUnreachableSteps(q, input)));
+}
+
+export function* consumeRunnerWorkSequenceSteps(
+  q: Q,
+  runId: string,
+  generation: number,
+  sequence: number,
+) {
+  const { runnerWork } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(runnerWork)
+      .set({ consumedSequence: sequence })
+      .where(and(eq(runnerWork.runId, runId), eq(runnerWork.generation, generation))),
+  );
+}
+
+export function consumeRunnerWorkSequence(
+  db: Database,
+  runId: string,
+  generation: number,
+  sequence: number,
+): void {
+  settled(sqliteDb(db).run((q) => consumeRunnerWorkSequenceSteps(q, runId, generation, sequence)));
+}
+
+export function* loseRunnerWorkSteps(q: Q, runId: string, generation: number, at: number) {
+  const { runnerWork, runnerWorkGrant } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(runnerWork)
+      .set({ endedAt: at, lostAt: at })
+      .where(
+        and(
+          eq(runnerWork.runId, runId),
+          eq(runnerWork.generation, generation),
+          isNull(runnerWork.endedAt),
+        ),
+      ),
+  );
+  yield* q.exec(q.orm.delete(runnerWorkGrant).where(eq(runnerWorkGrant.runId, runId)));
+}
+
+export function loseRunnerWork(db: Database, runId: string, generation: number, at: number): void {
+  settled(sqliteDb(db).run((q) => loseRunnerWorkSteps(q, runId, generation, at)));
 }

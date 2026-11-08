@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
+  count,
   desc,
   eq,
   gt,
@@ -360,4 +361,24 @@ export function* latestRunningAnswerSteps(q: Q, runId: string): Steps<AnsweredRu
 
 export function latestRunningAnswer(db: Database, runId: string): AnsweredRunQuestion | null {
   return settled(sqliteDb(db).run((q) => latestRunningAnswerSteps(q, runId)));
+}
+
+export function* runWaitsOnQuestionSteps(q: Q, runId: string): Steps<boolean> {
+  const { question } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        stored: count(),
+        open: sql<number>`COALESCE(SUM(CASE WHEN ${question.status} IN ('open', 'queued') AND ${question.cancelledAt} IS NULL THEN 1 ELSE 0 END), 0)`.mapWith(
+          Number,
+        ),
+      })
+      .from(question)
+      .where(eq(question.runId, runId)),
+  );
+  return !row || row.stored === 0 || row.open > 0;
+}
+
+export function runWaitsOnQuestion(db: Database, runId: string): boolean {
+  return settled(sqliteDb(db).run((q) => runWaitsOnQuestionSteps(q, runId)));
 }

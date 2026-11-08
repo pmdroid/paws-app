@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, min, ne, sql } from "drizzle-orm";
 import { systemClock } from "../core";
 import { resumeAccountHealthNowSteps } from "./agent-account-health";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
@@ -162,4 +162,59 @@ export function* runnerAgentLoginReadySteps(q: Q, runnerId: string, agent: strin
 
 export function runnerAgentLoginReady(db: Database, runnerId: string, agent: string): boolean {
   return settled(sqliteDb(db).run((q) => runnerAgentLoginReadySteps(q, runnerId, agent)));
+}
+
+export function* usageLimitResetSteps(
+  q: Q,
+  agent: string,
+  sessionId: string | null,
+  now: number,
+): Steps<number | null> {
+  if (sessionId === null) return null;
+  const { agentAccountHealth: h, linearSession, runner, runnerAgentPolicy: p, workspace } = q.t;
+  const inScope = and(
+    eq(runner.status, "active"),
+    isNull(runner.revokedAt),
+    inArray(
+      runner.workspaceId,
+      q.orm
+        .select({ id: workspace.id })
+        .from(workspace)
+        .innerJoin(linearSession, eq(linearSession.organizationId, workspace.linearOrganizationId))
+        .where(eq(linearSession.sessionId, sessionId)),
+    ),
+  );
+  const cooldown = yield* q.one(
+    q.orm
+      .select({ at: min(p.cooldownUntil) })
+      .from(p)
+      .innerJoin(runner, eq(runner.id, p.runnerId))
+      .where(and(eq(p.agent, agent), gt(p.cooldownUntil, now), inScope)),
+  );
+  const recheck = yield* q.one(
+    q.orm
+      .select({ at: min(h.nextCheckAt) })
+      .from(h)
+      .innerJoin(runner, eq(runner.id, h.runnerId))
+      .where(
+        and(
+          eq(h.agent, agent),
+          inArray(h.state, ["exhausted", "restricted"]),
+          ne(h.scope, "binding"),
+          gt(h.nextCheckAt, now),
+          inScope,
+        ),
+      ),
+  );
+  const resets = [cooldown?.at, recheck?.at].filter((at): at is number => typeof at === "number");
+  return resets.length ? Math.min(...resets) : null;
+}
+
+export function usageLimitReset(
+  db: Database,
+  agent: string,
+  sessionId: string | null,
+  now: number,
+): number | null {
+  return settled(sqliteDb(db).run((q) => usageLimitResetSteps(q, agent, sessionId, now)));
 }

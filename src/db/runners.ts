@@ -1,6 +1,7 @@
 import { workspaceMemberUsableSql, auditWorkspaceAccess } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 import { orm } from "./orm";
 import { runner as runnerTable, runnerHelper, runnerHostStatus } from "./schema";
 import { endRevokedRunnerAuthority, runnerLeaseCutoff } from "./runner-lease";
@@ -717,4 +718,47 @@ export function runnerHelperBusy(db: Database, now: number): boolean {
       )
       .get() !== undefined
   );
+}
+
+export function* usableRecentRunnersSteps(q: Q, seenAfter: number) {
+  const { runner, workspaceMember: m } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ id: runner.id, workspaceId: runner.workspaceId })
+      .from(runner)
+      .innerJoin(m, and(eq(m.workspaceId, runner.workspaceId), eq(m.userId, runner.ownerUserId)))
+      .where(
+        and(
+          eq(runner.status, "active"),
+          isNull(runner.revokedAt),
+          eq(m.active, 1),
+          isNull(m.revokedAt),
+          gt(runner.lastSeenAt, seenAfter),
+        ),
+      )
+      .orderBy(desc(runner.lastSeenAt), runner.id),
+  );
+}
+
+export function usableRecentRunners(
+  db: Database,
+  seenAfter: number,
+): { id: string; workspaceId: string }[] {
+  return settled(sqliteDb(db).run((q) => usableRecentRunnersSteps(q, seenAfter)));
+}
+
+export function* itemStartedRunnerWorkSteps(q: Q, itemId: string) {
+  const { runnerExecutionUsage: u } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(u)
+      .where(and(eq(u.itemId, itemId), eq(u.purpose, "work")))
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+export function itemStartedRunnerWork(db: Database, itemId: string): boolean {
+  return settled(sqliteDb(db).run((q) => itemStartedRunnerWorkSteps(q, itemId)));
 }
