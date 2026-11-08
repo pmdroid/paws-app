@@ -18,6 +18,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../db";
 import {
   createFakeMergeQueue,
@@ -257,6 +258,7 @@ describe("changes-requested reviews", () => {
     expect(await handlePullReview(db, 501, caps)).toBe("wait");
     const step = await advanceMerge(
       db,
+      sqliteDb(db),
       { itemId: "eng-1", payload: {}, jobId: 1 },
       laneCapabilities(),
     );
@@ -281,6 +283,7 @@ describe("changes-requested reviews", () => {
     // The merge step that finds the pull request gone waits for the review instead.
     const step = await advanceMerge(
       db,
+      sqliteDb(db),
       { itemId: "eng-1", payload: {}, jobId: 1 },
       laneCapabilities(),
     );

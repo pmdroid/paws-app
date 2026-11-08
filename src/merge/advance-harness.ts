@@ -25,6 +25,7 @@ import {
   DEFAULT_PULL_FEEDBACK_WAIT,
   type PullFeedbackWait,
   type TaskMergeSettings,
+  sqliteDb,
 } from "../db";
 import {
   createFakeGitHub,
@@ -610,7 +611,12 @@ export async function mergeHarness(
   async function pass(id: string, jobPayload?: Record<string, unknown>): Promise<MergeStep> {
     jobId += 1;
     const payload = jobPayload ?? payloads.get(id)!;
-    const step = await advanceMerge(db, { itemId: id, payload, jobId }, capabilities(id));
+    const step = await advanceMerge(
+      db,
+      sqliteDb(db),
+      { itemId: id, payload, jobId },
+      capabilities(id),
+    );
     if (step.kind === "wait")
       payloads.set(id, {
         ...payload,

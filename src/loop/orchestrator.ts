@@ -5211,6 +5211,7 @@ export class Orchestrator {
     };
     return advanceMerge(
       this.db,
+      this.store,
       { itemId, payload, jobId },
       {
         ...this.orderCapabilities(itemId),
