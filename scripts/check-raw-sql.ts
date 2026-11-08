@@ -6,6 +6,7 @@ const ALLOWED_FILES = new Set([
   "src/db/open.ts",
   "src/runner-daemon/commands-ddl.ts",
   "src/runner-health-runtime/health-ddl.ts",
+  "src/runner-journal/ddl.ts",
   "src/runner-retro-runtime/retro-ddl.ts",
 ]);
 const TEST_FILE = /(^|\/)(test|fixtures)\/|\.test\.tsx?$/;
