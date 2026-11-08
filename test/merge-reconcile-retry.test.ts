@@ -90,7 +90,7 @@ async function delegate(failures: number) {
         return tracker.loadEpic(id);
       },
       listDeps: (id) => tracker.listDeps(id),
-      listBlockers: (...args) => tracker.listBlockers(...args),
+      listBlockers: tracker.listBlockers?.bind(tracker),
     },
     lifecycle: createFakeLinearIssueLifecycle({
       id: "acme-issue",
