@@ -1959,7 +1959,7 @@ export class Orchestrator {
       if (waiting === undefined) return;
       const waitingId = readString(job.payload, "itemId");
       if (waitingId) this.settleItemAwake(waitingId);
-      const parked = parkMerge(this.db, job, this.now(), waiting);
+      const parked = await parkMerge(this.store, job, this.now(), waiting);
       if (parked === "parked" || parked === "lost") return;
       const itemId = readString(job.payload, "itemId");
       if (
