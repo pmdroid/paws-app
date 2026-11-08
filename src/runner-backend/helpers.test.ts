@@ -915,6 +915,63 @@ test("a retry reuses the item's open helper instead of sending a second", async 
   expect(() => f.helpers.current(out.command.id)).toThrow(/unavailable/);
 });
 
+test("a reused helper's sign-in failure excludes its named account, not the runner", async () => {
+  const excluded: (readonly string[] | undefined)[] = [];
+  const f = fixture(() => ({
+    async candidates(request) {
+      excluded.push(request.excludeRunnerIds);
+      return [];
+    },
+    started() {},
+    finished: () => ({ retryable: true }),
+  }));
+  const workspace = f.db
+    .query<{ id: string }, []>("SELECT workspace_id AS id FROM runner WHERE id='runner'")
+    .get()!.id;
+  const account = createAgentAccount(f.db, {
+    workspaceId: workspace,
+    agent: "codex",
+    label: "A",
+    now: Date.now(),
+  });
+  const binding = bindAgentAccount(f.db, {
+    workspaceId: workspace,
+    accountId: account.id,
+    runnerId: "runner",
+    now: Date.now(),
+  });
+  f.db.run(
+    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner','0.1.61',?)",
+    [Date.now()],
+  );
+  recordRunnerAccountCapability(
+    f.db,
+    "runner",
+    { protocol: 1, bindings: [{ bindingId: binding.id, agent: "codex" }] },
+    Date.now(),
+  );
+  const named = { accountId: account.id, bindingId: binding.id };
+  const out = f.helpers.dispatch({
+    runnerId: "runner",
+    sessionId: "session",
+    purpose: "classify",
+    profile: { agent: "codex", model: null },
+    prompt: f.input.prompt,
+    account: named,
+  });
+  const retry = f.backend.forSession("session", "classify")(f.input);
+  await Bun.sleep(10);
+  f.helpers.submit("runner", {
+    ...helperResult(out.command.id),
+    stopReason: "error",
+    authRequired: true,
+    agentExited: true,
+    account: named,
+  });
+  await retry.catch(() => undefined);
+  expect(excluded).toEqual([[binding.id]]);
+});
+
 test("a second attempt on one helper keeps it open until the last attempt finishes", async () => {
   const f = fixture();
   const first = f.backend.forSession("session", "classify")(f.input);

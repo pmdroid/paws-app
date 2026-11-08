@@ -124,6 +124,7 @@ export function createRemoteSessionAgentRunner(options: {
               : null;
           if (open?.purpose === purpose && open.prompt === input.prompt) {
             command = open;
+            placed = open.account ? { ...open.account, named: true } : undefined;
             break;
           }
           if (open) {
