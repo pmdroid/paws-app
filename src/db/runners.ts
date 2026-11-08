@@ -2,10 +2,12 @@ import type { Database } from "bun:sqlite";
 import {
   aliasedTable,
   and,
+  asc,
   count,
   desc,
   eq,
   exists,
+  getTableColumns,
   gt,
   inArray,
   isNull,
@@ -1037,4 +1039,322 @@ export function* runnerIdentitySteps(q: Q, runnerId: string): Steps<RunnerIdenti
       .where(eq(runner.id, runnerId)),
   );
   return row ?? null;
+}
+
+function runSteps<T>(db: Database, body: (q: Q) => Steps<T>): T {
+  return settled(sqliteDb(db).run(body));
+}
+
+/** The newest usage row first when `ended_at` or `started_at` ties. */
+const usageNewest = (q: Q) =>
+  q.dialect === "sqlite"
+    ? sql`runner_execution_usage.rowid DESC`
+    : desc(q.t.runnerExecutionUsage.commandId);
+
+/** What placement admitted a runner against: its identity, policy, capacity and owner's standing. */
+export function* runnerPlacementPolicySteps(q: Q, runnerId: string, agent?: string) {
+  const {
+    runner,
+    runnerAgentPolicy,
+    runnerCapacity,
+    runnerPolicy,
+    workspaceMember,
+    workspaceUserTeam,
+  } = q.t;
+  const identity = yield* q.one(
+    q.orm
+      .select({
+        id: runner.id,
+        workspaceId: runner.workspaceId,
+        ownerUserId: runner.ownerUserId,
+        status: runner.status,
+        fence: runner.fence,
+        revokedAt: runner.revokedAt,
+      })
+      .from(runner)
+      .where(eq(runner.id, runnerId)),
+  );
+  const host = yield* q.one(
+    q.orm
+      .select({ runnerId: runnerPolicy.runnerId, sharing: runnerPolicy.sharing })
+      .from(runnerPolicy)
+      .where(eq(runnerPolicy.runnerId, runnerId)),
+  );
+  const capacity = yield* q.one(
+    q.orm
+      .select({
+        capacity: runnerCapacity.capacity,
+        ceiling: runnerCapacity.ceiling,
+        desired: runnerCapacity.desired,
+      })
+      .from(runnerCapacity)
+      .where(eq(runnerCapacity.runnerId, runnerId)),
+  );
+  const agentPolicy = agent
+    ? yield* q.one(
+        q.orm
+          .select()
+          .from(runnerAgentPolicy)
+          .where(and(eq(runnerAgentPolicy.runnerId, runnerId), eq(runnerAgentPolicy.agent, agent))),
+      )
+    : null;
+  const membership = yield* q.one(
+    q.orm
+      .select(getTableColumns(workspaceMember))
+      .from(workspaceMember)
+      .innerJoin(
+        runner,
+        and(
+          eq(runner.workspaceId, workspaceMember.workspaceId),
+          eq(runner.ownerUserId, workspaceMember.userId),
+        ),
+      )
+      .where(eq(runner.id, runnerId)),
+  );
+  const teams = yield* q.all(
+    q.orm
+      .select(getTableColumns(workspaceUserTeam))
+      .from(workspaceUserTeam)
+      .innerJoin(
+        runner,
+        and(
+          eq(runner.workspaceId, workspaceUserTeam.workspaceId),
+          eq(runner.ownerUserId, workspaceUserTeam.userId),
+        ),
+      )
+      .where(eq(runner.id, runnerId))
+      .orderBy(asc(workspaceUserTeam.teamId)),
+  );
+  return {
+    runner: identity ?? null,
+    host: host ?? null,
+    capacity: capacity ?? null,
+    agent: agentPolicy ?? null,
+    membership: membership ?? null,
+    teams,
+  };
+}
+
+export function runnerPlacementPolicy(db: Database, runnerId: string, agent?: string) {
+  return runSteps(db, (q) => runnerPlacementPolicySteps(q, runnerId, agent));
+}
+
+/** Start and end of each execution on a runner that ended in `(from, to]`. */
+export function* runnerExecutionHistorySteps(q: Q, runnerId: string, from: number, to: number) {
+  const { runnerExecutionUsage: u } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ startedAt: u.startedAt, endedAt: u.endedAt })
+      .from(u)
+      .where(and(eq(u.runnerId, runnerId), gt(u.endedAt, from), lte(u.endedAt, to))),
+  );
+  return rows.map((row) => ({ startedAt: row.startedAt, endedAt: row.endedAt as number }));
+}
+
+export function runnerExecutionHistory(
+  db: Database,
+  runnerId: string,
+  from: number,
+  to: number,
+): { startedAt: number; endedAt: number }[] {
+  return runSteps(db, (q) => runnerExecutionHistorySteps(q, runnerId, from, to));
+}
+
+/** The runner and resolved model of an item's latest successful implementer turn. */
+export function* lastSuccessfulImplementationSteps(q: Q, itemId: string) {
+  const { runnerExecutionUsage: u } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ runnerId: u.runnerId, model: u.resolvedModel })
+      .from(u)
+      .where(
+        and(
+          eq(u.itemId, itemId),
+          eq(u.role, "implementer"),
+          eq(u.purpose, "work"),
+          eq(u.outcome, "success"),
+        ),
+      )
+      .orderBy(desc(u.endedAt), usageNewest(q))
+      .limit(1),
+  );
+  return row ?? null;
+}
+
+export function lastSuccessfulImplementation(
+  db: Database,
+  itemId: string,
+): { runnerId: string; model: string | null } | null {
+  return runSteps(db, (q) => lastSuccessfulImplementationSteps(q, itemId));
+}
+
+export function* runnerAgentQuotaSteps(q: Q, runnerId: string, agent: string) {
+  const { runnerAgentPolicy: p } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ cooldownUntil: p.cooldownUntil, quotaState: p.quotaState })
+      .from(p)
+      .where(and(eq(p.runnerId, runnerId), eq(p.agent, agent))),
+  );
+  return row ?? null;
+}
+
+export function runnerAgentQuota(
+  db: Database,
+  runnerId: string,
+  agent: string,
+): { cooldownUntil: number; quotaState: string } | null {
+  return runSteps(db, (q) => runnerAgentQuotaSteps(q, runnerId, agent));
+}
+
+/** Charge one placement to a runner's agent, creating its policy row on first use. */
+export function* chargeRunnerAgentSteps(
+  q: Q,
+  input: { runnerId: string; agent: string; at: number },
+) {
+  const { runnerAgentPolicy: p } = q.t;
+  yield* q.exec(
+    q.orm.insert(p).values({ runnerId: input.runnerId, agent: input.agent }).onConflictDoNothing(),
+  );
+  yield* q.exec(
+    q.orm
+      .update(p)
+      .set({
+        virtualFinish: sql`${p.virtualFinish}+CASE WHEN ${p.quotaState}='low' THEN 5 ELSE 1 END`,
+        lastUsedAt: input.at,
+      })
+      .where(and(eq(p.runnerId, input.runnerId), eq(p.agent, input.agent))),
+  );
+}
+
+export function chargeRunnerAgent(
+  db: Database,
+  input: { runnerId: string; agent: string; at: number },
+): void {
+  runSteps(db, (q) => chargeRunnerAgentSteps(q, input));
+}
+
+export type RunnerExecutionStart = {
+  commandId: string;
+  runnerId: string;
+  ownerUserId: string;
+  itemId: string | null;
+  runId: string | null;
+  agent: string | null;
+  model: string | null;
+  role: string;
+  purpose: string;
+  startedAt: number;
+  placementReason: string | null;
+};
+
+export function* insertRunnerExecutionUsageSteps(q: Q, input: RunnerExecutionStart) {
+  yield* q.exec(q.orm.insert(q.t.runnerExecutionUsage).values(input));
+}
+
+export function insertRunnerExecutionUsage(db: Database, input: RunnerExecutionStart): void {
+  runSteps(db, (q) => insertRunnerExecutionUsageSteps(q, input));
+}
+
+/** The usage receipt a finished command settles, or null when it is not this runner's. */
+export function* runnerExecutionReceiptSteps(q: Q, commandId: string, runnerId: string) {
+  const { runnerExecutionUsage: u } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        ownerId: u.ownerUserId,
+        purpose: u.purpose,
+        agent: u.agent,
+        itemId: u.itemId,
+        role: u.role,
+        startedAt: u.startedAt,
+        endedAt: u.endedAt,
+        outcome: u.outcome,
+        resetsAt: u.resetsAt,
+      })
+      .from(u)
+      .where(and(eq(u.commandId, commandId), eq(u.runnerId, runnerId))),
+  );
+  return row ?? null;
+}
+
+export function runnerExecutionReceipt(db: Database, commandId: string, runnerId: string) {
+  return runSteps(db, (q) => runnerExecutionReceiptSteps(q, commandId, runnerId));
+}
+
+export type RunnerExecutionFinish = {
+  commandId: string;
+  endedAt: number;
+  outcome: string;
+  resolvedModel: string | null;
+  outputBytes: number;
+  resetsAt: number | null;
+};
+
+export function* finishRunnerExecutionUsageSteps(q: Q, input: RunnerExecutionFinish) {
+  const { runnerExecutionUsage: u } = q.t;
+  const { commandId, ...finished } = input;
+  yield* q.exec(q.orm.update(u).set(finished).where(eq(u.commandId, commandId)));
+}
+
+export function finishRunnerExecutionUsage(db: Database, input: RunnerExecutionFinish): void {
+  runSteps(db, (q) => finishRunnerExecutionUsageSteps(q, input));
+}
+
+export type RunnerAgentSettlement = {
+  runnerId: string;
+  agent: string;
+  authRequired: boolean;
+  success: boolean;
+  quota: { state: string; resetsAt: number | null; cooldownUntil: number } | null;
+  /** A successful non-preparation turn clears a recorded quota limit. */
+  clearQuota: boolean;
+  model: string | null;
+};
+
+/** Apply what a finished turn showed about the runner's agent; anything it did not show stays. */
+export function* settleRunnerAgentSteps(q: Q, input: RunnerAgentSettlement) {
+  const { runnerAgentPolicy: p } = q.t;
+  const { authRequired, success, quota, clearQuota, model } = input;
+  yield* q.exec(
+    q.orm
+      .update(p)
+      .set({
+        ready: authRequired ? 0 : success ? 1 : p.ready,
+        authExpired: authRequired ? 1 : success ? 0 : p.authExpired,
+        quotaState: quota ? quota.state : clearQuota ? "ok" : p.quotaState,
+        resetsAt: quota ? quota.resetsAt : clearQuota ? null : p.resetsAt,
+        cooldownUntil: quota ? quota.cooldownUntil : clearQuota ? 0 : p.cooldownUntil,
+        resolvedModel: model ?? p.resolvedModel,
+      })
+      .where(and(eq(p.runnerId, input.runnerId), eq(p.agent, input.agent))),
+  );
+}
+
+export function settleRunnerAgent(db: Database, input: RunnerAgentSettlement): void {
+  runSteps(db, (q) => settleRunnerAgentSteps(q, input));
+}
+
+export function* setRunnerAgentCooldownSteps(
+  q: Q,
+  runnerId: string,
+  agent: string,
+  cooldownUntil: number,
+) {
+  const { runnerAgentPolicy: p } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(p)
+      .set({ cooldownUntil })
+      .where(and(eq(p.runnerId, runnerId), eq(p.agent, agent))),
+  );
+}
+
+export function setRunnerAgentCooldown(
+  db: Database,
+  runnerId: string,
+  agent: string,
+  cooldownUntil: number,
+): void {
+  runSteps(db, (q) => setRunnerAgentCooldownSteps(q, runnerId, agent, cooldownUntil));
 }
