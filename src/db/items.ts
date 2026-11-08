@@ -1517,3 +1517,26 @@ export function* workItemSessionKeysSteps(q: Q, ids: readonly string[]) {
       .where(inArray(workItem.id, [...ids])),
   );
 }
+
+export type WakeRecord = { fromWall: number; toWall: number; sleptMs: number; now: number };
+
+export function* recordWakeSteps(q: Q, input: WakeRecord) {
+  const { wake } = q.t;
+  const inserted = yield* q.all(
+    q.orm
+      .insert(wake)
+      .values({
+        fromWall: input.fromWall,
+        toWall: input.toWall,
+        sleptMs: input.sleptMs,
+        createdAt: input.now,
+      })
+      .onConflictDoNothing({ target: wake.fromWall })
+      .returning({ fromWall: wake.fromWall }),
+  );
+  return inserted.length > 0;
+}
+
+export function recordWake(db: Database, input: WakeRecord): boolean {
+  return settled(sqliteDb(db).run((q) => recordWakeSteps(q, input)));
+}
