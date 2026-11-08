@@ -64,6 +64,7 @@ import {
 import type { SkillResolver, SkillUpdates } from "../skills";
 import {
   auditWorkspaceAccess,
+  firstWorkspaceId,
   getArtifact,
   getWorkItem,
   hotFiles,
@@ -589,9 +590,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   if (path === FINDING_SETTINGS_PATH && secrets.db) {
     const db = secrets.db;
-    const workspaceId =
-      principal?.workspaceId ??
-      db.query<{ id: string }, []>("SELECT id FROM workspace ORDER BY id LIMIT 1").get()?.id;
+    const workspaceId = principal?.workspaceId ?? firstWorkspaceId(db);
     if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
     const configPath = secrets.agentSettings?.configPath;
     return (await handleFindingSettingsRequest(request, {
