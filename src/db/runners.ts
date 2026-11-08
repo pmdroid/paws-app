@@ -1,6 +1,10 @@
-import { workspaceMemberUsableSql, auditWorkspaceAccess } from "./workspace";
+import {
+  workspaceMemberUsableSql,
+  workspaceMemberUsableWhere,
+  auditWorkspaceAccess,
+} from "./workspace";
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { orm } from "./orm";
 import { runner as runnerTable, runnerHelper, runnerHostStatus } from "./schema";
@@ -750,4 +754,79 @@ export function* runnerIdentitySteps(q: Q, runnerId: string): Steps<RunnerIdenti
       .where(eq(runner.id, runnerId)),
   );
   return row ?? null;
+}
+
+type AvailableRunnerIdentity = {
+  workspaceId: string;
+  userId: string;
+  fence: number;
+  status: string;
+};
+
+/** The runner, unless it is revoked or its owner can no longer use the workspace. */
+export function* availableRunnerIdentitySteps(
+  q: Q,
+  runnerId: string,
+): Steps<AvailableRunnerIdentity | null> {
+  const { runner: r, workspaceMember: m } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        workspaceId: r.workspaceId,
+        userId: r.ownerUserId,
+        fence: r.fence,
+        status: r.status,
+      })
+      .from(r)
+      .innerJoin(m, and(eq(m.workspaceId, r.workspaceId), eq(m.userId, r.ownerUserId)))
+      .where(
+        and(
+          eq(r.id, runnerId),
+          isNull(r.revokedAt),
+          ne(r.status, "revoked"),
+          workspaceMemberUsableWhere(m),
+        ),
+      ),
+  );
+  return row ?? null;
+}
+
+export function availableRunnerIdentity(
+  db: Database,
+  runnerId: string,
+): AvailableRunnerIdentity | null {
+  return settled(sqliteDb(db).run((q) => availableRunnerIdentitySteps(q, runnerId)));
+}
+
+export function* noteRunnerSeenSteps(q: Q, runnerId: string, at: number): Steps<void> {
+  const { runner: r } = q.t;
+  yield* q.exec(q.orm.update(r).set({ lastSeenAt: at }).where(eq(r.id, runnerId)));
+}
+
+export function noteRunnerSeen(db: Database, runnerId: string, at: number): void {
+  settled(sqliteDb(db).run((q) => noteRunnerSeenSteps(q, runnerId, at)));
+}
+
+export function* noteRunnerLiveReportSteps(q: Q, runnerId: string, at: number): Steps<void> {
+  const { runner: r } = q.t;
+  yield* q.exec(q.orm.update(r).set({ liveReportedAt: at }).where(eq(r.id, runnerId)));
+}
+
+export function noteRunnerLiveReport(db: Database, runnerId: string, at: number): void {
+  settled(sqliteDb(db).run((q) => noteRunnerLiveReportSteps(q, runnerId, at)));
+}
+
+/** Keeps the moment termination reports began; later reports leave it. */
+export function* noteRunnerTerminationsSteps(q: Q, runnerId: string, at: number): Steps<void> {
+  const { runner: r } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(r)
+      .set({ terminationsSince: sql`COALESCE(${r.terminationsSince},${at})` })
+      .where(eq(r.id, runnerId)),
+  );
+}
+
+export function noteRunnerTerminations(db: Database, runnerId: string, at: number): void {
+  settled(sqliteDb(db).run((q) => noteRunnerTerminationsSteps(q, runnerId, at)));
 }
