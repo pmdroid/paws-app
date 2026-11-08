@@ -169,6 +169,7 @@ export * from "./improvements";
 export * from "./improvement-follow-through";
 export * from "./retro-activity";
 export * from "./intake";
+export * from "./item-reconciliation";
 export * from "./item-dependencies";
 export * from "./parent-delegations";
 export * from "./runner-work";

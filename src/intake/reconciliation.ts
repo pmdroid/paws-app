@@ -1,13 +1,6 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import {
-  delegationHasOpenWork,
-  delegationIssueIdSql,
-  parentIssueIdSql,
-  parentTaskKeySql,
-  type IssueBrief,
-  type WorkBrief,
-} from "../core";
+import type { IssueBrief, WorkBrief } from "../core";
 import type {
   DependencyEdge,
   EpicSnapshot,
@@ -18,7 +11,32 @@ import type {
 import { readyItems, syncItemDependencies } from "./dependencies";
 import { ulid } from "./ulid";
 import { snapshotProject } from "./project";
-import { listTaskBlockers, recordBlockerChecks, saveWorkItemLinearProject } from "../db";
+import {
+  clearDelegationDependencyScopes,
+  countDelegationReconciliationChange,
+  delegationHasOpenItem,
+  delegationReconciliationChanges,
+  deleteItemReconciliationEffect,
+  deleteItemReconciliationRequest,
+  insertIntakeItem,
+  itemReconciliationDue,
+  listItemReconciliationEffects,
+  listItemReconciliationRequests,
+  listPresentDelegationItems,
+  listReconciliationItems,
+  listReconciliationTargets,
+  listRelationItems,
+  listTaskBlockers,
+  markItemSpecificationAbsent,
+  readReconciliationIdentity,
+  recordBlockerChecks,
+  recordDelegationReconciled,
+  requestItemReconciliation,
+  saveItemReconciliationEffect,
+  saveItemSpecification,
+  saveWorkItemLinearProject,
+  updateReconciledWorkItem,
+} from "../db";
 
 export const SWEEP_FULL_REFRESH_MS = 6 * 60 * 60_000;
 /**
@@ -51,62 +69,12 @@ export class UnreadBlockersError extends Error {
 }
 type Target = { itemId: string; workspaceId: string; signal?: AbortSignal; known?: IntakeReads };
 type IssueChange = { issueId: string; organizationId: string; parentIssueId?: string | null };
-type Identity = {
-  issueId: string;
-  sessionId: string;
-  organizationId: string;
-  teamId: string;
-  appUserId: string;
-  clientId: string;
-  creatorId: string | null;
-  actorId: string | null;
-  generation: number;
-  taskKey: string | null;
-};
-type Item = {
-  id: string;
-  issueId: string;
-  brief: string | null;
-  hash: string | null;
-  revision: number | null;
-  present: number | null;
-};
-type RequestRow = { itemId: string; token: string };
-
-function requestsFor(db: Database, delegationId: string): RequestRow[] {
-  return db
-    .query<RequestRow, [string]>(
-      `SELECT r.item_id AS itemId, r.token FROM item_reconciliation_request r
-       JOIN work_item i ON i.id=r.item_id WHERE i.delegation_id=? ORDER BY r.item_id`,
-    )
-    .all(delegationId);
-}
 
 function authority(db: Database, target: Target) {
-  const row = db
-    .query<Identity & { delegationId: string }, [string, string]>(
-      `SELECT i.delegation_id AS delegationId, ${delegationIssueIdSql("i")} AS issueId, ${parentTaskKeySql("i")} AS taskKey,
-       s.session_id AS sessionId, s.organization_id AS organizationId, s.team_id AS teamId,
-       s.app_user_id AS appUserId, s.oauth_client_id AS clientId, s.creator_id AS creatorId,
-       COALESCE(u.linear_user_id, i.delegated_by, s.creator_id) AS actorId, s.generation
-       FROM work_item i
-       JOIN linear_session s ON s.session_id=i.session_key
-       JOIN workspace w ON w.linear_organization_id=s.organization_id
-       LEFT JOIN workspace_user u ON u.id=i.owner_user_id
-       WHERE i.id=? AND w.id=? AND ${delegationHasOpenWork("i.delegation_id")}
-       AND s.stopped_at IS NULL
-       AND s.team_id IS NOT NULL AND s.app_user_id IS NOT NULL AND s.oauth_client_id IS NOT NULL`,
-    )
-    .get(target.itemId, target.workspaceId);
+  const row = readReconciliationIdentity(db, target.itemId, target.workspaceId);
   if (!row) throw new Error("Item reconciliation authority changed");
   const { delegationId, ...identity } = row;
-  const items = db
-    .query<Item, [string]>(
-      `SELECT i.id,i.linear_issue_id AS issueId,i.brief,p.hash,p.revision,p.present
-       FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
-       WHERE i.delegation_id=? ORDER BY i.id`,
-    )
-    .all(delegationId);
+  const items = listReconciliationItems(db, delegationId);
   const active = items.filter((item) => item.present !== 0);
   if (new Set(active.map((item) => item.issueId)).size !== active.length)
     throw new Error("Item reconciliation item identities are ambiguous");
@@ -153,14 +121,9 @@ export function createItemReconciler(input: {
     target.signal?.throwIfAborted();
     const { tracker, lifecycle } = target.known ? knownReads(target.known) : input;
     const initial = authority(db, target);
-    const captured = requestsFor(db, initial.delegationId);
+    const captured = listItemReconciliationRequests(db, initial.delegationId);
     const startedAt = now();
-    const seenChanges =
-      db
-        .query<{ changes: number }, [string]>(
-          "SELECT changes FROM delegation_reconciliation WHERE delegation_id=?",
-        )
-        .get(initial.delegationId)?.changes ?? 0;
+    const seenChanges = delegationReconciliationChanges(db, initial.delegationId);
     const loaded = await tracker.loadEpic(initial.identity.issueId);
     const snapshot = input.scopeSnapshot
       ? await input.scopeSnapshot(initial.identity.sessionId, loaded, target.signal)
@@ -187,7 +150,7 @@ export function createItemReconciler(input: {
       .transaction(() => {
         if (authority(db, target).token !== initial.token)
           throw new Error("Item reconciliation authority changed");
-        const currentRequests = requestsFor(db, initial.delegationId);
+        const currentRequests = listItemReconciliationRequests(db, initial.delegationId);
         if (
           JSON.stringify(currentRequests) !== JSON.stringify(captured) ||
           !currentRequests.some((row) => row.itemId === target.itemId && row.token === requestToken)
@@ -208,10 +171,10 @@ export function createItemReconciler(input: {
         for (const item of initial.items) {
           if (!desired.has(item.issueId) && item.present !== 0) change.removedItemIds.push(item.id);
           if (!desired.has(item.issueId))
-            db.run(
-              `INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES(?,?,1,0)
-               ON CONFLICT(item_id) DO UPDATE SET present=0`,
-              [item.id, item.hash ?? specHash(JSON.parse(item.brief ?? "null"))],
+            markItemSpecificationAbsent(
+              db,
+              item.id,
+              item.hash ?? specHash(JSON.parse(item.brief ?? "null")),
             );
         }
         const byIssue = new Map(
@@ -230,39 +193,31 @@ export function createItemReconciler(input: {
               (item) => item.issueId === issue.linearIssueId,
             ).length;
             const reappearance = previousOccurrences ? `:reappearance:${previousOccurrences}` : "";
-            db.run(
-              `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,
-               branch_name,position,version,created_at,brief,task_key,session_key)
-               VALUES(?,?,?,?,?,'queued',?,?,0,?,?,?,?)`,
-              [
-                id,
-                initial.delegationId,
-                issue.linearIssueId,
-                issue.identifier,
-                issue.title,
-                `paws/${issue.identifier.toLowerCase()}${previousOccurrences ? `-r${previousOccurrences}` : ""}`,
-                position,
-                now(),
-                JSON.stringify(workBrief),
-                `${initial.identity.taskKey ?? `initial:${snapshot.linearIssueId}`}:item:${issue.linearIssueId}${reappearance}`,
-                initial.identity.sessionId,
-              ],
-            );
+            insertIntakeItem(db, {
+              id,
+              delegationId: initial.delegationId,
+              linearIssueId: issue.linearIssueId,
+              linearIdentifier: issue.identifier,
+              title: issue.title,
+              branchName: `paws/${issue.identifier.toLowerCase()}${previousOccurrences ? `-r${previousOccurrences}` : ""}`,
+              position,
+              createdAt: now(),
+              brief: JSON.stringify(workBrief),
+              taskKey: `${initial.identity.taskKey ?? `initial:${snapshot.linearIssueId}`}:item:${issue.linearIssueId}${reappearance}`,
+              sessionKey: initial.identity.sessionId,
+            });
             change.addedItemIds.push(id);
           } else {
             const previous = existing.hash ?? specHash(JSON.parse(existing.brief ?? "null"));
             if (previous !== hash) change.specChangedItemIds.push(id);
-            db.run(
-              "UPDATE work_item SET brief=?,title=?,linear_identifier=?,position=? WHERE id=?",
-              [JSON.stringify(workBrief), issue.title, issue.identifier, position, id],
-            );
+            updateReconciledWorkItem(db, id, {
+              brief: JSON.stringify(workBrief),
+              title: issue.title,
+              linearIdentifier: issue.identifier,
+              position,
+            });
           }
-          db.run(
-            `INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES(?,?,1,1)
-             ON CONFLICT(item_id) DO UPDATE SET hash=excluded.hash,
-             revision=work_item_specification.revision+(work_item_specification.hash<>excluded.hash),present=1`,
-            [id, hash],
-          );
+          saveItemSpecification(db, id, hash);
           const project = snapshotProject(issue);
           if (project !== undefined) saveWorkItemLinearProject(db, id, project);
           change.issues.push({ itemId: id, issue });
@@ -274,28 +229,16 @@ export function createItemReconciler(input: {
           change.removedItemIds.length ||
           change.specChangedItemIds.length
         )
-          db.run(
-            "UPDATE item_dependency_snapshot SET scope='[]' WHERE item_id IN (SELECT id FROM work_item WHERE delegation_id=?)",
-            [initial.delegationId],
-          );
+          clearDelegationDependencyScopes(db, initial.delegationId);
         for (const [kind, ids] of [
           ["spec", change.specChangedItemIds],
           ["removed", change.removedItemIds],
           ["canceled", change.canceledItemIds],
         ] as const)
           for (const id of ids)
-            db.run(
-              `INSERT INTO item_reconciliation_effect(item_id,kind,token) VALUES(?,?,?)
-               ON CONFLICT(item_id,kind) DO UPDATE SET token=excluded.token`,
-              [id, kind, crypto.randomUUID()],
-            );
+            saveItemReconciliationEffect(db, { itemId: id, kind, token: crypto.randomUUID() });
         input.onChanges({ ...change });
-        const effects = db
-          .query<{ itemId: string; kind: string; token: string }, [string]>(
-            `SELECT e.item_id AS itemId,e.kind,e.token FROM item_reconciliation_effect e
-             JOIN work_item i ON i.id=e.item_id WHERE i.delegation_id=?`,
-          )
-          .all(initial.delegationId);
+        const effects = listItemReconciliationEffects(db, initial.delegationId);
         change.specChangedItemIds = effects
           .filter((effect) => effect.kind === "spec")
           .map((effect) => effect.itemId);
@@ -312,19 +255,8 @@ export function createItemReconciler(input: {
     const changes = publication.change;
     await input.afterChanges?.(changes);
     target.signal?.throwIfAborted();
-    const delegationOpen = db
-      .query(
-        `SELECT 1 FROM work_item WHERE delegation_id=? AND state NOT IN ('completed','merged','cancelled')`,
-      )
-      .get(initial.delegationId);
-    if (!changes.parentCanceled && delegationOpen) {
-      const itemIds = db
-        .query<{ id: string }, [string]>(
-          `SELECT i.id FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
-           WHERE i.delegation_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
-        )
-        .all(initial.delegationId)
-        .map((item) => item.id);
+    if (!changes.parentCanceled && delegationHasOpenItem(db, initial.delegationId)) {
+      const itemIds = listPresentDelegationItems(db, initial.delegationId).map((item) => item.id);
       for (const itemId of itemIds)
         await syncItemDependencies(db, {
           itemId,
@@ -337,23 +269,10 @@ export function createItemReconciler(input: {
         });
     }
     db.transaction(() => {
-      db.run(
-        `INSERT INTO delegation_reconciliation(delegation_id,reconciled_changes,reconciled_at)
-         VALUES(?,?,?) ON CONFLICT(delegation_id) DO UPDATE SET
-         reconciled_changes=excluded.reconciled_changes,reconciled_at=excluded.reconciled_at`,
-        [initial.delegationId, seenChanges, startedAt],
-      );
+      recordDelegationReconciled(db, initial.delegationId, seenChanges, startedAt);
       for (const request of captured)
-        db.run(
-          "DELETE FROM item_reconciliation_request WHERE item_id=? AND workspace_id=? AND token=?",
-          [request.itemId, target.workspaceId, request.token],
-        );
-      for (const effect of publication.effects)
-        db.run("DELETE FROM item_reconciliation_effect WHERE item_id=? AND kind=? AND token=?", [
-          effect.itemId,
-          effect.kind,
-          effect.token,
-        ]);
+        deleteItemReconciliationRequest(db, request.itemId, target.workspaceId, request.token);
+      for (const effect of publication.effects) deleteItemReconciliationEffect(db, effect);
     }).immediate();
   }
 
@@ -412,13 +331,13 @@ export function createItemReconciler(input: {
       delegationId = db
         .transaction(() => {
           const current = authority(db, target);
-          const accepted = db.run(
-            `INSERT INTO item_reconciliation_request(item_id,workspace_id,token) VALUES(?,?,?)
-             ON CONFLICT(item_id) DO UPDATE SET token=excluded.token
-             WHERE item_reconciliation_request.workspace_id=excluded.workspace_id`,
-            [target.itemId, target.workspaceId, crypto.randomUUID()],
+          const accepted = requestItemReconciliation(
+            db,
+            target.itemId,
+            target.workspaceId,
+            crypto.randomUUID(),
           );
-          if (!accepted.changes) throw new Error("Item reconciliation workspace changed");
+          if (!accepted) throw new Error("Item reconciliation workspace changed");
           return current.delegationId;
         })
         .immediate();
@@ -437,7 +356,7 @@ export function createItemReconciler(input: {
       try {
         do {
           flight.dirty = false;
-          const pending = requestsFor(db, delegationId);
+          const pending = listItemReconciliationRequests(db, delegationId);
           const request = pending.find((row) => row.itemId === target.itemId) ?? pending[0];
           if (!request) throw new Error("Item reconciliation request changed");
           const known = request.itemId === target.itemId ? target.known : undefined;
@@ -461,33 +380,7 @@ export function createItemReconciler(input: {
   }
 
   function activeTargets(issue?: IssueChange): Target[] {
-    return db
-      .query<
-        Target,
-        [string | null, string | null, string | null, string | null, string | null, string | null]
-      >(
-        `SELECT DISTINCT i.id AS itemId,w.id AS workspaceId FROM work_item i
-         JOIN linear_session s ON s.session_id=i.session_key
-         JOIN workspace w ON w.linear_organization_id=s.organization_id
-         WHERE ${delegationHasOpenWork("i.delegation_id")} AND i.session_key IS NOT NULL AND s.stopped_at IS NULL
-         AND (? IS NULL OR s.organization_id=?)
-         AND (? IS NULL OR ${parentIssueIdSql("i")}=?
-          OR EXISTS(SELECT 1 FROM work_item hit WHERE hit.delegation_id=i.delegation_id AND hit.linear_issue_id=?5)
-          OR EXISTS(SELECT 1 FROM task_block b WHERE b.blocker_linear_issue_id=?5 AND i.delegation_id=(
-            SELECT bi.delegation_id FROM work_item bi
-            WHERE bi.linear_issue_id=b.blocked_linear_issue_id AND bi.state<>'cancelled'
-            AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=bi.id AND p.present=0)
-            ORDER BY bi.created_at DESC, bi.id DESC LIMIT 1))
-          OR ${parentIssueIdSql("i")}=?6)`,
-      )
-      .all(
-        issue?.organizationId ?? null,
-        issue?.organizationId ?? null,
-        issue?.issueId ?? null,
-        issue?.issueId ?? null,
-        issue?.issueId ?? null,
-        issue?.parentIssueId ?? null,
-      );
+    return listReconciliationTargets(db, issue);
   }
 
   async function issueChanged(issue: IssueChange) {
@@ -496,29 +389,14 @@ export function createItemReconciler(input: {
       throw new Error("Missing Linear issue event identity");
     const targets = activeTargets(issue);
     db.transaction(() => {
-      for (const target of targets)
-        db.run(
-          `INSERT INTO delegation_reconciliation(delegation_id,changes)
-           SELECT delegation_id,1 FROM work_item WHERE id=?
-           ON CONFLICT(delegation_id) DO UPDATE SET changes=changes+1`,
-          [target.itemId],
-        );
+      for (const target of targets) countDelegationReconciliationChange(db, target.itemId);
     }).immediate();
     await Promise.all(targets.map(reconcile));
     return targets;
   }
 
   function due(target: Target, time: number): boolean {
-    return (
-      db
-        .query<{ itemId: string }, [string, number]>(
-          `SELECT i.id AS itemId FROM work_item i
-           LEFT JOIN delegation_reconciliation r ON r.delegation_id=i.delegation_id
-           WHERE i.id=? AND (r.reconciled_at IS NULL OR r.changes>r.reconciled_changes
-            OR r.reconciled_at<=?)`,
-        )
-        .get(target.itemId, time - SWEEP_FULL_REFRESH_MS) !== null
-    );
+    return itemReconciliationDue(db, target.itemId, time - SWEEP_FULL_REFRESH_MS);
   }
 
   function sweep(options: { now?: number; signal?: AbortSignal } = {}): Promise<void> {
@@ -540,26 +418,10 @@ export function createItemReconciler(input: {
   }
 
   function relationItems(scope: RelationsScope) {
-    return db
-      .query<Target & { issueId: string; delegationId: string }, [number, number, string | null]>(
-        `SELECT DISTINCT i.id AS itemId,w.id AS workspaceId,i.linear_issue_id AS issueId,
-         i.delegation_id AS delegationId FROM work_item i
-         JOIN linear_session s ON s.session_id=i.session_key
-         JOIN workspace w ON w.linear_organization_id=s.organization_id
-         JOIN item_dependency_snapshot d ON d.item_id=i.id
-         LEFT JOIN work_item_specification p ON p.item_id=i.id
-         WHERE ${delegationHasOpenWork("i.delegation_id")} AND s.stopped_at IS NULL
-         AND i.state NOT IN ('completed','merged','cancelled') AND COALESCE(p.present,1)=1
-         AND (?1=0 OR (i.state='queued'
-          AND EXISTS(SELECT 1 FROM item_hold h WHERE h.item_id=i.id AND h.reason='blocked')))
-         AND (?2=0 OR i.id=?3)
-         ORDER BY i.id`,
-      )
-      .all(
-        scope === "all" ? 0 : 1,
-        typeof scope === "object" ? 1 : 0,
-        typeof scope === "object" ? scope.itemId : null,
-      );
+    return listRelationItems(db, {
+      blockedOnly: scope !== "all",
+      itemId: typeof scope === "object" ? scope.itemId : undefined,
+    });
   }
 
   async function readBlockers(items: readonly { itemId: string; issueId: string }[]) {
@@ -637,12 +499,7 @@ export function createItemReconciler(input: {
         }
         db.transaction(() => {
           for (const target of changed.values())
-            db.run(
-              `INSERT INTO delegation_reconciliation(delegation_id,changes)
-               SELECT delegation_id,1 FROM work_item WHERE id=?
-               ON CONFLICT(delegation_id) DO UPDATE SET changes=changes+1`,
-              [target.itemId],
-            );
+            countDelegationReconciliationChange(db, target.itemId);
         }).immediate();
         await Promise.all(
           [...changed.values()].map((target) => reconcile({ ...target, signal: options.signal })),
