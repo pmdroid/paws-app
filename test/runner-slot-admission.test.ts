@@ -22,6 +22,7 @@ import {
   itemRunnerVerdicts,
 } from "../src/runner-placement";
 import { createRunnerWork } from "../src/runner-work";
+import { createRunnerHealth } from "../src/runner-health";
 import { tempDb } from "./helpers";
 
 import { workspaceWithRunners, REPOSITORY, NOW } from "./runner-slot-fixture";
@@ -46,22 +47,23 @@ test("a held item's reason names each runner and placement's rejection", () => {
   const admitted = pass();
   const heldId = ["a", "b"].find((id) => !admitted.includes(id))!;
 
-  expect(listItemHolds(db).find((hold) => hold.itemId === heldId)).toEqual({
-    itemId: heldId,
-    reason: "slot",
-    blockers: [
-      `No runner can take ${REPOSITORY}: goldbox: repository not allowed in the runner's host config; agentbox: no free capacity`,
-    ],
-  });
+  const hold = listItemHolds(db).find((entry) => entry.itemId === heldId);
+  expect(hold).toMatchObject({ itemId: heldId, reason: "slot" });
+  expect(hold?.blockers[0]).toStartWith(`No runner can take ${REPOSITORY}: `);
+  expect(hold?.blockers[0]).toContain(
+    "goldbox: repository not allowed in the runner's host config",
+  );
+  expect(hold?.blockers[0]).toContain("agentbox: no free capacity");
 });
 
-test("every in-scope runner refusing the repository still reaches the question path", () => {
+test("every in-scope runner refusing the repository leaves the item queued", () => {
   const db = tempDb();
   const { pair, queue, pass } = workspaceWithRunners(db);
   pair("goldbox", 6, ["other/repo"]);
   queue("a");
 
-  expect(pass()).toEqual(["a"]);
+  expect(pass()).toEqual([]);
+  expect(listItemHolds(db)[0]?.blockers[0]).toContain("goldbox: repository not allowed");
 });
 
 test("a runner refusing every item is reported once per runner and journaled every 10 minutes", () => {
@@ -204,7 +206,6 @@ test("unplaced flexible work cannot hide the slot placement may take from exclus
   const other = pair("shared", 6, [REPOSITORY]);
   queue("a-flexible");
   queue("b-exclusive");
-  // Only the owner's runner permits this second repository.
   db.run("UPDATE work_item_repository SET repo='exclusive' WHERE item_id='b-exclusive'");
   db.run(
     "INSERT INTO workspace_repository SELECT workspace_id,'pmdroid/exclusive',team_id FROM workspace_repository LIMIT 1",
@@ -220,7 +221,7 @@ test("unplaced flexible work cannot hide the slot placement may take from exclus
     )!.rejection,
   ).not.toBeNull();
   expect(pass()).toEqual(["a-flexible"]);
-  expect(pass()).toEqual([]); // An outstanding admission still accounts for either placement.
+  expect(pass()).toEqual([]);
 });
 
 test("an admin repository policy refusal is not a host-config warning", () => {
@@ -256,4 +257,52 @@ test("a reconnect with unchanged reports wakes parked work once, without waking 
   db.run("UPDATE job SET run_at=? WHERE id=?", [now + 60_000, jobId]);
   work.heartbeat(id, 2, {}, undefined, undefined, undefined, undefined, undefined, [REPOSITORY]);
   expect(getJob(db, jobId)!.runAt).toBe(now + 60_000);
+});
+
+test("offline runners never give admission an unlimited slot budget", () => {
+  const db = tempDb();
+  const { pair, queue, pass } = workspaceWithRunners(db);
+  const id = pair("offline-box", 6, [REPOSITORY]);
+  db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [NOW - 60_000, id]);
+  queue("a");
+  expect(pass()).toEqual([]);
+  expect(listItemHolds(db)[0]?.blockers[0]).toContain("offline-box: offline");
+});
+
+test("a successful background sign-in check wakes parked work", () => {
+  const db = tempDb();
+  const { pair, queue } = workspaceWithRunners(db);
+  const id = pair("agentbox", 1, [REPOSITORY]);
+  db.run("UPDATE runner_agent_policy SET ready=0,auth_expired=1 WHERE runner_id=?", [id]);
+  queue("parked");
+  const { jobId } = parkedRun(db, "parked", [id], [id]);
+  const at = NOW + 1;
+  const work = createRunnerWork({
+    db,
+    keyId: "fixture",
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+    eventKey: Buffer.alloc(32, 7),
+    now: () => at,
+  });
+  const health = createRunnerHealth({ db, work, now: () => at });
+  expect(health.afterSignIn(id, "claude")).toBe(true);
+  const envelope = work.commands(id)[0]!;
+  const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
+    id: string;
+  };
+  health.submit(id, {
+    executionId: "01J00000000000000000000001",
+    commandId: command.id,
+    role: "implementer",
+    stopReason: "end_turn",
+    timedOut: false,
+    cancelled: false,
+    authRequired: false,
+    agentExited: true,
+    login: { agent: "claude", authenticated: true, method: "subscription" },
+  });
+  expect(getJob(db, jobId)!.runAt).toBe(at);
+  expect(
+    itemRunnerVerdicts(db, { itemId: "parked", agent: "claude", now: at })!.runners[0]!.rejection,
+  ).toBeNull();
 });

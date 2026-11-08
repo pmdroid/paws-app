@@ -11,12 +11,7 @@ import {
 } from "../db";
 import type { RunnerCodingAgent } from "../runner-protocol";
 import { accountHealthBlock, BINDING_REASON_TEXT } from "./account-health";
-import {
-  eligibleRunners,
-  isInRunnerScope,
-  itemOwnerScope,
-  itemRepositoryRefusals,
-} from "./eligible";
+import { eligibleRunners, isInRunnerScope, itemOwnerScope } from "./eligible";
 import type { EligibleRunner, PlacementAccount, PlacementPurpose } from "./index";
 
 type AccountRefusal = { reason: string; until?: number };
@@ -119,7 +114,5 @@ export function itemRunnerVerdicts(
     repository,
     agent: input.agent,
     runners,
-    refusedEverywhere:
-      itemRepositoryRefusals(db, { itemId: input.itemId, now: input.now }) !== null,
   };
 }

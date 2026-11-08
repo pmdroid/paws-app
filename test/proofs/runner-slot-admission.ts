@@ -18,8 +18,13 @@ export default {
     const db = proof.database;
     const { pair, queue, pass } = workspaceWithRunners(db);
     const goldbox = pair("goldbox", 6, ["other/repo"]);
-    pair("agentbox", 2, [REPOSITORY]);
     for (const id of ["a", "b", "c"]) queue(id);
+    proof.expect("a repository refused everywhere stays queued", pass().length === 0);
+    proof.expect(
+      "no refused start can be claimed",
+      claimNextJob(db, { now: NOW, queues: [JOB_KIND.start] }) === null,
+    );
+    pair("agentbox", 2, [REPOSITORY]);
     const admitted = pass();
     proof.expect("only two items are admitted", admitted.length === 2, admitted);
     const claims = Array.from({ length: 2 }, (_, i) =>
@@ -46,7 +51,6 @@ export default {
       getWorkItem(db, "c")?.state === "queued",
       getWorkItem(db, "c")?.state,
     );
-    // Use the same heartbeat repository writer as the real runner.
     recordRunnerRepositories(db, goldbox, [REPOSITORY], NOW + 1);
     proof.expect("newly allowed capacity admits the held item", pass().includes("c"));
   },

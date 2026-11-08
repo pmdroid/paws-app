@@ -11,7 +11,6 @@ export type ItemRunnerVerdicts = {
   repository: string | null;
   agent: string;
   runners: ItemRunnerVerdict[];
-  refusedEverywhere: boolean;
 };
 
 export type RunnerHostRefusal = {

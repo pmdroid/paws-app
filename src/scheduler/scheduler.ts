@@ -570,14 +570,14 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     const slots = taskSlots(db, now);
     const answers = new Map<string, ItemRunnerVerdicts | null>();
     const verdictsFor = (itemId: string): ItemRunnerVerdicts | null => {
-      if (slots === null || !options.itemRunners) return null;
+      if (!options.itemRunners) return null;
       if (!answers.has(itemId)) answers.set(itemId, options.itemRunners(itemId));
       return answers.get(itemId)!;
     };
     const openRunner = (itemId: string): string | null | undefined => {
       const verdicts = verdictsFor(itemId);
-      if (!verdicts || verdicts.refusedEverywhere) return undefined;
-      const open = (id: string) => slots!.open.get(id) ?? 0;
+      if (!verdicts) return undefined;
+      const open = (id: string) => slots?.open.get(id) ?? 0;
       const free = verdicts.runners.filter(
         (runner) => runner.rejection === null && open(runner.id) > 0,
       );
@@ -587,9 +587,6 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       const runnerId = openRunner(itemId);
       if (runnerId === undefined) return true;
       if (runnerId === null) return false;
-      // Placement owns ranking and may choose any eligible runner. Until it assigns the
-      // item, account for it on every possible runner; the next pass uses its actual slot.
-      // Choosing one here would let a later item consume the slot placement actually takes.
       for (const runner of verdictsFor(itemId)!.runners)
         if (runner.rejection === null)
           slots!.open.set(runner.id, (slots!.open.get(runner.id) ?? 0) - 1);
@@ -721,7 +718,8 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     const noRunnerLine = (itemId: string): string | null => {
       if (openRunner(itemId) !== null) return null;
       const verdicts = verdictsFor(itemId)!;
-      if (!verdicts.runners.length) return null;
+      if (!verdicts.runners.length)
+        return `No runner can take ${verdicts.repository ?? "this item"}: no paired runners available to its owner`;
       return `No runner can take ${verdicts.repository ?? "this item"}: ${verdicts.runners
         .map((runner) => `${runner.name}: ${runner.rejection ?? RUNNER_FULL}`)
         .join("; ")}`;
