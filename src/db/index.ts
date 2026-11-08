@@ -174,5 +174,6 @@ export * from "./item-dependencies";
 export * from "./parent-delegations";
 export * from "./runner-work";
 export * from "./runner-file-objects";
+export * from "./run-file-chunks";
 export * from "./work-item-fields";
 export * from "./runner-results";
