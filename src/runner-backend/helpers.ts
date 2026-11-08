@@ -3,17 +3,14 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import { runDir, type RunAgentOptions, type RunAgentResult, type AcpEvent } from "../acp";
-import type { RunnerHelpers } from "../runner-helpers";
+import { RunnerHelperBusyError, type RunnerHelpers } from "../runner-helpers";
 import type { PlacementAccount, PlacementCandidate, RunnerPlacement } from "../runner-placement";
 import { RunnerSlotsBusyError, systemClock, UserFacingError } from "../core";
 import {
   earliestRunnerCooldown,
-  enabledRunnerIds,
   immediate,
   linearSessionClientId,
   recentRunners,
-  runnerHasCapacity,
-  runnerHelperBusy,
   runnerHostVersion,
   runnerOwner,
   sessionActiveRuns,
@@ -32,6 +29,14 @@ import {
 
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
 
+/** A placement rejection that only says the runner is full: a wait, not a cause. */
+const AT_CAPACITY = /(no free capacity|account at its concurrency limit)$/;
+
+function noRunnerMessage(agent: string, causes: ReadonlySet<string>): string {
+  const named = causes.size ? `: ${[...causes].join("; ")}.` : ".";
+  return `No paired runner can run ${agent} for this issue right now${named} Check runner availability and usage limits, then retry.`;
+}
+
 export function createRemoteSessionAgentRunner(options: {
   db: Database;
   helpers: RunnerHelpers;
@@ -46,6 +51,8 @@ export function createRemoteSessionAgentRunner(options: {
     runnerIds.length === 0
       ? null
       : earliestRunnerCooldown(options.db, { agent, now: now(), runnerIds });
+  // When a start was last turned away by each runner's helper slot.
+  const turnedAway = new Map<string, number>();
   const sessionRun = (sessionId: string) => {
     const rows = sessionActiveRuns(options.db, sessionId);
     return rows.length === 1 ? rows[0]! : null;
@@ -76,6 +83,8 @@ export function createRemoteSessionAgentRunner(options: {
         let placed: PlacementAccount | undefined;
         const cooling: string[] = [];
         const checks: { runnerId: string; until: number }[] = [];
+        const causes = new Set<string>();
+        let slotBusy = false;
         const request = {
           sessionId,
           ...(purpose === "finding_groups" ? { findingGroups: true } : {}),
@@ -88,10 +97,18 @@ export function createRemoteSessionAgentRunner(options: {
         while (!command) {
           cooling.length = 0;
           checks.length = 0;
+          causes.clear();
+          slotBusy = false;
           const runners: readonly PlacementCandidate[] = options.placement
             ? await options.placement.candidates({
                 ...request,
                 onRejected: (runnerId, reason, until) => {
+                  if (AT_CAPACITY.test(reason)) {
+                    slotBusy = true;
+                    turnedAway.set(runnerId, now());
+                    return;
+                  }
+                  causes.add(reason.replaceAll("-", " "));
                   if (reason === "agent quota cooldown") cooling.push(runnerId);
                   if (until !== undefined && until > now()) checks.push({ runnerId, until });
                 },
@@ -109,8 +126,10 @@ export function createRemoteSessionAgentRunner(options: {
                   runnerHostVersion(options.db, runner.id),
                   FINDING_GROUPS_RUNNER_VERSION,
                 )
-              )
+              ) {
+                causes.add("runner version too old");
                 continue;
+              }
               const owner = runnerOwner(options.db, runner.id);
               const clientId = linearSessionClientId(options.db, sessionId);
               if (
@@ -158,15 +177,15 @@ export function createRemoteSessionAgentRunner(options: {
               break;
             } catch (caughtError1) {
               journalCaught(caughtError1, "helpers.forSession.immediate", null);
+              if (caughtError1 instanceof RunnerHelperBusyError) {
+                slotBusy = true;
+                turnedAway.set(runner.id, now());
+              }
             }
           }
           if (command) break;
-          const helperBusy = runnerHelperBusy(options.db, now());
-          const workFull = enabledRunnerIds(options.db).some(
-            (runner) => !runnerHasCapacity(options.db, runner.id, now()),
-          );
-          if (workFull && now() >= waitUntil) throw new RunnerSlotsBusyError();
-          if ((!helperBusy && !workFull) || now() >= waitUntil) {
+          if (slotBusy && now() >= waitUntil) throw new RunnerSlotsBusyError();
+          if (!slotBusy) {
             const runnerCooldown = earliestCooldown(cooling, profile.agent);
             const cooldown = [...(runnerCooldown ? [runnerCooldown] : []), ...checks].sort(
               (a, b) => a.until - b.until,
@@ -180,13 +199,12 @@ export function createRemoteSessionAgentRunner(options: {
                 async () =>
                   (await options.placement!.candidates(request)).map((runner) => runner.id),
               );
-            throw new UserFacingError(
-              `No paired runner can run ${profile.agent} for this issue right now. Check runner availability and usage limits, then retry.`,
-            );
+            throw new UserFacingError(noRunnerMessage(profile.agent, causes));
           }
           await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
         }
         let accounted = false;
+        const dispatchedAt = now();
         const deadline = Math.min(command.expiresAt, now() + (input.timeoutMs ?? 60_000));
         try {
           while (now() < deadline) {
@@ -273,6 +291,12 @@ export function createRemoteSessionAgentRunner(options: {
             }
             await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
           }
+          // Other starts queued on this runner's single helper slot while this one held it.
+          if (
+            purpose !== "finding_groups" &&
+            (turnedAway.get(command.runnerId) ?? 0) > dispatchedAt
+          )
+            throw new RunnerSlotsBusyError();
           throw new Error("Remote session helper timed out");
         } finally {
           // A locally aborted or expired helper is not evidence of a lost runner heartbeat.

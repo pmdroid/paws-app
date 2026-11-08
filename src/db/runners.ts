@@ -693,33 +693,6 @@ export function recentRunners(
     .all();
 }
 
-export function enabledRunnerIds(db: Database): { id: string }[] {
-  return orm(db)
-    .select({ id: runnerTable.id })
-    .from(runnerTable)
-    .where(and(eq(runnerTable.status, "active"), isNull(runnerTable.revokedAt)))
-    .all();
-}
-
-export function runnerHelperBusy(db: Database, now: number): boolean {
-  return (
-    orm(db)
-      .select({ one: sql`1` })
-      .from(runnerHelper)
-      .innerJoin(runnerTable, eq(runnerTable.id, runnerHelper.runnerId))
-      .where(
-        and(
-          eq(runnerTable.status, "active"),
-          isNull(runnerTable.revokedAt),
-          isNull(runnerHelper.endedAt),
-          gt(runnerHelper.expiresAt, now),
-          sql.raw(WORK_HELPER("runner_helper")),
-        ),
-      )
-      .get() !== undefined
-  );
-}
-
 export type RunnerIdentity = {
   workspaceId: string;
   ownerId: string;

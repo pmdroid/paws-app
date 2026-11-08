@@ -11,6 +11,7 @@ import {
   RUNNER_CAPACITY_WAIT_MS,
   RunnerCapacityWait,
   RunnerSlotsBusyError,
+  UserFacingError,
   systemClock,
 } from "../src/core";
 import {
@@ -181,6 +182,32 @@ test("a helper that finds every runner slot busy waits without spending retries 
   expect(new Set(result.retries), result.detail).toEqual(new Set([0]));
   expect(result.states, result.detail).not.toContain("failed");
   expect(result.events, result.detail).toContain("deferred");
+}, 90_000);
+
+test.each([
+  ["full runners", () => new RunnerSlotsBusyError()],
+  ["a busy runner", () => new RunnerCapacityWait(["runner-1"])],
+])(
+  "15 placement attempts against %s do not fail the task",
+  async (_, error) => {
+    const clock = new FakeClock(Date.now());
+    const result = await runWithFault({ error, times: 15, clock });
+    expect(result.state, result.detail).toBe("merge_queue");
+    expect(result.errors, result.detail).toEqual([]);
+    expect(result.states, result.detail).not.toContain("failed");
+  },
+  90_000,
+);
+
+test("no runner signed in still fails after the attempt budget and names that cause", async () => {
+  const message =
+    "No paired runner can run claude for this issue right now: agent not signed in. Check runner availability and usage limits, then retry.";
+  const result = await runWithFault({
+    error: () => new UserFacingError(message),
+    times: Infinity,
+  });
+  expect(result.state, result.detail).toBe("failed");
+  expect(result.errors, result.detail).toEqual([`Stopped after 10 attempts. ${message}`]);
 }, 90_000);
 
 test("a failure that keeps coming back stops the task after its retries instead of leaving it stuck", async () => {

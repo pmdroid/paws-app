@@ -38,6 +38,13 @@ type Row = {
   result: string | null;
 };
 class HelperFencedError extends Error {}
+/** The runner's helper slot or its task slots are taken: the helper can start once one frees. */
+export class RunnerHelperBusyError extends Error {
+  override readonly name = "RunnerHelperBusyError";
+  constructor() {
+    super("Runner is busy");
+  }
+}
 
 export function createRunnerHelpers(options: {
   db: Database;
@@ -140,7 +147,7 @@ export function createRunnerHelpers(options: {
             conversation,
           ).available
         )
-          throw new Error("Runner is busy");
+          throw new RunnerHelperBusyError();
         const at = now();
         const command = RunnerCommandSchema.parse({
           ...input,
