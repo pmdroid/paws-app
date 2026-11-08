@@ -85,11 +85,101 @@ test("waits for both check runs and legacy statuses on the exact candidate", asy
   expect(messages).toEqual(["Waiting for checks: build."]);
 });
 
-test("a pending legacy status keeps the pull request waiting", async () => {
-  const result = await readOnce(() =>
-    withChecks([run("build", "SUCCESS"), { context: "legacy", state: "PENDING" }]),
+test("a pending legacy status that branch protection requires keeps the pull request waiting", async () => {
+  const result = await readOnce(
+    () => withChecks([run("build", "SUCCESS"), { context: "legacy", state: "PENDING" }]),
+    { protection: ["legacy"] },
   );
   expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: legacy." });
+});
+
+const actions = (name: string, conclusion: string | null): FakeCheckContext => ({
+  ...run(name, conclusion),
+  checkSuite: { app: { slug: "github-actions" } },
+});
+const cloudflare = (conclusion: string | null): FakeCheckContext => ({
+  ...run("Cloudflare Pages", conclusion),
+  checkSuite: { app: { slug: "cloudflare-workers-and-pages" } },
+});
+
+test("a pending third-party check that isn't required doesn't hold green Actions checks", async () => {
+  const result = await readOnce(() =>
+    withChecks([
+      actions("acme / test", "SUCCESS"),
+      actions("acme / lint", "SUCCESS"),
+      cloudflare(null),
+    ]),
+  );
+  expect(result).toMatchObject({
+    outcome: "ready",
+    message:
+      "CI passed and all review threads are resolved. Cloudflare Pages is still running and isn't required.",
+  });
+  expect(result.passed?.map((check) => [check.name, check.conclusion])).toEqual([
+    ["acme / test", "SUCCESS"],
+    ["acme / lint", "SUCCESS"],
+    ["Cloudflare Pages", ""],
+  ]);
+});
+
+test("a pending third-party check that branch protection requires holds the merge", async () => {
+  const result = await readOnce(
+    () => withChecks([actions("acme / test", "SUCCESS"), cloudflare(null)]),
+    { rulesets: ["Cloudflare Pages"] },
+  );
+  expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: Cloudflare Pages." });
+});
+
+test("a pending plain status that isn't required doesn't hold the merge", async () => {
+  const result = await readOnce(() =>
+    withChecks([actions("acme / test", "SUCCESS"), { context: "acme/preview", state: "PENDING" }]),
+  );
+  expect(result).toMatchObject({
+    outcome: "ready",
+    message:
+      "CI passed and all review threads are resolved. acme/preview is still running and isn't required.",
+  });
+});
+
+test("a failed third-party check that isn't required doesn't fail CI; a failed Actions check does", async () => {
+  const optional = await readOnce(() =>
+    withChecks([
+      actions("acme / test", "SUCCESS"),
+      cloudflare("FAILURE"),
+      { context: "acme/preview", state: "ERROR" },
+    ]),
+  );
+  expect(optional).toMatchObject({
+    outcome: "ready",
+    message:
+      "CI passed and all review threads are resolved. Cloudflare Pages, acme/preview failed and aren't required.",
+  });
+  const required = await readOnce(
+    () => withChecks([actions("acme / test", "SUCCESS"), cloudflare("FAILURE")]),
+    { protection: ["Cloudflare Pages"] },
+  );
+  expect(required.failedChecks?.map((check) => check.name)).toEqual(["Cloudflare Pages"]);
+  const actionsFailed = await readOnce(() =>
+    withChecks([actions("acme / test", "FAILURE"), cloudflare(null)]),
+  );
+  expect(actionsFailed.outcome).toBe("ci_failed");
+  expect(actionsFailed.failedChecks?.map((check) => check.name)).toEqual(["acme / test"]);
+});
+
+test("a pending Actions check still waits, and names the optional check beside it", async () => {
+  const result = await readOnce(() => withChecks([actions("acme / test", null), cloudflare(null)]));
+  expect(result).toEqual({
+    outcome: "pending",
+    message:
+      "Waiting for checks: acme / test. Cloudflare Pages is still running and isn't required.",
+  });
+});
+
+test("when a third-party app is the only CI and nothing is required, its checks keep holding the merge", async () => {
+  const result = await readOnce(() => withChecks([cloudflare(null)]));
+  expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: Cloudflare Pages." });
+  const failed = await readOnce(() => withChecks([{ context: "acme/ci", state: "FAILURE" }]));
+  expect(failed.outcome).toBe("ci_failed");
 });
 
 test("a required check that registers after the others went green holds the merge until it reports", async () => {
@@ -674,27 +764,29 @@ const ACTIONS_LOG = [
 
 test("a failing Actions check carries the tail of its job log; another falls back to its summary", async () => {
   const logReads: { path: string; token: string; accept?: string }[] = [];
-  const f = fixture(() =>
-    withChecks([
-      {
-        ...run("check / test", "FAILURE"),
-        startedAt: "2026-10-22T10:00:00Z",
-        completedAt: "2026-10-22T10:04:51Z",
-        databaseId: 4242,
-        checkSuite: { app: { slug: "github-actions" } },
-      },
-      {
-        ...run("external", "FAILURE"),
-        summary: "Deploy preview failed: build exited 1",
-        checkSuite: { app: { slug: "cloudflare-pages" } },
-      },
-      {
-        ...run("check / lint", "SUCCESS"),
-        databaseId: 7,
-        checkSuite: { app: { slug: "github-actions" } },
-      },
-      run("CodeQL", null),
-    ]),
+  const f = fixture(
+    () =>
+      withChecks([
+        {
+          ...run("check / test", "FAILURE"),
+          startedAt: "2026-10-22T10:00:00Z",
+          completedAt: "2026-10-22T10:04:51Z",
+          databaseId: 4242,
+          checkSuite: { app: { slug: "github-actions" } },
+        },
+        {
+          ...run("external", "FAILURE"),
+          summary: "Deploy preview failed: build exited 1",
+          checkSuite: { app: { slug: "cloudflare-pages" } },
+        },
+        {
+          ...run("check / lint", "SUCCESS"),
+          databaseId: 7,
+          checkSuite: { app: { slug: "github-actions" } },
+        },
+        run("CodeQL", null),
+      ]),
+    { protection: ["external"] },
   );
   const client = f.input.client;
   const result = await waitForMergeReadiness({
