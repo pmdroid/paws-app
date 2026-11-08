@@ -4,9 +4,11 @@ import {
   commandDeliveryQueue,
   drainInstanceCommandsAsync,
   enqueueJobAsync,
+  forwardCommandAsync,
   forwardCommandSteps,
   getJobSteps,
   listJobsSteps,
+  onJobReady,
   type Db,
 } from "../src/db";
 import { forEachDialect, insertWorkItem, seed, type DialectDb } from "./dialects";
@@ -74,6 +76,25 @@ forEachDialect((open) => {
         forwardCommandSteps(q, "self", { ...stop, itemId: "missing" }, 100_000),
       ),
     ).toEqual({ owners: [], inserted: false });
+  });
+
+  test("an async forward wakes the job loop only when it adds a delivery", async () => {
+    const handle = await open();
+    handles.push(handle);
+    const { db } = handle;
+    await owned(db);
+    let woken = 0;
+    const stopWake = onJobReady((source) => {
+      if (source === db) woken += 1;
+    });
+    try {
+      expect(await forwardCommandAsync(db, "self", stop, 100_000)).toEqual(["peer"]);
+      expect(woken).toBe(1);
+      expect(await forwardCommandAsync(db, "self", stop, 100_000)).toEqual(["peer"]);
+      expect(woken).toBe(1);
+    } finally {
+      stopWake();
+    }
   });
 
   test("an instance drains its delivered commands and skips malformed ones", async () => {

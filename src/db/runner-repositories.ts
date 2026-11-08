@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 import { emitJobReady, enqueueJobSteps } from "./jobs";
 import { jsonField, jsonText, jsonValue } from "./json-text";
 import { auditWorkspaceAccessSteps } from "./workspace";
@@ -51,6 +51,18 @@ export function recordRunnerRepositories(
     sqliteDb(db).transaction((q) => recordRunnerRepositoriesSteps(q, runnerId, repositories, at)),
   );
   if (enqueued) emitJobReady(db);
+}
+
+export async function recordRunnerRepositoriesAsync(
+  store: Db,
+  runnerId: string,
+  repositories: readonly string[] | null,
+  at: number,
+): Promise<void> {
+  const enqueued = await store.transaction((q) =>
+    recordRunnerRepositoriesSteps(q, runnerId, repositories, at),
+  );
+  if (enqueued) emitJobReady(store);
 }
 
 type RunnerAdminRepositories = {
@@ -109,6 +121,14 @@ export function setRunnerAdminRepositories(db: Database, input: RunnerAdminRepos
     sqliteDb(db).transaction((q) => setRunnerAdminRepositoriesSteps(q, input)),
   );
   if (enqueued) emitJobReady(db);
+}
+
+export async function setRunnerAdminRepositoriesAsync(
+  store: Db,
+  input: RunnerAdminRepositories,
+): Promise<void> {
+  const enqueued = await store.transaction((q) => setRunnerAdminRepositoriesSteps(q, input));
+  if (enqueued) emitJobReady(store);
 }
 
 export function* runnerRepositoryListsSteps(q: Q, runnerId: string) {

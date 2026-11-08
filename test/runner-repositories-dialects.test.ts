@@ -2,9 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { JOB_KIND } from "../src/core";
 import {
   listJobsSteps,
+  onJobReady,
+  recordRunnerRepositoriesAsync,
   recordRunnerRepositoriesSteps,
   runnerRepositoryListsSteps,
   runnerRepositoryRefusalSteps,
+  setRunnerAdminRepositoriesAsync,
   setRunnerAdminRepositoriesSteps,
   type Db,
 } from "../src/db";
@@ -127,6 +130,38 @@ forEachDialect((connect) => {
     expect((await db.run(listJobsSteps)).map((job) => job.payload)).toEqual([
       { runnerId: "box", answeredBy: "admin" },
     ]);
+  });
+
+  test("the async writers wake the job loop only when they enqueue a check", async () => {
+    const handle = await connect();
+    open.push(handle);
+    const { db } = handle;
+    await withoutForeignKeys(db);
+    await seed(db, (q) => q.orm.insert(q.t.runner).values(runner("box", null)));
+    let woken = 0;
+    const stopWake = onJobReady((source) => {
+      if (source === db) woken += 1;
+    });
+    try {
+      await recordRunnerRepositoriesAsync(db, "box", ["acme/paws"], 1);
+      expect(woken).toBe(0);
+      await askRepository(db);
+      await recordRunnerRepositoriesAsync(db, "box", ["acme/looky"], 2);
+      expect(woken).toBe(1);
+      const choice = {
+        runnerId: "box",
+        workspaceId: "acme",
+        userId: "admin",
+        repositories: ["acme/paws"],
+        now: 3,
+      };
+      await setRunnerAdminRepositoriesAsync(db, choice);
+      expect(woken).toBe(2);
+      await setRunnerAdminRepositoriesAsync(db, choice);
+      expect(woken).toBe(2);
+    } finally {
+      stopWake();
+    }
   });
 });
 

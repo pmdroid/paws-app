@@ -75,6 +75,19 @@ export function forwardCommand(db: Database, command: LinearCommand, now = Date.
   return owners;
 }
 
+export async function forwardCommandAsync(
+  store: Db,
+  self: string,
+  command: LinearCommand,
+  now = Date.now(),
+): Promise<string[]> {
+  const { owners, inserted } = await store.transaction((q) =>
+    forwardCommandSteps(q, self, command, now),
+  );
+  if (inserted) emitJobReady(store);
+  return owners;
+}
+
 function deliveryOf(job: Job): DeliveredCommand | null {
   const payload = job.payload as { command?: unknown; stoppedAtVersion?: unknown } | null;
   const command = parseLinearCommand(payload?.command);
