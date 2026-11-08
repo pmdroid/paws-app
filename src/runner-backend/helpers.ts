@@ -226,7 +226,7 @@ export function createRemoteSessionAgentRunner(options: {
             }
           }
           if (command) break;
-          for (const runnerId of held) noteHeld(runnerId);
+          if (purpose !== "finding_groups") for (const runnerId of held) noteHeld(runnerId);
           if (slotBusy && now() >= waitUntil)
             throw new RunnerSlotsBusyError(held.size > 0 ? HELPER_LANE_BUSY : undefined);
           if (!slotBusy) {
