@@ -1,6 +1,6 @@
 import { workspaceMemberUsableSql, auditWorkspaceAccess } from "./workspace";
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, gt, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, ne } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { orm } from "./orm";
 import { runner as runnerTable, runnerHostStatus } from "./schema";
@@ -723,4 +723,26 @@ export function* runnerIdentitySteps(q: Q, runnerId: string): Steps<RunnerIdenti
       .where(eq(runner.id, runnerId)),
   );
   return row ?? null;
+}
+
+/** The people who own a runner in this workspace that is not revoked. */
+export function* activeRunnerOwnersSteps(q: Q, workspaceId: string): Steps<string[]> {
+  const { runner } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ userId: runner.ownerUserId })
+      .from(runner)
+      .where(
+        and(
+          eq(runner.workspaceId, workspaceId),
+          isNull(runner.revokedAt),
+          ne(runner.status, "revoked"),
+        ),
+      ),
+  );
+  return rows.map((row) => row.userId);
+}
+
+export function activeRunnerOwners(db: Database, workspaceId: string): string[] {
+  return settled(sqliteDb(db).run((q) => activeRunnerOwnersSteps(q, workspaceId)));
 }
