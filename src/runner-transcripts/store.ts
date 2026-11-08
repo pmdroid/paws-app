@@ -1,5 +1,13 @@
 import type { Database } from "bun:sqlite";
-import { immediate } from "../db";
+import {
+  immediate,
+  insertRunnerTranscript,
+  jobStatusByKey,
+  runnerTranscript,
+  sealRunnerTranscript,
+  setRunnerTranscriptUri,
+  type RunnerTranscriptRow,
+} from "../db";
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
 import { createRunFileChunks, type RunFileObjects } from "../run-files";
 import {
@@ -11,15 +19,6 @@ import {
 } from "./schema";
 
 type Access = { runnerId: string; runId: string; token: string };
-type Transcript = {
-  commandId: string;
-  workspaceId: string;
-  executionId: string;
-  sizeBytes: number;
-  sealedSize: number | null;
-  sha256: string | null;
-  uri: string | null;
-};
 
 /** The one-time job, enqueued by a migration, that seals chunks stored before encryption. */
 export const RUNNER_TRANSCRIPT_ENCRYPT_JOB = "runner-transcripts.encrypt";
@@ -29,10 +28,8 @@ export const RUNNER_TRANSCRIPT_ENCRYPT_JOB = "runner-transcripts.encrypt";
  * without a key ID is refused instead of read as plaintext.
  */
 export function runnerTranscriptsEncrypted(db: Database) {
-  const job = db
-    .query<{ status: string }, [string]>("SELECT status FROM job WHERE job_key=?")
-    .get(RUNNER_TRANSCRIPT_ENCRYPT_JOB);
-  return !job || job.status === "done";
+  const status = jobStatusByKey(db, RUNNER_TRANSCRIPT_ENCRYPT_JOB);
+  return status === null || status === "done";
 }
 
 /** Where a transcript's chunk objects live. Chunks stored before encryption keep this key. */
@@ -70,26 +67,22 @@ export function createRunnerTranscripts(options: {
     return command;
   }
   function read(runId: string, generation: number) {
-    return db
-      .query<Transcript, [string, number]>(
-        `SELECT command_id AS commandId,workspace_id AS workspaceId,execution_id AS executionId,
-        size_bytes AS sizeBytes,sealed_size AS sealedSize,sha256,uri FROM runner_transcript
-        WHERE run_id=? AND generation=?`,
-      )
-      .get(runId, generation);
+    return runnerTranscript(db, runId, generation);
   }
-  function file(runId: string, generation: number, row: Transcript) {
+  function file(runId: string, generation: number, row: RunnerTranscriptRow) {
     return { runId, generation, prefix: transcriptPrefix(row) };
   }
   function rowFor(access: Access, generation: number, executionId: string) {
     const command = authorize(access, generation);
     let row = read(access.runId, generation);
     if (!row) {
-      db.run(
-        `INSERT INTO runner_transcript(run_id,generation,command_id,workspace_id,execution_id)
-        VALUES(?,?,?,?,?)`,
-        [access.runId, generation, command.id, command.workspaceId, executionId],
-      );
+      insertRunnerTranscript(db, {
+        runId: access.runId,
+        generation,
+        commandId: command.id,
+        workspaceId: command.workspaceId,
+        executionId,
+      });
       row = read(access.runId, generation)!;
     }
     if (row.commandId !== command.id || row.executionId !== executionId) denied();
@@ -122,10 +115,12 @@ export function createRunnerTranscripts(options: {
             (value.sealedSize !== finish.sizeBytes || value.sha256 !== finish.sha256))
         )
           denied();
-        db.run(
-          "UPDATE runner_transcript SET sealed_size=?,sha256=? WHERE run_id=? AND generation=?",
-          [finish.sizeBytes, finish.sha256, access.runId, finish.generation],
-        );
+        sealRunnerTranscript(db, {
+          runId: access.runId,
+          generation: finish.generation,
+          sizeBytes: finish.sizeBytes,
+          sha256: finish.sha256,
+        });
         return value;
       });
       if (row.uri) return { uri: row.uri };
@@ -135,11 +130,7 @@ export function createRunnerTranscripts(options: {
         const value = rowFor(access, finish.generation, finish.executionId);
         if (value.sealedSize !== finish.sizeBytes || value.sha256 !== finish.sha256) denied();
         const uri = `paws-run-file:transcript/${transcript.prefix}`;
-        db.run("UPDATE runner_transcript SET uri=? WHERE run_id=? AND generation=?", [
-          uri,
-          access.runId,
-          finish.generation,
-        ]);
+        setRunnerTranscriptUri(db, access.runId, finish.generation, uri);
         return { uri };
       });
     },
