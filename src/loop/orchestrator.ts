@@ -877,6 +877,7 @@ export class Orchestrator {
   >();
   private readonly leasedJobs = new Map<string, Job>();
   private readonly jobContexts = new Map<string, JobContext>();
+  private readonly mergeTurnNotes = new Map<string, number>();
   /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
   private readonly verifyingStops = new Map<string, string>();
   private readonly reviewerFaults = new Map<string, string>();
@@ -1928,7 +1929,7 @@ export class Orchestrator {
     });
     jobs.register(JOB_KIND.merge, async (job, context) => {
       const ownerId = readString(job.payload, "itemId");
-      if (ownerId !== null && this.jobContexts.has(ownerId)) {
+      if (ownerId !== null && this.mergeTurnTaken(ownerId)) {
         if (context.isCurrent()) waitForMergeTurn(this.db, job, this.now());
         return;
       }
@@ -7341,6 +7342,31 @@ export class Orchestrator {
     };
   }
 
+  private mergeTurnTaken(itemId: string): boolean {
+    const held = this.jobContexts.get(itemId);
+    if (!held) {
+      this.mergeTurnNotes.delete(itemId);
+      return false;
+    }
+    const owner = this.leasedJobs.get(itemId);
+    const holder = owner ? `${owner.queue} job ${owner.id}` : "worktree sweep";
+    if (!held.isCurrent()) {
+      this.jobContexts.delete(itemId);
+      if (owner) this.leasedJobs.delete(itemId);
+      this.mergeTurnNotes.delete(itemId);
+      this.options.journal?.(
+        `merge for item ${itemId} dropped the stale context of ${holder}, which is no longer running`,
+      );
+      return false;
+    }
+    const noted = this.mergeTurnNotes.get(itemId);
+    if (noted === undefined || this.now() - noted >= MERGE_TURN_NOTE_MS) {
+      this.mergeTurnNotes.set(itemId, this.now());
+      this.options.journal?.(`merge for item ${itemId} waits for its turn behind ${holder}`);
+    }
+    return true;
+  }
+
   private async runLeasedJob(
     job: Job,
     context: JobContext,
@@ -9797,6 +9823,7 @@ function retryCount(payload: unknown): number {
 }
 
 const CLOSEOUT_FAULT_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
+const MERGE_TURN_NOTE_MS = 10 * 60_000;
 const REVIEWER_ALERT_INTERVAL_MS = 60 * 60_000;
 
 function closeoutFaults(payload: unknown): CloseoutFaults | null {
