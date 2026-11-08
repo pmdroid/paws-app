@@ -2,7 +2,7 @@ import type { RunnerCapacityWaitState } from "./items";
 import { CONVERSATION_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
 import type { Database } from "bun:sqlite";
 import { and, count, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
-import type { Q } from "./db";
+import { settled, sqliteDb, type Q } from "./db";
 import { orm } from "./orm";
 import { runnerCapacity, runnerHelper, runnerHostStatus } from "./schema";
 import { runnerLeaseCutoff } from "./runner-lease";
@@ -330,6 +330,7 @@ export function runnerHelperAvailability(
         runnerReleaseAtLeast(version, CONVERSATION_RUNNER_VERSION) &&
         (conversationsInUse(db, [runnerId], now).get(runnerId) ?? 0) < limit,
       preempts: false,
+      held: false,
     };
   }
   const rows = db
@@ -352,10 +353,72 @@ export function runnerHelperAvailability(
     );
   }).length;
   const { occupied, capacity } = runnerOccupancy(db, runnerId, now);
+  // The runner runs helpers and sign-ins one at a time, so a helper sent now could only expire.
+  const held = rows.length > maintenance || runnerSignInWaiting(db, runnerId, now);
   return {
-    available: rows.length === maintenance && occupied - maintenance < capacity,
+    available: !held && occupied - maintenance < capacity,
     preempts: maintenance > 0,
+    held,
   };
+}
+
+/** A sign-in someone started is waiting for this runner's health lane or holding it. */
+export function* runnerSignInWaitingSteps(q: Q, runnerId: string, now: number) {
+  const { runnerCommand, runnerLogin } = q.t;
+  const signIn = yield* q.one(
+    q.orm
+      .select({ id: runnerCommand.id })
+      .from(runnerCommand)
+      .innerJoin(runnerLogin, eq(runnerLogin.id, runnerCommand.id))
+      .where(
+        and(
+          eq(runnerCommand.runnerId, runnerId),
+          eq(runnerCommand.kind, "login"),
+          gt(runnerCommand.expiresAt, now),
+          inArray(runnerLogin.state, ["starting", "waiting"]),
+        ),
+      )
+      .limit(1),
+  );
+  return signIn !== undefined;
+}
+
+function runnerSignInWaiting(db: Database, runnerId: string, now: number): boolean {
+  return settled(sqliteDb(db).run((q) => runnerSignInWaitingSteps(q, runnerId, now)));
+}
+
+/** The session's unfinished classify or repository helper, if one is out. */
+export function openSessionHelper(
+  db: Database,
+  sessionId: string,
+  generation: number,
+  now: number,
+): { id: string } | null {
+  return (
+    orm(db)
+      .select({ id: runnerHelper.id })
+      .from(runnerHelper)
+      .where(
+        and(
+          eq(runnerHelper.sessionId, sessionId),
+          eq(runnerHelper.sessionGeneration, generation),
+          inArray(runnerHelper.purpose, ["classify", "select_repository"]),
+          isNull(runnerHelper.endedAt),
+          gt(runnerHelper.expiresAt, now),
+        ),
+      )
+      .limit(1)
+      .get() ?? null
+  );
+}
+
+export function runnerHelperAcknowledged(db: Database, id: string): boolean {
+  const row = orm(db)
+    .select({ acknowledgedAt: runnerHelper.acknowledgedAt })
+    .from(runnerHelper)
+    .where(eq(runnerHelper.id, id))
+    .get();
+  return row?.acknowledgedAt != null;
 }
 
 /** Foreground session helpers fence unfinished maintenance work before taking its slot.

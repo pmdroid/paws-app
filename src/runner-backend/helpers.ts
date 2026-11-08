@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal as writeJournal, journalCaught } from "../journal";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
@@ -11,12 +11,17 @@ import {
   immediate,
   linearSessionClientId,
   recentRunners,
+  runnerHelperAvailability,
   runnerHostVersion,
   runnerOwner,
   sessionActiveRuns,
   workspaceSessionIds,
 } from "../db";
-import { FINDING_GROUPS_RUNNER_VERSION, type RunnerCommand } from "../runner-protocol";
+import {
+  FINDING_GROUPS_RUNNER_VERSION,
+  type RunnerCommand,
+  type RunnerHelperResult,
+} from "../runner-protocol";
 import { versionAtLeast } from "./session-restore";
 import { usageLimitWait } from "./usage-limit-wait";
 
@@ -28,6 +33,9 @@ import {
 } from "./failover";
 
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
+
+const HELD_JOURNAL_INTERVAL_MS = 5 * 60_000;
+const HELPER_LANE_BUSY = "Queued: the runner's helper lane is busy. Paws retries when it frees.";
 
 /** A placement rejection that only says the runner is full: a wait, not a cause. */
 const AT_CAPACITY = /(no free capacity|account at its concurrency limit)$/;
@@ -44,15 +52,25 @@ export function createRemoteSessionAgentRunner(options: {
   mono?: () => number;
   pollIntervalMs?: number;
   placement?: RunnerPlacement;
+  journal?: (line: string) => void;
 }) {
   const now = options.now ?? Date.now;
   const mono = options.mono ?? systemClock.mono;
+  const heldJournaled = new Map<string, number>();
+  const noteHeld = (runnerId: string) => {
+    const last = heldJournaled.get(runnerId);
+    if (last !== undefined && now() - last < HELD_JOURNAL_INTERVAL_MS) return;
+    heldJournaled.set(runnerId, now());
+    (options.journal ?? writeJournal)(
+      `runner ${runnerId}: holding back helper requests while its helper lane is taken`,
+    );
+  };
+  // Attempts in this process waiting on each helper. The last one out ends the helper.
+  const waiters = new Map<string, number>();
   const earliestCooldown = (runnerIds: readonly string[], agent: string) =>
     runnerIds.length === 0
       ? null
       : earliestRunnerCooldown(options.db, { agent, now: now(), runnerIds });
-  // When a start was last turned away by each runner's helper slot.
-  const turnedAway = new Map<string, number>();
   const sessionRun = (sessionId: string) => {
     const rows = sessionActiveRuns(options.db, sessionId);
     return rows.length === 1 ? rows[0]! : null;
@@ -84,6 +102,7 @@ export function createRemoteSessionAgentRunner(options: {
         const cooling: string[] = [];
         const checks: { runnerId: string; until: number }[] = [];
         const causes = new Set<string>();
+        const held = new Set<string>();
         let slotBusy = false;
         const request = {
           sessionId,
@@ -99,21 +118,45 @@ export function createRemoteSessionAgentRunner(options: {
           checks.length = 0;
           causes.clear();
           slotBusy = false;
-          const runners: readonly PlacementCandidate[] = options.placement
-            ? await options.placement.candidates({
-                ...request,
-                onRejected: (runnerId, reason, until) => {
-                  if (AT_CAPACITY.test(reason)) {
-                    slotBusy = true;
-                    turnedAway.set(runnerId, now());
-                    return;
-                  }
-                  causes.add(reason.replaceAll("-", " "));
-                  if (reason === "agent quota cooldown") cooling.push(runnerId);
-                  if (until !== undefined && until > now()) checks.push({ runnerId, until });
-                },
-              })
-            : recentRunners(options.db, now() - 60_000);
+          held.clear();
+          // One request per item: a retry picks up the one still out instead of adding another.
+          const open =
+            purpose === "classify" || purpose === "select_repository"
+              ? options.helpers.open(sessionId)
+              : null;
+          if (open?.purpose === purpose && open.prompt === input.prompt) {
+            command = open;
+            break;
+          }
+          if (open) {
+            held.add(open.runnerId);
+            slotBusy = true;
+          }
+          let runners: readonly PlacementCandidate[] = [];
+          if (!open)
+            runners = options.placement
+              ? await options.placement.candidates({
+                  ...request,
+                  onRejected: (runnerId, reason, until) => {
+                    if (AT_CAPACITY.test(reason)) {
+                      slotBusy = true;
+                      if (
+                        runnerHelperAvailability(
+                          options.db,
+                          runnerId,
+                          now(),
+                          purpose !== "finding_groups",
+                        ).held
+                      )
+                        held.add(runnerId);
+                      return;
+                    }
+                    causes.add(reason.replaceAll("-", " "));
+                    if (reason === "agent quota cooldown") cooling.push(runnerId);
+                    if (until !== undefined && until > now()) checks.push({ runnerId, until });
+                  },
+                })
+              : recentRunners(options.db, now() - 60_000);
           for (const runner of runners) {
             if (
               excluded.includes(runner.id) ||
@@ -176,15 +219,16 @@ export function createRemoteSessionAgentRunner(options: {
               });
               break;
             } catch (caughtError1) {
-              journalCaught(caughtError1, "helpers.forSession.immediate", null);
-              if (caughtError1 instanceof RunnerHelperBusyError) {
-                slotBusy = true;
-                turnedAway.set(runner.id, now());
-              }
+              const busy = caughtError1 instanceof RunnerHelperBusyError ? caughtError1 : null;
+              if (busy) slotBusy = true;
+              if (busy?.heldRunnerId) held.add(busy.heldRunnerId);
+              else journalCaught(caughtError1, "helpers.forSession.immediate", null);
             }
           }
           if (command) break;
-          if (slotBusy && now() >= waitUntil) throw new RunnerSlotsBusyError();
+          for (const runnerId of held) noteHeld(runnerId);
+          if (slotBusy && now() >= waitUntil)
+            throw new RunnerSlotsBusyError(held.size > 0 ? HELPER_LANE_BUSY : undefined);
           if (!slotBusy) {
             const runnerCooldown = earliestCooldown(cooling, profile.agent);
             const cooldown = [...(runnerCooldown ? [runnerCooldown] : []), ...checks].sort(
@@ -204,12 +248,19 @@ export function createRemoteSessionAgentRunner(options: {
           await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
         }
         let accounted = false;
-        const dispatchedAt = now();
         const deadline = Math.min(command.expiresAt, now() + (input.timeoutMs ?? 60_000));
+        waiters.set(command.id, (waiters.get(command.id) ?? 0) + 1);
         try {
           while (now() < deadline) {
             input.signal?.throwIfAborted();
-            const result = options.helpers.result(command.id);
+            let result: RunnerHelperResult | null;
+            try {
+              result = options.helpers.result(command.id);
+            } catch (error) {
+              // The helper can expire between the deadline check and this read.
+              if (now() < deadline) throw error;
+              break;
+            }
             if (result) {
               const disposition = immediate(options.db, () =>
                 options.placement?.finished({
@@ -291,18 +342,18 @@ export function createRemoteSessionAgentRunner(options: {
             }
             await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
           }
-          // Other starts queued on this runner's single helper slot while this one held it.
-          if (
-            purpose !== "finding_groups" &&
-            (turnedAway.get(command.runnerId) ?? 0) > dispatchedAt
-          )
-            throw new RunnerSlotsBusyError();
+          // A helper the runner never picked up waited for the lane; it says nothing about the item.
+          if (purpose !== "finding_groups" && !options.helpers.acknowledged(command.id))
+            throw new RunnerSlotsBusyError(HELPER_LANE_BUSY);
           throw new Error("Remote session helper timed out");
         } finally {
+          const others = (waiters.get(command.id) ?? 1) - 1;
+          if (others > 0) waiters.set(command.id, others);
+          else waiters.delete(command.id);
           // A locally aborted or expired helper is not evidence of a lost runner heartbeat.
           // Cleanup failures must not replace the original timeout, fence or cancellation error.
           try {
-            if (!accounted)
+            if (!accounted && others === 0)
               immediate(options.db, () =>
                 options.placement?.finished({
                   commandId: command.id,
@@ -323,7 +374,7 @@ export function createRemoteSessionAgentRunner(options: {
             journalCaught(error, "helpers.forSession.accountingCleanup", null);
           }
           try {
-            options.helpers.finish(command.id);
+            if (others === 0) options.helpers.finish(command.id);
           } catch (error) {
             journalCaught(error, "helpers.forSession.finishCleanup", null);
           }

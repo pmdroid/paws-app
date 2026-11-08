@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 import { jsonText } from "./json-text";
-import { workHelperSql } from "./runner-capacity";
+import { runnerSignInWaitingSteps, workHelperSql } from "./runner-capacity";
 
 export function* itemOpenRunnerWorkRunsSteps(q: Q, itemId: string) {
   const { run, runnerWork } = q.t;
@@ -375,24 +375,9 @@ export function runnerAgentCheckStates(db: Database, runnerId: string) {
  * commands in arrival order and runs one at a time, so routine checks go out one by one, last.
  */
 export function* nextRoutineHealthCommandSteps(q: Q, runnerId: string, now: number) {
-  const { runnerCommand, runnerHealthResult, runnerLogin } = q.t;
+  const { runnerCommand, runnerHealthResult } = q.t;
   if (yield* runnerLaneHelperWaitingSteps(q, runnerId, now)) return null;
-  const signIn = yield* q.one(
-    q.orm
-      .select({ id: runnerCommand.id })
-      .from(runnerCommand)
-      .innerJoin(runnerLogin, eq(runnerLogin.id, runnerCommand.id))
-      .where(
-        and(
-          eq(runnerCommand.runnerId, runnerId),
-          eq(runnerCommand.kind, "login"),
-          gt(runnerCommand.expiresAt, now),
-          inArray(runnerLogin.state, ["starting", "waiting"]),
-        ),
-      )
-      .limit(1),
-  );
-  if (signIn) return null;
+  if (yield* runnerSignInWaitingSteps(q, runnerId, now)) return null;
   const routine = yield* q.all(
     q.orm
       .select({ ordinal: runnerCommand.ordinal, acknowledgedAt: runnerCommand.acknowledgedAt })
