@@ -9,7 +9,7 @@ import {
   type LinkAskRounds,
 } from "../db";
 import { ask as askQuestion, type QuestionAsker } from "./lifecycle";
-import type { StoredQuestion } from "./store";
+import { getQuestion, type StoredQuestion } from "./store";
 
 /** The button on the overview's Needs you list and the session link label. */
 export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
@@ -261,11 +261,7 @@ export function addLinkAskUrl(db: Database, question: StoredQuestion, now: numbe
 /** Takes the link off the session once the ask closed. */
 export function removeLinkAskUrl(db: Database, questionId: string, now: number): void {
   const ask = getLinkAsk(db, questionId);
-  const sessionId = db
-    .query<{ sessionId: string }, [string]>(
-      "SELECT session_id AS sessionId FROM question WHERE id = ?",
-    )
-    .get(questionId)?.sessionId;
+  const sessionId = getQuestion(db, questionId)?.sessionId;
   if (ask === null || sessionId === undefined) return;
   enqueueOutboxOnce(db, {
     target: "linear",

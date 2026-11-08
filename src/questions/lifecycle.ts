@@ -1,6 +1,10 @@
 import type { Database } from "bun:sqlite";
 import {
+  activeItemQuestions,
+  amendQuestionRow,
+  cancelQueuedQuestions,
   closeLinkAsk,
+  dropQuestionElicitations,
   enqueueOutboxOnce,
   getLinkAsk,
   getWorkItem,
@@ -8,6 +12,9 @@ import {
   journal,
   latestCloseoutIdentity,
   listCloseoutRecoveries,
+  markQuestionAnswered,
+  promoteQuestionRow,
+  setQuestionCancelled,
   type WorkItemRecord,
   type LinkAskKind,
 } from "../db";
@@ -86,11 +93,11 @@ export function ask(
     const waits = findOpenQuestion(db, asker.sessionId) !== null;
     const scope = SUPERSEDES[kind];
     if (waits && scope !== null)
-      db.run(
-        `UPDATE question SET cancelled_at = ?
-         WHERE ${scope === "item" ? "item_id" : "session_id"} = ? AND kind = ?
-           AND status = 'queued' AND cancelled_at IS NULL`,
-        [now, scope === "item" ? asker.itemId : asker.sessionId, kind],
+      cancelQueuedQuestions(
+        db,
+        scope === "item" ? { itemId: asker.itemId } : { sessionId: asker.sessionId },
+        kind,
+        now,
       );
     const inserted = insertQuestion(db, {
       ...asker,
@@ -103,12 +110,7 @@ export function ask(
       now,
     });
     const amended = input.amend?.(inserted) ?? null;
-    if (amended !== null)
-      db.run("UPDATE question SET context = ?, options = ? WHERE id = ?", [
-        amended.context,
-        JSON.stringify(amended.options),
-        inserted.id,
-      ]);
+    if (amended !== null) amendQuestionRow(db, inserted.id, amended);
     const question = amended === null ? inserted : getQuestion(db, inserted.id)!;
     if (waits) return { status: "queued", question };
     deliver(db, question, now);
@@ -146,19 +148,14 @@ export function answerQuestion(
 ): StoredQuestion | null {
   return immediate(db, () => {
     const now = input.now ?? Date.now();
-    const updated = db.run(
-      `UPDATE question
-       SET status = 'answered', answer = ?, answered_by = ?, answered_at = ?, answer_event_key = ?
-       WHERE id = ? AND status = 'open' AND cancelled_at IS NULL`,
-      [input.answer, input.answeredBy, now, input.eventKey ?? null, id],
-    );
-    if (updated.changes === 0) return null;
-    db.run(
-      `UPDATE outbox SET status = 'dropped', error = 'Question already answered.'
-       WHERE target = 'linear' AND op = 'elicitation' AND status IN ('pending', 'dead')
-         AND json_extract(payload, '$.questionId') = ?`,
-      [id],
-    );
+    const updated = markQuestionAnswered(db, id, {
+      answer: input.answer,
+      answeredBy: input.answeredBy,
+      answeredAt: now,
+      answerEventKey: input.eventKey ?? null,
+    });
+    if (!updated) return null;
+    dropQuestionElicitations(db, id, "Question already answered.");
     const answered = getQuestion(db, id);
     if (answered !== null) promoteNext(db, answered.sessionId, now);
     return answered;
@@ -169,7 +166,7 @@ export function cancelQuestion(db: Database, id: string, now = Date.now()): void
   immediate(db, () => {
     const question = getQuestion(db, id);
     if (question?.status !== "open" && question?.status !== "queued") return;
-    db.run("UPDATE question SET cancelled_at = ? WHERE id = ?", [now, id]);
+    setQuestionCancelled(db, id, now);
     promoteNext(db, question.sessionId, now);
   });
 }
@@ -209,25 +206,16 @@ export function cancelItemQuestions(
   scope: "all" | "criteria" = "all",
 ): void {
   immediate(db, () => {
-    const questions = db
-      .query<{ id: string; kind: QuestionKind; sessionId: string }, [string]>(
-        `SELECT id,kind,session_id AS sessionId FROM question
-         WHERE item_id = ? AND status IN ('open', 'queued') AND cancelled_at IS NULL`,
-      )
-      .all(itemId)
+    const questions = activeItemQuestions(db, itemId)
+      .map((question) => ({ ...question, kind: question.kind as QuestionKind }))
       .filter((question) => {
         if (scope === "all" || CRITERIA_QUESTIONS[question.kind]) return true;
         const link = question.kind === "link" ? getLinkAsk(db, question.id) : null;
         return link !== null && CRITERIA_LINK_ASKS[link.kind];
       });
     for (const question of questions) {
-      db.run("UPDATE question SET cancelled_at = ? WHERE id = ?", [now, question.id]);
-      db.run(
-        `UPDATE outbox SET status = 'dropped', error = 'Question cancelled.'
-         WHERE target = 'linear' AND op = 'elicitation' AND status IN ('pending', 'dead')
-           AND json_extract(payload, '$.questionId') = ?`,
-        [question.id],
-      );
+      setQuestionCancelled(db, question.id, now);
+      dropQuestionElicitations(db, question.id, "Question cancelled.");
       if (question.kind === "link" && closeLinkAsk(db, question.id, { reason: "cancelled", now }))
         removeLinkAskUrl(db, question.id, now);
     }
@@ -242,11 +230,11 @@ function promoteNext(db: Database, sessionId: string, now: number): void {
   while (next !== null) {
     const stale = staleReason(db, next);
     if (stale === null) {
-      db.run("UPDATE question SET status = 'open', created_at = ? WHERE id = ?", [now, next.id]);
+      promoteQuestionRow(db, next.id, now);
       deliver(db, next, now);
       return;
     }
-    db.run("UPDATE question SET cancelled_at = ? WHERE id = ?", [now, next.id]);
+    setQuestionCancelled(db, next.id, now);
     journal(`question ${next.id} dropped from the queue: ${stale}`);
     next = nextQueuedQuestion(db, sessionId);
   }
