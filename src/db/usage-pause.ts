@@ -48,20 +48,20 @@ export function startUsagePause(db: Database, pause: UsagePause, mono = systemCl
 }
 
 export function* usagePauseSteps(q: Q, runId: string) {
-  const { usagePause } = q.t;
+  const pauses = q.t.usagePause;
   const row = yield* q.one(
     q.orm
       .select({
-        runId: usagePause.runId,
-        itemId: usagePause.itemId,
-        agent: usagePause.agent,
-        runnerId: usagePause.runnerId,
-        resetsAt: usagePause.resetsAt,
-        resumeAt: usagePause.resumeAt,
-        pausedAt: usagePause.pausedAt,
+        runId: pauses.runId,
+        itemId: pauses.itemId,
+        agent: pauses.agent,
+        runnerId: pauses.runnerId,
+        resetsAt: pauses.resetsAt,
+        resumeAt: pauses.resumeAt,
+        pausedAt: pauses.pausedAt,
       })
-      .from(usagePause)
-      .where(eq(usagePause.runId, runId)),
+      .from(pauses)
+      .where(eq(pauses.runId, runId)),
   );
   return row ?? null;
 }

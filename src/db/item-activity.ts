@@ -59,14 +59,14 @@ export function* itemActivityFactsSteps(
   );
   let liveJob = false;
   let slotWait: ItemActivityFacts["slotWait"] = null;
-  for (const job of jobs) {
+  for (const row of jobs) {
     const payload = parsedJson<{
       awakeWait?: { kind?: string; worker?: string; attempt?: number };
-    }>(q, job.payload);
-    const claimed = job.status === "running" && (job.lockedUntil ?? 0) > now;
+    }>(q, row.payload);
+    const claimed = row.status === "running" && (row.lockedUntil ?? 0) > now;
     const wait = payload.awakeWait;
     const waits =
-      claimed && wait?.worker === job.lockedBy && wait?.attempt === job.attempts
+      claimed && wait?.worker === row.lockedBy && wait?.attempt === row.attempts
         ? wait?.kind
         : null;
     const capacity = runnerCapacityWait(payload);
