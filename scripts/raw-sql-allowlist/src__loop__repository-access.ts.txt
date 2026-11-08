@@ -1,0 +1,2 @@
+src/loop/repository-access.ts | const allowed = db .query<{ allowed: number }, string[]>( | not yet converted to Drizzle
+src/loop/repository-access.ts | ? db .query<{ name: string }, [string]>( | not yet converted to Drizzle

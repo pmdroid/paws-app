@@ -1,0 +1,23 @@
+src/intake/parent-delegation.ts | const row = db .query<Omit<Parent, "edges"> & { edges: string }, [string]>( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | return db .query<SubIssue, [string]>( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | return db .query<SubIssue, [string]>( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | return db .query<SubIssue, [string, string]>( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db .query( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | const items = db .query< | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db .query( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db .query<{ identifier: string }, [string, string]>( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db .query<{ identifier: string }, [string]>( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | if (db.query("SELECT 1 FROM outbox WHERE idempotency_key=?").get(key)) return; | not yet converted to Drizzle
+src/intake/parent-delegation.ts | const changed = db.run( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db .query( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db .query( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db .query(`SELECT 1 FROM work_item i JOIN linear_session s ON s.session_id=i.session_key | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db.run( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db.run( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [ | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db.run("UPDATE parent_delegation_issue SET delegation_id=? WHERE session_id=?", [ | not yet converted to Drizzle
+src/intake/parent-delegation.ts | for (const item of db .query<{ id: string }, [string]>( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db.run( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | const rows = db .query<{ id: string }, []>( | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db.run("UPDATE parent_delegation SET last_error=NULL WHERE delegation_id=?", [row.id]); | not yet converted to Drizzle
+src/intake/parent-delegation.ts | db.run("UPDATE parent_delegation SET last_error=? WHERE delegation_id=?", [ | not yet converted to Drizzle

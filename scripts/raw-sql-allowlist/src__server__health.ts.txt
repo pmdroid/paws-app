@@ -1,0 +1,1 @@
+src/server/health.ts | db.query("SELECT count(*) FROM sqlite_schema").get(); | not yet converted to Drizzle

@@ -1,0 +1,1 @@
+src/questions/link-ask.ts | const sessionId = db .query<{ sessionId: string }, [string]>( | not yet converted to Drizzle

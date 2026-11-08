@@ -1,0 +1,11 @@
+src/questions/visual-review.ts | db.run( | not yet converted to Drizzle
+src/questions/visual-review.ts | db.run( | not yet converted to Drizzle
+src/questions/visual-review.ts | const rows = db .query<VisualReviewRow, [string, string]>( | not yet converted to Drizzle
+src/questions/visual-review.ts | const row = db .query<VisualReviewRow, [string]>("SELECT * FROM visual_review WHERE question_id = ?") | not yet converted to Drizzle
+src/questions/visual-review.ts | db.run( | not yet converted to Drizzle
+src/questions/visual-review.ts | db.run( | not yet converted to Drizzle
+src/questions/visual-review.ts | db.run( | not yet converted to Drizzle
+src/questions/visual-review.ts | return db .query<VisualReviewRow, [string]>( | not yet converted to Drizzle
+src/questions/visual-review.ts | const rows = db .query<VisualReviewRow, [string]>( | not yet converted to Drizzle
+src/questions/visual-review.ts | const row = db .query<{ changes: number; continued: number }, [string, string]>( | not yet converted to Drizzle
+src/questions/visual-review.ts | return db .query<{ questionId: string; feedback: string | null }, [string, string]>( | not yet converted to Drizzle

@@ -1,0 +1,3 @@
+src/linear/redelegation.ts | const open = db .query( | not yet converted to Drizzle
+src/linear/redelegation.ts | const session = db .query<{ sessionId: string; createdAt: number }, [string]>( | not yet converted to Drizzle
+src/linear/redelegation.ts | if (db.query("SELECT 1 FROM work_item WHERE session_key=? LIMIT 1").get(session.sessionId)) | not yet converted to Drizzle

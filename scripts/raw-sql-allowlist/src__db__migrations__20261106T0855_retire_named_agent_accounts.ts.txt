@@ -1,0 +1,1 @@
+src/db/migrations/20261106T0855_retire_named_agent_accounts.ts | for (const account of db .query<{ id: string; workspaceId: string; agent: string; label: string }, []>( | frozen legacy migration (src/db/README.md)

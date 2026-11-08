@@ -1,0 +1,2 @@
+src/db/migrations/20261105T2237_runner_extra_usage.ts | db.run("CREATE TEMP TABLE extra_usage_import(agent TEXT NOT NULL)"); | frozen legacy migration (src/db/README.md)
+src/db/migrations/20261105T2237_runner_extra_usage.ts | db.run("INSERT INTO extra_usage_import VALUES(?)", [agent]); | frozen legacy migration (src/db/README.md)

@@ -1,0 +1,4 @@
+src/dashboard/src/server/finding-groups.ts | db.query<{ id: string }, []>("SELECT id FROM workspace ORDER BY id LIMIT 1").get()?.id; | not yet converted to Drizzle
+src/dashboard/src/server/finding-groups.ts | const claimed = db.run( | not yet converted to Drizzle
+src/dashboard/src/server/finding-groups.ts | db.run( | not yet converted to Drizzle
+src/dashboard/src/server/finding-groups.ts | db.run("UPDATE finding_group SET action=NULL WHERE id=? AND status='open' AND action=?", [ | not yet converted to Drizzle

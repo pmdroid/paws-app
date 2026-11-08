@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const ALLOWED_FILES = new Set(["src/db/migrate.ts", "src/db/open.ts"]);
 const TEST_FILE = /(^|\/)(test|fixtures)\/|\.test\.tsx?$/;
@@ -75,7 +75,13 @@ export function maskCode(source: string): string {
 }
 
 export type RawCall = { path: string; line: number; content: string };
-export type Entry = { path: string; content: string; reason: string };
+export type Entry = { path: string; content: string; reason: string; file?: string };
+
+export const ALLOWLIST_DIR = "scripts/raw-sql-allowlist";
+
+export function allowlistFile(path: string): string {
+  return `${ALLOWLIST_DIR}/${path.replaceAll("/", "__")}.txt`;
+}
 
 export function rawCalls(path: string, source: string): RawCall[] {
   if (TEST_FILE.test(path) || ALLOWED_FILES.has(path)) return [];
@@ -100,7 +106,7 @@ export function rawCalls(path: string, source: string): RawCall[] {
   return calls;
 }
 
-export function parseAllowlist(text: string): Entry[] {
+export function parseAllowlist(text: string, file?: string): Entry[] {
   return text
     .split("\n")
     .filter((line) => line.trim() !== "" && !line.startsWith("#"))
@@ -113,6 +119,7 @@ export function parseAllowlist(text: string): Entry[] {
         path: line.slice(0, first),
         content: line.slice(first + 3, last),
         reason: line.slice(last + 3),
+        ...(file === undefined ? {} : { file }),
       };
     });
 }
@@ -138,15 +145,29 @@ function sourceCalls(root: string): RawCall[] {
     .flatMap((file) => rawCalls(file, readFileSync(join(root, file), "utf8")));
 }
 
+function readAllowlist(root: string): Entry[] {
+  let names: string[];
+  try {
+    names = readdirSync(join(root, ALLOWLIST_DIR));
+  } catch {
+    return [];
+  }
+  return names
+    .filter((name) => name.endsWith(".txt"))
+    .sort()
+    .flatMap((name) => {
+      const file = `${ALLOWLIST_DIR}/${name}`;
+      return parseAllowlist(readFileSync(join(root, file), "utf8"), file);
+    });
+}
+
 function main(root: string, baseline: boolean): number {
-  const allowlistPath = join(root, "scripts/raw-sql-allowlist.txt");
-  const { refused, used, stale } = checkRawSql(
-    sourceCalls(root),
-    parseAllowlist(readFileSync(allowlistPath, "utf8")),
-  );
+  const { refused, used, stale } = checkRawSql(sourceCalls(root), readAllowlist(root));
   if (baseline) {
     for (const call of refused)
-      console.log(`${call.path} | ${call.content} | not yet converted to Drizzle`);
+      console.log(
+        `${allowlistFile(call.path)}: ${call.path} | ${call.content} | not yet converted to Drizzle`,
+      );
     return 0;
   }
   const counts = new Map<string, number>();
@@ -156,14 +177,16 @@ function main(root: string, baseline: boolean): number {
   }
   for (const [key, count] of counts) console.log(`allowlisted: ${count} × ${key}`);
   for (const entry of stale)
-    console.log(`stale allowlist entry, remove it: ${entry.path} | ${entry.content}`);
+    console.log(
+      `stale allowlist entry in ${entry.file ?? ALLOWLIST_DIR}, remove it: ${entry.path} | ${entry.content}`,
+    );
   for (const call of refused)
     console.error(
       `${call.path}:${call.line}: raw bun:sqlite call; go through Drizzle in src/db: ${call.content}`,
     );
   if (refused.length === 0) return 0;
   console.error(
-    `\n${refused.length} raw SQL call(s) refused. Move them to src/db through orm(db), or list them in ${relative(root, allowlistPath)} with a reason.`,
+    `\n${refused.length} raw SQL call(s) refused. Move them to src/db through orm(db), or list each in ${ALLOWLIST_DIR}/<path with / as __>.txt (${allowlistFile(refused[0]!.path)}) with a reason.`,
   );
   return 1;
 }

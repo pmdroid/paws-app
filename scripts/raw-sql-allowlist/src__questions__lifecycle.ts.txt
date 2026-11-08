@@ -1,0 +1,10 @@
+src/questions/lifecycle.ts | db.run( | not yet converted to Drizzle
+src/questions/lifecycle.ts | db.run("UPDATE question SET context = ?, options = ? WHERE id = ?", [ | not yet converted to Drizzle
+src/questions/lifecycle.ts | const updated = db.run( | not yet converted to Drizzle
+src/questions/lifecycle.ts | db.run( | not yet converted to Drizzle
+src/questions/lifecycle.ts | db.run("UPDATE question SET cancelled_at = ? WHERE id = ?", [now, id]); | not yet converted to Drizzle
+src/questions/lifecycle.ts | const questions = db .query<{ id: string; kind: QuestionKind; sessionId: string }, [string]>( | not yet converted to Drizzle
+src/questions/lifecycle.ts | db.run("UPDATE question SET cancelled_at = ? WHERE id = ?", [now, question.id]); | not yet converted to Drizzle
+src/questions/lifecycle.ts | db.run( | not yet converted to Drizzle
+src/questions/lifecycle.ts | db.run("UPDATE question SET status = 'open', created_at = ? WHERE id = ?", [now, next.id]); | not yet converted to Drizzle
+src/questions/lifecycle.ts | db.run("UPDATE question SET cancelled_at = ? WHERE id = ?", [now, next.id]); | not yet converted to Drizzle

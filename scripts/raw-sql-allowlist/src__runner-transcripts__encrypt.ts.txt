@@ -1,0 +1,1 @@
+src/runner-transcripts/encrypt.ts | const next = db.query<Plaintext, [string, number, number]>( | not yet converted to Drizzle

@@ -1,0 +1,13 @@
+src/runner-health-runtime/index.ts | db.run( | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | !db .query<{ name: string }, []>("PRAGMA table_info(health_execution)") | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | db.run("ALTER TABLE health_execution ADD COLUMN result TEXT"); | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | for (const row of db .query<{ id: string; payload: string; phase: string; result: string | null }, []>( | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | } else db.run("UPDATE health_execution SET phase='interrupted' WHERE id=?", [row.id]); | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | db.run("UPDATE health_execution SET phase='publishing',result=? WHERE id=?", [ | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | db.run("UPDATE health_execution SET phase='interrupted' WHERE id=?", [entry.id]); | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | db.run("UPDATE health_execution SET phase='complete' WHERE id=?", [entry.id]); | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | db.run("UPDATE health_execution SET phase='publishing',result=? WHERE id=?", [ | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | db.run("UPDATE health_execution SET phase='complete' WHERE id=?", [entry.id]); | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | const previous = db .query<{ payload: string }, [string]>( | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | db.run( | not yet converted to Drizzle
+src/runner-health-runtime/index.ts | db.run("UPDATE health_execution SET phase='running' WHERE id=?", [id]); | not yet converted to Drizzle

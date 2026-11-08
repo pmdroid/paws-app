@@ -1,0 +1,3 @@
+src/loop/merge-jobs.ts | if (db.query("SELECT 1 FROM github_delivery WHERE delivery_id = ?").get(delivery.deliveryId)) | not yet converted to Drizzle
+src/loop/merge-jobs.ts | const jobs = db .query<{ id: number; activationId: number; payload: string }, [string]>( | not yet converted to Drizzle
+src/loop/merge-jobs.ts | db.run( | not yet converted to Drizzle

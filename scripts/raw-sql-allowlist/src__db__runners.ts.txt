@@ -1,0 +1,23 @@
+src/db/runners.ts | return db .query<RunnerRecord, [string]>( | not yet converted to Drizzle
+src/db/runners.ts | return db .query<RunnerRecord, [string]>( | not yet converted to Drizzle
+src/db/runners.ts | const rows = db .query< | not yet converted to Drizzle
+src/db/runners.ts | db.run( | not yet converted to Drizzle
+src/db/runners.ts | db.run( | not yet converted to Drizzle
+src/db/runners.ts | const row = db .query<{ limits: string; observedAt: number }, [string, string]>( | not yet converted to Drizzle
+src/db/runners.ts | return db .query<Row, [number, number, number, string]>( | not yet converted to Drizzle
+src/db/runners.ts | const row = db .query<{ id: string }, [string, number, number]>( | not yet converted to Drizzle
+src/db/runners.ts | db.run( | not yet converted to Drizzle
+src/db/runners.ts | db.run("DELETE FROM runner_enrollment WHERE used_at IS NULL AND expires_at<=?", [input.now]); | not yet converted to Drizzle
+src/db/runners.ts | const pending = db .query<{ count: number }, [string, number]>( | not yet converted to Drizzle
+src/db/runners.ts | db.run( | not yet converted to Drizzle
+src/db/runners.ts | return db .query<RunnerEnrollment, [string, number]>( | not yet converted to Drizzle
+src/db/runners.ts | db.run( | not yet converted to Drizzle
+src/db/runners.ts | const used = db.run( | not yet converted to Drizzle
+src/db/runners.ts | db .query<{ current: number }, [string]>( | not yet converted to Drizzle
+src/db/runners.ts | db.run( | not yet converted to Drizzle
+src/db/runners.ts | const changed = db.run( | not yet converted to Drizzle
+src/db/runners.ts | const fingerprints = db .query<{ fingerprint: string }, [string]>( | not yet converted to Drizzle
+src/db/runners.ts | db.run("UPDATE runner_certificate SET revoked_at=? WHERE runner_id=?", [ | not yet converted to Drizzle
+src/db/runners.ts | db.run("UPDATE member_vm SET runner_id=NULL,updated_at=? WHERE runner_id=?", [ | not yet converted to Drizzle
+src/db/runners.ts | db .query<{ name: string }, [string]>( | not yet converted to Drizzle
+src/db/runners.ts | const row = db .query<Omit<RunnerAvailability, "revoked"> & { revoked: number }, [string]>( | not yet converted to Drizzle

@@ -1,0 +1,7 @@
+src/db/outbox.ts | db.run( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | db.run( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | const item = db .query<{ state: string; runId: string | null }, [string]>( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | db .query<{ open: number }, [string]>( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | db .query<{ origin: string | null }, [string, string]>( | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | if (db.query<{ id: number }, [string]>("SELECT id FROM job WHERE job_key = ?").get(key)) | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
+src/db/outbox.ts | db.run(`UPDATE outbox SET status = 'dropped', error = ? WHERE id = ? AND status = 'dead'`, [ | retryOutbox and its dead-row settling wait for enqueueJobOnceSteps in jobs.ts
