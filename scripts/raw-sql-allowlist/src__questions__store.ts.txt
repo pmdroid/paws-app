@@ -1,6 +1,0 @@
-src/questions/store.ts | db.run( | not yet converted to Drizzle
-src/questions/store.ts | const row = db.query<QuestionRow, [string]>("SELECT * FROM question WHERE id = ?").get(id); | not yet converted to Drizzle
-src/questions/store.ts | const row = db .query<QuestionRow, [string]>( | not yet converted to Drizzle
-src/questions/store.ts | const row = db .query<QuestionRow, [string, string]>( | not yet converted to Drizzle
-src/questions/store.ts | const row = db .query<QuestionRow, [string]>( | not yet converted to Drizzle
-src/questions/store.ts | db .query<{ id: string }, [string, string]>( | not yet converted to Drizzle
