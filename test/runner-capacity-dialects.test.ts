@@ -376,7 +376,10 @@ forEachDialect((connect) => {
     expect((await payloadOf(db, 3)).pinnedSlot).toEqual({ runnerId: "box", order: 3 });
     expect(await payloadOf(db, 1)).toEqual({ itemId: "kept" });
 
+    await save([[1, { runnerId: "box", order: 0 }]]);
     await save([]);
+    expect(await payloadOf(db, 1)).toEqual({ itemId: "kept" });
+
     await db.run((q) => releasePinnedSlotSteps(q, "claimed"));
     expect(await payloadOf(db, 3)).toEqual({ itemId: "claimed" });
     await db.run((q) => releasePinnedSlotSteps(q, "other-queue"));
