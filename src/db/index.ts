@@ -44,6 +44,11 @@ export {
   type PullReviewOutcome,
   type PullReviewRecord,
   type PullReviewState,
+  getPullReviewSteps,
+  pendingChangeRequestsSteps,
+  recordPullReviewSteps,
+  settlePullReviewSteps,
+  wakePullReviewsSteps,
 } from "./pull-reviews";
 export {
   getPullComment,
@@ -61,6 +66,14 @@ export {
   type PullCommentOutcome,
   type PullCommentRecord,
   type PullCommentSource,
+  commentingAppsSteps,
+  deferPullFeedbackSteps,
+  gatherPullFeedbackSteps,
+  getPullCommentSteps,
+  pendingPullCommentsSteps,
+  pullReviewCheckWaitSteps,
+  recordPullCommentSteps,
+  settlePullCommentsSteps,
 } from "./pull-comments";
 export {
   gatherLinearComments,
@@ -97,6 +110,11 @@ export {
   type PullCiFailureRecord,
   type PullCiObservation,
   type PullCiOutcome,
+  clearPullCiFailuresSteps,
+  getPullCiFailureSteps,
+  pendingPullCiFailuresSteps,
+  recordPullCiFailureSteps,
+  settlePullCiFailuresSteps,
 } from "./pull-ci";
 export {
   listReviewEscapes,
