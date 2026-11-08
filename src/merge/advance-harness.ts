@@ -633,6 +633,7 @@ export async function mergeHarness(
   function sweep(main: string | null): Promise<string[]> {
     return returnQueuedConflicts(
       db,
+      sqliteDb(db),
       { repository: "acme/app", main },
       {
         ask,

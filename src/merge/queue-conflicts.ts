@@ -3,12 +3,16 @@ import { JOB_KIND } from "../core";
 import {
   enqueueJobOnce,
   getItemPullRequest,
-  getWorkItem,
+  getWorkItemSteps,
   immediate,
   itemJobRunning,
+  itemJobRunningSteps,
   listMergeQueues,
-  rebaseReturnedFor,
+  listMergeQueuesSteps,
+  rebaseReturnedForSteps,
   recordRebaseReturn,
+  type Db,
+  type MergeQueuePosition,
   type WorkItemRecord,
 } from "../db";
 import type { RebaseConflict } from "./budget";
@@ -59,18 +63,19 @@ export function queueConflictSweep(payload: unknown): QueueConflictSweep | null 
  */
 export async function returnQueuedConflicts(
   db: Database,
+  store: Db,
   sweep: QueueConflictSweep,
   caps: QueueConflictCapabilities,
 ): Promise<string[]> {
   const handled: string[] = [];
-  for (const itemId of behindFront(db, sweep.repository)) {
-    const item = getWorkItem(db, itemId);
+  for (const itemId of await queuedBehindFront(store, sweep.repository)) {
+    const item = await store.run((q) => getWorkItemSteps(q, itemId));
     if (!item || item.state !== "merge_queue" || item.cancelRequested) continue;
     const pull = getItemPullRequest(db, item.id);
     if (pull === null) continue;
     const read = await caps.readPull(item, pull.pullNumber);
     if (read === null || !read.open || read.merges !== "conflict") continue;
-    if (rebaseReturnedFor(db, item.id, read.head)) continue;
+    if (await store.run((q) => rebaseReturnedForSteps(q, item.id, read.head))) continue;
     const conflict: RebaseConflict = { base: sweep.main, files: null };
     // The read awaited GitHub: the item may have reached the front, or its merge may have started.
     // Judge that again in the transaction that sends it back or asks.
@@ -140,11 +145,27 @@ function askSpentBudget(
 
 /** Queued items in `repository` behind the front whose merge attempt is not running. */
 function behindFront(db: Database, repository: string): string[] {
-  const name = repository.toLowerCase();
   return listMergeQueues(db)
-    .filter((entry) => entry.repository.toLowerCase() === name && entry.position > 1)
+    .filter((entry) => queuedBehind(entry, repository))
     .map((entry) => entry.itemId)
     .filter((itemId) => !mergeRunning(db, itemId));
+}
+
+/** {@link behindFront}, read through the store. */
+function queuedBehindFront(store: Db, repository: string): Promise<string[]> {
+  return store.run(function* (q) {
+    const behind: string[] = [];
+    for (const entry of yield* listMergeQueuesSteps(q))
+      if (queuedBehind(entry, repository)) behind.push(entry.itemId);
+    const waiting: string[] = [];
+    for (const itemId of behind)
+      if (!(yield* itemJobRunningSteps(q, JOB_KIND.merge, itemId))) waiting.push(itemId);
+    return waiting;
+  });
+}
+
+function queuedBehind(entry: MergeQueuePosition, repository: string): boolean {
+  return entry.repository.toLowerCase() === repository.toLowerCase() && entry.position > 1;
 }
 
 function mergeRunning(db: Database, itemId: string): boolean {

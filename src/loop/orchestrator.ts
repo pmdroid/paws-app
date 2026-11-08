@@ -2040,7 +2040,7 @@ export class Orchestrator {
     jobs.register(JOB_KIND.queueConflicts, async (job, context) => {
       const sweep = queueConflictSweep(job.payload);
       if (sweep === null || !context.isCurrent()) return;
-      await returnQueuedConflicts(this.db, sweep, {
+      await returnQueuedConflicts(this.db, this.store, sweep, {
         ask,
         restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
         now: () => this.now(),
