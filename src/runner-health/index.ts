@@ -7,7 +7,9 @@ import {
   recordAccountObservation,
   immediate,
   recordRunnerAgentUsage,
+  runnerAgentCheckStates,
   runnerAgentUsage,
+  runnerLaneHelperWaiting,
   workspaceMember,
   type RunnerAgentLimit,
 } from "../db";
@@ -51,8 +53,27 @@ type History = {
   result: { authenticated: boolean; receivedAt: number } | null;
 };
 const SIGN_IN_INTERVAL_MS = 5 * 60_000;
+const PASSED_CHECK_INTERVAL_MS = 30 * 60_000;
+const RECENT_USE_MS = 24 * 60 * 60_000;
 const RECENTLY_SEEN_MS = 60_000;
 const runnerAgents = ["claude", "codex", "grok", "opencode"] as const;
+
+/**
+ * Whether a background check of this agent is due. An agent nothing has answered for yet gets
+ * one, because a check is what finds out whether it is signed in. After that only an agent
+ * signed in here or used here recently is checked: every 30 minutes while it passes, else every 5.
+ */
+function checkDue(
+  entry: History | undefined,
+  state: { authExpired: number; lastUsedAt: number } | undefined,
+  at: number,
+) {
+  if (entry?.inFlight || (entry && entry.issuedAt > at - SIGN_IN_INTERVAL_MS)) return false;
+  if (!entry?.result) return true;
+  const signedIn = entry.result.authenticated && state?.authExpired !== 1;
+  if (!signedIn && (state?.lastUsedAt ?? 0) <= at - RECENT_USE_MS) return false;
+  return entry.result.receivedAt < at - (signedIn ? PASSED_CHECK_INTERVAL_MS : SIGN_IN_INTERVAL_MS);
+}
 
 export function createRunnerHealth(options: {
   db: Database;
@@ -180,8 +201,8 @@ export function createRunnerHealth(options: {
       });
     },
     /**
-     * Queues a login_check per agent on active, recently seen runners when the last check is older
-     * than five minutes and none is in flight. Never queues probe: it runs a model turn.
+     * Queues a login_check per agent that is due on active, recently seen runners. Queues nothing
+     * on a runner while a helper waits for its lane. Never queues probe: it runs a model turn.
      */
     refresh() {
       const at = now();
@@ -197,19 +218,16 @@ export function createRunnerHealth(options: {
       for (const runner of runners) {
         try {
           immediate(db, () => {
+            if (runnerLaneHelperWaiting(db, runner.id, at)) return;
             const last = history(runner.id, at);
+            const states = new Map(
+              runnerAgentCheckStates(db, runner.id).map((state) => [state.agent, state]),
+            );
             let pending = pendingChecks(runner.id, at);
             for (const agent of runnerAgents) {
               if (!work.supportsAgent(runner.id, agent)) continue;
               if (pending >= 4) return;
-              const entry = last(agent);
-              if (
-                entry &&
-                (entry.inFlight ||
-                  entry.issuedAt > at - SIGN_IN_INTERVAL_MS ||
-                  (entry.result && entry.result.receivedAt > at - SIGN_IN_INTERVAL_MS))
-              )
-                continue;
+              if (!checkDue(last(agent), states.get(agent), at)) continue;
               queueCheck(runner, agent, at);
               pending += 1;
             }

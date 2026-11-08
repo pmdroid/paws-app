@@ -171,7 +171,9 @@ Replacing a named binding's credentials never changes the identity of work alrea
 
 A named sign-in or sign-in check does not change the default sign-in's readiness, quota or usage rows.
 
-The runner runs probes, sign-in checks and sign-ins one at a time, in the order it received them. So Paws sends a sign-in at once, and sends probes and sign-in checks one at a time: none while another of them or a sign-in someone started is still unfinished (`nextRoutineHealthCommand` in `src/db/runner-work.ts`). A sign-in therefore waits at most for the one check already running. Until the runner starts it, the sign-in dialog says it is waiting for the runner and how long ago the person asked.
+The runner runs probes, sign-in checks, sign-ins and session helpers one at a time, in the order it received them. So Paws sends a sign-in or a helper at once, and sends probes and sign-in checks one at a time: none while another of them, a helper, or a sign-in someone started is still unfinished (`nextRoutineHealthCommand` in `src/db/runner-work.ts`). A conversation helper has its own lane and does not hold them back. A sign-in or helper therefore waits at most for the one check already running. Until the runner starts it, the sign-in dialog says it is waiting for the runner and how long ago the person asked.
+
+Paws checks each agent on an active, recently seen runner by itself, and queues none while a helper waits. An agent no check has answered for yet gets a check, repeated every 5 minutes until one answers. After that, an agent is checked only if it is signed in on that runner or was used there in the last 24 hours. A check that passed is repeated after 30 minutes. An agent that is signed out, or whose last check failed, is checked every 5 minutes. An agent that is signed out and has not been used for a day is left alone until someone signs it in from the dashboard or asks for a check.
 
 Agents on a runner all run as the one runner account, so a binding home is isolated from the agents' own configuration, not from a tool call that deliberately reads another path as that account.
 

@@ -6,12 +6,15 @@ import {
   migrate,
   putWorkspaceUser,
   recordAccountObservation,
+  recordLinearInstallation,
+  recordRunnerCapacity,
   recordRunnerAgentUsage,
   runnerAgentUsage,
   syncWorkspaceMember,
 } from "../src/db";
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerHealth } from "../src/runner-health";
+import { createRunnerHelpers } from "../src/runner-helpers";
 import { createRunnerLogin } from "../src/runner-login";
 import { createRunnerHttp, type RunnerControl } from "../src/runner-control";
 import { workspaceId, type WorkspacePrincipal } from "../src/workspace";
@@ -128,6 +131,52 @@ function fixture() {
     });
   const seen = (runnerId: string) =>
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
+  const used = (runnerId: string, agent: string, usedAt = at) =>
+    db.run(
+      "INSERT INTO runner_agent_policy(runner_id,agent,last_used_at) VALUES(?1,?2,?3) ON CONFLICT(runner_id,agent) DO UPDATE SET last_used_at=?3",
+      [runnerId, agent, usedAt],
+    );
+  const helpers = createRunnerHelpers({
+    db,
+    keyId: "sign-in",
+    privateKey: generateKeyPairSync("ed25519").privateKey,
+    now: () => at,
+  });
+  const helper = (runnerId: string, purpose: "classify" | "conversation" = "classify") => {
+    const sessionId = crypto.randomUUID();
+    recordLinearInstallation(db, {
+      organizationId: "sign-in-org",
+      oauthClientId: "app",
+      appUserId: "app-user",
+      sessionId,
+      teamId: "team",
+      observedAtMs: at,
+    });
+    return helpers.dispatch({
+      runnerId,
+      sessionId,
+      purpose,
+      profile: { agent: "claude", model: null },
+      prompt: "Which repository does this belong to?",
+      ...(purpose === "conversation"
+        ? {
+            conversation: {
+              itemId: "item",
+              runId: "run",
+              resumeSessionId: `claude-${sessionId}`,
+            },
+          }
+        : {}),
+    }).command;
+  };
+  const delivered = (runnerId: string) =>
+    work.commands(runnerId).map((envelope) => {
+      const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
+        id: string;
+        type: string;
+      };
+      return command;
+    });
   return {
     db,
     owner,
@@ -137,6 +186,10 @@ function fixture() {
     checks,
     answer,
     seen,
+    used,
+    helper,
+    helpers,
+    delivered,
     now: () => at,
     advance: (ms: number) => {
       at += ms;
@@ -156,6 +209,7 @@ test("background sign-in checks run once per agent per interval and never while 
   f.advance(10_000);
   f.answer(claude!);
   f.answer(codex!, false);
+  f.used(runnerId, "codex");
 
   f.advance(3 * 60_000);
   f.seen(runnerId);
@@ -180,7 +234,7 @@ test("background sign-in checks run once per agent per interval and never while 
       .checks()
       .slice(6)
       .map((check) => check.agent),
-  ).toEqual(["claude", "codex"]);
+  ).toEqual(["codex"]);
   expect(f.db.query("SELECT 1 FROM runner_command WHERE kind='probe'").get()).toBeNull();
 
   const inFlight = f.checks().length;
@@ -202,6 +256,121 @@ test("background sign-in checks run once per agent per interval and never while 
       .slice(inFlight + 1)
       .map((check) => check.agent),
   ).toEqual(["codex", "grok", "opencode"]);
+});
+
+test("four signed-in agents get at most one passing check each in 30 minutes", () => {
+  const f = fixture();
+  const runnerId = f.runner();
+  f.health.refresh();
+  for (const check of f.checks()) f.answer(check);
+  for (let minute = 5; minute <= 30; minute += 5) {
+    f.advance(5 * 60_000);
+    f.seen(runnerId);
+    f.health.refresh();
+    expect(f.checks()).toHaveLength(4);
+  }
+  f.advance(1);
+  f.seen(runnerId);
+  f.health.refresh();
+  expect(
+    f
+      .checks()
+      .slice(4)
+      .map((check) => check.agent),
+  ).toEqual(["claude", "codex", "grok", "opencode"]);
+});
+
+test("a pending helper goes out before a queued login check, which waits until the helper finishes", () => {
+  const f = fixture();
+  const runnerId = f.runner();
+  f.health.refresh();
+  expect(f.delivered(runnerId).map(({ type }) => type)).toEqual(["login_check"]);
+  const [first] = f.delivered(runnerId);
+  f.work.acknowledge(runnerId, first!.id);
+  f.answer({ id: first!.id, runnerId, agent: "claude" });
+
+  const helper = f.helper(runnerId);
+  expect(f.helpers.commands(runnerId)).toHaveLength(1);
+  expect(f.delivered(runnerId)).toEqual([]);
+
+  f.helpers.acknowledge(runnerId, helper.id);
+  expect(f.delivered(runnerId)).toEqual([]);
+
+  f.helpers.finish(helper.id);
+  expect(f.delivered(runnerId).map(({ type }) => type)).toEqual(["login_check"]);
+});
+
+test("a helper that expired unserved, or a conversation in its own lane, holds no check back", () => {
+  const f = fixture();
+  const runnerId = f.runner();
+  f.db.run("UPDATE runner_host_status SET runner_version='0.1.74' WHERE runner_id=?", [runnerId]);
+  recordRunnerCapacity(f.db, runnerId, 1, 1, 2);
+  f.health.refresh();
+  f.helper(runnerId, "conversation");
+  expect(f.delivered(runnerId).map(({ type }) => type)).toEqual(["login_check"]);
+
+  const g = fixture();
+  const other = g.runner();
+  g.health.refresh();
+  g.helper(other);
+  expect(g.delivered(other)).toEqual([]);
+  g.advance(60_001);
+  expect(g.delivered(other).map(({ type }) => type)).toEqual(["login_check"]);
+});
+
+test("no check is queued while a helper waits for the lane", () => {
+  const f = fixture();
+  const runnerId = f.runner();
+  f.helper(runnerId);
+  f.health.refresh();
+  expect(f.checks()).toHaveLength(0);
+});
+
+test("a signed-out agent, and one whose check failed, is still checked every 5 minutes", () => {
+  const f = fixture();
+  const runnerId = f.runner();
+  f.health.refresh();
+  const [claude, codex] = f.checks();
+  f.answer(codex!, false);
+  f.answer(claude!);
+  f.used(runnerId, "codex");
+  f.used(runnerId, "claude");
+  f.db.run(
+    "UPDATE runner_agent_policy SET ready=0,auth_expired=1 WHERE runner_id=? AND agent='claude'",
+    [runnerId],
+  );
+  const agents = () => f.checks(runnerId).map((check) => check.agent);
+  const count = (agent: string) => agents().filter((name) => name === agent).length;
+  for (let round = 1; round <= 3; round += 1) {
+    f.advance(5 * 60_000 + 1);
+    f.seen(runnerId);
+    f.health.refresh();
+    expect(count("claude")).toBe(1 + round);
+    expect(count("codex")).toBe(1 + round);
+    f.answer(
+      f.checks(runnerId).findLast((check) => check.agent === "codex")!,
+      false,
+    );
+  }
+});
+
+test("a signed-out agent not used for a day is left alone, and one signed in is still checked", () => {
+  const f = fixture();
+  const runnerId = f.runner();
+  f.health.refresh();
+  const [claude, codex] = f.checks();
+  f.answer(claude!);
+  f.answer(codex!, false);
+  f.used(runnerId, "codex", f.now() - 24 * 60 * 60_000);
+  f.advance(31 * 60_000);
+  f.seen(runnerId);
+  f.health.refresh();
+  const later = f
+    .checks()
+    .slice(4)
+    .map((check) => check.agent);
+  expect(later).toContain("claude");
+  expect(later).not.toContain("codex");
 });
 
 test("paused, draining, revoked and unseen runners are skipped", () => {
@@ -450,7 +619,7 @@ test("a login check readies the runner's agent or marks it signed out", () => {
   f.health.refresh();
   f.answer(f.checks(runnerId).find((command) => command.agent === "grok")!);
   expect(policy()).toEqual({ ready: 1, authExpired: 0 });
-  f.advance(5 * 60_000 + 1);
+  f.advance(30 * 60_000 + 1);
   f.seen(runnerId);
   f.health.refresh();
   f.answer(
@@ -487,6 +656,7 @@ test("a login check issued before a newer sign-in failure cannot mark the agent 
   f.advance(10_000);
   f.answer(late);
   expect(policy()).toEqual({ ready: 0, authExpired: 1 });
+  f.used(runnerId, "claude");
 
   f.advance(5 * 60_000 + 1);
   f.seen(runnerId);
@@ -517,7 +687,7 @@ test("a sign-in check's usage reading replaces a stale usage limit", () => {
   ]);
   expect(policy()).toEqual({ quotaState: "ok", resetsAt: null, cooldownUntil: 0 });
 
-  f.advance(5 * 60_000 + 1);
+  f.advance(30 * 60_000 + 1);
   f.seen(runnerId);
   f.health.refresh();
   f.answer(claude(), true, [
@@ -526,7 +696,7 @@ test("a sign-in check's usage reading replaces a stale usage limit", () => {
   ]);
   expect(policy()).toEqual({ quotaState: "exhausted", resetsAt: reset, cooldownUntil: reset });
 
-  f.advance(5 * 60_000 + 1);
+  f.advance(30 * 60_000 + 1);
   f.seen(runnerId);
   f.health.refresh();
   f.answer(claude());
