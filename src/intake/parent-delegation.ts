@@ -1,4 +1,25 @@
 import {
+  activeParentSubIssue,
+  claimParentSubIssueSession,
+  delegationHasLiveItem,
+  insertParentDelegation,
+  insertParentSubIssue,
+  latestIssueIdentifier,
+  listActiveParentDelegationIds,
+  listFailedDelegationItemIds,
+  listIssueBlockerItems,
+  listParentSubIssues,
+  moveParentSubIssueSession,
+  outboxKeyExists,
+  parentDelegationActive,
+  parentSubIssueActive,
+  parentSubIssueForSession,
+  parentSubIssueIdentifier,
+  readParentDelegation,
+  setItemOwner,
+  setParentDelegationError,
+  setParentSubIssueDelegation,
+  workspaceIssueHasOpenItem,
   workspaceMemberUsable,
   applyWorkItemEvent,
   auditWorkspaceAccess,
@@ -16,7 +37,7 @@ import {
 } from "../db";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import { isBlockerSatisfied, type TaskMode, type WorkItemState } from "../core";
+import { isBlockerSatisfied } from "../core";
 import type {
   AcceptedLinearEvent,
   DependencyEdge,
@@ -63,9 +84,6 @@ type SubIssue = {
 /** A sub-issue of a delegated parent and what it still waits for before its session opens. */
 export type ParentSubIssueProgress = SubIssue & { waitingFor: string[] };
 
-const SUB_COLUMNS = `parent_delegation_id AS parentDelegationId,issue_id AS issueId,identifier,title,url,
-  session_id AS sessionId,delegation_id AS delegationId`;
-
 /**
  * A delegated parent issue whose sub-issues each run in their own Linear session (one issue,
  * one run, one session). Intake adopts the parent; a recurring job opens each sub-issue's
@@ -87,39 +105,16 @@ export function createParentDelegations(input: {
   const now = input.now ?? Date.now;
 
   function readParent(delegationId: string): Parent | null {
-    const row = db
-      .query<Omit<Parent, "edges"> & { edges: string }, [string]>(
-        `SELECT delegation_id AS delegationId,workspace_id AS workspaceId,organization_id AS organizationId,
-         session_id AS sessionId,owner_user_id AS ownerUserId,edges,stopped_at AS stoppedAt
-         FROM parent_delegation WHERE delegation_id=?`,
-      )
-      .get(delegationId);
-    return row ? { ...row, edges: JSON.parse(row.edges) as DependencyEdge[] } : null;
+    return readParentDelegation<DependencyEdge>(db, delegationId);
   }
   function subIssues(parentDelegationId: string): SubIssue[] {
-    return db
-      .query<SubIssue, [string]>(
-        `SELECT ${SUB_COLUMNS} FROM parent_delegation_issue
-         WHERE parent_delegation_id=? AND released_at IS NULL ORDER BY position,issue_id`,
-      )
-      .all(parentDelegationId);
+    return listParentSubIssues(db, parentDelegationId);
   }
   function subIssueForSession(sessionId: string): SubIssue | null {
-    return db
-      .query<SubIssue, [string]>(
-        `SELECT ${SUB_COLUMNS} FROM parent_delegation_issue WHERE session_id=? AND released_at IS NULL`,
-      )
-      .get(sessionId);
+    return parentSubIssueForSession(db, sessionId);
   }
   function activeSubIssue(issueId: string, organizationId: string): SubIssue | null {
-    return db
-      .query<SubIssue, [string, string]>(
-        `SELECT c.parent_delegation_id AS parentDelegationId,c.issue_id AS issueId,c.identifier,c.title,c.url,
-         c.session_id AS sessionId,c.delegation_id AS delegationId
-         FROM parent_delegation_issue c JOIN workspace w ON w.id=c.workspace_id
-         WHERE c.issue_id=? AND c.released_at IS NULL AND w.linear_organization_id=?`,
-      )
-      .get(issueId, organizationId);
+    return activeParentSubIssue(db, issueId, organizationId);
   }
   function eventSubIssue(event: AcceptedLinearEvent): SubIssue | null {
     if (!event.issueId || !event.sessionId) return null;
@@ -148,11 +143,7 @@ export function createParentDelegations(input: {
     return (
       parent.stoppedAt === null &&
       sub.delegationId !== null &&
-      db
-        .query(
-          "SELECT 1 FROM work_item WHERE delegation_id=? AND state NOT IN ('failed','cancelled')",
-        )
-        .get(sub.delegationId) === null
+      !delegationHasLiveItem(db, sub.delegationId)
     );
   }
   function scope(sessionId: string, snapshot: EpicSnapshot): EpicSnapshot {
@@ -168,26 +159,7 @@ export function createParentDelegations(input: {
     return { ...snapshot, subIssues: [] };
   }
   function blockerSatisfied(parent: Parent, blockerId: string): boolean {
-    const items = db
-      .query<
-        {
-          state: WorkItemState;
-          mode: TaskMode | null;
-          cancelRequested: number;
-          mergeSha: string | null;
-        },
-        [string, string]
-      >(
-        `SELECT i.state,t.mode,i.cancel_requested AS cancelRequested,f.merge_sha AS mergeSha FROM work_item i
-         JOIN linear_session s ON s.session_id=i.session_key
-         JOIN workspace w ON w.linear_organization_id=s.organization_id
-         LEFT JOIN work_item_task t ON t.item_id=i.id
-         LEFT JOIN remote_merge_fact f ON f.item_id=i.id
-         WHERE w.id=? AND i.linear_issue_id=? AND i.state<>'cancelled'
-         AND NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)
-         ORDER BY i.created_at,i.id`,
-      )
-      .all(parent.workspaceId, blockerId);
+    const items = listIssueBlockerItems(db, parent.workspaceId, blockerId);
     if (items.length > 0) {
       const active = items.filter((item) => !item.cancelRequested);
       const item = (active.length > 0 ? active : items).at(-1)!;
@@ -195,13 +167,7 @@ export function createParentDelegations(input: {
     }
     const delivered = deliveredLinearIssueState(db, parent.organizationId, blockerId);
     if (delivered?.stateType) return delivered.stateType === "completed";
-    return (
-      db
-        .query(
-          "SELECT 1 FROM parent_delegation_issue WHERE workspace_id=? AND issue_id=? AND released_at IS NULL",
-        )
-        .get(parent.workspaceId, blockerId) === null
-    );
+    return !parentSubIssueActive(db, parent.workspaceId, blockerId);
   }
   function pendingBlockers(parent: Parent, issueId: string): string[] {
     const blockers = new Set([
@@ -214,16 +180,8 @@ export function createParentDelegations(input: {
   }
   function identifierFor(parent: Parent, issueId: string): string {
     return (
-      db
-        .query<{ identifier: string }, [string, string]>(
-          "SELECT identifier FROM parent_delegation_issue WHERE parent_delegation_id=? AND issue_id=?",
-        )
-        .get(parent.delegationId, issueId)?.identifier ??
-      db
-        .query<{ identifier: string }, [string]>(
-          "SELECT linear_identifier AS identifier FROM work_item WHERE linear_issue_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
-        )
-        .get(issueId)?.identifier ??
+      parentSubIssueIdentifier(db, parent.delegationId, issueId) ??
+      latestIssueIdentifier(db, issueId) ??
       deliveredLinearIssueState(db, parent.organizationId, issueId)?.identifier ??
       issueId
     );
@@ -239,7 +197,7 @@ export function createParentDelegations(input: {
    */
   async function summarize(parent: Parent, signal: AbortSignal) {
     const key = `parent-summary:${parent.delegationId}`;
-    if (db.query("SELECT 1 FROM outbox WHERE idempotency_key=?").get(key)) return;
+    if (outboxKeyExists(db, key)) return;
     const subs = subIssues(parent.delegationId);
     const own = new Map(subs.map((sub) => [sub.issueId, sub]));
     const outside = new Map<string, SummaryIssue | null>();
@@ -323,11 +281,12 @@ export function createParentDelegations(input: {
           if (!context.isCurrent()) throw new Error("The parent delegation claim changed.");
           if (event.issueId !== sub.issueId || !event.sessionId)
             throw new Error("Linear returned another sub-issue.");
-          const changed = db.run(
-            `UPDATE parent_delegation_issue SET session_id=? WHERE parent_delegation_id=? AND issue_id=?
-             AND session_id IS NULL AND released_at IS NULL`,
-            [event.sessionId, parent.delegationId, sub.issueId],
-          ).changes;
+          const changed = claimParentSubIssueSession(
+            db,
+            parent.delegationId,
+            sub.issueId,
+            event.sessionId,
+          );
           if (changed !== 1) throw new Error("This sub-issue already has a session.");
         },
       );
@@ -346,30 +305,15 @@ export function createParentDelegations(input: {
       if (!session?.organizationId || !session.creatorId) return false;
       const workspace = workspaceForOrganization(db, session.organizationId);
       if (!workspace) return false;
-      if (
-        db
-          .query(
-            "SELECT 1 FROM parent_delegation WHERE workspace_id=? AND parent_issue_id=? AND stopped_at IS NULL",
-          )
-          .get(workspace.id, snapshot.linearIssueId) !== null
-      )
-        return true;
+      if (parentDelegationActive(db, workspace.id, snapshot.linearIssueId)) return true;
       const owner = workspaceLinearMember(db, workspace.id, session.creatorId);
       if (!workspaceMemberUsable(owner)) return false;
       const issueIds = snapshot.subIssues.map((issue) => issue.linearIssueId);
       if (
         issueIds.some(
           (issueId) =>
-            db
-              .query(
-                "SELECT 1 FROM parent_delegation_issue WHERE workspace_id=? AND issue_id=? AND released_at IS NULL",
-              )
-              .get(workspace.id, issueId) !== null ||
-            db
-              .query(`SELECT 1 FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
-                JOIN workspace w ON w.linear_organization_id=s.organization_id
-                WHERE w.id=? AND i.linear_issue_id=? AND i.state NOT IN ('completed','merged','cancelled') LIMIT 1`)
-              .get(workspace.id, issueId) !== null,
+            parentSubIssueActive(db, workspace.id, issueId) ||
+            workspaceIssueHasOpenItem(db, workspace.id, issueId),
         )
       )
         return false;
@@ -388,38 +332,30 @@ export function createParentDelegations(input: {
       if (!ordered.ok) return false;
       const createdAt = now();
       const delegationId = ulid(createdAt);
-      db.run(
-        `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,
-         title,session_id,owner_user_id,edges,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-        [
-          delegationId,
-          workspace.id,
-          workspace.organizationId,
-          snapshot.linearIssueId,
-          snapshot.identifier,
-          snapshot.title,
-          sessionId,
-          owner.userId,
-          JSON.stringify(internal),
-          createdAt,
-        ],
-      );
+      insertParentDelegation(db, {
+        delegationId,
+        workspaceId: workspace.id,
+        organizationId: workspace.organizationId,
+        parentIssueId: snapshot.linearIssueId,
+        parentIdentifier: snapshot.identifier,
+        title: snapshot.title,
+        sessionId,
+        ownerUserId: owner.userId,
+        edges: internal,
+        createdAt,
+      });
       const issues = new Map(snapshot.subIssues.map((issue) => [issue.linearIssueId, issue]));
       ordered.ordered.forEach((node, position) => {
         const issue = issues.get(node.linearIssueId)!;
-        db.run(
-          `INSERT INTO parent_delegation_issue(parent_delegation_id,workspace_id,issue_id,identifier,title,url,position)
-           VALUES(?,?,?,?,?,?,?)`,
-          [
-            delegationId,
-            workspace.id,
-            issue.linearIssueId,
-            issue.identifier,
-            issue.title,
-            issue.url ?? null,
-            position,
-          ],
-        );
+        insertParentSubIssue(db, {
+          parentDelegationId: delegationId,
+          workspaceId: workspace.id,
+          issueId: issue.linearIssueId,
+          identifier: issue.identifier,
+          title: issue.title,
+          url: issue.url ?? null,
+          position,
+        });
       });
       saveTaskBlocks(
         db,
@@ -466,14 +402,8 @@ export function createParentDelegations(input: {
       const parent = readParent(sub.parentDelegationId)!;
       if (!result.ok || result.items.length !== 1 || result.items[0]?.linearIssueId !== sub.issueId)
         throw new Error("Intake did not keep the sub-issue to itself.");
-      db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [
-        parent.ownerUserId,
-        result.items[0].id,
-      ]);
-      db.run("UPDATE parent_delegation_issue SET delegation_id=? WHERE session_id=?", [
-        result.delegation.id,
-        sessionId,
-      ]);
+      setItemOwner(db, result.items[0].id, parent.ownerUserId);
+      setParentSubIssueDelegation(db, sessionId, result.delegation.id);
     },
     async authorizeEvent(event: AcceptedLinearEvent): Promise<IntakeDecision | undefined> {
       const sub = eventSubIssue(event);
@@ -495,17 +425,14 @@ export function createParentDelegations(input: {
         );
       const moved = immediate(db, () => {
         if (!restartable(parent, sub)) return false;
-        for (const item of db
-          .query<{ id: string }, [string]>(
-            "SELECT id FROM work_item WHERE delegation_id=? AND state='failed'",
-          )
-          .all(sub.delegationId!))
-          applyWorkItemEvent(db, item.id, "cancel");
-        db.run(
-          `UPDATE parent_delegation_issue SET session_id=?,delegation_id=NULL
-           WHERE parent_delegation_id=? AND issue_id=? AND session_id=?`,
-          [event.sessionId, sub.parentDelegationId, sub.issueId, sub.sessionId],
-        );
+        for (const itemId of listFailedDelegationItemIds(db, sub.delegationId!))
+          applyWorkItemEvent(db, itemId, "cancel");
+        moveParentSubIssueSession(db, {
+          parentDelegationId: sub.parentDelegationId,
+          issueId: sub.issueId,
+          from: sub.sessionId!,
+          to: event.sessionId!,
+        });
         return true;
       });
       return moved ? ACCEPTED : refuse(parent, event);
@@ -524,23 +451,19 @@ export function createParentDelegations(input: {
       if (!input.startSession) return;
       enqueueJobOnce(db, { queue: QUEUE, jobKey: QUEUE, recurringEveryMs: 30_000, now: now() });
       jobs.register(QUEUE, async (_job, context) => {
-        const rows = db
-          .query<{ id: string }, []>(
-            "SELECT delegation_id AS id FROM parent_delegation WHERE stopped_at IS NULL ORDER BY created_at",
-          )
-          .all();
-        for (const row of rows) {
+        for (const id of listActiveParentDelegationIds(db)) {
           context.signal.throwIfAborted();
           try {
-            await advance(readParent(row.id)!, context);
-            db.run("UPDATE parent_delegation SET last_error=NULL WHERE delegation_id=?", [row.id]);
+            await advance(readParent(id)!, context);
+            setParentDelegationError(db, id, null);
           } catch (caughtError2) {
             journalCaught(caughtError2, "parent-delegation.register.advance", null);
             context.signal.throwIfAborted();
-            db.run("UPDATE parent_delegation SET last_error=? WHERE delegation_id=?", [
+            setParentDelegationError(
+              db,
+              id,
               "Sub-issue sessions could not be opened. Check Linear access.",
-              row.id,
-            ]);
+            );
           }
         }
       });
