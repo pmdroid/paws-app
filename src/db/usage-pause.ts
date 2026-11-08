@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { systemClock } from "../core";
 import { resumeAccountHealthNow } from "./agent-account-health";
+import { settled, sqliteDb, type Q } from "./db";
 import { accrueAwake } from "./items";
 import { orm } from "./orm";
 import { runnerAgentPolicy, usagePause as usagePauseTable } from "./schema";
@@ -46,22 +47,27 @@ export function startUsagePause(db: Database, pause: UsagePause, mono = systemCl
   });
 }
 
-export function usagePause(db: Database, runId: string): UsagePause | null {
-  return (
-    orm(db)
+export function* usagePauseSteps(q: Q, runId: string) {
+  const { usagePause } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({
-        runId: usagePauseTable.runId,
-        itemId: usagePauseTable.itemId,
-        agent: usagePauseTable.agent,
-        runnerId: usagePauseTable.runnerId,
-        resetsAt: usagePauseTable.resetsAt,
-        resumeAt: usagePauseTable.resumeAt,
-        pausedAt: usagePauseTable.pausedAt,
+        runId: usagePause.runId,
+        itemId: usagePause.itemId,
+        agent: usagePause.agent,
+        runnerId: usagePause.runnerId,
+        resetsAt: usagePause.resetsAt,
+        resumeAt: usagePause.resumeAt,
+        pausedAt: usagePause.pausedAt,
       })
-      .from(usagePauseTable)
-      .where(eq(usagePauseTable.runId, runId))
-      .get() ?? null
+      .from(usagePause)
+      .where(eq(usagePause.runId, runId)),
   );
+  return row ?? null;
+}
+
+export function usagePause(db: Database, runId: string): UsagePause | null {
+  return settled(sqliteDb(db).run((q) => usagePauseSteps(q, runId)));
 }
 
 export function endUsagePause(

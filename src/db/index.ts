@@ -1210,6 +1210,7 @@ export {
   resumeUsagePauseNow,
   startUsagePause,
   usagePause,
+  usagePauseSteps,
   earliestRunnerCooldown,
   runnerAgentLoginReady,
 } from "./usage-pause";
