@@ -631,8 +631,15 @@ export function createRunnerWork(options: {
           runnerReleaseAtLeast(host.runnerVersion ?? storedVersion, OFFLINE_LEASE_RUNNER_VERSION)
             ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt }
             : undefined;
-        const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling, conversations);
         const at = now();
+        const concurrency = recordRunnerCapacity(
+          db,
+          runnerId,
+          capacity,
+          ceiling,
+          conversations,
+          at,
+        );
         noteRunnerSeen(db, runnerId, at);
         if (Object.values(host).some((value) => value !== undefined))
           recordRunnerHostStatus(db, runnerId, host, at);

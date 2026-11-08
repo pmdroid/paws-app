@@ -24,6 +24,7 @@ export type ItemWait = {
   | {
       kind: "runner";
       position: number;
+      noRunner?: string;
       restart: Exclude<RestartReason, "follow_up" | "answer"> | null;
     }
   | { kind: "paused"; by: string | null }
@@ -106,7 +107,15 @@ export function itemWaits(
         ];
       const position = positions.get(item.id);
       if ((hold?.reason === "slot" || hold?.reason === "cap") && position !== undefined)
-        return [{ ...base, kind: "runner", position, restart: restartReason(db, item.id) }];
+        return [
+          {
+            ...base,
+            kind: "runner",
+            position,
+            ...(hold.reason === "slot" && hold.blockers[0] ? { noRunner: hold.blockers[0] } : {}),
+            restart: restartReason(db, item.id),
+          },
+        ];
       return [];
     });
     const shown = new Set(faces.map((face) => face.itemId));
@@ -139,7 +148,10 @@ export function waitingLine(wait: ItemWait): string | null {
         ? `Still waiting for ${wait.blockers.join(", ")}.`
         : "Still waiting for a blocking issue."
     } Paws checks blockers in Linear every minute while it waits.`;
-  if (wait.kind === "runner") return `Still ${ordinal(wait.position)} in line for a runner.`;
+  if (wait.kind === "runner")
+    return wait.noRunner
+      ? `Still waiting. ${wait.noRunner}.`
+      : `Still ${ordinal(wait.position)} in line for a runner.`;
   return null;
 }
 

@@ -19,7 +19,10 @@ import {
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
-import { jsonField, jsonText } from "./json-text";
+import { JOB_KIND } from "../core";
+import { runnerCapacityWait } from "./items";
+import { emitJobReady } from "./jobs";
+import { jsonField, jsonText, jsonValue } from "./json-text";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { auditWorkspaceAccessSteps } from "./workspace";
 
@@ -159,6 +162,12 @@ export function* runnerSlotsHeldBetweenCommandsSteps(
   return holders.includes(excludeRunId) ? 0 : holders.length;
 }
 
+function* runnerOccupancyCapacitySteps(q: Q, runnerId: string) {
+  const { runnerCapacity } = q.t;
+  const row = yield* q.one(q.orm.select({capacity:runnerCapacity.capacity,desired:runnerCapacity.desired}).from(runnerCapacity).where(eq(runnerCapacity.runnerId,runnerId)));
+  return row ? Math.min(row.capacity,row.desired ?? 16) : 0;
+}
+
 export function runnerSlotsHeldBetweenCommands(
   db: Database,
   runnerId: string,
@@ -230,6 +239,53 @@ export function* runnerSlotFreeSteps(q: Q, runnerIds: readonly string[], now: nu
   return false;
 }
 
+export function* wakeRunnerSlotWaitsSteps(q: Q, runnerId: string, now: number): Steps<void> {
+  const { job } = q.t;
+  const parked = yield* q.all(
+    q.orm
+      .select({ id: job.id, payload: jsonText(q, job.payload) })
+      .from(job)
+      .where(
+        and(
+          eq(job.status, "pending"),
+          inArray(job.queue, [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify]),
+          isNotNull(jsonField(q, job.payload, "capacityWait")),
+        ),
+      ),
+  );
+  for (const row of parked) {
+    const payload = JSON.parse(row.payload) as Record<string, unknown>;
+    const wait = runnerCapacityWait(payload);
+    if (!wait) continue;
+    const online = wait.online?.filter((id) => id !== runnerId);
+    yield* q.exec(
+      q.orm
+        .update(job)
+        .set({
+          runAt: now,
+          payload: jsonValue(q, {
+            ...payload,
+            capacityWait: { ...wait, ...(online ? { online } : {}) },
+          }),
+        })
+        .where(and(eq(job.id, row.id), eq(job.status, "pending"))),
+    );
+  }
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({ runAt: now })
+      .where(
+        and(eq(job.queue, JOB_KIND.schedulerTick), eq(job.status, "pending"), gt(job.runAt, now)),
+      ),
+  );
+}
+
+export function wakeRunnerSlotWaits(db: Database, runnerId: string, now: number): void {
+  settled(sqliteDb(db).run((q) => wakeRunnerSlotWaitsSteps(q, runnerId, now)));
+  emitJobReady(db);
+}
+
 export function runnerSlotFree(
   db: Database,
   runnerIds: readonly string[],
@@ -298,12 +354,16 @@ export function recordRunnerCapacity(
   capacity: number,
   ceiling?: number,
   conversations?: number,
+  now = Date.now(),
 ): number | undefined {
-  return settled(
+  const before = settled(sqliteDb(db).run((q) => runnerOccupancyCapacitySteps(q, runnerId)));
+  const result = settled(
     sqliteDb(db).run((q) =>
       recordRunnerCapacitySteps(q, runnerId, capacity, ceiling, conversations),
     ),
   );
+  if (settled(sqliteDb(db).run((q) => runnerOccupancyCapacitySteps(q, runnerId))) > before) wakeRunnerSlotWaits(db, runnerId, now);
+  return result;
 }
 
 export class RunnerConcurrencyError extends Error {}

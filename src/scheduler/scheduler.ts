@@ -42,7 +42,10 @@ import {
   settled,
   sqliteDb,
   savePinnedSlots,
+  RUNNER_FULL,
   type ItemHold,
+  type ItemRunnerVerdicts,
+  type RunnerHostRefusal,
   type PinnedSlot,
   type JobLoop,
   repositoryKey,
@@ -51,7 +54,7 @@ import { blockingIssues, readyItems } from "../intake";
 import { createAdmission, type ItemAdmission } from "./admission";
 import { itemWaits, overlapLine, postWaitKeepalives, type ItemWait } from "./waits";
 
-const TICK = "scheduler.tick";
+const TICK = JOB_KIND.schedulerTick;
 const RUNNER_SEEN_MS = 60_000;
 type Item = SchedulerItem;
 type Admission = {
@@ -75,6 +78,8 @@ export type SchedulerOptions = {
   /** Queued items whose owner has no runner they may use, after every admission pass. */
   onRunnerSetup?: (itemIds: readonly string[]) => void;
   onWaits?: (waits: readonly ItemWait[]) => void;
+  itemRunners?: (itemId: string) => ItemRunnerVerdicts | null;
+  onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
   ownerCap?: number | null;
   log?: (line: string) => void;
 };
@@ -93,6 +98,7 @@ const HOLD_LINES: Record<ItemHold["reason"], string> = {
 function holdLine(hold: ItemHold): string {
   if (hold.reason === "overlap" && hold.blockers.length)
     return overlapLine(hold.blockers[0]!, hold.files ?? [], hold.start);
+  if (hold.reason === "slot" && hold.blockers[0]) return hold.blockers[0];
   return hold.reason === "blocked" && hold.blockers.length
     ? `blocked by ${hold.blockers.join(", ")}`
     : HOLD_LINES[hold.reason];
@@ -277,6 +283,27 @@ function taskSlots(
       ]),
     ),
   };
+}
+
+function hostRefusals(verdicts: readonly ItemRunnerVerdicts[]): RunnerHostRefusal[] {
+  const runners = new Map<string, { all: boolean; refusals: Map<string, RunnerHostRefusal> }>();
+  for (const { repository, agent, runners: answers } of verdicts)
+    for (const answer of answers) {
+      const entry = runners.get(answer.id) ?? { all: true, refusals: new Map() };
+      runners.set(answer.id, entry);
+      if (answer.hostConfig === null || repository === null) {
+        entry.all = false;
+        continue;
+      }
+      entry.refusals.set(`${repository}:${answer.hostConfig}`, {
+        runnerId: answer.id,
+        runnerName: answer.name,
+        repository,
+        kind: answer.hostConfig,
+        agent,
+      });
+    }
+  return [...runners.values()].flatMap((entry) => (entry.all ? [...entry.refusals.values()] : []));
 }
 
 type PinnedWait = {
@@ -541,6 +568,28 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       a.id.localeCompare(b.id);
     const candidates = items.filter((item) => ready.has(item.id)).sort(rank);
     const slots = taskSlots(db, now);
+    const answers = new Map<string, ItemRunnerVerdicts | null>();
+    const verdictsFor = (itemId: string): ItemRunnerVerdicts | null => {
+      if (slots === null || !options.itemRunners) return null;
+      if (!answers.has(itemId)) answers.set(itemId, options.itemRunners(itemId));
+      return answers.get(itemId)!;
+    };
+    const openRunner = (itemId: string): string | null | undefined => {
+      const verdicts = verdictsFor(itemId);
+      if (!verdicts || verdicts.refusedEverywhere) return undefined;
+      const open = (id: string) => slots!.open.get(id) ?? 0;
+      const free = verdicts.runners
+        .filter((runner) => runner.rejection === null && open(runner.id) > 0)
+        .sort((a, b) => open(b.id) - open(a.id));
+      return free[0]?.id ?? null;
+    };
+    const takeSlot = (itemId: string): boolean => {
+      const runnerId = openRunner(itemId);
+      if (runnerId === undefined) return true;
+      if (runnerId === null) return false;
+      slots!.open.set(runnerId, slots!.open.get(runnerId)! - 1);
+      return true;
+    };
     const pins = slots
       ? pinnedWaits(db, now)
           .filter((pin) => byId.has(pin.itemId) && pin.runnerIds.some((id) => slots.open.has(id)))
@@ -579,6 +628,13 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
           (item.state === "queued" && held.some((entry) => entry.itemId === item.id))),
     ).length;
     let free = slots === null ? Infinity : slots.total - slots.busy - reserved;
+    for (const item of items)
+      if (
+        !item.placed &&
+        (item.placing ||
+          (item.state === "queued" && held.some((entry) => entry.itemId === item.id)))
+      )
+        takeSlot(item.id);
     const running = new Map<string, number>();
     for (const item of items)
       if (
@@ -630,6 +686,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         overlaps.set(item.id, overlap);
         continue;
       }
+      if (!takeSlot(item.id)) continue;
       cancelPendingItemJobs(db, JOB_KIND.start, item.id, now);
       const handoff = options.handoffForItem?.(item.id);
       const jobId =
@@ -656,6 +713,14 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     const waiting = order.filter(
       ({ item }) => !admitted.includes(item.id) && !setup.has(item.id) && !overlaps.has(item.id),
     );
+    const noRunnerLine = (itemId: string): string | null => {
+      if (openRunner(itemId) !== null) return null;
+      const verdicts = verdictsFor(itemId)!;
+      if (!verdicts.runners.length) return null;
+      return `No runner can take ${verdicts.repository ?? "this item"}: ${verdicts.runners
+        .map((runner) => `${runner.name}: ${runner.rejection ?? RUNNER_FULL}`)
+        .join("; ")}`;
+    };
     const line = [
       ...waiting.filter(({ capped }) => !capped),
       ...waiting.filter(({ capped }) => capped),
@@ -681,11 +746,14 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
               },
             ],
       ),
-      ...waiting.map(({ item, capped }): ItemHold => ({
-        itemId: item.id,
-        reason: capped ? "cap" : "slot",
-        blockers: [],
-      })),
+      ...waiting.map(({ item, capped }): ItemHold => {
+        const noRunner = capped ? null : noRunnerLine(item.id);
+        return {
+          itemId: item.id,
+          reason: capped ? "cap" : "slot",
+          blockers: noRunner === null ? [] : [noRunner],
+        };
+      }),
       ...[...overlaps].map(([itemId, overlap]): ItemHold => ({
         itemId,
         reason: "overlap",
@@ -718,12 +786,19 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       waiting: waiting.map(({ item }) => item.id),
       setup: [...setup],
       changes,
+      hostRefusals: hostRefusals(
+        order.flatMap(({ item }) => {
+          const verdicts = verdictsFor(item.id);
+          return verdicts ? [verdicts] : [];
+        }),
+      ),
     };
   });
   if (options.log) for (const line of result.changes) options.log(line);
   options.onWaiting?.(result.waiting);
   options.onRunnerSetup?.(result.setup);
   options.onWaits?.(result.waits);
+  options.onRunnerHostRefusals?.(result.hostRefusals, now);
   return result.admitted;
 }
 

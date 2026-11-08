@@ -377,7 +377,8 @@ function replace(node: DOMNode): ReactElement | undefined {
   if (name === "ul" && has("runner-rows"))
     return styled("m-0 flex list-none flex-col gap-3 p-0 [&>li]:p-0");
   if (has("runner-row-name")) return styled("flex min-w-0 flex-col gap-1 [&>b]:text-base");
-  if (has("runner-row-tags")) return styled("flex flex-wrap gap-2 sm:justify-end");
+  if (has("runner-row-tags"))
+    return styled("flex min-w-0 flex-wrap gap-2 sm:justify-end [&>.tag]:whitespace-normal");
   if (has("runner-head")) return styled("flex min-w-0 items-start justify-between gap-3");
   if (has("runner-title")) return styled("flex min-w-0 flex-col gap-2");
   if (has("runner-block"))

@@ -13,7 +13,6 @@ import {
   runnerExecutionReceipt,
   runnerIdentity,
   runnerPlacementPolicy,
-  runnerRepositoryRefusal,
   sessionRepositoriesAllowed,
   setRunnerAgentCooldown,
   settleRunnerAgent,
@@ -35,28 +34,20 @@ import {
   workspaceSessionIds,
   findingGroupingAdmins,
   commandAccount,
-  legacyAgentAccountId,
   legacyAgentBindingId,
-  legacyBindingAccountHealth,
   recordAccountObservation,
   type AccountObservation,
 } from "../db";
 import type { RunnerCodingAgent } from "../runner-protocol";
-import type {
-  EligibleRunner,
-  PlacementAccount,
-  PlacementPurpose,
-  PlacementReason,
-  PlacementRequest,
-  RunnerPlacement,
-} from "./index";
+import type { PlacementAccount, PlacementReason, PlacementRequest, RunnerPlacement } from "./index";
 import {
   eligibleRunners,
   itemRepositoryRefusals,
   runnerSetupNeed,
   RUNNER_ONLINE_MS,
 } from "./eligible";
-import { accountHealthBlock, BINDING_REASON_TEXT, classifyAgentFailure } from "./account-health";
+import { classifyAgentFailure } from "./account-health";
+import { repositoryRejection, signInFit } from "./fit";
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
 const RETRYABLE_OUTCOMES = new Set([
@@ -81,9 +72,6 @@ export const SESSION_GRACE_MS = 2 * 60_000;
 export const LOAD_HISTORY_MS = 6 * 60 * 60_000;
 /** Finished work loses half its weight in recent load every hour. */
 export const LOAD_HALF_LIFE_MS = 60 * 60_000;
-
-type AccountRefusal = { reason: string; until?: number };
-type AccountFit = { account: PlacementAccount; low: boolean };
 
 export function createRunnerPlacement(options: {
   db: Database;
@@ -280,40 +268,6 @@ export function createRunnerPlacement(options: {
     if (kind !== "quota") return null;
     return quotaRecheckAt(db, commandId, owner.workspaceId);
   }
-  function signInFit(
-    runner: Pick<EligibleRunner, "id" | "cooldownUntil" | "quotaState"> & { signedIn: boolean },
-    workspaceId: string,
-    input: {
-      agent: RunnerCodingAgent;
-      model: string | null | undefined;
-      purpose: PlacementPurpose;
-      at: number;
-    },
-  ): AccountFit | AccountRefusal {
-    const { agent, at, purpose } = input;
-    if (!runner.signedIn) return { reason: "agent not signed in" };
-    if (runner.cooldownUntil > at)
-      return { reason: "agent quota cooldown", until: runner.cooldownUntil };
-    const bindingId = legacyAgentBindingId(runner.id, agent);
-    const health = accountHealthBlock(
-      db,
-      bindingId,
-      legacyBindingAccountHealth(db, runner.id, agent, input.model).filter(
-        (row) => row.kind !== "quota" && row.kind !== "auth",
-      ),
-      at,
-      purpose,
-    );
-    if (health)
-      return {
-        reason: BINDING_REASON_TEXT[health.reason],
-        ...(health.until !== null ? { until: health.until } : {}),
-      };
-    return {
-      account: { accountId: legacyAgentAccountId(workspaceId, agent), bindingId, named: false },
-      low: runner.quotaState === "low",
-    };
-  }
   function admit(
     input: Parameters<RunnerPlacement["started"]>[0],
     account: PlacementAccount,
@@ -328,6 +282,7 @@ export function createRunnerPlacement(options: {
       throw new PlacementRaceError("The command does not carry the sign-in placement chose");
     const runner = runnerAgentQuota(db, input.runnerId, agent);
     const fit = signInFit(
+      db,
       {
         id: input.runnerId,
         cooldownUntil: runner?.cooldownUntil ?? 0,
@@ -429,24 +384,19 @@ export function createRunnerPlacement(options: {
         if (helper && !helper.available)
           return reject("helper already running or no free capacity");
         if (runner.id === input.handedOverFrom) return reject("handed the session over");
-        const repositoryRefusal = current.repository
-          ? runnerRepositoryRefusal(
-              db,
-              runner.id,
-              `${current.repository.owner}/${current.repository.repo}`,
-            )
-          : null;
-        if (repositoryRefusal)
-          return reject(
-            repositoryRefusal.list === "admin"
-              ? "repository not allowed on the runner's page"
-              : "repository not allowed in the runner's host config",
+        const repositoryRefusal =
+          current.repository &&
+          repositoryRejection(
+            db,
+            runner.id,
+            `${current.repository.owner}/${current.repository.repo}`,
           );
+        if (repositoryRefusal) return reject(repositoryRefusal);
         // Retry exclusions avoid failed hosts for unpinned work. A live run retries a fresh
         // session on its pinned host instead of moving its checkout and held slot.
         if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline)
           return reject("excluded after failed attempt");
-        const fit = signInFit(runner, current.workspace.id, {
+        const fit = signInFit(db, runner, current.workspace.id, {
           agent,
           model: input.profile?.model,
           purpose: input.purpose,

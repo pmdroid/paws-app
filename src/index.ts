@@ -275,6 +275,8 @@ import {
   createRunnerPlacementBrowser,
   itemOwnerEligibleRunner,
   itemOwnerHasEligibleRunner,
+  itemRunnerVerdicts,
+  createRunnerHostRefusals,
   itemOwnerRunnerSetupNeed,
   itemRepositoryAllowedOn,
   itemRepositoryRefusals,
@@ -898,11 +900,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     artifactRoot: join(paths.home, "retros"),
     catalogs: retroCatalog,
   });
+  const runnerHostRefusals = createRunnerHostRefusals();
   const runnerReady =
     runnerConfig === null
       ? Promise.resolve(undefined)
       : openRunnerCoordinator({
           db,
+          hostWarnings: runnerHostRefusals.lines,
           discoverModels: false,
           checkSignIn: false,
           root: runnerConfig.root,
@@ -1460,6 +1464,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               },
               ownerHasRunner: (itemId: string, agent: string, now: number) =>
                 itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
+              itemRunners: (
+                itemId: string,
+                profile: { agent: string; model?: string | null },
+                now: number,
+              ) => itemRunnerVerdicts(db, { itemId, ...profile, now }),
+              onRunnerHostRefusals: runnerHostRefusals.report,
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
                 itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
               eligibleRunner: (itemId: string, agent: string, now: number) =>

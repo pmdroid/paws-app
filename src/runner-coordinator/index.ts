@@ -95,6 +95,7 @@ export async function openRunnerCoordinator(options: {
   /** The repositories a new host may run, written into its config on Add a host. */
   repositories?: () => readonly string[];
   retros?: () => ((request: Request, runnerId: string) => Promise<Response | null>) | undefined;
+  hostWarnings?: (runnerId: string) => readonly string[];
 }) {
   if (!isAbsolute(options.root)) throw new Error("Runner identity path must be absolute.");
   const authority = openRunnerAuthority(options.root);
@@ -146,6 +147,7 @@ export async function openRunnerCoordinator(options: {
   });
   const http = createRunnerHttp(control, {
     agents: (principal, runnerId) => health.agents(principal, runnerId),
+    ...(options.hostWarnings ? { hostWarnings: options.hostWarnings } : {}),
     hostConfig: () => {
       if (!options.publicUrl || !listener) return null;
       const runnerApi = new URL(options.publicUrl);

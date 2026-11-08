@@ -29,6 +29,7 @@ import {
 import { dashboardUrl } from "../dashboard-links";
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
+import type { ItemRunnerVerdicts, RunnerHostRefusal } from "../db";
 import {
   AFTER_PULL_REQUEST_RESPONSE,
   canReportProgress as canReportSessionProgress,
@@ -804,6 +805,12 @@ export type OrchestratorOptions = {
    * item out of the slot line and its start timeout. Null when it cannot tell. SQLite only.
    */
   ownerHasRunner?: (itemId: string, agent: string, now: number) => boolean | null;
+  itemRunners?: (
+    itemId: string,
+    profile: { agent: string; model?: string | null },
+    now: number,
+  ) => ItemRunnerVerdicts | null;
+  onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
   /**
    * Why the item's owner has no runner they may use for this agent, for the runner-setup hold
    * and its thought. Null when a runner is usable or only offline. SQLite only.
@@ -6963,17 +6970,38 @@ export class Orchestrator {
             },
             onRunnerSetup: (itemIds: readonly string[]) =>
               this.noteRunnerSetup(itemIds, (item) => this.implementerAgent(item, config)),
+            ...(this.options.itemRunners
+              ? {
+                  itemRunners: (itemId: string) => {
+                    const item = getWorkItem(this.db, itemId);
+                    return item
+                      ? this.options.itemRunners!(
+                          itemId,
+                          this.implementerProfile(item, config),
+                          this.now(),
+                        )
+                      : null;
+                  },
+                }
+              : {}),
+            ...(this.options.onRunnerHostRefusals
+              ? { onRunnerHostRefusals: this.options.onRunnerHostRefusals }
+              : {}),
           }
         : {}),
     });
   }
 
   private implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
+    return this.implementerProfile(item, config).agent;
+  }
+
+  private implementerProfile(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
     const repository = this.repositoryForItem(item);
     return resolveAgentProfiles(
       config,
       repository ? `${repository.owner}/${repository.repo}` : undefined,
-    ).implementer.agent;
+    ).implementer;
   }
 
   /**
@@ -7058,7 +7086,9 @@ export class Orchestrator {
       } else if (wait.kind === "runner")
         progress.wait(
           "Wait for a runner",
-          `${name}: ${ordinal(wait.position)} in line for a runner`,
+          wait.noRunner
+            ? `${name}: ${wait.noRunner}`
+            : `${name}: ${ordinal(wait.position)} in line for a runner`,
         );
       else if (wait.kind === "paused")
         progress.status(`${name}: paused by ${wait.by ?? "a workspace member"}`);

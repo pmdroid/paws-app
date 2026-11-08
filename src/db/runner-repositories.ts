@@ -3,6 +3,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 import { emitJobReady, enqueueJobSteps } from "./jobs";
+import { wakeRunnerSlotWaitsSteps } from "./runner-capacity";
 import { jsonField, jsonText, jsonValue } from "./json-text";
 import { auditWorkspaceAccessSteps } from "./workspace";
 
@@ -33,7 +34,9 @@ export function* recordRunnerRepositoriesSteps(
       }),
   );
   if (before !== undefined && sameList(before.host, reported)) return false;
-  return yield* enqueueRepositoryCheckSteps(q, runnerId, `runner:${runnerId}`, at);
+  yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
+  yield* enqueueRepositoryCheckSteps(q, runnerId, `runner:${runnerId}`, at);
+  return true;
 }
 
 function sameList(stored: string | null, reported: string | null): boolean {
@@ -113,7 +116,9 @@ export function* setRunnerAdminRepositoriesSteps(
     subject: input.runnerId,
     now: input.now,
   });
-  return yield* enqueueRepositoryCheckSteps(q, input.runnerId, input.userId, input.now);
+  yield* wakeRunnerSlotWaitsSteps(q, input.runnerId, input.now);
+  yield* enqueueRepositoryCheckSteps(q, input.runnerId, input.userId, input.now);
+  return true;
 }
 
 export function setRunnerAdminRepositories(db: Database, input: RunnerAdminRepositories): void {
