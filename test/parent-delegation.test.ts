@@ -654,7 +654,7 @@ test("a delegated parent with a chain of sub-issues ends its session with one su
     ).toBe(1);
 
     for (let i = 0; i < 5; i++) {
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
     }
     // A response is Linear's final activity: it completes the parent's session.

@@ -137,7 +137,7 @@ test.each(["workflow states", "credential acquisition"])(
     );
     try {
       f.enqueue("status");
-      f.outbox.tick();
+      await f.outbox.tick();
       await started.promise;
       advanceLinearSessionGeneration(f.db, "session", { stop: true, now: 10 });
       release.resolve();
@@ -165,7 +165,7 @@ test("a queued final response verifies live access and survives the task's own c
     ] as const)
       applyWorkItemEvent(f.db, f.item.id, event);
     f.enqueue("activity");
-    f.outbox.tick();
+    await f.outbox.tick();
     await f.outbox.idle();
     expect(f.tracker.progress.map((update) => update.body)).toEqual(["Confirmed result."]);
     expect(f.access.calls.map((call) => call.method)).toEqual(["session", "team"]);
@@ -188,7 +188,7 @@ test("access removed during a fresh publication read prevents the queued mutatio
   };
   try {
     f.enqueue("status");
-    f.outbox.tick();
+    await f.outbox.tick();
     await started.promise;
     revokeLinearInstallation(f.db, {
       ...f.scope,
@@ -215,7 +215,7 @@ test("a stopped task can acknowledge removal of delegation while installation ac
     advanceLinearSessionGeneration(f.db, "session", { stop: true, now: 10 });
     f.lifecycle.issue.delegateId = "different-app";
     f.enqueue("activity", true);
-    f.outbox.tick();
+    await f.outbox.tick();
     await f.outbox.idle();
     expect(f.tracker.progress.map((update) => update.body)).toEqual(["Confirmed result."]);
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
@@ -231,7 +231,7 @@ test("fresh delegation removal prevents a final response without workflow mutati
   try {
     f.enqueue("activity");
     f.lifecycle.issue.delegateId = null;
-    f.outbox.tick();
+    await f.outbox.tick();
     await f.outbox.idle();
     expect(f.tracker.progress).toEqual([]);
     expect(f.tracker.statuses).toEqual([]);

@@ -8062,7 +8062,7 @@ export class Orchestrator {
     try {
       for (let attempt = 0; attempt < 50; attempt += 1) {
         signal?.throwIfAborted();
-        const ticked = this.options.outbox.tick();
+        const ticked = await this.options.outbox.tick();
         for (const row of ticked) claimed.add(row.id);
         if (stop.aborted) break;
         let onAbort: () => void = () => {};

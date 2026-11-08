@@ -112,7 +112,7 @@ test("a green check_suite delivery for the pull request's head merges it before 
     const deadline = Date.now() + 90_000;
     while (Date.now() < deadline && !parkedForCi() && stateOf(db, "ENG-9") !== "failed") {
       if ((await jobs.tick()) === null) {
-        outbox.tick();
+        await outbox.tick();
         await Bun.sleep(25);
       }
     }
@@ -134,7 +134,7 @@ test("a green check_suite delivery for the pull request's head merges it before 
     );
     while (Date.now() < parked!.runAt && stateOf(db, "ENG-9") !== "merged") {
       if ((await jobs.tick()) === null) {
-        outbox.tick();
+        await outbox.tick();
         await Bun.sleep(25);
       }
     }

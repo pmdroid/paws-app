@@ -121,19 +121,21 @@ describe("transactional outbox", () => {
       }
     });
 
-    dispatcher.tick();
+    // Delivery awaits the database before the handler, so let each claimed head reach it.
+    await dispatcher.tick();
+    await Bun.sleep(0);
     expect(seen).toEqual(["A1"]);
-    dispatcher.tick();
+    await dispatcher.tick();
+    await Bun.sleep(0);
     expect(seen).toEqual(["A1", "B1"]);
     expect(
       listOutbox(db, "A").find((message) => (message.payload as { n: string }).n === "A2")?.status,
     ).toBe("pending");
-    await Promise.resolve();
     expect(listOutbox(db, "B")[0]?.status).toBe("sent");
 
     releaseA();
     await dispatcher.idle();
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(seen).toEqual(["A1", "B1", "A2"]);
     expect(listOutbox(db, "A").every((message) => message.status === "sent")).toBe(true);
@@ -174,14 +176,14 @@ describe("transactional outbox", () => {
       if (message.orderingKey === "A") throw new Error("nope");
     });
 
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "A")[0]?.status).toBe("dead");
     expect(listOutbox(db, "A")[1]?.status).toBe("pending");
     expect(listOutbox(db, "B")[0]?.status).toBe("sent");
     expect(listOutbox(db, "B")[1]?.status).toBe("pending");
 
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "A")[1]?.status).toBe("pending");
     expect(listOutbox(db, "B")[1]?.status).toBe("sent");
@@ -220,22 +222,22 @@ describe("transactional outbox", () => {
       if (aFailures === 1) throw new Error("blip");
     });
 
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "B")[0]?.status).toBe("sent");
     expect(listOutbox(db, "A")[0]?.status).toBe("pending");
     expect(listOutbox(db, "A")[1]?.status).toBe("pending");
 
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "A")[0]?.status).toBe("pending");
 
     clock.advance(1_000);
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "A")[0]?.status).toBe("sent");
     expect(listOutbox(db, "A")[1]?.status).toBe("pending");
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "A")[1]?.status).toBe("sent");
   });

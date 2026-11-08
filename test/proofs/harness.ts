@@ -404,7 +404,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
         // The process's recurring scheduler tick, without its 30 second wait.
         orchestrator.reconcileExecution();
         await jobs.tick();
-        outbox.tick();
+        await outbox.tick();
         await Bun.sleep(20);
       }
       return done();

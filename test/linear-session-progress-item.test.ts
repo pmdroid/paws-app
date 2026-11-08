@@ -36,7 +36,7 @@ test("a session progress row sent by a plain outbox tick counts under its task",
     );
     progress.phase("verifying");
     progress.link("Pull request", "https://github.com/acme/app/pull/1");
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(credited.length).toBeGreaterThan(0);
     expect([...new Set(credited)]).toEqual(["task"]);
   } finally {

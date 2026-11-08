@@ -172,7 +172,7 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
   dispatcher.setHandler((message, context) =>
     deliverLinearOutbox(message, opened.tracker!, async () => {}, context),
   );
-  while (dispatcher.tick().length > 0) await dispatcher.idle();
+  while ((await dispatcher.tick()).length > 0) await dispatcher.idle();
   expect(requests.map((request) => request.body)).toEqual([ISSUE_CLOSED_RESPONSE.completed]);
   expect(requests.every((request) => request.query.trim().startsWith("mutation"))).toBe(true);
   const responses = listOutbox(f.db).filter(

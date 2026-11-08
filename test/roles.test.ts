@@ -294,7 +294,7 @@ describe("roles", () => {
           });
         },
       });
-      const claimed = loops.outbox.tick();
+      const claimed = await loops.outbox.tick();
       if (role !== "web") await waitFor(() => delivered.length > 0);
       await loops.outbox.idle();
       controller.abort();

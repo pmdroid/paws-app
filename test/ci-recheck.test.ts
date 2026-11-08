@@ -180,11 +180,11 @@ test("a merge-queue re-check waits for CI, sends red CI to a fix, a conflict to 
       !["failed", "merged", "awaiting_input"].includes(stateOf(db, "ENG-8") ?? "")
     ) {
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) {
-        outbox.tick();
+        await outbox.tick();
         await Bun.sleep(25);
       }
     }
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     const detail = JSON.stringify({
       heads,
       ran,

@@ -163,7 +163,7 @@ function instance(input: {
   });
   const flush = async () => {
     for (let round = 0; round < 20; round++) {
-      const claimed = outbox.tick();
+      const claimed = await outbox.tick();
       await outbox.idle();
       if (claimed.length === 0) return;
     }

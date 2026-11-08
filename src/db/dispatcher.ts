@@ -3,12 +3,13 @@ import type { Database } from "bun:sqlite";
 import { DEFAULT_POLL_MS, sleep, type Clock } from "../core";
 import { sqliteDb, type Db } from "./db";
 import {
-  claimOutboxHeads,
-  coalesceOutbox,
-  completeOutbox,
+  claimOutboxHeadsSteps,
+  coalesceOutboxAsync,
+  completeOutboxSteps,
   isOutboxCurrent,
+  isOutboxCurrentSteps,
   retryOutbox,
-  releaseOutboxLease,
+  releaseOutboxLeaseSteps,
   type OutboxRow,
 } from "./outbox";
 
@@ -53,13 +54,13 @@ export class OutboxDispatcher {
     this.handler = handler;
   }
 
-  tick(): OutboxRow[] {
+  async tick(): Promise<OutboxRow[]> {
     if (this.handler === null || this.options.claims === false) return [];
-    for (const { row, controller } of this.active.values()) {
-      if (!isOutboxCurrent(this.db, row))
+    for (const { row, controller } of [...this.active.values()]) {
+      if (!(await this.store.run((q) => isOutboxCurrentSteps(q, row))))
         controller.abort(new Error("Delivery superseded by a session fence."));
     }
-    const claimed = claimOutboxHeads(this.db, {
+    const options = {
       blockedKeys: [...this.active.values()].flatMap(({ row }) =>
         row.orderingKey === null ? [] : [`${row.target}:${row.orderingKey}`],
       ),
@@ -67,7 +68,9 @@ export class OutboxDispatcher {
       now: this.clock.now(),
       limit: this.options.batchSize ?? 32,
       progressIntervalMs: this.options.progressIntervalMs,
-    });
+    };
+    // The claim is one `UPDATE … RETURNING`, so each claim is its own transaction.
+    const claimed = await this.store.run((q) => claimOutboxHeadsSteps(q, options));
     for (const message of claimed) {
       const controller = new AbortController();
       this.active.set(message.id, { row: message, controller });
@@ -86,7 +89,7 @@ export class OutboxDispatcher {
   ): Promise<void> {
     while (!signal.aborted) {
       try {
-        this.tick();
+        await this.tick();
       } catch (error) {
         // Same failure as the job loop: one locked database must not end delivery for good.
         journalCaught(error, "dispatcher.run.tick", null);
@@ -108,16 +111,18 @@ export class OutboxDispatcher {
     const handler = this.handler;
     if (handler === null) return;
     try {
-      if (!isOutboxCurrent(this.db, message)) return;
-      message = coalesceOutbox(this.db, message, {
-        now: this.clock.now(),
-        thoughts: Boolean(this.options.progressIntervalMs),
-      });
-      await handler(message, {
+      const claimed = message;
+      if (!(await this.store.run((q) => isOutboxCurrentSteps(q, claimed)))) return;
+      const options = { now: this.clock.now(), thoughts: Boolean(this.options.progressIntervalMs) };
+      message = await coalesceOutboxAsync(this.store, claimed, options);
+      const delivered = message;
+      await handler(delivered, {
         signal: controller.signal,
-        isCurrent: () => isOutboxCurrent(this.db, message),
+        // Handlers ask this synchronously; it stays on the SQLite wrapper until they await it.
+        isCurrent: () => isOutboxCurrent(this.db, delivered),
       });
-      completeOutbox(this.db, message, this.clock.now());
+      const now = this.clock.now();
+      await this.store.transaction((q) => completeOutboxSteps(q, delivered, now));
     } catch (error) {
       journalCaught(error, "dispatcher.deliver.isOutboxCurrent", journalItemId(message.payload));
       retryOutbox(this.db, message, error, {
@@ -125,7 +130,8 @@ export class OutboxDispatcher {
         baseMs: this.options.backoffBaseMs,
       });
     } finally {
-      releaseOutboxLease(this.db, message);
+      const released = message;
+      await this.store.run((q) => releaseOutboxLeaseSteps(q, released));
       this.active.delete(message.id);
     }
   }

@@ -8,7 +8,7 @@ import {
   JOB_KIND,
   retryBackoffMs,
 } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Db, type Q } from "./db";
 import { enqueueJobOnce, errorText } from "./jobs";
 import { journal } from "./journal";
 import type * as pgSchema from "./schema-pg";
@@ -540,6 +540,16 @@ export function coalesceOutbox(
 ): OutboxRow {
   if (coalescing(row, options) === null) return row;
   return settled(sqliteDb(db).transaction((q) => coalesceOutboxSteps(q, row, options)));
+}
+
+/** `coalesceOutbox` for async callers: no transaction when nothing coalesces. */
+export async function coalesceOutboxAsync(
+  store: Db,
+  row: OutboxRow,
+  options: { now?: number; thoughts?: boolean } = {},
+): Promise<OutboxRow> {
+  if (coalescing(row, options) === null) return row;
+  return store.transaction((q) => coalesceOutboxSteps(q, row, options));
 }
 
 export function* coalesceOutboxSteps(

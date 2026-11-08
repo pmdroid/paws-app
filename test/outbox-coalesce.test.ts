@@ -16,7 +16,7 @@ function harness() {
     deliverLinearOutbox(row, tracker, async () => {}, context, db),
   );
   const flush = async () => {
-    while (dispatcher.tick().length > 0) await dispatcher.idle();
+    while ((await dispatcher.tick()).length > 0) await dispatcher.idle();
   };
   const requests = () =>
     tracker.progress.length + tracker.questions.length + tracker.sessionUpdates.length;

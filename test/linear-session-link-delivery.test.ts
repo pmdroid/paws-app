@@ -42,7 +42,7 @@ test("persisted session link replacement, incremental removal and clearing reach
     deliverLinearOutbox(row, tracker, async () => {}, context),
   );
   try {
-    while (dispatcher.tick().length) await dispatcher.idle();
+    while ((await dispatcher.tick()).length) await dispatcher.idle();
     expect(sent).toEqual(changes.map((input) => ({ id: "session", input })));
   } finally {
     db.close();
