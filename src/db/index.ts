@@ -33,7 +33,13 @@ export {
   type ItemBranchState,
   type ItemPullRequest,
 } from "./stop-response";
-export { getItemCandidate, recordItemCandidate, type ItemCandidate } from "./item-candidate";
+export {
+  getItemCandidate,
+  getItemCandidateSteps,
+  recordItemCandidate,
+  recordItemCandidateSteps,
+  type ItemCandidate,
+} from "./item-candidate";
 export {
   getPullReview,
   pendingChangeRequests,
@@ -192,14 +198,20 @@ export {
 } from "./plan-proposals";
 export {
   closeLinkAsk,
+  closeLinkAskSteps,
   getLinkAsk,
+  getLinkAskSteps,
   insertLinkAsk,
+  insertLinkAskSteps,
   listLinkAsks,
+  listLinkAsksSteps,
   LINK_ASK_DECISIONS,
   LINK_ASK_KINDS,
   LINK_ASK_NOTE_REQUIRED,
   openLinkAsks,
+  openLinkAsksSteps,
   recordLinkAskDecision,
+  recordLinkAskDecisionSteps,
   type LinkAsk,
   type LinkAskRounds,
   type OpenReviewFinding,
@@ -866,7 +878,12 @@ export {
   schedulingProjectLeadSteps,
   type SchedulerItem,
 } from "./scheduling";
-export { blockerCheckedAt, recordBlockerChecks } from "./blocker-checks";
+export {
+  blockerCheckedAt,
+  blockerCheckedAtSteps,
+  recordBlockerChecks,
+  recordBlockerChecksSteps,
+} from "./blocker-checks";
 
 export {
   saveArtifact,
@@ -928,10 +945,15 @@ export { getLinearConversationSourceSteps } from "./linear-session-url";
 export {
   CLEANUP_BLOCKED_NOTICE,
   blockConversation,
+  blockConversationSteps,
   clearConversationBlock,
+  clearConversationBlockSteps,
   getConversation,
+  getConversationSteps,
   listBlockedConversations,
+  listBlockedConversationsSteps,
   saveConversation,
+  saveConversationSteps,
 } from "./acp-conversations";
 export {
   beginMergeCall,
@@ -1104,9 +1126,9 @@ export {
   saveQueuePositions,
 } from "./queue-wait";
 export type { QueuePosition } from "./queue-wait";
-export { listItemHolds, saveItemHolds } from "./item-hold";
+export { listItemHolds, listItemHoldsSteps, saveItemHolds, saveItemHoldsSteps } from "./item-hold";
 export { itemActivityFacts, type ItemActivityFacts } from "./item-activity";
-export { itemWaitSince, keepItemWaits } from "./item-wait";
+export { itemWaitSince, itemWaitSinceSteps, keepItemWaits, keepItemWaitsSteps } from "./item-wait";
 export {
   enqueueRunnerSetupCheck,
   enqueueRunnerSetupCheckSteps,

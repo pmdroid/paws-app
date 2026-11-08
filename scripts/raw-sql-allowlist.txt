@@ -15,11 +15,6 @@ src/dashboard/src/server/finding-groups.ts | const claimed = db.run( | not yet c
 src/dashboard/src/server/finding-groups.ts | db.run( | not yet converted to Drizzle
 src/dashboard/src/server/finding-groups.ts | db.run("UPDATE finding_group SET action=NULL WHERE id=? AND status='open' AND action=?", [ | not yet converted to Drizzle
 src/dashboard/src/server/findings.ts | db .query(`SELECT 1 FROM finding_group | not yet converted to Drizzle
-src/db/acp-conversations.ts | const row = db .query< | not yet converted to Drizzle
-src/db/acp-conversations.ts | db.run( | not yet converted to Drizzle
-src/db/acp-conversations.ts | db.run( | not yet converted to Drizzle
-src/db/acp-conversations.ts | db.run( | not yet converted to Drizzle
-src/db/acp-conversations.ts | return db .query<{ itemId: string; blockedAt: number }, []>( | not yet converted to Drizzle
 src/db/closeout-bypass.ts | db.run( | not yet converted to Drizzle
 src/db/closeout-bypass.ts | return db .query<Row, [string]>( | not yet converted to Drizzle
 src/db/closeout-bypass.ts | const updated = db.run( | not yet converted to Drizzle
@@ -135,12 +130,6 @@ src/db/legacy-migrate.ts | db.run("INSERT INTO schema_migration (id, applied_at)
 src/db/legacy-migrate.ts | db.run(`PRAGMA foreign_keys = ${foreignKeys ? "ON" : "OFF"}`); | frozen legacy migration (src/db/README.md)
 src/db/linear-comments.ts | db.run( | not yet converted to Drizzle
 src/db/linear-comments.ts | const gathering = db .query<{ n: number }, [string, string]>( | not yet converted to Drizzle
-src/db/link-asks.ts | db.run( | not yet converted to Drizzle
-src/db/link-asks.ts | const row = db .query<LinkAskRow, [string]>("SELECT * FROM link_ask WHERE question_id = ?") | not yet converted to Drizzle
-src/db/link-asks.ts | return db .query<LinkAskRow, [string]>( | not yet converted to Drizzle
-src/db/link-asks.ts | return db .query<LinkAskRow, [string]>( | not yet converted to Drizzle
-src/db/link-asks.ts | db.run( | not yet converted to Drizzle
-src/db/link-asks.ts | db.run( | not yet converted to Drizzle
 src/db/migrations.ts | const item = db .query<{ id: string }, []>( | not yet converted to Drizzle
 src/db/migrations.ts | const item = db .query<{ id: string; identifier: string }, []>( | not yet converted to Drizzle
 src/db/migrations.ts | const item = db .query<{ id: string; identifier: string; state: string }, []>( | not yet converted to Drizzle
