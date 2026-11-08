@@ -207,6 +207,26 @@ export function recordAccountObservation(
   return settled(sqliteDb(db).transaction((q) => recordAccountObservationSteps(q, observation)));
 }
 
+/** When to look again at the quota limit a command's result recorded. */
+export function* quotaRecheckAtSteps(q: Q, commandId: string, workspaceId: string) {
+  const { agentAccountHealth: h } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ at: h.nextCheckAt })
+      .from(h)
+      .where(and(eq(h.kind, "quota"), eq(h.sourceId, commandId), eq(h.workspaceId, workspaceId))),
+  );
+  return row?.at ?? null;
+}
+
+export function quotaRecheckAt(
+  db: Database,
+  commandId: string,
+  workspaceId: string,
+): number | null {
+  return settled(sqliteDb(db).run((q) => quotaRecheckAtSteps(q, commandId, workspaceId)));
+}
+
 export function* bindingAccountHealthSteps(q: Q, bindingId: string, model?: string | null) {
   const binding = yield* bindingForSteps(q, bindingId);
   if (!binding) return [];
