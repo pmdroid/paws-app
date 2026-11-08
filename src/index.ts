@@ -87,7 +87,6 @@ import {
   sweepTmpDir,
 } from "./config";
 import {
-  delegationHasOpenWork,
   type LinearCommand,
   type GitCommitPolicy,
   type AppBotIdentity,
@@ -160,6 +159,12 @@ import {
   applyLinearIssueProject,
   workspaceMember,
   sqliteDb,
+  enabledRunnerIds,
+  latestCloseoutProgressMarker,
+  listWorkspaceIds,
+  missingSnapshotTargets,
+  openDelegationWorkspaceId,
+  workspaceUserLinearId,
   type Db,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
@@ -564,15 +569,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       const session = getLinearSession(db, event.sessionId);
       const linked = workItemForSession(db, event.sessionId);
       if (linked && session?.organizationId && session.stoppedAt === null) {
-        const workspace = db
-          .query<{ id: string }, [string, string]>(
-            `SELECT w.id FROM workspace w WHERE w.linear_organization_id=? AND ${delegationHasOpenWork("?")}`,
-          )
-          .get(session.organizationId, linked.delegationId);
-        if (workspace)
+        const workspaceId = openDelegationWorkspaceId(
+          db,
+          session.organizationId,
+          linked.delegationId,
+        );
+        if (workspaceId)
           await reconciler.reconcile({
             itemId: linked.id,
-            workspaceId: workspace.id,
+            workspaceId,
             signal: abort.signal,
             known: event.action === "created" ? known : undefined,
           });
@@ -1072,12 +1077,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         commandsGone: (itemId, since) => remoteCommandsGone(db, itemId, since),
         runInProgress: async (runId) => (await remote).agents.runInProgress(runId),
         slotFree: () =>
-          db
-            .query<{ id: string }, []>(
-              "SELECT id FROM runner WHERE status='active' AND revoked_at IS NULL",
-            )
-            .all()
-            .some((host) => runnerHasCapacity(db, host.id, Date.now())),
+          enabledRunnerIds(db).some((host) => runnerHasCapacity(db, host.id, Date.now())),
         agentForItem: (itemId) => async (input) => {
           input.signal?.throwIfAborted();
           await ready;
@@ -1343,23 +1343,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   if (!managed) journal(LINEAR_WORKSPACE_REQUIRED);
   const admission = createAdmission({ db, workspace: managed });
   const enqueueMissingSnapshots = () => {
-    const targets = db
-      .query<{ itemId: string; workspaceId: string }, []>(
-        `SELECT picked.id AS itemId,w.id AS workspaceId FROM work_item picked
-      JOIN linear_session s ON s.session_id=picked.session_key
-      JOIN workspace w ON w.linear_organization_id=s.organization_id
-      WHERE picked.id=(
-        SELECT i.id FROM work_item i
-        JOIN linear_session open_session ON open_session.session_id=i.session_key AND open_session.stopped_at IS NULL
-        WHERE i.delegation_id=picked.delegation_id AND i.state NOT IN ('completed','merged','cancelled')
-        AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=i.id AND f.present=0)
-        ORDER BY i.position,i.id LIMIT 1)
-      AND ${delegationHasOpenWork("picked.delegation_id")} AND s.stopped_at IS NULL
-      AND EXISTS(SELECT 1 FROM work_item gap WHERE gap.delegation_id=picked.delegation_id AND gap.state NOT IN ('completed','merged','cancelled')
-        AND NOT EXISTS(SELECT 1 FROM work_item_specification f WHERE f.item_id=gap.id AND f.present=0)
-        AND NOT EXISTS(SELECT 1 FROM item_dependency_snapshot p WHERE p.item_id=gap.id))`,
-      )
-      .all();
+    const targets = missingSnapshotTargets(db);
     for (const target of targets)
       enqueueJobOnce(db, {
         queue: "linear.item.reconcile",
@@ -1670,11 +1654,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             JSON.stringify([
               delegatedLinearUserId(db, item.id),
               getWorkItemRepository(db, item.id) ?? getWorkItemRepositoryChoice(db, item.id),
-              db
-                .query(
-                  "SELECT id,head,base,policy_digest,decision FROM closeout_progress WHERE item_id=? ORDER BY updated_at DESC,id DESC LIMIT 1",
-                )
-                .get(item.id),
+              latestCloseoutProgressMarker(db, item.id),
             ]),
           administratorsForItem: (item) => {
             const session = item.sessionKey ? getLinearSession(db, item.sessionKey) : null;
@@ -1685,12 +1665,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             return listWorkspaceMembers(db, currentWorkspace.id)
               .filter((member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role))
               .flatMap((member) => {
-                const linked = db
-                  .query<{ id: string }, [string]>(
-                    "SELECT linear_user_id AS id FROM workspace_user WHERE id=?",
-                  )
-                  .get(member.id);
-                return linked ? [linked.id] : [];
+                const linked = workspaceUserLinearId(db, member.id);
+                return linked ? [linked] : [];
               });
           },
         }),
@@ -1850,11 +1826,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       if (findingGrouping)
         registerFindingGrouping(created.jobs, {
           groupingTime: runtime.file.findingsGroupingTime ?? "06:00",
-          workspaces: () =>
-            db
-              .query<{ id: string }, []>("SELECT id FROM workspace")
-              .all()
-              .map((w) => w.id),
+          workspaces: () => listWorkspaceIds(db),
           run: (workspaceId, signal) =>
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
         });

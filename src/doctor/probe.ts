@@ -17,7 +17,13 @@ import {
   type TrackerKind,
 } from "../config";
 import { validate } from "../closeout-spec";
-import { latestGitHubDelivery, linearWebhookWarning, type LinearWebhookWarning } from "../db";
+import {
+  distinctWorkspaceRepositories,
+  latestGitHubDelivery,
+  linearWebhookWarning,
+  oldestWorkspaceName,
+  type LinearWebhookWarning,
+} from "../db";
 import { createFetchGitHubClient, mintInstallationToken, signAppJwt } from "../github";
 import { checkDeveloperLogin, grokLoginStatus, type GrokLoginStatus } from "../install";
 import { createLinearClient, readStoredToken } from "../linear";
@@ -121,13 +127,7 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     webhooks: runtime.webhooks,
     linearWebhook: readPawsDb(runtime.env.home, (db) => linearWebhookWarning(db, Date.now())),
     githubDelivery: readPawsDb(runtime.env.home, latestGitHubDelivery),
-    workspace: readPawsDb(
-      runtime.env.home,
-      (db) =>
-        db
-          .query<{ name: string }, []>("SELECT name FROM workspace ORDER BY created_at LIMIT 1")
-          .get()?.name ?? null,
-    ),
+    workspace: readPawsDb(runtime.env.home, (db) => oldestWorkspaceName(db)),
     publicUrl: runtime.publicUrl,
     repos,
     team: runtime.linearTeam,
@@ -240,15 +240,7 @@ function closeoutPolicyFact(
 
 /** Workspace repository choices from the Paws database, then `config.toml` repositories. */
 function chosenRepositories(runtime: RuntimeConfig): string[] {
-  const chosen =
-    readPawsDb(runtime.env.home, (db) =>
-      db
-        .query<{ repository: string }, []>(
-          "SELECT DISTINCT repository FROM workspace_repository ORDER BY repository",
-        )
-        .all()
-        .map((row) => row.repository),
-    ) ?? [];
+  const chosen = readPawsDb(runtime.env.home, (db) => distinctWorkspaceRepositories(db)) ?? [];
   return [...new Set([...chosen, ...runtime.repos])];
 }
 
