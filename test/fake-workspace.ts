@@ -22,6 +22,24 @@ type Session = {
 const OPEN = "i.state NOT IN ('completed','merged','cancelled')";
 const PRESENT =
   "NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)";
+const DEPENDENCY_INPUTS = `SELECT json_array(
+  (SELECT json_group_array(json_array(i.id,i.linear_issue_id,i.linear_identifier,i.title,i.state,
+    i.version,i.position,i.created_at,i.cancel_requested,i.session_key,i.brief,i.owner_user_id,
+    i.delegated_by,u.linear_user_id,t.mode,p.present))
+   FROM work_item i LEFT JOIN work_item_task t ON t.item_id=i.id
+   LEFT JOIN work_item_specification p ON p.item_id=i.id
+   LEFT JOIN workspace_user u ON u.id=i.owner_user_id WHERE i.delegation_id=d.delegation_id),
+  (SELECT json_group_array(json_array(s.session_id,s.organization_id,s.oauth_client_id,
+    s.app_user_id,s.team_id,s.creator_id,s.generation,s.stopped_at,w.id))
+   FROM linear_session s LEFT JOIN workspace w ON w.linear_organization_id=s.organization_id
+   WHERE s.session_id IN (SELECT session_key FROM work_item WHERE delegation_id=d.delegation_id)),
+  (SELECT json_group_array(json_array(pd.parent_issue_id,pd.stopped_at,sub.issue_id))
+   FROM parent_delegation_issue sub JOIN parent_delegation pd ON pd.delegation_id=sub.parent_delegation_id
+   WHERE sub.delegation_id=d.delegation_id),
+  (SELECT json_array(workspace_id,generation,scope,linear_states)
+   FROM item_dependency_snapshot WHERE item_id=d.id)) AS inputs
+  FROM work_item d WHERE d.id=?`;
+const currentInputs = new WeakMap<Database, Map<string, string>>();
 
 export function workspaceAdmission(db: Database, options: AdmissionOptions = {}): ItemAdmission {
   const admission = createAdmission({ db, ...options });
@@ -95,11 +113,19 @@ export function joinFakeWorkspace(db: Database, delegationId: string): void {
     const target = { itemId: item.id, workspaceId };
     const fresh = reads(db, item.id);
     const saved = snapshot(db, item.id);
+    const inputs = db
+      .query<{ inputs: string }, [string]>(DEPENDENCY_INPUTS)
+      .get(item.id)
+      ?.inputs.concat(workspaceId);
+    const current = currentInputs.get(db) ?? new Map<string, string>();
+    currentInputs.set(db, current);
     if (
-      itemDependenciesCurrent(db, target) &&
-      saved?.linearStates === JSON.stringify([...fresh.states])
-    )
+      saved?.linearStates === JSON.stringify([...fresh.states]) &&
+      (current.get(item.id) === inputs || itemDependenciesCurrent(db, target))
+    ) {
+      if (inputs !== undefined) current.set(item.id, inputs);
       continue;
+    }
     try {
       recordItemDependencies(db, { ...target, expectedGeneration: saved?.generation ?? 0 }, fresh);
     } catch {
