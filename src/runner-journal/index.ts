@@ -1,6 +1,10 @@
 import { randomBytes, createHash } from "node:crypto";
 import { chmodSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import type { Changes } from "bun:sqlite";
+import { and, eq, gt, gte, inArray, isNull, lt, ne, notExists, notInArray, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 import { openDatabase, immediate } from "../db";
 import {
@@ -14,6 +18,8 @@ import {
   type RunnerCommand,
   withoutJournalTime,
 } from "../runner-protocol";
+import { ddl } from "./ddl";
+import { cleanup, delivery, execution, publication, resultDelivery, termination } from "./schema";
 
 export type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
 export type Execution = { id: string; command: WorkCommand; phase: string };
@@ -85,8 +91,28 @@ type TerminalRow = {
   generation: number;
   itemId: string;
 };
-const TERMINAL_COLUMNS = `id,command_id AS commandId,json_extract(payload,'$.runId') AS runId,
-  json_extract(payload,'$.generation') AS generation,json_extract(payload,'$.itemId') AS itemId`;
+const TERMINAL_PHASES = ["complete", "interrupted"];
+// Read only the identifiers, so an execution an older release journaled still lists.
+const payloadRunId = sql<string>`json_extract(${execution.payload},'$.runId')`;
+const payloadGeneration = sql<number>`json_extract(${execution.payload},'$.generation')`;
+const terminalColumns = {
+  id: execution.id,
+  commandId: execution.commandId,
+  runId: payloadRunId,
+  generation: payloadGeneration,
+  itemId: sql<string>`json_extract(${execution.payload},'$.itemId')`,
+};
+const awaitsAnswer = sql`json_extract(${delivery.payload},'$.type') IN ('question','artifact','closeout_policy','ci_rerun')`;
+const one = { one: sql`1` };
+
+function rowid(table: SQLiteTable) {
+  return sql`${table}.rowid`;
+}
+
+function changes(query: { run(): unknown }): number {
+  return (query.run() as Changes).changes;
+}
+
 function terminalExecution({ id, commandId, runId, generation, itemId }: TerminalRow) {
   return { id, command: { id: commandId, runId, generation, itemId } } satisfies TerminalExecution;
 }
@@ -99,53 +125,29 @@ export function openExecutionJournal(root: string) {
   const path = join(root, "executions.db");
   const db = openDatabase(path);
   chmodSync(path, 0o600);
-  db.run(
-    "CREATE TABLE IF NOT EXISTS execution (id TEXT PRIMARY KEY, command_id TEXT UNIQUE NOT NULL, payload TEXT NOT NULL, phase TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, prefix_hash TEXT NOT NULL DEFAULT '', answer_cursor INTEGER NOT NULL DEFAULT 0) STRICT",
-  );
-  db.run(
-    "CREATE TABLE IF NOT EXISTS delivery (execution_id TEXT NOT NULL REFERENCES execution(id), sequence INTEGER NOT NULL, payload TEXT NOT NULL, request_id TEXT, sent INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(execution_id,sequence)) STRICT",
-  );
-  db.run(
-    "CREATE TABLE IF NOT EXISTS result_delivery (execution_id TEXT PRIMARY KEY REFERENCES execution(id), payload TEXT NOT NULL, failure INTEGER NOT NULL, accepted INTEGER NOT NULL DEFAULT 0) STRICT",
-  );
-  db.run(
-    "CREATE TABLE IF NOT EXISTS publication (execution_id TEXT PRIMARY KEY REFERENCES execution(id), payload TEXT NOT NULL, lease TEXT, published_sha TEXT, refused TEXT) STRICT",
-  );
-  const columns = new Set(
-    db
-      .query<{ name: string }, []>("PRAGMA table_info(execution)")
-      .all()
-      .map((column) => column.name),
-  );
-  if (!columns.has("transcript_offset"))
-    db.run("ALTER TABLE execution ADD COLUMN transcript_offset INTEGER NOT NULL DEFAULT 0");
-  // The agent session upload: bytes Paws holds, and '' until it is sealed or skipped.
-  if (!columns.has("session_offset"))
-    db.run("ALTER TABLE execution ADD COLUMN session_offset INTEGER NOT NULL DEFAULT 0");
-  if (!columns.has("session_state"))
-    db.run("ALTER TABLE execution ADD COLUMN session_state TEXT NOT NULL DEFAULT ''");
-  if (!columns.has("transcript_sealed"))
-    db.run("ALTER TABLE execution ADD COLUMN transcript_sealed INTEGER NOT NULL DEFAULT 0");
-  if (
-    !db
-      .query<{ name: string }, []>("PRAGMA table_info(result_delivery)")
-      .all()
-      .some((column) => column.name === "refused")
-  )
-    db.run("ALTER TABLE result_delivery ADD COLUMN refused TEXT");
-  db.run(
-    "CREATE INDEX IF NOT EXISTS delivery_waiting ON delivery(execution_id,sequence) WHERE json_extract(payload,'$.type') IN ('question','artifact','closeout_policy')",
-  );
-  db.run(`CREATE TABLE IF NOT EXISTS termination (
-    command_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, generation INTEGER NOT NULL,
-    reported INTEGER NOT NULL DEFAULT 0) STRICT`);
-  db.run("CREATE INDEX IF NOT EXISTS termination_generation ON termination(run_id,generation)");
-  db.run(`CREATE TABLE IF NOT EXISTS cleanup (
-    execution_id TEXT PRIMARY KEY REFERENCES execution(id), started_at INTEGER NOT NULL,
-    failures INTEGER NOT NULL DEFAULT 0, failure TEXT, failed_at INTEGER) STRICT`);
+  ddl(db);
+  const orm = drizzle(db);
   // Recover a crash between recording Paws's decision and changing the execution phase.
-  db.run(
-    "UPDATE execution SET phase=(SELECT CASE WHEN accepted=1 AND failure=0 THEN 'complete' ELSE 'interrupted' END FROM result_delivery WHERE execution_id=execution.id) WHERE phase NOT IN ('complete','interrupted') AND id IN (SELECT execution_id FROM result_delivery WHERE accepted<>0)",
+  orm
+    .update(execution)
+    .set({
+      phase: sql`(SELECT CASE WHEN ${resultDelivery.accepted}=1 AND ${resultDelivery.failure}=0 THEN 'complete' ELSE 'interrupted' END FROM ${resultDelivery} WHERE ${resultDelivery.executionId}=${execution.id})`,
+    })
+    .where(
+      and(
+        notInArray(execution.phase, TERMINAL_PHASES),
+        inArray(
+          execution.id,
+          orm
+            .select({ id: resultDelivery.executionId })
+            .from(resultDelivery)
+            .where(ne(resultDelivery.accepted, 0)),
+        ),
+      ),
+    )
+    .run();
+  const unterminated = notExists(
+    orm.select(one).from(termination).where(eq(termination.commandId, execution.commandId)),
   );
   function parseExecution(row: { id: string; payload: string; phase: string }) {
     const parsed = RunnerCommandSchema.safeParse(JSON.parse(row.payload));
@@ -155,36 +157,35 @@ export function openExecutionJournal(root: string) {
       throw new Error("Invalid persisted work command");
     return { id: row.id, command, phase: row.phase } satisfies Execution;
   }
-  function execution(id: string): Execution | undefined {
-    const row = db
-      .query<{ id: string; payload: string; phase: string }, [string]>(
-        "SELECT id,payload,phase FROM execution WHERE id=?",
-      )
-      .get(id);
+  const executionColumns = { id: execution.id, payload: execution.payload, phase: execution.phase };
+  function readExecution(id: string): Execution | undefined {
+    const row = orm.select(executionColumns).from(execution).where(eq(execution.id, id)).get();
     return row ? parseExecution(row) : undefined;
   }
   function executions(active: boolean): Execution[] {
-    return db
-      .query<{ id: string; payload: string; phase: string }, [number]>(
-        "SELECT id,payload,phase FROM execution WHERE (phase NOT IN ('complete','interrupted'))=? ORDER BY rowid",
+    return orm
+      .select(executionColumns)
+      .from(execution)
+      .where(
+        active
+          ? notInArray(execution.phase, TERMINAL_PHASES)
+          : inArray(execution.phase, TERMINAL_PHASES),
       )
-      .all(Number(active))
+      .orderBy(rowid(execution))
+      .all()
       .flatMap((row) => parseExecution(row) ?? []);
   }
   function storedPublication(id: string) {
-    const row = db
-      .query<
-        {
-          payload: string;
-          lease: string | null;
-          publishedSha: string | null;
-          refused: string | null;
-        },
-        [string]
-      >(
-        "SELECT payload,lease,published_sha AS publishedSha,refused FROM publication WHERE execution_id=?",
-      )
-      .get(id);
+    const row = orm
+      .select({
+        payload: publication.payload,
+        lease: publication.lease,
+        publishedSha: publication.publishedSha,
+        refused: publication.refused,
+      })
+      .from(publication)
+      .where(eq(publication.executionId, id))
+      .get();
     return (
       row && {
         result: RunnerResultSchema.parse(JSON.parse(row.payload)),
@@ -194,139 +195,182 @@ export function openExecutionJournal(root: string) {
       }
     );
   }
+  function unsentArtifactPayload(id: string, sequence: number) {
+    return orm
+      .select({ payload: delivery.payload })
+      .from(delivery)
+      .where(
+        and(eq(delivery.executionId, id), eq(delivery.sequence, sequence), eq(delivery.sent, 0)),
+      )
+      .get();
+  }
+  function replaceUnsent(id: string, sequence: number, payload: string) {
+    orm
+      .update(delivery)
+      .set({ payload })
+      .where(
+        and(eq(delivery.executionId, id), eq(delivery.sequence, sequence), eq(delivery.sent, 0)),
+      )
+      .run();
+  }
   return {
     executions,
-    execution,
+    execution: readExecution,
     publication: storedPublication,
     // Older releases could mark an execution interrupted before its broker stopped.
     // Reconcile those rows through the same broker contract on upgrade.
     unconfirmedTerminations(): TerminalExecution[] {
-      return db
-        .query<TerminalRow, []>(
-          `SELECT ${TERMINAL_COLUMNS}
-          FROM execution e WHERE phase IN ('complete','interrupted')
-          AND NOT EXISTS(SELECT 1 FROM termination t WHERE t.command_id=e.command_id) ORDER BY rowid`,
-        )
+      return orm
+        .select(terminalColumns)
+        .from(execution)
+        .where(and(inArray(execution.phase, TERMINAL_PHASES), unterminated))
+        .orderBy(rowid(execution))
         .all()
         .map(terminalExecution);
     },
     unreadableExecutions(): TerminalExecution[] {
-      return db
-        .query<TerminalRow & { payload: string; phase: string }, []>(
-          `SELECT ${TERMINAL_COLUMNS},payload,phase
-          FROM execution e WHERE phase NOT IN ('complete','interrupted')
-          AND NOT EXISTS(SELECT 1 FROM termination t WHERE t.command_id=e.command_id) ORDER BY rowid`,
-        )
+      return orm
+        .select({ ...terminalColumns, payload: execution.payload, phase: execution.phase })
+        .from(execution)
+        .where(and(notInArray(execution.phase, TERMINAL_PHASES), unterminated))
+        .orderBy(rowid(execution))
         .all()
         .filter((row) => !parseExecution(row))
         .map(terminalExecution);
     },
     terminationPending(runId: string, generation: number) {
       return (
-        db
-          .query(
-            `SELECT 1 FROM execution e WHERE json_extract(e.payload,'$.runId')=?
-            AND json_extract(e.payload,'$.generation')=?
-            AND NOT EXISTS(SELECT 1 FROM termination t WHERE t.command_id=e.command_id)`,
-          )
-          .get(runId, generation) !== null
+        orm
+          .select(one)
+          .from(execution)
+          .where(and(eq(payloadRunId, runId), eq(payloadGeneration, generation), unterminated))
+          .limit(1)
+          .get() !== undefined
       );
     },
     confirmTermination(command: { id: string; runId: string; generation: number }) {
-      db.run("INSERT OR IGNORE INTO termination(command_id,run_id,generation) VALUES(?,?,?)", [
-        command.id,
-        command.runId,
-        command.generation,
-      ]);
+      // A row from an older release can lack these fields. OR IGNORE skips its NOT NULL failure,
+      // which the builder's ON CONFLICT DO NOTHING would raise.
+      orm.run(
+        sql`INSERT OR IGNORE INTO ${termination}(command_id,run_id,generation) VALUES(${command.id},${command.runId},${command.generation})`,
+      );
     },
     cleanupStarted(id: string, at: number) {
-      db.run("INSERT OR IGNORE INTO cleanup(execution_id,started_at) VALUES(?,?)", [id, at]);
+      orm.insert(cleanup).values({ executionId: id, startedAt: at }).onConflictDoNothing().run();
     },
     cleanupFailed(id: string, failure: string, at: number) {
-      return db
-        .query<{ failures: number }, [string, number, string, number]>(
-          `INSERT INTO cleanup(execution_id,started_at,failures,failure,failed_at) VALUES(?1,?2,1,?3,?4)
-          ON CONFLICT(execution_id) DO UPDATE SET failures=failures+1,failure=excluded.failure,failed_at=excluded.failed_at
-          RETURNING failures`,
-        )
-        .get(id, at, failure.slice(0, 1024), at)!.failures;
+      return orm
+        .insert(cleanup)
+        .values({
+          executionId: id,
+          startedAt: at,
+          failures: 1,
+          failure: failure.slice(0, 1024),
+          failedAt: at,
+        })
+        .onConflictDoUpdate({
+          target: cleanup.executionId,
+          set: {
+            failures: sql`${cleanup.failures}+1`,
+            failure: sql`excluded.failure`,
+            failedAt: sql`excluded.failed_at`,
+          },
+        })
+        .returning({ failures: cleanup.failures })
+        .get().failures;
     },
     cleanupDone(id: string) {
       return (
-        db
-          .query<{ failures: number }, [string]>(
-            "DELETE FROM cleanup WHERE execution_id=? RETURNING failures",
-          )
-          .get(id)?.failures ?? 0
+        orm
+          .delete(cleanup)
+          .where(eq(cleanup.executionId, id))
+          .returning({ failures: cleanup.failures })
+          .get()?.failures ?? 0
       );
     },
     cleanups() {
-      return db
-        .query<
-          {
-            executionId: string;
-            phase: string;
-            since: number;
-            failures: number;
-            failure: string | null;
-            failedAt: number | null;
-            runId: string;
-            generation: number;
-            commandId: string;
-          },
-          []
-        >(
-          // Read only the identifiers, so an execution an older release journaled still lists.
-          `SELECT c.execution_id AS executionId,e.phase,c.started_at AS since,c.failures,c.failure,
-          c.failed_at AS failedAt,json_extract(e.payload,'$.runId') AS runId,
-          json_extract(e.payload,'$.generation') AS generation,e.command_id AS commandId
-          FROM cleanup c JOIN execution e ON e.id=c.execution_id ORDER BY c.rowid`,
-        )
+      return orm
+        .select({
+          executionId: cleanup.executionId,
+          phase: execution.phase,
+          since: cleanup.startedAt,
+          failures: cleanup.failures,
+          failure: cleanup.failure,
+          failedAt: cleanup.failedAt,
+          runId: payloadRunId,
+          generation: payloadGeneration,
+          commandId: execution.commandId,
+        })
+        .from(cleanup)
+        .innerJoin(execution, eq(execution.id, cleanup.executionId))
+        .orderBy(rowid(cleanup))
         .all();
     },
     pendingTerminations() {
-      return db
-        .query<{ runId: string; generation: number; commandId: string }, []>(
-          "SELECT run_id AS runId,generation,command_id AS commandId FROM termination WHERE reported=0 ORDER BY rowid LIMIT 64",
-        )
+      return orm
+        .select({
+          runId: termination.runId,
+          generation: termination.generation,
+          commandId: termination.commandId,
+        })
+        .from(termination)
+        .where(eq(termination.reported, 0))
+        .orderBy(rowid(termination))
+        .limit(64)
         .all();
     },
     terminationReported(entry: { runId: string; generation: number; commandId: string }) {
-      db.run("UPDATE termination SET reported=1 WHERE command_id=? AND run_id=? AND generation=?", [
-        entry.commandId,
-        entry.runId,
-        entry.generation,
-      ]);
+      orm
+        .update(termination)
+        .set({ reported: 1 })
+        .where(
+          and(
+            eq(termination.commandId, entry.commandId),
+            eq(termination.runId, entry.runId),
+            eq(termination.generation, entry.generation),
+          ),
+        )
+        .run();
     },
     transcriptSealed(id: string) {
       return Boolean(
-        db
-          .query<{ sealed: number }, [string]>(
-            "SELECT transcript_sealed AS sealed FROM execution WHERE id=?",
-          )
-          .get(id)?.sealed,
+        orm
+          .select({ sealed: execution.transcriptSealed })
+          .from(execution)
+          .where(eq(execution.id, id))
+          .get()?.sealed,
       );
     },
     sealTranscript(id: string) {
-      db.run("UPDATE execution SET transcript_sealed=1 WHERE id=?", [id]);
+      orm.update(execution).set({ transcriptSealed: 1 }).where(eq(execution.id, id)).run();
     },
     resultRejected(id: string) {
-      db.run("UPDATE result_delivery SET accepted=2 WHERE execution_id=?", [id]);
+      orm
+        .update(resultDelivery)
+        .set({ accepted: 2 })
+        .where(eq(resultDelivery.executionId, id))
+        .run();
     },
     resultUndeliverable(id: string, reason: string) {
-      db.run(
-        "UPDATE result_delivery SET accepted=3,refused=? WHERE execution_id=? AND accepted=0",
-        [reason.slice(0, 4096), id],
-      );
+      orm
+        .update(resultDelivery)
+        .set({ accepted: 3, refused: reason.slice(0, 4096) })
+        .where(and(eq(resultDelivery.executionId, id), eq(resultDelivery.accepted, 0)))
+        .run();
     },
     undeliverableResults() {
-      return db
-        .query<
-          { id: string; runId: string; generation: number; reason: string; payload: string },
-          []
-        >(
-          "SELECT r.execution_id AS id,json_extract(e.payload,'$.runId') AS runId,json_extract(e.payload,'$.generation') AS generation,r.refused AS reason,r.payload FROM result_delivery r JOIN execution e ON e.id=r.execution_id WHERE r.accepted=3 ORDER BY r.rowid",
-        )
+      return orm
+        .select({
+          id: resultDelivery.executionId,
+          runId: payloadRunId,
+          generation: payloadGeneration,
+          reason: sql<string>`${resultDelivery.refused}`,
+          payload: resultDelivery.payload,
+        })
+        .from(resultDelivery)
+        .innerJoin(execution, eq(execution.id, resultDelivery.executionId))
+        .where(eq(resultDelivery.accepted, 3))
+        .orderBy(rowid(resultDelivery))
         .all()
         .map(({ payload, ...row }) => ({
           ...row,
@@ -334,52 +378,69 @@ export function openExecutionJournal(root: string) {
         }));
     },
     saveResult(id: string, result: RunnerResult, failure = false) {
-      db.run("INSERT OR IGNORE INTO result_delivery(execution_id,payload,failure) VALUES (?,?,?)", [
-        id,
-        JSON.stringify(RunnerResultSchema.parse(result)),
-        Number(failure),
-      ]);
+      orm
+        .insert(resultDelivery)
+        .values({
+          executionId: id,
+          payload: JSON.stringify(RunnerResultSchema.parse(result)),
+          failure: Number(failure),
+        })
+        .onConflictDoNothing()
+        .run();
     },
     beginPublication(id: string, result: RunnerResult, lease?: string) {
       immediate(db, () => {
-        db.run("INSERT OR IGNORE INTO publication(execution_id,payload,lease) VALUES (?,?,?)", [
-          id,
-          JSON.stringify(RunnerResultSchema.parse(result)),
-          lease ?? null,
-        ]);
-        db.run(
-          "UPDATE execution SET phase='publishing' WHERE id=? AND phase NOT IN ('complete','interrupted')",
-          [id],
-        );
+        orm
+          .insert(publication)
+          .values({
+            executionId: id,
+            payload: JSON.stringify(RunnerResultSchema.parse(result)),
+            lease: lease ?? null,
+          })
+          .onConflictDoNothing()
+          .run();
+        orm
+          .update(execution)
+          .set({ phase: "publishing" })
+          .where(and(eq(execution.id, id), notInArray(execution.phase, TERMINAL_PHASES)))
+          .run();
       });
       return storedPublication(id)!;
     },
     published(id: string, sha: string) {
       if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Runner published commit is invalid");
-      db.run("UPDATE publication SET published_sha=? WHERE execution_id=? AND refused IS NULL", [
-        sha,
-        id,
-      ]);
+      orm
+        .update(publication)
+        .set({ publishedSha: sha })
+        .where(and(eq(publication.executionId, id), isNull(publication.refused)))
+        .run();
     },
     refusePublication(id: string, reason: string) {
-      db.run("UPDATE publication SET refused=? WHERE execution_id=? AND refused IS NULL", [
-        reason.slice(0, 4096),
-        id,
-      ]);
+      orm
+        .update(publication)
+        .set({ refused: reason.slice(0, 4096) })
+        .where(and(eq(publication.executionId, id), isNull(publication.refused)))
+        .run();
     },
     pendingResults() {
-      return db
-        .query<{ id: string; runId: string; generation: number }, []>(
-          "SELECT r.execution_id AS id,json_extract(e.payload,'$.runId') AS runId,json_extract(e.payload,'$.generation') AS generation FROM result_delivery r JOIN execution e ON e.id=r.execution_id WHERE r.accepted=0 ORDER BY r.rowid",
-        )
+      return orm
+        .select({
+          id: resultDelivery.executionId,
+          runId: payloadRunId,
+          generation: payloadGeneration,
+        })
+        .from(resultDelivery)
+        .innerJoin(execution, eq(execution.id, resultDelivery.executionId))
+        .where(eq(resultDelivery.accepted, 0))
+        .orderBy(rowid(resultDelivery))
         .all();
     },
     pendingResult(id: string) {
-      const row = db
-        .query<{ payload: string; failure: number }, [string]>(
-          "SELECT payload,failure FROM result_delivery WHERE execution_id=? AND accepted=0",
-        )
-        .get(id);
+      const row = orm
+        .select({ payload: resultDelivery.payload, failure: resultDelivery.failure })
+        .from(resultDelivery)
+        .where(and(eq(resultDelivery.executionId, id), eq(resultDelivery.accepted, 0)))
+        .get();
       return (
         row && {
           result: RunnerResultSchema.parse(JSON.parse(row.payload)),
@@ -389,22 +450,36 @@ export function openExecutionJournal(root: string) {
     },
     resultPending(id: string) {
       return Boolean(
-        db.query("SELECT 1 FROM result_delivery WHERE execution_id=? AND accepted=0").get(id),
+        orm
+          .select(one)
+          .from(resultDelivery)
+          .where(and(eq(resultDelivery.executionId, id), eq(resultDelivery.accepted, 0)))
+          .get(),
       );
     },
     resultAccepted(id: string) {
-      db.run("UPDATE result_delivery SET accepted=1 WHERE execution_id=?", [id]);
+      orm
+        .update(resultDelivery)
+        .set({ accepted: 1 })
+        .where(eq(resultDelivery.executionId, id))
+        .run();
     },
     hasResult(id: string) {
-      return Boolean(db.query("SELECT 1 FROM result_delivery WHERE execution_id=?").get(id));
+      return Boolean(
+        orm.select(one).from(resultDelivery).where(eq(resultDelivery.executionId, id)).get(),
+      );
     },
     waiting(id: string) {
       return Boolean(
-        db
-          .query(
-            "SELECT 1 FROM delivery d JOIN execution e ON e.id=d.execution_id WHERE e.id=? AND d.sequence>e.answer_cursor AND json_extract(d.payload,'$.type') IN ('question','artifact','closeout_policy','ci_rerun') LIMIT 1",
+        orm
+          .select(one)
+          .from(delivery)
+          .innerJoin(execution, eq(execution.id, delivery.executionId))
+          .where(
+            and(eq(execution.id, id), gt(delivery.sequence, execution.answerCursor), awaitsAnswer),
           )
-          .get(id),
+          .limit(1)
+          .get(),
       );
     },
     admit(command: WorkCommand, now: number): Execution | null {
@@ -412,42 +487,58 @@ export function openExecutionJournal(root: string) {
       if (parsed.type !== "run" && parsed.type !== "review" && parsed.type !== "task")
         throw new Error("Work command is required");
       if (
-        db
-          .query("SELECT 1 FROM termination WHERE run_id=? AND generation=?")
-          .get(command.runId, command.generation)
+        orm
+          .select(one)
+          .from(termination)
+          .where(
+            and(
+              eq(termination.runId, command.runId),
+              eq(termination.generation, command.generation),
+            ),
+          )
+          .limit(1)
+          .get()
       )
         return null;
-      const existing = db
-        .query<{ payload: string }, [string]>("SELECT payload FROM execution WHERE command_id=?")
-        .get(command.id);
+      const existing = orm
+        .select({ payload: execution.payload })
+        .from(execution)
+        .where(eq(execution.commandId, command.id))
+        .get();
       if (existing) {
         if (existing.payload !== JSON.stringify(parsed))
           throw new Error("Persisted command changed");
         return null;
       }
       const id = executionId(now);
-      db.run("INSERT INTO execution(id,command_id,payload,phase) VALUES (?,?,?,'preparing')", [
-        id,
-        command.id,
-        JSON.stringify(parsed),
-      ]);
+      orm
+        .insert(execution)
+        .values({ id, commandId: command.id, payload: JSON.stringify(parsed), phase: "preparing" })
+        .run();
       return { id, command: parsed, phase: "preparing" };
     },
     phase(id: string, phase: "running" | "publishing" | "cleaning" | "complete" | "interrupted") {
-      const changed = db.run(
-        "UPDATE execution SET phase=? WHERE id=? AND phase NOT IN ('complete','interrupted')",
-        [phase, id],
-      ).changes;
-      return changed === 1;
+      return (
+        changes(
+          orm
+            .update(execution)
+            .set({ phase })
+            .where(and(eq(execution.id, id), notInArray(execution.phase, TERMINAL_PHASES))),
+        ) === 1
+      );
     },
     ingest(id: string, bytes: Buffer) {
       if (bytes.length > 16_777_216) throw new Error("Runner event journal exceeds size limit");
       immediate(db, () => {
-        const row = db
-          .query<{ consumed: number; prefix_hash: string; phase: string }, [string]>(
-            "SELECT consumed,prefix_hash,phase FROM execution WHERE id=?",
-          )
-          .get(id);
+        const row = orm
+          .select({
+            consumed: execution.consumed,
+            prefixHash: execution.prefixHash,
+            phase: execution.phase,
+          })
+          .from(execution)
+          .where(eq(execution.id, id))
+          .get();
         if (!row) throw new Error("Unknown execution journal");
         const terminal = row.phase === "complete" || row.phase === "interrupted";
         if (terminal && (bytes.length < row.consumed || bytes.indexOf(10, row.consumed) !== -1))
@@ -456,23 +547,28 @@ export function openExecutionJournal(root: string) {
           bytes.length < row.consumed ||
           (row.consumed > 0 &&
             createHash("sha256").update(bytes.subarray(0, row.consumed)).digest("hex") !==
-              row.prefix_hash)
+              row.prefixHash)
         )
           throw new Error("Runner event journal was rewritten");
         // Result replay still validates the consumed prefix of a terminal execution.
         if (terminal) return;
         let offset = row.consumed;
-        let sequence = db
-          .query<{ sequence: number }, [string]>(
-            "SELECT COALESCE(MAX(sequence),0) AS sequence FROM delivery WHERE execution_id=?",
-          )
-          .get(id)!.sequence;
+        let sequence = orm
+          .select({ sequence: sql<number>`COALESCE(MAX(${delivery.sequence}),0)` })
+          .from(delivery)
+          .where(eq(delivery.executionId, id))
+          .get()!.sequence;
         let message = "";
         function append(event: z.infer<typeof RunnerEventSchema>, requestId: string | null = null) {
-          db.run(
-            "INSERT INTO delivery(execution_id,sequence,payload,request_id) VALUES (?,?,?,?)",
-            [id, ++sequence, JSON.stringify(RunnerEventSchema.parse(event)), requestId],
-          );
+          orm
+            .insert(delivery)
+            .values({
+              executionId: id,
+              sequence: ++sequence,
+              payload: JSON.stringify(RunnerEventSchema.parse(event)),
+              requestId,
+            })
+            .run();
         }
         function flushMessage() {
           if (!message) return;
@@ -493,7 +589,7 @@ export function openExecutionJournal(root: string) {
           let event: z.infer<typeof RunnerEventSchema> | undefined;
           let requestId: string | null = null;
           const q = question.safeParse(raw);
-          const publication = artifact.safeParse(raw);
+          const artifactRequest = artifact.safeParse(raw);
           const policy = policyRequest.safeParse(raw);
           const ciRerun = ciRerunRequest.safeParse(raw);
           if (ciRerun.success) {
@@ -506,11 +602,11 @@ export function openExecutionJournal(root: string) {
               ...(policy.data.hash === undefined ? {} : { hash: policy.data.hash }),
             };
             requestId = policy.data.requestId;
-          } else if (publication.success) {
-            if (publication.data.requestId !== publication.data.artifact.id)
+          } else if (artifactRequest.success) {
+            if (artifactRequest.data.requestId !== artifactRequest.data.artifact.id)
               throw new Error("Artifact request binding changed");
-            event = { type: "artifact", artifact: publication.data.artifact };
-            requestId = publication.data.requestId;
+            event = { type: "artifact", artifact: artifactRequest.data.artifact };
+            requestId = artifactRequest.data.requestId;
           } else if (q.success) {
             event = {
               type: "question",
@@ -672,143 +768,164 @@ export function openExecutionJournal(root: string) {
           offset = end + 1;
         }
         flushMessage();
-        db.run("UPDATE execution SET consumed=?,prefix_hash=? WHERE id=?", [
-          offset,
-          createHash("sha256").update(bytes.subarray(0, offset)).digest("hex"),
-          id,
-        ]);
+        orm
+          .update(execution)
+          .set({
+            consumed: offset,
+            prefixHash: createHash("sha256").update(bytes.subarray(0, offset)).digest("hex"),
+          })
+          .where(eq(execution.id, id))
+          .run();
       });
     },
     pending(id: string) {
-      return db
-        .query<{ sequence: number; payload: string }, [string]>(
-          "SELECT sequence,payload FROM delivery WHERE execution_id=? AND sent=0 ORDER BY sequence",
-        )
-        .all(id)
+      return orm
+        .select({ sequence: delivery.sequence, payload: delivery.payload })
+        .from(delivery)
+        .where(and(eq(delivery.executionId, id), eq(delivery.sent, 0)))
+        .orderBy(delivery.sequence)
+        .all()
         .map((row) => ({
           sequence: row.sequence,
           event: RunnerEventSchema.parse(JSON.parse(row.payload)),
         }));
     },
     transcriptCursor(id: string) {
-      const row = db
-        .query<{ offset: number; consumed: number }, [string]>(
-          "SELECT transcript_offset AS offset,consumed FROM execution WHERE id=?",
-        )
-        .get(id);
+      const row = orm
+        .select({ offset: execution.transcriptOffset, consumed: execution.consumed })
+        .from(execution)
+        .where(eq(execution.id, id))
+        .get();
       if (!row) throw new Error("Runner transcript execution is missing");
       return row;
     },
     transcriptUploaded(id: string, previous: number, offset: number) {
       if (!Number.isSafeInteger(offset) || offset <= previous)
         throw new Error("Runner transcript offset is invalid");
-      const changed = db.run(
-        "UPDATE execution SET transcript_offset=? WHERE id=? AND transcript_offset=? AND consumed>=?",
-        [offset, id, previous, offset],
+      const changed = changes(
+        orm
+          .update(execution)
+          .set({ transcriptOffset: offset })
+          .where(
+            and(
+              eq(execution.id, id),
+              eq(execution.transcriptOffset, previous),
+              gte(execution.consumed, offset),
+            ),
+          ),
       );
-      if (changed.changes !== 1) throw new Error("Runner transcript offset changed");
+      if (changed !== 1) throw new Error("Runner transcript offset changed");
     },
     sessionCursor(id: string) {
-      const row = db
-        .query<{ offset: number; state: "" | "sealed" | "skipped" }, [string]>(
-          "SELECT session_offset AS offset,session_state AS state FROM execution WHERE id=?",
-        )
-        .get(id);
+      const row = orm
+        .select({ offset: execution.sessionOffset, state: execution.sessionState })
+        .from(execution)
+        .where(eq(execution.id, id))
+        .get();
       if (!row) throw new Error("Runner session execution is missing");
       return row;
     },
     sessionUploaded(id: string, previous: number, offset: number) {
       if (!Number.isSafeInteger(offset) || offset <= previous)
         throw new Error("Runner session offset is invalid");
-      const changed = db.run(
-        "UPDATE execution SET session_offset=? WHERE id=? AND session_offset=? AND session_state=''",
-        [offset, id, previous],
+      const changed = changes(
+        orm
+          .update(execution)
+          .set({ sessionOffset: offset })
+          .where(
+            and(
+              eq(execution.id, id),
+              eq(execution.sessionOffset, previous),
+              eq(execution.sessionState, ""),
+            ),
+          ),
       );
-      if (changed.changes !== 1) throw new Error("Runner session offset changed");
+      if (changed !== 1) throw new Error("Runner session offset changed");
     },
     sessionDone(id: string, state: "sealed" | "skipped") {
-      db.run("UPDATE execution SET session_state=? WHERE id=? AND session_state=''", [state, id]);
+      orm
+        .update(execution)
+        .set({ sessionState: state })
+        .where(and(eq(execution.id, id), eq(execution.sessionState, "")))
+        .run();
     },
     /** Marks an unsent artifact as refused by Paws, so the event is sent without its bytes. */
     dropArtifact(id: string, sequence: number, reason: string) {
-      const row = db
-        .query<{ payload: string }, [string, number]>(
-          "SELECT payload FROM delivery WHERE execution_id=? AND sequence=? AND sent=0",
-        )
-        .get(id, sequence);
+      const row = unsentArtifactPayload(id, sequence);
       const event = row && RunnerEventSchema.parse(JSON.parse(row.payload));
       if (!event || event.type !== "artifact")
         throw new Error("Dropped artifact does not match an unsent artifact");
       const dropped = RunnerEventSchema.parse({ ...event, dropped: reason.slice(0, 1024) });
-      db.run("UPDATE delivery SET payload=? WHERE execution_id=? AND sequence=? AND sent=0", [
-        JSON.stringify(dropped),
-        id,
-        sequence,
-      ]);
+      replaceUnsent(id, sequence, JSON.stringify(dropped));
       return dropped;
     },
     /** Marks an unsent checkpoint as not published, so Paws never records its commit. */
     dropCheckpoint(id: string, sequence: number, reason: string) {
-      const row = db
-        .query<{ payload: string }, [string, number]>(
-          "SELECT payload FROM delivery WHERE execution_id=? AND sequence=? AND sent=0",
-        )
-        .get(id, sequence);
+      const row = unsentArtifactPayload(id, sequence);
       const event = row && RunnerEventSchema.parse(JSON.parse(row.payload));
       if (!event || event.type !== "checkpoint")
         throw new Error("Dropped checkpoint does not match an unsent checkpoint");
       const dropped = RunnerEventSchema.parse({ ...event, dropped: reason.slice(0, 1024) });
-      db.run("UPDATE delivery SET payload=? WHERE execution_id=? AND sequence=? AND sent=0", [
-        JSON.stringify(dropped),
-        id,
-        sequence,
-      ]);
+      replaceUnsent(id, sequence, JSON.stringify(dropped));
       return dropped;
     },
     sent(id: string, sequence: number) {
-      db.run("UPDATE delivery SET sent=1 WHERE execution_id=? AND sequence=?", [id, sequence]);
+      orm
+        .update(delivery)
+        .set({ sent: 1 })
+        .where(and(eq(delivery.executionId, id), eq(delivery.sequence, sequence)))
+        .run();
     },
     answerCursor(id: string) {
-      return db
-        .query<{ answer_cursor: number }, [string]>(
-          "SELECT answer_cursor FROM execution WHERE id=?",
-        )
-        .get(id)!.answer_cursor;
+      return orm
+        .select({ cursor: execution.answerCursor })
+        .from(execution)
+        .where(eq(execution.id, id))
+        .get()!.cursor;
     },
     requestId(id: string, sequence: number) {
       return (
-        db
-          .query<{ request_id: string | null }, [string, number]>(
-            "SELECT request_id FROM delivery WHERE execution_id=? AND sequence=?",
-          )
-          .get(id, sequence)?.request_id ?? null
+        orm
+          .select({ requestId: delivery.requestId })
+          .from(delivery)
+          .where(and(eq(delivery.executionId, id), eq(delivery.sequence, sequence)))
+          .get()?.requestId ?? null
       );
     },
     answered(id: string, sequence: number) {
-      const delivery = db
-        .query<{ payload: string; sent: number }, [string, number]>(
-          "SELECT payload,sent FROM delivery WHERE execution_id=? AND sequence=?",
-        )
-        .get(id, sequence);
+      const row = orm
+        .select({ payload: delivery.payload, sent: delivery.sent })
+        .from(delivery)
+        .where(and(eq(delivery.executionId, id), eq(delivery.sequence, sequence)))
+        .get();
       if (
-        !delivery ||
-        delivery.sent !== 1 ||
+        !row ||
+        row.sent !== 1 ||
         !["question", "artifact", "closeout_policy", "ci_rerun"].includes(
-          RunnerEventSchema.parse(JSON.parse(delivery.payload)).type,
+          RunnerEventSchema.parse(JSON.parse(row.payload)).type,
         )
       )
         throw new Error("Answer does not match a delivered question or artifact");
-      const earlier = db
-        .query<{ sequence: number }, [string, number]>(
-          "SELECT d.sequence FROM delivery d JOIN execution e ON e.id=d.execution_id WHERE d.execution_id=? AND d.sequence>e.answer_cursor AND d.sequence<? AND json_extract(d.payload,'$.type') IN ('question','artifact','closeout_policy','ci_rerun') LIMIT 1",
+      const earlier = orm
+        .select({ sequence: delivery.sequence })
+        .from(delivery)
+        .innerJoin(execution, eq(execution.id, delivery.executionId))
+        .where(
+          and(
+            eq(delivery.executionId, id),
+            gt(delivery.sequence, execution.answerCursor),
+            lt(delivery.sequence, sequence),
+            awaitsAnswer,
+          ),
         )
-        .get(id, sequence);
+        .limit(1)
+        .get();
       if (earlier) throw new Error("Answer would skip an earlier question or artifact");
-      db.run("UPDATE execution SET answer_cursor=? WHERE id=? AND answer_cursor<?", [
-        sequence,
-        id,
-        sequence,
-      ]);
+      orm
+        .update(execution)
+        .set({ answerCursor: sequence })
+        .where(and(eq(execution.id, id), lt(execution.answerCursor, sequence)))
+        .run();
     },
     close() {
       db.close();
