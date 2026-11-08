@@ -2,7 +2,7 @@ import type { RunnerCapacityWaitState } from "./items";
 import { CONVERSATION_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
 import type { Database } from "bun:sqlite";
 import { and, count, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
-import type { Q } from "./db";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { orm } from "./orm";
 import { runnerCapacity, runnerHelper, runnerHostStatus } from "./schema";
 import { runnerLeaseCutoff } from "./runner-lease";
@@ -420,26 +420,34 @@ export function unfinishedConversationHelpers(db: Database) {
     .all();
 }
 
+export function* conversationsInUseSteps(
+  q: Q,
+  runnerIds: readonly string[],
+  now: number,
+): Steps<Map<string, number>> {
+  if (runnerIds.length === 0) return new Map();
+  const { runnerHelper: helper } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ runnerId: helper.runnerId, used: count() })
+      .from(helper)
+      .where(
+        and(
+          inArray(helper.runnerId, [...runnerIds]),
+          isNull(helper.endedAt),
+          gt(helper.expiresAt, now),
+          sql`NOT ${workHelperSql(q, "runner_helper")}`,
+        ),
+      )
+      .groupBy(helper.runnerId),
+  );
+  return new Map(rows.map((row) => [row.runnerId, row.used]));
+}
+
 export function conversationsInUse(
   db: Database,
   runnerIds: readonly string[],
   now: number,
 ): Map<string, number> {
-  if (runnerIds.length === 0) return new Map();
-  return new Map(
-    orm(db)
-      .select({ runnerId: runnerHelper.runnerId, used: count() })
-      .from(runnerHelper)
-      .where(
-        and(
-          inArray(runnerHelper.runnerId, [...runnerIds]),
-          isNull(runnerHelper.endedAt),
-          gt(runnerHelper.expiresAt, now),
-          sql`NOT ${sql.raw(WORK_HELPER("runner_helper"))}`,
-        ),
-      )
-      .groupBy(runnerHelper.runnerId)
-      .all()
-      .map((row) => [row.runnerId, row.used]),
-  );
+  return settled(sqliteDb(db).run((q) => conversationsInUseSteps(q, runnerIds, now)));
 }

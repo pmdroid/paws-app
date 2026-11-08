@@ -59,6 +59,11 @@ export async function probeRunnerTaskAuthority(
   applyMigration(
     migrations.find((value) => value.id === "20261028T1929_workspace_member_revocation")!,
   );
+  // Enrollment's Drizzle insert names every column of the current runner table.
+  applyMigration(
+    migrations.find((value) => value.id === "20261027T1858_conversation_block_release")!,
+  );
+  applyMigration(migrations.find((value) => value.id === "20261101T1430_runner_teardown")!);
   let now = Date.now();
   const userId = putWorkspaceUser(db, {
     id: workspaceId(),
