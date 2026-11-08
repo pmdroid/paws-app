@@ -1,8 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { eq, sql } from "drizzle-orm";
+import { parseRemainingParts, type RemainingPart } from "../core";
 import { settled, sqliteDb, type Q } from "./db";
 
-export type PullRequestDraft = { title: string; body: string };
+export type PullRequestDraft = {
+  title: string;
+  body: string;
+  remaining?: readonly RemainingPart[];
+};
 
 export function* savePullRequestDraftSteps(
   q: Q,
@@ -14,12 +19,19 @@ export function* savePullRequestDraftSteps(
   yield* q.exec(
     q.orm
       .insert(pullRequestDraft)
-      .values({ itemId, title: draft.title, body: draft.body, updatedAt: now })
+      .values({
+        itemId,
+        title: draft.title,
+        body: draft.body,
+        remainingJson: draft.remaining?.length ? JSON.stringify(draft.remaining) : null,
+        updatedAt: now,
+      })
       .onConflictDoUpdate({
         target: pullRequestDraft.itemId,
         set: {
           title: sql`excluded.title`,
           body: sql`excluded.body`,
+          remainingJson: sql`excluded.remaining_json`,
           updatedAt: sql`excluded.updated_at`,
         },
       }),
@@ -54,11 +66,19 @@ export function* getPullRequestDraftSteps(q: Q, itemId: string) {
   const { pullRequestDraft } = q.t;
   const row = yield* q.one(
     q.orm
-      .select({ title: pullRequestDraft.title, body: pullRequestDraft.body })
+      .select({
+        title: pullRequestDraft.title,
+        body: pullRequestDraft.body,
+        remainingJson: pullRequestDraft.remainingJson,
+      })
       .from(pullRequestDraft)
       .where(eq(pullRequestDraft.itemId, itemId)),
   );
-  return row ?? null;
+  if (!row) return null;
+  const remaining = row.remainingJson ? parseRemainingParts(JSON.parse(row.remainingJson)) : [];
+  return remaining.length
+    ? { title: row.title, body: row.body, remaining }
+    : { title: row.title, body: row.body };
 }
 
 export function getPullRequestDraft(db: Database, itemId: string): PullRequestDraft | null {

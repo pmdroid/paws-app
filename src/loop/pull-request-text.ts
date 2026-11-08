@@ -13,7 +13,7 @@ import {
   updatePullRequestText,
   type GitHubBinding,
 } from "../github";
-import { JOB_KIND } from "../core";
+import { JOB_KIND, withLeftForLater } from "../core";
 
 const CLOSED_STATES = new Set(["merged", "completed", "cancelled"]);
 
@@ -53,7 +53,9 @@ export async function applyPullRequestDraft(input: {
     if (!live.open) return "no_pull";
     if (!written) {
       written = recoveredText(input.issue, live, [
-        input.previous?.body,
+        input.previous
+          ? withLeftForLater(input.previous.body, input.previous.remaining ?? [])
+          : undefined,
         acceptedSummary(input.db, input.itemId),
       ]);
       savePullRequestText(input.db, input.itemId, written, input.now);
@@ -76,7 +78,11 @@ export async function applyPullRequestDraft(input: {
 }
 
 function textBody(written: PullRequestText, issue: string, draft: PullRequestDraft): string {
-  return publishedPullRequestBody({ issue, description: draft.body, evidence: written.evidence });
+  return publishedPullRequestBody({
+    issue,
+    description: withLeftForLater(draft.body, draft.remaining ?? []),
+    evidence: written.evidence,
+  });
 }
 
 function sameText(written: PullRequestText, issue: string, draft: PullRequestDraft): boolean {

@@ -572,7 +572,7 @@ import {
 import { deliverLinearOutbox } from "./dispatch";
 import { durableConversation } from "./conversation";
 import { createLinearSessionProgress } from "./session-progress";
-import { renderWorkContext } from "../core";
+import { renderWorkContext, withLeftForLater } from "../core";
 import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
 import {
   createEvidenceArtifactPublisher,
@@ -5492,7 +5492,7 @@ export class Orchestrator {
         title,
         body: publishedPullRequestBody({
           issue: item.linearIdentifier,
-          ...(draft ? { description: draft.body } : {}),
+          ...(draft ? { description: withLeftForLater(draft.body, draft.remaining ?? []) } : {}),
           evidence,
         }),
         evidence,

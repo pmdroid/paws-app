@@ -1,4 +1,5 @@
 import { journal, journalCaught } from "../journal";
+import { parseRemainingParts, type RemainingPart } from "../core";
 import { createServer, type Server, type Socket } from "node:net";
 import { chmod, mkdir, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -64,6 +65,7 @@ const OPEN_PULL_REQUEST_FIRST = JSON.stringify({
 export interface PullRequestDescription {
   title: string;
   body: string;
+  remaining?: readonly RemainingPart[];
 }
 
 export interface PullRequestHook {
@@ -774,6 +776,7 @@ function parsePlan(value: { steps?: unknown }): PlanStep[] {
 export function parsePullRequest(value: {
   title?: unknown;
   body?: unknown;
+  remaining?: unknown;
 }): PullRequestDescription {
   if (typeof value.title !== "string" || typeof value.body !== "string")
     throw new Error("open_pull_request requires a title and a body");
@@ -783,7 +786,8 @@ export function parsePullRequest(value: {
     throw new Error("open_pull_request needs a one-line title of at most 256 characters");
   if (body.length < 1 || body.length > 12_000)
     throw new Error("open_pull_request needs a body of 1 to 12000 characters");
-  return { title, body };
+  const remaining = parseRemainingParts(value.remaining);
+  return remaining.length ? { title, body, remaining } : { title, body };
 }
 
 export function parsePostUpdate(value: { text?: unknown }): string {

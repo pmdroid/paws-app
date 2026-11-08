@@ -45,6 +45,7 @@ import { withOpenFindings } from "./open-findings";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { endMergeCall, getConfirmedRemoteMerge, mergeStopRequested } from "./remote-merges";
 import { orm } from "./orm";
+import { getPullRequestDraft } from "./pull-request-drafts";
 import { workItem, workItemEvent } from "./schema";
 import { immediate } from "./tx";
 import { runnerLeaseCutoff } from "./runner-lease";
@@ -867,6 +868,25 @@ export function completeMergedItem(
       },
       now: input.now,
     });
+    const remaining = getPullRequestDraft(db, current.id)?.remaining;
+    if (remaining?.length)
+      enqueueOutboxOnce(db, {
+        target: "linear",
+        op: "linear.remaining_issues",
+        orderingKey: current.linearIssueId,
+        idempotencyKey: `remaining:${current.id}`,
+        payload: {
+          itemId: current.id,
+          issueId: current.linearIssueId,
+          identifier: current.linearIdentifier,
+          repository: `${fact.repositoryOwner}/${fact.repositoryName}`,
+          pullUrl:
+            fact.pullUrl ??
+            `https://github.com/${fact.repositoryOwner}/${fact.repositoryName}/pull/${fact.pullNumber}`,
+          parts: remaining,
+        },
+        now: input.now,
+      });
     input.announce?.(current);
     const merged = applyWorkItemEvent(db, current.id, "merge_accepted", { now: input.now });
     endMergeCall(db, current.id);

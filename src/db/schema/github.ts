@@ -82,6 +82,7 @@ export const pullRequestDraft = sqliteTable("pull_request_draft", {
   itemId: text("item_id").primaryKey().notNull(),
   title: text().notNull(),
   body: text().notNull(),
+  remainingJson: text("remaining_json"),
   updatedAt: integer("updated_at").notNull(),
 });
 
