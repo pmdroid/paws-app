@@ -1,32 +1,41 @@
 import type { RunnerCapacityWaitState } from "./items";
 import { CONVERSATION_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
 import type { Database } from "bun:sqlite";
-import { and, count, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
-import { orm } from "./orm";
-import { runnerCapacity, runnerHelper, runnerHostStatus } from "./schema";
+import { jsonField, jsonText } from "./json-text";
 import { runnerLeaseCutoff } from "./runner-lease";
-import { immediate } from "./tx";
-import { auditWorkspaceAccess } from "./workspace";
-
-export const CI_WAITING = (run: string) =>
-  `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND json_extract(ci.payload,'$.itemId')=${run}.item_id
-    AND json_extract(ci.payload,'$.awakeWait.kind')='ci')`;
+import { auditWorkspaceAccessSteps } from "./workspace";
 
 export const ciWaitingSql = (q: Q, run: string): SQL =>
   sql.raw(
     q.dialect === "sqlite"
-      ? CI_WAITING(run)
+      ? `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND json_extract(ci.payload,'$.itemId')=${run}.item_id
+    AND json_extract(ci.payload,'$.awakeWait.kind')='ci')`
       : `EXISTS(SELECT 1 FROM job ci WHERE ci.status='running' AND (ci.payload->>'itemId')=${run}.item_id
     AND (ci.payload->'awakeWait'->>'kind')='ci')`,
   );
 
-export const WORK_HELPER = (helper: string) => `${helper}.purpose IS NOT 'conversation'`;
-
 export const workHelperSql = (q: Q, helper: string): SQL =>
   sql.raw(
     q.dialect === "sqlite"
-      ? WORK_HELPER(helper)
+      ? `${helper}.purpose IS NOT 'conversation'`
       : `${helper}.purpose IS DISTINCT FROM 'conversation'`,
   );
 
@@ -42,10 +51,25 @@ export const TEARDOWN_UNRESOLVED = `(w.ended_at IS NOT NULL AND w.teardown_confi
     OR EXISTS(SELECT 1 FROM runner_command stopped WHERE stopped.runner_id=w.runner_id
       AND stopped.run_id=w.run_id AND stopped.generation=w.generation AND stopped.kind='cancel'
       AND stopped.acknowledged_at<COALESCE(owner.terminations_since,stopped.acknowledged_at+1)))))`;
+const num = (fragment: SQL) => sql<number>`${fragment}`.mapWith(Number);
+
+const teardownUnresolved = sql.raw(TEARDOWN_UNRESOLVED);
+
 /**
  * Slots Paws may fill on a runner. A lowered desired value applies at once; a raised one waits
  * until the runner reports it applied the value.
  */
+export function* runnerHasCapacitySteps(
+  q: Q,
+  runnerId: string,
+  now: number,
+  excludeRunId = "",
+  additionalReservations = 0,
+) {
+  const row = yield* runnerOccupancySteps(q, runnerId, now, excludeRunId);
+  return row.occupied + additionalReservations < row.capacity;
+}
+
 export function runnerHasCapacity(
   db: Database,
   runnerId: string,
@@ -53,30 +77,86 @@ export function runnerHasCapacity(
   excludeRunId = "",
   additionalReservations = 0,
 ): boolean {
-  const row = runnerOccupancy(db, runnerId, now, excludeRunId);
-  return row.occupied + additionalReservations < row.capacity;
+  return settled(
+    sqliteDb(db).run((q) =>
+      runnerHasCapacitySteps(q, runnerId, now, excludeRunId, additionalReservations),
+    ),
+  );
 }
 
 /** The slots Paws may fill on a runner and the slots leased work, helpers and retros fill now. */
+export function* runnerOccupancySteps(q: Q, runnerId: string, now: number, excludeRunId = "") {
+  const least = sql.raw(q.dialect === "sqlite" ? "MIN" : "LEAST");
+  const row = yield* q.one(
+    q.orm
+      .select({
+        capacity: num(
+          sql`COALESCE((SELECT ${least}(capacity,COALESCE(desired,16)) FROM runner_capacity WHERE runner_id=${runnerId}),1)`,
+        ),
+        occupied:
+          num(sql`(SELECT count(*) FROM runner_work w WHERE w.runner_id=${runnerId} AND ((w.ended_at IS NULL AND w.lease_until>${runnerLeaseCutoff(now)} AND w.run_id<>${excludeRunId})
+            OR ${teardownUnresolved})) +
+          (SELECT count(*) FROM runner_helper h WHERE h.runner_id=${runnerId} AND h.ended_at IS NULL AND h.expires_at>${now}
+            AND ${workHelperSql(q, "h")}) +
+          (SELECT count(*) FROM retro_dispatch WHERE runner_id=${runnerId} AND released_at IS NULL)`),
+      })
+      .from(sql`(SELECT 1) AS occupancy`),
+  );
+  return row!;
+}
+
 export function runnerOccupancy(
   db: Database,
   runnerId: string,
   now: number,
   excludeRunId = "",
 ): { capacity: number; occupied: number } {
-  return db
-    .query<
-      { capacity: number; occupied: number },
-      [string, string, number, string, string, number, string]
-    >(
-      `SELECT COALESCE((SELECT MIN(capacity,COALESCE(desired,16)) FROM runner_capacity WHERE runner_id=?),1) AS capacity,
-     (SELECT count(*) FROM runner_work w WHERE w.runner_id=? AND ((w.ended_at IS NULL AND w.lease_until>? AND w.run_id<>?)
-       OR ${TEARDOWN_UNRESOLVED})) +
-     (SELECT count(*) FROM runner_helper h WHERE h.runner_id=? AND h.ended_at IS NULL AND h.expires_at>?
-       AND ${WORK_HELPER("h")}) +
-     (SELECT count(*) FROM retro_dispatch WHERE runner_id=? AND released_at IS NULL) AS occupied`,
-    )
-    .get(runnerId, runnerId, runnerLeaseCutoff(now), excludeRunId, runnerId, now, runnerId)!;
+  return settled(sqliteDb(db).run((q) => runnerOccupancySteps(q, runnerId, now, excludeRunId)));
+}
+
+export function* runnerSlotsHeldBetweenCommandsSteps(
+  q: Q,
+  runnerId: string,
+  now: number,
+  excludeRunId = "",
+) {
+  const w = alias(q.t.runnerWork, "w");
+  const r = alias(q.t.run, "r");
+  const { runnerResult: result } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ runId: w.runId })
+      .from(w)
+      .innerJoin(r, eq(r.id, w.runId))
+      .where(
+        and(
+          eq(w.runnerId, runnerId),
+          or(
+            isNotNull(w.endedAt),
+            and(
+              lte(w.leaseUntil, runnerLeaseCutoff(now)),
+              exists(
+                q.orm
+                  .select({ one: sql`1` })
+                  .from(result)
+                  .where(
+                    and(
+                      eq(result.runId, w.runId),
+                      eq(result.generation, w.generation),
+                      eq(result.commandId, w.commandId),
+                    ),
+                  ),
+              ),
+            ),
+          ),
+          inArray(r.status, ["active", "provisioning"]),
+          sql`NOT ${teardownUnresolved}`,
+          sql`NOT ${ciWaitingSql(q, "r")}`,
+        ),
+      ),
+  );
+  const holders = rows.map((row) => row.runId);
+  return holders.includes(excludeRunId) ? 0 : holders.length;
 }
 
 export function runnerSlotsHeldBetweenCommands(
@@ -85,26 +165,51 @@ export function runnerSlotsHeldBetweenCommands(
   now: number,
   excludeRunId = "",
 ): number {
-  const holders = db
-    .query<{ runId: string }, [string, number]>(
-      `SELECT w.run_id AS runId FROM runner_work w JOIN run r ON r.id=w.run_id
-       WHERE w.runner_id=? AND (w.ended_at IS NOT NULL OR (w.lease_until<=? AND EXISTS (
-         SELECT 1 FROM runner_result result WHERE result.run_id=w.run_id
-           AND result.generation=w.generation AND result.command_id=w.command_id)))
-       AND r.status IN ('active','provisioning') AND NOT ${TEARDOWN_UNRESOLVED} AND NOT ${CI_WAITING("r")}`,
-    )
-    .all(runnerId, runnerLeaseCutoff(now))
-    .map((row) => row.runId);
-  return holders.includes(excludeRunId) ? 0 : holders.length;
+  return settled(
+    sqliteDb(db).run((q) => runnerSlotsHeldBetweenCommandsSteps(q, runnerId, now, excludeRunId)),
+  );
+}
+
+export function* activeRunnerIdsSteps(q: Q, now: number) {
+  const { runner } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: runner.id })
+      .from(runner)
+      .where(
+        and(
+          eq(runner.status, "active"),
+          isNull(runner.revokedAt),
+          gt(runner.lastSeenAt, now - 60_000),
+        ),
+      ),
+  );
+  return rows.map((row) => row.id);
 }
 
 export function activeRunnerIds(db: Database, now: number): string[] {
-  return db
-    .query<{ id: string }, [number]>(
-      "SELECT id FROM runner WHERE status='active' AND revoked_at IS NULL AND last_seen_at>?",
-    )
-    .all(now - 60_000)
-    .map((runner) => runner.id);
+  return settled(sqliteDb(db).run((q) => activeRunnerIdsSteps(q, now)));
+}
+
+export function* slotWaitRunnersSteps(
+  q: Q,
+  runId: string,
+  wait: RunnerCapacityWaitState,
+  now: number,
+): Steps<readonly string[]> {
+  if (wait.runnerIds.length === 0) return wait.runnerIds;
+  const { runnerWork } = q.t;
+  const placed = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(runnerWork)
+      .where(eq(runnerWork.runId, runId))
+      .limit(1),
+  );
+  if (placed) return wait.runnerIds;
+  const known = new Set([...wait.runnerIds, ...(wait.online ?? [])]);
+  const active = yield* activeRunnerIdsSteps(q, now);
+  return [...wait.runnerIds, ...active.filter((id) => !known.has(id))];
 }
 
 export function slotWaitRunners(
@@ -113,13 +218,16 @@ export function slotWaitRunners(
   wait: RunnerCapacityWaitState,
   now: number,
 ): readonly string[] {
-  if (
-    wait.runnerIds.length === 0 ||
-    db.query("SELECT 1 FROM runner_work WHERE run_id=? LIMIT 1").get(runId)
-  )
-    return wait.runnerIds;
-  const known = new Set([...wait.runnerIds, ...(wait.online ?? [])]);
-  return [...wait.runnerIds, ...activeRunnerIds(db, now).filter((id) => !known.has(id))];
+  return settled(sqliteDb(db).run((q) => slotWaitRunnersSteps(q, runId, wait, now)));
+}
+
+export function* runnerSlotFreeSteps(q: Q, runnerIds: readonly string[], now: number, runId = "") {
+  const ids = runnerIds.length ? runnerIds : yield* activeRunnerIdsSteps(q, now);
+  for (const id of ids) {
+    const held = yield* runnerSlotsHeldBetweenCommandsSteps(q, id, now, runId);
+    if (yield* runnerHasCapacitySteps(q, id, now, runId, held)) return true;
+  }
+  return false;
 }
 
 export function runnerSlotFree(
@@ -128,10 +236,7 @@ export function runnerSlotFree(
   now: number,
   runId = "",
 ): boolean {
-  const ids = runnerIds.length ? runnerIds : activeRunnerIds(db, now);
-  return ids.some((id) =>
-    runnerHasCapacity(db, id, now, runId, runnerSlotsHeldBetweenCommands(db, id, now, runId)),
-  );
+  return settled(sqliteDb(db).run((q) => runnerSlotFreeSteps(q, runnerIds, now, runId)));
 }
 
 /**
@@ -139,13 +244,13 @@ export function runnerSlotFree(
  * Returns the concurrency the runner should apply, or undefined for runners that do not report a
  * ceiling (older releases reject unknown reply fields).
  */
-export function recordRunnerCapacity(
-  db: Database,
+export function* recordRunnerCapacitySteps(
+  q: Q,
   runnerId: string,
   capacity: number,
   ceiling?: number,
   conversations?: number,
-): number | undefined {
+): Steps<number | undefined> {
   if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 16)
     throw new Error("Invalid runner capacity");
   if (
@@ -158,121 +263,215 @@ export function recordRunnerCapacity(
     (!Number.isSafeInteger(conversations) || conversations < 0 || conversations > 16)
   )
     throw new Error("Invalid runner conversation capacity");
-  db.run(
-    `INSERT INTO runner_capacity(runner_id,capacity,ceiling,conversation) VALUES(?,?,?,?)
-    ON CONFLICT(runner_id) DO UPDATE SET capacity=excluded.capacity,ceiling=excluded.ceiling,
-    conversation=excluded.conversation`,
-    [runnerId, capacity, ceiling ?? null, conversations ?? null],
+  const { runnerCapacity } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(runnerCapacity)
+      .values({
+        runnerId,
+        capacity,
+        ceiling: ceiling ?? null,
+        conversation: conversations ?? null,
+      })
+      .onConflictDoUpdate({
+        target: runnerCapacity.runnerId,
+        set: {
+          capacity: sql`excluded.capacity`,
+          ceiling: sql`excluded.ceiling`,
+          conversation: sql`excluded.conversation`,
+        },
+      }),
   );
   if (ceiling === undefined) return undefined;
-  const desired = db
-    .query<{ desired: number | null }, [string]>(
-      "SELECT desired FROM runner_capacity WHERE runner_id=?",
-    )
-    .get(runnerId)?.desired;
-  return Math.min(desired ?? ceiling, ceiling);
+  const row = yield* q.one(
+    q.orm
+      .select({ desired: runnerCapacity.desired })
+      .from(runnerCapacity)
+      .where(eq(runnerCapacity.runnerId, runnerId)),
+  );
+  return Math.min(row?.desired ?? ceiling, ceiling);
+}
+
+export function recordRunnerCapacity(
+  db: Database,
+  runnerId: string,
+  capacity: number,
+  ceiling?: number,
+  conversations?: number,
+): number | undefined {
+  return settled(
+    sqliteDb(db).run((q) =>
+      recordRunnerCapacitySteps(q, runnerId, capacity, ceiling, conversations),
+    ),
+  );
 }
 
 export class RunnerConcurrencyError extends Error {}
 
+type RunnerConcurrencyInput = {
+  runnerId: string;
+  workspaceId: string;
+  userId: string;
+  concurrency: number;
+  now: number;
+};
+
 /** Stores the concurrency an admin chose, from 1 up to the ceiling the runner reported. */
-export function setRunnerConcurrency(
-  db: Database,
-  input: {
-    runnerId: string;
-    workspaceId: string;
-    userId: string;
-    concurrency: number;
-    now: number;
-  },
-): void {
-  immediate(db, () => {
-    const row = db
-      .query<{ ceiling: number | null }, [string, string]>(
-        `SELECT c.ceiling FROM runner r LEFT JOIN runner_capacity c ON c.runner_id=r.id
-        WHERE r.id=? AND r.workspace_id=? AND r.revoked_at IS NULL`,
-      )
-      .get(input.runnerId, input.workspaceId);
-    if (!row) throw new Error("Runner is unavailable.");
-    if (row.ceiling === null)
-      throw new RunnerConcurrencyError(
-        "Update this runner to set its concurrency from Paws. It uses its config value until then.",
-      );
-    if (
-      !Number.isSafeInteger(input.concurrency) ||
-      input.concurrency < 1 ||
-      input.concurrency > row.ceiling
-    )
-      throw new RunnerConcurrencyError(
-        `Concurrency must be from 1 to ${row.ceiling}, the limit set on the host.`,
-      );
-    db.run("UPDATE runner_capacity SET desired=? WHERE runner_id=?", [
-      input.concurrency,
-      input.runnerId,
-    ]);
-    auditWorkspaceAccess(db, {
-      workspaceId: input.workspaceId,
-      userId: input.userId,
-      action: "runner.concurrency",
-      subject: input.runnerId,
-      now: input.now,
-    });
+export function* setRunnerConcurrencySteps(q: Q, input: RunnerConcurrencyInput) {
+  const { runner, runnerCapacity } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ ceiling: runnerCapacity.ceiling })
+      .from(runner)
+      .leftJoin(runnerCapacity, eq(runnerCapacity.runnerId, runner.id))
+      .where(
+        and(
+          eq(runner.id, input.runnerId),
+          eq(runner.workspaceId, input.workspaceId),
+          isNull(runner.revokedAt),
+        ),
+      ),
+  );
+  if (!row) throw new Error("Runner is unavailable.");
+  if (row.ceiling === null)
+    throw new RunnerConcurrencyError(
+      "Update this runner to set its concurrency from Paws. It uses its config value until then.",
+    );
+  if (
+    !Number.isSafeInteger(input.concurrency) ||
+    input.concurrency < 1 ||
+    input.concurrency > row.ceiling
+  )
+    throw new RunnerConcurrencyError(
+      `Concurrency must be from 1 to ${row.ceiling}, the limit set on the host.`,
+    );
+  yield* q.exec(
+    q.orm
+      .update(runnerCapacity)
+      .set({ desired: input.concurrency })
+      .where(eq(runnerCapacity.runnerId, input.runnerId)),
+  );
+  yield* auditWorkspaceAccessSteps(q, {
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+    action: "runner.concurrency",
+    subject: input.runnerId,
+    now: input.now,
   });
+}
+
+export function setRunnerConcurrency(db: Database, input: RunnerConcurrencyInput): void {
+  settled(sqliteDb(db).transaction((q) => setRunnerConcurrencySteps(q, input)));
 }
 
 /** A runner slot the scheduler reserved for an item resuming on its pinned runner. */
 export type PinnedSlot = { runnerId: string; order: number };
 
-const RESERVING_JOBS = "queue IN ('run.resume','run.reverify')";
+const reservingJobs = (q: Q) => inArray(q.t.job.queue, ["run.resume", "run.reverify"]);
+
+/** True when the payload holds a reservation; a JSON null counts as none on both dialects. */
+const holdsPinnedSlot = (q: Q) => isNotNull(jsonField(q, q.t.job.payload, "pinnedSlot"));
+
+const withoutPinnedSlot = (q: Q): SQL =>
+  q.dialect === "sqlite"
+    ? sql`json_remove(${q.t.job.payload},'$.pinnedSlot')`
+    : sql`${q.t.job.payload} - 'pinnedSlot'`;
 
 /**
  * Saves the slots the scheduler reserved this tick on the pending resume and reverify jobs that
  * wait for them, and releases every other reservation those jobs held.
  */
-export function savePinnedSlots(db: Database, slots: ReadonlyMap<number, PinnedSlot>): void {
-  const ids = [...slots.keys()];
-  db.run(
-    `UPDATE job SET payload=json_remove(payload,'$.pinnedSlot') WHERE status='pending' AND ${RESERVING_JOBS}
-     AND json_extract(payload,'$.pinnedSlot') IS NOT NULL AND id NOT IN (${ids.map(() => "?").join(",")})`,
-    ids,
+export function* savePinnedSlotsSteps(q: Q, slots: ReadonlyMap<number, PinnedSlot>) {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({ payload: withoutPinnedSlot(q) })
+      .where(
+        and(
+          eq(job.status, "pending"),
+          reservingJobs(q),
+          holdsPinnedSlot(q),
+          notInArray(job.id, [...slots.keys()]),
+        ),
+      ),
   );
-  for (const [id, slot] of slots)
-    db.run(
-      `UPDATE job SET payload=json_set(payload,'$.pinnedSlot',json(?)) WHERE id=? AND status='pending'
-       AND json_extract(payload,'$.pinnedSlot') IS NOT json(?)`,
-      [JSON.stringify(slot), id, JSON.stringify(slot)],
+  for (const [id, slot] of slots) {
+    const text = JSON.stringify(slot);
+    yield* q.exec(
+      q.orm
+        .update(job)
+        .set({
+          payload:
+            q.dialect === "sqlite"
+              ? sql`json_set(${job.payload},'$.pinnedSlot',json(${text}))`
+              : sql`jsonb_set(${job.payload},'{pinnedSlot}',${text}::jsonb)`,
+        })
+        .where(
+          and(
+            eq(job.id, id),
+            eq(job.status, "pending"),
+            q.dialect === "sqlite"
+              ? sql`json_extract(${job.payload},'$.pinnedSlot') IS NOT json(${text})`
+              : sql`${job.payload}->'pinnedSlot' IS DISTINCT FROM ${text}::jsonb`,
+          ),
+        ),
     );
+  }
+}
+
+export function savePinnedSlots(db: Database, slots: ReadonlyMap<number, PinnedSlot>): void {
+  settled(sqliteDb(db).run((q) => savePinnedSlotsSteps(q, slots)));
 }
 
 /** Releases the item's reservation once its run is placed. */
-export function releasePinnedSlot(db: Database, itemId: string): void {
-  db.run(
-    `UPDATE job SET payload=json_remove(payload,'$.pinnedSlot') WHERE ${RESERVING_JOBS}
-     AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=?
-     AND json_extract(payload,'$.pinnedSlot') IS NOT NULL`,
-    [itemId],
+export function* releasePinnedSlotSteps(q: Q, itemId: string) {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({ payload: withoutPinnedSlot(q) })
+      .where(
+        and(
+          reservingJobs(q),
+          inArray(job.status, ["pending", "running"]),
+          eq(jsonField(q, job.payload, "itemId"), itemId),
+          holdsPinnedSlot(q),
+        ),
+      ),
   );
+}
+
+export function releasePinnedSlot(db: Database, itemId: string): void {
+  settled(sqliteDb(db).run((q) => releasePinnedSlotSteps(q, itemId)));
 }
 
 /**
  * Slots on the runner reserved for other items that resume there. An item that holds a
  * reservation itself only yields to the reservations ranked ahead of its own.
  */
-export function pinnedSlotsReserved(
-  db: Database,
-  runnerId: string,
-  itemId: string,
-  now: number,
-): number {
-  const rows = db
-    .query<{ itemId: string; runnerId: string; slotOrder: number }, [number]>(
-      `SELECT json_extract(payload,'$.itemId') AS itemId,
-       json_extract(payload,'$.pinnedSlot.runnerId') AS runnerId,
-       json_extract(payload,'$.pinnedSlot.order') AS slotOrder
-       FROM job WHERE ${RESERVING_JOBS} AND json_extract(payload,'$.pinnedSlot') IS NOT NULL
-       AND (status='pending' OR (status='running' AND (locked_until IS NULL OR locked_until>?)))`,
-    )
-    .all(now);
+export function* pinnedSlotsReservedSteps(q: Q, runnerId: string, itemId: string, now: number) {
+  const { job } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        itemId: jsonField(q, job.payload, "itemId"),
+        runnerId: jsonField(q, job.payload, "pinnedSlot", "runnerId"),
+        slotOrder: num(jsonField(q, job.payload, "pinnedSlot", "order")),
+      })
+      .from(job)
+      .where(
+        and(
+          reservingJobs(q),
+          holdsPinnedSlot(q),
+          or(
+            eq(job.status, "pending"),
+            and(eq(job.status, "running"), or(isNull(job.lockedUntil), gt(job.lockedUntil, now))),
+          ),
+        ),
+      )
+      .orderBy(asc(job.id)),
+  );
   const own = rows.find((row) => row.itemId === itemId && row.runnerId === runnerId)?.slotOrder;
   return new Set(
     rows
@@ -286,58 +485,98 @@ export function pinnedSlotsReserved(
   ).size;
 }
 
-export function runnerCancelPending(db: Database, runnerId: string): boolean {
-  return (
-    db
-      .query(`SELECT 1 FROM runner_work w WHERE w.runner_id=? AND ${TEARDOWN_UNRESOLVED}`)
-      .get(runnerId) !== null
+export function pinnedSlotsReserved(
+  db: Database,
+  runnerId: string,
+  itemId: string,
+  now: number,
+): number {
+  return settled(sqliteDb(db).run((q) => pinnedSlotsReservedSteps(q, runnerId, itemId, now)));
+}
+
+export function* runnerCancelPendingSteps(q: Q, runnerId: string) {
+  const w = alias(q.t.runnerWork, "w");
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(w)
+      .where(and(eq(w.runnerId, runnerId), teardownUnresolved))
+      .limit(1),
   );
+  return row !== undefined;
+}
+
+export function runnerCancelPending(db: Database, runnerId: string): boolean {
+  return settled(sqliteDb(db).run((q) => runnerCancelPendingSteps(q, runnerId)));
+}
+
+export function* runTeardownOwnerSteps(q: Q, runId: string) {
+  const w = alias(q.t.runnerWork, "w");
+  const row = yield* q.one(
+    q.orm
+      .select({ runnerId: w.runnerId })
+      .from(w)
+      .where(and(eq(w.runId, runId), teardownUnresolved)),
+  );
+  return row?.runnerId ?? null;
 }
 
 export function runTeardownOwner(db: Database, runId: string): string | null {
-  return (
-    db
-      .query<{ runnerId: string }, [string]>(
-        `SELECT w.runner_id AS runnerId FROM runner_work w WHERE w.run_id=? AND ${TEARDOWN_UNRESOLVED}`,
-      )
-      .get(runId)?.runnerId ?? null
+  return settled(sqliteDb(db).run((q) => runTeardownOwnerSteps(q, runId)));
+}
+
+/** The conversation slots a runner offers and whether its release can run conversations. */
+function* conversationLaneSteps(q: Q, runnerId: string) {
+  const { runnerCapacity, runnerHostStatus } = q.t;
+  const capacity = yield* q.one(
+    q.orm
+      .select({ limit: runnerCapacity.conversation })
+      .from(runnerCapacity)
+      .where(eq(runnerCapacity.runnerId, runnerId)),
   );
+  const status = yield* q.one(
+    q.orm
+      .select({ version: runnerHostStatus.runnerVersion })
+      .from(runnerHostStatus)
+      .where(eq(runnerHostStatus.runnerId, runnerId)),
+  );
+  return {
+    limit: capacity?.limit ?? 0,
+    supported: runnerReleaseAtLeast(status?.version, CONVERSATION_RUNNER_VERSION),
+  };
 }
 
 /** Read-only admission check. Helpers share one runtime slot, independently of work capacity.
  * A foreground helper may replace unfinished grouping, but only its dispatch may fence it. */
-export function runnerHelperAvailability(
-  db: Database,
+export function* runnerHelperAvailabilitySteps(
+  q: Q,
   runnerId: string,
   now: number,
   foreground: boolean,
   conversation = false,
 ) {
+  const { runnerHelper } = q.t;
   if (conversation) {
-    const limit =
-      orm(db)
-        .select({ limit: runnerCapacity.conversation })
-        .from(runnerCapacity)
-        .where(eq(runnerCapacity.runnerId, runnerId))
-        .get()?.limit ?? 0;
-    const version = orm(db)
-      .select({ version: runnerHostStatus.runnerVersion })
-      .from(runnerHostStatus)
-      .where(eq(runnerHostStatus.runnerId, runnerId))
-      .get()?.version;
-    return {
-      available:
-        runnerReleaseAtLeast(version, CONVERSATION_RUNNER_VERSION) &&
-        (conversationsInUse(db, [runnerId], now).get(runnerId) ?? 0) < limit,
-      preempts: false,
-    };
+    const { limit, supported } = yield* conversationLaneSteps(q, runnerId);
+    const inUse = yield* conversationsInUseSteps(q, [runnerId], now);
+    return { available: supported && (inUse.get(runnerId) ?? 0) < limit, preempts: false };
   }
-  const rows = db
-    .query<{ envelope: string; result: string | null }, [string, number]>(
-      `SELECT h.envelope,h.result FROM runner_helper h WHERE h.runner_id=? AND h.ended_at IS NULL
-       AND h.expires_at>? AND ${WORK_HELPER("h")}`,
-    )
-    .all(runnerId, now);
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        envelope: jsonText(q, runnerHelper.envelope),
+        result: jsonText(q, runnerHelper.result) as SQL<string | null>,
+      })
+      .from(runnerHelper)
+      .where(
+        and(
+          eq(runnerHelper.runnerId, runnerId),
+          isNull(runnerHelper.endedAt),
+          gt(runnerHelper.expiresAt, now),
+          workHelperSql(q, "runner_helper"),
+        ),
+      ),
+  );
   const maintenance = rows.filter((row) => {
     const envelope = JSON.parse(row.envelope) as { payload: string };
     const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")) as {
@@ -351,39 +590,96 @@ export function runnerHelperAvailability(
       command.purpose === "finding_groups"
     );
   }).length;
-  const { occupied, capacity } = runnerOccupancy(db, runnerId, now);
+  const { occupied, capacity } = yield* runnerOccupancySteps(q, runnerId, now);
   return {
     available: rows.length === maintenance && occupied - maintenance < capacity,
     preempts: maintenance > 0,
   };
 }
 
+export function runnerHelperAvailability(
+  db: Database,
+  runnerId: string,
+  now: number,
+  foreground: boolean,
+  conversation = false,
+) {
+  return settled(
+    sqliteDb(db).run((q) =>
+      runnerHelperAvailabilitySteps(q, runnerId, now, foreground, conversation),
+    ),
+  );
+}
+
 /** Foreground session helpers fence unfinished maintenance work before taking its slot.
  * The runner renews helper authority before continuing, so the old turn is stopped before the next helper starts. */
+export function* yieldFindingGroupHelpersSteps(q: Q, runnerId: string, now: number) {
+  const { runnerHelper, runnerExecutionUsage } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: runnerHelper.id, envelope: jsonText(q, runnerHelper.envelope) })
+      .from(runnerHelper)
+      .where(
+        and(
+          eq(runnerHelper.runnerId, runnerId),
+          isNull(runnerHelper.endedAt),
+          gt(runnerHelper.expiresAt, now),
+        ),
+      ),
+  );
+  for (const row of rows) {
+    const envelope = JSON.parse(row.envelope) as { payload: string };
+    const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")) as {
+      type: string;
+      purpose?: string;
+    };
+    if (command.type !== "helper" || command.purpose !== "finding_groups") continue;
+    yield* q.exec(
+      q.orm
+        .update(runnerHelper)
+        .set({ endedAt: now })
+        .where(
+          and(
+            eq(runnerHelper.id, row.id),
+            isNull(runnerHelper.endedAt),
+            isNull(runnerHelper.result),
+          ),
+        ),
+    );
+    yield* q.exec(
+      q.orm
+        .update(runnerExecutionUsage)
+        .set({ endedAt: now, outcome: "preempted" })
+        .where(
+          and(
+            eq(runnerExecutionUsage.commandId, row.id),
+            isNull(runnerExecutionUsage.endedAt),
+            exists(
+              q.orm
+                .select({ one: sql`1` })
+                .from(runnerHelper)
+                .where(and(eq(runnerHelper.id, row.id), isNotNull(runnerHelper.endedAt))),
+            ),
+          ),
+        ),
+    );
+  }
+}
+
 export function yieldFindingGroupHelpers(db: Database, runnerId: string, now: number): void {
-  immediate(db, () => {
-    const rows = db
-      .query<{ id: string; envelope: string }, [string, number]>(
-        "SELECT id,envelope FROM runner_helper WHERE runner_id=? AND ended_at IS NULL AND expires_at>?",
-      )
-      .all(runnerId, now);
-    for (const row of rows) {
-      const envelope = JSON.parse(row.envelope) as { payload: string };
-      const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")) as {
-        type: string;
-        purpose?: string;
-      };
-      if (command.type !== "helper" || command.purpose !== "finding_groups") continue;
-      db.run(
-        "UPDATE runner_helper SET ended_at=? WHERE id=? AND ended_at IS NULL AND result IS NULL",
-        [now, row.id],
-      );
-      db.run(
-        "UPDATE runner_execution_usage SET ended_at=?,outcome='preempted' WHERE command_id=? AND ended_at IS NULL AND EXISTS(SELECT 1 FROM runner_helper WHERE id=? AND ended_at IS NOT NULL)",
-        [now, row.id, row.id],
-      );
-    }
-  });
+  settled(sqliteDb(db).transaction((q) => yieldFindingGroupHelpersSteps(q, runnerId, now)));
+}
+
+export function* runnerConversationLaneSteps(
+  q: Q,
+  runnerId: string,
+  now: number,
+): Steps<"closed" | "full" | "free"> {
+  const { limit, supported } = yield* conversationLaneSteps(q, runnerId);
+  if (limit <= 0 || !supported) return "closed";
+  return (yield* runnerHelperAvailabilitySteps(q, runnerId, now, true, true)).available
+    ? "free"
+    : "full";
 }
 
 export function runnerConversationLane(
@@ -391,33 +687,27 @@ export function runnerConversationLane(
   runnerId: string,
   now: number,
 ): "closed" | "full" | "free" {
-  const limit =
-    orm(db)
-      .select({ limit: runnerCapacity.conversation })
-      .from(runnerCapacity)
-      .where(eq(runnerCapacity.runnerId, runnerId))
-      .get()?.limit ?? 0;
-  const version = orm(db)
-    .select({ version: runnerHostStatus.runnerVersion })
-    .from(runnerHostStatus)
-    .where(eq(runnerHostStatus.runnerId, runnerId))
-    .get()?.version;
-  if (limit <= 0 || !runnerReleaseAtLeast(version, CONVERSATION_RUNNER_VERSION)) return "closed";
-  return runnerHelperAvailability(db, runnerId, now, true, true).available ? "free" : "full";
+  return settled(sqliteDb(db).run((q) => runnerConversationLaneSteps(q, runnerId, now)));
+}
+
+export function* unfinishedConversationHelpersSteps(q: Q) {
+  const { runnerHelper } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        id: runnerHelper.id,
+        sessionId: runnerHelper.sessionId,
+        envelope: jsonText(q, runnerHelper.envelope),
+        result: jsonText(q, runnerHelper.result) as SQL<string | null>,
+        expiresAt: runnerHelper.expiresAt,
+      })
+      .from(runnerHelper)
+      .where(and(eq(runnerHelper.purpose, "conversation"), isNull(runnerHelper.endedAt))),
+  );
 }
 
 export function unfinishedConversationHelpers(db: Database) {
-  return orm(db)
-    .select({
-      id: runnerHelper.id,
-      sessionId: runnerHelper.sessionId,
-      envelope: runnerHelper.envelope,
-      result: runnerHelper.result,
-      expiresAt: runnerHelper.expiresAt,
-    })
-    .from(runnerHelper)
-    .where(and(eq(runnerHelper.purpose, "conversation"), isNull(runnerHelper.endedAt)))
-    .all();
+  return settled(sqliteDb(db).run((q) => unfinishedConversationHelpersSteps(q)));
 }
 
 export function* conversationsInUseSteps(
@@ -442,12 +732,4 @@ export function* conversationsInUseSteps(
       .groupBy(helper.runnerId),
   );
   return new Map(rows.map((row) => [row.runnerId, row.used]));
-}
-
-export function conversationsInUse(
-  db: Database,
-  runnerIds: readonly string[],
-  now: number,
-): Map<string, number> {
-  return settled(sqliteDb(db).run((q) => conversationsInUseSteps(q, runnerIds, now)));
 }
