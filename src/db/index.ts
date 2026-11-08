@@ -364,8 +364,11 @@ export {
 } from "./pull-request-drafts";
 export {
   getCandidateRisk,
+  getCandidateRiskSteps,
   latestCandidateRisk,
+  latestCandidateRiskSteps,
   saveCandidateRisk,
+  saveCandidateRiskSteps,
   type CandidateRisk,
 } from "./candidate-risk";
 export {
@@ -389,7 +392,17 @@ export {
   type ReviewFindingSeverity,
   type ReviewFindingWhy,
 } from "./review-findings";
-export { deleteRiskFix, getRiskFix, latestRiskFix, saveRiskFix, type RiskFix } from "./risk-fix";
+export {
+  deleteRiskFix,
+  deleteRiskFixSteps,
+  getRiskFix,
+  getRiskFixSteps,
+  latestRiskFix,
+  latestRiskFixSteps,
+  saveRiskFix,
+  saveRiskFixSteps,
+  type RiskFix,
+} from "./risk-fix";
 export {
   endPushOutage,
   getPushOutage,
@@ -887,14 +900,23 @@ export {
 
 export {
   saveArtifact,
+  saveArtifactSteps,
   markArtifact,
+  markArtifactSteps,
   listArtifacts,
+  listArtifactsSteps,
   artifactPublicationReady,
+  artifactPublicationReadySteps,
   getArtifact,
+  getArtifactSteps,
   beginArtifactAttempt,
+  beginArtifactAttemptSteps,
   requestArtifactAttachment,
+  requestArtifactAttachmentSteps,
   artifactAttachmentRequested,
+  artifactAttachmentRequestedSteps,
   completeArtifactAttempt,
+  completeArtifactAttemptSteps,
   type StoredArtifact,
 } from "./artifacts";
 
@@ -1127,7 +1149,7 @@ export {
 } from "./queue-wait";
 export type { QueuePosition } from "./queue-wait";
 export { listItemHolds, listItemHoldsSteps, saveItemHolds, saveItemHoldsSteps } from "./item-hold";
-export { itemActivityFacts, type ItemActivityFacts } from "./item-activity";
+export { itemActivityFacts, itemActivityFactsSteps, type ItemActivityFacts } from "./item-activity";
 export { itemWaitSince, itemWaitSinceSteps, keepItemWaits, keepItemWaitsSteps } from "./item-wait";
 export {
   enqueueRunnerSetupCheck,
@@ -1210,6 +1232,7 @@ export {
   resumeUsagePauseNow,
   startUsagePause,
   usagePause,
+  usagePauseSteps,
   earliestRunnerCooldown,
   runnerAgentLoginReady,
 } from "./usage-pause";
@@ -1418,8 +1441,11 @@ export {
 
 export {
   saveRiskAutoContext,
+  saveRiskAutoContextSteps,
   getRiskAutoContext,
+  getRiskAutoContextSteps,
   listRiskAutoContexts,
+  listRiskAutoContextsSteps,
   type RiskAutoContext,
 } from "./risk-auto-context";
 

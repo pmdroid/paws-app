@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, sql } from "drizzle-orm";
-import { orm } from "./orm";
-import { riskFix } from "./schema";
+import { and, desc, eq } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
+import { jsonValue, parsedJson } from "./json-text";
+import type { riskFix } from "./schema-pg";
 
 /**
  * What a fix changed on a high-risk pull request since the head a person approved. `paths` are
@@ -20,61 +21,84 @@ export type RiskFix = {
   recordedAt: number;
 };
 
-/** Records the comparison for a head. A repeat for the same head replaces it. */
-export function saveRiskFix(db: Database, fix: RiskFix): void {
+export function* saveRiskFixSteps(q: Q, fix: RiskFix) {
+  const { riskFix } = q.t;
   const values = {
     approvedHead: fix.approvedHead,
     approvedQuestionId: fix.approvedQuestionId,
-    changed: JSON.stringify(fix.changed),
-    paths: JSON.stringify(fix.paths),
+    changed: jsonValue(q, fix.changed),
+    paths: jsonValue(q, fix.paths),
     recordedAt: fix.recordedAt,
   };
-  orm(db)
-    .insert(riskFix)
-    .values({ itemId: fix.itemId, headSha: fix.head, ...values })
-    .onConflictDoUpdate({ target: [riskFix.itemId, riskFix.headSha], set: values })
-    .run();
+  yield* q.exec(
+    q.orm
+      .insert(riskFix)
+      .values({ itemId: fix.itemId, headSha: fix.head, ...values })
+      .onConflictDoUpdate({ target: [riskFix.itemId, riskFix.headSha], set: values }),
+  );
+}
+
+/** Records the comparison for a head. A repeat for the same head replaces it. */
+export function saveRiskFix(db: Database, fix: RiskFix): void {
+  settled(sqliteDb(db).run((q) => saveRiskFixSteps(q, fix)));
+}
+
+export function* deleteRiskFixSteps(q: Q, itemId: string, head: string) {
+  const { riskFix } = q.t;
+  yield* q.exec(
+    q.orm.delete(riskFix).where(and(eq(riskFix.itemId, itemId), eq(riskFix.headSha, head))),
+  );
 }
 
 /** Forgets the comparison for a head, as when Paws can no longer read the fix. */
 export function deleteRiskFix(db: Database, itemId: string, head: string): void {
-  orm(db)
-    .delete(riskFix)
-    .where(and(eq(riskFix.itemId, itemId), eq(riskFix.headSha, head)))
-    .run();
+  settled(sqliteDb(db).run((q) => deleteRiskFixSteps(q, itemId, head)));
 }
 
 type Row = typeof riskFix.$inferSelect;
 
+export function* getRiskFixSteps(q: Q, itemId: string, head: string) {
+  const { riskFix } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(riskFix)
+      .where(and(eq(riskFix.itemId, itemId), eq(riskFix.headSha, head))),
+  );
+  return row ? fromRow(q, row) : null;
+}
+
 export function getRiskFix(db: Database, itemId: string, head: string): RiskFix | null {
-  const row = orm(db)
-    .select()
-    .from(riskFix)
-    .where(and(eq(riskFix.itemId, itemId), eq(riskFix.headSha, head)))
-    .get();
-  return row ? fromRow(row) : null;
+  return settled(sqliteDb(db).run((q) => getRiskFixSteps(q, itemId, head)));
+}
+
+/** Ties on `recorded_at` go to the greater head SHA. */
+export function* latestRiskFixSteps(q: Q, itemId: string) {
+  const { riskFix } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(riskFix)
+      .where(eq(riskFix.itemId, itemId))
+      .orderBy(desc(riskFix.recordedAt), desc(riskFix.headSha))
+      .limit(1),
+  );
+  return row ? fromRow(q, row) : null;
 }
 
 /** The most recently recorded fix of the item. */
 export function latestRiskFix(db: Database, itemId: string): RiskFix | null {
-  const row = orm(db)
-    .select()
-    .from(riskFix)
-    .where(eq(riskFix.itemId, itemId))
-    .orderBy(desc(riskFix.recordedAt), sql`rowid DESC`)
-    .limit(1)
-    .get();
-  return row ? fromRow(row) : null;
+  return settled(sqliteDb(db).run((q) => latestRiskFixSteps(q, itemId)));
 }
 
-function fromRow(row: Row): RiskFix {
+function fromRow(q: Q, row: Row): RiskFix {
   return {
     itemId: row.itemId,
     head: row.headSha,
     approvedHead: row.approvedHead,
     approvedQuestionId: row.approvedQuestionId,
-    changed: JSON.parse(row.changed) as string[],
-    paths: JSON.parse(row.paths) as string[],
+    changed: parsedJson<string[]>(q, row.changed),
+    paths: parsedJson<string[]>(q, row.paths),
     recordedAt: row.recordedAt,
   };
 }
