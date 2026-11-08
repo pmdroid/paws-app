@@ -8,7 +8,7 @@ import {
   completeOutboxSteps,
   isOutboxCurrent,
   isOutboxCurrentSteps,
-  retryOutbox,
+  retryOutboxAsync,
   releaseOutboxLeaseSteps,
   type OutboxRow,
 } from "./outbox";
@@ -136,7 +136,7 @@ export class OutboxDispatcher {
       await this.store.transaction((q) => completeOutboxSteps(q, delivered, now));
     } catch (error) {
       journalCaught(error, "dispatcher.deliver.isOutboxCurrent", journalItemId(message.payload));
-      retryOutbox(this.db, message, error, {
+      await retryOutboxAsync(this.store, message, error, {
         now: this.clock.now(),
         baseMs: this.options.backoffBaseMs,
       });

@@ -25,7 +25,7 @@ import {
   retryAfterMs,
   retryBackoffMs,
 } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 import { journal } from "./journal";
 
 export const JOB_STATUSES = ["pending", "running", "done", "dead", "cancelled"] as const;
@@ -137,10 +137,12 @@ function* updateLeasedSteps(
   return rows.length;
 }
 
-const jobReadyListeners = new Set<(db: Database) => void>();
+type JobReadySource = Database | Db;
+
+const jobReadyListeners = new Set<(db: JobReadySource) => void>();
 
 /** Fires after a job row is inserted. The job loop wakes its claimer from this. */
-export function onJobReady(listener: (db: Database) => void): () => void {
+export function onJobReady(listener: (db: JobReadySource) => void): () => void {
   jobReadyListeners.add(listener);
   return () => {
     jobReadyListeners.delete(listener);
@@ -148,7 +150,7 @@ export function onJobReady(listener: (db: Database) => void): () => void {
 }
 
 /** Wake the job loop after a wrapper ran a …Steps that inserted a job row. */
-export function emitJobReady(db: Database): void {
+export function emitJobReady(db: JobReadySource): void {
   for (const listener of jobReadyListeners) {
     try {
       listener(db);
@@ -276,6 +278,12 @@ export function enqueueJob(db: Database, job: NewJob): number {
   return id;
 }
 
+export async function enqueueJobAsync(store: Db, job: NewJob): Promise<number> {
+  const id = await store.transaction((q) => enqueueJobSteps(q, job));
+  emitJobReady(store);
+  return id;
+}
+
 /**
  * Return the open row for this key when one exists. A finished key cannot be
  * inserted again (`job_key` is unique for the life of the table), so the
@@ -314,6 +322,12 @@ export function* enqueueJobOnceSteps(q: Q, job: NewJob) {
 export function enqueueJobOnce(db: Database, job: NewJob): number {
   const { id, inserted } = run(db, (q) => enqueueJobOnceSteps(q, job));
   if (inserted) emitJobReady(db);
+  return id;
+}
+
+export async function enqueueJobOnceAsync(store: Db, job: NewJob): Promise<number> {
+  const { id, inserted } = await store.transaction((q) => enqueueJobOnceSteps(q, job));
+  if (inserted) emitJobReady(store);
   return id;
 }
 

@@ -8,12 +8,11 @@ import {
   JOB_KIND,
   retryBackoffMs,
 } from "../core";
-import { settled, sqliteDb, type Db, type Q } from "./db";
+import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 import { jsonField } from "./json-text";
-import { enqueueJobOnce, errorText } from "./jobs";
+import { emitJobReady, enqueueJobOnceSteps, errorText } from "./jobs";
 import { journal } from "./journal";
 import type * as pgSchema from "./schema-pg";
-import { immediate } from "./tx";
 
 const OUTBOX_TARGETS = ["linear", "slack", "github"] as const;
 export type OutboxTarget = (typeof OUTBOX_TARGETS)[number];
@@ -439,66 +438,112 @@ export function* releaseOutboxLeaseSteps(q: Q, row: OutboxRow) {
   );
 }
 
+type RetryOptions = { now?: number; baseMs?: number; capMs?: number };
+
 export function retryOutbox(
   db: Database,
   row: OutboxRow,
   error: unknown,
-  options: { now?: number; baseMs?: number; capMs?: number } = {},
+  options: RetryOptions = {},
 ): void {
-  immediate(db, () => {
-    const now = options.now ?? Date.now();
-    const retryAfter =
-      row.target === "linear" && error instanceof Error && error.name === "LinearRateLimitError"
-        ? (error as Error & { retryAfterMs?: number }).retryAfterMs
-        : undefined;
-    const rateLimited =
-      typeof retryAfter === "number" &&
-      Number.isSafeInteger(retryAfter) &&
-      retryAfter >= 0 &&
-      Number.isSafeInteger(now + retryAfter);
-    const delay = rateLimited
-      ? retryAfter
-      : retryBackoffMs(
-          row.attempts,
-          options.baseMs ?? DEFAULT_BACKOFF_BASE_MS,
-          options.capMs ?? DEFAULT_BACKOFF_CAP_MS,
-        );
-    if (rateLimited) {
-      db.run(
-        `INSERT INTO linear_outbox_backoff(id,not_before) VALUES(1,?)
-         ON CONFLICT(id) DO UPDATE SET not_before=MAX(not_before,excluded.not_before)`,
-        [now + delay],
-      );
-    }
-    const updated = db
-      .query<{ status: OutboxStatus }, (string | number | null)[]>(
-        `UPDATE outbox
-       SET status = CASE WHEN ? THEN 'pending' WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
-           max_attempts=max_attempts+?,
-           not_before = CASE WHEN ? OR attempts < max_attempts THEN ? ELSE not_before END,
-           locked_by = NULL,
-           locked_until = NULL,
-           error = ?
-       WHERE id = ? AND status = 'pending' AND locked_by = ? AND attempts = ? RETURNING status`,
-      )
-      .get(
-        rateLimited ? 1 : 0,
-        rateLimited ? 1 : 0,
-        rateLimited ? 1 : 0,
-        now + delay,
-        errorText(error),
-        row.id,
-        row.lockedBy,
+  const { reasked } = settled(
+    sqliteDb(db).transaction((q) => retryOutboxSteps(q, row, error, options)),
+  );
+  if (reasked) emitJobReady(db);
+}
+
+export async function retryOutboxAsync(
+  store: Db,
+  row: OutboxRow,
+  error: unknown,
+  options: RetryOptions = {},
+): Promise<void> {
+  const { reasked } = await store.transaction((q) => retryOutboxSteps(q, row, error, options));
+  if (reasked) emitJobReady(store);
+}
+
+export function* retryOutboxSteps(
+  q: Q,
+  row: OutboxRow,
+  error: unknown,
+  options: RetryOptions = {},
+): Steps<{ reasked: boolean }> {
+  const { outbox, linearOutboxBackoff: backoff } = q.t;
+  const now = options.now ?? Date.now();
+  const retryAfter =
+    row.target === "linear" && error instanceof Error && error.name === "LinearRateLimitError"
+      ? (error as Error & { retryAfterMs?: number }).retryAfterMs
+      : undefined;
+  const rateLimited =
+    typeof retryAfter === "number" &&
+    Number.isSafeInteger(retryAfter) &&
+    retryAfter >= 0 &&
+    Number.isSafeInteger(now + retryAfter);
+  const delay = rateLimited
+    ? retryAfter
+    : retryBackoffMs(
         row.attempts,
+        options.baseMs ?? DEFAULT_BACKOFF_BASE_MS,
+        options.capMs ?? DEFAULT_BACKOFF_CAP_MS,
       );
-    if (updated?.status === "dead") settleDeadOutbox(db, row, errorText(error), now);
-    db.run(
-      `UPDATE outbox SET locked_by = NULL, locked_until = NULL,
-        error = COALESCE(error, '') || ' Superseded delivery failed or aborted; external effect may have occurred.'
-      WHERE id = ? AND status = 'dropped' AND locked_by = ? AND attempts = ?`,
-      [row.id, row.lockedBy, row.attempts],
+  if (rateLimited) {
+    const later = q.dialect === "sqlite" ? sql`MAX` : sql`GREATEST`;
+    yield* q.exec(
+      q.orm
+        .insert(backoff)
+        .values({ id: 1, notBefore: now + delay })
+        .onConflictDoUpdate({
+          target: backoff.id,
+          set: { notBefore: sql`${later}(${backoff.notBefore}, excluded.not_before)` },
+        }),
     );
-  });
+  }
+  const message = errorText(error);
+  const updated = yield* q.one(
+    q.orm
+      .update(outbox)
+      .set({
+        status: rateLimited
+          ? "pending"
+          : sql`CASE WHEN ${outbox.attempts} >= ${outbox.maxAttempts} THEN 'dead' ELSE 'pending' END`,
+        ...(rateLimited ? { maxAttempts: sql`${outbox.maxAttempts} + 1` } : {}),
+        notBefore: rateLimited
+          ? now + delay
+          : sql`CASE WHEN ${outbox.attempts} < ${outbox.maxAttempts} THEN ${now + delay} ELSE ${outbox.notBefore} END`,
+        lockedBy: null,
+        lockedUntil: null,
+        error: message,
+      })
+      .where(
+        and(
+          eq(outbox.id, row.id),
+          eq(outbox.status, "pending"),
+          heldBy(q, row.lockedBy),
+          eq(outbox.attempts, row.attempts),
+        ),
+      )
+      .returning({ status: outbox.status }),
+  );
+  const reasked =
+    updated?.status === "dead" ? yield* settleDeadOutboxSteps(q, row, message, now) : false;
+  yield* q.exec(
+    q.orm
+      .update(outbox)
+      .set({
+        lockedBy: null,
+        lockedUntil: null,
+        error: sql`COALESCE(${outbox.error}, '') || ' Superseded delivery failed or aborted; external effect may have occurred.'`,
+      })
+      .where(
+        and(
+          eq(outbox.id, row.id),
+          eq(outbox.status, "dropped"),
+          heldBy(q, row.lockedBy),
+          eq(outbox.attempts, row.attempts),
+        ),
+      ),
+  );
+  return { reasked };
 }
 
 type DispatchOptions = OutboxClaimOptions & {
@@ -754,10 +799,6 @@ export const OUTBOX_ITEM_SQL = (row: string, dialect: Dialect = "sqlite") => `CO
     AND i.session_key = ${row}.ordering_key ORDER BY i.created_at DESC, i.id DESC LIMIT 1)
 )`;
 
-function outboxItemId(db: Database, id: number): string | null {
-  return settled(sqliteDb(db).run((q) => outboxItemIdSteps(q, id)));
-}
-
 export function* outboxItemIdSteps(q: Q, id: number) {
   const { outbox } = q.t;
   const row = yield* q.one(
@@ -780,49 +821,59 @@ export function oneLine(text: string, max = 200): string {
  * When the redelivery dies too, a job asks the question again, once per question lineage.
  * Anything still dead is listed on the issue page with a retry.
  */
-function settleDeadOutbox(db: Database, row: OutboxRow, error: string, now: number): void {
-  const itemId = outboxItemId(db, row.id);
+function* settleDeadOutboxSteps(q: Q, row: OutboxRow, error: string, now: number): Steps<boolean> {
+  const { job, outbox, question, workItem } = q.t;
+  const itemId = yield* outboxItemIdSteps(q, row.id);
   journal(
     `outbox ${row.id} ${row.target}.${row.op} dead item=${itemId ?? "-"} attempts=${row.attempts}/${row.maxAttempts} error=${oneLine(error)}`,
   );
-  if (row.op !== "elicitation" || itemId === null) return;
-  const item = db
-    .query<{ state: string; runId: string | null }, [string]>(
-      "SELECT state, current_run_id AS runId FROM work_item WHERE id = ?",
-    )
-    .get(itemId);
-  if (item?.state !== "awaiting_input") return;
-  const stored = getOutbox(db, row.id);
+  if (row.op !== "elicitation" || itemId === null) return false;
+  const item = yield* q.one(
+    q.orm.select({ state: workItem.state }).from(workItem).where(eq(workItem.id, itemId)),
+  );
+  if (item?.state !== "awaiting_input") return false;
+  const stored = yield* getOutboxSteps(q, row.id);
   const questionId = (stored?.payload as { questionId?: unknown } | undefined)?.questionId;
-  const open =
-    typeof questionId === "string" &&
-    db
-      .query<{ open: number }, [string]>(
-        "SELECT status = 'open' AND cancelled_at IS NULL AS open FROM question WHERE id = ?",
-      )
-      .get(questionId)?.open === 1;
-  if (typeof questionId === "string" && !open) return;
+  let open = false;
+  if (typeof questionId === "string") {
+    const asked = yield* q.one(
+      q.orm
+        .select({ status: question.status, cancelledAt: question.cancelledAt })
+        .from(question)
+        .where(eq(question.id, questionId)),
+    );
+    open = asked?.status === "open" && asked.cancelledAt === null;
+    if (!open) return false;
+  }
   const lastChance =
     row.idempotencyKey.endsWith(ELICITATION_REDELIVERY_SUFFIX) ||
     row.idempotencyKey.endsWith(ELICITATION_REASK_SUFFIX);
   if (lastChance) {
-    const stays = () =>
+    const stays = () => {
       journal(
         `outbox ${row.id} elicitation dead again item=${itemId}; retry it from the issue page`,
       );
+      return false;
+    };
     if (!open) return stays();
     // One re-ask per question lineage: a question a re-ask produced counts as its origin.
-    const origin =
-      db
-        .query<{ origin: string | null }, [string, string]>(
-          `SELECT json_extract(payload, '$.questionId') AS origin FROM job
-           WHERE queue = ? AND json_extract(payload, '$.reaskedAs') = ? LIMIT 1`,
+    const reasked = yield* q.one(
+      q.orm
+        .select({ origin: jsonField(q, job.payload, "questionId") })
+        .from(job)
+        .where(
+          and(
+            eq(job.queue, JOB_KIND.reaskQuestion),
+            eq(jsonField(q, job.payload, "reaskedAs"), questionId as string),
+          ),
         )
-        .get(JOB_KIND.reaskQuestion, questionId)?.origin ?? questionId;
+        .limit(1),
+    );
+    const origin = reasked?.origin ?? questionId;
     const key = `${JOB_KIND.reaskQuestion}:${origin}`;
-    if (db.query<{ id: number }, [string]>("SELECT id FROM job WHERE job_key = ?").get(key))
+    if (yield* q.one(q.orm.select({ id: job.id }).from(job).where(eq(job.jobKey, key))))
       return stays();
-    enqueueJobOnce(db, {
+    const { inserted } = yield* enqueueJobOnceSteps(q, {
       queue: JOB_KIND.reaskQuestion,
       jobKey: key,
       payload: { itemId, questionId },
@@ -831,10 +882,10 @@ function settleDeadOutbox(db: Database, row: OutboxRow, error: string, now: numb
     journal(
       `outbox ${row.id} elicitation dead again item=${itemId}; re-asking question ${questionId}`,
     );
-    return;
+    return inserted;
   }
-  const id = insertOutbox(
-    db,
+  const id = yield* insertOutboxSteps(
+    q,
     {
       target: row.target,
       op: row.op,
@@ -848,16 +899,15 @@ function settleDeadOutbox(db: Database, row: OutboxRow, error: string, now: numb
     },
     true,
   );
-  if (id === null || getOutbox(db, id)?.status !== "pending") return;
-  db.run(`UPDATE outbox SET status = 'dropped', error = ? WHERE id = ? AND status = 'dead'`, [
-    `Dead: ${oneLine(error)} Re-enqueued as outbox ${id}.`,
-    row.id,
-  ]);
+  if (id === null || (yield* getOutboxSteps(q, id))?.status !== "pending") return false;
+  yield* q.exec(
+    q.orm
+      .update(outbox)
+      .set({ status: "dropped", error: `Dead: ${oneLine(error)} Re-enqueued as outbox ${id}.` })
+      .where(and(eq(outbox.id, row.id), eq(outbox.status, "dead"))),
+  );
   journal(`outbox ${row.id} elicitation re-enqueued as outbox ${id} item=${itemId}`);
-}
-
-function insertOutbox(db: Database, row: NewOutbox, ignore = false): number | null {
-  return settled(sqliteDb(db).transaction((q) => insertOutboxSteps(q, row, ignore)));
+  return false;
 }
 
 function* insertOutboxSteps(q: Q, row: NewOutbox, ignore = false) {

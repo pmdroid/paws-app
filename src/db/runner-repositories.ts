@@ -2,14 +2,44 @@ import type { Database } from "bun:sqlite";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
-import { enqueueJob } from "./jobs";
-import { jsonText } from "./json-text";
-import { orm } from "./orm";
-import { job, question, runner, runnerRepositories } from "./schema";
-import { immediate } from "./tx";
-import { auditWorkspaceAccess } from "./workspace";
+import { emitJobReady, enqueueJobSteps } from "./jobs";
+import { jsonField, jsonText, jsonValue } from "./json-text";
+import { auditWorkspaceAccessSteps } from "./workspace";
 
 export type RunnerRepositoryLists = { admin: string[] | null; host: string[] | null };
+
+export function* recordRunnerRepositoriesSteps(
+  q: Q,
+  runnerId: string,
+  repositories: readonly string[] | null,
+  at: number,
+): Steps<boolean> {
+  const lists = q.t.runnerRepositories;
+  const reported = repositories === null ? null : JSON.stringify(repositories);
+  const before = yield* q.one(
+    q.orm
+      .select({ host: jsonText(q, lists.repositories) })
+      .from(lists)
+      .where(eq(lists.runnerId, runnerId)),
+  );
+  const stored = repositories === null ? null : jsonValue(q, repositories);
+  yield* q.exec(
+    q.orm
+      .insert(lists)
+      .values({ runnerId, repositories: stored, reportedAt: at })
+      .onConflictDoUpdate({
+        target: lists.runnerId,
+        set: { repositories: stored, reportedAt: at },
+      }),
+  );
+  if (before !== undefined && sameList(before.host, reported)) return false;
+  return yield* enqueueRepositoryCheckSteps(q, runnerId, `runner:${runnerId}`, at);
+}
+
+function sameList(stored: string | null, reported: string | null): boolean {
+  if (stored === null || reported === null) return stored === reported;
+  return JSON.stringify(JSON.parse(stored)) === reported;
+}
 
 export function recordRunnerRepositories(
   db: Database,
@@ -17,36 +47,27 @@ export function recordRunnerRepositories(
   repositories: readonly string[] | null,
   at: number,
 ): void {
-  const reported = repositories === null ? null : JSON.stringify(repositories);
-  const before = orm(db)
-    .select({ host: runnerRepositories.repositories })
-    .from(runnerRepositories)
-    .where(eq(runnerRepositories.runnerId, runnerId))
-    .get();
-  orm(db)
-    .insert(runnerRepositories)
-    .values({ runnerId, repositories: reported, reportedAt: at })
-    .onConflictDoUpdate({
-      target: runnerRepositories.runnerId,
-      set: { repositories: reported, reportedAt: at },
-    })
-    .run();
-  if (before === undefined || before.host !== reported)
-    enqueueRepositoryCheck(db, runnerId, `runner:${runnerId}`, at);
+  const enqueued = settled(
+    sqliteDb(db).transaction((q) => recordRunnerRepositoriesSteps(q, runnerId, repositories, at)),
+  );
+  if (enqueued) emitJobReady(db);
 }
 
-export function setRunnerAdminRepositories(
-  db: Database,
-  input: {
-    runnerId: string;
-    workspaceId: string;
-    userId: string;
-    repositories: readonly string[] | null;
-    now: number;
-  },
-): void {
-  immediate(db, () => {
-    const found = orm(db)
+type RunnerAdminRepositories = {
+  runnerId: string;
+  workspaceId: string;
+  userId: string;
+  repositories: readonly string[] | null;
+  now: number;
+};
+
+export function* setRunnerAdminRepositoriesSteps(
+  q: Q,
+  input: RunnerAdminRepositories,
+): Steps<boolean> {
+  const { runner, runnerRepositories: lists } = q.t;
+  const found = yield* q.one(
+    q.orm
       .select({ id: runner.id })
       .from(runner)
       .where(
@@ -55,12 +76,13 @@ export function setRunnerAdminRepositories(
           eq(runner.workspaceId, input.workspaceId),
           isNull(runner.revokedAt),
         ),
-      )
-      .get();
-    if (!found) throw new Error("Runner is unavailable.");
-    const chosen = input.repositories === null ? null : JSON.stringify(input.repositories);
-    orm(db)
-      .insert(runnerRepositories)
+      ),
+  );
+  if (!found) throw new Error("Runner is unavailable.");
+  const chosen = input.repositories === null ? null : jsonValue(q, input.repositories);
+  yield* q.exec(
+    q.orm
+      .insert(lists)
       .values({
         runnerId: input.runnerId,
         repositories: null,
@@ -68,19 +90,25 @@ export function setRunnerAdminRepositories(
         adminRepositories: chosen,
       })
       .onConflictDoUpdate({
-        target: runnerRepositories.runnerId,
+        target: lists.runnerId,
         set: { adminRepositories: chosen },
-      })
-      .run();
-    auditWorkspaceAccess(db, {
-      workspaceId: input.workspaceId,
-      userId: input.userId,
-      action: "runner.repositories",
-      subject: input.runnerId,
-      now: input.now,
-    });
-    enqueueRepositoryCheck(db, input.runnerId, input.userId, input.now);
+      }),
+  );
+  yield* auditWorkspaceAccessSteps(q, {
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+    action: "runner.repositories",
+    subject: input.runnerId,
+    now: input.now,
   });
+  return yield* enqueueRepositoryCheckSteps(q, input.runnerId, input.userId, input.now);
+}
+
+export function setRunnerAdminRepositories(db: Database, input: RunnerAdminRepositories): void {
+  const enqueued = settled(
+    sqliteDb(db).transaction((q) => setRunnerAdminRepositoriesSteps(q, input)),
+  );
+  if (enqueued) emitJobReady(db);
 }
 
 export function* runnerRepositoryListsSteps(q: Q, runnerId: string) {
@@ -136,44 +164,48 @@ export function runnerAllowsRepository(
   return runnerRepositoryRefusal(db, runnerId, repository) === null;
 }
 
-function enqueueRepositoryCheck(
-  db: Database,
+function* enqueueRepositoryCheckSteps(
+  q: Q,
   runnerId: string,
   answeredBy: string,
   at: number,
-): void {
-  const waiting = orm(db)
-    .select({ one: sql`1` })
-    .from(question)
-    .where(
-      and(
-        eq(question.kind, "runner-repository"),
-        eq(question.status, "open"),
-        isNull(question.cancelledAt),
-      ),
-    )
-    .limit(1)
-    .get();
-  const pending = orm(db)
-    .select({ one: sql`1` })
-    .from(job)
-    .where(
-      and(
-        eq(job.queue, JOB_KIND.runnerRepositoryCheck),
-        eq(job.status, "pending"),
-        sql`json_extract(${job.payload},'$.runnerId') = ${runnerId}`,
-        sql`json_extract(${job.payload},'$.answeredBy') = ${answeredBy}`,
-      ),
-    )
-    .limit(1)
-    .get();
-  if (!waiting || pending) return;
-  enqueueJob(db, {
+): Steps<boolean> {
+  const { job, question } = q.t;
+  const waiting = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(question)
+      .where(
+        and(
+          eq(question.kind, "runner-repository"),
+          eq(question.status, "open"),
+          isNull(question.cancelledAt),
+        ),
+      )
+      .limit(1),
+  );
+  const pending = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.runnerRepositoryCheck),
+          eq(job.status, "pending"),
+          eq(jsonField(q, job.payload, "runnerId"), runnerId),
+          eq(jsonField(q, job.payload, "answeredBy"), answeredBy),
+        ),
+      )
+      .limit(1),
+  );
+  if (!waiting || pending) return false;
+  yield* enqueueJobSteps(q, {
     queue: JOB_KIND.runnerRepositoryCheck,
     payload: { runnerId, answeredBy },
     maxAttempts: 3,
     now: at,
   });
+  return true;
 }
 
 export type RunnerRepositoryQuestion = { id: string; itemId: string; sessionId: string };

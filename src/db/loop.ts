@@ -179,7 +179,7 @@ export class JobLoop {
     this.polling = true;
     // One claimer fills free slots. The control slot still runs when every general slot is busy.
     const stopWake = onJobReady((db) => {
-      if (db === this.db) this.wake();
+      if (db === this.db || db === this.store) this.wake();
     });
     try {
       while (!signal.aborted) {
