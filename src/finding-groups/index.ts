@@ -2,10 +2,22 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import {
+  activeRunnerOwners,
+  completeFindingGroupRun,
+  deleteUntouchedFindingGroups,
+  dropProcessedFindingGroupMembers,
   enqueueJobOnce,
+  failFindingGroupRun,
+  findingGroupRunExistsForDay,
+  findingGroupRunIsRunning,
+  heldFindingGroupMembers,
   immediate,
+  insertFindingGroup,
+  insertFindingGroupRun,
+  lastCompletedFindingGroupRun,
   reviewFindingsByIds,
   findingGroupSources,
+  setFindingGroupRunFingerprint,
   workspaceSessionIds,
   findingGroupingAdmins,
   findingGroupingEnabled,
@@ -231,42 +243,34 @@ export function createFindingGrouping(options: {
           )
           .digest("hex");
       const runId = randomUUID();
-      const last = db
-        .query<
-          { fingerprint: string; findingCursor: number; issueCursor: number; groupCount: number },
-          [string]
-        >(
-          "SELECT fingerprint,finding_cursor AS findingCursor,issue_cursor AS issueCursor,group_count AS groupCount FROM finding_group_run WHERE workspace_id=? AND status='completed' ORDER BY started_at DESC,rowid DESC LIMIT 1",
-        )
-        .get(workspaceId);
+      const last = lastCompletedFindingGroupRun(db, workspaceId);
       const claimed = immediate(db, () => {
-        if (
-          db
-            .query("SELECT 1 FROM finding_group_run WHERE workspace_id=? AND day=?")
-            .get(workspaceId, day)
-        )
-          return false;
+        if (findingGroupRunExistsForDay(db, workspaceId, day)) return false;
         if (last?.fingerprint === fingerprint) {
-          db.run(
-            "INSERT INTO finding_group_run(id,workspace_id,day,started_at,finished_at,fingerprint,status,tokens,group_count,finding_cursor,issue_cursor,skip_reason) VALUES(?,?,?,?,?,?,'completed',0,?,?,?,'No findings changed since the last completed grouping.')",
-            [
-              runId,
-              workspaceId,
-              day,
-              at,
-              at,
-              fingerprint,
-              last.groupCount,
-              last.findingCursor,
-              last.issueCursor,
-            ],
-          );
+          insertFindingGroupRun(db, {
+            id: runId,
+            workspaceId,
+            day,
+            startedAt: at,
+            finishedAt: at,
+            fingerprint,
+            status: "completed",
+            tokens: 0,
+            groupCount: last.groupCount,
+            findingCursor: last.findingCursor,
+            issueCursor: last.issueCursor,
+            skipReason: "No findings changed since the last completed grouping.",
+          });
           return false;
         }
-        db.run(
-          "INSERT INTO finding_group_run(id,workspace_id,day,started_at,fingerprint,status) VALUES(?,?,?,?,?,'running')",
-          [runId, workspaceId, day, at, fingerprint],
-        );
+        insertFindingGroupRun(db, {
+          id: runId,
+          workspaceId,
+          day,
+          startedAt: at,
+          fingerprint,
+          status: "running",
+        });
         return true;
       });
       if (!claimed) return;
@@ -294,10 +298,7 @@ export function createFindingGrouping(options: {
           const issues = batch.issues;
           // A partial snapshot must be revisited even if no finding changes tomorrow.
           if (!batch.cycleComplete)
-            db.run("UPDATE finding_group_run SET fingerprint=? WHERE id=?", [
-              `${fingerprint}:partial`,
-              runId,
-            ]);
+            setFindingGroupRunFingerprint(db, runId, `${fingerprint}:partial`);
           signal.throwIfAborted();
           const result = await options.helper({
             workspaceId,
@@ -317,67 +318,47 @@ export function createFindingGrouping(options: {
             .map((f) => f.id),
         );
         immediate(db, () => {
-          if (
-            !db.query("SELECT 1 FROM finding_group_run WHERE id=? AND status='running'").get(runId)
-          )
+          if (!findingGroupRunIsRunning(db, runId))
             throw new Error("Finding grouping run no longer owns this result.");
-          if (selectedIds !== null) {
-            // Preserve the unprocessed members of earlier groups during a partial snapshot.
-            db.run(
-              `UPDATE finding_group SET member_ids=(SELECT json_group_array(value) FROM json_each(member_ids) WHERE value NOT IN (SELECT value FROM json_each(?)) AND value IN (SELECT value FROM json_each(?)))
-              WHERE workspace_id=? AND status='open' AND action IS NULL`,
-              [JSON.stringify(selectedIds), JSON.stringify([...current]), workspaceId],
-            );
-            db.run(
-              "DELETE FROM finding_group WHERE workspace_id=? AND status='open' AND action IS NULL AND json_array_length(member_ids)=0",
-              [workspaceId],
-            );
-          } else
-            db.run(
-              "DELETE FROM finding_group WHERE workspace_id=? AND status='open' AND action IS NULL",
-              [workspaceId],
-            );
-          const held = new Set(
-            db
-              .query<{ ids: string }, [string]>(
-                "SELECT member_ids AS ids FROM finding_group WHERE workspace_id=? AND status='open'",
-              )
-              .all(workspaceId)
-              .flatMap((r) => JSON.parse(r.ids) as number[]),
-          );
+          // Preserve the unprocessed members of earlier groups during a partial snapshot.
+          if (selectedIds !== null)
+            dropProcessedFindingGroupMembers(db, workspaceId, selectedIds, [...current]);
+          else deleteUntouchedFindingGroups(db, workspaceId);
+          const held = new Set(heldFindingGroupMembers(db, workspaceId));
           let count = 0;
           for (const group of groups) {
             const ids = group.memberIds.filter((id) => current.has(id) && !held.has(id));
             if (!ids.length) continue;
-            db.run(
-              `INSERT INTO finding_group(id,workspace_id,repository,team_id,title,summary,scope,suggested_issue,member_ids,created_at,run_id)
-              VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-              [
-                randomUUID(),
-                workspaceId,
-                group.repository,
-                group.teamId,
-                group.title,
-                group.summary,
-                group.scope,
-                group.suggestedIssue,
-                JSON.stringify(ids),
-                at,
-                runId,
-              ],
-            );
+            insertFindingGroup(db, {
+              id: randomUUID(),
+              workspaceId,
+              repository: group.repository,
+              teamId: group.teamId,
+              title: group.title,
+              summary: group.summary,
+              scope: group.scope,
+              suggestedIssue: group.suggestedIssue,
+              memberIds: ids,
+              createdAt: at,
+              runId,
+            });
             count++;
           }
-          const completed = db.run(
-            "UPDATE finding_group_run SET status='completed',finished_at=?,tokens=?,group_count=?,finding_cursor=?,issue_cursor=? WHERE id=? AND status='running'",
-            [now(), tokens, count, nextFindingCursor, nextIssueCursor, runId],
-          ).changes;
-          if (completed !== 1) throw new Error("Finding grouping run no longer owns this result.");
+          const completed = completeFindingGroupRun(db, runId, {
+            finishedAt: now(),
+            tokens,
+            groupCount: count,
+            findingCursor: nextFindingCursor,
+            issueCursor: nextIssueCursor,
+          });
+          if (!completed) throw new Error("Finding grouping run no longer owns this result.");
         });
       } catch (error) {
-        db.run(
-          "UPDATE finding_group_run SET status='failed',finished_at=?,error=? WHERE id=? AND status='running'",
-          [now(), error instanceof Error ? error.message : "Grouping failed", runId],
+        failFindingGroupRun(
+          db,
+          runId,
+          now(),
+          error instanceof Error ? error.message : "Grouping failed",
         );
         throw error;
       }
@@ -450,14 +431,7 @@ export function createFakeGroupingHelper(text: string) {
 export function groupingAuthorityUser(db: Database, workspaceId: string): string | null {
   const admins = findingGroupingAdmins(db, workspaceId);
   if (!admins.length) return null;
-  const owners = new Set(
-    db
-      .query<{ userId: string }, [string]>(
-        "SELECT owner_user_id AS userId FROM runner WHERE workspace_id=? AND revoked_at IS NULL AND status<>'revoked'",
-      )
-      .all(workspaceId)
-      .map((row) => row.userId),
-  );
+  const owners = new Set(activeRunnerOwners(db, workspaceId));
   return admins.find((admin) => owners.has(admin.userId))?.userId ?? admins[0]!.userId;
 }
 
