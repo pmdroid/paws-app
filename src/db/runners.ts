@@ -39,7 +39,7 @@ export type RunnerRecord = {
   status: "active" | "paused" | "draining" | "revoked";
   fence: number;
 };
-export type StoredRunnerCertificate = {
+type StoredRunnerCertificate = {
   fingerprint: string;
   serial: string;
   pem: string;
@@ -66,10 +66,6 @@ export function* getRunnerSteps(q: Q, id: string): Steps<RunnerRecord | null> {
   const { runner } = q.t;
   const row = yield* q.one(q.orm.select(runnerColumns(q)).from(runner).where(eq(runner.id, id)));
   return row ?? null;
-}
-
-export function listRunners(db: Database, workspaceId: string): RunnerRecord[] {
-  return settled(sqliteDb(db).run((q) => listRunnersSteps(q, workspaceId)));
 }
 
 export function* listRunnersSteps(q: Q, workspaceId: string): Steps<RunnerRecord[]> {
@@ -110,7 +106,7 @@ export type RunnerStrayProcess = {
   cpuPercent: number;
 };
 
-export type RunnerOverview = RunnerRecord & {
+type RunnerOverview = RunnerRecord & {
   hasRunWork: boolean;
   /** The owner's display name, so the Runners page can say whose host it is. */
   ownerName: string | null;
@@ -146,8 +142,8 @@ export type RunnerOverview = RunnerRecord & {
   repositories: RunnerRepositoryLists;
 };
 
-export type RunnerSessionPhase = "working" | "closeout" | "fixing" | "merging";
-export type RunnerSession = {
+type RunnerSessionPhase = "working" | "closeout" | "fixing" | "merging";
+type RunnerSession = {
   runId: string;
   identifier: string;
   title: string;
@@ -610,7 +606,7 @@ export function* createRunnerEnrollmentSteps(q: Q, input: RunnerEnrollmentReques
   );
 }
 
-export type RunnerEnrollment = {
+type RunnerEnrollment = {
   id: string;
   workspaceId: string;
   userId: string;
