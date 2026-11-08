@@ -70,16 +70,16 @@ test("two concurrent confirmations accept one suggestion once, with every read i
       body: "Which pagination format?",
     });
     const suggestion = suggestDecisions(f.db, pending.id, pending.body)[0]!;
-    const query = f.db.query.bind(f.db);
+    const prepare = f.db.prepare.bind(f.db);
     const transactions: boolean[] = [];
-    f.db.query = ((...args: Parameters<typeof f.db.query>) => {
-      transactions.push(f.db.inTransaction);
-      return query(...args);
-    }) as typeof f.db.query;
+    f.db.prepare = ((...args: Parameters<typeof f.db.prepare>) => {
+      if (/^\s*select\b/i.test(args[0])) transactions.push(f.db.inTransaction);
+      return prepare(...args);
+    }) as typeof f.db.prepare;
     expect(() =>
       confirmDecision(f.db, pending.id, suggestion.value, "inactive", Date.now()),
     ).toThrow();
-    f.db.query = query;
+    f.db.prepare = prepare;
     expect(transactions.length).toBeGreaterThan(0);
     expect(transactions.every(Boolean)).toBe(true);
     const script = `
