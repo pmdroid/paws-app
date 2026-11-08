@@ -113,7 +113,7 @@ function setup(reviewed = true) {
   );
   async function deliver(rounds = 1) {
     for (let round = 0; round < rounds; round++) {
-      dispatcher.tick();
+      await dispatcher.tick();
       await dispatcher.idle();
       clock.advance(3_600_000);
     }

@@ -108,7 +108,7 @@ test("updates from a run that Paws resumes after a restart all land in the outbo
     while (Date.now() < deadline) {
       if (sent >= count) return;
       paws.orchestrator.reconcileExecution();
-      paws.outbox.tick();
+      await paws.outbox.tick();
       ticking = ticking.then(() => paws.jobs.tick()).catch(() => undefined);
       await Promise.race([ticking, Bun.sleep(50)]);
     }

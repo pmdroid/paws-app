@@ -283,7 +283,7 @@ test.each([false, true])(
       dispatcher.setHandler(async () => {
         throw new Error("delivery exhausted");
       });
-      dispatcher.tick();
+      await dispatcher.tick();
       await dispatcher.idle();
       if (!finalAlreadyQueued) final();
       enqueueOutbox(env.db, {

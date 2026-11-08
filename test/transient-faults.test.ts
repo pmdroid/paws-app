@@ -520,7 +520,7 @@ async function runWithFault(fault: {
       }
       states.push(stateOf(db, "ENG-7"));
       if ((await jobs.tick()) === null) {
-        outbox.tick();
+        await outbox.tick();
         await Bun.sleep(25);
         const delayed = listJobs(db).find(
           (job) =>
@@ -540,7 +540,7 @@ async function runWithFault(fault: {
     }
     const drainBy = Date.now() + 10_000;
     while (Date.now() < drainBy && listOutbox(db).some((row) => row.status === "pending")) {
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
       await Bun.sleep(10);
     }

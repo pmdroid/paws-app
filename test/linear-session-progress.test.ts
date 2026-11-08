@@ -22,7 +22,7 @@ import {
 import { tempDb } from "./helpers";
 
 async function flush(dispatcher: OutboxDispatcher) {
-  while (dispatcher.tick().length > 0) await dispatcher.idle();
+  while ((await dispatcher.tick()).length > 0) await dispatcher.idle();
 }
 
 test("ACP plans preserve status and append host verification and publication steps", async () => {
@@ -391,7 +391,7 @@ test("a generation change during actual session-update authentication prevents t
     outbox.setHandler((row, context) =>
       deliverLinearOutbox(row, tracker, async () => {}, context, db),
     );
-    outbox.tick();
+    await outbox.tick();
     await started.promise;
     advanceOutboxSession(db, "linear", "session");
     release.resolve();

@@ -160,7 +160,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
   const tasks = () => listWorkItems(db).filter((item) => item.linearIdentifier.startsWith("ENG-"));
   const count = (state: string) => tasks().filter((item) => item.state === state).length;
   const step = async (ms = STEP_MS) => {
-    while ((await jobs.tick()) !== null || outbox.tick().length > 0) await outbox.idle();
+    while ((await jobs.tick()) !== null || (await outbox.tick()).length > 0) await outbox.idle();
     clock.advance(ms);
     runner.seen(clock.now());
   };

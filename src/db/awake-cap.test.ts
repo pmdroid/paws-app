@@ -319,17 +319,22 @@ describe("awake-time cap after Closeout accepted the work", () => {
     });
     const jobs = new JobLoop(db, clock, { leaseMs: 24 * 60 * MINUTE });
     let finish = () => {};
+    let started = () => {};
     jobs.register(
       JOB_KIND.reverify,
       () =>
         new Promise<void>((resolve) => {
           finish = resolve;
+          started();
         }),
     );
-    const verify = () => {
+    const verify = async () => {
       enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id }, now: clock.now() });
-      // The claim is synchronous; the handler then holds the job until finish().
-      return jobs.tick([JOB_KIND.reverify]);
+      const handling = new Promise<void>((resolve) => (started = resolve));
+      // The claim is awaited; the handler then holds the job until finish().
+      const running = jobs.tick([JOB_KIND.reverify]);
+      await handling;
+      return { running };
     };
     const accrue = () =>
       accrueAwake(
@@ -348,7 +353,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
 
     // Two idle hours in verifying, then a job claims the item before the next accrual.
     clock.advance(2 * 60 * MINUTE);
-    let running = verify();
+    let { running } = await verify();
     expect(getWorkItem(db, item.id)).toMatchObject({ awakeMs: 41 * MINUTE, closeoutMs: 0 });
     clock.advance(10 * MINUTE);
     accrue();
@@ -366,7 +371,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       closeoutMs: 15 * MINUTE,
     });
 
-    running = verify();
+    ({ running } = await verify());
     clock.advance(4 * MINUTE);
     expect(accrue()).toMatchObject({ capped: false, asked: true, stopAgent: true });
     expect(listJobs(db).find((job) => job.queue === "item.ask")?.payload).toMatchObject({

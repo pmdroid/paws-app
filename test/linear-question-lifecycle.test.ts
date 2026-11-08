@@ -176,7 +176,7 @@ test("an answer aborts an elicitation currently being delivered", async () => {
       },
       now: NOW,
     });
-    outbox.tick();
+    await outbox.tick();
     await orchestrator.onLinearEvent(prompt());
     expect(aborted).toBe(true);
     expect(getQuestion(db, question.id)?.status).toBe("answered");

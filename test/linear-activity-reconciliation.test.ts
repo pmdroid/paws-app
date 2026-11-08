@@ -110,7 +110,7 @@ test.each(["response", "select", "auth"])(
       },
     });
     const first = dispatcher(db, clock, api.tracker);
-    first.tick();
+    await first.tick();
     await first.idle();
     const prepared = getOutbox(db, id)!;
     expect(prepared.status).toBe("pending");
@@ -124,7 +124,7 @@ test.each(["response", "select", "auth"])(
       migrate(reopened);
       clock.advance(2_000);
       const recovered = dispatcher(reopened, clock, api.tracker);
-      recovered.tick();
+      await recovered.tick();
       await recovered.idle();
       expect(getOutbox(reopened, id)?.status).toBe("sent");
       expect((getOutbox(reopened, id)!.payload as { id: string }).id).toBe(callerId);
@@ -151,7 +151,7 @@ test.each(["mismatch", "incomplete", "unavailable", "malformed metadata", "nonob
         payload: { sessionId: "session", kind: "error", body: "Execution halted" },
       });
       const outbox = dispatcher(db, clock, api.tracker);
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
       if (failure === "mismatch")
         api.activities.values().next().value!["content"] = {
@@ -167,7 +167,7 @@ test.each(["mismatch", "incomplete", "unavailable", "malformed metadata", "nonob
           return { agentActivities: { nodes: [] } };
         });
       clock.advance(2_000);
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
       expect(listOutbox(db)[0]?.status).toBe("pending");
       expect(api.created).toHaveLength(1);
@@ -190,7 +190,7 @@ test("Stop during an empty reconciliation fences the subsequent mutation before 
       payload: { sessionId: "session", kind: "response", body: "Prepared answer" },
     });
     const outbox = dispatcher(db, clock, api.tracker);
-    outbox.tick();
+    await outbox.tick();
     await outbox.idle();
     const pending = Promise.withResolvers<unknown>();
     const reading = Promise.withResolvers<void>();
@@ -200,7 +200,7 @@ test("Stop during an empty reconciliation fences the subsequent mutation before 
       return pending.promise;
     });
     clock.advance(2_000);
-    outbox.tick();
+    await outbox.tick();
     await reading.promise;
     stopOutboxSession(db, "linear", "session", clock.now());
     pending.resolve({ agentActivities: { nodes: [], pageInfo: { hasNextPage: false } } });
@@ -264,7 +264,7 @@ test.each(["credentials", "reconciliation"])(
       outbox.setHandler((row, context) =>
         deliverLinearOutbox(row, tracker, async () => {}, context, db),
       );
-      outbox.tick();
+      await outbox.tick();
       await started.promise;
       advanceOutboxSession(db, "linear", "session");
       release.resolve();

@@ -169,14 +169,14 @@ async function handOver(options: {
       orchestrator.reconcileExecution();
       await jobs.tick(["run.resume"]);
       if (job === null) {
-        outbox.tick();
+        await outbox.tick();
         await Bun.sleep(20);
       }
     }
     // Let the turn that handed over settle and its outbox rows post.
     for (let index = 0; index < 50; index++) {
       const job = await tickWithRestarts(jobs, orchestrator, db);
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
       if (job === null) await Bun.sleep(10);
     }

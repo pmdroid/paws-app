@@ -59,7 +59,7 @@ test("Stop aborts active Linear HTTP delivery before its final acknowledgement s
     payload: { sessionId: "session", kind: "thought", body: "Working" },
   });
   try {
-    dispatcher.tick();
+    await dispatcher.tick();
     await active;
     const generation = stopOutboxSession(db, "linear", "session");
     const ack = enqueueOutbox(db, {
@@ -71,10 +71,10 @@ test("Stop aborts active Linear HTTP delivery before its final acknowledgement s
       generation,
       payload: { sessionId: "session", kind: "response", body: "Stopped" },
     });
-    expect(dispatcher.tick()).toEqual([]);
+    expect(await dispatcher.tick()).toEqual([]);
     await dispatcher.idle();
     expect(calls).toEqual(["Working", "aborted"]);
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(calls).toEqual(["Working", "aborted", "Stopped"]);
     expect(getOutbox(db, progress)?.status).toBe("dropped");

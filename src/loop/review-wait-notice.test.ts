@@ -89,7 +89,7 @@ async function fixture() {
       ),
     deliver: async () => {
       for (let round = 0; round < 10; round++) {
-        if (delivery.tick().length === 0) return;
+        if ((await delivery.tick()).length === 0) return;
         await delivery.idle();
       }
     },

@@ -70,7 +70,7 @@ function elicit(db: Database, id: string, session: string): number {
 
 async function deliverAll(dispatcher: OutboxDispatcher, clock: FakeClock, rounds = 4) {
   for (let round = 0; round < rounds; round += 1) {
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     clock.advance(60_000);
   }

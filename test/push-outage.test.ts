@@ -162,11 +162,11 @@ async function delegate(refusal: string) {
       while (Date.now() < deadline && !done()) {
         each?.();
         if ((await jobs.tick()) === null) {
-          outbox.tick();
+          await outbox.tick();
           await Bun.sleep(25);
         }
       }
-      while (outbox.tick().length > 0) await outbox.idle();
+      while ((await outbox.tick()).length > 0) await outbox.idle();
       expect(done(), this.detail()).toBe(true);
     },
     detail: () =>

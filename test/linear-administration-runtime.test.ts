@@ -227,14 +227,14 @@ test("signed revocation stops owned work and fences active, queued and delayed r
     idempotencyKey: "progress",
     payload: { sessionId: "session", kind: "thought", body: "Working" },
   });
-  f.dispatcher.tick();
+  await f.dispatcher.tick();
   await f.active.promise;
   expect((await f.post(revoked())).status).toBe(200);
   expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
   expect(getWorkItem(f.db, f.task.items[0]!.id)?.state).toBe("cancelled");
   expect(f.owned.signal.aborted).toBe(true);
   expect(listOutbox(f.db, "session").every((row) => row.status === "dropped")).toBe(true);
-  f.dispatcher.tick();
+  await f.dispatcher.tick();
   await f.dispatcher.idle();
   expect(getOutbox(f.db, progress)?.status).toBe("dropped");
   const late = enqueueOutbox(f.db, {
@@ -269,7 +269,7 @@ test("signed revocation stops owned work and fences active, queued and delayed r
   recovered.setHandler((message, context) =>
     deliverLinearOutbox(message, f.opened.tracker!, async () => {}, context),
   );
-  expect(recovered.tick()).toEqual([]);
+  expect(await recovered.tick()).toEqual([]);
   await recovered.idle();
   expect(f.requests).toEqual(["Working"]);
 });
@@ -300,7 +300,7 @@ test("team removal keeps the authorized stopped response while human unassignmen
   ).toBe(200);
   expect(getLinearSessionAccess(f.db, "session")).toBe("team_removed");
   expect(isLinearAppRevoked(f.db, scope)).toBe(false);
-  f.dispatcher.tick();
+  await f.dispatcher.tick();
   await f.dispatcher.idle();
   expect(f.requests).toEqual([
     expect.stringMatching(

@@ -165,11 +165,11 @@ async function runAccepted(options: {
         capChecked = true;
       }
       if ((await jobs.tick()) === null) {
-        outbox.tick();
+        await outbox.tick();
         await Bun.sleep(25);
       }
     }
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
     const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-8");

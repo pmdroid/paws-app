@@ -101,7 +101,7 @@ for (const [body, existing] of [
       await stopping;
       await intake;
       await outbox.idle();
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
       expect(tracker.progress.some((update) => update.body === body)).toBe(false);
       expect(listOutbox(db).find((entry) => entry.id === row.id)?.status).toBe("dropped");
@@ -149,12 +149,12 @@ test("acknowledgement retry and duplicate replay preserve one activity UUID", as
     expect(ids).toHaveLength(0);
     expect(listOutbox(db)[0]?.notBefore).toBe(6_000);
     clock.advance(5_000);
-    outbox.tick();
+    await outbox.tick();
     await outbox.idle();
     expect(ids).toHaveLength(1);
     clock.advance(60_000);
     await orchestrator.sessionProgressReporter(created())(update);
-    outbox.tick();
+    await outbox.tick();
     await outbox.idle();
     expect(ids).toHaveLength(2);
     expect(ids[0]).toBe(ids[1]);
@@ -346,7 +346,7 @@ test("item Stop delivery retains one UUID through failure, reopen and duplicate 
     outbox = new OutboxDispatcher(db, clock);
     orchestrator = attachOrchestrator(options());
     await orchestrator.onLinearEvent(stop);
-    outbox.tick();
+    await outbox.tick();
     await outbox.idle();
     expect(ids).toEqual([id, id]);
     expect(listOutbox(db).find((entry) => entry.id === row.id)?.status).toBe("sent");

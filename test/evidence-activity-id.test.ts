@@ -39,7 +39,7 @@ async function deliverAll(db: Database, tracker: ReturnType<typeof createFakeTra
     deliverLinearOutbox(row, tracker, async () => {}, context, db),
   );
   for (let round = 0; round < 50; round++) {
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     clock.advance(3_600_000);
   }

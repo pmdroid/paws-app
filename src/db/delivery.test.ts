@@ -46,7 +46,7 @@ function deferred() {
 }
 
 async function flush(dispatcher: OutboxDispatcher) {
-  while (dispatcher.tick().length > 0) await dispatcher.idle();
+  while ((await dispatcher.tick()).length > 0) await dispatcher.idle();
 }
 
 describe("critical Linear delivery", () => {
@@ -126,7 +126,7 @@ describe("critical Linear delivery", () => {
     await flush(dispatcher);
     const later = enqueue("later-final", { payload: { kind: "response", body: "Another result" } });
     dispatcher.setHandler(() => {});
-    expect(dispatcher.tick()).toHaveLength(0);
+    expect(await dispatcher.tick()).toHaveLength(0);
     expect(getOutbox(db, failed)?.status).toBe("dead");
     advanceOutboxSession(db, "linear", "A");
     expect(getOutbox(db, failed)?.error).toContain("accepted newer session generation");
@@ -168,10 +168,10 @@ describe("critical Linear delivery", () => {
         concurrent -= 1;
       }
     });
-    dispatcher.tick();
+    await dispatcher.tick();
     enqueue("final", { payload: { kind: "response", body: "Done" } });
     enqueue("other", { orderingKey: "B" });
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     await flush(dispatcher);
     expect(events.indexOf("aborted")).toBeLessThan(events.indexOf("final"));
@@ -190,10 +190,10 @@ describe("critical Linear delivery", () => {
       delivered.push(row.idempotencyKey);
       if (row.idempotencyKey === "progress") await gate.promise;
     });
-    dispatcher.tick();
+    await dispatcher.tick();
     enqueue("final", { payload: { kind: "response", body: "Done" } });
     clock.advance(120000);
-    expect(dispatcher.tick()).toHaveLength(0);
+    expect(await dispatcher.tick()).toHaveLength(0);
     expect(delivered).toEqual(["progress"]);
     gate.resolve();
     await dispatcher.idle();
@@ -288,7 +288,7 @@ describe("persisted Stop fences", () => {
       if (row.idempotencyKey === "progress") await gate.promise;
       if (context.isCurrent()) calls.push(row.idempotencyKey);
     });
-    dispatcher.tick();
+    await dispatcher.tick();
     const completed = enqueue("completed-status", {
       op: "status",
       payload: { linearIssueId: "done", stateType: "completed" },
@@ -308,7 +308,7 @@ describe("persisted Stop fences", () => {
       });
     const stale = enqueue("stale-after-stop", { generation: generation - 1 });
     enqueue("other", { orderingKey: "B" });
-    dispatcher.tick();
+    await dispatcher.tick();
     gate.resolve();
     await dispatcher.idle();
     await flush(dispatcher);

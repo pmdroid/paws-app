@@ -112,7 +112,7 @@ for (const delivered of [true, false, "completed"] as const)
           idempotencyKey: `pull-request-ready:${item.id}:${getLinearSessionGeneration(db, "ses_1")}`,
           payload: { sessionId: "ses_1", kind: "response", body: "Opened pull request #1." },
         });
-        while (outbox.tick().length > 0) await outbox.idle();
+        while ((await outbox.tick()).length > 0) await outbox.idle();
         expect(tracker.progress.at(-1)?.kind).toBe("response");
       }
       await orchestrator.onLinearEvent(event("prompted", "Also cover the empty state"));

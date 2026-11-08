@@ -447,7 +447,7 @@ async function runTask(input: {
     const deadline = Date.now() + 20_000;
     while (!["merged", "failed"].includes(state() ?? "")) {
       if (Date.now() > deadline) throw new Error(`The task is stuck in ${state()}`);
-      while (outbox.tick().length > 0) await outbox.idle();
+      while ((await outbox.tick()).length > 0) await outbox.idle();
       const open = findOpenQuestion(db, "session");
       if (open !== null && open.kind === "link" && !asked.includes("visual-review")) {
         // The screens are approved on the item page; a Linear reply never approves them.
@@ -499,7 +499,7 @@ async function runTask(input: {
         await Bun.sleep(5);
       }
     }
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     const perCaller: Record<string, number> = {};
     for (const [key, count] of server.counts) {
       const [owner, caller] = key.split(" ");
