@@ -1498,3 +1498,22 @@ export function lastItemEvent(
 ): { kind: string; reason: string | null } | null {
   return settled(sqliteDb(db).run((q) => lastItemEventSteps(q, itemId)));
 }
+
+/** The Linear session key of each of these work items that exists. */
+export function workItemSessionKeys(
+  db: Database,
+  ids: readonly string[],
+): { id: string; sessionKey: string | null }[] {
+  return settled(sqliteDb(db).run((q) => workItemSessionKeysSteps(q, ids)));
+}
+
+export function* workItemSessionKeysSteps(q: Q, ids: readonly string[]) {
+  if (ids.length === 0) return [];
+  const { workItem } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ id: workItem.id, sessionKey: workItem.sessionKey })
+      .from(workItem)
+      .where(inArray(workItem.id, [...ids])),
+  );
+}

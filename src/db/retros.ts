@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, max, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, max, notInArray, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { recordImprovementProposalSteps, type ImprovementActionStep } from "./improvements";
 import { jsonValue } from "./json-text";
@@ -1131,4 +1131,183 @@ export function* recordRetroScheduleStateSteps(q: Q, input: ScheduleState) {
           OR ${runtime.blockedReason} IS DISTINCT FROM excluded.blocked_reason`,
       }),
   );
+}
+
+/** Every settings revision of a workspace, newest first. */
+export function listRetroSettingsRevisions(
+  db: Database,
+  workspaceId: string,
+): RetroSettingsRevision[] {
+  return settled(sqliteDb(db).run((q) => listRetroSettingsRevisionsSteps(q, workspaceId)));
+}
+
+export function* listRetroSettingsRevisionsSteps(q: Q, workspaceId: string) {
+  const { retroSettingsRevision: settings } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(settings)
+      .where(eq(settings.workspaceId, workspaceId))
+      .orderBy(desc(settings.revision)),
+  );
+  return rows.map((row) => settingsFromRow(q, row));
+}
+
+/** Workspaces that saved retro settings, in id order. */
+export function retroSettingsWorkspaces(db: Database): string[] {
+  return settled(sqliteDb(db).run((q) => retroSettingsWorkspacesSteps(q)));
+}
+
+export function* retroSettingsWorkspacesSteps(q: Q) {
+  const { retroSettingsRevision: settings } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .selectDistinct({ workspaceId: settings.workspaceId })
+      .from(settings)
+      .orderBy(settings.workspaceId),
+  );
+  return rows.map((row) => row.workspaceId);
+}
+
+/** The id of the workspace's retro over exactly this window. */
+export function retroIdForWindow(
+  db: Database,
+  workspaceId: string,
+  windowStart: number,
+  windowEnd: number,
+): string | null {
+  return settled(
+    sqliteDb(db).run((q) => retroIdForWindowSteps(q, workspaceId, windowStart, windowEnd)),
+  );
+}
+
+export function* retroIdForWindowSteps(
+  q: Q,
+  workspaceId: string,
+  windowStart: number,
+  windowEnd: number,
+) {
+  const { retro } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: retro.id })
+      .from(retro)
+      .where(
+        and(
+          eq(retro.workspaceId, workspaceId),
+          eq(retro.windowStart, windowStart),
+          eq(retro.windowEnd, windowEnd),
+        ),
+      ),
+  );
+  return row?.id ?? null;
+}
+
+/** The workspace's most recently created retro, limited to `states` when given. */
+export function latestRetro(
+  db: Database,
+  workspaceId: string,
+  states?: readonly RetroState[],
+): Retro | null {
+  return settled(sqliteDb(db).run((q) => latestRetroSteps(q, workspaceId, states)));
+}
+
+export function* latestRetroSteps(q: Q, workspaceId: string, states?: readonly RetroState[]) {
+  const { retro } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(retro)
+      .where(
+        and(
+          eq(retro.workspaceId, workspaceId),
+          states === undefined ? undefined : inArray(retro.state, [...states]),
+        ),
+      )
+      .orderBy(desc(retro.createdAt), desc(retro.id))
+      .limit(1),
+  );
+  return row === undefined ? null : retroFromRow(q, row);
+}
+
+/** The published retro with the latest window end. */
+export function latestPublishedRetro(db: Database, workspaceId: string): Retro | null {
+  return settled(sqliteDb(db).run((q) => latestPublishedRetroSteps(q, workspaceId)));
+}
+
+export function* latestPublishedRetroSteps(q: Q, workspaceId: string) {
+  const { retro } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(retro)
+      .where(and(eq(retro.workspaceId, workspaceId), eq(retro.state, "published")))
+      .orderBy(desc(retro.windowEnd), desc(retro.id))
+      .limit(1),
+  );
+  return row === undefined ? null : retroFromRow(q, row);
+}
+
+/** Ids of the workspace's retros still collecting evidence, oldest first. */
+export function collectingRetroIds(db: Database, workspaceId: string): string[] {
+  return settled(sqliteDb(db).run((q) => collectingRetroIdsSteps(q, workspaceId)));
+}
+
+export function* collectingRetroIdsSteps(q: Q, workspaceId: string) {
+  const { retro } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: retro.id })
+      .from(retro)
+      .where(and(eq(retro.workspaceId, workspaceId), eq(retro.state, "collecting")))
+      .orderBy(retro.createdAt),
+  );
+  return rows.map((row) => row.id);
+}
+
+type OccurrenceRow = typeof pgSchema.retroOccurrence.$inferSelect;
+
+/** Record the occurrence a new retro covers; an occurrence already recorded stays. */
+export function recordRetroOccurrence(db: Database, occurrence: OccurrenceRow): void {
+  settled(sqliteDb(db).run((q) => recordRetroOccurrenceSteps(q, occurrence)));
+}
+
+export function* recordRetroOccurrenceSteps(q: Q, occurrence: OccurrenceRow) {
+  yield* q.exec(q.orm.insert(q.t.retroOccurrence).values(occurrence).onConflictDoNothing());
+}
+
+/** The schedule occurrence a retro was claimed for. */
+export type RetroOccurrenceRecord = {
+  origin: string;
+  occurrenceAt: number;
+  timeZone: string;
+  localDate: string;
+  localTime: string;
+  utcOffsetMinutes: number;
+  adjustment: string;
+  requestedBy: string | null;
+};
+
+export function retroOccurrence(db: Database, retroId: string): RetroOccurrenceRecord | null {
+  return settled(sqliteDb(db).run((q) => retroOccurrenceSteps(q, retroId)));
+}
+
+export function* retroOccurrenceSteps(q: Q, retroId: string) {
+  const { retroOccurrence: occurrence } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        origin: occurrence.origin,
+        occurrenceAt: occurrence.occurrenceAt,
+        timeZone: occurrence.timeZone,
+        localDate: occurrence.localDate,
+        localTime: occurrence.localTime,
+        utcOffsetMinutes: occurrence.utcOffsetMinutes,
+        adjustment: occurrence.localAdjustment,
+        requestedBy: occurrence.requestedBy,
+      })
+      .from(occurrence)
+      .where(eq(occurrence.retroId, retroId)),
+  );
+  return row ?? null;
 }
