@@ -5284,7 +5284,7 @@ export class Orchestrator {
     item: WorkItemRecord,
     run: MergeRun,
   ): Promise<MergePublication | MergeStep> {
-    this.assertReconciled(item);
+    await this.reconcileForMerge(item, run);
     const repository = this.repositoryForItem(item);
     const configuredGitHub = repository === null ? null : this.githubForRepository(repository);
     if (
@@ -5313,12 +5313,7 @@ export class Orchestrator {
     });
     const live = this.live.get(`operation:${item.id}`);
     if (!live) throw new Error("GitHub publication has no owned operation.");
-    const priorVerification = ciWaitVerification(run.payload);
-    run.publicationCandidate = priorVerification
-      ? { sha: priorVerification.head, baseSha: priorVerification.base }
-      : item.checkpoint?.wipCommit && item.checkpoint.baseSha
-        ? { sha: item.checkpoint.wipCommit, baseSha: item.checkpoint.baseSha }
-        : undefined;
+    run.publicationCandidate = mergeCandidate(item, run.payload);
     const freshReads = new Set<string>();
     const repositoryName = `${repository.owner}/${repository.repo}`;
     const github = guardGitHubPublication({
@@ -6494,6 +6489,24 @@ export class Orchestrator {
       throw new LinearReconciliationPendingError(
         "Linear execution changes are still being reconciled",
       );
+  }
+
+  private async reconcileForMerge(item: WorkItemRecord, run: MergeRun): Promise<void> {
+    if (this.admission.canDispatchDelegation(item.delegationId)) return;
+    const signal = this.live.get(`operation:${item.id}`)?.controller.signal;
+    if (signal && this.options.publicationReady) {
+      this.options.journal?.(
+        `item ${item.linearIdentifier}: a merge attempt reconciles pending Linear changes`,
+      );
+      await this.options.publicationReady(
+        item.id,
+        "merge",
+        signal,
+        mergeCandidate(item, run.payload),
+      );
+      signal.throwIfAborted();
+    }
+    this.assertReconciled(item);
   }
 
   private async assertPublicationReady(
@@ -9913,6 +9926,17 @@ function inFlight(state: WorkItemRecord["state"]): boolean {
 function withAcceptedBranch(text: string, item: WorkItemRecord): string {
   const sentence = /[.!?]$/.test(text) ? text : `${text}.`;
   return `${sentence} The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`;
+}
+
+function mergeCandidate(
+  item: WorkItemRecord,
+  payload: unknown,
+): { sha: string; baseSha: string } | undefined {
+  const priorVerification = ciWaitVerification(payload);
+  if (priorVerification) return { sha: priorVerification.head, baseSha: priorVerification.base };
+  return item.checkpoint?.wipCommit && item.checkpoint.baseSha
+    ? { sha: item.checkpoint.wipCommit, baseSha: item.checkpoint.baseSha }
+    : undefined;
 }
 
 function retryCount(payload: unknown): number {
