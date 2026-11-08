@@ -13,6 +13,7 @@ export * from "./review-replies";
 export * from "./suggested-findings";
 export * from "./runner-capacity";
 export * from "./decisions";
+export * from "./decision-memory";
 export * from "./dispatcher";
 export * from "./tasks";
 export * from "./plan-proposals";

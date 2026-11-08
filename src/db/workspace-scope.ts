@@ -5,7 +5,7 @@ import { workspaceMemberUsable, workspaceMemberSteps } from "./workspace";
 import { teamRepositoryAllowedSql } from "./repository-catalog";
 import { getLinearSessionAccess } from "./linear-access";
 
-function sessionRepositoryAllowed(repository: SQL): SQL {
+export function sessionRepositoryAllowed(repository: SQL): SQL {
   const parts = teamRepositoryAllowedSql("workspace.id", "linear_session.team_id", "\0").split(
     "\0",
   );
