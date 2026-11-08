@@ -20,7 +20,7 @@ export type ItemWait = {
   version: number;
 } & (
   | { kind: "blocked"; blockers: string[] }
-  | { kind: "overlap"; blocker: string; files: string[] }
+  | { kind: "overlap"; blocker: string; files: string[]; start?: true }
   | {
       kind: "runner";
       position: number;
@@ -95,7 +95,15 @@ export function itemWaits(
       if (hold?.reason === "blocked")
         return [{ ...base, kind: "blocked", blockers: hold.blockers }];
       if (hold?.reason === "overlap" && hold.blockers[0])
-        return [{ ...base, kind: "overlap", blocker: hold.blockers[0], files: hold.files ?? [] }];
+        return [
+          {
+            ...base,
+            kind: "overlap",
+            blocker: hold.blockers[0],
+            files: hold.files ?? [],
+            ...(hold.start ? { start: hold.start } : {}),
+          },
+        ];
       const position = positions.get(item.id);
       if ((hold?.reason === "slot" || hold?.reason === "cap") && position !== undefined)
         return [{ ...base, kind: "runner", position, restart: restartReason(db, item.id) }];
@@ -118,13 +126,13 @@ export function itemWaits(
 }
 
 /** `waiting for PAS-1 to merge (both change provider.ts)`, file names without their directories. */
-export function overlapLine(blocker: string, files: readonly string[]): string {
+export function overlapLine(blocker: string, files: readonly string[], start?: true): string {
   const names = [...new Set(files.map((path) => path.slice(path.lastIndexOf("/") + 1)))];
-  return `waiting for ${blocker} to merge${names.length ? ` (both change ${names.join(", ")})` : ""}`;
+  return `waiting for ${blocker} to ${start ? "start" : "merge"}${names.length ? ` (both change ${names.join(", ")})` : ""}`;
 }
 
 export function waitingLine(wait: ItemWait): string | null {
-  if (wait.kind === "overlap") return `Still ${overlapLine(wait.blocker, wait.files)}.`;
+  if (wait.kind === "overlap") return `Still ${overlapLine(wait.blocker, wait.files, wait.start)}.`;
   if (wait.kind === "blocked")
     return `${
       wait.blockers.length

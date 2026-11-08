@@ -1,10 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import {
   blockerCheckedAtSteps,
   getItemCandidateSteps,
   itemWaitSinceSteps,
   keepItemWaitsSteps,
   listItemHoldsSteps,
+  listOverlapHoldAgesSteps,
   recordBlockerChecksSteps,
   recordItemCandidateSteps,
   saveItemHoldsSteps,
@@ -50,6 +52,30 @@ forEachDialect((open) => {
       { itemId: "a", held: null },
     ]);
     expect(await db.run((q) => listItemHoldsSteps(q))).toEqual([overlap]);
+  });
+
+  test("an overlap hold age outlives the hold until the item is cancelled", async () => {
+    const db = await connect(open, "a", "b");
+    const overlap = { itemId: "a", reason: "overlap" as const, blockers: ["b"], files: ["x.ts"] };
+    await db.run((q) => saveItemHoldsSteps(q, [overlap], 100));
+    await db.run((q) => saveItemHoldsSteps(q, [{ ...overlap, blockers: ["c"] }], 200));
+    expect(await db.run((q) => listOverlapHoldAgesSteps(q))).toEqual(new Map([["a", 100]]));
+    expect(await db.run((q) => saveItemHoldsSteps(q, [], 300))).toEqual([
+      { itemId: "a", held: null },
+    ]);
+    expect(await db.run((q) => listItemHoldsSteps(q))).toEqual([]);
+    expect(await db.run((q) => saveItemHoldsSteps(q, [], 400))).toEqual([]);
+    await db.run((q) => saveItemHoldsSteps(q, [{ ...overlap, reason: "slot", blockers: [] }], 500));
+    await db.run((q) => saveItemHoldsSteps(q, [overlap], 600));
+    expect(await db.run((q) => listOverlapHoldAgesSteps(q))).toEqual(new Map([["a", 100]]));
+    await db.run((q) => saveItemHoldsSteps(q, [], 700));
+    await db.run((q) =>
+      q.exec(
+        q.orm.update(q.t.workItem).set({ state: "cancelled" }).where(eq(q.t.workItem.id, "a")),
+      ),
+    );
+    await db.run((q) => saveItemHoldsSteps(q, [], 800));
+    expect(await db.run((q) => listOverlapHoldAgesSteps(q))).toEqual(new Map());
   });
 
   test("a wait starts again only for a new version, and kept items keep theirs", async () => {

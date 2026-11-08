@@ -494,9 +494,10 @@ export const itemHold = sqliteTable(
       .primaryKey()
       .notNull()
       .references(() => workItem.id),
-    reason: text().notNull(),
+    reason: text(),
     blockers: text().notNull(),
     files: text().default("[]").notNull(),
+    overlapSince: integer("overlap_since"),
   },
   () => [
     check(

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, isNotNull } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
@@ -21,7 +21,10 @@ export type ItemHold = {
   reason: ItemHoldReason;
   blockers: string[];
   files?: string[];
+  start?: true;
 };
+
+const FINISHED = new Set(["completed", "merged", "cancelled"]);
 export type ItemHoldChange = { itemId: string; held: ItemHold | null };
 
 export function* listItemHoldsSteps(q: Q) {
@@ -35,6 +38,7 @@ export function* listItemHoldsSteps(q: Q) {
         files: jsonText(q, itemHold.files),
       })
       .from(itemHold)
+      .where(isNotNull(itemHold.reason))
       .orderBy(asc(itemHold.itemId)),
   );
   return rows.map(({ files, ...row }): ItemHold => {
@@ -52,29 +56,66 @@ export function listItemHolds(db: Database): ItemHold[] {
   return settled(sqliteDb(db).run((q) => listItemHoldsSteps(q)));
 }
 
-export function* saveItemHoldsSteps(q: Q, holds: readonly ItemHold[]) {
+export function* listOverlapHoldAgesSteps(q: Q) {
   const { itemHold } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ itemId: itemHold.itemId, since: itemHold.overlapSince })
+      .from(itemHold)
+      .where(isNotNull(itemHold.overlapSince)),
+  );
+  return new Map(rows.map((row) => [row.itemId, row.since!]));
+}
+
+export function listOverlapHoldAges(db: Database): Map<string, number> {
+  return settled(sqliteDb(db).run((q) => listOverlapHoldAgesSteps(q)));
+}
+
+export function* saveItemHoldsSteps(q: Q, holds: readonly ItemHold[], now = Date.now()) {
+  const { itemHold, workItem } = q.t;
   const before = new Map((yield* listItemHoldsSteps(q)).map((hold) => [hold.itemId, hold]));
+  const ages = yield* listOverlapHoldAgesSteps(q);
   const kept = new Set(holds.map((hold) => hold.itemId));
   const changes: ItemHoldChange[] = [];
-  for (const itemId of before.keys())
-    if (!kept.has(itemId)) {
-      yield* q.exec(q.orm.delete(itemHold).where(eq(itemHold.itemId, itemId)));
-      changes.push({ itemId, held: null });
-    }
+  const finished = new Set(
+    ages.size
+      ? (yield* q.all(
+          q.orm
+            .select({ id: workItem.id, state: workItem.state })
+            .from(itemHold)
+            .innerJoin(workItem, eq(workItem.id, itemHold.itemId)),
+        ))
+          .filter((row) => FINISHED.has(row.state))
+          .map((row) => row.id)
+      : [],
+  );
+  for (const itemId of new Set([...before.keys(), ...ages.keys()])) {
+    if (kept.has(itemId)) continue;
+    if (ages.has(itemId) && !finished.has(itemId)) {
+      if (!before.has(itemId)) continue;
+      yield* q.exec(
+        q.orm
+          .update(itemHold)
+          .set({ reason: null, blockers: jsonValue(q, []), files: jsonValue(q, []) })
+          .where(eq(itemHold.itemId, itemId)),
+      );
+    } else yield* q.exec(q.orm.delete(itemHold).where(eq(itemHold.itemId, itemId)));
+    if (before.has(itemId)) changes.push({ itemId, held: null });
+  }
   for (const hold of holds) {
     const files = hold.files ?? [];
     const old = before.get(hold.itemId);
-    if (
+    const since = hold.reason === "overlap" ? (ages.get(hold.itemId) ?? now) : null;
+    const same =
       old?.reason === hold.reason &&
       JSON.stringify(old.blockers) === JSON.stringify(hold.blockers) &&
-      JSON.stringify(old.files ?? []) === JSON.stringify(files)
-    )
-      continue;
+      JSON.stringify(old.files ?? []) === JSON.stringify(files);
+    if (same && (since === null || ages.has(hold.itemId))) continue;
     const values = {
       reason: hold.reason,
       blockers: jsonValue(q, hold.blockers),
       files: jsonValue(q, files),
+      ...(since === null ? {} : { overlapSince: since }),
     };
     yield* q.exec(
       q.orm
@@ -82,11 +123,15 @@ export function* saveItemHoldsSteps(q: Q, holds: readonly ItemHold[]) {
         .values({ itemId: hold.itemId, ...values })
         .onConflictDoUpdate({ target: itemHold.itemId, set: values }),
     );
-    changes.push({ itemId: hold.itemId, held: hold });
+    if (!same) changes.push({ itemId: hold.itemId, held: hold });
   }
   return changes;
 }
 
-export function saveItemHolds(db: Database, holds: readonly ItemHold[]): ItemHoldChange[] {
-  return settled(sqliteDb(db).run((q) => saveItemHoldsSteps(q, holds)));
+export function saveItemHolds(
+  db: Database,
+  holds: readonly ItemHold[],
+  now?: number,
+): ItemHoldChange[] {
+  return settled(sqliteDb(db).run((q) => saveItemHoldsSteps(q, holds, now)));
 }

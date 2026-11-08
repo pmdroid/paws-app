@@ -456,9 +456,10 @@ export const itemHold = pgTable(
     itemId: text("item_id")
       .primaryKey()
       .references(() => workItem.id),
-    reason: text().notNull(),
+    reason: text(),
     blockers: jsonb().notNull(),
     files: jsonb().default([]).notNull(),
+    overlapSince: bigint("overlap_since", { mode: "number" }),
   },
   () => [
     check(
