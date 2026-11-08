@@ -1,5 +1,17 @@
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, exists, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 import { jsonText } from "./json-text";
 
@@ -409,7 +421,7 @@ export function* runnerWorkCommandSteps(q: Q, runId: string) {
       .select({
         runnerId: runnerWork.runnerId,
         kind: runnerCommand.kind,
-        envelope: jsonText(q, runnerCommand.envelope),
+        envelope: jsonText(q, runnerCommand.envelope) as SQL<string | null>,
       })
       .from(runnerWork)
       .leftJoin(runnerCommand, eq(runnerCommand.id, runnerWork.commandId))
