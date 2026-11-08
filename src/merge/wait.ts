@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 export { wakeMergesBehind } from "../db";
-import { latestGitHubDelivery, parkLeasedJob, type Job } from "../db";
+import { latestGitHubDeliverySteps, parkLeasedJobSteps, type Db, type Job } from "../db";
 
 export const MERGE_CI_POLL_MS = 10_000;
 export const MERGE_BACKSTOP_POLL_MS = 5 * 60_000;
@@ -40,12 +39,12 @@ export type MergeWait = {
   githubQueue?: GitHubQueueWatch;
 };
 
-export function parkMerge(
-  db: Database,
+export async function parkMerge(
+  store: Db,
   job: Job,
   now: number,
   wait: Partial<MergeWait> = {},
-): "parked" | "expired" | "ask" | "lost" {
+): Promise<"parked" | "expired" | "ask" | "lost"> {
   const payload = payloadRecord(job.payload);
   if (wait.reason)
     payload.mergeWait = {
@@ -61,13 +60,13 @@ export function parkMerge(
         : 0;
     const delayMs = Math.min(MERGE_CI_POLL_MS * 2 ** retries, MERGE_BACKSTOP_POLL_MS);
     payload.mergeOutcomeRetries = retries + 1;
-    return park(db, job, now + delayMs, payload, now);
+    return park(store, job, now + delayMs, payload, now);
   }
   delete payload.mergeOutcomeRetries;
   if (wait.queued) {
     delete payload.ciWaitDeadline;
     if (wait.githubQueue !== undefined) payload.githubQueue = wait.githubQueue;
-    return park(db, job, now + pollMs(db, now, MERGE_QUEUE_POLL_MS), payload, now);
+    return park(store, job, now + (await pollMs(store, now, MERGE_QUEUE_POLL_MS)), payload, now);
   }
   const head = wait.head;
   const saved = payload.ciWaitDeadline;
@@ -76,7 +75,11 @@ export function parkMerge(
   const deadline = resumed
     ? saved
     : now + (wait.githubQueue ? GITHUB_QUEUE_WAIT_MS : MERGE_CI_WAIT_MS);
-  let delayMs = pollMs(db, now, wait.githubQueue ? GITHUB_QUEUE_POLL_MS : MERGE_CI_POLL_MS);
+  let delayMs = await pollMs(
+    store,
+    now,
+    wait.githubQueue ? GITHUB_QUEUE_POLL_MS : MERGE_CI_POLL_MS,
+  );
   let started: number | undefined;
   if (wait.githubQueue) {
     if (sameHead && now >= deadline) return "expired";
@@ -92,7 +95,7 @@ export function parkMerge(
     if (now >= deadline) delayMs = MERGE_BACKSTOP_POLL_MS;
   }
   return park(
-    db,
+    store,
     job,
     now + delayMs,
     {
@@ -108,21 +111,24 @@ export function parkMerge(
   );
 }
 
-function pollMs(db: Database, now: number, fastMs: number): number {
-  const last = latestGitHubDelivery(db);
+async function pollMs(store: Db, now: number, fastMs: number): Promise<number> {
+  const last = await store.run(latestGitHubDeliverySteps);
   return last !== null && now - last.receivedAt < GITHUB_DELIVERY_QUIET_MS
     ? Math.max(fastMs, MERGE_BACKSTOP_POLL_MS)
     : fastMs;
 }
 
-function park(
-  db: Database,
+async function park(
+  store: Db,
   job: Job,
   runAt: number,
   payload: Record<string, unknown>,
   now: number,
-): "parked" | "lost" {
-  return parkLeasedJob(db, job, { runAt, payload, attempts: 0, now }) ? "parked" : "lost";
+): Promise<"parked" | "lost"> {
+  const parked = await store.run((q) =>
+    parkLeasedJobSteps(q, job, { runAt, payload, attempts: 0, now }),
+  );
+  return parked ? "parked" : "lost";
 }
 
 export function ciWaitVerification(payload: unknown): CiWaitVerification | undefined {
