@@ -1,6 +1,8 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
+import { and, eq, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { immediate } from "./tx";
 
 export type CatalogEntry = {
@@ -94,4 +96,56 @@ export function listRepositoryCandidates(
       return true;
     })
     .map(({ owner, repo, remoteUrl }) => ({ owner, repo, remoteUrl }));
+}
+
+/**
+ * Whether the team may use this repository (`owner/repo` in lower case): the team maps it, or the
+ * team maps none and it is in the catalog.
+ */
+export function* teamRepositoryAllowedSteps(
+  q: Q,
+  workspaceId: string,
+  teamId: string,
+  repository: string,
+): Steps<boolean> {
+  const { repositoryCatalog, workspaceRepository } = q.t;
+  const team = and(
+    eq(workspaceRepository.workspaceId, workspaceId),
+    eq(workspaceRepository.teamId, teamId),
+  );
+  const mapped = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(workspaceRepository)
+      .where(and(team, sql`lower(${workspaceRepository.repository}) = ${repository}`))
+      .limit(1),
+  );
+  if (mapped !== undefined) return true;
+  const anyMapped = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(workspaceRepository)
+      .where(team)
+      .limit(1),
+  );
+  if (anyMapped !== undefined) return false;
+  const cataloged = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(repositoryCatalog)
+      .where(eq(repositoryCatalog.repository, repository))
+      .limit(1),
+  );
+  return cataloged !== undefined;
+}
+
+export function teamRepositoryAllowed(
+  db: Database,
+  workspaceId: string,
+  teamId: string,
+  repository: string,
+): boolean {
+  return settled(
+    sqliteDb(db).run((q) => teamRepositoryAllowedSteps(q, workspaceId, teamId, repository)),
+  );
 }

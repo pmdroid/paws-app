@@ -1,5 +1,0 @@
-src/loop/question-effects.ts | db.run("UPDATE question SET answer=?, handoff_version=0 WHERE id=?", [ | not yet converted to Drizzle
-src/loop/question-effects.ts | const pending = db .query< | not yet converted to Drizzle
-src/loop/question-effects.ts | db.run("UPDATE question SET handoff_version=? WHERE id=?", [version, entry.id]); | not yet converted to Drizzle
-src/loop/question-effects.ts | db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]); | not yet converted to Drizzle
-src/loop/question-effects.ts | const live = db .query( | not yet converted to Drizzle

@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { JOB_KIND } from "../core";
 import {
+  releasePushOutageJobs,
   endPushOutage,
   getJob,
   getPushOutage,
@@ -119,11 +119,7 @@ export function pushWorked(db: Database, repository: string, now: number): PushO
   const ended = immediate(db, () => {
     const outage = endPushOutage(db, repository);
     if (outage === null) return null;
-    db.run(
-      `UPDATE job SET run_at = MIN(run_at, ?)
-       WHERE queue = ? AND status = 'pending' AND json_extract(payload, '$.pushOutage') = ?`,
-      [now, JOB_KIND.merge, repository],
-    );
+    releasePushOutageJobs(db, repository, now);
     if (outage.questionId !== null) cancelQuestion(db, outage.questionId, now);
     return outage;
   });

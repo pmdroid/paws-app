@@ -373,3 +373,23 @@ export function nextRoutineHealthCommand(
 ): number | null {
   return settled(sqliteDb(db).run((q) => nextRoutineHealthCommandSteps(q, runnerId, now)));
 }
+
+/** The runner work of every run on this branch, whichever item ran it. */
+export function* branchRunnerWorkSteps(q: Q, branchName: string) {
+  const { run, runnerWork, workItem } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ runId: runnerWork.runId, endedAt: runnerWork.endedAt })
+      .from(runnerWork)
+      .innerJoin(run, eq(run.id, runnerWork.runId))
+      .innerJoin(workItem, eq(workItem.id, run.itemId))
+      .where(eq(workItem.branchName, branchName)),
+  );
+}
+
+export function branchRunnerWork(
+  db: Database,
+  branchName: string,
+): { runId: string; endedAt: number | null }[] {
+  return settled(sqliteDb(db).run((q) => branchRunnerWorkSteps(q, branchName)));
+}
