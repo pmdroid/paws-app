@@ -8,18 +8,7 @@ import { settled, sqliteDb, type Q, type Steps } from "./db";
 export type ReviewFindingPlace = { path: string; lines: string };
 
 /** The Linear issue filed from a pre-existing review finding. */
-export type ReviewFindingIssue = {
-  key: string;
-  repository: string;
-  path: string;
-  lines: string;
-  linearIssueId: string;
-  identifier: string;
-  url: string | null;
-  itemId: string | null;
-  filedBy: string | null;
-  filedAt: number;
-};
+export type ReviewFindingIssue = Q["t"]["reviewFindingIssue"]["$inferSelect"];
 
 /**
  * The path and lines of `path:line`, `path:line:column` or `path:first-last`, read as
