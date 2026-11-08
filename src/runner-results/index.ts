@@ -1,20 +1,30 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
-import { immediate, recordRunnerAgentUsage, runnerLeaseCutoff } from "../db";
+import {
+  immediate,
+  insertRunnerFollowUp,
+  insertRunnerQuestionAnswer,
+  insertRunnerResult,
+  itemRunnerFollowUpTarget,
+  recordRunnerAgentUsage,
+  runnerEventPage,
+  runnerFollowUpsAfter,
+  runnerLeaseCutoff,
+  runnerQuestionAnswersAfter,
+  runnerResultForCommand,
+  runnerResultMatches,
+  storedRunnerAnswer,
+  storedRunnerEvent,
+  unansweredRunnerQuestions,
+} from "../db";
 import {
   RUNNER_RESULT_BODY_LIMIT,
   RunnerResultSchema,
   runnerAccountEchoed,
   type RunnerResult,
 } from "../runner-protocol";
-import {
-  RUNNER_EVENT_COLUMNS,
-  RunnerWorkFencedError,
-  runnerFailureStatus,
-  type RunnerWork,
-  type StoredRunnerEvent,
-} from "../runner-work";
+import { RunnerWorkFencedError, runnerFailureStatus, type RunnerWork } from "../runner-work";
 
 const integer = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
@@ -77,23 +87,19 @@ export function createRunnerResults(options: {
         )
           throw new Error("Runner result command binding is invalid.");
         const payload = JSON.stringify(result);
-        const existing = db
-          .query<{ payload: string }, [string, number]>(
-            "SELECT payload FROM runner_result WHERE run_id=? AND generation=?",
-          )
-          .get(input.runId, input.generation);
-        if (existing) {
-          if (existing.payload !== payload) throw new Error("Runner result is immutable.");
+        const existing = runnerResultMatches(db, input, payload);
+        if (existing !== null) {
+          if (!existing) throw new Error("Runner result is immutable.");
           return { duplicate: true };
         }
         const at = now();
-        db.run("INSERT INTO runner_result VALUES(?,?,?,?,?)", [
-          input.runId,
-          input.generation,
-          command.id,
+        insertRunnerResult(db, {
+          runId: input.runId,
+          generation: input.generation,
+          commandId: command.id,
           payload,
-          at,
-        ]);
+          receivedAt: at,
+        });
         if (result.agentLimits)
           recordRunnerAgentUsage(db, {
             runnerId: input.runnerId,
@@ -106,37 +112,24 @@ export function createRunnerResults(options: {
     },
     read(runId: string, generation: number, commandId: string): RunnerResult | null {
       current(runId, generation, commandId);
-      const row = db
-        .query<{ payload: string }, [string, number, string]>(
-          "SELECT payload FROM runner_result WHERE run_id=? AND generation=? AND command_id=?",
-        )
-        .get(runId, generation, commandId);
-      return row ? RunnerResultSchema.parse(JSON.parse(row.payload)) : null;
+      const payload = runnerResultForCommand(db, { runId, generation }, commandId);
+      return payload === null ? null : RunnerResultSchema.parse(JSON.parse(payload));
     },
     events(runId: string, generation: number, after: number) {
       integer.parse(generation);
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(after);
       current(runId, generation);
-      return db
-        .query<StoredRunnerEvent, [string, number, number]>(
-          `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
-           WHERE run_id=? AND generation=? AND sequence>? ORDER BY sequence LIMIT 64`,
-        )
-        .all(runId, generation, after)
-        .map((row) => ({ sequence: row.sequence, event: work.openEvent(row) }));
+      return runnerEventPage(db, { runId, generation }, after).map((row) => ({
+        sequence: row.sequence,
+        event: work.openEvent(row),
+      }));
     },
     /** The stored answer to a runner event, or null before Paws answered it. */
     answered(runId: string, generation: number, sequence: number): string | null {
       integer.parse(generation);
       integer.parse(sequence);
       current(runId, generation);
-      return (
-        db
-          .query<{ answer: string }, [string, number, number]>(
-            "SELECT answer FROM runner_question_answer WHERE run_id=? AND generation=? AND sequence=?",
-          )
-          .get(runId, generation, sequence)?.answer ?? null
-      );
+      return storedRunnerAnswer(db, { runId, generation }, sequence);
     },
     answer(input: { runId: string; generation: number; sequence: number; answer: string }) {
       integer.parse(input.generation);
@@ -144,30 +137,21 @@ export function createRunnerResults(options: {
       const answer = z.string().min(1).max(65536).parse(input.answer);
       immediate(db, () => {
         current(input.runId, input.generation);
-        const question = db
-          .query<StoredRunnerEvent, [string, number, number]>(
-            `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
-             WHERE run_id=? AND generation=? AND sequence=?`,
-          )
-          .get(input.runId, input.generation, input.sequence);
+        const question = storedRunnerEvent(db, input, input.sequence);
         if (!question || !QUESTION_TYPES.includes(work.openEvent(question).type))
           throw new Error("Runner question is unavailable.");
-        const existing = db
-          .query<{ answer: string }, [string, number, number]>(
-            "SELECT answer FROM runner_question_answer WHERE run_id=? AND generation=? AND sequence=?",
-          )
-          .get(input.runId, input.generation, input.sequence);
-        if (existing) {
-          if (existing.answer !== answer) throw new Error("Runner answer is immutable.");
+        const existing = storedRunnerAnswer(db, input, input.sequence);
+        if (existing !== null) {
+          if (existing !== answer) throw new Error("Runner answer is immutable.");
           return;
         }
-        db.run("INSERT INTO runner_question_answer VALUES(?,?,?,?,?)", [
-          input.runId,
-          input.generation,
-          input.sequence,
+        insertRunnerQuestionAnswer(db, {
+          runId: input.runId,
+          generation: input.generation,
+          sequence: input.sequence,
           answer,
-          now(),
-        ]);
+          createdAt: now(),
+        });
       });
     },
     answers(input: {
@@ -179,36 +163,18 @@ export function createRunnerResults(options: {
     }) {
       work.authorize(input);
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(input.after);
-      const unanswered = db
-        .query<StoredRunnerEvent, [string, number]>(
-          `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event e
-           WHERE run_id=? AND generation=?
-             AND (type IN ('question','artifact','closeout_policy','ci_rerun') OR (type IS NULL AND key_id IS NULL))
-             AND NOT EXISTS(SELECT 1 FROM runner_question_answer a
-               WHERE a.run_id=e.run_id AND a.generation=e.generation AND a.sequence=e.sequence)
-           ORDER BY sequence`,
-        )
-        .all(input.runId, input.generation)
-        .find((row) => QUESTION_TYPES.includes(work.openEvent(row).type));
-      return db
-        .query<{ sequence: number; answer: string }, [string, number, number]>(
-          "SELECT sequence,answer FROM runner_question_answer WHERE run_id=? AND generation=? AND sequence>? ORDER BY sequence LIMIT 64",
-        )
-        .all(input.runId, input.generation, input.after)
-        .filter((answer) => !unanswered || answer.sequence < unanswered.sequence);
+      const unanswered = unansweredRunnerQuestions(db, input, QUESTION_TYPES).find((row) =>
+        QUESTION_TYPES.includes(work.openEvent(row).type),
+      );
+      return runnerQuestionAnswersAfter(db, input, input.after).filter(
+        (answer) => !unanswered || answer.sequence < unanswered.sequence,
+      );
     },
     deliverFollowUp(itemId: string, body: string): boolean {
       const text = z.string().min(1).max(65536).safeParse(body);
       if (!text.success) return false;
       return immediate(db, () => {
-        const row = db
-          .query<{ runId: string; generation: number; version: string | null }, [string, number]>(
-            `SELECT w.run_id AS runId,w.generation,h.runner_version AS version FROM work_item i
-             JOIN runner_work w ON w.run_id=i.current_run_id
-             JOIN runner_host_status h ON h.runner_id=w.runner_id
-             WHERE i.id=? AND w.ended_at IS NULL AND w.lease_until>?`,
-          )
-          .get(itemId, runnerLeaseCutoff(now()));
+        const row = itemRunnerFollowUpTarget(db, itemId, runnerLeaseCutoff(now()));
         if (!row || !followUpsSupported(row.version)) return false;
         try {
           if (current(row.runId, row.generation).type !== "run") return false;
@@ -216,18 +182,12 @@ export function createRunnerResults(options: {
           journalCaught(caughtError1, "runner-results.deliverFollowUp.current", itemId);
           return false;
         }
-        const next = db
-          .query<{ sequence: number }, [string, number]>(
-            "SELECT COALESCE(MAX(sequence),0)+1 AS sequence FROM runner_follow_up WHERE run_id=? AND generation=?",
-          )
-          .get(row.runId, row.generation)!.sequence;
-        db.run("INSERT INTO runner_follow_up VALUES(?,?,?,?,?)", [
-          row.runId,
-          row.generation,
-          next,
-          text.data,
-          now(),
-        ]);
+        insertRunnerFollowUp(db, {
+          runId: row.runId,
+          generation: row.generation,
+          body: text.data,
+          createdAt: now(),
+        });
         return true;
       });
     },
@@ -240,11 +200,7 @@ export function createRunnerResults(options: {
     }) {
       work.authorize(input);
       z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).parse(input.after);
-      return db
-        .query<{ sequence: number; body: string }, [string, number, number]>(
-          "SELECT sequence,body FROM runner_follow_up WHERE run_id=? AND generation=? AND sequence>? ORDER BY sequence LIMIT 64",
-        )
-        .all(input.runId, input.generation, input.after);
+      return runnerFollowUpsAfter(db, input, input.after);
     },
     async fetch(request: Request, runnerId: string): Promise<Response | null> {
       const match = /^\/v1\/runs\/([^/]+)\/(result|answers|follow-ups)$/.exec(
