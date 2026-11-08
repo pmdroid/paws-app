@@ -9,10 +9,12 @@ import {
   isNotNull,
   isNull,
   lte,
+  ne,
   notInArray,
   or,
   sql,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { IN_FLIGHT_ITEM_STATES, JOB_KIND } from "../core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { mergeLaneSql } from "./jobs";
@@ -720,4 +722,143 @@ export function* sessionActiveRunsSteps(q: Q, sessionId: string): Steps<SessionR
 
 export function sessionActiveRuns(db: Database, sessionId: string): SessionRun[] {
   return settled(sqliteDb(db).run((q) => sessionActiveRunsSteps(q, sessionId)));
+}
+
+export function* previousIssueSessionIdsSteps(
+  q: Q,
+  incomingSessionId: string,
+  issueId: string,
+): Steps<string[]> {
+  const { linearSession, workItem } = q.t;
+  const previous = alias(linearSession, "previous");
+  const incoming = alias(linearSession, "incoming");
+  const rows = yield* q.all(
+    q.orm
+      .selectDistinct({ sessionId: previous.sessionId })
+      .from(workItem)
+      .innerJoin(previous, eq(previous.sessionId, workItem.sessionKey))
+      .innerJoin(
+        incoming,
+        and(
+          eq(incoming.sessionId, incomingSessionId),
+          eq(incoming.organizationId, previous.organizationId),
+          eq(incoming.oauthClientId, previous.oauthClientId),
+          eq(incoming.appUserId, previous.appUserId),
+          eq(incoming.teamId, previous.teamId),
+        ),
+      )
+      .where(
+        and(
+          eq(workItem.linearIssueId, issueId),
+          ne(workItem.sessionKey, incoming.sessionId),
+          notInArray(workItem.state, ["completed", "merged"]),
+        ),
+      ),
+  );
+  return rows.map((row) => row.sessionId);
+}
+
+export function previousIssueSessionIds(
+  db: Database,
+  incomingSessionId: string,
+  issueId: string,
+): string[] {
+  return settled(
+    sqliteDb(db).run((q) => previousIssueSessionIdsSteps(q, incomingSessionId, issueId)),
+  );
+}
+
+type StoppedSessionItem = { id: string; sessionKey: string; delegationId: string };
+
+export function* pausedStoppedSessionItemSteps(
+  q: Q,
+  incomingSessionId: string,
+  issueId: string,
+): Steps<StoppedSessionItem | null> {
+  const { linearSession, workItem } = q.t;
+  const previous = alias(linearSession, "previous");
+  const incoming = alias(linearSession, "incoming");
+  const same = (left: unknown, right: unknown) => sql`${left} IS NOT DISTINCT FROM ${right}`;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        id: workItem.id,
+        sessionKey: workItem.sessionKey,
+        delegationId: workItem.delegationId,
+      })
+      .from(workItem)
+      .innerJoin(previous, eq(previous.sessionId, workItem.sessionKey))
+      .innerJoin(
+        incoming,
+        and(
+          eq(incoming.sessionId, incomingSessionId),
+          same(incoming.organizationId, previous.organizationId),
+          same(incoming.oauthClientId, previous.oauthClientId),
+          same(incoming.appUserId, previous.appUserId),
+          same(incoming.teamId, previous.teamId),
+        ),
+      )
+      .where(
+        and(
+          eq(workItem.linearIssueId, issueId),
+          eq(workItem.state, "paused"),
+          isNotNull(previous.stoppedAt),
+          ne(previous.sessionId, incoming.sessionId),
+        ),
+      )
+      .orderBy(desc(workItem.createdAt))
+      .limit(1),
+  );
+  return row ? { ...row, sessionKey: row.sessionKey! } : null;
+}
+
+export function pausedStoppedSessionItem(
+  db: Database,
+  incomingSessionId: string,
+  issueId: string,
+): StoppedSessionItem | null {
+  return settled(
+    sqliteDb(db).run((q) => pausedStoppedSessionItemSteps(q, incomingSessionId, issueId)),
+  );
+}
+
+type LinearTurnKey = { sessionId: string; eventKey: string };
+
+export function* rewritePendingLinearTurnSteps(q: Q, turn: LinearTurnKey, body: string) {
+  const { linearTurn } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(linearTurn)
+      .set({ body })
+      .where(
+        and(
+          eq(linearTurn.sessionId, turn.sessionId),
+          eq(linearTurn.eventKey, turn.eventKey),
+          eq(linearTurn.state, "pending"),
+        ),
+      ),
+  );
+}
+
+export function rewritePendingLinearTurn(db: Database, turn: LinearTurnKey, body: string): void {
+  settled(sqliteDb(db).run((q) => rewritePendingLinearTurnSteps(q, turn, body)));
+}
+
+export function* deleteCancelledLinearTurnSteps(q: Q, turn: LinearTurnKey) {
+  const { linearTurn } = q.t;
+  yield* q.exec(
+    q.orm
+      .delete(linearTurn)
+      .where(
+        and(
+          eq(linearTurn.sessionId, turn.sessionId),
+          eq(linearTurn.eventKey, turn.eventKey),
+          eq(linearTurn.state, "cancelled"),
+        ),
+      ),
+  );
+}
+
+export function deleteCancelledLinearTurn(db: Database, turn: LinearTurnKey): void {
+  settled(sqliteDb(db).run((q) => deleteCancelledLinearTurnSteps(q, turn)));
 }

@@ -175,3 +175,25 @@ function enqueueRepositoryCheck(
     now: at,
   });
 }
+
+export type RunnerRepositoryQuestion = { id: string; itemId: string; sessionId: string };
+
+export function* openRunnerRepositoryQuestionsSteps(q: Q): Steps<RunnerRepositoryQuestion[]> {
+  const asked = q.t.question;
+  return yield* q.all(
+    q.orm
+      .select({ id: asked.id, itemId: asked.itemId, sessionId: asked.sessionId })
+      .from(asked)
+      .where(
+        and(
+          eq(asked.kind, "runner-repository"),
+          eq(asked.status, "open"),
+          isNull(asked.cancelledAt),
+        ),
+      ),
+  );
+}
+
+export function openRunnerRepositoryQuestions(db: Database): RunnerRepositoryQuestion[] {
+  return settled(sqliteDb(db).run((q) => openRunnerRepositoryQuestionsSteps(q)));
+}

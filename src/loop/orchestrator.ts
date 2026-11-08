@@ -159,11 +159,9 @@ import {
   type GitCommitPolicy,
   JOB_KIND,
   OUTBOX_ACTIVITY,
-  delegationIssueIdSql,
   isTerminalWorkItemState,
   isReadOnlyTaskMode,
   isResponseTaskMode,
-  parentTaskKeySql,
   type Clock,
   type StageLimits,
   type ResponseTaskMode,
@@ -355,6 +353,35 @@ import {
   recordLinearComment,
   getWorkItemLinearProjectId,
   listOpenPolicyBlocks,
+  assignUnownedItem,
+  bumpItemVersion,
+  cancelItemPendingJobs,
+  clearItemRecovery,
+  deleteCancelledLinearTurn,
+  dropUnsentSessionActivity,
+  hasOpenItemJob,
+  issueOpenInOtherSession,
+  itemContinued,
+  itemDelegationIssueId,
+  itemOwnerUserId,
+  itemParentTaskKey,
+  itemSpecificationRevision,
+  landedTaskBlockers,
+  latestRestartEvent,
+  latestRunningAnswer,
+  linearOutboxKeyed,
+  listItemIds,
+  loseActiveItemRuns,
+  moveDelegationSession,
+  openRunnerRepositoryQuestions,
+  openTaskDependents,
+  pausedStoppedSessionItem,
+  previousIssueSessionIds,
+  queuedLinearCommentItemIds,
+  recentRepositoryNames,
+  rewritePendingLinearTurn,
+  setItemBranchName,
+  workspaceUserIdForLinearUser,
 } from "../db";
 import {
   publishAccepted,
@@ -1068,13 +1095,7 @@ export class Orchestrator {
     policy: LinearCommentPolicy,
     issueId: string,
   ): Promise<void> {
-    const row = this.db
-      .query<{ id: string }, [string]>(
-        `SELECT DISTINCT item_id AS id FROM linear_comment
-         WHERE issue_id = ? AND state = 'queued' AND item_id IS NOT NULL`,
-      )
-      .all(issueId);
-    for (const { id } of row) {
+    for (const id of queuedLinearCommentItemIds(this.db, issueId)) {
       const item = getWorkItem(this.db, id);
       const pull = item ? getItemPullRequest(this.db, item.id) : null;
       if (!item || item.state !== "merge_queue" || pull === null) continue;
@@ -1117,13 +1138,7 @@ export class Orchestrator {
     return {
       now: () => this.now(),
       policy,
-      busy: (item) =>
-        this.jobContexts.has(item.id) ||
-        this.db
-          .query(
-            "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",
-          )
-          .get(this.now(), item.id) !== null,
+      busy: (item) => this.jobContexts.has(item.id) || hasLiveJob(this.db, item.id, this.now()),
       leaveMergeQueue: async (item, pullNumber) => {
         const repository = this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
@@ -1369,12 +1384,12 @@ export class Orchestrator {
     const row = getOutbox(this.db, id);
     if (row?.orderingKey == null) return;
     attachSessionUpdates(this.db, id, this.now());
-    this.db.run(
-      `UPDATE outbox SET status = 'dropped', error = ? WHERE target = 'linear' AND ordering_key = ?
-        AND op = 'activity' AND status = 'pending' AND attempts = 0
-        AND (locked_until IS NULL OR locked_until <= ?) AND json_extract(payload, '$.body') = ?`,
-      [`Sent as outbox ${id}.`, row.orderingKey, this.now(), FIRST_ACTIVITY_BODY],
-    );
+    dropUnsentSessionActivity(this.db, {
+      orderingKey: row.orderingKey,
+      body: FIRST_ACTIVITY_BODY,
+      error: `Sent as outbox ${id}.`,
+      now: this.now(),
+    });
   }
 
   private async enqueueSessionProgress(
@@ -1532,22 +1547,13 @@ export class Orchestrator {
       if (!previous || previous.state === "cancelled") return;
       applyWorkItemEvent(this.db, previous.id, "cancel");
       if (previous.currentRunId) markRun(this.db, previous.currentRunId, "ended", this.now());
-      this.db.run(
-        "UPDATE job SET status = 'cancelled', finished_at = ? WHERE status = 'pending' AND json_extract(payload,'$.itemId') = ?",
-        [this.now(), previous.id],
-      );
+      cancelItemPendingJobs(this.db, previous.id, this.now());
     };
     const assignUnownedItems = (actorId: string | null, items: readonly { id: string }[]) => {
       if (items.length === 0 || !actorId) return;
-      const ownerId = this.db
-        .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
-        .get(actorId)?.id;
+      const ownerId = workspaceUserIdForLinearUser(this.db, actorId);
       if (!ownerId) return;
-      for (const item of items)
-        this.db.run("UPDATE work_item SET owner_user_id=? WHERE id=? AND owner_user_id IS NULL", [
-          ownerId,
-          item.id,
-        ]);
+      for (const item of items) assignUnownedItem(this.db, item.id, ownerId);
     };
     const intakeCurrent = () =>
       isCurrent() &&
@@ -1666,22 +1672,10 @@ export class Orchestrator {
   ): Promise<void> {
     if (!this.tracker?.getSession) return;
     const candidates = (issueId: string) =>
-      this.db
-        .query<{ session_id: string }, [string, string]>(
-          `SELECT DISTINCT previous.session_id FROM work_item item
-       JOIN linear_session previous ON previous.session_id = item.session_key
-       JOIN linear_session incoming ON incoming.session_id = ?
-         AND incoming.organization_id = previous.organization_id
-         AND incoming.oauth_client_id = previous.oauth_client_id
-         AND incoming.app_user_id = previous.app_user_id
-         AND incoming.team_id = previous.team_id
-       WHERE item.linear_issue_id = ? AND item.session_key != incoming.session_id
-         AND item.state NOT IN ('completed', 'merged')`,
-        )
-        .all(incomingSessionId, issueId);
+      previousIssueSessionIds(this.db, incomingSessionId, issueId);
     try {
       for (const issueId of issueIds) {
-        for (const { session_id: sessionId } of candidates(issueId)) {
+        for (const sessionId of candidates(issueId)) {
           const previous = getLinearSession(this.db, sessionId)!;
           const unfinished = this.itemsForSession(sessionId).some(
             (item) => !isTerminalWorkItemState(item.state),
@@ -1696,7 +1690,7 @@ export class Orchestrator {
             if (
               !isCurrent() ||
               getLinearSession(this.db, sessionId)?.generation !== previous.generation ||
-              !candidates(issueId).some((candidate) => candidate.session_id === sessionId)
+              !candidates(issueId).includes(sessionId)
             )
               throw new Error("Linear session ownership changed");
             if (
@@ -2005,15 +1999,7 @@ export class Orchestrator {
       const item = itemId ? getWorkItem(this.db, itemId) : null;
       if (!item || item.state !== "cancelled" || getConfirmedRemoteMerge(this.db, item.id)) return;
       // A re-delegation that took over the branch owns its pull request now.
-      if (
-        this.db
-          .query(
-            `SELECT 1 FROM item_continuation c JOIN work_item i ON i.id = c.item_id
-             WHERE c.previous_item_id = ? AND i.state != 'cancelled'`,
-          )
-          .get(item.id)
-      )
-        return;
+      if (itemContinued(this.db, item.id)) return;
       await this.joinChangedItems([item.id]);
       const repository = this.repositoryForItem(item);
       const github = repository ? this.githubForRepository(repository) : null;
@@ -2085,13 +2071,7 @@ export class Orchestrator {
   private pullFeedbackCapabilities(signal?: AbortSignal): PullReviewCapabilities {
     return {
       now: () => this.now(),
-      busy: (item) =>
-        this.jobContexts.has(item.id) ||
-        this.db
-          .query(
-            "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",
-          )
-          .get(this.now(), item.id) !== null,
+      busy: (item) => this.jobContexts.has(item.id) || hasLiveJob(this.db, item.id, this.now()),
       threads: async (item, pullNumber) => {
         const repository = this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
@@ -2585,12 +2565,7 @@ export class Orchestrator {
   ) {
     const hold = holdForRunnerSetup(this.db, {
       itemId: current.id,
-      ownerUserId:
-        this.db
-          .query<{ owner: string | null }, [string]>(
-            "SELECT owner_user_id AS owner FROM work_item WHERE id=?",
-          )
-          .get(current.id)?.owner ?? null,
+      ownerUserId: itemOwnerUserId(this.db, current.id),
       reason: need.reason,
       ...(need.reason === "agent-not-signed-in"
         ? { runnerId: need.runnerId, agent: need.agent }
@@ -2715,13 +2690,7 @@ export class Orchestrator {
     const now = this.now();
     const seen = new Set<string>();
     const waiting = () =>
-      this.db
-        .query<{ id: string; itemId: string; sessionId: string }, []>(
-          `SELECT id,item_id AS itemId,session_id AS sessionId FROM question
-           WHERE kind='runner-repository' AND status='open' AND cancelled_at IS NULL`,
-        )
-        .all()
-        .filter((question) => !seen.has(question.id));
+      openRunnerRepositoryQuestions(this.db).filter((question) => !seen.has(question.id));
     let answered = false;
     for (let batch = waiting(); batch.length > 0; batch = waiting())
       for (const question of batch) {
@@ -3339,7 +3308,7 @@ export class Orchestrator {
     const pathId = itemPathId(item);
     const branch = worktreeBranch(item);
     if (item.branchName !== branch) {
-      this.db.run("UPDATE work_item SET branch_name = ? WHERE id = ?", [branch, item.id]);
+      setItemBranchName(this.db, item.id, branch);
     }
     const run = this.ensureRun(item);
     item = getWorkItem(this.db, item.id)!;
@@ -3411,11 +3380,7 @@ export class Orchestrator {
         `${run.id}:working`,
         { ephemeral: true },
       );
-      const returned = this.db
-        .query<{ reason: string; version: number }, [string]>(
-          "SELECT reason,version FROM work_item_event WHERE item_id=? AND kind='restart' ORDER BY id DESC LIMIT 1",
-        )
-        .get(item.id);
+      const returned = latestRestartEvent(this.db, item.id);
       const fixing =
         returned !== null && ["findings", "ci", "review", "conflict"].includes(returned.reason);
       if (!fixing) sessionProgress?.phase("implementing");
@@ -6135,18 +6100,7 @@ export class Orchestrator {
   private releaseAskedRun(runId: string): void {
     if (!this.askedRuns.delete(runId)) return;
     releaseRunCapacity(this.db, runId, this.now());
-    const answered = this.db
-      .query<
-        { id: string; itemId: string; body: string; options: string | null; answer: string },
-        [string]
-      >(
-        `SELECT q.id, q.item_id AS itemId, q.body, q.options, q.answer FROM question q
-         JOIN work_item i ON i.id = q.item_id
-         WHERE q.run_id = ? AND q.status = 'answered' AND q.cancelled_at IS NULL
-         AND q.answer IS NOT NULL AND i.state = 'running'
-         ORDER BY q.answered_at DESC, q.id DESC LIMIT 1`,
-      )
-      .get(runId);
+    const answered = latestRunningAnswer(this.db, runId);
     if (!answered) return;
     enqueueJobOnce(this.db, {
       queue: JOB_KIND.resume,
@@ -6382,10 +6336,7 @@ export class Orchestrator {
           if (confirmed === null)
             throw new Error("This suggestion is invalid. Answer this question in your own words.");
           answer = confirmed;
-          this.db.run(
-            "UPDATE linear_turn SET body=? WHERE session_id=? AND event_key=? AND state='pending'",
-            [answer, sessionId, event.dedupeKey],
-          );
+          rewritePendingLinearTurn(this.db, { sessionId, eventKey: event.dedupeKey }, answer);
         } catch (error) {
           journalCaught(
             error,
@@ -6569,11 +6520,7 @@ export class Orchestrator {
             source: "linear",
             requestedAt: this.now(),
           });
-          const dependents = this.db
-            .query<{ id: string; identifier: string }, [string, string]>(
-              `SELECT i.id,i.linear_identifier AS identifier FROM task_block b JOIN work_item i ON i.linear_issue_id=b.blocked_linear_issue_id AND i.delegation_id=? WHERE b.blocker_linear_issue_id=? AND i.state NOT IN ('merged','completed','cancelled')`,
-            )
-            .all(changes.delegationId, item.linearIssueId);
+          const dependents = openTaskDependents(this.db, changes.delegationId, item.linearIssueId);
           if (dependents.length)
             enqueueOutboxOnce(this.db, {
               target: "linear",
@@ -6600,12 +6547,7 @@ export class Orchestrator {
             )
           )
             continue;
-          const revision =
-            this.db
-              .query<{ revision: number }, [string]>(
-                "SELECT revision FROM work_item_specification WHERE item_id=?",
-              )
-              .get(itemId)?.revision ?? 0;
+          const revision = itemSpecificationRevision(this.db, itemId) ?? 0;
           enqueueOutboxOnce(this.db, {
             target: "linear",
             op: "activity",
@@ -6622,14 +6564,12 @@ export class Orchestrator {
         }
         cancelItemQuestions(this.db, itemId, this.now());
         if (item.state === "failed") {
-          this.db.run("UPDATE work_item SET cancel_requested=0,recovery_attempts=0 WHERE id=?", [
-            itemId,
-          ]);
+          clearItemRecovery(this.db, itemId);
           resetAwakeTime(this.db, itemId);
         }
         if (item.state === "paused") {
           cancelOpenJobs(this.db, { itemId, reason: "Linear criteria changed", now: this.now() });
-          this.db.run("UPDATE work_item SET version=version+1 WHERE id=?", [itemId]);
+          bumpItemVersion(this.db, itemId);
           continue;
         }
         restart(this.db, item, {
@@ -6676,10 +6616,7 @@ export class Orchestrator {
       if (!canAct() || item?.state !== "running" || item.cancelRequested) return false;
       applyWorkItemEvent(this.db, itemId, "pause");
       cancelOpenJobs(this.db, { itemId, reason: "Paused by a workspace member", now: this.now() });
-      this.db.run(
-        "UPDATE run SET status='lost',updated_at=? WHERE item_id=? AND status IN ('active','provisioning')",
-        [this.now(), itemId],
-      );
+      loseActiveItemRuns(this.db, itemId, this.now());
       onCommitted?.();
       return true;
     });
@@ -6857,20 +6794,7 @@ export class Orchestrator {
   dependencyHandoff(itemId: string): string | undefined {
     const item = getWorkItem(this.db, itemId);
     if (!item) return undefined;
-    const blockers = this.db
-      .query<{ id: string; identifier: string; checkpoint: string | null }, [string, string]>(
-        `SELECT i.id,i.linear_identifier AS identifier,r.checkpoint FROM task_block b
-         JOIN work_item i ON i.id=(
-           SELECT candidate.id FROM work_item candidate
-           WHERE candidate.linear_issue_id=b.blocker_linear_issue_id AND candidate.delegation_id=?
-           AND candidate.state<>'cancelled'
-           AND NOT EXISTS(SELECT 1 FROM work_item_specification spec WHERE spec.item_id=candidate.id AND spec.present=0)
-           ORDER BY candidate.created_at DESC, candidate.id DESC LIMIT 1)
-         LEFT JOIN run r ON r.id=i.current_run_id
-         WHERE b.blocked_linear_issue_id=? AND i.state IN ('merged','completed')
-         ORDER BY i.position,i.id`,
-      )
-      .all(item.delegationId, item.linearIssueId);
+    const blockers = landedTaskBlockers(this.db, item.delegationId, item.linearIssueId);
     const active = new Set(this.delegationItems(item.delegationId).map((entry) => entry.id));
     const results = blockers
       .filter((blocker) => active.has(blocker.id))
@@ -7003,11 +6927,7 @@ export class Orchestrator {
         );
       } else if (wait.kind === "runner" && wait.restart) {
         const limit = this.fixAttemptLimit(item, wait.restart);
-        const restarted = this.db
-          .query<{ version: number }, [string]>(
-            "SELECT version FROM work_item_event WHERE item_id=? AND kind='restart' ORDER BY id DESC LIMIT 1",
-          )
-          .get(item.id);
+        const restarted = latestRestartEvent(this.db, item.id);
         if (restarted) progress.restart(wait.restart, round, restarted.version, limit);
         progress.status(
           `${name}: waiting for a runner to ${
@@ -7038,14 +6958,7 @@ export class Orchestrator {
     for (const id of itemIds) {
       const item = getWorkItem(this.db, id);
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      if (
-        this.db
-          .query(
-            "SELECT 1 FROM job WHERE queue=? AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=? LIMIT 1",
-          )
-          .get(JOB_KIND.start, item.id)
-      )
-        continue;
+      if (hasOpenItemJob(this.db, JOB_KIND.start, item.id)) continue;
       const name = item.linearIdentifier ?? "this issue";
       if (
         now - settled(queueWaitSince(sqliteDb(this.db), item.id, item.version, now)) >=
@@ -7357,14 +7270,7 @@ export class Orchestrator {
   /** The item opened a pull request in some generation of its session. A new turn starts a new generation. */
   private hasOpenedPullRequest(itemId: string): boolean {
     const prefix = `pull-request-ready:${itemId}:`;
-    return Boolean(
-      this.db
-        .query(
-          `SELECT 1 FROM outbox WHERE target='linear' AND substr(idempotency_key, 1, length(?)) = ?
-           AND status!='dropped' LIMIT 1`,
-        )
-        .get(prefix, prefix),
-    );
+    return linearOutboxKeyed(this.db, prefix);
   }
 
   private postStatus(
@@ -7578,12 +7484,7 @@ export class Orchestrator {
     issueId: string,
     session: StoredLinearSession,
   ): Promise<boolean> {
-    const elsewhere = this.db
-      .query(
-        `SELECT 1 FROM work_item WHERE linear_issue_id = ? AND session_key != ?
-         AND state NOT IN ('completed', 'merged', 'cancelled') LIMIT 1`,
-      )
-      .get(issueId, session.sessionId);
+    const elsewhere = issueOpenInOtherSession(this.db, issueId, session.sessionId);
     if (!elsewhere || !this.tracker) return false;
     const snapshot = await this.tracker.loadEpic(issueId);
     const isCurrent = () => {
@@ -7598,31 +7499,18 @@ export class Orchestrator {
     await this.reconcilePreviousSessions([issueId], session.sessionId, isCurrent, {
       keepPullRequest: true,
     });
-    const paused = this.db
-      .query<{ id: string; sessionKey: string; delegationId: string }, [string, string]>(
-        `SELECT item.id, item.session_key AS sessionKey, item.delegation_id AS delegationId
-         FROM work_item item
-         JOIN linear_session previous ON previous.session_id = item.session_key
-         JOIN linear_session incoming ON incoming.session_id = ?
-           AND incoming.organization_id IS previous.organization_id
-           AND incoming.oauth_client_id IS previous.oauth_client_id
-           AND incoming.app_user_id IS previous.app_user_id
-           AND incoming.team_id IS previous.team_id
-         WHERE item.linear_issue_id = ? AND item.state = 'paused'
-           AND previous.stopped_at IS NOT NULL AND previous.session_id != incoming.session_id
-         ORDER BY item.created_at DESC LIMIT 1`,
-      )
-      .get(session.sessionId, issueId);
+    const paused = pausedStoppedSessionItem(this.db, session.sessionId, issueId);
     if (!paused) return false;
     await this.interruptLinearSession(paused.sessionKey);
     const resumed = immediate(this.db, () => {
       const item = getWorkItem(this.db, paused.id);
       if (item?.state !== "paused" || item.sessionKey !== paused.sessionKey || !isCurrent())
         return false;
-      this.db.run(
-        "UPDATE work_item SET session_key = ? WHERE delegation_id = ? AND session_key = ?",
-        [session.sessionId, paused.delegationId, paused.sessionKey],
-      );
+      moveDelegationSession(this.db, {
+        delegationId: paused.delegationId,
+        from: paused.sessionKey,
+        to: session.sessionId,
+      });
       bindLinearSessionTask(this.db, session.sessionId, paused.delegationId);
       activateLinearItem(this.db, session.sessionId, item.id);
       cancelItemQuestions(this.db, item.id, this.now());
@@ -7765,11 +7653,7 @@ export class Orchestrator {
         "\n\n",
       );
       if (current.state === "paused") cancelItemQuestions(this.db, current.id, this.now());
-      if (item!.cancelRequested || item!.state === "failed")
-        this.db.run(
-          "UPDATE work_item SET cancel_requested = 0, recovery_attempts = 0 WHERE id = ?",
-          [item!.id],
-        );
+      if (item!.cancelRequested || item!.state === "failed") clearItemRecovery(this.db, item!.id);
       startFreshBudget(this.db, {
         itemId: item!.id,
         sessionId,
@@ -8006,21 +7890,9 @@ export class Orchestrator {
   }
 
   private allItems(includeArchived = false): WorkItemRecord[] {
-    const specification =
-      !includeArchived &&
-      this.db
-        .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_item_specification'")
-        .get();
-    const rows = this.db
-      .query<{ id: string }, []>(
-        specification
-          ? "SELECT id FROM work_item i WHERE NOT EXISTS(SELECT 1 FROM work_item_specification s WHERE s.item_id=i.id AND s.present=0)"
-          : "SELECT id FROM work_item",
-      )
-      .all();
     const items: WorkItemRecord[] = [];
-    for (const row of rows) {
-      const item = getWorkItem(this.db, row.id);
+    for (const id of listItemIds(this.db, includeArchived)) {
+      const item = getWorkItem(this.db, id);
       if (item) items.push(item);
     }
     return items;
@@ -8033,23 +7905,11 @@ export class Orchestrator {
   }
 
   private parentTaskKey(item: WorkItemRecord): string | null {
-    return (
-      this.db
-        .query<{ task_key: string | null }, [string]>(
-          `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE id = ?`,
-        )
-        .get(item.id)?.task_key ?? null
-    );
+    return itemParentTaskKey(this.db, item.id);
   }
 
   private delegationIssueId(item: WorkItemRecord): string | null {
-    return (
-      this.db
-        .query<{ issue_id: string | null }, [string]>(
-          `SELECT ${delegationIssueIdSql("work_item")} AS issue_id FROM work_item WHERE id = ?`,
-        )
-        .get(item.id)?.issue_id ?? null
-    );
+    return itemDelegationIssueId(this.db, item.id);
   }
 
   private async flush(signal?: AbortSignal, session?: string | null): Promise<void> {
@@ -8145,11 +8005,7 @@ export class Orchestrator {
       sessionId === null ||
       findOpenQuestion(this.db, sessionId) !== null ||
       listPendingLinearTurns(this.db, sessionId).length > 0 ||
-      this.db
-        .query(
-          "SELECT 1 FROM job WHERE id!=? AND queue=? AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=?",
-        )
-        .get(job.id, JOB_KIND.reverify, item.id) !== null;
+      hasOpenItemJob(this.db, JOB_KIND.reverify, item.id, job.id);
     if (moving) return;
     const head = item.checkpoint?.wipCommit ?? "";
     const prior = closeoutFaults(job.payload);
@@ -8610,10 +8466,7 @@ export class Orchestrator {
         if (current === null) return false;
         const { open, item } = current;
         const dedupeKey = `paws-answer:${open.id}`;
-        this.db.run(
-          "DELETE FROM linear_turn WHERE session_id = ? AND event_key = ? AND state = 'cancelled'",
-          [open.sessionId, dedupeKey],
-        );
+        deleteCancelledLinearTurn(this.db, { sessionId: open.sessionId, eventKey: dedupeKey });
         const at = Math.max(this.now(), open.createdAt + 1);
         await this.handleLinearEvent({
           dedupeKey,
@@ -9645,13 +9498,7 @@ export class Orchestrator {
         bindWorkItemRepository(this.db, item.id, candidates[0]!);
         return true;
       }
-      const recent = this.db
-        .query<{ name: string }, []>(
-          `SELECT lower(r.owner||'/'||r.repo) AS name FROM work_item_repository r
-           JOIN work_item i ON i.id=r.item_id ORDER BY i.created_at DESC LIMIT 50`,
-        )
-        .all()
-        .map((row) => row.name);
+      const recent = recentRepositoryNames(this.db, 50);
       const recency = (candidate: RepositoryBinding) => {
         const index = recent.indexOf(`${candidate.owner}/${candidate.repo}`.toLowerCase());
         return index === -1 ? Number.MAX_SAFE_INTEGER : index;

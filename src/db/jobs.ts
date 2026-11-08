@@ -597,6 +597,48 @@ export function hasLiveJob(
   return run(db, (q) => hasLiveJobSteps(q, itemId, now, exceptJobId));
 }
 
+export function* hasOpenItemJobSteps(q: Q, queue: string, itemId: string, exceptJobId?: number) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: drizzleSql`1` })
+      .from(job)
+      .where(
+        and(
+          ...(exceptJobId === undefined ? [] : [ne(job.id, exceptJobId)]),
+          eq(job.queue, queue),
+          inArray(job.status, ["pending", "running"]),
+          eq(jobItemId(q), itemId),
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+export function hasOpenItemJob(
+  db: Database,
+  queue: string,
+  itemId: string,
+  exceptJobId?: number,
+): boolean {
+  return run(db, (q) => hasOpenItemJobSteps(q, queue, itemId, exceptJobId));
+}
+
+export function* cancelItemPendingJobsSteps(q: Q, itemId: string, now: number) {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({ status: "cancelled", finishedAt: now })
+      .where(and(eq(job.status, "pending"), eq(jobItemId(q), itemId))),
+  );
+}
+
+export function cancelItemPendingJobs(db: Database, itemId: string, now: number): void {
+  run(db, (q) => cancelItemPendingJobsSteps(q, itemId, now));
+}
+
 export function* extendJobLeaseSteps(q: Q, job: Job, now: number, leaseMs: number) {
   return (yield* updateLeasedSteps(q, job, { lockedUntil: now + leaseMs })) > 0;
 }

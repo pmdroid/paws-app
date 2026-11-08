@@ -9,6 +9,7 @@ import {
   retryBackoffMs,
 } from "../core";
 import { settled, sqliteDb, type Db, type Q } from "./db";
+import { jsonField } from "./json-text";
 import { enqueueJobOnce, errorText } from "./jobs";
 import { journal } from "./journal";
 import type * as pgSchema from "./schema-pg";
@@ -1162,4 +1163,52 @@ export function* pullRequestReadyQueuedSteps(q: Q, sessionId: string, generation
       .limit(1),
   );
   return row !== undefined;
+}
+
+type SessionActivityDrop = { orderingKey: string; body: string; error: string; now: number };
+
+export function* dropUnsentSessionActivitySteps(q: Q, input: SessionActivityDrop) {
+  const { outbox } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(outbox)
+      .set({ status: "dropped", error: input.error })
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          eq(outbox.orderingKey, input.orderingKey),
+          eq(outbox.op, "activity"),
+          eq(outbox.status, "pending"),
+          eq(outbox.attempts, 0),
+          unlockedAt(q, input.now),
+          eq(jsonField(q, outbox.payload, "body"), input.body),
+        ),
+      ),
+  );
+}
+
+export function dropUnsentSessionActivity(db: Database, input: SessionActivityDrop): void {
+  settled(sqliteDb(db).run((q) => dropUnsentSessionActivitySteps(q, input)));
+}
+
+export function* linearOutboxKeyedSteps(q: Q, prefix: string) {
+  const { outbox } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          sql`substr(${outbox.idempotencyKey}, 1, ${prefix.length}) = ${prefix}`,
+          ne(outbox.status, "dropped"),
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+export function linearOutboxKeyed(db: Database, prefix: string): boolean {
+  return settled(sqliteDb(db).run((q) => linearOutboxKeyedSteps(q, prefix)));
 }
