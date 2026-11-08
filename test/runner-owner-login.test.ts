@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import {
   insertQueuedItem,
   legacyMigrate,
+  migrate,
   migrations,
   putWorkspaceUser,
   syncWorkspaceMember,
@@ -22,7 +23,7 @@ function fixture() {
   const db = new Database(":memory:");
   databases.push(db);
   db.run("PRAGMA foreign_keys=ON");
-  legacyMigrate(db);
+  migrate(db);
   let at = Date.now();
   const workspace = workspaceId();
   db.run("INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES(?,?,?,?)", [
