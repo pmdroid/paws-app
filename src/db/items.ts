@@ -46,7 +46,7 @@ import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { endMergeCall, getConfirmedRemoteMerge, mergeStopRequested } from "./remote-merges";
 import { orm } from "./orm";
 import { getPullRequestDraft } from "./pull-request-drafts";
-import { workItem, workItemEvent } from "./schema";
+import { itemReconciliationRequest, workItem, workItemEvent } from "./schema";
 import { immediate } from "./tx";
 import { runnerLeaseCutoff } from "./runner-lease";
 
@@ -230,6 +230,11 @@ export function applyWorkItemEvent(
       throw new Error(`work item ${id} changed before ${event}`);
     }
     if (current.state !== result.to) wakeMergesBehind(db, record.now ?? Date.now());
+    if (result.to === "cancelled")
+      orm(db)
+        .delete(itemReconciliationRequest)
+        .where(eq(itemReconciliationRequest.itemId, id))
+        .run();
     const next = getWorkItem(db, id);
     if (next === null) throw new Error(`work item ${id} not found`);
     db.run(
