@@ -11,8 +11,11 @@ import {
   cancelPendingItemJobsSteps,
   claimNextJobSteps,
   completeJobSteps,
+  enqueueJobAsync,
+  enqueueJobOnceAsync,
   enqueueJobOnceSteps,
   enqueueJobSteps,
+  onJobReady,
   extendJobLeaseSteps,
   failJobSteps,
   getJobSteps,
@@ -343,5 +346,24 @@ forEachDialect((open) => {
       expect(await db.run((q) => cancelOpenJobsSteps(q, { reason: "none" }))).toBe(0);
       await db.run((q) => cancelAdmittedJobSteps(q, future, 400));
       expect(await getJob(db, future)).toMatchObject({ status: "cancelled", finishedAt: 400 });
+    }));
+
+  test("an async enqueue wakes the job loop after each insert, and a keyed repeat does not", async () =>
+    withDb(open, async (db) => {
+      let woken = 0;
+      const stop = onJobReady((source) => {
+        if (source === db) woken += 1;
+      });
+      try {
+        const id = await enqueueJobAsync(db, { queue: "work", now: 0 });
+        expect(woken).toBe(1);
+        const keyed = await enqueueJobOnceAsync(db, { queue: "work", jobKey: "k", now: 0 });
+        expect(woken).toBe(2);
+        expect(await enqueueJobOnceAsync(db, { queue: "work", jobKey: "k", now: 0 })).toBe(keyed);
+        expect(woken).toBe(2);
+        expect((await db.run(listJobsSteps)).map((job) => job.id)).toEqual([id, keyed]);
+      } finally {
+        stop();
+      }
     }));
 });

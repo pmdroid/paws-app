@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { runnerRepositoryListsSteps, runnerRepositoryRefusalSteps } from "../src/db";
+import { JOB_KIND } from "../src/core";
+import {
+  listJobsSteps,
+  recordRunnerRepositoriesSteps,
+  runnerRepositoryListsSteps,
+  runnerRepositoryRefusalSteps,
+  setRunnerAdminRepositoriesSteps,
+  type Db,
+} from "../src/db";
 import { forEachDialect, json, seed, withoutForeignKeys, type DialectDb } from "./dialects";
 
 const open: DialectDb[] = [];
@@ -51,4 +59,99 @@ forEachDialect((connect) => {
       await db.run((q) => runnerRepositoryRefusalSteps(q, "open", "acme/anything")),
     ).toBeNull();
   });
+
+  test("a changed host list checks the waiting repository question once", async () => {
+    const handle = await connect();
+    open.push(handle);
+    const { db } = handle;
+    await withoutForeignKeys(db);
+    const record = (repositories: string[] | null, at: number) =>
+      db.transaction((q) => recordRunnerRepositoriesSteps(q, "box", repositories, at));
+
+    expect(await record(["acme/paws"], 1)).toBe(false);
+    await askRepository(db);
+    expect(await record(["acme/paws"], 2)).toBe(false);
+    expect(await record(["acme/paws", "acme/looky"], 3)).toBe(true);
+    expect(await record(null, 4)).toBe(false);
+    expect(await record(null, 5)).toBe(false);
+    expect(await db.run((q) => runnerRepositoryListsSteps(q, "box"))).toEqual({
+      admin: null,
+      host: null,
+    });
+    const jobs = await db.run(listJobsSteps);
+    expect(jobs.map((job) => [job.queue, job.payload, job.maxAttempts])).toEqual([
+      [JOB_KIND.runnerRepositoryCheck, { runnerId: "box", answeredBy: "runner:box" }, 3],
+    ]);
+  });
+
+  test("an administrator's list is audited and checks the waiting question", async () => {
+    const handle = await connect();
+    open.push(handle);
+    const { db } = handle;
+    await withoutForeignKeys(db);
+    await seed(db, (q) =>
+      q.orm.insert(q.t.runner).values([runner("box", null), runner("revoked", 1)]),
+    );
+    const choose = (runnerId: string, repositories: string[] | null, now: number) =>
+      db.transaction((q) =>
+        setRunnerAdminRepositoriesSteps(q, {
+          runnerId,
+          workspaceId: "acme",
+          userId: "admin",
+          repositories,
+          now,
+        }),
+      );
+
+    await askRepository(db);
+    expect(await choose("box", ["acme/paws"], 10)).toBe(true);
+    expect(await choose("box", ["acme/paws"], 11)).toBe(false);
+    expect(await db.run((q) => runnerRepositoryListsSteps(q, "box"))).toEqual({
+      admin: ["acme/paws"],
+      host: null,
+    });
+    await expect(choose("revoked", null, 12)).rejects.toThrow("Runner is unavailable.");
+    const audit = await db.run(function* (q) {
+      const table = q.t.workspaceAccessAudit;
+      return yield* q.all(
+        q.orm
+          .select({ action: table.action, subject: table.subject, createdAt: table.createdAt })
+          .from(table)
+          .orderBy(table.id),
+      );
+    });
+    expect(audit).toEqual([
+      { action: "runner.repositories", subject: "box", createdAt: 10 },
+      { action: "runner.repositories", subject: "box", createdAt: 11 },
+    ]);
+    expect((await db.run(listJobsSteps)).map((job) => job.payload)).toEqual([
+      { runnerId: "box", answeredBy: "admin" },
+    ]);
+  });
 });
+
+function runner(id: string, revokedAt: number | null) {
+  return {
+    id,
+    workspaceId: "acme",
+    ownerUserId: "owner",
+    name: id,
+    status: "active",
+    createdAt: 0,
+    revokedAt,
+  };
+}
+
+function askRepository(db: Db) {
+  return seed(db, (q) =>
+    q.orm.insert(q.t.question).values({
+      id: "question",
+      itemId: "item",
+      sessionId: "ses",
+      body: "Which runner?",
+      kind: "runner-repository",
+      status: "open",
+      createdAt: 0,
+    }),
+  );
+}
