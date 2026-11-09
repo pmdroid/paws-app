@@ -28,6 +28,8 @@ for (const [
   ["Cargo.toml", false, true],
   ["Cargo.toml", false, true, false, false, false, true],
   ["Cargo.toml", true, false],
+  [".acme/Cargo.toml", false, true],
+  ["many/Cargo.toml", false, true],
   ["apps/acme/go.mod", false, true],
   ["a/b/go.mod", false, false],
   ["", false, false],
@@ -56,6 +58,13 @@ for (const [
       if (manifest) {
         mkdirSync(dirname(join(source, manifest)), { recursive: true });
         writeFileSync(join(source, manifest), "");
+      }
+      if (manifest === "many/Cargo.toml") {
+        for (let index = 0; index < 200; index++) {
+          const directory = join(source, `acme-${index}-${"x".repeat(180)}`);
+          mkdirSync(directory);
+          writeFileSync(join(directory, "Cargo.toml"), "");
+        }
       }
       if (existing) writeFileSync(join(source, "mise.toml"), '[tools]\nnode = "lts"\n');
       const bin = join(root, "bin");
@@ -165,7 +174,10 @@ for (const [
         expect(readFileSync(join(clone, "acme.txt"), "utf8")).toBe("checkpoint only");
       }
       if (blocked) {
-        expect(question).toContain(manifest);
+        if (manifest === "many/Cargo.toml") {
+          expect(question.length).toBeLessThanOrEqual(16_384);
+          expect(question).toContain("200 other manifests");
+        } else expect(question).toContain(manifest);
         expect(question).toContain(
           manifest.endsWith("go.mod") ? 'go = "latest"' : 'rust = "stable"',
         );

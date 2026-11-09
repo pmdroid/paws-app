@@ -2387,7 +2387,7 @@ export async function executeRunnerCommand(
 function missingToolchainQuestion(worktree: string, path: string): string | undefined {
   const directories = [""];
   for (const entry of readdirSync(worktree, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    if (!entry.isDirectory() || entry.name === ".git") continue;
     directories.push(entry.name);
     if (entry.name === "apps" || entry.name === "packages")
       for (const child of readdirSync(join(worktree, entry.name), { withFileTypes: true }))
@@ -2402,7 +2402,7 @@ function missingToolchainQuestion(worktree: string, path: string): string | unde
     ["bun.lockb", "bun", 'bun = "latest"'],
     ["package.json", "node", 'node = "lts"'],
   ] as const;
-  const missing: string[] = [];
+  const missing = new Map<string, { manifest: string; count: number }>();
   const lines = new Set<string>();
   for (const directory of directories.sort()) {
     const root = join(worktree, directory);
@@ -2414,14 +2414,20 @@ function missingToolchainQuestion(worktree: string, path: string): string | unde
         continue;
       if (!existsSync(join(root, manifest)) || Bun.which(tool, { PATH: path, cwd: worktree }))
         continue;
-      missing.push(
-        `${directory ? `${directory}/` : ""}${manifest} needs ${tool}, which isn't installed on the runner.`,
-      );
+      const found = missing.get(tool);
+      if (found) found.count++;
+      else
+        missing.set(tool, { manifest: `${directory ? `${directory}/` : ""}${manifest}`, count: 1 });
       lines.add(line);
     }
   }
-  if (!missing.length) return;
-  return `${missing.join("\n")} Add these entries to the existing [tools] table in mise.toml at the repository root, or create that table if absent. Commit the configuration to main, then answer to retry (do not add a second [tools] header):\n\n[tools]\n${[...lines].join("\n")}`;
+  if (!missing.size) return;
+  // One representative manifest per tool keeps large repositories within the protocol limit.
+  const descriptions = [...missing].map(
+    ([tool, { manifest, count }]) =>
+      `${manifest.slice(0, 1_000)}${count > 1 ? ` (and ${count - 1} other manifests)` : ""} needs ${tool}, which isn't installed on the runner.`,
+  );
+  return `${descriptions.join("\n")} Add these entries to the existing [tools] table in mise.toml at the repository root, or create that table if absent. Commit the configuration to main, then answer to retry (do not add a second [tools] header):\n\n[tools]\n${[...lines].join("\n")}`;
 }
 
 /**
