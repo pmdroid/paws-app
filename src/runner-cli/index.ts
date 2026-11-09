@@ -14,7 +14,7 @@ import {
 } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
 import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "../runner-failure";
-import { runPairedDaemon } from "./daemon";
+import { RUNNER_WORK_ROOT, runPairedDaemon } from "./daemon";
 
 export {
   CAUSE_LIMIT,
@@ -273,7 +273,7 @@ export async function runRunnerCli(
           pawsAgentUid: ids.pawsAgentUid,
           resultsGid: ids.resultsGid,
         },
-        workRoot: "/var/lib/paws-agent/work",
+        workRoot: RUNNER_WORK_ROOT,
         home: process.env.HOME ?? "/var/lib/paws-agent",
         signal: abort.signal,
         resume: args[2] === "--resume",

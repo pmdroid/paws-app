@@ -22,6 +22,7 @@ import {
   runnerCheckpointPendingSteps,
   runnerCommandAcknowledgedBySteps,
   runnerCommandEnvelopeSteps,
+  runnerFinishedRunsSteps,
   runnerWorkAssignmentSteps,
   runnerWorkGrantValidSteps,
   runnerWorkStillReportedSteps,
@@ -31,7 +32,13 @@ import {
   workspaceSessionRepositoryAllowedSteps,
   type Db,
 } from "../src/db";
-import { forEachDialect, seed, withoutForeignKeys, type DialectDb } from "./dialects";
+import {
+  forEachDialect,
+  insertWorkItem,
+  seed,
+  withoutForeignKeys,
+  type DialectDb,
+} from "./dialects";
 import { seedCommand, seedRun, seedRunner, seedWork } from "./runner-rows";
 
 const open: DialectDb[] = [];
@@ -310,6 +317,39 @@ forEachDialect((connect) => {
     expect((await work(db)).teardownConfirmedAt).toBe(4);
     await confirm("work-command", 5);
     expect((await work(db)).teardownConfirmedAt).toBe(4);
+  });
+
+  test("finished runs are this runner's torn-down runs whose item can never resume", async () => {
+    const db = await connected(connect);
+    const add = async (
+      name: string,
+      state: string,
+      runner: string,
+      teardownConfirmedAt: number | null,
+    ) => {
+      await insertWorkItem(db, name);
+      await seed(db, (q) =>
+        q.orm.update(q.t.workItem).set({ state }).where(eq(q.t.workItem.id, name)),
+      );
+      await seedRun(db, `run-${name}`, name, "ended");
+      await seedWork(db, `run-${name}`, runner);
+      await seed(db, (q) =>
+        q.orm
+          .update(q.t.runnerWork)
+          .set({ teardownConfirmedAt })
+          .where(eq(q.t.runnerWork.runId, `run-${name}`)),
+      );
+    };
+    await add("merged", "merged", "box", 3);
+    await add("failed", "failed", "box", 4);
+    await add("waiting", "awaiting_input", "box", 5);
+    await add("not-torn-down", "cancelled", "box", null);
+    await add("elsewhere", "merged", "other", 6);
+    expect(await db.run((q) => runnerFinishedRunsSteps(q, "box"))).toEqual([
+      "run-failed",
+      "run-merged",
+    ]);
+    expect(await db.run((q) => runnerFinishedRunsSteps(q, "box", 1))).toEqual(["run-failed"]);
   });
 
   test("a grant is valid for its own token, generation and lifetime until deleted", async () => {

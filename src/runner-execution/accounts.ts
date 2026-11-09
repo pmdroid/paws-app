@@ -15,6 +15,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  rmdirSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
@@ -468,11 +469,27 @@ export function prepareRunnerWorkRoot(
 }
 
 function removeRunnerTree(path: string): void {
+  for (const _ of removeRunnerTreeSteps(path));
+}
+
+export function* removeRunnerTreeSteps(path: string): Generator<void, void> {
   const info = lstatSync(path);
-  if (!info.isDirectory()) return unlinkSync(path);
-  chmodSync(path, 0o700);
-  for (const name of readdirSync(path)) removeRunnerTree(join(path, name));
-  rmSync(path, { recursive: true });
+  if (!info.isDirectory()) {
+    unlinkSync(path);
+    yield;
+    return;
+  }
+  if (info.uid === process.getuid?.()) chmodSync(path, 0o700);
+  let names: string[];
+  try {
+    names = readdirSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EACCES") throw error;
+    names = [];
+  }
+  for (const name of names) yield* removeRunnerTreeSteps(join(path, name));
+  rmdirSync(path);
+  yield;
 }
 
 function shareRunnerPaths(
