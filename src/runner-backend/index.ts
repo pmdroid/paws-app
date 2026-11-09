@@ -30,13 +30,11 @@ import {
   legacyAgentBindingId,
   getWorkItem,
   immediate,
-  inMergeQueue,
   listHooks,
   startAgentWait,
   endAgentWait,
   pinnedSlotsReserved,
   releasePinnedSlot,
-  restartedFromMergeQueue,
   recordFallbackAttempt,
   runnerHasCapacity,
   runnerSlotsHeldBetweenCommands,
@@ -98,7 +96,6 @@ import {
   redactGitHubTokens,
   SESSION_RESUME_RUNNER_VERSION,
   HIDDEN_CHECKPOINT_RUNNER_VERSION,
-  type RunnerCodingAgent,
   type RunnerCommand,
   type RunnerResult,
   type RunnerVersion,
@@ -148,8 +145,9 @@ import {
   type WorkspaceHook,
 } from "../core";
 import {
+  sessionHolder,
+  runRunner,
   PlacementRaceError,
-  quotaSignal,
   RUNNER_ONLINE_MS,
   SESSION_GRACE_MS,
   type PlacementAccount,
@@ -181,15 +179,6 @@ const RUN_HUNG_THOUGHT = (minutes: number) =>
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 const NO_FREE_CAPACITY = ": no free capacity";
 const ACCOUNT_CONCURRENCY_LIMIT = ": account at its concurrency limit";
-type SessionHolder = {
-  runnerId: string;
-  agent: string;
-  sessionId: string;
-  bindingId: string;
-  runId: string;
-  model: string | null;
-  account?: { accountId: string; bindingId: string };
-};
 
 function earlierSession(
   db: Database,
@@ -204,61 +193,6 @@ function earlierSession(
     (bindingId === undefined || holder.bindingId === bindingId)
     ? holder.sessionId
     : undefined;
-}
-
-/** The runner and agent that hold the item's last resumable agent session. */
-function sessionHolder(db: Database, itemId: string): SessionHolder | undefined {
-  const rows = db
-    .query<{ envelope: string; payload: string; receivedAt: number }, [string]>(
-      `SELECT c.envelope, rr.payload, rr.received_at AS receivedAt FROM runner_result rr
-       JOIN runner_command c ON c.id=rr.command_id
-       JOIN run ON run.id=rr.run_id
-       WHERE run.item_id=? AND c.kind='run'
-       ORDER BY rr.received_at DESC, rr.generation DESC`,
-    )
-    .all(itemId);
-  for (const row of rows) {
-    const command = JSON.parse(
-      Buffer.from((JSON.parse(row.envelope) as { payload: string }).payload, "base64url").toString(
-        "utf8",
-      ),
-    ) as {
-      runnerId?: string;
-      runId?: string;
-      checkpoint?: boolean;
-      profile?: { agent?: string; model?: string | null };
-      account?: { accountId: string; bindingId: string };
-    };
-    if (command.checkpoint === false) continue;
-    const result = JSON.parse(row.payload) as {
-      stopReason?: string;
-      sessionId?: string;
-      errorMessage?: string;
-    };
-    // An errored session may hold the prompt that failed; a usage-limit stop does not.
-    const resumable =
-      result.stopReason !== "error" ||
-      (result.errorMessage !== undefined &&
-        quotaSignal(result.errorMessage, row.receivedAt)?.state === "exhausted");
-    return command.runnerId &&
-      command.runId &&
-      command.profile?.agent &&
-      resumable &&
-      result.sessionId
-      ? {
-          runnerId: command.runnerId,
-          agent: command.profile.agent,
-          sessionId: result.sessionId,
-          bindingId:
-            command.account?.bindingId ??
-            legacyAgentBindingId(command.runnerId, command.profile.agent as RunnerCodingAgent),
-          runId: command.runId,
-          model: command.profile.model ?? null,
-          ...(command.account ? { account: command.account } : {}),
-        }
-      : undefined;
-  }
-  return undefined;
 }
 
 function reviewContext(
@@ -304,44 +238,6 @@ function failedBinding(
   result: { authRequired?: boolean },
 ): string | undefined {
   return account?.named && result.authRequired ? account.bindingId : undefined;
-}
-
-/**
- * Where a command for the run goes. A turn that continues the agent session is pinned to the
- * run's runner. Merge-queue work that continues no session, such as a re-verify's checks and
- * review, is not pinned: it prefers the run's runner and takes any eligible one. So when such
- * work last ran on another runner, the merge-queue item's next turn is pinned to the runner
- * holding its session. A run that moved because its runner went away keeps its new runner.
- */
-function runRunner(
-  db: Database,
-  input: { itemId: string; runId: string; continuesSession: boolean; sessionRunnerId?: string },
-): { pinnedRunnerId?: string; preferRunnerId?: string } {
-  const row = db
-    .query<{ runnerId: string; kind: string | null; envelope: string | null }, [string]>(
-      `SELECT w.runner_id AS runnerId, c.kind, c.envelope FROM runner_work w
-       LEFT JOIN runner_command c ON c.id=w.command_id WHERE w.run_id=?`,
-    )
-    .get(input.runId);
-  if (!row) return {};
-  const merging = inMergeQueue(db, input.itemId);
-  if (!input.continuesSession && merging) return { preferRunnerId: row.runnerId };
-  const backToSession =
-    input.continuesSession &&
-    input.sessionRunnerId !== undefined &&
-    (merging || restartedFromMergeQueue(db, input.itemId)) &&
-    (row.kind === "review" ||
-      (row.kind === "run" &&
-        row.envelope !== null &&
-        (
-          JSON.parse(
-            Buffer.from(
-              (JSON.parse(row.envelope) as { payload: string }).payload,
-              "base64url",
-            ).toString("utf8"),
-          ) as { checkpoint?: boolean }
-        ).checkpoint === false));
-  return { pinnedRunnerId: backToSession ? input.sessionRunnerId : row.runnerId };
 }
 
 function snapshotCommit(workspace: string, repository: { owner: string; repo: string }) {

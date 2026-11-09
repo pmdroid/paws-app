@@ -595,9 +595,9 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       if (!options.itemRunners) return undefined;
       if (!verdicts) return null;
       const open = (id: string) => slots?.open.get(id) ?? 0;
-      const free = verdicts.runners
-        .filter((runner) => runner.rejection === null && open(runner.id) > 0)
-        .sort((a, b) => open(b.id) - open(a.id));
+      const free = verdicts.runners.filter(
+        (runner) => runner.rejection === null && open(runner.id) > 0,
+      );
       return free[0]?.id ?? null;
     };
     const choices = new Map<string, string>();

@@ -5,6 +5,7 @@ import {
   recordRunnerRepositories,
   schedulerRunnerSlots,
 } from "../../src/db";
+import { createRunnerPlacement } from "../../src/runner-placement";
 import { JOB_KIND } from "../../src/core";
 import { workspaceWithRunners, REPOSITORY, NOW } from "../runner-slot-fixture";
 import type { Proof } from "./harness";
@@ -14,6 +15,8 @@ export default {
     "src/scheduler/scheduler.ts",
     "src/scheduler/waits.ts",
     "src/runner-placement/fit.ts",
+    "src/runner-placement/placement.ts",
+    "src/runner-placement/session.ts",
     "src/runner-placement/eligible.ts",
     "src/db/runner-capacity.ts",
   ],
@@ -67,6 +70,22 @@ export default {
     proof.expect(
       "newly eligible runner owns the third admission",
       schedulerRunnerSlots(db, NOW).find((slot) => slot.itemId === "c")?.runnerId === goldbox,
+    );
+    const spare = pair("spare", 1, [REPOSITORY]);
+    const alternatives = await createRunnerPlacement({ db, now: () => NOW }).candidates({
+      itemId: "c",
+      role: "implementer",
+      purpose: "work",
+      profile: { agent: "claude" },
+      excludeRunnerIds: [goldbox],
+    });
+    proof.expect(
+      "a failed admission host permits failover",
+      alternatives.some((r) => r.id === spare) && !alternatives.some((r) => r.id === goldbox),
+    );
+    proof.expect(
+      "failover replaces the unusable admission choice",
+      schedulerRunnerSlots(db, NOW).find((slot) => slot.itemId === "c")?.runnerId === spare,
     );
   },
 } satisfies Proof;

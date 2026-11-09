@@ -209,6 +209,7 @@ test("an admission reserves only its chosen runner and placement honors that cho
   const { pair, queue, pass } = workspaceWithRunners(db);
   pair("owner", 1, null);
   const other = pair("shared", 6, [REPOSITORY]);
+  db.run("UPDATE runner_agent_policy SET virtual_finish=100 WHERE runner_id<>?", [other]);
   queue("a-flexible");
   queue("b-exclusive");
   db.run("UPDATE work_item_repository SET repo='exclusive' WHERE item_id='b-exclusive'");
@@ -377,4 +378,65 @@ test("two flexible slow starts reserve different runner slots", async () => {
       slots.find((slot) => slot.itemId === itemId)!.runnerId!,
     ]);
   }
+});
+
+for (const failure of ["offline", "repository", "excluded"] as const)
+  test(`an unusable admission choice permits failover: ${failure}`, async () => {
+    const db = tempDb();
+    const { pair, queue, pass } = workspaceWithRunners(db);
+    const first = pair("first", 1, [REPOSITORY]);
+    const second = pair("second", 1, [REPOSITORY]);
+    db.run("UPDATE runner_agent_policy SET virtual_finish=100 WHERE runner_id=?", [second]);
+    queue("item");
+    expect(pass()).toEqual(["item"]);
+    expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(first);
+    if (failure === "offline") db.run("UPDATE runner SET status='paused' WHERE id=?", [first]);
+    if (failure === "repository") recordRunnerRepositories(db, first, ["other/repo"], NOW);
+    const offered = await createRunnerPlacement({ db, now: () => NOW }).candidates({
+      itemId: "item",
+      role: "implementer",
+      purpose: "work",
+      profile: { agent: "claude" },
+      ...(failure === "excluded" ? { excludeRunnerIds: [first] } : {}),
+    });
+    expect(offered.map((r) => r.id)).toEqual([second]);
+    expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(second);
+  });
+
+test("admission preserves placement quota ranking over free slot count", () => {
+  const db = tempDb();
+  const { pair, queue, pass } = workspaceWithRunners(db);
+  const normal = pair("normal", 1, [REPOSITORY]);
+  const extra = pair("extra", 6, [REPOSITORY]);
+  db.run("UPDATE runner_agent_policy SET quota_state='spent_extra' WHERE runner_id=?", [extra]);
+  queue("item");
+  expect(pass()).toEqual(["item"]);
+  expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(normal);
+});
+
+test("a queued resume keeps its online pin and reservation past historical ended work", async () => {
+  const db = tempDb();
+  const { pair, queue, pass } = workspaceWithRunners(db);
+  const pinned = pair("pinned", 1, [REPOSITORY]);
+  pair("other", 6, [REPOSITORY]);
+  queue("resume");
+  const run = insertRun(db, { itemId: "resume", now: NOW, status: "active" });
+  db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) SELECT ?,id,workspace_id,1,0,'ended',?,?,? FROM runner WHERE id=?",
+    [run.id, NOW - 1, NOW - 1, NOW - 1, pinned],
+  );
+  // An ended implementation run has no live occupancy, but the next turn retains its pin.
+  db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
+  expect(pass()).toEqual(["resume"]);
+  expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(pinned);
+  applyWorkItemEvent(db, "resume", "dispatched");
+  expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(pinned);
+  const offered = await createRunnerPlacement({ db, now: () => NOW }).candidates({
+    itemId: "resume",
+    role: "implementer",
+    purpose: "work",
+    profile: { agent: "claude" },
+    pinnedRunnerId: pinned,
+  });
+  expect(offered.map((r) => r.id)).toEqual([pinned]);
 });

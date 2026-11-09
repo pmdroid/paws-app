@@ -373,7 +373,7 @@ export function* schedulerRunnerSlotsSteps(q: Q, now: number) {
             eq(job.status, "pending"),
             and(eq(job.status, "running"), or(isNull(job.lockedUntil), gt(job.lockedUntil, now))),
           ),
-          sql`(${item.state}='queued' OR NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=${item.currentRunId}))`,
+          sql`(${item.state}='queued' OR NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=${item.currentRunId} AND w.ended_at IS NULL AND w.lease_until>${runnerLeaseCutoff(now)}))`,
           sql`NOT EXISTS(SELECT 1 FROM runner_reservation v WHERE v.run_id=${item.currentRunId} AND v.expires_at>${now})`,
         ),
       ),
@@ -382,4 +382,37 @@ export function* schedulerRunnerSlotsSteps(q: Q, now: number) {
 
 export function schedulerRunnerSlots(db: Database, now: number) {
   return settled(sqliteDb(db).run((q) => schedulerRunnerSlotsSteps(q, now)));
+}
+
+/** Replace or abandon a scheduler choice; physical reservations keep their own lifecycle. */
+export function setSchedulerRunnerSlot(
+  db: Database,
+  itemId: string,
+  runnerId: string | null,
+): void {
+  settled(
+    sqliteDb(db).run(function* (q: Q) {
+      const { job, schedulerAdmission: admission } = q.t;
+      const row = yield* q.one(
+        q.orm
+          .select({ id: job.id, payload: jsonText(q, job.payload) })
+          .from(admission)
+          .innerJoin(job, eq(job.id, admission.jobId))
+          .where(eq(admission.itemId, itemId)),
+      );
+      if (!row) return;
+      const { admissionRunnerId: _choice, ...payload } = JSON.parse(row.payload);
+      yield* q.exec(
+        q.orm
+          .update(job)
+          .set({
+            payload: jsonValue(q, {
+              ...payload,
+              ...(runnerId ? { admissionRunnerId: runnerId } : {}),
+            }),
+          })
+          .where(eq(job.id, row.id)),
+      );
+    }),
+  );
 }
