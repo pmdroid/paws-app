@@ -2631,8 +2631,8 @@ export function createRemoteAgentRunner(options: {
                 command?.type === "run" &&
                 command.checkpoint !== false &&
                 !detached &&
-                signal.aborted &&
-                !(signal.reason instanceof PawsShutdown)
+                (questionError !== undefined ||
+                  (signal.aborted && !(signal.reason instanceof PawsShutdown)))
               )
                 await checkpointBeforeStop(command.runId);
             } catch (error) {

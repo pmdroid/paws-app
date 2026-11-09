@@ -68,6 +68,8 @@ function fakeSystemctl(fail?: string, exitsAtOnce = false, showFails = false) {
       pids.push(pid);
       return { code: 0, output: "" };
     }
+    if (args.includes("--property=ExecMainCode"))
+      return { code: 0, output: "ExecMainCode=1\nExecMainStatus=1\n" };
     if (args[0] === "show")
       return showFails
         ? { code: 1, output: "Failed to connect to bus" }
@@ -424,4 +426,14 @@ test('a "runner" sign-in check still spawns directly and makes the account folde
   expect(launched).toHaveLength(1);
   expect(existsSync(join(home, ".codex"))).toBe(true);
   await supervisor.stop(id);
+});
+
+test("systemd worker exit status is available without a child exit listener", async () => {
+  const f = setup("paws-agent");
+  try {
+    await f.supervisor.start(id);
+    expect(await f.supervisor.exitStatus!(id)).toBe("code 1");
+  } finally {
+    await f.supervisor.stop(id);
+  }
 });

@@ -311,7 +311,7 @@ async function setup() {
   function turn(
     record: { id: string; runId: string },
     notices: string[],
-    question?: "answered" | "open",
+    question?: "answered" | "open" | "stale",
   ) {
     const stop = new AbortController();
     stops.add(stop);
@@ -331,6 +331,7 @@ async function setup() {
               askTeam: {
                 // The question store records the question, answered or still open.
                 async ask(request: { question: string }) {
+                  if (question === "stale") throw new Error("Question owner is stale");
                   db.run(
                     `INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at)
                      VALUES(?,?,?,?,'agent',?,?,?)`,
@@ -567,6 +568,23 @@ test("only a runner that ends the turn at a question is told to; an older one ke
     context.submit(onA, runners.a, { candidateSha: context.base });
     expect(await running).toMatchObject({ stopReason: "end_turn" });
   }
+});
+
+test("a question that cannot be asked keeps the turn's work as a WIP commit before the cancel", async () => {
+  const { db, runners } = context;
+  const record = context.item();
+  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  db.run("UPDATE runner_host_status SET runner_version='0.1.73' WHERE runner_id=?", [runners.a]);
+  const { running } = context.turn(record, [], "stale");
+  const onA = (await context.next(runners.a)) as RunCommand;
+  context.events(onA, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  const checkpoint = await context.next(runners.a);
+  expect(checkpoint).toMatchObject({ type: "checkpoint", runId: onA.runId });
+  const wip = "a".repeat(40);
+  context.events(onA, runners.a, [{ type: "checkpoint", reason: "stop", sha: wip }]);
+  expect(await context.next(runners.a)).toMatchObject({ type: "cancel", runId: onA.runId });
+  expect(await running).toMatchObject({ message: "Question owner is stale" });
+  expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(wip);
 });
 
 test("after a restart the handed-over run still avoids the runner it left and waits", async () => {
