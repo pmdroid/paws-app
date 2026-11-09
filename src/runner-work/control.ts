@@ -1,4 +1,4 @@
-import { extendStalledRunnerWork } from "../db";
+import { runnerCommandAuthorityUntil, extendStalledRunnerWork } from "../db";
 import {
   acknowledgeRunnerCommand,
   assignRunnerWork,
@@ -335,7 +335,7 @@ export function createRunnerWork(options: {
       command.generation !== work.generation
     )
       throw new Error("Run command binding changed.");
-    return command;
+    return { ...command, expiresAt: runnerCommandAuthorityUntil(db, work.commandId) };
   }
   function authorized(
     input: {

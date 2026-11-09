@@ -261,7 +261,7 @@ export async function probeRunnerWork(
     assert.throws(() => work.issueGrant({ ...grantInput, commandId: "other" }), /changed/);
     const grant = work.issueGrant(grantInput);
     const beforeStall = now;
-    now = grant.expiresAt + 1000;
+    now = command.expiresAt + 1000;
     const stallMs = now - beforeStall;
     recoverRunnerWorkStall(db, beforeStall, stallMs);
     const extended = db
@@ -274,6 +274,9 @@ export async function probeRunnerWork(
       sequence: 1,
       event: { type: "progress", text: "Working" },
     });
+    assert.deepEqual(work.heartbeat(firstRunner).fenced, []);
+    // Restore this fixture's delivery deadline for its later normal-expiry assertions.
+    db.run("UPDATE runner_command SET expires_at=? WHERE id=?", [command.expiresAt, command.id]);
     now = beforeStall;
     const stored = db
       .query<{ token_hash: string }, []>("SELECT token_hash FROM runner_work_grant")

@@ -261,7 +261,11 @@ export class JobLoop {
         queues,
       };
       // The claim is one `UPDATE … RETURNING`, so each claim is its own transaction.
-      job = await this.store.run((q) => claimNextJobSteps(q, options));
+      job = await trackHostOperation(
+        "loop.tick",
+        () => this.store.run((q) => claimNextJobSteps(q, options)),
+        () => this.clock.mono(),
+      );
     } catch (error) {
       journalCaught(error, "loop.tick.claimNextJob", null);
       this.claimFailed = true;

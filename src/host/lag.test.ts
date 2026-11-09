@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { FakeClock, trackHostOperation } from "../core";
+import { FakeClock, trackHostOperation, measureHostOperation } from "../core";
 import { createLagWatchdog } from "./lag";
 
 test("a ten second stall journals once with the operation and recovers once", () => {
@@ -11,7 +11,11 @@ test("a ten second stall journals once with the operation and recovers once", ()
     log: (line) => lines.push(line),
     recover: (...args) => recovered.push(args),
   });
-  trackHostOperation("job:linear.delivery", () => clock.advance(11_000));
+  trackHostOperation(
+    "job:linear.delivery",
+    () => clock.advance(11_000),
+    () => clock.mono(),
+  );
   sample();
   clock.advance(1000);
   sample();
@@ -33,4 +37,52 @@ test("wall clock changes and ordinary timer jitter do not recover authority", ()
   clock.advance(1000);
   sample();
   expect(lines).toEqual([]);
+});
+
+test("awaiting and completed jobs are excluded from stall attribution", async () => {
+  const clock = new FakeClock();
+  const lines: string[] = [];
+  const sample = createLagWatchdog({ clock, log: (line) => lines.push(line), recover: () => {} });
+  let resolve!: () => void;
+  const pending = trackHostOperation(
+    "job:waiting",
+    () =>
+      new Promise<void>((done) => {
+        resolve = done;
+      }),
+  );
+  trackHostOperation("job:finished", () => {});
+  trackHostOperation(
+    "job:blocking",
+    () => clock.advance(10_000),
+    () => clock.mono(),
+  );
+
+  // Sampling consumes only measured blocking spans, regardless of other active contexts.
+  sample();
+  resolve();
+  await pending;
+  expect(lines).toEqual(["event loop stalled 9000 ms operation=job:blocking"]);
+});
+
+test("synchronous work after an await retains its operation without attributing the await", async () => {
+  const clock = new FakeClock();
+  const lines: string[] = [];
+  const sample = createLagWatchdog({ clock, log: (line) => lines.push(line), recover: () => {} });
+  let resume!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  const task = trackHostOperation(
+    "job:continuation",
+    async () => {
+      await gate;
+      measureHostOperation(() => clock.advance(11_000));
+    },
+    () => clock.mono(),
+  );
+  resume();
+  await task;
+  sample();
+  expect(lines).toEqual(["event loop stalled 10000 ms operation=job:continuation"]);
 });

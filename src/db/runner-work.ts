@@ -644,6 +644,19 @@ export function runnerCheckpointPending(db: Database, runId: string, now: number
   return settled(sqliteDb(db).run((q) => runnerCheckpointPendingSteps(q, runId, now)));
 }
 
+/** Control-plane authority may outlive the signed delivery deadline after a host stall. */
+export function runnerCommandAuthorityUntil(db: Database, commandId: string): number {
+  return settled(
+    sqliteDb(db).run(function* (q) {
+      const c = q.t.runnerCommand;
+      const row = yield* q.one(
+        q.orm.select({ until: c.expiresAt }).from(c).where(eq(c.id, commandId)),
+      );
+      return row?.until ?? 0;
+    }),
+  );
+}
+
 export function* runnerCommandEnvelopeSteps(q: Q, commandId: string) {
   const { runnerCommand: c } = q.t;
   const row = yield* q.one(
@@ -1032,15 +1045,27 @@ export function branchRunnerWork(
 export function extendStalledRunnerWork(db: Database, startedAt: number, lagMs: number): void {
   settled(
     sqliteDb(db).transaction(function* (q) {
-      const { runnerWork: w, runnerWorkGrant: g } = q.t;
+      const { runnerWork: w, runnerWorkGrant: g, runnerCommand: c } = q.t;
       const rows = yield* q.all(
         q.orm
-          .select({ runId: w.runId, generation: w.generation, leaseUntil: w.leaseUntil })
+          .select({
+            runId: w.runId,
+            generation: w.generation,
+            leaseUntil: w.leaseUntil,
+            commandId: w.commandId,
+          })
           .from(w)
           .where(and(isNull(w.endedAt), gt(w.leaseUntil, runnerLeaseCutoff(startedAt)))),
       );
       for (const row of rows) {
         yield* extendRunnerWorkLeaseSteps(q, row.runId, row.leaseUntil + lagMs);
+        yield* q.exec(
+          q.orm
+            .update(c)
+            .set({ expiresAt: sql`${c.expiresAt} + ${lagMs}` })
+            .where(and(eq(c.id, row.commandId), gt(c.expiresAt, startedAt))),
+        );
+
         yield* q.exec(
           q.orm
             .update(g)

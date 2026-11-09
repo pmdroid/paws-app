@@ -215,4 +215,4 @@ export {
   type BriefValues,
 } from "./brief-template";
 
-export { trackHostOperation, sampleHostOperations } from "./host-operation";
+export { trackHostOperation, sampleHostOperations, measureHostOperation } from "./host-operation";

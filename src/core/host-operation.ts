@@ -1,28 +1,37 @@
-// Keep names through the next timer sample, including handlers that unblock before it runs.
-const operations = new Set<string>();
-const active = new Map<string, number>();
-export function trackHostOperation<T>(name: string, run: () => T): T {
-  operations.add(name);
-  active.set(name, (active.get(name) ?? 0) + 1);
-  const finish = () => {
-    const count = (active.get(name) ?? 1) - 1;
-    if (count) active.set(name, count);
-    else active.delete(name);
-    operations.add(name);
-  };
+import { AsyncLocalStorage } from "node:async_hooks";
+
+type Operation = { name: string; now: () => number };
+const context = new AsyncLocalStorage<Operation>();
+let stalled = "idle";
+let longest = 5000;
+
+/** Measure synchronous work only; the operation context survives awaits. */
+export function measureHostOperation<T>(run: () => T): T {
+  const operation = context.getStore();
+  if (!operation) return run();
+  const at = operation.now();
   try {
-    const result = run();
-    if (result instanceof Promise) return result.finally(finish) as T;
-    finish();
-    return result;
-  } catch (error) {
-    finish();
-    throw error;
+    return run();
+  } finally {
+    const elapsed = operation.now() - at;
+    if (elapsed > longest) {
+      longest = elapsed;
+      stalled = operation.name;
+    }
   }
 }
 
+export function trackHostOperation<T>(
+  name: string,
+  run: () => T,
+  now: () => number = () => performance.now(),
+): T {
+  return context.run({ name, now }, () => measureHostOperation(run));
+}
+
 export function sampleHostOperations(): string {
-  const names = [...new Set([...operations, ...active.keys()])].join(",") || "idle";
-  operations.clear();
-  return names;
+  const name = stalled;
+  stalled = "idle";
+  longest = 5000;
+  return name;
 }
