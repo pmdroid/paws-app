@@ -1,3 +1,4 @@
+import { findAskedQuestion, getQuestion } from "../questions";
 import { journal, journalCaught, startPhaseClock } from "../journal";
 import { randomUUID } from "node:crypto";
 import {
@@ -1027,6 +1028,7 @@ export function createRemoteAgentRunner(options: {
         const signal = controller.signal;
         let command: WorkCommand | undefined;
         let question: Promise<void> | undefined;
+        let questionText: string | undefined;
         let questionError: unknown;
         let publishedEffects = false;
         let asked = false;
@@ -2271,17 +2273,42 @@ export function createRemoteAgentRunner(options: {
                   origin,
                 );
               if (event.type === "question") {
-                if (question) throw new Error("Remote runner sent overlapping questions");
+                if (question) {
+                  if (questionText !== event.text)
+                    throw new Error("Remote runner sent overlapping questions");
+                  cursor = row.sequence;
+                  db.run(
+                    "UPDATE runner_work SET consumed_sequence=? WHERE run_id=? AND generation=?",
+                    [cursor, assigned.runId, assigned.generation],
+                  );
+                  continue;
+                }
+                const stored = findAskedQuestion(db, selected.runId, "agent");
+                if (stored && stored.body !== event.text)
+                  throw new Error("Remote runner sent overlapping questions");
                 if (!input.askTeam) throw new Error("Remote question channel is unavailable");
                 publishedEffects = true;
                 asked = true;
                 await emit({ type: "ask_team", question: event.text, phase: "asked" });
                 const currentCommand = assigned;
+                questionText = event.text;
                 question = (async () => {
-                  const answer = await input.askTeam!.ask(
-                    { question: event.text, options: event.options, context: event.context },
-                    { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
-                  );
+                  const answer = stored
+                    ? await (async () => {
+                        for (;;) {
+                          signal.throwIfAborted();
+                          const current = getQuestion(db, stored.id);
+                          if (!current || current.status === "cancelled")
+                            throw new Error("Remote runner question was cancelled");
+                          if (current.status === "answered" && current.answer !== null)
+                            return { answer: current.answer };
+                          await delay(interval, undefined, { signal });
+                        }
+                      })()
+                    : await input.askTeam!.ask(
+                        { question: event.text, options: event.options, context: event.context },
+                        { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
+                      );
                   signal.throwIfAborted();
                   results.answer({
                     runId: currentCommand.runId,

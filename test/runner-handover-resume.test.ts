@@ -312,7 +312,12 @@ async function setup() {
   function turn(
     record: { id: string; runId: string },
     notices: string[],
-    question?: "answered" | "open" | "stale" | "waiting",
+    question?:
+      | "answered"
+      | "open"
+      | "stale"
+      | "waiting"
+      | ((request: { question: string }) => Promise<{ answer: string }>),
   ) {
     const stop = new AbortController();
     stops.add(stop);
@@ -339,6 +344,7 @@ async function setup() {
                         once: true,
                       }),
                     );
+                  if (typeof question === "function") return question(request);
                   db.run(
                     `INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at)
                      VALUES(?,?,?,?,'agent',?,?,?)`,
@@ -1011,4 +1017,80 @@ test("the work turn after start_work waits for a slot on the session's runner, t
   expect(onA.checkpoint).not.toBe(false);
   context.submit(onA, runners.a, { candidateSha: context.base });
   expect(await work.running).toMatchObject({ stopReason: "end_turn" });
+});
+
+test("replayed questions attach to the open answer without asking or cancelling again", async () => {
+  const { db, runners } = context;
+  const record = context.item();
+  let asks = 0;
+  const ask = async (request: { question: string }) => {
+    asks++;
+    db.run(
+      "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
+      [workspaceId(), record.id, record.runId, record.id, request.question, context.now],
+    );
+    for (;;) {
+      const row = db
+        .query<{ answer: string | null }, [string]>("SELECT answer FROM question WHERE run_id=?")
+        .get(record.runId);
+      if (row?.answer) return { answer: row.answer };
+      await delay(1);
+    }
+  };
+  const first = context.turn(record, [], ask);
+  const command = (await context.next(runners.a)) as RunCommand;
+  const event = { type: "question" as const, text: "Which delimiter?", options: [] };
+  context.events(command, runners.a, [event]);
+  for (let i = 0; i < 5000; i++) {
+    if (asks > 0) break;
+    await delay(1);
+  }
+  // Replay while the first ask is still waiting on its answer.
+  context.events(command, runners.a, [event, event]);
+  expect(await context.next(runners.a, 50)).toBeNull();
+  expect(asks).toBe(1);
+  db.run("UPDATE question SET status='answered',answer='Use commas.' WHERE run_id=?", [
+    record.runId,
+  ]);
+  expect(await context.next(runners.a)).toMatchObject({ type: "answer", answer: "Use commas." });
+  expect(await context.next(runners.a, 50)).toBeNull();
+  context.submit(command, runners.a, { candidateSha: context.base });
+  expect(await first.running).toMatchObject({ stopReason: "end_turn" });
+});
+
+test("different text while a question is open still fails as overlapping questions", async () => {
+  const { runners } = context;
+  const record = context.item();
+  const turn = context.turn(record, [], async () => new Promise(() => {}));
+  const command = (await context.next(runners.a)) as RunCommand;
+  context.events(command, runners.a, [
+    { type: "question", text: "Which delimiter?", options: [] },
+    { type: "question", text: "Which encoding?", options: [] },
+  ]);
+  expect(String(await turn.running)).toContain("overlapping questions");
+});
+
+test("a replay attaches to a question already stored by an earlier attachment", async () => {
+  const { db, runners } = context;
+  const record = context.item();
+  db.run(
+    "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
+    [workspaceId(), record.id, record.runId, record.id, "Which delimiter?", context.now],
+  );
+  let asks = 0;
+  const turn = context.turn(record, [], async () => {
+    asks++;
+    throw new Error("Question owner is stale");
+  });
+  const command = (await context.next(runners.a)) as RunCommand;
+  context.events(command, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  expect(await context.next(runners.a, 50)).toBeNull();
+  expect(asks).toBe(0);
+  db.run("UPDATE question SET status='answered',answer='Use commas.' WHERE run_id=?", [
+    record.runId,
+  ]);
+  expect(await context.next(runners.a)).toMatchObject({ type: "answer", answer: "Use commas." });
+  expect(await context.next(runners.a, 50)).toBeNull();
+  context.submit(command, runners.a, { candidateSha: context.base });
+  expect(await turn.running).toMatchObject({ stopReason: "end_turn" });
 });

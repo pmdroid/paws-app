@@ -31,6 +31,7 @@ export default {
     "src/loop/question-effects.ts",
     "src/questions/**",
     "src/runner-worker/**",
+    "src/runner-backend/**",
     "src/linear/**",
   ],
   summary:
@@ -150,6 +151,21 @@ export default {
       QUESTION,
     );
     // Relay the worker's actual question through the scripted local tracker fixture.
+    // Exercise the remote event replay path with its real runner store and command harness.
+    const replay = Bun.spawn(
+      ["bun", "test", "test/runner-handover-resume.test.ts", "--test-name-pattern", "replay"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [exit, stdout, stderr] = await Promise.all([
+      replay.exited,
+      new Response(replay.stdout).text(),
+      new Response(replay.stderr).text(),
+    ]);
+    proof.expect("runner question replay waits and delivers one answer", exit === 0, {
+      stdout,
+      stderr,
+    });
+
     await proof.delegate();
     const asked = await proof.waitFor(
       "the question is asked and the item waits for input",
