@@ -1,4 +1,4 @@
-import { pendingRestartHandoff } from "./restart";
+import { pendingRestartHandoffSteps } from "./restart";
 import type { Database } from "bun:sqlite";
 import {
   and,
@@ -21,9 +21,10 @@ import {
   type AnyColumn,
   type SQL,
 } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
-import { halt } from "./halt";
-import { wakeMergesBehind } from "./merge-queue";
+import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { haltSteps } from "./halt";
+import { jsonField as jsonPath } from "./json-text";
+import { wakeMergesBehindSteps } from "./merge-queue";
 import { readCheckpoint } from "./checkpoint";
 import {
   awakeCategory,
@@ -58,18 +59,19 @@ import {
   type WorkItemState,
   type WorkBrief,
 } from "../core";
-import { cancelOpenJobs, enqueueJobOnce, type Job } from "./jobs";
+import { cancelOpenJobsSteps, emitJobReady, enqueueJobOnceSteps, type Job } from "./jobs";
 import { journal } from "./journal";
-import { enqueueOutboxOnce } from "./outbox";
-import { getLinearSessionGeneration } from "./linear-sessions";
-import { withOpenFindings } from "./open-findings";
-import { getRun, markRun, releaseRunCapacity } from "./runs";
-import { endMergeCall, getConfirmedRemoteMerge, mergeStopRequested } from "./remote-merges";
-import { orm } from "./orm";
-import { getPullRequestDraft } from "./pull-request-drafts";
-import { itemReconciliationRequest } from "./schema";
+import { enqueueOutboxOnceSteps } from "./outbox";
+import { getLinearSessionGenerationSteps } from "./linear-sessions";
+import { withOpenFindingsSteps } from "./open-findings";
+import { getRunSteps, markRunSteps, releaseRunCapacitySteps } from "./runs";
+import {
+  endMergeCallSteps,
+  getConfirmedRemoteMergeSteps,
+  mergeStopRequestedSteps,
+} from "./remote-merges";
+import { getPullRequestDraftSteps } from "./pull-request-drafts";
 import type { workItem as pgWorkItem } from "./schema-pg";
-import { immediate } from "./tx";
 import { runnerLeaseCutoff } from "./runner-lease";
 
 type PgWorkItem = typeof pgWorkItem.$inferSelect;
@@ -232,6 +234,69 @@ export type WorkItemEventRecord =
     }
   | { kind: "ask"; reason: string; payloadDigest?: string; actor?: string; now?: number };
 
+function* requireWorkItemSteps(q: Q, id: string): Steps<WorkItemRecord> {
+  const item = yield* getWorkItemSteps(q, id);
+  if (item === null) throw new Error(`work item ${id} not found`);
+  return item;
+}
+
+export function* applyWorkItemEventSteps(
+  q: Q,
+  id: string,
+  event: WorkItemEvent,
+  record: WorkItemEventRecord = {},
+): Steps<WorkItemRecord> {
+  const { workItem, workItemEvent, itemReconciliationRequest } = q.t;
+  const current = yield* requireWorkItemSteps(q, id);
+  const result = transition(current.state, event);
+  if (!result.ok) {
+    throw new TransitionRejectedError(result.reason);
+  }
+  if (event === "take_over") yield* haltSteps(q, current, record.now ?? Date.now());
+  // A state whose time is not tracked at all (queued, the merge queue) drops the awake clock's
+  // baseline, so the next counted state starts from its own first tick. Otherwise hours in the
+  // merge queue would count as agent time once a review sends the item back to the agent.
+  const untracked = awakeCategory(result.to, null) === null;
+  const updated = yield* q.all(
+    q.orm
+      .update(workItem)
+      .set({
+        state: result.to,
+        version: sql`${workItem.version} + 1`,
+        ...(untracked ? { lastMonoMs: null } : {}),
+      })
+      .where(and(eq(workItem.id, id), eq(workItem.state, current.state)))
+      .returning({ id: workItem.id }),
+  );
+  if (updated.length === 0) {
+    throw new Error(`work item ${id} changed before ${event}`);
+  }
+  if (current.state !== result.to) yield* wakeMergesBehindSteps(q, record.now ?? Date.now());
+  if (result.to === "cancelled")
+    yield* q.exec(
+      q.orm.delete(itemReconciliationRequest).where(eq(itemReconciliationRequest.itemId, id)),
+    );
+  const next = yield* requireWorkItemSteps(q, id);
+  yield* q.exec(
+    q.orm.insert(workItemEvent).values({
+      itemId: id,
+      version: next.version,
+      at: record.now ?? Date.now(),
+      fromState: current.state,
+      toState: next.state,
+      event,
+      kind: record.kind ?? "transition",
+      reason: record.reason ?? null,
+      payloadDigest: record.payloadDigest ?? null,
+      actor: record.actor ?? null,
+    }),
+  );
+  journal(
+    `transition ${next.linearIdentifier} ${current.state} --${event}--> ${next.state} v${next.version}`,
+  );
+  return next;
+}
+
 /**
  * The only writer of `work_item.state`. Throws when `transition` rejects the event. The state
  * change and its `work_item_event` row commit in one immediate transaction, or a savepoint of
@@ -243,58 +308,7 @@ export function applyWorkItemEvent(
   event: WorkItemEvent,
   record: WorkItemEventRecord = {},
 ): WorkItemRecord {
-  return immediate(db, () => {
-    const current = getWorkItem(db, id);
-    if (current === null) {
-      throw new Error(`work item ${id} not found`);
-    }
-    const result = transition(current.state, event);
-    if (!result.ok) {
-      throw new TransitionRejectedError(result.reason);
-    }
-    if (event === "take_over") halt(db, current, record.now ?? Date.now());
-    // A state whose time is not tracked at all (queued, the merge queue) drops the awake clock's
-    // baseline, so the next counted state starts from its own first tick. Otherwise hours in the
-    // merge queue would count as agent time once a review sends the item back to the agent.
-    const untracked = awakeCategory(result.to, null) === null;
-    const updated = db.run(
-      `UPDATE work_item SET state = ?, version = version + 1${untracked ? ", last_mono_ms = NULL" : ""}
-       WHERE id = ? AND state = ?`,
-      [result.to, id, current.state],
-    );
-    if (updated.changes === 0) {
-      throw new Error(`work item ${id} changed before ${event}`);
-    }
-    if (current.state !== result.to) wakeMergesBehind(db, record.now ?? Date.now());
-    if (result.to === "cancelled")
-      orm(db)
-        .delete(itemReconciliationRequest)
-        .where(eq(itemReconciliationRequest.itemId, id))
-        .run();
-    const next = getWorkItem(db, id);
-    if (next === null) throw new Error(`work item ${id} not found`);
-    db.run(
-      `INSERT INTO work_item_event
-         (item_id, version, at, from_state, to_state, event, kind, reason, payload_digest, actor)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        next.version,
-        record.now ?? Date.now(),
-        current.state,
-        next.state,
-        event,
-        record.kind ?? "transition",
-        record.reason ?? null,
-        record.payloadDigest ?? null,
-        record.actor ?? null,
-      ],
-    );
-    journal(
-      `transition ${next.linearIdentifier} ${current.state} --${event}--> ${next.state} v${next.version}`,
-    );
-    return next;
-  });
+  return settled(sqliteDb(db).transaction((q) => applyWorkItemEventSteps(q, id, event, record)));
 }
 
 /** One committed transition of a work item, from `work_item_event`. */
@@ -393,11 +407,6 @@ const STAGE_COLUMN = {
   fixes: "fixMs",
   closeout: "closeoutMs",
 } as const satisfies Record<TimeStage, ItemColumn>;
-const STAGE_SQL_COLUMN: Record<TimeStage, string> = {
-  implementation: "implement_ms",
-  fixes: "fix_ms",
-  closeout: "closeout_ms",
-};
 
 export function* agentTurnStageSteps(q: Q, id: string) {
   const { workItemEvent } = q.t;
@@ -473,12 +482,73 @@ export type CapOutcome = {
   item: WorkItemRecord;
 };
 
-const BREAKDOWN_COLUMN: Record<AwakeCategory, string> = {
-  agent: "agent_ms",
-  closeout: "closeout_ms",
-  waiting: "waiting_ms",
-  recheck: "recheck_ms",
+/** An accrual's outcome, and whether it inserted a job the wrapper announces after the commit. */
+export type AwakeAccrual = { outcome: CapOutcome; jobReady: boolean };
+
+const BREAKDOWN_COLUMN: Record<AwakeCategory, ItemColumn> = {
+  agent: "agentMs",
+  closeout: "closeoutMs",
+  waiting: "waitingMs",
+  recheck: "recheckMs",
 };
+
+/** Adds `amount` to each column in the database, so concurrent accruals are not lost. */
+function addedTo(q: Q, columns: readonly ItemColumn[], amount: number) {
+  return Object.fromEntries(
+    columns.map((column) => [column, sql`${q.t.workItem[column]} + ${amount}`]),
+  ) as Partial<PgWorkItem>;
+}
+
+export function* accrueAwakeSteps(
+  q: Q,
+  id: string,
+  mono: number,
+  now: number,
+  sinceMono?: number,
+  liveJob?: boolean,
+  forcedHold?: "slot" | "ci",
+): Steps<AwakeAccrual> {
+  const current = yield* requireWorkItemSteps(q, id);
+  const baseline = sinceMono ?? current.lastMonoMs;
+  const delta = baseline === null ? 0 : Math.max(0, mono - baseline);
+  const counted = awakeCategory(current.state, current.checkpoint, current.acceptedHead);
+  // Only an execution job doing agent or Closeout work spends the budget. Idle running,
+  // recovering and verifying items are waiting. Job claims
+  // and ends settle the interval before them (accrueAtJobBoundary), so the job status
+  // now holds for the whole interval since the last accrual.
+  const activity = yield* awakeJobActivitySteps(q, id, now, -1);
+  const live = liveJob ?? activity.live;
+  const idle = (counted === "agent" || counted === "closeout") && !live;
+  // A parked slot wait, or Closeout blocked on CI, is waiting. The caller settles the
+  // interval before the wait, so this delta is only the wait itself (PAS-898).
+  const hold = forcedHold !== undefined || activity.waiting || activity.usage;
+  const category: AwakeCategory | null =
+    (idle || hold) && (counted === "agent" || counted === "closeout") ? "waiting" : counted;
+  const awake = category === "agent" || category === "closeout";
+  const awakeMs = current.awakeMs + (awake ? delta : 0);
+  const stage: TimeStage | null =
+    category === "agent"
+      ? yield* agentTurnStageSteps(q, id)
+      : category === "closeout"
+        ? "closeout"
+        : null;
+  if (delta > 0 || (current.lastMonoMs === null && sinceMono === undefined)) {
+    const columns =
+      category === null
+        ? []
+        : category === "agent"
+          ? [BREAKDOWN_COLUMN.agent, STAGE_COLUMN[stage!]]
+          : [BREAKDOWN_COLUMN[category]];
+    yield* setItemSteps(q, id, { awakeMs, lastMonoMs: mono, ...addedTo(q, columns, delta) });
+  }
+  if (!awake) {
+    return {
+      outcome: { capped: false, item: yield* requireWorkItemSteps(q, id) },
+      jobReady: false,
+    };
+  }
+  return yield* enforceCapsSteps(q, id, stage!, now);
+}
 
 export function accrueAwake(
   db: Database,
@@ -495,49 +565,64 @@ export function accrueAwake(
    */
   forcedHold?: "slot" | "ci",
 ): CapOutcome {
-  return immediate(db, () => {
-    const current = getWorkItem(db, id);
-    if (current === null) throw new Error(`work item ${id} not found`);
-    const baseline = sinceMono ?? current.lastMonoMs;
-    const delta = baseline === null ? 0 : Math.max(0, mono - baseline);
-    const counted = awakeCategory(current.state, current.checkpoint, current.acceptedHead);
-    // Only an execution job doing agent or Closeout work spends the budget. Idle running,
-    // recovering and verifying items are waiting. Job claims
-    // and ends settle the interval before them (accrueAtJobBoundary), so the job status
-    // now holds for the whole interval since the last accrual.
-    const activity = awakeJobActivity(db, id, now);
-    const live = liveJob ?? activity.live;
-    const idle = (counted === "agent" || counted === "closeout") && !live;
-    // A parked slot wait, or Closeout blocked on CI, is waiting. The caller settles the
-    // interval before the wait, so this delta is only the wait itself (PAS-898).
-    const hold = forcedHold !== undefined || activity.waiting || activity.usage;
-    const category: AwakeCategory | null =
-      (idle || hold) && (counted === "agent" || counted === "closeout") ? "waiting" : counted;
-    const awake = category === "agent" || category === "closeout";
-    const awakeMs = current.awakeMs + (awake ? delta : 0);
-    const stage: TimeStage | null =
-      category === "agent" ? agentTurnStage(db, id) : category === "closeout" ? "closeout" : null;
-    if (delta > 0 || (current.lastMonoMs === null && sinceMono === undefined)) {
-      const columns =
-        category === null
-          ? []
-          : category === "agent"
-            ? [BREAKDOWN_COLUMN.agent, STAGE_SQL_COLUMN[stage!]]
-            : [BREAKDOWN_COLUMN[category]];
-      db.run(
-        `UPDATE work_item SET awake_ms = ?, last_mono_ms = ?${columns
-          .map((column) => `, ${column} = ${column} + ?`)
-          .join("")} WHERE id = ?`,
-        [awakeMs, mono, ...columns.map(() => delta), id],
-      );
-    }
-    if (!awake) {
-      const updated = getWorkItem(db, id);
-      if (updated === null) throw new Error(`work item ${id} not found`);
-      return { capped: false, item: updated };
-    }
-    return enforceCaps(db, id, stage!, now);
-  });
+  const { outcome, jobReady } = settled(
+    sqliteDb(db).transaction((q) =>
+      accrueAwakeSteps(q, id, mono, now, sinceMono, liveJob, forcedHold),
+    ),
+  );
+  if (jobReady) emitJobReady(db);
+  return outcome;
+}
+
+export async function accrueAwakeAsync(
+  store: Db,
+  id: string,
+  mono: number,
+  now = Date.now(),
+  sinceMono?: number,
+  liveJob?: boolean,
+  forcedHold?: "slot" | "ci",
+): Promise<CapOutcome> {
+  const { outcome, jobReady } = await store.transaction((q) =>
+    accrueAwakeSteps(q, id, mono, now, sinceMono, liveJob, forcedHold),
+  );
+  if (jobReady) emitJobReady(store);
+  return outcome;
+}
+
+type BoundaryJob = { id: number; payload: unknown };
+
+function boundaryItemId(job: BoundaryJob): string | null {
+  const itemId = (job.payload as { itemId?: unknown } | null)?.itemId;
+  return typeof itemId === "string" ? itemId : null;
+}
+
+/** Says whether the accrual inserted a job. */
+export function* accrueAtJobBoundarySteps(
+  q: Q,
+  job: BoundaryJob,
+  boundary: "claimed" | "ending",
+  mono: number,
+  now: number,
+): Steps<boolean> {
+  const itemId = boundaryItemId(job);
+  if (itemId === null) return false;
+  const item = yield* getWorkItemSteps(q, itemId);
+  if (item === null) return false;
+  // The claim ends a parked slot wait. Settle that interval as waiting before the attempt.
+  if (boundary === "claimed" && runnerCapacityWait(job.payload) && isAwakeItemState(item.state)) {
+    const accrued = yield* accrueAwakeSteps(q, itemId, mono, now, undefined, false, "slot");
+    return accrued.jobReady;
+  }
+  if (!isAwakeItemState(item.state) && boundary !== "claimed") return false;
+  const activity = yield* awakeJobActivitySteps(
+    q,
+    itemId,
+    now,
+    boundary === "claimed" ? job.id : -1,
+  );
+  const accrued = yield* accrueAwakeSteps(q, itemId, mono, now, undefined, activity.live);
+  return accrued.jobReady;
 }
 
 /**
@@ -546,25 +631,93 @@ export function accrueAwake(
  */
 export function accrueAtJobBoundary(
   db: Database,
-  job: { id: number; payload: unknown },
+  job: BoundaryJob,
   boundary: "claimed" | "ending",
   mono: number,
   now: number,
 ): void {
-  const itemId = (job.payload as { itemId?: unknown } | null)?.itemId;
-  if (typeof itemId !== "string") return;
-  immediate(db, () => {
-    const item = getWorkItem(db, itemId);
-    if (item === null) return;
-    // The claim ends a parked slot wait. Settle that interval as waiting before the attempt.
-    if (boundary === "claimed" && runnerCapacityWait(job.payload) && isAwakeItemState(item.state)) {
-      accrueAwake(db, itemId, mono, now, undefined, false, "slot");
-      return;
-    }
-    if (!isAwakeItemState(item.state) && boundary !== "claimed") return;
-    const liveJob = awakeJobActivity(db, itemId, now, boundary === "claimed" ? job.id : -1).live;
-    accrueAwake(db, itemId, mono, now, undefined, liveJob);
-  });
+  if (boundaryItemId(job) === null) return;
+  const jobReady = settled(
+    sqliteDb(db).transaction((q) => accrueAtJobBoundarySteps(q, job, boundary, mono, now)),
+  );
+  if (jobReady) emitJobReady(db);
+}
+
+export async function accrueAtJobBoundaryAsync(
+  store: Db,
+  job: BoundaryJob,
+  boundary: "claimed" | "ending",
+  mono: number,
+  now: number,
+): Promise<void> {
+  if (boundaryItemId(job) === null) return;
+  const jobReady = await store.transaction((q) =>
+    accrueAtJobBoundarySteps(q, job, boundary, mono, now),
+  );
+  if (jobReady) emitJobReady(store);
+}
+
+function awakeWaitItemId(job: Job): string | undefined {
+  return (job.payload as { itemId?: string }).itemId;
+}
+
+/** Says whether the accrual inserted a job. */
+export function* markJobAwakeWaitSteps(
+  q: Q,
+  job: Job,
+  waiting: boolean,
+  mono: number,
+  now: number,
+  reason: "ci" | "runner" | "backoff" = "ci",
+): Steps<boolean> {
+  const itemId = awakeWaitItemId(job);
+  if (!itemId) return false;
+  const table = q.t.job;
+  const { jobReady } = yield* accrueAwakeSteps(q, itemId, mono, now);
+  if (waiting) {
+    const marked =
+      q.dialect === "sqlite"
+        ? sql`json_set(${table.payload}, '$.awakeWait',
+            json_object('kind', ${reason}, 'worker', ${table.lockedBy}, 'attempt', ${table.attempts}))`
+        : sql`jsonb_set(${table.payload}, '{awakeWait}',
+            jsonb_build_object('kind', ${reason}::text, 'worker', ${table.lockedBy}, 'attempt', ${table.attempts}))`;
+    yield* q.exec(
+      q.orm
+        .update(table)
+        .set({ payload: marked })
+        .where(
+          and(
+            eq(table.id, job.id),
+            eq(table.status, "running"),
+            eq(table.lockedBy, job.lockedBy ?? sql`NULL`),
+            eq(table.attempts, job.attempts),
+            gt(table.lockedUntil, now),
+          ),
+        ),
+    );
+  } else {
+    const cleared =
+      q.dialect === "sqlite"
+        ? sql`json_remove(${table.payload}, '$.awakeWait')`
+        : sql`${table.payload} - 'awakeWait'`;
+    yield* q.exec(
+      q.orm
+        .update(table)
+        .set({ payload: cleared })
+        .where(
+          and(
+            eq(table.id, job.id),
+            eq(jsonPath(q, table.payload, "awakeWait", "worker"), job.lockedBy ?? sql`NULL`),
+            // Postgres reads the JSON field as text, SQLite as the stored integer.
+            eq(
+              jsonPath(q, table.payload, "awakeWait", "attempt"),
+              q.dialect === "sqlite" ? job.attempts : String(job.attempts),
+            ),
+          ),
+        ),
+    );
+  }
+  return jobReady;
 }
 
 /** Wait bookkeeping belongs to one claim. A stale finally may clear only its own mark. */
@@ -576,41 +729,98 @@ export function markJobAwakeWait(
   now: number,
   reason: "ci" | "runner" | "backoff" = "ci",
 ): void {
-  const itemId = (job.payload as { itemId?: string }).itemId;
-  if (!itemId) return;
-  immediate(db, () => {
-    accrueAwake(db, itemId, mono, now);
-    if (waiting) {
-      db.run(
-        `UPDATE job SET payload = json_set(payload, '$.awakeWait',
-           json_object('kind', ?1, 'worker', locked_by, 'attempt', attempts))
-         WHERE id=?2 AND status='running' AND locked_by=?3 AND attempts=?4 AND locked_until>?5`,
-        [reason, job.id, job.lockedBy, job.attempts, now],
-      );
-    } else {
-      db.run(
-        `UPDATE job SET payload = json_remove(payload, '$.awakeWait')
-         WHERE id=? AND json_extract(payload, '$.awakeWait.worker')=?
-           AND json_extract(payload, '$.awakeWait.attempt')=?`,
-        [job.id, job.lockedBy, job.attempts],
-      );
-    }
-  });
+  if (!awakeWaitItemId(job)) return;
+  const jobReady = settled(
+    sqliteDb(db).transaction((q) => markJobAwakeWaitSteps(q, job, waiting, mono, now, reason)),
+  );
+  if (jobReady) emitJobReady(db);
+}
+
+export async function markJobAwakeWaitAsync(
+  store: Db,
+  job: Job,
+  waiting: boolean,
+  mono: number,
+  now: number,
+  reason: "ci" | "runner" | "backoff" = "ci",
+): Promise<void> {
+  if (!awakeWaitItemId(job)) return;
+  const jobReady = await store.transaction((q) =>
+    markJobAwakeWaitSteps(q, job, waiting, mono, now, reason),
+  );
+  if (jobReady) emitJobReady(store);
 }
 
 export type AgentWaitRun = { itemId: string; runId: string; generation: number };
 
+/** Says whether the accrual inserted a job. */
+export function* startAgentWaitSteps(
+  q: Q,
+  run: AgentWaitRun,
+  mono: number,
+  now: number,
+): Steps<boolean> {
+  const { agentWait } = q.t;
+  if ((yield* getWorkItemSteps(q, run.itemId)) === null) return false;
+  const { outcome, jobReady } = yield* accrueAwakeSteps(q, run.itemId, mono, now);
+  const wait = { generation: run.generation, startedAt: now, waitingMs: outcome.item.waitingMs };
+  yield* q.exec(
+    q.orm
+      .insert(agentWait)
+      .values({ runId: run.runId, ...wait })
+      .onConflictDoUpdate({ target: agentWait.runId, set: wait }),
+  );
+  return jobReady;
+}
+
 export function startAgentWait(db: Database, run: AgentWaitRun, mono: number, now: number): void {
-  immediate(db, () => {
-    if (getWorkItem(db, run.itemId) === null) return;
-    const item = accrueAwake(db, run.itemId, mono, now).item;
-    db.run(
-      `INSERT INTO agent_wait(run_id,generation,started_at,waiting_ms) VALUES(?,?,?,?)
-       ON CONFLICT(run_id) DO UPDATE SET generation=excluded.generation,
-         started_at=excluded.started_at,waiting_ms=excluded.waiting_ms`,
-      [run.runId, run.generation, now, item.waitingMs],
-    );
-  });
+  const jobReady = settled(sqliteDb(db).transaction((q) => startAgentWaitSteps(q, run, mono, now)));
+  if (jobReady) emitJobReady(db);
+}
+
+export async function startAgentWaitAsync(
+  store: Db,
+  run: AgentWaitRun,
+  mono: number,
+  now: number,
+): Promise<void> {
+  const jobReady = await store.transaction((q) => startAgentWaitSteps(q, run, mono, now));
+  if (jobReady) emitJobReady(store);
+}
+
+/** Says whether the accrual inserted a job. */
+export function* endAgentWaitSteps(
+  q: Q,
+  run: AgentWaitRun,
+  mono: number,
+  now: number,
+  waitedMs?: number,
+): Steps<boolean> {
+  const { agentWait } = q.t;
+  const open = yield* q.one(
+    q.orm
+      .select({ waitingMs: agentWait.waitingMs })
+      .from(agentWait)
+      .where(and(eq(agentWait.runId, run.runId), eq(agentWait.generation, run.generation))),
+  );
+  if (open === undefined || (yield* getWorkItemSteps(q, run.itemId)) === null) return false;
+  const { outcome, jobReady } = yield* accrueAwakeSteps(q, run.itemId, mono, now);
+  const item = outcome.item;
+  yield* q.exec(q.orm.delete(agentWait).where(eq(agentWait.runId, run.runId)));
+  if (waitedMs === undefined) return jobReady;
+  const counted = Math.max(0, item.waitingMs - open.waitingMs);
+  const stage = yield* agentTurnStageSteps(q, run.itemId);
+  const moved = Math.min(
+    Math.max(0, waitedMs - counted),
+    item.agentMs,
+    stage === "implementation" ? item.implementMs : item.fixMs,
+  );
+  if (moved > 0)
+    yield* setItemSteps(q, run.itemId, {
+      ...addedTo(q, ["awakeMs", "agentMs", STAGE_COLUMN[stage]], -moved),
+      ...addedTo(q, ["waitingMs"], moved),
+    });
+  return jobReady;
 }
 
 export function endAgentWait(
@@ -620,38 +830,24 @@ export function endAgentWait(
   now: number,
   waitedMs?: number,
 ): void {
-  immediate(db, () => {
-    const open = db
-      .query<{ waitingMs: number }, [string, number]>(
-        "SELECT waiting_ms AS waitingMs FROM agent_wait WHERE run_id=? AND generation=?",
-      )
-      .get(run.runId, run.generation);
-    if (open === null || getWorkItem(db, run.itemId) === null) return;
-    const item = accrueAwake(db, run.itemId, mono, now).item;
-    db.run("DELETE FROM agent_wait WHERE run_id=?", [run.runId]);
-    if (waitedMs === undefined) return;
-    const counted = Math.max(0, item.waitingMs - open.waitingMs);
-    const stage = agentTurnStage(db, run.itemId);
-    const moved = Math.min(
-      Math.max(0, waitedMs - counted),
-      item.agentMs,
-      stage === "implementation" ? item.implementMs : item.fixMs,
-    );
-    if (moved > 0)
-      db.run(
-        `UPDATE work_item SET awake_ms = awake_ms - ?1, agent_ms = agent_ms - ?1,
-           ${STAGE_SQL_COLUMN[stage]} = ${STAGE_SQL_COLUMN[stage]} - ?1,
-           waiting_ms = waiting_ms + ?1 WHERE id = ?2`,
-        [moved, run.itemId],
-      );
-  });
+  const jobReady = settled(
+    sqliteDb(db).transaction((q) => endAgentWaitSteps(q, run, mono, now, waitedMs)),
+  );
+  if (jobReady) emitJobReady(db);
+}
+
+export async function endAgentWaitAsync(
+  store: Db,
+  run: AgentWaitRun,
+  mono: number,
+  now: number,
+  waitedMs?: number,
+): Promise<void> {
+  const jobReady = await store.transaction((q) => endAgentWaitSteps(q, run, mono, now, waitedMs));
+  if (jobReady) emitJobReady(store);
 }
 
 /** Read ownership and wait flags for each accrual. Pending CI marks are never live. */
-function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId = -1) {
-  return settled(sqliteDb(db).run((q) => awakeJobActivitySteps(q, itemId, now, exceptJobId)));
-}
-
 function* awakeJobActivitySteps(q: Q, itemId: string, now: number, exceptJobId: number) {
   const { job, workItem, runnerWork, usagePause, agentWait } = q.t;
   const jobs = yield* q.all(
@@ -729,37 +925,50 @@ function* awakeJobActivitySteps(q: Q, itemId: string, now: number, exceptJobId: 
  * publishing and merging, and only a resumed agent stops to ask. Before acceptance, a
  * running agent or Closeout run stops to ask. The cap fails an item only when it cannot ask.
  */
-function enforceCaps(db: Database, id: string, stage: TimeStage, now: number): CapOutcome {
-  const updated = getWorkItem(db, id);
-  if (updated === null) throw new Error(`work item ${id} not found`);
-  if (!stageReached(updated, stage)) return { capped: false, item: updated };
+function* enforceCapsSteps(q: Q, id: string, stage: TimeStage, now: number): Steps<AwakeAccrual> {
+  const { job } = q.t;
+  const updated = yield* requireWorkItemSteps(q, id);
+  const unchanged = { outcome: { capped: false, item: updated }, jobReady: false };
+  if (!stageReached(updated, stage)) return unchanged;
   const accepted = updated.acceptedHead !== null;
   if (
     !accepted &&
     (updated.sessionKey === null || (updated.state !== "running" && updated.state !== "verifying"))
   ) {
-    failForCap(db, updated, stage, now);
-    return { capped: true, item: refetch() };
+    yield* failForCapSteps(q, updated, stage, now);
+    return { outcome: { capped: true, item: yield* requireWorkItemSteps(q, id) }, jobReady: false };
   }
-  if (accepted && updated.state !== "running") return { capped: false, item: updated };
-  if (
-    db
-      .query(
-        "SELECT 1 FROM job WHERE queue='item.ask' AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=?",
+  if (accepted && updated.state !== "running") return unchanged;
+  const asking = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, "item.ask"),
+          inArray(job.status, ["pending", "running"]),
+          eq(jsonField(q, job.payload, "itemId"), id),
+        ),
       )
-      .get(id)
-  )
-    return { capped: false, item: updated };
-  if (askTimeLimit(db, updated, stage, now))
-    return { capped: false, asked: true, stopAgent: true, item: refetch() };
-  pauseAtTimeLimit(db, updated, stage, now);
-  return { capped: false, stopAgent: true, item: refetch() };
-
-  function refetch(): WorkItemRecord {
-    const item = getWorkItem(db, id);
-    if (item === null) throw new Error(`work item ${id} not found`);
-    return item;
-  }
+      .limit(1),
+  );
+  if (asking !== undefined) return unchanged;
+  const { asked, jobReady } = yield* askTimeLimitSteps(q, updated, stage, now);
+  if (asked)
+    return {
+      outcome: {
+        capped: false,
+        asked: true,
+        stopAgent: true,
+        item: yield* requireWorkItemSteps(q, id),
+      },
+      jobReady,
+    };
+  yield* pauseAtTimeLimitSteps(q, updated, stage, now);
+  return {
+    outcome: { capped: false, stopAgent: true, item: yield* requireWorkItemSteps(q, id) },
+    jobReady: false,
+  };
 }
 
 export function awakeBreakdown(item: WorkItemRecord): AwakeBreakdown {
@@ -780,15 +989,6 @@ export function* markCloseoutAcceptedSteps(q: Q, id: string, head: string) {
 
 export function markCloseoutAccepted(db: Database, id: string, head: string): void {
   settled(sqliteDb(db).run((q) => markCloseoutAcceptedSteps(q, id, head)));
-}
-
-function extendAwakeCap(
-  db: Database,
-  id: string,
-  stage: TimeStage,
-  extraMs = TIME_LIMIT_EXTENSION_MS,
-): void {
-  settled(sqliteDb(db).run((q) => extendAwakeCapSteps(q, id, stage, extraMs)));
 }
 
 function* extendAwakeCapSteps(q: Q, id: string, stage: TimeStage, extraMs: number) {
@@ -830,10 +1030,6 @@ export function resetStageTime(db: Database, id: string, stage: TimeStage): void
  * run of work not yet accepted. Merge jobs stay: Paws keeps publishing and merging
  * accepted work.
  */
-function cancelAgentJobs(db: Database, itemId: string, now: number, closeout = false): void {
-  settled(sqliteDb(db).run((q) => cancelAgentJobsSteps(q, itemId, now, closeout)));
-}
-
 function* cancelAgentJobsSteps(q: Q, itemId: string, now: number, closeout: boolean) {
   const { job } = q.t;
   const queues: string[] = [JOB_KIND.start, JOB_KIND.resume];
@@ -910,16 +1106,16 @@ export function markHandoffsCarried(db: Database, held: readonly HeldHandoff[]):
  * instead of failing. The cap already allows another hour, so resuming it from
  * the run page keeps going.
  */
-function pauseAtTimeLimit(db: Database, item: WorkItemRecord, stage: TimeStage, now: number): void {
-  applyWorkItemEvent(db, item.id, "pause");
-  cancelAgentJobs(db, item.id, now);
+function* pauseAtTimeLimitSteps(q: Q, item: WorkItemRecord, stage: TimeStage, now: number) {
+  yield* applyWorkItemEventSteps(q, item.id, "pause");
+  yield* cancelAgentJobsSteps(q, item.id, now, false);
   if (item.currentRunId !== null) {
-    const run = getRun(db, item.currentRunId);
-    if (run?.status === "active") markRun(db, run.id, "ended", now);
+    const run = yield* getRunSteps(q, item.currentRunId);
+    if (run?.status === "active") yield* markRunSteps(q, run.id, "ended", now);
   }
-  extendAwakeCap(db, item.id, stage);
+  yield* extendAwakeCapSteps(q, item.id, stage, TIME_LIMIT_EXTENSION_MS);
   journal(`item ${item.linearIdentifier} reached its time cap after acceptance; paused`);
-  enqueueOutboxOnce(db, {
+  yield* enqueueOutboxOnceSteps(q, {
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
     orderingKey: item.id,
@@ -938,15 +1134,20 @@ function timeLimitPausedNote(item: WorkItemRecord, stage: TimeStage): string {
  * Stops the agent's or Closeout's run and asks "continue or stop?" in Linear, offering
  * Merge when Closeout accepted a head. Returns false when the task has no Linear session.
  */
-function askTimeLimit(db: Database, item: WorkItemRecord, stage: TimeStage, now: number): boolean {
+function* askTimeLimitSteps(
+  q: Q,
+  item: WorkItemRecord,
+  stage: TimeStage,
+  now: number,
+): Steps<{ asked: boolean; jobReady: boolean }> {
   const sessionId = item.sessionKey;
-  if (sessionId === null) return false;
+  if (sessionId === null) return { asked: false, jobReady: false };
   const accepted = item.acceptedHead !== null;
   const verifying = item.state === "verifying";
-  cancelAgentJobs(db, item.id, now, !accepted);
-  const held = heldHandoffs(db, item.id).length > 0;
-  if (accepted && item.currentRunId) releaseRunCapacity(db, item.currentRunId, now);
-  enqueueJobOnce(db, {
+  yield* cancelAgentJobsSteps(q, item.id, now, !accepted);
+  const held = (yield* heldHandoffsSteps(q, item.id)).length > 0;
+  if (accepted && item.currentRunId) yield* releaseRunCapacitySteps(q, item.currentRunId, now);
+  const { inserted } = yield* enqueueJobOnceSteps(q, {
     queue: "item.ask",
     jobKey: `time-limit:${item.id}:${item.version}`,
     payload: {
@@ -966,6 +1167,35 @@ function askTimeLimit(db: Database, item: WorkItemRecord, stage: TimeStage, now:
     },
     now,
   });
+  return { asked: true, jobReady: inserted };
+}
+
+export function* failWorkItemSteps(
+  q: Q,
+  item: WorkItemRecord,
+  reason: string,
+  text: string,
+  now: number,
+  options: { stoppedByAnswer?: boolean } = {},
+): Steps<boolean> {
+  const current = yield* getWorkItemSteps(q, item.id);
+  if (
+    current === null ||
+    current.version !== item.version ||
+    current.currentRunId !== item.currentRunId ||
+    current.state === "failed" ||
+    isTerminalWorkItemState(current.state)
+  )
+    return false;
+  yield* commitFailureSteps(
+    q,
+    current,
+    reason,
+    text,
+    now,
+    (version) => `fail:${item.id}:${version}:${reason}`,
+    options.stoppedByAnswer === true,
+  );
   return true;
 }
 
@@ -977,27 +1207,73 @@ export function failWorkItem(
   now: number,
   options: { stoppedByAnswer?: boolean } = {},
 ): boolean {
-  return immediate(db, () => {
-    const current = getWorkItem(db, item.id);
-    if (
-      current === null ||
-      current.version !== item.version ||
-      current.currentRunId !== item.currentRunId ||
-      current.state === "failed" ||
-      isTerminalWorkItemState(current.state)
-    )
-      return false;
-    commitFailure(
-      db,
-      current,
-      reason,
-      text,
-      now,
-      (version) => `fail:${item.id}:${version}:${reason}`,
-      options.stoppedByAnswer === true,
-    );
-    return true;
+  return settled(
+    sqliteDb(db).transaction((q) => failWorkItemSteps(q, item, reason, text, now, options)),
+  );
+}
+
+type CompleteMergedInput = {
+  itemId: string;
+  now: number;
+  announce?: (item: WorkItemRecord) => void;
+};
+
+export function* completeMergedItemSteps(
+  q: Q,
+  input: CompleteMergedInput,
+): Steps<WorkItemRecord | null> {
+  const current = yield* getWorkItemSteps(q, input.itemId);
+  if (current === null || current.state !== "merge_queue" || current.cancelRequested) return null;
+  const fact = yield* getConfirmedRemoteMergeSteps(q, current.id);
+  if (fact === null) return null;
+  const sessionId = current.sessionKey ?? current.id;
+  const generation = yield* getLinearSessionGenerationSteps(q, sessionId);
+  yield* enqueueOutboxOnceSteps(q, {
+    target: "linear",
+    op: "activity",
+    orderingKey: sessionId,
+    delivery: (yield* mergeStopRequestedSteps(q, current.id)) ? "stop" : "ordered",
+    generation,
+    idempotencyKey: `merged:${current.id}:${generation}`,
+    payload: {
+      sessionId,
+      itemId: current.id,
+      kind: "response",
+      body: yield* withOpenFindingsSteps(
+        q,
+        current.id,
+        `Merged #${fact.pullNumber} into main at ${fact.mergeSha ?? "unknown commit"}. ${current.linearIdentifier} is Done.`,
+      ),
+    },
+    now: input.now,
   });
+  const remaining = (yield* getPullRequestDraftSteps(q, current.id))?.remaining;
+  if (remaining?.length)
+    yield* enqueueOutboxOnceSteps(q, {
+      target: "linear",
+      op: "linear.remaining_issues",
+      orderingKey: current.linearIssueId,
+      idempotencyKey: `remaining:${current.id}`,
+      payload: {
+        itemId: current.id,
+        issueId: current.linearIssueId,
+        identifier: current.linearIdentifier,
+        repository: `${fact.repositoryOwner}/${fact.repositoryName}`,
+        pullUrl:
+          fact.pullUrl ??
+          `https://github.com/${fact.repositoryOwner}/${fact.repositoryName}/pull/${fact.pullNumber}`,
+        parts: remaining,
+      },
+      now: input.now,
+    });
+  input.announce?.(current);
+  const merged = yield* applyWorkItemEventSteps(q, current.id, "merge_accepted", {
+    now: input.now,
+  });
+  yield* endMergeCallSteps(q, current.id);
+  yield* endActiveRunSteps(q, current.currentRunId, input.now);
+  yield* cancelAdvancingJobsSteps(q, current.id, "merged", input.now);
+  return merged;
 }
 
 export function completeMergedItem(
@@ -1008,70 +1284,14 @@ export function completeMergedItem(
     announce?: (item: WorkItemRecord) => void;
   },
 ): WorkItemRecord | null {
-  return immediate(db, () => {
-    const current = getWorkItem(db, input.itemId);
-    if (
-      current === null ||
-      current.state !== "merge_queue" ||
-      current.cancelRequested ||
-      getConfirmedRemoteMerge(db, current.id) === null
-    )
-      return null;
-    const fact = getConfirmedRemoteMerge(db, current.id)!;
-    const sessionId = current.sessionKey ?? current.id;
-    const generation = getLinearSessionGeneration(db, sessionId);
-    enqueueOutboxOnce(db, {
-      target: "linear",
-      op: "activity",
-      orderingKey: sessionId,
-      delivery: mergeStopRequested(db, current.id) ? "stop" : "ordered",
-      generation,
-      idempotencyKey: `merged:${current.id}:${generation}`,
-      payload: {
-        sessionId,
-        itemId: current.id,
-        kind: "response",
-        body: withOpenFindings(
-          db,
-          current.id,
-          `Merged #${fact.pullNumber} into main at ${fact.mergeSha ?? "unknown commit"}. ${current.linearIdentifier} is Done.`,
-        ),
-      },
-      now: input.now,
-    });
-    const remaining = getPullRequestDraft(db, current.id)?.remaining;
-    if (remaining?.length)
-      enqueueOutboxOnce(db, {
-        target: "linear",
-        op: "linear.remaining_issues",
-        orderingKey: current.linearIssueId,
-        idempotencyKey: `remaining:${current.id}`,
-        payload: {
-          itemId: current.id,
-          issueId: current.linearIssueId,
-          identifier: current.linearIdentifier,
-          repository: `${fact.repositoryOwner}/${fact.repositoryName}`,
-          pullUrl:
-            fact.pullUrl ??
-            `https://github.com/${fact.repositoryOwner}/${fact.repositoryName}/pull/${fact.pullNumber}`,
-          parts: remaining,
-        },
-        now: input.now,
-      });
-    input.announce?.(current);
-    const merged = applyWorkItemEvent(db, current.id, "merge_accepted", { now: input.now });
-    endMergeCall(db, current.id);
-    endActiveRun(db, current.currentRunId, input.now);
-    cancelAdvancingJobs(db, current.id, "merged", input.now);
-    return merged;
-  });
+  return settled(sqliteDb(db).transaction((q) => completeMergedItemSteps(q, input)));
 }
 
-function endActiveRun(db: Database, runId: string | null, now: number): void {
+function* endActiveRunSteps(q: Q, runId: string | null, now: number) {
   if (runId === null) return;
-  const run = getRun(db, runId);
+  const run = yield* getRunSteps(q, runId);
   if (run && (run.status === "active" || run.status === "provisioning"))
-    markRun(db, runId, "ended", now);
+    yield* markRunSteps(q, runId, "ended", now);
 }
 
 export function* cancelAdvancingJobsSteps(q: Q, itemId: string, reason: string, now: number) {
@@ -1107,102 +1327,113 @@ function advancingQueue(q: Q) {
   );
 }
 
-export function deferWorkItem(
-  db: Database,
+type DeferInput = {
+  retry: number;
+  delayMs: number;
+  handoff: string | null;
+  message: string | null;
+  now: number;
+  lastError?: string;
+  capacityWait?: RunnerCapacityWaitState;
+  closeoutFault?: CloseoutFaults & { jobId: number; reviewer?: string };
+};
+
+/** Says whether the deferral inserted a job. */
+export function* deferWorkItemSteps(q: Q, item: WorkItemRecord, input: DeferInput): Steps<boolean> {
+  const before = (yield* getWorkItemSteps(q, item.id)) ?? item;
+  const reverify = before.state === "verifying" && hasVerificationCandidate(before.checkpoint);
+  if (!reverify && (item.state === "running" || item.state === "verifying"))
+    yield* applyWorkItemEventSteps(q, item.id, "deferred");
+  const current = (yield* getWorkItemSteps(q, item.id)) ?? item;
+  journal(
+    `item ${item.linearIdentifier} deferred: ${reverify ? "re-verify" : "retry"} ${input.retry} in ${input.delayMs} ms`,
+  );
+  if (current.currentRunId !== null) {
+    const run = yield* getRunSteps(q, current.currentRunId);
+    if (run && (run.status === "active" || run.status === "provisioning"))
+      yield* markRunSteps(q, run.id, "lost", input.now);
+  }
+  const capacityWait = input.capacityWait ? { capacityWait: input.capacityWait } : {};
+  const lastError = input.lastError === undefined ? {} : { lastError: input.lastError };
+  const fault = input.closeoutFault;
+  const { inserted } =
+    reverify && fault
+      ? yield* enqueueJobOnceSteps(q, {
+          queue: JOB_KIND.reverify,
+          jobKey: `reverify:closeout-fault:${item.id}:${fault.jobId}`,
+          runAt: input.now + input.delayMs,
+          payload: {
+            itemId: item.id,
+            runId: current.currentRunId,
+            reason: "closeout_fault",
+            recheckHead: true,
+            failClosed: true,
+            closeoutFaults: { head: fault.head, reasons: fault.reasons },
+            ...(fault.reviewer === undefined ? {} : { reviewerFault: fault.reviewer }),
+          },
+          now: input.now,
+        })
+      : reverify
+        ? yield* enqueueJobOnceSteps(q, {
+            queue: JOB_KIND.reverify,
+            jobKey: `reverify:retry:${item.id}:${current.version}:${input.retry}`,
+            runAt: input.now + input.delayMs,
+            maxAttempts: Math.max(1, MAX_TRANSIENT_RETRIES - input.retry + 1),
+            payload: {
+              itemId: item.id,
+              runId: current.currentRunId,
+              reason: "transient_failure",
+              retry: input.retry,
+              recheckHead: true,
+              failClosed: true,
+              ...capacityWait,
+              ...lastError,
+            },
+            now: input.now,
+          })
+        : yield* enqueueJobOnceSteps(q, {
+            queue: JOB_KIND.resume,
+            jobKey: `resume:${item.id}:${current.version}`,
+            runAt: input.now + input.delayMs,
+            payload: {
+              itemId: item.id,
+              runId: current.currentRunId,
+              reason: "transient_failure",
+              retry: input.retry,
+              ...(yield* pendingRestartHandoffSteps(q, item.id)),
+              ...(input.handoff === null ? {} : { handoff: input.handoff }),
+              ...capacityWait,
+              ...lastError,
+            },
+            now: input.now,
+          });
+  if (input.message !== null)
+    yield* enqueueOutboxOnceSteps(q, {
+      target: OUTBOX_ACTIVITY.target,
+      op: OUTBOX_ACTIVITY.op,
+      orderingKey: item.sessionKey ?? item.id,
+      idempotencyKey: fault
+        ? fault.reviewer === undefined
+          ? `closeout-fault:${item.id}:${fault.jobId}`
+          : `${REVIEWER_ALERT}${fault.reviewer}:${item.id}:${fault.jobId}`
+        : `retry:${item.id}:${current.version}`,
+      payload: { sessionId: item.sessionKey ?? item.id, kind: "thought", body: input.message },
+      now: input.now,
+    });
+  return inserted;
+}
+
+export function deferWorkItem(db: Database, item: WorkItemRecord, input: DeferInput): void {
+  if (settled(sqliteDb(db).transaction((q) => deferWorkItemSteps(q, item, input))))
+    emitJobReady(db);
+}
+
+export async function deferWorkItemAsync(
+  store: Db,
   item: WorkItemRecord,
-  input: {
-    retry: number;
-    delayMs: number;
-    handoff: string | null;
-    message: string | null;
-    now: number;
-    lastError?: string;
-    capacityWait?: RunnerCapacityWaitState;
-    closeoutFault?: CloseoutFaults & { jobId: number; reviewer?: string };
-  },
-): void {
-  immediate(db, () => {
-    const before = getWorkItem(db, item.id) ?? item;
-    const reverify = before.state === "verifying" && hasVerificationCandidate(before.checkpoint);
-    if (!reverify && (item.state === "running" || item.state === "verifying"))
-      applyWorkItemEvent(db, item.id, "deferred");
-    const current = getWorkItem(db, item.id) ?? item;
-    journal(
-      `item ${item.linearIdentifier} deferred: ${reverify ? "re-verify" : "retry"} ${input.retry} in ${input.delayMs} ms`,
-    );
-    if (current.currentRunId !== null) {
-      const run = getRun(db, current.currentRunId);
-      if (run && (run.status === "active" || run.status === "provisioning"))
-        markRun(db, run.id, "lost", input.now);
-    }
-    const capacityWait = input.capacityWait ? { capacityWait: input.capacityWait } : {};
-    const lastError = input.lastError === undefined ? {} : { lastError: input.lastError };
-    const fault = input.closeoutFault;
-    if (reverify && fault)
-      enqueueJobOnce(db, {
-        queue: JOB_KIND.reverify,
-        jobKey: `reverify:closeout-fault:${item.id}:${fault.jobId}`,
-        runAt: input.now + input.delayMs,
-        payload: {
-          itemId: item.id,
-          runId: current.currentRunId,
-          reason: "closeout_fault",
-          recheckHead: true,
-          failClosed: true,
-          closeoutFaults: { head: fault.head, reasons: fault.reasons },
-          ...(fault.reviewer === undefined ? {} : { reviewerFault: fault.reviewer }),
-        },
-        now: input.now,
-      });
-    else if (reverify)
-      enqueueJobOnce(db, {
-        queue: JOB_KIND.reverify,
-        jobKey: `reverify:retry:${item.id}:${current.version}:${input.retry}`,
-        runAt: input.now + input.delayMs,
-        maxAttempts: Math.max(1, MAX_TRANSIENT_RETRIES - input.retry + 1),
-        payload: {
-          itemId: item.id,
-          runId: current.currentRunId,
-          reason: "transient_failure",
-          retry: input.retry,
-          recheckHead: true,
-          failClosed: true,
-          ...capacityWait,
-          ...lastError,
-        },
-        now: input.now,
-      });
-    else
-      enqueueJobOnce(db, {
-        queue: JOB_KIND.resume,
-        jobKey: `resume:${item.id}:${current.version}`,
-        runAt: input.now + input.delayMs,
-        payload: {
-          itemId: item.id,
-          runId: current.currentRunId,
-          reason: "transient_failure",
-          retry: input.retry,
-          ...pendingRestartHandoff(db, item.id),
-          ...(input.handoff === null ? {} : { handoff: input.handoff }),
-          ...capacityWait,
-          ...lastError,
-        },
-        now: input.now,
-      });
-    if (input.message !== null)
-      enqueueOutboxOnce(db, {
-        target: OUTBOX_ACTIVITY.target,
-        op: OUTBOX_ACTIVITY.op,
-        orderingKey: item.sessionKey ?? item.id,
-        idempotencyKey: fault
-          ? fault.reviewer === undefined
-            ? `closeout-fault:${item.id}:${fault.jobId}`
-            : `${REVIEWER_ALERT}${fault.reviewer}:${item.id}:${fault.jobId}`
-          : `retry:${item.id}:${current.version}`,
-        payload: { sessionId: item.sessionKey ?? item.id, kind: "thought", body: input.message },
-        now: input.now,
-      });
-  });
+  input: DeferInput,
+): Promise<void> {
+  if (await store.transaction((q) => deferWorkItemSteps(q, item, input))) emitJobReady(store);
 }
 
 export type CloseoutFaults = { head: string; reasons: readonly string[] };
@@ -1310,9 +1541,9 @@ export function runnerCapacityWait(payload: unknown): RunnerCapacityWaitState | 
     : null;
 }
 
-function failForCap(db: Database, item: WorkItemRecord, stage: TimeStage, now: number): void {
-  commitFailure(
-    db,
+function* failForCapSteps(q: Q, item: WorkItemRecord, stage: TimeStage, now: number) {
+  yield* commitFailureSteps(
+    q,
     item,
     "cap:time",
     capActivityText(stage, stageLimits(item), awakeBreakdown(item)),
@@ -1321,28 +1552,40 @@ function failForCap(db: Database, item: WorkItemRecord, stage: TimeStage, now: n
   );
 }
 
-function commitFailure(
-  db: Database,
+function* commitFailureSteps(
+  q: Q,
   item: WorkItemRecord,
   reason: string,
   text: string,
   now: number,
   idempotencyKey: (version: number) => string,
   stoppedByAnswer = false,
-): void {
-  const version = moveToFailed(db, item, stoppedByAnswer);
+) {
+  const { outbox } = q.t;
+  const version = yield* moveToFailedSteps(q, item, stoppedByAnswer);
   journal(`item ${item.linearIdentifier} failed: ${reason}`);
-  db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
-  if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
-  cancelOpenJobs(db, { itemId: item.id, reason, now });
+  yield* setItemSteps(q, item.id, { cancelRequested: 1 });
+  if (item.currentRunId !== null) yield* markRunSteps(q, item.currentRunId, "lost", now);
+  yield* cancelOpenJobsSteps(q, { itemId: item.id, reason, now });
   const sessionId = item.sessionKey ?? item.id;
-  const generation = getLinearSessionGeneration(db, sessionId);
+  const generation = yield* getLinearSessionGenerationSteps(q, sessionId);
   const afterPr =
-    db
-      .query(`SELECT 1 FROM outbox WHERE target='linear' AND ordering_key=?
-    AND delivery_generation=? AND idempotency_key LIKE 'pull-request-ready:%' AND status!='dropped' LIMIT 1`)
-      .get(sessionId, generation) !== null;
-  enqueueOutboxOnce(db, {
+    (yield* q.one(
+      q.orm
+        .select({ one: sql`1` })
+        .from(outbox)
+        .where(
+          and(
+            eq(outbox.target, "linear"),
+            eq(outbox.orderingKey, sessionId),
+            eq(outbox.deliveryGeneration, generation),
+            likeText(q, outbox.idempotencyKey, "pull-request-ready:%"),
+            ne(outbox.status, "dropped"),
+          ),
+        )
+        .limit(1),
+    )) !== undefined;
+  yield* enqueueOutboxOnceSteps(q, {
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
     orderingKey: sessionId,
@@ -1351,20 +1594,20 @@ function commitFailure(
     payload: {
       sessionId,
       kind: afterPr ? "response" : "error",
-      body: afterPr ? withOpenFindings(db, item.id, `Closed: ${text}`) : text,
+      body: afterPr ? yield* withOpenFindingsSteps(q, item.id, `Closed: ${text}`) : text,
     },
     now,
   });
 }
 
-function moveToFailed(db: Database, item: WorkItemRecord, stopped: boolean): number {
+function* moveToFailedSteps(q: Q, item: WorkItemRecord, stopped: boolean): Steps<number> {
   if (item.state === "failed") return item.version;
   const event =
     stopped && item.state === "awaiting_input" ? "answer_stopped" : failureEvent(item.state);
   if (event === null) {
     throw new TransitionRejectedError("illegal_transition");
   }
-  return applyWorkItemEvent(db, item.id, event).version;
+  return (yield* applyWorkItemEventSteps(q, item.id, event)).version;
 }
 
 function failureEvent(state: WorkItemState): WorkItemEvent | null {
