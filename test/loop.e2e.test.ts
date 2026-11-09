@@ -11,7 +11,7 @@ import type { Database } from "bun:sqlite";
 import * as acp from "../src/acp";
 import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
-import type { Finding } from "../src/closeout";
+import { createCloseoutGate, type Finding } from "../src/closeout";
 import { JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
@@ -1870,6 +1870,7 @@ for (const review of invalidReviews) {
       jobs,
       outbox,
       pawsRoot: layout.pawsRoot,
+      closeoutGate: (options) => createCloseoutGate({ ...options, reviewRetryDelaysMs: [0, 0, 0] }),
       home: layout.home,
       tracker,
       repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
