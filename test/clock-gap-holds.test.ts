@@ -103,7 +103,7 @@ function snapshot(db: Database) {
     },
     run: item.currentRunId ? getRun(db, item.currentRunId)?.status : null,
     jobs: listJobs(db)
-      .filter((job) => job.queue !== JOB_KIND.catchup && job.queue !== "closeout.stall")
+      .filter((job) => job.queue !== JOB_KIND.catchup)
       .map((job) => ({ id: job.id, queue: job.queue, status: job.status, runAt: job.runAt })),
     questions: db
       .query("SELECT id, status, cancelled_at FROM question WHERE item_id='item' ORDER BY id")

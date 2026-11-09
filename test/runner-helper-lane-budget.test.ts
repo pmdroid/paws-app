@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { runAgent } from "../src/acp";
-import { JOB_KIND, RunnerSlotsBusyError, systemClock } from "../src/core";
+import { RunnerSlotsBusyError, systemClock } from "../src/core";
 import { JobLoop, OutboxDispatcher, getWorkItem, migrate, openDatabase } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
@@ -65,13 +65,10 @@ test("a busy helper lane leaves the start attempts alone and a failing helper sp
       agentForItem: () => failing("work"),
     },
   });
-  const runnable = () =>
-    db.run("UPDATE job SET run_at=0 WHERE status='pending' AND queue != 'closeout.stall'");
+  const runnable = () => db.run("UPDATE job SET run_at=0 WHERE status='pending'");
   const attempts = () =>
     db
-      .query<{ attempts: number }, []>(
-        "SELECT attempts FROM job WHERE status='pending' AND queue != 'closeout.stall'",
-      )
+      .query<{ attempts: number }, []>("SELECT attempts FROM job WHERE status='pending'")
       .all()
       .map((row) => row.attempts);
   try {
@@ -80,7 +77,7 @@ test("a busy helper lane leaves the start attempts alone and a failing helper sp
     const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
     for (let wait = 0; wait < 3; wait++) {
       runnable();
-      await jobs.tick([JOB_KIND.start, JOB_KIND.resume]);
+      await jobs.tick();
     }
     expect(helperCalls).toEqual(["classify", "classify", "classify"]);
     expect(getWorkItem(db, itemId)?.state).toBe("recovering");
@@ -89,7 +86,7 @@ test("a busy helper lane leaves the start attempts alone and a failing helper sp
     outcome = new Error("Remote session helper timed out");
     helperCalls.length = 0;
     runnable();
-    await jobs.tick([JOB_KIND.start, JOB_KIND.resume]);
+    await jobs.tick();
     expect(helperCalls).toEqual(["classify"]);
     expect(attempts()).toEqual([1]);
     expect(getWorkItem(db, itemId)?.state).not.toBe("failed");

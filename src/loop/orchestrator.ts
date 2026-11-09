@@ -1811,20 +1811,6 @@ export class Orchestrator {
           ),
         ),
     };
-    jobs.register("closeout.stall", async () => {
-      await recoverStalledCloseout(this.db, {
-        now: this.now(),
-        cancel: (id) => this.joinChangedItems([id]),
-        journal: this.options.journal ?? journal,
-      });
-    });
-    enqueueJobOnce(this.db, {
-      queue: "closeout.stall",
-      jobKey: "closeout.stall",
-      runAt: this.now() + 60_000,
-      recurringEveryMs: 60_000,
-      now: this.now(),
-    });
     jobs.register("item.ask", async (job, context) => {
       if (!context.isCurrent()) return;
       const id = readString(job.payload, "itemId");
@@ -6827,6 +6813,14 @@ export class Orchestrator {
 
   reconcileExecution(): void {
     this.dispatch();
+  }
+
+  async recoverStalledCloseout(): Promise<void> {
+    await recoverStalledCloseout(this.db, {
+      now: this.now(),
+      cancel: (id) => this.joinChangedItems([id]),
+      journal: this.options.journal ?? journal,
+    });
   }
 
   async checkPolicyBlocks(): Promise<void> {
