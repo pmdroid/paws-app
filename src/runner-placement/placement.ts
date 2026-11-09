@@ -78,6 +78,10 @@ export const LOAD_HALF_LIFE_MS = 60 * 60_000;
 /** Placement authority cannot currently authorize this task. */
 export class PlacementUnavailableError extends Error {}
 
+type SessionWait = { runnerId: string; since: number; seen: number };
+// Admission previews and execution must observe the same session grace period.
+const sessionWaitsByDatabase = new WeakMap<Database, Map<string, SessionWait>>();
+
 export function createRunnerPlacement(options: {
   db: Database;
   sessionActor?: (sessionId: string) => string | undefined;
@@ -97,7 +101,8 @@ export function createRunnerPlacement(options: {
     }
   >();
   // Per item: since when placement has held a task for its busy session runner.
-  const sessionWaits = new Map<string, { runnerId: string; since: number; seen: number }>();
+  const sessionWaits = sessionWaitsByDatabase.get(db) ?? new Map<string, SessionWait>();
+  sessionWaitsByDatabase.set(db, sessionWaits);
   function admissionKey(
     runnerId: string,
     input: Pick<PlacementRequest, "itemId" | "sessionId" | "purpose" | "role" | "profile">,
