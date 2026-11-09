@@ -221,6 +221,7 @@ async function runWithFault(
       closed: progress("response").filter((body) => body.startsWith("Closed:")),
       questions: progress("elicitation"),
       pending: listJobs(db)
+        .filter((job) => job.queue !== "closeout.stall")
         .filter((job) => job.status === "pending" || job.status === "running")
         .map((job) => job.queue),
       injected,
