@@ -931,6 +931,33 @@ export function confirmRunnerWorkTeardown(db: Database, input: TeardownConfirmat
   settled(sqliteDb(db).run((q) => confirmRunnerWorkTeardownSteps(q, input)));
 }
 
+const OVER_FOR_GOOD = ["merged", "completed", "cancelled", "failed"];
+
+export function* runnerFinishedRunsSteps(q: Q, runnerId: string, limit = 64) {
+  const { run, runnerWork, workItem } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ runId: runnerWork.runId })
+      .from(runnerWork)
+      .innerJoin(run, eq(run.id, runnerWork.runId))
+      .innerJoin(workItem, eq(workItem.id, run.itemId))
+      .where(
+        and(
+          eq(runnerWork.runnerId, runnerId),
+          isNotNull(runnerWork.teardownConfirmedAt),
+          inArray(workItem.state, OVER_FOR_GOOD),
+        ),
+      )
+      .orderBy(desc(runnerWork.teardownConfirmedAt))
+      .limit(limit),
+  );
+  return rows.map((row) => row.runId);
+}
+
+export function runnerFinishedRuns(db: Database, runnerId: string): string[] {
+  return settled(sqliteDb(db).run((q) => runnerFinishedRunsSteps(q, runnerId)));
+}
+
 export function* setRunnerWorkLastSequenceSteps(q: Q, runId: string, sequence: number) {
   const { runnerWork: w } = q.t;
   yield* q.exec(q.orm.update(w).set({ lastSequence: sequence }).where(eq(w.runId, runId)));

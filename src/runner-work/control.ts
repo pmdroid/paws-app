@@ -23,6 +23,7 @@ import {
   runnerCheckpointPending,
   runnerCommandAcknowledgedBy,
   runnerCommandEnvelope,
+  runnerFinishedRuns,
   runnerHostVersion,
   runnerResultForCommand,
   runnerWorkAssignment,
@@ -73,6 +74,7 @@ import {
   RUNNER_LEASE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
   OPENCODE_RUNNER_VERSION,
+  WORK_ROOT_CLEANUP_RUNNER_VERSION,
   RunnerCommandSchema,
   runnerReleaseAtLeast,
   RunnerEventSchema,
@@ -702,9 +704,16 @@ export function createRunnerWork(options: {
           for (const { runId, generation } of reported)
             confirmRunnerWork(db, { runId, generation, at, runnerId });
         }
+        const finishedRuns = runnerReleaseAtLeast(
+          host.runnerVersion ?? storedVersion,
+          WORK_ROOT_CLEANUP_RUNNER_VERSION,
+        )
+          ? runnerFinishedRuns(db, runnerId)
+          : [];
         return {
           leases,
           fenced,
+          ...(finishedRuns.length ? { finishedRuns } : {}),
           ...(liveAfter === undefined ? {} : { observedAt: at }),
           ...(terminated === undefined ? {} : { terminated: [...terminated] }),
           ...(offlineCredit === undefined ? {} : offlineCredit),

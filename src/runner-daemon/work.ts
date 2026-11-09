@@ -17,6 +17,7 @@ const assignment = z.strictObject({ runId: identifier, generation });
 
 export const RunnerHeartbeatSchema = z.strictObject({
   terminated: z.array(RunnerTerminationSchema).max(64).optional(),
+  finishedRuns: z.array(identifier).max(64).optional(),
   observedAt: timestamp.optional(),
   leases: z.array(z.strictObject({ ...assignment.shape, expiresAt: timestamp })),
   fenced: z.array(assignment),
