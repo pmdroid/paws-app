@@ -525,6 +525,68 @@ test("a conversation helper that expires without a result stops holding the merg
   expect(conversationHolds(talk, "acme-1")).toBe(false);
 });
 
+test("a helper result stored before it expires holds the merge until the job posts it", async () => {
+  const f = setup();
+  const acme = f.item("acme-1");
+  await f.reply(acme.session, "Please add a test for the card retry.");
+  expect(await f.deliver("acme-1")).toBe("wait");
+  const [started] = f.conversations();
+  const talk = createConversationTurns({ db: f.db, helpers: f.helpers, now: () => f.clock.now() });
+  const plan = "Add a test that checkout retries a card once on a gateway timeout.";
+  f.clock.advance(RUNNER_CONVERSATION_MS - 5_000);
+  f.answer(started!.id, { text: "", startWork: plan });
+  f.clock.advance(10_000);
+  expect(conversationHolds(talk, "acme-1")).toBe(true);
+
+  expect(await f.deliver("acme-1")).toBe("done");
+  expect(conversationHolds(talk, "acme-1")).toBe(false);
+  expect(f.responses(acme.session)).toEqual([`${START_WORK_RESPONSE}${plan}`]);
+  expect(getWorkItem(f.db, "acme-1")!.state).toBe("queued");
+});
+
+test("a reply taken on during a merge job waits through Closeout and starts the conversation back in the merge queue", async () => {
+  const f = setup();
+  const acme = f.item("acme-1");
+  const merge = claimMerge(f, "acme-1");
+  await f.reply(acme.session, "Is the retry covered by a test?");
+  expect(await f.deliver("acme-1")).toBe("wait");
+
+  parkMergeJob(f, merge.id, f.clock.now() + 600_000);
+  f.db.run("UPDATE work_item SET state='verifying' WHERE id='acme-1'");
+  expect(await f.deliver("acme-1")).toBe("wait");
+  expect(f.conversations()).toEqual([]);
+  expect(listPendingLinearTurns(f.db, acme.session)).toHaveLength(1);
+
+  f.db.run("UPDATE work_item SET state='merge_queue' WHERE id='acme-1'");
+  expect(await f.orchestrator["merge"]({ itemId: "acme-1" }, merge.id)).toMatchObject(
+    CONVERSATION_HOLD,
+  );
+  expect(await f.deliver("acme-1")).toBe("wait");
+  expect(f.conversations()[0]!.command.prompt).toContain("Is the retry covered by a test?");
+  expect(listPendingLinearTurns(f.db, acme.session)).toEqual([]);
+});
+
+test("each session reply gathers its own conversation job, so a later reply is not deduped away", async () => {
+  const f = setup();
+  const acme = f.item("acme-1");
+  const gathered = () =>
+    listJobs(f.db)
+      .filter((job) => job.queue === JOB_KIND.linearComments && job.status === "pending")
+      .map((job) => job.jobKey);
+  f.turn(acme.session, "turn-1", "Is the retry covered by a test?");
+  await f.orchestrator["resumeLinearSession"](acme.session);
+  expect(gathered()).toEqual(["linear-turns:acme-1:turn-1"]);
+
+  f.db.run("UPDATE job SET status='done', finished_at=? WHERE queue=?", [
+    f.clock.now(),
+    JOB_KIND.linearComments,
+  ]);
+  f.clock.advance(1_000);
+  f.turn(acme.session, "turn-2", "And the gateway timeout?");
+  await f.orchestrator["resumeLinearSession"](acme.session);
+  expect(gathered()).toEqual(["linear-turns:acme-1:turn-2"]);
+});
+
 test("start_work while the merge waits for the conversation restarts the item instead of refusing", async () => {
   const f = setup();
   const acme = f.item("acme-1");

@@ -296,8 +296,29 @@ export async function deliverLinearComments(
   itemId: string,
   caps: LinearCommentCapabilities,
 ): Promise<LinearCommentStep> {
-  const item = getWorkItem(db, itemId);
   const talk = (await caps.conversations?.()) ?? null;
+  const step = await deliverOnce(db, itemId, caps, talk);
+  return step === "done" && talk !== null && sessionRepliesWaiting(db, itemId) ? "wait" : step;
+}
+
+function sessionRepliesWaiting(db: Database, itemId: string): boolean {
+  const item = getWorkItem(db, itemId);
+  return (
+    item !== null &&
+    item.sessionKey !== null &&
+    !item.cancelRequested &&
+    !isTerminalWorkItemState(item.state) &&
+    listPendingLinearTurns(db, item.sessionKey).length > 0
+  );
+}
+
+async function deliverOnce(
+  db: Database,
+  itemId: string,
+  caps: LinearCommentCapabilities,
+  talk: LinearConversations | null,
+): Promise<LinearCommentStep> {
+  const item = getWorkItem(db, itemId);
   if (talk !== null) {
     if (await postConversationReplies(db, itemId, talk, caps)) {
       await caps.flush();
@@ -306,12 +327,9 @@ export async function deliverLinearComments(
     if (talk.open(itemId).length > 0) return "wait";
   }
   const all = pendingLinearComments(db, itemId);
-  const conversable = talk !== null && item !== null && canConverse(item);
-  const idle = conversable && !caps.busy(item);
-  const waiting = conversable ? listPendingLinearTurns(db, item.sessionKey!) : [];
-  const turns = idle ? waiting : [];
-  if (all.length === 0 && waiting.length === 0) return "done";
-  if (all.length === 0 && turns.length === 0) return "wait";
+  const idle = talk !== null && item !== null && canConverse(item) && !caps.busy(item);
+  const turns = idle ? listPendingLinearTurns(db, item.sessionKey!) : [];
+  if (all.length === 0 && turns.length === 0) return "done";
   if (item === null || isTerminalWorkItemState(item.state) || item.cancelRequested) {
     settleLinearComments(
       db,
@@ -425,7 +443,7 @@ export async function deliverLinearComments(
 }
 
 export function conversationHolds(talk: LinearConversations, itemId: string): boolean {
-  return talk.open(itemId).some((turn) => !turn.expired);
+  return talk.open(itemId).some((turn) => turn.result !== null || !turn.expired);
 }
 
 export function canConverse(item: WorkItemRecord): boolean {

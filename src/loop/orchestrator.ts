@@ -7853,7 +7853,7 @@ export class Orchestrator {
       item.id,
       this.now(),
       { quietMs: 0, maxMs: 0 },
-      `linear-turns:${item.id}:${listPendingLinearTurns(this.db, sessionId)[0]?.eventKey ?? ""}`,
+      `linear-turns:${item.id}:${listPendingLinearTurns(this.db, sessionId).at(-1)?.eventKey ?? ""}`,
     );
     return true;
   }
