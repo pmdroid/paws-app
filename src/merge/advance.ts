@@ -6,7 +6,7 @@ import {
   mergeStopRequestedSteps,
   carriedAcceptForSteps,
   closeoutPolicyDigestsSteps,
-  completeMergedItem,
+  completeMergedItemSteps,
   countMergeDenialsSteps,
   endMergeCall,
   endMergeCallSteps,
@@ -199,11 +199,11 @@ export async function advanceMerge(
     return { kind: "obsolete" };
   if (await store.run((q) => getConfirmedRemoteMergeSteps(q, item.id))) {
     await store.run((q) => endMergeCallSteps(q, item.id));
-    if (completeMergedItem(db, { itemId: item.id, now: caps.now() })) caps.completed();
+    await completeMerged(store, item, caps);
     return { kind: "obsolete" };
   }
   // A pull request merged by hand on GitHub merges the item: publishing again would open another.
-  const outside = await mergedOutsideLane(db, store, item, caps);
+  const outside = await mergedOutsideLane(store, item, caps);
   if (outside) return outside;
   if (await store.run((q) => mergeCallInFlightSteps(q, item.id))) {
     reverifyAfterRestart(db, item, input.jobId, caps.now());
@@ -404,8 +404,7 @@ export async function advanceMerge(
   if (turn.kind !== "merged" && (await store.run((q) => mergeStopRequestedSteps(q, item.id))))
     return { kind: "obsolete" };
   if (caps.stopped()) {
-    if (turn.kind === "merged" && completeMergedItem(db, { itemId: item.id, now: caps.now() }))
-      caps.completed();
+    if (turn.kind === "merged") await completeMerged(store, item, caps);
     return { kind: "obsolete" };
   }
   if (turn.kind === "merged") return { kind: "merged" };
@@ -499,7 +498,7 @@ export async function advanceMerge(
     round("failed");
   }
   // A person merged the pull request on GitHub during the turn, so the lane found it closed.
-  const late = await mergedOutsideLane(db, store, item, caps);
+  const late = await mergedOutsideLane(store, item, caps);
   if (late) return late;
   const denials = (head: string) => store.run((q) => countMergeDenialsSteps(q, item.id, head));
   if (
@@ -690,7 +689,6 @@ function queueName(repository: { owner: string; repo: string }): string {
  * queue. The `merged` step completes it like a lane merge, which cancels its queued merge jobs.
  */
 async function mergedOutsideLane(
-  db: Database,
   store: Db,
   item: WorkItemRecord,
   caps: MergeCapabilities,
@@ -712,10 +710,21 @@ async function mergedOutsideLane(
     `item ${item.linearIdentifier} merged outside the merge lane: #${merge.pullNumber} at ${merge.mergeSha ?? "unknown commit"}`,
   );
   if (caps.stopped()) {
-    if (completeMergedItem(db, { itemId: item.id, now: caps.now() })) caps.completed();
+    await completeMerged(store, item, caps);
     return { kind: "obsolete" };
   }
   return { kind: "merged" };
+}
+
+async function completeMerged(
+  store: Db,
+  item: WorkItemRecord,
+  caps: MergeCapabilities,
+): Promise<void> {
+  const completed = await store.transaction((q) =>
+    completeMergedItemSteps(q, { itemId: item.id, now: caps.now() }),
+  );
+  if (completed) caps.completed();
 }
 
 /** Unknown remote outcomes wait without spending the CI deadline or leaving the queue. */

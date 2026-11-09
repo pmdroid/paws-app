@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   enqueueJobOnce,
-  getItemPullRequest,
+  getItemPullRequestSteps,
   getWorkItemSteps,
   immediate,
   itemJobRunning,
@@ -71,7 +71,7 @@ export async function returnQueuedConflicts(
   for (const itemId of await queuedBehindFront(store, sweep.repository)) {
     const item = await store.run((q) => getWorkItemSteps(q, itemId));
     if (!item || item.state !== "merge_queue" || item.cancelRequested) continue;
-    const pull = getItemPullRequest(db, item.id);
+    const pull = await store.run((q) => getItemPullRequestSteps(q, item.id));
     if (pull === null) continue;
     const read = await caps.readPull(item, pull.pullNumber);
     if (read === null || !read.open || read.merges !== "conflict") continue;

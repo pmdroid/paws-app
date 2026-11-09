@@ -8,7 +8,7 @@ import {
   resetOtherLaneCiFailures,
   artifactPublicationReady,
   clearPullCiFailures,
-  getItemPullRequest,
+  getItemPullRequestSteps,
   getLinearSessionGenerationSteps,
   getWorkItem,
   getWorkItemSteps,
@@ -102,9 +102,9 @@ export async function feedbackHold(
   merge: MergeContext,
   payload: unknown,
 ): Promise<MergeStep | null> {
-  const { db, item, caps } = merge;
+  const { db, store, item, caps } = merge;
   if (!feedbackPending(db, item.id)) return null;
-  const pull = getItemPullRequest(db, item.id);
+  const pull = await store.run((q) => getItemPullRequestSteps(q, item.id));
   const head = ciWaitVerification(payload)?.head ?? item.checkpoint?.wipCommit;
   if (pull !== null && head) await observeHeldCi(merge, { number: pull.pullNumber, head });
   if (caps.stopped()) return { kind: "obsolete" };
