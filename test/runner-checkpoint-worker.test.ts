@@ -382,6 +382,39 @@ test.skipIf(!linux)(
   },
 );
 
+// A stop with no sha lets the backend restart from the base, so a change must never produce one.
+for (const change of ["edited", "deleted"] as const) {
+  test.skipIf(!linux)(
+    `an interrupted turn with a ${change} tracked file saves a commit`,
+    async () => {
+      const context = await fixture();
+      await context.execute({
+        checkpointIntervalMs: 3_600_000,
+        async runAgent(options) {
+          const file = join(options.worktreePath, "original.txt");
+          if (change === "edited") writeFileSync(file, "changed by the agent");
+          else rmSync(file);
+          return {
+            role: "implementer",
+            stopReason: "cancelled",
+            cancelled: true,
+            interrupted: true,
+            timedOut: false,
+            authRequired: false,
+            agentExited: true,
+          };
+        },
+      });
+      const [saved] = context.checkpoints();
+      expect(saved?.sha).toBeTruthy();
+      const clone = await context.published(saved!.sha!);
+      if (change === "edited")
+        expect(readFileSync(join(clone, "original.txt"), "utf8")).toBe("changed by the agent");
+      else expect(existsSync(join(clone, "original.txt"))).toBe(false);
+    },
+  );
+}
+
 test.skipIf(!linux)(
   "an unchanged interrupted worktree is safe to restart without a new checkpoint",
   async () => {
