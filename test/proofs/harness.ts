@@ -95,6 +95,7 @@ function fixtureGitHub(input: {
   repository: string;
   origin: string;
   ciPending?: boolean;
+  noCi?: boolean;
 }): {
   client: GitHubClient;
   ci: { pending: boolean };
@@ -122,6 +123,10 @@ function fixtureGitHub(input: {
     if (path === "/graphql") {
       const { head } = (request.body as { variables: { head: string } }).variables;
       const body = fakeMergeReadiness(head);
+      if (input.noCi) {
+        body.data.repository.object.statusCheckRollup.contexts.nodes = [];
+        body.data.repository.object.pushedAt = new Date(Date.now() - 6 * 60_000).toISOString();
+      }
       if (ci.pending) {
         body.data.repository.object.statusCheckRollup.state = "PENDING";
         body.data.repository.object.statusCheckRollup.contexts.nodes[0]!.conclusion = null;
@@ -232,6 +237,7 @@ export type Proof = {
   covers: string[];
   summary: string;
   ciPending?: boolean;
+  noCi?: boolean;
   /** `.agents/closeout.yaml` for this scenario, instead of the default. */
   policy?: string;
   agent(input: LaunchInput): FakeStep[];
@@ -278,6 +284,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     repository: ACME.repository,
     origin: bare,
     ciPending: proof.ciPending,
+    noCi: proof.noCi,
   });
   const db = openDatabase(join(pawsRoot, "paws.db"));
   migrate(db);
