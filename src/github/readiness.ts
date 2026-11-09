@@ -44,7 +44,11 @@ const responseSchema = z.object({
   errors: z.array(z.unknown()).optional(),
   data: z.object({
     repository: z.object({
-      object: z.object({ oid: z.string(), statusCheckRollup: rollupSchema }),
+      object: z.object({
+        oid: z.string(),
+        pushedAt: z.string().nullable().optional(),
+        statusCheckRollup: rollupSchema,
+      }),
       pullRequest: z.object({
         headRefOid: z.string(),
         state: z.enum(["OPEN", "CLOSED", "MERGED"]),
@@ -73,6 +77,7 @@ const query = `query MergeReadiness($owner: String!, $repo: String!, $number: In
     object(oid: $head) {
       ... on Commit {
         oid
+        pushedAt
         statusCheckRollup {
           state
           contexts(first: 100, after: $checksCursor) @include(if: $readChecks) { ...Contexts }
@@ -209,6 +214,7 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
     const allChecks: Check[] = [];
     const baseChecks: Check[] = [];
     let baseBranch = "";
+    let pushedAt: string | null = null;
     let unresolved = 0;
     const cursors = {
       checks: null as string | null,
@@ -273,6 +279,7 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
         return { outcome: "blocked", message: "pull request base branch no longer exists" };
       }
       baseBranch = pull.baseRefName;
+      pushedAt = commit.pushedAt ?? null;
       const rollups = {
         checks: commit.statusCheckRollup,
         base: pull.baseRef.target.statusCheckRollup ?? null,
@@ -302,6 +309,8 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
       checks,
       latestPerName(baseChecks, (check) => check),
       required,
+      baseBranch,
+      pushedAt,
     );
     if (ci.outcome === "ci_failed") return await withLogTails(input, token, ci, checks);
     if (ci.outcome !== "ready") return ci;
@@ -319,7 +328,10 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
         }
       : {
           outcome: "ready",
-          message: `CI passed and all review threads are resolved.${skippedNote(checks)}${optionalNote(checks, required)}`,
+          message:
+            checks.length === 0
+              ? ci.message
+              : `CI passed and all review threads are resolved.${skippedNote(checks)}${optionalNote(checks, required)}`,
           passed,
         };
   } catch (error) {
@@ -398,7 +410,13 @@ function startedLater(
   return false;
 }
 
-function judgeChecks(all: Check[], baseChecks: Check[], required: Set<string>): Readiness {
+function judgeChecks(
+  all: Check[],
+  baseChecks: Check[],
+  required: Set<string>,
+  baseBranch: string,
+  pushedAt: string | null,
+): Readiness {
   const checks = all.filter((check) => !optional(check, required, all));
   const failed = checks.filter((check) => FAILED.has(check.result ?? ""));
   if (failed.length > 0) {
@@ -417,6 +435,18 @@ function judgeChecks(all: Check[], baseChecks: Check[], required: Set<string>): 
     };
   }
   if (checks.length === 0 && required.size === 0) {
+    const pushed = Date.parse(pushedAt ?? "");
+    if (
+      all.length === 0 &&
+      baseChecks.length === 0 &&
+      Number.isFinite(pushed) &&
+      Date.now() - pushed >= 5 * 60_000
+    ) {
+      return {
+        outcome: "ready",
+        message: `No CI on this repository: no checks on the candidate or on ${baseBranch}, and none required.`,
+      };
+    }
     return { outcome: "pending", message: "Waiting for CI on the candidate commit." };
   }
   const reported = new Set(all.map((check) => check.name));
