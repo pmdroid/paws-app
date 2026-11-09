@@ -146,7 +146,8 @@ async function fixture() {
 
 test("the heartbeat reply carries the chosen concurrency only to runners that report a ceiling", async () => {
   const runner = await fixture();
-  expect(await runner.heartbeat({ capacity: 4 })).toEqual({ leases: [], fenced: [] });
+  const reply = await runner.heartbeat({ capacity: 4, runnerVersion: "0.1.75" });
+  expect(reply).toEqual({ leases: [], fenced: [] });
   expect((await runner.list()).concurrency).toEqual({ desired: null, applied: 4, ceiling: null });
   const old = await runner.set(2);
   expect(old.status).toBe(400);
