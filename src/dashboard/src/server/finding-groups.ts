@@ -4,14 +4,18 @@ import {
   workspaceMemberUsable,
   acceptedImprovementsForFindings,
   auditWorkspaceAccess,
+  claimFindingGroupAction,
+  closeFindingGroup,
   enqueueJobOnce,
   findingGroupingEnabled,
+  firstWorkspaceId,
   reviewFindingsByIds,
   getFindingGroup,
   immediate,
   lastFindingGroupRun,
   listFindingGroups,
   markReviewFindingFiled,
+  releaseFindingGroupAction,
   reviewFindingItems,
   setReviewFindingStatus,
   workspaceMember,
@@ -79,9 +83,7 @@ export async function handleFindingGroupsRequest(
 ): Promise<Response | null> {
   if (new URL(request.url).pathname !== FINDING_GROUPS_API_PATH) return null;
   const { db, principal } = options;
-  const workspaceId =
-    principal?.workspaceId ??
-    db.query<{ id: string }, []>("SELECT id FROM workspace ORDER BY id LIMIT 1").get()?.id;
+  const workspaceId = principal?.workspaceId ?? firstWorkspaceId(db) ?? undefined;
   const member = principal ? workspaceMember(db, principal.workspaceId, principal.userId) : null;
   if (request.method === "GET") {
     const enabled = !workspaceId || findingGroupingEnabled(db, workspaceId);
@@ -219,10 +221,12 @@ export async function handleFindingGroupsRequest(
   if (activeActions.has(group.id))
     return Response.json({ error: "This group action is still running." }, { status: 409 });
   // Store the chosen action before the network write. Stable Linear ids make retries safe.
-  const claimed = db.run(
-    "UPDATE finding_group SET action=?,member_ids=? WHERE id=? AND status='open' AND (action IS NULL OR action=?)",
-    [action.action, JSON.stringify(rows.map((f) => f.id)), group.id, action.action],
-  ).changes;
+  const claimed = claimFindingGroupAction(
+    db,
+    group.id,
+    action.action,
+    rows.map((f) => f.id),
+  );
   if (!claimed)
     return Response.json({ error: "The group changed. Refresh the page." }, { status: 409 });
   activeActions.add(group.id);
@@ -262,17 +266,15 @@ export async function handleFindingGroupsRequest(
             );
         } else markReviewFindingFiled(db, { key: finding.key, issue: identifier!, by, now });
       }
-      db.run(
-        "UPDATE finding_group SET status=?,status_reason=?,status_by=?,status_at=?,filed_issue=? WHERE id=?",
-        [
+      closeFindingGroup(db, {
+        id: group.id,
+        status:
           action.action === "file" ? "filed" : action.action === "add" ? "added" : "dismissed",
-          action.action === "dismiss" ? action.reason : null,
-          by,
-          now,
-          identifier,
-          group.id,
-        ],
-      );
+        reason: action.action === "dismiss" ? action.reason : null,
+        by,
+        now,
+        filedIssue: identifier,
+      });
       auditWorkspaceAccess(db, {
         workspaceId: principal.workspaceId,
         userId: principal.userId,
@@ -286,10 +288,7 @@ export async function handleFindingGroupsRequest(
     journalCaught(error, "finding-groups.action", null);
     // The adapter checks the stable Linear id before a definitive refusal, including on retries.
     if (error instanceof Error && "noFindingWrite" in error && error.noFindingWrite === true)
-      db.run("UPDATE finding_group SET action=NULL WHERE id=? AND status='open' AND action=?", [
-        group.id,
-        action.action,
-      ]);
+      releaseFindingGroupAction(db, group.id, action.action);
     if (error instanceof Error && "findingConflict" in error)
       return Response.json({ error: error.message }, { status: 409 });
     return Response.json(

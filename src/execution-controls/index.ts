@@ -8,6 +8,7 @@ import {
   getLinearSession,
   getWorkItem,
   getWorkspace,
+  linearSessionClientId,
   parseDeadDeliveryRef,
   resumeUsagePauseNow,
   retryDeadDelivery,
@@ -50,23 +51,17 @@ export function createExecutionControls(input: {
     const item = getWorkItem(input.db, itemId);
     const session = item?.sessionKey ? getLinearSession(input.db, item.sessionKey) : null;
     const workspace = getWorkspace(input.db, principal.workspaceId);
-    const client = session
-      ? input.db
-          .query<{ id: string }, [string]>(
-            "SELECT oauth_client_id AS id FROM linear_session WHERE session_id=?",
-          )
-          .get(session.sessionId)
-      : null;
+    const clientId = session ? linearSessionClientId(input.db, session.sessionId) : null;
     return workspaceMemberUsable(member) &&
       item &&
       session &&
       workspace &&
-      client &&
+      clientId &&
       (session.stoppedAt === null || options.stoppedSession === true || item.state === "paused") &&
       session.delegationId === item.delegationId &&
       session.organizationId === workspace.organizationId &&
       sessionIds.includes(session.sessionId) &&
-      workspaceSessionIds(input.db, workspace.id, member.userId, client.id).includes(
+      workspaceSessionIds(input.db, workspace.id, member.userId, clientId).includes(
         session.sessionId,
       )
       ? item

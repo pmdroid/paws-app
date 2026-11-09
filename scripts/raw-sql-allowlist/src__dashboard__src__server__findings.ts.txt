@@ -1,1 +1,0 @@
-src/dashboard/src/server/findings.ts | db .query(`SELECT 1 FROM finding_group | not yet converted to Drizzle
