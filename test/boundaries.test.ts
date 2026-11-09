@@ -48,6 +48,7 @@ const MODULES = [
   "process",
   "runner-worker",
   "runner-cli",
+  "runner-failure",
   "runner-answers",
   "workspace",
   "runner-identity",
@@ -222,7 +223,9 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-execution": ["journal", "runner-protocol", "process"],
   "runner-repositories": ["journal", "github", "runner-protocol", "core"],
   process: ["journal"],
+  "runner-failure": ["journal", "runner-daemon"],
   "runner-cli": [
+    "runner-failure",
     "journal",
     "runner-daemon",
     "runner-execution",
@@ -232,6 +235,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "runner-retro-runtime",
   ],
   "runner-worker": [
+    "runner-failure",
     "journal",
     "live-preview",
     "closeout-spec",

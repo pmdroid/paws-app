@@ -164,7 +164,8 @@ test("task worker refuses a replaced prepared workspace before ACP dispatch", as
     const workRoot = join(root, "work");
     const outputDirectory = join(root, "output");
     const home = join(root, "home");
-    for (const path of [workRoot, outputDirectory, home]) mkdirSync(path, { mode: 0o700 });
+    for (const path of [join(workRoot, executionId), outputDirectory, home])
+      mkdirSync(path, { mode: 0o700 });
     symlinkSync(home, join(workRoot, executionId));
     await expect(
       executeRunnerCommand({
@@ -335,6 +336,44 @@ test("ask_team context reaches the runner journal's question event", async () =>
     ]);
   } finally {
     journal.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an aborted adapter turn persists its agent failure reason", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-worker-abort-"));
+  try {
+    const workRoot = join(root, "work");
+    const outputDirectory = join(root, "output");
+    const home = join(root, "home");
+    for (const path of [join(workRoot, executionId), outputDirectory, home])
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+    chmodSync(join(workRoot, executionId), 0o770);
+    const result = await executeRunnerCommand({
+      job: { executionId, command: command("answer") },
+      outputDirectory,
+      workRoot,
+      home,
+      resultsGid: process.getgid!(),
+      async runAgent() {
+        return {
+          role: "implementer",
+          stopReason: "error",
+          errorMessage: "turn aborted: interrupted",
+          agentExited: true,
+          cancelled: false,
+          timedOut: false,
+          authRequired: false,
+        };
+      },
+    });
+    expect(result.run.errorMessage).toContain("Run failed during agent:");
+    expect(result.run.errorMessage).toContain("turn aborted: interrupted");
+    expect(result.run.errorMessage).not.toContain("Cause: Error.");
+    expect(
+      JSON.parse(readFileSync(join(outputDirectory, "result.json"), "utf8")).run.errorMessage,
+    ).toBe(result.run.errorMessage);
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

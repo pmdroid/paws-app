@@ -9,7 +9,7 @@ import {
   type RunnerResult,
 } from "../src/runner-protocol";
 
-async function fixture(options: { alive?: boolean; cancel?: boolean } = {}) {
+async function fixture(options: { alive?: boolean; cancel?: boolean; log?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-failure-"));
   const now = Date.now();
   let clock = 0;
@@ -68,7 +68,7 @@ async function fixture(options: { alive?: boolean; cancel?: boolean } = {}) {
       },
       async stop() {},
       alive: () => options.alive ?? true,
-      log: () => "worker output line\nTypeError: boom",
+      log: () => options.log ?? "worker output line\nTypeError: boom",
     },
     daemon: {
       status: () => paired,
@@ -176,6 +176,20 @@ test("a cancel from Paws stops the worker without reporting a failure", async ()
     await Bun.sleep(100);
     expect(f.results).toHaveLength(0);
     expect(f.errors.join("\n")).toContain("cancelled by Paws");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a missing result reports the exit code and last worker phase", async () => {
+  const f = await fixture({
+    alive: false,
+    log: '{"event":"worker_phase","phase":"checkout"}\n{"event":"worker_phase","phase":"agent"}\nRunner worker exited with code 1\n',
+  });
+  try {
+    await f.runtime.tick();
+    await until(() => f.results.length > 0);
+    expect(f.results[0]!.errorMessage).toContain("worker exited with code 1 during phase agent");
   } finally {
     await f.cleanup();
   }

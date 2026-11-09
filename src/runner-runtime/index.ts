@@ -1702,7 +1702,16 @@ export async function openRunnerRuntime(options: {
       try {
         raw = readRunnerResultFile(options.results, entry.execution.id, "result.json");
       } catch {
-        throw new Error("worker exited without a result");
+        const log = broker.log?.(entry.execution.id) ?? "";
+        const exit = [
+          ...log.matchAll(/Runner worker exited with (signal [A-Z0-9]+|code -?\d+)/g),
+        ].at(-1)?.[1];
+        const phase = [
+          ...log.matchAll(/"event":"worker_phase","phase":"(checkout|mise|agent|verify|push)"/g),
+        ].at(-1)?.[1];
+        throw new Error(
+          `worker exited ${exit ? `with ${exit}` : "without a result"}${phase ? ` during phase ${phase}` : ""}`,
+        );
       }
     }
     try {

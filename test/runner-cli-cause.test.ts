@@ -264,3 +264,11 @@ test("a refused request names the request, its status and Paws' reason", () => {
     ),
   ).toBe("Paws answered HTTP 403 from /v1/events.");
 });
+
+test("adapter end reasons retain detail but scrub secrets and stay bounded", () => {
+  expect(describeRunnerFailure(new Error("turn aborted: interrupted"), [], true)).toBe(
+    "turn aborted: interrupted",
+  );
+  expect(describeRunnerFailure(new Error(`turn aborted: ${TOKEN}`), [TOKEN], true)).toBe("Error.");
+  expect(describeRunnerFailure(new Error("x".repeat(1000)), [], true)).toHaveLength(CAUSE_LIMIT);
+});
