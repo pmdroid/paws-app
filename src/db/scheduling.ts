@@ -19,6 +19,7 @@ export type SchedulerItem = {
   version: number;
   createdAt: number;
   cancelRequested: number;
+  currentRunId: string | null;
   liveRun: number;
   liveJob: number;
   placed: number;
@@ -237,6 +238,7 @@ export function* schedulerItemsSteps(q: Q, now: number) {
         version: i.version,
         createdAt: i.createdAt,
         cancelRequested: i.cancelRequested,
+        currentRunId: i.currentRunId,
         liveRun: num(
           sql`EXISTS(SELECT 1 FROM run live WHERE live.item_id=i.id AND live.status IN ('active','provisioning'))`,
         ),

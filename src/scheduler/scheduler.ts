@@ -9,7 +9,6 @@ import {
   type WorkBrief,
 } from "../core";
 import {
-  getWorkItem,
   closeExpiredRunnerLeases,
   enqueueJob,
   enqueueJobOnce,
@@ -595,9 +594,8 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     const credits = new Map<string, Map<string, number>>();
     if (slots)
       for (const item of candidates) {
-        const runId = getWorkItem(db, item.id)?.currentRunId;
-        if (!runId) continue;
-        const excluding = taskSlots(db, now, runId);
+        if (!item.currentRunId) continue;
+        const excluding = taskSlots(db, now, item.currentRunId);
         if (excluding)
           credits.set(
             item.id,
@@ -673,15 +671,16 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
           (item.state === "queued" && held.some((entry) => entry.itemId === item.id))),
     ).length;
     let free = slots === null ? Infinity : slots.total - slots.busy - reserved;
+    const assignedRunners = new Map(
+      schedulerRunnerSlots(db, now).map((row) => [row.itemId, row.runnerId]),
+    );
     for (const item of items)
       if (
         !item.placed &&
         (item.placing ||
           (item.state === "queued" && held.some((entry) => entry.itemId === item.id)))
       ) {
-        const assigned = schedulerRunnerSlots(db, now).find(
-          (row) => row.itemId === item.id,
-        )?.runnerId;
+        const assigned = assignedRunners.get(item.id);
         if (assigned && slots) slots.open.set(assigned, (slots.open.get(assigned) ?? 0) - 1);
         else takeSlot(item.id);
       }

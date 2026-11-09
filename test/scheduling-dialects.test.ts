@@ -189,6 +189,7 @@ forEachDialect((connect) => {
       version: 0,
       createdAt: 1,
       cancelRequested: 0,
+      currentRunId: null,
       liveRun: 0,
       liveJob: 0,
       placed: 0,
