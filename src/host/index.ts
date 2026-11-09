@@ -35,3 +35,5 @@ export function startHost(input: {
     },
   };
 }
+
+export { createLagWatchdog } from "./lag";

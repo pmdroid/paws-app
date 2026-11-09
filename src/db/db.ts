@@ -1,3 +1,4 @@
+import { measureHostOperation } from "../core";
 import type { Database } from "bun:sqlite";
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
@@ -134,13 +135,15 @@ function openSqliteDb(database: Database): SqliteDb {
   return {
     dialect: "sqlite",
     orm: handle,
-    sync: (fn) => settle(() => fn(handle)),
-    run: (body) => settle(() => drive(body(q))),
+    sync: (fn) => settle(() => measureHostOperation(() => fn(handle))),
+    run: (body) => settle(() => measureHostOperation(() => drive(body(q)))),
     transaction: (body) =>
       settle(() =>
-        database.inTransaction
-          ? savepoint(body)
-          : within("BEGIN IMMEDIATE", "COMMIT", ["ROLLBACK"], body),
+        measureHostOperation(() =>
+          database.inTransaction
+            ? savepoint(body)
+            : within("BEGIN IMMEDIATE", "COMMIT", ["ROLLBACK"], body),
+        ),
       ),
   };
 }

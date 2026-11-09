@@ -1,3 +1,4 @@
+import { trackHostOperation } from "../core";
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
@@ -149,7 +150,9 @@ export class JobLoop {
     countsCapacity = true,
   ): Promise<Job | null> {
     this.noteTick();
-    const launched = await this.launch(queues, countsCapacity ? "any" : "control", countsCapacity);
+    const launched = await trackHostOperation("loop.tick", () =>
+      this.launch(queues, countsCapacity ? "any" : "control", countsCapacity),
+    );
     if (launched === null) return null;
     await launched.done;
     return launched.job;
@@ -258,7 +261,11 @@ export class JobLoop {
         queues,
       };
       // The claim is one `UPDATE … RETURNING`, so each claim is its own transaction.
-      job = await this.store.run((q) => claimNextJobSteps(q, options));
+      job = await trackHostOperation(
+        "loop.tick",
+        () => this.store.run((q) => claimNextJobSteps(q, options)),
+        () => this.clock.mono(),
+      );
     } catch (error) {
       journalCaught(error, "loop.tick.claimNextJob", null);
       this.claimFailed = true;
@@ -316,7 +323,7 @@ export class JobLoop {
     );
     renewal.unref?.();
     try {
-      await handler(job, context);
+      await trackHostOperation(`job:${job.queue}`, () => handler(job, context));
       if (await stillCurrent()) {
         this.settleAwake(job, "ending");
         const now = this.clock.now();

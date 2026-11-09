@@ -1,7 +1,7 @@
 import { cancelOpenJobs } from "./jobs";
 import { describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { FakeClock, systemClock } from "../core";
+import { FakeClock, systemClock, sampleHostOperations } from "../core";
 import {
   enqueueJob,
   JobLoop,
@@ -378,4 +378,40 @@ test("a claim failure does not cancel or repeat an in-flight handler", async () 
   await loop.tick();
   expect(getJob(real, waitingId)).toMatchObject({ status: "done", attempts: 1 });
   real.close();
+});
+
+test("production run attributes a blocked claim to loop.tick", async () => {
+  const clock = new FakeClock();
+  const db = openDatabase(":memory:");
+  migrate(db);
+  const controller = new AbortController();
+  let blocked = false;
+  const wrapped = new Proxy(db, {
+    get(target, key) {
+      if (key === "prepare")
+        return (sql: string) => {
+          if (!blocked && sql.startsWith(CLAIM_SQL)) {
+            blocked = true;
+            clock.advance(11_000);
+          }
+          return target.prepare(sql);
+        };
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  sampleHostOperations();
+  let operation = "idle";
+  try {
+    const loop = new JobLoop(wrapped, clock);
+    loop.register("test", async () => {});
+    await loop.run(controller.signal, async () => {
+      operation = sampleHostOperations();
+      controller.abort();
+    });
+    expect(operation).toBe("loop.tick");
+  } finally {
+    controller.abort();
+    db.close();
+  }
 });
