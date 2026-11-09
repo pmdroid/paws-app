@@ -53,7 +53,7 @@ function blockedFixture() {
   return db;
 }
 
-test("a blocked item gets one thought, then an ephemeral at each 25-minute mark until it starts", () => {
+test("a blocked item gets one thought, then an ephemeral at each 25-minute mark until it starts", async () => {
   const db = blockedFixture();
   try {
     const session = "session-second";
@@ -65,7 +65,7 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
         onWaits: (w: readonly ItemWait[]) => waits.push([...w]),
       });
 
-    expect(tick(0)).toEqual([]);
+    expect(await tick(0)).toEqual([]);
     expect(waits.at(-1)).toEqual([
       {
         itemId: "PAS-619",
@@ -81,13 +81,13 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
     ]);
 
     // Ticks inside the first 25 minutes add nothing.
-    tick(1);
-    tick(24);
+    await tick(1);
+    await tick(24);
     expect(activities(db, session)).toHaveLength(1);
 
-    tick(25);
-    tick(25);
-    tick(30);
+    await tick(25);
+    await tick(25);
+    await tick(30);
     expect(activities(db, session).filter((row) => row.ephemeral)).toEqual([
       expect.objectContaining({
         body: "Still waiting for PAS-618. Paws checks blockers in Linear every minute while it waits.",
@@ -96,13 +96,13 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
     ]);
 
     // Delivery is down: the next mark replaces the pending one instead of queueing a second.
-    tick(50);
+    await tick(50);
     const ephemerals = activities(db, session).filter((row) => row.ephemeral);
     expect(ephemerals.map((row) => row.status)).toEqual(["dropped", "pending"]);
     expect(ephemerals[1]!.key).toEndWith(":keep:2");
 
     // A restart of Paws replays the same mark under the same key.
-    tick(55);
+    await tick(55);
     expect(activities(db, session).filter((row) => row.ephemeral)).toHaveLength(2);
 
     db.run("UPDATE work_item SET state='merged' WHERE id='PAS-618'");
@@ -115,10 +115,10 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
       mergeSha: "merge-PAS-618",
       confirmedAt: 1000,
     });
-    expect(tick(60)).toEqual(["PAS-619"]);
+    expect(await tick(60)).toEqual(["PAS-619"]);
     expect(waits.at(-1)).toEqual([]);
-    tick(75);
-    tick(100);
+    await tick(75);
+    await tick(100);
     expect(activities(db, session).filter((row) => row.ephemeral)).toHaveLength(2);
     expect(
       activities(db, session).filter(
@@ -131,7 +131,7 @@ test("a blocked item gets one thought, then an ephemeral at each 25-minute mark 
   }
 });
 
-test("a runner-queued item says its place in line every 25 minutes", () => {
+test("a runner-queued item says its place in line every 25 minutes", async () => {
   const db = tempDb();
   try {
     const start = Date.now();
@@ -155,14 +155,14 @@ test("a runner-queued item says its place in line every 25 minutes", () => {
         now: start + minutes * MINUTE,
         onWaits: (w: readonly ItemWait[]) => waits.push([...w]),
       });
-    expect(tick(0)).toEqual([]);
+    expect(await tick(0)).toEqual([]);
     expect(
       waits.at(-1)!.map((wait) => [wait.identifier, wait.kind === "runner" && wait.position]),
     ).toEqual([
       ["PAS-2", 1],
       ["PAS-3", 2],
     ]);
-    tick(25);
+    await tick(25);
     expect(activities(db, "session-third").map((row) => row.body)).toEqual([
       "Still 2nd in line for a runner.",
     ]);
@@ -175,7 +175,7 @@ test("a runner-queued item says its place in line every 25 minutes", () => {
   }
 });
 
-test("a sibling at work keeps its session's face, and a paused item posts no ephemeral", () => {
+test("a sibling at work keeps its session's face, and a paused item posts no ephemeral", async () => {
   const db = tempDb();
   try {
     item(db, "PAS-10", "shared", "running");
@@ -193,8 +193,11 @@ test("a sibling at work keeps its session's face, and a paused item posts no eph
     );
     const waits: ItemWait[][] = [];
     const start = Date.now();
-    workspaceDispatch(db, { now: start, onWaits: (w: readonly ItemWait[]) => waits.push([...w]) });
-    workspaceDispatch(db, {
+    await workspaceDispatch(db, {
+      now: start,
+      onWaits: (w: readonly ItemWait[]) => waits.push([...w]),
+    });
+    await workspaceDispatch(db, {
       now: start + 60 * MINUTE,
       onWaits: (w: readonly ItemWait[]) => waits.push([...w]),
     });

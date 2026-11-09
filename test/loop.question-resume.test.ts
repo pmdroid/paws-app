@@ -499,7 +499,7 @@ async function drive(
     if (state === "failed") {
       throw new Error(JSON.stringify(listJobs(fixture.db)));
     }
-    workspaceDispatch(fixture.db, { now: Date.now() });
+    await workspaceDispatch(fixture.db, { now: Date.now() });
     const job = await fixture.jobs.tick();
     if (job === null) {
       idle += 1;

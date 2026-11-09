@@ -302,7 +302,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         }),
       });
     }
-    dispatch(db, { now: clock.now() });
+    await dispatch(db, { now: clock.now() });
     expect(db.query("SELECT item_id FROM scheduler_admission").all()).toHaveLength(5);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;

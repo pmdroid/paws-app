@@ -21,7 +21,7 @@ export function createRelationsPolls(input: {
   db: Database;
   reconciler: Reconciler;
   lowBudget: () => boolean;
-  reconcileExecution: () => void;
+  reconcileExecution: () => unknown;
   read?: <T>(run: () => Promise<T>) => Promise<T>;
   now?: () => number;
 }) {
@@ -31,7 +31,7 @@ export function createRelationsPolls(input: {
 
   async function poll(scope: RelationsScope, signal?: AbortSignal) {
     const changed = await read(() => input.reconciler.pollRelations({ scope, signal }));
-    if (changed.length) input.reconcileExecution();
+    if (changed.length) await input.reconcileExecution();
     return changed;
   }
 

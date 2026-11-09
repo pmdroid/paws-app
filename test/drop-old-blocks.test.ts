@@ -73,7 +73,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
     expect(listWorkItemBlocks(db, "hold")).toEqual([edge]);
     expect(listWorkItemBlocks(db, "stale")).toEqual([]);
 
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(
       db.query<{ id: string }, []>("SELECT item_id AS id FROM scheduler_admission").all(),
     ).toEqual([{ id: "hold-0" }]);

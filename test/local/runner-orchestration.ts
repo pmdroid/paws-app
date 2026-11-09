@@ -808,7 +808,7 @@ export async function probeRunnerOrchestration(
           projectId: "project",
           paths: ["src/shared"],
         });
-        orchestrator.reconcileExecution();
+        await orchestrator.reconcileExecution();
       }
       if (scenario === "resume-lease") {
         const pending = listWorkItems(db)[0]!;
@@ -830,7 +830,7 @@ export async function probeRunnerOrchestration(
         db.run("UPDATE runner_work SET ended_at=? WHERE ended_at IS NULL", [clock.now()]);
       if (!initialLease && listWorkItems(db)[0]?.state === "queued") {
         verificationExclusions = [];
-        orchestrator.reconcileExecution();
+        await orchestrator.reconcileExecution();
         await jobs.tick([JOB_KIND.resume]);
       }
       const item = listWorkItems(db)[0]!;
@@ -942,7 +942,7 @@ export async function probeRunnerOrchestration(
             job: deferred?.id,
             activeItemId: before,
           });
-          orchestrator.reconcileExecution();
+          await orchestrator.reconcileExecution();
           assert.equal(getLinearSession(db, "session")?.activeItemId, null);
           const blocker = await jobs.tick();
           assert(blocker);

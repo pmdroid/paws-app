@@ -246,7 +246,7 @@ function fixture({
               },
             },
           });
-        orchestrator.reconcileExecution();
+        await orchestrator.reconcileExecution();
         if (!continuations.includes(value.dedupeKey)) continuations.push(value.dedupeKey);
       },
     });

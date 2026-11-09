@@ -582,7 +582,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             signal: abort.signal,
             known: event.action === "created" ? known : undefined,
           });
-        orchestrator.reconcileExecution();
+        await orchestrator.reconcileExecution();
       }
     }
     return accepted;
@@ -661,7 +661,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       }
       if (issueEvent && reconciler) {
         const targets = await reconciler.issueChanged(issueEvent);
-        if (targets.length > 0) orchestrator?.reconcileExecution();
+        if (targets.length > 0) await orchestrator?.reconcileExecution();
         return false;
       }
       if (
@@ -700,7 +700,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 });
               invalidateAuthorization({ issueId: notification.issueId });
               await linearTaskAccess.reconcile(notification.issueId);
-              orchestrator?.reconcileExecution();
+              await orchestrator?.reconcileExecution();
               await refreshLinearNotificationContext(db, linear?.tracker ?? null, notification);
             }),
           notify: (command) => {
@@ -1780,11 +1780,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               reconciler?.reconcile({ ...target, signal: abort.signal }),
             ),
           );
-          attached.reconcileExecution();
+          await attached.reconcileExecution();
         });
         created.jobs.register("linear.epics.reconcile", async () => {
           await linearCaller("epics-sweep", () => reconciler?.sweep({ signal: abort.signal }));
-          attached.reconcileExecution();
+          await attached.reconcileExecution();
         });
         enqueueJobOnce(db, {
           queue: "linear.epics.reconcile",

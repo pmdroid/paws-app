@@ -1,16 +1,17 @@
-import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { ordinal, type RestartReason, type WorkItemState } from "../core";
 import {
-  enqueueOutboxOnce,
-  getLinearSessionGeneration,
-  itemWaitSince,
-  keepItemWaits,
-  lastItemEvent,
-  lastPausedBy,
-  linearSessionClosed,
-  pullRequestReadyQueued,
+  enqueueOutboxOnceSteps,
+  getLinearSessionGenerationSteps,
+  itemWaitSinceSteps,
+  keepItemWaitsSteps,
+  lastItemEventSteps,
+  lastPausedBySteps,
+  linearSessionClosedSteps,
+  pullRequestReadyQueuedSteps,
   type ItemHold,
+  type Q,
+  type Steps,
 } from "../db";
 
 export const WAIT_KEEPALIVE_MS = 25 * 60 * 1000;
@@ -54,8 +55,8 @@ const BUSY: readonly WorkItemState[] = [
   "merge_queue",
 ];
 
-function restartReason(db: Database, itemId: string) {
-  const last = lastItemEvent(db, itemId);
+function* restartReasonSteps(q: Q, itemId: string) {
+  const last = yield* lastItemEventSteps(q, itemId);
   return last?.kind === "restart" &&
     (last.reason === "findings" ||
       last.reason === "ci" ||
@@ -65,16 +66,12 @@ function restartReason(db: Database, itemId: string) {
     : null;
 }
 
-function pausedBy(db: Database, itemId: string): string | null {
-  return lastPausedBy(db, itemId);
-}
-
-export function itemWaits(
-  db: Database,
+export function* itemWaitsSteps(
+  q: Q,
   items: readonly WaitItem[],
   holds: readonly ItemHold[],
   positions: ReadonlyMap<string, number>,
-): ItemWait[] {
+): Steps<ItemWait[]> {
   const held = new Map(holds.map((hold) => [hold.itemId, hold]));
   const sessions = new Map<string, WaitItem[]>();
   for (const item of [...items].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id)))
@@ -82,35 +79,48 @@ export function itemWaits(
       sessions.set(item.sessionId, [...(sessions.get(item.sessionId) ?? []), item]);
   const waits: ItemWait[] = [];
   for (const [sessionId, members] of sessions) {
-    const faces = members.flatMap((item): ItemWait[] => {
-      if (item.cancelRequested || item.identifier === null) return [];
+    const faces: ItemWait[] = [];
+    for (const item of members) {
+      if (item.cancelRequested || item.identifier === null) continue;
       const base = {
         itemId: item.id,
         sessionId,
         identifier: item.identifier,
         version: item.version,
       };
-      if (item.state === "paused") return [{ ...base, kind: "paused", by: pausedBy(db, item.id) }];
-      if (item.state === "recovering" && !item.liveJob) return [{ ...base, kind: "recovering" }];
-      if (item.state !== "queued" || item.liveRun || item.liveJob) return [];
+      if (item.state === "paused") {
+        faces.push({ ...base, kind: "paused", by: yield* lastPausedBySteps(q, item.id) });
+        continue;
+      }
+      if (item.state === "recovering" && !item.liveJob) {
+        faces.push({ ...base, kind: "recovering" });
+        continue;
+      }
+      if (item.state !== "queued" || item.liveRun || item.liveJob) continue;
       const hold = held.get(item.id);
-      if (hold?.reason === "blocked")
-        return [{ ...base, kind: "blocked", blockers: hold.blockers }];
-      if (hold?.reason === "overlap" && hold.blockers[0])
-        return [
-          {
-            ...base,
-            kind: "overlap",
-            blocker: hold.blockers[0],
-            files: hold.files ?? [],
-            ...(hold.start ? { start: hold.start } : {}),
-          },
-        ];
+      if (hold?.reason === "blocked") {
+        faces.push({ ...base, kind: "blocked", blockers: hold.blockers });
+        continue;
+      }
+      if (hold?.reason === "overlap" && hold.blockers[0]) {
+        faces.push({
+          ...base,
+          kind: "overlap",
+          blocker: hold.blockers[0],
+          files: hold.files ?? [],
+          ...(hold.start ? { start: hold.start } : {}),
+        });
+        continue;
+      }
       const position = positions.get(item.id);
       if ((hold?.reason === "slot" || hold?.reason === "cap") && position !== undefined)
-        return [{ ...base, kind: "runner", position, restart: restartReason(db, item.id) }];
-      return [];
-    });
+        faces.push({
+          ...base,
+          kind: "runner",
+          position,
+          restart: yield* restartReasonSteps(q, item.id),
+        });
+    }
     const shown = new Set(faces.map((face) => face.itemId));
     if (
       members.some(
@@ -156,17 +166,21 @@ export function waitingLine(wait: ItemWait): string | null {
  * unique across sessions and two items can wait for one blocker. Not `terminal`: the session goes
  * on. A blocker that has not started yet gets its line when it starts.
  */
-export function postConflictHolds(db: Database, waits: readonly ItemWait[], now: number): void {
+export function* postConflictHoldsSteps(
+  q: Q,
+  waits: readonly ItemWait[],
+  now: number,
+): Steps<void> {
   for (const wait of waits) {
     if (wait.kind !== "overlap" || wait.start) continue;
-    if (restartReason(db, wait.itemId) !== "conflict") continue;
-    const generation = getLinearSessionGeneration(db, wait.sessionId);
+    if ((yield* restartReasonSteps(q, wait.itemId)) !== "conflict") continue;
+    const generation = yield* getLinearSessionGenerationSteps(q, wait.sessionId);
     if (
-      !pullRequestReadyQueued(db, wait.sessionId, generation) ||
-      linearSessionClosed(db, wait.sessionId, generation)
+      !(yield* pullRequestReadyQueuedSteps(q, wait.sessionId, generation)) ||
+      (yield* linearSessionClosedSteps(q, wait.sessionId, generation))
     )
       continue;
-    enqueueOutboxOnce(db, {
+    yield* enqueueOutboxOnceSteps(q, {
       target: "linear",
       op: "activity",
       orderingKey: wait.sessionId,
@@ -184,22 +198,26 @@ export function postConflictHolds(db: Database, waits: readonly ItemWait[], now:
   }
 }
 
-export function postWaitKeepalives(db: Database, waits: readonly ItemWait[], now: number): void {
+export function* postWaitKeepalivesSteps(
+  q: Q,
+  waits: readonly ItemWait[],
+  now: number,
+): Steps<void> {
   const queued = waits.filter(
     (wait) => wait.kind === "blocked" || wait.kind === "overlap" || wait.kind === "runner",
   );
-  keepItemWaits(
-    db,
+  yield* keepItemWaitsSteps(
+    q,
     queued.map((wait) => wait.itemId),
   );
   for (const wait of queued) {
-    const since = itemWaitSince(db, wait.itemId, wait.version, now);
+    const since = yield* itemWaitSinceSteps(q, wait.itemId, wait.version, now);
     const mark = Math.floor((now - since) / WAIT_KEEPALIVE_MS);
     const body = waitingLine(wait);
     if (mark < 1 || body === null) continue;
-    const generation = getLinearSessionGeneration(db, wait.sessionId);
-    if (linearSessionClosed(db, wait.sessionId, generation)) continue;
-    enqueueOutboxOnce(db, {
+    const generation = yield* getLinearSessionGenerationSteps(q, wait.sessionId);
+    if (yield* linearSessionClosedSteps(q, wait.sessionId, generation)) continue;
+    yield* enqueueOutboxOnceSteps(q, {
       target: "linear",
       op: "activity",
       orderingKey: wait.sessionId,

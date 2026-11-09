@@ -99,7 +99,7 @@ export async function probeCurrentRunStartup(root: string) {
       },
     });
     try {
-      if (mode !== "clarified-artifact") workspaceDispatch(db, { now: clock.now() });
+      if (mode !== "clarified-artifact") await workspaceDispatch(db, { now: clock.now() });
       else
         enqueueJob(db, {
           queue: mode === "clarified-artifact" ? JOB_KIND.resume : JOB_KIND.start,

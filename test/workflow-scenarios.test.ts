@@ -60,7 +60,7 @@ function liveExecution(w: World, id: string): Job[] {
 }
 
 describe("combined recovery scenarios", () => {
-  test("PAS-959: the same head failing CI twice around a crash reaches the agent and counts both rounds", () => {
+  test("PAS-959: the same head failing CI twice around a crash reaches the agent and counts both rounds", async () => {
     const w = new World().seed(["merge_queue"]);
     try {
       const id = "merge_queue";
@@ -72,7 +72,7 @@ describe("combined recovery scenarios", () => {
         now: w.now,
       })!;
       expect(fixRounds(w.db, id)).toBe(1);
-      workspaceDispatch(w.db, { now: w.now });
+      await workspaceDispatch(w.db, { now: w.now });
       const claimed = claimNextJob(w.db, { now: w.now, queues: [JOB_KIND.resume] });
       expect(claimed?.id).toBe(first);
       beginImplementRun(w.db, id, w.now);

@@ -147,12 +147,12 @@ test("a transcript lookup resolves the session through session_key alone", async
   }
 });
 
-test("the scheduler resolves a session item through session_key alone", () => {
+test("the scheduler resolves a session item through session_key alone", async () => {
   const db = legacyTempDb();
   try {
     const item = insertQueuedItem(db, { id: "sched-item", sessionKey: "sched-session", now: 1 });
     ensureLinearSession(db, { sessionId: "sched-session", issueId: item.linearIssueId, now: 1 });
-    expect(workspaceDispatch(db, { now: 2 })).toEqual([item.id]);
+    expect(await workspaceDispatch(db, { now: 2 })).toEqual([item.id]);
     expect(
       db
         .query<{ session_id: string | null }, []>("SELECT session_id FROM scheduler_admission")

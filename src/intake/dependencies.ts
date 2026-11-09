@@ -4,23 +4,28 @@ import { isBlockerSatisfied, isTerminalWorkItemState } from "../core";
 import {
   delegationHasItemWithoutSnapshot,
   delegationHasReconciliationWork,
+  delegationHasReconciliationWorkSteps,
   enqueueOutboxOnce,
-  getConfirmedRemoteMerge,
-  itemSpecificationPresent,
-  latestIssueIdentifier,
-  listBlocksOf,
-  listPresentDelegationItems,
-  readDependencyScope,
-  readDependencySnapshot,
+  getConfirmedRemoteMergeSteps,
+  itemSpecificationPresentSteps,
+  latestIssueIdentifierSteps,
+  listBlocksOfSteps,
+  listPresentDelegationItemsSteps,
+  readDependencyScopeSteps,
+  readDependencySnapshotSteps,
   saveDependencySnapshot,
   saveTaskBlocks,
+  settled,
+  sqliteDb,
+  type Q,
+  type Steps,
   type DependencyIdentity,
   type DependencyItem,
   type DependencySnapshot,
 } from "../db";
 import type { DependencyEdge, LinearIssueLifecycle, TrackerAdapter } from "../linear";
 import { orderByBlocks } from "./order";
-import { managedBlockerSatisfied } from "./blocker-policy";
+import { managedBlockerSatisfiedSteps } from "./blocker-policy";
 
 type Target = { itemId: string; workspaceId: string };
 type Item = DependencyItem;
@@ -47,10 +52,14 @@ export type DependencyReadiness = {
 };
 
 function scope(db: Database, target: Target): Scope | null {
-  const located = itemSpecificationPresent(db, target.itemId);
+  return settled(sqliteDb(db).run((q) => scopeSteps(q, target)));
+}
+
+function* scopeSteps(q: Q, target: Target): Steps<Scope | null> {
+  const located = yield* itemSpecificationPresentSteps(q, target.itemId);
   if (located === null) throw new Error("Dependency workspace or task ownership changed");
   if (located === 0) return null;
-  const row = readDependencyScope(db, target.itemId, target.workspaceId);
+  const row = yield* readDependencyScopeSteps(q, target.itemId, target.workspaceId);
   if (!row) throw new Error("Dependency workspace or task ownership changed");
   const {
     delegationIssueId,
@@ -75,7 +84,7 @@ function scope(db: Database, target: Target): Scope | null {
     ownerActorId,
     creatorId,
   };
-  const siblings = listPresentDelegationItems(db, item.delegationId);
+  const siblings = yield* listPresentDelegationItemsSteps(q, item.delegationId);
   if (new Set(siblings.map((entry) => entry.linearIssueId)).size !== siblings.length)
     throw new Error("Dependency task identities are incomplete");
   return {
@@ -103,7 +112,11 @@ function scope(db: Database, target: Target): Scope | null {
 }
 
 function snapshot(db: Database, target: Target): Snapshot | null {
-  const saved = readDependencySnapshot(db, target.itemId);
+  return settled(sqliteDb(db).run((q) => snapshotSteps(q, target)));
+}
+
+function* snapshotSteps(q: Q, target: Target): Steps<Snapshot | null> {
+  const saved = yield* readDependencySnapshotSteps(q, target.itemId);
   if (saved && saved.workspaceId !== target.workspaceId)
     throw new Error("Dependency workspace or task ownership changed");
   return saved;
@@ -118,18 +131,36 @@ export function hasPendingDelegationChanges(db: Database, delegationId: string):
 }
 
 export function readyItems(db: Database, target: Target): DependencyReadiness {
-  return db.transaction(() => readReadyItems(db, target, false)).deferred();
+  return db
+    .transaction(() => settled(sqliteDb(db).run((q) => readReadyItemsSteps(q, target, false))))
+    .deferred();
+}
+
+export function* readyItemsSteps(q: Q, target: Target): Steps<DependencyReadiness> {
+  return yield* q.transaction((tx) => readReadyItemsSteps(tx, target, false));
 }
 
 export function canAdvanceItem(db: Database, target: Target): boolean {
   return db
-    .transaction(() => readReadyItems(db, target, true).readyItemIds.includes(target.itemId))
+    .transaction(() => settled(sqliteDb(db).run((q) => canAdvanceSteps(q, target))))
     .deferred();
 }
 
-function readReadyItems(db: Database, target: Target, includeHeld: boolean): DependencyReadiness {
-  const current = scope(db, target);
-  const saved = snapshot(db, target);
+export function* canAdvanceItemSteps(q: Q, target: Target): Steps<boolean> {
+  return yield* q.transaction((tx) => canAdvanceSteps(tx, target));
+}
+
+function* canAdvanceSteps(q: Q, target: Target): Steps<boolean> {
+  return (yield* readReadyItemsSteps(q, target, true)).readyItemIds.includes(target.itemId);
+}
+
+function* readReadyItemsSteps(
+  q: Q,
+  target: Target,
+  includeHeld: boolean,
+): Steps<DependencyReadiness> {
+  const current = yield* scopeSteps(q, target);
+  const saved = yield* snapshotSteps(q, target);
   if (!current)
     return {
       generation: saved?.generation ?? 0,
@@ -147,22 +178,27 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
     heldItemIds: candidate ? [item.id] : [],
     cycleHeldItemIds: [],
   });
-  if (!saved || saved.scope !== current.token || hasPendingDelegationChanges(db, item.delegationId))
+  if (
+    !saved ||
+    saved.scope !== current.token ||
+    (yield* delegationHasReconciliationWorkSteps(q, item.delegationId))
+  )
     return held();
   const issueIds = current.siblings.map((entry) => entry.linearIssueId);
-  const blocks = listBlocksOf(db, issueIds);
+  const blocks = yield* listBlocksOfSteps(q, issueIds);
   const owned = new Set(issueIds);
   const internal = blocks.filter((edge) => owned.has(edge.blockerLinearIssueId));
   const ordered = orderByBlocks(current.siblings, internal);
   const cycleHeld = new Set(
     ordered.ok ? [] : ordered.remaining.map((entry) => entry.linearIssueId),
   );
-  const satisfied = blockerSatisfied(db, target, current, saved);
+  const satisfied = blockerSatisfied(target, current, saved);
   const blocking = blocks.filter((edge) => edge.blockedLinearIssueId === item.linearIssueId);
-  const ready =
-    candidate &&
-    !cycleHeld.has(item.linearIssueId) &&
-    blocking.every((edge) => satisfied(edge.blockerLinearIssueId));
+  let ready = candidate && !cycleHeld.has(item.linearIssueId);
+  for (const edge of blocking) {
+    if (!ready) break;
+    ready = yield* satisfied(q, edge.blockerLinearIssueId);
+  }
   return {
     generation: saved.generation,
     readyItemIds: ready ? [item.id] : [],
@@ -177,42 +213,52 @@ function readReadyItems(db: Database, target: Target, includeHeld: boolean): Dep
  */
 export function itemBlockers(db: Database, target: Target): string[] {
   return db
-    .transaction(() => {
-      const current = scope(db, target);
-      const saved = snapshot(db, target);
-      if (!current || !saved) return [];
-      const satisfied = blockerSatisfied(db, target, current, saved);
-      const identifiers = new Map<string, string>(JSON.parse(saved.linearIdentifiers));
-      const siblings = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
-      const named = (id: string): string =>
-        siblings.get(id)?.identifier ?? identifiers.get(id) ?? latestIssueIdentifier(db, id) ?? id;
-      return listBlocksOf(db, [current.item.linearIssueId])
-        .map((edge) => edge.blockerLinearIssueId)
-        .filter((id) => !satisfied(id))
-        .map(named);
-    })
+    .transaction(() => settled(sqliteDb(db).run((q) => readItemBlockersSteps(q, target))))
     .deferred();
 }
 
+export function* itemBlockersSteps(q: Q, target: Target): Steps<string[]> {
+  return yield* q.transaction((tx) => readItemBlockersSteps(tx, target));
+}
+
+function* readItemBlockersSteps(q: Q, target: Target): Steps<string[]> {
+  const current = yield* scopeSteps(q, target);
+  const saved = yield* snapshotSteps(q, target);
+  if (!current || !saved) return [];
+  const satisfied = blockerSatisfied(target, current, saved);
+  const identifiers = new Map<string, string>(JSON.parse(saved.linearIdentifiers));
+  const siblings = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
+  const unmet: string[] = [];
+  for (const edge of yield* listBlocksOfSteps(q, [current.item.linearIssueId]))
+    if (!(yield* satisfied(q, edge.blockerLinearIssueId))) unmet.push(edge.blockerLinearIssueId);
+  const named: string[] = [];
+  for (const id of unmet)
+    named.push(
+      siblings.get(id)?.identifier ??
+        identifiers.get(id) ??
+        (yield* latestIssueIdentifierSteps(q, id)) ??
+        id,
+    );
+  return named;
+}
+
 function blockerSatisfied(
-  db: Database,
   target: Target,
   current: Scope,
   saved: Snapshot,
-): (id: string) => boolean {
+): (q: Q, id: string) => Steps<boolean> {
   const states = new Map<string, string>(JSON.parse(saved.linearStates));
   const byId = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
-  return (id: string): boolean => {
+  return function* (q, id) {
     if (states.get(id) === "canceled") return false;
     const blocker = byId.get(id);
     // A blocker outside the delegation follows its Paws work, or its Linear state without any.
-    if (!blocker) return managedBlockerSatisfied(db, target, id) ?? states.get(id) === "completed";
+    if (!blocker)
+      return (yield* managedBlockerSatisfiedSteps(q, target, id)) ?? states.get(id) === "completed";
     if (blocker.cancelRequested || blocker.state === "cancelled") return false;
     if (blocker.state === "manual") return states.get(id) === "completed";
-    return isBlockerSatisfied({
-      ...blocker,
-      mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
-    });
+    const merge = yield* getConfirmedRemoteMergeSteps(q, blocker.id);
+    return isBlockerSatisfied({ ...blocker, mergeSha: merge?.mergeSha ?? null });
   };
 }
 

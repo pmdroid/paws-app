@@ -720,7 +720,7 @@ async function runRemoteFault(fault: Fault) {
       tracker,
       lifecycle,
     });
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     const deadline = Date.now() + 45_000;
     while (
       Date.now() < deadline &&

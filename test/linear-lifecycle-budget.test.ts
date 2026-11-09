@@ -493,7 +493,7 @@ async function runTask(input: {
         mainMoved = true;
         await commitOnMain(layout.bare, "side.txt", "side\n");
       }
-      orchestrator.reconcileExecution();
+      await orchestrator.reconcileExecution();
       if ((await jobs.tick()) === null) {
         clock.advance(60_000);
         await Bun.sleep(5);

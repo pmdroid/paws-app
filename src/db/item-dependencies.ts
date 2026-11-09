@@ -20,8 +20,7 @@ import {
   type TaskMode,
   type WorkItemState,
 } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
-import { orm } from "./orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import type { TaskBlock } from "./task-blocks";
 
 export type DependencyItem = {
@@ -63,11 +62,6 @@ export type ManagedBlockerItem = {
   mergeSha: string | null;
 };
 
-const itemColumns =
-  sql.raw(`i.id,i.delegation_id AS delegationId,i.linear_issue_id AS linearIssueId,
-  i.linear_identifier AS identifier,i.title,i.state,i.cancel_requested AS cancelRequested,
-  t.mode,i.brief`);
-
 function jsonText(q: Q, value: unknown): string {
   return q.dialect === "sqlite" ? (value as string) : JSON.stringify(value);
 }
@@ -107,39 +101,61 @@ export function itemSpecificationRevision(db: Database, itemId: string): number 
   return settled(sqliteDb(db).run((q) => itemSpecificationRevisionSteps(q, itemId)));
 }
 
-export function readDependencyScope(
-  db: Database,
+export function* readDependencyScopeSteps(
+  q: Q,
   itemId: string,
   workspaceId: string,
-): (DependencyItem & DependencyIdentity) | null {
-  return (
-    orm(db).all<DependencyItem & DependencyIdentity>(
-      sql`SELECT ${itemColumns},${sql.raw(parentIssueIdSql("i"))} AS delegationIssueId,s.session_id AS sessionId,
-       s.organization_id AS organizationId,s.oauth_client_id AS clientId,s.app_user_id AS appUserId,
-       s.generation AS sessionGeneration,s.team_id AS teamId,
-       COALESCE((SELECT u.linear_user_id FROM workspace_user u
+): Steps<(DependencyItem & DependencyIdentity) | null> {
+  const row = yield* q.one(
+    q.orm
+      .select({
+        id: sql<string>`i.id`,
+        delegationId: sql<string>`i.delegation_id`,
+        linearIssueId: sql<string>`i.linear_issue_id`,
+        identifier: sql<string | null>`i.linear_identifier`,
+        title: sql<string>`i.title`,
+        state: sql<WorkItemState>`i.state`,
+        cancelRequested: sql<number>`i.cancel_requested`,
+        mode: sql<TaskMode | null>`t.mode`,
+        brief: sql<unknown>`i.brief`,
+        delegationIssueId: sql<string>`${sql.raw(parentIssueIdSql("i"))}`,
+        sessionId: sql<string>`s.session_id`,
+        organizationId: sql<string>`s.organization_id`,
+        clientId: sql<string>`s.oauth_client_id`,
+        appUserId: sql<string>`s.app_user_id`,
+        sessionGeneration: sql<number>`s.generation`,
+        teamId: sql<string>`s.team_id`,
+        ownerActorId: sql<string | null>`COALESCE((SELECT u.linear_user_id FROM workspace_user u
          JOIN work_item oi ON oi.owner_user_id=u.id
          WHERE oi.delegation_id=i.delegation_id AND oi.session_key=s.session_id
          ORDER BY oi.created_at, oi.position, oi.id LIMIT 1),
        (SELECT oi.delegated_by FROM work_item oi
          WHERE oi.delegation_id=i.delegation_id AND oi.session_key=s.session_id AND oi.delegated_by IS NOT NULL
-         ORDER BY oi.created_at, oi.position, oi.id LIMIT 1), s.creator_id) AS ownerActorId,
-       s.creator_id AS creatorId
-       FROM work_item i
-       JOIN linear_session s ON s.session_id=(
+         ORDER BY oi.created_at, oi.position, oi.id LIMIT 1), s.creator_id)`,
+        creatorId: sql<string | null>`s.creator_id`,
+      })
+      .from(sql`work_item i`)
+      .innerJoin(
+        sql`linear_session s`,
+        sql`s.session_id=(
          SELECT si.session_key FROM work_item si
          JOIN linear_session ls ON ls.session_id=si.session_key AND ls.stopped_at IS NULL
          WHERE si.delegation_id=i.delegation_id
-         ORDER BY si.created_at, si.position, si.id LIMIT 1)
-       JOIN workspace w ON w.linear_organization_id=s.organization_id
-       LEFT JOIN work_item_task t ON t.item_id=i.id
-       LEFT JOIN work_item_specification p ON p.item_id=i.id
-       WHERE i.id=${itemId} AND w.id=${workspaceId} AND ${sql.raw(delegationHasOpenWork("i.delegation_id"))}
+         ORDER BY si.created_at, si.position, si.id LIMIT 1)`,
+      )
+      .innerJoin(sql`workspace w`, sql`w.linear_organization_id=s.organization_id`)
+      .leftJoin(sql`work_item_task t`, sql`t.item_id=i.id`)
+      .leftJoin(sql`work_item_specification p`, sql`p.item_id=i.id`)
+      .where(
+        sql`i.id=${itemId} AND w.id=${workspaceId} AND ${sql.raw(delegationHasOpenWork("i.delegation_id"))}
        AND s.stopped_at IS NULL
        AND s.oauth_client_id IS NOT NULL AND s.app_user_id IS NOT NULL
        AND s.team_id IS NOT NULL AND COALESCE(p.present,1)=1`,
-    )[0] ?? null
+      ),
   );
+  if (row === undefined) return null;
+  return { ...row, brief: row.brief === null ? null : jsonText(q, row.brief) } as DependencyItem &
+    DependencyIdentity;
 }
 
 export function* listPresentDelegationItemsSteps(q: Q, delegationId: string) {
