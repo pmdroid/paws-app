@@ -9,6 +9,7 @@ import {
   type WorkBrief,
 } from "../core";
 import {
+  getWorkItem,
   closeExpiredRunnerLeases,
   enqueueJob,
   enqueueJobOnce,
@@ -274,18 +275,19 @@ export function hintedPaths(brief: string | null): string[] {
 function taskSlots(
   db: Database,
   now: number,
+  excludeRunId = "",
 ): { total: number; busy: number; open: Map<string, number> } | null {
   const runners = runnerTaskSlots(db, now, now - RUNNER_SEEN_MS);
   if (!runners.length) return null;
   const reservations = settled(unassignedRunnerReservations(sqliteDb(db), now, ""));
   const occupancy = runners.map((runner) => {
-    const { capacity, occupied } = runnerOccupancy(db, runner.id, now);
+    const { capacity, occupied } = runnerOccupancy(db, runner.id, now, excludeRunId);
     return {
       id: runner.id,
       capacity,
       used:
         occupied +
-        runnerSlotsHeldBetweenCommands(db, runner.id, now) +
+        runnerSlotsHeldBetweenCommands(db, runner.id, now, excludeRunId) +
         (reservations.get(runner.id) ?? 0),
     };
   });
@@ -549,7 +551,11 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       dropSchedulerAdmission(db, row.itemId);
     }
     for (const item of items)
-      if (holdsSession(item) && !held.some((entry) => entry.itemId === item.id)) {
+      if (
+        item.state !== "queued" &&
+        holdsSession(item) &&
+        !held.some((entry) => entry.itemId === item.id)
+      ) {
         const entry = footprint(item, options);
         const jobId = latestItemJobId(
           db,
@@ -584,6 +590,26 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       a.id.localeCompare(b.id);
     const candidates = items.filter((item) => ready.has(item.id)).sort(rank);
     const slots = taskSlots(db, now);
+    // A restart can reuse the slot its active run holds between commands. Credit only
+    // that candidate, and consume no additional slot when it resumes on the holder.
+    const credits = new Map<string, Map<string, number>>();
+    if (slots)
+      for (const item of candidates) {
+        const runId = getWorkItem(db, item.id)?.currentRunId;
+        if (!runId) continue;
+        const excluding = taskSlots(db, now, runId);
+        if (excluding)
+          credits.set(
+            item.id,
+            new Map(
+              [...slots.open].map(([id, open]) => [
+                id,
+                Math.min(1, Math.max(0, (excluding.open.get(id) ?? 0) - open)),
+              ]),
+            ),
+          );
+      }
+    const credit = (itemId: string, runnerId: string) => credits.get(itemId)?.get(runnerId) ?? 0;
     const answers = new Map<string, ItemRunnerVerdicts | null>();
     const verdictsFor = (itemId: string): ItemRunnerVerdicts | null => {
       if (!options.itemRunners) return null;
@@ -594,7 +620,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       const verdicts = verdictsFor(itemId);
       if (!options.itemRunners) return undefined;
       if (!verdicts) return null;
-      const open = (id: string) => slots?.open.get(id) ?? 0;
+      const open = (id: string) => (slots?.open.get(id) ?? 0) + credit(itemId, id);
       const free = verdicts.runners.filter(
         (runner) => runner.rejection === null && open(runner.id) > 0,
       );
@@ -605,7 +631,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       const runnerId = openRunner(itemId);
       if (runnerId === undefined) return true;
       if (runnerId === null) return false;
-      slots!.open.set(runnerId, slots!.open.get(runnerId)! - 1);
+      slots!.open.set(runnerId, slots!.open.get(runnerId)! - 1 + credit(itemId, runnerId));
       choices.set(itemId, runnerId);
       return true;
     };
@@ -701,7 +727,9 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     for (const { item, capped } of order) {
       if (capped || setup.has(item.id)) continue;
       claimPinned(item);
-      if (free <= 0) break;
+      const runnerId = openRunner(item.id);
+      const reused = runnerId ? credit(item.id, runnerId) : 0;
+      if (free + reused <= 0) continue;
       const next = footprint(item, options);
       if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
       // Work admitted earlier in this tick runs too.
@@ -731,7 +759,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       held.push(next);
       occupants.push(item);
       admitted.push(item.id);
-      free -= 1;
+      free -= 1 - reused;
     }
     claimPinned();
     savePinnedSlots(db, reservedSlots);

@@ -421,6 +421,7 @@ test("a queued resume keeps its online pin and reservation past historical ended
   pair("other", 6, [REPOSITORY]);
   queue("resume");
   const run = insertRun(db, { itemId: "resume", now: NOW, status: "active" });
+  db.run("UPDATE work_item SET current_run_id=? WHERE id=?", [run.id, "resume"]);
   db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) SELECT ?,id,workspace_id,1,0,'ended',?,?,? FROM runner WHERE id=?",
     [run.id, NOW - 1, NOW - 1, NOW - 1, pinned],
@@ -451,4 +452,31 @@ test("unavailable session authority holds only its item and does not abort unrel
   expect(itemRunnerVerdicts(db, { itemId: "a-stopped", agent: "claude", now: NOW })).toBeNull();
   expect(pass()).toEqual(["b-ready"]);
   expect(getWorkItem(db, "a-stopped")?.state).toBe("queued");
+});
+
+test("a queued restart reuses its active run's held slot without admitting unrelated work", async () => {
+  const db = tempDb();
+  const { pair, queue, pass, workspace } = workspaceWithRunners(db);
+  const pinned = pair("pinned", 1, [REPOSITORY]);
+  queue("a-unrelated");
+  queue("b-resume");
+  const run = insertRun(db, { itemId: "b-resume", now: NOW, status: "active" });
+  db.run("UPDATE work_item SET current_run_id=? WHERE id=?", [run.id, "b-resume"]);
+  db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(?,?,?,1,0,'ended',?,?,?)",
+    [run.id, pinned, workspace.id, NOW - 1, NOW - 1, NOW - 1],
+  );
+  expect(pass()).toEqual(["b-resume"]);
+  expect(getWorkItem(db, "a-unrelated")?.state).toBe("queued");
+  expect(schedulerRunnerSlots(db, NOW).find((row) => row.itemId === "b-resume")?.runnerId).toBe(
+    pinned,
+  );
+  const offered = await createRunnerPlacement({ db, now: () => NOW }).candidates({
+    itemId: "b-resume",
+    role: "implementer",
+    purpose: "work",
+    profile: { agent: "claude" },
+    pinnedRunnerId: pinned,
+  });
+  expect(offered.map((row) => row.id)).toEqual([pinned]);
 });
