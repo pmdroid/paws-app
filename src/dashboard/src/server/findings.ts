@@ -2,6 +2,7 @@ import {
   workspaceMemberUsable,
   acceptedImprovementsForFindings,
   auditWorkspaceAccess,
+  findingHasGroupAction,
   listReviewFindings,
   reviewFindingItems,
   setReviewFindingStatus,
@@ -117,13 +118,7 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
     listReviewFindings(db).filter((row) => row.id === action.id),
   );
   if (shown.length === 0) return Response.json({ error: "Finding not found." }, { status: 404 });
-  if (
-    db
-      .query(`SELECT 1 FROM finding_group
-      WHERE workspace_id=? AND status='open' AND action IS NOT NULL
-      AND EXISTS(SELECT 1 FROM json_each(member_ids) WHERE value=?)`)
-      .get(principal.workspaceId, action.id)
-  )
+  if (findingHasGroupAction(db, principal.workspaceId, action.id))
     return Response.json(
       { error: "This finding has a group action in progress. Finish that action first." },
       { status: 409 },
