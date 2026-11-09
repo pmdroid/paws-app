@@ -19,6 +19,7 @@ import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
   unansweredRunnerQuestions,
+  setRunnerWorkConsumedSequence,
   askedQuestionRow,
   questionRowById,
   workspaceMemberUsableSql,
@@ -2290,10 +2291,7 @@ export function createRemoteAgentRunner(options: {
                       answer: questionAnswer,
                     });
                   cursor = row.sequence;
-                  db.run(
-                    "UPDATE runner_work SET consumed_sequence=? WHERE run_id=? AND generation=?",
-                    [cursor, assigned.runId, assigned.generation],
-                  );
+                  setRunnerWorkConsumedSequence(db, assigned.runId, assigned.generation, cursor);
                   continue;
                 }
                 const stored = askedQuestionRow(db, selected.runId, "agent");
