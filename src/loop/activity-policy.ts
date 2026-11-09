@@ -9,7 +9,7 @@ import type { Database } from "bun:sqlite";
  * complete, so none reopens it.
  */
 export const AFTER_PULL_REQUEST_RESPONSE =
-  /^(merged:|closed:|command:stop:|pull-review:|risk-approval:|paws-answer:|merge-review:|reply:)/;
+  /^(merged:|closed:|command:stop:|pull-review:|risk-approval:|paws-answer:|merge-review:|reply:|conversation:)/;
 
 /**
  * Thoughts that may follow the PR response: a change request on the risk approval, from the

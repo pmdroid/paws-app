@@ -558,6 +558,7 @@ import {
   authorizeLinearComment,
   canConverse,
   commitLinearCommentRoute,
+  conversationHolds,
   deliverLinearComments,
   routeLinearComment,
   linearCommentBrief,
@@ -5217,6 +5218,7 @@ export class Orchestrator {
     const policyDigests = (item: WorkItemRecord, worktree: string) => {
       return this.candidatePolicy(item, worktree);
     };
+    const talk = (await this.options.conversations?.()) ?? null;
     return advanceMerge(
       this.db,
       this.store,
@@ -5224,6 +5226,7 @@ export class Orchestrator {
       {
         ...this.orderCapabilities(itemId),
         ...(this.options.instanceId ? { instanceId: this.options.instanceId } : {}),
+        conversing: (id) => talk !== null && conversationHolds(talk, id),
         publish: (item) => this.publishForMerge(item, run),
         ...(this.options.runnerRebase ? { runnerRebase: this.options.runnerRebase } : {}),
         settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),
@@ -7876,7 +7879,7 @@ export class Orchestrator {
       item.id,
       this.now(),
       { quietMs: 0, maxMs: 0 },
-      `linear-turns:${item.id}:${listPendingLinearTurns(this.db, sessionId)[0]?.eventKey ?? ""}`,
+      `linear-turns:${item.id}:${listPendingLinearTurns(this.db, sessionId).at(-1)?.eventKey ?? ""}`,
     );
     return true;
   }

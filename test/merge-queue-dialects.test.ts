@@ -14,6 +14,7 @@ import {
   releaseMergeQueuePlaceSteps,
   restartedFromMergeQueueSteps,
   returnToMergeQueueSteps,
+  wakeItemMergeSteps,
   wakeMergesBehindSteps,
   type Db,
 } from "../src/db";
@@ -183,6 +184,29 @@ forEachDialect((open) => {
       expect([await runAt(ahead), await runAt(dependencies), await runAt(ci)]).toEqual([
         50, 50, 100,
       ]);
+    } finally {
+      await close();
+    }
+  });
+
+  test("the item's parked merge job runs now once its conversation ends", async () => {
+    const { db, close } = await open();
+    try {
+      const merge = (itemId: string) =>
+        db.run((q) =>
+          enqueueJobSteps(q, {
+            queue: JOB_KIND.merge,
+            payload: { itemId, mergeWait: { reason: "review" } },
+            runAt: 100,
+            now: 0,
+          }),
+        );
+      const held = await merge("a");
+      const other = await merge("b");
+      expect(await db.run((q) => wakeItemMergeSteps(q, "a", 50))).toBe(true);
+      expect(await db.run((q) => wakeItemMergeSteps(q, "c", 50))).toBe(false);
+      const runAt = async (id: number) => (await db.run((q) => getJobSteps(q, id)))?.runAt;
+      expect([await runAt(held), await runAt(other)]).toEqual([50, 100]);
     } finally {
       await close();
     }
