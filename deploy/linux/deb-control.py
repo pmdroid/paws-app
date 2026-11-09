@@ -3,6 +3,7 @@ import importlib.util
 import json
 import pathlib
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 
@@ -52,6 +53,15 @@ def stop(next_version):
         installer.stop_for_install()
 
 
+def admit():
+    """Refuse what configure would refuse, while dpkg can still leave the installed package as it is."""
+    incoming = json.loads(installer.release.read_regular(ROOT / "admission.json", 65536))
+    try:
+        installer.admitted_release(incoming, incoming["releaseKeyFingerprint"], reinstall=True)
+    except ValueError as error:
+        sys.exit(str(error))
+
+
 def configure():
     docker = installer.docker_access_choice()
     journal = installer.Journal()
@@ -98,10 +108,12 @@ def restore():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=("configure", "stop", "restore"))
+    parser.add_argument("operation", choices=("admit", "configure", "stop", "restore"))
     parser.add_argument("--next-version")
     arguments = parser.parse_args()
-    if arguments.operation == "configure":
+    if arguments.operation == "admit":
+        admit()
+    elif arguments.operation == "configure":
         configure()
     elif arguments.operation == "restore":
         restore()
