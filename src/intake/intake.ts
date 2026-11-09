@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { UserFacingError, type IssueBrief } from "../core";
+import type { IssueBrief } from "../core";
 import { issueHasUnfinishedItem } from "../db";
-import type { TrackerAdapter } from "../linear";
+import { LinearIntakeRefusedError, type TrackerAdapter } from "../linear";
 import type { DependencyEdge, EpicSnapshot } from "../linear";
 import { orderByBlocks, type OrderNode } from "./order";
 import {
@@ -207,7 +207,6 @@ export async function intakeDelegatedIssue(
   } catch (error) {
     if (error instanceof ActiveIssueError) {
       await announce(tracker, input.sessionId, "error", error.message);
-      error.reported = sessionId.length > 0;
     }
     throw error;
   }
@@ -225,10 +224,11 @@ export async function intakeDelegatedIssue(
   return result;
 }
 
-export class ActiveIssueError extends UserFacingError {
+export class ActiveIssueError extends LinearIntakeRefusedError {
   constructor(identifier: string) {
     super(
       `${identifier} has an unfinished attempt in another Paws session. Reply in that session to continue, or stop it before starting a new one.`,
+      { quiet: true },
     );
   }
 }
