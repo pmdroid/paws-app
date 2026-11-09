@@ -76,6 +76,10 @@ const settingsSchema = z.strictObject({
 });
 
 export function parseAgentSettings(value: unknown): AgentSettings {
+  return parseSettings(value, false);
+}
+
+function parseSettings(value: unknown, legacyDefaults: boolean): AgentSettings {
   const settings = dropAccounts(settingsSchema.parse(value));
   const names = new Set<string>();
   for (const name of Object.keys(settings.presets ?? {})) {
@@ -83,6 +87,8 @@ export function parseAgentSettings(value: unknown): AgentSettings {
     if (names.has(key)) throw new Error(`Duplicate preset: ${name}`);
     names.add(key);
   }
+  // Presets alone must not newly validate the synthesized legacy role pair.
+  if (legacyDefaults) return settings;
   const repos = new Set<string>();
   validateIndependence(settings.defaults);
   if (settings.defaults.reviewerFallback?.agent === settings.defaults.reviewer.agent)
@@ -233,30 +239,33 @@ export function parseAgentSettingsToml(
     };
   };
   const agents = parsed.agents;
-  return parseAgentSettings({
-    defaults: {
-      implementer: { model: null, ...(agents?.defaults?.implementer ?? { agent: implementer }) },
-      reviewer: { model: null, ...(agents?.defaults?.reviewer ?? { agent: "codex" }) },
-      ...(agents?.defaults?.reviewer_fallback
-        ? { reviewerFallback: { model: null, ...agents.defaults.reviewer_fallback } }
-        : {}),
+  return parseSettings(
+    {
+      defaults: {
+        implementer: { model: null, ...(agents?.defaults?.implementer ?? { agent: implementer }) },
+        reviewer: { model: null, ...(agents?.defaults?.reviewer ?? { agent: "codex" }) },
+        ...(agents?.defaults?.reviewer_fallback
+          ? { reviewerFallback: { model: null, ...agents.defaults.reviewer_fallback } }
+          : {}),
+      },
+      ...(agents?.presets === undefined
+        ? {}
+        : {
+            presets: Object.fromEntries(
+              Object.entries(agents.presets).map(([name, profile]) => [
+                name,
+                { model: null, ...profile },
+              ]),
+            ),
+          }),
+      projects: Object.entries(agents?.projects ?? {}).map(([repo, profiles]) => ({
+        repo,
+        ...(profiles.implementer ? { implementer: { model: null, ...profiles.implementer } } : {}),
+        ...(profiles.reviewer ? { reviewer: { model: null, ...profiles.reviewer } } : {}),
+      })),
     },
-    ...(agents?.presets === undefined
-      ? {}
-      : {
-          presets: Object.fromEntries(
-            Object.entries(agents.presets).map(([name, profile]) => [
-              name,
-              { model: null, ...profile },
-            ]),
-          ),
-        }),
-    projects: Object.entries(agents?.projects ?? {}).map(([repo, profiles]) => ({
-      repo,
-      ...(profiles.implementer ? { implementer: { model: null, ...profiles.implementer } } : {}),
-      ...(profiles.reviewer ? { reviewer: { model: null, ...profiles.reviewer } } : {}),
-    })),
-  });
+    agents?.defaults === undefined && agents?.projects === undefined,
+  );
 }
 
 export function renderAgentSettingsText(current: string, input: AgentSettings): string {

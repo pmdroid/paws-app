@@ -121,3 +121,26 @@ test("fallback cannot review a matching label-selected implementer, but a differ
     settings.defaults.reviewerFallback,
   );
 });
+
+test("presets alone preserve legacy Codex defaults without weakening explicit profile validation", () => {
+  const legacy = '[agents]\nimplementer = "codex"\n';
+  const preset = '\n[agents.presets.Opus]\nagent = "claude"\nmodel = "opus"\n';
+  const before = resolveAgentProfiles(parseConfigToml(legacy), "acme/app");
+  const cfg = parseConfigToml(legacy + preset);
+  expect(resolveAgentProfiles(cfg, "acme/app")).toEqual(before);
+  expect(cfg.agentSettings?.presets?.Opus).toEqual({ agent: "claude", model: "opus" });
+  expect(resolveAgentProfiles(cfg, "acme/app", { implementer: "Opus" }).implementer).toEqual({
+    agent: "claude",
+    model: "opus",
+  });
+  expect(() =>
+    parseConfigToml(legacy + preset + '\n[agents.defaults.implementer]\nagent = "codex"\n'),
+  ).toThrow("Implementer and reviewer");
+  expect(() => parseAgentSettings(cfg.agentSettings)).toThrow("Implementer and reviewer");
+  expect(() =>
+    parseConfigToml(legacy + preset.replace('agent = "claude"', 'agent = "invalid"')),
+  ).toThrow();
+  expect(() => parseConfigToml(legacy + preset + preset.replace("Opus", "opus"))).toThrow(
+    "Duplicate preset",
+  );
+});
