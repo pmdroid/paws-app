@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
 import {
   adoptLegacyCandidate,
@@ -9,7 +8,7 @@ import {
   worktreePath,
 } from "../acp";
 import type { RepositoryBinding, WorkItemState } from "../core";
-import { latestRunUpdate, listWorkItems, type WorkItemRecord } from "../db";
+import { latestRunUpdateSteps, listWorkItemsSteps, type Db, type WorkItemRecord } from "../db";
 import { itemPathId } from "./sources";
 
 export const RETIRED_WORKTREE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -29,7 +28,7 @@ const IDLE_STATES: ReadonlySet<WorkItemState> = new Set([
 ]);
 
 export type WorktreeSweep = {
-  db: Database;
+  store: Db;
   pawsRoot: string;
   now: number;
   signal: AbortSignal;
@@ -45,11 +44,11 @@ export type WorktreeSweep = {
 };
 
 export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
-  for (const [pathId, items] of owners(sweep.db)) {
+  for (const [pathId, items] of await owners(sweep.store)) {
     sweep.signal.throwIfAborted();
     const path = worktreePath(sweep.pawsRoot, pathId);
     const repository = sweep.repositoryForItem(items[0]!);
-    const touched = lastTouched(sweep.db, items, path);
+    const touched = await lastTouched(sweep.store, items, path);
     const leftover = sweep.runnerBacked === true;
     if (!repository || touched === null || (!leftover && !items.every(idle))) continue;
     if (items.some((item) => sweep.busy(item.id))) continue;
@@ -61,7 +60,7 @@ export async function sweepWorktrees(sweep: WorktreeSweep): Promise<void> {
     if (!expired && !(await worktreeMergedInto(path, heads))) continue;
     const ids = items.map((item) => item.id);
     await sweep.hold(ids, async () => {
-      const current = owners(sweep.db).get(pathId) ?? [];
+      const current = (await owners(sweep.store)).get(pathId) ?? [];
       const unchanged =
         current.length === items.length &&
         current.every(
@@ -104,9 +103,9 @@ async function keepLeftoverHead(
   }
 }
 
-function owners(db: Database): Map<string, WorkItemRecord[]> {
+async function owners(store: Db): Promise<Map<string, WorkItemRecord[]>> {
   const byPath = new Map<string, WorkItemRecord[]>();
-  for (const item of listWorkItems(db)) {
+  for (const item of await store.run(listWorkItemsSteps)) {
     const pathId = itemPathId(item);
     byPath.set(pathId, [...(byPath.get(pathId) ?? []), item]);
   }
@@ -117,7 +116,11 @@ function idle(item: WorkItemRecord): boolean {
   return IDLE_STATES.has(item.state);
 }
 
-function lastTouched(db: Database, items: WorkItemRecord[], path: string): number | null {
+async function lastTouched(
+  store: Db,
+  items: WorkItemRecord[],
+  path: string,
+): Promise<number | null> {
   let modified: number;
   try {
     modified = statSync(path).mtimeMs;
@@ -130,13 +133,8 @@ function lastTouched(db: Database, items: WorkItemRecord[], path: string): numbe
     );
     return null;
   }
-  return Math.max(
-    modified,
-    latestRunUpdate(
-      db,
-      items.map((item) => item.id),
-    ) ?? 0,
-  );
+  const ids = items.map((item) => item.id);
+  return Math.max(modified, (await store.run((q) => latestRunUpdateSteps(q, ids))) ?? 0);
 }
 
 async function mergedHeads(

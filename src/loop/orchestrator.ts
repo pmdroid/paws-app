@@ -2250,7 +2250,7 @@ export class Orchestrator {
             this.options.journal,
           );
         }
-        return readReviewChecks(this.db, {
+        return readReviewChecks(this.store, {
           owner: repository.owner,
           repo: repository.repo,
           head: pull.head,
@@ -3516,7 +3516,7 @@ export class Orchestrator {
       const turnHandoff = [handoff, comments?.text, suggestions]
         .filter((part) => part)
         .join("\n\n");
-      const focus = closeoutFocus(this.db, item.id, returned?.reason);
+      const focus = await closeoutFocus(this.store, item.id, returned?.reason);
       const draft = this.savedDraft(item.id);
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
@@ -3899,7 +3899,7 @@ export class Orchestrator {
           ...(options.reverifyJobId !== undefined ? { reverifyJobId: options.reverifyJobId } : {}),
         });
         if (mergeJob !== null)
-          await settleReviewEscapes(this.db, {
+          await settleReviewEscapes(this.store, {
             itemId: item.id,
             fixHead: acceptedHead,
             base,
@@ -3968,7 +3968,7 @@ export class Orchestrator {
       "-z",
       `${base}...${head}`,
     ]);
-    await recordAcceptedFindings(this.db, {
+    await recordAcceptedFindings(this.store, {
       itemId: item.id,
       head,
       pawsRoot: this.options.pawsRoot,
@@ -5472,7 +5472,7 @@ export class Orchestrator {
     const publicUrl = this.options.evidence?.publicUrl ?? this.options.publicUrl ?? null;
     const open: OpenItems = {
       findings: await openFindings(
-        this.db,
+        this.store,
         item,
         run.publicationCandidate?.sha ?? null,
         this.options.pawsRoot,
@@ -5983,7 +5983,7 @@ export class Orchestrator {
     if (this.suggestedFindingsMode(`${repository.owner}/${repository.repo}`) === "off") return "";
     await this.pullCloseoutEvidence(item);
     const findings = undecidedSuggestions(
-      await acceptedSuggestions(this.db, item, this.options.pawsRoot).catch((error: unknown) => {
+      await acceptedSuggestions(this.store, item, this.options.pawsRoot).catch((error: unknown) => {
         journalCaught(
           error,
           "orchestrator.suggestionBrief",
@@ -6869,7 +6869,7 @@ export class Orchestrator {
 
   async sweepWorktrees(signal: AbortSignal): Promise<void> {
     await sweepCheckpointRefs({
-      db: this.db,
+      store: this.store,
       signal,
       remove: (repository, ref) => {
         const github = this.githubForRepository(repository);
@@ -6891,7 +6891,7 @@ export class Orchestrator {
       this.jobContexts.has(itemId) ||
       [...this.live.values()].some((live) => live.itemId === itemId);
     return sweepWorktrees({
-      db: this.db,
+      store: this.store,
       pawsRoot: this.options.pawsRoot,
       now: this.now(),
       signal,
@@ -7474,7 +7474,7 @@ export class Orchestrator {
         const repository = this.repositoryForItem(item);
         const signal = this.signalForItem(item.id);
         await applyPullRequestDraft({
-          db: this.db,
+          store: this.store,
           itemId: item.id,
           issue: item.linearIdentifier,
           draft: description,
@@ -7764,7 +7764,7 @@ export class Orchestrator {
     try {
       this.conversations.set(
         itemId,
-        await durableConversation(this.db, itemId, this.remoteAgentForItem(itemId)),
+        await durableConversation(this.store, itemId, this.remoteAgentForItem(itemId)),
       );
       this.assertJobCurrent(itemId);
       await operation();
@@ -7951,7 +7951,7 @@ export class Orchestrator {
     ) {
       let conversation: string | undefined;
       if (item) {
-        await durableConversation(this.db, item.id);
+        await durableConversation(this.store, item.id);
         conversation = getConversation(this.db, item.id).entries;
         turns = listPendingLinearTurns(this.db, sessionId);
         if (!turns.length) return;
@@ -9107,11 +9107,11 @@ export class Orchestrator {
     const sourceItemId = classification?.mode !== "clarify" ? classification?.sourceItemId : null;
     const stored = getConversation(this.db, item.id);
     if (sourceItemId && stored.entries === "[]" && !stored.transcript) {
-      await durableConversation(this.db, sourceItemId);
+      await durableConversation(this.store, sourceItemId);
       saveConversation(this.db, item.id, getConversation(this.db, sourceItemId).entries, null);
     }
     const backend = this.remoteAgentForItem(item.id) ?? runAgent;
-    const runner = await durableConversation(this.db, item.id, async (input) => {
+    const runner = await durableConversation(this.store, item.id, async (input) => {
       const policy =
         getTaskMode(this.db, item.id) === "code" &&
         input.role === "implementer" &&
@@ -9215,7 +9215,7 @@ export class Orchestrator {
       ...this.gitHubCredentials(github),
     };
     await postReviewReplies(
-      this.db,
+      this.store,
       { itemId: item.id, pullNumber, head, now: () => this.now() },
       {
         replyToReviewComment: (prNumber, commentId, body) =>
@@ -9585,7 +9585,7 @@ export class Orchestrator {
         const load = trustedPolicyFiles(repo, home, policyRoot);
         // The runner parses the policy with its own release: say which keys it would leave out.
         if (load.ok && !load.absent)
-          checkPolicyRunners(this.db, {
+          await checkPolicyRunners(this.store, {
             repository: `${repository.owner}/${repository.repo}`,
             digest: load.digest,
             files: load.files,
@@ -9601,7 +9601,7 @@ export class Orchestrator {
   private async failedReviewFindings(item: WorkItemRecord): Promise<ReviewFindings[]> {
     try {
       await this.pullCloseoutEvidence(item);
-      return await failedReviewFindings(this.db, item.id, this.options.pawsRoot);
+      return await failedReviewFindings(this.store, item.id, this.options.pawsRoot);
     } catch (caught) {
       journalCaught(caught, "orchestrator.failedReviewFindings", item.id);
       return [];

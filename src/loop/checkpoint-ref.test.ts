@@ -8,6 +8,7 @@ import {
   listJobs,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../db";
 import { deleteEndedCheckpointRef, sweepCheckpointRefs } from "./checkpoint-ref";
 
@@ -38,7 +39,7 @@ for (const state of ["completed", "merged", "cancelled"] as const)
     expect(ended()).toEqual([]);
     db.run("UPDATE work_item SET state=?, version=version+1 WHERE id=?", [state, item.id]);
     expect(ended()).toEqual([item.id]);
-    await sweepCheckpointRefs({ db, remove });
+    await sweepCheckpointRefs({ store: sqliteDb(db), remove });
     expect(removed).toEqual([
       { repository: expect.objectContaining(REPOSITORY), ref: "refs/paws/checkpoints/paws/item" },
     ]);
@@ -57,13 +58,13 @@ test("a delete that fails stays for the next sweep", async () => {
   const { db, item, remove, removed, ended } = setup();
   db.run("UPDATE work_item SET state='merged', version=version+1 WHERE id=?", [item.id]);
   await sweepCheckpointRefs({
-    db,
+    store: sqliteDb(db),
     remove: async () => {
       throw new Error("GitHub is down");
     },
   });
   expect(ended()).toEqual([item.id]);
-  await sweepCheckpointRefs({ db, remove });
+  await sweepCheckpointRefs({ store: sqliteDb(db), remove });
   expect(removed).toHaveLength(1);
   expect(ended()).toEqual([]);
 });
@@ -72,7 +73,9 @@ test("an item resumed before the sweep keeps its checkpoint", async () => {
   const { db, item, removed, remove } = setup();
   db.run("UPDATE work_item SET state='cancelled', version=version+1 WHERE id=?", [item.id]);
   db.run("UPDATE work_item SET state='queued', version=version+1 WHERE id=?", [item.id]);
-  expect(await deleteEndedCheckpointRef({ db, itemId: item.id, remove })).toBe("kept");
+  expect(await deleteEndedCheckpointRef({ store: sqliteDb(db), itemId: item.id, remove })).toBe(
+    "kept",
+  );
   expect(removed).toEqual([]);
 });
 
@@ -85,18 +88,26 @@ test("a continuing item that took over the branch owns the checkpoint, until it 
     item.id,
     "paws/item",
   ]);
-  expect(await deleteEndedCheckpointRef({ db, itemId: item.id, remove })).toBe("kept");
+  expect(await deleteEndedCheckpointRef({ store: sqliteDb(db), itemId: item.id, remove })).toBe(
+    "kept",
+  );
   expect(removed).toEqual([]);
   db.run("UPDATE work_item SET state='merged', version=version+1 WHERE id=?", [next.id]);
-  expect(await deleteEndedCheckpointRef({ db, itemId: item.id, remove })).toBe("deleted");
+  expect(await deleteEndedCheckpointRef({ store: sqliteDb(db), itemId: item.id, remove })).toBe(
+    "deleted",
+  );
 });
 
 test("a ref that is already gone is fine", async () => {
   const { db, item } = setup();
   db.run("UPDATE work_item SET state='merged', version=version+1 WHERE id=?", [item.id]);
-  expect(await deleteEndedCheckpointRef({ db, itemId: item.id, remove: async () => false })).toBe(
-    "absent",
-  );
+  expect(
+    await deleteEndedCheckpointRef({
+      store: sqliteDb(db),
+      itemId: item.id,
+      remove: async () => false,
+    }),
+  ).toBe("absent");
 });
 
 test("a continuation two steps on that still runs keeps the shared checkpoint", async () => {
@@ -113,7 +124,7 @@ test("a continuation two steps on that still runs keeps the shared checkpoint", 
     );
   for (const id of [item.id, second.id])
     db.run("UPDATE work_item SET state='cancelled', version=version+1 WHERE id=?", [id]);
-  await sweepCheckpointRefs({ db, remove });
+  await sweepCheckpointRefs({ store: sqliteDb(db), remove });
   expect(removed).toEqual([]);
   expect(ended()).toEqual([]);
 });
@@ -127,15 +138,15 @@ test("a stop whose runner is still publishing its checkpoint waits for the next 
     [run.id, "runner", "workspace", 1, 0, "command", 10],
   );
   db.run("UPDATE work_item SET state='cancelled', version=version+1 WHERE id=?", [item.id]);
-  await sweepCheckpointRefs({ db, remove });
+  await sweepCheckpointRefs({ store: sqliteDb(db), remove });
   expect(removed).toEqual([]);
   expect(ended()).toEqual([item.id]);
   db.run("UPDATE runner_work SET ended_at=20 WHERE run_id=?", [run.id]);
-  await sweepCheckpointRefs({ db, remove });
+  await sweepCheckpointRefs({ store: sqliteDb(db), remove });
   expect(removed).toEqual([]);
   expect(ended()).toEqual([item.id]);
   db.run("UPDATE runner_work SET teardown_confirmed_at=30 WHERE run_id=?", [run.id]);
-  await sweepCheckpointRefs({ db, remove });
+  await sweepCheckpointRefs({ store: sqliteDb(db), remove });
   expect(removed).toHaveLength(1);
   expect(ended()).toEqual([]);
 });
@@ -144,7 +155,7 @@ test("a repository without a GitHub binding keeps its cleanup request for a late
   const { db, item, ended } = setup();
   db.run("UPDATE work_item SET state='merged', version=version+1 WHERE id=?", [item.id]);
   await sweepCheckpointRefs({
-    db,
+    store: sqliteDb(db),
     remove: () => Promise.reject(new Error("No GitHub App binding for acme/repo")),
   });
   expect(ended()).toEqual([item.id]);

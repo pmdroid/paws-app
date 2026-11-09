@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { listPolicyRunnerWarnings, migrate, openDatabase } from "../db";
+import { listPolicyRunnerWarnings, migrate, openDatabase, sqliteDb } from "../db";
 import { setJournalSink } from "../journal";
 import { checkPolicyRunners } from "./policy-runners";
 
@@ -44,11 +44,16 @@ function runner(db: Database, id: string, version: string, lastSeenAt: number): 
 }
 
 function check(db: Database, digest = DIGEST) {
-  return checkPolicyRunners(db, { repository: REPOSITORY, digest, files: CI_POLICY, now: NOW });
+  return checkPolicyRunners(sqliteDb(db), {
+    repository: REPOSITORY,
+    digest,
+    files: CI_POLICY,
+    now: NOW,
+  });
 }
 
 describe("a Closeout policy key the lowest online runner does not know", () => {
-  test("is recorded for the dashboard and journaled once", () => {
+  test("is recorded for the dashboard and journaled once", async () => {
     const db = database();
     runner(db, "new", "0.1.53", NOW - 1_000);
     runner(db, "old", "0.1.48", NOW - 1_000);
@@ -58,7 +63,7 @@ describe("a Closeout policy key the lowest online runner does not know", () => {
     const restore = setJournalSink((line) => lines.push(line));
     try {
       for (let pass = 0; pass < 3; pass++)
-        expect(check(db)).toEqual({
+        expect(await check(db)).toEqual({
           repository: REPOSITORY,
           policyDigest: DIGEST,
           runnerVersion: "0.1.48",
@@ -81,19 +86,19 @@ describe("a Closeout policy key the lowest online runner does not know", () => {
     ]);
   });
 
-  test("clears once every online runner knows the policy's keys", () => {
+  test("clears once every online runner knows the policy's keys", async () => {
     const db = database();
     runner(db, "old", "0.1.48", NOW - 1_000);
-    expect(check(db)).not.toBeNull();
+    expect(await check(db)).not.toBeNull();
     db.run("UPDATE runner_host_status SET runner_version='0.1.53'");
-    expect(check(db)).toBeNull();
+    expect(await check(db)).toBeNull();
     expect(listPolicyRunnerWarnings(db)).toEqual([]);
   });
 
-  test("with no runner online there is nothing to compare", () => {
+  test("with no runner online there is nothing to compare", async () => {
     const db = database();
     runner(db, "gone", "0.1.40", NOW - 600_000);
-    expect(check(db)).toBeNull();
+    expect(await check(db)).toBeNull();
     expect(listPolicyRunnerWarnings(db)).toEqual([]);
   });
 });

@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import type { ReviewFindingGroup } from "../acp";
 import {
   omittedFindings,
@@ -9,9 +8,10 @@ import {
 } from "../closeout";
 import { riskLine, type RiskClassification } from "../core";
 import {
-  acceptedCloseoutReviews,
-  failedCloseoutReviews,
+  acceptedCloseoutReviewsSteps,
+  failedCloseoutReviewsSteps,
   type AcceptedCloseoutReviews,
+  type Db,
   type WorkItemRecord,
 } from "../db";
 import { dashboardIssuePath } from "../dashboard-links";
@@ -50,12 +50,12 @@ export type OpenItems = {
  * accepted the head only because something waived it.
  */
 export async function openFindings(
-  db: Database,
+  store: Db,
   item: WorkItemRecord,
   head: string | null,
   pawsRoot: string,
 ): Promise<OpenFinding[]> {
-  const accepted = acceptedCloseoutReviews(db, item.id, head);
+  const accepted = await store.run((q) => acceptedCloseoutReviewsSteps(q, item.id, head));
   if (accepted === null || accepted.reviews.length === 0) return [];
   const records = await reviewRecordsAt(accepted.taskId, accepted.head, pawsRoot);
   return nonBlockingFindings(accepted.reviews, records);
@@ -104,11 +104,11 @@ export function nonBlockingFindings(
 }
 
 export async function failedReviewFindings(
-  db: Database,
+  store: Db,
   itemId: string,
   pawsRoot: string,
 ): Promise<ReviewFindings[]> {
-  const failed = failedCloseoutReviews(db, itemId);
+  const failed = await store.run((q) => failedCloseoutReviewsSteps(q, itemId));
   if (failed === null || failed.reviews.length === 0) return [];
   const records = await reviewRecordsAt(failed.taskId, failed.head, pawsRoot);
   return acceptedReviewRecords(failed.reviews, records).map(({ review, record }) => {

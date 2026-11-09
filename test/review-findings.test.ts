@@ -14,6 +14,7 @@ import {
   reviewFindingItems,
   setReviewFindingStatus,
   upsertCloseoutStep,
+  sqliteDb,
 } from "../src/db";
 import { formatFixFeedback } from "../src/closeout";
 import {
@@ -150,7 +151,7 @@ test("an accepted head stores its two non-blocking findings and not the waived b
       findings: [STALE, MINOR, BLOCKING],
       preExisting: [0],
     });
-    const result = await recordAcceptedFindings(db, {
+    const result = await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-a",
       head: "a".repeat(40),
       pawsRoot: home,
@@ -188,7 +189,7 @@ test("the same finding on another item updates its count and last seen instead o
       findings: [STALE],
       preExisting: [0],
     });
-    await recordAcceptedFindings(db, {
+    await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-a",
       head: "a".repeat(40),
       pawsRoot: home,
@@ -206,7 +207,7 @@ test("the same finding on another item updates its count and last seen instead o
       findings: [again],
       preExisting: [0],
     });
-    await recordAcceptedFindings(db, {
+    await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-b",
       head: "c".repeat(40),
       pawsRoot: home,
@@ -220,7 +221,7 @@ test("the same finding on another item updates its count and last seen instead o
       findings: [again],
       preExisting: [0],
     });
-    await recordAcceptedFindings(db, {
+    await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-b",
       head: "d".repeat(40),
       pawsRoot: home,
@@ -256,7 +257,7 @@ test("a finding a later accepted review of its path no longer reports is gone, a
       findings: [STALE],
       preExisting: [0],
     });
-    await recordAcceptedFindings(db, {
+    await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-a",
       head: "a".repeat(40),
       pawsRoot: home,
@@ -264,7 +265,7 @@ test("a finding a later accepted review of its path no longer reports is gone, a
     });
     accept(db, home, { itemId: "item-b", head: "c".repeat(40), at: 200, findings: [] });
     // Another review's silence and an untouched path say nothing about it.
-    await recordAcceptedFindings(db, {
+    await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-b",
       head: "c".repeat(40),
       pawsRoot: home,
@@ -272,7 +273,7 @@ test("a finding a later accepted review of its path no longer reports is gone, a
       changedPaths: ["src/other.ts"],
     });
     expect(listReviewFindings(db)[0]!.status).toBe("open");
-    await recordAcceptedFindings(db, {
+    await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-b",
       head: "c".repeat(40),
       pawsRoot: home,
@@ -291,7 +292,7 @@ test("a finding a later accepted review of its path no longer reports is gone, a
       findings: [STALE],
       preExisting: [0],
     });
-    await recordAcceptedFindings(db, {
+    await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-b",
       head: "d".repeat(40),
       pawsRoot: home,
@@ -315,7 +316,7 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
       findings: [STALE],
       preExisting: [0],
     });
-    await recordAcceptedFindings(db, {
+    await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-a",
       head: "a".repeat(40),
       pawsRoot: home,
@@ -341,7 +342,7 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
     });
     expect(listReviewFindings(db, { status: "open" })).toEqual([]);
     // A dismissed finding reported again keeps its status.
-    await recordAcceptedFindings(db, {
+    await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-a",
       head: "a".repeat(40),
       pawsRoot: home,
@@ -412,7 +413,7 @@ test("the backfill reads each task's evidence once and running it again changes 
       reads.push(taskId);
       return taskReviewRecords(taskId, home);
     };
-    expect(await backfillReviewFindings({ db, pawsRoot: home, read })).toEqual({
+    expect(await backfillReviewFindings({ store: sqliteDb(db), pawsRoot: home, read })).toEqual({
       runs: 3,
       recorded: 5,
       // Item b's review reported a blocking finding in src/new.ts and not item a's P2 there.
@@ -426,7 +427,7 @@ test("the backfill reads each task's evidence once and running it again changes 
       ["src/legacy.ts", "open", 2, 100, 200],
       ["src/new.ts", "gone", 1, 100, 150],
     ]);
-    await backfillReviewFindings({ db, pawsRoot: home });
+    await backfillReviewFindings({ store: sqliteDb(db), pawsRoot: home });
     expect(listReviewFindings(db)).toEqual(once);
   } finally {
     db.close();
@@ -491,7 +492,7 @@ test("a review that fails with a P1 hands the agent its location and explanation
       preExisting: [0],
       rejected: true,
     });
-    const failed = await failedReviewFindings(db, "item-r", home);
+    const failed = await failedReviewFindings(sqliteDb(db), "item-r", home);
     expect(reviewFindingGroups(failed)).toEqual([
       {
         reviewId: "independent-review",
@@ -512,7 +513,7 @@ test("an accepted head hands the agent no failed findings", async () => {
   try {
     item(db, "item-s");
     accept(db, home, { itemId: "item-s", head: "e".repeat(40), at: 100, findings: [BLOCKING] });
-    expect(await failedReviewFindings(db, "item-s", home)).toEqual([]);
+    expect(await failedReviewFindings(sqliteDb(db), "item-s", home)).toEqual([]);
   } finally {
     db.close();
   }
