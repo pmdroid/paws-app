@@ -774,9 +774,9 @@ export async function executeRunnerCommand(
   let failurePhase = "checkout";
   const enterPhase = (name: string) => {
     failurePhase = name;
+    replaceOutputFile(options, "phase.txt", name);
     console.warn(JSON.stringify({ event: "worker_phase", phase: name }));
   };
-  enterPhase("checkout");
   if (
     ![options.outputDirectory, options.workRoot, options.home].every(isAbsolute) ||
     (options.skills !== undefined && !isAbsolute(options.skills)) ||
@@ -894,6 +894,7 @@ export async function executeRunnerCommand(
   let preview: Promise<LivePreview | null> | undefined;
   const previewStart = new AbortController();
   try {
+    enterPhase("checkout");
     if (command.type === "login") {
       if (!options.answer || !options.signal) throw new Error("Login lifecycle is unavailable");
       await runProviderLogin({

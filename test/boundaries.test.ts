@@ -223,7 +223,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   "runner-execution": ["journal", "runner-protocol", "process"],
   "runner-repositories": ["journal", "github", "runner-protocol", "core"],
   process: ["journal"],
-  "runner-failure": ["journal", "runner-daemon"],
+  "runner-failure": ["core", "journal", "runner-daemon"],
   "runner-cli": [
     "runner-failure",
     "journal",

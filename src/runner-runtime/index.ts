@@ -1703,12 +1703,31 @@ export async function openRunnerRuntime(options: {
         raw = readRunnerResultFile(options.results, entry.execution.id, "result.json");
       } catch {
         const log = broker.log?.(entry.execution.id) ?? "";
-        const exit = [
-          ...log.matchAll(/Runner worker exited with (signal [A-Z0-9]+|code -?\d+)/g),
-        ].at(-1)?.[1];
-        const phase = [
-          ...log.matchAll(/"event":"worker_phase","phase":"(checkout|mise|agent|verify|push)"/g),
-        ].at(-1)?.[1];
+        const exit =
+          (await broker.exitStatus?.(entry.execution.id)) ??
+          [...log.matchAll(/Runner worker exited with (signal [A-Z0-9]+|code -?\d+)/g)].at(-1)?.[1];
+        let savedPhase: string | undefined;
+        try {
+          const value = readRunnerResultFile(
+            options.results,
+            entry.execution.id,
+            "phase.txt",
+          ).toString("utf8");
+          if (/^(checkout|mise|agent|verify|push)$/.test(value)) savedPhase = value;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          journalCaught(
+            error,
+            "runner-runtime.workerFinished.phase",
+            entry.execution.command.itemId,
+            "optional file may be absent",
+          );
+        }
+        const phase =
+          savedPhase ??
+          [
+            ...log.matchAll(/"event":"worker_phase","phase":"(checkout|mise|agent|verify|push)"/g),
+          ].at(-1)?.[1];
         throw new Error(
           `worker exited ${exit ? `with ${exit}` : "without a result"}${phase ? ` during phase ${phase}` : ""}`,
         );

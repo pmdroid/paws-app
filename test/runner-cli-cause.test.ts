@@ -1,3 +1,4 @@
+import { isAgentServiceError } from "../src/core";
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -295,4 +296,14 @@ test("commit attribution rejection retains a fixed diagnostic without commit det
       true,
     ),
   ).toBe("Commit attribution rejected.");
+});
+
+test("worker reasons reject plain-sentence secrets and retain service retry classification", () => {
+  for (const message of ["Password is SecretValue", "Error: Password is SecretValue"])
+    expect(describeRunnerFailure(new Error(message), [], true)).toBe("Error.");
+  for (const message of ["Internal error", "API Error: 503 secret", "overloaded_error secret"]) {
+    const reason = describeRunnerFailure(new Error(message), [], true);
+    expect(isAgentServiceError(`Run failed during agent: ${reason}`)).toBe(true);
+    expect(reason).not.toContain("secret");
+  }
 });
