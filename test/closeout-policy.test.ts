@@ -735,8 +735,14 @@ describe("origin/main source", () => {
     git.remoteStdout = `${"b".repeat(40)}\trefs/heads/main\n`;
     const repo = tempDir();
     const result = loadPolicy({ repo, git, home, env: {} });
-    expectBlocked(result, "repo", "origin/main is unavailable");
-    expect(git.calls.map((call) => call.split(" ")[0])).toEqual(["fetch", "ls-remote"]);
+    expectBlocked(
+      result,
+      "repo",
+      `origin/main is unavailable (fetched ${git.commit}, remote ${"b".repeat(40)} after 3 attempts)`,
+    );
+    expect(git.calls.map((call) => call.split(" ")[0])).toEqual(
+      Array(3).fill(["fetch", "ls-remote"]).flat(),
+    );
   });
 
   test("an empty second answer and a failed fetch or ls-remote block", () => {
