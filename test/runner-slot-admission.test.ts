@@ -6,6 +6,7 @@ import {
   applyWorkItemEvent,
   enqueueJob,
   getJob,
+  holdForRunnerSetup,
   insertRun,
   listItemHolds,
   schedulerRunnerSlots,
@@ -149,6 +150,13 @@ test("a parked item is placed on a runner as soon as it reports the repository a
       .capacityWait;
   expect(runnerSlotFree(db, slotWaitRunners(db, runId, waited(), NOW), NOW, runId)).toBe(false);
 
+  // This is a failover of previously placed work, not its first placement.
+  const previous = pair("previous", 1, [REPOSITORY]);
+  db.run("UPDATE runner SET status='paused' WHERE id=?", [previous]);
+  db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) SELECT ?,?,workspace_id,1,0,'previous',?,?,? FROM runner WHERE id=?",
+    [runId, previous, NOW - 1, NOW - 1, NOW - 1, previous],
+  );
   const clock = { now: NOW + 1_000 };
   const work = createRunnerWork({
     db,
@@ -479,4 +487,29 @@ test("a queued restart reuses its active run's held slot without admitting unrel
     pinnedRunnerId: pinned,
   });
   expect(offered.map((row) => row.id)).toEqual([pinned]);
+});
+
+test("sign-in host warnings persist while queued work is held for runner setup", () => {
+  const db = tempDb();
+  const { pair, queue, pass, userId } = workspaceWithRunners(db);
+  const runnerId = pair("unsigned", 1, [REPOSITORY]);
+  db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id=?", [runnerId]);
+  queue("held");
+  const reports: RunnerHostRefusal[][] = [];
+  pass(reports);
+  expect(reports.at(-1)).toHaveLength(1);
+  holdForRunnerSetup(db, {
+    itemId: "held",
+    ownerUserId: userId,
+    reason: "agent-not-signed-in",
+    runnerId,
+    agent: "claude",
+    now: NOW,
+  });
+  const refusals = createRunnerHostRefusals();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    expect(pass(reports)).toEqual([]);
+    refusals.report(reports.at(-1)!, NOW);
+    expect(refusals.lines(runnerId)).toHaveLength(1);
+  }
 });

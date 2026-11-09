@@ -273,7 +273,13 @@ export function* wakeRunnerSlotWaitsSteps(q: Q, runnerId: string, now: number): 
           runAt: now,
           payload: jsonValue(q, {
             ...payload,
-            capacityWait: { ...wait, ...(online ? { online } : {}) },
+            capacityWait: {
+              ...wait,
+              // Placed runs keep a bounded retry list too. Recheck the runner whose
+              // eligibility changed; placement still enforces scope and online pins.
+              runnerIds: wait.runnerIds.length ? [...new Set([...wait.runnerIds, runnerId])] : [],
+              ...(online ? { online } : {}),
+            },
           }),
         })
         .where(and(eq(job.id, row.id), eq(job.status, "pending"))),

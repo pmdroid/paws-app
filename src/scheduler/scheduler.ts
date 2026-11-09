@@ -842,10 +842,12 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       setup: [...setup],
       changes,
       hostRefusals: hostRefusals(
-        order.flatMap(({ item }) => {
-          const verdicts = verdictsFor(item.id);
-          return verdicts ? [verdicts] : [];
-        }),
+        items
+          .filter((item) => item.state === "queued" && !item.cancelRequested && !item.absent)
+          .flatMap((item) => {
+            const verdicts = verdictsFor(item.id);
+            return verdicts ? [verdicts] : [];
+          }),
       ),
     };
   });
