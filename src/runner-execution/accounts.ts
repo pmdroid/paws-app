@@ -468,9 +468,17 @@ export function prepareRunnerWorkRoot(
   removeRunnerTree(path);
 }
 
-export function removeRunnerTree(path: string): void {
+function removeRunnerTree(path: string): void {
+  for (const _ of removeRunnerTreeSteps(path));
+}
+
+export function* removeRunnerTreeSteps(path: string): Generator<void, void> {
   const info = lstatSync(path);
-  if (!info.isDirectory()) return unlinkSync(path);
+  if (!info.isDirectory()) {
+    unlinkSync(path);
+    yield;
+    return;
+  }
   if (info.uid === process.getuid?.()) chmodSync(path, 0o700);
   let names: string[];
   try {
@@ -479,8 +487,9 @@ export function removeRunnerTree(path: string): void {
     if ((error as NodeJS.ErrnoException).code !== "EACCES") throw error;
     names = [];
   }
-  for (const name of names) removeRunnerTree(join(path, name));
+  for (const name of names) yield* removeRunnerTreeSteps(join(path, name));
   rmdirSync(path);
+  yield;
 }
 
 function shareRunnerPaths(

@@ -159,6 +159,36 @@ test("a folder that cannot be deleted is reported once, and the rest still go", 
   expect(lines.at(-1)).toContain("failed=1");
 });
 
+function largeCheckout(root: string, name: string) {
+  const path = checkout(root, name, 1);
+  for (let index = 0; index < 5_000; index++) writeFileSync(join(path, "src", `${index}.ts`), "");
+  return path;
+}
+
+test("a large checkout leaves the event loop running while it is deleted", async () => {
+  const { root, cleaner } = fixture();
+  const path = largeCheckout(root, RUN);
+  let ticks = 0;
+  const ticking = setInterval(() => ticks++, 0);
+  await cleaner.released([RUN]);
+  clearInterval(ticking);
+  expect(existsSync(path)).toBe(false);
+  expect(ticks).toBeGreaterThan(3);
+});
+
+test("work admitted while a checkout is measured or deleted stops the deletion", async () => {
+  const { root, cleaner, holds, lines } = fixture();
+  const path = largeCheckout(root, RUN);
+  const admitted = (async () => {
+    for (let tick = 0; tick < 3; tick++) await new Promise((resolve) => setImmediate(resolve));
+    holds.add(RUN);
+  })();
+  await cleaner.released([RUN]);
+  await admitted;
+  expect(existsSync(path)).toBe(true);
+  expect(lines.some((line) => line.includes(`removed name=${RUN}`))).toBe(false);
+});
+
 test("a worker opens folders it owns to the group and keeps their other bits", () => {
   const { root } = fixture();
   const path = checkout(root, RUN, 1);

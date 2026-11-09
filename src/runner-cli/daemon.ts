@@ -14,6 +14,8 @@ import {
 } from "../runner-execution";
 import { openRunnerAgents, openRunnerRuntime } from "../runner-runtime";
 
+export const RUNNER_WORK_ROOT = "/var/lib/paws-agent/work";
+
 export async function runPairedDaemon(
   daemon: RunnerDaemon,
   ids: {
@@ -96,7 +98,7 @@ export async function runPairedDaemon(
     signal.addEventListener("abort", interrupt, { once: true });
     const [healthNow, retroNow] = [health, retro];
     cleaner = createRunnerWorkCleaner({
-      workRoot: "/var/lib/paws-agent/work",
+      workRoot: RUNNER_WORK_ROOT,
       signal,
       holds: () =>
         new Set([

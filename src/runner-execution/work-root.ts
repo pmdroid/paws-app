@@ -2,12 +2,13 @@ import { chmodSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { journal, journalCaught } from "../journal";
-import { removeRunnerTree } from "./accounts";
+import { removeRunnerTreeSteps } from "./accounts";
 
 export const RUNNER_WORK_SWEEP_EVERY_MS = 3_600_000;
 const CHECKOUT_IDLE_MS = 24 * 3_600_000;
 const RUN_FOLDER = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const EXECUTION_FOLDER = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const PACE_ENTRIES = 1_000;
 
 const unreadable = (error: unknown) =>
   ["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "");
@@ -30,18 +31,30 @@ function list(path: string): string[] {
   }
 }
 
-function measure(path: string): { bytes: number; newest: number } {
+function* measureSteps(path: string): Generator<void, { bytes: number; newest: number }> {
   let bytes = 0;
   let newest = 0;
-  const visit = (entry: string) => {
+  const pending = [path];
+  while (pending.length) {
+    const entry = pending.pop()!;
     const info = stat(entry);
-    if (!info) return;
+    if (!info) continue;
     bytes += info.size;
     newest = Math.max(newest, info.mtimeMs);
-    if (info.isDirectory()) for (const name of list(entry)) visit(join(entry, name));
-  };
-  visit(path);
+    if (info.isDirectory()) for (const name of list(entry)) pending.push(join(entry, name));
+    yield;
+  }
   return { bytes, newest };
+}
+
+async function paced<T>(steps: Generator<void, T>, stop: () => boolean): Promise<T | undefined> {
+  for (let count = 1; ; count++) {
+    const next = steps.next();
+    if (next.done) return next.value;
+    if (count % PACE_ENTRIES) continue;
+    await yieldToLoop();
+    if (stop()) return undefined;
+  }
 }
 
 export function openRunnerCheckoutToGroup(path: string): void {
@@ -69,28 +82,42 @@ export function createRunnerWorkCleaner(options: {
   const now = options.now ?? Date.now;
   const queue = new Set<string>();
   const failed = new Set<string>();
+  const collecting = new Set<string>();
   let draining: Promise<void> | undefined;
   let sweeping: Promise<void> | undefined;
   let removed = 0;
   let removedBytes = 0;
   let failures = 0;
 
-  function collect(name: string, reason: string, idleBefore?: number): void {
-    if (name.startsWith(".") || name.includes("/") || options.holds().has(name)) return;
+  async function collect(name: string, reason: string, idleBefore?: number): Promise<void> {
+    if (name.startsWith(".") || name.includes("/") || collecting.has(name)) return;
+    const stop = () => options.signal?.aborted === true || options.holds().has(name);
+    if (stop()) return;
     const path = join(options.workRoot, name);
+    collecting.add(name);
     try {
       if (!stat(path)?.isDirectory()) return;
-      const { bytes, newest } = measure(path);
-      if (idleBefore !== undefined && newest >= idleBefore) return;
-      removeRunnerTree(path);
+      const measured = await paced(measureSteps(path), stop);
+      if (!measured || (idleBefore !== undefined && measured.newest >= idleBefore) || stop())
+        return;
+      const done = await paced(
+        (function* () {
+          yield* removeRunnerTreeSteps(path);
+          return true;
+        })(),
+        stop,
+      );
+      if (!done) return;
       failed.delete(name);
       removed++;
-      removedBytes += bytes;
-      journal(`runner work root removed name=${name} reason=${reason} bytes=${bytes}`);
+      removedBytes += measured.bytes;
+      journal(`runner work root removed name=${name} reason=${reason} bytes=${measured.bytes}`);
     } catch (error) {
       failed.add(name);
       failures++;
       journalCaught(error, "runner-execution.workRoot.remove", null);
+    } finally {
+      collecting.delete(name);
     }
   }
 
@@ -99,7 +126,7 @@ export function createRunnerWorkCleaner(options: {
       queue.delete(name);
       await yieldToLoop();
       if (options.signal?.aborted) return;
-      collect(name, "finished");
+      await collect(name, "finished");
     }
   }
 
@@ -110,7 +137,7 @@ export function createRunnerWorkCleaner(options: {
       if (!run && !EXECUTION_FOLDER.test(name)) continue;
       await yieldToLoop();
       if (options.signal?.aborted) return;
-      collect(name, "sweep", run ? now() - CHECKOUT_IDLE_MS : undefined);
+      await collect(name, "sweep", run ? now() - CHECKOUT_IDLE_MS : undefined);
     }
     journal(`runner work root swept removed=${removed} bytes=${removedBytes} failed=${failures}`);
   }
