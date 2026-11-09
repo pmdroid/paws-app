@@ -1,6 +1,6 @@
-import { Database } from "bun:sqlite";
+import { constants, Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { migrate as drizzleMigrate } from "drizzle-orm/bun-sqlite/migrator";
 import { journal } from "../journal";
 import { orm } from "./orm";
@@ -31,10 +31,19 @@ export function appliedMigrations(db: Database): { latest: string | null; applie
 
 const SIDE_FILES = ["-wal", "-shm"];
 
-export function setAsideLegacyDatabase(path: string, now: Date = new Date()): string | null {
-  if (!existsSync(path)) return null;
-  const old = new Database(path, { readonly: true });
-  let legacy: boolean;
+/**
+ * Whether `path` was built by the migrations from before drizzle-kit. Leaves the disk as it found
+ * it: a plain read-only open of a WAL database creates its -wal and -shm files, so a database with
+ * no -wal, whose main file is therefore complete, is opened immutable.
+ */
+export function isLegacyDatabase(path: string): boolean {
+  if (!existsSync(path)) return false;
+  const old = existsSync(`${path}-wal`)
+    ? new Database(path, { readonly: true })
+    : new Database(
+        `${pathToFileURL(path).href}?immutable=1`,
+        constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI,
+      );
   try {
     const names = new Set(
       old
@@ -44,11 +53,26 @@ export function setAsideLegacyDatabase(path: string, now: Date = new Date()): st
         .all()
         .map((row) => row.name),
     );
-    legacy = names.has("schema_migration") && !names.has("__drizzle_migrations");
+    return names.has("schema_migration") && !names.has("__drizzle_migrations");
   } finally {
     old.close();
   }
-  if (!legacy) return null;
+}
+
+/**
+ * Renames a legacy database so Paws starts on an empty one. That loses everything Paws knows, so
+ * it throws, changing nothing, unless the operator set PAWS_RESET_LEGACY_DATABASE=1.
+ */
+export function setAsideLegacyDatabase(
+  path: string,
+  source: Record<string, string | undefined>,
+  now: Date = new Date(),
+): string | null {
+  if (!isLegacyDatabase(path)) return null;
+  if (source.PAWS_RESET_LEGACY_DATABASE !== "1")
+    throw new Error(
+      `${path} is from before drizzle-kit migrations and cannot be carried over. Paws would start on an empty database, and the workspace, members, runners and items in this one would be lost. Paws changed nothing. To set this database aside and start empty, set PAWS_RESET_LEGACY_DATABASE=1 and start Paws again.`,
+    );
   const target = `${path}.pre-drizzle-${now.toISOString().replace(/[-:]|\.\d+/g, "")}`;
   for (const suffix of ["", ...SIDE_FILES])
     if (existsSync(target + suffix)) throw new Error(`${target + suffix} already exists`);

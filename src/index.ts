@@ -439,11 +439,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const transcriptObjects = transcriptStorage?.objects;
   const env = { ...runtime.env, host: publicDashboard ? runtime.env.host : LOOPBACK };
   const paths = pawsPaths(env.home);
+  setAsideLegacyDatabase(paths.db, envSource);
   ensureLayout(paths);
   sweepTmpDir(paths);
   useGitTempDirectory(paths.tmpDir);
   usePublicationRepositories(paths.publicationDir);
-  setAsideLegacyDatabase(paths.db);
   const db = openDatabase(paths.db);
   const store = sqliteDb(db);
   migrate(db);
@@ -2483,8 +2483,8 @@ function reviewScoreMain(args: string[]): number {
     }
   }
   const paths = pawsPaths(loadEnv(process.env).home);
+  setAsideLegacyDatabase(paths.db, process.env);
   ensureLayout(paths);
-  setAsideLegacyDatabase(paths.db);
   const db = openDatabase(paths.db);
   try {
     migrate(db);
@@ -2631,8 +2631,8 @@ if (import.meta.main) {
       if (argv.length !== 2) throw new Error("usage: paws login slack");
       const runtime = loadRuntime(process.env);
       const paths = pawsPaths(runtime.env.home);
+      setAsideLegacyDatabase(paths.db, process.env);
       ensureLayout(paths);
-      setAsideLegacyDatabase(paths.db);
       const db = openDatabase(paths.db);
       migrate(db);
       await loginSlack({

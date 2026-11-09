@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
+import { isLegacyDatabase } from "./migrate";
 
 export const CONFIG_SETTINGS_KEY = "config.toml";
 
@@ -43,7 +44,7 @@ export function updateSetting(
 }
 
 export function readSavedSettings(path: string): string | null {
-  if (!existsSync(path)) return null;
+  if (!existsSync(path) || isLegacyDatabase(path)) return null;
   const db = new Database(path, { readonly: true });
   try {
     return readSetting(db, CONFIG_SETTINGS_KEY);
