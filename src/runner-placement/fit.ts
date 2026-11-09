@@ -114,6 +114,7 @@ export function itemRunnerVerdicts(
     });
   let order: string[];
   try {
+    // A new instance is safe here: session grace is kept per database, so this does not restart it.
     order = createRunnerPlacement({ db, now: () => input.now }).preview!({
       itemId: input.itemId,
       profile: { agent: input.agent as RunnerCodingAgent, model: input.model },

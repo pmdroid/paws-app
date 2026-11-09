@@ -24,6 +24,7 @@ import {
   createRunnerHostRefusals,
   createRunnerPlacement,
   itemRunnerVerdicts,
+  SESSION_GRACE_MS,
 } from "../src/runner-placement";
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerHealth } from "../src/runner-health";
@@ -512,4 +513,52 @@ test("sign-in host warnings persist while queued work is held for runner setup",
     refusals.report(reports.at(-1)!, NOW);
     expect(refusals.lines(runnerId)).toHaveLength(1);
   }
+});
+
+test("admission fails over from a busy session runner once session grace ends", () => {
+  const db = tempDb();
+  const { pair, queue, workspace } = workspaceWithRunners(db);
+  const holder = pair("holder", 1, [REPOSITORY]);
+  const other = pair("other", 1, [REPOSITORY]);
+  queue("busy");
+  applyWorkItemEvent(db, "busy", "dispatched");
+  const occupant = insertRun(db, { itemId: "busy", now: NOW, status: "active" });
+  db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,'busy',?)",
+    [occupant.id, holder, workspace.id, NOW + 60 * 60_000],
+  );
+  queue("resumes");
+  const earlier = insertRun(db, { itemId: "resumes", now: NOW, status: "ended" });
+  db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(?,?,?,1,0,'earlier',?,?,?)",
+    [earlier.id, holder, workspace.id, NOW, NOW, NOW],
+  );
+  const payload = Buffer.from(
+    JSON.stringify({ runnerId: holder, runId: earlier.id, profile: { agent: "claude" } }),
+  ).toString("base64url");
+  db.run(
+    "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at) VALUES('earlier',?,?,1,'run',?,?)",
+    [holder, earlier.id, JSON.stringify({ payload }), NOW + 60 * 60_000],
+  );
+  db.run(
+    "INSERT INTO runner_result(run_id,generation,command_id,payload,received_at) VALUES(?,1,'earlier',?,?)",
+    [earlier.id, JSON.stringify({ stopReason: "end_turn", sessionId: "held-session" }), NOW],
+  );
+  // Each pass asks placement afresh, as the scheduler does on its 30 second tick.
+  const pass = (now: number) => {
+    db.run("UPDATE runner SET last_seen_at=?", [now]);
+    return dispatch(db, {
+      now,
+      admission: workspaceAdmission(db),
+      itemRunners: (itemId) => itemRunnerVerdicts(db, { itemId, agent: "claude", now }),
+    });
+  };
+
+  for (let waited = 0; waited < SESSION_GRACE_MS; waited += 30_000)
+    expect(pass(NOW + waited)).toEqual([]);
+
+  expect(pass(NOW + SESSION_GRACE_MS)).toEqual(["resumes"]);
+  expect(schedulerRunnerSlots(db, NOW + SESSION_GRACE_MS)).toContainEqual(
+    expect.objectContaining({ itemId: "resumes", runnerId: other }),
+  );
 });
