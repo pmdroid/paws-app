@@ -4,17 +4,20 @@ import {
   agentCatalogSummary,
   auditWorkspaceAccess,
   createRunnerEnrollment,
-  enrollRunner,
-  findRunnerEnrollment,
+  enrollRunnerSteps,
+  findRunnerEnrollmentSteps,
   getRun,
   getRunner,
   getWorkItem,
   immediate,
   listRunnerOverview,
-  renewRunnerCertificate,
+  renewRunnerCertificateSteps,
   requestAllRunnerAgentUpdates,
   requestRunnerAgentUpdate,
-  isCurrentRunnerCertificate,
+  isCurrentRunnerCertificateSteps,
+  runnerForCertificateSteps,
+  sqliteDb,
+  type Db,
   runnerForCertificate,
   setRunnerAdminRepositories,
   setRunnerConcurrency,
@@ -38,6 +41,7 @@ import { releaseVersionFromPath } from "../runner-protocol";
 
 export function createRunnerControl(options: {
   db: Database;
+  store?: Db;
   authority: RunnerAuthority;
   certificateRoot: string;
   disconnect(fingerprint: string): void;
@@ -46,6 +50,7 @@ export function createRunnerControl(options: {
   serverVersion?: string | null;
 }) {
   const { db } = options;
+  const store = options.store ?? sqliteDb(db);
   const now = options.now ?? Date.now;
   const serverVersion =
     options.serverVersion === undefined ? installedVersion() : options.serverVersion;
@@ -103,14 +108,17 @@ export function createRunnerControl(options: {
     async enroll(input: { token: string; name: string; csr: string }) {
       const name = runnerName(input.name);
       const tokenHash = workspaceTokenHash(input.token);
-      if (!findRunnerEnrollment(db, tokenHash, now())) throw new RunnerEnrollmentDenied();
+      if (!(await store.run((q) => findRunnerEnrollmentSteps(q, tokenHash, now()))))
+        throw new RunnerEnrollmentDenied();
       await validateRunnerRequest(options.certificateRoot, input.csr);
       const certificate = await options.authority.issue(input.csr, undefined, now());
       const at = now();
       const runnerId = workspaceId(at);
       let enrollment;
       try {
-        enrollment = enrollRunner(db, { tokenHash, runnerId, name, certificate, now: at });
+        enrollment = await store.transaction((q) =>
+          enrollRunnerSteps(q, { tokenHash, runnerId, name, certificate, now: at }),
+        );
       } catch {
         throw new RunnerEnrollmentDenied();
       }
@@ -248,13 +256,15 @@ export function createRunnerControl(options: {
       });
     },
     async renew(peer: RunnerPeer, csr: string) {
-      authorized(peer);
-      if (!isCurrentRunnerCertificate(db, peer.fingerprint))
+      if (!(await store.run((q) => runnerForCertificateSteps(q, peer.fingerprint, now()))))
+        throw new Error("Runner identity is revoked or expired.");
+      if (!(await store.run((q) => isCurrentRunnerCertificateSteps(q, peer.fingerprint))))
         throw new Error("Runner certificate has been superseded.");
       const certificate = await options.authority.issue(csr, undefined, now());
-      const runner = immediate(db, () => {
-        authorized(peer);
-        return renewRunnerCertificate(db, {
+      const runner = await store.transaction(function* (q) {
+        if (!(yield* runnerForCertificateSteps(q, peer.fingerprint, now())))
+          throw new Error("Runner identity is revoked or expired.");
+        return yield* renewRunnerCertificateSteps(q, {
           previousFingerprint: peer.fingerprint,
           certificate,
           now: now(),
