@@ -18,6 +18,7 @@ export type ProjectAgentProfiles = {
 export type AgentSettings = {
   defaults: AgentProfiles;
   projects: ProjectAgentProfiles[];
+  presets?: Record<string, AgentProfile>;
 };
 
 const profileSchema = z.strictObject({
@@ -61,10 +62,27 @@ const settingsSchema = z.strictObject({
     accounts: retiredAccounts,
   }),
   projects: z.array(projectSchema).max(200),
+  presets: z
+    .record(
+      z
+        .string()
+        .refine(
+          (name) =>
+            name.trim().length >= 1 && name.trim().length <= 40 && /^[a-zA-Z0-9 ._-]+$/.test(name),
+        ),
+      profileSchema,
+    )
+    .optional(),
 });
 
 export function parseAgentSettings(value: unknown): AgentSettings {
   const settings = dropAccounts(settingsSchema.parse(value));
+  const names = new Set<string>();
+  for (const name of Object.keys(settings.presets ?? {})) {
+    const key = name.trim().toLowerCase();
+    if (names.has(key)) throw new Error(`Duplicate preset: ${name}`);
+    names.add(key);
+  }
   const repos = new Set<string>();
   validateIndependence(settings.defaults);
   if (settings.defaults.reviewerFallback?.agent === settings.defaults.reviewer.agent)
@@ -81,6 +99,7 @@ function dropAccounts(settings: z.infer<typeof settingsSchema>): AgentSettings {
   const { accounts: _defaults, ...defaults } = settings.defaults;
   return {
     defaults,
+    ...(settings.presets === undefined ? {} : { presets: settings.presets }),
     projects: settings.projects.map(({ accounts: _project, ...project }) => project),
   };
 }
@@ -125,13 +144,48 @@ export function readAgentSettings(config: PawsConfigFile): AgentSettings {
   );
 }
 
-export function resolveAgentProfiles(config: PawsConfigFile, repo?: string): AgentProfiles {
+export type AgentLabelProblem = {
+  role: "implementer" | "reviewer";
+  label: string;
+  reason: "unknown_preset" | "same_as_implementer";
+};
+
+export function resolveAgentProfiles(
+  config: PawsConfigFile,
+  repo?: string,
+  labels?: { implementer?: string; reviewer?: string },
+): AgentProfiles & { labelProblems?: AgentLabelProblem[] } {
   const settings = readAgentSettings(config);
   const project = settings.projects.find((entry) => entry.repo === repo?.toLowerCase());
-  const reviewer = project?.reviewer ?? settings.defaults.reviewer;
+  const labelProblems: AgentLabelProblem[] = [];
+  const select = (role: "implementer" | "reviewer"): AgentProfile => {
+    const inherited = project?.[role] ?? settings.defaults[role];
+    const label = labels?.[role];
+    if (label === undefined) return inherited;
+    const preset = Object.entries(settings.presets ?? {}).find(
+      ([name]) => name.trim().toLowerCase() === label.trim().toLowerCase(),
+    )?.[1];
+    if (!preset) {
+      labelProblems.push({ role, label, reason: "unknown_preset" });
+      return inherited;
+    }
+    return preset;
+  };
+  const implementer = select("implementer");
+  let reviewer = select("reviewer");
+  if (
+    labels?.reviewer !== undefined &&
+    reviewer.agent === implementer.agent &&
+    reviewer.model === implementer.model &&
+    !labelProblems.some((problem) => problem.role === "reviewer")
+  ) {
+    labelProblems.push({ role: "reviewer", label: labels.reviewer, reason: "same_as_implementer" });
+    reviewer = project?.reviewer ?? settings.defaults.reviewer;
+  }
   const fallback = settings.defaults.reviewerFallback;
   return {
-    implementer: project?.implementer ?? settings.defaults.implementer,
+    implementer,
+    ...(labels === undefined ? {} : { labelProblems }),
     reviewer,
     ...(fallback && fallback.agent !== reviewer.agent ? { reviewerFallback: fallback } : {}),
   };
@@ -141,7 +195,7 @@ export function parseAgentSettingsToml(
   text: string,
   implementer: ImplementerName,
 ): AgentSettings | null {
-  if (!/^\s*\[agents\.(defaults|projects)(?:[.\]])/m.test(text)) return null;
+  if (!/^\s*\[agents\.(defaults|projects|presets)(?:[.\]])/m.test(text)) return null;
   const parsed = Bun.TOML.parse(text) as {
     agents?: {
       defaults?: {
@@ -149,6 +203,7 @@ export function parseAgentSettingsToml(
         reviewer?: Partial<AgentProfile>;
         reviewer_fallback?: Partial<AgentProfile>;
       };
+      presets?: Record<string, Partial<AgentProfile>>;
       projects?: Record<
         string,
         {
@@ -167,6 +222,16 @@ export function parseAgentSettingsToml(
         ? { reviewerFallback: { model: null, ...agents.defaults.reviewer_fallback } }
         : {}),
     },
+    ...(agents?.presets === undefined
+      ? {}
+      : {
+          presets: Object.fromEntries(
+            Object.entries(agents.presets).map(([name, profile]) => [
+              name,
+              { model: null, ...profile },
+            ]),
+          ),
+        }),
     projects: Object.entries(agents?.projects ?? {}).map(([repo, profiles]) => ({
       repo,
       ...(profiles.implementer ? { implementer: { model: null, ...profiles.implementer } } : {}),
@@ -183,7 +248,7 @@ export function renderAgentSettingsText(current: string, input: AgentSettings): 
     .filter((line) => {
       const heading = /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
       if (heading?.[1]) section = heading[1].trim();
-      return !/^agents\.(defaults|projects)(?:\.|$)/i.test(section);
+      return !/^agents\.(defaults|projects|presets)(?:\.|$)/i.test(section);
     })
     .join("\n");
   const base = setImplementerText(retained, settings.defaults.implementer.agent).trimEnd();
@@ -195,6 +260,8 @@ export function renderAgentSettingsText(current: string, input: AgentSettings): 
     sections.push(
       renderProfile("agents.defaults.reviewer_fallback", settings.defaults.reviewerFallback),
     );
+  for (const [name, profile] of Object.entries(settings.presets ?? {}))
+    sections.push(renderProfile(`agents.presets.${JSON.stringify(name)}`, profile));
   for (const project of settings.projects) {
     const prefix = `agents.projects.${JSON.stringify(project.repo)}`;
     if (!project.implementer && !project.reviewer) sections.push(`[${prefix}]`);
