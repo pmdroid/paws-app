@@ -170,7 +170,9 @@ describe("member VM", () => {
     expect(again.id).toBe(first.id);
     expect(openJobs(f.db)).toHaveLength(1);
     const inactive = f.person("Watcher", "watch@example.invalid", false);
-    await expect(startMemberVm(sqliteDb(f.db), inactive)).rejects.toThrow(/Active workspace membership/);
+    await expect(startMemberVm(sqliteDb(f.db), inactive)).rejects.toThrow(
+      /Active workspace membership/,
+    );
     const namesake = f.person("Ada Lovelace", "ada2@example.invalid");
     expect((await startMemberVm(sqliteDb(f.db), namesake)).vmName).toBe("ada-lovelace-paws-2");
   });

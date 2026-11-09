@@ -120,11 +120,7 @@ export class MemberVmMissing extends Error {
   }
 }
 
-export function* mayDeleteMemberVmSteps(
-  q: Q,
-  row: MemberVm,
-  requester: MemberRef,
-): Steps<boolean> {
+export function* mayDeleteMemberVmSteps(q: Q, row: MemberVm, requester: MemberRef): Steps<boolean> {
   if (row.workspaceId !== requester.workspaceId) return false;
   const member = yield* memberAccessSteps(q, requester);
   if (!workspaceMemberUsable(member)) return false;

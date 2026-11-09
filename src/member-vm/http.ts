@@ -290,7 +290,8 @@ export function createMemberVmHttp(options: {
           return exeDevError(error, `exe.dev did not move ${row.vmName}.`);
         }
         await store.run((q) => setMemberVmPoolSteps(q, row.id, body.pool, now()));
-      } else if (path === "/api/runners/vm/retry") await retryMemberVm(store, { ...member, now: at });
+      } else if (path === "/api/runners/vm/retry")
+        await retryMemberVm(store, { ...member, now: at });
       else if (path === "/api/runners/vm/delete") {
         const body = await deleteBody(request);
         if (body === null)

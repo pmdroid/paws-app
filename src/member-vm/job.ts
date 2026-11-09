@@ -178,7 +178,8 @@ async function runStep(
       if (row.installStartedAt === null) {
         const enrollment = await mint();
         const started = await bootstrap.startInstall(vm, enrollment.token);
-        await update(store,
+        await update(
+          store,
           row,
           {
             installStartedAt: now(),
