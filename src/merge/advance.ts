@@ -71,6 +71,7 @@ import {
   type MergeStep,
   type SerialMergeStep,
 } from "./step";
+import { SquashLock } from "./repository-lock";
 import { githubQueueWatch, wakeMergesBehind } from "./wait";
 
 export type MergePublication = MergePull & {
@@ -145,6 +146,8 @@ export type MergeCapabilities = OrderCapabilities & {
   ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null | "unknown">;
   rerunCi?(item: WorkItemRecord, pullNumber: number, reason: string): Promise<string>;
   completed(): void;
+  instanceId?: string;
+  sleep?(ms: number): Promise<void>;
 };
 
 const CANCELLED_CI_RERUN = "cancelled or timed-out CI job";
@@ -187,6 +190,25 @@ export async function advanceMerge(
   store: Db,
   input: { itemId: string; payload: unknown; jobId: number },
   caps: MergeCapabilities,
+): Promise<MergeStep> {
+  const squashLock = new SquashLock(
+    store,
+    { itemId: input.itemId, jobId: input.jobId, instanceId: caps.instanceId ?? null },
+    { now: () => caps.now(), sleep: (ms) => (caps.sleep ? caps.sleep(ms) : Bun.sleep(ms)) },
+  );
+  try {
+    return await laneAttempt(db, store, input, caps, squashLock);
+  } finally {
+    await squashLock.finish();
+  }
+}
+
+async function laneAttempt(
+  db: Database,
+  store: Db,
+  input: { itemId: string; payload: unknown; jobId: number },
+  caps: MergeCapabilities,
+  squashLock: SquashLock,
 ): Promise<MergeStep> {
   const item = await store.run((q) => getWorkItemSteps(q, input.itemId));
   if (
@@ -285,6 +307,7 @@ export async function advanceMerge(
   };
   let mainPolicy: PolicyRead | undefined;
   let mergedPolicyError: MergeResultPolicyError | undefined;
+  let lockBusy = false;
   const turn = await laneTurn({
     read: () => readPullFacts(lane),
     facts: (facts) => {
@@ -323,9 +346,26 @@ export async function advanceMerge(
           head,
           message: mergedPolicyMessage(mergedPolicyError.error),
         };
+      const cancelled = () => mergeHeld(merge);
+      if (!(await squashLock.acquire(repository.owner, repository.repo, cancelled))) {
+        if (cancelled())
+          return {
+            merged: false,
+            outcome: "blocked",
+            branch: facts.branch,
+            message: "merge cancelled",
+          };
+        lockBusy = true;
+        return { merged: false, outcome: "waiting", branch: facts.branch, head };
+      }
       const squashed = await squashPull(
         {
           ...lane,
+          stillHeld: async () => {
+            const stillHeld = await squashLock.confirm();
+            if (!stillHeld) lockBusy = true;
+            return stillHeld;
+          },
           beforeMergeCall: (expectedHead) => beginMergeCall(db, item.id, expectedHead, caps.now()),
         },
         { head, base: facts.base },
@@ -333,11 +373,13 @@ export async function advanceMerge(
       );
       if (!squashed.merged && squashed.outcome !== "unknown")
         await store.run((q) => endMergeCallSteps(q, item.id));
+      if (!squashed.merged && squashed.outcome !== "unknown") await squashLock.release();
       return squashed;
     },
   });
   if (mainPolicy && !("ok" in mainPolicy)) caps.policyLoads?.(queueName(repository));
   if (turn.kind === "stopped" && turn.result.outcome === "unknown") return pendingMergeOutcome();
+  if (lockBusy) return squashLockWait(repository);
   // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
   // A turn that already rebased goes on to re-verify the pushed head.
   if ((turn.kind === "stopped" || turn.kind === "blocked") && !caps.stopped()) {
@@ -395,6 +437,7 @@ export async function advanceMerge(
         confirmedAt: caps.now(),
       }),
     );
+    await squashLock.release();
   }
   // A deferred stop owns the next step after an unsent or unsuccessful squash.
   if (turn.kind !== "merged" && (await store.run((q) => mergeStopRequestedSteps(q, item.id))))
@@ -721,6 +764,14 @@ async function completeMerged(
     completeMergedItemSteps(q, { itemId: item.id, now: caps.now() }),
   );
   if (completed) caps.completed();
+}
+
+function squashLockWait(repository: { owner: string; repo: string }): MergeStep {
+  return {
+    kind: "wait",
+    reason: "repository_lock",
+    message: `Another task is merging into ${repository.owner}/${repository.repo}. Merging after it.`,
+  };
 }
 
 /** Unknown remote outcomes wait without spending the CI deadline or leaving the queue. */

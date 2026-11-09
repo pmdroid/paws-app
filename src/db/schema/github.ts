@@ -209,6 +209,16 @@ export const mergeCall = sqliteTable("merge_call", {
   startedAt: integer("started_at").notNull(),
 });
 
+export const repositoryMergeLock = sqliteTable("repository_merge_lock", {
+  repository: text().primaryKey().notNull(),
+  holder: text().notNull(),
+  itemId: text("item_id").notNull(),
+  jobId: integer("job_id").notNull(),
+  instanceId: text("instance_id"),
+  acquiredAt: integer("acquired_at").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+});
+
 export const rebaseReturn = sqliteTable(
   "rebase_return",
   {
