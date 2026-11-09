@@ -34,21 +34,21 @@ function journal() {
   return { lines, log: (line: string) => lines.push(line) };
 }
 
-test("a blocked item names its blocker once in the journal and once more when it starts", () => {
+test("a blocked item names its blocker once in the journal and once more when it starts", async () => {
   const db = tempDb();
   try {
     item(db, "PAS-367", "running");
     item(db, "PAS-368", "queued", 1);
     db.run("INSERT INTO task_block VALUES('issue-PAS-367','issue-PAS-368')");
     const { lines, log } = journal();
-    expect(workspaceDispatch(db, { now: 1, log })).toEqual([]);
-    expect(workspaceDispatch(db, { now: 2, log })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: 1, log })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: 2, log })).toEqual([]);
     expect(listItemHolds(db)).toEqual([
       { itemId: "PAS-368", reason: "blocked", blockers: ["PAS-367"] },
     ]);
     expect(lines).toEqual(["item PAS-368 held: blocked by PAS-367"]);
     db.run("UPDATE work_item SET state='merged' WHERE id='PAS-367'");
-    expect(workspaceDispatch(db, { now: 3, log })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: 3, log })).toEqual([]);
     expect(listItemHolds(db)).toEqual([
       { itemId: "PAS-368", reason: "blocked", blockers: ["PAS-367"] },
     ]);
@@ -58,7 +58,7 @@ test("a blocked item names its blocker once in the journal and once more when it
         .issues.find((entry) => entry.id === "PAS-368")?.blockers,
     ).toEqual(["PAS-367"]);
     confirmFakeMerge(db, "PAS-367");
-    expect(workspaceDispatch(db, { now: 3, log })).toEqual(["PAS-368"]);
+    expect(await workspaceDispatch(db, { now: 3, log })).toEqual(["PAS-368"]);
     expect(listItemHolds(db)).toEqual([]);
     expect(lines).toEqual(["item PAS-368 held: blocked by PAS-367", "item PAS-368 no longer held"]);
   } finally {
@@ -88,14 +88,14 @@ function externalBlocker(db: Database, state: string) {
 }
 
 for (const state of ["started", "canceled"])
-  test(`an item blocked by a ${state} issue Paws does not run names that issue`, () => {
+  test(`an item blocked by a ${state} issue Paws does not run names that issue`, async () => {
     const db = tempDb();
     const journaled: string[] = [];
     const restore = setJournalSink((line) => journaled.push(line));
     try {
       externalBlocker(db, state);
       const { lines, log } = journal();
-      expect(dispatch(db, { now: 1, log, admission: createAdmission({ db }) })).toEqual([]);
+      expect(await dispatch(db, { now: 1, log, admission: createAdmission({ db }) })).toEqual([]);
       expect(listItemHolds(db)).toEqual([
         { itemId: "PAS-840", reason: "blocked", blockers: ["OPS-12"] },
       ]);
@@ -107,7 +107,7 @@ for (const state of ["started", "canceled"])
     }
   });
 
-test("a blocked hold without an open blocker is journaled as an inconsistency", () => {
+test("a blocked hold without an open blocker is journaled as an inconsistency", async () => {
   const db = tempDb();
   const journaled: string[] = [];
   const restore = setJournalSink((line) => journaled.push(line));
@@ -119,8 +119,8 @@ test("a blocked hold without an open blocker is journaled as an inconsistency", 
       canMerge: () => ({ ok: false, held: "blocked" }),
     };
     const { lines, log } = journal();
-    expect(dispatch(db, { now: 1, log, admission: blocked })).toEqual([]);
-    expect(dispatch(db, { now: 2, log, admission: blocked })).toEqual([]);
+    expect(await dispatch(db, { now: 1, log, admission: blocked })).toEqual([]);
+    expect(await dispatch(db, { now: 2, log, admission: blocked })).toEqual([]);
     expect(listItemHolds(db)).toEqual([{ itemId: "PAS-841", reason: "blocked", blockers: [] }]);
     expect(lines).toEqual(["item PAS-841 held: blocked by another issue"]);
     expect(journaled).toEqual([
@@ -132,7 +132,7 @@ test("a blocked hold without an open blocker is journaled as an inconsistency", 
   }
 });
 
-test("a ready item without a free slot, then over its owner cap, journals each new reason", () => {
+test("a ready item without a free slot, then over its owner cap, journals each new reason", async () => {
   const db = tempDb();
   try {
     item(db, "PAS-1", "running");
@@ -140,11 +140,11 @@ test("a ready item without a free slot, then over its owner cap, journals each n
     const { lines, log } = journal();
     fullRunner(db);
     const now = Date.now();
-    workspaceDispatch(db, { now, log });
+    await workspaceDispatch(db, { now, log });
     expect(listItemHolds(db)).toEqual([{ itemId: "PAS-2", reason: "slot", blockers: [] }]);
-    workspaceDispatch(db, { now: now + 1, log });
+    await workspaceDispatch(db, { now: now + 1, log });
     db.run("DELETE FROM runner_work");
-    workspaceDispatch(db, { now: now + 2, log, ownerCap: 1 });
+    await workspaceDispatch(db, { now: now + 2, log, ownerCap: 1 });
     expect(listItemHolds(db)).toEqual([{ itemId: "PAS-2", reason: "cap", blockers: [] }]);
     expect(lines).toEqual([
       "item PAS-2 held: no free slot on any runner",
@@ -155,13 +155,13 @@ test("a ready item without a free slot, then over its owner cap, journals each n
   }
 });
 
-test("a project that holds an item is its held reason", () => {
+test("a project that holds an item is its held reason", async () => {
   const db = tempDb();
   try {
     item(db, "PAS-5");
     const { lines, log } = journal();
     const admission = workspaceAdmission(db, { authority: () => false });
-    expect(dispatch(db, { now: 1, log, admission })).toEqual([]);
+    expect(await dispatch(db, { now: 1, log, admission })).toEqual([]);
     expect(listItemHolds(db)).toEqual([{ itemId: "PAS-5", reason: "project", blockers: [] }]);
     expect(lines).toEqual(["item PAS-5 held: its project has not released it yet"]);
   } finally {
@@ -169,20 +169,20 @@ test("a project that holds an item is its held reason", () => {
   }
 });
 
-test("without a workspace every queued item is held for the workspace, journaled once", () => {
+test("without a workspace every queued item is held for the workspace, journaled once", async () => {
   const db = tempDb();
   try {
     item(db, "PAS-7", "running");
     item(db, "PAS-8", "queued", 1);
     db.run("INSERT INTO task_block VALUES('issue-PAS-7','issue-PAS-8')");
     const { lines, log } = journal();
-    expect(workspaceDispatch(db, { now: 1, log })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: 1, log })).toEqual([]);
     confirmFakeMerge(db, "PAS-7");
     db.run("UPDATE work_item SET state='merged' WHERE id='PAS-7'");
     item(db, "PAS-9", "queued", 2);
     const admission = createAdmission({ db, workspace: false });
-    expect(dispatch(db, { now: 2, log, admission })).toEqual([]);
-    expect(dispatch(db, { now: 3, log, admission })).toEqual([]);
+    expect(await dispatch(db, { now: 2, log, admission })).toEqual([]);
+    expect(await dispatch(db, { now: 3, log, admission })).toEqual([]);
     expect(listItemHolds(db)).toEqual([
       { itemId: "PAS-8", reason: "workspace", blockers: [] },
       { itemId: "PAS-9", reason: "workspace", blockers: [] },
@@ -202,13 +202,13 @@ test("without a workspace every queued item is held for the workspace, journaled
   }
 });
 
-test("the status API carries the held reason of a queued item", () => {
+test("the status API carries the held reason of a queued item", async () => {
   const db = tempDb();
   try {
     item(db, "PAS-367", "running");
     item(db, "PAS-368", "queued", 1);
     db.run("INSERT INTO task_block VALUES('issue-PAS-367','issue-PAS-368')");
-    workspaceDispatch(db, { now: 1 });
+    await workspaceDispatch(db, { now: 1 });
     const items = createLiveStatusProvider(db).issues().issues;
     expect(items.find((entry) => entry.id === "PAS-368")?.held).toEqual({
       reason: "blocked",

@@ -74,7 +74,7 @@ test("when a delegation's only item merges, that item stays merged and no delega
   const { db, clock, orchestrator } = harness();
   try {
     seed(db, clock.now(), "merged", ["merged"]);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(itemStates(db, "merged")).toEqual(["merged"]);
     expect(summaryActivities(db)).toBe(0);
   } finally {
@@ -87,7 +87,7 @@ test("when every item is cancelled, those items stay cancelled", async () => {
   const { db, clock, orchestrator } = harness();
   try {
     seed(db, clock.now(), "cancelled", ["cancelled", "cancelled"]);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(itemStates(db, "cancelled")).toEqual(["cancelled", "cancelled"]);
   } finally {
     await orchestrator.shutdown();
@@ -99,9 +99,9 @@ test("a held item no longer produces a stall question after ten minutes", async 
   const { db, clock, orchestrator } = harness();
   try {
     seed(db, clock.now(), "held", ["failed"]);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     clock.advance(10 * 60 * 1000);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     const questions = db
       .query<{ n: number }, []>(
         "SELECT COUNT(*) AS n FROM question WHERE body LIKE '%made no progress%'",
@@ -164,7 +164,7 @@ test("the orchestrator pump treats a delegation whose items are all merged as fi
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
     ).toBeNull();
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(getWorkItem(db, finished.items[0]!.id)?.state).toBe("merged");
     expect(
       db

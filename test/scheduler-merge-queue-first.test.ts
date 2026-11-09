@@ -97,26 +97,26 @@ function fixture() {
   return { db, mergeItem, reverify, runAt, free };
 }
 
-test("a freed slot goes to the merge-queue re-verify, not to a queued item with a higher priority", () => {
+test("a freed slot goes to the merge-queue re-verify, not to a queued item with a higher priority", async () => {
   const { db, mergeItem, reverify, runAt, free } = fixture();
   try {
     mergeItem("M", NOW - 120_000);
     const job = reverify("M", ["A", "B"]);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     expect(runAt(job)).toBe(BACKOFF);
     // The re-verify is not pinned: B's freed slot is its, and N keeps waiting.
     free("B", NOW + 1);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
     expect(runAt(job)).toBe(NOW + 2);
     expect(pinnedSlotsReserved(db, "B", "N", NOW + 2)).toBe(1);
     expect(pinnedSlotsReserved(db, "A", "N", NOW + 2)).toBe(0);
-    expect(workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
   } finally {
     db.close();
   }
 });
 
-test("the first item in merge order gets the freed slot first", () => {
+test("the first item in merge order gets the freed slot first", async () => {
   const { db, mergeItem, reverify, runAt, free } = fixture();
   try {
     mergeItem("second", NOW - 60_000);
@@ -124,25 +124,25 @@ test("the first item in merge order gets the freed slot first", () => {
     const later = reverify("second", ["A", "B"]);
     const earlier = reverify("first", ["A", "B"]);
     free("A", NOW + 1);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
     expect(runAt(earlier)).toBe(NOW + 2);
     expect(runAt(later)).toBe(BACKOFF);
     free("B", NOW + 3);
-    expect(workspaceDispatch(db, { now: NOW + 4 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 4 })).toEqual([]);
     expect(runAt(later)).toBe(NOW + 4);
   } finally {
     db.close();
   }
 });
 
-test("a pinned merge-queue wait keeps to its runner, ahead of a queued item with a higher priority", () => {
+test("a pinned merge-queue wait keeps to its runner, ahead of a queued item with a higher priority", async () => {
   const { db, mergeItem, reverify, runAt, free } = fixture();
   try {
     mergeItem("M", NOW - 120_000);
     const job = reverify("M", ["A"]);
     // B frees: M's agent turn is pinned to A, so N may take B.
     free("B", NOW + 1);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["N"]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["N"]);
     expect(runAt(job)).toBe(BACKOFF);
     expect(pinnedSlotsReserved(db, "A", "N", NOW + 2)).toBe(1);
   } finally {
@@ -150,35 +150,35 @@ test("a pinned merge-queue wait keeps to its runner, ahead of a queued item with
   }
 });
 
-test("a conflict fix sent back from the merge queue is admitted before a queued item with a higher priority", () => {
+test("a conflict fix sent back from the merge queue is admitted before a queued item with a higher priority", async () => {
   const { db, mergeItem, free } = fixture();
   try {
     mergeItem("M", NOW - 120_000);
     // M's owner already runs both busy items; N's owner runs nothing.
     db.run("UPDATE work_item SET owner_user_id='user-1' WHERE id IN ('M','busy-A','busy-B')");
     restart(db, getWorkItem(db, "M")!, { reason: "conflict", body: "Resolve conflicts", now: NOW });
-    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
     free("A", NOW + 2);
-    expect(workspaceDispatch(db, { now: NOW + 3 })).toEqual(["M"]);
+    expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual(["M"]);
   } finally {
     db.close();
   }
 });
 
-test("findings from a merge-queue re-verify send the fix ahead of a queued item with a higher priority", () => {
+test("findings from a merge-queue re-verify send the fix ahead of a queued item with a higher priority", async () => {
   const { db, mergeItem, free } = fixture();
   try {
     mergeItem("M", NOW - 120_000);
     applyWorkItemEvent(db, "M", "reverify_requested");
     restart(db, getWorkItem(db, "M")!, { reason: "findings", body: "Fix findings", now: NOW });
     free("A", NOW + 1);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["M"]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["M"]);
   } finally {
     db.close();
   }
 });
 
-test("a fix sent back by a first Closeout keeps the usual order", () => {
+test("a fix sent back by a first Closeout keeps the usual order", async () => {
   const { db, free } = fixture();
   try {
     insertQueuedItem(db, { id: "F", now: 2 });
@@ -187,7 +187,7 @@ test("a fix sent back by a first Closeout keeps the usual order", () => {
     applyWorkItemEvent(db, "F", "turn_ended");
     restart(db, getWorkItem(db, "F")!, { reason: "findings", body: "Fix findings", now: NOW });
     free("A", NOW + 1);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["N"]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["N"]);
   } finally {
     db.close();
   }

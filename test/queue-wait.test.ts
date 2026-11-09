@@ -78,16 +78,16 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
         .filter((payload) => payload.kind === kind)
         .map((payload) => payload.body ?? "");
 
-    orchestrator.reconcileExecution();
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(bodies("thought").filter((body) => body.startsWith("Queued"))).toHaveLength(1);
 
     clock.advance(DAY - 1_000);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(getWorkItem(db, "waiting")?.state).toBe("queued");
 
     clock.advance(2_000);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(getWorkItem(db, "waiting")?.state).toBe("failed");
     expect(bodies("error").some((body) => body.includes("within 24 hours"))).toBe(true);
   } finally {
@@ -123,17 +123,17 @@ test("the queued thought shows the place in line, and the start timeout comes fr
         .filter((payload) => payload.kind === kind)
         .map((payload) => payload.body ?? "");
 
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(bodies("thought")).toContain(
       "Queued, 2nd in line. 1 of 1 runner slot is busy. Paws starts PAS-1 when a slot frees.",
     );
 
     clock.advance(2 * HOUR - 1_000);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(getWorkItem(db, "waiting")?.state).toBe("queued");
 
     clock.advance(2_000);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(getWorkItem(db, "waiting")?.state).toBe("failed");
     expect(bodies("error").some((body) => body.includes("PAS-1 within 2 hours"))).toBe(true);
   } finally {
@@ -214,7 +214,7 @@ test("a runner-queued item names its place in the title and plan, and a restart 
     const latest = (op: string) =>
       listOutbox(db, "session").findLast((row) => row.op === op)?.payload as SessionUpdate;
 
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(latest("linear.session.summary").summary).toBe("PAS-1: 2nd in line for a runner");
     expect(latest("linear.session.plan").plan?.[0]).toEqual({
       content: "Wait for a runner",
@@ -222,7 +222,7 @@ test("a runner-queued item names its place in the title and plan, and a restart 
     });
 
     clock.advance(25 * 60_000);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(
       listOutbox(db, "session")
         .map((row) => row.payload as { body?: string; ephemeral?: boolean })
@@ -238,7 +238,7 @@ test("a runner-queued item names its place in the title and plan, and a restart 
       `INSERT INTO job(queue,payload,run_at,max_attempts,created_at)
        VALUES('run.resume',json_object('itemId','waiting','reason','findings'),0,3,0)`,
     );
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(latest("linear.session.summary").summary).toBe(
       "PAS-1: waiting for a runner to fix Closeout findings (1 of 3)",
     );
@@ -292,15 +292,15 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
         listOutbox(db, "session").findLast((row) => row.op === "linear.session.summary")
           ?.payload as SessionUpdate | undefined
       )?.summary;
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(summary()).toBe("PAS-2: paused by Pascal");
     clock.advance(60 * 60_000);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(listOutbox(db, "session").filter((row) => row.op === "activity")).toEqual([]);
 
     db.run("UPDATE work_item SET state='recovering' WHERE id='paused'");
     clock.advance(5 * 60_000);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     expect(summary()).toBe("PAS-2: recovering an interrupted turn");
   } finally {
     await orchestrator.shutdown();

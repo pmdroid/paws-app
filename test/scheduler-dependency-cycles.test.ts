@@ -1,16 +1,16 @@
 import { expect, spyOn, test } from "bun:test";
-import { insertQueuedItem } from "../src/db";
+import { insertQueuedItem, type Q, type Steps } from "../src/db";
 import * as intake from "../src/intake";
 import { tempDb } from "./helpers";
 import { workspaceDispatch } from "./fake-workspace";
 
-test("dispatch reports a delegation's dependency cycle and skips readiness reads for a delegation without edges", () => {
+test("dispatch reports a delegation's dependency cycle and skips readiness reads for a delegation without edges", async () => {
   const db = tempDb();
-  const readyItems = intake.readyItems;
+  const readyItemsSteps = intake.readyItemsSteps;
   const cycleChecks: string[] = [];
-  const ready = spyOn(intake, "readyItems").mockImplementation((database, target) => {
+  const ready = spyOn(intake, "readyItemsSteps").mockImplementation((q, target) => {
     if (new Error().stack?.includes("reportDependencyCycles")) cycleChecks.push(target.itemId);
-    return readyItems(database, target);
+    return readyItemsSteps(q, target);
   });
   try {
     for (const [id, delegationId] of [
@@ -25,10 +25,13 @@ test("dispatch reports a delegation's dependency cycle and skips readiness reads
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('lin-item-acme-a','lin-item-acme-b'),('lin-item-acme-b','lin-item-acme-a')",
     );
-    const sessionFor = (itemId: string) => `session-for-${itemId}`;
-    expect(workspaceDispatch(db, { now: 1000, sessionFor })).toEqual(["acme-c", "acme-d"]);
+    // oxlint-disable-next-line require-yield
+    function* sessionFor(_q: Q, itemId: string): Steps<string> {
+      return `session-for-${itemId}`;
+    }
+    expect(await workspaceDispatch(db, { now: 1000, sessionFor })).toEqual(["acme-c", "acme-d"]);
     cycleChecks.length = 0;
-    workspaceDispatch(db, { now: 1001, sessionFor });
+    await workspaceDispatch(db, { now: 1001, sessionFor });
     expect({
       checked: cycleChecks.sort(),
       reported: db

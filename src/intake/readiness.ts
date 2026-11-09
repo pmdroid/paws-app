@@ -1,20 +1,23 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import { delegationWorkspaceId, readItemDelegation } from "../db";
 import {
-  canAdvanceItem,
-  delegationSnapshotsComplete,
-  hasPendingDelegationChanges,
-  itemBlockers,
-  readyItems,
-} from "./dependencies";
+  delegationHasItemWithoutSnapshotSteps,
+  delegationHasReconciliationWorkSteps,
+  delegationWorkspaceIdSteps,
+  readItemDelegationSteps,
+  settled,
+  sqliteDb,
+  type Q,
+  type Steps,
+} from "../db";
+import { canAdvanceItemSteps, itemBlockersSteps, readyItemsSteps } from "./dependencies";
 
 export type ReadinessPhase = "start" | "merge";
 export type ReadinessHold = "reconciling" | "snapshot" | "cancelled" | "blocked";
 
-export function delegationReadiness(db: Database, delegationId: string): ReadinessHold | null {
-  if (hasPendingDelegationChanges(db, delegationId)) return "reconciling";
-  return delegationSnapshotsComplete(db, delegationId) ? null : "snapshot";
+export function* delegationReadinessSteps(q: Q, delegationId: string): Steps<ReadinessHold | null> {
+  if (yield* delegationHasReconciliationWorkSteps(q, delegationId)) return "reconciling";
+  return (yield* delegationHasItemWithoutSnapshotSteps(q, delegationId)) ? "snapshot" : null;
 }
 
 export function itemReadiness(
@@ -22,16 +25,24 @@ export function itemReadiness(
   itemId: string,
   phase: ReadinessPhase,
 ): ReadinessHold | null {
-  const item = readItemDelegation(db, itemId);
+  return settled(sqliteDb(db).run((q) => itemReadinessSteps(q, itemId, phase)));
+}
+
+export function* itemReadinessSteps(
+  q: Q,
+  itemId: string,
+  phase: ReadinessPhase,
+): Steps<ReadinessHold | null> {
+  const item = yield* readItemDelegationSteps(q, itemId);
   if (!item || item.cancelRequested) return "cancelled";
-  const workspaceId = delegationWorkspaceId(db, item.delegationId);
+  const workspaceId = yield* delegationWorkspaceIdSteps(q, item.delegationId);
   if (workspaceId === undefined) return "blocked";
   const target = { itemId, workspaceId };
   try {
     const ready =
       phase === "start"
-        ? readyItems(db, target).readyItemIds.includes(itemId)
-        : canAdvanceItem(db, target);
+        ? (yield* readyItemsSteps(q, target)).readyItemIds.includes(itemId)
+        : yield* canAdvanceItemSteps(q, target);
     return ready ? null : "blocked";
   } catch (caughtError1) {
     journalCaught(caughtError1, "readiness.itemReadiness.includes", itemId);
@@ -44,12 +55,16 @@ export function itemReadiness(
  * it for something other than a blocker, which is an inconsistency for the caller to report.
  */
 export function blockingIssues(db: Database, itemId: string): string[] {
-  const delegationId = readItemDelegation(db, itemId)?.delegationId;
+  return settled(sqliteDb(db).run((q) => blockingIssuesSteps(q, itemId)));
+}
+
+export function* blockingIssuesSteps(q: Q, itemId: string): Steps<string[]> {
+  const delegationId = (yield* readItemDelegationSteps(q, itemId))?.delegationId;
   const workspaceId =
-    delegationId === undefined ? undefined : delegationWorkspaceId(db, delegationId);
+    delegationId === undefined ? undefined : yield* delegationWorkspaceIdSteps(q, delegationId);
   if (workspaceId === undefined) return [];
   try {
-    return itemBlockers(db, { itemId, workspaceId });
+    return yield* itemBlockersSteps(q, { itemId, workspaceId });
   } catch (caughtError1) {
     journalCaught(caughtError1, "readiness.blockingIssues.itemBlockers", itemId);
     return [];

@@ -307,7 +307,7 @@ test("host credentials reach real host clone and fetch without reaching reposito
           ],
         }),
       );
-      workspaceDispatch(db, { now: Date.now() });
+      await workspaceDispatch(db, { now: Date.now() });
       await jobs.tick();
       expect(getWorkItem(db, item.id)?.state).toBe("completed");
       expect(checkedReads).toBe(1);

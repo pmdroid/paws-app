@@ -85,14 +85,14 @@ function held(db: Database, id: string, reason: "conflict" | "ci", respondFirst 
   sendBack(db, id, reason);
 }
 
-test("an item sent back to rebase and held behind another posts one line naming blocker and files", () => {
+test("an item sent back to rebase and held behind another posts one line naming blocker and files", async () => {
   const db = tempDb();
   try {
     hot(db, [TOOLKIT, PROJECT]);
     item(db, "ACME-1", "running", 1, [TOOLKIT, PROJECT]);
     held(db, "ACME-2", "conflict");
 
-    for (const offset of [0, 1, 2]) workspaceDispatch(db, { now: NOW + offset });
+    for (const offset of [0, 1, 2]) await workspaceDispatch(db, { now: NOW + offset });
 
     expect(holds(db, "ACME-2")).toEqual([
       {
@@ -107,7 +107,7 @@ test("an item sent back to rebase and held behind another posts one line naming 
   }
 });
 
-test("two items held behind one blocker each get their own line", () => {
+test("two items held behind one blocker each get their own line", async () => {
   const db = tempDb();
   try {
     hot(db, [TOOLKIT, PROJECT]);
@@ -115,8 +115,8 @@ test("two items held behind one blocker each get their own line", () => {
     held(db, "ACME-2", "conflict");
     held(db, "ACME-3", "conflict");
 
-    workspaceDispatch(db, { now: NOW });
-    workspaceDispatch(db, { now: NOW + 1 });
+    await workspaceDispatch(db, { now: NOW });
+    await workspaceDispatch(db, { now: NOW + 1 });
 
     expect(holds(db, "ACME-2")).toHaveLength(1);
     expect(holds(db, "ACME-3")).toHaveLength(1);
@@ -125,7 +125,7 @@ test("two items held behind one blocker each get their own line", () => {
   }
 });
 
-test("a hold says nothing without a conflict restart or before the pull request response", () => {
+test("a hold says nothing without a conflict restart or before the pull request response", async () => {
   const db = tempDb();
   try {
     hot(db, [TOOLKIT]);
@@ -133,7 +133,7 @@ test("a hold says nothing without a conflict restart or before the pull request 
     held(db, "ACME-2", "ci");
     held(db, "ACME-3", "conflict", false);
 
-    workspaceDispatch(db, { now: NOW });
+    await workspaceDispatch(db, { now: NOW });
 
     expect(holds(db, "ACME-2")).toEqual([]);
     expect(holds(db, "ACME-3")).toEqual([]);

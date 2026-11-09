@@ -86,36 +86,36 @@ function fixture() {
   return { db, runAt, free };
 }
 
-test("a freed slot on the pinned runner goes to the item waiting on it, not to a queued item", () => {
+test("a freed slot on the pinned runner goes to the item waiting on it, not to a queued item", async () => {
   const { db, runAt, free } = fixture();
   try {
-    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     expect(runAt()).toBe(BACKOFF);
     free(NOW + 1);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
     expect(runAt()).toBe(NOW + 2);
     // The wake stands until X's job runs; Y keeps waiting meanwhile.
-    expect(workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
     expect(runAt()).toBe(NOW + 2);
   } finally {
     db.close();
   }
 });
 
-test("a queued item ranked ahead of the waiting item takes the freed slot", () => {
+test("a queued item ranked ahead of the waiting item takes the freed slot", async () => {
   const { db, runAt, free } = fixture();
   try {
     saveSchedulingContext(db, { itemId: "Y", priority: 1 });
     saveSchedulingContext(db, { itemId: "X", priority: 4 });
     free(NOW + 1);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
     expect(runAt()).toBe(BACKOFF);
   } finally {
     db.close();
   }
 });
 
-test("a wait on an offline pinned runner reserves nothing", () => {
+test("a wait on an offline pinned runner reserves nothing", async () => {
   const { db, runAt } = fixture();
   try {
     db.run(
@@ -123,28 +123,28 @@ test("a wait on an offline pinned runner reserves nothing", () => {
       [NOW + 120_000],
     );
     db.run("UPDATE runner SET last_seen_at=0 WHERE id='A'");
-    expect(workspaceDispatch(db, { now: NOW + 120_000 })).toEqual(["Y"]);
+    expect(await workspaceDispatch(db, { now: NOW + 120_000 })).toEqual(["Y"]);
     expect(runAt()).toBe(BACKOFF);
   } finally {
     db.close();
   }
 });
 
-test("a wait past its hold reserves nothing", () => {
+test("a wait past its hold reserves nothing", async () => {
   const { db, runAt, free } = fixture();
   try {
     db.run("UPDATE job SET payload=json_set(payload,'$.capacityWait.holdMs',1000) WHERE queue=?", [
       JOB_KIND.resume,
     ]);
     free(NOW + 1);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
     expect(runAt()).toBe(BACKOFF);
   } finally {
     db.close();
   }
 });
 
-test("with another runner free, the waiting item's slot stays off limits to the queued item", () => {
+test("with another runner free, the waiting item's slot stays off limits to the queued item", async () => {
   const { db, runAt, free } = fixture();
   try {
     db.run(
@@ -153,7 +153,7 @@ test("with another runner free, the waiting item's slot stays off limits to the 
     );
     free(NOW + 1);
     // A and B each have a free slot: X is woken for A, and Y is admitted for B.
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
     expect(runAt()).toBe(NOW + 2);
     // Placement keeps Y off A while X holds A's slot, and gives X its own slot.
     const reserved = pinnedSlotsReserved(db, "A", "Y", NOW + 2);
@@ -169,13 +169,13 @@ test("with another runner free, the waiting item's slot stays off limits to the 
   }
 });
 
-test("a waiting item ranked behind a queued item that took the last slot reserves nothing", () => {
+test("a waiting item ranked behind a queued item that took the last slot reserves nothing", async () => {
   const { db, runAt, free } = fixture();
   try {
     saveSchedulingContext(db, { itemId: "Y", priority: 1 });
     saveSchedulingContext(db, { itemId: "X", priority: 4 });
     free(NOW + 1);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
     expect(pinnedSlotsReserved(db, "A", "Y", NOW + 2)).toBe(0);
     expect(runAt()).toBe(BACKOFF);
   } finally {
@@ -183,23 +183,23 @@ test("a waiting item ranked behind a queued item that took the last slot reserve
   }
 });
 
-test("a waiting item on a full runner holds the slot that frees next", () => {
+test("a waiting item on a full runner holds the slot that frees next", async () => {
   const { db } = fixture();
   try {
-    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     expect(pinnedSlotsReserved(db, "A", "Y", NOW)).toBe(1);
   } finally {
     db.close();
   }
 });
 
-test("a reservation is released when its runner goes offline", () => {
+test("a reservation is released when its runner goes offline", async () => {
   const { db } = fixture();
   try {
-    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     expect(pinnedSlotsReserved(db, "A", "Y", NOW)).toBe(1);
     db.run("UPDATE runner SET last_seen_at=0 WHERE id='A'");
-    workspaceDispatch(db, { now: NOW + 120_000 });
+    await workspaceDispatch(db, { now: NOW + 120_000 });
     expect(pinnedSlotsReserved(db, "A", "Y", NOW + 120_000)).toBe(0);
   } finally {
     db.close();

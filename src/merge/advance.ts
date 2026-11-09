@@ -145,7 +145,7 @@ export type MergeCapabilities = OrderCapabilities & {
     item: WorkItemRecord,
   ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null | "unknown">;
   rerunCi?(item: WorkItemRecord, pullNumber: number, reason: string): Promise<string>;
-  completed(): void;
+  completed(): unknown;
 };
 
 const CANCELLED_CI_RERUN = "cancelled or timed-out CI job";
@@ -725,7 +725,7 @@ async function completeMerged(
   const completed = await store.transaction((q) =>
     completeMergedItemSteps(q, { itemId: item.id, now: caps.now() }),
   );
-  if (completed) caps.completed();
+  if (completed) await caps.completed();
 }
 
 /** Unknown remote outcomes wait without spending the CI deadline or leaving the queue. */

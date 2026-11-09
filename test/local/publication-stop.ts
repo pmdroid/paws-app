@@ -425,8 +425,8 @@ export async function probePublicationStop(
         tracker: cycleTracker,
         lifecycle,
       });
-    current.orchestrator.reconcileExecution();
-    current.orchestrator.reconcileExecution();
+    await current.orchestrator.reconcileExecution();
+    await current.orchestrator.reconcileExecution();
     const cycleQuestion = db
       .query<{ n: number }, []>(
         "SELECT COUNT(*) AS n FROM outbox WHERE idempotency_key LIKE 'dependency-cycle:cycle:%'",
@@ -447,7 +447,7 @@ export async function probePublicationStop(
       cycleQuestion === 1 && openQuestions === 0 && freeJob === 1,
       { cycleQuestion, openQuestions, freeJob },
     );
-    current.orchestrator.reconcileExecution();
+    await current.orchestrator.reconcileExecution();
     observe(
       "a cycle notice stays one-shot and does not open a stall question",
       db
@@ -511,7 +511,7 @@ export async function probePublicationStop(
     }
     db.run("UPDATE work_item SET state='cancelled' WHERE id='cycle-free'");
     pendingEpics.add("all-removed");
-    current.orchestrator.reconcileExecution();
+    await current.orchestrator.reconcileExecution();
     const restored = db
       .query<{ n: number }, []>(
         "SELECT COUNT(*) AS n FROM job WHERE json_extract(payload,'$.itemId')='restored-new' AND status='pending'",
@@ -525,7 +525,7 @@ export async function probePublicationStop(
       { restored },
     );
     pendingEpics.delete("all-removed");
-    current.orchestrator.reconcileExecution();
+    await current.orchestrator.reconcileExecution();
     const outcomes = [
       getWorkItem(db, "all-removed-old")?.state,
       getWorkItem(db, "delivered-history-old")?.state,
@@ -722,7 +722,7 @@ export async function probePublicationStop(
         [`${delegationId}-issue`, `${delegationId}-consumer`],
       );
     }
-    current.orchestrator.reconcileExecution();
+    await current.orchestrator.reconcileExecution();
     const handoff = current.orchestrator.dependencyHandoff("handoff-history-consumer");
     const readyIds = db
       .query<{ id: string }, []>("SELECT item_id AS id FROM scheduler_admission")

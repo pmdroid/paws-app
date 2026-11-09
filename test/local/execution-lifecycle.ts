@@ -86,7 +86,7 @@ export async function probeExecutionLifecycle(
     seed("abandoned", ["cancelled", "cancelled"]);
     seed("already-stalled", ["merged"]);
     seed("failed", ["failed"]);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     observe(
       "mixed completed and cancelled work finishes the epic",
       state("mixed") === "done",
@@ -108,7 +108,7 @@ export async function probeExecutionLifecycle(
       state("failed"),
     );
     clock.advance(10 * 60 * 1000);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     const stallQuestions = db
       .query<{ n: number }, []>(
         "SELECT COUNT(*) AS n FROM question WHERE body LIKE '%made no progress%'",
@@ -138,8 +138,8 @@ export async function probeExecutionLifecycle(
       orchestrator.dependencyHandoff("handoff-1"),
       "Completed dependencies:\nhandoff-0: Published the exact API schema.",
     );
-    orchestrator.reconcileExecution();
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     const starts = db
       .query<{ payload: string }, []>(
         "SELECT payload FROM job WHERE queue='item.start' AND json_extract(payload,'$.itemId')='handoff-1'",
@@ -199,9 +199,9 @@ export async function probeExecutionLifecycle(
       tracker,
       lifecycle,
     });
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     clock.advance(600000);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     observe(
       "in-progress external work does not produce a human stalled question",
       state("external") === "running" && notices("external") === 0,
@@ -210,7 +210,7 @@ export async function probeExecutionLifecycle(
     await orchestrator.shutdown();
     orchestrator = create(() => ({}));
     seed("unrelated-active", ["running"]);
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     observe(
       "configured scheduling runs despite unrelated active work",
       db.query("SELECT 1 FROM scheduler_admission WHERE item_id='handoff-1'").get() !== null,
@@ -233,19 +233,19 @@ export async function probeExecutionLifecycle(
       guardDb.run(
         "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('guard-item','guard','guard','G-1','Guard','queued','paws/guard',0,1)",
       );
-      guard.reconcileExecution();
+      await guard.reconcileExecution();
       allowed = false;
-      guard.reconcileExecution();
+      await guard.reconcileExecution();
       await guardJobs.tick();
-      guard.reconcileExecution();
+      await guard.reconcileExecution();
       const held = guardDb
         .query<{ n: number }, []>(
           "SELECT COUNT(*) AS n FROM job WHERE queue='item.start' AND status='pending'",
         )
         .get()!.n;
       allowed = true;
-      guard.reconcileExecution();
-      guard.reconcileExecution();
+      await guard.reconcileExecution();
+      await guard.reconcileExecution();
       const resumed = guardDb
         .query<{ n: number }, []>(
           "SELECT COUNT(*) AS n FROM job WHERE queue='item.start' AND status='pending'",

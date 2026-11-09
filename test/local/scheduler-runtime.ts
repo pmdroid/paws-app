@@ -93,9 +93,9 @@ export async function probeSchedulerRuntime(
   try {
     registerScheduler(
       jobs,
-      () => {
+      async () => {
         events.push(`reconcile:${getLinearSession(db, "session")?.activeItemId}`);
-        orchestrator.reconcileExecution();
+        await orchestrator.reconcileExecution();
       },
       clock.now(),
     );
@@ -146,14 +146,20 @@ export async function probeSchedulerRuntime(
     });
     const loop = new JobLoop(defaults, clock);
     const run = () => workspaceDispatch(defaults, { now: clock.now() });
-    registerScheduler(loop, () => void run(), clock.now());
+    registerScheduler(
+      loop,
+      async () => {
+        await run();
+      },
+      clock.now(),
+    );
     const tick = await loop.tick();
     const count = defaults
       .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM scheduler_admission")
       .get()!.count;
     observe(
       "without a custom hook the durable tick and returned dispatcher retain default behavior",
-      tick?.queue === "scheduler.tick" && count === 1 && run().length === 0,
+      tick?.queue === "scheduler.tick" && count === 1 && (await run()).length === 0,
       { queue: tick?.queue, admissions: count },
     );
   } finally {

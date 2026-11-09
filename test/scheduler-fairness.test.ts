@@ -42,12 +42,12 @@ function fixture(capacity: number) {
   return { db, queue };
 }
 
-test("a second person's single task starts in the first round beside a large batch", () => {
+test("a second person's single task starts in the first round beside a large batch", async () => {
   const { db, queue } = fixture(2);
   try {
     for (let index = 1; index <= 20; index += 1) queue(`ada-${index}`, "ada", index);
     queue("ben-1", "ben", 100);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ben-1"]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ben-1"]);
     expect(settled(getQueuePosition(sqliteDb(db), "ada-2"))).toMatchObject({
       position: 1,
       ownerCap: null,
@@ -57,31 +57,31 @@ test("a second person's single task starts in the first round beside a large bat
   }
 });
 
-test("two owners' tasks take turns", () => {
+test("two owners' tasks take turns", async () => {
   const { db, queue } = fixture(4);
   try {
     for (let index = 1; index <= 3; index += 1) queue(`ada-${index}`, "ada", index);
     for (let index = 1; index <= 3; index += 1) queue(`ben-${index}`, "ben", 10 + index);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ben-1", "ada-2", "ben-2"]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ben-1", "ada-2", "ben-2"]);
   } finally {
     db.close();
   }
 });
 
-test("with a cap of 3 one owner never runs more than 3 tasks while others wait", () => {
+test("with a cap of 3 one owner never runs more than 3 tasks while others wait", async () => {
   const { db, queue } = fixture(10);
   try {
     for (let index = 1; index <= 10; index += 1) queue(`ada-${index}`, "ada", index);
     queue("ben-1", "ben", 100);
     queue("ben-2", "ben", 101);
-    expect(workspaceDispatch(db, { now: NOW, ownerCap: 3 })).toEqual([
+    expect(await workspaceDispatch(db, { now: NOW, ownerCap: 3 })).toEqual([
       "ada-1",
       "ben-1",
       "ada-2",
       "ben-2",
       "ada-3",
     ]);
-    expect(workspaceDispatch(db, { now: NOW + 1, ownerCap: 3 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 1, ownerCap: 3 })).toEqual([]);
     expect(settled(getQueuePosition(sqliteDb(db), "ada-4"))).toMatchObject({
       position: 1,
       ownerCap: 3,
@@ -91,11 +91,11 @@ test("with a cap of 3 one owner never runs more than 3 tasks while others wait",
   }
 });
 
-test("without a cap one owner gets every free runner slot", () => {
+test("without a cap one owner gets every free runner slot", async () => {
   const { db, queue } = fixture(4);
   try {
     for (let index = 1; index <= 6; index += 1) queue(`ada-${index}`, "ada", index);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ada-2", "ada-3", "ada-4"]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ada-2", "ada-3", "ada-4"]);
   } finally {
     db.close();
   }

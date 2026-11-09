@@ -14,11 +14,18 @@ export {
   itemDependenciesCurrent,
   recordItemDependencies,
   readyItems,
+  readyItemsSteps,
   syncItemDependencies,
   delegationSnapshotsComplete,
 } from "./dependencies";
 export type { DependencyReadiness, DependencyReads } from "./dependencies";
-export { blockingIssues, delegationReadiness, itemReadiness } from "./readiness";
+export {
+  blockingIssues,
+  blockingIssuesSteps,
+  delegationReadinessSteps,
+  itemReadiness,
+  itemReadinessSteps,
+} from "./readiness";
 export type { ReadinessHold, ReadinessPhase } from "./readiness";
 export {
   BLOCKED_RELATIONS_POLL_MS,

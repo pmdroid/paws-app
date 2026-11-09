@@ -139,7 +139,7 @@ test("the scheduler admits an item without reading the epic table", async () => 
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
     ).toBeNull();
     expect(
-      workspaceDispatch(db, {
+      await workspaceDispatch(db, {
         now: 2,
       }),
     ).toEqual([intake.items[0]!.id]);

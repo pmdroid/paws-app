@@ -9,51 +9,53 @@ import {
   type WorkBrief,
 } from "../core";
 import {
-  closeExpiredRunnerLeases,
-  enqueueJob,
+  closeExpiredRunnerLeasesSteps,
+  emitJobReady,
   enqueueJobOnce,
-  enqueueOutboxOnce,
-  cancelAdmittedJob,
-  cancelPendingItemJobs,
-  dropSchedulerAdmission,
-  hotFiles,
-  immediate,
-  itemLinearIdentifier,
-  latestItemJobId,
-  listBlocksOf,
-  listSchedulerAdmissions,
-  listTaskBlocks,
-  mergeQueueReadyTimes,
-  pendingRunnerWaits,
-  releaseIdleSessionItem,
-  runnerTaskSlots,
-  runPendingJobNow,
+  enqueueJobSteps,
+  enqueueOutboxOnceSteps,
+  cancelAdmittedJobSteps,
+  cancelPendingItemJobsSteps,
+  dropSchedulerAdmissionSteps,
+  hotFilesSteps,
+  itemLinearIdentifierSteps,
+  latestItemJobIdSteps,
+  listBlocksOfSteps,
+  listSchedulerAdmissionsSteps,
+  listTaskBlocksSteps,
+  mergeQueueReadyTimesSteps,
+  pendingRunnerWaitsSteps,
+  releaseIdleSessionItemSteps,
+  runnerTaskSlotsSteps,
+  runPendingJobNowSteps,
   saveItemScheduling,
-  saveSchedulerAdmission,
-  schedulerItems,
+  saveSchedulerAdmissionSteps,
+  schedulerItemsSteps,
   schedulingProjectLead,
   type SchedulerItem,
-  latestCandidatePaths,
-  requeueOrphanedWork,
+  latestCandidatePathsSteps,
+  requeueOrphanedWorkSteps,
   runnerCapacityWait,
-  listOverlapHoldAges,
-  saveItemHolds,
-  saveQueuePositions,
-  settled,
+  listOverlapHoldAgesSteps,
+  saveItemHoldsSteps,
+  saveQueuePositionsSteps,
   sqliteDb,
-  savePinnedSlots,
+  savePinnedSlotsSteps,
+  type Db,
   type ItemHold,
   type PinnedSlot,
   type JobLoop,
+  type Q,
+  type Steps,
   repositoryKey,
 } from "../db";
-import { blockingIssues, readyItems } from "../intake";
-import { createAdmission, type ItemAdmission } from "./admission";
+import { blockingIssues, blockingIssuesSteps, readyItemsSteps } from "../intake";
+import { createAdmission, type Admission as StartAdmission, type ItemAdmission } from "./admission";
 import {
-  itemWaits,
+  itemWaitsSteps,
   overlapLine,
-  postConflictHolds,
-  postWaitKeepalives,
+  postConflictHoldsSteps,
+  postWaitKeepalivesSteps,
   type ItemWait,
 } from "./waits";
 
@@ -69,15 +71,16 @@ export type SchedulerOptions = {
   now?: number;
   admission?: ItemAdmission;
   defaultRepository?: RepositoryBinding | null;
-  handoffForItem?: (itemId: string) => string | undefined;
-  sessionFor?: (itemId: string) => string | null;
+  store?: Db;
+  handoffForItem?: (q: Q, itemId: string) => Steps<string | undefined>;
+  sessionFor?: (q: Q, itemId: string) => Steps<string | null>;
   onWaiting?: (itemIds: readonly string[]) => void;
   /**
    * Whether the item's owner has a runner they may use. False keeps the item out of the slot
    * line: no runner slot would ever be theirs, so it waits for runner setup instead. Null or
-   * unset counts as true. Reads SQLite only.
+   * unset counts as true. Database work only.
    */
-  ownerHasRunner?: (itemId: string) => boolean | null;
+  ownerHasRunner?: (q: Q, itemId: string) => Steps<boolean | null>;
   /** Queued items whose owner has no runner they may use, after every admission pass. */
   onRunnerSetup?: (itemIds: readonly string[]) => void;
   onWaits?: (waits: readonly ItemWait[]) => void;
@@ -116,21 +119,24 @@ type Overlap = { blocker: string; files: string[]; start?: true };
  * keeps its merge-queue place, such as one sent back for a conflict, is held only by an item
  * ahead of it in that queue: anything behind it, or not queued yet, merges after it.
  */
-function overlapGate(db: Database, now: number, waiters: readonly Item[]) {
+function* overlapGate(q: Q, now: number, waiters: readonly Item[]) {
   const hot = new Map<string, Set<string>>();
-  for (const file of hotFiles(db, now)) {
+  for (const file of yield* hotFilesSteps(q, now)) {
     const key = file.repository.toLowerCase();
     hot.set(key, (hot.get(key) ?? new Set()).add(file.path));
   }
-  const paths = hot.size ? latestCandidatePaths(db) : new Map<string, string[]>();
+  const paths = hot.size ? yield* latestCandidatePathsSteps(q) : new Map<string, string[]>();
   const blocks = new Map<string, string[]>();
   if (hot.size)
-    for (const edge of listTaskBlocks(db))
+    for (const edge of yield* listTaskBlocksSteps(q))
       blocks.set(edge.blocker, [...(blocks.get(edge.blocker) ?? []), edge.blocked]);
   const places = new Map(
-    (hot.size ? mergeQueueReadyTimes(db) : []).map((entry) => [entry.itemId, entry.readyAt]),
+    (hot.size ? yield* mergeQueueReadyTimesSteps(q) : []).map((entry) => [
+      entry.itemId,
+      entry.readyAt,
+    ]),
   );
-  const ages = hot.size ? listOverlapHoldAges(db) : new Map<string, number>();
+  const ages = hot.size ? yield* listOverlapHoldAgesSteps(q) : new Map<string, number>();
   const waitedLonger = (other: Item, item: Item): boolean => {
     const theirs = ages.get(other.id);
     if (theirs === undefined) return false;
@@ -192,6 +198,23 @@ function overlapGate(db: Database, now: number, waiters: readonly Item[]) {
  */
 export function openBlockers(db: Database, itemId: string): string[] {
   return blockingIssues(db, itemId);
+}
+
+function canDispatchDelegation(q: Q, admission: ItemAdmission, delegationId: string) {
+  return admission.steps
+    ? admission.steps.canDispatchDelegation(q, delegationId)
+    : syncRead(admission.canDispatchDelegation(delegationId));
+}
+
+function canStart(q: Q, admission: ItemAdmission, itemId: string) {
+  return admission.steps
+    ? admission.steps.canStart(q, itemId)
+    : syncRead(admission.canStart(itemId));
+}
+
+// oxlint-disable-next-line require-yield
+function* syncRead<T>(result: T): Steps<T> {
+  return result;
 }
 
 export function schedulerPaths(paths: readonly string[]): string[] {
@@ -267,11 +290,11 @@ export function hintedPaths(brief: string | null): string[] {
   }
 }
 
-function taskSlots(
-  db: Database,
+function* taskSlots(
+  q: Q,
   now: number,
-): { total: number; busy: number; open: Map<string, number> } | null {
-  const runners = runnerTaskSlots(db, now, now - RUNNER_SEEN_MS);
+): Steps<{ total: number; busy: number; open: Map<string, number> } | null> {
+  const runners = yield* runnerTaskSlotsSteps(q, now, now - RUNNER_SEEN_MS);
   if (!runners.length) return null;
   return {
     total: runners.reduce((total, runner) => total + runner.capacity, 0),
@@ -299,8 +322,8 @@ type PinnedWait = {
  * such as a re-verify that only runs the checks and the review, holds the next slot that frees on
  * any of the runners it waits for.
  */
-function pinnedWaits(db: Database, now: number): PinnedWait[] {
-  return pendingRunnerWaits(db, now - RUNNER_SEEN_MS).flatMap(
+function* pinnedWaits(q: Q, now: number): Steps<PinnedWait[]> {
+  return (yield* pendingRunnerWaitsSteps(q, now - RUNNER_SEEN_MS)).flatMap(
     ({ payload, runnerId, online, merging, ...wait }): PinnedWait[] => {
       const capacity = runnerCapacityWait(JSON.parse(payload));
       if (!capacity || now - capacity.since >= (capacity.holdMs ?? Infinity)) return [];
@@ -362,13 +385,13 @@ function fairOrder(
   return order;
 }
 
-function depths(db: Database, items: Item[]): Map<string, number> {
+function* depths(q: Q, items: Item[]): Steps<Map<string, number>> {
   const ids = new Map<string, string>();
   for (const item of items) {
     if (isTerminalWorkItemState(item.state) && ids.has(item.issueId)) continue;
     ids.set(item.issueId, item.id);
   }
-  const edges = listTaskBlocks(db);
+  const edges = yield* listTaskBlocksSteps(q);
   const children = new Map<string, string[]>();
   for (const edge of edges) {
     const parent = ids.get(edge.blocker),
@@ -389,68 +412,69 @@ function depths(db: Database, items: Item[]): Map<string, number> {
   return result;
 }
 
-function yieldIdleMergeSessions(
-  db: Database,
+function* yieldIdleMergeSessions(
+  q: Q,
   items: readonly Item[],
   ready: ReadonlySet<string>,
   admission: ItemAdmission,
   now: number,
-): void {
+): Steps<void> {
   for (const item of items) {
     if (
       item.state !== "merge_queue" ||
       item.absent ||
-      !admission.canDispatchDelegation(item.delegationId) ||
+      !(yield* canDispatchDelegation(q, admission, item.delegationId)) ||
       !items.some(
         (other) =>
           other.id !== item.id && other.delegationId === item.delegationId && ready.has(other.id),
       )
     )
       continue;
-    releaseIdleSessionItem(db, item.id, now);
+    yield* releaseIdleSessionItemSteps(q, item.id, now);
   }
 }
 
-function reportDependencyCycles(
-  db: Database,
+function* reportDependencyCycles(
+  q: Q,
   items: readonly Item[],
   admission: ItemAdmission,
-  sessionFor: (itemId: string) => string | null,
+  sessionFor: (q: Q, itemId: string) => Steps<string | null>,
   now: number,
-): void {
+): Steps<void> {
   const delegations = new Map<string, Item[]>();
   for (const item of items)
     if (!item.absent)
       delegations.set(item.delegationId, [...(delegations.get(item.delegationId) ?? []), item]);
   for (const [delegationId, members] of delegations) {
     if (
-      !listBlocksOf(
-        db,
+      !(yield* listBlocksOfSteps(
+        q,
         members.map((member) => member.issueId),
-      ).length
+      )).length
     )
       continue;
     const workspaceId = members.find((member) => member.workspaceId)?.workspaceId;
-    if (!workspaceId || !admission.canDispatchDelegation(delegationId)) continue;
-    let held: Item[];
+    if (!workspaceId || !(yield* canDispatchDelegation(q, admission, delegationId))) continue;
+    const held: Item[] = [];
     try {
-      held = members
-        .sort((left, right) => left.position - right.position)
-        .filter(
-          (member) =>
-            readyItems(db, { itemId: member.id, workspaceId }).cycleHeldItemIds.length > 0,
-        );
+      for (const member of members.sort((left, right) => left.position - right.position))
+        if ((yield* readyItemsSteps(q, { itemId: member.id, workspaceId })).cycleHeldItemIds.length)
+          held.push(member);
     } catch (caughtError2) {
       journalCaught(caughtError2, "scheduler.reportDependencyCycles.filter", null);
       continue;
     }
     if (!held.length) continue;
-    const session = held.map((member) => sessionFor(member.id)).find((id) => id !== null);
+    let session: string | null = null;
+    for (const member of held) {
+      session = yield* sessionFor(q, member.id);
+      if (session !== null) break;
+    }
     if (!session) continue;
     const digest = createHash("sha256")
       .update(JSON.stringify(held.map((member) => member.id).sort()))
       .digest("hex");
-    enqueueOutboxOnce(db, {
+    yield* enqueueOutboxOnceSteps(q, {
       target: "linear",
       op: "activity",
       orderingKey: session,
@@ -465,28 +489,38 @@ function reportDependencyCycles(
   }
 }
 
-export function dispatch(db: Database, options: SchedulerOptions = {}): string[] {
+export function dispatch(db: Database, options: SchedulerOptions = {}): Promise<string[]> {
   if (db.inTransaction) throw new Error("Dispatch runs after the transition commits");
+  return admit(
+    options.store ?? sqliteDb(db),
+    options.admission ?? createAdmission({ db }),
+    options,
+  );
+}
+
+async function admit(
+  store: Db,
+  admission: ItemAdmission,
+  options: SchedulerOptions,
+): Promise<string[]> {
   const now = options.now ?? Date.now();
-  const admission = options.admission ?? createAdmission({ db });
-  const result = immediate(db, () => {
-    closeExpiredRunnerLeases(db, now);
-    requeueOrphanedWork(db, now);
-    const items = schedulerItems(db, now);
+  const result = await store.transaction(function* (q) {
+    let armed = (yield* closeExpiredRunnerLeasesSteps(q, now)).armed;
+    armed = (yield* requeueOrphanedWorkSteps(q, now)).armed || armed;
+    const items = yield* schedulerItemsSteps(q, now);
     const byId = new Map(items.map((item) => [item.id, item]));
-    const starts = items
-      // A runner-setup hold waits for the delegator, not for a slot: it is neither started nor
-      // counted as waiting, so no queue notice or start timeout reaches it. Only the
-      // `runner_setup.check` job ends it, after a runner write, never this tick.
-      .filter(
-        (item) =>
-          item.state === "queued" && !item.cancelRequested && !item.absent && !item.setupHeld,
-      )
-      .map((item) => ({ item, start: admission.canStart(item.id) }));
+    const starts: { item: Item; start: StartAdmission }[] = [];
+    // A runner-setup hold waits for the delegator, not for a slot: it is neither started nor
+    // counted as waiting, so no queue notice or start timeout reaches it. Only the
+    // `runner_setup.check` job ends it, after a runner write, never this tick.
+    for (const item of items)
+      if (item.state === "queued" && !item.cancelRequested && !item.absent && !item.setupHeld)
+        starts.push({ item, start: yield* canStart(q, admission, item.id) });
     const ready = new Set(starts.filter(({ start }) => start.ok).map(({ item }) => item.id));
-    yieldIdleMergeSessions(db, items, ready, admission, now);
-    if (options.sessionFor) reportDependencyCycles(db, items, admission, options.sessionFor, now);
-    const saved = listSchedulerAdmissions(db);
+    yield* yieldIdleMergeSessions(q, items, ready, admission, now);
+    if (options.sessionFor)
+      yield* reportDependencyCycles(q, items, admission, options.sessionFor, now);
+    const saved = yield* listSchedulerAdmissionsSteps(q);
     const held: Admission[] = [];
     for (const row of saved) {
       const item = byId.get(row.itemId);
@@ -508,21 +542,21 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
           continue;
         }
       }
-      cancelAdmittedJob(db, row.jobId, now);
-      dropSchedulerAdmission(db, row.itemId);
+      yield* cancelAdmittedJobSteps(q, row.jobId, now);
+      yield* dropSchedulerAdmissionSteps(q, row.itemId);
     }
     for (const item of items)
       if (holdsSession(item) && !held.some((entry) => entry.itemId === item.id)) {
         const entry = footprint(item, options);
-        const jobId = latestItemJobId(
-          db,
+        const jobId = yield* latestItemJobIdSteps(
+          q,
           item.id,
           [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify],
           ["pending", "running"],
         );
         if (jobId !== null)
-          saveSchedulerAdmission(
-            db,
+          yield* saveSchedulerAdmissionSteps(
+            q,
             {
               itemId: item.id,
               jobId,
@@ -534,7 +568,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
           );
         held.push(entry);
       }
-    const depth = depths(db, items);
+    const depth = yield* depths(q, items);
     // Merge-queue work goes first, in merge order: finished pull requests never wait behind new
     // implementation work.
     const rank = (a: Item, b: Item) =>
@@ -546,9 +580,9 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       a.createdAt - b.createdAt ||
       a.id.localeCompare(b.id);
     const candidates = items.filter((item) => ready.has(item.id)).sort(rank);
-    const slots = taskSlots(db, now);
+    const slots = yield* taskSlots(q, now);
     const pins = slots
-      ? pinnedWaits(db, now)
+      ? (yield* pinnedWaits(q, now))
           .filter((pin) => byId.has(pin.itemId) && pin.runnerIds.some((id) => slots.open.has(id)))
           .sort((a, b) => rank(byId.get(a.itemId)!, byId.get(b.itemId)!))
       : [];
@@ -559,7 +593,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     // reservation is saved on the wait's job, so runner placement keeps queued work off it. An
     // unpinned merge-queue wait takes a free slot on any of its runners; while all are full it
     // holds nothing, and the next tick gives it the first slot that frees.
-    const claimPinned = (before?: Item) => {
+    function* claimPinned(before?: Item): Steps<void> {
       for (; pinned < pins.length; pinned += 1) {
         const pin = pins[pinned]!;
         if (before && rank(byId.get(pin.itemId)!, before) > 0) return;
@@ -574,10 +608,10 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         if (open > 0 && free <= 0) continue;
         reservedSlots.set(pin.jobId, { runnerId, order: pinned });
         if (open <= 0) continue;
-        runPendingJobNow(db, pin.jobId, now);
+        yield* runPendingJobNowSteps(q, pin.jobId, now);
         free -= 1;
       }
-    };
+    }
     const reserved = items.filter(
       (item) =>
         !item.placed &&
@@ -593,15 +627,17 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       )
         running.set(item.turn, (running.get(item.turn) ?? 0) + 1);
     const cap = options.ownerCap ?? null;
-    const overlapping = overlapGate(
-      db,
-      now,
-      candidates.filter(
-        (item) =>
-          !held.some((entry) => entry.itemId === item.id) &&
-          (slots === null || options.ownerHasRunner?.(item.id) !== false),
-      ),
-    );
+    const waiters: Item[] = [];
+    for (const item of candidates) {
+      if (held.some((entry) => entry.itemId === item.id)) continue;
+      if (
+        slots === null ||
+        !options.ownerHasRunner ||
+        (yield* options.ownerHasRunner(q, item.id)) !== false
+      )
+        waiters.push(item);
+    }
+    const overlapping = yield* overlapGate(q, now, waiters);
     const occupants = items.filter(
       (item) =>
         holdsExecution(item) ||
@@ -618,15 +654,14 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     const order = fairOrder(unheld, running, cap);
     // Only checked while runners exist, so a workspace without runners behaves as before.
     const ownerHasRunner = slots === null ? undefined : options.ownerHasRunner;
-    const setup = new Set(
-      ownerHasRunner
-        ? order.filter(({ item }) => ownerHasRunner(item.id) === false).map(({ item }) => item.id)
-        : [],
-    );
+    const setup = new Set<string>();
+    if (ownerHasRunner)
+      for (const { item } of order)
+        if ((yield* ownerHasRunner(q, item.id)) === false) setup.add(item.id);
     const admitted: string[] = [];
     for (const { item, capped } of order) {
       if (capped || setup.has(item.id)) continue;
-      claimPinned(item);
+      yield* claimPinned(item);
       if (free <= 0) break;
       const next = footprint(item, options);
       if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
@@ -636,16 +671,20 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         overlaps.set(item.id, overlap);
         continue;
       }
-      cancelPendingItemJobs(db, JOB_KIND.start, item.id, now);
-      const handoff = options.handoffForItem?.(item.id);
-      const jobId =
-        latestItemJobId(db, item.id, ["run.resume"], ["pending"]) ??
-        enqueueJob(db, {
+      yield* cancelPendingItemJobsSteps(q, JOB_KIND.start, item.id, now);
+      const handoff = options.handoffForItem
+        ? yield* options.handoffForItem(q, item.id)
+        : undefined;
+      let jobId = yield* latestItemJobIdSteps(q, item.id, ["run.resume"], ["pending"]);
+      if (jobId === null) {
+        jobId = yield* enqueueJobSteps(q, {
           queue: JOB_KIND.start,
           payload: { itemId: item.id, ...(handoff ? { handoff } : {}) },
           now,
         });
-      saveSchedulerAdmission(db, {
+        armed = true;
+      }
+      yield* saveSchedulerAdmissionSteps(q, {
         itemId: item.id,
         jobId,
         repositoryKey: next.repositoryKey,
@@ -657,8 +696,8 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       admitted.push(item.id);
       free -= 1;
     }
-    claimPinned();
-    savePinnedSlots(db, reservedSlots);
+    yield* claimPinned();
+    yield* savePinnedSlotsSteps(q, reservedSlots);
     const waiting = order.filter(
       ({ item }) => !admitted.includes(item.id) && !setup.has(item.id) && !overlaps.has(item.id),
     );
@@ -666,27 +705,24 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       ...waiting.filter(({ capped }) => !capped),
       ...waiting.filter(({ capped }) => capped),
     ].map(({ item }) => item.id);
-    settled(
-      saveQueuePositions(
-        sqliteDb(db),
+    yield* q.transaction((tx) =>
+      saveQueuePositionsSteps(
+        tx,
         line,
         slots ? { busy: slots.total - Math.max(free, 0), total: slots.total } : null,
         now,
         new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
       ),
     );
-    const holds: ItemHold[] = [
-      ...starts.flatMap(({ item, start }): ItemHold[] =>
-        start.ok || start.held === "missing" || start.held === "cancelled"
-          ? []
-          : [
-              {
-                itemId: item.id,
-                reason: start.held,
-                blockers: start.held === "blocked" ? openBlockers(db, item.id) : [],
-              },
-            ],
-      ),
+    const holds: ItemHold[] = [];
+    for (const { item, start } of starts)
+      if (!start.ok && start.held !== "missing" && start.held !== "cancelled")
+        holds.push({
+          itemId: item.id,
+          reason: start.held,
+          blockers: start.held === "blocked" ? yield* blockingIssuesSteps(q, item.id) : [],
+        });
+    holds.push(
       ...waiting.map(({ item, capped }): ItemHold => ({
         itemId: item.id,
         reason: capped ? "cap" : "slot",
@@ -699,27 +735,29 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         files: overlap.files,
         ...(overlap.start ? { start: overlap.start } : {}),
       })),
-    ];
-    const changes = saveItemHolds(db, holds, now).map((change) => {
+    );
+    const changes: string[] = [];
+    for (const change of yield* saveItemHoldsSteps(q, holds, now)) {
       const name =
         byId.get(change.itemId)?.identifier ??
-        itemLinearIdentifier(db, change.itemId) ??
+        (yield* itemLinearIdentifierSteps(q, change.itemId)) ??
         change.itemId;
       if (change.held?.reason === "blocked" && !change.held.blockers.length)
         journal(`scheduler inconsistency: item ${name} is held as blocked but has no open blocker`);
-      return change.held
-        ? `item ${name} held: ${holdLine(change.held)}`
-        : `item ${name} no longer held`;
-    });
-    const waits = itemWaits(
-      db,
+      changes.push(
+        change.held ? `item ${name} held: ${holdLine(change.held)}` : `item ${name} no longer held`,
+      );
+    }
+    const waits = yield* itemWaitsSteps(
+      q,
       items.map((item) => (admitted.includes(item.id) ? { ...item, liveJob: 1 } : item)),
       holds,
       new Map(slots ? line.map((id, index) => [id, index + 1]) : []),
     );
-    postWaitKeepalives(db, waits, now);
-    postConflictHolds(db, waits, now);
+    yield* postWaitKeepalivesSteps(q, waits, now);
+    yield* postConflictHoldsSteps(q, waits, now);
     return {
+      armed,
       admitted,
       waits,
       waiting: waiting.map(({ item }) => item.id),
@@ -727,6 +765,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       changes,
     };
   });
+  if (result.armed) emitJobReady(store);
   if (options.log) for (const line of result.changes) options.log(line);
   options.onWaiting?.(result.waiting);
   options.onRunnerSetup?.(result.setup);
@@ -734,7 +773,11 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
   return result.admitted;
 }
 
-export function registerScheduler(jobs: JobLoop, tick: () => void, now = Date.now()): void {
+export function registerScheduler(
+  jobs: JobLoop,
+  tick: () => void | Promise<void>,
+  now = Date.now(),
+): void {
   jobs.register(TICK, tick);
   enqueueJobOnce(jobs.db, { queue: TICK, jobKey: TICK, recurringEveryMs: 30_000, now });
 }

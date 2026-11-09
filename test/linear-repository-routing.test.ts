@@ -268,7 +268,7 @@ test("an incomplete access scan retries without binding the surviving repository
     ).toBe(true);
     f.unavailable.clear();
     f.clock.advance(10_000);
-    workspaceDispatch(f.db, { now: f.clock.now() });
+    await workspaceDispatch(f.db, { now: f.clock.now() });
     await f.jobs.tick();
     expect(findOpenQuestion(f.db, "session")?.options).toHaveLength(2);
     expect(getWorkItemRepository(f.db, item.id)).toBeNull();
@@ -622,7 +622,7 @@ test("a retried repository selection reuses the hints and suggestions it already
     expect([hintReads, suggestionReads]).toEqual([1, 3]);
     f.unavailable.clear();
     f.clock.advance(10_000);
-    workspaceDispatch(f.db, { now: f.clock.now() });
+    await workspaceDispatch(f.db, { now: f.clock.now() });
     await f.jobs.tick();
     expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[1]!);
     // The retry selects from what it kept; the second read is the new run's profile labels.

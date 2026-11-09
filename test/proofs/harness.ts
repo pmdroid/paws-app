@@ -424,7 +424,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       while (Date.now() < deadline) {
         if (done()) return true;
         // The process's recurring scheduler tick, without its 30 second wait.
-        orchestrator.reconcileExecution();
+        await orchestrator.reconcileExecution();
         await jobs.tick();
         await outbox.tick();
         await Bun.sleep(20);

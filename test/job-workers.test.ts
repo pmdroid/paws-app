@@ -15,7 +15,7 @@ test("Paws runs more task starts at once than the four workers it used to have",
     bindWorkItemRepository(db, id, repository);
     saveSchedulingContext(db, { itemId: id, projectId: "project", paths: [`src/${id}.ts`] });
   }
-  expect(workspaceDispatch(db, { now: Date.now() })).toEqual(ids);
+  expect(await workspaceDispatch(db, { now: Date.now() })).toEqual(ids);
   const controller = new AbortController();
   let release!: () => void;
   const released = new Promise<void>((resolve) => (release = resolve));

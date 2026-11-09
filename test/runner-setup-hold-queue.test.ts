@@ -136,8 +136,8 @@ test("a delegator without a runner, beside another member's free runner, is held
   const paws = orchestrator(db, clock, jobs);
   try {
     const users = workspace(db);
-    paws.reconcileExecution();
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
+    await paws.reconcileExecution();
     expect(getRunnerSetupHold(db, "mine")).toMatchObject({
       reason: "no-runner",
       ownerUserId: users.me,
@@ -153,7 +153,7 @@ test("a delegator without a runner, beside another member's free runner, is held
     for (const step of [60_000, 60 * 60_000, DAY]) {
       clock.advance(step);
       db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
-      paws.reconcileExecution();
+      await paws.reconcileExecution();
     }
     expect(getWorkItem(db, "mine")?.state).toBe("queued");
     expect(listOutbox(db).length).toBe(outbox);
@@ -162,7 +162,7 @@ test("a delegator without a runner, beside another member's free runner, is held
     // The scheduler tick alone never ends the hold. The delegator's own runner queues a check,
     // and that job ends the hold and lets the scheduler start the item.
     addRunner(db, "own", users.me!, clock.now(), 1);
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     expect(itemJobs(db, "mine")).toBe(0);
     while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
     expect(getRunnerSetupHold(db, "mine")).toBeNull();
@@ -180,7 +180,7 @@ test("a delegator whose own runner needs its agent signed in hears the runner an
   try {
     const users = workspace(db);
     addRunner(db, "member-vm", users.me!, START, 0);
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     expect(getRunnerSetupHold(db, "mine")).toMatchObject({
       reason: "agent-not-signed-in",
       runnerId: "member-vm",
@@ -221,7 +221,7 @@ async function held(prepare: (db: Database, users: Record<string, string>, now: 
   const jobs = new JobLoop(db, clock);
   const paws = orchestrator(db, clock, jobs);
   const users = workspace(db);
-  paws.reconcileExecution();
+  await paws.reconcileExecution();
   expect(getRunnerSetupHold(db, "mine")).not.toBeNull();
   prepare(db, users, clock.now());
   while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
@@ -439,7 +439,7 @@ test("an Acme issue labelled Codex starts on its owner's Codex-only runner", asy
     addRunner(db, "own", users.me!, START, 1);
     onlyCodex(db, "own");
     label("Codex");
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     expect(getRunnerSetupHold(db, "mine")).toBeNull();
     await Bun.sleep(0);
     expect(counted.reads).toBe(1);
@@ -460,18 +460,18 @@ test("a labelled Acme issue is held for its labelled agent and resumes when that
     const users = workspace(db);
     addRunner(db, "own", users.me!, START, 0);
     label("Codex");
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     await Bun.sleep(0);
     expect(getRunnerSetupHold(db, "mine")).toMatchObject({ reason: "agent-not-signed-in" });
     expect(thoughts(db)).toHaveLength(1);
     expect(thoughts(db)[0]).toContain("Codex");
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     await Bun.sleep(0);
     expect(counted.reads).toBe(1);
     onlyCodex(db, "own");
     clock.advance(60_000);
     db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
     expect(getRunnerSetupHold(db, "mine")).toBeNull();
     expect(itemJobs(db, "mine")).toBe(1);
@@ -488,7 +488,7 @@ test("without presets a label can't change the agent, so a hold costs no Linear 
   const { paws, counted } = labelled(db, clock, jobs, false);
   try {
     workspace(db);
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     await Bun.sleep(0);
     expect(counted.reads).toBe(0);
     expect(getRunnerSetupHold(db, "mine")).toMatchObject({ reason: "no-runner" });

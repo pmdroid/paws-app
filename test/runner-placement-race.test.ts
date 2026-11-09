@@ -257,7 +257,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
         projectId: "project",
       }),
     });
-    dispatch(db, { now: Date.now() });
+    await dispatch(db, { now: Date.now() });
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;
     while (Date.now() < deadline && !runs.length && getWorkItem(db, item.id)?.state !== "failed")

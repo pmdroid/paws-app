@@ -399,11 +399,15 @@ import {
   itemOwnerUserId,
   itemParentTaskKey,
   itemSpecificationRevision,
-  landedTaskBlockers,
+  landedTaskBlockersSteps,
   latestRestartEvent,
   latestRunningAnswer,
   linearOutboxKeyed,
   listItemIds,
+  listItemIdsSteps,
+  getWorkItemRepositorySteps,
+  type Q,
+  type Steps,
   moveDelegationSession,
   openRunnerRepositoryQuestions,
   openTaskDependents,
@@ -1093,7 +1097,7 @@ export class Orchestrator {
         if (event.action === "prompted" && event.sessionId) {
           const delegationId =
             workItemForSession(this.db, event.sessionId)?.delegationId ?? questionDelegationId;
-          if (delegationId) this.reconcileExecution();
+          if (delegationId) await this.reconcileExecution();
         }
       });
     this.sessionEvents.set(key, done);
@@ -1421,7 +1425,7 @@ export class Orchestrator {
           );
         }
       }
-      this.dispatch();
+      await this.dispatch();
     }
     await this.flush();
   }
@@ -1903,14 +1907,17 @@ export class Orchestrator {
       if (reaskDeadQuestion(this.db, { itemId, questionId, jobId: job.id, now: this.now() }))
         await this.flush();
     });
-    jobs.register(JOB_KIND.runnerSetupCheck, (job) => {
+    jobs.register(JOB_KIND.runnerSetupCheck, async (job) => {
       const owner = readString(job.payload, "ownerUserId");
-      if (owner !== null) this.checkRunnerSetup(owner);
+      if (owner !== null) await this.checkRunnerSetup(owner);
     });
     jobs.register(JOB_KIND.runnerRepositoryCheck, async (job) => {
       const runnerId = readString(job.payload, "runnerId");
       if (runnerId !== null)
-        this.checkRunnerRepositories(runnerId, readString(job.payload, "answeredBy") ?? "paws");
+        await this.checkRunnerRepositories(
+          runnerId,
+          readString(job.payload, "answeredBy") ?? "paws",
+        );
       await this.flush();
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
@@ -2688,7 +2695,7 @@ export class Orchestrator {
    * they may use. A resume ends the hold, posts one thought and lets the scheduler start the
    * item, which places it by its normal checks. Reads SQLite only, never Linear.
    */
-  private checkRunnerSetup(ownerUserId: string): void {
+  private async checkRunnerSetup(ownerUserId: string): Promise<void> {
     const eligibleRunner = this.options.eligibleRunner;
     if (!eligibleRunner) return;
     const holds = listRunnerSetupHolds(this.db, ownerUserId);
@@ -2727,7 +2734,7 @@ export class Orchestrator {
           return true;
         }) || resumed;
     }
-    if (resumed) this.dispatch();
+    if (resumed) await this.dispatch();
   }
 
   private askRunnerRepository(item: WorkItemRecord, refused: RunnerRepositoryRefused): boolean {
@@ -2776,7 +2783,7 @@ export class Orchestrator {
     return true;
   }
 
-  private checkRunnerRepositories(runnerId: string, answeredBy: string): void {
+  private async checkRunnerRepositories(runnerId: string, answeredBy: string): Promise<void> {
     const allowedOn = this.options.repositoryAllowedOn;
     if (!allowedOn) return;
     const now = this.now();
@@ -2801,7 +2808,7 @@ export class Orchestrator {
         );
         answered = outcome.status === "answered" || answered;
       }
-    if (answered) this.dispatch();
+    if (answered) await this.dispatch();
   }
 
   private runnerSetupLine(need: RunnerSetupNeed): string {
@@ -3045,7 +3052,7 @@ export class Orchestrator {
       });
     if (taskKey && classification?.mode === "code" && classification.redirect) {
       await this.intakeLinearTask(this.delegationIssueId(item)!, item.sessionKey, taskKey);
-      this.dispatch();
+      await this.dispatch();
       return false;
     }
     // Code stays code, and a plan stays a plan through its edits and questions.
@@ -3119,7 +3126,7 @@ export class Orchestrator {
             context: [this.workContext(item), handoff].join("\n\n"),
           });
           await this.intakeLinearTask(issueId, item.sessionKey, taskKey);
-          this.dispatch();
+          await this.dispatch();
           return false;
         }
       }
@@ -3324,7 +3331,7 @@ export class Orchestrator {
           finish,
         );
       } else completeAnswerTask(this.db, item.id, activity.resultBody(), this.now(), finish);
-      this.dispatch();
+      await this.dispatch();
     } catch (error) {
       if (
         !this.askedRuns.has(run.id) &&
@@ -5807,7 +5814,7 @@ export class Orchestrator {
       );
       return undefined;
     });
-    this.dispatch();
+    await this.dispatch();
     await this.flush();
   }
 
@@ -6413,7 +6420,7 @@ export class Orchestrator {
       });
       if (guided) {
         this.abortItem(open.itemId);
-        this.dispatch();
+        await this.dispatch();
       }
       await this.flush();
       return guided ? "answered" : "rejected";
@@ -6777,7 +6784,7 @@ export class Orchestrator {
       onCommitted?.();
       return true;
     });
-    if (resumed) this.reconcileExecution();
+    if (resumed) await this.reconcileExecution();
     return resumed;
   }
 
@@ -6840,8 +6847,8 @@ export class Orchestrator {
     this.githubAuth?.invalidate(scope);
   }
 
-  reconcileExecution(): void {
-    this.dispatch();
+  async reconcileExecution(): Promise<void> {
+    await this.dispatch();
   }
 
   async checkPolicyBlocks(): Promise<void> {
@@ -6922,10 +6929,16 @@ export class Orchestrator {
   }
 
   dependencyHandoff(itemId: string): string | undefined {
-    const item = getWorkItem(this.db, itemId);
+    return settled(this.store.run((q) => this.dependencyHandoffSteps(q, itemId)));
+  }
+
+  private *dependencyHandoffSteps(q: Q, itemId: string): Steps<string | undefined> {
+    const item = yield* getWorkItemSteps(q, itemId);
     if (!item) return undefined;
-    const blockers = landedTaskBlockers(this.db, item.delegationId, item.linearIssueId);
-    const active = new Set(this.delegationItems(item.delegationId).map((entry) => entry.id));
+    const blockers = yield* landedTaskBlockersSteps(q, item.delegationId, item.linearIssueId);
+    const active = new Set<string>();
+    for (const id of yield* listItemIdsSteps(q, false))
+      if ((yield* getWorkItemSteps(q, id))?.delegationId === item.delegationId) active.add(id);
     const results = blockers
       .filter((blocker) => active.has(blocker.id))
       .map((blocker) => {
@@ -6941,7 +6954,7 @@ export class Orchestrator {
     return [resume, dependencies].filter(Boolean).join("\n\n") || undefined;
   }
 
-  private dispatch(): void {
+  private async dispatch(): Promise<void> {
     const ownerHasRunner = this.options.ownerHasRunner;
     let config: ReturnType<typeof loadConfigFile> | null = null;
     try {
@@ -6957,25 +6970,20 @@ export class Orchestrator {
       );
       config = null;
     }
-    dispatch(this.db, {
+    await dispatch(this.db, {
+      store: this.store,
       now: this.now(),
       admission: this.admission,
       ...(this.options.journal ? { log: this.options.journal } : {}),
-      handoffForItem: (itemId) => this.dependencyHandoff(itemId),
-      sessionFor: (itemId) => {
-        const item = getWorkItem(this.db, itemId);
-        return item && this.activitySession(item);
-      },
+      handoffForItem: (q, itemId) => this.dependencyHandoffSteps(q, itemId),
+      sessionFor: (q, itemId) => this.itemSessionSteps(q, itemId),
       ...this.options.scheduling?.(),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
       onWaits: (waits) => this.noteWaits(waits),
       ...(ownerHasRunner && config
         ? {
-            ownerHasRunner: (itemId: string) => {
-              const item = getWorkItem(this.db, itemId);
-              if (!item) return null;
-              return ownerHasRunner(itemId, this.implementerAgent(item, config), this.now());
-            },
+            ownerHasRunner: (q: Q, itemId: string) =>
+              this.ownerHasRunnerSteps(q, itemId, ownerHasRunner, config),
             onRunnerSetup: (itemIds: readonly string[]) =>
               this.noteRunnerSetup(
                 itemIds.filter((id) => !this.awaitsAdmissionLabels(id, config)),
@@ -6987,12 +6995,28 @@ export class Orchestrator {
   }
 
   private implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
-    const repository = this.repositoryForItem(item);
-    return resolveAgentProfiles(
-      config,
-      repository ? `${repository.owner}/${repository.repo}` : undefined,
-      this.knownProfileLabels(item),
-    ).implementer.agent;
+    return implementerAgentFor(config, this.repositoryForItem(item), this.knownProfileLabels(item));
+  }
+
+  private *itemSessionSteps(q: Q, itemId: string): Steps<string | null> {
+    const item = yield* getWorkItemSteps(q, itemId);
+    return item ? this.activitySession(item) : null;
+  }
+
+  private *ownerHasRunnerSteps(
+    q: Q,
+    itemId: string,
+    ownerHasRunner: NonNullable<OrchestratorOptions["ownerHasRunner"]>,
+    config: ReturnType<typeof loadConfigFile>,
+  ): Steps<boolean | null> {
+    const item = yield* getWorkItemSteps(q, itemId);
+    if (!item) return null;
+    const repository = yield* getWorkItemRepositorySteps(q, item.id);
+    return ownerHasRunner(
+      itemId,
+      implementerAgentFor(config, repository, this.knownProfileLabels(item)),
+      this.now(),
+    );
   }
 
   /** The labels read for this queue entry, or else the ones the last run used. */
@@ -7065,7 +7089,7 @@ export class Orchestrator {
         { mode: 0o600 },
       );
       this.admissionLabelReads.delete(item.id);
-      if (!this.shuttingDown) this.dispatch();
+      if (!this.shuttingDown) await this.dispatch();
     } catch (error) {
       this.admissionLabelReads.delete(item.id);
       journalCaught(
@@ -7410,7 +7434,7 @@ export class Orchestrator {
     } else {
       this.post(current, "error", text, `fail:${current.id}:${current.version}:${reason}`);
     }
-    this.dispatch();
+    await this.dispatch();
   }
 
   private planHook(
@@ -7887,7 +7911,7 @@ export class Orchestrator {
       });
       return true;
     });
-    if (resumed) this.reconcileExecution();
+    if (resumed) await this.reconcileExecution();
     await this.flush();
     return resumed;
   }
@@ -8804,7 +8828,7 @@ export class Orchestrator {
     );
     if (outcome === "answered" && itemId && getWorkItem(this.db, itemId)?.state === "queued") {
       this.abortItem(itemId);
-      this.dispatch();
+      await this.dispatch();
     }
     await this.flush();
     return outcome;
@@ -8866,7 +8890,7 @@ export class Orchestrator {
           },
           now: this.now(),
         });
-        this.reconcileExecution();
+        await this.reconcileExecution();
         await this.flush();
         return true;
       });
@@ -8961,7 +8985,7 @@ export class Orchestrator {
     // Changes requested while the other checks ran restart the item: stop that evaluation.
     if (outcome === "answered" && getWorkItem(this.db, open.itemId)?.state === "queued") {
       this.abortItem(open.itemId);
-      this.dispatch();
+      await this.dispatch();
     }
     await this.flush();
     return outcome;
@@ -10120,6 +10144,18 @@ const RESPONSE_COMMENT_PROMPT: Record<string, string> = {
 
 export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
   return new Orchestrator(options);
+}
+
+function implementerAgentFor(
+  config: ReturnType<typeof loadConfigFile>,
+  repository: RepositoryBinding | null,
+  labels: ProfileLabels | undefined,
+): string {
+  return resolveAgentProfiles(
+    config,
+    repository ? `${repository.owner}/${repository.repo}` : undefined,
+    labels,
+  ).implementer.agent;
 }
 
 function closeActiveRun(
