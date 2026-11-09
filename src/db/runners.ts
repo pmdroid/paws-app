@@ -1494,3 +1494,61 @@ export function* noteRunnerTerminationsSteps(q: Q, runnerId: string, at: number)
 export function noteRunnerTerminations(db: Database, runnerId: string, at: number): void {
   settled(sqliteDb(db).run((q) => noteRunnerTerminationsSteps(q, runnerId, at)));
 }
+
+export function* runnerNameAndOwnerSteps(q: Q, id: string) {
+  const { runner: r, workspaceUser: u } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ name: r.name, ownerName: u.name })
+      .from(r)
+      .leftJoin(u, eq(u.id, r.ownerUserId))
+      .where(eq(r.id, id)),
+  );
+  return row ?? null;
+}
+
+export function runnerNameAndOwner(
+  db: Database,
+  id: string,
+): { name: string; ownerName: string | null } | null {
+  return settled(sqliteDb(db).run((q) => runnerNameAndOwnerSteps(q, id)));
+}
+
+export function* runnerAgentReadinessSteps(q: Q, agent: string) {
+  const { runner: r, runnerAgentPolicy: p } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        name: r.name,
+        ready: sql<number>`CASE WHEN ${p.ready}=1 AND ${p.authExpired}=0 THEN 1 ELSE 0 END`.mapWith(
+          Number,
+        ),
+      })
+      .from(r)
+      .leftJoin(p, and(eq(p.runnerId, r.id), eq(p.agent, agent)))
+      .where(and(eq(r.status, "active"), isNull(r.revokedAt)))
+      .orderBy(r.name),
+  );
+  return rows.map((row) => ({ name: row.name, ready: row.ready === 1 }));
+}
+
+export function runnerAgentReadiness(
+  db: Database,
+  agent: string,
+): { name: string; ready: boolean }[] {
+  return settled(sqliteDb(db).run((q) => runnerAgentReadinessSteps(q, agent)));
+}
+
+export function* enabledRunnerIdsSteps(q: Q) {
+  const { runner: r } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ id: r.id })
+      .from(r)
+      .where(and(eq(r.status, "active"), isNull(r.revokedAt))),
+  );
+}
+
+export function enabledRunnerIds(db: Database): { id: string }[] {
+  return settled(sqliteDb(db).run((q) => enabledRunnerIdsSteps(q)));
+}
