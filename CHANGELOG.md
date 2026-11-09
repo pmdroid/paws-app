@@ -2,6 +2,16 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-09: Paws and runners run on Bun 1.4.4
+
+### Changed
+
+- **A host that runs Paws needs Bun 1.4.4 on `PATH`** (`mise use -g bun@1.4.4`); `paws install` refuses any other version. Runner packages bring their own Bun, so upgrading a runner needs nothing extra. A runner release is verified by the installer in its own package, so upgrades work across this change; a release built for 1.4.2 is older and is refused as a downgrade, as before.
+
+### Fixed
+
+- A synchronous child process no longer loses its exit after a garbage collection, which left the process spinning beside a zombie child. This was a Bun 1.4.2 bug; Paws makes synchronous git calls on the control plane and in tests.
+
 ## 2026-11-07: Settings saves go to the database, and GitHub deliveries keep their payload
 
 ### Changed
