@@ -1,11 +1,23 @@
-import happy from "./happy-path";
+import { join } from "node:path";
 import { ACME, type Proof } from "./harness";
 
 export default {
   covers: ["src/linear/repositories.ts", "src/loop/orchestrator.ts"],
   summary:
     "An unknown Implementer label asks for a preset correction; choosing the default resumes and merges the Acme issue.",
-  agent: happy.agent,
+  agent: (input) =>
+    input.purpose === "implement"
+      ? [
+          { type: "fs_write", path: join(input.worktree, "widgets.txt"), content: "12\n" },
+          { type: "terminal", command: "git", args: ["add", "widgets.txt"], cwd: input.worktree },
+          {
+            type: "terminal",
+            command: "git",
+            args: ["commit", "-q", "-m", "Count Acme widgets"],
+            cwd: input.worktree,
+          },
+        ]
+      : [],
   async run(proof) {
     proof.linear.repositoryHints.set(ACME.issueId, {
       mentions: [],
