@@ -283,8 +283,7 @@ test("abort kills the closeout process group without counting a failure", async 
 
 test("a check finishes when it exits even if a detached child keeps its output open", async () => {
   const root = initRepo();
-  // Process bookkeeping is not part of the candidate being checked.
-  const mark = join(root, ".git", "pid.txt");
+  const mark = join(root, "pid.txt");
   const script = [
     'const {spawn}=require("child_process");',
     'const child=spawn(process.execPath,["-e","setTimeout(()=>{},60000)"],{detached:true,stdio:["ignore","inherit","inherit"]});',
