@@ -83,3 +83,15 @@ export async function withPullRequestDraft<T>(
     rmSync(folder, { recursive: true, force: true });
   }
 }
+
+export async function withPrivateTemp<T>(
+  env: Record<string, string>,
+  work: (env: Record<string, string>) => Promise<T>,
+): Promise<T> {
+  const folder = mkdtempSync(join(env.TMPDIR || tmpdir(), "paws-check-"));
+  try {
+    return await work({ ...env, TMPDIR: folder, TMP: folder, TEMP: folder });
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+}
