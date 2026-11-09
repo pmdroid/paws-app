@@ -337,6 +337,13 @@ export function writeAgentSettings(
   });
 }
 
+/** Render already-validated presets without materializing legacy role defaults. */
+export function renderAgentPresetsText(settings: AgentSettings): string {
+  return Object.entries(settings.presets ?? {})
+    .map(([name, profile]) => renderProfile(`agents.presets.${JSON.stringify(name)}`, profile))
+    .join("\n\n");
+}
+
 function renderProfile(section: string, profile: AgentProfile): string {
   const lines = [`[${section}]`, `agent = ${JSON.stringify(profile.agent)}`];
   if (profile.model !== null) lines.push(`model = ${JSON.stringify(profile.model)}`);

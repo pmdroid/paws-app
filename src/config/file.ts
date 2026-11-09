@@ -13,6 +13,7 @@ import { dirname, resolve } from "node:path";
 import {
   parseAgentSettingsToml,
   renderAgentSettingsText,
+  renderAgentPresetsText,
   selectDefaultImplementer,
   writeAgentSettings,
   type AgentSettings,
@@ -314,7 +315,9 @@ export function writeConfigFile(path: string, config: PawsSetupConfig): boolean 
   const next =
     profiles === null
       ? rendered
-      : renderAgentSettingsText(rendered, selectDefaultImplementer(profiles, config.implementer));
+      : !hasExplicitAgentProfiles(current)
+        ? `${rendered}\n${renderAgentPresetsText(profiles)}\n`
+        : renderAgentSettingsText(rendered, selectDefaultImplementer(profiles, config.implementer));
   if (existsSync(path) && readFileSync(path, "utf8") === next) {
     if ((statSync(path).mode & 0o777) !== 0o600) chmodSync(path, 0o600);
     return false;
@@ -623,6 +626,11 @@ function assignConfig(
   }
 }
 
+function hasExplicitAgentProfiles(text: string): boolean {
+  const agents = (Bun.TOML.parse(text) as { agents?: Record<string, unknown> }).agents;
+  return agents?.defaults !== undefined || agents?.projects !== undefined;
+}
+
 /** Write `agents.implementer`, keeping every other line. Mode is always 0600. */
 export function writeImplementer(path: string, implementer: ImplementerName): void {
   if (!isImplementer(implementer)) {
@@ -630,7 +638,7 @@ export function writeImplementer(path: string, implementer: ImplementerName): vo
   }
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   const profiles = parseAgentSettingsToml(current, implementer);
-  if (profiles !== null) {
+  if (profiles !== null && hasExplicitAgentProfiles(current)) {
     writeAgentSettings(path, selectDefaultImplementer(profiles, implementer));
     return;
   }
