@@ -1083,11 +1083,28 @@ export function extendStalledRunnerWork(db: Database, startedAt: number, lagMs: 
   );
 }
 
-export function* setRunnerWorkConsumedSequenceSteps(q: Q, runId: string, generation: number, sequence: number) {
+export function* setRunnerWorkConsumedSequenceSteps(
+  q: Q,
+  runId: string,
+  generation: number,
+  sequence: number,
+) {
   const w = q.t.runnerWork;
-  yield* q.exec(q.orm.update(w).set({ consumedSequence: sequence }).where(and(eq(w.runId, runId), eq(w.generation, generation))));
+  yield* q.exec(
+    q.orm
+      .update(w)
+      .set({ consumedSequence: sequence })
+      .where(and(eq(w.runId, runId), eq(w.generation, generation))),
+  );
 }
 
-export function setRunnerWorkConsumedSequence(db: Database, runId: string, generation: number, sequence: number): void {
-  settled(sqliteDb(db).run((q) => setRunnerWorkConsumedSequenceSteps(q, runId, generation, sequence)));
+export function setRunnerWorkConsumedSequence(
+  db: Database,
+  runId: string,
+  generation: number,
+  sequence: number,
+): void {
+  settled(
+    sqliteDb(db).run((q) => setRunnerWorkConsumedSequenceSteps(q, runId, generation, sequence)),
+  );
 }
