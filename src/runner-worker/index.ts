@@ -1833,7 +1833,7 @@ export async function executeRunnerCommand(
       }
       return sha !== undefined && published.has(sha);
     };
-    let checkpointing = Promise.resolve();
+    let checkpointing: Promise<boolean> = Promise.resolve(true);
     const checkpointWorktree = async (reason: "stop" | "interval") => {
       const run = runCommand!;
       try {
@@ -1856,12 +1856,13 @@ export async function executeRunnerCommand(
         const key = `${saved.head}:${saved.tree}`;
         // Only an interval skips what this turn already emitted: its push may have failed, so a
         // stop always publishes the worktree as it is.
-        if (reason === "interval" && key === checkpointed && wasPublished(checkpointedSha)) return;
+        if (reason === "interval" && key === checkpointed && wasPublished(checkpointedSha))
+          return true;
         if (saved.sha === run.repository.baseSha) {
           // The base is already the item's checkpoint, unless this turn saved work since.
           if (checkpointed === undefined) {
             if (reason === "stop") emit({ type: "checkpoint", reason });
-            return;
+            return true;
           }
           // A worktree back at the base replaces the earlier checkpoint with a WIP commit of it,
           // so a restart does not bring back what the agent discarded.
@@ -1909,9 +1910,11 @@ export async function executeRunnerCommand(
         checkpointed = key;
         checkpointedSha = saved.sha;
         emit({ type: "checkpoint", reason, sha: saved.sha });
+        return true;
       } catch (error) {
         journalCaught(error, "runner-worker.executeRunnerCommand.checkpoint", run.itemId);
         if (reason === "stop") emit({ type: "checkpoint", reason });
+        return false;
       }
     };
     const checkpoint = (reason: "stop" | "interval") =>
@@ -2120,8 +2123,17 @@ export async function executeRunnerCommand(
       writeJournal(
         `item ${runCommand.itemId} run ${runCommand!.runId} interrupt source=unsolicited_agent`,
       );
-      await checkpoint("stop");
-      run = { ...run, stopReason: "cancelled", cancelled: true, interrupted: true };
+      const saved = await checkpoint("stop");
+      run = saved
+        ? { ...run, stopReason: "cancelled", cancelled: true, interrupted: true }
+        : {
+            ...run,
+            stopReason: "error",
+            cancelled: false,
+            interrupted: false,
+            errorMessage:
+              "The interrupted turn could not save its stop checkpoint; automatic restart is unsafe.",
+          };
     }
     let handoverReady = false;
     let handoverFailure: RunnerHandoverFailure | null = null;

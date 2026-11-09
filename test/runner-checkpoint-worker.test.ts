@@ -378,3 +378,71 @@ test.skipIf(!linux)(
     expect(readFileSync(join(clone, "unfinished.txt"), "utf8")).toBe("work in progress");
   },
 );
+
+test.skipIf(!linux)(
+  "an unchanged interrupted worktree is safe to restart without a new checkpoint",
+  async () => {
+    const context = await fixture();
+    const result = await context.execute({
+      async runAgent() {
+        return {
+          role: "implementer",
+          stopReason: "cancelled",
+          cancelled: true,
+          interrupted: true,
+          timedOut: false,
+          authRequired: false,
+          agentExited: true,
+        };
+      },
+    });
+    expect(context.checkpoints()).toEqual([{ type: "checkpoint", reason: "stop" }]);
+    expect(result.run.interrupted).toBe(true);
+  },
+);
+
+for (const failure of ["snapshot", "bundle preparation"] as const) {
+  test.skipIf(!linux)(`a failed interruption ${failure} prevents automatic restart`, async () => {
+    const context = await fixture();
+    let locked: string | undefined;
+    try {
+      const result = await context.execute({
+        checkpointIntervalMs: 3_600_000,
+        async runAgent(options) {
+          writeFileSync(join(options.worktreePath, "unfinished.txt"), "must not be discarded");
+          // Snapshotting needs a temporary index in .git.
+          if (failure === "snapshot") {
+            locked = join(options.worktreePath, ".git");
+            chmodSync(locked, 0o500);
+          } else {
+            // Snapshot creation succeeds, but the temporary bundle ref cannot be written.
+            locked = join(options.worktreePath, ".git", "refs", "paws");
+            mkdirSync(locked, { recursive: true });
+            chmodSync(locked, 0o500);
+          }
+          return {
+            role: "implementer",
+            stopReason: "cancelled",
+            cancelled: true,
+            interrupted: true,
+            timedOut: false,
+            authRequired: false,
+            agentExited: true,
+          };
+        },
+      });
+      expect(context.checkpoints()).toEqual([{ type: "checkpoint", reason: "stop" }]);
+      expect(result.run).toMatchObject({
+        stopReason: "error",
+        cancelled: false,
+        interrupted: false,
+      });
+      expect(result.run.errorMessage).toBeTruthy();
+      expect(readFileSync(join(context.checkout, "unfinished.txt"), "utf8")).toBe(
+        "must not be discarded",
+      );
+    } finally {
+      if (locked) chmodSync(locked, 0o700);
+    }
+  });
+}
