@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { getRetro, readRetroArtifact, type Retro } from "../db";
+import { getRetro, readRetroArtifact, workItemSessionKeys, type Retro } from "../db";
 import { memberRepositories } from "../improvements";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RetroDigest } from "./digest";
@@ -81,12 +81,7 @@ export function retroReaderAccess(
     ),
   );
   const sessions = new Map(
-    db
-      .query<{ id: string; sessionKey: string | null }, [string]>(
-        "SELECT id, session_key AS sessionKey FROM work_item WHERE id IN (SELECT value FROM json_each(?))",
-      )
-      .all(JSON.stringify(index.itemIds))
-      .map((row) => [row.id, row.sessionKey]),
+    workItemSessionKeys(db, index.itemIds).map((row) => [row.id, row.sessionKey]),
   );
   const allowedSessions = new Set(sessionIds);
   const readableItem = (itemId: string) => {

@@ -31,7 +31,7 @@ const store = createRunnerInputStore({
 });
 const access = { runnerId: "runner", runId: "run", token: "token" };
 const observations = [];
-command.inputFiles = store.stage(
+command.inputFiles = await store.stage(
   "wide",
   Array.from({ length: 20 }, (_, id) => ({
     path: `${id}/` + "界".repeat(4080),
@@ -41,7 +41,7 @@ command.inputFiles = store.stage(
 );
 try {
   assert.equal(
-    store.read(access, { commandId: "wide", generation: 1, fileId: 0, offset: 0 }).data,
+    (await store.read(access, { commandId: "wide", generation: 1, fileId: 0, offset: 0 })).data,
     "eA==",
   );
   observations.push({ claim: "schema-valid Unicode manifest readable", passed: true });
@@ -55,7 +55,7 @@ try {
 command = {
   type: "run",
   id: "faults",
-  inputFiles: store.stage("faults", [
+  inputFiles: await store.stage("faults", [
     { path: "a", mimeType: "text/plain", bytes: Buffer.from("x") },
   ]),
 };
@@ -63,7 +63,7 @@ for (const mode of ["stat", "sync"]) {
   const before = original.readdirSync("/proc/self/fd").length;
   fault = mode;
   for (let i = 0; i < 20; i++)
-    assert.throws(() =>
+    await assert.rejects(async () =>
       store.read(access, { commandId: "faults", generation: 1, fileId: 0, offset: 0 }),
     );
   fault = "";
@@ -78,9 +78,9 @@ const folder = join(root, createHash("sha256").update("faults").digest("hex"));
 const published = join(folder, "0.bytes");
 original.linkSync(published, published + ".00000000-0000-4000-8000-000000000000");
 try {
-  store.stage("faults", [{ path: "a", mimeType: "text/plain", bytes: Buffer.from("x") }]);
+  await store.stage("faults", [{ path: "a", mimeType: "text/plain", bytes: Buffer.from("x") }]);
   assert.equal(
-    store.read(access, { commandId: "faults", generation: 1, fileId: 0, offset: 0 }).data,
+    (await store.read(access, { commandId: "faults", generation: 1, fileId: 0, offset: 0 })).data,
     "eA==",
   );
   observations.push({ claim: "crashed hard-link publication exact retry", passed: true });

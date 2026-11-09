@@ -223,7 +223,7 @@ function fixture() {
     delaySession() {
       delaySession = true;
     },
-    blockOtherSession() {
+    async blockOtherSession() {
       ensureLinearSession(db, { sessionId: "other", issueId: "issue" });
       recordLinearInstallation(db, {
         ...scope,
@@ -238,7 +238,7 @@ function fixture() {
         idempotencyKey: "other",
         payload: { sessionId: "other", kind: "thought", body: "Other session progress" },
       });
-      outbox.tick();
+      await outbox.tick();
     },
     delayTeam() {
       delayTeam = true;
@@ -247,9 +247,9 @@ function fixture() {
     delayActivity() {
       delayActivity = true;
     },
-    releaseHeld() {
+    async releaseHeld() {
       db.run("UPDATE outbox SET not_before = 0 WHERE status = 'pending'");
-      outbox.tick();
+      await outbox.tick();
     },
     async deliver(action: "created" | "prompted" = "created") {
       const raw = JSON.stringify({
@@ -338,7 +338,7 @@ test("one initial deadline spans authoritative reads and timeout leaves the inbo
     await Bun.sleep(0);
     await f.deliver();
     expect(await f.outcome()).toBeNull();
-    f.releaseHeld();
+    await f.releaseHeld();
     await f.outbox.idle();
     expect(f.sent).toHaveLength(1);
     expect(f.followedUp).toBe(1);
@@ -357,7 +357,7 @@ test("a deadline aborts the held acknowledgement transport and its retry keeps t
     await f.deliver();
     expect(await f.outcome()).toBeNull();
     expect(f.followedUp).toBe(1);
-    f.releaseHeld();
+    await f.releaseHeld();
     const signal = await f.activityStarted.promise;
     const original = listOutbox(f.db)[0]!;
     f.deadlines[0]!.abort(new Error("Initial acknowledgement deadline expired"));
@@ -366,7 +366,7 @@ test("a deadline aborts the held acknowledgement transport and its retry keeps t
     await f.outbox.idle();
     expect(f.sent).toEqual([]);
     expect(listOutbox(f.db)[0]?.status).toBe("pending");
-    f.releaseHeld();
+    await f.releaseHeld();
     await f.outbox.idle();
     expect(f.sent).toEqual([
       { id: (original.payload as { id: string }).id, body: "Picked up this issue." },
@@ -424,7 +424,7 @@ test("the first-activity deadline does not silence a later intake error", async 
 test("another session delivery cannot hold the first acknowledgement's intake open", async () => {
   const f = fixture();
   try {
-    f.blockOtherSession();
+    await f.blockOtherSession();
     await f.otherStarted.promise;
     let otherSettled = false;
     const others = f.outbox.idle().then(() => {
@@ -439,7 +439,7 @@ test("another session delivery cannot hold the first acknowledgement's intake op
     expect(original.status).toBe("pending");
     f.otherRelease.resolve();
     await others;
-    f.releaseHeld();
+    await f.releaseHeld();
     await f.outbox.idle();
     expect(f.sent.filter((activity) => activity.body === "Picked up this issue.")).toEqual([
       { id: (original.payload as { id: string }).id, body: "Picked up this issue." },
@@ -457,7 +457,7 @@ test("a signed created acknowledgement bypasses and retains dead public history 
     expect(await f.outcome()).toBeNull();
     for (let attempt = 0; attempt < 5; attempt++) {
       f.db.run("UPDATE outbox SET not_before = 0");
-      f.outbox.tick();
+      await f.outbox.tick();
       await f.outbox.idle();
     }
     const progress = listOutbox(f.db, "session").find(
@@ -467,7 +467,7 @@ test("a signed created acknowledgement bypasses and retains dead public history 
     expect(f.sent.map((activity) => activity.body)).toEqual(["Received your update."]);
     expect((await f.deliver()).status).toBe(200);
     expect(await f.outcome()).toBeNull();
-    f.releaseHeld();
+    await f.releaseHeld();
     await f.outbox.idle();
     expect(f.sent.map((activity) => activity.body)).toEqual([
       "Received your update.",
@@ -492,21 +492,21 @@ test("Stop aborts a critical first acknowledgement and prevents its later retry"
     f.delayActivity();
     await f.deliver();
     expect(await f.outcome()).toBeNull();
-    f.releaseHeld();
+    await f.releaseHeld();
     const signal = await f.activityStarted.promise;
     expect(listOutbox(f.db, "session")[0]?.delivery).toBe("critical");
     await f.stop();
     expect(signal.aborted).toBe(true);
     f.activityRelease.resolve();
     await f.outbox.idle();
-    f.outbox.tick();
+    await f.outbox.tick();
     await f.outbox.idle();
     expect(f.db.query("SELECT count(*) AS n FROM work_item").get()).toEqual({ n: 0 });
     expect(f.sent).toHaveLength(1);
     expect(f.sent[0]?.body).toMatch(/stopp/i);
     expect(listOutbox(f.db, "session")[0]?.status).toBe("dropped");
     f.db.run("UPDATE outbox SET not_before = 0");
-    f.outbox.tick();
+    await f.outbox.tick();
     await f.outbox.idle();
     expect(f.sent).toHaveLength(1);
   } finally {

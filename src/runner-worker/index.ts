@@ -235,8 +235,20 @@ export { CHECKPOINT_COMMIT_MESSAGE };
  */
 export const HANDOVER_STEP_TIMEOUT_MS = 60_000;
 
+export const CONVERSATION_RESULT_MARGIN_MS = 30_000;
+
+const CONVERSATION_PREAMBLE =
+  "A person wrote about this item. This turn is read-only: read the checkout and answer with the reply tool. Edits, commits and pushes are refused. Call start_work only when the person asked for a change or agreed to one; it ends this turn, and a work turn resumes this session with edits allowed. Never claim to have changed code in this turn.";
+
+/** Time for start_work's answer to reach the agent before its conversation turn stops. */
+const START_WORK_GRACE_MS = 500;
+
 export const HANDOVER_COMMIT_MESSAGE =
   "Save work in progress to hand the session to another runner";
+
+export const QUESTION_COMMIT_MESSAGE = "Save work in progress while the team answers a question";
+
+const QUESTION_TOOL_GRACE_MS = 2_000;
 
 export const RESUME_PROMPT =
   "The agent process stopped unexpectedly. Check git status and the workspace, then continue where you left off.";
@@ -416,6 +428,8 @@ export interface RunnerWorkerResult {
   candidateSha?: string;
   reviewText?: string;
   text?: string;
+  replies?: string[];
+  startWork?: string;
   login?: {
     agent: "claude" | "codex" | "grok" | "opencode";
     authenticated: boolean;
@@ -741,6 +755,7 @@ export async function executeRunnerCommand(
   if (process.getuid?.() === 0) throw new Error("Runner agents must run as a non-root user");
   const repository = command.type === "run" || command.type === "review";
   const task = command.type === "task";
+  const talk = command.type === "helper" ? command.conversation : undefined;
   const phase =
     (repository || task) && options.resume !== true
       ? startPhaseClock({
@@ -828,6 +843,9 @@ export async function executeRunnerCommand(
   let activityOmitted = false;
   const updates = createUpdateLimiter();
   const replies = new Map<string, number>();
+  const sentReplies: string[] = [];
+  let startWorkPlan: string | undefined;
+  const workStart = new AbortController();
   let githubRead: GitHubReadConfig | undefined;
   const readRedactor = () =>
     command.type === "run" && command.githubRead
@@ -906,7 +924,7 @@ export async function executeRunnerCommand(
     // A run checks out at one path on every runner so cwd-keyed agent sessions keep their key.
     const worktree = join(
       options.workRoot,
-      command.type === "run" ? command.runId : job.executionId,
+      command.type === "run" ? command.runId : (talk?.runId ?? job.executionId),
     );
     if (command.type === "run" && !resumed) removeLeftoverCheckout(worktree);
     if (task) {
@@ -1044,6 +1062,15 @@ export async function executeRunnerCommand(
           .split("\n")
           .filter(Boolean))
           await invokeGit(["-C", worktree, "update-ref", "-d", ref]);
+    } else if (talk) {
+      let info;
+      try {
+        info = lstatSync(worktree);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        throw new Error("The item's checkout is not on this runner", { cause: error });
+      }
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Unsafe runner workspace");
     } else if (!task) {
       mkdirSync(worktree, { mode: 0o700 });
     }
@@ -1141,6 +1168,7 @@ export async function executeRunnerCommand(
       repository || task || command.type === "helper"
         ? (options.inputs?.prompt ?? command.prompt)
         : "Check agent connection.";
+    const conversationPrompt = talk ? `${CONVERSATION_PREAMBLE}\n\n${prompt}` : undefined;
     if (resumed) emit({ type: "progress", text: "The agent restarted after a crash." });
     // A moved run unpacks its saved session at the same paths before the agent starts. Paws
     // learns once whether the agent loaded it; otherwise the run starts a new session.
@@ -1199,12 +1227,23 @@ export async function executeRunnerCommand(
     let waitingForAnswer = 0;
     const safePoint = () =>
       [...toolCalls.values()].every((call) => call.askTeam && waitingForAnswer > 0);
+    const questionEnd = new AbortController();
+    let turnFinished = false;
+    const endAfterQuestion = async () => {
+      const grace = Date.now() + QUESTION_TOOL_GRACE_MS;
+      for (;;) {
+        const running = [...toolCalls.values()].some((call) => !call.askTeam || Date.now() < grace);
+        if (turnFinished || !running) break;
+        await delay(50);
+      }
+      questionEnd.abort(FOLLOW_UP_INTERRUPTION);
+    };
     const earlierSession =
       command.type === "run"
         ? restoreRequest
           ? restored && restoreRequest.sessionId
           : command.resumeSessionId
-        : undefined;
+        : talk?.resumeSessionId;
     const agent: RunAgentOptions = {
       ...options.launch,
       hostAccess: true,
@@ -1251,6 +1290,9 @@ export async function executeRunnerCommand(
       ...(command.type === "run" && command.suggestedFindings?.length
         ? { suggestedFindings: command.suggestedFindings }
         : {}),
+      ...(command.type === "run" && command.reviewFindings?.length
+        ? { reviewFindings: command.reviewFindings }
+        : {}),
       ...(command.type === "run" && command.ciRerun && options.answer
         ? {
             ciRerun: remoteCiRerun(
@@ -1261,15 +1303,16 @@ export async function executeRunnerCommand(
           }
         : {}),
       prepareOnly: !repository && command.type !== "helper" && !task,
-      itemId: repository || task ? command.itemId : job.executionId,
+      itemId: repository || task ? command.itemId : (talk?.itemId ?? job.executionId),
       runId: job.executionId,
       prompt: resumed
         ? RESUME_PROMPT
-        : earlierSession
-          ? `This continues your earlier session in a fresh checkout at ${worktree}, which holds the latest commit.\n\n${currentRequest(prompt)}`
-          : prompt,
+        : (conversationPrompt ??
+          (earlierSession
+            ? `This continues your earlier session in a fresh checkout at ${worktree}, which holds the latest commit.\n\n${currentRequest(prompt)}`
+            : prompt)),
       ...(earlierSession && !resumed
-        ? { resume: { sessionId: earlierSession, replayPrompt: prompt } }
+        ? { resume: { sessionId: earlierSession, replayPrompt: conversationPrompt ?? prompt } }
         : {}),
       ...(resumed
         ? {
@@ -1312,6 +1355,8 @@ export async function executeRunnerCommand(
                 ? { restored: true }
                 : { restored: false, reason: "load" },
             );
+          if (talk && event.type === "session_update" && event.update.sessionUpdate === "tool_call")
+            reviewText = "";
           if (
             (command.type === "review" || command.type === "helper") &&
             event.type === "session_update" &&
@@ -1455,7 +1500,7 @@ export async function executeRunnerCommand(
             }
           : undefined,
       reply:
-        command.type === "run"
+        command.type === "run" || talk
           ? {
               async post(text) {
                 const parsed = RunnerEventSchema.safeParse({ type: "reply", text });
@@ -1468,11 +1513,20 @@ export async function executeRunnerCommand(
                     reason: `at most ${REPLIES_PER_TURN} replies per turn`,
                   };
                 replies.set(job.executionId, sent + 1);
+                if (talk) sentReplies.push(parsed.data.text);
                 emit(parsed.data);
                 return { posted: true as const };
               },
             }
           : undefined,
+      startWork: talk
+        ? {
+            async start(plan) {
+              startWorkPlan ??= plan;
+              void delay(START_WORK_GRACE_MS).then(() => workStart.abort(FOLLOW_UP_INTERRUPTION));
+            },
+          }
+        : undefined,
       askTeam:
         command.type === "helper"
           ? undefined
@@ -1493,7 +1547,9 @@ export async function executeRunnerCommand(
                 });
                 waitingForAnswer++;
                 try {
-                  return await options.answer(requestId, context.signal);
+                  const answer = await options.answer(requestId, context.signal);
+                  if (command.type === "run" && command.questionEndsTurn) void endAfterQuestion();
+                  return answer;
                 } finally {
                   waitingForAnswer--;
                 }
@@ -1812,13 +1868,23 @@ export async function executeRunnerCommand(
       runCommand && runCommand.checkpoint !== false && installFailure === undefined
         ? watchCheckpoints(watch.signal, halt, turnDone)
         : undefined;
+    const questionEndsTurn = runCommand?.questionEndsTurn === true;
+    const lifetime = new AbortController();
+    const lifetimeTimer = talk
+      ? setTimeout(
+          () => lifetime.abort(),
+          Math.max(0, command.expiresAt - Date.now() - CONVERSATION_RESULT_MARGIN_MS),
+        )
+      : undefined;
     const current: RunAgentOptions =
-      handover || checkpoints
+      handover || checkpoints || questionEndsTurn || talk
         ? {
             ...agent,
             signal: AbortSignal.any([
+              ...(talk ? [lifetime.signal, workStart.signal] : []),
               ...(handover ? [interrupt.signal] : []),
               ...(checkpoints ? [halt.signal] : []),
+              ...(questionEndsTurn ? [questionEnd.signal] : []),
               ...(options.signal ? [options.signal] : []),
             ]),
           }
@@ -1859,14 +1925,53 @@ export async function executeRunnerCommand(
           ? await runWithFollowUps(current, options.followUp, runner).finally(endTurn)
           : await runner(current).finally(endTurn);
     endTurn();
+    turnFinished = true;
     waits.stop();
     // A turn halted for a stop leaves its work in the stop checkpoint, never in a candidate.
     if (halt.signal.aborted) run = { ...run, cancelled: true, interrupted: false };
+    clearTimeout(lifetimeTimer);
+    if (lifetime.signal.aborted && !options.signal?.aborted)
+      run = { ...run, stopReason: "timeout", timedOut: true, cancelled: false, interrupted: false };
+    else if (workStart.signal.aborted && !options.signal?.aborted)
+      run = { ...run, stopReason: "end_turn", cancelled: false, interrupted: false };
     watch.abort();
     const interrupted = (await handover) === true;
     // A checkpoint in progress finishes before the turn's own commit and result.
     await checkpoints;
     await checkpointing;
+    if (
+      questionEnd.signal.aborted &&
+      !interrupted &&
+      !halt.signal.aborted &&
+      !options.signal?.aborted &&
+      run.interrupted &&
+      run.agentExited
+    ) {
+      await bounded("commit", (signal) =>
+        commitCheckpoint(
+          worktree,
+          runCommand!.commitPolicy
+            ? commitPolicyMessage(QUESTION_COMMIT_MESSAGE, runCommand!.commitPolicy)
+            : QUESTION_COMMIT_MESSAGE,
+          signal,
+          undefined,
+          env,
+          inputFiles.map((file) => file.path),
+          runCommand!.commitPolicy
+            ? appBotCommitIdentity(runCommand!.commitPolicy.bot)
+            : runCommand!.checkpointBot
+              ? appBotCommitIdentity(runCommand!.checkpointBot)
+              : undefined,
+        ),
+      ).catch((error: unknown) =>
+        journalCaught(
+          error,
+          "runner-worker.executeRunnerCommand.questionCommit",
+          runCommand!.itemId,
+        ),
+      );
+      run = { ...run, stopReason: "end_turn", cancelled: false, interrupted: false };
+    }
     let handoverReady = false;
     let handoverFailure: RunnerHandoverFailure | null = null;
     if (interrupted && (!run.cancelled || !run.agentExited || options.signal?.aborted))
@@ -1890,6 +1995,8 @@ export async function executeRunnerCommand(
       throw new Error("Runner response exceeds size limit");
     const result: RunnerWorkerResult = { executionId: job.executionId, commandId: command.id, run };
     if (command.type === "helper") result.text = reviewText;
+    if (sentReplies.length) result.replies = sentReplies;
+    if (startWorkPlan) result.startWork = startWorkPlan;
     if (command.type === "login_check") {
       const checked =
         command.agent === "claude" || command.agent === "codex"
@@ -2075,6 +2182,8 @@ export async function executeRunnerCommand(
               executionId: true,
               commandId: true,
               text: true,
+              replies: true,
+              startWork: true,
             })
               .strip()
               .parse(run),

@@ -18,6 +18,7 @@ import type {
   PostUpdateHook,
   PullRequestHook,
   ReplyHook,
+  StartWorkHook,
   UpdatePlanHook,
 } from "./ask-team";
 import type { ArtifactLimits, PublishArtifactHook } from "./artifacts";
@@ -113,6 +114,7 @@ export interface RunAgentOptions {
   closeoutFocus?: CloseoutFocus;
   pullRequestDraft?: PullRequestDraft;
   suggestedFindings?: readonly SuggestedFindingLine[];
+  reviewFindings?: readonly ReviewFindingGroup[];
   hostAccess?: boolean;
   prepareOnly?: boolean;
   role: AgentRole;
@@ -167,6 +169,8 @@ export interface RunAgentOptions {
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
   reply?: ReplyHook;
+  /** Offered only in conversation turns. */
+  startWork?: StartWorkHook;
   publishArtifact?: PublishArtifactHook;
   closeoutProgress?: CloseoutProgressHook;
   artifactLimits?: ArtifactLimits;
@@ -229,6 +233,8 @@ export interface ExecuteItemResult {
   branch: string;
   run: RunAgentResult;
 }
+
+export type ReviewFindingGroup = { reviewId: string; lines: readonly string[] };
 
 export type SuggestedFindingLine = {
   id: string;

@@ -222,6 +222,27 @@ export const visualReviewMark = sqliteTable(
   (table) => [index("visual_review_mark_question").on(table.questionId)],
 );
 
+export const evidenceObject = sqliteTable("evidence_object", {
+  id: text().primaryKey().notNull(),
+  prefix: text().notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  storedAt: integer("stored_at").notNull(),
+});
+
+export const closeoutEvidenceObject = sqliteTable(
+  "closeout_evidence_object",
+  {
+    task: text().notNull(),
+    path: text().notNull(),
+    prefix: text().notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    sha256: text().notNull(),
+    modifiedAt: integer("modified_at").notNull(),
+    storedAt: integer("stored_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.task, table.path] })],
+);
+
 export const candidateRisk = sqliteTable(
   "candidate_risk",
   {

@@ -192,6 +192,8 @@ export async function mergeHarness(
     /** GitHub merges the pull request, but its answer to the merge call never arrives. */
     dropMergeResponse: false,
     mergeResponseStatus: 200,
+    mergeDenial: null as (() => Promise<GitHubResponse | null>) | null,
+    mergeState: null as string | null,
     /** Runs before each operation token the lane acquires, with its purpose. */
     beforeMergeToken: (_purpose?: string): void => {},
     beforeGit: (_args: string[]): void => {},
@@ -289,6 +291,8 @@ export async function mergeHarness(
         state.squashing = true;
         await state.squashGate;
         if (state.mergeResponseStatus === 403) return { status: 403, body: {} };
+        const denied = await state.mergeDenial?.();
+        if (denied) return denied;
         const body = req.body as { sha: string; commit_title: string };
         const number = Number(req.path.split("/").at(-2));
         const result = await github.merge({
@@ -349,7 +353,8 @@ export async function mergeHarness(
       body: {
         state: "open",
         mergeable: merges,
-        mergeable_state: merges ? (state.upToDateRule ? "behind" : "clean") : "dirty",
+        mergeable_state:
+          state.mergeState ?? (merges ? (state.upToDateRule ? "behind" : "clean") : "dirty"),
         head: { sha: head },
       },
     };

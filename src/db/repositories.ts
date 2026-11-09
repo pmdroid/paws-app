@@ -1,13 +1,23 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { orm } from "./orm";
+import { question, workItemRepository, workItemRepositoryQuestion } from "./schema";
 import { immediate } from "./tx";
 
 export function getWorkItemRepository(db: Database, itemId: string): RepositoryBinding | null {
-  return db
-    .query<RepositoryBinding, [string]>(
-      "SELECT owner, repo, remote_url AS remoteUrl FROM work_item_repository WHERE item_id = ?",
-    )
-    .get(itemId);
+  return (
+    orm(db)
+      .select({
+        owner: workItemRepository.owner,
+        repo: workItemRepository.repo,
+        remoteUrl: workItemRepository.remoteUrl,
+      })
+      .from(workItemRepository)
+      .where(eq(workItemRepository.itemId, itemId))
+      .get() ?? null
+  );
 }
 
 export function bindWorkItemRepository(
@@ -24,10 +34,16 @@ export function bindWorkItemRepository(
     throw new Error("A work item repository requires an owner, repository name and remote URL");
   }
   return immediate(db, () => {
-    db.run(
-      "INSERT OR IGNORE INTO work_item_repository (item_id, owner, repo, remote_url) VALUES (?, ?, ?, ?)",
-      [itemId, repository.owner, repository.repo, repository.remoteUrl],
-    );
+    orm(db)
+      .insert(workItemRepository)
+      .values({
+        itemId,
+        owner: repository.owner,
+        repo: repository.repo,
+        remoteUrl: repository.remoteUrl,
+      })
+      .onConflictDoNothing()
+      .run();
     const saved = getWorkItemRepository(db, itemId);
     if (
       saved === null ||
@@ -47,27 +63,43 @@ export function saveWorkItemRepositoryQuestion(
   questionId: string,
   candidates: readonly RepositoryBinding[],
 ): void {
-  db.run(
-    `INSERT INTO work_item_repository_question (item_id, question_id, candidates) VALUES (?, ?, ?)
-    ON CONFLICT (item_id) DO UPDATE SET question_id = excluded.question_id, candidates = excluded.candidates, chosen_repository = NULL`,
-    [itemId, questionId, JSON.stringify(candidates)],
-  );
+  orm(db)
+    .insert(workItemRepositoryQuestion)
+    .values({ itemId, questionId, candidates: JSON.stringify(candidates) })
+    .onConflictDoUpdate({
+      target: workItemRepositoryQuestion.itemId,
+      set: {
+        questionId: sql`excluded.question_id`,
+        candidates: sql`excluded.candidates`,
+        chosenRepository: null,
+      },
+    })
+    .run();
 }
 
 export function getWorkItemRepositoryAnswer(
   db: Database,
   itemId: string,
 ): { questionId: string; answer: string; candidates: readonly RepositoryBinding[] } | null {
-  const row = db
-    .query<{ questionId: string; answer: string; candidates: string }, [string]>(
-      `SELECT q.id AS questionId, q.answer, r.candidates FROM work_item_repository_question r
-      JOIN question q ON q.id = r.question_id
-      WHERE r.item_id = ? AND q.status = 'answered' AND q.answer IS NOT NULL`,
+  const row = orm(db)
+    .select({
+      questionId: question.id,
+      answer: question.answer,
+      candidates: workItemRepositoryQuestion.candidates,
+    })
+    .from(workItemRepositoryQuestion)
+    .innerJoin(question, eq(question.id, workItemRepositoryQuestion.questionId))
+    .where(
+      and(
+        eq(workItemRepositoryQuestion.itemId, itemId),
+        eq(question.status, "answered"),
+        isNotNull(question.answer),
+      ),
     )
-    .get(itemId);
-  return row === null
+    .get();
+  return row === undefined
     ? null
-    : { questionId: row.questionId, answer: row.answer, candidates: JSON.parse(row.candidates) };
+    : { questionId: row.questionId, answer: row.answer!, candidates: JSON.parse(row.candidates) };
 }
 
 export function rememberWorkItemRepositoryChoice(
@@ -81,10 +113,16 @@ export function rememberWorkItemRepositoryChoice(
     if (answer === null || answer.questionId !== questionId) return false;
     if (!answer.candidates.some((candidate) => sameRepository(candidate, repository)))
       throw new Error("The chosen repository was not offered for this question");
-    db.run(
-      "UPDATE work_item_repository_question SET chosen_repository = ? WHERE item_id = ? AND question_id = ?",
-      [JSON.stringify(repository), itemId, questionId],
-    );
+    orm(db)
+      .update(workItemRepositoryQuestion)
+      .set({ chosenRepository: JSON.stringify(repository) })
+      .where(
+        and(
+          eq(workItemRepositoryQuestion.itemId, itemId),
+          eq(workItemRepositoryQuestion.questionId, questionId),
+        ),
+      )
+      .run();
     return true;
   });
 }
@@ -93,14 +131,19 @@ export function getWorkItemRepositoryChoice(
   db: Database,
   itemId: string,
 ): RepositoryBinding | null {
-  const row = db
-    .query<{ chosen: string }, [string]>(
-      `SELECT r.chosen_repository AS chosen FROM work_item_repository_question r
-      JOIN question q ON q.id = r.question_id
-      WHERE r.item_id = ? AND q.status = 'answered' AND r.chosen_repository IS NOT NULL`,
+  const row = orm(db)
+    .select({ chosen: workItemRepositoryQuestion.chosenRepository })
+    .from(workItemRepositoryQuestion)
+    .innerJoin(question, eq(question.id, workItemRepositoryQuestion.questionId))
+    .where(
+      and(
+        eq(workItemRepositoryQuestion.itemId, itemId),
+        eq(question.status, "answered"),
+        isNotNull(workItemRepositoryQuestion.chosenRepository),
+      ),
     )
-    .get(itemId);
-  return row === null ? null : JSON.parse(row.chosen);
+    .get();
+  return row === undefined ? null : JSON.parse(row.chosen!);
 }
 
 function sameRepository(left: RepositoryBinding, right: RepositoryBinding): boolean {
@@ -109,16 +152,25 @@ function sameRepository(left: RepositoryBinding, right: RepositoryBinding): bool
   );
 }
 
+export function* isWorkItemRepositoryQuestionSteps(
+  q: Q,
+  itemId: string,
+  questionId: string,
+): Steps<boolean> {
+  const asked = q.t.workItemRepositoryQuestion;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: asked.questionId })
+      .from(asked)
+      .where(and(eq(asked.itemId, itemId), eq(asked.questionId, questionId))),
+  );
+  return row !== undefined;
+}
+
 export function isWorkItemRepositoryQuestion(
   db: Database,
   itemId: string,
   questionId: string,
 ): boolean {
-  return (
-    db
-      .query<{ id: string }, [string, string]>(
-        "SELECT question_id AS id FROM work_item_repository_question WHERE item_id = ? AND question_id = ?",
-      )
-      .get(itemId, questionId) !== null
-  );
+  return settled(sqliteDb(db).run((q) => isWorkItemRepositoryQuestionSteps(q, itemId, questionId)));
 }

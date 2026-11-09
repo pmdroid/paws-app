@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { isTerminalWorkItemState, parentIssueIdSql } from "../core";
 import {
+  applyLinearTurns,
   DEFAULT_PULL_FEEDBACK_WAIT,
   enqueueOutboxOnce,
   gatherLinearComments,
@@ -12,6 +13,7 @@ import {
   getWorkItem,
   immediate,
   linearCommentAuthor,
+  listPendingLinearTurns,
   markLinearCommentsDelivered,
   pendingChangeRequests,
   pendingLinearComments,
@@ -27,6 +29,7 @@ import {
 import type { LeaveMergeQueueResult } from "../github";
 import { isPawsStop } from "../linear";
 import { findOpenQuestion } from "../questions";
+import { publicToolText } from "./activity";
 import { restart } from "./operations";
 
 export type LinearCommentActor = { id: string; teamId: string | null };
@@ -58,15 +61,42 @@ export type LinearCommentRoute =
 
 export type LinearCommentStep = "done" | "wait" | "restarted";
 
+export type LinearConversationTurn = {
+  commandId: string;
+  sessionId: string;
+  result: { text: string; replies?: string[]; startWork?: string; timedOut: boolean } | null;
+  expired: boolean;
+};
+
+export type LinearConversations = {
+  lane(itemId: string): "closed" | "full" | "free";
+  start(itemId: string, sessionId: string, prompt: string): boolean;
+  open(itemId: string): LinearConversationTurn[];
+  finish(commandId: string): void;
+};
+
 export type LinearCommentCapabilities = {
   now(): number;
   policy: LinearCommentPolicy;
   busy(item: WorkItemRecord): boolean;
   leaveMergeQueue(item: WorkItemRecord, pullNumber: number): Promise<LeaveMergeQueueResult>;
   flush(): Promise<void>;
+  conversations?(): Promise<LinearConversations | null>;
+  resumeSession?(sessionId: string): Promise<void>;
 };
 
 const HELD_STATES = new Set(["paused", "manual", "failed"]);
+const CONVERSATION_STATES = new Set(["queued", "merge_queue"]);
+const CONVERSATION_PROMPT_CHARS = 60_000;
+
+export const START_WORK_RESPONSE = "Starting work: ";
+const START_WORK_REFUSED =
+  "I could not start the work: the item moved on while we talked. Reply to try again.";
+const START_WORK_HANDOFF =
+  "In the conversation you called start_work with this plan. This is the work turn: edits, commits and Closeout are allowed. Carry out the plan.";
+
+export const CONVERSATION_TIMEOUT_REPLY = "I stopped checking after 15 minutes. Reply to continue.";
+const CONVERSATION_EMPTY_REPLY = "I could not answer this time. Reply to try again.";
 const ACTIVE_STATES = new Set(["running", "verifying", "recovering"]);
 const COMMENT_CHARS = 4_000;
 const SECTION_CHARS = 12_000;
@@ -266,8 +296,15 @@ export async function deliverLinearComments(
   caps: LinearCommentCapabilities,
 ): Promise<LinearCommentStep> {
   const item = getWorkItem(db, itemId);
+  const talk = (await caps.conversations?.()) ?? null;
+  if (talk !== null) {
+    if (await postConversationReplies(db, itemId, talk, caps)) await caps.flush();
+    if (talk.open(itemId).length > 0) return "wait";
+  }
   const all = pendingLinearComments(db, itemId);
-  if (all.length === 0) return "done";
+  const idle = talk !== null && item !== null && canConverse(item) && !caps.busy(item);
+  const turns = idle ? listPendingLinearTurns(db, item.sessionKey!) : [];
+  if (all.length === 0 && turns.length === 0) return "done";
   if (item === null || isTerminalWorkItemState(item.state) || item.cancelRequested) {
     settleLinearComments(
       db,
@@ -277,6 +314,15 @@ export async function deliverLinearComments(
     return "done";
   }
   const { kept, unknown } = current(db, item, all, caps);
+  if (idle) {
+    const lane = talk!.lane(item.id);
+    if (lane === "full") return "wait";
+    if (lane === "free" && (kept.length > 0 || turns.length > 0)) {
+      startConversation(db, item, kept, turns, talk!, caps.now());
+      return "wait";
+    }
+  }
+  if (turns.length > 0) await caps.resumeSession?.(item.sessionKey!);
   if (kept.length === 0) return unknown ? "wait" : "done";
   if (item.state === "awaiting_input") {
     const question = findOpenQuestion(db, item.sessionKey!);
@@ -369,6 +415,114 @@ export async function deliverLinearComments(
   });
   if (step === "restarted") await caps.flush();
   return step;
+}
+
+export function canConverse(item: WorkItemRecord): boolean {
+  return item.sessionKey !== null && !item.cancelRequested && CONVERSATION_STATES.has(item.state);
+}
+
+function startConversation(
+  db: Database,
+  item: WorkItemRecord,
+  comments: readonly LinearCommentRecord[],
+  turns: readonly { eventKey: string; body: string }[],
+  talk: LinearConversations,
+  now: number,
+): void {
+  const batch = fitLinearComments(comments);
+  const section = linearCommentSection(batch, item.linearIdentifier);
+  const parts = section === null ? [] : [section];
+  const sent: string[] = [];
+  for (const turn of turns) {
+    const next = [...parts, turn.body].join("\n\n");
+    if (parts.length > 0 && next.length > CONVERSATION_PROMPT_CHARS) break;
+    parts.push(turn.body);
+    sent.push(turn.eventKey);
+  }
+  const prompt = clip(parts.join("\n\n"), CONVERSATION_PROMPT_CHARS);
+  if (prompt.trim() === "") return;
+  immediate(db, () => {
+    if (!talk.start(item.id, item.sessionKey!, prompt)) return;
+    markLinearCommentsDelivered(
+      db,
+      batch.map((comment) => comment.commentId),
+      { via: "follow_up", itemVersion: item.version, now },
+    );
+    if (sent.length > 0) applyLinearTurns(db, item.sessionKey!, sent, item.id);
+  });
+}
+
+async function postConversationReplies(
+  db: Database,
+  itemId: string,
+  talk: LinearConversations,
+  caps: LinearCommentCapabilities,
+): Promise<boolean> {
+  const now = caps.now();
+  let posted = false;
+  for (const turn of talk.open(itemId)) {
+    if (turn.result === null && !turn.expired) continue;
+    const plan = turn.result?.startWork;
+    const left = plan ? await leftMergeQueue(db, itemId, caps) : true;
+    immediate(db, () => {
+      const item = getWorkItem(db, itemId);
+      const started =
+        plan !== undefined &&
+        left &&
+        item !== null &&
+        canConverse(item) &&
+        restart(db, item, {
+          reason: "follow_up",
+          body: `${START_WORK_HANDOFF}\n\n${plan}`,
+          jobKey: `start-work:${turn.commandId}`,
+          now,
+        }) !== null;
+      const bodies = plan
+        ? [
+            ...(turn.result!.replies ?? []),
+            started ? `${START_WORK_RESPONSE}${plan}` : START_WORK_REFUSED,
+          ]
+        : conversationReplies(turn.result);
+      bodies.forEach((body, index) =>
+        enqueueOutboxOnce(db, {
+          target: "linear",
+          op: "activity",
+          orderingKey: turn.sessionId,
+          idempotencyKey: `conversation:${turn.commandId}:${index}`,
+          payload: {
+            sessionId: turn.sessionId,
+            kind: "response",
+            body: publicToolText(body),
+            id: crypto.randomUUID(),
+          },
+          now,
+        }),
+      );
+      talk.finish(turn.commandId);
+    });
+    posted = true;
+  }
+  return posted;
+}
+
+/** A plan's work turn needs the pull request out of GitHub's merge queue first, as a comment does. */
+async function leftMergeQueue(
+  db: Database,
+  itemId: string,
+  caps: LinearCommentCapabilities,
+): Promise<boolean> {
+  const item = getWorkItem(db, itemId);
+  const pull = item?.state === "merge_queue" ? getItemPullRequest(db, itemId) : null;
+  if (item === null || pull === null) return true;
+  const left = await caps.leaveMergeQueue(item, pull.pullNumber);
+  return left === "left" || left === "not_queued";
+}
+
+function conversationReplies(result: LinearConversationTurn["result"]): string[] {
+  if (result === null || result.timedOut)
+    return [...(result?.replies ?? []), CONVERSATION_TIMEOUT_REPLY];
+  if (result.replies?.length) return result.replies;
+  return result.text.trim() === "" ? [CONVERSATION_EMPTY_REPLY] : [result.text.trim()];
 }
 
 export type LinearCommentBrief = {

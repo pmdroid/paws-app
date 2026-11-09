@@ -7,6 +7,7 @@ import {
   carriedAcceptFor,
   closeoutPolicyDigests,
   completeMergedItem,
+  countMergeDenials,
   endMergeCall,
   enqueueJobOnce,
   getConfirmedRemoteMerge,
@@ -14,6 +15,7 @@ import {
   hasCiRerun,
   immediate,
   leaveMergeQueue,
+  MERGE_DENIED_REASON,
   mergeCallInFlight,
   recordCarriedAccept,
   recordConfirmedRemoteMerge,
@@ -22,6 +24,7 @@ import {
   type ConfirmedRemoteMerge,
   type TaskMergeSettings,
   type WorkItemRecord,
+  recordItemCandidate,
 } from "../db";
 import {
   adoptRunnerRebase,
@@ -37,6 +40,7 @@ import {
 } from "../github";
 import { journal, journalCaught } from "../journal";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
+import { MERGE_DENIAL_LIMIT, RETRY_MERGE, mergeDeniedQuestion } from "./merge-denied";
 import type { MergeFacts, RiskApproval } from "./mergeable";
 import {
   REBASE_CONFLICT_INSTRUCTION,
@@ -280,7 +284,17 @@ export async function advanceMerge(
         approval: riskApproval,
       });
     },
-    rebase: (facts) => rebaseOnRunner(item, caps, lane, facts, published.signal),
+    rebase: async (facts) => {
+      const rebased = await rebaseOnRunner(item, caps, lane, facts, published.signal);
+      if (rebased.rebased && lane.ref)
+        recordItemCandidate(db, {
+          itemId: item.id,
+          sha: rebased.head,
+          branch: rebased.branch,
+          recordedAt: caps.now(),
+        });
+      return rebased;
+    },
     squash: async (head, facts) => {
       mergedPolicyError = caps.mergeResultPolicy?.(item, published.worktree, {
         base: facts.base,
@@ -456,6 +470,28 @@ export async function advanceMerge(
   // A person merged the pull request on GitHub during the turn, so the lane found it closed.
   const late = await mergedOutsideLane(db, item, caps);
   if (late) return late;
+  if (
+    result?.outcome === "merge_denied" &&
+    result.status !== undefined &&
+    result.status !== 401 &&
+    result.status !== 403 &&
+    result.head !== undefined &&
+    countMergeDenials(db, item.id, result.head) + 1 < MERGE_DENIAL_LIMIT &&
+    askHelp(
+      merge,
+      mergeDeniedQuestion({
+        status: result.status,
+        reason: result.reason,
+        head: result.head,
+        pullUrl: pull.url,
+      }),
+      MERGE_DENIED_REASON,
+      [RETRY_MERGE],
+    )
+  ) {
+    await voice.flush();
+    return { kind: "asked" };
+  }
   const message = failure(turn, step);
   voice.thought(item, message, `${item.id}:merge:${result?.outcome ?? step.kind}`);
   return { kind: "failed", reason: "merge", message };

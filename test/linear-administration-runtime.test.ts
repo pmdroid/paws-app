@@ -19,17 +19,10 @@ import {
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import { createLinearReconnect } from "../src/onboarding";
-import {
-  createFakeTracker,
-  createInboxStore,
-  linearTokenPath,
-  openLinear,
-  parseAgentEvent,
-  writeStoredToken,
-} from "../src/linear";
+import { createFakeTracker, createInboxStore, openLinear, parseAgentEvent } from "../src/linear";
 import { deliverLinearOutbox, handleLinearAdministration } from "../src/loop";
 import { startServer } from "../src/server";
-import { tempHome } from "./helpers";
+import { tempHome, storeLinearToken } from "./helpers";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -71,7 +64,7 @@ async function fixture(token = true, children = false) {
     owned.abort(new Error("Cancelled"));
   });
   if (token)
-    writeStoredToken(linearTokenPath(join(home, "secrets")), {
+    storeLinearToken(home, {
       accessToken: "fake-old-access",
       refreshToken: "fake-old-refresh",
       expiresAtMs: Date.now() + 600_000,
@@ -234,14 +227,14 @@ test("signed revocation stops owned work and fences active, queued and delayed r
     idempotencyKey: "progress",
     payload: { sessionId: "session", kind: "thought", body: "Working" },
   });
-  f.dispatcher.tick();
+  await f.dispatcher.tick();
   await f.active.promise;
   expect((await f.post(revoked())).status).toBe(200);
   expect(getLinearSessionAccess(f.db, "session")).toBe("revoked");
   expect(getWorkItem(f.db, f.task.items[0]!.id)?.state).toBe("cancelled");
   expect(f.owned.signal.aborted).toBe(true);
   expect(listOutbox(f.db, "session").every((row) => row.status === "dropped")).toBe(true);
-  f.dispatcher.tick();
+  await f.dispatcher.tick();
   await f.dispatcher.idle();
   expect(getOutbox(f.db, progress)?.status).toBe("dropped");
   const late = enqueueOutbox(f.db, {
@@ -276,7 +269,7 @@ test("signed revocation stops owned work and fences active, queued and delayed r
   recovered.setHandler((message, context) =>
     deliverLinearOutbox(message, f.opened.tracker!, async () => {}, context),
   );
-  expect(recovered.tick()).toEqual([]);
+  expect(await recovered.tick()).toEqual([]);
   await recovered.idle();
   expect(f.requests).toEqual(["Working"]);
 });
@@ -307,7 +300,7 @@ test("team removal keeps the authorized stopped response while human unassignmen
   ).toBe(200);
   expect(getLinearSessionAccess(f.db, "session")).toBe("team_removed");
   expect(isLinearAppRevoked(f.db, scope)).toBe(false);
-  f.dispatcher.tick();
+  await f.dispatcher.tick();
   await f.dispatcher.idle();
   expect(f.requests).toEqual([
     expect.stringMatching(

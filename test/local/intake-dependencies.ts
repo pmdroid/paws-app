@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   bindLinearSessionTask,
-  migrate,
+  legacyMigrate,
   openDatabase,
   recordLinearInstallation,
   saveTaskMode,
@@ -18,7 +18,7 @@ export async function probeDependencySnapshots(
 ) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const db = openDatabase(join(root, "paws.sqlite"));
-  migrate(db);
+  legacyMigrate(db);
   const tracker = createFakeTracker([
     {
       linearIssueId: "parent",

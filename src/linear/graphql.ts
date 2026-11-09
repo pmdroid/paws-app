@@ -39,7 +39,8 @@ export function createLinearClient(options: {
       };
       current();
       const { caller, priority, item, itemId } = currentLinearCaller();
-      const held = ledger.admit(caller, priority, query);
+      const held =
+        ledger.admit(caller, priority, query) ?? (await ledger.reserve(caller, priority));
       if (held !== null) throw held;
       const run = async (token: string) => {
         current();
@@ -54,14 +55,20 @@ export function createLinearClient(options: {
           ...(signal === undefined ? {} : { signal }),
         });
       };
-      let token = await abortable(options.auth.ensureFresh(), signal);
-      let response = await run(token);
-      if (response.status === 401) {
-        token = await abortable(options.auth.forceRefresh(), signal);
+      let response: Response;
+      try {
+        let token = await abortable(options.auth.ensureFresh(), signal);
         response = await run(token);
+        if (response.status === 401) {
+          token = await abortable(options.auth.forceRefresh(), signal);
+          response = await run(token);
+        }
+      } catch (error) {
+        await ledger.settle();
+        throw error;
       }
       const budget = budgetFromHeaders(response.headers);
-      ledger.observe(caller, budget, item, itemId, query);
+      await ledger.observe(caller, budget, item, itemId, query);
       const json: unknown = await abortable(response.json(), signal).catch((error: unknown) => {
         signal?.throwIfAborted();
         if (error instanceof Error && error.name === "AbortError") throw error;
@@ -70,7 +77,7 @@ export function createLinearClient(options: {
       });
       current();
       const limited = rateLimitFrom(response, json, budget, ledger.now());
-      if (limited !== null) throw ledger.limited(caller, limited);
+      if (limited !== null) throw await ledger.limited(caller, limited);
       const errors = isRecord(json) ? json["errors"] : undefined;
       let message: string | null = null;
       if (Array.isArray(errors) && errors.length > 0) {

@@ -12,12 +12,21 @@ import {
   getLinearSessionAccess,
   getLinearSessionInstallation,
   immediate,
+  insertWorkspaceAssignment,
+  invalidateWorkspaceAssignment,
+  latestWorkspaceAssignment,
+  linkWorkspaceAssignment,
   listWorkspaceRepositories,
+  moveWorkspaceAssignment,
+  pendingWorkspaceAssignmentTokens,
   recordLinearTurn,
+  workspaceAssignmentByToken,
+  workspaceAssignmentTokenForLink,
   workspaceForOrganization,
   workspaceLinearMember,
   syncWorkspaceMember,
   type JobLoop,
+  type WorkspaceAssignmentHold,
 } from "../db";
 import {
   linearItem,
@@ -114,23 +123,7 @@ const UNRECORDED = retry(
   "Paws has not recorded this session's Linear installation yet. It will try again automatically.",
 );
 
-type Hold = {
-  sessionId: string;
-  generation: number;
-  workspaceId: string;
-  actorId: string;
-  tokenHash: string;
-  linkId: string | null;
-  linkExpiresAt: number | null;
-  fingerprint: string;
-  event: string;
-  expiresAt: number;
-  status: "pending" | "ready" | "accepted" | "continued" | "invalid";
-};
-
-const HOLD_COLUMNS = `session_id AS sessionId,generation,workspace_id AS workspaceId,actor_id AS actorId,
-    token_hash AS tokenHash,link_id AS linkId,link_expires_at AS linkExpiresAt,fingerprint,event,
-    expires_at AS expiresAt,status`;
+type Hold = WorkspaceAssignmentHold;
 
 /** The issue's team and page as Linear reported them when the hold was written. */
 function holdIssue(hold: Pick<Hold, "fingerprint">) {
@@ -203,16 +196,8 @@ export function createWorkspaceAssignments(options: {
     throw new Error("Assignment sign-in requires verified HTTPS.");
   const now = options.now ?? Date.now;
   const continuations = new WeakSet<AcceptedLinearEvent>();
-  const holds = (sessionId: string) =>
-    db
-      .query<Hold, [string]>(
-        `SELECT ${HOLD_COLUMNS} FROM workspace_assignment WHERE session_id=? ORDER BY generation DESC LIMIT 1`,
-      )
-      .get(sessionId);
-  const byToken = (tokenHash: string) =>
-    db
-      .query<Hold, [string]>(`SELECT ${HOLD_COLUMNS} FROM workspace_assignment WHERE token_hash=?`)
-      .get(tokenHash);
+  const holds = (sessionId: string) => latestWorkspaceAssignment(db, sessionId);
+  const byToken = (tokenHash: string) => workspaceAssignmentByToken(db, tokenHash);
   /** The hold for this token, only while it is the session's latest generation. */
   const currentHold = (tokenHash: string) => {
     const hold = byToken(tokenHash);
@@ -220,10 +205,7 @@ export function createWorkspaceAssignments(options: {
   };
   const expired = (hold: Hold) => (hold.linkExpiresAt ?? hold.expiresAt) <= now();
   function invalidate(hold: Hold) {
-    db.run(
-      "UPDATE workspace_assignment SET status='invalid' WHERE token_hash=? AND status IN ('pending','ready','accepted')",
-      [hold.tokenHash],
-    );
+    invalidateWorkspaceAssignment(db, hold.tokenHash);
   }
   /**
    * Ends a pending hold that outlived its link: one final response that completes the Linear
@@ -353,23 +335,14 @@ export function createWorkspaceAssignments(options: {
   ) {
     const link = onboardingLinkId();
     const expiresAt = now() + ONBOARDING_HOLD_MS;
-    const inserted = db.run(
-      `INSERT INTO workspace_assignment(session_id,generation,workspace_id,actor_id,token_hash,fingerprint,event,expires_at,status,link_id,link_expires_at)
-      VALUES(?,?,?,?,?,?,?,?,'pending',?,?) ON CONFLICT(session_id,generation) DO NOTHING`,
-      [
-        hold.sessionId,
-        hold.generation,
-        hold.workspaceId,
-        hold.actorId,
-        workspaceTokenHash(link),
-        hold.fingerprint,
-        hold.event,
-        expiresAt,
-        link,
-        expiresAt,
-      ],
-    ).changes;
-    if (inserted === 1) postSignIn(hold, link);
+    const inserted = insertWorkspaceAssignment(db, {
+      ...hold,
+      tokenHash: workspaceTokenHash(link),
+      expiresAt,
+      linkId: link,
+      linkExpiresAt: expiresAt,
+    });
+    if (inserted) postSignIn(hold, link);
   }
   /**
    * Lets a pending hold continue once its creator has a member row that may delegate here,
@@ -386,10 +359,11 @@ export function createWorkspaceAssignments(options: {
         .allowed
     )
       return false;
-    db.run(
-      "UPDATE workspace_assignment SET status='ready',completed_at=? WHERE token_hash=? AND status='pending'",
-      [now(), hold.tokenHash],
-    );
+    moveWorkspaceAssignment(db, hold.tokenHash, {
+      from: "pending",
+      to: "ready",
+      completedAt: now(),
+    });
     enqueueJobOnce(db, {
       queue: QUEUE,
       jobKey: `assignment:${hold.tokenHash}`,
@@ -400,11 +374,7 @@ export function createWorkspaceAssignments(options: {
   }
   /** Holds written before link ids existed get one link and one new-form sign-in action. */
   function upgrade() {
-    for (const { tokenHash } of db
-      .query<{ tokenHash: string }, []>(
-        "SELECT token_hash AS tokenHash FROM workspace_assignment WHERE status='pending' AND link_id IS NULL",
-      )
-      .all())
+    for (const tokenHash of pendingWorkspaceAssignmentTokens(db, { linked: false }))
       immediate(db, () => {
         const hold = byToken(tokenHash);
         if (!hold || hold.status !== "pending" || hold.linkId !== null) return;
@@ -412,11 +382,11 @@ export function createWorkspaceAssignments(options: {
           return invalidate(hold);
         const link = onboardingLinkId();
         const expiresAt = now() + ONBOARDING_HOLD_MS;
-        db.run(
-          `UPDATE workspace_assignment SET link_id=?,link_expires_at=?,expires_at=?,token_hash=?
-          WHERE token_hash=? AND status='pending' AND link_id IS NULL`,
-          [link, expiresAt, expiresAt, workspaceTokenHash(link), tokenHash],
-        );
+        linkWorkspaceAssignment(db, tokenHash, {
+          linkId: link,
+          expiresAt,
+          tokenHash: workspaceTokenHash(link),
+        });
         postSignIn(hold, link);
       });
   }
@@ -672,12 +642,8 @@ export function createWorkspaceAssignments(options: {
     /** Resolves an /onboard/<link id> address. The id alone grants nothing. */
     open(link: string): AssignmentLink | null {
       if (!LINK_ID.test(link)) return null;
-      const row = db
-        .query<{ tokenHash: string }, [string]>(
-          "SELECT token_hash AS tokenHash FROM workspace_assignment WHERE link_id=?",
-        )
-        .get(link);
-      const hold = row ? currentHold(row.tokenHash) : null;
+      const tokenHash = workspaceAssignmentTokenForLink(db, link);
+      const hold = tokenHash ? currentHold(tokenHash) : null;
       if (!hold) return null;
       if (hold.status === "pending")
         return !expired(hold) && current(hold)
@@ -721,11 +687,10 @@ export function createWorkspaceAssignments(options: {
     },
     /** A dashboard sign-in releases the signer's own pending holds without a new action. */
     releaseFor(workspaceId: string, linearUserId: string): void {
-      for (const { tokenHash } of db
-        .query<{ tokenHash: string }, [string, string]>(
-          "SELECT token_hash AS tokenHash FROM workspace_assignment WHERE workspace_id=? AND actor_id=? AND status='pending'",
-        )
-        .all(workspaceId, linearUserId))
+      for (const tokenHash of pendingWorkspaceAssignmentTokens(db, {
+        workspaceId,
+        actorId: linearUserId,
+      }))
         immediate(db, () => {
           const hold = byToken(tokenHash);
           if (hold) release(hold);
@@ -745,11 +710,7 @@ export function createWorkspaceAssignments(options: {
       // response.
       jobs.register(`${QUEUE}.expire`, () => {
         upgrade();
-        for (const { tokenHash } of db
-          .query<{ tokenHash: string }, []>(
-            "SELECT token_hash AS tokenHash FROM workspace_assignment WHERE status='pending' AND link_id IS NOT NULL",
-          )
-          .all())
+        for (const tokenHash of pendingWorkspaceAssignmentTokens(db, { linked: true }))
           immediate(db, () => {
             const hold = byToken(tokenHash);
             if (!hold || hold.status !== "pending") return;
@@ -797,10 +758,7 @@ export function createWorkspaceAssignments(options: {
               return false;
             }
             if (hold.status === "ready") {
-              db.run(
-                "UPDATE workspace_assignment SET status='accepted' WHERE token_hash=? AND status='ready'",
-                [hold.tokenHash],
-              );
+              moveWorkspaceAssignment(db, hold.tokenHash, { from: "ready", to: "accepted" });
               auditWorkspaceAccess(db, {
                 workspaceId: hold.workspaceId,
                 userId: member.userId,
@@ -816,10 +774,7 @@ export function createWorkspaceAssignments(options: {
           try {
             const result = await options.continue(event);
             if (result === false) throw new Error("Assignment continuation is still held.");
-            db.run(
-              "UPDATE workspace_assignment SET status='continued' WHERE token_hash=? AND status='accepted'",
-              [hold.tokenHash],
-            );
+            moveWorkspaceAssignment(db, hold.tokenHash, { from: "accepted", to: "continued" });
           } catch (error) {
             // A refusal is final for this hold: say why once instead of retrying the job.
             if (!(error instanceof LinearIntakeRefusedError)) throw error;

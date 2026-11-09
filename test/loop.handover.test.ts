@@ -87,51 +87,60 @@ async function handOver(options: {
         throw new Error("This fixture does not request a routing helper");
       },
       agentForItem() {
-        return cloneRunner(repository, async (input: RunAgentOptions): Promise<RunAgentResult> => {
-          if (input.prepareOnly) return runAgent(input);
-          prompts.push(input.prompt);
-          const failing = options.failure !== undefined && prompts.length === 1;
-          if (options.ask)
-            await input.askTeam!.ask(
-              { question: options.ask },
-              { itemId: input.itemId, runId: input.runId, role: input.role, signal: input.signal! },
+        return cloneRunner(
+          repository,
+          async (input: RunAgentOptions): Promise<RunAgentResult> => {
+            if (input.prepareOnly) return runAgent(input);
+            prompts.push(input.prompt);
+            const failing = options.failure !== undefined && prompts.length === 1;
+            if (options.ask)
+              await input.askTeam!.ask(
+                { question: options.ask },
+                {
+                  itemId: input.itemId,
+                  runId: input.runId,
+                  role: input.role,
+                  signal: input.signal!,
+                },
+              );
+            // What the remote backend leaves after importing the runner's WIP commit.
+            writeFileSync(
+              path.join(input.worktreePath, "wip.txt"),
+              `half done, turn ${prompts.length}\n`,
             );
-          // What the remote backend leaves after importing the runner's WIP commit.
-          writeFileSync(
-            path.join(input.worktreePath, "wip.txt"),
-            `half done, turn ${prompts.length}\n`,
-          );
-          const git = (args: string[]) =>
-            execFileSync("git", ["-C", input.worktreePath, ...args], {
-              encoding: "utf8",
-              env: {
-                ...process.env,
-                GIT_AUTHOR_NAME: "Paws",
-                GIT_AUTHOR_EMAIL: "paws@localhost",
-                GIT_COMMITTER_NAME: "Paws",
-                GIT_COMMITTER_EMAIL: "paws@localhost",
-              },
-            }).trim();
-          git(["add", "-A"]);
-          git(["commit", "-q", "-m", "Save work in progress"]);
-          wip = git(["rev-parse", "HEAD"]);
-          saveCheckpoint(db, listWorkItems(db)[0]!.id, {
-            phase: "running",
-            baseSha: git(["rev-parse", "HEAD~1"]),
-            wipCommit: wip,
-          });
-          handed = !failing;
-          return {
-            role: input.role,
-            stopReason: "cancelled",
-            cancelled: false,
-            ...(failing ? { handoverFailure: options.failure } : { handedOver: true }),
-            timedOut: false,
-            authRequired: false,
-            agentExited: true,
-            sessionId: "claude-session",
-          };
-        });
+            const git = (args: string[]) =>
+              execFileSync("git", ["-C", input.worktreePath, ...args], {
+                encoding: "utf8",
+                env: {
+                  ...process.env,
+                  GIT_AUTHOR_NAME: "Paws",
+                  GIT_AUTHOR_EMAIL: "paws@localhost",
+                  GIT_COMMITTER_NAME: "Paws",
+                  GIT_COMMITTER_EMAIL: "paws@localhost",
+                },
+              }).trim();
+            git(["add", "-A"]);
+            git(["commit", "-q", "-m", "Save work in progress"]);
+            wip = git(["rev-parse", "HEAD"]);
+            saveCheckpoint(db, listWorkItems(db)[0]!.id, {
+              phase: "running",
+              baseSha: git(["rev-parse", "HEAD~1"]),
+              wipCommit: wip,
+            });
+            handed = !failing;
+            return {
+              role: input.role,
+              stopReason: "cancelled",
+              cancelled: false,
+              ...(failing ? { handoverFailure: options.failure } : { handedOver: true }),
+              timedOut: false,
+              authRequired: false,
+              agentExited: true,
+              sessionId: "claude-session",
+            };
+          },
+          db,
+        );
       },
     },
     launch(input) {
@@ -160,14 +169,14 @@ async function handOver(options: {
       orchestrator.reconcileExecution();
       await jobs.tick(["run.resume"]);
       if (job === null) {
-        outbox.tick();
+        await outbox.tick();
         await Bun.sleep(20);
       }
     }
     // Let the turn that handed over settle and its outbox rows post.
     for (let index = 0; index < 50; index++) {
       const job = await tickWithRestarts(jobs, orchestrator, db);
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
       if (job === null) await Bun.sleep(10);
     }

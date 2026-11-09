@@ -32,10 +32,12 @@ import {
   type MergeRepositories,
   type MergeRule,
 } from "./merge";
+import { readConfigText } from "./settings-store";
 import { parseTimeLimitTables, type StoredTimeLimits } from "./time-limits";
 import { assignMemberVmKey, renderMemberVmSettings, type MemberVmSize } from "./member-vm";
 import { renderQueueSettings } from "./queue";
 import { parseProjectSkills, renderProjectSkills, type ProjectSkills } from "./skills";
+import { checkDatabaseUrl } from "./database";
 
 /** `github.auth`. Paws uses the GitHub App only. */
 export type GitHubConfigAuth = "app";
@@ -134,6 +136,7 @@ export type PawsConfigFile = {
   /** `[brief.projects."owner/repo"] template`. */
   briefProjects?: Record<string, string>;
   timeLimits?: StoredTimeLimits;
+  databaseUrl?: string;
 };
 
 /**
@@ -177,8 +180,8 @@ export function emptyConfigFile(): PawsConfigFile {
 }
 
 export function loadConfigFile(path: string): PawsConfigFile {
-  if (!existsSync(path)) return emptyConfigFile();
-  return parseConfigToml(readFileSync(path, "utf8"));
+  const text = readConfigText(path);
+  return text === "" ? emptyConfigFile() : parseConfigToml(text);
 }
 
 const RETIRED_UPDATE_SECTION = "update";
@@ -195,7 +198,7 @@ export function parseConfigToml(text: string): PawsConfigFile {
     if (heading?.[1]) {
       section = heading[1].toLowerCase();
       if (
-        !/^(linear|github|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief)$/.test(
+        !/^(linear|github|tracker|closeout|merge|queue|findings|checkout|caps|agents|server|member_vm|brief|database)$/.test(
           section,
         ) &&
         !/^(closeout|merge|checkout|agents|skills|brief|time_limits)\./.test(section) &&
@@ -517,6 +520,15 @@ function assignConfig(
     )
       throw new Error(`config.toml line ${line}: findings.grouping_time must be HH:MM UTC`);
     config.findingsGroupingTime = value;
+    return;
+  }
+  if (section === "database") {
+    if (key !== "url")
+      throw new Error(`config.toml line ${line} has an unknown key: ${section}.${key}`);
+    config.databaseUrl = checkDatabaseUrl(
+      asString(value, line),
+      `config.toml line ${line}: database.url`,
+    );
     return;
   }
   if (section === "linear") {

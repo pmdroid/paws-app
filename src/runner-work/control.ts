@@ -11,7 +11,7 @@ import {
   recordRunnerSkills,
   runnerAgentTargets,
   teamRepositoryAllowedSql,
-  pawsAliveAt,
+  lastInstanceHeartbeat,
   runnerLeaseCutoff,
   getLinearSessionAccess,
   getLinearSession,
@@ -28,6 +28,7 @@ import {
   workspaceSessionIds,
   runnerCancelPending,
   runTeardownOwner,
+  nextRoutineHealthCommand,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
@@ -584,6 +585,8 @@ export function createRunnerWork(options: {
     commands(runnerId: string): SignedRunnerCommand[] {
       runner(runnerId);
       const result: SignedRunnerCommand[] = [];
+      // A sign-in someone is waiting on goes out before probes and sign-in checks queued earlier.
+      const routine = nextRoutineHealthCommand(db, runnerId, now());
       let ordinal = 0;
       while (result.length < 16) {
         const rows = db
@@ -605,6 +608,11 @@ export function createRunnerWork(options: {
           const payload = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString("utf8"),
           ) as RunnerCommand;
+          if (
+            (payload.type === "probe" || payload.type === "login_check") &&
+            row.ordinal !== routine
+          )
+            continue;
           if (payload.type === "run" || payload.type === "review" || payload.type === "task") {
             try {
               live(runnerId, row.runId!, row.generation!, now());
@@ -656,6 +664,7 @@ export function createRunnerWork(options: {
       terminated?: readonly { runId: string; generation: number; commandId: string }[],
       liveAfter?: number,
       accounts?: RunnerAccountCapability,
+      conversations?: number,
     ) {
       const running =
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
@@ -666,13 +675,13 @@ export function createRunnerWork(options: {
             "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
           )
           .get(runnerId)?.version;
-        const aliveAt = pawsAliveAt(db);
+        const aliveAt = lastInstanceHeartbeat(db);
         const offlineCredit =
           aliveAt !== null &&
           runnerReleaseAtLeast(host.runnerVersion ?? storedVersion, OFFLINE_LEASE_RUNNER_VERSION)
             ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt }
             : undefined;
-        const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling);
+        const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling, conversations);
         const at = now();
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         if (Object.values(host).some((value) => value !== undefined))

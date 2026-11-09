@@ -1,7 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import type { StageLimits } from "../core";
-import { replaceConfigText } from "./agents";
+import { updateConfigText } from "./settings-store";
 import type { PawsConfigFile } from "./file";
 
 export const MAX_TIME_LIMIT_MINUTES = 7 * 24 * 60;
@@ -190,6 +189,5 @@ export function setTimeLimitsText(current: string, settings: StoredTimeLimits): 
 }
 
 export function writeTimeLimits(path: string, settings: StoredTimeLimits): void {
-  const text = existsSync(path) ? readFileSync(path, "utf8") : "";
-  replaceConfigText(path, setTimeLimitsText(text, settings));
+  updateConfigText(path, (text) => setTimeLimitsText(text, settings));
 }

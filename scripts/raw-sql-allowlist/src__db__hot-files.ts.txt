@@ -1,0 +1,6 @@
+src/db/hot-files.ts | db.run( | not yet converted to Drizzle
+src/db/hot-files.ts | const row = db .query<{ paths: string }, [string, string]>( | not yet converted to Drizzle
+src/db/hot-files.ts | db .query<{ itemId: string; paths: string }, []>( | not yet converted to Drizzle
+src/db/hot-files.ts | const row = db .query<{ paths: string }, [string, string, number, string]>( | not yet converted to Drizzle
+src/db/hot-files.ts | const returns = db .query< | not yet converted to Drizzle
+src/db/hot-files.ts | const merges = db .query<{ itemId: string; owner: string; repo: string; at: number }, [number]>( | not yet converted to Drizzle

@@ -14,7 +14,7 @@ import {
   legacyAgentBindingId,
   listAgentAccounts,
   listAgentBindings,
-  migrate,
+  legacyMigrate,
   openDatabase,
   putWorkspaceUser,
   recordCommandAccount,
@@ -37,7 +37,7 @@ const HOUR = 3_600_000;
 
 function fixture() {
   const db = openDatabase(join(tempHome(), "paws.sqlite"));
-  migrate(db);
+  legacyMigrate(db);
   let clock = Date.now();
   const owner = putWorkspaceUser(db, {
     id: workspaceId(),
@@ -208,7 +208,7 @@ test("a legacy installation upgrades to default sign-in accounts and rolls back 
   const db = new Database(":memory:");
   db.run("PRAGMA foreign_keys=ON");
   try {
-    migrate(db, { until: "20261102T0055_runner_admin_repositories" });
+    legacyMigrate(db, { until: "20261102T0055_runner_admin_repositories" });
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','o','W',1)",
     );
@@ -231,7 +231,7 @@ test("a legacy installation upgrades to default sign-in accounts and rolls back 
       "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,agent,role,purpose,started_at,ended_at,outcome) VALUES('old','r','u','claude','implementer','check',1,2,'ok')",
     );
 
-    migrate(db);
+    legacyMigrate(db);
     const legacy = legacyAgentAccountId("w", "claude");
     expect(listAgentAccounts(db, "w")).toMatchObject([{ id: legacy, legacy: true, enabled: true }]);
     expect(listAgentBindings(db, "w")).toMatchObject([
@@ -289,7 +289,7 @@ test("a legacy installation upgrades to default sign-in accounts and rolls back 
     );
     const applied = () => db.query("SELECT id FROM schema_migration ORDER BY id").all();
     const before = applied();
-    migrate(db, { until: "20261102T0055_runner_admin_repositories" });
+    legacyMigrate(db, { until: "20261102T0055_runner_admin_repositories" });
     expect(applied()).toEqual(before);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('r','codex',1)");
     db.run(
@@ -303,7 +303,7 @@ test("a legacy installation upgrades to default sign-in accounts and rolls back 
     );
     expect(() => db.run("DELETE FROM runner_command_account")).toThrow("retained");
 
-    migrate(db);
+    legacyMigrate(db);
     expect(applied()).toEqual(before);
     expect(
       listAgentAccounts(db, "w")

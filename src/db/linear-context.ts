@@ -1,5 +1,27 @@
-import { getLinearIssueContext } from "./linear-issue-context";
 import type { Database } from "bun:sqlite";
+import { asc, eq, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
+import { getLinearIssueContextSteps } from "./linear-issue-context";
+
+export function* saveLinearSessionContextSteps(
+  q: Q,
+  sessionId: string,
+  context: string,
+  richness = 1,
+) {
+  if (!context) return;
+  const { linearSessionContext } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(linearSessionContext)
+      .values({ sessionId, context, richness })
+      .onConflictDoUpdate({
+        target: linearSessionContext.sessionId,
+        set: { context: sql`excluded.context`, richness: sql`excluded.richness` },
+        setWhere: sql`excluded.richness > linear_session_context.richness`,
+      }),
+  );
+}
 
 export function saveLinearSessionContext(
   db: Database,
@@ -7,32 +29,53 @@ export function saveLinearSessionContext(
   context: string,
   richness = 1,
 ): void {
-  if (!context) return;
-  db.run(
-    `INSERT INTO linear_session_context (session_id, context, richness) VALUES (?, ?, ?)
-     ON CONFLICT (session_id) DO UPDATE SET context = excluded.context, richness = excluded.richness WHERE excluded.richness > linear_session_context.richness`,
-    [sessionId, context, richness],
+  settled(sqliteDb(db).run((q) => saveLinearSessionContextSteps(q, sessionId, context, richness)));
+}
+
+function* sessionContextSteps(q: Q, sessionId: string) {
+  const { linearSessionContext } = q.t;
+  return yield* q.one(
+    q.orm
+      .select({
+        context: linearSessionContext.context,
+        snapshotContext: linearSessionContext.snapshotContext,
+      })
+      .from(linearSessionContext)
+      .where(eq(linearSessionContext.sessionId, sessionId)),
   );
 }
 
+export function* getLinearSessionContextSteps(q: Q, sessionId: string) {
+  const row = yield* sessionContextSteps(q, sessionId);
+  const issueContext = yield* getLinearIssueContextSteps(q, sessionId);
+  return [row?.context, row?.snapshotContext, issueContext].filter(Boolean).join("\n\n");
+}
+
 export function getLinearSessionContext(db: Database, sessionId: string): string {
-  const row = db
-    .query<{ context: string; snapshot_context: string | null }, [string]>(
-      "SELECT context, snapshot_context FROM linear_session_context WHERE session_id = ?",
-    )
-    .get(sessionId);
-  return [row?.context, row?.snapshot_context, getLinearIssueContext(db, sessionId)]
-    .filter(Boolean)
-    .join("\n\n");
+  return settled(sqliteDb(db).run((q) => getLinearSessionContextSteps(q, sessionId)));
+}
+
+export function* hasLinearSessionSnapshotContextSteps(q: Q, sessionId: string) {
+  const row = yield* sessionContextSteps(q, sessionId);
+  return row !== undefined && row.snapshotContext !== null;
 }
 
 export function hasLinearSessionSnapshotContext(db: Database, sessionId: string): boolean {
-  return (
-    db
-      .query<{ hydrated: number }, [string]>(
-        "SELECT snapshot_context IS NOT NULL AS hydrated FROM linear_session_context WHERE session_id = ?",
-      )
-      .get(sessionId)?.hydrated === 1
+  return settled(sqliteDb(db).run((q) => hasLinearSessionSnapshotContextSteps(q, sessionId)));
+}
+
+export function* saveLinearSessionSnapshotContextSteps(q: Q, sessionId: string, context: string) {
+  const { linearSessionContext } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(linearSessionContext)
+      .values({ sessionId, context: "", richness: -1, snapshotContext: context })
+      .onConflictDoUpdate({
+        target: linearSessionContext.sessionId,
+        set: {
+          snapshotContext: sql`COALESCE(linear_session_context.snapshot_context, excluded.snapshot_context)`,
+        },
+      }),
   );
 }
 
@@ -41,28 +84,44 @@ export function saveLinearSessionSnapshotContext(
   sessionId: string,
   context: string,
 ): void {
-  db.run(
-    `INSERT INTO linear_session_context (session_id, context, richness, snapshot_context) VALUES (?, '', -1, ?)
-    ON CONFLICT (session_id) DO UPDATE SET snapshot_context = COALESCE(linear_session_context.snapshot_context, excluded.snapshot_context)`,
-    [sessionId, context],
+  settled(sqliteDb(db).run((q) => saveLinearSessionSnapshotContextSteps(q, sessionId, context)));
+}
+
+type LinearActivitySnapshotInput = {
+  id: string;
+  sessionId: string;
+  createdAt: string;
+  snapshot: string;
+};
+
+export function* saveLinearActivitySnapshotSteps(q: Q, input: LinearActivitySnapshotInput) {
+  const snapshot = q.dialect === "sqlite" ? input.snapshot : sql`${input.snapshot}::jsonb`;
+  yield* q.exec(
+    q.orm
+      .insert(q.t.linearActivitySnapshot)
+      .values({ ...input, snapshot })
+      .onConflictDoNothing({ target: q.t.linearActivitySnapshot.id }),
   );
 }
 
-export function saveLinearActivitySnapshot(
-  db: Database,
-  input: { id: string; sessionId: string; createdAt: string; snapshot: string },
-): void {
-  db.run(
-    "INSERT INTO linear_activity_snapshot (id, session_id, created_at, snapshot) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO NOTHING",
-    [input.id, input.sessionId, input.createdAt, input.snapshot],
+export function saveLinearActivitySnapshot(db: Database, input: LinearActivitySnapshotInput): void {
+  settled(sqliteDb(db).run((q) => saveLinearActivitySnapshotSteps(q, input)));
+}
+
+export function* listLinearActivitySnapshotsSteps(q: Q, sessionId: string) {
+  const { linearActivitySnapshot } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ snapshot: linearActivitySnapshot.snapshot })
+      .from(linearActivitySnapshot)
+      .where(eq(linearActivitySnapshot.sessionId, sessionId))
+      .orderBy(asc(linearActivitySnapshot.createdAt), asc(linearActivitySnapshot.id)),
+  );
+  return rows.map((row) =>
+    q.dialect === "sqlite" ? (row.snapshot as string) : JSON.stringify(row.snapshot),
   );
 }
 
 export function listLinearActivitySnapshots(db: Database, sessionId: string): readonly string[] {
-  return db
-    .query<{ snapshot: string }, [string]>(
-      "SELECT snapshot FROM linear_activity_snapshot WHERE session_id = ? ORDER BY created_at, id",
-    )
-    .all(sessionId)
-    .map((row) => row.snapshot);
+  return settled(sqliteDb(db).run((q) => listLinearActivitySnapshotsSteps(q, sessionId)));
 }

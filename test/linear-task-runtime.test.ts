@@ -935,7 +935,7 @@ test.each([
         content: { type: "text", text: "Private reasoning must not reach Linear" },
       },
     ]);
-    const delivery = setInterval(() => f.outbox.tick(), 1);
+    const delivery = setInterval(() => void f.outbox.tick(), 1);
     try {
       await f.orchestrator.onLinearEvent(event());
       await f.jobs.tick();

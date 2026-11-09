@@ -20,6 +20,7 @@ import {
   immediate,
   itemLinearIdentifier,
   latestItemJobId,
+  listBlocksOf,
   listSchedulerAdmissions,
   listTaskBlocks,
   mergeQueueReadyTimes,
@@ -35,8 +36,11 @@ import {
   latestCandidatePaths,
   requeueOrphanedWork,
   runnerCapacityWait,
+  listOverlapHoldAges,
   saveItemHolds,
   saveQueuePositions,
+  settled,
+  sqliteDb,
   savePinnedSlots,
   type ItemHold,
   type PinnedSlot,
@@ -88,13 +92,13 @@ const HOLD_LINES: Record<ItemHold["reason"], string> = {
 
 function holdLine(hold: ItemHold): string {
   if (hold.reason === "overlap" && hold.blockers.length)
-    return overlapLine(hold.blockers[0]!, hold.files ?? []);
+    return overlapLine(hold.blockers[0]!, hold.files ?? [], hold.start);
   return hold.reason === "blocked" && hold.blockers.length
     ? `blocked by ${hold.blockers.join(", ")}`
     : HOLD_LINES[hold.reason];
 }
 
-type Overlap = { blocker: string; files: string[] };
+type Overlap = { blocker: string; files: string[]; start?: true };
 
 /**
  * Holds work that would conflict again in the merge queue. A queued item whose latest candidate
@@ -106,7 +110,7 @@ type Overlap = { blocker: string; files: string[] };
  * keeps its merge-queue place, such as one sent back for a conflict, is held only by an item
  * ahead of it in that queue: anything behind it, or not queued yet, merges after it.
  */
-function overlapGate(db: Database, now: number) {
+function overlapGate(db: Database, now: number, waiters: readonly Item[]) {
   const hot = new Map<string, Set<string>>();
   for (const file of hotFiles(db, now)) {
     const key = file.repository.toLowerCase();
@@ -120,6 +124,13 @@ function overlapGate(db: Database, now: number) {
   const places = new Map(
     (hot.size ? mergeQueueReadyTimes(db) : []).map((entry) => [entry.itemId, entry.readyAt]),
   );
+  const ages = hot.size ? listOverlapHoldAges(db) : new Map<string, number>();
+  const waitedLonger = (other: Item, item: Item): boolean => {
+    const theirs = ages.get(other.id);
+    if (theirs === undefined) return false;
+    const mine = ages.get(item.id) ?? Infinity;
+    return theirs < mine || (theirs === mine && other.id < item.id);
+  };
   /** Whether `other` merges before `item` in the serial lane, by the order the queue uses. */
   const mergesFirst = (other: Item, item: Item): boolean => {
     const mine = places.get(item.id);
@@ -146,15 +157,26 @@ function overlapGate(db: Database, now: number) {
     const mine = files ? (paths.get(item.id) ?? []).filter((path) => files.has(path)) : [];
     if (!mine.length) return null;
     const waiting = dependents(item.issueId);
-    for (const other of occupants) {
-      if (other.id === item.id || !other.owner || !other.repo) continue;
-      if (waiting.has(other.issueId) || !mergesFirst(other, item)) continue;
-      if (repositoryKey(other.owner, other.repo) !== key) continue;
+    const sharedWith = (other: Item): string[] => {
+      if (other.id === item.id || !other.owner || !other.repo) return [];
+      if (waiting.has(other.issueId) || !mergesFirst(other, item)) return [];
+      if (repositoryKey(other.owner, other.repo) !== key) return [];
       const theirs = new Set(paths.get(other.id) ?? []);
-      const shared = mine.filter((path) => theirs.has(path));
+      return mine.filter((path) => theirs.has(path));
+    };
+    for (const other of occupants) {
+      const shared = sharedWith(other);
       if (shared.length) return { blocker: other.identifier ?? other.id, files: shared };
     }
-    return null;
+    let oldest: { other: Item; files: string[] } | null = null;
+    for (const other of waiters) {
+      if (!waitedLonger(other, item) || (oldest && !waitedLonger(other, oldest.other))) continue;
+      const shared = sharedWith(other);
+      if (shared.length) oldest = { other, files: shared };
+    }
+    return oldest
+      ? { blocker: oldest.other.identifier ?? oldest.other.id, files: oldest.files, start: true }
+      : null;
   };
 }
 
@@ -395,6 +417,13 @@ function reportDependencyCycles(
     if (!item.absent)
       delegations.set(item.delegationId, [...(delegations.get(item.delegationId) ?? []), item]);
   for (const [delegationId, members] of delegations) {
+    if (
+      !listBlocksOf(
+        db,
+        members.map((member) => member.issueId),
+      ).length
+    )
+      continue;
     const workspaceId = members.find((member) => member.workspaceId)?.workspaceId;
     if (!workspaceId || !admission.canDispatchDelegation(delegationId)) continue;
     let held: Item[];
@@ -558,7 +587,15 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       )
         running.set(item.turn, (running.get(item.turn) ?? 0) + 1);
     const cap = options.ownerCap ?? null;
-    const overlapping = overlapGate(db, now);
+    const overlapping = overlapGate(
+      db,
+      now,
+      candidates.filter(
+        (item) =>
+          !held.some((entry) => entry.itemId === item.id) &&
+          (slots === null || options.ownerHasRunner?.(item.id) !== false),
+      ),
+    );
     const occupants = items.filter(
       (item) =>
         holdsExecution(item) ||
@@ -623,12 +660,14 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       ...waiting.filter(({ capped }) => !capped),
       ...waiting.filter(({ capped }) => capped),
     ].map(({ item }) => item.id);
-    saveQueuePositions(
-      db,
-      line,
-      slots ? { busy: slots.total - Math.max(free, 0), total: slots.total } : null,
-      now,
-      new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
+    settled(
+      saveQueuePositions(
+        sqliteDb(db),
+        line,
+        slots ? { busy: slots.total - Math.max(free, 0), total: slots.total } : null,
+        now,
+        new Map(waiting.flatMap(({ item, capped }) => (capped && cap ? [[item.id, cap]] : []))),
+      ),
     );
     const holds: ItemHold[] = [
       ...starts.flatMap(({ item, start }): ItemHold[] =>
@@ -652,9 +691,10 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         reason: "overlap",
         blockers: [overlap.blocker],
         files: overlap.files,
+        ...(overlap.start ? { start: overlap.start } : {}),
       })),
     ];
-    const changes = saveItemHolds(db, holds).map((change) => {
+    const changes = saveItemHolds(db, holds, now).map((change) => {
       const name =
         byId.get(change.itemId)?.identifier ??
         itemLinearIdentifier(db, change.itemId) ??

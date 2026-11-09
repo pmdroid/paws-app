@@ -10,7 +10,7 @@ import { connect } from "node:net";
 const TOOL = {
   name: "ask_team",
   description:
-    "Ask the engineering team a question and wait for their answer. Use this when a product or scope decision is needed.",
+    "Ask the engineering team a question. Posting it ends your turn, and their answer arrives as your next message, so state the question completely. Use this when a product or scope decision is needed.",
   inputSchema: {
     type: "object",
     properties: {
@@ -115,6 +115,25 @@ const PULL_REQUEST_TOOL = {
         maxLength: 12000,
         description: "Markdown description: what changed, why, and how you verified it.",
       },
+      remaining: {
+        type: "array",
+        description:
+          "Work left for later pull requests. The item ends when this pull request merges; Paws then files each part as a sub-issue delegated to Paws. More than 3 parts: ask_team instead.",
+        items: {
+          type: "object",
+          properties: {
+            title: { type: "string", minLength: 1, maxLength: 120, description: "One-line title." },
+            scope: {
+              type: "string",
+              minLength: 1,
+              maxLength: 4000,
+              description: "The files and what is left in them.",
+            },
+          },
+          required: ["title", "scope"],
+          additionalProperties: false,
+        },
+      },
     },
     required: ["title", "body"],
     additionalProperties: false,
@@ -150,6 +169,25 @@ const REPLY_TOOL = {
       },
     },
     required: ["text"],
+    additionalProperties: false,
+  },
+};
+
+const START_WORK_TOOL = {
+  name: "start_work",
+  description:
+    "Move this conversation to a work turn. Call it only when the person asked for a change or agreed to one. Your turn ends at once; Paws queues the item for a work slot and the work turn resumes this session with edits allowed. The plan is posted to the person.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      plan: {
+        type: "string",
+        minLength: 1,
+        maxLength: 4000,
+        description: "What you will change and why.",
+      },
+    },
+    required: ["plan"],
     additionalProperties: false,
   },
 };
@@ -287,6 +325,7 @@ async function handle(socketPath: string, message: Rpc): Promise<void> {
           PULL_REQUEST_TOOL,
           POST_UPDATE_TOOL,
           REPLY_TOOL,
+          START_WORK_TOOL,
           GET_CLOSEOUT_TOOL,
           RUN_CLOSEOUT_TOOL,
           RERUN_CI_TOOL,

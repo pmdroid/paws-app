@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { and, count, eq, ne, notExists, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 
 export type StoredArtifact = {
   id: string;
@@ -13,71 +15,143 @@ export type StoredArtifact = {
   assetUrl: string | null;
 };
 
-const COLUMNS = `id, item_id AS itemId, run_id AS runId, path, display_name AS displayName,
-  mime_type AS mimeType, size_bytes AS sizeBytes, sha256, state, asset_url AS assetUrl`;
+function columns(q: Q) {
+  const { linearArtifact } = q.t;
+  return {
+    id: linearArtifact.id,
+    itemId: linearArtifact.itemId,
+    runId: linearArtifact.runId,
+    path: linearArtifact.path,
+    displayName: linearArtifact.displayName,
+    mimeType: linearArtifact.mimeType,
+    sizeBytes: linearArtifact.sizeBytes,
+    sha256: linearArtifact.sha256,
+    state: sql<StoredArtifact["state"]>`${linearArtifact.state}`,
+    assetUrl: linearArtifact.assetUrl,
+  };
+}
+
+export function* saveArtifactSteps(
+  q: Q,
+  artifact: StoredArtifact & { identityHash?: string },
+  now: number,
+) {
+  const { linearArtifact } = q.t;
+  const identityHash = artifact.identityHash ?? null;
+  yield* q.exec(
+    q.orm
+      .insert(linearArtifact)
+      .values({ ...artifact, state: "pending", assetUrl: null, createdAt: now, identityHash })
+      .onConflictDoNothing(),
+  );
+  const stored = (yield* q.one(
+    q.orm
+      .select(columns(q))
+      .from(linearArtifact)
+      .where(
+        and(
+          eq(linearArtifact.itemId, artifact.itemId),
+          eq(linearArtifact.path, artifact.path),
+          eq(linearArtifact.displayName, artifact.displayName),
+          eq(linearArtifact.mimeType, artifact.mimeType),
+          eq(linearArtifact.sha256, artifact.sha256),
+        ),
+      ),
+  ))!;
+  yield* q.exec(
+    q.orm
+      .update(linearArtifact)
+      .set({
+        requestVersion: sql`(
+          SELECT COALESCE(max(request_version), 0) + 1 FROM linear_artifact WHERE item_id = ${artifact.itemId}
+        )`,
+        identityHash: sql`coalesce(${identityHash}, identity_hash)`,
+      })
+      .where(eq(linearArtifact.id, stored.id)),
+  );
+  return stored;
+}
 
 export function saveArtifact(
   db: Database,
   artifact: StoredArtifact & { identityHash?: string },
   now: number,
 ): StoredArtifact {
-  db.query(`INSERT OR IGNORE INTO linear_artifact
-    (id, item_id, run_id, path, display_name, mime_type, size_bytes, sha256, state, created_at, identity_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`).run(
-    artifact.id,
-    artifact.itemId,
-    artifact.runId,
-    artifact.path,
-    artifact.displayName,
-    artifact.mimeType,
-    artifact.sizeBytes,
-    artifact.sha256,
-    now,
-    artifact.identityHash ?? null,
+  return settled(sqliteDb(db).run((q) => saveArtifactSteps(q, artifact, now)));
+}
+
+export function* markArtifactSteps(q: Q, id: string, assetUrl: string | null) {
+  const { linearArtifact } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(linearArtifact)
+      .set({ state: assetUrl === null ? "failed" : "uploaded", assetUrl })
+      .where(eq(linearArtifact.id, id)),
   );
-  const stored = db
-    .query<StoredArtifact, [string, string, string, string, string]>(
-      `SELECT ${COLUMNS} FROM linear_artifact
-     WHERE item_id = ? AND path = ? AND display_name = ? AND mime_type = ? AND sha256 = ?`,
-    )
-    .get(artifact.itemId, artifact.path, artifact.displayName, artifact.mimeType, artifact.sha256)!;
-  db.query(`UPDATE linear_artifact SET request_version = (
-    SELECT COALESCE(max(request_version), 0) + 1 FROM linear_artifact WHERE item_id = ?
-  ), identity_hash = coalesce(?, identity_hash) WHERE id = ?`).run(
-    artifact.itemId,
-    artifact.identityHash ?? null,
-    stored.id,
-  );
-  return stored;
 }
 
 export function markArtifact(db: Database, id: string, assetUrl: string | null): void {
-  db.query("UPDATE linear_artifact SET state = ?, asset_url = ? WHERE id = ?").run(
-    assetUrl === null ? "failed" : "uploaded",
-    assetUrl,
-    id,
+  settled(sqliteDb(db).run((q) => markArtifactSteps(q, id, assetUrl)));
+}
+
+export function* listArtifactsSteps(q: Q, itemId: string) {
+  const { linearArtifact } = q.t;
+  return yield* q.all(
+    q.orm.select(columns(q)).from(linearArtifact).where(eq(linearArtifact.itemId, itemId)),
   );
 }
 
 export function listArtifacts(db: Database, itemId: string): StoredArtifact[] {
-  return db
-    .query<StoredArtifact, [string]>(`SELECT ${COLUMNS} FROM linear_artifact WHERE item_id = ?`)
-    .all(itemId);
+  return settled(sqliteDb(db).run((q) => listArtifactsSteps(q, itemId)));
+}
+
+export function* getArtifactSteps(q: Q, id: string) {
+  const { linearArtifact } = q.t;
+  const row = yield* q.one(
+    q.orm.select(columns(q)).from(linearArtifact).where(eq(linearArtifact.id, id)),
+  );
+  return row ?? null;
 }
 
 export function getArtifact(db: Database, id: string): StoredArtifact | null {
-  return db
-    .query<StoredArtifact, [string]>(`SELECT ${COLUMNS} FROM linear_artifact WHERE id = ?`)
-    .get(id);
+  return settled(sqliteDb(db).run((q) => getArtifactSteps(q, id)));
+}
+
+export function* beginArtifactAttemptSteps(q: Q, itemId: string, identityHash: string) {
+  const { linearArtifactAttempt } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .insert(linearArtifactAttempt)
+      .values({ itemId, identityHash, version: 1, completedVersion: 0 })
+      .onConflictDoUpdate({
+        target: [linearArtifactAttempt.itemId, linearArtifactAttempt.identityHash],
+        set: { version: sql`${linearArtifactAttempt.version} + 1` },
+      })
+      .returning({ version: linearArtifactAttempt.version }),
+  );
+  return row!.version;
 }
 
 export function beginArtifactAttempt(db: Database, itemId: string, identityHash: string): number {
-  return db
-    .query<{ version: number }, [string, string]>(`INSERT INTO linear_artifact_attempt
-    (item_id, identity_hash, version, completed_version) VALUES (?, ?, 1, 0)
-    ON CONFLICT(item_id, identity_hash) DO UPDATE SET version = version + 1
-    RETURNING version`)
-    .get(itemId, identityHash)!.version;
+  return settled(sqliteDb(db).run((q) => beginArtifactAttemptSteps(q, itemId, identityHash)));
+}
+
+export function* completeArtifactAttemptSteps(
+  q: Q,
+  itemId: string,
+  identityHash: string,
+  version: number,
+) {
+  const { linearArtifactAttempt } = q.t;
+  const greatest = q.dialect === "postgres" ? sql`GREATEST` : sql`max`;
+  yield* q.exec(
+    q.orm
+      .update(linearArtifactAttempt)
+      .set({
+        completedVersion: sql`${greatest}(${linearArtifactAttempt.completedVersion}, ${version})`,
+      })
+      .where(attempt(q, itemId, identityHash)),
+  );
 }
 
 export function completeArtifactAttempt(
@@ -86,28 +160,54 @@ export function completeArtifactAttempt(
   identityHash: string,
   version: number,
 ): void {
-  db.query(`UPDATE linear_artifact_attempt SET completed_version = max(completed_version, ?)
-    WHERE item_id = ? AND identity_hash = ?`).run(version, itemId, identityHash);
+  settled(sqliteDb(db).run((q) => completeArtifactAttemptSteps(q, itemId, identityHash, version)));
+}
+
+export function* artifactPublicationReadySteps(q: Q, itemId: string) {
+  const { linearArtifact, linearArtifactAttempt } = q.t;
+  const attempts = (yield* q.one(
+    q.orm
+      .select({ pending: count() })
+      .from(linearArtifactAttempt)
+      .where(
+        and(
+          eq(linearArtifactAttempt.itemId, itemId),
+          sql`${linearArtifactAttempt.completedVersion} < ${linearArtifactAttempt.version}`,
+        ),
+      ),
+  ))!;
+  if (attempts.pending !== 0) return false;
+  // A correlated NOT EXISTS over the same table under a second alias.
+  const uploads = (yield* q.one(
+    q.orm
+      .select({ pending: count() })
+      .from(linearArtifact)
+      .where(
+        and(
+          eq(linearArtifact.itemId, itemId),
+          ne(linearArtifact.state, "uploaded"),
+          notExists(sql`(SELECT 1 FROM linear_artifact AS newer
+            WHERE newer.item_id = ${linearArtifact.itemId}
+              AND ((${linearArtifact.identityHash} IS NULL AND newer.path = ${linearArtifact.path})
+                OR newer.identity_hash = ${linearArtifact.identityHash})
+              AND newer.request_version > ${linearArtifact.requestVersion})`),
+        ),
+      ),
+  ))!;
+  return uploads.pending === 0;
 }
 
 export function artifactPublicationReady(db: Database, itemId: string): boolean {
-  return (
-    db
-      .query<{ pending: number }, [string]>(`SELECT count(*) AS pending FROM linear_artifact_attempt
-      WHERE item_id = ? AND completed_version < version`)
-      .get(itemId)!.pending === 0 &&
-    db
-      .query<{ pending: number }, [string]>(
-        `SELECT count(*) AS pending FROM linear_artifact AS artifact
-     WHERE item_id = ? AND state != 'uploaded' AND NOT EXISTS (
-       SELECT 1 FROM linear_artifact AS newer
-       WHERE newer.item_id = artifact.item_id
-         AND ((artifact.identity_hash IS NULL AND newer.path = artifact.path)
-           OR newer.identity_hash = artifact.identity_hash)
-         AND newer.request_version > artifact.request_version
-     )`,
-      )
-      .get(itemId)!.pending === 0
+  return settled(sqliteDb(db).run((q) => artifactPublicationReadySteps(q, itemId)));
+}
+
+export function* requestArtifactAttachmentSteps(q: Q, itemId: string, identityHash: string) {
+  const { linearArtifactAttempt } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(linearArtifactAttempt)
+      .set({ attachmentRequested: 1 })
+      .where(attempt(q, itemId, identityHash)),
   );
 }
 
@@ -116,8 +216,18 @@ export function requestArtifactAttachment(
   itemId: string,
   identityHash: string,
 ): void {
-  db.query(`UPDATE linear_artifact_attempt SET attachment_requested = 1
-    WHERE item_id = ? AND identity_hash = ?`).run(itemId, identityHash);
+  settled(sqliteDb(db).run((q) => requestArtifactAttachmentSteps(q, itemId, identityHash)));
+}
+
+export function* artifactAttachmentRequestedSteps(q: Q, itemId: string, identityHash: string) {
+  const { linearArtifactAttempt } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ requested: linearArtifactAttempt.attachmentRequested })
+      .from(linearArtifactAttempt)
+      .where(attempt(q, itemId, identityHash)),
+  );
+  return row?.requested === 1;
 }
 
 export function artifactAttachmentRequested(
@@ -125,10 +235,15 @@ export function artifactAttachmentRequested(
   itemId: string,
   identityHash: string,
 ): boolean {
-  return (
-    db
-      .query<{ requested: number }, [string, string]>(`SELECT attachment_requested AS requested
-    FROM linear_artifact_attempt WHERE item_id = ? AND identity_hash = ?`)
-      .get(itemId, identityHash)?.requested === 1
+  return settled(
+    sqliteDb(db).run((q) => artifactAttachmentRequestedSteps(q, itemId, identityHash)),
+  );
+}
+
+function attempt(q: Q, itemId: string, identityHash: string) {
+  const { linearArtifactAttempt } = q.t;
+  return and(
+    eq(linearArtifactAttempt.itemId, itemId),
+    eq(linearArtifactAttempt.identityHash, identityHash),
   );
 }

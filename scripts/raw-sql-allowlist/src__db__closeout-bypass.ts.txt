@@ -1,0 +1,3 @@
+src/db/closeout-bypass.ts | db.run( | not yet converted to Drizzle
+src/db/closeout-bypass.ts | return db .query<Row, [string]>( | not yet converted to Drizzle
+src/db/closeout-bypass.ts | const updated = db.run( | not yet converted to Drizzle

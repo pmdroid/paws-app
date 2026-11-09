@@ -38,7 +38,7 @@ const ROUNDS: LinkAskRounds = {
   handoff: "- review independent-review P1 at src/auth/session.ts:42: unchecked null",
 };
 
-function asked() {
+function asked(findings?: string) {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "PAS-759", sessionKey: "ses_1", title: "Rounds" });
@@ -71,6 +71,7 @@ function asked() {
       summary: "Closeout: exhausted",
     },
     rounds: ROUNDS,
+    ...(findings ? { findings } : {}),
     publicUrl: "https://paws.example",
     now: NOW,
   })!;
@@ -119,6 +120,17 @@ test("one elicitation without options names the recurring bug class and links to
   ]);
   // Nobody answered yet, so no new round budget.
   expect(recoveryOptions(db, itemId).retryBaseline).toEqual([]);
+});
+
+test("the question lists the open findings' text without changing the dashboard detail", () => {
+  const findings =
+    "- review independent-review P1 at src/auth/session.ts:42: unchecked null: the session is read before the check. (session.ts:42)";
+  const { db, question } = asked(findings);
+  const body = (listOutbox(db).find((row) => row.op === "elicitation")!.payload as { body: string })
+    .body;
+  expect(body).toContain(findings);
+  expect(body.indexOf(findings)).toBeLessThan(body.indexOf("Decide in Paws:"));
+  expect(getLinkAsk(db, question.id)?.detail).not.toContain(findings);
 });
 
 test("Rethink the approach restarts the item with the findings, the note and a new round budget", () => {

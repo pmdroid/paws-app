@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { migrate } from "../src/db";
+import { legacyMigrate } from "../src/db";
 
 const BEFORE = "20261028T1525_review_finding";
 
@@ -8,7 +8,7 @@ test("opencode joins every runner agent row without losing what was recorded", (
   const db = new Database(":memory:");
   try {
     db.run("PRAGMA foreign_keys=ON");
-    migrate(db, { until: BEFORE });
+    legacyMigrate(db, { until: BEFORE });
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','o','W',1)",
     );
@@ -42,7 +42,7 @@ test("opencode joins every runner agent row without losing what was recorded", (
       "INSERT INTO runner_login(id,runner_id,workspace_id,user_id,agent,state,expires_at,terminal,authorization,input_id,updated_at) VALUES('l','r','w','u','codex','connected',2,'gone',NULL,NULL,3)",
     );
 
-    migrate(db, { until: "20261029T1559_opencode_agent_rows" });
+    legacyMigrate(db, { until: "20261029T1559_opencode_agent_rows" });
 
     expect(db.query("SELECT * FROM runner_agent_policy").all()).toEqual([
       {

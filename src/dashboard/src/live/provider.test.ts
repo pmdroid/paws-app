@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
@@ -19,7 +19,9 @@ import {
   LINEAR_WEBHOOK_FIX,
   joinMergeQueue,
   keepTaskMergeSettings,
-  migrate,
+  legacyMigrate,
+  MIGRATIONS_FOLDER,
+  migrationTags,
   openDatabase,
   putWorkspaceUser,
   recordCiRound,
@@ -58,9 +60,19 @@ afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
+/** The legacy schema, then every drizzle-kit migration after `0000_baseline`. */
+function migrated(db: Database): void {
+  legacyMigrate(db);
+  for (const tag of migrationTags().slice(1))
+    for (const statement of readFileSync(join(MIGRATIONS_FOLDER, `${tag}.sql`), "utf8").split(
+      "--> statement-breakpoint",
+    ))
+      db.run(statement);
+}
+
 function database(): Database {
   const db = openDatabase(":memory:");
-  migrate(db);
+  migrated(db);
   open.push(db);
   return db;
 }
@@ -81,10 +93,10 @@ describe("live status provider", () => {
   test("HTTP status exposes migrated failures and budget questions without obsolete item states", async () => {
     const db = openDatabase(":memory:");
     open.push(db);
-    migrate(db, { until: "147_job_item_version_and_question_reason" });
+    legacyMigrate(db, { until: "147_job_item_version_and_question_reason" });
     insertQueuedItem(db, { id: "legacy-budget" });
     db.run("UPDATE work_item SET state='exhausted' WHERE id='legacy-budget'");
-    migrate(db);
+    migrated(db);
     insertQueuedItem(db, { id: "budget-question" });
     beginImplementRun(db, "budget-question", 1);
     applyWorkItemEvent(db, "budget-question", "blocking_question");

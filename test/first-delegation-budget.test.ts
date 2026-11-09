@@ -417,7 +417,7 @@ async function firstDelegation(
       // Runners heartbeat on their own; that is a database write, not a Linear request.
       db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
       for (;;) {
-        while (outbox.tick().length > 0) await outbox.idle();
+        while ((await outbox.tick()).length > 0) await outbox.idle();
         if ((await jobs.tick()) === null) break;
       }
       clock.advance(60_000);
@@ -527,7 +527,7 @@ async function firstDelegation(
       if (Date.now() > deadline) throw new Error(`The task is stuck in ${state()}`);
       await settle();
     }
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     return {
       server,
       refused: false as const,

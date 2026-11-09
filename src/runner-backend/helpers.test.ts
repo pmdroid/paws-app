@@ -74,12 +74,14 @@ function fixture(
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => now,
   });
+  const journaled: string[] = [];
   const backend = createRemoteSessionAgentRunner({
     db,
     helpers,
     now: () => now,
     pollIntervalMs: 1,
     placement: placement?.(db, () => now),
+    journal: (line) => journaled.push(line),
   });
   const input: RunAgentOptions = {
     itemId: "not-an-item",
@@ -116,7 +118,16 @@ function fixture(
     db.close();
     rmSync(root, { recursive: true, force: true });
   });
-  return { db, backend, input, helpers, current, reply, advance: (ms: number) => (now += ms) };
+  return {
+    db,
+    backend,
+    input,
+    helpers,
+    current,
+    reply,
+    journaled,
+    advance: (ms: number) => (now += ms),
+  };
 }
 
 test.each(["classify", "select_repository"] as const)(
@@ -204,6 +215,7 @@ test("no active runner fails closed and a deadline cannot retain capacity", asyn
   );
   f.db.run("UPDATE runner SET status='active'");
   const pending = f.backend.forSession("session", "classify")(f.input);
+  f.helpers.acknowledge("runner", f.current().id);
   f.advance(60_000);
   await expect(pending).rejects.toThrow(/timed out/);
   expect(
@@ -242,6 +254,7 @@ test("a helper waits while task work fills the runner and starts once a slot fre
     await Bun.sleep(2);
   }
   expect(f.current().runnerId).toBe("runner");
+  f.helpers.acknowledge("runner", f.current().id);
   f.advance(60_000);
   await expect(pending).rejects.toThrow(/timed out/);
 });
@@ -251,8 +264,88 @@ test("a helper still blocked by task work at its deadline reports the runner slo
   fillRunner(f);
   const pending = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
+  // The runner stays online for the whole wait; only its slots are taken.
+  f.db.run("UPDATE runner SET last_seen_at=last_seen_at+60000");
   f.advance(60_000);
   await expect(pending).rejects.toBeInstanceOf(RunnerSlotsBusyError);
+});
+
+const HELPER_SLOT_TAKEN = "helper already running or no free capacity";
+
+test("a helper slot still busy at the deadline is a wait, not a failure", async () => {
+  const f = fixture(() => ({
+    async candidates(input) {
+      input.onRejected?.("runner", HELPER_SLOT_TAKEN);
+      return [];
+    },
+    started() {
+      throw new Error("Must not dispatch");
+    },
+    finished() {
+      return { retryable: false };
+    },
+  }));
+  const pending = f.backend.forSession("session", "classify")(f.input);
+  await Bun.sleep(10);
+  f.advance(60_000);
+  await expect(pending).rejects.toBeInstanceOf(RunnerSlotsBusyError);
+});
+
+test("a helper that times out while other starts queue on its slot is a wait", async () => {
+  let held = false;
+  const f = fixture(() => ({
+    async candidates(input) {
+      if (held) {
+        input.onRejected?.("runner", HELPER_SLOT_TAKEN);
+        return [];
+      }
+      held = true;
+      return [{ id: "runner", workspaceId: "workspace" }];
+    },
+    started() {},
+    finished() {
+      return { retryable: false };
+    },
+  }));
+  const holder = f.backend.forSession("session", "classify")(f.input);
+  await Bun.sleep(10);
+  f.advance(1);
+  const queued = f.backend.forSession("session", "classify")(f.input);
+  await Bun.sleep(10);
+  f.advance(60_000);
+  const outcomes = await Promise.allSettled([holder, queued]);
+  for (const outcome of outcomes) {
+    expect(outcome.status).toBe("rejected");
+    expect((outcome as PromiseRejectedResult).reason).toBeInstanceOf(RunnerSlotsBusyError);
+  }
+});
+
+test.each([
+  ["agent-not-signed-in", "agent not signed in"],
+  ["auth-expired", "auth expired"],
+  ["revoked", "revoked"],
+])("a runner refused for %s fails at once and names the cause", async (reason, named) => {
+  const f = fixture(() => ({
+    async candidates(input) {
+      input.onRejected?.("runner", reason);
+      return [];
+    },
+    started() {
+      throw new Error("Must not dispatch");
+    },
+    finished() {
+      return { retryable: false };
+    },
+  }));
+  const error = await f.backend
+    .forSession(
+      "session",
+      "classify",
+    )(f.input)
+    .catch((caught: unknown) => caught);
+  expect(error).not.toBeInstanceOf(RunnerSlotsBusyError);
+  expect((error as Error).message).toContain(`No paired runner can run codex`);
+  expect((error as Error).message).toContain(named);
 });
 
 test("session helpers reject executable-work and file/tool contracts before dispatch", async () => {
@@ -701,4 +794,254 @@ test("a helper whose named account hits its quota retries with the next account 
     account: second.account!,
   });
   expect((await pending).stopReason).toBe("end_turn");
+});
+
+function secondRunner(f: ReturnType<typeof fixture>) {
+  f.db.run(
+    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'second',workspace_id,owner_user_id,'Second','active',created_at,last_seen_at FROM runner WHERE id='runner'",
+  );
+}
+
+function linearSession(f: ReturnType<typeof fixture>, sessionId: string) {
+  recordLinearInstallation(f.db, {
+    organizationId: "org",
+    oauthClientId: "app",
+    appUserId: "app-user",
+    sessionId,
+    teamId: "team",
+    observedAtMs: Date.now(),
+  });
+}
+
+const helperResult = (commandId: string) => ({
+  executionId: workspaceId(),
+  commandId,
+  role: "implementer" as const,
+  stopReason: "end_turn" as const,
+  cancelled: false,
+  timedOut: false,
+  authRequired: false,
+  agentExited: true,
+  text: '{"mode":"answer"}',
+});
+
+test("twelve resuming items keep one unacknowledged helper per runner and none fails", async () => {
+  const f = fixture();
+  secondRunner(f);
+  const sessions = Array.from({ length: 12 }, (_, index) => `session-${index}`);
+  for (const session of sessions) linearSession(f, session);
+  const openHelpers = () =>
+    f.db
+      .query<{ id: string; runnerId: string; acked: number | null }, [number]>(
+        "SELECT id,runner_id AS runnerId,acknowledged_at AS acked FROM runner_helper WHERE ended_at IS NULL AND result IS NULL AND expires_at>?",
+      )
+      .all(f.advance(0));
+  const unacknowledgedPerRunner = () => {
+    const counts = new Map<string, number>();
+    for (const { runnerId, acked } of openHelpers())
+      if (acked === null) counts.set(runnerId, (counts.get(runnerId) ?? 0) + 1);
+    return Math.max(0, ...counts.values());
+  };
+  const failures: unknown[] = [];
+  let lanesBusy = 0;
+  const resume = async (session: string) => {
+    for (;;)
+      try {
+        return await f.backend.forSession(session, "classify")(f.input);
+      } catch (error) {
+        if (!(error instanceof RunnerSlotsBusyError)) {
+          failures.push(error);
+          throw error;
+        }
+        lanesBusy++;
+      }
+  };
+  const all = Promise.all(sessions.map(resume));
+  const progress = { done: false };
+  void all.finally(() => (progress.done = true)).catch(() => undefined);
+  while (new Set(openHelpers().map((row) => row.runnerId)).size < 2) await Bun.sleep(1);
+  await Bun.sleep(20);
+  expect(openHelpers()).toHaveLength(2);
+  expect(unacknowledgedPerRunner()).toBe(1);
+
+  f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
+  let peak = 0;
+  while (!progress.done) {
+    peak = Math.max(peak, unacknowledgedPerRunner());
+    for (const { id, runnerId } of openHelpers()) {
+      f.helpers.acknowledge(runnerId, id);
+      f.helpers.submit(runnerId, helperResult(id));
+    }
+    await Bun.sleep(1);
+  }
+  await all;
+  expect(failures).toEqual([]);
+  expect(lanesBusy).toBeGreaterThan(0);
+  expect(peak).toBeLessThanOrEqual(1);
+  expect(
+    f.db
+      .query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper WHERE result IS NOT NULL")
+      .get()!.n,
+  ).toBe(12);
+});
+
+test("a helper the runner never picked up waits for the lane, one it ran and failed does not", async () => {
+  const f = fixture();
+  const unpicked = f.backend.forSession("session", "classify")(f.input);
+  f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
+  await expect(unpicked).rejects.toBeInstanceOf(RunnerSlotsBusyError);
+  const ran = f.backend.forSession("session", "classify")(f.input);
+  f.helpers.acknowledge("runner", f.current().id);
+  f.advance(60_000);
+  const failure = await ran.catch((error: unknown) => error);
+  expect(failure).not.toBeInstanceOf(RunnerSlotsBusyError);
+  expect((failure as Error).message).toBe("Remote session helper timed out");
+});
+
+test("a retry reuses the item's open helper instead of sending a second", async () => {
+  const f = fixture();
+  const out = f.helpers.dispatch({
+    runnerId: "runner",
+    sessionId: "session",
+    purpose: "classify",
+    profile: { agent: "codex", model: null },
+    prompt: f.input.prompt,
+  });
+  const retry = f.backend.forSession("session", "classify")(f.input);
+  await Bun.sleep(10);
+  expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(1);
+  f.helpers.submit("runner", helperResult(out.command.id));
+  expect((await retry).stopReason).toBe("end_turn");
+  expect(() => f.helpers.current(out.command.id)).toThrow(/unavailable/);
+});
+
+test("a reused helper's sign-in failure excludes its named account, not the runner", async () => {
+  const excluded: (readonly string[] | undefined)[] = [];
+  const f = fixture(() => ({
+    async candidates(request) {
+      excluded.push(request.excludeRunnerIds);
+      return [];
+    },
+    started() {},
+    finished: () => ({ retryable: true }),
+  }));
+  const workspace = f.db
+    .query<{ id: string }, []>("SELECT workspace_id AS id FROM runner WHERE id='runner'")
+    .get()!.id;
+  const account = createAgentAccount(f.db, {
+    workspaceId: workspace,
+    agent: "codex",
+    label: "A",
+    now: Date.now(),
+  });
+  const binding = bindAgentAccount(f.db, {
+    workspaceId: workspace,
+    accountId: account.id,
+    runnerId: "runner",
+    now: Date.now(),
+  });
+  f.db.run(
+    "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner','0.1.61',?)",
+    [Date.now()],
+  );
+  recordRunnerAccountCapability(
+    f.db,
+    "runner",
+    { protocol: 1, bindings: [{ bindingId: binding.id, agent: "codex" }] },
+    Date.now(),
+  );
+  const named = { accountId: account.id, bindingId: binding.id };
+  const out = f.helpers.dispatch({
+    runnerId: "runner",
+    sessionId: "session",
+    purpose: "classify",
+    profile: { agent: "codex", model: null },
+    prompt: f.input.prompt,
+    account: named,
+  });
+  const retry = f.backend.forSession("session", "classify")(f.input);
+  await Bun.sleep(10);
+  f.helpers.submit("runner", {
+    ...helperResult(out.command.id),
+    stopReason: "error",
+    authRequired: true,
+    agentExited: true,
+    account: named,
+  });
+  await retry.catch(() => undefined);
+  expect(excluded).toEqual([[binding.id]]);
+});
+
+test("a second attempt on one helper keeps it open until the last attempt finishes", async () => {
+  const f = fixture();
+  const first = f.backend.forSession("session", "classify")(f.input);
+  const command = f.current();
+  const second = f.backend.forSession("session", "classify")(f.input);
+  await Bun.sleep(10);
+  expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(1);
+  f.helpers.submit("runner", helperResult(command.id));
+  expect((await first).stopReason).toBe("end_turn");
+  expect((await second).stopReason).toBe("end_turn");
+  expect(() => f.helpers.current(command.id)).toThrow(/unavailable/);
+});
+
+test("held-back helpers journal one line per runner at most every five minutes", async () => {
+  const f = fixture();
+  linearSession(f, "waiting");
+  const holdOnce = async () => {
+    const out = f.helpers.dispatch({
+      runnerId: "runner",
+      sessionId: "session",
+      purpose: "classify",
+      profile: { agent: "codex", model: null },
+      prompt: "other work",
+    });
+    const controller = new AbortController();
+    const waiting = f.backend.forSession(
+      "waiting",
+      "classify",
+    )({ ...f.input, signal: controller.signal });
+    await Bun.sleep(20);
+    controller.abort();
+    await waiting.catch(() => undefined);
+    f.helpers.finish(out.command.id);
+  };
+  await holdOnce();
+  expect(f.journaled).toHaveLength(1);
+  expect(f.journaled[0]).toContain("runner runner");
+  f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
+  await holdOnce();
+  expect(f.journaled).toHaveLength(1);
+  f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(5 * 60_000)]);
+  await holdOnce();
+  expect(f.journaled).toHaveLength(2);
+});
+
+test("a sign-in goes first: no new helper goes out while one waits", () => {
+  const f = fixture();
+  const dispatch = () =>
+    f.helpers.dispatch({
+      runnerId: "runner",
+      sessionId: "session",
+      purpose: "classify",
+      profile: { agent: "codex", model: null },
+      prompt: "work",
+    });
+  const owner = f.db
+    .query<{ workspace: string; user: string }, []>(
+      "SELECT workspace_id AS workspace,owner_user_id AS user FROM runner WHERE id='runner'",
+    )
+    .get()!;
+  const expires = f.advance(0) + 300_000;
+  f.db.run(
+    "INSERT INTO runner_command(id,runner_id,kind,envelope,expires_at) VALUES('sign-in','runner','login','{}',?)",
+    [expires],
+  );
+  f.db.run(
+    "INSERT INTO runner_login(id,runner_id,workspace_id,user_id,agent,state,expires_at,updated_at) VALUES('sign-in','runner',?,?,'codex','waiting',?,?)",
+    [owner.workspace, owner.user, expires, f.advance(0)],
+  );
+  expect(dispatch).toThrow(/busy/);
+  f.db.run("UPDATE runner_login SET state='cancelled' WHERE id='sign-in'");
+  expect(dispatch().command.purpose).toBe("classify");
 });

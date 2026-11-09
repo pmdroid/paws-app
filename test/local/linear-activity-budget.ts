@@ -127,7 +127,7 @@ export async function probeLinearActivityBudget(
     });
     const final = activity("chatty", "response", item.id);
     for (let n = 0; n < 61; n++) {
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
     }
     assert.equal(activities.size, 61);
@@ -142,7 +142,7 @@ export async function probeLinearActivityBudget(
     migrate(db);
     outbox = dispatcher();
     for (let n = 61; n < eventCount + 1; n++) {
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
     }
     assert.equal(activities.size, eventCount + 1);
@@ -174,7 +174,7 @@ export async function probeLinearActivityBudget(
         ephemeral: true,
       },
     });
-    outbox.tick();
+    await outbox.tick();
     await outbox.idle();
     assert.equal(getOutbox(db, keepalive)?.status, "sent");
     observe("Keepalives remain deliverable alongside complete public history", true, {
@@ -189,7 +189,7 @@ export async function probeLinearActivityBudget(
     });
     setCurrentRun(db, item.id, nextRun.id);
     const nextId = activity("next-run-session", "thought", item.id);
-    outbox.tick();
+    await outbox.tick();
     await outbox.idle();
     assert.equal(getOutbox(db, nextId)?.status, "sent");
     assert.notEqual(original.run.id, nextRun.id);
@@ -197,11 +197,11 @@ export async function probeLinearActivityBudget(
       runChanged: true,
     });
     const question = activity("question-session", "elicitation", item.id);
-    outbox.tick();
+    await outbox.tick();
     await outbox.idle();
     assert.equal(getOutbox(db, question)?.status, "sent");
     const questionFinal = activity("question-session", "response", item.id);
-    outbox.tick();
+    await outbox.tick();
     await outbox.idle();
     assert.equal(getOutbox(db, questionFinal)?.status, "sent");
     observe(
@@ -215,7 +215,7 @@ export async function probeLinearActivityBudget(
     limited = true;
     const critical = activity("rate-limited", "thought");
     for (let n = 0; n < 7; n++) {
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
       assert.equal(getOutbox(db, critical)?.status, "pending");
       const before = requests;
@@ -225,7 +225,7 @@ export async function probeLinearActivityBudget(
         op: "message",
         idempotencyKey: `slack:${n}`,
       });
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
       assert.equal(requests, before);
       assert.equal(getOutbox(db, slack)?.status, "sent");
@@ -234,12 +234,12 @@ export async function probeLinearActivityBudget(
         db = openDatabase(path);
         migrate(db);
         outbox = dispatcher();
-        assert.equal(outbox.tick().length, 0);
+        assert.equal((await outbox.tick()).length, 0);
       }
       clock.advance(120_000);
     }
     limited = false;
-    outbox.tick();
+    await outbox.tick();
     await outbox.idle();
     assert.equal(getOutbox(db, critical)?.status, "sent");
     assert.equal(getOutbox(db, critical)?.attempts, 8);

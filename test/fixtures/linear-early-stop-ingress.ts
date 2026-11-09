@@ -1,13 +1,13 @@
 import "../quiet-journal";
+import { storeLinearToken } from "../helpers";
 import { createHmac } from "node:crypto";
-import { join } from "node:path";
 import { startPaws } from "../../src/index";
-import { createInboxStore, linearTokenPath, writeStoredToken } from "../../src/linear";
+import { createInboxStore } from "../../src/linear";
 
 const home = process.argv[2]!;
 const token = process.argv[3] === "token";
 if (token)
-  writeStoredToken(linearTokenPath(join(home, "secrets")), {
+  storeLinearToken(home, {
     accessToken: "fake-access",
     refreshToken: "fake-refresh",
     expiresAtMs: Date.now() + 600_000,

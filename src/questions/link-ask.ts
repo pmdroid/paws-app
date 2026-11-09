@@ -9,7 +9,7 @@ import {
   type LinkAskRounds,
 } from "../db";
 import { ask as askQuestion, type QuestionAsker } from "./lifecycle";
-import type { StoredQuestion } from "./store";
+import { getQuestion, type StoredQuestion } from "./store";
 
 /** The button on the overview's Needs you list and the session link label. */
 export const LINK_ASK_ACTIONS: Record<LinkAskKind, string> = {
@@ -207,6 +207,7 @@ export function openLinkAsk(
     detail: string;
     answerers: readonly string[];
     rounds?: LinkAskRounds;
+    findings?: string;
     now: number;
   },
 ): { question: StoredQuestion; linkAsk: LinkAsk } {
@@ -215,7 +216,12 @@ export function openLinkAsk(
     db,
     input.asker,
     "link",
-    linkAskBody({ kind: input.kind, title, detail: input.detail, link: input.link }),
+    linkAskBody({
+      kind: input.kind,
+      title,
+      detail: [input.detail, input.findings].filter(Boolean).join("\n"),
+      link: input.link,
+    }),
     {
       reason: `link:${input.kind}`,
       context: JSON.stringify({ link: input.link, label: LINK_ASK_ACTIONS[input.kind] }),
@@ -255,11 +261,7 @@ export function addLinkAskUrl(db: Database, question: StoredQuestion, now: numbe
 /** Takes the link off the session once the ask closed. */
 export function removeLinkAskUrl(db: Database, questionId: string, now: number): void {
   const ask = getLinkAsk(db, questionId);
-  const sessionId = db
-    .query<{ sessionId: string }, [string]>(
-      "SELECT session_id AS sessionId FROM question WHERE id = ?",
-    )
-    .get(questionId)?.sessionId;
+  const sessionId = getQuestion(db, questionId)?.sessionId;
   if (ask === null || sessionId === undefined) return;
   enqueueOutboxOnce(db, {
     target: "linear",

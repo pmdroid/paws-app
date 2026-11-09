@@ -1,5 +1,5 @@
 specVersion: "0.1"
-description: Lint, format, typecheck, the tests the change affects, the dashboard build, the documentation checks, dead-code and dependency checks, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request. GitHub CI runs the full test suite, which must be green before a merge. A merge-queue re-check takes the checks with `ci:` from green GitHub CI on the same commit.
+description: Lint, format, typecheck, the tests the change affects, the dashboard build, the documentation checks, dead-code and dependency checks, the proof scenarios that cover a loop change, screenshots of changed screens, an independent review of the diff, and a security review of high-risk paths must pass before a pull request. GitHub CI runs the full test suite, which must be green before a merge. A merge-queue re-check takes the checks with `ci:` from green GitHub CI on the same commit.
 retry:
   maxFailedAttemptsPerItem: 3
   scope: task
@@ -49,6 +49,19 @@ items:
     gate: beforePR
     exec: ["bun", "run", "knip"]
     timeoutSeconds: 300
+  - id: proof
+    kind: command
+    gate: beforePR
+    exec: ["bun", "run", "verify:proof", "--changed", "origin/main"]
+    timeoutSeconds: 900
+    paths:
+      - "src/loop/**"
+      - "src/db/commands.ts"
+      - "src/merge/**"
+      - "src/linear/**"
+      - "src/github/**"
+      - "src/runner-backend/**"
+      - "src/scheduler/**"
   - id: visual-proof
     kind: evidence
     gate: beforePR
@@ -110,9 +123,9 @@ items:
       - "src/worktree-checkout/**"
 rules:
   - id: migrations-append-only
-    summary: The frozen migration list and shipped migration files never change; a new file is named for a UTC time.
+    summary: Shipped drizzle-kit migrations never change and new ones append to the journal; the legacy migrations take no new files.
     probe: .agents/probes/migrations-append-only.ts
-    paths: ["src/db/**"]
+    paths: ["src/db/drizzle/**", "src/db/migrations.ts", "src/db/migrations/**"]
     failOn: P0
     onFail: fix
   - id: restart-and-ask-from-loop

@@ -1,7 +1,9 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { systemClock, type Clock } from "../core";
+import type { Db } from "./db";
 import { OutboxDispatcher } from "./dispatcher";
+import { roleRunsJobs, type InstanceRole } from "./instances";
 import { JOB_IDLE_CLAIM_MS, JobLoop } from "./loop";
 import { LINEAR_PROGRESS_INTERVAL_MS } from "./outbox";
 
@@ -11,6 +13,10 @@ export const JOB_WORKERS = 64;
 /** Poll the job queue and the outbox until `signal` aborts. `prepare` registers handlers first. */
 export function startLoops(input: {
   db: Database;
+  /** The async `Db` over `db`, handed to the job loop and the outbox. */
+  store?: Db;
+  instanceId: string;
+  role?: InstanceRole;
   signal: AbortSignal;
   clock?: Clock;
   concurrency?: number;
@@ -21,16 +27,25 @@ export function startLoops(input: {
   outbox: OutboxDispatcher;
 } {
   const clock = input.clock ?? systemClock;
+  const runsJobs = roleRunsJobs(input.role ?? "all");
   const jobs = new JobLoop(input.db, clock, {
+    ...(input.store ? { store: input.store } : {}),
+    workerId: input.instanceId,
+    instanceId: input.instanceId,
     concurrency: input.concurrency ?? JOB_WORKERS,
     leaseMs: JOB_LEASE_MS,
     pollMs: JOB_IDLE_CLAIM_MS,
   });
   const outbox = new OutboxDispatcher(input.db, clock, {
+    ...(input.store ? { store: input.store } : {}),
+    workerId: `outbox:${input.instanceId}`,
+    claims: runsJobs,
     progressIntervalMs: LINEAR_PROGRESS_INTERVAL_MS,
   });
   input.prepare?.({ jobs, outbox });
-  const task = Promise.all([jobs.run(input.signal), outbox.run(input.signal)]);
+  const task = runsJobs
+    ? Promise.all([jobs.run(input.signal), outbox.run(input.signal)])
+    : Promise.resolve();
   void task.catch((caughtError1) => {
     journalCaught(caughtError1, "loops.startLoops", null);
     return undefined;

@@ -1,2 +1,7 @@
 [test]
-preload = ["./test/temp-root.ts", "./test/quiet-journal.ts", "./test/sync-process-timeout.ts"]
+preload = [
+  "./test/temp-root.ts",
+  "./test/quiet-journal.ts",
+  "./test/sync-process-timeout.ts",
+  "./test/test-progress.ts",
+]

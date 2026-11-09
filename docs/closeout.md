@@ -83,6 +83,10 @@ A repository that checks titles in CI can run the same script before the pull re
 
 `test -n` fails the check while no title is saved yet, so the agent calls `open_pull_request` before `run_closeout`. The script's error output is what the agent sees when the title is wrong (`test/closeout-pull-request-draft.test.ts`).
 
+### Work left for later
+
+An item ends when its pull request merges. An agent that splits its work ships one pull request and lists the rest in `open_pull_request`'s `remaining`: at most 3 parts, each a one-line `title` under 120 characters and a `scope` under 4,000 characters naming the files and what is left. A fourth part is refused, and the agent asks a person instead. Paws saves the parts with the draft and shows them in the pull request description under "Left for later". When the item merges, and never before, Paws files each part through the outbox as a sub-issue of the item's issue, in its project, delegated to Paws, with a body that links the merged pull request and says which issue it continues (`test/remaining-work.test.ts`). On a runner, `remaining` needs runner 0.1.74 or later; an older runner drops it.
+
 ## Evidence checks
 
 An `evidence` check asks the agent for screenshots or videos instead of running a command. This repository requires one when a change touches the status dashboard or the landing page:
@@ -332,6 +336,23 @@ When the diff, a test, or an imported helper cannot be read, when import parsing
 test/merge-lane.test.ts  imports src/merge/index.ts
 full suite (556 files): package.json changed
 ``` `bun scripts/affected-tests.ts --list <base> <head>` prints the selection without running it. `--bail`, or `PAWS_TEST_BAIL=1`, adds `--bail=1` to the test command.
+
+### Proof scenarios
+
+In this repository, the `proof` check runs `bun run verify:proof --changed origin/main` when the change touches `src/loop/**`, `src/db/commands.ts`, `src/merge/**`, `src/linear/**`, `src/github/**`, `src/runner-backend/**` or `src/scheduler/**`. A change outside those paths skips it. The runner picks the scenarios in `test/proofs/` whose `covers` globs match a file changed since the merge base and runs each in a throwaway home with fake Linear, fake GitHub and the scripted ACP agent. The timeout is 15 minutes, and CI does not run it.
+
+- **A scenario covers the change:** each scenario's `proof-<name>.md` bundle (actions, Linear and GitHub calls, transitions and assertions) goes into the check's log, which Closeout stores as the check's evidence. No person approves it. A bundle over 64 KB keeps its actions, transitions and assertions and replaces each Linear and GitHub call list with how many entries were cut. A scenario that exits 0 without writing its bundle fails with `FAIL <name>: no proof bundle`.
+- **No scenario covers the change:** the check passes and its log says `No proof scenario covers these paths`.
+- **A scenario fails:** the check fails. The failed assertions and what they observed come last in the log, so they reach the agent in its fix feedback.
+
+The implement prompt asks the agent to add or update a scenario when it changes how an item moves through Paws. To write one, add `test/proofs/<name>.ts` that default-exports a `Proof` from `test/proofs/harness.ts`:
+
+- `covers`: globs of the source files whose change should run the scenario.
+- `summary`: one sentence on the behaviour it shows.
+- `agent(input)`: the scripted agent's steps for each turn, such as an `fs_write` in `input.worktree`.
+- `run(proof)`: the person's actions (`proof.delegate()`, `proof.stopInLinear()`, …), `proof.waitFor()` for the loop to reach a state, and `proof.expect(assertion, passed, observed)` for each claim, checked against `proof.linear`, `proof.github` and `proof.itemState()`.
+
+`bun run verify:proof <name>` runs it and writes `proof-<name>.md` and `proof-<name>.json` to `PAWS_EVIDENCE_DIR` (default `./proof-evidence`).
 
 ## Review escapes
 

@@ -1,6 +1,21 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { immediate } from "./tx";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  max,
+  or,
+  sql,
+} from "drizzle-orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
+import type * as pgSchema from "./schema-pg";
 import { ulid } from "./ulid";
 
 export type ImprovementSourceKind = "retro_item" | "daily_finding";
@@ -131,64 +146,57 @@ export type ImprovementDecisionResult =
       improvement: Improvement | null;
     };
 
-type ImprovementRow = {
-  id: string;
-  workspace_id: string;
-  repository: string;
-  created_at: number;
-  version: number;
-  review_state: ImprovementReviewState;
-  reviewed_proposal: number | null;
-  reviewed_by: string | null;
-  reviewed_at: number | null;
-  review_reason: string | null;
-  intent: "create" | "link" | null;
-  intent_issue_id: string | null;
-  evidence_comment: number;
-  issue_id: string | null;
-  issue_identifier: string | null;
-  issue_url: string | null;
-  issue_confirmed_at: number | null;
-  implementation_state: ImprovementImplementationState;
-  implementation_at: number | null;
-  verification_state: ImprovementVerificationState;
-  verification_at: number | null;
-};
+type ImprovementRow = typeof pgSchema.improvement.$inferSelect;
+type DeliveryRow = typeof pgSchema.improvementDelivery.$inferSelect;
+
+/** SQLite stores JSON as text, Postgres as `jsonb`. */
+function jsonIn(q: Q, value: unknown): unknown {
+  return q.dialect === "sqlite" ? JSON.stringify(value) : value;
+}
+
+function jsonOut<T>(q: Q, stored: unknown): T {
+  return (q.dialect === "sqlite" ? JSON.parse(stored as string) : stored) as T;
+}
 
 function improvementFromRow(row: ImprovementRow): Improvement {
   return {
     id: row.id,
-    workspaceId: row.workspace_id,
+    workspaceId: row.workspaceId,
     repository: row.repository,
-    createdAt: row.created_at,
+    createdAt: row.createdAt,
     version: row.version,
-    reviewState: row.review_state,
-    reviewedProposal: row.reviewed_proposal,
-    reviewedBy: row.reviewed_by,
-    reviewedAt: row.reviewed_at,
-    reviewReason: row.review_reason,
-    intent: row.intent,
-    intentIssueId: row.intent_issue_id,
-    evidenceComment: row.evidence_comment === 1,
+    reviewState: row.reviewState as ImprovementReviewState,
+    reviewedProposal: row.reviewedProposal,
+    reviewedBy: row.reviewedBy,
+    reviewedAt: row.reviewedAt,
+    reviewReason: row.reviewReason,
+    intent: row.intent as Improvement["intent"],
+    intentIssueId: row.intentIssueId,
+    evidenceComment: row.evidenceComment === 1,
     issue:
-      row.issue_id === null
+      row.issueId === null
         ? null
         : {
-            id: row.issue_id,
-            identifier: row.issue_identifier,
-            url: row.issue_url,
-            confirmedAt: row.issue_confirmed_at!,
+            id: row.issueId,
+            identifier: row.issueIdentifier,
+            url: row.issueUrl,
+            confirmedAt: row.issueConfirmedAt!,
           },
-    implementationState: row.implementation_state,
-    implementationAt: row.implementation_at,
-    verificationState: row.verification_state,
-    verificationAt: row.verification_at,
+    implementationState: row.implementationState as ImprovementImplementationState,
+    implementationAt: row.implementationAt,
+    verificationState: row.verificationState as ImprovementVerificationState,
+    verificationAt: row.verificationAt,
   };
 }
 
 export function getImprovement(db: Database, id: string): Improvement | null {
-  const row = db.query<ImprovementRow, [string]>("SELECT * FROM improvement WHERE id = ?").get(id);
-  return row === null ? null : improvementFromRow(row);
+  return settled(sqliteDb(db).run((q) => getImprovementSteps(q, id)));
+}
+
+export function* getImprovementSteps(q: Q, id: string) {
+  const { improvement } = q.t;
+  const row = yield* q.one(q.orm.select().from(improvement).where(eq(improvement.id, id)));
+  return row === undefined ? null : improvementFromRow(row);
 }
 
 export function improvementBySource(
@@ -196,14 +204,25 @@ export function improvementBySource(
   workspaceId: string,
   source: ImprovementSource,
 ): Improvement | null {
-  const row = db
-    .query<ImprovementRow, [string, string, string]>(
-      `SELECT improvement.* FROM improvement_source
-       JOIN improvement ON improvement.id = improvement_source.improvement_id
-       WHERE improvement_source.workspace_id = ? AND source_kind = ? AND source_key = ?`,
-    )
-    .get(workspaceId, source.kind, source.key);
-  return row === null ? null : improvementFromRow(row);
+  return settled(sqliteDb(db).run((q) => improvementBySourceSteps(q, workspaceId, source)));
+}
+
+export function* improvementBySourceSteps(q: Q, workspaceId: string, source: ImprovementSource) {
+  const { improvement, improvementSource } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select(getTableColumns(improvement))
+      .from(improvementSource)
+      .innerJoin(improvement, eq(improvement.id, improvementSource.improvementId))
+      .where(
+        and(
+          eq(improvementSource.workspaceId, workspaceId),
+          eq(improvementSource.sourceKind, source.kind),
+          eq(improvementSource.sourceKey, source.key),
+        ),
+      ),
+  );
+  return row === undefined ? null : improvementFromRow(row);
 }
 
 export function improvementsForIssue(
@@ -211,21 +230,35 @@ export function improvementsForIssue(
   workspaceId: string,
   issueId: string,
 ): Improvement[] {
-  return db
-    .query<ImprovementRow, [string, string]>(
-      "SELECT * FROM improvement WHERE workspace_id = ? AND issue_id = ? ORDER BY created_at, id",
-    )
-    .all(workspaceId, issueId)
-    .map(improvementFromRow);
+  return settled(sqliteDb(db).run((q) => improvementsForIssueSteps(q, workspaceId, issueId)));
+}
+
+export function* improvementsForIssueSteps(q: Q, workspaceId: string, issueId: string) {
+  const { improvement } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(improvement)
+      .where(and(eq(improvement.workspaceId, workspaceId), eq(improvement.issueId, issueId)))
+      .orderBy(asc(improvement.createdAt), asc(improvement.id)),
+  );
+  return rows.map(improvementFromRow);
 }
 
 export function listImprovements(db: Database, workspaceId: string): Improvement[] {
-  return db
-    .query<ImprovementRow, [string]>(
-      "SELECT * FROM improvement WHERE workspace_id = ? ORDER BY created_at DESC, id",
-    )
-    .all(workspaceId)
-    .map(improvementFromRow);
+  return settled(sqliteDb(db).run((q) => listImprovementsSteps(q, workspaceId)));
+}
+
+export function* listImprovementsSteps(q: Q, workspaceId: string) {
+  const { improvement } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(improvement)
+      .where(eq(improvement.workspaceId, workspaceId))
+      .orderBy(desc(improvement.createdAt), asc(improvement.id)),
+  );
+  return rows.map(improvementFromRow);
 }
 
 function proposalDigest(proposal: ImprovementProposalInput): string {
@@ -243,143 +276,162 @@ function proposalDigest(proposal: ImprovementProposalInput): string {
     .digest("hex");
 }
 
-function nextProposalVersion(db: Database, improvementId: string): number {
-  return (
-    (db
-      .query<{ version: number | null }, [string]>(
-        "SELECT max(version) AS version FROM improvement_proposal WHERE improvement_id = ?",
-      )
-      .get(improvementId)?.version ?? 0) + 1
+function* nextProposalVersionSteps(q: Q, improvementId: string) {
+  const { improvementProposal } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ version: max(improvementProposal.version) })
+      .from(improvementProposal)
+      .where(eq(improvementProposal.improvementId, improvementId)),
   );
+  return (row?.version ?? 0) + 1;
 }
+
+type ProposalRecord = {
+  workspaceId: string;
+  repository: string;
+  source: ImprovementSource;
+  proposal: ImprovementProposalInput;
+  attachTo?: string;
+  now: number;
+};
 
 export function recordImprovementProposal(
   db: Database,
-  input: {
-    workspaceId: string;
-    repository: string;
-    source: ImprovementSource;
-    proposal: ImprovementProposalInput;
-    attachTo?: string;
-    now: number;
-  },
+  input: ProposalRecord,
 ): { improvementId: string; version: number; created: boolean; changed: boolean } {
-  return immediate(db, () => {
-    const digest = proposalDigest(input.proposal);
-    const existing = db
-      .query<{ id: string }, [string, string, string]>(
-        `SELECT improvement_id AS id FROM improvement_source
-         WHERE workspace_id = ? AND source_kind = ? AND source_key = ?`,
-      )
-      .get(input.workspaceId, input.source.kind, input.source.key);
-    if (existing !== null && input.attachTo !== undefined && existing.id !== input.attachTo)
-      throw new Error(
-        `Source ${input.source.kind}:${input.source.key} belongs to another improvement`,
-      );
-    let improvementId: string;
-    let version = 1;
-    if (existing === null) {
-      if (input.attachTo === undefined) {
-        improvementId = ulid(input.now);
-        db.run(
-          "INSERT INTO improvement (id, workspace_id, repository, created_at) VALUES (?, ?, ?, ?)",
-          [improvementId, input.workspaceId, input.repository, input.now],
-        );
-      } else {
-        const target = getImprovement(db, input.attachTo);
-        if (
-          target === null ||
-          target.workspaceId !== input.workspaceId ||
-          target.repository.toLowerCase() !== input.repository.toLowerCase()
-        )
-          throw new Error(`Improvement ${input.attachTo} is not in this workspace and repository`);
-        improvementId = target.id;
-        version = nextProposalVersion(db, improvementId);
-      }
-      db.run(
-        `INSERT INTO improvement_source (workspace_id, source_kind, source_key, improvement_id, created_at)
-         VALUES (?, ?, ?, ?, ?)`,
-        [input.workspaceId, input.source.kind, input.source.key, improvementId, input.now],
-      );
-    } else {
-      improvementId = existing.id;
-      const latest = db
-        .query<{ version: number; content_sha256: string }, [string, string, string]>(
-          `SELECT version, content_sha256 FROM improvement_proposal
-           WHERE improvement_id = ? AND source_kind = ? AND source_key = ?
-           ORDER BY version DESC LIMIT 1`,
-        )
-        .get(improvementId, input.source.kind, input.source.key);
-      if (latest?.content_sha256 === digest)
-        return { improvementId, version: latest.version, created: false, changed: false };
-      version = nextProposalVersion(db, improvementId);
-    }
-    const proposal = input.proposal;
-    db.run(
-      `INSERT INTO improvement_proposal (improvement_id, version, source_kind, source_key, title,
-         problem, proposed_change, action_step, verification_criterion, evidence, content_sha256,
-         created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        improvementId,
-        version,
-        input.source.kind,
-        input.source.key,
-        proposal.title,
-        proposal.problem,
-        proposal.proposedChange,
-        proposal.actionStep,
-        proposal.verificationCriterion,
-        JSON.stringify(proposal.evidence),
-        digest,
-        input.now,
-      ],
-    );
-    return {
-      improvementId,
-      version,
-      created: existing === null && input.attachTo === undefined,
-      changed: true,
-    };
-  });
+  return settled(sqliteDb(db).transaction((q) => recordImprovementProposalSteps(q, input)));
 }
 
-type ProposalRow = {
-  improvement_id: string;
-  version: number;
-  source_kind: ImprovementSourceKind;
-  source_key: string;
-  title: string;
-  problem: string;
-  proposed_change: string;
-  action_step: ImprovementActionStep;
-  verification_criterion: string;
-  evidence: string;
-  content_sha256: string;
-  created_at: number;
-};
+export function* recordImprovementProposalSteps(q: Q, input: ProposalRecord) {
+  const { improvement, improvementSource, improvementProposal } = q.t;
+  const digest = proposalDigest(input.proposal);
+  const existing = yield* q.one(
+    q.orm
+      .select({ id: improvementSource.improvementId })
+      .from(improvementSource)
+      .where(
+        and(
+          eq(improvementSource.workspaceId, input.workspaceId),
+          eq(improvementSource.sourceKind, input.source.kind),
+          eq(improvementSource.sourceKey, input.source.key),
+        ),
+      ),
+  );
+  if (existing !== undefined && input.attachTo !== undefined && existing.id !== input.attachTo)
+    throw new Error(
+      `Source ${input.source.kind}:${input.source.key} belongs to another improvement`,
+    );
+  let improvementId: string;
+  let version = 1;
+  if (existing === undefined) {
+    if (input.attachTo === undefined) {
+      improvementId = ulid(input.now);
+      yield* q.exec(
+        q.orm.insert(improvement).values({
+          id: improvementId,
+          workspaceId: input.workspaceId,
+          repository: input.repository,
+          createdAt: input.now,
+        }),
+      );
+    } else {
+      const target = yield* getImprovementSteps(q, input.attachTo);
+      if (
+        target === null ||
+        target.workspaceId !== input.workspaceId ||
+        target.repository.toLowerCase() !== input.repository.toLowerCase()
+      )
+        throw new Error(`Improvement ${input.attachTo} is not in this workspace and repository`);
+      improvementId = target.id;
+      version = yield* nextProposalVersionSteps(q, improvementId);
+    }
+    yield* q.exec(
+      q.orm.insert(improvementSource).values({
+        workspaceId: input.workspaceId,
+        sourceKind: input.source.kind,
+        sourceKey: input.source.key,
+        improvementId,
+        createdAt: input.now,
+      }),
+    );
+  } else {
+    improvementId = existing.id;
+    const latest = yield* q.one(
+      q.orm
+        .select({
+          version: improvementProposal.version,
+          contentSha256: improvementProposal.contentSha256,
+        })
+        .from(improvementProposal)
+        .where(
+          and(
+            eq(improvementProposal.improvementId, improvementId),
+            eq(improvementProposal.sourceKind, input.source.kind),
+            eq(improvementProposal.sourceKey, input.source.key),
+          ),
+        )
+        .orderBy(desc(improvementProposal.version))
+        .limit(1),
+    );
+    if (latest?.contentSha256 === digest)
+      return { improvementId, version: latest.version, created: false, changed: false };
+    version = yield* nextProposalVersionSteps(q, improvementId);
+  }
+  const proposal = input.proposal;
+  yield* q.exec(
+    q.orm.insert(improvementProposal).values({
+      improvementId,
+      version,
+      sourceKind: input.source.kind,
+      sourceKey: input.source.key,
+      title: proposal.title,
+      problem: proposal.problem,
+      proposedChange: proposal.proposedChange,
+      actionStep: proposal.actionStep,
+      verificationCriterion: proposal.verificationCriterion,
+      evidence: jsonIn(q, proposal.evidence),
+      contentSha256: digest,
+      createdAt: input.now,
+    }),
+  );
+  return {
+    improvementId,
+    version,
+    created: existing === undefined && input.attachTo === undefined,
+    changed: true,
+  };
+}
 
 export function listImprovementProposals(
   db: Database,
   improvementId: string,
 ): ImprovementProposal[] {
-  return db
-    .query<ProposalRow, [string]>(
-      "SELECT * FROM improvement_proposal WHERE improvement_id = ? ORDER BY version",
-    )
-    .all(improvementId)
-    .map((row) => ({
-      improvementId: row.improvement_id,
-      version: row.version,
-      source: { kind: row.source_kind, key: row.source_key },
-      title: row.title,
-      problem: row.problem,
-      proposedChange: row.proposed_change,
-      actionStep: row.action_step,
-      verificationCriterion: row.verification_criterion,
-      evidence: JSON.parse(row.evidence) as string[],
-      contentSha256: row.content_sha256,
-      createdAt: row.created_at,
-    }));
+  return settled(sqliteDb(db).run((q) => listImprovementProposalsSteps(q, improvementId)));
+}
+
+export function* listImprovementProposalsSteps(q: Q, improvementId: string) {
+  const { improvementProposal } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(improvementProposal)
+      .where(eq(improvementProposal.improvementId, improvementId))
+      .orderBy(asc(improvementProposal.version)),
+  );
+  return rows.map((row): ImprovementProposal => ({
+    improvementId: row.improvementId,
+    version: row.version,
+    source: { kind: row.sourceKind as ImprovementSourceKind, key: row.sourceKey },
+    title: row.title,
+    problem: row.problem,
+    proposedChange: row.proposedChange,
+    actionStep: row.actionStep as ImprovementActionStep,
+    verificationCriterion: row.verificationCriterion,
+    evidence: jsonOut<string[]>(q, row.evidence),
+    contentSha256: row.contentSha256,
+    createdAt: row.createdAt,
+  }));
 }
 
 export function improvementDeliveryId(
@@ -393,132 +445,161 @@ export function improvementDeliveryId(
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-export function decideImprovement(
-  db: Database,
-  input: {
-    improvementId: string;
-    expectedVersion: number;
-    review: ImprovementReview;
-    actor: string;
-    now: number;
-    content?: Record<string, unknown>;
-    criterion?: string;
-  },
-): ImprovementDecisionResult {
-  return immediate(db, () => {
-    const current = getImprovement(db, input.improvementId);
-    if (current === null) return { ok: false, reason: "not_found", improvement: null };
-    if (current.version !== input.expectedVersion)
-      return { ok: false, reason: "stale", improvement: current };
-    const review = input.review;
-    if (current.reviewState === "accepted") {
-      if (review.kind !== "reopen" || !improvementWithdrawable(db, input.improvementId))
-        return { ok: false, reason: "accepted", improvement: current };
-      db.run(
-        `DELETE FROM improvement_delivery_attempt WHERE delivery_id IN
-           (SELECT id FROM improvement_delivery WHERE improvement_id = ?)`,
-        [input.improvementId],
+type DecisionInput = {
+  improvementId: string;
+  expectedVersion: number;
+  review: ImprovementReview;
+  actor: string;
+  now: number;
+  content?: Record<string, unknown>;
+  criterion?: string;
+};
+
+export function decideImprovement(db: Database, input: DecisionInput): ImprovementDecisionResult {
+  return settled(sqliteDb(db).transaction((q) => decideImprovementSteps(q, input)));
+}
+
+export function* decideImprovementSteps(
+  q: Q,
+  input: DecisionInput,
+): Steps<ImprovementDecisionResult> {
+  const { improvement, improvementCriterion, improvementDecision, improvementDelivery } = q.t;
+  const { improvementDeliveryAttempt, improvementProposal } = q.t;
+  const current = yield* getImprovementSteps(q, input.improvementId);
+  if (current === null) return { ok: false, reason: "not_found", improvement: null };
+  if (current.version !== input.expectedVersion)
+    return { ok: false, reason: "stale", improvement: current };
+  const review = input.review;
+  if (current.reviewState === "accepted") {
+    if (review.kind !== "reopen" || !(yield* improvementWithdrawableSteps(q, input.improvementId)))
+      return { ok: false, reason: "accepted", improvement: current };
+    yield* q.exec(
+      q.orm
+        .delete(improvementDeliveryAttempt)
+        .where(
+          inArray(
+            improvementDeliveryAttempt.deliveryId,
+            q.orm
+              .select({ id: improvementDelivery.id })
+              .from(improvementDelivery)
+              .where(eq(improvementDelivery.improvementId, input.improvementId)),
+          ),
+        ),
+    );
+    yield* q.exec(
+      q.orm
+        .delete(improvementDelivery)
+        .where(eq(improvementDelivery.improvementId, input.improvementId)),
+    );
+  }
+  if (review.kind === "reopen" && current.reviewState === "needs_review")
+    return { ok: false, reason: "unchanged", improvement: current };
+  if (
+    review.kind === "accept" &&
+    (yield* q.one(
+      q.orm
+        .select({ version: improvementProposal.version })
+        .from(improvementProposal)
+        .where(
+          and(
+            eq(improvementProposal.improvementId, input.improvementId),
+            eq(improvementProposal.version, review.proposalVersion),
+          ),
+        ),
+    )) === undefined
+  )
+    return { ok: false, reason: "unknown_proposal", improvement: current };
+  const state: ImprovementReviewState =
+    review.kind === "accept" ? "accepted" : review.kind === "reject" ? "rejected" : "needs_review";
+  const proposal = review.kind === "accept" ? review.proposalVersion : null;
+  const intent = review.kind === "accept" ? review.intent.kind : null;
+  const intentIssue =
+    review.kind === "accept" && review.intent.kind === "link" ? review.intent.issueId : null;
+  const comment =
+    review.kind === "accept" && review.intent.kind === "link" && review.intent.addEvidenceComment
+      ? 1
+      : 0;
+  const reason = review.kind === "reject" ? review.reason : null;
+  const version = current.version + 1;
+  yield* q.exec(
+    q.orm
+      .update(improvement)
+      .set({
+        version,
+        reviewState: state,
+        reviewedProposal: proposal,
+        reviewedBy: input.actor,
+        reviewedAt: input.now,
+        reviewReason: reason,
+        intent,
+        intentIssueId: intentIssue,
+        evidenceComment: comment,
+      })
+      .where(
+        and(eq(improvement.id, input.improvementId), eq(improvement.version, current.version)),
+      ),
+  );
+  yield* q.exec(
+    q.orm.insert(improvementDecision).values({
+      improvementId: input.improvementId,
+      version,
+      reviewState: state,
+      proposalVersion: proposal,
+      intent,
+      intentIssueId: intentIssue,
+      evidenceComment: comment,
+      reason,
+      actor: input.actor,
+      at: input.now,
+    }),
+  );
+  if (review.kind === "accept") {
+    const operation = review.intent.kind === "create" ? "create_issue" : "link_issue";
+    const team = review.intent.teamId ?? null;
+    const content = input.content === undefined ? null : jsonIn(q, input.content);
+    const delivery = (kind: ImprovementDeliveryOperation) => ({
+      id: improvementDeliveryId(input.improvementId, kind),
+      improvementId: input.improvementId,
+      operation: kind,
+      targetIssueId: intentIssue,
+      targetTeamId: team,
+      content,
+      state: "pending",
+      createdAt: input.now,
+      updatedAt: input.now,
+    });
+    yield* q.exec(q.orm.insert(improvementDelivery).values(delivery(operation)));
+    if (comment === 1)
+      yield* q.exec(q.orm.insert(improvementDelivery).values(delivery("evidence_comment")));
+    if (input.criterion !== undefined)
+      yield* q.exec(
+        q.orm.insert(improvementCriterion).values({
+          improvementId: input.improvementId,
+          revision: sql`(SELECT coalesce(max(${improvementCriterion.revision}), 0) + 1
+            FROM ${improvementCriterion}
+            WHERE ${improvementCriterion.improvementId} = ${input.improvementId})`,
+          proposalVersion: review.proposalVersion,
+          criterion: input.criterion,
+          actor: input.actor,
+          at: input.now,
+        }),
       );
-      db.run("DELETE FROM improvement_delivery WHERE improvement_id = ?", [input.improvementId]);
-    }
-    if (review.kind === "reopen" && current.reviewState === "needs_review")
-      return { ok: false, reason: "unchanged", improvement: current };
-    if (
-      review.kind === "accept" &&
-      db
-        .query("SELECT 1 FROM improvement_proposal WHERE improvement_id = ? AND version = ?")
-        .get(input.improvementId, review.proposalVersion) === null
-    )
-      return { ok: false, reason: "unknown_proposal", improvement: current };
-    const state: ImprovementReviewState =
-      review.kind === "accept"
-        ? "accepted"
-        : review.kind === "reject"
-          ? "rejected"
-          : "needs_review";
-    const proposal = review.kind === "accept" ? review.proposalVersion : null;
-    const intent = review.kind === "accept" ? review.intent.kind : null;
-    const intentIssue =
-      review.kind === "accept" && review.intent.kind === "link" ? review.intent.issueId : null;
-    const comment =
-      review.kind === "accept" && review.intent.kind === "link" && review.intent.addEvidenceComment
-        ? 1
-        : 0;
-    const reason = review.kind === "reject" ? review.reason : null;
-    const version = current.version + 1;
-    db.run(
-      `UPDATE improvement SET version = ?, review_state = ?, reviewed_proposal = ?, reviewed_by = ?,
-         reviewed_at = ?, review_reason = ?, intent = ?, intent_issue_id = ?, evidence_comment = ?
-       WHERE id = ? AND version = ?`,
-      [
-        version,
-        state,
-        proposal,
-        input.actor,
-        input.now,
-        reason,
-        intent,
-        intentIssue,
-        comment,
-        input.improvementId,
-        current.version,
-      ],
-    );
-    db.run(
-      `INSERT INTO improvement_decision (improvement_id, version, review_state, proposal_version,
-         intent, intent_issue_id, evidence_comment, reason, actor, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        input.improvementId,
-        version,
-        state,
-        proposal,
-        intent,
-        intentIssue,
-        comment,
-        reason,
-        input.actor,
-        input.now,
-      ],
-    );
-    if (review.kind === "accept") {
-      const operation = review.intent.kind === "create" ? "create_issue" : "link_issue";
-      const team = review.intent.teamId ?? null;
-      const content = input.content === undefined ? null : JSON.stringify(input.content);
-      insertDelivery(db, input.improvementId, operation, intentIssue, team, content, input.now);
-      if (comment === 1)
-        insertDelivery(
-          db,
-          input.improvementId,
-          "evidence_comment",
-          intentIssue,
-          team,
-          content,
-          input.now,
-        );
-      if (input.criterion !== undefined)
-        db.run(
-          `INSERT INTO improvement_criterion (improvement_id, revision, proposal_version, criterion,
-             actor, at) VALUES (?, (SELECT coalesce(max(revision), 0) + 1 FROM improvement_criterion
-             WHERE improvement_id = ?), ?, ?, ?, ?)`,
-          [
-            input.improvementId,
-            input.improvementId,
-            review.proposalVersion,
-            input.criterion,
-            input.actor,
-            input.now,
-          ],
-        );
-    }
-    return { ok: true, improvement: getImprovement(db, input.improvementId)! };
-  });
+  }
+  return { ok: true, improvement: (yield* getImprovementSteps(q, input.improvementId))! };
 }
 
 export function improvementWithdrawable(db: Database, improvementId: string): boolean {
-  const rows = db
-    .query<DeliveryRow, [string]>("SELECT * FROM improvement_delivery WHERE improvement_id = ?")
-    .all(improvementId);
+  return settled(sqliteDb(db).run((q) => improvementWithdrawableSteps(q, improvementId)));
+}
+
+export function* improvementWithdrawableSteps(q: Q, improvementId: string) {
+  const { improvementDelivery } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(improvementDelivery)
+      .where(eq(improvementDelivery.improvementId, improvementId)),
+  );
   const link = rows.find((row) => row.operation === "link_issue");
   return (
     link !== undefined &&
@@ -527,7 +608,7 @@ export function improvementWithdrawable(db: Database, improvementId: string): bo
     rows.every(
       (row) =>
         row.operation !== "create_issue" &&
-        row.remote_id === null &&
+        row.remoteId === null &&
         (row.state === "pending" || row.state === "failed"),
     )
   );
@@ -537,55 +618,49 @@ export function cancelImprovementEvidenceComment(
   db: Database,
   deliveryId: string,
 ): Improvement | null {
-  return immediate(db, () => {
-    const current = db
-      .query<DeliveryRow, [string]>("SELECT * FROM improvement_delivery WHERE id = ?")
-      .get(deliveryId);
-    if (
-      current === null ||
-      current.operation !== "evidence_comment" ||
-      current.state !== "failed" ||
-      current.blocked === null ||
-      current.remote_id !== null
-    )
-      return null;
-    const link = db
-      .query<{ state: ImprovementDeliveryState }, [string]>(
-        `SELECT state FROM improvement_delivery WHERE improvement_id = ? AND operation = 'link_issue'`,
-      )
-      .get(current.improvement_id);
-    if (link?.state !== "succeeded") return null;
-    db.run("DELETE FROM improvement_delivery_attempt WHERE delivery_id = ?", [current.id]);
-    db.run("DELETE FROM improvement_delivery WHERE id = ?", [current.id]);
-    db.run("UPDATE improvement SET evidence_comment = 0 WHERE id = ?", [current.improvement_id]);
-    return getImprovement(db, current.improvement_id);
-  });
+  return settled(
+    sqliteDb(db).transaction((q) => cancelImprovementEvidenceCommentSteps(q, deliveryId)),
+  );
 }
 
-function insertDelivery(
-  db: Database,
-  improvementId: string,
-  operation: ImprovementDeliveryOperation,
-  targetIssueId: string | null,
-  targetTeamId: string | null,
-  content: string | null,
-  now: number,
-): void {
-  db.run(
-    `INSERT INTO improvement_delivery (id, improvement_id, operation, target_issue_id,
-       target_team_id, content, state, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
-    [
-      improvementDeliveryId(improvementId, operation),
-      improvementId,
-      operation,
-      targetIssueId,
-      targetTeamId,
-      content,
-      now,
-      now,
-    ],
+export function* cancelImprovementEvidenceCommentSteps(q: Q, deliveryId: string) {
+  const { improvement, improvementDelivery, improvementDeliveryAttempt } = q.t;
+  const current = yield* q.one(
+    q.orm.select().from(improvementDelivery).where(eq(improvementDelivery.id, deliveryId)),
   );
+  if (
+    current === undefined ||
+    current.operation !== "evidence_comment" ||
+    current.state !== "failed" ||
+    current.blocked === null ||
+    current.remoteId !== null
+  )
+    return null;
+  const link = yield* q.one(
+    q.orm
+      .select({ state: improvementDelivery.state })
+      .from(improvementDelivery)
+      .where(
+        and(
+          eq(improvementDelivery.improvementId, current.improvementId),
+          eq(improvementDelivery.operation, "link_issue"),
+        ),
+      ),
+  );
+  if (link?.state !== "succeeded") return null;
+  yield* q.exec(
+    q.orm
+      .delete(improvementDeliveryAttempt)
+      .where(eq(improvementDeliveryAttempt.deliveryId, current.id)),
+  );
+  yield* q.exec(q.orm.delete(improvementDelivery).where(eq(improvementDelivery.id, current.id)));
+  yield* q.exec(
+    q.orm
+      .update(improvement)
+      .set({ evidenceComment: 0 })
+      .where(eq(improvement.id, current.improvementId)),
+  );
+  return yield* getImprovementSteps(q, current.improvementId);
 }
 
 export type ImprovementCriterion = {
@@ -600,82 +675,149 @@ export function listImprovementCriteria(
   db: Database,
   improvementId: string,
 ): ImprovementCriterion[] {
-  return db
-    .query<ImprovementCriterion, [string]>(
-      `SELECT revision, proposal_version AS proposalVersion, criterion, actor, at
-       FROM improvement_criterion WHERE improvement_id = ? ORDER BY revision`,
-    )
-    .all(improvementId);
+  return settled(sqliteDb(db).run((q) => listImprovementCriteriaSteps(q, improvementId)));
+}
+
+export function* listImprovementCriteriaSteps(q: Q, improvementId: string) {
+  const { improvementCriterion } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        revision: improvementCriterion.revision,
+        proposalVersion: improvementCriterion.proposalVersion,
+        criterion: improvementCriterion.criterion,
+        actor: improvementCriterion.actor,
+        at: improvementCriterion.at,
+      })
+      .from(improvementCriterion)
+      .where(eq(improvementCriterion.improvementId, improvementId))
+      .orderBy(asc(improvementCriterion.revision)),
+  );
 }
 
 export function requeueImprovementDelivery(
   db: Database,
   input: { deliveryId: string; now: number },
 ): ImprovementDelivery | null {
-  const row = db
-    .query<DeliveryRow, [number, string]>(
-      `UPDATE improvement_delivery SET state = CASE state WHEN 'unknown' THEN 'unknown' ELSE 'pending' END,
-         blocked = NULL, next_attempt_at = NULL, retry_base = attempts, updated_at = ?
-       WHERE id = ? AND (state = 'failed' OR (state = 'unknown' AND blocked IS NOT NULL))
-       RETURNING *`,
-    )
-    .get(input.now, input.deliveryId);
-  return row === null ? null : deliveryFromRow(row);
+  return settled(sqliteDb(db).run((q) => requeueImprovementDeliverySteps(q, input)));
+}
+
+export function* requeueImprovementDeliverySteps(q: Q, input: { deliveryId: string; now: number }) {
+  const { improvementDelivery: d } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .update(d)
+      .set({
+        state: sql`CASE ${d.state} WHEN 'unknown' THEN 'unknown' ELSE 'pending' END`,
+        blocked: null,
+        nextAttemptAt: null,
+        retryBase: sql`${d.attempts}`,
+        updatedAt: input.now,
+      })
+      .where(
+        and(
+          eq(d.id, input.deliveryId),
+          or(eq(d.state, "failed"), and(eq(d.state, "unknown"), isNotNull(d.blocked))),
+        ),
+      )
+      .returning(),
+  );
+  return row === undefined ? null : deliveryFromRow(q, row);
 }
 
 export function repairImprovementDestination(
   db: Database,
   input: { deliveryId: string; teamId: string; now: number },
 ): ImprovementDelivery | null {
-  return immediate(db, () => {
-    const current = db
-      .query<DeliveryRow, [string]>("SELECT * FROM improvement_delivery WHERE id = ?")
-      .get(input.deliveryId);
-    if (
-      current === null ||
-      current.operation !== "create_issue" ||
-      current.state !== "failed" ||
-      current.blocked !== "destination" ||
-      current.remote_id !== null
-    )
-      return null;
-    const row = db
-      .query<DeliveryRow, [string, number, string]>(
-        `UPDATE improvement_delivery SET target_team_id = ?, state = 'pending', blocked = NULL,
-           next_attempt_at = NULL, retry_base = attempts, error = NULL, updated_at = ?
-         WHERE id = ? RETURNING *`,
-      )
-      .get(input.teamId, input.now, input.deliveryId);
-    return row === null ? null : deliveryFromRow(row);
-  });
+  return settled(sqliteDb(db).transaction((q) => repairImprovementDestinationSteps(q, input)));
 }
 
-export function reserveImprovementDeliveryRemote(
-  db: Database,
-  input: { deliveryId: string; owner: string; attempt: number; remoteId: string },
-): boolean {
-  return (
-    db.run(
-      `UPDATE improvement_delivery SET remote_id = ?
-       WHERE id = ? AND state = 'claimed' AND claim_owner = ? AND attempts = ?
-         AND (remote_id IS NULL OR remote_id = ?)`,
-      [input.remoteId, input.deliveryId, input.owner, input.attempt, input.remoteId],
-    ).changes === 1
+export function* repairImprovementDestinationSteps(
+  q: Q,
+  input: { deliveryId: string; teamId: string; now: number },
+) {
+  const { improvementDelivery: d } = q.t;
+  const current = yield* q.one(q.orm.select().from(d).where(eq(d.id, input.deliveryId)));
+  if (
+    current === undefined ||
+    current.operation !== "create_issue" ||
+    current.state !== "failed" ||
+    current.blocked !== "destination" ||
+    current.remoteId !== null
+  )
+    return null;
+  const row = yield* q.one(
+    q.orm
+      .update(d)
+      .set({
+        targetTeamId: input.teamId,
+        state: "pending",
+        blocked: null,
+        nextAttemptAt: null,
+        retryBase: sql`${d.attempts}`,
+        error: null,
+        updatedAt: input.now,
+      })
+      .where(eq(d.id, input.deliveryId))
+      .returning(),
+  );
+  return row === undefined ? null : deliveryFromRow(q, row);
+}
+
+type RemoteReservation = { deliveryId: string; owner: string; attempt: number; remoteId: string };
+
+export function reserveImprovementDeliveryRemote(db: Database, input: RemoteReservation): boolean {
+  return settled(sqliteDb(db).run((q) => reserveImprovementDeliveryRemoteSteps(q, input)));
+}
+
+export function* reserveImprovementDeliveryRemoteSteps(q: Q, input: RemoteReservation) {
+  const { improvementDelivery: d } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .update(d)
+      .set({ remoteId: input.remoteId })
+      .where(
+        and(
+          eq(d.id, input.deliveryId),
+          eq(d.state, "claimed"),
+          eq(d.claimOwner, input.owner),
+          eq(d.attempts, input.attempt),
+          or(isNull(d.remoteId), eq(d.remoteId, input.remoteId)),
+        ),
+      )
+      .returning({ id: d.id }),
+  );
+  return rows.length === 1;
+}
+
+/** A delivery that is due: open and unblocked past its retry time, or claimed past its lease. */
+function deliveryDue(q: Q, now: number) {
+  const { improvementDelivery: d } = q.t;
+  return or(
+    and(
+      inArray(d.state, ["pending", "failed", "unknown"]),
+      isNull(d.blocked),
+      or(isNull(d.nextAttemptAt), lte(d.nextAttemptAt, now)),
+    ),
+    and(eq(d.state, "claimed"), lte(d.claimExpiresAt, now)),
   );
 }
 
 export function improvementDeliveryWorkspaces(db: Database, now: number): string[] {
-  return db
-    .query<{ workspace_id: string }, [number, number]>(
-      `SELECT DISTINCT improvement.workspace_id FROM improvement_delivery AS delivery
-       JOIN improvement ON improvement.id = delivery.improvement_id
-       WHERE (delivery.state IN ('pending','failed','unknown') AND delivery.blocked IS NULL
-           AND (delivery.next_attempt_at IS NULL OR delivery.next_attempt_at <= ?))
-         OR (delivery.state = 'claimed' AND delivery.claim_expires_at <= ?)
-       ORDER BY improvement.workspace_id`,
-    )
-    .all(now, now)
-    .map((row) => row.workspace_id);
+  return settled(sqliteDb(db).run((q) => improvementDeliveryWorkspacesSteps(q, now)));
+}
+
+export function* improvementDeliveryWorkspacesSteps(q: Q, now: number) {
+  const { improvement, improvementDelivery: d } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .selectDistinct({ workspaceId: improvement.workspaceId })
+      .from(d)
+      .innerJoin(improvement, eq(improvement.id, d.improvementId))
+      .where(deliveryDue(q, now))
+      .orderBy(asc(improvement.workspaceId)),
+  );
+  return rows.map((row) => row.workspaceId);
 }
 
 export function acceptedImprovementsForFindings(
@@ -683,99 +825,94 @@ export function acceptedImprovementsForFindings(
   workspaceId: string,
   findingIds: readonly number[],
 ): Improvement[] {
+  return settled(
+    sqliteDb(db).run((q) => acceptedImprovementsForFindingsSteps(q, workspaceId, findingIds)),
+  );
+}
+
+export function* acceptedImprovementsForFindingsSteps(
+  q: Q,
+  workspaceId: string,
+  findingIds: readonly number[],
+) {
   if (findingIds.length === 0) return [];
-  return db
-    .query<ImprovementRow, [string, string]>(
-      `SELECT DISTINCT improvement.* FROM improvement_source AS source
-       JOIN improvement ON improvement.id = source.improvement_id
-       WHERE source.workspace_id = ? AND source.source_kind = 'daily_finding'
-         AND improvement.review_state = 'accepted'
-         AND EXISTS (SELECT 1 FROM json_each(?) AS finding
-           WHERE instr(source.source_key, '#' || finding.value || ':') > 0)
-       ORDER BY improvement.id`,
-    )
-    .all(workspaceId, JSON.stringify(findingIds))
-    .map(improvementFromRow);
+  const { improvement, improvementSource: source } = q.t;
+  const ids = q.dialect === "sqlite" ? JSON.stringify(findingIds) : `{${findingIds.join(",")}}`;
+  const findings =
+    q.dialect === "sqlite"
+      ? sql`SELECT 1 FROM json_each(${ids}) AS finding
+          WHERE instr(${source.sourceKey}, '#' || finding.value || ':') > 0`
+      : sql`SELECT 1 FROM unnest(${ids}::bigint[]) AS finding(value)
+          WHERE strpos(${source.sourceKey}, '#' || finding.value || ':') > 0`;
+  const rows = yield* q.all(
+    q.orm
+      .selectDistinct(getTableColumns(improvement))
+      .from(source)
+      .innerJoin(improvement, eq(improvement.id, source.improvementId))
+      .where(
+        and(
+          eq(source.workspaceId, workspaceId),
+          eq(source.sourceKind, "daily_finding"),
+          eq(improvement.reviewState, "accepted"),
+          sql`EXISTS (${findings})`,
+        ),
+      )
+      .orderBy(asc(improvement.id)),
+  );
+  return rows.map(improvementFromRow);
 }
 
 export function listImprovementDecisions(
   db: Database,
   improvementId: string,
 ): ImprovementDecision[] {
-  return db
-    .query<
-      {
-        improvement_id: string;
-        version: number;
-        review_state: ImprovementReviewState;
-        proposal_version: number | null;
-        intent: "create" | "link" | null;
-        intent_issue_id: string | null;
-        evidence_comment: number;
-        reason: string | null;
-        actor: string;
-        at: number;
-      },
-      [string]
-    >("SELECT * FROM improvement_decision WHERE improvement_id = ? ORDER BY version")
-    .all(improvementId)
-    .map((row) => ({
-      improvementId: row.improvement_id,
-      version: row.version,
-      reviewState: row.review_state,
-      proposalVersion: row.proposal_version,
-      intent: row.intent,
-      intentIssueId: row.intent_issue_id,
-      evidenceComment: row.evidence_comment === 1,
-      reason: row.reason,
-      actor: row.actor,
-      at: row.at,
-    }));
+  return settled(sqliteDb(db).run((q) => listImprovementDecisionsSteps(q, improvementId)));
 }
 
-type DeliveryRow = {
-  id: string;
-  improvement_id: string;
-  operation: ImprovementDeliveryOperation;
-  target_issue_id: string | null;
-  target_team_id: string | null;
-  content: string | null;
-  state: ImprovementDeliveryState;
-  claim_owner: string | null;
-  claim_expires_at: number | null;
-  attempts: number;
-  remote_id: string | null;
-  remote_identifier: string | null;
-  remote_url: string | null;
-  error: string | null;
-  next_attempt_at: number | null;
-  blocked: ImprovementDeliveryBlock | null;
-  retry_base: number;
-  created_at: number;
-  updated_at: number;
-};
+export function* listImprovementDecisionsSteps(q: Q, improvementId: string) {
+  const { improvementDecision } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(improvementDecision)
+      .where(eq(improvementDecision.improvementId, improvementId))
+      .orderBy(asc(improvementDecision.version)),
+  );
+  return rows.map((row): ImprovementDecision => ({
+    improvementId: row.improvementId,
+    version: row.version,
+    reviewState: row.reviewState as ImprovementReviewState,
+    proposalVersion: row.proposalVersion,
+    intent: row.intent as ImprovementDecision["intent"],
+    intentIssueId: row.intentIssueId,
+    evidenceComment: row.evidenceComment === 1,
+    reason: row.reason,
+    actor: row.actor,
+    at: row.at,
+  }));
+}
 
-function deliveryFromRow(row: DeliveryRow): ImprovementDelivery {
+function deliveryFromRow(q: Q, row: DeliveryRow): ImprovementDelivery {
   return {
     id: row.id,
-    improvementId: row.improvement_id,
-    operation: row.operation,
-    targetIssueId: row.target_issue_id,
-    targetTeamId: row.target_team_id,
-    content: row.content === null ? null : (JSON.parse(row.content) as Record<string, unknown>),
-    state: row.state,
-    claimOwner: row.claim_owner,
-    claimExpiresAt: row.claim_expires_at,
+    improvementId: row.improvementId,
+    operation: row.operation as ImprovementDeliveryOperation,
+    targetIssueId: row.targetIssueId,
+    targetTeamId: row.targetTeamId,
+    content: row.content === null ? null : jsonOut<Record<string, unknown>>(q, row.content),
+    state: row.state as ImprovementDeliveryState,
+    claimOwner: row.claimOwner,
+    claimExpiresAt: row.claimExpiresAt,
     attempts: row.attempts,
-    remoteId: row.remote_id,
-    remoteIdentifier: row.remote_identifier,
-    remoteUrl: row.remote_url,
+    remoteId: row.remoteId,
+    remoteIdentifier: row.remoteIdentifier,
+    remoteUrl: row.remoteUrl,
     error: row.error,
-    nextAttemptAt: row.next_attempt_at,
-    blocked: row.blocked,
-    retryBase: row.retry_base,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    nextAttemptAt: row.nextAttemptAt,
+    blocked: row.blocked as ImprovementDeliveryBlock | null,
+    retryBase: row.retryBase,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }
 
@@ -783,12 +920,19 @@ export function listImprovementDeliveries(
   db: Database,
   improvementId: string,
 ): ImprovementDelivery[] {
-  return db
-    .query<DeliveryRow, [string]>(
-      "SELECT * FROM improvement_delivery WHERE improvement_id = ? ORDER BY created_at, operation",
-    )
-    .all(improvementId)
-    .map(deliveryFromRow);
+  return settled(sqliteDb(db).run((q) => listImprovementDeliveriesSteps(q, improvementId)));
+}
+
+export function* listImprovementDeliveriesSteps(q: Q, improvementId: string) {
+  const { improvementDelivery: d } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(d)
+      .where(eq(d.improvementId, improvementId))
+      .orderBy(asc(d.createdAt), asc(d.operation)),
+  );
+  return rows.map((row) => deliveryFromRow(q, row));
 }
 
 export function claimableImprovementDeliveries(
@@ -796,142 +940,144 @@ export function claimableImprovementDeliveries(
   workspaceId: string,
   now: number,
 ): ImprovementDelivery[] {
-  return db
-    .query<DeliveryRow, [string, number, number]>(
-      `SELECT delivery.* FROM improvement_delivery AS delivery
-       JOIN improvement ON improvement.id = delivery.improvement_id
-       WHERE improvement.workspace_id = ? AND ((delivery.state IN ('pending','failed','unknown')
-           AND delivery.blocked IS NULL
-           AND (delivery.next_attempt_at IS NULL OR delivery.next_attempt_at <= ?))
-         OR (delivery.state = 'claimed' AND delivery.claim_expires_at <= ?))
-       ORDER BY delivery.created_at, delivery.id`,
-    )
-    .all(workspaceId, now, now)
-    .map(deliveryFromRow);
+  return settled(sqliteDb(db).run((q) => claimableImprovementDeliveriesSteps(q, workspaceId, now)));
 }
+
+export function* claimableImprovementDeliveriesSteps(q: Q, workspaceId: string, now: number) {
+  const { improvement, improvementDelivery: d } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select(getTableColumns(d))
+      .from(d)
+      .innerJoin(improvement, eq(improvement.id, d.improvementId))
+      .where(and(eq(improvement.workspaceId, workspaceId), deliveryDue(q, now)))
+      .orderBy(asc(d.createdAt), asc(d.id)),
+  );
+  return rows.map((row) => deliveryFromRow(q, row));
+}
+
+type DeliveryClaim = { deliveryId: string; owner: string; now: number; leaseMs: number };
 
 export function claimImprovementDelivery(
   db: Database,
-  input: { deliveryId: string; owner: string; now: number; leaseMs: number },
+  input: DeliveryClaim,
 ): ImprovementDelivery | null {
-  return immediate(db, () => {
-    const row = db
-      .query<DeliveryRow, [string, number, number, string, number, number]>(
-        `UPDATE improvement_delivery SET state = 'claimed', claim_owner = ?, claim_expires_at = ?,
-           attempts = attempts + 1, updated_at = ?
-         WHERE id = ? AND ((state IN ('pending','failed','unknown') AND blocked IS NULL
-             AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
-           OR (state = 'claimed' AND claim_expires_at <= ?))
-         RETURNING *`,
-      )
-      .get(
-        input.owner,
-        input.now + input.leaseMs,
-        input.now,
-        input.deliveryId,
-        input.now,
-        input.now,
-      );
-    if (row === null) return null;
-    db.run(
-      `UPDATE improvement_delivery_attempt SET outcome = 'expired', settled_at = ?
-       WHERE delivery_id = ? AND outcome = 'claimed'`,
-      [input.now, row.id],
-    );
-    db.run(
-      `INSERT INTO improvement_delivery_attempt (delivery_id, attempt, owner, claimed_at,
-         claim_expires_at) VALUES (?, ?, ?, ?, ?)`,
-      [row.id, row.attempts, input.owner, input.now, input.now + input.leaseMs],
-    );
-    return deliveryFromRow(row);
-  });
+  return settled(sqliteDb(db).transaction((q) => claimImprovementDeliverySteps(q, input)));
 }
 
-export function settleImprovementDelivery(
-  db: Database,
-  input: {
-    deliveryId: string;
-    attempt: number;
-    owner: string;
-    outcome: "succeeded" | "failed" | "unknown";
-    remote?: { id: string; identifier?: string; url?: string };
-    error?: string;
-    retryAt?: number;
-    blocked?: ImprovementDeliveryBlock;
-    now: number;
-  },
-): boolean {
-  return immediate(db, () => {
-    if (input.outcome === "succeeded" && input.remote === undefined)
-      throw new Error("A succeeded delivery needs its remote record");
-    const error = input.outcome === "succeeded" ? null : (input.error ?? null);
-    const row = db
-      .query<
-        DeliveryRow,
-        [
-          string,
-          string | null,
-          string | null,
-          string | null,
-          string | null,
-          number | null,
-          string | null,
-          number,
-          string,
-          string,
-          number,
-        ]
-      >(
-        `UPDATE improvement_delivery SET state = ?, remote_id = coalesce(?, remote_id),
-           remote_identifier = coalesce(?, remote_identifier), remote_url = coalesce(?, remote_url),
-           error = ?, next_attempt_at = ?, blocked = ?, claim_owner = NULL,
-           claim_expires_at = NULL, updated_at = ?
-         WHERE id = ? AND state = 'claimed' AND claim_owner = ? AND attempts = ?
-         RETURNING *`,
+export function* claimImprovementDeliverySteps(q: Q, input: DeliveryClaim) {
+  const { improvementDelivery: d, improvementDeliveryAttempt: attempt } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .update(d)
+      .set({
+        state: "claimed",
+        claimOwner: input.owner,
+        claimExpiresAt: input.now + input.leaseMs,
+        attempts: sql`${d.attempts} + 1`,
+        updatedAt: input.now,
+      })
+      .where(and(eq(d.id, input.deliveryId), deliveryDue(q, input.now)))
+      .returning(),
+  );
+  if (row === undefined) return null;
+  yield* q.exec(
+    q.orm
+      .update(attempt)
+      .set({ outcome: "expired", settledAt: input.now })
+      .where(and(eq(attempt.deliveryId, row.id), eq(attempt.outcome, "claimed"))),
+  );
+  yield* q.exec(
+    q.orm.insert(attempt).values({
+      deliveryId: row.id,
+      attempt: row.attempts,
+      owner: input.owner,
+      claimedAt: input.now,
+      claimExpiresAt: input.now + input.leaseMs,
+    }),
+  );
+  return deliveryFromRow(q, row);
+}
+
+type DeliverySettlement = {
+  deliveryId: string;
+  attempt: number;
+  owner: string;
+  outcome: "succeeded" | "failed" | "unknown";
+  remote?: { id: string; identifier?: string; url?: string };
+  error?: string;
+  retryAt?: number;
+  blocked?: ImprovementDeliveryBlock;
+  now: number;
+};
+
+export function settleImprovementDelivery(db: Database, input: DeliverySettlement): boolean {
+  return settled(sqliteDb(db).transaction((q) => settleImprovementDeliverySteps(q, input)));
+}
+
+export function* settleImprovementDeliverySteps(q: Q, input: DeliverySettlement) {
+  const { improvement, improvementDelivery: d, improvementDeliveryAttempt: attempt } = q.t;
+  if (input.outcome === "succeeded" && input.remote === undefined)
+    throw new Error("A succeeded delivery needs its remote record");
+  const error = input.outcome === "succeeded" ? null : (input.error ?? null);
+  const row = yield* q.one(
+    q.orm
+      .update(d)
+      .set({
+        state: input.outcome,
+        remoteId: sql`coalesce(${input.remote?.id ?? null}, ${d.remoteId})`,
+        remoteIdentifier: sql`coalesce(${input.remote?.identifier ?? null}, ${d.remoteIdentifier})`,
+        remoteUrl: sql`coalesce(${input.remote?.url ?? null}, ${d.remoteUrl})`,
+        error,
+        nextAttemptAt: input.outcome === "succeeded" ? null : (input.retryAt ?? null),
+        blocked: input.outcome === "succeeded" ? null : (input.blocked ?? null),
+        claimOwner: null,
+        claimExpiresAt: null,
+        updatedAt: input.now,
+      })
+      .where(
+        and(
+          eq(d.id, input.deliveryId),
+          eq(d.state, "claimed"),
+          eq(d.claimOwner, input.owner),
+          eq(d.attempts, input.attempt),
+        ),
       )
-      .get(
-        input.outcome,
-        input.remote?.id ?? null,
-        input.remote?.identifier ?? null,
-        input.remote?.url ?? null,
+      .returning(),
+  );
+  if (row === undefined) return false;
+  yield* q.exec(
+    q.orm
+      .update(attempt)
+      .set({
+        outcome: input.outcome,
+        remoteId: input.remote?.id ?? null,
+        remoteIdentifier: input.remote?.identifier ?? null,
+        remoteUrl: input.remote?.url ?? null,
         error,
-        input.outcome === "succeeded" ? null : (input.retryAt ?? null),
-        input.outcome === "succeeded" ? null : (input.blocked ?? null),
-        input.now,
-        input.deliveryId,
-        input.owner,
-        input.attempt,
-      );
-    if (row === null) return false;
-    db.run(
-      `UPDATE improvement_delivery_attempt SET outcome = ?, remote_id = ?, remote_identifier = ?,
-         remote_url = ?, error = ?, settled_at = ?
-       WHERE delivery_id = ? AND attempt = ? AND outcome = 'claimed'`,
-      [
-        input.outcome,
-        input.remote?.id ?? null,
-        input.remote?.identifier ?? null,
-        input.remote?.url ?? null,
-        error,
-        input.now,
-        input.deliveryId,
-        input.attempt,
-      ],
+        settledAt: input.now,
+      })
+      .where(
+        and(
+          eq(attempt.deliveryId, input.deliveryId),
+          eq(attempt.attempt, input.attempt),
+          eq(attempt.outcome, "claimed"),
+        ),
+      ),
+  );
+  if (input.outcome === "succeeded" && row.operation !== "evidence_comment")
+    yield* q.exec(
+      q.orm
+        .update(improvement)
+        .set({
+          issueId: row.operation === "link_issue" ? row.targetIssueId : row.remoteId,
+          issueIdentifier: row.remoteIdentifier,
+          issueUrl: row.remoteUrl,
+          issueConfirmedAt: input.now,
+        })
+        .where(and(eq(improvement.id, row.improvementId), isNull(improvement.issueId))),
     );
-    if (input.outcome === "succeeded" && row.operation !== "evidence_comment")
-      db.run(
-        `UPDATE improvement SET issue_id = ?, issue_identifier = ?, issue_url = ?,
-           issue_confirmed_at = ? WHERE id = ? AND issue_id IS NULL`,
-        [
-          row.operation === "link_issue" ? row.target_issue_id : row.remote_id,
-          row.remote_identifier,
-          row.remote_url,
-          input.now,
-          row.improvement_id,
-        ],
-      );
-    return true;
-  });
+  return true;
 }
 
 export type ImprovementDeliveryAttempt = {
@@ -951,104 +1097,119 @@ export function listImprovementDeliveryAttempts(
   db: Database,
   deliveryId: string,
 ): ImprovementDeliveryAttempt[] {
-  return db
-    .query<ImprovementDeliveryAttempt, [string]>(
-      `SELECT attempt, owner, claimed_at AS claimedAt, claim_expires_at AS claimExpiresAt, outcome,
-         remote_id AS remoteId, remote_identifier AS remoteIdentifier, remote_url AS remoteUrl,
-         error, settled_at AS settledAt
-       FROM improvement_delivery_attempt WHERE delivery_id = ? ORDER BY attempt`,
-    )
-    .all(deliveryId);
+  return settled(sqliteDb(db).run((q) => listImprovementDeliveryAttemptsSteps(q, deliveryId)));
 }
+
+export function* listImprovementDeliveryAttemptsSteps(q: Q, deliveryId: string) {
+  const { improvementDeliveryAttempt: attempt } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        attempt: attempt.attempt,
+        owner: attempt.owner,
+        claimedAt: attempt.claimedAt,
+        claimExpiresAt: attempt.claimExpiresAt,
+        outcome: attempt.outcome,
+        remoteId: attempt.remoteId,
+        remoteIdentifier: attempt.remoteIdentifier,
+        remoteUrl: attempt.remoteUrl,
+        error: attempt.error,
+        settledAt: attempt.settledAt,
+      })
+      .from(attempt)
+      .where(eq(attempt.deliveryId, deliveryId))
+      .orderBy(asc(attempt.attempt)),
+  );
+  return rows as ImprovementDeliveryAttempt[];
+}
+
+type OutcomeInput = ImprovementOutcome & {
+  improvementId: string;
+  evidence: string[];
+  revision?: string;
+  deployment?: string;
+  actor: string;
+  now: number;
+};
 
 export function recordImprovementOutcome(
   db: Database,
-  input: ImprovementOutcome & {
-    improvementId: string;
-    evidence: string[];
-    revision?: string;
-    deployment?: string;
-    actor: string;
-    now: number;
-  },
+  input: OutcomeInput,
 ): ImprovementOutcomeRecord {
+  return settled(sqliteDb(db).transaction((q) => recordImprovementOutcomeSteps(q, input)));
+}
+
+export function* recordImprovementOutcomeSteps(q: Q, input: OutcomeInput) {
   if (input.track === "verification" && input.state === "verified" && input.evidence.length === 0)
     throw new Error("Verified needs evidence for the stated criterion");
-  return immediate(db, () => {
-    const id = db
-      .query<
-        { id: number },
-        [string, string, string, string, string | null, string | null, string, number]
-      >(
-        `INSERT INTO improvement_outcome (improvement_id, track, state, evidence, revision,
-           deployment, actor, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+  const { improvement, improvementOutcome } = q.t;
+  const inserted = yield* q.one(
+    q.orm
+      .insert(improvementOutcome)
+      .values({
+        improvementId: input.improvementId,
+        track: input.track,
+        state: input.state,
+        evidence: jsonIn(q, input.evidence),
+        revision: input.revision ?? null,
+        deployment: input.deployment ?? null,
+        actor: input.actor,
+        recordedAt: input.now,
+      })
+      .returning({ id: improvementOutcome.id }),
+  );
+  const changed = yield* q.all(
+    q.orm
+      .update(improvement)
+      .set(
+        input.track === "implementation"
+          ? { implementationState: input.state, implementationAt: input.now }
+          : { verificationState: input.state, verificationAt: input.now },
       )
-      .get(
-        input.improvementId,
-        input.track,
-        input.state,
-        JSON.stringify(input.evidence),
-        input.revision ?? null,
-        input.deployment ?? null,
-        input.actor,
-        input.now,
-      )!.id;
-    const changed =
-      input.track === "implementation"
-        ? db.run(
-            "UPDATE improvement SET implementation_state = ?, implementation_at = ? WHERE id = ?",
-            [input.state, input.now, input.improvementId],
-          ).changes
-        : db.run(
-            "UPDATE improvement SET verification_state = ?, verification_at = ? WHERE id = ?",
-            [input.state, input.now, input.improvementId],
-          ).changes;
-    if (changed !== 1) throw new Error(`Unknown improvement ${input.improvementId}`);
-    return {
-      id,
-      improvementId: input.improvementId,
-      ...({ track: input.track, state: input.state } as ImprovementOutcome),
-      evidence: input.evidence,
-      revision: input.revision ?? null,
-      deployment: input.deployment ?? null,
-      actor: input.actor,
-      recordedAt: input.now,
-    };
-  });
+      .where(eq(improvement.id, input.improvementId))
+      .returning({ id: improvement.id }),
+  );
+  if (changed.length !== 1) throw new Error(`Unknown improvement ${input.improvementId}`);
+  return {
+    id: inserted!.id,
+    improvementId: input.improvementId,
+    ...({ track: input.track, state: input.state } as ImprovementOutcome),
+    evidence: input.evidence,
+    revision: input.revision ?? null,
+    deployment: input.deployment ?? null,
+    actor: input.actor,
+    recordedAt: input.now,
+  } as ImprovementOutcomeRecord;
 }
 
 export function listImprovementOutcomes(
   db: Database,
   improvementId: string,
 ): ImprovementOutcomeRecord[] {
-  return db
-    .query<
-      {
-        id: number;
-        improvement_id: string;
-        track: "implementation" | "verification";
-        state: string;
-        evidence: string;
-        revision: string | null;
-        deployment: string | null;
-        actor: string;
-        recorded_at: number;
-      },
-      [string]
-    >("SELECT * FROM improvement_outcome WHERE improvement_id = ? ORDER BY id")
-    .all(improvementId)
-    .map(
-      (row) =>
-        ({
-          id: row.id,
-          improvementId: row.improvement_id,
-          track: row.track,
-          state: row.state,
-          evidence: JSON.parse(row.evidence) as string[],
-          revision: row.revision,
-          deployment: row.deployment,
-          actor: row.actor,
-          recordedAt: row.recorded_at,
-        }) as ImprovementOutcomeRecord,
-    );
+  return settled(sqliteDb(db).run((q) => listImprovementOutcomesSteps(q, improvementId)));
+}
+
+export function* listImprovementOutcomesSteps(q: Q, improvementId: string) {
+  const { improvementOutcome } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(improvementOutcome)
+      .where(eq(improvementOutcome.improvementId, improvementId))
+      .orderBy(asc(improvementOutcome.id)),
+  );
+  return rows.map(
+    (row) =>
+      ({
+        id: row.id,
+        improvementId: row.improvementId,
+        track: row.track,
+        state: row.state,
+        evidence: jsonOut<string[]>(q, row.evidence),
+        revision: row.revision,
+        deployment: row.deployment,
+        actor: row.actor,
+        recordedAt: row.recordedAt,
+      }) as ImprovementOutcomeRecord,
+  );
 }

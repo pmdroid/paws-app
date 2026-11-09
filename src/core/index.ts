@@ -12,6 +12,12 @@ export {
   type FiledSubIssue,
   type SubIssueDraft,
 } from "./plan";
+export {
+  MAX_REMAINING_PARTS,
+  parseRemainingParts,
+  withLeftForLater,
+  type RemainingPart,
+} from "./remaining";
 export type { RepositoryBinding } from "./repository";
 export {
   DELEGATION_STATES,

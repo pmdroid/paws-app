@@ -4,6 +4,16 @@ import { join } from "node:path";
 import { chmodSync, writeSync } from "node:fs";
 import { z } from "zod";
 import { immediate, openDatabase } from "../db";
+import type { Changes } from "bun:sqlite";
+import { and, desc, eq, gt, inArray, lt, notInArray, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/bun-sqlite";
+import { createCommandStore } from "./commands-ddl";
+import {
+  commandReceipt,
+  pendingCommand,
+  pendingRetroCommand,
+  retroAttempt,
+} from "./commands-schema";
 import { describeRunnerCertificate } from "../runner-identity";
 import {
   RUNNER_ACCOUNT_PROTOCOL,
@@ -129,6 +139,7 @@ export type RunnerDaemonOptions = {
   trustedKeys?: ReadonlyMap<string, KeyObject>;
   allowedRepositories?: readonly string[];
   concurrency?: number;
+  conversationConcurrency?: number;
   agentUser?: RunnerAgentUser;
   now?: () => number;
   /** Host metrics sent with every heartbeat. */
@@ -145,6 +156,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     .max(16)
     .parse(options.concurrency ?? 1);
   let applied = ceiling;
+  const conversations =
+    options.conversationConcurrency === undefined
+      ? undefined
+      : z.number().int().min(0).max(16).parse(options.conversationConcurrency);
   const origins = {
     controlPlaneUrl: httpsOrigin(options.controlPlaneUrl),
     runnerApiUrl: httpsOrigin(options.runnerApiUrl),
@@ -168,18 +183,19 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   const dbPath = join(options.root, "commands.db");
   const db = openDatabase(dbPath);
   chmodSync(dbPath, 0o600);
-  db.run(
-    "CREATE TABLE IF NOT EXISTS command_receipt (id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL) STRICT",
-  );
-  db.run(
-    "CREATE TABLE IF NOT EXISTS pending_command (id TEXT PRIMARY KEY REFERENCES command_receipt(id), payload TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged IN (0,1,2))) STRICT",
-  );
-  db.run(
-    "CREATE TABLE IF NOT EXISTS pending_retro_command (id TEXT PRIMARY KEY REFERENCES command_receipt(id), payload TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1))) STRICT",
-  );
-  db.run(
-    "CREATE TABLE IF NOT EXISTS retro_attempt (retro_id TEXT PRIMARY KEY, attempt INTEGER NOT NULL) STRICT",
-  );
+  createCommandStore(db);
+  const q = drizzle(db);
+  const changes = (query: { run(): unknown }) => (query.run() as Changes).changes;
+  const storedCommand = (id: string) =>
+    q
+      .select({ payload: pendingCommand.payload })
+      .from(pendingCommand)
+      .where(eq(pendingCommand.id, id))
+      .get();
+  const claimCommand = (id: string, expiresAt: number) =>
+    changes(q.insert(commandReceipt).values({ id, expiresAt }).onConflictDoNothing()) === 1;
+  const markRetroDelivered = (id: string) =>
+    q.update(pendingRetroCommand).set({ delivered: 1 }).where(eq(pendingRetroCommand.id, id)).run();
 
   let prunedAt = Number.NEGATIVE_INFINITY;
   function pruneRetired() {
@@ -189,19 +205,40 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     prunedAt = at;
     const cutoff = at - RETIRED_RECEIPT_RETENTION_MS;
     return immediate(db, () => {
+      const expired = q
+        .select({ id: commandReceipt.id })
+        .from(commandReceipt)
+        .where(lt(commandReceipt.expiresAt, cutoff));
       const commands =
-        db.run(
-          "DELETE FROM pending_command WHERE acknowledged=2 AND id IN (SELECT id FROM command_receipt WHERE expires_at<?)",
-          [cutoff],
-        ).changes +
-        db.run(
-          "DELETE FROM pending_retro_command WHERE delivered=1 AND id IN (SELECT id FROM command_receipt WHERE expires_at<?)",
-          [cutoff],
-        ).changes;
-      const receipts = db.run(
-        "DELETE FROM command_receipt WHERE expires_at<? AND id NOT IN (SELECT id FROM pending_command) AND id NOT IN (SELECT id FROM pending_retro_command)",
-        [cutoff],
-      ).changes;
+        changes(
+          q
+            .delete(pendingCommand)
+            .where(and(eq(pendingCommand.acknowledged, 2), inArray(pendingCommand.id, expired))),
+        ) +
+        changes(
+          q
+            .delete(pendingRetroCommand)
+            .where(
+              and(eq(pendingRetroCommand.delivered, 1), inArray(pendingRetroCommand.id, expired)),
+            ),
+        );
+      const receipts = changes(
+        q
+          .delete(commandReceipt)
+          .where(
+            and(
+              lt(commandReceipt.expiresAt, cutoff),
+              notInArray(
+                commandReceipt.id,
+                q.select({ id: pendingCommand.id }).from(pendingCommand),
+              ),
+              notInArray(
+                commandReceipt.id,
+                q.select({ id: pendingRetroCommand.id }).from(pendingRetroCommand),
+              ),
+            ),
+          ),
+      );
       return commands + receipts;
     });
   }
@@ -256,23 +293,25 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   }
   function pendingCommands(): RunnerCommand[] {
     paired();
-    return db
-      .query<{ payload: string }, []>(
-        "SELECT payload FROM pending_command WHERE acknowledged=0 ORDER BY rowid",
-      )
+    return q
+      .select({ payload: pendingCommand.payload })
+      .from(pendingCommand)
+      .where(eq(pendingCommand.acknowledged, 0))
+      .orderBy(sql`rowid`)
       .all()
       .map((row) => RunnerCommandSchema.parse(JSON.parse(row.payload)));
   }
   async function acknowledgeCommand(id: string): Promise<void> {
     const identity = paired();
     identifier.parse(id);
-    const row = db
-      .query<{ payload: string }, [string]>("SELECT payload FROM pending_command WHERE id=?")
-      .get(id);
+    const row = storedCommand(id);
     if (!row) throw new Error("Runner command is unknown.");
     const command = RunnerCommandSchema.parse(JSON.parse(row.payload));
     const queue = command.type === "helper" ? "helper-commands" : "commands";
-    db.run("UPDATE pending_command SET acknowledged=1 WHERE id=? AND acknowledged=0", [id]);
+    q.update(pendingCommand)
+      .set({ acknowledged: 1 })
+      .where(and(eq(pendingCommand.id, id), eq(pendingCommand.acknowledged, 0)))
+      .run();
     try {
       const receipt = await authenticated(`/v1/${queue}/${encodeURIComponent(id)}/ack`, "POST", {});
       if (command.type === "helper") z.strictObject({ ok: z.literal(true) }).parse(receipt);
@@ -286,14 +325,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       journalCaught(error, "daemon.acknowledgeCommand.authenticated", null);
     }
     unchangedIdentity(identity);
-    db.run("UPDATE pending_command SET acknowledged=2 WHERE id=?", [id]);
+    q.update(pendingCommand).set({ acknowledged: 2 }).where(eq(pendingCommand.id, id)).run();
   }
   function helperCommand(id: string) {
     paired();
     identifier.parse(id);
-    const row = db
-      .query<{ payload: string }, [string]>("SELECT payload FROM pending_command WHERE id=?")
-      .get(id);
+    const row = storedCommand(id);
     const command = row ? RunnerCommandSchema.parse(JSON.parse(row.payload)) : null;
     if (command?.type !== "helper" || command.expiresAt <= now())
       throw new Error("Runner helper command is unavailable or expired.");
@@ -302,9 +339,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   function repositoryCommand(id: string): RunnerRepositoryCommand {
     paired();
     identifier.parse(id);
-    const row = db
-      .query<{ payload: string }, [string]>("SELECT payload FROM pending_command WHERE id=?")
-      .get(id);
+    const row = storedCommand(id);
     const command = row ? RunnerCommandSchema.parse(JSON.parse(row.payload)) : null;
     if (command?.type !== "rebase" || command.expiresAt <= now())
       throw new Error("Runner repository command is unavailable or expired.");
@@ -324,10 +359,11 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     const identity = paired();
     trustedSigningKeys(identity, pins);
     pruneRetired();
-    for (const row of db
-      .query<{ id: string }, []>(
-        "SELECT id FROM pending_command WHERE acknowledged=1 ORDER BY rowid",
-      )
+    for (const row of q
+      .select({ id: pendingCommand.id })
+      .from(pendingCommand)
+      .where(eq(pendingCommand.acknowledged, 1))
+      .orderBy(sql`rowid`)
       .all())
       await acknowledgeCommand(row.id);
     const response = z
@@ -348,11 +384,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           now: now(),
           allowedRepositories: options.allowedRepositories,
           accountBindings,
-          claimCommand: (id, expiresAt) =>
-            db.run("INSERT INTO command_receipt VALUES (?,?) ON CONFLICT DO NOTHING", [
-              id,
-              expiresAt,
-            ]).changes === 1,
+          claimCommand,
         });
         if (
           verified.ok &&
@@ -360,10 +392,9 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         )
           throw new Error("Runner command arrived through the wrong queue.");
         if (verified.ok)
-          db.run("INSERT INTO pending_command (id,payload) VALUES (?,?)", [
-            verified.command.id,
-            JSON.stringify(verified.command),
-          ]);
+          q.insert(pendingCommand)
+            .values({ id: verified.command.id, payload: JSON.stringify(verified.command) })
+            .run();
         return verified;
       });
       if (!result.ok) rejected.push(result.reason);
@@ -373,30 +404,34 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   }
   function pendingRetroCommands(): RunnerRetroCommand[] {
     paired();
-    return db
-      .query<{ payload: string }, [number]>(
-        "SELECT p.payload FROM pending_retro_command p JOIN command_receipt r ON r.id=p.id WHERE r.expires_at>? ORDER BY p.rowid",
-      )
-      .all(now())
+    return q
+      .select({ payload: pendingRetroCommand.payload })
+      .from(pendingRetroCommand)
+      .innerJoin(commandReceipt, eq(commandReceipt.id, pendingRetroCommand.id))
+      .where(gt(commandReceipt.expiresAt, now()))
+      .orderBy(sql`${pendingRetroCommand}.rowid`)
+      .all()
       .map((row) => RunnerRetroCommandSchema.parse(JSON.parse(row.payload)));
   }
   function retroCommand(id: string): RunnerRetroCommand {
     paired();
     identifier.parse(id);
-    const row = db
-      .query<{ payload: string }, [string]>("SELECT payload FROM pending_retro_command WHERE id=?")
-      .get(id);
+    const row = q
+      .select({ payload: pendingRetroCommand.payload })
+      .from(pendingRetroCommand)
+      .where(eq(pendingRetroCommand.id, id))
+      .get();
     if (!row) throw new Error("Runner retro command is unknown.");
     return RunnerRetroCommandSchema.parse(JSON.parse(row.payload));
   }
   async function retroTerminal(id: string, action: "result" | "released", body: unknown) {
     try {
       const response = await authenticated(retroPath(id, action), "POST", body);
-      db.run("UPDATE pending_retro_command SET delivered=1 WHERE id=?", [id]);
+      markRetroDelivered(id);
       return response;
     } catch (error) {
       if (error instanceof RunnerRequestError && error.status >= 400 && error.status < 500)
-        db.run("UPDATE pending_retro_command SET delivered=1 WHERE id=?", [id]);
+        markRetroDelivered(id);
       throw error;
     }
   }
@@ -421,26 +456,24 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           now: now(),
           accountBindings,
           latestAttempt: (retroId) =>
-            db
-              .query<{ attempt: number }, [string]>(
-                "SELECT attempt FROM retro_attempt WHERE retro_id=?",
-              )
-              .get(retroId)?.attempt,
-          claimCommand: (id, expiresAt) =>
-            db.run("INSERT INTO command_receipt VALUES (?,?) ON CONFLICT DO NOTHING", [
-              id,
-              expiresAt,
-            ]).changes === 1,
+            q
+              .select({ attempt: retroAttempt.attempt })
+              .from(retroAttempt)
+              .where(eq(retroAttempt.retroId, retroId))
+              .get()?.attempt,
+          claimCommand,
         });
         if (verified.ok) {
-          db.run("INSERT INTO pending_retro_command (id,payload) VALUES (?,?)", [
-            verified.command.id,
-            JSON.stringify(verified.command),
-          ]);
-          db.run(
-            "INSERT INTO retro_attempt VALUES (?,?) ON CONFLICT(retro_id) DO UPDATE SET attempt=MAX(attempt,excluded.attempt)",
-            [verified.command.retroId, verified.command.attempt],
-          );
+          q.insert(pendingRetroCommand)
+            .values({ id: verified.command.id, payload: JSON.stringify(verified.command) })
+            .run();
+          q.insert(retroAttempt)
+            .values({ retroId: verified.command.retroId, attempt: verified.command.attempt })
+            .onConflictDoUpdate({
+              target: retroAttempt.retroId,
+              set: { attempt: sql`MAX(${retroAttempt.attempt}, excluded.attempt)` },
+            })
+            .run();
         }
         return verified;
       });
@@ -455,6 +488,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     status,
     capacity: () => applied,
     ceiling: () => ceiling,
+    conversationCapacity: () => conversations ?? 0,
     pendingCommands,
     pruneRetired,
     /**
@@ -491,10 +525,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         throw new Error("Re-enrollment requires a new runner identity.");
       if (previous)
         immediate(db, () => {
-          db.run("DELETE FROM pending_command");
-          db.run("DELETE FROM pending_retro_command");
-          db.run("DELETE FROM retro_attempt");
-          db.run("DELETE FROM command_receipt");
+          q.delete(pendingCommand).run();
+          q.delete(pendingRetroCommand).run();
+          q.delete(retroAttempt).run();
+          q.delete(commandReceipt).run();
         });
       observedAt = 0;
       writeState(options.root, enrolled);
@@ -568,6 +602,8 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       });
       if (options.agentUser)
         attempts.unshift({ ...(attempts[0] as object), agentUser: options.agentUser });
+      if (conversations !== undefined)
+        attempts.unshift({ ...(attempts[0] as object), conversationConcurrency: conversations });
       let reply: unknown;
       for (const [index, attempt] of attempts.entries()) {
         try {
@@ -770,9 +806,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       const input = RunnerCommandSchema.parse(command);
       if (input.type !== "run" && input.type !== "review" && input.type !== "task")
         throw new Error("Runner input command is invalid");
-      const stored = db
-        .query<{ payload: string }, [string]>("SELECT payload FROM pending_command WHERE id=?")
-        .get(input.id);
+      const stored = storedCommand(input.id);
       if (
         !stored ||
         JSON.stringify(RunnerCommandSchema.parse(JSON.parse(stored.payload))) !==
@@ -869,11 +903,20 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       identifier.parse(runId);
       const body = RunnerRepositoryAccessSchema.parse({ generation, access });
       RunnerGrantTokenSchema.parse(grantToken);
-      const stored = db
-        .query<{ payload: string }, [string, number]>(
-          "SELECT payload FROM pending_command WHERE json_extract(payload,'$.runId')=? AND json_extract(payload,'$.generation')=? AND json_extract(payload,'$.type') IN ('run','review','task') ORDER BY rowid DESC LIMIT 1",
+      const field = (path: string) => sql`json_extract(${pendingCommand.payload},${path})`;
+      const stored = q
+        .select({ payload: pendingCommand.payload })
+        .from(pendingCommand)
+        .where(
+          and(
+            eq(field("$.runId"), runId),
+            eq(field("$.generation"), generation),
+            inArray(field("$.type"), ["run", "review", "task"]),
+          ),
         )
-        .get(runId, generation);
+        .orderBy(desc(sql`rowid`))
+        .limit(1)
+        .get();
       if (!stored) throw new Error("Runner work command is unknown.");
       const command = RunnerCommandSchema.parse(JSON.parse(stored.payload));
       if (

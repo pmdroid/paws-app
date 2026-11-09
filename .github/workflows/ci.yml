@@ -27,7 +27,7 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - run: bun test --parallel=4 --timeout=20000 --no-orphans --shard=${{ matrix.shard }}/4 --timings=test-timings.json
+      - run: bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --shard=${{ matrix.shard }}/4 --timings=test-timings.json
 
   check:
     name: lint, format, types, test, dashboard build
@@ -49,5 +49,6 @@ jobs:
       - run: bun run typecheck
       - run: bun run build:dashboard
       - run: bun run links
+      - run: bun run raw-sql
       - run: bun run knip
       - run: bun scripts/check-runner-versions.ts --since-latest-release

@@ -3,7 +3,7 @@ import type { Database } from "bun:sqlite";
 import {
   bindLinearSessionTask,
   migrations,
-  migrate,
+  legacyMigrate,
   openDatabase,
   recordLinearInstallation,
 } from "../src/db";
@@ -72,7 +72,7 @@ test("migration 063 copies a request, an effect and a policy onto the non-termin
     db.run(
       "INSERT INTO external_blocker_policy(workspace_id,epic_id,blocker_issue_id,policy,user_id,revision) VALUES('workspace','epic','blocker','{\"blockerLinearIssueId\":\"blocker\",\"outcome\":\"completion\"}','person',3)",
     );
-    migrate(db, { until: "129_parent_delegation" });
+    legacyMigrate(db, { until: "129_parent_delegation" });
     expect(
       db
         .query<{ itemId: string; workspaceId: string; token: string }, []>(
@@ -117,7 +117,7 @@ test("migration 063 copies a request, an effect and a policy onto the non-termin
 test("a spec change on the item's issue is reconciled through the item", async () => {
   const db = openDatabase(":memory:");
   try {
-    migrate(db);
+    legacyMigrate(db);
     const tracker = createFakeTracker([
       {
         linearIssueId: "parent",
@@ -195,7 +195,7 @@ test("a spec change on the item's issue is reconciled through the item", async (
 test("a reconcile handed the intake's reads writes the scheduler rows without reading Linear", async () => {
   const db = openDatabase(":memory:");
   try {
-    migrate(db);
+    legacyMigrate(db);
     const snapshot = {
       linearIssueId: "issue",
       identifier: "ONE-1",

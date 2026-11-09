@@ -1,22 +1,52 @@
 import { expect, spyOn, test } from "bun:test";
-import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { createLinearAuth, readStoredToken, writeStoredToken } from "../src/linear";
+import { createLinearAuth, readStoredToken } from "../src/linear";
 import { claimNextJob, completeJob, listJobs, migrate, openDatabase } from "../src/db";
 import { refreshCredential } from "../src/credentials";
-import { tempHome } from "./helpers";
+import { storeLinearToken, tempHome } from "./helpers";
 
 function initial(home: string): string {
-  const path = join(home, "secrets", "linear-oauth.json");
-  mkdirSync(join(home, "secrets"), { recursive: true });
-  writeStoredToken(path, {
+  storeLinearToken(home, {
     accessToken: "synthetic-access-old",
     refreshToken: "synthetic-refresh-old",
     expiresAtMs: 0,
     scope: "read,write",
     actor: "app",
   });
-  return path;
+  return join(home, "secrets");
+}
+
+function storedRefresh(home: string): string | null | undefined {
+  const db = openDatabase(join(home, "paws.db"));
+  try {
+    return readStoredToken(db, join(home, "secrets"))?.refreshToken;
+  } finally {
+    db.close();
+  }
+}
+
+function spawnRefresh(home: string, port: number, mode: string) {
+  return Bun.spawn(
+    [
+      process.execPath,
+      "--no-env-file",
+      new URL("./fixtures/credential-refresh.ts", import.meta.url).pathname,
+      home,
+      `http://127.0.0.1:${port}/token`,
+      mode,
+    ],
+    {
+      env: {
+        PATH: process.env.PATH,
+        HOME: home,
+        KYOTOAGENT_ROOT: join(home, "kyoto"),
+        PAWS_HOME: home,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
 }
 
 test("a refresh waiter rereads credentials when another worker completes between its reads", async () => {
@@ -142,13 +172,13 @@ test("credential publication holds the SQLite writer lock through read and write
 
 test("separate Linear clients share one durable refresh job and rotate the encrypted token", async () => {
   const home = tempHome();
-  const path = initial(home);
+  const secretsDir = initial(home);
   const db = openDatabase(join(home, "paws.db"));
   migrate(db);
   let requests = 0;
   const options = {
     db,
-    tokenPath: path,
+    secretsDir,
     clientId: "synthetic-client",
     clientSecret: "synthetic-client-secret",
     fetch: async () => {
@@ -168,7 +198,7 @@ test("separate Linear clients share one durable refresh job and rotate the encry
     );
     expect(requests).toBe(1);
     expect(listJobs(db).map((job) => job.status)).toEqual(["done"]);
-    expect(readStoredToken(path)?.refreshToken).toBe("synthetic-refresh-new");
+    expect(readStoredToken(db, secretsDir)?.refreshToken).toBe("synthetic-refresh-new");
   } finally {
     db.close();
     rmSync(home, { recursive: true, force: true });
@@ -177,7 +207,7 @@ test("separate Linear clients share one durable refresh job and rotate the encry
 
 test("a killed refresh process replays the consumed Linear token after restart and persists its rotation", async () => {
   const home = tempHome();
-  const path = initial(home);
+  initial(home);
   const bodies: string[] = [];
   const provider = Bun.serve({
     hostname: "127.0.0.1",
@@ -192,27 +222,7 @@ test("a killed refresh process replays the consumed Linear token after restart a
       });
     },
   });
-  const spawn = (mode: string) =>
-    Bun.spawn(
-      [
-        process.execPath,
-        "--no-env-file",
-        new URL("./fixtures/credential-refresh.ts", import.meta.url).pathname,
-        home,
-        `http://127.0.0.1:${provider.port}/token`,
-        mode,
-      ],
-      {
-        env: {
-          PATH: process.env.PATH,
-          HOME: home,
-          KYOTOAGENT_ROOT: join(home, "kyoto"),
-          PAWS_HOME: home,
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    );
+  const spawn = (mode: string) => spawnRefresh(home, provider.port!, mode);
   const first = spawn("crash");
   let second: ReturnType<typeof spawn> | undefined;
   try {
@@ -227,12 +237,12 @@ test("a killed refresh process replays the consumed Linear token after restart a
     expect(new TextDecoder().decode(ready.value)).toContain("provider rotated");
     first.kill("SIGKILL");
     await first.exited;
-    expect(readStoredToken(path)?.refreshToken).toBe("synthetic-refresh-old");
+    expect(storedRefresh(home)).toBe("synthetic-refresh-old");
     second = spawn("recover");
     expect(await second.exited).toBe(0);
     expect(await new Response(second.stderr).text()).toBe("");
     expect(bodies).toEqual(["synthetic-refresh-old", "synthetic-refresh-old"]);
-    expect(readStoredToken(path)?.refreshToken).toBe("synthetic-refresh-rotated");
+    expect(storedRefresh(home)).toBe("synthetic-refresh-rotated");
     const db = openDatabase(join(home, "paws.db"));
     expect(listJobs(db).map((job) => ({ status: job.status, attempts: job.attempts }))).toEqual([
       { status: "done", attempts: 2 },
@@ -265,13 +275,13 @@ test("a killed refresh process replays the consumed Linear token after restart a
 
 test("refresh failures keep the prior token and persist only a sanitized retry error", async () => {
   const home = tempHome();
-  const path = initial(home);
+  const secretsDir = initial(home);
   const db = openDatabase(join(home, "paws.db"));
   migrate(db);
   try {
     const auth = createLinearAuth({
       db,
-      tokenPath: path,
+      secretsDir,
       clientId: "synthetic-client",
       clientSecret: "synthetic-client-secret",
       fetch: async () => {
@@ -279,7 +289,7 @@ test("refresh failures keep the prior token and persist only a sanitized retry e
       },
     });
     await expect(auth.ensureFresh()).rejects.toThrow("Integration token refresh failed");
-    expect(readStoredToken(path)?.refreshToken).toBe("synthetic-refresh-old");
+    expect(readStoredToken(db, secretsDir)?.refreshToken).toBe("synthetic-refresh-old");
     expect(listJobs(db)[0]?.lastError).toBe("Integration token refresh failed.");
     expect(listJobs(db)[0]?.status).toBe("pending");
   } finally {
@@ -287,3 +297,53 @@ test("refresh failures keep the prior token and persist only a sanitized retry e
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("after one process refreshes, another process's next call uses the new token", async () => {
+  const home = tempHome();
+  storeLinearToken(home, {
+    accessToken: "acme-access-old",
+    refreshToken: "acme-refresh-old",
+    expiresAtMs: Date.now() + 600_000,
+    scope: "read,write",
+    actor: "app",
+  });
+  const provider = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () =>
+      Response.json({
+        access_token: "acme-access-new",
+        refresh_token: "acme-refresh-new",
+        expires_in: 3600,
+      }),
+  });
+  const replica = tempHome();
+  const replicaSecrets = join(replica, "secrets");
+  mkdirSync(replicaSecrets, { mode: 0o700 });
+  copyFileSync(join(home, "secrets", ".envelope-key"), join(replicaSecrets, ".envelope-key"));
+  const db = openDatabase(join(home, "paws.db"));
+  let requests = 0;
+  try {
+    const auth = createLinearAuth({
+      db,
+      secretsDir: replicaSecrets,
+      clientId: "acme-client",
+      clientSecret: "acme-client-secret",
+      fetch: async () => {
+        requests += 1;
+        throw new Error("This process must not refresh.");
+      },
+    });
+    expect(await auth.ensureFresh()).toBe("acme-access-old");
+    const other = spawnRefresh(home, provider.port!, "recover");
+    expect(await other.exited).toBe(0);
+    expect(await auth.ensureFresh()).toBe("acme-access-new");
+    expect(readStoredToken(db, replicaSecrets)?.refreshToken).toBe("acme-refresh-new");
+    expect(requests).toBe(0);
+  } finally {
+    db.close();
+    await provider.stop(true);
+    rmSync(home, { recursive: true, force: true });
+    rmSync(replica, { recursive: true, force: true });
+  }
+}, 20_000);

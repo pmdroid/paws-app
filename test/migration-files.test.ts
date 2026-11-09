@@ -5,7 +5,7 @@ import {
   combineMigrations,
   frozenMigrations,
   loadMigrationFiles,
-  migrate,
+  legacyMigrate,
   migrations,
   openDatabase,
   type Migration,
@@ -40,7 +40,7 @@ function schema(list: readonly Migration[], order: string[][]): unknown[] {
   try {
     for (const ids of order) {
       const known = new Set(ids);
-      migrate(db, {
+      legacyMigrate(db, {
         migrations: list.filter((m) => known.has(m.id) || frozenMigrations.includes(m)),
       });
     }
@@ -55,11 +55,11 @@ function schema(list: readonly Migration[], order: string[][]): unknown[] {
 }
 
 describe("migration files", () => {
-  test("the frozen list ends at 155_pull_comment; a new migration is a file", () => {
-    const ids = frozenMigrations.map((m) => m.id);
-    if (ids.length !== 164 || ids.at(-1) !== "155_pull_comment")
+  test("the legacy migrations are frozen; a new migration is a drizzle-kit migration", () => {
+    const ids = migrations.map((m) => m.id);
+    if (ids.length !== 243 || ids.at(-1) !== "20261106T0855_retire_named_agent_accounts")
       throw new Error(
-        `src/db/migrations.ts is frozen at 164 entries ending at 155_pull_comment, but it now ends at ${ids.at(-1)} (${ids.length} entries). Do not add to that array: add a file under src/db/migrations/ named <yyyymmdd>T<hhmm>_<name>.ts instead (see src/db/migrations/README.md).`,
+        `The legacy migrations are frozen at 243 ending at 20261106T0855_retire_named_agent_accounts, but they now end at ${ids.at(-1)} (${ids.length}). Do not add a legacy migration: change src/db/schema/ and run drizzle-kit generate (see src/db/README.md).`,
       );
     expect(migrations.slice(0, 164)).toEqual([...frozenMigrations]);
   });

@@ -4,14 +4,20 @@ import {
   getWorkItem,
   openVisualReviewFiles,
   workspaceMember,
+  type StoredEvidence,
   type VisualReviewMark,
 } from "../db";
 import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import type { Database } from "bun:sqlite";
 import { sniffMedia } from "./media";
-import { EVIDENCE_LIMITS, evidencePath } from "./store";
+import {
+  removeEvidenceFile,
+  writeEvidenceFile,
+  type EvidenceObjects,
+  type EvidenceStorage,
+} from "./objects";
+import { EVIDENCE_LIMITS } from "./store";
 import { ulid } from "./ulid";
 
 export const VISUAL_REVIEW_CHANGES_PATH = "/api/visual-review-changes";
@@ -32,6 +38,7 @@ export type VisualReviewChanges = (input: {
 export type VisualReviewChangesOptions = {
   db: Database;
   root: string;
+  objects?: EvidenceObjects;
   principal: { workspaceId: string; userId: string } | undefined;
   sessionIds: readonly string[] | undefined;
   submit: VisualReviewChanges;
@@ -72,22 +79,23 @@ export async function handleVisualReviewChanges(
       { error: "This review is no longer waiting. Refresh the run." },
       { status: 409 },
     );
-  const files: { evidenceId: string; bytes: Uint8Array }[] = [];
+  const files: { evidence: StoredEvidence; bytes: Uint8Array }[] = [];
   for (const [key, value] of form.entries()) {
     if (!key.startsWith("mark:")) continue;
     const evidenceId = key.slice("mark:".length);
+    const evidence = getEvidence(db, evidenceId);
     if (
       typeof value === "string" ||
       !review.evidenceIds.includes(evidenceId) ||
-      files.some((file) => file.evidenceId === evidenceId) ||
-      !getEvidence(db, evidenceId)?.mediaType.startsWith("image/") ||
+      files.some((file) => file.evidence.id === evidenceId) ||
+      !evidence?.mediaType.startsWith("image/") ||
       value.size > EVIDENCE_LIMITS.image
     )
       return Response.json({ error: "A mark doesn't match a screenshot." }, { status: 400 });
     const bytes = new Uint8Array(await value.arrayBuffer());
     if (sniffMedia(bytes.subarray(0, 64)) !== "image/png")
       return Response.json({ error: "Marked screenshots must be PNG." }, { status: 400 });
-    files.push({ evidenceId, bytes });
+    files.push({ evidence, bytes });
   }
   if (files.length === 0 && note.trim() === "")
     return Response.json(
@@ -95,17 +103,15 @@ export async function handleVisualReviewChanges(
       { status: 400 },
     );
   const now = (options.now ?? Date.now)();
-  await mkdir(options.root, { recursive: true, mode: 0o700 });
-  await chmod(options.root, 0o700);
   const marks: VisualReviewMark[] = [];
   try {
     for (const file of files) {
       const id = ulid(now);
-      await writeFile(evidencePath(options.root, id), file.bytes, { flag: "wx", mode: 0o600 });
+      await writeEvidenceFile(db, options, file.evidence, id, file.bytes, now);
       marks.push({
         id,
         questionId,
-        evidenceId: file.evidenceId,
+        evidenceId: file.evidence.id,
         sizeBytes: file.bytes.byteLength,
         sha256: createHash("sha256").update(file.bytes).digest("hex"),
         createdAt: now,
@@ -119,7 +125,7 @@ export async function handleVisualReviewChanges(
       actor: { workspaceId: principal.workspaceId, userId: principal.userId, name: member.name },
     });
     if (result === "answered") return Response.json({ ok: true, marks: marks.length });
-    await removeMarks(options.root, marks);
+    await removeMarks(db, options, marks);
     return result === "forbidden"
       ? Response.json(
           {
@@ -133,11 +139,15 @@ export async function handleVisualReviewChanges(
           { status: 409 },
         );
   } catch (error) {
-    await removeMarks(options.root, marks);
+    await removeMarks(db, options, marks);
     throw error;
   }
 }
 
-async function removeMarks(root: string, marks: readonly VisualReviewMark[]): Promise<void> {
-  await Promise.all(marks.map((mark) => rm(evidencePath(root, mark.id), { force: true })));
+async function removeMarks(
+  db: Database,
+  storage: EvidenceStorage,
+  marks: readonly VisualReviewMark[],
+): Promise<void> {
+  await Promise.all(marks.map((mark) => removeEvidenceFile(db, storage, mark.id)));
 }

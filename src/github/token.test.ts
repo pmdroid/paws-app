@@ -99,12 +99,12 @@ describe("GitHub App tokens", () => {
       ).toThrow("agent read token grants unexpected permissions");
     expect(() =>
       assertScopedToken(
-        tokenBody("ghs_wide", { permissions: { ...INSTALLATION_PERMISSIONS, actions: "read" } }),
+        tokenBody("ghs_wide", { permissions: { ...INSTALLATION_PERMISSIONS, actions: "write" } }),
         "pmdroid",
         "paws-demo",
         now,
       ),
-    ).toThrow("installation token grants unexpected permission actions");
+    ).toThrow("actions permission must be read");
   });
 
   test("revoking a token deletes it with itself and accepts one GitHub already dropped", async () => {
@@ -176,6 +176,7 @@ describe("GitHub App tokens", () => {
     expect(request.body.repositories).toEqual(["paws-demo"]);
     expect(request.body.permissions).toEqual({
       ...INSTALLATION_PERMISSIONS,
+      actions: "read",
       workflows: "write",
       statuses: "read",
     });
@@ -248,10 +249,11 @@ describe("GitHub App tokens", () => {
         now: new Date(),
       });
     expect((await mint()).token).toBe("ghs_scoped");
-    expect(asked.at(-1)).toEqual({ ...INSTALLATION_PERMISSIONS, workflows: "write" });
+    const withoutStatuses = { ...INSTALLATION_PERMISSIONS, actions: "read", workflows: "write" };
+    expect(asked.at(-1)).toEqual(withoutStatuses);
     const before = asked.length;
     await mint();
-    expect(asked.slice(before)).toEqual([{ ...INSTALLATION_PERMISSIONS, workflows: "write" }]);
+    expect(asked.slice(before)).toEqual([withoutStatuses]);
   });
 
   test("commit statuses are accepted only as read", () => {
@@ -264,6 +266,20 @@ describe("GitHub App tokens", () => {
     expect(assertScopedToken(body("read"), "pmdroid", "paws-demo", now).token).toBe("ghs_statuses");
     expect(() => assertScopedToken(body("write"), "pmdroid", "paws-demo", now)).toThrow(
       GitHubTokenError,
+    );
+  });
+
+  test("Actions is accepted on a write token only as read", () => {
+    const now = new Date("2026-10-09T12:00:00.000Z");
+    const body = (actions: string) =>
+      tokenBody("ghs_actions", {
+        expires_at: "2026-10-09T13:00:00.000Z",
+        repositories: [{ name: "widgets", full_name: "acme/widgets" }],
+        permissions: { ...INSTALLATION_PERMISSIONS, metadata: "read", actions },
+      });
+    expect(assertScopedToken(body("read"), "acme", "widgets", now).token).toBe("ghs_actions");
+    expect(() => assertScopedToken(body("write"), "acme", "widgets", now)).toThrow(
+      "actions permission must be read",
     );
   });
 

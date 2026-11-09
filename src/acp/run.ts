@@ -381,6 +381,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
       options.pullRequest ||
       options.postUpdate ||
       options.reply ||
+      options.startWork ||
       options.publishArtifact
     ) {
       bridge = await startAskTeamBridge({
@@ -390,6 +391,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         pullRequest: options.pullRequest,
         postUpdate: options.postUpdate,
         reply: options.reply,
+        ...(options.startWork ? { startWork: options.startWork } : {}),
         publishArtifact: options.publishArtifact,
         ...(options.closeoutProgress ? { closeoutProgress: options.closeoutProgress } : {}),
         artifactLimits: options.artifactLimits,
@@ -415,6 +417,7 @@ export async function runAgent(options: RunAgentOptions): Promise<RunAgentResult
         ...(options.suggestedFindings?.length
           ? { suggestedFindings: options.suggestedFindings }
           : {}),
+        ...(options.reviewFindings?.length ? { reviewFindings: options.reviewFindings } : {}),
         signal: runAbort.signal,
         onAsk: (question) => emit({ type: "ask_team", question, phase: "asked" }),
         onAnswer: (question, answer) =>

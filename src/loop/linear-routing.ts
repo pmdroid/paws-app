@@ -1,24 +1,37 @@
 import type { Database } from "bun:sqlite";
 import { parentTaskKeySql } from "../core";
-import { ensureLinearSession, workItemForSession, type StoredLinearSession } from "../db";
+import {
+  ensureLinearSessionSteps,
+  workItemForSession,
+  type Q,
+  type Steps,
+  type StoredLinearSession,
+} from "../db";
 import type { AcceptedLinearEvent } from "../linear";
 
-export function recordLinearSessionEvent(
-  db: Database,
+export function* recordLinearSessionEventSteps(
+  q: Q,
   event: AcceptedLinearEvent,
   now: number,
-): StoredLinearSession | null {
+): Steps<StoredLinearSession | null> {
+  const input = linearSessionInput(event, now);
+  return input ? yield* ensureLinearSessionSteps(q, input) : null;
+}
+
+type LinearSessionInput = Parameters<typeof ensureLinearSessionSteps>[1];
+
+function linearSessionInput(event: AcceptedLinearEvent, now: number): LinearSessionInput | null {
   if (!event.sessionId) return null;
   const raw: unknown = JSON.parse(event.payload);
   const payload = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  return ensureLinearSession(db, {
+  return {
     sessionId: event.sessionId,
     issueId: event.issueId,
     organizationId: typeof payload.organizationId === "string" ? payload.organizationId : null,
     appUserId: typeof payload.appUserId === "string" ? payload.appUserId : null,
     creatorId: linearSessionCreatorId(event),
     now,
-  });
+  };
 }
 
 export function linearSessionCreatorId(event: AcceptedLinearEvent): string | null {

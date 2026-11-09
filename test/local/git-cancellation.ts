@@ -48,9 +48,16 @@ export async function probeGitCancellation(
     });
   try {
     const deadline = Date.now() + 5000;
-    while (!existsSync(`${gitBin}.pids.json`) && Date.now() < deadline) await Bun.sleep(10);
+    const written = () => {
+      try {
+        return JSON.parse(readFileSync(`${gitBin}.pids.json`, "utf8")) as number[];
+      } catch {
+        return undefined;
+      }
+    };
+    while (written() === undefined && Date.now() < deadline) await Bun.sleep(10);
     assert(existsSync(`${gitBin}.pids.json`));
-    pids = JSON.parse(readFileSync(`${gitBin}.pids.json`, "utf8")) as number[];
+    pids = written() ?? [];
     assert.equal(pids.length, 2);
     assert(pids.every(running));
     const at = Date.now();

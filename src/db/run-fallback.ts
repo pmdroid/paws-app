@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { immediate } from "./tx";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 export type FallbackOutcome = "failed" | "handed_over" | "usage_limit";
 
@@ -11,77 +12,112 @@ export type FallbackHistory = {
   usageLimits: number;
 };
 
-export function recordFallbackAttempt(
-  db: Database,
-  input: {
-    runId: string;
-    callId: string;
-    policyKey: string;
-    outcome: FallbackOutcome;
-    runnerId: string;
-    excludedKey: string;
-    now: number;
-  },
-): boolean {
-  return immediate(db, () => {
-    if (!db.query("SELECT 1 FROM run WHERE id=?").get(input.runId)) return false;
-    const generation =
-      db
-        .query<{ generation: number }, [string, string]>(
-          "SELECT generation FROM runner_work WHERE run_id=? AND runner_id=?",
-        )
-        .get(input.runId, input.runnerId)?.generation ?? 0;
-    const account = db
-      .query<{ accountId: string; bindingId: string }, [string, string, number]>(
-        `SELECT a.account_id AS accountId,a.binding_id AS bindingId FROM runner_command c
-         JOIN runner_command_account a ON a.command_id=c.id
-         WHERE c.run_id=? AND c.runner_id=? AND c.generation=? AND c.kind IN ('run','review','task')
-         ORDER BY c.ordinal DESC LIMIT 1`,
+type FallbackAttempt = {
+  runId: string;
+  callId: string;
+  policyKey: string;
+  outcome: FallbackOutcome;
+  runnerId: string;
+  excludedKey: string;
+  now: number;
+};
+
+export function* recordFallbackAttemptSteps(q: Q, input: FallbackAttempt): Steps<boolean> {
+  const { run, runFallbackAttempt, runnerCommand, runnerCommandAccount, runnerWork } = q.t;
+  if (
+    !(yield* q.one(
+      q.orm
+        .select({ one: sql`1` })
+        .from(run)
+        .where(eq(run.id, input.runId)),
+    ))
+  )
+    return false;
+  const work = yield* q.one(
+    q.orm
+      .select({ generation: runnerWork.generation })
+      .from(runnerWork)
+      .where(and(eq(runnerWork.runId, input.runId), eq(runnerWork.runnerId, input.runnerId))),
+  );
+  const generation = work?.generation ?? 0;
+  const account = yield* q.one(
+    q.orm
+      .select({
+        accountId: runnerCommandAccount.accountId,
+        bindingId: runnerCommandAccount.bindingId,
+      })
+      .from(runnerCommand)
+      .innerJoin(runnerCommandAccount, eq(runnerCommandAccount.commandId, runnerCommand.id))
+      .where(
+        and(
+          eq(runnerCommand.runId, input.runId),
+          eq(runnerCommand.runnerId, input.runnerId),
+          eq(runnerCommand.generation, generation),
+          inArray(runnerCommand.kind, ["run", "review", "task"]),
+        ),
       )
-      .get(input.runId, input.runnerId, generation);
-    const ordinal =
-      db
-        .query<{ ordinal: number }, [string, string]>(
-          "SELECT COALESCE(MAX(ordinal),0) AS ordinal FROM run_fallback_attempt WHERE run_id=? AND call_id=?",
-        )
-        .get(input.runId, input.callId)!.ordinal + 1;
-    if (ordinal > MAX_FALLBACK_ATTEMPTS) return false;
-    return (
-      db
-        .query(
-          `INSERT OR IGNORE INTO run_fallback_attempt(run_id,call_id,ordinal,policy_key,outcome,
-           runner_id,generation,excluded_key,account_id,binding_id,recorded_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-        )
-        .run(
-          input.runId,
-          input.callId,
-          ordinal,
-          input.policyKey,
-          input.outcome,
-          input.runnerId,
-          generation,
-          input.excludedKey,
-          account?.accountId ?? null,
-          account?.bindingId ?? null,
-          input.now,
-        ).changes > 0
-    );
-  });
+      .orderBy(desc(runnerCommand.ordinal))
+      .limit(1),
+  );
+  const last = yield* q.one(
+    q.orm
+      .select({
+        ordinal: sql<number>`COALESCE(MAX(${runFallbackAttempt.ordinal}),0)`.mapWith(Number),
+      })
+      .from(runFallbackAttempt)
+      .where(
+        and(eq(runFallbackAttempt.runId, input.runId), eq(runFallbackAttempt.callId, input.callId)),
+      ),
+  );
+  const ordinal = last!.ordinal + 1;
+  if (ordinal > MAX_FALLBACK_ATTEMPTS) return false;
+  const inserted = yield* q.all(
+    q.orm
+      .insert(runFallbackAttempt)
+      .values({
+        runId: input.runId,
+        callId: input.callId,
+        ordinal,
+        policyKey: input.policyKey,
+        outcome: input.outcome,
+        runnerId: input.runnerId,
+        generation,
+        excludedKey: input.excludedKey,
+        accountId: account?.accountId ?? null,
+        bindingId: account?.bindingId ?? null,
+        recordedAt: input.now,
+      })
+      .onConflictDoNothing()
+      .returning({ ordinal: runFallbackAttempt.ordinal }),
+  );
+  return inserted.length > 0;
 }
 
-export function fallbackHistory(
-  db: Database,
+export function recordFallbackAttempt(db: Database, input: FallbackAttempt): boolean {
+  return settled(sqliteDb(db).transaction((q) => recordFallbackAttemptSteps(q, input)));
+}
+
+export function* fallbackHistorySteps(
+  q: Q,
   runId: string,
   callId: string,
   policyKey: string,
-): FallbackHistory {
-  const rows = db
-    .query<{ outcome: FallbackOutcome; excludedKey: string }, [string, string, string]>(
-      `SELECT outcome,excluded_key AS excludedKey FROM run_fallback_attempt
-       WHERE run_id=? AND call_id=? AND policy_key=? AND closed_at IS NULL ORDER BY ordinal`,
-    )
-    .all(runId, callId, policyKey);
+): Steps<FallbackHistory> {
+  const { runFallbackAttempt } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ outcome: runFallbackAttempt.outcome, excludedKey: runFallbackAttempt.excludedKey })
+      .from(runFallbackAttempt)
+      .where(
+        and(
+          eq(runFallbackAttempt.runId, runId),
+          eq(runFallbackAttempt.callId, callId),
+          eq(runFallbackAttempt.policyKey, policyKey),
+          isNull(runFallbackAttempt.closedAt),
+        ),
+      )
+      .orderBy(asc(runFallbackAttempt.ordinal)),
+  );
   const excluded: string[] = [];
   for (const row of rows)
     if (row.excludedKey && !excluded.includes(row.excludedKey)) excluded.push(row.excludedKey);
@@ -92,14 +128,41 @@ export function fallbackHistory(
   };
 }
 
+export function fallbackHistory(
+  db: Database,
+  runId: string,
+  callId: string,
+  policyKey: string,
+): FallbackHistory {
+  return settled(sqliteDb(db).run((q) => fallbackHistorySteps(q, runId, callId, policyKey)));
+}
+
+export function* closeFallbackAttemptsSteps(
+  q: Q,
+  runId: string,
+  callId: string,
+  now: number,
+): Steps<void> {
+  const { runFallbackAttempt } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(runFallbackAttempt)
+      .set({ closedAt: now })
+      .where(
+        and(
+          eq(runFallbackAttempt.runId, runId),
+          eq(runFallbackAttempt.callId, callId),
+          isNull(runFallbackAttempt.closedAt),
+        ),
+      ),
+  );
+}
+
 export function closeFallbackAttempts(
   db: Database,
   runId: string,
   callId: string,
   now: number,
 ): void {
-  db.run(
-    "UPDATE run_fallback_attempt SET closed_at=? WHERE run_id=? AND call_id=? AND closed_at IS NULL",
-    [now, runId, callId],
-  );
+  settled(sqliteDb(db).run((q) => closeFallbackAttemptsSteps(q, runId, callId, now)));
 }

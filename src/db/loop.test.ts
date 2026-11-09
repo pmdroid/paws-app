@@ -14,17 +14,20 @@ import {
 } from "./index";
 
 /** The next claim statement throws once. Later claims use the real database. */
+/** The start of the claim statement Drizzle prepares. */
+const CLAIM_SQL = 'update "job" set "status" = ?, "attempts" = "job"."attempts" + 1';
+
 function failNextClaim(db: Database): { db: Database; failNext(): void } {
   let fail = false;
   const wrapped = new Proxy(db, {
     get(target, property, receiver) {
-      if (property === "query") {
+      if (property === "prepare") {
         return (sql: string) => {
-          const statement = target.query(sql);
-          if (!fail || !sql.startsWith("UPDATE job SET status = 'running'")) return statement;
+          const statement = target.prepare(sql);
+          if (!fail || !sql.startsWith(CLAIM_SQL)) return statement;
           return new Proxy(statement, {
             get(statementTarget, statementProperty, statementReceiver) {
-              if (statementProperty === "get") {
+              if (statementProperty === "values") {
                 return () => {
                   fail = false;
                   throw new Error("SQLITE_BUSY: database is locked");
@@ -251,10 +254,10 @@ test("an idle loop claims once per ceiling and sleeps until the earliest run_at"
   const claims: number[] = [];
   const observed = new Proxy(db, {
     get(target, prop, receiver) {
-      if (prop === "query") {
+      if (prop === "prepare") {
         return (sql: string) => {
-          if (sql.startsWith("UPDATE job SET status = 'running'")) claims.push(clock.now());
-          return target.query(sql);
+          if (sql.startsWith(CLAIM_SQL)) claims.push(clock.now());
+          return target.prepare(sql);
         };
       }
       const value = Reflect.get(target, prop, receiver);

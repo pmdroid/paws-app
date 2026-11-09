@@ -1,13 +1,15 @@
 import type { Database } from "bun:sqlite";
+import { and, desc, eq, sql, type AnyColumn, type SQL } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
+import { jsonItemId } from "./jobs";
 import { journal } from "./journal";
 import {
   DEFAULT_OUTBOX_MAX_ATTEMPTS,
   ELICITATION_REASK_SUFFIX,
-  enqueueOutboxOnce,
+  enqueueOutboxOnceSteps,
   OUTBOX_ITEM_SQL,
   type OutboxDelivery,
 } from "./outbox";
-import { immediate } from "./tx";
 
 /** A dead outbox row or a dead job of one work item. */
 export type DeadDelivery = {
@@ -29,75 +31,96 @@ export type DeadDelivery = {
 
 export type DeadDeliveryRef = { kind: "outbox" | "job"; id: number };
 
+function jsonField(q: Q, column: AnyColumn, key: string): SQL<string | null> {
+  return q.dialect === "sqlite"
+    ? sql`json_extract(${column}, ${`$.${key}`})`
+    : sql`(${column}->>${key})`;
+}
+
 /** A job is current while the item still has the version the job was captured at. */
-const JOB_CURRENT_SQL = `(job.item_version IS NULL OR job.item_version =
-  (SELECT version FROM work_item WHERE id = json_extract(job.payload, '$.itemId')))`;
+function jobCurrent(q: Q): SQL {
+  const { job, workItem } = q.t;
+  return sql`(${job.itemVersion} IS NULL OR ${job.itemVersion} =
+    (SELECT ${workItem.version} FROM ${workItem} WHERE ${workItem.id} = ${jsonItemId(q, sql`${job.payload}`)}))`;
+}
+
+function outboxItem(q: Q): SQL<string | null> {
+  return sql<string | null>`${sql.raw(OUTBOX_ITEM_SQL("outbox", q.dialect))}`;
+}
 
 /** Dead outbox rows and dead jobs of one work item, oldest first. */
 export function listDeadDeliveries(db: Database, itemId: string): DeadDelivery[] {
-  const outbox = db
-    .query<
-      { id: number; name: string; error: string | null; attempts: number; created_at: number },
-      [string]
-    >(
-      `SELECT o.id, o.target || '.' || o.op AS name, o.error, o.attempts, o.created_at
-       FROM outbox o WHERE o.status = 'dead' AND ${OUTBOX_ITEM_SQL("o")} = ? ORDER BY o.id`,
-    )
-    .all(itemId)
-    .map((row): DeadDelivery => ({
-      kind: "outbox",
-      id: row.id,
-      name: row.name,
-      error: row.error,
-      attempts: row.attempts,
-      createdAt: row.created_at,
-      at: row.created_at,
-      retryable: true,
-    }));
-  const jobs = db
-    .query<
-      {
-        id: number;
-        queue: string;
-        last_error: string | null;
-        attempts: number;
-        created_at: number;
-        finished_at: number | null;
-        current: number;
-      },
-      [string]
-    >(
-      `SELECT id, queue, last_error, attempts, created_at, finished_at, ${JOB_CURRENT_SQL} AS current
-       FROM job WHERE status = 'dead' AND json_extract(payload, '$.itemId') = ? ORDER BY id`,
-    )
-    .all(itemId)
-    .map((row): DeadDelivery => ({
-      kind: "job",
-      id: row.id,
-      name: row.queue,
-      error: row.last_error,
-      attempts: row.attempts,
-      createdAt: row.created_at,
-      at: row.finished_at ?? row.created_at,
-      retryable: row.current === 1,
-    }));
-  return [...outbox, ...jobs].sort((left, right) => left.at - right.at || left.id - right.id);
+  return settled(sqliteDb(db).run((q) => listDeadDeliveriesSteps(q, itemId)));
+}
+
+export function* listDeadDeliveriesSteps(q: Q, itemId: string) {
+  const { outbox, job } = q.t;
+  const outboxRows = (yield* q.all(
+    q.orm
+      .select({
+        id: outbox.id,
+        name: sql<string>`${outbox.target} || '.' || ${outbox.op}`,
+        error: outbox.error,
+        attempts: outbox.attempts,
+        createdAt: outbox.createdAt,
+      })
+      .from(outbox)
+      .where(and(eq(outbox.status, "dead"), sql`${outboxItem(q)} = ${itemId}`))
+      .orderBy(outbox.id),
+  )).map((row): DeadDelivery => ({
+    kind: "outbox",
+    ...row,
+    at: row.createdAt,
+    retryable: true,
+  }));
+  const jobs = (yield* q.all(
+    q.orm
+      .select({
+        id: job.id,
+        queue: job.queue,
+        lastError: job.lastError,
+        attempts: job.attempts,
+        createdAt: job.createdAt,
+        finishedAt: job.finishedAt,
+        current: sql<number>`CASE WHEN ${jobCurrent(q)} THEN 1 ELSE 0 END`,
+      })
+      .from(job)
+      .where(and(eq(job.status, "dead"), eq(jsonItemId(q, sql`${job.payload}`), itemId)))
+      .orderBy(job.id),
+  )).map((row): DeadDelivery => ({
+    kind: "job",
+    id: row.id,
+    name: row.queue,
+    error: row.lastError,
+    attempts: row.attempts,
+    createdAt: row.createdAt,
+    at: row.finishedAt ?? row.createdAt,
+    retryable: Number(row.current) === 1,
+  }));
+  return [...outboxRows, ...jobs].sort((left, right) => left.at - right.at || left.id - right.id);
 }
 
 /** The work item a dead row or job belongs to, or null when it is not dead or has no item. */
 export function deadDeliveryItemId(db: Database, ref: DeadDeliveryRef): string | null {
+  return settled(sqliteDb(db).run((q) => deadDeliveryItemIdSteps(q, ref)));
+}
+
+export function* deadDeliveryItemIdSteps(q: Q, ref: DeadDeliveryRef) {
+  const { outbox, job } = q.t;
   const row =
     ref.kind === "outbox"
-      ? db
-          .query<{ itemId: string | null }, [number]>(
-            `SELECT ${OUTBOX_ITEM_SQL("o")} AS itemId FROM outbox o WHERE o.id = ? AND o.status = 'dead'`,
-          )
-          .get(ref.id)
-      : db
-          .query<{ itemId: string | null }, [number]>(
-            `SELECT json_extract(payload, '$.itemId') AS itemId FROM job WHERE id = ? AND status = 'dead'`,
-          )
-          .get(ref.id);
+      ? yield* q.one(
+          q.orm
+            .select({ itemId: outboxItem(q) })
+            .from(outbox)
+            .where(and(eq(outbox.id, ref.id), eq(outbox.status, "dead"))),
+        )
+      : yield* q.one(
+          q.orm
+            .select({ itemId: jsonItemId(q, sql`${job.payload}`) })
+            .from(job)
+            .where(and(eq(job.id, ref.id), eq(job.status, "dead"))),
+        );
   return typeof row?.itemId === "string" ? row.itemId : null;
 }
 
@@ -121,36 +144,85 @@ export function retryDeadDelivery(
   ref: DeadDeliveryRef,
   now = Date.now(),
 ): boolean {
-  return immediate(db, () => {
-    const result =
-      ref.kind === "outbox"
-        ? db.run(
-            `UPDATE outbox SET status = 'pending', max_attempts = attempts + ?, not_before = ?,
-               locked_by = NULL, locked_until = NULL
-             WHERE id = ? AND status = 'dead' AND ${OUTBOX_ITEM_SQL("outbox")} = ?`,
-            [DEFAULT_OUTBOX_MAX_ATTEMPTS, now, ref.id, itemId],
-          )
-        : db.run(
-            `UPDATE job SET status = 'pending', attempts = 0, run_at = ?, finished_at = NULL,
-               locked_by = NULL, locked_until = NULL
-             WHERE id = ? AND status = 'dead' AND json_extract(payload, '$.itemId') = ?
-               AND ${JOB_CURRENT_SQL}`,
-            [now, ref.id, itemId],
-          );
-    if (result.changes === 0) return false;
-    journal(`${ref.kind} ${ref.id} retried item=${itemId}`);
-    return true;
-  });
+  return settled(sqliteDb(db).transaction((q) => retryDeadDeliverySteps(q, itemId, ref, now)));
+}
+
+export function* retryDeadDeliverySteps(
+  q: Q,
+  itemId: string,
+  ref: DeadDeliveryRef,
+  now = Date.now(),
+) {
+  const { outbox, job } = q.t;
+  const changed =
+    ref.kind === "outbox"
+      ? (yield* q.all(
+          q.orm
+            .update(outbox)
+            .set({
+              status: "pending",
+              maxAttempts: sql`${outbox.attempts} + ${DEFAULT_OUTBOX_MAX_ATTEMPTS}`,
+              notBefore: now,
+              lockedBy: null,
+              lockedUntil: null,
+            })
+            .where(
+              and(
+                eq(outbox.id, ref.id),
+                eq(outbox.status, "dead"),
+                sql`${outboxItem(q)} = ${itemId}`,
+              ),
+            )
+            .returning({ id: outbox.id }),
+        )).length
+      : (yield* q.all(
+          q.orm
+            .update(job)
+            .set({
+              status: "pending",
+              attempts: 0,
+              runAt: now,
+              finishedAt: null,
+              lockedBy: null,
+              lockedUntil: null,
+            })
+            .where(
+              and(
+                eq(job.id, ref.id),
+                eq(job.status, "dead"),
+                eq(jsonItemId(q, sql`${job.payload}`), itemId),
+                jobCurrent(q),
+              ),
+            )
+            .returning({ id: job.id }),
+        )).length;
+  if (changed === 0) return false;
+  journal(`${ref.kind} ${ref.id} retried item=${itemId}`);
+  return true;
 }
 
 /** Drop the dead elicitation rows of a question that was asked again, so the page stops listing them. */
 export function dropDeadElicitations(db: Database, questionId: string, note: string): number {
-  return db.run(
-    `UPDATE outbox SET status = 'dropped', error = COALESCE(error || ' ', '') || ?
-     WHERE target = 'linear' AND op = 'elicitation' AND status = 'dead'
-       AND json_extract(payload, '$.questionId') = ?`,
-    [note, questionId],
-  ).changes;
+  return settled(sqliteDb(db).run((q) => dropDeadElicitationsSteps(q, questionId, note)));
+}
+
+export function* dropDeadElicitationsSteps(q: Q, questionId: string, note: string) {
+  const { outbox } = q.t;
+  const dropped = yield* q.all(
+    q.orm
+      .update(outbox)
+      .set({ status: "dropped", error: sql`COALESCE(${outbox.error} || ' ', '') || ${note}` })
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          eq(outbox.op, "elicitation"),
+          eq(outbox.status, "dead"),
+          eq(jsonField(q, outbox.payload, "questionId"), questionId),
+        ),
+      )
+      .returning({ id: outbox.id }),
+  );
+  return dropped.length;
 }
 
 /**
@@ -177,10 +249,21 @@ export const QUESTION_LINKS = [
 
 /** True when another record is tied to this question's id. */
 export function questionHasLinkedRecords(db: Database, questionId: string): boolean {
-  const sql = QUESTION_LINKS.map(
-    ({ table, column }) => `SELECT 1 FROM ${table} WHERE ${column} = ?1`,
-  ).join(" UNION ALL ");
-  return db.query<{ 1: number }, [string]>(`${sql} LIMIT 1`).get(questionId) !== null;
+  return settled(sqliteDb(db).run((q) => questionHasLinkedRecordsSteps(q, questionId)));
+}
+
+export function* questionHasLinkedRecordsSteps(q: Q, questionId: string) {
+  const links = QUESTION_LINKS.map(
+    ({ table, column }) =>
+      sql`SELECT 1 FROM ${sql.identifier(table)} WHERE ${sql.identifier(column)} = ${questionId}`,
+  );
+  const linked = yield* q.one(
+    q.orm
+      .select({ one: sql<number>`1` })
+      .from(sql`(${sql.join(links, sql` UNION ALL `)}) AS link`)
+      .limit(1),
+  );
+  return linked !== undefined;
 }
 
 /**
@@ -192,54 +275,62 @@ export function questionHasLinkedRecords(db: Database, questionId: string): bool
  * the issue page with a retry, so the item is never left waiting on nothing visible.
  */
 export function redeliverQuestion(db: Database, questionId: string, now: number): number | null {
-  return immediate(db, () => {
-    const last = db
-      .query<
-        {
-          op: string;
-          ordering_key: string | null;
-          payload: string;
-          priority: number;
-          idempotency_key: string;
-          delivery_kind: OutboxDelivery;
-          delivery_generation: number;
-        },
-        [string]
-      >(
-        `SELECT op, ordering_key, payload, priority, idempotency_key, delivery_kind, delivery_generation
-         FROM outbox
-         WHERE target = 'linear' AND op = 'elicitation' AND json_extract(payload, '$.questionId') = ?
-         ORDER BY id DESC LIMIT 1`,
+  return settled(sqliteDb(db).transaction((q) => redeliverQuestionSteps(q, questionId, now)));
+}
+
+export function* redeliverQuestionSteps(q: Q, questionId: string, now: number) {
+  const { outbox } = q.t;
+  const last = yield* q.one(
+    q.orm
+      .select({
+        op: outbox.op,
+        orderingKey: outbox.orderingKey,
+        payload: outbox.payload,
+        priority: outbox.priority,
+        idempotencyKey: outbox.idempotencyKey,
+        deliveryKind: outbox.deliveryKind,
+        deliveryGeneration: outbox.deliveryGeneration,
+      })
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          eq(outbox.op, "elicitation"),
+          eq(jsonField(q, outbox.payload, "questionId"), questionId),
+        ),
       )
-      .get(questionId);
-    if (last === null || last.ordering_key === null) return null;
-    const base = last.idempotency_key.replace(/(:redelivery|:reask)+$/, "");
-    const id = enqueueOutboxOnce(db, {
-      target: "linear",
-      op: last.op,
-      orderingKey: last.ordering_key,
-      idempotencyKey: `${base}${ELICITATION_REASK_SUFFIX}`,
-      payload: JSON.parse(last.payload) as unknown,
-      priority: last.priority,
-      delivery: last.delivery_kind,
-      generation: last.delivery_generation,
-      now,
-    });
-    const queued = db
-      .query<{ status: string; error: string | null }, [number]>(
-        "SELECT status, error FROM outbox WHERE id = ?",
-      )
-      .get(id);
-    if (queued?.status !== "pending") {
-      journal(
-        `question ${questionId} could not be delivered again: ${queued?.error ?? "not queued"}; retry it from the issue page`,
-      );
-      return null;
-    }
-    dropDeadElicitations(db, questionId, `Delivered again as outbox ${id}.`);
-    journal(`question ${questionId} delivered again as outbox ${id}`);
-    return id;
+      .orderBy(desc(outbox.id))
+      .limit(1),
+  );
+  if (last === undefined || last.orderingKey === null) return null;
+  const base = last.idempotencyKey.replace(/(:redelivery|:reask)+$/, "");
+  const id = yield* enqueueOutboxOnceSteps(q, {
+    target: "linear",
+    op: last.op,
+    orderingKey: last.orderingKey,
+    idempotencyKey: `${base}${ELICITATION_REASK_SUFFIX}`,
+    payload:
+      q.dialect === "sqlite" ? (JSON.parse(last.payload as string) as unknown) : last.payload,
+    priority: last.priority,
+    delivery: last.deliveryKind as OutboxDelivery,
+    generation: last.deliveryGeneration,
+    now,
   });
+  const queued = yield* q.one(
+    q.orm
+      .select({ status: outbox.status, error: outbox.error })
+      .from(outbox)
+      .where(eq(outbox.id, id)),
+  );
+  if (queued?.status !== "pending") {
+    journal(
+      `question ${questionId} could not be delivered again: ${queued?.error ?? "not queued"}; retry it from the issue page`,
+    );
+    return null;
+  }
+  yield* dropDeadElicitationsSteps(q, questionId, `Delivered again as outbox ${id}.`);
+  journal(`question ${questionId} delivered again as outbox ${id}`);
+  return id;
 }
 
 /**
@@ -247,14 +338,21 @@ export function redeliverQuestion(db: Database, questionId: string, now: number)
  * not require a running session, unlike every other retry.
  */
 export function deadDeliveryIsFinalStop(db: Database, ref: DeadDeliveryRef): boolean {
+  return settled(sqliteDb(db).run((q) => deadDeliveryIsFinalStopSteps(q, ref)));
+}
+
+export function* deadDeliveryIsFinalStopSteps(q: Q, ref: DeadDeliveryRef) {
   if (ref.kind !== "outbox") return false;
-  return (
-    db
-      .query<{ id: number }, [number]>(
-        "SELECT id FROM outbox WHERE id = ? AND status = 'dead' AND delivery_kind = 'stop'",
-      )
-      .get(ref.id) !== null
+  const { outbox } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: outbox.id })
+      .from(outbox)
+      .where(
+        and(eq(outbox.id, ref.id), eq(outbox.status, "dead"), eq(outbox.deliveryKind, "stop")),
+      ),
   );
+  return row !== undefined;
 }
 
 /**
@@ -262,8 +360,20 @@ export function deadDeliveryIsFinalStop(db: Database, ref: DeadDeliveryRef): boo
  * the same lineage instead of starting a new allowance.
  */
 export function recordQuestionReask(db: Database, jobId: number, questionId: string): void {
-  db.run(`UPDATE job SET payload = json_set(payload, '$.reaskedAs', ?) WHERE id = ?`, [
-    questionId,
-    jobId,
-  ]);
+  settled(sqliteDb(db).run((q) => recordQuestionReaskSteps(q, jobId, questionId)));
+}
+
+export function* recordQuestionReaskSteps(q: Q, jobId: number, questionId: string) {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({
+        payload:
+          q.dialect === "sqlite"
+            ? sql`json_set(${job.payload}, '$.reaskedAs', ${questionId})`
+            : sql`jsonb_set(${job.payload}, '{reaskedAs}', to_jsonb(${questionId}::text))`,
+      })
+      .where(eq(job.id, jobId)),
+  );
 }

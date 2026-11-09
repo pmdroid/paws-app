@@ -1,6 +1,5 @@
 import { journalCaught } from "../journal";
 import { createHash, createHmac } from "node:crypto";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { writeSecretFile } from "../credentials";
@@ -17,6 +16,8 @@ import {
   createLinearMembershipReads,
   exchangeLinearCode,
   linearAuthorizeUrl,
+  readStoredToken,
+  writeStoredToken,
 } from "../linear";
 import {
   beginWorkspaceOAuth,
@@ -57,7 +58,7 @@ export function createBrowserOnboarding(options: {
   const now = options.now ?? Date.now;
   const startsPerIp = createRateLimiter(ONBOARDING_RATE_LIMITS.startsPerIp, now);
   const fetchImpl = options.fetch ?? fetch;
-  const tokenPath = join(home, "secrets", "linear-oauth.json");
+  const secretsDir = join(home, "secrets");
   const configuredOrganization = options.expectedOrganizationId?.trim() || null;
   function installationOrganization(): string | null {
     const workspaces = db
@@ -169,7 +170,7 @@ export function createBrowserOnboarding(options: {
     }
     if (url.pathname !== CALLBACK)
       return Response.json({ error: "Sign in to connect your Linear workspace." }, { status: 401 });
-    if (installing || (existsSync(tokenPath) && !options.reconnect))
+    if (installing || (readStoredToken(db, secretsDir) !== null && !options.reconnect))
       return retry("already-connected");
     installing = true;
     try {
@@ -239,7 +240,7 @@ export function createBrowserOnboarding(options: {
           home,
         ).complete({ clientId: options.clientId!, token });
         if (!restored) return retry("workspace-mismatch");
-      } else writeSecretFile(tokenPath, JSON.stringify(token), true);
+      } else if (!writeStoredToken(db, secretsDir, token, true)) return retry("already-connected");
       const timestamp = now();
       const userId = putWorkspaceUser(db, {
         id: workspaceId(),

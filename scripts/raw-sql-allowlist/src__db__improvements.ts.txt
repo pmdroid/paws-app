@@ -1,0 +1,45 @@
+src/db/improvements.ts | const row = db.query<ImprovementRow, [string]>("SELECT * FROM improvement WHERE id = ?").get(id); | not yet converted to Drizzle
+src/db/improvements.ts | const row = db .query<ImprovementRow, [string, string, string]>( | not yet converted to Drizzle
+src/db/improvements.ts | return db .query<ImprovementRow, [string, string]>( | not yet converted to Drizzle
+src/db/improvements.ts | return db .query<ImprovementRow, [string]>( | not yet converted to Drizzle
+src/db/improvements.ts | (db .query<{ version: number | null }, [string]>( | not yet converted to Drizzle
+src/db/improvements.ts | const existing = db .query<{ id: string }, [string, string, string]>( | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | const latest = db .query<{ version: number; content_sha256: string }, [string, string, string]>( | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | return db .query<ProposalRow, [string]>( | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | db.run("DELETE FROM improvement_delivery WHERE improvement_id = ?", [input.improvementId]); | not yet converted to Drizzle
+src/db/improvements.ts | db .query("SELECT 1 FROM improvement_proposal WHERE improvement_id = ? AND version = ?") | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | const rows = db .query<DeliveryRow, [string]>("SELECT * FROM improvement_delivery WHERE improvement_id = ?") | not yet converted to Drizzle
+src/db/improvements.ts | const current = db .query<DeliveryRow, [string]>("SELECT * FROM improvement_delivery WHERE id = ?") | not yet converted to Drizzle
+src/db/improvements.ts | const link = db .query<{ state: ImprovementDeliveryState }, [string]>( | not yet converted to Drizzle
+src/db/improvements.ts | db.run("DELETE FROM improvement_delivery_attempt WHERE delivery_id = ?", [current.id]); | not yet converted to Drizzle
+src/db/improvements.ts | db.run("DELETE FROM improvement_delivery WHERE id = ?", [current.id]); | not yet converted to Drizzle
+src/db/improvements.ts | db.run("UPDATE improvement SET evidence_comment = 0 WHERE id = ?", [current.improvement_id]); | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | return db .query<ImprovementCriterion, [string]>( | not yet converted to Drizzle
+src/db/improvements.ts | const row = db .query<DeliveryRow, [number, string]>( | not yet converted to Drizzle
+src/db/improvements.ts | const current = db .query<DeliveryRow, [string]>("SELECT * FROM improvement_delivery WHERE id = ?") | not yet converted to Drizzle
+src/db/improvements.ts | const row = db .query<DeliveryRow, [string, number, string]>( | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | return db .query<{ workspace_id: string }, [number, number]>( | not yet converted to Drizzle
+src/db/improvements.ts | return db .query<ImprovementRow, [string, string]>( | not yet converted to Drizzle
+src/db/improvements.ts | return db .query< | not yet converted to Drizzle
+src/db/improvements.ts | return db .query<DeliveryRow, [string]>( | not yet converted to Drizzle
+src/db/improvements.ts | return db .query<DeliveryRow, [string, number, number]>( | not yet converted to Drizzle
+src/db/improvements.ts | const row = db .query<DeliveryRow, [string, number, number, string, number, number]>( | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | const row = db .query< | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | db.run( | not yet converted to Drizzle
+src/db/improvements.ts | return db .query<ImprovementDeliveryAttempt, [string]>( | not yet converted to Drizzle
+src/db/improvements.ts | const id = db .query< | not yet converted to Drizzle
+src/db/improvements.ts | ? db.run( | not yet converted to Drizzle
+src/db/improvements.ts | : db.run( | not yet converted to Drizzle
+src/db/improvements.ts | return db .query< | not yet converted to Drizzle

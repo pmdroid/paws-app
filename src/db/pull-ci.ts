@@ -1,6 +1,10 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { CiRoundCheck } from "./ci-rounds";
-import { gatherPullFeedback, type PullFeedbackWait } from "./pull-comments";
+import { settled, sqliteDb, type Q } from "./db";
+import { emitJobReady } from "./jobs";
+import { jsonValue, parsedJson } from "./json-text";
+import { gatherPullFeedbackSteps, type PullFeedbackWait } from "./pull-comments";
 
 export type PullCiOutcome = "restarted" | "asked" | "dropped" | "cleared";
 
@@ -23,81 +27,126 @@ export type PullCiFailureRecord = {
   outcome: PullCiOutcome | null;
 };
 
-type Row = {
-  item_id: string;
-  head: string;
-  pull_number: number;
-  item_version: number;
-  failed_checks: string;
-  checks: string;
-  observed_at: number;
-  handled_at: number | null;
-  outcome: PullCiOutcome | null;
-};
+type Row = Q["t"]["pullCiFailure"]["$inferSelect"];
 
 export type PullCiObservation = "recorded" | "known";
 
 const TERMINAL = new Set<PullCiOutcome>(["restarted", "asked"]);
+
+/** `enqueued`: this call added the job that gathers the item's feedback. */
+export function* recordPullCiFailureSteps(
+  q: Q,
+  failure: Omit<PullCiFailureRecord, "handledAt" | "outcome">,
+  wait: PullFeedbackWait,
+) {
+  const { pullCiFailure } = q.t;
+  yield* settleOtherHeadsSteps(q, failure.itemId, failure.head, failure.observedAt);
+  const existing = yield* selectFailureSteps(q, failure.itemId, failure.head);
+  const values = {
+    pullNumber: failure.pullNumber,
+    itemVersion: failure.itemVersion,
+    failedChecks: jsonValue(q, failure.failedChecks),
+    checks: jsonValue(q, failure.checks),
+  };
+  if (
+    existing !== undefined &&
+    (existing.handledAt === null || TERMINAL.has(existing.outcome as PullCiOutcome))
+  ) {
+    if (existing.handledAt === null)
+      yield* q.exec(
+        q.orm
+          .update(pullCiFailure)
+          .set(values)
+          .where(
+            and(eq(pullCiFailure.itemId, failure.itemId), eq(pullCiFailure.head, failure.head)),
+          ),
+      );
+    return { observation: "known" as PullCiObservation, enqueued: false };
+  }
+  yield* q.exec(
+    q.orm
+      .insert(pullCiFailure)
+      .values({
+        ...values,
+        itemId: failure.itemId,
+        head: failure.head,
+        observedAt: failure.observedAt,
+      })
+      .onConflictDoUpdate({
+        target: [pullCiFailure.itemId, pullCiFailure.head],
+        set: {
+          pullNumber: sql`excluded.pull_number`,
+          itemVersion: sql`excluded.item_version`,
+          failedChecks: sql`excluded.failed_checks`,
+          checks: sql`excluded.checks`,
+          observedAt: sql`excluded.observed_at`,
+          handledAt: null,
+          outcome: null,
+        },
+      }),
+  );
+  const enqueued = yield* gatherPullFeedbackSteps(
+    q,
+    failure.itemId,
+    failure.observedAt,
+    wait,
+    `pull-comments:${failure.itemId}:ci:${failure.head}:${failure.observedAt}`,
+  );
+  return { observation: "recorded" as PullCiObservation, enqueued };
+}
 
 export function recordPullCiFailure(
   db: Database,
   failure: Omit<PullCiFailureRecord, "handledAt" | "outcome">,
   wait: PullFeedbackWait,
 ): PullCiObservation {
-  settleOtherHeads(db, failure.itemId, failure.head, failure.observedAt);
-  const existing = db
-    .query<Row, [string, string]>("SELECT * FROM pull_ci_failure WHERE item_id = ? AND head = ?")
-    .get(failure.itemId, failure.head);
-  const values = [
-    failure.pullNumber,
-    failure.itemVersion,
-    JSON.stringify(failure.failedChecks),
-    JSON.stringify(failure.checks),
-  ];
-  if (existing !== null && (existing.handled_at === null || TERMINAL.has(existing.outcome!))) {
-    if (existing.handled_at === null)
-      db.run(
-        `UPDATE pull_ci_failure SET pull_number = ?, item_version = ?, failed_checks = ?, checks = ?
-         WHERE item_id = ? AND head = ?`,
-        [...values, failure.itemId, failure.head],
-      );
-    return "known";
-  }
-  db.run(
-    `INSERT INTO pull_ci_failure (pull_number, item_version, failed_checks, checks, item_id, head, observed_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (item_id, head) DO UPDATE SET pull_number = excluded.pull_number,
-       item_version = excluded.item_version, failed_checks = excluded.failed_checks,
-       checks = excluded.checks, observed_at = excluded.observed_at, handled_at = NULL, outcome = NULL`,
-    [...values, failure.itemId, failure.head, failure.observedAt],
+  const { observation, enqueued } = settled(
+    sqliteDb(db).run((q) => recordPullCiFailureSteps(q, failure, wait)),
   );
-  gatherPullFeedback(
-    db,
-    failure.itemId,
-    failure.observedAt,
-    wait,
-    `pull-comments:${failure.itemId}:ci:${failure.head}:${failure.observedAt}`,
+  if (enqueued) emitJobReady(db);
+  return observation;
+}
+
+export function* clearPullCiFailuresSteps(q: Q, itemId: string, head: string, now: number) {
+  const { pullCiFailure } = q.t;
+  yield* settleOtherHeadsSteps(q, itemId, head, now);
+  yield* q.exec(
+    q.orm
+      .update(pullCiFailure)
+      .set({ handledAt: now, outcome: "cleared" })
+      .where(
+        and(
+          eq(pullCiFailure.itemId, itemId),
+          eq(pullCiFailure.head, head),
+          isNull(pullCiFailure.handledAt),
+        ),
+      ),
   );
-  return "recorded";
 }
 
 export function clearPullCiFailures(db: Database, itemId: string, head: string, now: number): void {
-  settleOtherHeads(db, itemId, head, now);
-  db.run(
-    `UPDATE pull_ci_failure SET handled_at = ?, outcome = 'cleared'
-     WHERE item_id = ? AND head = ? AND handled_at IS NULL`,
-    [now, itemId, head],
+  settled(sqliteDb(db).run((q) => clearPullCiFailuresSteps(q, itemId, head, now)));
+}
+
+export function* pendingPullCiFailuresSteps(q: Q, itemId: string) {
+  const { pullCiFailure } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(pullCiFailure)
+      .where(and(eq(pullCiFailure.itemId, itemId), isNull(pullCiFailure.handledAt)))
+      .orderBy(asc(pullCiFailure.observedAt), asc(pullCiFailure.head)),
   );
+  return rows.map((row) => mapRow(q, row));
 }
 
 export function pendingPullCiFailures(db: Database, itemId: string): PullCiFailureRecord[] {
-  return db
-    .query<Row, [string]>(
-      `SELECT * FROM pull_ci_failure WHERE item_id = ? AND handled_at IS NULL
-       ORDER BY observed_at, head`,
-    )
-    .all(itemId)
-    .map(mapRow);
+  return settled(sqliteDb(db).run((q) => pendingPullCiFailuresSteps(q, itemId)));
+}
+
+export function* getPullCiFailureSteps(q: Q, itemId: string, head: string) {
+  const row = yield* selectFailureSteps(q, itemId, head);
+  return row === undefined ? null : mapRow(q, row);
 }
 
 export function getPullCiFailure(
@@ -105,10 +154,32 @@ export function getPullCiFailure(
   itemId: string,
   head: string,
 ): PullCiFailureRecord | null {
-  const row = db
-    .query<Row, [string, string]>("SELECT * FROM pull_ci_failure WHERE item_id = ? AND head = ?")
-    .get(itemId, head);
-  return row === null ? null : mapRow(row);
+  return settled(sqliteDb(db).run((q) => getPullCiFailureSteps(q, itemId, head)));
+}
+
+export function* settlePullCiFailuresSteps(
+  q: Q,
+  failures: readonly Pick<PullCiFailureRecord, "itemId" | "head">[],
+  outcome: PullCiOutcome,
+  now: number,
+) {
+  const { pullCiFailure } = q.t;
+  let settledCount = 0;
+  for (const failure of failures)
+    settledCount += (yield* q.all(
+      q.orm
+        .update(pullCiFailure)
+        .set({ handledAt: now, outcome })
+        .where(
+          and(
+            eq(pullCiFailure.itemId, failure.itemId),
+            eq(pullCiFailure.head, failure.head),
+            isNull(pullCiFailure.handledAt),
+          ),
+        )
+        .returning({ itemId: pullCiFailure.itemId }),
+    )).length;
+  return settledCount;
 }
 
 export function settlePullCiFailures(
@@ -117,34 +188,45 @@ export function settlePullCiFailures(
   outcome: PullCiOutcome,
   now: number,
 ): number {
-  let settled = 0;
-  for (const failure of failures)
-    settled += db.run(
-      `UPDATE pull_ci_failure SET handled_at = ?, outcome = ?
-       WHERE item_id = ? AND head = ? AND handled_at IS NULL`,
-      [now, outcome, failure.itemId, failure.head],
-    ).changes;
-  return settled;
+  return settled(sqliteDb(db).run((q) => settlePullCiFailuresSteps(q, failures, outcome, now)));
 }
 
-function settleOtherHeads(db: Database, itemId: string, head: string, now: number): void {
-  db.run(
-    `UPDATE pull_ci_failure SET handled_at = ?, outcome = 'dropped'
-     WHERE item_id = ? AND head != ? AND handled_at IS NULL`,
-    [now, itemId, head],
+function* settleOtherHeadsSteps(q: Q, itemId: string, head: string, now: number) {
+  const { pullCiFailure } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(pullCiFailure)
+      .set({ handledAt: now, outcome: "dropped" })
+      .where(
+        and(
+          eq(pullCiFailure.itemId, itemId),
+          ne(pullCiFailure.head, head),
+          isNull(pullCiFailure.handledAt),
+        ),
+      ),
   );
 }
 
-function mapRow(row: Row): PullCiFailureRecord {
+function* selectFailureSteps(q: Q, itemId: string, head: string) {
+  const { pullCiFailure } = q.t;
+  return yield* q.one(
+    q.orm
+      .select()
+      .from(pullCiFailure)
+      .where(and(eq(pullCiFailure.itemId, itemId), eq(pullCiFailure.head, head))),
+  );
+}
+
+function mapRow(q: Q, row: Row): PullCiFailureRecord {
   return {
-    itemId: row.item_id,
+    itemId: row.itemId,
     head: row.head,
-    pullNumber: row.pull_number,
-    itemVersion: row.item_version,
-    failedChecks: JSON.parse(row.failed_checks) as PullCiFailedCheck[],
-    checks: JSON.parse(row.checks) as CiRoundCheck[],
-    observedAt: row.observed_at,
-    handledAt: row.handled_at,
-    outcome: row.outcome,
+    pullNumber: row.pullNumber,
+    itemVersion: row.itemVersion,
+    failedChecks: parsedJson<PullCiFailedCheck[]>(q, row.failedChecks),
+    checks: parsedJson<CiRoundCheck[]>(q, row.checks),
+    observedAt: row.observedAt,
+    handledAt: row.handledAt,
+    outcome: row.outcome as PullCiOutcome | null,
   };
 }

@@ -29,6 +29,21 @@ import {
   replaceLeasedJobPayload,
   refreshVerificationJobVersion,
   type RestartHandoff,
+  getItemCandidate,
+  recordItemCandidate,
+  activateLinearItemSteps,
+  bindLinearSessionTaskSteps,
+  configureWorkItemSteps,
+  discardLinearTurnsSteps,
+  getLinearCommentSteps,
+  getLinearSessionSteps,
+  getTaskModeSteps,
+  getWorkItemSteps,
+  isWorkItemRepositoryQuestionSteps,
+  recordLinearTurnSteps,
+  saveLinearSessionContextSteps,
+  settleLinearCommentsSteps,
+  workItemForSessionSteps,
 } from "../db";
 import { journal, journalCaught } from "../journal";
 import { rerunItemCi } from "./ci-rerun";
@@ -68,6 +83,7 @@ import {
   ensureCandidateRef,
   adoptLegacyCandidate,
   removeCandidateRef,
+  restoreCandidateRef,
   FOLLOW_UP_INTERRUPTION,
   type RunAgentOptions,
   type RunAgentResult,
@@ -111,9 +127,11 @@ import {
   visualReviewRequirements,
   bypassable,
   readReviewRounds,
+  reviewFindingText,
   snapshotRetryBaseline,
   storedReviewFindings,
   loggedSessionCloseout,
+  missingResultReason,
   readSessionCloseout,
   sessionCloseoutPath,
   sessionCloseoutResult,
@@ -122,6 +140,7 @@ import {
   usesPullRequestDraft,
   type PullRequestDraft,
   type GateResult,
+  type ReviewFindings,
   type ReviewRounds,
   type CloseoutGate,
   type CloseoutGateOptions,
@@ -136,6 +155,12 @@ import {
   POLICY_SCHEMA_SUMMARY,
 } from "../closeout";
 import {
+  hydrateCloseoutEvidence,
+  publishCloseoutEvidence,
+  type EvidenceObjects,
+  type EvidenceStorage,
+} from "../evidence";
+import {
   CommandBus,
   riskLine,
   type RiskClassification,
@@ -147,11 +172,9 @@ import {
   type GitCommitPolicy,
   JOB_KIND,
   OUTBOX_ACTIVITY,
-  delegationIssueIdSql,
   isTerminalWorkItemState,
   isReadOnlyTaskMode,
   isResponseTaskMode,
-  parentTaskKeySql,
   type Clock,
   type StageLimits,
   type ResponseTaskMode,
@@ -223,6 +246,9 @@ import {
   getQueuePosition,
   clearQueueWait,
   queueWaitSince,
+  settled,
+  sqliteDb,
+  type Db,
   getRun,
   CLEANUP_BLOCKED_NOTICE,
   blockConversation as blockStoredConversation,
@@ -239,7 +265,6 @@ import {
   getWorkItemRepositoryAnswer,
   getWorkItemRepositoryChoice,
   rememberWorkItemRepositoryChoice,
-  isWorkItemRepositoryQuestion,
   saveWorkItemRepositoryQuestion,
   getWorkItem,
   suggestedFindings,
@@ -252,6 +277,8 @@ import {
   listAgentCloseout,
   recordAgentCloseout,
   immediate,
+  claimRun,
+  drainInstanceCommands,
   insertRun,
   listInFlightItems,
   listCloseoutRecoveries,
@@ -281,9 +308,7 @@ import {
   ensureLinearSession,
   activateLinearItem,
   workItemForSession,
-  recordLinearTurn,
   applyLinearTurns,
-  saveLinearSessionContext,
   getLinearSessionContext,
   hasLinearSessionSnapshotContext,
   saveLinearSessionSnapshotContext,
@@ -331,12 +356,41 @@ import {
   delegatedLinearUserId,
   resetAwakeTime,
   rebaseReturnedFor,
+  gatherLinearComments,
   getLinearComment,
   receivedLinearComments,
-  settleLinearComments,
   recordLinearComment,
   getWorkItemLinearProjectId,
   listOpenPolicyBlocks,
+  assignUnownedItem,
+  bumpItemVersion,
+  cancelItemPendingJobs,
+  clearItemRecovery,
+  deleteCancelledLinearTurn,
+  dropUnsentSessionActivity,
+  hasOpenItemJob,
+  issueOpenInOtherSession,
+  itemContinued,
+  itemDelegationIssueId,
+  itemOwnerUserId,
+  itemParentTaskKey,
+  itemSpecificationRevision,
+  landedTaskBlockers,
+  latestRestartEvent,
+  latestRunningAnswer,
+  linearOutboxKeyed,
+  listItemIds,
+  loseActiveItemRuns,
+  moveDelegationSession,
+  openRunnerRepositoryQuestions,
+  openTaskDependents,
+  pausedStoppedSessionItem,
+  previousIssueSessionIds,
+  queuedLinearCommentItemIds,
+  recentRepositoryNames,
+  rewritePendingLinearTurn,
+  setItemBranchName,
+  workspaceUserIdForLinearUser,
 } from "../db";
 import {
   publishAccepted,
@@ -479,6 +533,7 @@ import {
 } from "./pending-feedback";
 import {
   authorizeLinearComment,
+  canConverse,
   commitLinearCommentRoute,
   deliverLinearComments,
   routeLinearComment,
@@ -487,6 +542,7 @@ import {
   type LinearCommentBrief,
   type LinearCommentCapabilities,
   type LinearCommentPolicy,
+  type LinearConversations,
 } from "./linear-comments";
 import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
 import { suggestedFindingsSection } from "./pull-comments";
@@ -536,7 +592,7 @@ import {
 import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
-import { createDbCloseoutProgress } from "./closeout-progress";
+import { createDbCloseoutProgress, publishingCloseoutProgress } from "./closeout-progress";
 import { checkPolicyRunners } from "./policy-runners";
 import { itemPathId, taskBranchKey, worktreeBranch, worktreeStartRef } from "./sources";
 import {
@@ -553,8 +609,8 @@ import {
 import { deliverLinearOutbox } from "./dispatch";
 import { durableConversation } from "./conversation";
 import { createLinearSessionProgress } from "./session-progress";
-import { renderWorkContext } from "../core";
-import { recordLinearSessionEvent, sessionTaskKey } from "./linear-routing";
+import { renderWorkContext, withLeftForLater } from "../core";
+import { recordLinearSessionEventSteps, sessionTaskKey } from "./linear-routing";
 import {
   createEvidenceArtifactPublisher,
   enqueueEvidenceCard,
@@ -607,10 +663,12 @@ import { createRepositoryGit } from "./repository-git";
 import { readFixDiff, settleReviewEscapes } from "./review-escapes";
 import { recordAcceptedFindings } from "./review-findings";
 import {
+  failedReviewFindings,
   openFindings,
   openFindingsLine,
   openFindingsSection,
   pawsIssueUrl,
+  reviewFindingGroups,
   type OpenItems,
 } from "./open-findings";
 import type { RuntimeList } from "../runtimes";
@@ -630,6 +688,9 @@ export type { RepositoryBinding } from "../core";
 
 export type OrchestratorOptions = {
   db: Database;
+  /** The async `Db` over `db` for converted code. Defaults to `sqliteDb(db)`. */
+  store?: Db;
+  instanceId?: string;
   jobs: JobLoop;
   outbox: OutboxDispatcher;
   pawsRoot: string;
@@ -648,6 +709,7 @@ export type OrchestratorOptions = {
   recheckLinearEvent?: (event: AcceptedLinearEvent) => boolean | Promise<boolean>;
   remoteFollowUp?: (itemId: string, body: string) => boolean | Promise<boolean>;
   linearComments?: LinearCommentPolicy;
+  conversations?: () => Promise<LinearConversations | null>;
   outboxWaitMs?: number;
   authorizeLinearIntake?: (sessionId: string, snapshot: EpicSnapshot) => boolean;
   linearIntakeScope?: (sessionId: string, snapshot: EpicSnapshot) => EpicSnapshot;
@@ -666,7 +728,13 @@ export type OrchestratorOptions = {
    * Closeout videos and screenshots. Links are `<publicUrl>/evidence/<id>`. With `root` and
    * `files`, the files are also uploaded to Linear and shown inline.
    */
-  evidence?: { store: EvidenceSink; publicUrl: string; root?: string } | null;
+  evidence?: {
+    store: EvidenceSink;
+    publicUrl: string;
+    root?: string;
+    objects?: EvidenceObjects;
+  } | null;
+  closeoutEvidenceObjects?: EvidenceObjects;
   /** The HTTPS dashboard origin (`PAWS_PUBLIC_URL`). Without it Paws cannot ask with a link. */
   publicUrl?: string | null;
   catchUp?: () => Promise<void>;
@@ -785,6 +853,7 @@ const LINEAR_ACCESS_CHANGED: IntakeDecision = {
  */
 export class Orchestrator {
   readonly bus = new CommandBus();
+  readonly store: Db;
   private tracker: TrackerAdapter | null;
   private catchUpFn: () => Promise<void>;
   private readonly askedRuns = new Set<string>();
@@ -796,6 +865,7 @@ export class Orchestrator {
     string,
     {
       itemId: string;
+      version: number;
       sessionId: string | null;
       generation: number;
       controller: AbortController;
@@ -816,6 +886,7 @@ export class Orchestrator {
   >();
   private readonly leasedJobs = new Map<string, Job>();
   private readonly jobContexts = new Map<string, JobContext>();
+  private readonly mergeTurnNotes = new Map<string, number>();
   /** Why the current job dropped the item's Closeout result while the item stays in `verifying`. */
   private readonly verifyingStops = new Map<string, string>();
   private readonly reviewerFaults = new Map<string, string>();
@@ -852,6 +923,7 @@ export class Orchestrator {
   }
 
   constructor(private readonly options: OrchestratorOptions) {
+    this.store = options.store ?? sqliteDb(options.db);
     this.riskDisplayReader = new RiskDisplayReader({
       db: options.db,
       configPath: join(options.pawsRoot, "config.toml"),
@@ -939,7 +1011,7 @@ export class Orchestrator {
       return;
     }
     if (event.action === "prompted" && !event.body?.trim()) return;
-    if (event.action === "prompted" && this.commentAlreadyHandedOff(event)) return;
+    if (event.action === "prompted" && (await this.commentAlreadyHandedOff(event))) return;
     await this.taskAccess()?.assertOpenIssue(event);
     let turnEventKey = event.dedupeKey;
     if (
@@ -948,9 +1020,9 @@ export class Orchestrator {
       event.body !== null &&
       (!findOpenQuestion(this.db, event.sessionId) ||
         this.hasPublishedPullRequest(event.sessionId) ||
-        this.sessionPaused(event.sessionId))
+        (await this.sessionPaused(event.sessionId)))
     ) {
-      const turn = this.recordTurn(event);
+      const turn = await this.recordTurn(event);
       if (turn) turnEventKey = turn.eventKey;
       if (
         turn?.state === "pending" &&
@@ -1033,13 +1105,7 @@ export class Orchestrator {
     policy: LinearCommentPolicy,
     issueId: string,
   ): Promise<void> {
-    const row = this.db
-      .query<{ id: string }, [string]>(
-        `SELECT DISTINCT item_id AS id FROM linear_comment
-         WHERE issue_id = ? AND state = 'queued' AND item_id IS NOT NULL`,
-      )
-      .all(issueId);
-    for (const { id } of row) {
+    for (const id of queuedLinearCommentItemIds(this.db, issueId)) {
       const item = getWorkItem(this.db, id);
       const pull = item ? getItemPullRequest(this.db, item.id) : null;
       if (!item || item.state !== "merge_queue" || pull === null) continue;
@@ -1057,17 +1123,18 @@ export class Orchestrator {
     }
   }
 
-  private commentAlreadyHandedOff(event: AcceptedLinearEvent): boolean {
+  private async commentAlreadyHandedOff(event: AcceptedLinearEvent): Promise<boolean> {
     const source = linearSourceCommentId(event);
     if (source === null) return false;
-    return immediate(this.db, () => {
-      const comment = getLinearComment(this.db, source);
+    const now = () => this.now();
+    return await this.store.transaction(function* (q) {
+      const comment = yield* getLinearCommentSteps(q, source);
       if (comment === null) return false;
       if (comment.state === "received" || comment.state === "queued") {
-        settleLinearComments(this.db, [source], {
+        yield* settleLinearCommentsSteps(q, [source], {
           state: "ignored",
           reason: "agent_session",
-          now: this.now(),
+          now: now(),
         });
         return false;
       }
@@ -1082,13 +1149,7 @@ export class Orchestrator {
     return {
       now: () => this.now(),
       policy,
-      busy: (item) =>
-        this.jobContexts.has(item.id) ||
-        this.db
-          .query(
-            "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",
-          )
-          .get(this.now(), item.id) !== null,
+      busy: (item) => this.jobContexts.has(item.id) || hasLiveJob(this.db, item.id, this.now()),
       leaveMergeQueue: async (item, pullNumber) => {
         const repository = this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
@@ -1103,6 +1164,8 @@ export class Orchestrator {
         });
       },
       flush: () => this.flush(),
+      ...(this.options.conversations ? { conversations: this.options.conversations } : {}),
+      resumeSession: (sessionId) => this.resumeLinearSession(sessionId, false),
     };
   }
 
@@ -1197,39 +1260,56 @@ export class Orchestrator {
     });
   }
 
-  private recordTurn(event: AcceptedLinearEvent) {
+  private async recordTurn(event: AcceptedLinearEvent) {
     if (!event.sessionId || event.body === null) return null;
-    recordLinearSessionEvent(this.db, event, this.now());
-    return recordLinearTurn(this.db, {
-      eventKey: event.dedupeKey,
-      activityId: event.activityId,
-      sessionId: event.sessionId,
-      actorId: "actorId" in event && typeof event.actorId === "string" ? event.actorId : null,
-      body: event.body,
-      payload: event.payload,
-      createdAtMs:
-        "activityCreatedAtMs" in event && typeof event.activityCreatedAtMs === "number"
-          ? event.activityCreatedAtMs
-          : event.updatedAtMs,
-      now: this.now(),
-    });
+    const sessionId = event.sessionId;
+    const body = event.body;
+    await this.store.transaction((q) => recordLinearSessionEventSteps(q, event, this.now()));
+    return await this.store.transaction((q) =>
+      recordLinearTurnSteps(q, {
+        eventKey: event.dedupeKey,
+        activityId: event.activityId,
+        sessionId,
+        actorId: "actorId" in event && typeof event.actorId === "string" ? event.actorId : null,
+        body,
+        payload: event.payload,
+        createdAtMs:
+          "activityCreatedAtMs" in event && typeof event.activityCreatedAtMs === "number"
+            ? event.activityCreatedAtMs
+            : event.updatedAtMs,
+        now: this.now(),
+      }),
+    );
   }
 
   private async handleLinearEvent(event: AcceptedLinearEvent): Promise<void> {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
     if (event.action === "prompted") {
       const question =
-        event.sessionId && !this.sessionPaused(event.sessionId)
+        event.sessionId && !(await this.sessionPaused(event.sessionId))
           ? findOpenQuestion(this.db, event.sessionId)
           : null;
-      const questionItem = question ? getWorkItem(this.db, question.itemId) : null;
+      const questionItem = question
+        ? await this.store.run((q) => getWorkItemSteps(q, question.itemId))
+        : null;
       if (event.sessionId && event.body) {
-        const session = recordLinearSessionEvent(this.db, event, this.now());
-        if (questionItem && session && !workItemForSession(this.db, event.sessionId)) {
-          bindLinearSessionTask(this.db, event.sessionId, questionItem.delegationId);
-          activateLinearItem(this.db, event.sessionId, questionItem.id);
+        const sessionId = event.sessionId;
+        const session = await this.store.transaction((q) =>
+          recordLinearSessionEventSteps(q, event, this.now()),
+        );
+        if (
+          questionItem &&
+          session &&
+          !(await this.store.run((q) => workItemForSessionSteps(q, sessionId)))
+        ) {
+          await this.store.transaction((q) =>
+            bindLinearSessionTaskSteps(q, sessionId, questionItem.delegationId),
+          );
+          await this.store.transaction((q) =>
+            activateLinearItemSteps(q, sessionId, questionItem.id),
+          );
         }
-        const turn = this.recordTurn(event);
+        const turn = await this.recordTurn(event);
         if (turn?.state !== "pending") return;
         event = { ...event, dedupeKey: turn.eventKey, body: turn.body, payload: turn.payload };
       }
@@ -1237,38 +1317,47 @@ export class Orchestrator {
         await this.resumeLinearSession(event.sessionId);
         return;
       }
-      const outcome = await this.deliverPrompt(
-        event,
-        Boolean(
-          event.sessionId &&
-          questionItem &&
-          question &&
-          !isWorkItemRepositoryQuestion(this.db, questionItem.id, question.id) &&
-          isResponseTaskMode(getTaskMode(this.db, questionItem.id)),
-        ),
+      const responseMode = Boolean(
+        event.sessionId &&
+        questionItem &&
+        question &&
+        !(await this.store.run((q) =>
+          isWorkItemRepositoryQuestionSteps(q, questionItem.id, question.id),
+        )) &&
+        isResponseTaskMode(await this.store.run((q) => getTaskModeSteps(q, questionItem.id))),
       );
+      const outcome = await this.deliverPrompt(event, responseMode);
       if (event.sessionId) {
-        if (outcome === "rejected") discardLinearTurns(this.db, event.sessionId, [event.dedupeKey]);
-        if (outcome === "redirect") await this.resumeLinearSession(event.sessionId);
+        const sessionId = event.sessionId;
+        const eventKey = event.dedupeKey;
+        if (outcome === "rejected")
+          await this.store.transaction((q) => discardLinearTurnsSteps(q, sessionId, [eventKey]));
+        if (outcome === "redirect") await this.resumeLinearSession(sessionId);
       }
       return;
     }
     if (event.action !== "created" || event.issueId === null) return;
     let startFresh = asksForFreshStart(event.body);
     if (event.sessionId !== null) {
+      const sessionId = event.sessionId;
       const context = parseLinearSessionContext(event.payload);
       const comment = context.comment as { body?: unknown } | null;
       if (typeof comment?.body === "string" && asksForFreshStart(comment.body)) startFresh = true;
-      saveLinearSessionContext(
-        this.db,
-        event.sessionId,
-        renderLinearSessionContext(context),
-        context.promptContext ? 2 : 1,
+      await this.store.run((q) =>
+        saveLinearSessionContextSteps(
+          q,
+          sessionId,
+          renderLinearSessionContext(context),
+          context.promptContext ? 2 : 1,
+        ),
       );
     }
     const tracker = this.tracker;
     if (tracker === null) throw new Error("Linear is not connected");
-    const session = recordLinearSessionEvent(this.db, event, this.now());
+    const session =
+      event.sessionId === null
+        ? null
+        : await this.store.transaction((q) => recordLinearSessionEventSteps(q, event, this.now()));
     const taskKey = session ? sessionTaskKey(this.db, session) : null;
     if (session?.stoppedAt !== null && session?.stoppedAt !== undefined) return;
     if (session && !startFresh && (await this.resumeRedelegatedItem(event.issueId, session)))
@@ -1280,7 +1369,9 @@ export class Orchestrator {
         startFresh,
       });
     } catch (error) {
-      const current = session ? getLinearSession(this.db, session.sessionId) : null;
+      const current = session
+        ? await this.store.run((q) => getLinearSessionSteps(q, session.sessionId))
+        : null;
       if (session && (current?.stoppedAt !== null || current.generation !== session.generation)) {
         journalCaught(
           error,
@@ -1299,10 +1390,10 @@ export class Orchestrator {
       const caps = this.options.caps;
       if (caps !== undefined) {
         for (const saved of result.items) {
-          configureWorkItem(this.db, saved.id, {
-            maxAwakeMs: caps.maxAwakeMs,
-            limits: this.timeLimits(saved.id),
-          });
+          const limits = this.timeLimits(saved.id);
+          await this.store.run((q) =>
+            configureWorkItemSteps(q, saved.id, { maxAwakeMs: caps.maxAwakeMs, limits }),
+          );
         }
       }
       this.dispatch();
@@ -1332,12 +1423,12 @@ export class Orchestrator {
     const row = getOutbox(this.db, id);
     if (row?.orderingKey == null) return;
     attachSessionUpdates(this.db, id, this.now());
-    this.db.run(
-      `UPDATE outbox SET status = 'dropped', error = ? WHERE target = 'linear' AND ordering_key = ?
-        AND op = 'activity' AND status = 'pending' AND attempts = 0
-        AND (locked_until IS NULL OR locked_until <= ?) AND json_extract(payload, '$.body') = ?`,
-      [`Sent as outbox ${id}.`, row.orderingKey, this.now(), FIRST_ACTIVITY_BODY],
-    );
+    dropUnsentSessionActivity(this.db, {
+      orderingKey: row.orderingKey,
+      body: FIRST_ACTIVITY_BODY,
+      error: `Sent as outbox ${id}.`,
+      now: this.now(),
+    });
   }
 
   private async enqueueSessionProgress(
@@ -1495,22 +1586,13 @@ export class Orchestrator {
       if (!previous || previous.state === "cancelled") return;
       applyWorkItemEvent(this.db, previous.id, "cancel");
       if (previous.currentRunId) markRun(this.db, previous.currentRunId, "ended", this.now());
-      this.db.run(
-        "UPDATE job SET status = 'cancelled', finished_at = ? WHERE status = 'pending' AND json_extract(payload,'$.itemId') = ?",
-        [this.now(), previous.id],
-      );
+      cancelItemPendingJobs(this.db, previous.id, this.now());
     };
     const assignUnownedItems = (actorId: string | null, items: readonly { id: string }[]) => {
       if (items.length === 0 || !actorId) return;
-      const ownerId = this.db
-        .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id=?")
-        .get(actorId)?.id;
+      const ownerId = workspaceUserIdForLinearUser(this.db, actorId);
       if (!ownerId) return;
-      for (const item of items)
-        this.db.run("UPDATE work_item SET owner_user_id=? WHERE id=? AND owner_user_id IS NULL", [
-          ownerId,
-          item.id,
-        ]);
+      for (const item of items) assignUnownedItem(this.db, item.id, ownerId);
     };
     const intakeCurrent = () =>
       isCurrent() &&
@@ -1629,22 +1711,10 @@ export class Orchestrator {
   ): Promise<void> {
     if (!this.tracker?.getSession) return;
     const candidates = (issueId: string) =>
-      this.db
-        .query<{ session_id: string }, [string, string]>(
-          `SELECT DISTINCT previous.session_id FROM work_item item
-       JOIN linear_session previous ON previous.session_id = item.session_key
-       JOIN linear_session incoming ON incoming.session_id = ?
-         AND incoming.organization_id = previous.organization_id
-         AND incoming.oauth_client_id = previous.oauth_client_id
-         AND incoming.app_user_id = previous.app_user_id
-         AND incoming.team_id = previous.team_id
-       WHERE item.linear_issue_id = ? AND item.session_key != incoming.session_id
-         AND item.state NOT IN ('completed', 'merged')`,
-        )
-        .all(incomingSessionId, issueId);
+      previousIssueSessionIds(this.db, incomingSessionId, issueId);
     try {
       for (const issueId of issueIds) {
-        for (const { session_id: sessionId } of candidates(issueId)) {
+        for (const sessionId of candidates(issueId)) {
           const previous = getLinearSession(this.db, sessionId)!;
           const unfinished = this.itemsForSession(sessionId).some(
             (item) => !isTerminalWorkItemState(item.state),
@@ -1659,7 +1729,7 @@ export class Orchestrator {
             if (
               !isCurrent() ||
               getLinearSession(this.db, sessionId)?.generation !== previous.generation ||
-              !candidates(issueId).some((candidate) => candidate.session_id === sessionId)
+              !candidates(issueId).includes(sessionId)
             )
               throw new Error("Linear session ownership changed");
             if (
@@ -1819,11 +1889,13 @@ export class Orchestrator {
       await this.flush();
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
+      if (await this.waitingForConversation(job, context)) return;
       if (this.waitingForRunnerSlot(job)) return;
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.resume, async (job, context) => {
+      if (await this.waitingForConversation(job, context)) return;
       if (this.waitingForRunnerSlot(job)) return;
       if (await this.mergeInsteadOfTurn(job, context)) return;
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
@@ -1836,7 +1908,8 @@ export class Orchestrator {
         !item ||
         !this.reverifyEligible(item) ||
         !context.isCurrent() ||
-        !this.reverifyJobCurrent(job, item)
+        !this.reverifyJobCurrent(job, item) ||
+        (await this.waitingForConversation(job, context))
       )
         return;
       await this.failOnLastAttempt(job, context, "reverify", async () => {
@@ -1894,7 +1967,7 @@ export class Orchestrator {
     });
     jobs.register(JOB_KIND.merge, async (job, context) => {
       const ownerId = readString(job.payload, "itemId");
-      if (ownerId !== null && this.jobContexts.has(ownerId)) {
+      if (ownerId !== null && this.mergeTurnTaken(ownerId)) {
         if (context.isCurrent()) waitForMergeTurn(this.db, job, this.now());
         return;
       }
@@ -1965,15 +2038,7 @@ export class Orchestrator {
       const item = itemId ? getWorkItem(this.db, itemId) : null;
       if (!item || item.state !== "cancelled" || getConfirmedRemoteMerge(this.db, item.id)) return;
       // A re-delegation that took over the branch owns its pull request now.
-      if (
-        this.db
-          .query(
-            `SELECT 1 FROM item_continuation c JOIN work_item i ON i.id = c.item_id
-             WHERE c.previous_item_id = ? AND i.state != 'cancelled'`,
-          )
-          .get(item.id)
-      )
-        return;
+      if (itemContinued(this.db, item.id)) return;
       await this.joinChangedItems([item.id]);
       const repository = this.repositoryForItem(item);
       const github = repository ? this.githubForRepository(repository) : null;
@@ -2045,13 +2110,7 @@ export class Orchestrator {
   private pullFeedbackCapabilities(signal?: AbortSignal): PullReviewCapabilities {
     return {
       now: () => this.now(),
-      busy: (item) =>
-        this.jobContexts.has(item.id) ||
-        this.db
-          .query(
-            "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",
-          )
-          .get(this.now(), item.id) !== null,
+      busy: (item) => this.jobContexts.has(item.id) || hasLiveJob(this.db, item.id, this.now()),
       threads: async (item, pullNumber) => {
         const repository = this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
@@ -2111,6 +2170,7 @@ export class Orchestrator {
       },
       fixRoundLimit: (item) => this.fixRoundLimit(item),
       closeoutFindings: async (item) => {
+        await this.pullCloseoutEvidence(item);
         const started = closeoutHeadsStarted(this.db, item.id);
         try {
           return await storedReviewFindings(
@@ -2322,14 +2382,14 @@ export class Orchestrator {
       });
     }
     const files = this.options.files;
-    const root = this.options.evidence?.root;
+    const storage = this.evidenceStorage();
     await deliverLinearOutbox(
       message,
       tracker,
       () => this.catchUpFn(),
       context,
       this.db,
-      files && root ? { files, root } : undefined,
+      files && storage ? { files, ...storage } : undefined,
     );
   }
 
@@ -2494,6 +2554,25 @@ export class Orchestrator {
       }
       if (job.attempts >= job.maxAttempts)
         this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
+      // A start is only claimed while its item is queued, so its retries continue as a resume.
+      else if (job.queue === JOB_KIND.start && item.state === "running") {
+        this.settleItemAwake(item.id);
+        deferWorkItem(this.db, item, {
+          retry: retryCount(job.payload),
+          delayMs: transientRetryDelayMs(1, error, this.options.retryBaseMs),
+          handoff: readString(job.payload, "handoff"),
+          message: null,
+          now: this.now(),
+        });
+        journalCaught(
+          error,
+          "orchestrator.executeRetried.startRetry",
+          item.id,
+          undefined,
+          this.options.journal,
+        );
+        return;
+      }
       throw error;
     } finally {
       if (
@@ -2544,12 +2623,7 @@ export class Orchestrator {
   ) {
     const hold = holdForRunnerSetup(this.db, {
       itemId: current.id,
-      ownerUserId:
-        this.db
-          .query<{ owner: string | null }, [string]>(
-            "SELECT owner_user_id AS owner FROM work_item WHERE id=?",
-          )
-          .get(current.id)?.owner ?? null,
+      ownerUserId: itemOwnerUserId(this.db, current.id),
       reason: need.reason,
       ...(need.reason === "agent-not-signed-in"
         ? { runnerId: need.runnerId, agent: need.agent }
@@ -2674,13 +2748,7 @@ export class Orchestrator {
     const now = this.now();
     const seen = new Set<string>();
     const waiting = () =>
-      this.db
-        .query<{ id: string; itemId: string; sessionId: string }, []>(
-          `SELECT id,item_id AS itemId,session_id AS sessionId FROM question
-           WHERE kind='runner-repository' AND status='open' AND cancelled_at IS NULL`,
-        )
-        .all()
-        .filter((question) => !seen.has(question.id));
+      openRunnerRepositoryQuestions(this.db).filter((question) => !seen.has(question.id));
     let answered = false;
     for (let batch = waiting(); batch.length > 0; batch = waiting())
       for (const question of batch) {
@@ -2730,6 +2798,17 @@ export class Orchestrator {
   private runnerWaitMs(wait: RunnerCapacityWaitState, recoveringResume = false): number {
     const baseMs = placementWaitMs(wait.attempt, this.options.placementPollMs);
     return recoveringResume ? baseMs - resumeRetrySpreadMs(baseMs, this.options.random) : baseMs;
+  }
+
+  private async waitingForConversation(
+    job: Job,
+    context: { isCurrent(): boolean },
+  ): Promise<boolean> {
+    const itemId = readString(job.payload, "itemId");
+    const talk = itemId === null ? null : await this.options.conversations?.();
+    if (!talk || talk.open(itemId!).length === 0 || !context.isCurrent()) return false;
+    waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+    return true;
   }
 
   private waitingForRunnerSlot(job: Job, beforePark?: () => Job): boolean {
@@ -3287,7 +3366,7 @@ export class Orchestrator {
     const pathId = itemPathId(item);
     const branch = worktreeBranch(item);
     if (item.branchName !== branch) {
-      this.db.run("UPDATE work_item SET branch_name = ? WHERE id = ?", [branch, item.id]);
+      setItemBranchName(this.db, item.id, branch);
     }
     const run = this.ensureRun(item);
     item = getWorkItem(this.db, item.id)!;
@@ -3359,11 +3438,7 @@ export class Orchestrator {
         `${run.id}:working`,
         { ephemeral: true },
       );
-      const returned = this.db
-        .query<{ reason: string; version: number }, [string]>(
-          "SELECT reason,version FROM work_item_event WHERE item_id=? AND kind='restart' ORDER BY id DESC LIMIT 1",
-        )
-        .get(item.id);
+      const returned = latestRestartEvent(this.db, item.id);
       const fixing =
         returned !== null && ["findings", "ci", "review", "conflict"].includes(returned.reason);
       if (!fixing) sessionProgress?.phase("implementing");
@@ -3919,6 +3994,7 @@ export class Orchestrator {
           status: "active",
           freshSession: true,
           now: this.now(),
+          ownerInstance: this.options.instanceId ?? null,
         });
         ownedRunId = run.id;
         setCurrentRun(this.db, current.id, run.id);
@@ -4044,10 +4120,12 @@ export class Orchestrator {
     let rulesFirst = !recovery.bypasses.some((bypass) => bypass.head === head);
     let stoppedOnRule: string | undefined;
     const runnerChecks = new Map<string, Promise<void>>();
-    const runnerResults = (commit: string, stepId: string | undefined) => {
+    const rerunHeads = new Set<string>();
+    const runnerResults = (commit: string, stepId: string | undefined, again = false) => {
       let checks = runnerChecks.get(commit);
       if (!checks) {
         checks = this.runRunnerCloseout(item, deps, {
+          again,
           worktree,
           base,
           head: commit,
@@ -4076,6 +4154,18 @@ export class Orchestrator {
             if (broken && !sessionCloseoutResult(savedReport(commit, request.argv), request)) {
               stoppedOnRule = broken;
               throw new Error(`Rule ${broken} broke before the checks ran.`);
+            }
+            if (
+              !rerunHeads.has(commit) &&
+              !sessionCloseoutResult(savedReport(commit, request.argv), request)
+            ) {
+              rerunHeads.add(commit);
+              report(
+                `Closeout has no result for ${request.itemId ?? "a check"} on ${commit.slice(0, 7)}: ${missingResultReason(savedReport(commit, request.argv), request)}. Running the checks once more.`,
+              );
+              runnerChecks.delete(commit);
+              await runnerResults(commit, request.itemId, true);
+              assertCurrent();
             }
             const result = loggedSessionCloseout(savedReport(commit, request.argv), request);
             assertCurrent();
@@ -4118,6 +4208,11 @@ export class Orchestrator {
       reviewerAgent === "grok" || reviewerAgent === "opencode"
         ? createAcpCodexReviewer({ ...deps, postUpdate: this.updateHook(item) })
         : createReviewCommandReviewer({ ...deps, postUpdate: this.updateHook(item) });
+    const recorded = createDbCloseoutProgress(this.db, item.id, () => this.now());
+    const publishing = this.closeoutEvidence()?.objects?.()
+      ? publishingCloseoutProgress(recorded, () => this.pushCloseoutEvidence(item))
+      : null;
+    const progress = publishing ?? recorded;
     const gate = (this.options.closeoutGate ?? createCloseoutGate)({
       checkoutExclusions,
       candidate,
@@ -4162,7 +4257,7 @@ export class Orchestrator {
       reportDir: `${this.options.pawsRoot}/runs/${itemPathId(item)}`,
       ...this.closeoutHome(item),
       ...recovery,
-      progress: createDbCloseoutProgress(this.db, item.id, () => this.now()),
+      progress,
     });
     const request = {
       taskId: itemPathId(item),
@@ -4173,6 +4268,7 @@ export class Orchestrator {
       headSha: head,
       attempt: 1,
     };
+    await this.pullCloseoutEvidence(item, true);
     try {
       const verdict = await gate[decide ? "decide" : "run"](request);
       if (stoppedOnRule === undefined) return verdict;
@@ -4194,6 +4290,8 @@ export class Orchestrator {
     } finally {
       activity.flush();
       if (live) live.progress = null;
+      await publishing?.settled();
+      await this.pushCloseoutEvidence(item);
     }
   }
 
@@ -4212,6 +4310,7 @@ export class Orchestrator {
       /** Checks Closeout took from CI, which the runner leaves alone. */
       fromCi?: readonly string[];
       rulesFirst: boolean;
+      again?: boolean;
     },
   ): Promise<void> {
     const { worktree, head, assertCurrent } = input;
@@ -4237,15 +4336,16 @@ export class Orchestrator {
           `Running the Closeout checks for ${item.linearIdentifier} on its runner at ${short}.`,
         );
       const draft = this.savedDraft(item.id);
+      const checksRunId = `checks-${itemPathId(item)}-${short}-${input.again ? "again-" : ""}${attempt}`;
       try {
         const options: RunAgentOptions = {
           repository: deps.repository,
           role: "implementer",
           profile: deps.profiles?.implementer,
           itemId: itemPathId(item),
-          runId: `checks-${itemPathId(item)}-${short}-${attempt}`,
+          runId: checksRunId,
           prompt: closeoutChecksPrompt(head, input.fromCi),
-          worktreePath: this.runnerWorkspace(`checks-${itemPathId(item)}-${short}-${attempt}`),
+          worktreePath: this.runnerWorkspace(checksRunId),
           pawsRoot: this.options.pawsRoot,
           checkpoint: false,
           ...(input.rulesFirst ? { closeoutRulesFirst: true } : {}),
@@ -4255,7 +4355,10 @@ export class Orchestrator {
           ...(deps.home ? { home: deps.home } : {}),
           ...(deps.signal ? { signal: deps.signal } : {}),
         };
-        const result = await runner!({ ...options, ...this.trustedRunInputs(item, options) });
+        const result = await runner!({
+          ...options,
+          ...(await this.trustedRunInputs(item, options)),
+        });
         assertCurrent();
         const { ref } = this.itemHead(item);
         const at = (await git(["-C", worktree, "rev-parse", ref])).trim();
@@ -4265,6 +4368,13 @@ export class Orchestrator {
               ? ["-C", worktree, "reset", "--hard", head]
               : ["-C", worktree, "update-ref", ref, head, at],
           );
+          if (ref !== "HEAD")
+            recordItemCandidate(this.db, {
+              itemId: item.id,
+              sha: head,
+              branch: item.branchName,
+              recordedAt: this.now(),
+            });
           reason = "the checks run changed the commit";
         } else if (result.cancelled) reason = "the run was cancelled";
         else if (result.stopReason !== "end_turn" || result.errorMessage)
@@ -4420,6 +4530,7 @@ export class Orchestrator {
   private async startCloseoutRound(item: WorkItemRecord, head: string): Promise<void> {
     if (head === "" || head === item.checkpoint?.wipCommit) return;
     if (listCloseoutRounds(this.db, item.id).some((round) => round.head === head)) return;
+    await this.pullCloseoutEvidence(item);
     let retryBaseline: string[];
     try {
       retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
@@ -4662,6 +4773,7 @@ export class Orchestrator {
     }
     const sessionId = this.activitySession(item);
     if (sessionId === null) throw new Error("Closeout recovery has no tracker session");
+    await this.pullCloseoutEvidence(item);
     let retryBaseline: string[] = [];
     try {
       retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
@@ -4747,6 +4859,7 @@ export class Orchestrator {
   /** Records on the verifying run how many review rounds the item has needed so far. */
   private async recordReviewRounds(item: WorkItemRecord, runId: string | null): Promise<void> {
     if (runId === null) return;
+    await this.pullCloseoutEvidence(item);
     try {
       const { rounds } = await readReviewRounds(itemPathId(item), [], this.options.pawsRoot);
       if (rounds.length > 0) recordReviewRounds(this.db, runId, rounds.length);
@@ -4773,6 +4886,7 @@ export class Orchestrator {
     help: CloseoutHelp,
   ): Promise<boolean> {
     if (!linkAskAvailable(this.options.publicUrl) || item.sessionKey !== sessionId) return false;
+    await this.pullCloseoutEvidence(item);
     let rounds: ReviewRounds;
     try {
       rounds = await readReviewRounds(
@@ -4793,14 +4907,16 @@ export class Orchestrator {
     const exhausted = result?.decision?.items.find(
       (check) => check.kind === "review" && check.state === "exhausted",
     );
+    const findings = reviewFindingText(await this.failedReviewFindings(item));
     this.assertJobCurrent(item.id);
     const question = askReviewRounds(this.db, {
       item,
       help,
+      findings,
       rounds: {
         ...rounds,
         limit: reviewRoundLimit(exhausted?.message),
-        handoff: result?.handoff ?? help.summary,
+        handoff: result?.handoff ?? [help.summary, findings].filter(Boolean).join("\n"),
       },
       publicUrl: this.options.publicUrl ?? null,
       now: this.now(),
@@ -5196,7 +5312,7 @@ export class Orchestrator {
     item: WorkItemRecord,
     run: MergeRun,
   ): Promise<MergePublication | MergeStep> {
-    this.assertReconciled(item);
+    await this.reconcileForMerge(item, run);
     const repository = this.repositoryForItem(item);
     const configuredGitHub = repository === null ? null : this.githubForRepository(repository);
     if (
@@ -5225,12 +5341,7 @@ export class Orchestrator {
     });
     const live = this.live.get(`operation:${item.id}`);
     if (!live) throw new Error("GitHub publication has no owned operation.");
-    const priorVerification = ciWaitVerification(run.payload);
-    run.publicationCandidate = priorVerification
-      ? { sha: priorVerification.head, baseSha: priorVerification.base }
-      : item.checkpoint?.wipCommit && item.checkpoint.baseSha
-        ? { sha: item.checkpoint.wipCommit, baseSha: item.checkpoint.baseSha }
-        : undefined;
+    run.publicationCandidate = mergeCandidate(item, run.payload);
     const freshReads = new Set<string>();
     const repositoryName = `${repository.owner}/${repository.repo}`;
     const github = guardGitHubPublication({
@@ -5291,6 +5402,7 @@ export class Orchestrator {
       live.controller.signal,
     );
     if (this.stopped(item.id)) return { kind: "obsolete" };
+    await this.pullCloseoutEvidence(item);
     const publicUrl = this.options.evidence?.publicUrl ?? this.options.publicUrl ?? null;
     const open: OpenItems = {
       findings: await openFindings(
@@ -5336,7 +5448,7 @@ export class Orchestrator {
     const screenshots = await pullRequestScreenshots({
       db: this.db,
       itemId: item.id,
-      root: this.options.evidence?.root,
+      storage: this.evidenceStorage(),
       owner: repository.owner,
       repo: repository.repo,
       store: (files) =>
@@ -5408,7 +5520,7 @@ export class Orchestrator {
         title,
         body: publishedPullRequestBody({
           issue: item.linearIdentifier,
-          ...(draft ? { description: draft.body } : {}),
+          ...(draft ? { description: withLeftForLater(draft.body, draft.remaining ?? []) } : {}),
           evidence,
         }),
         evidence,
@@ -5790,6 +5902,7 @@ export class Orchestrator {
     repository: RepositoryBinding,
   ): Promise<string> {
     if (this.suggestedFindingsMode(`${repository.owner}/${repository.repo}`) === "off") return "";
+    await this.pullCloseoutEvidence(item);
     const findings = undecidedSuggestions(
       await acceptedSuggestions(this.db, item, this.options.pawsRoot).catch((error: unknown) => {
         journalCaught(
@@ -6045,18 +6158,7 @@ export class Orchestrator {
   private releaseAskedRun(runId: string): void {
     if (!this.askedRuns.delete(runId)) return;
     releaseRunCapacity(this.db, runId, this.now());
-    const answered = this.db
-      .query<
-        { id: string; itemId: string; body: string; options: string | null; answer: string },
-        [string]
-      >(
-        `SELECT q.id, q.item_id AS itemId, q.body, q.options, q.answer FROM question q
-         JOIN work_item i ON i.id = q.item_id
-         WHERE q.run_id = ? AND q.status = 'answered' AND q.cancelled_at IS NULL
-         AND q.answer IS NOT NULL AND i.state = 'running'
-         ORDER BY q.answered_at DESC, q.id DESC LIMIT 1`,
-      )
-      .get(runId);
+    const answered = latestRunningAnswer(this.db, runId);
     if (!answered) return;
     enqueueJobOnce(this.db, {
       queue: JOB_KIND.resume,
@@ -6292,10 +6394,7 @@ export class Orchestrator {
           if (confirmed === null)
             throw new Error("This suggestion is invalid. Answer this question in your own words.");
           answer = confirmed;
-          this.db.run(
-            "UPDATE linear_turn SET body=? WHERE session_id=? AND event_key=? AND state='pending'",
-            [answer, sessionId, event.dedupeKey],
-          );
+          rewritePendingLinearTurn(this.db, { sessionId, eventKey: event.dedupeKey }, answer);
         } catch (error) {
           journalCaught(
             error,
@@ -6406,6 +6505,24 @@ export class Orchestrator {
       );
   }
 
+  private async reconcileForMerge(item: WorkItemRecord, run: MergeRun): Promise<void> {
+    if (this.admission.canDispatchDelegation(item.delegationId)) return;
+    const signal = this.live.get(`operation:${item.id}`)?.controller.signal;
+    if (signal && this.options.publicationReady) {
+      this.options.journal?.(
+        `item ${item.linearIdentifier}: a merge attempt reconciles pending Linear changes`,
+      );
+      await this.options.publicationReady(
+        item.id,
+        "merge",
+        signal,
+        mergeCandidate(item, run.payload),
+      );
+      signal.throwIfAborted();
+    }
+    this.assertReconciled(item);
+  }
+
   private async assertPublicationReady(
     item: WorkItemRecord,
     phase: "publish" | "merge",
@@ -6461,11 +6578,7 @@ export class Orchestrator {
             source: "linear",
             requestedAt: this.now(),
           });
-          const dependents = this.db
-            .query<{ id: string; identifier: string }, [string, string]>(
-              `SELECT i.id,i.linear_identifier AS identifier FROM task_block b JOIN work_item i ON i.linear_issue_id=b.blocked_linear_issue_id AND i.delegation_id=? WHERE b.blocker_linear_issue_id=? AND i.state NOT IN ('merged','completed','cancelled')`,
-            )
-            .all(changes.delegationId, item.linearIssueId);
+          const dependents = openTaskDependents(this.db, changes.delegationId, item.linearIssueId);
           if (dependents.length)
             enqueueOutboxOnce(this.db, {
               target: "linear",
@@ -6492,12 +6605,7 @@ export class Orchestrator {
             )
           )
             continue;
-          const revision =
-            this.db
-              .query<{ revision: number }, [string]>(
-                "SELECT revision FROM work_item_specification WHERE item_id=?",
-              )
-              .get(itemId)?.revision ?? 0;
+          const revision = itemSpecificationRevision(this.db, itemId) ?? 0;
           enqueueOutboxOnce(this.db, {
             target: "linear",
             op: "activity",
@@ -6514,14 +6622,12 @@ export class Orchestrator {
         }
         cancelItemQuestions(this.db, itemId, this.now());
         if (item.state === "failed") {
-          this.db.run("UPDATE work_item SET cancel_requested=0,recovery_attempts=0 WHERE id=?", [
-            itemId,
-          ]);
+          clearItemRecovery(this.db, itemId);
           resetAwakeTime(this.db, itemId);
         }
         if (item.state === "paused") {
           cancelOpenJobs(this.db, { itemId, reason: "Linear criteria changed", now: this.now() });
-          this.db.run("UPDATE work_item SET version=version+1 WHERE id=?", [itemId]);
+          bumpItemVersion(this.db, itemId);
           continue;
         }
         restart(this.db, item, {
@@ -6568,10 +6674,7 @@ export class Orchestrator {
       if (!canAct() || item?.state !== "running" || item.cancelRequested) return false;
       applyWorkItemEvent(this.db, itemId, "pause");
       cancelOpenJobs(this.db, { itemId, reason: "Paused by a workspace member", now: this.now() });
-      this.db.run(
-        "UPDATE run SET status='lost',updated_at=? WHERE item_id=? AND status IN ('active','provisioning')",
-        [this.now(), itemId],
-      );
+      loseActiveItemRuns(this.db, itemId, this.now());
       onCommitted?.();
       return true;
     });
@@ -6604,6 +6707,28 @@ export class Orchestrator {
     });
     if (resumed) this.reconcileExecution();
     return resumed;
+  }
+
+  deliverInstanceCommands(): number {
+    const self = this.options.instanceId;
+    if (self === undefined) return 0;
+    return drainInstanceCommands(
+      this.db,
+      self,
+      ({ command, stoppedAtVersion }) => {
+        const live = [...this.live.values()].filter((entry) => entry.itemId === command.itemId);
+        const stopped = live.filter((entry) => entry.version < stoppedAtVersion);
+        if (stopped.length === 0) return;
+        if (stopped.length < live.length) {
+          for (const entry of stopped) entry.controller.abort();
+          return;
+        }
+        void this.interruptItem(command.itemId).catch((error) => {
+          journalCaught(error, "orchestrator.deliverInstanceCommands", command.itemId);
+        });
+      },
+      this.now(),
+    );
   }
 
   async interruptItem(itemId: string): Promise<void> {
@@ -6727,20 +6852,7 @@ export class Orchestrator {
   dependencyHandoff(itemId: string): string | undefined {
     const item = getWorkItem(this.db, itemId);
     if (!item) return undefined;
-    const blockers = this.db
-      .query<{ id: string; identifier: string; checkpoint: string | null }, [string, string]>(
-        `SELECT i.id,i.linear_identifier AS identifier,r.checkpoint FROM task_block b
-         JOIN work_item i ON i.id=(
-           SELECT candidate.id FROM work_item candidate
-           WHERE candidate.linear_issue_id=b.blocker_linear_issue_id AND candidate.delegation_id=?
-           AND candidate.state<>'cancelled'
-           AND NOT EXISTS(SELECT 1 FROM work_item_specification spec WHERE spec.item_id=candidate.id AND spec.present=0)
-           ORDER BY candidate.created_at DESC, candidate.id DESC LIMIT 1)
-         LEFT JOIN run r ON r.id=i.current_run_id
-         WHERE b.blocked_linear_issue_id=? AND i.state IN ('merged','completed')
-         ORDER BY i.position,i.id`,
-      )
-      .all(item.delegationId, item.linearIssueId);
+    const blockers = landedTaskBlockers(this.db, item.delegationId, item.linearIssueId);
     const active = new Set(this.delegationItems(item.delegationId).map((entry) => entry.id));
     const results = blockers
       .filter((blocker) => active.has(blocker.id))
@@ -6821,7 +6933,7 @@ export class Orchestrator {
     for (const id of itemIds) {
       const item = getWorkItem(this.db, id);
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      clearQueueWait(this.db, item.id);
+      settled(clearQueueWait(sqliteDb(this.db), item.id));
       const need = this.options.runnerSetupNeed?.(item.id, agentFor(item), now) ?? null;
       if (need) {
         immediate(this.db, () => {
@@ -6869,15 +6981,11 @@ export class Orchestrator {
       } else if (wait.kind === "overlap") {
         progress.wait(
           `Wait for ${wait.blocker} to merge`,
-          `${name} held: ${overlapLine(wait.blocker, wait.files)}`,
+          `${name} held: ${overlapLine(wait.blocker, wait.files, wait.start)}`,
         );
       } else if (wait.kind === "runner" && wait.restart) {
         const limit = this.fixAttemptLimit(item, wait.restart);
-        const restarted = this.db
-          .query<{ version: number }, [string]>(
-            "SELECT version FROM work_item_event WHERE item_id=? AND kind='restart' ORDER BY id DESC LIMIT 1",
-          )
-          .get(item.id);
+        const restarted = latestRestartEvent(this.db, item.id);
         if (restarted) progress.restart(wait.restart, round, restarted.version, limit);
         progress.status(
           `${name}: waiting for a runner to ${
@@ -6908,16 +7016,12 @@ export class Orchestrator {
     for (const id of itemIds) {
       const item = getWorkItem(this.db, id);
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      if (
-        this.db
-          .query(
-            "SELECT 1 FROM job WHERE queue=? AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=? LIMIT 1",
-          )
-          .get(JOB_KIND.start, item.id)
-      )
-        continue;
+      if (hasOpenItemJob(this.db, JOB_KIND.start, item.id)) continue;
       const name = item.linearIdentifier ?? "this issue";
-      if (now - queueWaitSince(this.db, item.id, item.version, now) >= hours * 3_600_000) {
+      if (
+        now - settled(queueWaitSince(sqliteDb(this.db), item.id, item.version, now)) >=
+        hours * 3_600_000
+      ) {
         failWorkItem(
           this.db,
           item,
@@ -6929,7 +7033,7 @@ export class Orchestrator {
       }
       const sessionId = this.activitySession(item);
       if (sessionId === null) continue;
-      const position = getQueuePosition(this.db, item.id);
+      const position = settled(getQueuePosition(sqliteDb(this.db), item.id));
       enqueueOutboxOnce(this.db, {
         target: OUTBOX_ACTIVITY.target,
         op: OUTBOX_ACTIVITY.op,
@@ -6951,6 +7055,7 @@ export class Orchestrator {
       if (existing && (existing.status === "active" || existing.status === "ended")) {
         this.reconcileAgentSettings();
         markRun(this.db, existing.id, "active", this.now());
+        this.claimRun(existing.id);
         return existing;
       }
       // A runner-setup hold stopped this run before any work. The resume continues it, so the
@@ -6958,6 +7063,7 @@ export class Orchestrator {
       if (existing?.status === "lost" && takeRunnerSetupResume(this.db, item.id, existing.id)) {
         this.reconcileAgentSettings();
         markRun(this.db, existing.id, "active", this.now());
+        this.claimRun(existing.id);
         return existing;
       }
     }
@@ -6973,6 +7079,7 @@ export class Orchestrator {
       kind: "implement",
       agent: profiles.implementer.agent,
       freshSession: true,
+      ownerInstance: this.options.instanceId ?? null,
     });
     if (item.currentRunId) {
       // Only an unannounced Settings switch carries over, while it still changes the agent.
@@ -7221,14 +7328,7 @@ export class Orchestrator {
   /** The item opened a pull request in some generation of its session. A new turn starts a new generation. */
   private hasOpenedPullRequest(itemId: string): boolean {
     const prefix = `pull-request-ready:${itemId}:`;
-    return Boolean(
-      this.db
-        .query(
-          `SELECT 1 FROM outbox WHERE target='linear' AND substr(idempotency_key, 1, length(?)) = ?
-           AND status!='dropped' LIMIT 1`,
-        )
-        .get(prefix, prefix),
-    );
+    return linearOutboxKeyed(this.db, prefix);
   }
 
   private postStatus(
@@ -7299,6 +7399,31 @@ export class Orchestrator {
     };
   }
 
+  private mergeTurnTaken(itemId: string): boolean {
+    const held = this.jobContexts.get(itemId);
+    if (!held) {
+      this.mergeTurnNotes.delete(itemId);
+      return false;
+    }
+    const owner = this.leasedJobs.get(itemId);
+    const holder = owner ? `${owner.queue} job ${owner.id}` : "worktree sweep";
+    if (!held.isCurrent()) {
+      this.jobContexts.delete(itemId);
+      if (owner) this.leasedJobs.delete(itemId);
+      this.mergeTurnNotes.delete(itemId);
+      this.options.journal?.(
+        `merge for item ${itemId} dropped the stale context of ${holder}, which is no longer running`,
+      );
+      return false;
+    }
+    const noted = this.mergeTurnNotes.get(itemId);
+    if (noted === undefined || this.now() - noted >= MERGE_TURN_NOTE_MS) {
+      this.mergeTurnNotes.set(itemId, this.now());
+      this.options.journal?.(`merge for item ${itemId} waits for its turn behind ${holder}`);
+    }
+    return true;
+  }
+
   private async runLeasedJob(
     job: Job,
     context: JobContext,
@@ -7364,6 +7489,7 @@ export class Orchestrator {
     const sessionId = item === null ? null : this.activitySession(item);
     const live = {
       itemId,
+      version: item?.version ?? 0,
       sessionId,
       generation: sessionId === null ? 0 : getLinearSessionGeneration(this.db, sessionId),
       controller,
@@ -7433,20 +7559,15 @@ export class Orchestrator {
     );
   }
 
-  private sessionPaused(sessionId: string): boolean {
-    return workItemForSession(this.db, sessionId)?.state === "paused";
+  private async sessionPaused(sessionId: string): Promise<boolean> {
+    return (await this.store.run((q) => workItemForSessionSteps(q, sessionId)))?.state === "paused";
   }
 
   private async resumeRedelegatedItem(
     issueId: string,
     session: StoredLinearSession,
   ): Promise<boolean> {
-    const elsewhere = this.db
-      .query(
-        `SELECT 1 FROM work_item WHERE linear_issue_id = ? AND session_key != ?
-         AND state NOT IN ('completed', 'merged', 'cancelled') LIMIT 1`,
-      )
-      .get(issueId, session.sessionId);
+    const elsewhere = issueOpenInOtherSession(this.db, issueId, session.sessionId);
     if (!elsewhere || !this.tracker) return false;
     const snapshot = await this.tracker.loadEpic(issueId);
     const isCurrent = () => {
@@ -7461,31 +7582,18 @@ export class Orchestrator {
     await this.reconcilePreviousSessions([issueId], session.sessionId, isCurrent, {
       keepPullRequest: true,
     });
-    const paused = this.db
-      .query<{ id: string; sessionKey: string; delegationId: string }, [string, string]>(
-        `SELECT item.id, item.session_key AS sessionKey, item.delegation_id AS delegationId
-         FROM work_item item
-         JOIN linear_session previous ON previous.session_id = item.session_key
-         JOIN linear_session incoming ON incoming.session_id = ?
-           AND incoming.organization_id IS previous.organization_id
-           AND incoming.oauth_client_id IS previous.oauth_client_id
-           AND incoming.app_user_id IS previous.app_user_id
-           AND incoming.team_id IS previous.team_id
-         WHERE item.linear_issue_id = ? AND item.state = 'paused'
-           AND previous.stopped_at IS NOT NULL AND previous.session_id != incoming.session_id
-         ORDER BY item.created_at DESC LIMIT 1`,
-      )
-      .get(session.sessionId, issueId);
+    const paused = pausedStoppedSessionItem(this.db, session.sessionId, issueId);
     if (!paused) return false;
     await this.interruptLinearSession(paused.sessionKey);
     const resumed = immediate(this.db, () => {
       const item = getWorkItem(this.db, paused.id);
       if (item?.state !== "paused" || item.sessionKey !== paused.sessionKey || !isCurrent())
         return false;
-      this.db.run(
-        "UPDATE work_item SET session_key = ? WHERE delegation_id = ? AND session_key = ?",
-        [session.sessionId, paused.delegationId, paused.sessionKey],
-      );
+      moveDelegationSession(this.db, {
+        delegationId: paused.delegationId,
+        from: paused.sessionKey,
+        to: session.sessionId,
+      });
       bindLinearSessionTask(this.db, session.sessionId, paused.delegationId);
       activateLinearItem(this.db, session.sessionId, item.id);
       cancelItemQuestions(this.db, item.id, this.now());
@@ -7501,7 +7609,7 @@ export class Orchestrator {
     return resumed;
   }
 
-  private async resumeLinearSession(sessionId: string): Promise<void> {
+  private async resumeLinearSession(sessionId: string, talk = true): Promise<void> {
     const active = [...this.live.values()].filter((live) =>
       this.itemsForSession(sessionId).some((item) => item.id === live.itemId),
     );
@@ -7510,6 +7618,7 @@ export class Orchestrator {
     if (this.shuttingDown) throw new Error("Paws is shutting down; user update remains pending");
     let turns = listPendingLinearTurns(this.db, sessionId);
     if (!turns.length) return;
+    if (talk && active.length === 0 && (await this.handToConversation(sessionId))) return;
     if (this.tracker === null)
       throw new Error("Linear is disconnected; user update remains pending");
     let session = getLinearSession(this.db, sessionId);
@@ -7595,6 +7704,7 @@ export class Orchestrator {
     const before = getWorkItem(this.db, item.id);
     const branchHead = getItemBranchState(this.db, item.id)?.head ?? null;
     const ci = rebase ? null : await this.followUpCi(item);
+    await this.pullCloseoutEvidence(item);
     const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
 
     immediate(this.db, () => {
@@ -7626,11 +7736,7 @@ export class Orchestrator {
         "\n\n",
       );
       if (current.state === "paused") cancelItemQuestions(this.db, current.id, this.now());
-      if (item!.cancelRequested || item!.state === "failed")
-        this.db.run(
-          "UPDATE work_item SET cancel_requested = 0, recovery_attempts = 0 WHERE id = ?",
-          [item!.id],
-        );
+      if (item!.cancelRequested || item!.state === "failed") clearItemRecovery(this.db, item!.id);
       startFreshBudget(this.db, {
         itemId: item!.id,
         sessionId,
@@ -7657,6 +7763,23 @@ export class Orchestrator {
         });
     });
     await this.flush();
+  }
+
+  private async handToConversation(sessionId: string): Promise<boolean> {
+    const routed = workItemForSession(this.db, sessionId);
+    const item = routed ? getWorkItem(this.db, routed.id) : null;
+    if (!item || !this.options.linearComments || !canConverse(item) || this.isLive(item.id))
+      return false;
+    const talk = await this.options.conversations?.();
+    if (!talk || talk.lane(item.id) === "closed") return false;
+    gatherLinearComments(
+      this.db,
+      item.id,
+      this.now(),
+      { quietMs: 0, maxMs: 0 },
+      `linear-turns:${item.id}:${listPendingLinearTurns(this.db, sessionId)[0]?.eventKey ?? ""}`,
+    );
+    return true;
   }
 
   private async followUpCi(item: WorkItemRecord): Promise<FollowUpCi | null> {
@@ -7850,21 +7973,9 @@ export class Orchestrator {
   }
 
   private allItems(includeArchived = false): WorkItemRecord[] {
-    const specification =
-      !includeArchived &&
-      this.db
-        .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_item_specification'")
-        .get();
-    const rows = this.db
-      .query<{ id: string }, []>(
-        specification
-          ? "SELECT id FROM work_item i WHERE NOT EXISTS(SELECT 1 FROM work_item_specification s WHERE s.item_id=i.id AND s.present=0)"
-          : "SELECT id FROM work_item",
-      )
-      .all();
     const items: WorkItemRecord[] = [];
-    for (const row of rows) {
-      const item = getWorkItem(this.db, row.id);
+    for (const id of listItemIds(this.db, includeArchived)) {
+      const item = getWorkItem(this.db, id);
       if (item) items.push(item);
     }
     return items;
@@ -7877,23 +7988,11 @@ export class Orchestrator {
   }
 
   private parentTaskKey(item: WorkItemRecord): string | null {
-    return (
-      this.db
-        .query<{ task_key: string | null }, [string]>(
-          `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE id = ?`,
-        )
-        .get(item.id)?.task_key ?? null
-    );
+    return itemParentTaskKey(this.db, item.id);
   }
 
   private delegationIssueId(item: WorkItemRecord): string | null {
-    return (
-      this.db
-        .query<{ issue_id: string | null }, [string]>(
-          `SELECT ${delegationIssueIdSql("work_item")} AS issue_id FROM work_item WHERE id = ?`,
-        )
-        .get(item.id)?.issue_id ?? null
-    );
+    return itemDelegationIssueId(this.db, item.id);
   }
 
   private async flush(signal?: AbortSignal, session?: string | null): Promise<void> {
@@ -7906,7 +8005,7 @@ export class Orchestrator {
     try {
       for (let attempt = 0; attempt < 50; attempt += 1) {
         signal?.throwIfAborted();
-        const ticked = this.options.outbox.tick();
+        const ticked = await this.options.outbox.tick();
         for (const row of ticked) claimed.add(row.id);
         if (stop.aborted) break;
         let onAbort: () => void = () => {};
@@ -7989,11 +8088,7 @@ export class Orchestrator {
       sessionId === null ||
       findOpenQuestion(this.db, sessionId) !== null ||
       listPendingLinearTurns(this.db, sessionId).length > 0 ||
-      this.db
-        .query(
-          "SELECT 1 FROM job WHERE id!=? AND queue=? AND status IN ('pending','running') AND json_extract(payload,'$.itemId')=?",
-        )
-        .get(job.id, JOB_KIND.reverify, item.id) !== null;
+      hasOpenItemJob(this.db, JOB_KIND.reverify, item.id, job.id);
     if (moving) return;
     const head = item.checkpoint?.wipCommit ?? "";
     const prior = closeoutFaults(job.payload);
@@ -8294,7 +8389,7 @@ export class Orchestrator {
         item.id,
         due.requirement.id,
         due.evidenceIds,
-        evidence.root,
+        this.evidenceStorage(),
       );
       const outcome = immediate(this.db, () => {
         const now = dueVisualReview(this.db, item.id, requirements, approvals);
@@ -8454,10 +8549,7 @@ export class Orchestrator {
         if (current === null) return false;
         const { open, item } = current;
         const dedupeKey = `paws-answer:${open.id}`;
-        this.db.run(
-          "DELETE FROM linear_turn WHERE session_id = ? AND event_key = ? AND state = 'cancelled'",
-          [open.sessionId, dedupeKey],
-        );
+        deleteCancelledLinearTurn(this.db, { sessionId: open.sessionId, eventKey: dedupeKey });
         const at = Math.max(this.now(), open.createdAt + 1);
         await this.handleLinearEvent({
           dedupeKey,
@@ -8660,15 +8752,42 @@ export class Orchestrator {
         ? (input: { workspace: string; prompt: string; signal: AbortSignal }) =>
             loader({ ...input, sessionId, turnId })
         : undefined;
-    const root = this.options.evidence?.root;
-    if (!root) return linear;
-    const marks = createReviewMarkLoader({ db: this.db, root, itemId: item.id, turnId });
+    const storage = this.evidenceStorage();
+    if (!storage) return linear;
+    const marks = createReviewMarkLoader({ db: this.db, storage, itemId: item.id, turnId });
     return async (input: { workspace: string; prompt: string; signal: AbortSignal }) => {
       const marked = await marks(input);
       if (!linear) return marked;
       const loaded = await linear({ ...input, prompt: marked.prompt });
       return { prompt: loaded.prompt, inputFiles: [...marked.inputFiles, ...loaded.inputFiles] };
     };
+  }
+
+  private closeoutEvidence(): EvidenceStorage | null {
+    const objects = this.options.closeoutEvidenceObjects;
+    return objects ? { root: join(this.options.pawsRoot, "closeout", "evidence"), objects } : null;
+  }
+
+  private async pullCloseoutEvidence(item: WorkItemRecord, strict = false): Promise<void> {
+    const storage = this.closeoutEvidence();
+    if (storage === null) return;
+    const restored = hydrateCloseoutEvidence(this.db, storage, [itemPathId(item)], { strict });
+    if (strict) await restored;
+    else
+      await restored.catch((error: unknown) =>
+        journalCaught(error, "orchestrator.pullCloseoutEvidence", item.id),
+      );
+  }
+
+  private async pushCloseoutEvidence(item: WorkItemRecord): Promise<void> {
+    const storage = this.closeoutEvidence();
+    if (storage === null) return;
+    await publishCloseoutEvidence(this.db, storage, itemPathId(item));
+  }
+
+  private evidenceStorage(): EvidenceStorage | undefined {
+    const evidence = this.options.evidence;
+    return evidence?.root ? { root: evidence.root, objects: evidence.objects } : undefined;
   }
 
   private blockConversation(itemId: string): void {
@@ -8692,7 +8811,11 @@ export class Orchestrator {
         !input.prepareOnly
           ? await this.commitPolicy(item)
           : undefined;
-      return backend({ ...input, commitPolicy: policy, ...this.trustedRunInputs(item, input) });
+      return backend({
+        ...input,
+        commitPolicy: policy,
+        ...(await this.trustedRunInputs(item, input)),
+      });
     });
     this.conversations.set(item.id, runner);
     if (item.sessionKey && getLinearSession(this.db, item.sessionKey))
@@ -8753,7 +8876,11 @@ export class Orchestrator {
           input.role === "implementer" && !input.prepareOnly
             ? await this.commitPolicy(item)
             : undefined;
-        return runner({ ...input, commitPolicy: policy, ...this.trustedRunInputs(item, input) });
+        return runner({
+          ...input,
+          commitPolicy: policy,
+          ...(await this.trustedRunInputs(item, input)),
+        });
       },
       agentRunner: this.remoteAgentForItem(item.id),
       ...(this.options.home ? { home: this.options.home } : {}),
@@ -8990,7 +9117,7 @@ export class Orchestrator {
     const worktree = this.options.remoteExecution
       ? {
           path: this.runnerWorkspace(runId),
-          repo: (await ensureCandidateRef(placement)).mirrorPath,
+          repo: await this.ensureRecordedCandidate(item, placement, signal),
         }
       : await createWorktree({
           ...placement,
@@ -9086,12 +9213,19 @@ export class Orchestrator {
   }
 
   /** The Closeout policy and the runtime list, both read from origin/main and never the work tree. */
-  private trustedRunInputs(
+  private async trustedRunInputs(
     item: WorkItemRecord,
     input: RunAgentOptions,
-  ): Pick<
-    RunAgentOptions,
-    "closeoutPolicy" | "runtimes" | "githubRead" | "ciRerun" | "suggestedFindings"
+  ): Promise<
+    Pick<
+      RunAgentOptions,
+      | "closeoutPolicy"
+      | "runtimes"
+      | "githubRead"
+      | "ciRerun"
+      | "suggestedFindings"
+      | "reviewFindings"
+    >
   > {
     const repository = this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
@@ -9107,9 +9241,11 @@ export class Orchestrator {
     const pull = getItemPullRequest(this.db, item.id);
     const github = pull ? this.githubForRepository(repository) : null;
     const suggested = input.readOnly ? [] : waitingSuggestions(this.db, item.id);
+    const failed = input.readOnly ? [] : reviewFindingGroups(await this.failedReviewFindings(item));
     return {
       ...runtimes,
       ...(suggested.length ? { suggestedFindings: suggested } : {}),
+      ...(failed.length ? { reviewFindings: failed } : {}),
       ...(!input.readOnly && this.agentReadAllowed(item, `${repository.owner}/${repository.repo}`)
         ? { githubRead: { prompt: GITHUB_READ_PROMPT } }
         : {}),
@@ -9148,6 +9284,16 @@ export class Orchestrator {
           : load;
       },
     };
+  }
+
+  private async failedReviewFindings(item: WorkItemRecord): Promise<ReviewFindings[]> {
+    try {
+      await this.pullCloseoutEvidence(item);
+      return await failedReviewFindings(this.db, item.id, this.options.pawsRoot);
+    } catch (caught) {
+      journalCaught(caught, "orchestrator.failedReviewFindings", item.id);
+      return [];
+    }
   }
 
   private agentReadAllowed(item: WorkItemRecord, repository: string): boolean {
@@ -9229,6 +9375,41 @@ export class Orchestrator {
       : { repo: worktreePath(this.options.pawsRoot, itemPathId(item)), ref: "HEAD" };
   }
 
+  private async ensureRecordedCandidate(
+    item: WorkItemRecord,
+    placement: Parameters<typeof ensureCandidateRef>[0] & { remoteUrl: string },
+    signal: AbortSignal,
+  ): Promise<string> {
+    await this.restoreCandidate(item, signal);
+    const candidate = await ensureCandidateRef(placement);
+    if (!getItemCandidate(this.db, item.id))
+      recordItemCandidate(this.db, {
+        itemId: item.id,
+        sha: candidate.head,
+        branch: item.branchName,
+        recordedAt: this.now(),
+      });
+    return candidate.mirrorPath;
+  }
+
+  private async restoreCandidate(item: WorkItemRecord, signal?: AbortSignal): Promise<void> {
+    const repository = this.repositoryForItem(item);
+    const recorded = getItemCandidate(this.db, item.id);
+    if (!this.options.remoteExecution || !repository || !recorded) return;
+    const owned = signal ?? AbortSignal.timeout(120_000);
+    const networkGit = this.repositoryGit(item, repository, owned, "read");
+    const baseSha = item.checkpoint?.baseSha;
+    await restoreCandidateRef({
+      ...repository,
+      itemId: itemPathId(item),
+      pawsRoot: this.options.pawsRoot,
+      sha: recorded.sha,
+      signal: owned,
+      ...(baseSha ? { baseSha } : {}),
+      ...(networkGit ? { networkGit } : {}),
+    });
+  }
+
   private async legacyItemHead(item: WorkItemRecord): Promise<{ repo: string; ref: string }> {
     const repository = this.repositoryForItem(item);
     if (this.options.remoteExecution && repository)
@@ -9237,6 +9418,7 @@ export class Orchestrator {
         itemId: itemPathId(item),
         pawsRoot: this.options.pawsRoot,
       });
+    await this.restoreCandidate(item, this.signalForItem(item.id));
     return this.itemHead(item);
   }
 
@@ -9399,13 +9581,7 @@ export class Orchestrator {
         bindWorkItemRepository(this.db, item.id, candidates[0]!);
         return true;
       }
-      const recent = this.db
-        .query<{ name: string }, []>(
-          `SELECT lower(r.owner||'/'||r.repo) AS name FROM work_item_repository r
-           JOIN work_item i ON i.id=r.item_id ORDER BY i.created_at DESC LIMIT 50`,
-        )
-        .all()
-        .map((row) => row.name);
+      const recent = recentRepositoryNames(this.db, 50);
       const recency = (candidate: RepositoryBinding) => {
         const index = recent.indexOf(`${candidate.owner}/${candidate.repo}`.toLowerCase());
         return index === -1 ? Number.MAX_SAFE_INTEGER : index;
@@ -9599,6 +9775,10 @@ export class Orchestrator {
     return (this.options.clock ?? systemClock).now();
   }
 
+  private claimRun(runId: string): void {
+    if (this.options.instanceId !== undefined) claimRun(this.db, runId, this.options.instanceId);
+  }
+
   private async waitWithoutAwake(
     itemId: string,
     reason: "ci" | "runner" | "backoff",
@@ -9683,12 +9863,24 @@ function withAcceptedBranch(text: string, item: WorkItemRecord): string {
   return `${sentence} The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`;
 }
 
+function mergeCandidate(
+  item: WorkItemRecord,
+  payload: unknown,
+): { sha: string; baseSha: string } | undefined {
+  const priorVerification = ciWaitVerification(payload);
+  if (priorVerification) return { sha: priorVerification.head, baseSha: priorVerification.base };
+  return item.checkpoint?.wipCommit && item.checkpoint.baseSha
+    ? { sha: item.checkpoint.wipCommit, baseSha: item.checkpoint.baseSha }
+    : undefined;
+}
+
 function retryCount(payload: unknown): number {
   const retry = (payload as { retry?: unknown } | null)?.retry;
   return typeof retry === "number" ? retry : 0;
 }
 
 const CLOSEOUT_FAULT_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
+const MERGE_TURN_NOTE_MS = 10 * 60_000;
 const REVIEWER_ALERT_INTERVAL_MS = 60 * 60_000;
 
 function closeoutFaults(payload: unknown): CloseoutFaults | null {

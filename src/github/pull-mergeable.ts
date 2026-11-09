@@ -17,6 +17,7 @@ export type PullMergeable = {
   head: string;
   open: boolean;
   merges: "clean" | "conflict" | "unknown";
+  behind?: true;
 };
 
 const pullSchema = z.object({
@@ -77,6 +78,7 @@ async function readOnce(
           : pull.mergeable === true
             ? "clean"
             : "unknown",
+      ...(pull.mergeable_state === "behind" ? { behind: true as const } : {}),
     };
   } catch (error) {
     if (input.signal?.aborted) throw error;

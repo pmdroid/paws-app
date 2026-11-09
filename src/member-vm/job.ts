@@ -1,6 +1,19 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import { immediate, parkLeasedJob, type Job, type JobContext, type JobLoop } from "../db";
+import {
+  advanceMemberVmStep,
+  failMemberVmStep,
+  immediate,
+  parkLeasedJob,
+  recordMemberVmEnrollment,
+  restoreMemberVmCreateRequest,
+  runnerIdentity,
+  updateMemberVmStep,
+  type Job,
+  type JobContext,
+  type JobLoop,
+  type MemberVmStepFields,
+} from "../db";
 import {
   isProvisioningError,
   type ExeDev,
@@ -9,14 +22,7 @@ import {
   type ProvisioningErrorCode,
 } from "../provisioning";
 import { workspaceTokenHash } from "../workspace";
-import {
-  freeVmName,
-  getMemberVm,
-  MEMBER_VM_QUEUE,
-  STEP_AT,
-  type MemberRef,
-  type MemberVm,
-} from "./store";
+import { freeVmName, getMemberVm, MEMBER_VM_QUEUE, type MemberRef, type MemberVm } from "./store";
 
 export type MintEnrollment = (
   member: MemberRef,
@@ -91,10 +97,7 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
       const text = redact(errorText(error), [...minted, ...secrets]);
       journalCaught(text, "member-vm.provision");
       const at = now();
-      db.run(
-        "UPDATE member_vm SET failure=?,updated_at=? WHERE id=? AND step=? AND delete_step IS NULL",
-        [text, at, row.id, row.step],
-      );
+      failMemberVmStep(db, { id: row.id, step: row.step, failure: text, now: at });
       return;
     }
     if (outcome.next === "done" || !context.isCurrent()) return;
@@ -122,17 +125,18 @@ async function runStep(
   const mint = () => {
     const enrollment = options.mintEnrollment(member, { name: vm });
     minted(enrollment.token);
-    db.run(
-      "INSERT OR IGNORE INTO member_vm_enrollment(token_hash,member_vm_id,created_at) VALUES(?,?,?)",
-      [workspaceTokenHash(enrollment.token), row.id, now()],
-    );
+    recordMemberVmEnrollment(db, {
+      tokenHash: workspaceTokenHash(enrollment.token),
+      memberVmId: row.id,
+      now: now(),
+    });
     return enrollment;
   };
 
   switch (row.step) {
     case "create": {
       const asked = row.createRequestedAt;
-      update(db, row, { create_requested_at: asked ?? now() }, now());
+      update(db, row, { createRequestedAt: asked ?? now() }, now());
       try {
         await exeDev.createVm(
           vm,
@@ -145,20 +149,11 @@ async function runStep(
         // under it for us, so the row takes the next name and asks again.
         if (asked === null && isProvisioningError(error) && error.code === "name_unavailable") {
           journalCaught(error, "member-vm.createVm", null, "trying the next VM name");
-          update(
-            db,
-            row,
-            { vm_name: freeVmName(db, member, vm), create_requested_at: null },
-            now(),
-          );
+          update(db, row, { vmName: freeVmName(db, member, vm), createRequestedAt: null }, now());
           return { next: "advance" };
         }
         if (!ours) {
-          if (rejected(error))
-            db.run(
-              "UPDATE member_vm SET create_requested_at=? WHERE id=? AND step='create' AND failure IS NULL",
-              [asked, row.id],
-            );
+          if (rejected(error)) restoreMemberVmCreateRequest(db, row.id, asked);
           if (isProvisioningError(error) && error.code === "conflict")
             throw new Error(
               `exe.dev already has a VM named ${vm} that Paws did not create (conflict).`,
@@ -179,8 +174,8 @@ async function runStep(
           db,
           row,
           {
-            install_started_at: now(),
-            ...(started === "started" ? { token_expires_at: enrollment.expiresAt } : {}),
+            installStartedAt: now(),
+            ...(started === "started" ? { tokenExpiresAt: enrollment.expiresAt } : {}),
           },
           now(),
         );
@@ -210,31 +205,26 @@ async function runStep(
         if (tokenExpiresAt === null || tokenExpiresAt - TOKEN_MARGIN_MS <= now()) {
           const enrollment = mint();
           await bootstrap.stageToken(vm, enrollment.token);
-          update(db, row, { token_expires_at: enrollment.expiresAt }, now());
+          update(db, row, { tokenExpiresAt: enrollment.expiresAt }, now());
         }
-        update(db, row, { token_expires_at: null }, now());
+        update(db, row, { tokenExpiresAt: null }, now());
         tokenExpiresAt = null;
         const enrolled = await bootstrap.enroll(vm);
-        const runner = db
-          .query<{ workspaceId: string; ownerUserId: string; revoked: number }, [string]>(
-            `SELECT workspace_id AS workspaceId,owner_user_id AS ownerUserId,
-            (status='revoked' OR revoked_at IS NOT NULL) AS revoked FROM runner WHERE id=?`,
-          )
-          .get(enrolled.runnerId);
+        const runner = runnerIdentity(db, enrolled.runnerId);
         if (
           runner === null ||
           enrolled.workspaceId !== row.workspaceId ||
           runner.workspaceId !== row.workspaceId ||
-          runner.ownerUserId !== row.userId
+          runner.ownerId !== row.userId
         )
           throw new Error(`${vm}: enrollment returned a runner this member does not own.`);
-        if (runner.revoked) {
+        if (runner.status === "revoked" || runner.revokedAt !== null) {
           if (attempt > 0)
             throw new Error(`${vm}: the VM kept the identity of a removed runner after a reset.`);
           await bootstrap.resetIdentity(vm);
           continue;
         }
-        update(db, row, { runner_id: enrolled.runnerId }, now());
+        update(db, row, { runnerId: enrolled.runnerId }, now());
         await bootstrap.startRunner(vm);
         advance(db, row, "health", now());
         return { next: "advance" };
@@ -242,14 +232,7 @@ async function runStep(
     }
 
     case "health": {
-      const runner =
-        row.runnerId === null
-          ? null
-          : db
-              .query<{ lastSeenAt: number | null; status: string }, [string]>(
-                "SELECT last_seen_at AS lastSeenAt,status FROM runner WHERE id=?",
-              )
-              .get(row.runnerId);
+      const runner = row.runnerId === null ? null : runnerIdentity(db, row.runnerId);
       if (runner === null || runner.status === "revoked")
         throw new Error(`${vm}: the runner was removed before its first heartbeat.`);
       if (runner.lastSeenAt !== null) {
@@ -266,23 +249,10 @@ async function runStep(
   }
 }
 
-type Columns = {
-  vm_name?: string;
-  create_requested_at?: number | null;
-  install_started_at?: number;
-  token_expires_at?: number | null;
-  runner_id?: string;
-};
-
-function update(db: Database, row: MemberVm, columns: Columns, at: number): void {
-  const entries = Object.entries(columns);
-  if (entries.length === 0) return;
-  const changed = db.run(
-    `UPDATE member_vm SET ${entries.map(([name]) => `${name}=?`).join(",")},updated_at=?
-    WHERE id=? AND step=? AND failure IS NULL`,
-    [...entries.map(([, value]) => value ?? null), at, row.id, row.step],
-  ).changes;
-  if (changed !== 1) throw new StepMoved();
+function update(db: Database, row: MemberVm, fields: MemberVmStepFields, at: number): void {
+  if (Object.keys(fields).length === 0) return;
+  if (updateMemberVmStep(db, { id: row.id, step: row.step, fields, now: at }) !== 1)
+    throw new StepMoved();
 }
 
 function advance(
@@ -292,12 +262,8 @@ function advance(
   at: number,
 ): void {
   immediate(db, () => {
-    const changed = db.run(
-      `UPDATE member_vm SET step=?,step_started_at=?,${STEP_AT[step]}=?,updated_at=?
-      WHERE id=? AND step=? AND failure IS NULL`,
-      [step, at, at, at, row.id, row.step],
-    ).changes;
-    if (changed !== 1) throw new StepMoved();
+    if (advanceMemberVmStep(db, { id: row.id, from: row.step, to: step, now: at }) !== 1)
+      throw new StepMoved();
   });
 }
 

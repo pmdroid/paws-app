@@ -44,7 +44,7 @@ function setup() {
     deliverLinearOutbox(row, tracker, async () => {}, context, db),
   );
   const flush = async () => {
-    while (dispatcher.tick().length) await dispatcher.idle();
+    while ((await dispatcher.tick()).length) await dispatcher.idle();
   };
   const publish = async (index: number, headCommit: string) => {
     const bytes = new Uint8Array([...PNG, index]);
@@ -181,7 +181,7 @@ test("a closed response fences later activities even without a PR response in it
         idempotencyKey: key!,
         payload: { sessionId: "session", kind, body: "Closed: cancelled" },
       });
-    while (dispatcher.tick().length) await dispatcher.idle();
+    while ((await dispatcher.tick()).length) await dispatcher.idle();
     expect(tracker.progress.map((update) => update.kind)).toEqual(["response"]);
   } finally {
     db.close();

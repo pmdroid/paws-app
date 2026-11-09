@@ -1,5 +1,8 @@
 import { journalCaught } from "../journal";
+import { journal } from "./journal";
+import { heartbeatInstance, ownerGone } from "./instances";
 import type { Database } from "bun:sqlite";
+import { and, desc, eq, inArray, isNotNull, isNull, like, or, sql, type SQL } from "drizzle-orm";
 import {
   decideStartup,
   hasVerificationCandidate,
@@ -22,15 +25,16 @@ import {
 } from "./items";
 import type { WorkItemRecord } from "./items";
 import {
-  markPawsAlive,
   runnerHoldsRunWork,
   runnerLeaseCutoff,
   shiftRunnerLeasesForDowntime,
 } from "./runner-lease";
 import { mergeCallInFlight } from "./remote-merges";
 import { ensureRestartQuestion } from "./restart-hold";
-import { getRun, markRun, releaseRunCapacity } from "./runs";
+import { claimRun, getRun, markRun, releaseRunCapacity, runOwner } from "./runs";
 import { pendingRestartHandoff } from "./restart";
+import { orm } from "./orm";
+import { job, runnerWork, runnerWorkGrant } from "./schema";
 import { immediate } from "./tx";
 
 /** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
@@ -46,112 +50,172 @@ const STARTUP_STATES = [
 
 const STARTUP_RESUME_SPACING_MS = 5_000;
 
+export const RUN_TAKEOVER_JOB = "run.takeover";
+export const RUN_TAKEOVER_MS = 30_000;
+
 /**
  * On process start, resume a live run once or ask whether to start it again. An item in the merge
  * queue keeps its place; one whose merge call may have been in flight asks GitHub before it moves.
- * Paws downtime, up to `offlineBudgetMs`, does not count against an open runner lease.
+ * Downtime of the instance that owned a run, up to `offlineBudgetMs`, does not count against its
+ * open runner lease while no other instance was alive.
  */
 export function recoverOnStartup(
   db: Database,
   now = Date.now(),
   offlineBudgetMs?: number,
+  instanceId?: string,
 ): StartupDecision[] {
   return immediate(db, () => {
-    shiftRunnerLeasesForDowntime(db, now, offlineBudgetMs);
-    const items = listWorkItemsByStates(db, STARTUP_STATES);
-    const decisions: StartupDecision[] = [];
-    let resumes = 0;
-    const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
-    for (const item of items) {
-      if (ensureRestartQuestion(db, item, now)) {
-        decisions.push({ type: "ask_restart" });
-        continue;
-      }
-      if (hasParkedCapacityWait(db, item)) continue;
-      if (hasPendingAnswerResume(db, item.id)) continue;
-      if (hasPendingTransientRetry(db, item)) continue;
-      const holds = runnerHoldsWork(db, item, now);
-      const decision = decideStartup({
-        itemState: item.state,
-        recoveryAttempts: item.recoveryAttempts,
-        checkpoint: item.checkpoint,
-        runnerHoldsWork: holds,
-        mergeCallInFlight: mergeCallInFlight(db, item.id),
-        runActive: runActive(db, item),
-        ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
-      });
-      // A re-verify the shutdown cut short attaches to the runner's Closeout work itself.
-      const followed =
-        decision.type === "resume"
-          ? decision.reattach === true && hasPendingResume(db, item.id, "process_restart")
-          : decision.type === "reverify" &&
-            holds &&
-            item.state === "verifying" &&
-            hasOpenReverify(db, item.id);
-      if (!followed)
-        applyDecision(db, item, decision, now, {
-          ...(decision.type === "resume" ? { runAt: nextResumeAt() } : {}),
-        });
-      decisions.push(decision);
-    }
-    for (const item of listWorkItemsByStates(db, ["awaiting_input"])) {
-      if (item.currentRunId !== null) releaseRunCapacity(db, item.currentRunId, now);
-    }
-    if (items.some((item) => item.state === "awaiting_input"))
-      enqueueJobOnce(db, {
-        queue: JOB_KIND.catchup,
-        jobKey: `startup-questions:${now}`,
-        payload: { reason: "open_questions" },
-        now,
-      });
-    return decisions;
+    shiftRunnerLeasesForDowntime(db, now, offlineBudgetMs, instanceId);
+    return recoverItems(db, now, instanceId, true);
   });
+}
+
+export function takeOverGoneRuns(
+  db: Database,
+  instanceId: string,
+  now = Date.now(),
+): StartupDecision[] {
+  return immediate(db, () => {
+    shiftRunnerLeasesForDowntime(db, now, undefined, instanceId);
+    return recoverItems(db, now, instanceId, false);
+  });
+}
+
+function recoverItems(
+  db: Database,
+  now: number,
+  instanceId: string | undefined,
+  unowned: boolean,
+): StartupDecision[] {
+  const takesOver = instanceId === undefined ? () => true : takeoverFilter(db, instanceId, now);
+  const items = listWorkItemsByStates(db, STARTUP_STATES).filter((item) =>
+    takesOver(item, unowned),
+  );
+  const decisions: StartupDecision[] = [];
+  let resumes = 0;
+  const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
+  for (const item of items) {
+    if (instanceId !== undefined && item.currentRunId !== null) {
+      const from = runOwner(db, item.currentRunId);
+      claimRun(db, item.currentRunId, instanceId);
+      if (from !== null)
+        journal(
+          `run ${item.currentRunId} taken over item=${item.id} from=${from} by=${instanceId}`,
+        );
+    }
+    if (ensureRestartQuestion(db, item, now)) {
+      decisions.push({ type: "ask_restart" });
+      continue;
+    }
+    if (hasParkedCapacityWait(db, item)) continue;
+    if (hasPendingAnswerResume(db, item.id)) continue;
+    if (hasPendingTransientRetry(db, item)) continue;
+    const holds = runnerHoldsWork(db, item, now);
+    const decision = decideStartup({
+      itemState: item.state,
+      recoveryAttempts: item.recoveryAttempts,
+      checkpoint: item.checkpoint,
+      runnerHoldsWork: holds,
+      mergeCallInFlight: mergeCallInFlight(db, item.id),
+      runActive: runActive(db, item),
+      ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
+    });
+    // A re-verify the shutdown cut short attaches to the runner's Closeout work itself.
+    const followed =
+      decision.type === "resume"
+        ? decision.reattach === true && hasPendingResume(db, item.id, "process_restart")
+        : decision.type === "reverify" &&
+          holds &&
+          item.state === "verifying" &&
+          hasOpenReverify(db, item.id);
+    if (!followed)
+      applyDecision(db, item, decision, now, {
+        ...(decision.type === "resume" ? { runAt: nextResumeAt() } : {}),
+      });
+    decisions.push(decision);
+  }
+  const taken = new Set(items.map((item) => item.id));
+  for (const item of listWorkItemsByStates(db, ["awaiting_input"])) {
+    if (taken.has(item.id) && item.currentRunId !== null)
+      releaseRunCapacity(db, item.currentRunId, now);
+  }
+  if (items.some((item) => item.state === "awaiting_input"))
+    enqueueJobOnce(db, {
+      queue: JOB_KIND.catchup,
+      jobKey: `startup-questions:${now}`,
+      payload: { reason: "open_questions" },
+      now,
+    });
+  return decisions;
+}
+
+function takeoverFilter(
+  db: Database,
+  self: string,
+  now: number,
+): (item: WorkItemRecord, unowned: boolean) => boolean {
+  const gone = ownerGone(db, self, now);
+  return (item, unowned) => {
+    const owner = item.currentRunId === null ? null : runOwner(db, item.currentRunId);
+    return owner === null ? unowned : gone(owner);
+  };
 }
 
 /** A capacity wait already has its next attempt; restarting neither spends recovery nor adds a job. */
 function hasParkedCapacityWait(db: Database, item: WorkItemRecord): boolean {
   if (item.cancelRequested || !["running", "recovering", "verifying"].includes(item.state))
     return false;
-  return (
-    db
-      .query(`SELECT 1 FROM job WHERE status='pending' AND queue IN (?, ?, ?)
-    AND json_extract(payload, '$.itemId')=? AND json_extract(payload, '$.capacityWait') IS NOT NULL
-    AND (item_version IS NULL OR item_version=?)`)
-      .get(JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify, item.id, item.version) !== null
+  return jobExists(
+    db,
+    eq(job.status, "pending"),
+    inArray(job.queue, [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify]),
+    payloadIs("itemId", item.id),
+    isNotNull(sql`json_extract(${job.payload}, '$.capacityWait')`),
+    or(isNull(job.itemVersion), eq(job.itemVersion, item.version)),
   );
 }
 
-function hasPendingAnswerResume(db: Database, itemId: string): boolean {
+function jobExists(db: Database, ...conditions: (SQL | undefined)[]): boolean {
   return (
-    db
-      .query(
-        `SELECT 1 FROM job WHERE status IN ('pending', 'running') AND job_key LIKE 'resume:answer:%'
-         AND json_extract(payload, '$.itemId') = ?`,
-      )
-      .get(itemId) !== null
+    orm(db)
+      .select({ one: sql`1` })
+      .from(job)
+      .where(and(...conditions))
+      .get() !== undefined
+  );
+}
+
+function payloadIs(key: "itemId" | "reason", value: string): SQL {
+  return sql`json_extract(${job.payload}, ${sql.raw(`'$.${key}'`)}) = ${value}`;
+}
+
+function hasPendingAnswerResume(db: Database, itemId: string): boolean {
+  return jobExists(
+    db,
+    inArray(job.status, ["pending", "running"]),
+    like(job.jobKey, "resume:answer:%"),
+    payloadIs("itemId", itemId),
   );
 }
 
 function hasOpenReverify(db: Database, itemId: string): boolean {
-  return (
-    db
-      .query(
-        `SELECT 1 FROM job WHERE queue = ? AND status IN ('pending', 'running')
-         AND json_extract(payload, '$.itemId') = ?`,
-      )
-      .get(JOB_KIND.reverify, itemId) !== null
+  return jobExists(
+    db,
+    eq(job.queue, JOB_KIND.reverify),
+    inArray(job.status, ["pending", "running"]),
+    payloadIs("itemId", itemId),
   );
 }
 
 function hasPendingTransientRetry(db: Database, item: WorkItemRecord): boolean {
-  return (
-    db
-      .query(
-        `SELECT 1 FROM job WHERE queue IN (?, ?) AND status = 'pending'
-         AND json_extract(payload, '$.itemId') = ? AND json_extract(payload, '$.reason') = ?
-         AND (item_version IS NULL OR item_version = ?)`,
-      )
-      .get(JOB_KIND.resume, JOB_KIND.reverify, item.id, "transient_failure", item.version) !== null
+  return jobExists(
+    db,
+    inArray(job.queue, [JOB_KIND.resume, JOB_KIND.reverify]),
+    eq(job.status, "pending"),
+    payloadIs("itemId", item.id),
+    payloadIs("reason", "transient_failure"),
+    or(isNull(job.itemVersion), eq(job.itemVersion, item.version)),
   );
 }
 
@@ -160,13 +224,12 @@ function keepsVerification(item: WorkItemRecord): boolean {
 }
 
 function hasPendingResume(db: Database, itemId: string, reason: string): boolean {
-  return (
-    db
-      .query(
-        `SELECT 1 FROM job WHERE queue = ? AND status = 'pending'
-         AND json_extract(payload, '$.itemId') = ? AND json_extract(payload, '$.reason') = ?`,
-      )
-      .get(JOB_KIND.resume, itemId, reason) !== null
+  return jobExists(
+    db,
+    eq(job.queue, JOB_KIND.resume),
+    eq(job.status, "pending"),
+    payloadIs("itemId", itemId),
+    payloadIs("reason", reason),
   );
 }
 
@@ -182,9 +245,15 @@ export function prepareShutdown(
   db: Database,
   now = Date.now(),
   commitWip?: ShutdownWipCommit,
+  instanceId?: string,
 ): void {
+  const owns = (item: WorkItemRecord) => {
+    if (instanceId === undefined || item.currentRunId === null) return true;
+    const owner = runOwner(db, item.currentRunId);
+    return owner === null || owner === instanceId;
+  };
   if (commitWip !== undefined) {
-    for (const item of listInFlightItems(db)) {
+    for (const item of listInFlightItems(db).filter(owns)) {
       try {
         commitWip(item);
       } catch (caughtError1) {
@@ -194,14 +263,14 @@ export function prepareShutdown(
     }
   }
   immediate(db, () => {
-    markPawsAlive(db, now);
-    const running = listWorkItemsByStates(db, ["running", "verifying"]);
+    if (instanceId !== undefined) heartbeatInstance(db, instanceId, now);
+    const running = listWorkItemsByStates(db, ["running", "verifying"]).filter(owns);
     for (const item of running) {
       if (hasParkedCapacityWait(db, item) || runnerHoldsWork(db, item, now)) continue;
       if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
       if (!keepsVerification(item)) applyWorkItemEvent(db, item.id, "lease_expired");
     }
-    for (const item of listWorkItemsByStates(db, ["merge_queue"])) {
+    for (const item of listWorkItemsByStates(db, ["merge_queue"]).filter(owns)) {
       if (!runActive(db, item)) continue;
       markRun(db, item.currentRunId!, "lost", now);
       applyWorkItemEvent(db, item.id, "lease_expired");
@@ -223,22 +292,24 @@ function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boole
 
 const ORPHAN_GRACE_MS = 5 * 60_000;
 
-function progressJobSql(item: string, running = "j.status = 'running'"): string {
-  return `EXISTS (SELECT 1 FROM job j WHERE json_extract(j.payload,'$.itemId') = ${item}.id
+/** Whether a running job, or a pending one for the item's version, moves work item `i`. */
+function progressJobSql(running: SQL = sql`j.status = 'running'`): SQL {
+  return sql`EXISTS (SELECT 1 FROM job j WHERE json_extract(j.payload,'$.itemId') = i.id
     AND (${running} OR (j.status = 'pending' AND (j.item_version IS NULL
-      OR j.item_version = ${item}.version OR j.queue IN ('${JOB_KIND.command}', '${JOB_KIND.reverify}')))))`;
+      OR j.item_version = i.version OR j.queue IN (${JOB_KIND.command}, ${JOB_KIND.reverify})))))`;
 }
 
-const RECLAIMABLE_RUNNING_JOB_SQL = `(j.status = 'running' AND (j.locked_until IS NULL
-  OR j.locked_until > ?2 OR j.item_version IS NULL OR j.item_version = i.version))`;
+function reclaimableRunningJobSql(now: number): SQL {
+  return sql`(j.status = 'running' AND (j.locked_until IS NULL
+  OR j.locked_until > ${now} OR j.item_version IS NULL OR j.item_version = i.version))`;
+}
 
 function jobOwnsProgress(db: Database, itemId: string, now: number): boolean {
   return (
-    db
-      .query(
-        `SELECT 1 FROM work_item i WHERE i.id = ?1 AND ${progressJobSql("i", RECLAIMABLE_RUNNING_JOB_SQL)}`,
-      )
-      .get(itemId, now) !== null
+    orm(db).all(
+      sql`SELECT 1 FROM work_item i WHERE i.id = ${itemId}
+        AND ${progressJobSql(reclaimableRunningJobSql(now))}`,
+    ).length > 0
   );
 }
 
@@ -248,16 +319,15 @@ function jobOwnsProgress(db: Database, itemId: string, now: number): boolean {
  * a re-verify, as on startup, so Closeout checks the head before the merge job is queued again.
  */
 export function requeueOrphanedWork(db: Database, now: number): string[] {
-  const orphans = db
-    .query<{ id: string }, [number, number]>(
-      `SELECT i.id FROM work_item i
+  const orphans = orm(db).all<{ id: string }>(
+    sql`SELECT i.id FROM work_item i
        WHERE i.state IN ('running','verifying','recovering','merge_queue') AND i.cancel_requested = 0
-       AND NOT ${progressJobSql("i")}
+       AND NOT ${progressJobSql()}
        AND NOT EXISTS (SELECT 1 FROM runner_work w WHERE w.run_id = i.current_run_id
-         AND w.ended_at IS NULL AND w.lease_until > ?1)
-       AND (SELECT MAX(j.finished_at) FROM job j WHERE json_extract(j.payload,'$.itemId') = i.id) < ?2`,
-    )
-    .all(runnerLeaseCutoff(now), now - ORPHAN_GRACE_MS);
+         AND w.ended_at IS NULL AND w.lease_until > ${runnerLeaseCutoff(now)})
+       AND (SELECT MAX(j.finished_at) FROM job j WHERE json_extract(j.payload,'$.itemId') = i.id)
+         < ${now - ORPHAN_GRACE_MS}`,
+  );
   const requeued: string[] = [];
   for (const { id } of orphans) {
     const found = getWorkItem(db, id);
@@ -307,19 +377,17 @@ export function requeueOrphanedWork(db: Database, now: number): string[] {
 export function closeExpiredRunnerLeases(db: Database, now: number): string[] {
   return immediate(db, () => {
     const cutoff = runnerLeaseCutoff(now);
-    const rows = db
-      .query<{ runId: string; generation: number }, [number, number]>(
-        `SELECT w.run_id AS runId, w.generation AS generation FROM runner_work w
+    const rows = orm(db).all<{ runId: string; generation: number }>(
+      sql`SELECT w.run_id AS runId, w.generation AS generation FROM runner_work w
          JOIN run r ON r.id = w.run_id
-         WHERE w.ended_at IS NULL AND w.lease_until <= ?
+         WHERE w.ended_at IS NULL AND w.lease_until <= ${cutoff}
            AND NOT EXISTS (SELECT 1 FROM job j WHERE json_extract(j.payload, '$.itemId')=r.item_id
-             AND j.status='running' AND (j.locked_until IS NULL OR j.locked_until> ?2))
+             AND j.status='running' AND (j.locked_until IS NULL OR j.locked_until> ${now}))
            AND r.status IN ('active', 'provisioning')
            AND NOT EXISTS (SELECT 1 FROM runner_result result
              WHERE result.run_id=w.run_id AND result.generation=w.generation
                AND result.command_id=w.command_id)`,
-      )
-      .all(cutoff, now);
+    );
     for (const row of rows) {
       const run = getRun(db, row.runId)!;
       const item = getWorkItem(db, run.itemId);
@@ -328,11 +396,12 @@ export function closeExpiredRunnerLeases(db: Database, now: number): string[] {
         ["running", "verifying", "merge_queue"].includes(item.state);
       if (current && !keepsVerification(item)) applyWorkItemEvent(db, item.id, "lease_expired");
       markRun(db, row.runId, "lost", now);
-      db.run("UPDATE runner_work SET ended_at = ? WHERE run_id = ? AND ended_at IS NULL", [
-        now,
-        row.runId,
-      ]);
-      db.run("DELETE FROM runner_work_grant WHERE run_id = ?", [row.runId]);
+      orm(db)
+        .update(runnerWork)
+        .set({ endedAt: now })
+        .where(and(eq(runnerWork.runId, row.runId), isNull(runnerWork.endedAt)))
+        .run();
+      orm(db).delete(runnerWorkGrant).where(eq(runnerWorkGrant.runId, row.runId)).run();
       if (current) followExpiredLease(db, item, row.generation, now);
     }
     return rows.map((row) => row.runId);
@@ -393,11 +462,17 @@ function followExpiredLease(
 }
 
 function lastAdvancingRetry(db: Database, itemId: string): number {
-  const row = db
-    .query<{ retry: unknown }, [string, string, string, string]>(
-      `SELECT json_extract(payload, '$.retry') AS retry FROM job WHERE queue IN (?, ?, ?)
-       AND json_extract(payload, '$.itemId') = ? ORDER BY id DESC LIMIT 1`,
+  const row = orm(db)
+    .select({ retry: sql<unknown>`json_extract(${job.payload}, '$.retry')` })
+    .from(job)
+    .where(
+      and(
+        inArray(job.queue, [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify]),
+        payloadIs("itemId", itemId),
+      ),
     )
-    .get(JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify, itemId);
+    .orderBy(desc(job.id))
+    .limit(1)
+    .get();
   return typeof row?.retry === "number" ? row.retry : 0;
 }

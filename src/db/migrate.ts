@@ -1,59 +1,79 @@
-import type { Database } from "bun:sqlite";
-import type { Migration } from "./migration";
-import { migrations as allMigrations } from "./migration-files";
+import { Database } from "bun:sqlite";
+import { existsSync, readFileSync, renameSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { migrate as drizzleMigrate } from "drizzle-orm/bun-sqlite/migrator";
+import { journal } from "../journal";
+import { orm } from "./orm";
 
-/**
- * Applies pending migrations in order. `until` stops after that id, for migration tests.
- * `migrations` replaces the list, for tests of the migration files themselves.
- */
-export function migrate(
-  db: Database,
-  options: { until?: string; migrations?: readonly Migration[] } = {},
-): void {
-  const migrations = options.migrations ?? allMigrations;
-  if (options.until !== undefined && !migrations.some((m) => m.id === options.until))
-    throw new Error(`Unknown migration ${options.until}`);
-  db.run(`
-    CREATE TABLE IF NOT EXISTS schema_migration (
-      id TEXT PRIMARY KEY,
-      applied_at INTEGER NOT NULL
-    ) STRICT
-  `);
-  const applied = new Set(
-    db
-      .query<{ id: string }, []>("SELECT id FROM schema_migration")
-      .all()
-      .map((row) => row.id),
-  );
-  for (const migration of migrations) {
-    if (applied.has(migration.id)) {
-      if (migration.id === options.until) return;
-      continue;
-    }
-    const foreignKeys =
-      db.query<{ foreign_keys: number }, []>("PRAGMA foreign_keys").get()?.foreign_keys ?? 1;
-    if (migration.foreignKeys === false && db.inTransaction)
-      throw new Error("Identity migration requires its own transaction");
-    if (migration.foreignKeys === false) db.run("PRAGMA foreign_keys = OFF");
-    try {
-      const apply = db.transaction(() => {
-        migration.guard?.(db);
-        db.run(migration.sql);
-        if (
-          migration.foreignKeys === false &&
-          db.query("PRAGMA foreign_key_check").all().length > 0
+export const MIGRATIONS_FOLDER = fileURLToPath(new URL("./drizzle", import.meta.url));
+export const PG_MIGRATIONS_FOLDER = fileURLToPath(new URL("./drizzle-pg", import.meta.url));
+
+export function migrate(db: Database, options: { migrationsFolder?: string } = {}): void {
+  drizzleMigrate(orm(db), { migrationsFolder: options.migrationsFolder ?? MIGRATIONS_FOLDER });
+}
+
+export function migrationTags(migrationsFolder: string = MIGRATIONS_FOLDER): string[] {
+  const file = JSON.parse(readFileSync(`${migrationsFolder}/meta/_journal.json`, "utf8")) as {
+    entries: { tag: string }[];
+  };
+  return file.entries.map((entry) => entry.tag);
+}
+
+export function appliedMigrations(db: Database): { latest: string | null; applied: number } {
+  const recorded = db
+    .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '__drizzle_migrations'")
+    .get();
+  const applied = recorded
+    ? db.query<{ n: number }, []>("SELECT count(*) AS n FROM __drizzle_migrations").get()!.n
+    : 0;
+  return { latest: applied === 0 ? null : (migrationTags()[applied - 1] ?? null), applied };
+}
+
+const SIDE_FILES = ["-wal", "-shm"];
+
+export function setAsideLegacyDatabase(path: string, now: Date = new Date()): string | null {
+  if (!existsSync(path)) return null;
+  const old = new Database(path, { readonly: true });
+  let legacy: boolean;
+  try {
+    const names = new Set(
+      old
+        .query<{ name: string }, []>(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('schema_migration', '__drizzle_migrations')",
         )
-          throw new Error("Identity migration would break foreign keys");
-        db.run("INSERT INTO schema_migration (id, applied_at) VALUES (?, ?)", [
-          migration.id,
-          Date.now(),
-        ]);
-      });
-      apply.immediate();
-    } finally {
-      if (migration.foreignKeys === false)
-        db.run(`PRAGMA foreign_keys = ${foreignKeys ? "ON" : "OFF"}`);
-    }
-    if (migration.id === options.until) return;
+        .all()
+        .map((row) => row.name),
+    );
+    legacy = names.has("schema_migration") && !names.has("__drizzle_migrations");
+  } finally {
+    old.close();
+  }
+  if (!legacy) return null;
+  const target = `${path}.pre-drizzle-${now.toISOString().replace(/[-:]|\.\d+/g, "")}`;
+  for (const suffix of ["", ...SIDE_FILES])
+    if (existsSync(target + suffix)) throw new Error(`${target + suffix} already exists`);
+  for (const suffix of SIDE_FILES)
+    if (existsSync(path + suffix)) renameSync(path + suffix, target + suffix);
+  renameSync(path, target);
+  journal(
+    `database reset: the database from before drizzle-kit migrations was renamed to ${target}; Paws starts on a fresh database`,
+  );
+  return target;
+}
+
+export function recordedMigrationHashes(path: string): string[] | null {
+  if (!existsSync(path)) return null;
+  const db = new Database(path, { readonly: true });
+  try {
+    const recorded = db
+      .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '__drizzle_migrations'")
+      .get();
+    if (!recorded) return [];
+    return db
+      .query<{ hash: string }, []>("SELECT hash FROM __drizzle_migrations ORDER BY created_at")
+      .all()
+      .map((row) => row.hash);
+  } finally {
+    db.close();
   }
 }

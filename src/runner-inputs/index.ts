@@ -14,7 +14,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import {
   RUNNER_INPUT_CHUNK_BYTES,
@@ -26,6 +26,11 @@ import {
   type RunnerInputFile,
 } from "../runner-protocol";
 import { RunnerWorkFencedError, runnerFailureStatus, type RunnerWork } from "../runner-work";
+import {
+  missingRunFileObject,
+  SealedRunnerFileConflictError,
+  type SealedRunnerFiles,
+} from "../run-files";
 
 export class RunnerInputStorageError extends Error {}
 export type RunnerInputSource = { path: string; mimeType: string; bytes: Uint8Array };
@@ -111,7 +116,11 @@ function storage<T>(operation: () => T): T {
     throw error;
   }
 }
-export function createRunnerInputStore(options: { root: string; work: RunnerWork }) {
+export function createRunnerInputStore(options: {
+  root: string;
+  work: RunnerWork;
+  remote?: SealedRunnerFiles;
+}) {
   if (!isAbsolute(options.root)) throw new Error("Runner input root must be absolute");
   mkdirSync(options.root, { recursive: true, mode: 0o700 });
   function directory(commandId: string) {
@@ -145,18 +154,73 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
       closeSync(fd);
     }
   }
-  function readChunk(
-    commandId: string,
-    offset: number,
-    file: { sizeBytes: number; sha256: string },
-    names: { bytes: string; metadata: string; expected: unknown; limit: number },
-  ) {
+  function range(offset: number, file: { sizeBytes: number }) {
     if (
       offset % RUNNER_INPUT_CHUNK_BYTES !== 0 ||
       offset > file.sizeBytes ||
       (offset > 0 && offset === file.sizeBytes)
     )
       throw new Error("Invalid runner input range");
+  }
+  function objectKey(runId: string, commandId: string, name: string, index: number) {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(runId) ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(commandId)
+    )
+      throw new Error("Invalid runner command ID");
+    return `runner-inputs/${runId}/${commandId}/${name}/${index}`;
+  }
+  async function put(
+    remote: SealedRunnerFiles,
+    file: { runId: string; commandId: string; name: string; digest: string },
+    bytes: Buffer,
+  ) {
+    const count = Math.max(1, Math.ceil(bytes.length / RUNNER_INPUT_CHUNK_BYTES));
+    for (let index = 0; index < count; index++) {
+      const start = index * RUNNER_INPUT_CHUNK_BYTES;
+      try {
+        await remote.write(
+          objectKey(file.runId, file.commandId, file.name, index),
+          { ...file, kind: "input" },
+          bytes.subarray(start, start + RUNNER_INPUT_CHUNK_BYTES),
+        );
+      } catch (error) {
+        if (error instanceof SealedRunnerFileConflictError)
+          throw new Error("Runner input is immutable", { cause: error });
+        journalCaught(error, "runner-inputs.put.write", null);
+        throw new RunnerInputStorageError("Runner input storage is unavailable");
+      }
+    }
+  }
+  async function remoteChunk(
+    access: { runId: string },
+    commandId: string,
+    name: string,
+    offset: number,
+    file: { sizeBytes: number; sha256: string },
+  ) {
+    if (!options.remote) return null;
+    range(offset, file);
+    const key = objectKey(access.runId, commandId, name, offset / RUNNER_INPUT_CHUNK_BYTES);
+    let bytes: Buffer;
+    try {
+      bytes = await options.remote.read(key, file.sha256);
+    } catch (error) {
+      if (missingRunFileObject(error)) return null;
+      journalCaught(error, "runner-inputs.remoteChunk.read", null);
+      throw new RunnerInputStorageError("Runner input storage is unavailable");
+    }
+    if (bytes.length !== Math.min(RUNNER_INPUT_CHUNK_BYTES, file.sizeBytes - offset))
+      throw new RunnerInputStorageError("Runner input storage is unavailable");
+    return bytes;
+  }
+  function readChunk(
+    commandId: string,
+    offset: number,
+    file: { sizeBytes: number; sha256: string },
+    names: { bytes: string; metadata: string; expected: unknown; limit: number },
+  ) {
+    range(offset, file);
     return storage(() => {
       const fd = directory(commandId);
       try {
@@ -177,7 +241,11 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
     });
   }
   const api = {
-    stagePrompt(commandId: string, prompt: string): RunnerPromptContext {
+    async stagePrompt(
+      commandId: string,
+      prompt: string,
+      runId?: string,
+    ): Promise<RunnerPromptContext> {
       if (typeof prompt !== "string" || Buffer.byteLength(prompt) > RUNNER_PROMPT_CONTEXT_MAX_BYTES)
         throw new Error("Runner prompt context exceeds limit");
       const bytes = Buffer.from(prompt, "utf8");
@@ -186,6 +254,14 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
         sizeBytes: bytes.length,
         sha256: hash(bytes),
       });
+      if (options.remote && runId) {
+        await put(
+          options.remote,
+          { runId, commandId, name: "prompt", digest: manifest.sha256 },
+          bytes,
+        );
+        return manifest;
+      }
       return storage(() => {
         const fd = directory(commandId);
         try {
@@ -199,7 +275,60 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
         }
       });
     },
-    readContext(
+    async migrateLocal(commands: readonly { id: string; runId: string }[]) {
+      const remote = options.remote;
+      if (!remote) return 0;
+      const present = new Set(readdirSync(options.root));
+      let moved = 0;
+      for (const command of commands) {
+        const folder = hash(command.id);
+        if (!present.has(folder)) continue;
+        try {
+          const staged = storage(() => {
+            const fd = directory(command.id);
+            try {
+              const root = `/proc/self/fd/${fd}`;
+              const names = readdirSync(root);
+              const files: { name: string; digest: string; bytes: Buffer }[] = [];
+              if (names.includes("manifest.json"))
+                for (const file of RunnerInputFilesSchema.parse(
+                  JSON.parse(privateFile(`${root}/manifest.json`, 262144).toString("utf8")),
+                ))
+                  files.push({
+                    name: String(file.id),
+                    digest: file.sha256,
+                    bytes: privateFile(`${root}/${file.id}.bytes`, RUNNER_INPUT_MAX_BYTES),
+                  });
+              if (names.includes("prompt.json"))
+                files.push({
+                  name: "prompt",
+                  digest: RunnerPromptContextSchema.parse(
+                    JSON.parse(privateFile(`${root}/prompt.json`, 262144).toString("utf8")),
+                  ).sha256,
+                  bytes: privateFile(`${root}/prompt.bytes`, RUNNER_PROMPT_CONTEXT_MAX_BYTES),
+                });
+              if (files.some((file) => hash(file.bytes) !== file.digest))
+                throw new Error("Runner input changed");
+              return files;
+            } finally {
+              closeSync(fd);
+            }
+          });
+          for (const file of staged)
+            await put(
+              remote,
+              { runId: command.runId, commandId: command.id, name: file.name, digest: file.digest },
+              file.bytes,
+            );
+          rmSync(join(options.root, folder), { recursive: true, force: true });
+          moved++;
+        } catch (error) {
+          journalCaught(error, "runner-inputs.migrateLocal", null);
+        }
+      }
+      return moved;
+    },
+    async readContext(
       access: { runnerId: string; runId: string; token: string },
       raw: z.infer<typeof contextRequestSchema>,
     ) {
@@ -215,12 +344,14 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
         return command.promptContext;
       };
       const manifest = authorize();
-      const bytes = readChunk(input.commandId, input.offset, manifest, {
-        bytes: "prompt.bytes",
-        metadata: "prompt.json",
-        expected: manifest,
-        limit: RUNNER_PROMPT_CONTEXT_MAX_BYTES,
-      });
+      const bytes =
+        (await remoteChunk(access, input.commandId, "prompt", input.offset, manifest)) ??
+        readChunk(input.commandId, input.offset, manifest, {
+          bytes: "prompt.bytes",
+          metadata: "prompt.json",
+          expected: manifest,
+          limit: RUNNER_PROMPT_CONTEXT_MAX_BYTES,
+        });
       if (JSON.stringify(authorize()) !== JSON.stringify(manifest))
         throw new RunnerWorkFencedError("Runner prompt context assignment changed");
       return {
@@ -230,7 +361,11 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
         data: bytes.toString("base64"),
       };
     },
-    stage(commandId: string, files: readonly RunnerInputSource[]): RunnerInputFile[] {
+    async stage(
+      commandId: string,
+      files: readonly RunnerInputSource[],
+      runId?: string,
+    ): Promise<RunnerInputFile[]> {
       if (
         files.length > 21 ||
         files.reduce((total, file) => total + file.bytes.byteLength, 0) > RUNNER_INPUT_MAX_BYTES
@@ -250,6 +385,15 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
           sha256: hash(file.bytes),
         })),
       );
+      if (options.remote && runId) {
+        for (const file of manifest)
+          await put(
+            options.remote,
+            { runId, commandId, name: String(file.id), digest: file.sha256 },
+            snapshots[file.id]!.bytes,
+          );
+        return manifest;
+      }
       return storage(() => {
         const fd = directory(commandId);
         try {
@@ -264,7 +408,7 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
         }
       });
     },
-    read(
+    async read(
       access: { runnerId: string; runId: string; token: string },
       raw: z.infer<typeof requestSchema>,
     ) {
@@ -282,12 +426,14 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
       const manifest = authorize();
       const file = manifest[input.fileId];
       if (!file) throw new Error("Invalid runner input range");
-      const bytes = readChunk(input.commandId, input.offset, file, {
-        bytes: `${file.id}.bytes`,
-        metadata: "manifest.json",
-        expected: manifest,
-        limit: RUNNER_INPUT_MAX_BYTES,
-      });
+      const bytes =
+        (await remoteChunk(access, input.commandId, String(file.id), input.offset, file)) ??
+        readChunk(input.commandId, input.offset, file, {
+          bytes: `${file.id}.bytes`,
+          metadata: "manifest.json",
+          expected: manifest,
+          limit: RUNNER_INPUT_MAX_BYTES,
+        });
       if (JSON.stringify(authorize()) !== JSON.stringify(manifest))
         throw new RunnerWorkFencedError("Runner input assignment changed");
       return {
@@ -320,8 +466,8 @@ export function createRunnerInputStore(options: { root: string; work: RunnerWork
         };
         return Response.json(
           match[2] === "context"
-            ? api.readContext(access, contextRequestSchema.parse(input))
-            : api.read(access, requestSchema.parse(input)),
+            ? await api.readContext(access, contextRequestSchema.parse(input))
+            : await api.read(access, requestSchema.parse(input)),
           { headers: { "cache-control": "no-store" } },
         );
       } catch (error) {

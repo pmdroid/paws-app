@@ -12,6 +12,7 @@ import { mainOverlap, readUpToDateRule } from "./overlap";
 import { pushDenial, pushWithLease } from "./push";
 import { gitTempDirectory } from "./temp";
 import { pushOutageCause } from "./transport";
+import { readPullMergeable } from "./pull-mergeable";
 import { waitForMergeReadiness, type Readiness } from "./readiness";
 import { readPullReview, type PullReview } from "./review";
 import { isTransient } from "../core";
@@ -338,15 +339,31 @@ export async function squashPull(
       head: expectedHead,
       message: "pull request head changed before merge",
     };
-  if (merged.status !== 200 || !isRecord(merged.body) || merged.body.merged !== true)
+  if (merged.status !== 200 || !isRecord(merged.body) || merged.body.merged !== true) {
+    if (merged.status !== 401 && merged.status !== 403) {
+      const base = await behindMain(input, token, gitExec, url);
+      if (base !== null)
+        return {
+          merged: false,
+          outcome: "sha_moved",
+          branch,
+          base,
+          head: expectedHead,
+          message: "GitHub refused the merge: the branch is behind main",
+        };
+    }
+    const reason = denialReason(merged.body);
     return {
       merged: false,
       outcome: "merge_denied",
       branch,
       head: expectedHead,
       summary,
-      message: `merge failed with status ${merged.status}`,
+      status: merged.status,
+      ...(reason ? { reason } : {}),
+      message: `merge failed with status ${merged.status}${reason ? `: ${reason}` : ""}`,
     };
+  }
   const sha = typeof merged.body.sha === "string" ? merged.body.sha : undefined;
   return {
     merged: true,
@@ -356,6 +373,58 @@ export async function squashPull(
     ...(sha ? { sha } : {}),
     summary,
   };
+}
+
+async function behindMain(
+  input: SerialMergeInput,
+  token: string,
+  gitExec: GitExec,
+  url: string,
+): Promise<string | null> {
+  const { client, owner, repo, prNumber, tokenProvider } = input;
+  const pull = await readPullMergeable({
+    client,
+    owner,
+    repo,
+    prNumber,
+    reads: 1,
+    ...(tokenProvider
+      ? { tokenProvider }
+      : {
+          appId: input.appId,
+          installationId: input.installationId,
+          privateKeyPem: input.privateKeyPem,
+        }),
+  });
+  if (pull?.behind !== true) return null;
+  try {
+    await fetchMain(input.worktree, url, token, gitExec, input.sleep);
+    const contains = await git(
+      input.worktree,
+      ["merge-base", "--is-ancestor", UPSTREAM_MAIN_REF, input.ref ?? "HEAD"],
+      gitExec,
+    ).then(
+      () => true,
+      () => false,
+    );
+    return contains ? null : await git(input.worktree, ["rev-parse", UPSTREAM_MAIN_REF], gitExec);
+  } catch (error) {
+    journalCaught(error, "merge.behindMain", input.issue);
+    return null;
+  }
+}
+
+const DENIAL_REASON_LIMIT = 500;
+
+function denialReason(body: unknown): string | undefined {
+  if (!isRecord(body)) return undefined;
+  const first = Array.isArray(body.errors) ? body.errors[0] : undefined;
+  const detail = typeof first === "string" ? first : isRecord(first) ? first.message : undefined;
+  const parts = [body.message, detail].filter(
+    (part): part is string => typeof part === "string" && part.trim() !== "",
+  );
+  const reason = [...new Set(parts.map((part) => part.trim()))].join(": ");
+  return reason === "" ? undefined : reason.slice(0, DENIAL_REASON_LIMIT);
 }
 
 function laneBranch(input: SerialMergeInput): string | SerialMergeResult {

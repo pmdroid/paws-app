@@ -268,13 +268,13 @@ async function runPreflight(fault: {
       if (implemented) break;
       ticking = undefined;
       if (job === null) {
-        outbox.tick();
+        await outbox.tick();
         await Bun.sleep(20);
       }
     }
     const drainBy = Date.now() + 10_000;
     while (Date.now() < drainBy && listOutbox(db).some((row) => row.status === "pending")) {
-      outbox.tick();
+      await outbox.tick();
       await outbox.idle();
       await Bun.sleep(10);
     }

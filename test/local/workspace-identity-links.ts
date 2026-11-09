@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pawsPaths } from "../../src/config";
-import { writeSecretFile } from "../../src/credentials";
+import { writeCredential } from "../../src/credentials";
 import {
   changeWorkspaceRole,
   consumeWorkspaceBootstrap,
@@ -64,8 +64,10 @@ export async function probeWorkspaceIdentityLinks(
     now,
   });
   const secrets = pawsPaths(root).secretsDir;
-  writeSecretFile(
-    join(secrets, "slack-oauth.json"),
+  writeCredential(
+    db,
+    secrets,
+    "slack",
     JSON.stringify({
       accessToken: "fixture-slack-identity-token",
       refreshToken: null,
@@ -455,6 +457,7 @@ export async function probeWorkspaceIdentityLinks(
     await access.stop();
     db.close();
   }
+  const step = "manual identity links and their access audits survive an actual process restart";
   const restarted = Bun.spawn(
     [
       process.execPath,
@@ -467,20 +470,34 @@ const audit = db.query("SELECT count(*) AS count FROM workspace_access_audit WHE
 console.log(JSON.stringify({ links, audit }));
 db.close();`,
     ],
-    { stdout: "pipe", stderr: "pipe", timeout: 5000 },
+    { stdout: "pipe", stderr: "pipe", timeout: 15_000 },
   );
-  const [output, errors, code] = await Promise.all([
+  // Wait for the child to exit before reading, then read both pipes to the end: the child's
+  // output is a few hundred bytes, so it cannot fill a pipe and block the exit.
+  const code = await restarted.exited;
+  const [output, errors] = await Promise.all([
     new Response(restarted.stdout).text(),
     new Response(restarted.stderr).text(),
-    restarted.exited,
   ]);
-  const restored = JSON.parse(output) as {
+  const child = {
+    code,
+    signal: restarted.signalCode,
+    stdout: output.slice(-500),
+    stderr: errors.slice(-2000),
+  };
+  let restored: {
     links: { provider: string; external_id: string; method: string }[];
     audit: { count: number };
   };
-  writeFileSync(join(root, "restart.json"), JSON.stringify({ code, ...restored, errors }, null, 2));
+  try {
+    restored = JSON.parse(output);
+  } catch {
+    observe(step, false, { ...child, reason: "the child printed no JSON" });
+    return;
+  }
+  writeFileSync(join(root, "restart.json"), JSON.stringify({ ...child, ...restored }, null, 2));
   observe(
-    "manual identity links and their access audits survive an actual process restart",
+    step,
     code === 0 &&
       restored.links.length === 3 &&
       restored.links.some(
@@ -489,6 +506,6 @@ db.close();`,
       restored.links.some((link) => link.provider === "slack" && link.external_id === "U888") &&
       restored.links.some((link) => link.provider === "slack" && link.external_id === "U999") &&
       restored.audit.count >= 10,
-    { code, ...restored, errors },
+    { ...child, ...restored },
   );
 }

@@ -1,6 +1,29 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 
 export type TaskLinearReadKind = "project_overview" | "repository_hints" | "repository_suggestions";
+
+export function* keepTaskLinearReadSteps(
+  q: Q,
+  itemId: string,
+  kind: TaskLinearReadKind,
+  value: unknown,
+  now: number,
+) {
+  const { workItemLinearRead } = q.t;
+  const text = JSON.stringify(value);
+  const valueJson = q.dialect === "sqlite" ? text : sql`${text}::jsonb`;
+  yield* q.exec(
+    q.orm
+      .insert(workItemLinearRead)
+      .values({ itemId, kind, valueJson, readAt: now })
+      .onConflictDoUpdate({
+        target: [workItemLinearRead.itemId, workItemLinearRead.kind],
+        set: { valueJson, readAt: now },
+      }),
+  );
+}
 
 export function keepTaskLinearRead(
   db: Database,
@@ -9,29 +32,47 @@ export function keepTaskLinearRead(
   value: unknown,
   now: number,
 ): void {
-  db.run(
-    `INSERT INTO work_item_linear_read(item_id,kind,value_json,read_at) VALUES(?,?,?,?)
-     ON CONFLICT(item_id,kind) DO UPDATE SET value_json=excluded.value_json,read_at=excluded.read_at`,
-    [itemId, kind, JSON.stringify(value), now],
+  settled(sqliteDb(db).run((q) => keepTaskLinearReadSteps(q, itemId, kind, value, now)));
+}
+
+export function* getTaskLinearReadSteps(q: Q, itemId: string, kind: TaskLinearReadKind) {
+  const { workItemLinearRead } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ valueJson: workItemLinearRead.valueJson })
+      .from(workItemLinearRead)
+      .where(and(eq(workItemLinearRead.itemId, itemId), eq(workItemLinearRead.kind, kind))),
   );
+  if (row === undefined) return undefined;
+  return q.dialect === "sqlite" ? (JSON.parse(row.valueJson as string) as unknown) : row.valueJson;
 }
 
 export function getTaskLinearRead(db: Database, itemId: string, kind: TaskLinearReadKind): unknown {
-  const row = db
-    .query<{ value_json: string }, [string, string]>(
-      "SELECT value_json FROM work_item_linear_read WHERE item_id=? AND kind=?",
-    )
-    .get(itemId, kind);
-  return row === null ? undefined : JSON.parse(row.value_json);
+  return settled(sqliteDb(db).run((q) => getTaskLinearReadSteps(q, itemId, kind)));
+}
+
+export function* linearActivitiesListedAtSteps(q: Q, sessionId: string) {
+  const { linearActivityListing } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ generation: linearActivityListing.generation })
+      .from(linearActivityListing)
+      .where(eq(linearActivityListing.sessionId, sessionId)),
+  );
+  return row?.generation ?? null;
 }
 
 export function linearActivitiesListedAt(db: Database, sessionId: string): number | null {
-  return (
-    db
-      .query<{ generation: number }, [string]>(
-        "SELECT generation FROM linear_activity_listing WHERE session_id=?",
-      )
-      .get(sessionId)?.generation ?? null
+  return settled(sqliteDb(db).run((q) => linearActivitiesListedAtSteps(q, sessionId)));
+}
+
+export function* markLinearActivitiesListedSteps(q: Q, sessionId: string, generation: number) {
+  const { linearActivityListing } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(linearActivityListing)
+      .values({ sessionId, generation })
+      .onConflictDoUpdate({ target: linearActivityListing.sessionId, set: { generation } }),
   );
 }
 
@@ -40,9 +81,5 @@ export function markLinearActivitiesListed(
   sessionId: string,
   generation: number,
 ): void {
-  db.run(
-    `INSERT INTO linear_activity_listing(session_id,generation) VALUES(?,?)
-     ON CONFLICT(session_id) DO UPDATE SET generation=excluded.generation`,
-    [sessionId, generation],
-  );
+  settled(sqliteDb(db).run((q) => markLinearActivitiesListedSteps(q, sessionId, generation)));
 }

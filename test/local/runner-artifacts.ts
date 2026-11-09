@@ -160,10 +160,10 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
         body: JSON.stringify(value),
       });
     assert.equal((await artifacts.fetch(request(chunk(0)), runnerId))!.status, 200);
-    assert.throws(() => artifacts.snapshot(run.id, 1, descriptor));
+    await assert.rejects(async () => artifacts.snapshot(run.id, 1, descriptor));
     assert.equal((await artifacts.fetch(request(chunk(1)), runnerId))!.status, 200);
     assert.equal((await artifacts.fetch(request(chunk(0)), runnerId))!.status, 200);
-    const snapshot = artifacts.snapshot(run.id, 1, descriptor);
+    const snapshot = await artifacts.snapshot(run.id, 1, descriptor);
     assert.deepEqual(Buffer.from(await snapshot.bytes.arrayBuffer()), bytes);
     assert.equal(snapshot.sha256, descriptor.sha256);
     work.event({
@@ -209,7 +209,9 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
         403,
       );
     }
-    assert.throws(() => artifacts.snapshot(run.id, 1, { ...descriptor, sha256: "a".repeat(64) }));
+    await assert.rejects(async () =>
+      artifacts.snapshot(run.id, 1, { ...descriptor, sha256: "a".repeat(64) }),
+    );
     const directory = join(storage, createHash("sha256").update(command.id).digest("hex"));
     assert.equal(statSync(storage).mode & 0o777, 0o700);
     assert.equal(statSync(directory).mode & 0o777, 0o700);
@@ -219,14 +221,14 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
     writeFileSync(outside, readFileSync(chunkPath), { mode: 0o600 });
     rmSync(chunkPath);
     symlinkSync(outside, chunkPath);
-    assert.throws(() => artifacts.snapshot(run.id, 1, descriptor));
+    await assert.rejects(async () => artifacts.snapshot(run.id, 1, descriptor));
     rmSync(chunkPath);
     writeFileSync(chunkPath, bytes.subarray(0, RUNNER_ARTIFACT_CHUNK_BYTES), { mode: 0o600 });
     chmodSync(chunkPath, 0o644);
-    assert.throws(() => artifacts.snapshot(run.id, 1, descriptor));
+    await assert.rejects(async () => artifacts.snapshot(run.id, 1, descriptor));
     chmodSync(chunkPath, 0o600);
     assert.deepEqual(
-      Buffer.from(await artifacts.snapshot(run.id, 1, descriptor).bytes.arrayBuffer()),
+      Buffer.from(await (await artifacts.snapshot(run.id, 1, descriptor)).bytes.arrayBuffer()),
       bytes,
     );
     observe(
@@ -257,7 +259,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
     };
     const videoChunks = Math.ceil(video.length / RUNNER_ARTIFACT_CHUNK_BYTES);
     for (let index = 0; index < videoChunks; index++)
-      artifacts.upload({
+      await artifacts.upload({
         ...access,
         chunk: {
           generation: 1,
@@ -271,7 +273,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
             .toString("base64"),
         },
       });
-    const videoSnapshot = artifacts.snapshot(run.id, 1, evidence);
+    const videoSnapshot = await artifacts.snapshot(run.id, 1, evidence);
     assert.deepEqual(Buffer.from(await videoSnapshot.bytes.arrayBuffer()), video);
     const { evidence: _evidence, ...plain } = evidence;
     assert.equal(
@@ -298,7 +300,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
       videoCap: false,
     });
     for (let count = 2; count < 20; count++)
-      artifacts.upload({
+      await artifacts.upload({
         ...access,
         chunk: {
           generation: 1,
@@ -312,8 +314,8 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
           },
         },
       });
-    assert.throws(
-      () =>
+    await assert.rejects(
+      async () =>
         artifacts.upload({
           ...access,
           chunk: {
@@ -352,7 +354,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
     );
     work.finish(run.id, 1);
     assert.equal((await artifacts.fetch(request(chunk(0)), runnerId))!.status, 409);
-    assert.throws(() => artifacts.snapshot(run.id, 1, descriptor));
+    await assert.rejects(async () => artifacts.snapshot(run.id, 1, descriptor));
     observe("per-command evidence is bounded and finished work loses storage access", true, {
       maximumArtifacts: 20,
       extraArtifactDenied: 422,

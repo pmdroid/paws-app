@@ -290,7 +290,7 @@ test("a requested card retries ahead of the terminal reply and is fenced by Stop
     dispatcher.setHandler(async () => {
       throw new Error("temporary failure");
     });
-    expect(dispatcher.tick()[0]!.op).toBe("linear.attachment");
+    expect((await dispatcher.tick())[0]!.op).toBe("linear.attachment");
     await dispatcher.idle();
     f.reopen();
     expect(claimOutboxHeads(f.db, { now: now + 1 })).toHaveLength(0);
@@ -325,7 +325,7 @@ test("exhausted attachment and image delivery preserve a claimable final respons
       throw new Error("delivery exhausted");
     });
     for (const op of ["linear.attachment", "activity"]) {
-      expect(dispatcher.tick()[0]?.op).toBe(op);
+      expect((await dispatcher.tick())[0]?.op).toBe(op);
       await dispatcher.idle();
     }
     f.reopen();

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { blockerCheckedAt, getWorkItem } from "../db";
+import { blockerCheckedAtSteps, getWorkItemSteps, sqliteDb, type Db } from "../db";
 import {
   BLOCKED_RELATIONS_POLL_MS,
   RELATIONS_POLL_MS,
@@ -65,10 +65,12 @@ export function createRelationsPolls(input: {
 
 export function createBlockerCheckRoute(input: {
   db: Database;
+  store?: Db;
   polls: Pick<ReturnType<typeof createRelationsPolls>, "checkNow">;
   blockedItemIds: () => string[];
   signal?: AbortSignal;
 }) {
+  const store = input.store ?? sqliteDb(input.db);
   return async (request: Request, sessionIds: readonly string[]): Promise<Response | null> => {
     if (new URL(request.url).pathname !== BLOCKER_CHECK_PATH) return null;
     if (request.method !== "POST") return Response.json({ error: "Use POST." }, { status: 405 });
@@ -86,15 +88,15 @@ export function createBlockerCheckRoute(input: {
     }
     if (typeof itemId !== "string" || !itemId)
       return Response.json({ error: "Send an itemId as bounded JSON." }, { status: 400 });
-    const item = input
-      .blockedItemIds()
-      .map((id) => getWorkItem(input.db, id))
-      .find(
-        (candidate) =>
-          candidate?.sessionKey &&
-          sessionIds.includes(candidate.sessionKey) &&
-          (candidate.id === itemId || candidate.linearIdentifier === itemId),
-      );
+    const candidates = [];
+    for (const id of input.blockedItemIds())
+      candidates.push(await store.run((q) => getWorkItemSteps(q, id)));
+    const item = candidates.find(
+      (candidate) =>
+        candidate?.sessionKey &&
+        sessionIds.includes(candidate.sessionKey) &&
+        (candidate.id === itemId || candidate.linearIdentifier === itemId),
+    );
     if (!item)
       return Response.json({ error: `${itemId} is not waiting on a blocker.` }, { status: 409 });
     let result: Awaited<ReturnType<typeof input.polls.checkNow>>;
@@ -113,7 +115,7 @@ export function createBlockerCheckRoute(input: {
         { status: 429, headers: { "retry-after": String(seconds) } },
       );
     }
-    const checkedAt = blockerCheckedAt(input.db, item.id);
+    const checkedAt = await store.run((q) => blockerCheckedAtSteps(q, item.id));
     return Response.json({
       itemId: item.id,
       changed: result.changed,

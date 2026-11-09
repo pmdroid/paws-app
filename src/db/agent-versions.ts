@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { immediate } from "./tx";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
+import { jsonText } from "./json-text";
 
 /** What Paws keeps from one version in an npm registry document. */
 export type NpmVersionMetadata = {
@@ -42,18 +44,65 @@ export type AgentVersionRow = {
   checkedAt: number;
 };
 
-export function readNpmPackage(db: Database, name: string): StoredNpmPackage | null {
-  const row = db
-    .query<{ etag: string | null; fetchedAt: number; versions: string }, [string]>(
-      "SELECT etag, fetched_at AS fetchedAt, versions FROM npm_package WHERE package = ?",
-    )
-    .get(name);
+export function* readNpmPackageSteps(q: Q, name: string) {
+  const { npmPackage } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        etag: npmPackage.etag,
+        fetchedAt: npmPackage.fetchedAt,
+        versions: jsonText(q, npmPackage.versions),
+      })
+      .from(npmPackage)
+      .where(eq(npmPackage.package, name)),
+  );
   if (!row) return null;
-  return {
+  const stored: StoredNpmPackage = {
     etag: row.etag,
     fetchedAt: row.fetchedAt,
     versions: JSON.parse(row.versions) as Record<string, NpmVersionMetadata>,
   };
+  return stored;
+}
+
+export function readNpmPackage(db: Database, name: string): StoredNpmPackage | null {
+  return settled(sqliteDb(db).run((q) => readNpmPackageSteps(q, name)));
+}
+
+export function* saveNpmPackageSteps(
+  q: Q,
+  name: string,
+  etag: string | null,
+  versions: Record<string, NpmVersionMetadata>,
+  now: number,
+) {
+  const { npmPackage, npmPackageVersion } = q.t;
+  const stored = {
+    etag,
+    fetchedAt: now,
+    versions: q.dialect === "sqlite" ? JSON.stringify(versions) : versions,
+  };
+  yield* q.exec(
+    q.orm
+      .insert(npmPackage)
+      .values({ package: name, ...stored })
+      .onConflictDoUpdate({ target: npmPackage.package, set: stored }),
+  );
+  for (const [version, metadata] of Object.entries(versions))
+    if (metadata.integrity !== null)
+      yield* q.exec(
+        q.orm
+          .insert(npmPackageVersion)
+          .values({ package: name, version, integrity: metadata.integrity, firstSeenAt: now })
+          .onConflictDoUpdate({
+            target: [npmPackageVersion.package, npmPackageVersion.version],
+            set: { changedIntegrity: metadata.integrity, changedAt: now },
+            setWhere: and(
+              isNull(npmPackageVersion.changedIntegrity),
+              sql`${npmPackageVersion.integrity} <> excluded.integrity`,
+            ),
+          }),
+      );
 }
 
 /**
@@ -67,28 +116,34 @@ export function saveNpmPackage(
   versions: Record<string, NpmVersionMetadata>,
   now: number,
 ): void {
-  immediate(db, () => {
-    db.run(
-      `INSERT INTO npm_package(package, etag, fetched_at, versions) VALUES (?, ?, ?, ?)
-       ON CONFLICT(package) DO UPDATE SET etag = excluded.etag, fetched_at = excluded.fetched_at,
-         versions = excluded.versions`,
-      [name, etag, now, JSON.stringify(versions)],
-    );
-    const insert = db.prepare(
-      `INSERT INTO npm_package_version(package, version, integrity, first_seen_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(package, version) DO UPDATE SET
-         changed_integrity = excluded.integrity, changed_at = ?
-       WHERE npm_package_version.changed_integrity IS NULL
-         AND npm_package_version.integrity <> excluded.integrity`,
-    );
-    for (const [version, metadata] of Object.entries(versions))
-      if (metadata.integrity !== null) insert.run(name, version, metadata.integrity, now, now);
-  });
+  settled(sqliteDb(db).transaction((q) => saveNpmPackageSteps(q, name, etag, versions, now)));
+}
+
+export function* touchNpmPackageSteps(q: Q, name: string, now: number) {
+  const { npmPackage } = q.t;
+  yield* q.exec(
+    q.orm.update(npmPackage).set({ fetchedAt: now }).where(eq(npmPackage.package, name)),
+  );
 }
 
 /** Record a 304: the stored document is still current. */
 export function touchNpmPackage(db: Database, name: string, now: number): void {
-  db.run("UPDATE npm_package SET fetched_at = ? WHERE package = ?", [now, name]);
+  settled(sqliteDb(db).run((q) => touchNpmPackageSteps(q, name, now)));
+}
+
+export function* readNpmIntegritySteps(q: Q, name: string, version: string) {
+  const { npmPackageVersion } = q.t;
+  const row: NpmIntegrityRecord | undefined = yield* q.one(
+    q.orm
+      .select({
+        integrity: npmPackageVersion.integrity,
+        firstSeenAt: npmPackageVersion.firstSeenAt,
+        changedIntegrity: npmPackageVersion.changedIntegrity,
+      })
+      .from(npmPackageVersion)
+      .where(and(eq(npmPackageVersion.package, name), eq(npmPackageVersion.version, version))),
+  );
+  return row ?? null;
 }
 
 export function readNpmIntegrity(
@@ -96,39 +151,59 @@ export function readNpmIntegrity(
   name: string,
   version: string,
 ): NpmIntegrityRecord | null {
-  return (
-    db
-      .query<NpmIntegrityRecord, [string, string]>(
-        `SELECT integrity, first_seen_at AS firstSeenAt, changed_integrity AS changedIntegrity
-         FROM npm_package_version WHERE package = ? AND version = ?`,
-      )
-      .get(name, version) ?? null
-  );
+  return settled(sqliteDb(db).run((q) => readNpmIntegritySteps(q, name, version)));
+}
+
+export function* saveAgentVersionsSteps(q: Q, rows: readonly AgentVersionRow[]) {
+  const { agentVersion } = q.t;
+  for (const row of rows)
+    yield* q.exec(
+      q.orm
+        .insert(agentVersion)
+        .values(row)
+        .onConflictDoUpdate({
+          target: [agentVersion.agent, agentVersion.version],
+          // The first integrity seen stays.
+          set: {
+            publishedAt: row.publishedAt,
+            status: row.status,
+            reason: row.reason,
+            nativeVersion: row.nativeVersion,
+            checkedAt: row.checkedAt,
+          },
+        }),
+    );
 }
 
 /** Replace the catalog rows of one agent. A version no longer reported keeps its last row. */
 export function saveAgentVersions(db: Database, rows: readonly AgentVersionRow[]): void {
-  immediate(db, () => {
-    const upsert = db.prepare(
-      `INSERT INTO agent_version(agent, version, published_at, integrity, status, first_seen_at, reason,
-         native_version, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(agent, version) DO UPDATE SET published_at = excluded.published_at,
-         integrity = agent_version.integrity, status = excluded.status, reason = excluded.reason,
-         native_version = excluded.native_version, checked_at = excluded.checked_at`,
-    );
-    for (const row of rows)
-      upsert.run(
-        row.agent,
-        row.version,
-        row.publishedAt,
-        row.integrity,
-        row.status,
-        row.firstSeenAt,
-        row.reason,
-        row.nativeVersion,
-        row.checkedAt,
-      );
-  });
+  settled(sqliteDb(db).transaction((q) => saveAgentVersionsSteps(q, rows)));
+}
+
+function agentVersionColumns(q: Q) {
+  const { agentVersion } = q.t;
+  return {
+    agent: agentVersion.agent,
+    version: agentVersion.version,
+    publishedAt: agentVersion.publishedAt,
+    integrity: agentVersion.integrity,
+    status: sql<AgentVersionStatus>`${agentVersion.status}`,
+    firstSeenAt: agentVersion.firstSeenAt,
+    reason: agentVersion.reason,
+    nativeVersion: agentVersion.nativeVersion,
+    checkedAt: agentVersion.checkedAt,
+  };
+}
+
+export function* readAgentVersionSteps(q: Q, agent: string, version: string) {
+  const { agentVersion } = q.t;
+  const row: AgentVersionRow | undefined = yield* q.one(
+    q.orm
+      .select(agentVersionColumns(q))
+      .from(agentVersion)
+      .where(and(eq(agentVersion.agent, agent), eq(agentVersion.version, version))),
+  );
+  return row ?? null;
 }
 
 export function readAgentVersion(
@@ -136,48 +211,61 @@ export function readAgentVersion(
   agent: string,
   version: string,
 ): AgentVersionRow | null {
-  return (
-    db
-      .query<AgentVersionRow, [string, string]>(
-        `${SELECT_AGENT_VERSION} WHERE agent = ? AND version = ?`,
-      )
-      .get(agent, version) ?? null
+  return settled(sqliteDb(db).run((q) => readAgentVersionSteps(q, agent, version)));
+}
+
+export function* listAgentVersionsSteps(q: Q, agent?: string) {
+  const { agentVersion } = q.t;
+  const rows: AgentVersionRow[] = yield* q.all(
+    q.orm
+      .select(agentVersionColumns(q))
+      .from(agentVersion)
+      .where(agent === undefined ? undefined : eq(agentVersion.agent, agent))
+      // SQLite sorts NULL first and Postgres last; NULLS LAST keeps SQLite's DESC order on both.
+      .orderBy(
+        asc(agentVersion.agent),
+        sql`${agentVersion.publishedAt} DESC NULLS LAST`,
+        desc(agentVersion.version),
+      ),
   );
+  return rows;
 }
 
 /** The catalog, newest publication first within each agent. */
 export function listAgentVersions(db: Database, agent?: string): AgentVersionRow[] {
-  const order = "ORDER BY agent, published_at DESC, version DESC";
-  return agent === undefined
-    ? db.query<AgentVersionRow, []>(`${SELECT_AGENT_VERSION} ${order}`).all()
-    : db
-        .query<AgentVersionRow, [string]>(`${SELECT_AGENT_VERSION} WHERE agent = ? ${order}`)
-        .all(agent);
+  return settled(sqliteDb(db).run((q) => listAgentVersionsSteps(q, agent)));
+}
+
+export function* lastAgentCatalogRefreshSteps(q: Q) {
+  const { agentCatalogRefresh } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ at: agentCatalogRefresh.completedAt })
+      .from(agentCatalogRefresh)
+      .where(eq(agentCatalogRefresh.id, 1)),
+  );
+  return row?.at ?? null;
 }
 
 /** When the last complete refresh of the agent catalog ran, or null before the first one. */
 export function lastAgentCatalogRefresh(db: Database): number | null {
-  return (
-    db
-      .query<{ at: number }, []>(
-        "SELECT completed_at AS at FROM agent_catalog_refresh WHERE id = 1",
-      )
-      .get()?.at ?? null
+  return settled(sqliteDb(db).run(lastAgentCatalogRefreshSteps));
+}
+
+export function* markAgentCatalogRefreshedSteps(q: Q, at: number) {
+  const { agentCatalogRefresh } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(agentCatalogRefresh)
+      .values({ id: 1, completedAt: at })
+      .onConflictDoUpdate({ target: agentCatalogRefresh.id, set: { completedAt: at } }),
   );
 }
 
 /** Record a refresh in which every agent was evaluated on fresh npm reads. */
 export function markAgentCatalogRefreshed(db: Database, at: number): void {
-  db.run(
-    `INSERT INTO agent_catalog_refresh(id, completed_at) VALUES (1, ?)
-     ON CONFLICT(id) DO UPDATE SET completed_at = excluded.completed_at`,
-    [at],
-  );
+  settled(sqliteDb(db).run((q) => markAgentCatalogRefreshedSteps(q, at)));
 }
-
-const SELECT_AGENT_VERSION = `SELECT agent, version, published_at AS publishedAt, integrity, status,
-  first_seen_at AS firstSeenAt, reason, native_version AS nativeVersion, checked_at AS checkedAt
-  FROM agent_version`;
 
 /** What the Runners page shows per agent: the newest version on offer and each refusal with its reason. */
 export type AgentCatalogSummary = {
@@ -188,9 +276,9 @@ export type AgentCatalogSummary = {
   checkedAt: number;
 };
 
-export function agentCatalogSummary(db: Database): AgentCatalogSummary[] {
+export function* agentCatalogSummarySteps(q: Q) {
   const byAgent = new Map<string, AgentCatalogSummary>();
-  for (const row of listAgentVersions(db)) {
+  for (const row of yield* listAgentVersionsSteps(q)) {
     let entry = byAgent.get(row.agent);
     if (!entry)
       byAgent.set(
@@ -210,4 +298,8 @@ export function agentCatalogSummary(db: Database): AgentCatalogSummary[] {
       });
   }
   return [...byAgent.values()];
+}
+
+export function agentCatalogSummary(db: Database): AgentCatalogSummary[] {
+  return settled(sqliteDb(db).run(agentCatalogSummarySteps));
 }

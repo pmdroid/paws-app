@@ -3,7 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRetro, migrate, openDatabase, saveRetroSettingsRevision } from "../db";
+import { createRetro, migrate, openDatabase, orm, saveRetroSettingsRevision, schema } from "../db";
 import { signRunnerRetroCommand, type RunnerRetroCommand } from "../runner-protocol";
 import { collectRetroDigest, createRetroDispatcher } from "./index";
 import { FIXTURE_END, FIXTURE_REPO, FIXTURE_START } from "./result.fixtures";
@@ -15,57 +15,77 @@ export const sign = (command: RunnerRetroCommand) =>
 
 export function seedActivity(db: Database, identifier: string, answers: number) {
   const id = `item-${identifier}`;
-  db.run(
-    `INSERT INTO linear_session (session_id, issue_id, organization_id, team_id, created_at)
-     VALUES (?, ?, 'org', 'team', 0)`,
-    [`session-${identifier}`, `issue-${identifier}`],
-  );
-  db.run(
-    `INSERT INTO work_item (id, delegation_id, linear_issue_id, linear_identifier, title, state,
-       branch_name, position, created_at, session_key)
-     VALUES (?, ?, ?, ?, ?, 'running', ?, 0, ?, ?)`,
-    [
+  const q = orm(db);
+  q.insert(schema.linearSession)
+    .values({
+      sessionId: `session-${identifier}`,
+      issueId: `issue-${identifier}`,
+      organizationId: "org",
+      teamId: "team",
+      createdAt: 0,
+    })
+    .run();
+  q.insert(schema.workItem)
+    .values({
       id,
-      `delegation-${identifier}`,
-      `issue-${identifier}`,
-      identifier,
-      `Work on ${identifier}`,
-      `paws/${identifier}`,
-      FIXTURE_START,
-      `session-${identifier}`,
-    ],
-  );
+      delegationId: `delegation-${identifier}`,
+      linearIssueId: `issue-${identifier}`,
+      linearIdentifier: identifier,
+      title: `Work on ${identifier}`,
+      state: "running",
+      branchName: `paws/${identifier}`,
+      position: 0,
+      createdAt: FIXTURE_START,
+      sessionKey: `session-${identifier}`,
+    })
+    .run();
   const [owner, repo] = FIXTURE_REPO.split("/");
-  db.run("INSERT INTO work_item_repository VALUES (?, ?, ?, 'git@x')", [id, owner!, repo!]);
+  q.insert(schema.workItemRepository)
+    .values({ itemId: id, owner: owner!, repo: repo!, remoteUrl: "git@x" })
+    .run();
   for (let n = 0; n < answers; n += 1)
-    db.run(
-      `INSERT INTO question (id, item_id, session_id, kind, reason, body, status, answer, answered_by,
-         created_at, answered_at) VALUES (?, ?, 's', 'agent', 'push_rejected', 'How do I recover?',
-         'answered', 'Fetch and rebase.', 'someone', ?, ?)`,
-      [`q-${identifier}-${n}`, id, FIXTURE_START + n, FIXTURE_START + n + 1],
-    );
+    q.insert(schema.question)
+      .values({
+        id: `q-${identifier}-${n}`,
+        itemId: id,
+        sessionId: "s",
+        kind: "agent",
+        reason: "push_rejected",
+        body: "How do I recover?",
+        status: "answered",
+        answer: "Fetch and rebase.",
+        answeredBy: "someone",
+        createdAt: FIXTURE_START + n,
+        answeredAt: FIXTURE_START + n + 1,
+      })
+      .run();
 }
 
 export function addRunner(
   db: Database,
   input: { id: string; owner?: string; version?: string; capacity?: number; ready?: boolean },
 ) {
-  db.run(
-    "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'ws',?,?,'active',0,0)",
-    [input.id, input.owner ?? "admin", input.id],
-  );
-  db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,0)", [
-    input.id,
-    input.version ?? "0.1.63",
-  ]);
-  db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',?)", [
-    input.id,
-    input.ready === false ? 0 : 1,
-  ]);
-  db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,?)", [
-    input.id,
-    input.capacity ?? 1,
-  ]);
+  const q = orm(db);
+  q.insert(schema.runner)
+    .values({
+      id: input.id,
+      workspaceId: "ws",
+      ownerUserId: input.owner ?? "admin",
+      name: input.id,
+      status: "active",
+      createdAt: 0,
+      lastSeenAt: 0,
+    })
+    .run();
+  q.insert(schema.runnerHostStatus)
+    .values({ runnerId: input.id, runnerVersion: input.version ?? "0.1.63", reportedAt: 0 })
+    .run();
+  q.insert(schema.runnerAgentPolicy)
+    .values({ runnerId: input.id, agent: "codex", ready: input.ready === false ? 0 : 1 })
+    .run();
+  q.insert(schema.runnerCapacity)
+    .values({ runnerId: input.id, capacity: input.capacity ?? 1 })
+    .run();
 }
 
 export function world(options: { activity?: boolean; retries?: number } = {}) {
@@ -73,22 +93,23 @@ export function world(options: { activity?: boolean; retries?: number } = {}) {
   const path = join(root, "paws.db");
   const db = openDatabase(path);
   migrate(db);
-  db.run("INSERT INTO workspace VALUES ('ws', 'org', 'ws', 0)");
-  db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team')", [FIXTURE_REPO]);
+  const q = orm(db);
+  q.insert(schema.workspace)
+    .values({ id: "ws", linearOrganizationId: "org", name: "ws", createdAt: 0 })
+    .run();
+  q.insert(schema.workspaceRepository)
+    .values({ workspaceId: "ws", repository: FIXTURE_REPO, teamId: "team" })
+    .run();
   for (const [id, role] of [
     ["admin", "admin"],
     ["member", "member"],
-  ]) {
-    db.run("INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES(?,?,?,?)", [
-      id!,
-      `linear-${id}`,
-      id!,
-      `${id}@example.test`,
-    ]);
-    db.run(
-      "INSERT INTO workspace_member(workspace_id,user_id,role,source,active,checked_at) VALUES('ws',?,?,'manual',1,0)",
-      [id!, role!],
-    );
+  ] as const) {
+    q.insert(schema.workspaceUser)
+      .values({ id, linearUserId: `linear-${id}`, name: id, email: `${id}@example.test` })
+      .run();
+    q.insert(schema.workspaceMember)
+      .values({ workspaceId: "ws", userId: id, role, source: "manual", active: 1, checkedAt: 0 })
+      .run();
   }
   if (options.activity !== false) {
     seedActivity(db, "PAS-817", 4);

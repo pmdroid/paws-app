@@ -2,7 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readSecretFile, writeSecretFile } from "../src/credentials";
+import {
+  importCredentialFile,
+  readCredential,
+  readSecretFile,
+  writeSecretFile,
+} from "../src/credentials";
+import { tempDb } from "./helpers";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -57,4 +63,27 @@ test("legacy credentials migrate atomically and missing keys and tampering fail 
   envelope.value = data.toString("base64");
   writeFileSync(path, `paws-envelope-v1\n${JSON.stringify(envelope)}`);
   expect(() => readSecretFile(path)).toThrow("Could not decrypt Paws credentials");
+});
+
+test("an existing install's token file is imported once and sealed in the database", () => {
+  const dir = directory();
+  const db = tempDb();
+  try {
+    const path = join(dir, "linear-oauth.json");
+    const token = JSON.stringify({ accessToken: "acme-access", refreshToken: "acme-refresh" });
+    writeFileSync(path, token, { mode: 0o600 });
+    expect(importCredentialFile(db, dir, "linear", path)).toBe(true);
+    expect(readCredential(db, dir, "linear")).toBe(token);
+    const rows = JSON.stringify(db.query("SELECT * FROM credential").all());
+    for (const secret of ["acme-access", "acme-refresh"]) expect(rows).not.toContain(secret);
+    expect(readFileSync(path, "utf8")).toBe(token);
+
+    writeFileSync(path, JSON.stringify({ accessToken: "acme-spent-access" }));
+    expect(importCredentialFile(db, dir, "linear", path)).toBe(false);
+    expect(readCredential(db, dir, "linear")).toBe(token);
+    expect(importCredentialFile(db, dir, "slack", join(dir, "slack-oauth.json"))).toBe(false);
+    expect(readCredential(db, dir, "slack")).toBeNull();
+  } finally {
+    db.close();
+  }
 });

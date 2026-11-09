@@ -147,6 +147,11 @@ type Check = {
   /** The Actions job id, when GitHub Actions ran the check. */
   actionsJob: number | null;
   summary: string | null;
+  /**
+   * A plain commit status or a check run from an app other than GitHub Actions. It holds the
+   * merge only when branch protection requires it. A check run whose app is hidden is not.
+   */
+  thirdParty: boolean;
 };
 
 /** Lines and characters of a failing check's log that Paws keeps and hands to the agent. */
@@ -314,7 +319,7 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
         }
       : {
           outcome: "ready",
-          message: `CI passed and all review threads are resolved.${skippedNote(checks)}`,
+          message: `CI passed and all review threads are resolved.${skippedNote(checks)}${optionalNote(checks, required)}`,
           passed,
         };
   } catch (error) {
@@ -361,6 +366,10 @@ function toChecks(nodes: z.infer<typeof contextsSchema>["nodes"]): Check[] {
             ? node.databaseId
             : null,
         summary: node.summary ?? node.description ?? null,
+        thirdParty:
+          node.context !== undefined ||
+          (typeof node.checkSuite?.app?.slug === "string" &&
+            node.checkSuite.app.slug !== "github-actions"),
       },
     ];
   });
@@ -389,7 +398,8 @@ function startedLater(
   return false;
 }
 
-function judgeChecks(checks: Check[], baseChecks: Check[], required: Set<string>): Readiness {
+function judgeChecks(all: Check[], baseChecks: Check[], required: Set<string>): Readiness {
+  const checks = all.filter((check) => !optional(check, required, all));
   const failed = checks.filter((check) => FAILED.has(check.result ?? ""));
   if (failed.length > 0) {
     const failedOnBase = new Set(
@@ -409,16 +419,44 @@ function judgeChecks(checks: Check[], baseChecks: Check[], required: Set<string>
   if (checks.length === 0 && required.size === 0) {
     return { outcome: "pending", message: "Waiting for CI on the candidate commit." };
   }
-  const reported = new Set(checks.map((check) => check.name));
+  const reported = new Set(all.map((check) => check.name));
   const waiting = new Set([...required].filter((name) => !reported.has(name)));
   for (const check of checks) if (!GREEN.has(check.result ?? "")) waiting.add(check.name);
+  const notes = `${skippedNote(all)}${optionalNote(all, required)}`;
   if (waiting.size > 0) {
     return {
       outcome: "pending",
-      message: `Waiting for checks: ${[...waiting].sort().join(", ")}.${skippedNote(checks)}`,
+      message: `Waiting for checks: ${[...waiting].sort().join(", ")}.${notes}`,
     };
   }
-  return { outcome: "ready", message: `CI passed.${skippedNote(checks)}` };
+  return { outcome: "ready", message: `CI passed.${notes}` };
+}
+
+/**
+ * A third-party check that branch protection does not require. When nothing else is CI
+ * (no Actions check and nothing required), every check keeps holding the merge.
+ */
+function optional(check: Check, required: Set<string>, checks: Check[]): boolean {
+  if (!check.thirdParty || required.has(check.name)) return false;
+  return required.size > 0 || checks.some((other) => !other.thirdParty);
+}
+
+/** Names the optional third-party checks that are not green, such as a preview deploy that hangs. */
+function optionalNote(checks: Check[], required: Set<string>): string {
+  const notGreen = checks.filter(
+    (check) => optional(check, required, checks) && !GREEN.has(check.result ?? ""),
+  );
+  const failed = notGreen.filter((check) => FAILED.has(check.result ?? "")).map((c) => c.name);
+  const running = notGreen.filter((check) => !FAILED.has(check.result ?? "")).map((c) => c.name);
+  const list = (names: string[]) => names.sort().join(", ");
+  return [
+    failed.length > 0
+      ? ` ${list(failed)} failed and ${failed.length === 1 ? "isn't" : "aren't"} required.`
+      : "",
+    running.length > 0
+      ? ` ${list(running)} ${running.length === 1 ? "is" : "are"} still running and ${running.length === 1 ? "isn't" : "aren't"} required.`
+      : "",
+  ].join("");
 }
 
 const CANCELLED = new Set(["CANCELLED", "TIMED_OUT"]);

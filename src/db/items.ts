@@ -1,6 +1,27 @@
 import { pendingRestartHandoff } from "./restart";
 import type { Database } from "bun:sqlite";
-import { desc, eq } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  gt,
+  gte,
+  ilike,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  max,
+  min,
+  ne,
+  or,
+  sql,
+  type AnyColumn,
+  type SQL,
+} from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 import { halt } from "./halt";
 import { wakeMergesBehind } from "./merge-queue";
 import { readCheckpoint } from "./checkpoint";
@@ -45,9 +66,13 @@ import { withOpenFindings } from "./open-findings";
 import { getRun, markRun, releaseRunCapacity } from "./runs";
 import { endMergeCall, getConfirmedRemoteMerge, mergeStopRequested } from "./remote-merges";
 import { orm } from "./orm";
-import { workItem, workItemEvent } from "./schema";
+import { getPullRequestDraft } from "./pull-request-drafts";
+import { itemReconciliationRequest } from "./schema";
+import type { workItem as pgWorkItem } from "./schema-pg";
 import { immediate } from "./tx";
 import { runnerLeaseCutoff } from "./runner-lease";
+
+type PgWorkItem = typeof pgWorkItem.$inferSelect;
 
 export type WorkItemRecord = {
   id: string;
@@ -87,58 +112,6 @@ export type WorkItemRecord = {
   brief: WorkBrief | null;
 };
 
-type ItemSql = {
-  id: string;
-  task_key: string | null;
-  delegation_id: string;
-  linear_issue_id: string;
-  linear_identifier: string;
-  title: string;
-  state: WorkItemState;
-  branch_name: string;
-  continues_item_id?: string | null;
-  continues_branch?: string | null;
-  position: number;
-  version: number;
-  checkpoint: string | null;
-  recovery_attempts: number;
-  resumed_at: number | null;
-  awake_ms: number;
-  last_mono_ms: number | null;
-  max_awake_ms: number;
-  max_fix_ms?: number;
-  max_closeout_ms?: number;
-  linear_project_id?: string | null;
-  accepted_head: string | null;
-  agent_ms: number;
-  implement_ms?: number;
-  fix_ms?: number;
-  closeout_ms: number;
-  waiting_ms: number;
-  recheck_ms: number;
-  cancel_requested: number;
-  session_key: string | null;
-  current_run_id: string | null;
-  brief: string | null;
-};
-
-/** Work item columns with the branch an item continues, from `item_continuation`. */
-const CONTINUED_ITEM_COLUMNS = `work_item.*, continuation.previous_item_id AS continues_item_id,
-  continuation.branch AS continues_branch
-  FROM work_item LEFT JOIN item_continuation continuation ON continuation.item_id = work_item.id`;
-const migratedContinuation = new WeakSet<Database>();
-
-/** A database migrated only partway, as migration tests build, has no `item_continuation` yet. */
-function itemColumns(db: Database): string {
-  if (migratedContinuation.has(db)) return CONTINUED_ITEM_COLUMNS;
-  const table = db
-    .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'item_continuation'")
-    .get();
-  if (table === null) return "* FROM work_item";
-  migratedContinuation.add(db);
-  return CONTINUED_ITEM_COLUMNS;
-}
-
 export class TransitionRejectedError extends Error {
   readonly reason: "illegal_transition" | "terminal";
 
@@ -149,30 +122,94 @@ export class TransitionRejectedError extends Error {
   }
 }
 
+/** Work item columns with the branch an item continues, from `item_continuation`. */
+function selectItems(q: Q, columns: object = q.t.workItem) {
+  const { workItem, itemContinuation } = q.t;
+  return q.orm
+    .select({
+      item: columns as typeof workItem,
+      continuesItemId: itemContinuation.previousItemId,
+      continuesBranch: itemContinuation.branch,
+    })
+    .from(workItem)
+    .leftJoin(itemContinuation, eq(itemContinuation.itemId, workItem.id))
+    .$dynamic();
+}
+
+const completeItemTables = new WeakSet<object>();
+
+/** A database migrated only partway, as migration tests build, has no `item_continuation` yet. */
+function* itemQuerySteps(q: Q) {
+  if (q.dialect === "postgres" || completeItemTables.has(q.orm)) return selectItems(q);
+  const { workItem } = q.t;
+  const names = new Set(
+    (yield* q.all(
+      q.orm.select({ name: sql<string>`name` }).from(sql`pragma_table_info('work_item')`),
+    )).map((row) => row.name),
+  );
+  const continuation = yield* q.one(
+    q.orm
+      .select({ name: sql<string>`name` })
+      .from(sql`sqlite_master`)
+      .where(sql`type = 'table' AND name = 'item_continuation'`),
+  );
+  const columns = Object.fromEntries(
+    Object.entries(getTableColumns(workItem)).filter(([, column]) => names.has(column.name)),
+  );
+  const complete = Object.keys(columns).length === Object.keys(getTableColumns(workItem)).length;
+  if (complete && continuation !== undefined) {
+    completeItemTables.add(q.orm);
+    return selectItems(q);
+  }
+  if (continuation !== undefined) return selectItems(q, columns);
+  return q.orm
+    .select({
+      item: columns,
+      continuesItemId: sql<string | null>`NULL`,
+      continuesBranch: sql<string | null>`NULL`,
+    })
+    .from(workItem)
+    .$dynamic() as unknown as ReturnType<typeof selectItems>;
+}
+
+export function* getWorkItemSteps(q: Q, id: string) {
+  const items = yield* itemQuerySteps(q);
+  const row = yield* q.one(items.where(eq(q.t.workItem.id, id)));
+  return row === undefined ? null : mapItem(row);
+}
+
 export function getWorkItem(db: Database, id: string): WorkItemRecord | null {
-  const row = db.query<ItemSql, [string]>(`SELECT ${itemColumns(db)} WHERE id = ?`).get(id);
-  return row === null ? null : mapItem(row);
+  return settled(sqliteDb(db).run((q) => getWorkItemSteps(q, id)));
+}
+
+export function* listWorkItemsSteps(q: Q) {
+  const { workItem } = q.t;
+  const items = yield* itemQuerySteps(q);
+  const rows = yield* q.all(items.orderBy(asc(workItem.createdAt), asc(workItem.id)));
+  return rows.map(mapItem);
 }
 
 export function listWorkItems(db: Database): WorkItemRecord[] {
-  return db
-    .query<ItemSql, []>(`SELECT ${itemColumns(db)} ORDER BY created_at, id`)
-    .all()
-    .map(mapItem);
+  return settled(sqliteDb(db).run(listWorkItemsSteps));
+}
+
+export function* listWorkItemsByStatesSteps(q: Q, states: readonly WorkItemState[]) {
+  if (states.length === 0) return [];
+  const { workItem } = q.t;
+  const items = yield* itemQuerySteps(q);
+  const rows = yield* q.all(
+    items
+      .where(inArray(workItem.state, [...states]))
+      .orderBy(asc(workItem.createdAt), asc(workItem.id)),
+  );
+  return rows.map(mapItem);
 }
 
 export function listWorkItemsByStates(
   db: Database,
   states: readonly WorkItemState[],
 ): WorkItemRecord[] {
-  if (states.length === 0) return [];
-  const placeholders = states.map(() => "?").join(", ");
-  return db
-    .query<ItemSql, string[]>(
-      `SELECT ${itemColumns(db)} WHERE state IN (${placeholders}) ORDER BY created_at, id`,
-    )
-    .all(...states)
-    .map(mapItem);
+  return settled(sqliteDb(db).run((q) => listWorkItemsByStatesSteps(q, states)));
 }
 
 export function listInFlightItems(db: Database): WorkItemRecord[] {
@@ -229,6 +266,11 @@ export function applyWorkItemEvent(
       throw new Error(`work item ${id} changed before ${event}`);
     }
     if (current.state !== result.to) wakeMergesBehind(db, record.now ?? Date.now());
+    if (result.to === "cancelled")
+      orm(db)
+        .delete(itemReconciliationRequest)
+        .where(eq(itemReconciliationRequest.itemId, id))
+        .run();
     const next = getWorkItem(db, id);
     if (next === null) throw new Error(`work item ${id} not found`);
     db.run(
@@ -271,57 +313,64 @@ export type WorkItemEventRow = {
 };
 
 /** When each item last changed state, in ms, from `work_item_event`. Items without rows are absent. */
-export function listLastWorkItemEventTimes(db: Database): Map<string, number> {
-  return new Map(
-    db
-      .query<{ item_id: string; at: number }, []>(
-        "SELECT item_id, MAX(at) AS at FROM work_item_event GROUP BY item_id",
-      )
-      .all()
-      .map((row) => [row.item_id, row.at]),
+export function* listLastWorkItemEventTimesSteps(q: Q) {
+  const { workItemEvent } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ itemId: workItemEvent.itemId, at: max(workItemEvent.at) })
+      .from(workItemEvent)
+      .groupBy(workItemEvent.itemId),
   );
+  return new Map(rows.map((row) => [row.itemId, row.at!]));
+}
+
+export function listLastWorkItemEventTimes(db: Database): Map<string, number> {
+  return settled(sqliteDb(db).run(listLastWorkItemEventTimesSteps));
 }
 
 /** An item's history, oldest first. `limit` keeps the newest rows. */
+export function* listWorkItemEventRowsSteps(q: Q, itemId: string, limit = 200) {
+  const { workItemEvent } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(workItemEvent)
+      .where(eq(workItemEvent.itemId, itemId))
+      .orderBy(desc(workItemEvent.id))
+      .limit(limit),
+  );
+  return rows.reverse() as WorkItemEventRow[];
+}
+
 export function listWorkItemEventRows(
   db: Database,
   itemId: string,
   limit = 200,
 ): WorkItemEventRow[] {
-  return db
-    .query<
-      {
-        id: number;
-        item_id: string;
-        version: number;
-        at: number;
-        from_state: WorkItemState;
-        to_state: WorkItemState;
-        event: RecordedWorkItemEvent;
-        kind: WorkItemEventKind;
-        reason: string | null;
-        payload_digest: string | null;
-        actor: string | null;
-      },
-      [string, number]
-    >(
-      `SELECT * FROM (SELECT * FROM work_item_event WHERE item_id = ? ORDER BY id DESC LIMIT ?)
-       ORDER BY id`,
-    )
-    .all(itemId, limit)
-    .map((row) => ({
-      id: row.id,
-      itemId: row.item_id,
-      version: row.version,
-      at: row.at,
-      fromState: row.from_state,
-      toState: row.to_state,
-      event: row.event,
-      kind: row.kind,
-      reason: row.reason,
-      payloadDigest: row.payload_digest,
-      actor: row.actor,
-    }));
+  return settled(sqliteDb(db).run((q) => listWorkItemEventRowsSteps(q, itemId, limit)));
+}
+
+export function* configureWorkItemSteps(
+  q: Q,
+  id: string,
+  patch: { sessionKey?: string; maxAwakeMs?: number; limits?: Partial<StageLimits> },
+) {
+  const { workItem } = q.t;
+  if (patch.sessionKey !== undefined)
+    yield* q.exec(
+      q.orm.update(workItem).set({ sessionKey: patch.sessionKey }).where(eq(workItem.id, id)),
+    );
+  const limits = { implementation: patch.maxAwakeMs, ...patch.limits };
+  for (const stage of ["implementation", "fixes", "closeout"] as const) {
+    const value = limits[stage];
+    if (value !== undefined)
+      yield* q.exec(
+        q.orm
+          .update(workItem)
+          .set({ [LIMIT_COLUMN[stage]]: value })
+          .where(eq(workItem.id, id)),
+      );
+  }
 }
 
 export function configureWorkItem(
@@ -329,58 +378,89 @@ export function configureWorkItem(
   id: string,
   patch: { sessionKey?: string; maxAwakeMs?: number; limits?: Partial<StageLimits> },
 ): void {
-  if (patch.sessionKey !== undefined) {
-    db.run("UPDATE work_item SET session_key = ? WHERE id = ?", [patch.sessionKey, id]);
-  }
-  const limits = { implementation: patch.maxAwakeMs, ...patch.limits };
-  for (const stage of ["implementation", "fixes", "closeout"] as const) {
-    const value = limits[stage];
-    if (value !== undefined)
-      db.run(`UPDATE work_item SET ${LIMIT_COLUMN[stage]} = ? WHERE id = ?`, [value, id]);
-  }
+  settled(sqliteDb(db).run((q) => configureWorkItemSteps(q, id, patch)));
 }
 
-const LIMIT_COLUMN: Record<TimeStage, string> = {
-  implementation: "max_awake_ms",
-  fixes: "max_fix_ms",
-  closeout: "max_closeout_ms",
-};
-const STAGE_COLUMN: Record<TimeStage, string> = {
+type ItemColumn = keyof PgWorkItem;
+
+const LIMIT_COLUMN = {
+  implementation: "maxAwakeMs",
+  fixes: "maxFixMs",
+  closeout: "maxCloseoutMs",
+} as const satisfies Record<TimeStage, ItemColumn>;
+const STAGE_COLUMN = {
+  implementation: "implementMs",
+  fixes: "fixMs",
+  closeout: "closeoutMs",
+} as const satisfies Record<TimeStage, ItemColumn>;
+const STAGE_SQL_COLUMN: Record<TimeStage, string> = {
   implementation: "implement_ms",
   fixes: "fix_ms",
   closeout: "closeout_ms",
 };
 
-export function agentTurnStage(db: Database, id: string): "implementation" | "fixes" {
-  const row = db
-    .query<{ reason: string | null }, [string]>(
-      "SELECT reason FROM work_item_event WHERE item_id = ? AND kind = 'restart' ORDER BY id DESC LIMIT 1",
-    )
-    .get(id);
+export function* agentTurnStageSteps(q: Q, id: string) {
+  const { workItemEvent } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ reason: workItemEvent.reason })
+      .from(workItemEvent)
+      .where(and(eq(workItemEvent.itemId, id), eq(workItemEvent.kind, "restart")))
+      .orderBy(desc(workItemEvent.id))
+      .limit(1),
+  );
   return agentStage(row?.reason ?? null);
 }
 
+export function agentTurnStage(db: Database, id: string): "implementation" | "fixes" {
+  return settled(sqliteDb(db).run((q) => agentTurnStageSteps(q, id)));
+}
+
+function* setItemSteps(q: Q, id: string, values: Partial<PgWorkItem>) {
+  const { workItem } = q.t;
+  yield* q.exec(q.orm.update(workItem).set(values).where(eq(workItem.id, id)));
+}
+
+export function* saveCheckpointSteps(q: Q, id: string, checkpoint: Checkpoint | null) {
+  yield* setItemSteps(q, id, {
+    checkpoint: checkpoint === null ? null : jsonValue(q, checkpoint),
+  });
+}
+
 export function saveCheckpoint(db: Database, id: string, checkpoint: Checkpoint | null): void {
-  db.run("UPDATE work_item SET checkpoint = ? WHERE id = ?", [
-    checkpoint === null ? null : JSON.stringify(checkpoint),
-    id,
-  ]);
+  settled(sqliteDb(db).run((q) => saveCheckpointSteps(q, id, checkpoint)));
+}
+
+export function* setRecoveryAttemptsSteps(q: Q, id: string, attempts: number) {
+  yield* setItemSteps(q, id, { recoveryAttempts: attempts });
 }
 
 export function setRecoveryAttempts(db: Database, id: string, attempts: number): void {
-  db.run("UPDATE work_item SET recovery_attempts = ? WHERE id = ?", [attempts, id]);
+  settled(sqliteDb(db).run((q) => setRecoveryAttemptsSteps(q, id, attempts)));
+}
+
+export function* markResumedSteps(q: Q, id: string, now: number) {
+  yield* setItemSteps(q, id, { recoveryAttempts: 1, resumedAt: now });
 }
 
 export function markResumed(db: Database, id: string, now: number): void {
-  db.run("UPDATE work_item SET recovery_attempts = 1, resumed_at = ? WHERE id = ?", [now, id]);
+  settled(sqliteDb(db).run((q) => markResumedSteps(q, id, now)));
+}
+
+export function* setCurrentRunSteps(q: Q, id: string, runId: string | null) {
+  yield* setItemSteps(q, id, { currentRunId: runId });
 }
 
 export function setCurrentRun(db: Database, id: string, runId: string | null): void {
-  db.run("UPDATE work_item SET current_run_id = ? WHERE id = ?", [runId, id]);
+  settled(sqliteDb(db).run((q) => setCurrentRunSteps(q, id, runId)));
+}
+
+export function* syncClockSteps(q: Q, id: string, mono: number) {
+  yield* setItemSteps(q, id, { lastMonoMs: mono });
 }
 
 export function syncClock(db: Database, id: string, mono: number): void {
-  db.run("UPDATE work_item SET last_mono_ms = ? WHERE id = ?", [mono, id]);
+  settled(sqliteDb(db).run((q) => syncClockSteps(q, id, mono)));
 }
 
 export type CapOutcome = {
@@ -442,7 +522,7 @@ export function accrueAwake(
         category === null
           ? []
           : category === "agent"
-            ? [BREAKDOWN_COLUMN.agent, STAGE_COLUMN[stage!]]
+            ? [BREAKDOWN_COLUMN.agent, STAGE_SQL_COLUMN[stage!]]
             : [BREAKDOWN_COLUMN[category]];
       db.run(
         `UPDATE work_item SET awake_ms = ?, last_mono_ms = ?${columns
@@ -560,50 +640,87 @@ export function endAgentWait(
     if (moved > 0)
       db.run(
         `UPDATE work_item SET awake_ms = awake_ms - ?1, agent_ms = agent_ms - ?1,
-           ${STAGE_COLUMN[stage]} = ${STAGE_COLUMN[stage]} - ?1,
+           ${STAGE_SQL_COLUMN[stage]} = ${STAGE_SQL_COLUMN[stage]} - ?1,
            waiting_ms = waiting_ms + ?1 WHERE id = ?2`,
         [moved, run.itemId],
       );
   });
 }
 
-/** Read ownership and wait flags in one scan for each accrual. Pending CI marks are never live. */
+/** Read ownership and wait flags for each accrual. Pending CI marks are never live. */
 function awakeJobActivity(db: Database, itemId: string, now: number, exceptJobId = -1) {
-  const row = db
-    .query<
-      { live: number; waiting: number; usage: number; agent: number },
-      [number, string, string, string, string, string, number, number]
-    >(
-      `SELECT (COALESCE(MAX(status='running' AND locked_until>?1), 0) OR EXISTS(
-         SELECT 1 FROM runner_work w JOIN work_item i ON i.current_run_id=w.run_id
-         WHERE i.id=?2 AND w.ended_at IS NULL AND w.lease_until>?8)) AS live,
-       COALESCE(MAX(status='running' AND locked_until>?1
-         AND json_extract(payload, '$.awakeWait.kind') IN ('ci', 'runner', 'backoff')
-         AND json_extract(payload, '$.awakeWait.worker')=locked_by
-         AND json_extract(payload, '$.awakeWait.attempt')=attempts), 0) AS waiting,
-       EXISTS(SELECT 1 FROM usage_pause p JOIN work_item i ON i.current_run_id=p.run_id
-         WHERE i.id=?2) AS usage,
-       EXISTS(SELECT 1 FROM agent_wait a JOIN work_item i ON i.current_run_id=a.run_id
-         JOIN runner_work w ON w.run_id=a.run_id AND w.generation=a.generation
-         WHERE i.id=?2 AND w.ended_at IS NULL AND w.lease_until>?8) AS agent
-     FROM job WHERE json_extract(payload, '$.itemId')=?2
-       AND status IN ('pending', 'running') AND id<>?7
-       AND (queue IN (?3, ?4, ?5, ?6) OR queue LIKE (?6 || '.%'))`,
-    )
-    .get(
-      now,
-      itemId,
-      JOB_KIND.start,
-      JOB_KIND.resume,
-      JOB_KIND.reverify,
-      JOB_KIND.merge,
-      exceptJobId,
-      runnerLeaseCutoff(now),
-    )!;
+  return settled(sqliteDb(db).run((q) => awakeJobActivitySteps(q, itemId, now, exceptJobId)));
+}
+
+function* awakeJobActivitySteps(q: Q, itemId: string, now: number, exceptJobId: number) {
+  const { job, workItem, runnerWork, usagePause, agentWait } = q.t;
+  const jobs = yield* q.all(
+    q.orm
+      .select({
+        status: job.status,
+        lockedUntil: job.lockedUntil,
+        lockedBy: job.lockedBy,
+        attempts: job.attempts,
+        payload: job.payload,
+      })
+      .from(job)
+      .where(
+        and(
+          eq(jsonField(q, job.payload, "itemId"), itemId),
+          inArray(job.status, ["pending", "running"]),
+          ne(job.id, exceptJobId),
+          advancingQueue(q),
+        ),
+      ),
+  );
+  const held = jobs.filter(
+    (row) => row.status === "running" && row.lockedUntil !== null && row.lockedUntil > now,
+  );
+  const waits = held.filter((row) => {
+    const wait = (jsonRead(row.payload) as { awakeWait?: Record<string, unknown> } | null)
+      ?.awakeWait;
+    return (
+      typeof wait?.kind === "string" &&
+      ["ci", "runner", "backoff"].includes(wait.kind) &&
+      wait.worker === row.lockedBy &&
+      wait.attempt === row.attempts
+    );
+  });
+  const cutoff = runnerLeaseCutoff(now);
+  const currentRun = and(eq(workItem.id, itemId), eq(workItem.currentRunId, runnerWork.runId));
+  const leased = and(isNull(runnerWork.endedAt), gt(runnerWork.leaseUntil, cutoff));
+  const runner = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(runnerWork)
+      .innerJoin(workItem, currentRun)
+      .where(leased)
+      .limit(1),
+  );
+  const usage = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(usagePause)
+      .innerJoin(workItem, eq(workItem.currentRunId, usagePause.runId))
+      .where(eq(workItem.id, itemId))
+      .limit(1),
+  );
+  const agent = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(agentWait)
+      .innerJoin(workItem, eq(workItem.currentRunId, agentWait.runId))
+      .innerJoin(
+        runnerWork,
+        and(eq(runnerWork.runId, agentWait.runId), eq(runnerWork.generation, agentWait.generation)),
+      )
+      .where(and(eq(workItem.id, itemId), leased))
+      .limit(1),
+  );
   return {
-    live: row.live === 1,
-    waiting: row.waiting === 1 || row.agent === 1,
-    usage: row.usage === 1,
+    live: held.length > 0 || runner !== undefined,
+    waiting: waits.length > 0 || agent !== undefined,
+    usage: usage !== undefined,
   };
 }
 
@@ -657,8 +774,12 @@ export function awakeBreakdown(item: WorkItemRecord): AwakeBreakdown {
 }
 
 /** Closeout accepted `head`. The time cap no longer fails this task. */
+export function* markCloseoutAcceptedSteps(q: Q, id: string, head: string) {
+  yield* setItemSteps(q, id, { acceptedHead: head });
+}
+
 export function markCloseoutAccepted(db: Database, id: string, head: string): void {
-  db.run("UPDATE work_item SET accepted_head = ? WHERE id = ?", [head, id]);
+  settled(sqliteDb(db).run((q) => markCloseoutAcceptedSteps(q, id, head)));
 }
 
 function extendAwakeCap(
@@ -667,26 +788,41 @@ function extendAwakeCap(
   stage: TimeStage,
   extraMs = TIME_LIMIT_EXTENSION_MS,
 ): void {
-  const limit = LIMIT_COLUMN[stage];
-  db.run(`UPDATE work_item SET ${limit} = MAX(${limit}, ${STAGE_COLUMN[stage]}) + ? WHERE id = ?`, [
-    extraMs,
-    id,
-  ]);
+  settled(sqliteDb(db).run((q) => extendAwakeCapSteps(q, id, stage, extraMs)));
+}
+
+function* extendAwakeCapSteps(q: Q, id: string, stage: TimeStage, extraMs: number) {
+  const limit = q.t.workItem[LIMIT_COLUMN[stage]];
+  const spent = q.t.workItem[STAGE_COLUMN[stage]];
+  const larger =
+    q.dialect === "sqlite" ? sql`MAX(${limit}, ${spent})` : sql`GREATEST(${limit}, ${spent})`;
+  yield* setItemSteps(q, id, { [LIMIT_COLUMN[stage]]: sql`${larger} + ${extraMs}` });
 }
 
 /** Zeroes the awake clock and its breakdown when a stopped task is started again. */
+export function* resetAwakeTimeSteps(q: Q, id: string) {
+  yield* setItemSteps(q, id, {
+    awakeMs: 0,
+    agentMs: 0,
+    implementMs: 0,
+    fixMs: 0,
+    closeoutMs: 0,
+    waitingMs: 0,
+    recheckMs: 0,
+    lastMonoMs: null,
+  });
+}
+
 export function resetAwakeTime(db: Database, id: string): void {
-  db.run(
-    `UPDATE work_item
-     SET awake_ms = 0, agent_ms = 0, implement_ms = 0, fix_ms = 0, closeout_ms = 0,
-         waiting_ms = 0, recheck_ms = 0, last_mono_ms = NULL
-     WHERE id = ?`,
-    [id],
-  );
+  settled(sqliteDb(db).run((q) => resetAwakeTimeSteps(q, id)));
+}
+
+export function* resetStageTimeSteps(q: Q, id: string, stage: TimeStage) {
+  yield* setItemSteps(q, id, { [STAGE_COLUMN[stage]]: 0 });
 }
 
 export function resetStageTime(db: Database, id: string, stage: TimeStage): void {
-  db.run(`UPDATE work_item SET ${STAGE_COLUMN[stage]} = 0 WHERE id = ?`, [id]);
+  settled(sqliteDb(db).run((q) => resetStageTimeSteps(q, id, stage)));
 }
 
 /**
@@ -695,15 +831,30 @@ export function resetStageTime(db: Database, id: string, stage: TimeStage): void
  * accepted work.
  */
 function cancelAgentJobs(db: Database, itemId: string, now: number, closeout = false): void {
+  settled(sqliteDb(db).run((q) => cancelAgentJobsSteps(q, itemId, now, closeout)));
+}
+
+function* cancelAgentJobsSteps(q: Q, itemId: string, now: number, closeout: boolean) {
+  const { job } = q.t;
   const queues: string[] = [JOB_KIND.start, JOB_KIND.resume];
   if (closeout) queues.push(JOB_KIND.reverify);
-  db.run(
-    `UPDATE job
-     SET status = 'cancelled', last_error = 'time_limit', locked_by = NULL,
-         locked_until = NULL, finished_at = ?
-     WHERE status IN ('pending', 'running') AND queue IN (${queues.map(() => "?").join(", ")})
-       AND json_extract(payload, '$.itemId') = ?`,
-    [now, ...queues, itemId],
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({
+        status: "cancelled",
+        lastError: "time_limit",
+        lockedBy: null,
+        lockedUntil: null,
+        finishedAt: now,
+      })
+      .where(
+        and(
+          inArray(job.status, ["pending", "running"]),
+          inArray(job.queue, queues),
+          eq(jsonField(q, job.payload, "itemId"), itemId),
+        ),
+      ),
   );
 }
 
@@ -714,23 +865,44 @@ export type HeldHandoff = { jobId: number; handoff: string };
  * Handoffs of resume jobs the time limit cancelled that no later restart carried yet, oldest
  * first. A review or comment restart that the cap cut off waits here for a Continue answer.
  */
+export function* heldHandoffsSteps(q: Q, itemId: string) {
+  const { job } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: job.id, handoff: jsonValueAt(q, job.payload, "handoff") })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.resume),
+          eq(job.status, "cancelled"),
+          eq(job.lastError, "time_limit"),
+          eq(jsonField(q, job.payload, "itemId"), itemId),
+        ),
+      )
+      .orderBy(asc(job.id)),
+  );
+  return rows.flatMap((row): HeldHandoff[] =>
+    typeof row.handoff === "string" && row.handoff.trim() !== ""
+      ? [{ jobId: row.id, handoff: row.handoff }]
+      : [],
+  );
+}
+
 export function heldHandoffs(db: Database, itemId: string): HeldHandoff[] {
-  return db
-    .query<{ id: number; handoff: string | null }, [string, string]>(
-      `SELECT id, json_extract(payload, '$.handoff') AS handoff FROM job
-       WHERE queue = ? AND status = 'cancelled' AND last_error = 'time_limit'
-         AND json_extract(payload, '$.itemId') = ?
-       ORDER BY id`,
-    )
-    .all(JOB_KIND.resume, itemId)
-    .filter((row) => typeof row.handoff === "string" && row.handoff.trim() !== "")
-    .map((row) => ({ jobId: row.id, handoff: row.handoff! }));
+  return settled(sqliteDb(db).run((q) => heldHandoffsSteps(q, itemId)));
 }
 
 /** Marks held handoffs as carried by a later restart, so none reaches the agent twice. */
-export function markHandoffsCarried(db: Database, held: readonly HeldHandoff[]): void {
+export function* markHandoffsCarriedSteps(q: Q, held: readonly HeldHandoff[]) {
+  const { job } = q.t;
   for (const entry of held)
-    db.run("UPDATE job SET last_error = 'time_limit_carried' WHERE id = ?", [entry.jobId]);
+    yield* q.exec(
+      q.orm.update(job).set({ lastError: "time_limit_carried" }).where(eq(job.id, entry.jobId)),
+    );
+}
+
+export function markHandoffsCarried(db: Database, held: readonly HeldHandoff[]): void {
+  settled(sqliteDb(db).run((q) => markHandoffsCarriedSteps(q, held)));
 }
 
 /**
@@ -867,6 +1039,25 @@ export function completeMergedItem(
       },
       now: input.now,
     });
+    const remaining = getPullRequestDraft(db, current.id)?.remaining;
+    if (remaining?.length)
+      enqueueOutboxOnce(db, {
+        target: "linear",
+        op: "linear.remaining_issues",
+        orderingKey: current.linearIssueId,
+        idempotencyKey: `remaining:${current.id}`,
+        payload: {
+          itemId: current.id,
+          issueId: current.linearIssueId,
+          identifier: current.linearIdentifier,
+          repository: `${fact.repositoryOwner}/${fact.repositoryName}`,
+          pullUrl:
+            fact.pullUrl ??
+            `https://github.com/${fact.repositoryOwner}/${fact.repositoryName}/pull/${fact.pullNumber}`,
+          parts: remaining,
+        },
+        now: input.now,
+      });
     input.announce?.(current);
     const merged = applyWorkItemEvent(db, current.id, "merge_accepted", { now: input.now });
     endMergeCall(db, current.id);
@@ -883,26 +1074,36 @@ function endActiveRun(db: Database, runId: string | null, now: number): void {
     markRun(db, runId, "ended", now);
 }
 
+export function* cancelAdvancingJobsSteps(q: Q, itemId: string, reason: string, now: number) {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({ status: "cancelled", lastError: reason, finishedAt: now })
+      .where(
+        and(
+          eq(job.status, "pending"),
+          eq(jsonField(q, job.payload, "itemId"), itemId),
+          advancingQueue(q),
+        ),
+      ),
+  );
+}
+
 export function cancelAdvancingJobs(
   db: Database,
   itemId: string,
   reason: string,
   now: number,
 ): void {
-  db.run(
-    `UPDATE job SET status = 'cancelled', last_error = ?, finished_at = ?
-     WHERE status = 'pending' AND json_extract(payload, '$.itemId') = ?
-       AND (queue IN (?, ?, ?) OR queue = ? OR queue LIKE ?)`,
-    [
-      reason,
-      now,
-      itemId,
-      JOB_KIND.start,
-      JOB_KIND.resume,
-      JOB_KIND.reverify,
-      JOB_KIND.merge,
-      `${JOB_KIND.merge}.%`,
-    ],
+  settled(sqliteDb(db).run((q) => cancelAdvancingJobsSteps(q, itemId, reason, now)));
+}
+
+function advancingQueue(q: Q) {
+  const { job } = q.t;
+  return or(
+    inArray(job.queue, [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify, JOB_KIND.merge]),
+    likeText(q, job.queue, `${JOB_KIND.merge}.%`),
   );
 }
 
@@ -1008,31 +1209,81 @@ export type CloseoutFaults = { head: string; reasons: readonly string[] };
 
 const REVIEWER_ALERT = "reviewer-fault:";
 
+export function* reviewerFaultHoldsSteps(q: Q, reviewer: string) {
+  const { job } = q.t;
+  const itemId = jsonField(q, job.payload, "itemId");
+  const rows = yield* q.all(
+    q.orm
+      .select({ itemId: sql<string>`${itemId}` })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.reverify),
+          eq(job.status, "pending"),
+          eq(jsonField(q, job.payload, "reviewerFault"), reviewer),
+        ),
+      )
+      .groupBy(itemId)
+      .orderBy(min(job.id)),
+  );
+  const items: WorkItemRecord[] = [];
+  for (const row of rows) {
+    const item = yield* getWorkItemSteps(q, row.itemId);
+    if (item !== null) items.push(item);
+  }
+  return items;
+}
+
 export function reviewerFaultHolds(db: Database, reviewer: string): WorkItemRecord[] {
-  return db
-    .query<{ itemId: string }, [string, string]>(
-      `SELECT DISTINCT json_extract(payload,'$.itemId') AS itemId FROM job
-       WHERE queue=? AND status='pending' AND json_extract(payload,'$.reviewerFault')=?`,
-    )
-    .all(JOB_KIND.reverify, reviewer)
-    .flatMap((row) => getWorkItem(db, row.itemId) ?? []);
+  return settled(sqliteDb(db).run((q) => reviewerFaultHoldsSteps(q, reviewer)));
+}
+
+export function* reviewerAlertedSinceSteps(q: Q, reviewer: string, since: number) {
+  const { outbox } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: outbox.id })
+      .from(outbox)
+      .where(
+        and(
+          likeText(q, outbox.idempotencyKey, `${REVIEWER_ALERT}${reviewer}:%`),
+          gte(outbox.createdAt, since),
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
 }
 
 export function reviewerAlertedSince(db: Database, reviewer: string, since: number): boolean {
-  return (
-    db
-      .query("SELECT 1 FROM outbox WHERE idempotency_key LIKE ? AND created_at>=?")
-      .get(`${REVIEWER_ALERT}${reviewer}:%`, since) !== null
+  return settled(sqliteDb(db).run((q) => reviewerAlertedSinceSteps(q, reviewer, since)));
+}
+
+export function* releaseReviewerFaultHoldsSteps(q: Q, itemId: string, now: number) {
+  const { job } = q.t;
+  const released =
+    q.dialect === "sqlite"
+      ? sql`json_remove(${job.payload}, '$.closeoutFaults', '$.reviewerFault')`
+      : sql`${job.payload} - 'closeoutFaults' - 'reviewerFault'`;
+  const rows = yield* q.all(
+    q.orm
+      .update(job)
+      .set({ runAt: now, payload: released })
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.reverify),
+          eq(job.status, "pending"),
+          eq(jsonField(q, job.payload, "itemId"), itemId),
+          isNotNull(jsonField(q, job.payload, "reviewerFault")),
+        ),
+      )
+      .returning({ id: job.id }),
   );
+  return rows.length;
 }
 
 export function releaseReviewerFaultHolds(db: Database, itemId: string, now: number): number {
-  return db.run(
-    `UPDATE job SET run_at=?, payload=json_remove(payload,'$.closeoutFaults','$.reviewerFault')
-     WHERE queue=? AND status='pending' AND json_extract(payload,'$.itemId')=?
-       AND json_extract(payload,'$.reviewerFault') IS NOT NULL`,
-    [now, JOB_KIND.reverify, itemId],
-  ).changes;
+  return settled(sqliteDb(db).run((q) => releaseReviewerFaultHoldsSteps(q, itemId, now)));
 }
 
 export type RunnerCapacityWaitState = {
@@ -1133,79 +1384,136 @@ function failureEvent(state: WorkItemState): WorkItemEvent | null {
   }
 }
 
-function mapItem(row: ItemSql): WorkItemRecord {
+type ItemRow = {
+  item: PgWorkItem;
+  continuesItemId: string | null;
+  continuesBranch: string | null;
+};
+
+function mapItem({ item: row, continuesItemId, continuesBranch }: ItemRow): WorkItemRecord {
   return {
     id: row.id,
-    taskKey: row.task_key,
-    delegationId: row.delegation_id,
-    linearIssueId: row.linear_issue_id,
-    linearIdentifier: row.linear_identifier,
+    taskKey: row.taskKey,
+    delegationId: row.delegationId,
+    linearIssueId: row.linearIssueId,
+    linearIdentifier: row.linearIdentifier,
     title: row.title,
-    state: row.state,
-    branchName: row.branch_name,
-    continuesItemId: row.continues_item_id ?? null,
-    continuesBranch: row.continues_branch ?? null,
+    state: row.state as WorkItemState,
+    branchName: row.branchName,
+    continuesItemId: continuesItemId ?? null,
+    continuesBranch: continuesBranch ?? null,
     position: row.position,
     version: row.version,
-    checkpoint: parseCheckpoint(row.checkpoint),
-    recoveryAttempts: row.recovery_attempts,
-    resumedAt: row.resumed_at,
-    awakeMs: row.awake_ms,
-    lastMonoMs: row.last_mono_ms,
-    maxAwakeMs: row.max_awake_ms,
-    maxFixMs: row.max_fix_ms ?? 0,
-    maxCloseoutMs: row.max_closeout_ms ?? 0,
-    linearProjectId: row.linear_project_id ?? null,
-    acceptedHead: row.accepted_head ?? null,
-    agentMs: row.agent_ms ?? 0,
-    implementMs: row.implement_ms ?? 0,
-    fixMs: row.fix_ms ?? 0,
-    closeoutMs: row.closeout_ms ?? 0,
-    waitingMs: row.waiting_ms ?? 0,
-    recheckMs: row.recheck_ms ?? 0,
-    cancelRequested: row.cancel_requested === 1,
-    sessionKey: row.session_key,
-    currentRunId: row.current_run_id,
-    brief: row.brief === null ? null : (JSON.parse(row.brief) as WorkBrief),
+    checkpoint: row.checkpoint === null ? null : readCheckpoint(jsonText(row.checkpoint)),
+    recoveryAttempts: row.recoveryAttempts,
+    resumedAt: row.resumedAt,
+    awakeMs: row.awakeMs,
+    lastMonoMs: row.lastMonoMs,
+    maxAwakeMs: row.maxAwakeMs,
+    maxFixMs: row.maxFixMs ?? 0,
+    maxCloseoutMs: row.maxCloseoutMs ?? 0,
+    linearProjectId: row.linearProjectId ?? null,
+    acceptedHead: row.acceptedHead ?? null,
+    agentMs: row.agentMs ?? 0,
+    implementMs: row.implementMs ?? 0,
+    fixMs: row.fixMs ?? 0,
+    closeoutMs: row.closeoutMs ?? 0,
+    waitingMs: row.waitingMs ?? 0,
+    recheckMs: row.recheckMs ?? 0,
+    cancelRequested: row.cancelRequested === 1,
+    sessionKey: row.sessionKey,
+    currentRunId: row.currentRunId,
+    brief: row.brief === null ? null : (jsonRead(row.brief) as WorkBrief),
   };
 }
 
-function parseCheckpoint(value: string | null): Checkpoint | null {
-  if (value === null) return null;
-  return readCheckpoint(value);
+function jsonRead(value: unknown): unknown {
+  return typeof value === "string" ? JSON.parse(value) : value;
+}
+
+function jsonText(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function jsonValue(q: Q, value: unknown): unknown {
+  return q.dialect === "sqlite" ? JSON.stringify(value) : value;
+}
+
+function jsonField(q: Q, column: AnyColumn, key: string): SQL {
+  return q.dialect === "sqlite"
+    ? sql`json_extract(${column}, ${sql.raw(`'$.${key}'`)})`
+    : sql`${column}->>${sql.raw(`'${key}'`)}`;
+}
+
+function jsonValueAt(q: Q, column: AnyColumn, key: string): SQL<unknown> {
+  return q.dialect === "sqlite"
+    ? jsonField(q, column, key)
+    : sql`${column}->${sql.raw(`'${key}'`)}`;
+}
+
+function likeText(q: Q, column: AnyColumn, pattern: string): SQL {
+  return q.dialect === "sqlite" ? like(column, pattern) : ilike(column, pattern);
+}
+
+export function* itemDelegationIdSteps(q: Q, itemId: string) {
+  const { workItem } = q.t;
+  const row = yield* q.one(
+    q.orm.select({ id: workItem.delegationId }).from(workItem).where(eq(workItem.id, itemId)),
+  );
+  return row?.id ?? null;
 }
 
 export function itemDelegationId(db: Database, itemId: string): string | null {
-  return (
-    orm(db)
-      .select({ id: workItem.delegationId })
-      .from(workItem)
-      .where(eq(workItem.id, itemId))
-      .get()?.id ?? null
+  return settled(sqliteDb(db).run((q) => itemDelegationIdSteps(q, itemId)));
+}
+
+export function* itemLinearIdentifierSteps(q: Q, itemId: string) {
+  const { workItem } = q.t;
+  const row = yield* q.one(
+    q.orm.select({ name: workItem.linearIdentifier }).from(workItem).where(eq(workItem.id, itemId)),
   );
+  return row?.name ?? null;
 }
 
 export function itemLinearIdentifier(db: Database, itemId: string): string | null {
-  return (
-    orm(db)
-      .select({ name: workItem.linearIdentifier })
-      .from(workItem)
-      .where(eq(workItem.id, itemId))
-      .get()?.name ?? null
+  return settled(sqliteDb(db).run((q) => itemLinearIdentifierSteps(q, itemId)));
+}
+
+export function* lastItemEventSteps(q: Q, itemId: string) {
+  const { workItemEvent } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ kind: workItemEvent.kind, reason: workItemEvent.reason })
+      .from(workItemEvent)
+      .where(eq(workItemEvent.itemId, itemId))
+      .orderBy(desc(workItemEvent.id))
+      .limit(1),
   );
+  return row ?? null;
 }
 
 export function lastItemEvent(
   db: Database,
   itemId: string,
 ): { kind: string; reason: string | null } | null {
-  return (
-    orm(db)
-      .select({ kind: workItemEvent.kind, reason: workItemEvent.reason })
-      .from(workItemEvent)
-      .where(eq(workItemEvent.itemId, itemId))
-      .orderBy(desc(workItemEvent.id))
-      .limit(1)
-      .get() ?? null
+  return settled(sqliteDb(db).run((q) => lastItemEventSteps(q, itemId)));
+}
+
+/** The Linear session key of each of these work items that exists. */
+export function workItemSessionKeys(
+  db: Database,
+  ids: readonly string[],
+): { id: string; sessionKey: string | null }[] {
+  return settled(sqliteDb(db).run((q) => workItemSessionKeysSteps(q, ids)));
+}
+
+export function* workItemSessionKeysSteps(q: Q, ids: readonly string[]) {
+  if (ids.length === 0) return [];
+  const { workItem } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ id: workItem.id, sessionKey: workItem.sessionKey })
+      .from(workItem)
+      .where(inArray(workItem.id, [...ids])),
   );
 }

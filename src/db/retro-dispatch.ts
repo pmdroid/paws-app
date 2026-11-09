@@ -1,5 +1,20 @@
 import type { Database } from "bun:sqlite";
-import { immediate } from "./tx";
+import { isDeepStrictEqual } from "node:util";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
+import type * as pgSchema from "./schema-pg";
 import { ulid } from "./ulid";
 
 export const newRetroCommandId = (now: number): string => ulid(now);
@@ -57,278 +72,504 @@ export type RetroGenerationRow = {
   updatedAt: number;
 };
 
-type DispatchRow = {
-  command_id: string;
-  retro_id: string;
-  attempt: number;
-  workspace_id: string;
-  runner_id: string;
-  runner_fence: number;
-  command: string;
-  envelope: string;
-  deliveries: number;
-  created_at: number;
-  issued_at: number;
-  expires_at: number;
-  fetched_at: number | null;
-  acknowledged_at: number | null;
-  cancel_requested_at: number | null;
-  result: string | null;
-  result_at: number | null;
-  released_at: number | null;
-  release_reason: RetroDispatchRelease | null;
-  settled_at: number | null;
-};
+function jsonIn(q: Q, value: unknown): unknown {
+  return q.dialect === "sqlite" ? JSON.stringify(value) : value;
+}
 
-function fromRow(row: DispatchRow): RetroDispatch {
+function jsonOut(q: Q, stored: unknown): unknown {
+  return q.dialect === "sqlite" ? (JSON.parse(stored as string) as unknown) : stored;
+}
+
+type DispatchRow = typeof pgSchema.retroDispatch.$inferSelect;
+
+function fromRow(q: Q, row: DispatchRow): RetroDispatch {
   return {
-    commandId: row.command_id,
-    retroId: row.retro_id,
-    attempt: row.attempt,
-    workspaceId: row.workspace_id,
-    runnerId: row.runner_id,
-    runnerFence: row.runner_fence,
-    command: JSON.parse(row.command),
-    envelope: JSON.parse(row.envelope),
-    deliveries: row.deliveries,
-    createdAt: row.created_at,
-    issuedAt: row.issued_at,
-    expiresAt: row.expires_at,
-    fetchedAt: row.fetched_at,
-    acknowledgedAt: row.acknowledged_at,
-    cancelRequestedAt: row.cancel_requested_at,
-    result: row.result === null ? null : JSON.parse(row.result),
-    resultAt: row.result_at,
-    releasedAt: row.released_at,
-    releaseReason: row.release_reason,
-    settledAt: row.settled_at,
+    ...row,
+    command: jsonOut(q, row.command),
+    envelope: jsonOut(q, row.envelope),
+    result: row.result === null ? null : jsonOut(q, row.result),
+    releaseReason: row.releaseReason as RetroDispatchRelease | null,
   };
 }
 
-export function recordRetroDispatch(
-  db: Database,
-  input: {
-    commandId: string;
-    retroId: string;
-    attempt: number;
-    workspaceId: string;
-    runnerId: string;
-    runnerFence: number;
-    command: unknown;
-    envelope: unknown;
-    issuedAt: number;
-    expiresAt: number;
-    now: number;
-  },
-): RetroDispatch {
-  db.run(
-    `INSERT INTO retro_dispatch (command_id, retro_id, attempt, workspace_id, runner_id,
-       runner_fence, command, envelope, created_at, issued_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      input.commandId,
-      input.retroId,
-      input.attempt,
-      input.workspaceId,
-      input.runnerId,
-      input.runnerFence,
-      JSON.stringify(input.command),
-      JSON.stringify(input.envelope),
-      input.now,
-      input.issuedAt,
-      input.expiresAt,
-    ],
+const unreleased = (q: Q) => isNull(q.t.retroDispatch.releasedAt);
+const unfinished = (q: Q) => or(unreleased(q), isNull(q.t.retroDispatch.settledAt));
+
+type NewRetroDispatch = {
+  commandId: string;
+  retroId: string;
+  attempt: number;
+  workspaceId: string;
+  runnerId: string;
+  runnerFence: number;
+  command: unknown;
+  envelope: unknown;
+  issuedAt: number;
+  expiresAt: number;
+  now: number;
+};
+
+export function recordRetroDispatch(db: Database, input: NewRetroDispatch): RetroDispatch {
+  return settled(sqliteDb(db).run((q) => recordRetroDispatchSteps(q, input)));
+}
+
+export function* recordRetroDispatchSteps(q: Q, input: NewRetroDispatch) {
+  yield* q.exec(
+    q.orm.insert(q.t.retroDispatch).values({
+      commandId: input.commandId,
+      retroId: input.retroId,
+      attempt: input.attempt,
+      workspaceId: input.workspaceId,
+      runnerId: input.runnerId,
+      runnerFence: input.runnerFence,
+      command: jsonIn(q, input.command),
+      envelope: jsonIn(q, input.envelope),
+      createdAt: input.now,
+      issuedAt: input.issuedAt,
+      expiresAt: input.expiresAt,
+    }),
   );
-  return getRetroDispatch(db, input.commandId)!;
+  return (yield* getRetroDispatchSteps(q, input.commandId))!;
 }
 
 export function getRetroDispatch(db: Database, commandId: string): RetroDispatch | null {
-  const row = db
-    .query<DispatchRow, [string]>("SELECT * FROM retro_dispatch WHERE command_id = ?")
-    .get(commandId);
-  return row === null ? null : fromRow(row);
+  return settled(sqliteDb(db).run((q) => getRetroDispatchSteps(q, commandId)));
+}
+
+export function* getRetroDispatchSteps(q: Q, commandId: string) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm.select().from(retroDispatch).where(eq(retroDispatch.commandId, commandId)),
+  );
+  return row === undefined ? null : fromRow(q, row);
 }
 
 export function listRetroDispatches(db: Database, retroId: string): RetroDispatch[] {
-  return db
-    .query<DispatchRow, [string]>(
-      "SELECT * FROM retro_dispatch WHERE retro_id = ? ORDER BY attempt",
-    )
-    .all(retroId)
-    .map(fromRow);
+  return settled(sqliteDb(db).run((q) => listRetroDispatchesSteps(q, retroId)));
+}
+
+export function* listRetroDispatchesSteps(q: Q, retroId: string) {
+  const { retroDispatch } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(retroDispatch)
+      .where(eq(retroDispatch.retroId, retroId))
+      .orderBy(retroDispatch.attempt),
+  );
+  return rows.map((row) => fromRow(q, row));
 }
 
 export function openRetroDispatch(db: Database, retroId: string): RetroDispatch | null {
-  const row = db
-    .query<DispatchRow, [string]>(
-      `SELECT * FROM retro_dispatch WHERE retro_id = ? AND (released_at IS NULL OR settled_at IS NULL)
-       ORDER BY attempt DESC LIMIT 1`,
-    )
-    .get(retroId);
-  return row === null ? null : fromRow(row);
+  return settled(sqliteDb(db).run((q) => openRetroDispatchSteps(q, retroId)));
+}
+
+export function* openRetroDispatchSteps(q: Q, retroId: string) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(retroDispatch)
+      .where(and(eq(retroDispatch.retroId, retroId), unfinished(q)))
+      .orderBy(desc(retroDispatch.attempt))
+      .limit(1),
+  );
+  return row === undefined ? null : fromRow(q, row);
 }
 
 export function unfinishedRetroDispatches(db: Database): RetroDispatch[] {
-  return db
-    .query<DispatchRow, []>(
-      "SELECT * FROM retro_dispatch WHERE released_at IS NULL OR settled_at IS NULL ORDER BY created_at",
-    )
-    .all()
-    .map(fromRow);
+  return settled(sqliteDb(db).run((q) => unfinishedRetroDispatchesSteps(q)));
+}
+
+export function* unfinishedRetroDispatchesSteps(q: Q) {
+  const { retroDispatch } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(retroDispatch)
+      .where(unfinished(q))
+      .orderBy(retroDispatch.createdAt, retroDispatch.commandId),
+  );
+  return rows.map((row) => fromRow(q, row));
 }
 
 export function deliverableRetroDispatches(db: Database, runnerId: string): RetroDispatch[] {
-  return db
-    .query<DispatchRow, [string]>(
-      `SELECT * FROM retro_dispatch WHERE runner_id = ? AND released_at IS NULL
-       AND acknowledged_at IS NULL AND cancel_requested_at IS NULL ORDER BY created_at LIMIT 16`,
-    )
-    .all(runnerId)
-    .map(fromRow);
+  return settled(sqliteDb(db).run((q) => deliverableRetroDispatchesSteps(q, runnerId)));
+}
+
+export function* deliverableRetroDispatchesSteps(q: Q, runnerId: string) {
+  const { retroDispatch } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(retroDispatch)
+      .where(
+        and(
+          eq(retroDispatch.runnerId, runnerId),
+          unreleased(q),
+          isNull(retroDispatch.acknowledgedAt),
+          isNull(retroDispatch.cancelRequestedAt),
+        ),
+      )
+      .orderBy(retroDispatch.createdAt, retroDispatch.commandId)
+      .limit(16),
+  );
+  return rows.map((row) => fromRow(q, row));
 }
 
 export function retroSlotsHeld(db: Database, runnerId: string): number {
-  return (
-    db
-      .query<{ held: number }, [string]>(
-        "SELECT count(*) AS held FROM retro_dispatch WHERE runner_id = ? AND released_at IS NULL",
-      )
-      .get(runnerId)?.held ?? 0
+  return settled(sqliteDb(db).run((q) => retroSlotsHeldSteps(q, runnerId)));
+}
+
+export function* retroSlotsHeldSteps(q: Q, runnerId: string) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ held: count() })
+      .from(retroDispatch)
+      .where(and(eq(retroDispatch.runnerId, runnerId), unreleased(q))),
   );
+  return row!.held;
 }
 
 export function retroDispatchesNotStarted(db: Database, retroId: string): number {
-  return (
-    db
-      .query<{ count: number }, [string]>(
-        "SELECT count(*) AS count FROM retro_dispatch WHERE retro_id = ? AND release_reason = 'not_started'",
-      )
-      .get(retroId)?.count ?? 0
+  return settled(sqliteDb(db).run((q) => retroDispatchesNotStartedSteps(q, retroId)));
+}
+
+export function* retroDispatchesNotStartedSteps(q: Q, retroId: string) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ count: count() })
+      .from(retroDispatch)
+      .where(
+        and(eq(retroDispatch.retroId, retroId), eq(retroDispatch.releaseReason, "not_started")),
+      ),
   );
+  return row!.count;
 }
 
 export function markRetroDispatchFetched(db: Database, commandId: string, now: number): void {
-  db.run(
-    "UPDATE retro_dispatch SET fetched_at = COALESCE(fetched_at, ?) WHERE command_id = ? AND released_at IS NULL",
-    [now, commandId],
+  settled(sqliteDb(db).run((q) => markRetroDispatchFetchedSteps(q, commandId, now)));
+}
+
+export function* markRetroDispatchFetchedSteps(q: Q, commandId: string, now: number) {
+  const { retroDispatch } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(retroDispatch)
+      .set({ fetchedAt: sql`COALESCE(${retroDispatch.fetchedAt}, ${now})` })
+      .where(and(eq(retroDispatch.commandId, commandId), unreleased(q))),
   );
 }
 
-export function resignRetroDispatch(
-  db: Database,
-  input: { commandId: string; envelope: unknown; issuedAt: number; expiresAt: number },
-): boolean {
-  return (
-    db.run(
-      `UPDATE retro_dispatch SET envelope = ?, issued_at = ?, expires_at = ?, deliveries = deliveries + 1
-       WHERE command_id = ? AND released_at IS NULL AND fetched_at IS NULL AND acknowledged_at IS NULL`,
-      [JSON.stringify(input.envelope), input.issuedAt, input.expiresAt, input.commandId],
-    ).changes === 1
+type Resign = { commandId: string; envelope: unknown; issuedAt: number; expiresAt: number };
+
+export function resignRetroDispatch(db: Database, input: Resign): boolean {
+  return settled(sqliteDb(db).run((q) => resignRetroDispatchSteps(q, input)));
+}
+
+export function* resignRetroDispatchSteps(q: Q, input: Resign) {
+  const { retroDispatch } = q.t;
+  const changed = yield* q.all(
+    q.orm
+      .update(retroDispatch)
+      .set({
+        envelope: jsonIn(q, input.envelope),
+        issuedAt: input.issuedAt,
+        expiresAt: input.expiresAt,
+        deliveries: sql`${retroDispatch.deliveries} + 1`,
+      })
+      .where(
+        and(
+          eq(retroDispatch.commandId, input.commandId),
+          unreleased(q),
+          isNull(retroDispatch.fetchedAt),
+          isNull(retroDispatch.acknowledgedAt),
+        ),
+      )
+      .returning({ commandId: retroDispatch.commandId }),
   );
+  return changed.length === 1;
 }
 
 export function acknowledgeRetroDispatch(db: Database, commandId: string, now: number): boolean {
-  return (
-    db.run(
-      `UPDATE retro_dispatch SET acknowledged_at = COALESCE(acknowledged_at, ?),
-         fetched_at = COALESCE(fetched_at, ?)
-       WHERE command_id = ? AND released_at IS NULL AND cancel_requested_at IS NULL`,
-      [now, now, commandId],
-    ).changes === 1
+  return settled(sqliteDb(db).run((q) => acknowledgeRetroDispatchSteps(q, commandId, now)));
+}
+
+export function* acknowledgeRetroDispatchSteps(q: Q, commandId: string, now: number) {
+  const { retroDispatch } = q.t;
+  const changed = yield* q.all(
+    q.orm
+      .update(retroDispatch)
+      .set({
+        acknowledgedAt: sql`COALESCE(${retroDispatch.acknowledgedAt}, ${now})`,
+        fetchedAt: sql`COALESCE(${retroDispatch.fetchedAt}, ${now})`,
+      })
+      .where(
+        and(
+          eq(retroDispatch.commandId, commandId),
+          unreleased(q),
+          isNull(retroDispatch.cancelRequestedAt),
+        ),
+      )
+      .returning({ commandId: retroDispatch.commandId }),
   );
+  return changed.length === 1;
 }
 
 export function requestRetroDispatchCancel(db: Database, commandId: string, now: number): void {
-  db.run(
-    "UPDATE retro_dispatch SET cancel_requested_at = COALESCE(cancel_requested_at, ?) WHERE command_id = ? AND released_at IS NULL",
-    [now, commandId],
+  settled(sqliteDb(db).run((q) => requestRetroDispatchCancelSteps(q, commandId, now)));
+}
+
+export function* requestRetroDispatchCancelSteps(q: Q, commandId: string, now: number) {
+  const { retroDispatch } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(retroDispatch)
+      .set({ cancelRequestedAt: sql`COALESCE(${retroDispatch.cancelRequestedAt}, ${now})` })
+      .where(and(eq(retroDispatch.commandId, commandId), unreleased(q))),
   );
 }
+
+type DispatchResult = { commandId: string; result: unknown; now: number };
 
 export function recordRetroDispatchResult(
   db: Database,
-  input: { commandId: string; result: unknown; now: number },
+  input: DispatchResult,
 ): "recorded" | "duplicate" | "conflict" | "released" {
-  return immediate(db, () => {
-    const dispatch = getRetroDispatch(db, input.commandId);
-    if (dispatch === null) return "released";
-    const text = JSON.stringify(input.result);
-    if (dispatch.result !== null)
-      return JSON.stringify(dispatch.result) === text ? "duplicate" : "conflict";
-    if (dispatch.releasedAt !== null) return "released";
-    db.run(
-      `UPDATE retro_dispatch SET result = ?, result_at = ?, released_at = ?, release_reason = 'result',
-         acknowledged_at = COALESCE(acknowledged_at, ?) WHERE command_id = ?`,
-      [text, input.now, input.now, input.now, input.commandId],
-    );
-    return "recorded";
-  });
+  return settled(sqliteDb(db).transaction((q) => recordRetroDispatchResultSteps(q, input)));
 }
 
-export function releaseRetroDispatch(
-  db: Database,
-  input: { commandId: string; reason: Exclude<RetroDispatchRelease, "result">; now: number },
-): boolean {
-  return (
-    db.run(
-      "UPDATE retro_dispatch SET released_at = ?, release_reason = ? WHERE command_id = ? AND released_at IS NULL",
-      [input.now, input.reason, input.commandId],
-    ).changes === 1
+export function* recordRetroDispatchResultSteps(q: Q, input: DispatchResult) {
+  const { retroDispatch } = q.t;
+  const dispatch = yield* getRetroDispatchSteps(q, input.commandId);
+  if (dispatch === null) return "released" as const;
+  const text = JSON.stringify(input.result);
+  if (dispatch.result !== null) {
+    const same =
+      q.dialect === "sqlite"
+        ? JSON.stringify(dispatch.result) === text
+        : isDeepStrictEqual(dispatch.result, JSON.parse(text));
+    return same ? ("duplicate" as const) : ("conflict" as const);
+  }
+  if (dispatch.releasedAt !== null) return "released" as const;
+  yield* q.exec(
+    q.orm
+      .update(retroDispatch)
+      .set({
+        result: jsonIn(q, input.result),
+        resultAt: input.now,
+        releasedAt: input.now,
+        releaseReason: "result",
+        acknowledgedAt: sql`COALESCE(${retroDispatch.acknowledgedAt}, ${input.now})`,
+      })
+      .where(eq(retroDispatch.commandId, input.commandId)),
   );
+  return "recorded" as const;
+}
+
+type Release = { commandId: string; reason: Exclude<RetroDispatchRelease, "result">; now: number };
+
+export function releaseRetroDispatch(db: Database, input: Release): boolean {
+  return settled(sqliteDb(db).run((q) => releaseRetroDispatchSteps(q, input)));
+}
+
+export function* releaseRetroDispatchSteps(q: Q, input: Release) {
+  const { retroDispatch } = q.t;
+  const changed = yield* q.all(
+    q.orm
+      .update(retroDispatch)
+      .set({ releasedAt: input.now, releaseReason: input.reason })
+      .where(and(eq(retroDispatch.commandId, input.commandId), unreleased(q)))
+      .returning({ commandId: retroDispatch.commandId }),
+  );
+  return changed.length === 1;
 }
 
 export function settleRetroDispatch(db: Database, commandId: string, now: number): void {
-  db.run(
-    "UPDATE retro_dispatch SET settled_at = COALESCE(settled_at, ?) WHERE command_id = ? AND released_at IS NOT NULL",
-    [now, commandId],
+  settled(sqliteDb(db).run((q) => settleRetroDispatchSteps(q, commandId, now)));
+}
+
+export function* settleRetroDispatchSteps(q: Q, commandId: string, now: number) {
+  const { retroDispatch } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(retroDispatch)
+      .set({ settledAt: sql`COALESCE(${retroDispatch.settledAt}, ${now})` })
+      .where(and(eq(retroDispatch.commandId, commandId), isNotNull(retroDispatch.releasedAt))),
   );
 }
 
-export function recordRetroGeneration(
-  db: Database,
-  input: {
-    retroId: string;
-    diagnostic: RetroGenerationDiagnostic;
-    detail: string;
-    now: number;
-    until?: number | null;
-    activeMs?: number;
-  },
-): RetroGenerationRow {
-  return immediate(db, () => {
-    const previous = retroGeneration(db, input.retroId);
-    const waited =
-      previous !== null && RETRO_WAIT_DIAGNOSTICS.includes(previous.diagnostic)
-        ? Math.max(0, input.now - previous.updatedAt)
-        : 0;
-    const since =
-      previous !== null && previous.diagnostic === input.diagnostic ? previous.since : input.now;
-    db.run(
-      `INSERT INTO retro_generation (retro_id, diagnostic, detail, since, until, wait_ms, active_ms,
-         updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (retro_id) DO UPDATE SET diagnostic = excluded.diagnostic,
-         detail = excluded.detail, since = excluded.since, until = excluded.until,
-         wait_ms = excluded.wait_ms, active_ms = excluded.active_ms, updated_at = excluded.updated_at`,
-      [
-        input.retroId,
-        input.diagnostic,
-        input.detail.slice(0, 2000),
-        since,
-        input.until ?? null,
-        (previous?.waitMs ?? 0) + waited,
-        (previous?.activeMs ?? 0) + Math.max(0, input.activeMs ?? 0),
-        input.now,
-      ],
-    );
-    return retroGeneration(db, input.retroId)!;
-  });
+type Generation = {
+  retroId: string;
+  diagnostic: RetroGenerationDiagnostic;
+  detail: string;
+  now: number;
+  until?: number | null;
+  activeMs?: number;
+};
+
+export function recordRetroGeneration(db: Database, input: Generation): RetroGenerationRow {
+  return settled(sqliteDb(db).transaction((q) => recordRetroGenerationSteps(q, input)));
+}
+
+export function* recordRetroGenerationSteps(q: Q, input: Generation) {
+  const { retroGeneration: generation } = q.t;
+  const previous = yield* retroGenerationSteps(q, input.retroId);
+  const waited =
+    previous !== null && RETRO_WAIT_DIAGNOSTICS.includes(previous.diagnostic)
+      ? Math.max(0, input.now - previous.updatedAt)
+      : 0;
+  const since =
+    previous !== null && previous.diagnostic === input.diagnostic ? previous.since : input.now;
+  const row = {
+    retroId: input.retroId,
+    diagnostic: input.diagnostic,
+    detail: input.detail.slice(0, 2000),
+    since,
+    until: input.until ?? null,
+    waitMs: (previous?.waitMs ?? 0) + waited,
+    activeMs: (previous?.activeMs ?? 0) + Math.max(0, input.activeMs ?? 0),
+    updatedAt: input.now,
+  };
+  yield* q.exec(
+    q.orm
+      .insert(generation)
+      .values(row)
+      .onConflictDoUpdate({ target: generation.retroId, set: { ...row, retroId: undefined } }),
+  );
+  return (yield* retroGenerationSteps(q, input.retroId))!;
 }
 
 export function retroGeneration(db: Database, retroId: string): RetroGenerationRow | null {
-  return db
-    .query<RetroGenerationRow, [string]>(
-      `SELECT retro_id AS retroId, diagnostic, detail, since, until, wait_ms AS waitMs,
-         active_ms AS activeMs, updated_at AS updatedAt FROM retro_generation WHERE retro_id = ?`,
-    )
-    .get(retroId);
+  return settled(sqliteDb(db).run((q) => retroGenerationSteps(q, retroId)));
+}
+
+export function* retroGenerationSteps(q: Q, retroId: string) {
+  const { retroGeneration: generation } = q.t;
+  const row = yield* q.one(q.orm.select().from(generation).where(eq(generation.retroId, retroId)));
+  return row === undefined
+    ? null
+    : ({ ...row, diagnostic: row.diagnostic as RetroGenerationDiagnostic } as RetroGenerationRow);
+}
+
+/** Why the dispatch for one attempt of a retro was released, or null when it was not. */
+export function retroDispatchReleaseReason(
+  db: Database,
+  retroId: string,
+  attempt: number,
+): string | null {
+  return settled(sqliteDb(db).run((q) => retroDispatchReleaseReasonSteps(q, retroId, attempt)));
+}
+
+export function* retroDispatchReleaseReasonSteps(q: Q, retroId: string, attempt: number) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ reason: retroDispatch.releaseReason })
+      .from(retroDispatch)
+      .where(and(eq(retroDispatch.retroId, retroId), eq(retroDispatch.attempt, attempt))),
+  );
+  return row?.reason ?? null;
+}
+
+/** The dispatch of a retro's latest attempt, finished or not. */
+export function latestRetroDispatch(db: Database, retroId: string): RetroDispatch | null {
+  return settled(sqliteDb(db).run((q) => latestRetroDispatchSteps(q, retroId)));
+}
+
+export function* latestRetroDispatchSteps(q: Q, retroId: string) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(retroDispatch)
+      .where(eq(retroDispatch.retroId, retroId))
+      .orderBy(desc(retroDispatch.attempt))
+      .limit(1),
+  );
+  return row === undefined ? null : fromRow(q, row);
+}
+
+/** The latest dispatch before `attempt` that recorded a result. */
+export function previousRetroResultDispatch(
+  db: Database,
+  retroId: string,
+  attempt: number,
+): RetroDispatch | null {
+  return settled(sqliteDb(db).run((q) => previousRetroResultDispatchSteps(q, retroId, attempt)));
+}
+
+export function* previousRetroResultDispatchSteps(q: Q, retroId: string, attempt: number) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(retroDispatch)
+      .where(
+        and(
+          eq(retroDispatch.retroId, retroId),
+          lt(retroDispatch.attempt, attempt),
+          isNotNull(retroDispatch.result),
+        ),
+      )
+      .orderBy(desc(retroDispatch.attempt))
+      .limit(1),
+  );
+  return row === undefined ? null : fromRow(q, row);
+}
+
+/** Whether any dispatch of the retro is still unreleased or unsettled. */
+export function retroHasUnfinishedDispatch(db: Database, retroId: string): boolean {
+  return settled(sqliteDb(db).run((q) => retroHasUnfinishedDispatchSteps(q, retroId)));
+}
+
+export function* retroHasUnfinishedDispatchSteps(q: Q, retroId: string) {
+  const { retroDispatch } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(retroDispatch)
+      .where(and(eq(retroDispatch.retroId, retroId), unfinished(q)))
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+/**
+ * Retros the dispatcher advances, oldest first: those still to generate, unless their generation
+ * failed for good, and those with a dispatch still to release or settle.
+ */
+export function retrosToAdvance(db: Database): string[] {
+  return settled(sqliteDb(db).run((q) => retrosToAdvanceSteps(q)));
+}
+
+export function* retrosToAdvanceSteps(q: Q) {
+  const { retro, retroGeneration: generation, retroDispatch } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: retro.id })
+      .from(retro)
+      .where(
+        or(
+          and(
+            inArray(retro.state, ["queued", "generating", "failed"]),
+            notInArray(
+              retro.id,
+              q.orm
+                .select({ id: generation.retroId })
+                .from(generation)
+                .where(eq(generation.diagnostic, "failed")),
+            ),
+          ),
+          inArray(
+            retro.id,
+            q.orm.select({ id: retroDispatch.retroId }).from(retroDispatch).where(unfinished(q)),
+          ),
+        ),
+      )
+      .orderBy(retro.createdAt, retro.id),
+  );
+  return rows.map((row) => row.id);
 }

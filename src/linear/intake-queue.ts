@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { linearCommentOf } from "./comments";
 import { journalCaught } from "../journal";
 import { acknowledgeNewSession } from "./acknowledge";
@@ -9,6 +10,10 @@ import type { InboxStore, QueuedLinearEvent } from "./inbox";
 
 /** Intakes that run at once. The rest wait in `inbox_event`, oldest first. */
 export const INTAKE_CONCURRENCY = 2;
+
+export const INTAKE_LEASE_MS = 2 * 60_000;
+
+export const INTAKE_POLL_MS = 1_000;
 
 /** Wait after the 1st, 2nd, 3rd, 4th failed attempt, then the last entry from then on. */
 export const INTAKE_RETRY_MS = [30_000, 60_000, 120_000, 5 * 60_000, 10 * 60_000] as const;
@@ -46,6 +51,9 @@ export function createIntakeQueue(options: {
   deliver: (event: AcceptedLinearEvent, attempts: number) => Promise<void | boolean>;
   ledger?: LinearLedger;
   concurrency?: number;
+  owner?: string;
+  leaseMs?: number;
+  pollMs?: number;
   now?: () => number;
   log?: (line: string) => void;
 }): IntakeQueue {
@@ -53,22 +61,46 @@ export function createIntakeQueue(options: {
   const now = options.now ?? Date.now;
   const log = options.log ?? ((line: string) => console.error(line));
   const concurrency = options.concurrency ?? INTAKE_CONCURRENCY;
-  const arriving = new Map<string, Promise<void>>();
-  const running = new Map<string, Promise<void>>();
+  const owner = options.owner ?? `paws:${randomUUID()}`;
+  const leaseMs = options.leaseMs ?? INTAKE_LEASE_MS;
+  const pollMs = options.pollMs ?? INTAKE_POLL_MS;
+  const arrivals = new Set<Promise<void>>();
+  const intakes = new Set<Promise<void>>();
   let pausedUntil = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+
+  const lease = () => ({ owner, now: now(), leaseMs });
 
   const arm = (delayMs: number) => {
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(
       () => {
         timer = null;
-        pump();
+        guarded("intake-queue.createIntakeQueue.poll", pump);
       },
       Math.max(0, delayMs),
     );
     timer.unref?.();
+  };
+
+  const held = (dedupeKey: string, work: () => Promise<void>, into: Set<Promise<void>>) => {
+    const renewal = setInterval(() => {
+      guarded("intake-queue.createIntakeQueue.renew", () => {
+        if (!store.renew(dedupeKey, lease()))
+          log(`linear intake ${dedupeKey} lost its lease to another instance`);
+      });
+    }, leaseMs / 4);
+    renewal.unref?.();
+    const running: Promise<void> = work().finally(() => {
+      clearInterval(renewal);
+      into.delete(running);
+      guarded("intake-queue.createIntakeQueue.release", () => {
+        store.release(dedupeKey, owner);
+        pump();
+      });
+    });
+    into.add(running);
   };
 
   const pump = () => {
@@ -77,96 +109,87 @@ export function createIntakeQueue(options: {
     timer = null;
     const at = now();
     if (pausedUntil > at) return arm(pausedUntil - at);
-    const ordered = new Set<string>();
-    let next: number | null = null;
-    for (const queued of store.listQueued()) {
-      const key = queued.event.dedupeKey;
-      const lane = queued.event.sessionId ?? queued.event.issueId;
-      const behind = lane !== null && ordered.has(lane);
-      if (lane !== null) ordered.add(lane);
-      if (behind || running.has(key) || arriving.has(key)) continue;
-      if (queued.nextAttemptAt !== null && queued.nextAttemptAt > at) {
-        next = Math.min(next ?? Infinity, queued.nextAttemptAt);
-        continue;
-      }
-      if (running.size >= concurrency) return;
-      const held = options.ledger?.admit("intake", "normal") ?? null;
-      if (held !== null) {
-        pausedUntil = at + held.retryAfterMs;
-        return arm(held.retryAfterMs);
+    while (intakes.size < concurrency) {
+      const queued = store.claimNext({ owner, now: at, leaseMs });
+      if (queued === null) break;
+      const hold = options.ledger?.admit("intake", "normal") ?? null;
+      if (hold !== null) {
+        store.release(queued.event.dedupeKey, owner);
+        pausedUntil = at + hold.retryAfterMs;
+        return arm(hold.retryAfterMs);
       }
       start(queued);
     }
-    if (next !== null) arm(next - at);
+    arm(pollMs);
   };
 
   const start = (queued: QueuedLinearEvent) => {
     const event = queued.event;
-    const work = (async () => {
-      try {
-        await options.deliver(store.get(event.dedupeKey) ?? event, queued.attempts);
-        store.markHandled(event.dedupeKey);
-      } catch (error) {
-        journalCaught(error, "intake-queue.createIntakeQueue.deliver", null);
-        if (stopped) return;
-        if (error instanceof LinearEntityNotFoundError && error.entity === "AgentSession") {
-          log(`linear session ${event.sessionId ?? "unknown"} no longer exists; skipped`);
+    held(
+      event.dedupeKey,
+      async () => {
+        try {
+          await options.deliver(store.get(event.dedupeKey) ?? event, queued.attempts);
           store.markHandled(event.dedupeKey);
-          return;
-        }
-        const at = now();
-        const message = error instanceof Error ? error.message : "intake failed";
-        if (error instanceof LinearRateLimitError) {
-          pausedUntil = Math.max(pausedUntil, at + error.retryAfterMs);
+        } catch (error) {
+          journalCaught(error, "intake-queue.createIntakeQueue.deliver", null);
+          if (stopped) return;
+          if (error instanceof LinearEntityNotFoundError && error.entity === "AgentSession") {
+            log(`linear session ${event.sessionId ?? "unknown"} no longer exists; skipped`);
+            store.markHandled(event.dedupeKey);
+            return;
+          }
+          const at = now();
+          const message = error instanceof Error ? error.message : "intake failed";
+          if (error instanceof LinearRateLimitError) {
+            pausedUntil = Math.max(pausedUntil, at + error.retryAfterMs);
+            store.markFailed(event.dedupeKey, {
+              error: message,
+              nextAttemptAt: at + Math.max(error.retryAfterMs, INTAKE_RETRY_MS[0]),
+              counted: false,
+            });
+            return;
+          }
+          const attempts = queued.attempts + 1;
+          const waitMs = intakeRetryMs(attempts);
           store.markFailed(event.dedupeKey, {
             error: message,
-            nextAttemptAt: at + Math.max(error.retryAfterMs, INTAKE_RETRY_MS[0]),
-            counted: false,
+            nextAttemptAt: at + waitMs,
+            counted: true,
           });
-          return;
+          log(
+            `linear intake ${event.dedupeKey} failed (attempt ${attempts}), retrying in ${Math.round(waitMs / 1000)}s: ${message}`,
+          );
         }
-        const attempts = queued.attempts + 1;
-        const waitMs = intakeRetryMs(attempts);
-        store.markFailed(event.dedupeKey, {
-          error: message,
-          nextAttemptAt: at + waitMs,
-          counted: true,
-        });
-        log(
-          `linear intake ${event.dedupeKey} failed (attempt ${attempts}), retrying in ${Math.round(waitMs / 1000)}s: ${message}`,
-        );
-      }
-    })().finally(() => {
-      running.delete(event.dedupeKey);
-      pump();
-    });
-    running.set(event.dedupeKey, work);
+      },
+      intakes,
+    );
   };
 
   const idle = async () => {
-    while (arriving.size > 0 || running.size > 0)
-      await Promise.allSettled([...arriving.values(), ...running.values()]);
+    while (arrivals.size > 0 || intakes.size > 0)
+      await Promise.allSettled([...arrivals, ...intakes]);
   };
 
   return {
     accepts: isQueuedIntake,
     arrive(event) {
-      if (stopped || arriving.has(event.dedupeKey) || running.has(event.dedupeKey)) return;
-      const work = options
-        .arrive(event)
-        .then((accepted) => {
-          if (accepted === false) store.markHandled(event.dedupeKey);
-        })
-        .catch((error: unknown) => {
-          journalCaught(error, "intake-queue.arrive.then", null);
-          const message = error instanceof Error ? error.message : "first activity failed";
-          log(`linear first activity for ${event.dedupeKey} failed: ${message}`);
-        })
-        .finally(() => {
-          arriving.delete(event.dedupeKey);
-          pump();
-        });
-      arriving.set(event.dedupeKey, work);
+      if (stopped || store.claim(event.dedupeKey, lease()) === null) return;
+      held(
+        event.dedupeKey,
+        () =>
+          options
+            .arrive(event)
+            .then((accepted) => {
+              if (accepted === false) store.markHandled(event.dedupeKey);
+            })
+            .catch((error: unknown) => {
+              journalCaught(error, "intake-queue.arrive.then", null);
+              const message = error instanceof Error ? error.message : "first activity failed";
+              log(`linear first activity for ${event.dedupeKey} failed: ${message}`);
+            }),
+        arrivals,
+      );
     },
     wake: pump,
     idle,
@@ -202,6 +225,7 @@ export function createLinearIntake(options: {
   signal: AbortSignal;
   ledger?: LinearLedger;
   concurrency?: number;
+  owner?: string;
   now?: () => number;
   log?: (line: string) => void;
 }): { onEvent: LinearEventDelivery; queue: IntakeQueue } {
@@ -290,10 +314,19 @@ export function createLinearIntake(options: {
     deliver: (event, attempts) => run(event, { phase: "intake", attempts }),
     ledger: options.ledger,
     concurrency: options.concurrency,
+    owner: options.owner,
     now: options.now,
     log: options.log,
   });
   return { onEvent, queue };
+}
+
+function guarded(site: string, run: () => void): void {
+  try {
+    run();
+  } catch (error) {
+    journalCaught(error, site, null);
+  }
 }
 
 function initialActivityRequest(event: AcceptedLinearEvent): TrackerRequestOptions | undefined {

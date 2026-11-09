@@ -110,7 +110,7 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
   const drain = async () => {
     while ((await jobs.tick()) !== null);
     for (let round = 0; round < 20; round++) {
-      const claimed = outbox.tick();
+      const claimed = await outbox.tick();
       await outbox.idle();
       if (claimed.length === 0) break;
     }

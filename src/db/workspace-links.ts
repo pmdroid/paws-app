@@ -1,10 +1,12 @@
-import {
-  workspaceMemberUsableSql,
-  workspaceMemberUsable,
-  auditWorkspaceAccess,
-  workspaceMember,
-} from "./workspace";
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, exists, lte, ne, not, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
+import {
+  workspaceMemberUsableWhere,
+  workspaceMemberUsable,
+  auditWorkspaceAccessSteps,
+  workspaceMemberSteps,
+} from "./workspace";
 import { immediate } from "./tx";
 
 export type WorkspaceIdentityLink = {
@@ -17,66 +19,112 @@ export type WorkspaceIdentityLink = {
   checkedAt: number;
 };
 
+export function* workspaceIdentityLinksSteps(q: Q, workspaceId: string) {
+  const { workspaceIdentityLink: l, workspaceUser: u } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        userId: l.userId,
+        name: u.name,
+        email: u.email,
+        provider: l.provider,
+        externalId: l.externalId,
+        installationId: l.installationId,
+        method: l.method,
+        status: l.status,
+        checkedAt: l.checkedAt,
+      })
+      .from(l)
+      .innerJoin(u, eq(u.id, l.userId))
+      .where(eq(l.workspaceId, workspaceId))
+      .orderBy(asc(u.name), asc(l.provider)),
+  );
+  return rows as (WorkspaceIdentityLink & { name: string; email: string })[];
+}
+
 export function workspaceIdentityLinks(db: Database, workspaceId: string) {
-  return db
-    .query<WorkspaceIdentityLink & { name: string; email: string }, [string]>(
-      `SELECT l.user_id AS userId,u.name,u.email,l.provider,l.external_id AS externalId,
-      l.installation_id AS installationId,l.method,l.status,l.checked_at AS checkedAt
-      FROM workspace_identity_link l JOIN workspace_user u ON u.id=l.user_id
-      WHERE l.workspace_id=? ORDER BY u.name,l.provider`,
-    )
-    .all(workspaceId);
+  return settled(sqliteDb(db).run((q) => workspaceIdentityLinksSteps(q, workspaceId)));
+}
+
+export function* workspaceIdentityCandidatesSteps(q: Q, workspaceId: string) {
+  const { workspaceUser: u, workspaceMember: m, workspaceIdentityLink: l } = q.t;
+  const manualSlack = q.orm
+    .select({ one: sql`1` })
+    .from(l)
+    .where(
+      and(
+        eq(l.workspaceId, m.workspaceId),
+        eq(l.userId, u.id),
+        eq(l.provider, "slack"),
+        eq(l.method, "manual"),
+      ),
+    );
+  return yield* q.all(
+    q.orm
+      .select({ userId: u.id, email: u.email })
+      .from(u)
+      .innerJoin(m, eq(m.userId, u.id))
+      .where(
+        and(
+          eq(m.workspaceId, workspaceId),
+          workspaceMemberUsableWhere(m),
+          not(exists(manualSlack)),
+        ),
+      )
+      .orderBy(asc(u.id)),
+  );
 }
 
 export function workspaceIdentityCandidates(db: Database, workspaceId: string) {
-  return db
-    .query<{ userId: string; email: string }, [string]>(
-      `SELECT u.id AS userId,u.email FROM workspace_user u
-      JOIN workspace_member m ON m.user_id=u.id WHERE m.workspace_id=? AND ${workspaceMemberUsableSql("m")}
-      AND NOT EXISTS(SELECT 1 FROM workspace_identity_link l WHERE l.workspace_id=m.workspace_id
-      AND l.user_id=u.id AND l.provider='slack' AND l.method='manual') ORDER BY u.id`,
-    )
-    .all(workspaceId);
+  return settled(sqliteDb(db).run((q) => workspaceIdentityCandidatesSteps(q, workspaceId)));
 }
 
-export function saveWorkspaceIdentityLink(
-  db: Database,
-  input: WorkspaceIdentityLink & { workspaceId: string; actorId?: string },
-): void {
-  immediate(db, () => {
-    const member = workspaceMember(db, input.workspaceId, input.userId);
-    if (!workspaceMemberUsable(member)) throw new Error("Choose an active workspace member.");
-    if (input.method === "manual" || input.actorId !== undefined) {
-      const actor = workspaceMember(db, input.workspaceId, input.actorId ?? "");
-      if (!workspaceMemberUsable(actor) || actor.role !== "admin")
-        throw new Error("Workspace administration is required.");
-    }
-    const changed = db.run(
-      `INSERT INTO workspace_identity_link(workspace_id,user_id,provider,external_id,installation_id,method,status,checked_at)
-      VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,user_id,provider) DO UPDATE SET
-      external_id=excluded.external_id,installation_id=excluded.installation_id,method=excluded.method,
-      status=excluded.status,checked_at=excluded.checked_at
-      WHERE (? OR workspace_identity_link.method!='manual')
-      AND workspace_identity_link.checked_at<=excluded.checked_at`,
-      [
-        input.workspaceId,
-        input.userId,
-        input.provider,
-        input.externalId,
-        input.installationId,
-        input.method,
-        input.status,
-        input.checkedAt,
-        input.method === "manual" || input.actorId !== undefined,
-      ],
-    ).changes;
-    if (changed > 0)
-      auditWorkspaceAccess(db, {
+type IdentityLinkInput = WorkspaceIdentityLink & { workspaceId: string; actorId?: string };
+
+export function* saveWorkspaceIdentityLinkSteps(q: Q, input: IdentityLinkInput) {
+  const { workspaceIdentityLink: l } = q.t;
+  const member = yield* workspaceMemberSteps(q, input.workspaceId, input.userId);
+  if (!workspaceMemberUsable(member)) throw new Error("Choose an active workspace member.");
+  const privileged = input.method === "manual" || input.actorId !== undefined;
+  if (privileged) {
+    const actor = yield* workspaceMemberSteps(q, input.workspaceId, input.actorId ?? "");
+    if (!workspaceMemberUsable(actor) || actor.role !== "admin")
+      throw new Error("Workspace administration is required.");
+  }
+  const fields = {
+    externalId: input.externalId,
+    installationId: input.installationId,
+    method: input.method,
+    status: input.status,
+    checkedAt: input.checkedAt,
+  };
+  const newer = lte(l.checkedAt, sql.raw("excluded.checked_at"));
+  const changed = yield* q.all(
+    q.orm
+      .insert(l)
+      .values({
         workspaceId: input.workspaceId,
-        userId: input.actorId ?? input.userId,
-        action: "identity.link.changed",
-        subject: `${input.userId}:${input.provider}:${input.method}:${input.status}:${input.externalId ?? ""}`,
-        now: input.checkedAt,
-      });
-  });
+        userId: input.userId,
+        provider: input.provider,
+        ...fields,
+      })
+      .onConflictDoUpdate({
+        target: [l.workspaceId, l.userId, l.provider],
+        set: fields,
+        setWhere: privileged ? newer : and(ne(l.method, "manual"), newer),
+      })
+      .returning({ userId: l.userId }),
+  );
+  if (changed.length > 0)
+    yield* auditWorkspaceAccessSteps(q, {
+      workspaceId: input.workspaceId,
+      userId: input.actorId ?? input.userId,
+      action: "identity.link.changed",
+      subject: `${input.userId}:${input.provider}:${input.method}:${input.status}:${input.externalId ?? ""}`,
+      now: input.checkedAt,
+    });
+}
+
+export function saveWorkspaceIdentityLink(db: Database, input: IdentityLinkInput): void {
+  immediate(db, () => settled(sqliteDb(db).run((q) => saveWorkspaceIdentityLinkSteps(q, input))));
 }

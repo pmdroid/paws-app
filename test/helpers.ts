@@ -1,9 +1,18 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { candidateRef, mirrorPath, type RunAgentOptions, type RunAgentResult } from "../src/acp";
-import { migrate, openDatabase } from "../src/db";
+import {
+  MIGRATIONS_FOLDER,
+  getRun,
+  getWorkItem,
+  legacyMigrate,
+  migrate,
+  openDatabase,
+  recordItemCandidate,
+} from "../src/db";
 import type { Database } from "bun:sqlite";
+import { writeStoredToken, type StoredLinearToken } from "../src/linear";
 
 export function tempHome(): string {
   return mkdtempSync(join(tmpdir(), "paws-"));
@@ -24,6 +33,29 @@ export function tempDb(): Database {
   const db = openDatabase(":memory:");
   migrate(db);
   return db;
+}
+
+function legacyThenDrizzle(db: Database): Database {
+  legacyMigrate(db);
+  const journal = JSON.parse(
+    readFileSync(join(MIGRATIONS_FOLDER, "meta/_journal.json"), "utf8"),
+  ) as {
+    entries: { tag: string }[];
+  };
+  for (const { tag } of journal.entries.slice(1))
+    for (const statement of readFileSync(join(MIGRATIONS_FOLDER, `${tag}.sql`), "utf8").split(
+      "--> statement-breakpoint",
+    ))
+      db.run(statement);
+  return db;
+}
+
+export function legacyTempDb(): Database {
+  return legacyThenDrizzle(openDatabase(":memory:"));
+}
+
+export function legacyMigratedDatabase(path: string): Database {
+  return legacyThenDrizzle(openDatabase(path));
 }
 
 // Migrating a new file database commits once per migration, about 0.6 s of
@@ -101,6 +133,7 @@ export function runnerCheckout(pawsRoot: string, itemId: string): string {
 export function cloneRunner(
   repository: { owner: string; repo: string },
   agent: (options: RunAgentOptions) => Promise<RunAgentResult>,
+  db?: Database,
 ) {
   const git = (args: string[]) => {
     const child = Bun.spawnSync(["/usr/bin/git", ...args]);
@@ -134,8 +167,29 @@ export function cloneRunner(
     ]);
     git(["-C", tree, "checkout", "-q", "--detach", "-f", "refs/paws/start"]);
     const result = await agent({ ...options, worktreePath: tree });
-    if (options.role === "implementer")
+    if (options.role === "implementer") {
       git(["--git-dir", mirror, "fetch", "-q", tree, `+HEAD:${ref}`]);
+      const item = db && getWorkItem(db, getRun(db, options.runId)?.itemId ?? "");
+      if (item)
+        recordItemCandidate(db, {
+          itemId: item.id,
+          sha: git(["--git-dir", mirror, "rev-parse", ref]),
+          branch: item.branchName,
+          recordedAt: Date.now(),
+        });
+    }
     return result;
   };
+}
+
+export function storeLinearToken(home: string, token: StoredLinearToken): void {
+  const path = join(home, "paws.db");
+  mkdirSync(dirname(path), { recursive: true });
+  const db = existsSync(path) ? openDatabase(path) : migratedDatabase(path);
+  try {
+    migrate(db);
+    writeStoredToken(db, join(home, "secrets"), token);
+  } finally {
+    db.close();
+  }
 }

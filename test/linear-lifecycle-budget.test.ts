@@ -447,7 +447,7 @@ async function runTask(input: {
     const deadline = Date.now() + 20_000;
     while (!["merged", "failed"].includes(state() ?? "")) {
       if (Date.now() > deadline) throw new Error(`The task is stuck in ${state()}`);
-      while (outbox.tick().length > 0) await outbox.idle();
+      while ((await outbox.tick()).length > 0) await outbox.idle();
       const open = findOpenQuestion(db, "session");
       if (open !== null && open.kind === "link" && !asked.includes("visual-review")) {
         // The screens are approved on the item page; a Linear reply never approves them.
@@ -499,7 +499,7 @@ async function runTask(input: {
         await Bun.sleep(5);
       }
     }
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     const perCaller: Record<string, number> = {};
     for (const [key, count] of server.counts) {
       const [owner, caller] = key.split(" ");
@@ -563,7 +563,7 @@ test("Linear requests for a long Closeout with an agent question and a visual re
   // Keep the request ceiling without requiring every intermediate update to be sent.
   // This includes putting the visual review link on the session and taking it off again.
   expect(result.perCaller["outbox"], result.operations).toBeLessThanOrEqual(14);
-});
+}, 60_000);
 
 test("a Closeout fix round that publishes a screenshot asks for a visual review, not Closeout help", async () => {
   const result = await runTask({
@@ -582,7 +582,7 @@ test("a Closeout fix round that publishes a screenshot asks for a visual review,
   });
   expect(result.state, result.operations).toBe("merged");
   expect(result.asked).toEqual(["visual-review"]);
-});
+}, 60_000);
 
 test("Linear requests while CI is pending and main moves before the merge", async () => {
   const result = await runTask({

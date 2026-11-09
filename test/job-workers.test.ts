@@ -22,6 +22,7 @@ test("Paws runs more task starts at once than the four workers it used to have",
   const held: string[] = [];
   const loops = startLoops({
     db,
+    instanceId: "01JINSTANCEACME0000000000",
     signal: controller.signal,
     prepare({ jobs }) {
       jobs.register(JOB_KIND.start, async (job) => {

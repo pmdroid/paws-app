@@ -1,5 +1,6 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
+import { and, eq, inArray, isNull, like, or, sql } from "drizzle-orm";
 import {
   CommandBus,
   JOB_KIND,
@@ -8,12 +9,15 @@ import {
   transition,
   type LinearCommand,
 } from "../core";
+import { forwardCommand } from "./command-delivery";
 import { applyWorkItemEvent, getWorkItem, type WorkItemRecord } from "./items";
 import {
   claimNextJob,
   completeJob,
   parkLeasedJob,
+  emitJobReady,
   enqueueJobOnce,
+  enqueueJobOnceSteps,
   errorText,
   noteJobError,
 } from "./jobs";
@@ -23,14 +27,13 @@ import { markRun } from "./runs";
 import { halt } from "./halt";
 import { enqueueEndedSessionFace, stoppedResponse } from "./stop-response";
 import { mergeCallInFlight, getConfirmedRemoteMerge } from "./remote-merges";
+import { orm } from "./orm";
+import { job as jobTable, question, workItem } from "./schema";
 import { immediate } from "./tx";
+import { settled, sqliteDb, type Q } from "./db";
 
-export function enqueueCommand(
-  db: Database,
-  command: LinearCommand,
-  now = command.requestedAt,
-): number {
-  return enqueueJobOnce(db, {
+export function* enqueueCommandSteps(q: Q, command: LinearCommand, now = command.requestedAt) {
+  return yield* enqueueJobOnceSteps(q, {
     queue: JOB_KIND.command,
     jobKey: `cmd:${command.type}:${command.itemId}:${command.requestedAt}`,
     priority: 0,
@@ -38,6 +41,16 @@ export function enqueueCommand(
     now,
     runAt: now,
   });
+}
+
+export function enqueueCommand(
+  db: Database,
+  command: LinearCommand,
+  now = command.requestedAt,
+): number {
+  const { id, inserted } = settled(sqliteDb(db).run((q) => enqueueCommandSteps(q, command, now)));
+  if (inserted) emitJobReady(db);
+  return id;
 }
 
 export function applyLinearCommand(
@@ -54,6 +67,20 @@ export function applyLinearCommand(
    * close job first posts `comment` on it, as an issue canceled in Linear does.
    */
   options: CommandOptions = {},
+): { applied: boolean; deferred?: boolean } {
+  return immediate(db, () => {
+    const result = applyCommandRows(db, command, now, response, options);
+    if (result.applied) forwardCommand(db, command, now);
+    return result;
+  });
+}
+
+function applyCommandRows(
+  db: Database,
+  command: LinearCommand,
+  now: number,
+  response: string | undefined,
+  options: CommandOptions,
 ): { applied: boolean; deferred?: boolean } {
   return immediate(db, () => {
     const item = getWorkItem(db, command.itemId);
@@ -105,11 +132,18 @@ export function applyLinearCommand(
       journalCaught(caughtError1, "commands.applyLinearCommand.applyWorkItemEvent", command.itemId);
       return { applied: false };
     }
-    db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
-    db.run(
-      "UPDATE question SET cancelled_at = ? WHERE item_id = ? AND status IN ('open', 'queued') AND cancelled_at IS NULL",
-      [now, item.id],
-    );
+    orm(db).update(workItem).set({ cancelRequested: 1 }).where(eq(workItem.id, item.id)).run();
+    orm(db)
+      .update(question)
+      .set({ cancelledAt: now })
+      .where(
+        and(
+          eq(question.itemId, item.id),
+          inArray(question.status, ["open", "queued"]),
+          isNull(question.cancelledAt),
+        ),
+      )
+      .run();
     if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
     const keepPullRequest =
       options.keepPullRequest ?? (command.type === "stop" && command.source === "linear");
@@ -117,11 +151,16 @@ export function applyLinearCommand(
       options.closePullRequest !== undefined ||
       (!keepPullRequest &&
         (item.state === "merge_queue" ||
-          db
-            .query(
-              "SELECT 1 FROM job WHERE (queue=? OR queue LIKE ?) AND json_extract(payload,'$.itemId')=? LIMIT 1",
+          orm(db)
+            .select({ one: sql`1` })
+            .from(jobTable)
+            .where(
+              and(
+                or(eq(jobTable.queue, JOB_KIND.merge), like(jobTable.queue, `${JOB_KIND.merge}.%`)),
+                sql`json_extract(${jobTable.payload}, '$.itemId') = ${item.id}`,
+              ),
             )
-            .get(JOB_KIND.merge, `${JOB_KIND.merge}.%`, item.id) !== null));
+            .get() !== undefined));
     if (closing)
       enqueueJobOnce(db, {
         queue: JOB_KIND.closeStoppedPull,

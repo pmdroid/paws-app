@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { immediate } from "./tx";
+import { settled, sqliteDb, type Q } from "./db";
+import { jsonField } from "./json-text";
 
 export type ConfirmedRemoteMerge = {
   itemId: string;
@@ -12,49 +14,75 @@ export type ConfirmedRemoteMerge = {
   confirmedAt: number;
 };
 
-export function getConfirmedRemoteMerge(db: Database, itemId: string): ConfirmedRemoteMerge | null {
-  return (
-    db
-      .query<ConfirmedRemoteMerge, [string]>(
-        `SELECT item_id AS itemId, repository_owner AS repositoryOwner,
-                repository_name AS repositoryName, pull_number AS pullNumber,
-                pull_url AS pullUrl, merge_sha AS mergeSha, confirmed_at AS confirmedAt
-         FROM remote_merge_fact WHERE item_id = ?`,
-      )
-      .get(itemId) ?? null
+export function* getConfirmedRemoteMergeSteps(q: Q, itemId: string) {
+  const { remoteMergeFact } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        itemId: remoteMergeFact.itemId,
+        repositoryOwner: remoteMergeFact.repositoryOwner,
+        repositoryName: remoteMergeFact.repositoryName,
+        pullNumber: remoteMergeFact.pullNumber,
+        pullUrl: remoteMergeFact.pullUrl,
+        mergeSha: remoteMergeFact.mergeSha,
+        confirmedAt: remoteMergeFact.confirmedAt,
+      })
+      .from(remoteMergeFact)
+      .where(eq(remoteMergeFact.itemId, itemId)),
   );
+  return row ?? null;
+}
+
+export function getConfirmedRemoteMerge(db: Database, itemId: string): ConfirmedRemoteMerge | null {
+  return settled(sqliteDb(db).run((q) => getConfirmedRemoteMergeSteps(q, itemId)));
+}
+
+export function* recordConfirmedRemoteMergeSteps(q: Q, input: ConfirmedRemoteMerge) {
+  const { remoteMergeFact } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(remoteMergeFact)
+      .values({
+        itemId: input.itemId,
+        repositoryOwner: input.repositoryOwner,
+        repositoryName: input.repositoryName,
+        pullNumber: input.pullNumber,
+        pullUrl: input.pullUrl,
+        mergeSha: input.mergeSha,
+        confirmedAt: input.confirmedAt,
+      })
+      .onConflictDoNothing({ target: remoteMergeFact.itemId }),
+  );
+  const saved = yield* getConfirmedRemoteMergeSteps(q, input.itemId);
+  if (
+    saved === null ||
+    saved.repositoryOwner !== input.repositoryOwner ||
+    saved.repositoryName !== input.repositoryName ||
+    saved.pullNumber !== input.pullNumber ||
+    saved.mergeSha !== input.mergeSha
+  )
+    throw new Error("The confirmed remote merge conflicts with its saved task history.");
+  return saved;
 }
 
 export function recordConfirmedRemoteMerge(
   db: Database,
   input: ConfirmedRemoteMerge,
 ): ConfirmedRemoteMerge {
-  return immediate(db, () => {
-    db.run(
-      `INSERT INTO remote_merge_fact
-         (item_id, repository_owner, repository_name, pull_number, pull_url, merge_sha, confirmed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (item_id) DO NOTHING`,
-      [
-        input.itemId,
-        input.repositoryOwner,
-        input.repositoryName,
-        input.pullNumber,
-        input.pullUrl,
-        input.mergeSha,
-        input.confirmedAt,
-      ],
-    );
-    const saved = getConfirmedRemoteMerge(db, input.itemId);
-    if (
-      saved === null ||
-      saved.repositoryOwner !== input.repositoryOwner ||
-      saved.repositoryName !== input.repositoryName ||
-      saved.pullNumber !== input.pullNumber ||
-      saved.mergeSha !== input.mergeSha
-    )
-      throw new Error("The confirmed remote merge conflicts with its saved task history.");
-    return saved;
-  });
+  return settled(sqliteDb(db).transaction((q) => recordConfirmedRemoteMergeSteps(q, input)));
+}
+
+export function* beginMergeCallSteps(q: Q, itemId: string, head: string, now: number) {
+  const { mergeCall } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(mergeCall)
+      .values({ itemId, headSha: head, startedAt: now })
+      .onConflictDoUpdate({
+        target: mergeCall.itemId,
+        set: { headSha: sql`excluded.head_sha`, startedAt: sql`excluded.started_at` },
+      }),
+  );
 }
 
 /**
@@ -63,29 +91,53 @@ export function recordConfirmedRemoteMerge(
  * GitHub before the item merges or re-verifies.
  */
 export function beginMergeCall(db: Database, itemId: string, head: string, now: number): void {
-  db.run(
-    `INSERT INTO merge_call(item_id, head_sha, started_at) VALUES (?, ?, ?)
-     ON CONFLICT (item_id) DO UPDATE SET head_sha = excluded.head_sha, started_at = excluded.started_at`,
-    [itemId, head, now],
-  );
+  settled(sqliteDb(db).run((q) => beginMergeCallSteps(q, itemId, head, now)));
+}
+
+export function* endMergeCallSteps(q: Q, itemId: string) {
+  yield* q.exec(q.orm.delete(q.t.mergeCall).where(eq(q.t.mergeCall.itemId, itemId)));
 }
 
 /** The merge call returned, or its outcome was read from GitHub after a restart. */
 export function endMergeCall(db: Database, itemId: string): void {
-  db.run("DELETE FROM merge_call WHERE item_id = ?", [itemId]);
+  settled(sqliteDb(db).run((q) => endMergeCallSteps(q, itemId)));
+}
+
+export function* mergeCallInFlightSteps(q: Q, itemId: string) {
+  const { mergeCall } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(mergeCall)
+      .where(eq(mergeCall.itemId, itemId)),
+  );
+  return row !== undefined;
 }
 
 export function mergeCallInFlight(db: Database, itemId: string): boolean {
-  return db.query("SELECT 1 FROM merge_call WHERE item_id = ?").get(itemId) !== null;
+  return settled(sqliteDb(db).run((q) => mergeCallInFlightSteps(q, itemId)));
+}
+
+export function* mergeStopRequestedSteps(q: Q, itemId: string) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.command),
+          inArray(job.status, ["pending", "running"]),
+          eq(jsonField(q, job.payload, "itemId"), itemId),
+          inArray(jsonField(q, job.payload, "type"), ["stop", "cancel"]),
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
 }
 
 /** A durable stop waiting for the lane to settle its call also guards an unsent squash. */
 export function mergeStopRequested(db: Database, itemId: string): boolean {
-  return (
-    db
-      .query(`SELECT 1 FROM job WHERE queue = ?
-    AND status IN ('pending','running') AND json_extract(payload, '$.itemId') = ?
-    AND json_extract(payload, '$.type') IN ('stop','cancel') LIMIT 1`)
-      .get(JOB_KIND.command, itemId) !== null
-  );
+  return settled(sqliteDb(db).run((q) => mergeStopRequestedSteps(q, itemId)));
 }

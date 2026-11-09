@@ -35,7 +35,7 @@ const ACCESS_RETRY_CAP_MS = 60_000;
 
 export function startWorkspaceAccess(
   options: Parameters<typeof createWorkspaceAccessFromLinear>[0] & {
-    refreshIntervalMs?: number;
+    refreshIntervalMs?: number | null;
     accessRetryBaseMs?: number;
     /** Whether a failed startup read is worth retrying; the composition passes `isTransient`. */
     retryable?: (error: unknown) => boolean;
@@ -123,13 +123,22 @@ export function startWorkspaceAccess(
     return operation;
   }
 
-  const timer = setInterval(() => {
-    if (pending === undefined)
-      void refresh().catch(
-        journalRejection("workspace/runtime.startWorkspaceAccess.refresh", options.onError, null),
-      );
-  }, options.refreshIntervalMs ?? MEMBERSHIP_BACKSTOP_MS);
-  timer.unref();
+  const backstopMs =
+    options.refreshIntervalMs === undefined ? MEMBERSHIP_BACKSTOP_MS : options.refreshIntervalMs;
+  const timer =
+    backstopMs === null
+      ? undefined
+      : setInterval(() => {
+          if (pending === undefined)
+            void refresh().catch(
+              journalRejection(
+                "workspace/runtime.startWorkspaceAccess.refresh",
+                options.onError,
+                null,
+              ),
+            );
+        }, backstopMs);
+  timer?.unref();
   return {
     access,
     refresh,

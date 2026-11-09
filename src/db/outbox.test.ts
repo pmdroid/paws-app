@@ -121,19 +121,21 @@ describe("transactional outbox", () => {
       }
     });
 
-    dispatcher.tick();
+    // Delivery awaits the database before the handler, so let each claimed head reach it.
+    await dispatcher.tick();
+    await Bun.sleep(0);
     expect(seen).toEqual(["A1"]);
-    dispatcher.tick();
+    await dispatcher.tick();
+    await Bun.sleep(0);
     expect(seen).toEqual(["A1", "B1"]);
     expect(
       listOutbox(db, "A").find((message) => (message.payload as { n: string }).n === "A2")?.status,
     ).toBe("pending");
-    await Promise.resolve();
     expect(listOutbox(db, "B")[0]?.status).toBe("sent");
 
     releaseA();
     await dispatcher.idle();
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(seen).toEqual(["A1", "B1", "A2"]);
     expect(listOutbox(db, "A").every((message) => message.status === "sent")).toBe(true);
@@ -174,14 +176,14 @@ describe("transactional outbox", () => {
       if (message.orderingKey === "A") throw new Error("nope");
     });
 
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "A")[0]?.status).toBe("dead");
     expect(listOutbox(db, "A")[1]?.status).toBe("pending");
     expect(listOutbox(db, "B")[0]?.status).toBe("sent");
     expect(listOutbox(db, "B")[1]?.status).toBe("pending");
 
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "A")[1]?.status).toBe("pending");
     expect(listOutbox(db, "B")[1]?.status).toBe("sent");
@@ -220,22 +222,22 @@ describe("transactional outbox", () => {
       if (aFailures === 1) throw new Error("blip");
     });
 
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "B")[0]?.status).toBe("sent");
     expect(listOutbox(db, "A")[0]?.status).toBe("pending");
     expect(listOutbox(db, "A")[1]?.status).toBe("pending");
 
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "A")[0]?.status).toBe("pending");
 
     clock.advance(1_000);
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "A")[0]?.status).toBe("sent");
     expect(listOutbox(db, "A")[1]?.status).toBe("pending");
-    dispatcher.tick();
+    await dispatcher.tick();
     await dispatcher.idle();
     expect(listOutbox(db, "A")[1]?.status).toBe("sent");
   });
@@ -246,14 +248,15 @@ describe("transactional outbox", () => {
     migrate(real);
     let fail = true;
     const db = new Proxy(real, {
-      get(target, property, receiver) {
-        if (property === "query") {
+      get(target, property) {
+        if (property === "prepare") {
           return (sql: string) => {
-            const statement = target.query(sql);
-            if (!fail || !sql.includes("UPDATE outbox SET locked_by")) return statement;
+            const statement = target.prepare(sql);
+            if (!fail || !sql.includes('update "outbox" set "attempts" = "outbox"."attempts" + 1'))
+              return statement;
             return new Proxy(statement, {
               get(statementTarget, statementProperty, statementReceiver) {
-                if (statementProperty === "all") {
+                if (statementProperty === "all" || statementProperty === "values") {
                   return () => {
                     fail = false;
                     throw new Error("SQLITE_BUSY: database is locked");
@@ -265,7 +268,7 @@ describe("transactional outbox", () => {
             });
           };
         }
-        const value = Reflect.get(target, property, receiver);
+        const value = Reflect.get(target, property);
         return typeof value === "function" ? value.bind(target) : value;
       },
     }) as Database;

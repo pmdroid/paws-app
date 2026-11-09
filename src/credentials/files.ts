@@ -1,5 +1,5 @@
 import { journalCaught } from "../journal";
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -57,15 +57,26 @@ export function writeSecretFile(path: string, value: string, exclusive = false):
       return false;
     }
   }
-  const key = envelopeKey(dirname(path));
+  atomicWrite(path, sealSecret(dirname(path), basename(path), value), exclusive);
+  return true;
+}
+
+export function sealSecret(secretsDir: string, name: string, value: string): string {
   const dataKey = randomBytes(32);
-  const context = Buffer.from(basename(path));
+  const context = Buffer.from(name);
   const envelope = {
-    key: encrypt(key, dataKey, context),
+    key: encrypt(envelopeKey(secretsDir), dataKey, context),
     value: encrypt(dataKey, Buffer.from(value), context),
   };
-  atomicWrite(path, PREFIX + JSON.stringify(envelope), exclusive);
-  return true;
+  return PREFIX + JSON.stringify(envelope);
+}
+
+export function openSecret(secretsDir: string, name: string, text: string): string {
+  return decodeSecretEnvelope(name, text, envelopeKey(secretsDir));
+}
+
+export function envelopeSubkey(secretsDir: string, purpose: string): Buffer {
+  return Buffer.from(hkdfSync("sha256", envelopeKey(secretsDir), Buffer.alloc(0), purpose, 32));
 }
 
 function envelopeKey(dir: string): Buffer {

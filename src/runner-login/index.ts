@@ -2,16 +2,31 @@ import {
   workspaceMemberUsable,
   AgentAccountError,
   auditWorkspaceAccess,
+  bindingRunningCount,
+  cancelPendingRunnerLogins,
+  closeRunnerLogin,
   getAgentAccount,
   getAgentBinding,
   getRunner,
   immediate,
+  insertRunnerLogin,
+  latestAgentRunnerLoginId,
+  latestBindingRunnerLoginId,
   legacyAgentAccountId,
   legacyAgentBindingId,
+  pendingRunnerLoginCount,
+  pendingRunnerLoginId,
   recordAccountObservation,
   runnerAccountUnsupported,
-  runnerLeaseCutoff,
+  runnerAgentOpenWorkCount,
+  runnerAgentPolicyState,
+  runnerLoginRow,
+  runnerNamedBindings,
+  setRunnerAgentSignedIn,
+  storedAgentBindingId,
+  updateRunnerLogin,
   workspaceMember,
+  type RunnerLoginRow,
 } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
@@ -26,23 +41,11 @@ import {
   type RunnerLoginUpdate,
 } from "../runner-protocol";
 
-type Agent = "claude" | "codex" | "grok" | "opencode";
-type Row = {
-  id: string;
-  runnerId: string;
-  workspaceId: string;
-  userId: string;
-  agent: Agent;
-  state: "starting" | "waiting" | "connected" | "failed" | "cancelled" | "expired";
-  expiresAt: number;
-  terminal: string;
-  authorization: string | null;
-  inputId: string | null;
-  bindingId: string | null;
-};
-const columns =
-  "id,runner_id AS runnerId,workspace_id AS workspaceId,user_id AS userId,agent,state,expires_at AS expiresAt,terminal,authorization,input_id AS inputId,binding_id AS bindingId";
+type Agent = RunnerLoginRow["agent"];
+type Row = RunnerLoginRow;
 const bindingParameter = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/** How long a sign-in may wait for the person. It starts this long before it expires. */
+const SIGN_IN_MS = 600_000;
 const pending = (row: Row) => row.state === "starting" || row.state === "waiting";
 
 class SignInRefused extends Error {
@@ -79,13 +82,10 @@ export function createRunnerLogin(options: {
     return runner;
   }
   function read(id: string) {
-    const row = db.query<Row, [string]>(`SELECT ${columns} FROM runner_login WHERE id=?`).get(id);
+    const row = runnerLoginRow(db, id);
     if (!row) throw new Error("Login session is unavailable");
     if (pending(row) && row.expiresAt <= now()) {
-      db.run(
-        "UPDATE runner_login SET state='expired',terminal='',authorization=NULL,input_id=NULL WHERE id=?",
-        [id],
-      );
+      closeRunnerLogin(db, id, "expired");
       inputs.delete(id);
       return {
         ...row,
@@ -103,6 +103,7 @@ export function createRunnerLogin(options: {
       agent: row.agent,
       bindingId: row.bindingId,
       state: row.state,
+      startedAt: row.expiresAt - SIGN_IN_MS,
       expiresAt: row.expiresAt,
       terminal: row.terminal,
       authorization: row.authorization
@@ -141,22 +142,10 @@ export function createRunnerLogin(options: {
       throw new SignInRefused("This account binding is not available on this runner.", 409);
     return { accountId: account.id, bindingId: binding.id };
   }
-  function bindingRunning(bindingId: string, at: number) {
-    return db
-      .query<{ count: number }, [string, number, number]>(
-        `SELECT (SELECT COUNT(*) FROM runner_work w JOIN runner_command_account c ON c.command_id=w.command_id
-            WHERE c.binding_id=?1 AND w.ended_at IS NULL AND w.lease_until>?2)
-          + (SELECT COUNT(*) FROM runner_helper h JOIN runner_command_account c ON c.command_id=h.id
-            WHERE c.binding_id=?1 AND h.ended_at IS NULL AND h.result IS NULL AND h.expires_at>?3) AS count`,
-      )
-      .get(bindingId, runnerLeaseCutoff(at), at)!.count;
-  }
   const api = {
     stop() {
       inputs.clear();
-      db.run(
-        "UPDATE runner_login SET state='cancelled',terminal='',authorization=NULL,input_id=NULL WHERE state IN ('starting','waiting')",
-      );
+      cancelPendingRunnerLogins(db);
     },
     list(principal: WorkspacePrincipal, runnerId: string) {
       access(principal.workspaceId, principal.userId, runnerId);
@@ -165,62 +154,39 @@ export function createRunnerLogin(options: {
       );
       return {
         accounts: agents.map((agent) => {
-          const account = db
-            .query<{ connected: number }, [string, string]>(
-              "SELECT ready=1 AND auth_expired=0 AS connected FROM runner_agent_policy WHERE runner_id=? AND agent=?",
-            )
-            .get(runnerId, agent);
-          const session = db
-            .query<{ id: string }, [string, string, string]>(
-              "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? AND binding_id IS NULL ORDER BY rowid DESC LIMIT 1",
-            )
-            .get(runnerId, principal.userId, agent);
+          const account = runnerAgentPolicyState(db, runnerId, agent);
+          const session = latestAgentRunnerLoginId(db, {
+            runnerId,
+            userId: principal.userId,
+            agent,
+          });
           // Sign-in replaces the credentials these tasks read from their next request on.
-          const running = db
-            .query<{ count: number }, [string, string, number]>(
-              "SELECT COUNT(*) AS count FROM runner_work JOIN run ON run.id=runner_work.run_id WHERE runner_work.runner_id=? AND run.agent=? AND runner_work.ended_at IS NULL AND runner_work.lease_until>?",
-            )
-            .get(runnerId, agent, runnerLeaseCutoff(now()))!.count;
-          const binding = db
-            .query<{ id: string }, [string]>("SELECT id FROM agent_account_binding WHERE id=?")
-            .get(legacyAgentBindingId(runnerId, agent));
+          const running = runnerAgentOpenWorkCount(db, runnerId, agent, now());
+          const binding = storedAgentBindingId(db, legacyAgentBindingId(runnerId, agent));
           return {
             agent,
             accountId: binding ? legacyAgentAccountId(principal.workspaceId, agent) : null,
-            bindingId: binding?.id ?? null,
-            connected: account?.connected === 1,
+            bindingId: binding,
+            connected: account?.ready === 1 && account.authExpired === 0,
             running,
-            session: session ? snapshot(read(session.id)) : null,
+            session: session ? snapshot(read(session)) : null,
           };
         }),
-        bindings: db
-          .query<
-            {
-              bindingId: string;
-              accountId: string;
-              agent: Agent;
-              label: string;
-              enabled: number;
-            },
-            [string, string]
-          >(
-            "SELECT b.id AS bindingId,b.account_id AS accountId,b.agent,a.label,a.enabled FROM agent_account_binding b JOIN agent_account a ON a.id=b.account_id WHERE b.runner_id=? AND b.workspace_id=? AND b.legacy=0 AND b.removed_at IS NULL AND a.removed_at IS NULL ORDER BY a.agent,a.created_at,b.created_at",
-          )
-          .all(runnerId, principal.workspaceId)
+        bindings: runnerNamedBindings(db, runnerId, principal.workspaceId)
           .filter((binding) => agents.includes(binding.agent))
           .map((binding) => {
-            const session = db
-              .query<{ id: string }, [string, string, string]>(
-                "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND binding_id=? ORDER BY rowid DESC LIMIT 1",
-              )
-              .get(runnerId, principal.userId, binding.bindingId);
+            const session = latestBindingRunnerLoginId(db, {
+              runnerId,
+              userId: principal.userId,
+              bindingId: binding.bindingId,
+            });
             return {
               ...binding,
               enabled: binding.enabled === 1,
               held:
                 runnerAccountUnsupported(db, runnerId, binding.bindingId, binding.agent) === null,
-              running: bindingRunning(binding.bindingId, now()),
-              session: session ? snapshot(read(session.id)) : null,
+              running: bindingRunningCount(db, binding.bindingId, now()),
+              session: session ? snapshot(read(session)) : null,
             };
           }),
       };
@@ -231,29 +197,26 @@ export function createRunnerLogin(options: {
         const at = now();
         for (const sessionId of inputs.keys()) read(sessionId);
         const account = bindingId ? namedAccount(principal, runnerId, agent, bindingId) : null;
-        const existing = db
-          .query<{ id: string }, [string, string, string, string | null, number]>(
-            "SELECT id FROM runner_login WHERE runner_id=? AND user_id=? AND agent=? AND binding_id IS ? AND state IN ('starting','waiting') AND expires_at>?",
-          )
-          .get(runnerId, principal.userId, agent, account?.bindingId ?? null, at);
-        if (existing) return snapshot(read(existing.id));
-        if (account && bindingRunning(account.bindingId, at) > 0)
+        const existing = pendingRunnerLoginId(db, {
+          runnerId,
+          userId: principal.userId,
+          agent,
+          bindingId: account?.bindingId ?? null,
+          at,
+        });
+        if (existing) return snapshot(read(existing));
+        if (account && bindingRunningCount(db, account.bindingId, at) > 0)
           throw new SignInRefused(
             "Work is still running with this account. Let it finish or stop it, then sign in again.",
             409,
           );
-        const count = db
-          .query<{ count: number }, [string, number]>(
-            "SELECT COUNT(*) AS count FROM runner_login WHERE runner_id=? AND state IN ('starting','waiting') AND expires_at>?",
-          )
-          .get(runnerId, at)!.count;
-        if (count >= 4)
+        if (pendingRunnerLoginCount(db, runnerId, at) >= 4)
           throw new SignInRefused(
             "This runner already has four sign-ins waiting. Finish one first.",
             429,
           );
         const id = randomUUID();
-        const expiresAt = at + 600_000;
+        const expiresAt = at + SIGN_IN_MS;
         work.enqueue({
           id,
           type: "login",
@@ -264,19 +227,16 @@ export function createRunnerLogin(options: {
           expiresAt,
           ...(account ? { account } : {}),
         });
-        db.run(
-          "INSERT INTO runner_login(id,runner_id,workspace_id,user_id,agent,state,expires_at,updated_at,binding_id) VALUES(?,?,?,?,?,'starting',?,?,?)",
-          [
-            id,
-            runnerId,
-            principal.workspaceId,
-            principal.userId,
-            agent,
-            expiresAt,
-            at,
-            account?.bindingId ?? null,
-          ],
-        );
+        insertRunnerLogin(db, {
+          id,
+          runnerId,
+          workspaceId: principal.workspaceId,
+          userId: principal.userId,
+          agent,
+          expiresAt,
+          updatedAt: at,
+          bindingId: account?.bindingId ?? null,
+        });
         auditWorkspaceAccess(db, {
           workspaceId: principal.workspaceId,
           userId: principal.userId,
@@ -303,10 +263,7 @@ export function createRunnerLogin(options: {
             "optional file may be absent",
           );
           inputs.delete(id);
-          db.run(
-            "UPDATE runner_login SET state='cancelled',terminal='',authorization=NULL,input_id=NULL WHERE id=? AND state IN ('starting','waiting')",
-            [id],
-          );
+          cancelPendingRunnerLogins(db, id);
           return { cancelled: true, input: null };
         }
         if (!pending(row)) return { cancelled: row.state !== "connected", input: null };
@@ -328,23 +285,17 @@ export function createRunnerLogin(options: {
         const finished = update.state === "connected" || update.state === "failed";
         if (finished) inputs.delete(id);
         const terminal = finished ? "" : update.terminal;
-        db.run(
-          "UPDATE runner_login SET state=?,terminal=?,authorization=?,input_id=?,updated_at=? WHERE id=?",
-          [
-            update.state,
-            terminal,
+        updateRunnerLogin(db, id, {
+          state: update.state,
+          terminal,
+          authorization:
             !finished && update.authorization ? JSON.stringify(update.authorization) : null,
-            finished ? null : update.inputId,
-            now(),
-            id,
-          ],
-        );
+          inputId: finished ? null : update.inputId,
+          updatedAt: now(),
+        });
         if (update.state === "connected" && row.bindingId !== null) inputs.delete(id);
         if (update.state === "connected" && row.bindingId === null) {
-          db.run(
-            "INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,?,1) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=1,auth_expired=0",
-            [runnerId, row.agent],
-          );
+          setRunnerAgentSignedIn(db, runnerId, row.agent, true);
           inputs.delete(id);
           signedIn = { runnerId, agent: row.agent };
         }
@@ -396,11 +347,7 @@ export function createRunnerLogin(options: {
         const row = own(principal, runnerId, agent, id);
         if (!match[4] && request.method === "GET") return json(snapshot(row));
         if (!match[4] && request.method === "DELETE") {
-          if (pending(row))
-            db.run(
-              "UPDATE runner_login SET state='cancelled',terminal='',authorization=NULL,input_id=NULL WHERE id=?",
-              [id],
-            );
+          if (pending(row)) closeRunnerLogin(db, id, "cancelled");
           inputs.delete(id);
           return json(snapshot(read(id)));
         }

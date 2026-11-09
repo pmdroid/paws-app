@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate } from "../src/db";
+import { legacyMigrate } from "../src/db";
 import { loadConfigFile } from "../src/config";
 
 const BEFORE = "20261105T1918_pull_request_text";
@@ -15,7 +15,7 @@ test("the retired [agents] extra_usage key turns extra usage on for its agents o
   const db = new Database(join(home, "paws.db"));
   try {
     db.run("PRAGMA foreign_keys=ON");
-    migrate(db, { until: BEFORE });
+    legacyMigrate(db, { until: BEFORE });
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('w','o','W',1)",
     );
@@ -37,7 +37,7 @@ test("the retired [agents] extra_usage key turns extra usage on for its agents o
         );
     }
 
-    migrate(db);
+    legacyMigrate(db);
     const rows = () =>
       db
         .query("SELECT runner_id,agent,ready,quota_state,extra_usage FROM runner_agent_policy")
@@ -51,7 +51,7 @@ test("the retired [agents] extra_usage key turns extra usage on for its agents o
 
     db.run("UPDATE runner_agent_policy SET extra_usage=0 WHERE runner_id='b'");
     writeFileSync(config, '[agents]\nextra_usage = ["claude", "codex"]\n');
-    migrate(db);
+    legacyMigrate(db);
     expect(
       db.query("SELECT extra_usage FROM runner_agent_policy WHERE runner_id='b'").all(),
     ).toEqual([{ extra_usage: 0 }, { extra_usage: 0 }]);

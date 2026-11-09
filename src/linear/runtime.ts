@@ -12,7 +12,12 @@ import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
 import { createLinearFileTransfer, type LinearFileTransfer } from "./files";
 import { callerClient, createLinearClient, defaultCallerClient } from "./graphql";
-import { createLinearLedger, type LinearLedger, type LinearUsage } from "./budget";
+import {
+  createLinearLedger,
+  type LinearLedger,
+  type LinearSharedBudget,
+  type LinearUsage,
+} from "./budget";
 import { createInboxStore } from "./inbox";
 import { createLinearIntake, type IntakeQueue } from "./intake-queue";
 import {
@@ -38,6 +43,7 @@ import { createLinearMembershipReads, type LinearMembershipReads } from "./membe
 
 export type LinearRunning = {
   catchUp: () => Promise<void>;
+  pollDue: () => Promise<void>;
   stop: () => Promise<void>;
 };
 
@@ -78,6 +84,7 @@ export function openLinear(options: {
   /** Applies `{ type: 'stop' }`. Default enqueues the command job for the loop to drain. */
   submitCommand?: (command: LinearCommand) => void;
   countItemRequest?: (itemId: string, caller: string) => void;
+  budget?: LinearSharedBudget;
   fetch?: FetchLike;
 }): OpenLinear {
   const stopping = new AbortController();
@@ -89,7 +96,7 @@ export function openLinear(options: {
   const accessAllowed = options.isAuthorized ?? (() => true);
   const auth = createLinearAuth({
     db: options.db,
-    tokenPath: linearTokenPath(options.secretsDir),
+    secretsDir: options.secretsDir,
     clientId: settings.clientId,
     clientSecret: settings.clientSecret,
     bootstrapAccessToken: settings.accessToken,
@@ -97,7 +104,10 @@ export function openLinear(options: {
     isAuthorized: accessAllowed,
     fetch: options.fetch,
   });
-  const ledger = createLinearLedger({ countItem: options.countItemRequest });
+  const ledger = createLinearLedger({
+    countItem: options.countItemRequest,
+    shared: options.budget,
+  });
   const client = auth.hasToken()
     ? createLinearClient({ auth, fetch: options.fetch, ledger })
     : null;
@@ -184,6 +194,9 @@ export function openLinear(options: {
           intake?.queue.wake();
           await intake?.queue.idle();
         },
+        async pollDue() {
+          await poller?.pollDue();
+        },
         async stop() {
           stopping.abort();
           const polling = poller?.stop();
@@ -225,6 +238,7 @@ function startPoller(options: {
     intake: options.intake,
     db: options.db,
     submitCommand: options.submitCommand,
+    timer: false,
   });
 }
 

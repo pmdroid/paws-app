@@ -78,7 +78,9 @@ const server = Bun.serve({
         id: "00000000-0000-4000-8000-000000000001",
         agent: "claude",
         state: "starting",
-        expiresAt: now + 600_000,
+        // The person clicked 95 seconds ago; the runner is still finishing a check.
+        startedAt: Date.now() - 95_000,
+        expiresAt: Date.now() + 505_000,
         terminal: "",
         authorization: null,
       };
@@ -137,7 +139,11 @@ try {
     expect(await page.evaluate(noScroll)).toBe(true);
     await page.screenshot({ path: join(directory, `signin-notice-${width}.png`) });
     await dialog.getByRole("button", { name: "Sign in to Claude" }).click();
-    await expect(dialog.getByText("Starting sign-in…")).toBeVisible();
+    await expect(
+      dialog.getByText(
+        /^Waiting for ubuntu-arm64 to start the sign-in \(it's finishing a check\)\. 1m 3[5-9]s since you asked\.$/,
+      ),
+    ).toBeVisible();
     await expect(dialog.getByText(/Claude is running/)).toHaveCount(0);
     await page.screenshot({ path: join(directory, `signin-started-${width}.png`) });
     await page.close();

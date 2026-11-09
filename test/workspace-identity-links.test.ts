@@ -8,8 +8,8 @@ test("workspace Slack email matching and audited manual identity links", async (
   const root = mkdtempSync(join(tmpdir(), "paws-workspace-links-"));
   const failures: string[] = [];
   try {
-    await probeWorkspaceIdentityLinks(root, (name, passed) => {
-      if (!passed) failures.push(name);
+    await probeWorkspaceIdentityLinks(root, (name, passed, observed) => {
+      if (!passed) failures.push(`${name}: ${JSON.stringify(observed)}`);
     });
     expect(failures).toEqual([]);
   } finally {

@@ -1,0 +1,3 @@
+src/db/migrations.ts | const item = db .query<{ id: string }, []>( | not yet converted to Drizzle
+src/db/migrations.ts | const item = db .query<{ id: string; identifier: string }, []>( | not yet converted to Drizzle
+src/db/migrations.ts | const item = db .query<{ id: string; identifier: string; state: string }, []>( | not yet converted to Drizzle

@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { aliasedTable, and, asc, desc, eq, inArray, lt, max, ne, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { orm } from "./orm";
-import { mergeQueueEntry } from "./schema";
+import { settled, sqliteDb, type Q } from "./db";
+import { jsonField } from "./json-text";
 
 /**
  * A task's place in its lane of its repository's merge queue. A lane is a Linear project, or `''`
@@ -34,36 +35,97 @@ export type MergeQueuePosition = {
   notifiedPosition: number | null;
 };
 
-const HOLDING = "('merge_queue','verifying')";
+const HOLDING = ["merge_queue", "verifying"];
+
+type JoinMergeQueue = { itemId: string; repository: string; lane?: string; now: number };
+
+export function* joinMergeQueueSteps(q: Q, input: JoinMergeQueue) {
+  yield* q.exec(
+    q.orm
+      .insert(q.t.mergeQueueEntry)
+      .values({
+        itemId: input.itemId,
+        repository: input.repository.toLowerCase(),
+        lane: input.lane ?? "",
+        readyAt: input.now,
+      })
+      .onConflictDoNothing(),
+  );
+}
 
 /**
  * Join the lane at the end, in the order tasks became ready. A task already in the queue keeps its
  * place and its lane. `lane` is a Linear project id, or `''` (the default) for the whole repository.
  */
-export function joinMergeQueue(
-  db: Database,
-  input: { itemId: string; repository: string; lane?: string; now: number },
-): void {
-  db.run(
-    "INSERT OR IGNORE INTO merge_queue_entry(item_id,repository,lane,ready_at) VALUES(?,?,?,?)",
-    [input.itemId, input.repository.toLowerCase(), input.lane ?? "", input.now],
-  );
+export function joinMergeQueue(db: Database, input: JoinMergeQueue): void {
+  settled(sqliteDb(db).run((q) => joinMergeQueueSteps(q, input)));
+}
+
+export function* leaveMergeQueueSteps(q: Q, itemId: string) {
+  yield* q.exec(q.orm.delete(q.t.mergeQueueEntry).where(eq(q.t.mergeQueueEntry.itemId, itemId)));
 }
 
 export function leaveMergeQueue(db: Database, itemId: string): void {
-  db.run("DELETE FROM merge_queue_entry WHERE item_id=?", [itemId]);
+  settled(sqliteDb(db).run((q) => leaveMergeQueueSteps(q, itemId)));
+}
+
+export function* inMergeQueueSteps(q: Q, itemId: string) {
+  const { mergeQueueEntry, workItem } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(mergeQueueEntry)
+      .innerJoin(workItem, eq(workItem.id, mergeQueueEntry.itemId))
+      .where(
+        and(
+          eq(mergeQueueEntry.itemId, itemId),
+          inArray(workItem.state, HOLDING),
+          eq(workItem.cancelRequested, 0),
+        ),
+      ),
+  );
+  return row !== undefined;
 }
 
 /** Whether the task holds a place in a merge queue: `merge_queue`, or `verifying` in it. */
 export function inMergeQueue(db: Database, itemId: string): boolean {
-  return (
-    db
-      .query(
-        `SELECT 1 FROM merge_queue_entry e JOIN work_item w ON w.id = e.item_id
-         WHERE e.item_id = ? AND w.state IN ${HOLDING} AND w.cancel_requested = 0`,
-      )
-      .get(itemId) !== null
+  return settled(sqliteDb(db).run((q) => inMergeQueueSteps(q, itemId)));
+}
+
+export function* restartedFromMergeQueueSteps(q: Q, itemId: string) {
+  const { workItemEvent } = q.t;
+  const restart = aliasedTable(workItemEvent, "r");
+  const prior = aliasedTable(workItemEvent, "p");
+  const latestRestart = q.orm
+    .select({ id: max(restart.id) })
+    .from(restart)
+    .where(and(eq(restart.itemId, itemId), eq(restart.kind, "restart")));
+  const enteredVerifyingFrom = q.orm
+    .select({ fromState: prior.fromState })
+    .from(prior)
+    .where(
+      and(
+        eq(prior.itemId, itemId),
+        lt(prior.id, workItemEvent.id),
+        eq(prior.toState, "verifying"),
+        ne(prior.fromState, "verifying"),
+      ),
+    )
+    .orderBy(desc(prior.id))
+    .limit(1);
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(workItemEvent)
+      .where(
+        and(
+          eq(workItemEvent.id, sql`(${latestRestart})`),
+          sql`(${workItemEvent.fromState} = 'merge_queue' OR (${workItemEvent.fromState} = 'verifying'
+            AND (${enteredVerifyingFrom}) = 'merge_queue'))`,
+        ),
+      ),
   );
+  return row !== undefined;
 }
 
 /**
@@ -71,17 +133,13 @@ export function inMergeQueue(db: Database, itemId: string): boolean {
  * re-verify of a task in it: a CI, conflict, review or findings fix of a finished pull request.
  */
 export function restartedFromMergeQueue(db: Database, itemId: string): boolean {
-  return (
-    db
-      .query(
-        `SELECT 1 FROM work_item_event ev
-         WHERE ev.id = (SELECT MAX(r.id) FROM work_item_event r WHERE r.item_id = ?1 AND r.kind = 'restart')
-         AND (ev.from_state = 'merge_queue' OR (ev.from_state = 'verifying'
-           AND (SELECT p.from_state FROM work_item_event p WHERE p.item_id = ?1 AND p.id < ev.id
-             AND p.to_state = 'verifying' AND p.from_state <> 'verifying'
-             ORDER BY p.id DESC LIMIT 1) = 'merge_queue'))`,
-      )
-      .get(itemId) !== null
+  return settled(sqliteDb(db).run((q) => restartedFromMergeQueueSteps(q, itemId)));
+}
+
+export function* keepMergeQueuePlaceSteps(q: Q, itemId: string) {
+  const { mergeQueueEntry } = q.t;
+  yield* q.exec(
+    q.orm.update(mergeQueueEntry).set({ kept: 1 }).where(eq(mergeQueueEntry.itemId, itemId)),
   );
 }
 
@@ -90,61 +148,82 @@ export function restartedFromMergeQueue(db: Database, itemId: string): boolean {
  * place alone, and the next Closeout acceptance returns the task to it.
  */
 export function keepMergeQueuePlace(db: Database, itemId: string): void {
-  db.run("UPDATE merge_queue_entry SET kept=1 WHERE item_id=?", [itemId]);
+  settled(sqliteDb(db).run((q) => keepMergeQueuePlaceSteps(q, itemId)));
+}
+
+export function* releaseMergeQueuePlaceSteps(q: Q, itemId: string) {
+  const { mergeQueueEntry } = q.t;
+  yield* q.exec(
+    q.orm
+      .delete(mergeQueueEntry)
+      .where(and(eq(mergeQueueEntry.itemId, itemId), eq(mergeQueueEntry.kept, 0))),
+  );
 }
 
 /** Leave the queue unless the place is kept. */
 export function releaseMergeQueuePlace(db: Database, itemId: string): void {
-  db.run("DELETE FROM merge_queue_entry WHERE item_id=? AND kept=0", [itemId]);
+  settled(sqliteDb(db).run((q) => releaseMergeQueuePlaceSteps(q, itemId)));
+}
+
+export function* returnToMergeQueueSteps(q: Q, itemId: string) {
+  const { mergeQueueEntry } = q.t;
+  yield* releaseMergeQueuePlaceSteps(q, itemId);
+  yield* q.exec(
+    q.orm.update(mergeQueueEntry).set({ kept: 0 }).where(eq(mergeQueueEntry.itemId, itemId)),
+  );
 }
 
 /** Closeout accepted a new head: back to a kept place, or out of the queue to join at the end. */
 export function returnToMergeQueue(db: Database, itemId: string): void {
-  releaseMergeQueuePlace(db, itemId);
-  db.run("UPDATE merge_queue_entry SET kept=0 WHERE item_id=?", [itemId]);
+  settled(sqliteDb(db).run((q) => returnToMergeQueueSteps(q, itemId)));
+}
+
+export function* markMergeQueueNotifiedSteps(q: Q, itemId: string, position: number) {
+  const { mergeQueueEntry } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(mergeQueueEntry)
+      .set({ notifiedPosition: position })
+      .where(eq(mergeQueueEntry.itemId, itemId)),
+  );
 }
 
 export function markMergeQueueNotified(db: Database, itemId: string, position: number): void {
-  db.run("UPDATE merge_queue_entry SET notified_position=? WHERE item_id=?", [position, itemId]);
+  settled(sqliteDb(db).run((q) => markMergeQueueNotifiedSteps(q, itemId, position)));
 }
 
-/**
- * Every lane of every queue, each in merge order. A task `held` says may not merge yet, such as one waiting for
- * its Linear dependencies, keeps its row and its `ready_at` but takes no place, so it blocks
- * nobody and returns to its place once released.
- */
-export function listMergeQueues(
-  db: Database,
-  held: (itemId: string) => boolean = () => false,
-): MergeQueuePosition[] {
-  const rows = db
-    .query<
-      {
-        itemId: string;
-        repository: string;
-        lane: string;
-        projectName: string | null;
-        readyAt: number;
-        notifiedPosition: number | null;
-        state: string;
-      },
-      []
-    >(
-      `SELECT e.item_id AS itemId, e.repository, e.lane, e.ready_at AS readyAt,
-              CASE WHEN w.linear_project_id = e.lane THEN w.linear_project_name END AS projectName,
-              e.notified_position AS notifiedPosition, w.state
-       FROM merge_queue_entry e JOIN work_item w ON w.id = e.item_id
-       WHERE w.state IN ${HOLDING} AND w.cancel_requested = 0
-       ORDER BY e.repository, e.lane, e.ready_at, e.id`,
-    )
-    .all();
+export function* listMergeQueuesSteps(q: Q, held: (itemId: string) => boolean = () => false) {
+  const { mergeQueueEntry, workItem } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        itemId: mergeQueueEntry.itemId,
+        repository: mergeQueueEntry.repository,
+        lane: mergeQueueEntry.lane,
+        readyAt: mergeQueueEntry.readyAt,
+        projectName: sql<
+          string | null
+        >`CASE WHEN ${workItem.linearProjectId} = ${mergeQueueEntry.lane} THEN ${workItem.linearProjectName} END`,
+        notifiedPosition: mergeQueueEntry.notifiedPosition,
+        state: workItem.state,
+      })
+      .from(mergeQueueEntry)
+      .innerJoin(workItem, eq(workItem.id, mergeQueueEntry.itemId))
+      .where(and(inArray(workItem.state, HOLDING), eq(workItem.cancelRequested, 0)))
+      .orderBy(
+        asc(mergeQueueEntry.repository),
+        asc(mergeQueueEntry.lane),
+        asc(mergeQueueEntry.readyAt),
+        asc(mergeQueueEntry.id),
+      ),
+  );
   const byLane = new Map<string, typeof rows>();
   for (const row of rows.filter((entry) => !held(entry.itemId))) {
     const key = `${row.repository}\0${row.lane}`;
     byLane.set(key, [...(byLane.get(key) ?? []), row]);
   }
   return [...byLane.values()].flatMap((queue) =>
-    queue.map(({ state, projectName: _, ...row }, index) => ({
+    queue.map(({ state, projectName: _, ...row }, index): MergeQueuePosition => ({
       ...row,
       laneName:
         row.lane === ""
@@ -160,6 +239,18 @@ export function listMergeQueues(
   );
 }
 
+/**
+ * Every lane of every queue, each in merge order. A task `held` says may not merge yet, such as one waiting for
+ * its Linear dependencies, keeps its row and its `ready_at` but takes no place, so it blocks
+ * nobody and returns to its place once released.
+ */
+export function listMergeQueues(
+  db: Database,
+  held: (itemId: string) => boolean = () => false,
+): MergeQueuePosition[] {
+  return settled(sqliteDb(db).run((q) => listMergeQueuesSteps(q, held)));
+}
+
 export function mergeQueuePosition(
   db: Database,
   itemId: string,
@@ -168,19 +259,37 @@ export function mergeQueuePosition(
   return listMergeQueues(db, held).find((entry) => entry.itemId === itemId) ?? null;
 }
 
+export function* wakeMergesBehindSteps(q: Q, now: number) {
+  const { job } = q.t;
+  const least = q.dialect === "sqlite" ? sql`MIN` : sql`LEAST`;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({ runAt: sql`${least}(${job.runAt}, ${now})` })
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.merge),
+          eq(job.status, "pending"),
+          inArray(jsonField(q, job.payload, "mergeWait", "reason"), ["ahead", "dependencies"]),
+        ),
+      ),
+  );
+}
+
 /** A holder departed or changed eligibility: parked followers check again now. */
 export function wakeMergesBehind(db: Database, now: number): void {
-  db.run(
-    `UPDATE job SET run_at = MIN(run_at, ?)
-     WHERE queue = ? AND status = 'pending'
-       AND json_extract(payload, '$.mergeWait.reason') IN ('ahead','dependencies')`,
-    [now, JOB_KIND.merge],
+  settled(sqliteDb(db).run((q) => wakeMergesBehindSteps(q, now)));
+}
+
+export function* mergeQueueReadyTimesSteps(q: Q) {
+  const { mergeQueueEntry } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ itemId: mergeQueueEntry.itemId, readyAt: mergeQueueEntry.readyAt })
+      .from(mergeQueueEntry),
   );
 }
 
 export function mergeQueueReadyTimes(db: Database): { itemId: string; readyAt: number }[] {
-  return orm(db)
-    .select({ itemId: mergeQueueEntry.itemId, readyAt: mergeQueueEntry.readyAt })
-    .from(mergeQueueEntry)
-    .all();
+  return settled(sqliteDb(db).run(mergeQueueReadyTimesSteps));
 }

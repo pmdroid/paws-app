@@ -1,11 +1,12 @@
 import { journal, journalCaught } from "../journal";
+import { parseRemainingParts, type RemainingPart } from "../core";
 import { createServer, type Server, type Socket } from "node:net";
 import { chmod, mkdir, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { McpServerStdio } from "@agentclientprotocol/sdk";
 import type { AgentRole } from "./adapters";
-import type { AcpEventOrigin, SuggestedFindingLine } from "./types";
+import type { AcpEventOrigin, ReviewFindingGroup, SuggestedFindingLine } from "./types";
 import {
   artifactMimeType,
   ArtifactRejectedError,
@@ -64,6 +65,7 @@ const OPEN_PULL_REQUEST_FIRST = JSON.stringify({
 export interface PullRequestDescription {
   title: string;
   body: string;
+  remaining?: readonly RemainingPart[];
 }
 
 export interface PullRequestHook {
@@ -82,6 +84,13 @@ type ReplyResult = { posted: true } | { posted: false; reason: string };
 
 export interface ReplyHook {
   post(text: string, origin?: AcpEventOrigin): Promise<ReplyResult>;
+}
+
+export const START_WORK_PLAN_MAX_LENGTH = 4000;
+
+/** Ends a conversation turn and queues the item for a work turn on the same session. */
+export interface StartWorkHook {
+  start(plan: string): Promise<void>;
 }
 export const POST_UPDATE_INTERVAL_MS = 60_000;
 
@@ -178,6 +187,7 @@ interface HostToolBridgeOptions {
   pullRequest?: PullRequestHook;
   postUpdate?: PostUpdateHook;
   reply?: ReplyHook;
+  startWork?: StartWorkHook;
   publishArtifact?: PublishArtifactHook;
   closeoutProgress?: CloseoutProgressHook;
   artifactLimits?: ArtifactLimits;
@@ -195,6 +205,7 @@ interface HostToolBridgeOptions {
   closeoutFocus?: CloseoutFocus;
   pullRequestDraft?: PullRequestDraft;
   suggestedFindings?: readonly SuggestedFindingLine[];
+  reviewFindings?: readonly ReviewFindingGroup[];
   signal: AbortSignal;
   onAsk?: (question: string) => void | Promise<void>;
   onAnswer?: (question: string, answer: string) => void | Promise<void>;
@@ -226,6 +237,32 @@ function withSuggested(
     })),
     suggested_note:
       "Suggested findings did not block and are not checks. Decide on each one in your final message's Finding decisions section.",
+  });
+}
+
+function withReviewFindings(
+  report: string,
+  groups: readonly ReviewFindingGroup[] | undefined,
+): string {
+  if (!groups?.length) return report;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(report);
+  } catch (error) {
+    journalCaught(error, "ask-team.withReviewFindings.parse", null);
+    return report;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return report;
+  const { required } = parsed as { required?: unknown };
+  if (!Array.isArray(required)) return report;
+  return JSON.stringify({
+    ...parsed,
+    required: required.map((entry: unknown) => {
+      if (typeof entry !== "object" || entry === null) return entry;
+      const { id, kind } = entry as { id?: unknown; kind?: unknown };
+      const group = kind === "review" ? groups.find((found) => found.reviewId === id) : undefined;
+      return group ? { ...entry, findings: group.lines } : entry;
+    }),
   });
 }
 
@@ -317,6 +354,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
             options.pullRequest ? "open_pull_request" : "",
             options.postUpdate ? "post_update" : "",
             options.reply ? "reply" : "",
+            options.startWork ? "start_work" : "",
             closeout ? "get_closeout" : "",
             closeout && allowCloseoutRun ? "run_closeout" : "",
             options.ciRerun ? "rerun_ci" : "",
@@ -329,6 +367,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
     /** The report that closes the turn. It reuses rule results `get_closeout` already has. */
     async closeoutReport() {
       if (!closeout) return undefined;
+      await closeout.settled();
       return closeout.report({ probes: true });
     },
     async close() {
@@ -407,7 +446,10 @@ async function handleConnection(
                 closeoutModel(parsed.arguments),
               );
         if (parsed.tool === "get_closeout")
-          answer = withSuggested(answer, options.suggestedFindings);
+          answer = withSuggested(
+            withReviewFindings(answer, options.reviewFindings),
+            options.suggestedFindings,
+          );
       } finally {
         options.onHookEnd?.();
       }
@@ -482,6 +524,21 @@ async function handleConnection(
       const result = await options.reply.post(parseReply(parsed.arguments ?? {}));
       socket.end(
         `${JSON.stringify({ id, answer: result.posted ? "Posted in the Linear conversation." : `Not posted: ${result.reason}` })}\n`,
+      );
+      return;
+    }
+    if (parsed.tool === "start_work") {
+      if (!options.startWork) throw new Error("start_work is unavailable");
+      const plan = parseStartWorkPlan(parsed.arguments ?? {});
+      if (plan === null) {
+        socket.end(
+          `${JSON.stringify({ id, answer: `Not started: plan needs 1 to ${START_WORK_PLAN_MAX_LENGTH} characters. Shorten it and call start_work again, or answer with reply.` })}\n`,
+        );
+        return;
+      }
+      await options.startWork.start(plan);
+      socket.end(
+        `${JSON.stringify({ id, answer: "Work queued. This conversation turn ends now; the work turn resumes this session with edits allowed when a work slot is free." })}\n`,
       );
       return;
     }
@@ -719,6 +776,7 @@ function parsePlan(value: { steps?: unknown }): PlanStep[] {
 export function parsePullRequest(value: {
   title?: unknown;
   body?: unknown;
+  remaining?: unknown;
 }): PullRequestDescription {
   if (typeof value.title !== "string" || typeof value.body !== "string")
     throw new Error("open_pull_request requires a title and a body");
@@ -728,7 +786,8 @@ export function parsePullRequest(value: {
     throw new Error("open_pull_request needs a one-line title of at most 256 characters");
   if (body.length < 1 || body.length > 12_000)
     throw new Error("open_pull_request needs a body of 1 to 12000 characters");
-  return { title, body };
+  const remaining = parseRemainingParts(value.remaining);
+  return remaining.length ? { title, body, remaining } : { title, body };
 }
 
 export function parsePostUpdate(value: { text?: unknown }): string {
@@ -745,6 +804,11 @@ function parseReply(value: { text?: unknown }): string {
   if (text.length < 1 || text.length > REPLY_MAX_LENGTH)
     throw new Error(`reply needs text of 1 to ${REPLY_MAX_LENGTH} characters`);
   return text;
+}
+
+function parseStartWorkPlan(value: { plan?: unknown }): string | null {
+  const plan = typeof value.plan === "string" ? value.plan.trim() : "";
+  return plan.length >= 1 && plan.length <= START_WORK_PLAN_MAX_LENGTH ? plan : null;
 }
 
 function progressListener(hook: CloseoutProgressHook): (event: CloseoutSessionEvent) => void {

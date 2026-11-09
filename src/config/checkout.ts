@@ -1,6 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
 import { validateExclusion } from "../worktree-checkout";
-import { replaceConfigText } from "./agents";
+import { updateConfigText } from "./settings-store";
 
 /**
  * `[checkout.projects."owner/repo"]`. `exclude` hides paths from the agent only; Closeout checks
@@ -96,8 +95,9 @@ export function setCheckoutProjectsText(current: string, projects: CheckoutProje
 }
 
 export function writeCheckoutProjects(path: string, projects: CheckoutProjects): void {
-  const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const next = setCheckoutProjectsText(current, projects);
-  parseCheckoutProjects(next);
-  replaceConfigText(path, next.endsWith("\n") || next === "" ? next : `${next}\n`);
+  updateConfigText(path, (current) => {
+    const next = setCheckoutProjectsText(current, projects);
+    parseCheckoutProjects(next);
+    return next.endsWith("\n") || next === "" ? next : `${next}\n`;
+  });
 }

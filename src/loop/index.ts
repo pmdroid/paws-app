@@ -104,10 +104,12 @@ export {
 } from "./link-ask";
 export { VISUAL_REVIEW_NEEDS_LINK, VISUAL_REVIEW_REPLY_NOTE } from "./visual-review";
 export {
+  failedReviewFindings,
   inertMarkdown,
   openFindingsLine,
   openFindingsSection,
   pawsIssueUrl,
+  reviewFindingGroups,
   type OpenFinding,
   type OpenItems,
 } from "./open-findings";
@@ -135,3 +137,12 @@ export {
 
 export { RiskDisplayReader } from "./risk-display";
 export { HOST_DISK_FULL_THOUGHT } from "./disk-full";
+export { publishingCloseoutProgress } from "./closeout-progress";
+export {
+  CONVERSATION_TIMEOUT_REPLY,
+  START_WORK_RESPONSE,
+  deliverLinearComments,
+  linearCommentBrief,
+  type LinearCommentPolicy,
+  type LinearConversations,
+} from "./linear-comments";

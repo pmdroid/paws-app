@@ -377,7 +377,8 @@ function productionFiles(root: string): string[] {
       if (entry.isDirectory()) {
         if (
           !["testing", "test", "migrations"].includes(entry.name) &&
-          path !== join(root, "src/db/schema")
+          path !== join(root, "src/db/schema") &&
+          path !== join(root, "src/db/schema-pg")
         )
           walk(path);
       } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$|^migrations?\b/.test(entry.name))

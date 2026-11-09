@@ -731,11 +731,11 @@ async function runRemoteFault(fault: Fault) {
       const ran = await jobs.tick();
       recover();
       if (ran === null) {
-        outbox.tick();
+        await outbox.tick();
         await Bun.sleep(10);
       }
     }
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
     return {

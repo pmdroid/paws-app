@@ -1,7 +1,22 @@
 import type { Database } from "bun:sqlite";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  notExists,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import { readCheckpoint } from "./checkpoint";
 import { randomUUID } from "node:crypto";
 import type { Checkpoint, RunKind, RunStatus, GitCommitPolicy } from "../core";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { jsonText } from "./json-text";
 
 export type StoredRun = {
   id: string;
@@ -15,137 +30,222 @@ export type StoredRun = {
   updatedAt: number;
 };
 
-type RunSql = {
-  id: string;
-  item_id: string;
-  kind: RunKind;
-  agent: string;
-  status: RunStatus;
-  checkpoint: string | null;
-  fresh_session: number;
-  created_at: number;
-  updated_at: number;
+type RunInput = {
+  itemId: string;
+  now: number;
+  kind?: RunKind;
+  agent?: string;
+  status?: RunStatus;
+  checkpoint?: Checkpoint | null;
+  freshSession?: boolean;
+  ownerInstance?: string | null;
 };
 
-export function insertRun(
-  db: Database,
-  input: {
-    itemId: string;
-    now: number;
-    kind?: RunKind;
-    agent?: string;
-    status?: RunStatus;
-    checkpoint?: Checkpoint | null;
-    freshSession?: boolean;
-  },
-): StoredRun {
+export function* insertRunSteps(q: Q, input: RunInput): Steps<StoredRun> {
   const id = randomUUID();
   const checkpoint = input.checkpoint ?? null;
-  db.run(
-    `INSERT INTO run (id, item_id, kind, agent, status, checkpoint, fresh_session, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
+  yield* q.exec(
+    q.orm.insert(q.t.run).values({
       id,
-      input.itemId,
-      input.kind ?? "implement",
-      input.agent ?? "cursor",
-      input.status ?? "active",
-      checkpoint === null ? null : JSON.stringify(checkpoint),
-      input.freshSession === true ? 1 : 0,
-      input.now,
-      input.now,
-    ],
+      itemId: input.itemId,
+      kind: input.kind ?? "implement",
+      agent: input.agent ?? "cursor",
+      status: input.status ?? "active",
+      checkpoint: checkpoint === null ? null : storedCheckpoint(q, checkpoint),
+      freshSession: input.freshSession === true ? 1 : 0,
+      createdAt: input.now,
+      updatedAt: input.now,
+    }),
   );
-  const run = getRun(db, id);
-  if (run === null) throw new Error("insertRun did not store a row");
-  return run;
+  if (input.ownerInstance != null) yield* claimRunSteps(q, id, input.ownerInstance);
+  const stored = yield* getRunSteps(q, id);
+  if (stored === null) throw new Error("insertRun did not store a row");
+  return stored;
+}
+
+export function insertRun(db: Database, input: RunInput): StoredRun {
+  return settled(sqliteDb(db).run((q) => insertRunSteps(q, input)));
+}
+
+export function* getRunSteps(q: Q, id: string): Steps<StoredRun | null> {
+  const row = yield* q.one(q.orm.select().from(q.t.run).where(eq(q.t.run.id, id)));
+  return row === undefined ? null : mapRun(q, row);
 }
 
 export function getRun(db: Database, id: string): StoredRun | null {
-  const row = db.query<RunSql, [string]>("SELECT * FROM run WHERE id = ?").get(id);
-  return row === null ? null : mapRun(row);
+  return settled(sqliteDb(db).run((q) => getRunSteps(q, id)));
+}
+
+export function* listRunsSteps(q: Q, itemId?: string): Steps<StoredRun[]> {
+  const { run: runTable } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(runTable)
+      .where(itemId === undefined ? undefined : eq(runTable.itemId, itemId))
+      .orderBy(asc(runTable.createdAt), asc(runTable.id)),
+  );
+  return rows.map((row) => mapRun(q, row));
 }
 
 /** Every run, oldest first. Pass `itemId` to keep one work item. */
 export function listRuns(db: Database, itemId?: string): StoredRun[] {
-  if (itemId !== undefined) {
-    return db
-      .query<RunSql, [string]>("SELECT * FROM run WHERE item_id = ? ORDER BY created_at, id")
-      .all(itemId)
-      .map(mapRun);
-  }
-  return db.query<RunSql, []>("SELECT * FROM run ORDER BY created_at, id").all().map(mapRun);
+  return settled(sqliteDb(db).run((q) => listRunsSteps(q, itemId)));
+}
+
+export function* runOwnerSteps(q: Q, runId: string): Steps<string | null> {
+  const { runOwner: runOwnerTable } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ owner: runOwnerTable.ownerInstance })
+      .from(runOwnerTable)
+      .where(eq(runOwnerTable.runId, runId)),
+  );
+  return row?.owner ?? null;
+}
+
+export function runOwner(db: Database, runId: string): string | null {
+  return settled(sqliteDb(db).run((q) => runOwnerSteps(q, runId)));
+}
+
+export function* claimRunSteps(q: Q, runId: string, ownerInstance: string): Steps<void> {
+  const { runOwner: runOwnerTable } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(runOwnerTable)
+      .values({ runId, ownerInstance })
+      .onConflictDoUpdate({ target: runOwnerTable.runId, set: { ownerInstance } }),
+  );
+}
+
+export function claimRun(db: Database, runId: string, ownerInstance: string): void {
+  settled(sqliteDb(db).run((q) => claimRunSteps(q, runId, ownerInstance)));
+}
+
+export function* markRunSteps(q: Q, id: string, status: RunStatus, now: number): Steps<void> {
+  yield* q.exec(q.orm.update(q.t.run).set({ status, updatedAt: now }).where(eq(q.t.run.id, id)));
 }
 
 export function markRun(db: Database, id: string, status: RunStatus, now: number): void {
-  db.run("UPDATE run SET status = ?, updated_at = ? WHERE id = ?", [status, now, id]);
+  settled(sqliteDb(db).run((q) => markRunSteps(q, id, status, now)));
+}
+
+export function* recordReviewRoundsSteps(q: Q, id: string, rounds: number): Steps<void> {
+  const { runReviewRounds } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(runReviewRounds)
+      .values({ runId: id, rounds })
+      .onConflictDoUpdate({ target: runReviewRounds.runId, set: { rounds } }),
+  );
 }
 
 /** How many review rounds the item needed by the time this run verified it. */
 export function recordReviewRounds(db: Database, id: string, rounds: number): void {
-  db.run(
-    `INSERT INTO run_review_rounds (run_id, rounds) VALUES (?, ?)
-     ON CONFLICT (run_id) DO UPDATE SET rounds = excluded.rounds`,
-    [id, rounds],
-  );
+  settled(sqliteDb(db).run((q) => recordReviewRoundsSteps(q, id, rounds)));
 }
 
-/** The review rounds recorded on the run, or null when it never verified a review. */
-export function reviewRoundsOf(db: Database, id: string): number | null {
-  return (
-    db
-      .query<{ rounds: number | null }, [string]>(
-        "SELECT rounds FROM run_review_rounds WHERE run_id = ?",
-      )
-      .get(id)?.rounds ?? null
+export function* releaseRunCapacitySteps(q: Q, runId: string, now: number): Steps<void> {
+  const { runnerWork, runnerWorkGrant } = q.t;
+  const stored = yield* getRunSteps(q, runId);
+  if (stored && (stored.status === "active" || stored.status === "provisioning"))
+    yield* markRunSteps(q, runId, "ended", now);
+  yield* q.exec(
+    q.orm
+      .update(runnerWork)
+      .set({ endedAt: now })
+      .where(and(eq(runnerWork.runId, runId), isNull(runnerWork.endedAt))),
   );
+  yield* q.exec(q.orm.delete(runnerWorkGrant).where(eq(runnerWorkGrant.runId, runId)));
 }
 
 export function releaseRunCapacity(db: Database, runId: string, now: number): void {
-  const run = getRun(db, runId);
-  if (run && (run.status === "active" || run.status === "provisioning"))
-    markRun(db, runId, "ended", now);
-  db.run("UPDATE runner_work SET ended_at = ? WHERE run_id = ? AND ended_at IS NULL", [now, runId]);
-  db.run("DELETE FROM runner_work_grant WHERE run_id = ?", [runId]);
+  settled(sqliteDb(db).run((q) => releaseRunCapacitySteps(q, runId, now)));
+}
+
+export function* saveRunResultSteps(
+  q: Q,
+  id: string,
+  resultBody: string,
+  now: number,
+): Steps<void> {
+  const stored = yield* getRunSteps(q, id);
+  if (stored === null) throw new Error(`run ${id} not found`);
+  const checkpoint = { ...(stored.checkpoint ?? { phase: "running" }), resultBody };
+  yield* q.exec(
+    q.orm
+      .update(q.t.run)
+      .set({ checkpoint: storedCheckpoint(q, checkpoint), updatedAt: now })
+      .where(eq(q.t.run.id, id)),
+  );
 }
 
 export function saveRunResult(db: Database, id: string, resultBody: string, now: number): void {
-  const run = getRun(db, id);
-  if (run === null) throw new Error(`run ${id} not found`);
-  const checkpoint = { ...(run.checkpoint ?? { phase: "running" }), resultBody };
-  db.run("UPDATE run SET checkpoint = ?, updated_at = ? WHERE id = ?", [
-    JSON.stringify(checkpoint),
-    now,
-    id,
-  ]);
+  settled(sqliteDb(db).run((q) => saveRunResultSteps(q, id, resultBody, now)));
 }
 
-function mapRun(row: RunSql): StoredRun {
+/** `run.checkpoint` is JSON text on SQLite and `jsonb` on Postgres. */
+function storedCheckpoint(q: Q, checkpoint: Checkpoint): unknown {
+  return q.dialect === "sqlite" ? JSON.stringify(checkpoint) : checkpoint;
+}
+
+function mapRun(q: Q, row: typeof q.t.run.$inferSelect): StoredRun {
   return {
     id: row.id,
-    itemId: row.item_id,
-    kind: row.kind,
+    itemId: row.itemId,
+    kind: row.kind as RunKind,
     agent: row.agent,
-    status: row.status,
-    checkpoint: row.checkpoint === null ? null : readCheckpoint(row.checkpoint),
-    freshSession: row.fresh_session === 1,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    status: row.status as RunStatus,
+    checkpoint:
+      row.checkpoint === null
+        ? null
+        : readCheckpoint(
+            q.dialect === "sqlite" ? (row.checkpoint as string) : JSON.stringify(row.checkpoint),
+          ),
+    freshSession: row.freshSession === 1,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }
 
-export function saveRunCommitPolicy(db: Database, id: string, policy: GitCommitPolicy): void {
-  const run = getRun(db, id);
-  if (!run) throw new Error("Attribution run is missing");
+export function* saveRunCommitPolicySteps(q: Q, id: string, policy: GitCommitPolicy): Steps<void> {
+  const stored = yield* getRunSteps(q, id);
+  if (!stored) throw new Error("Attribution run is missing");
   if (
-    run.checkpoint?.commitPolicy &&
-    JSON.stringify(run.checkpoint.commitPolicy) !== JSON.stringify(policy)
+    stored.checkpoint?.commitPolicy &&
+    JSON.stringify(stored.checkpoint.commitPolicy) !== JSON.stringify(policy)
   )
     throw new Error("Run attribution snapshot cannot change");
-  db.run("UPDATE run SET checkpoint=? WHERE id=?", [
-    JSON.stringify({ ...(run.checkpoint ?? { phase: "running" }), commitPolicy: policy }),
-    id,
-  ]);
+  yield* saveCheckpointSteps(q, id, {
+    ...(stored.checkpoint ?? { phase: "running" }),
+    commitPolicy: policy,
+  });
+}
+
+export function saveRunCommitPolicy(db: Database, id: string, policy: GitCommitPolicy): void {
+  settled(sqliteDb(db).run((q) => saveRunCommitPolicySteps(q, id, policy)));
+}
+
+function* saveCheckpointSteps(q: Q, id: string, checkpoint: Checkpoint): Steps<void> {
+  yield* q.exec(
+    q.orm
+      .update(q.t.run)
+      .set({ checkpoint: storedCheckpoint(q, checkpoint) })
+      .where(eq(q.t.run.id, id)),
+  );
+}
+
+export function* pinRunCheckoutSteps(
+  q: Q,
+  id: string,
+  resolve: () => NonNullable<Checkpoint["checkout"]>,
+): Steps<NonNullable<Checkpoint["checkout"]>> {
+  const stored = yield* getRunSteps(q, id);
+  if (!stored) return resolve();
+  if (stored.checkpoint?.checkout) return stored.checkpoint.checkout;
+  const checkout = resolve();
+  yield* saveCheckpointSteps(q, id, { ...(stored.checkpoint ?? { phase: "running" }), checkout });
+  return checkout;
 }
 
 /**
@@ -157,33 +257,107 @@ export function pinRunCheckout(
   id: string,
   resolve: () => NonNullable<Checkpoint["checkout"]>,
 ): NonNullable<Checkpoint["checkout"]> {
-  const run = getRun(db, id);
-  if (!run) return resolve();
-  if (run.checkpoint?.checkout) return run.checkpoint.checkout;
-  const checkout = resolve();
-  db.run("UPDATE run SET checkpoint=? WHERE id=?", [
-    JSON.stringify({ ...(run.checkpoint ?? { phase: "running" }), checkout }),
-    id,
-  ]);
-  return checkout;
+  return settled(sqliteDb(db).run((q) => pinRunCheckoutSteps(q, id, resolve)));
+}
+
+export function* getItemRunCommitPolicySteps(
+  q: Q,
+  itemId: string,
+): Steps<GitCommitPolicy | undefined> {
+  const runs = yield* listRunsSteps(q, itemId);
+  return runs.toReversed().find((stored) => stored.checkpoint?.commitPolicy)?.checkpoint
+    ?.commitPolicy;
 }
 
 export function getItemRunCommitPolicy(db: Database, itemId: string): GitCommitPolicy | undefined {
-  return listRuns(db, itemId)
-    .toReversed()
-    .find((run) => run.checkpoint?.commitPolicy)?.checkpoint?.commitPolicy;
+  return settled(sqliteDb(db).run((q) => getItemRunCommitPolicySteps(q, itemId)));
+}
+
+export function* listWaitingProfileRunsSteps(q: Q, now: number): Steps<StoredRun[]> {
+  const { run: runTable, runnerWork, workItem } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ run: runTable })
+      .from(runTable)
+      .innerJoin(workItem, eq(workItem.id, runTable.itemId))
+      .where(
+        and(
+          notInArray(workItem.state, ["queued", "completed", "merged", "cancelled"]),
+          eq(workItem.cancelRequested, 0),
+          notExists(
+            q.orm
+              .select({ one: sql`1` })
+              .from(runnerWork)
+              .where(
+                and(
+                  eq(runnerWork.runId, runTable.id),
+                  isNull(runnerWork.endedAt),
+                  gt(runnerWork.leaseUntil, now),
+                ),
+              ),
+          ),
+        ),
+      )
+      .orderBy(asc(runTable.createdAt), asc(runTable.id)),
+  );
+  return rows.map((row) => mapRun(q, row.run));
 }
 
 /** Existing runs eligible for a Settings profile update. A live work lease owns its snapshot. */
 export function listWaitingProfileRuns(db: Database, now: number): StoredRun[] {
-  return db
-    .query<RunSql, [number]>(
-      `SELECT r.* FROM run r JOIN work_item i ON i.id=r.item_id
-     WHERE i.state NOT IN ('queued','completed','merged','cancelled') AND i.cancel_requested=0
-       AND NOT EXISTS (SELECT 1 FROM runner_work w WHERE w.run_id=r.id
-         AND w.ended_at IS NULL AND w.lease_until>?)
-     ORDER BY r.created_at,r.id`,
-    )
-    .all(now)
-    .map(mapRun);
+  return settled(sqliteDb(db).run((q) => listWaitingProfileRunsSteps(q, now)));
+}
+
+export function* loseActiveItemRunsSteps(q: Q, itemId: string, now: number) {
+  const { run } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(run)
+      .set({ status: "lost", updatedAt: now })
+      .where(and(eq(run.itemId, itemId), inArray(run.status, ["active", "provisioning"]))),
+  );
+}
+
+export function loseActiveItemRuns(db: Database, itemId: string, now: number): void {
+  settled(sqliteDb(db).run((q) => loseActiveItemRunsSteps(q, itemId, now)));
+}
+
+export type AnsweredRunQuestion = {
+  id: string;
+  itemId: string;
+  body: string;
+  options: string | null;
+  answer: string;
+};
+
+export function* latestRunningAnswerSteps(q: Q, runId: string): Steps<AnsweredRunQuestion | null> {
+  const { question, workItem } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        id: question.id,
+        itemId: question.itemId,
+        body: question.body,
+        options: jsonText(q, question.options),
+        answer: question.answer,
+      })
+      .from(question)
+      .innerJoin(workItem, eq(workItem.id, question.itemId))
+      .where(
+        and(
+          eq(question.runId, runId),
+          eq(question.status, "answered"),
+          isNull(question.cancelledAt),
+          isNotNull(question.answer),
+          eq(workItem.state, "running"),
+        ),
+      )
+      .orderBy(desc(question.answeredAt), desc(question.id))
+      .limit(1),
+  );
+  return row ? { ...row, options: row.options as string | null, answer: row.answer! } : null;
+}
+
+export function latestRunningAnswer(db: Database, runId: string): AnsweredRunQuestion | null {
+  return settled(sqliteDb(db).run((q) => latestRunningAnswerSteps(q, runId)));
 }

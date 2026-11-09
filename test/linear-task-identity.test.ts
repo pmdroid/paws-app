@@ -14,7 +14,7 @@ import {
   putWorkspaceUser,
   saveTaskClassification,
   listPendingLinearTurns,
-  migrate,
+  legacyMigrate,
   migrations,
   openDatabase,
   recordLinearTurn,
@@ -23,7 +23,7 @@ import { createFakeTracker } from "../src/linear";
 import { intakeDelegatedIssue } from "../src/intake";
 import { attachOrchestrator, itemPathId } from "../src/loop";
 import { systemClock } from "../src/core";
-import { tempDb } from "./helpers";
+import { legacyTempDb } from "./helpers";
 
 const snapshot = {
   linearIssueId: "issue",
@@ -33,7 +33,7 @@ const snapshot = {
   subIssues: [],
 };
 
-async function task(db: ReturnType<typeof tempDb>, key?: string) {
+async function task(db: ReturnType<typeof legacyTempDb>, key?: string) {
   const result = await intakeDelegatedIssue(db, createFakeTracker([snapshot]), {
     linearIssueId: "issue",
     taskKey: key,
@@ -82,7 +82,7 @@ test("identity migration preserves existing rows, run foreign keys and original 
         [id!, id!, source!, session!],
       );
     }
-    migrate(db);
+    legacyMigrate(db);
     expect(db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(getWorkItem(db, "item")?.state).toBe("merged");
@@ -114,7 +114,7 @@ test("identity migration preserves existing rows, run foreign keys and original 
 });
 
 test("new tasks keep source IDs and get separate worktree identities while intake replay is stable", async () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     const initial = await task(db);
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [initial.items[0]!.id]);
@@ -134,7 +134,7 @@ test("new tasks keep source IDs and get separate worktree identities while intak
 });
 
 test("session ownership and active child routing remain separate from shared issue identity", async () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     const first = await task(db);
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [first.items[0]!.id]);
@@ -165,7 +165,7 @@ test("session ownership and active child routing remain separate from shared iss
 });
 
 test("prompt before hydration persists, ordered duplicates apply once and Stop fences pending turns", async () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     const turn = (eventKey: string, createdAtMs: number) => ({
       eventKey,
@@ -204,7 +204,7 @@ test("prompt before hydration persists, ordered duplicates apply once and Stop f
 });
 
 test("a second session for an active issue is rejected and a prompt still hydrates after that item is cancelled", async () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   const orchestrator = attachOrchestrator({
     db,
     tracker: createFakeTracker([snapshot]),
@@ -263,7 +263,7 @@ test("a second session for an active issue is rejected and a prompt still hydrat
 });
 
 test("a redirect cancels the previous item before the replacement is inserted", async () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   const orchestrator = attachOrchestrator({
     db,
     tracker: createFakeTracker([snapshot]),
@@ -306,7 +306,7 @@ test("a redirect cancels the previous item before the replacement is inserted", 
 });
 
 test("intake sets the session owner's workspace user on each new solo item and leaves an unknown actor unset", async () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   putWorkspaceUser(db, {
     id: "delegate-user",
     linearUserId: "delegate",

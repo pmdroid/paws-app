@@ -8,6 +8,7 @@ import {
   readRetroArtifact,
   retroArtifact,
   workspaceMember,
+  workItemSessionKeys,
   writeRetroArtifact,
   type Retro,
 } from "../db";
@@ -445,14 +446,7 @@ function readableEvidence(
       ...source.digest.records.map((record) => record.itemId),
     ]),
   ];
-  const sessions = new Map(
-    db
-      .query<{ id: string; sessionKey: string | null }, [string]>(
-        "SELECT id, session_key AS sessionKey FROM work_item WHERE id IN (SELECT value FROM json_each(?))",
-      )
-      .all(JSON.stringify(itemIds))
-      .map((row) => [row.id, row.sessionKey]),
-  );
+  const sessions = new Map(workItemSessionKeys(db, itemIds).map((row) => [row.id, row.sessionKey]));
   const readable = new Set(sessionIds);
   const authorized = itemIds.every((id) => {
     const sessionKey = sessions.get(id);

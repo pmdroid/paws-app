@@ -804,6 +804,56 @@ test("get_closeout lists the pending check and run_closeout runs it", async () =
   });
 });
 
+test("get_closeout lists a failed review's blocking findings under it", async () => {
+  const layout = await layoutRepo();
+  await mkdir(join(layout.worktree, ".agents", "skills", "review"), { recursive: true });
+  await writeFile(join(layout.worktree, ".agents", "skills", "review", "SKILL.md"), "# Review\n");
+  await writeFile(
+    join(layout.worktree, ".agents", "closeout.yaml"),
+    [
+      'specVersion: "0.1"',
+      "items:",
+      "  - id: independent-review",
+      "    kind: review",
+      "    gate: beforePR",
+      "    skill: .agents/skills/review/SKILL.md",
+      "    independence:",
+      "      differentSession: true",
+      "      differentModel: true",
+      "    failOn: P1",
+      "",
+    ].join("\n"),
+  );
+  const files = await writeScript(layout.root, {
+    steps: [{ type: "get_closeout" }, { type: "end" }],
+  });
+  const line =
+    "P1 at src/auth/session.ts:42: unchecked null: the handler reads the user before the check. (session.ts:42 reads user.id)";
+  await runAgent({
+    role: "implementer",
+    itemId: "ENG-1",
+    runId: "run-closeout-findings",
+    prompt: "Fix the review findings.",
+    worktreePath: layout.worktree,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    command: process.execPath,
+    args: fakeAgentArgs(files),
+    env: agentEnv(),
+    checkpoint: false,
+    updatePlan: { update: async () => undefined },
+    reviewFindings: [{ reviewId: "independent-review", lines: [line] }],
+  });
+  const trace = await readResult(files.resultPath);
+  const report = JSON.parse(trace.closeouts?.[0] ?? "{}") as {
+    required?: Array<{ id: string; findings?: string[] }>;
+  };
+  const review = report.required?.find((item) => item.id === "independent-review");
+  expect(review?.findings).toEqual([line]);
+  expect(review?.findings?.[0]).toContain("src/auth/session.ts:42");
+  expect(review?.findings?.[0]).toContain("the handler reads the user before the check");
+});
+
 test("a read-only session lists get_closeout and not run_closeout", async () => {
   const layout = await layoutRepo();
   const files = await writeScript(layout.root, {

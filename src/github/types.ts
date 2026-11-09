@@ -160,6 +160,8 @@ export type SerialMergeResult = {
   sha?: string;
   summary?: string;
   message?: string;
+  status?: number;
+  reason?: string;
   failedChecks?: {
     name: string;
     url: string | null;

@@ -21,6 +21,7 @@ const heartbeat = RunnerHostStatusSchema.extend({
   terminated: z.array(RunnerTerminationSchema).max(64).optional(),
   capacity: z.number().int().min(1).max(16).optional(),
   ceiling: z.number().int().min(1).max(16).optional(),
+  conversationConcurrency: z.number().int().min(0).max(16).optional(),
   skills: RunnerInstalledSkillsSchema.optional(),
   runtimes: RunnerInstalledRuntimesSchema.optional(),
   agents: RunnerInstalledAgentsSchema.optional(),
@@ -64,6 +65,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
           terminated,
           liveAfter,
           accounts,
+          conversationConcurrency,
           ...host
         } = heartbeat.parse(await body(request));
         return json(
@@ -80,6 +82,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
             terminated,
             liveAfter,
             accounts,
+            conversationConcurrency,
           ),
         );
       }

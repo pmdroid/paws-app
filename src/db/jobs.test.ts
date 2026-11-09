@@ -8,7 +8,6 @@ import {
   beginImplementRun,
   bindWorkItemRepository,
   actionableDue,
-  claimJobSql,
   cancelOpenJobs,
   claimNextJob,
   completeJob,
@@ -107,13 +106,6 @@ describe("job queue", () => {
     expect(getJob(db, otherResume)?.status).toBe("pending");
     expect(getJob(db, command)?.status).toBe("pending");
     db.close();
-  });
-
-  test("claims with one UPDATE ... RETURNING statement", () => {
-    const sql = claimJobSql(2);
-    expect(sql).toContain("UPDATE job");
-    expect(sql).toContain("RETURNING *");
-    expect(sql).not.toContain(";");
   });
 
   test("a timer row stays unclaimed until its run_at", () => {

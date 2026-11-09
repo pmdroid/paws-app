@@ -1,5 +1,14 @@
 import type { Database } from "bun:sqlite";
 import {
+  currentRunnerAgentVersion,
+  lastRunCommandAccount,
+  latestSealedSnapshot,
+  runnerAgentLoginReady,
+  runnerStanding,
+  runnerTargetForRestore,
+  storedRunnerName,
+} from "../db";
+import {
   CLAUDE_SESSION_RESTORE_RUNNER_VERSION,
   CODEX_SESSION_RUNNER_VERSION,
   GROK_SESSION_RUNNER_VERSION,
@@ -71,28 +80,7 @@ export function planSessionRestore(
     targetAccount?: { accountId: string; named: boolean };
   },
 ): SessionRestorePlan {
-  const snapshot = db
-    .query<
-      {
-        generation: number;
-        runnerId: string;
-        ownerUserId: string;
-        agent: string;
-        agentVersion: string;
-        sessionId: string;
-        commitSha: string;
-        turn: number;
-        sealedSize: number;
-        sha256: string;
-      },
-      [string]
-    >(
-      `SELECT generation,runner_id AS runnerId,owner_user_id AS ownerUserId,agent,
-       agent_version AS agentVersion,session_id AS sessionId,commit_sha AS commitSha,turn,
-       sealed_size AS sealedSize,sha256 FROM agent_session_snapshot
-       WHERE run_id=? AND status='sealed' ORDER BY generation DESC LIMIT 1`,
-    )
-    .get(input.runId);
+  const snapshot = latestSealedSnapshot(db, input.runId);
   // Another agent's snapshot is not this run's session.
   const minimum = snapshot && RESTORE_RUNNER_VERSION.get(snapshot.agent);
   if (
@@ -102,23 +90,12 @@ export function planSessionRestore(
     !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(snapshot.sessionId)
   )
     return { eligible: false, failure: "no_snapshot" };
-  const target = db
-    .query<{ ownerUserId: string; version: string | null }, [string]>(
-      `SELECT r.owner_user_id AS ownerUserId,h.runner_version AS version FROM runner r
-       LEFT JOIN runner_host_status h ON h.runner_id=r.id WHERE r.id=?`,
-    )
-    .get(input.targetRunnerId);
+  const target = runnerTargetForRestore(db, input.targetRunnerId);
   if (!target || !versionAtLeast(target.version, minimum))
     return { eligible: false, failure: "old_runner" };
   if (target.ownerUserId !== snapshot.ownerUserId)
     return { eligible: false, failure: "other_account" };
-  const source = db
-    .query<{ accountId: string; named: number }, [string, number]>(
-      `SELECT a.account_id AS accountId,a.named FROM runner_command c
-       JOIN runner_command_account a ON a.command_id=c.id
-       WHERE c.run_id=? AND c.generation=? AND c.kind='run' ORDER BY c.ordinal DESC LIMIT 1`,
-    )
-    .get(input.runId, snapshot.generation);
+  const source = lastRunCommandAccount(db, input.runId, snapshot.generation);
   const sourceNamed = source?.named === 1;
   const targetNamed = input.targetAccount?.named === true;
   if (
@@ -126,21 +103,10 @@ export function planSessionRestore(
     (sourceNamed && source!.accountId !== input.targetAccount!.accountId)
   )
     return { eligible: false, failure: "other_account" };
-  if (
-    !targetNamed &&
-    !db
-      .query(
-        "SELECT 1 FROM runner_agent_policy WHERE runner_id=? AND agent=? AND ready=1 AND auth_expired=0",
-      )
-      .get(input.targetRunnerId, snapshot.agent)
-  )
+  if (!targetNamed && !runnerAgentLoginReady(db, input.targetRunnerId, snapshot.agent))
     return { eligible: false, failure: "login_not_ready" };
-  const installed = db
-    .query<{ version: string }, [string, string]>(
-      "SELECT version FROM runner_agent WHERE runner_id=? AND agent=? AND status='current'",
-    )
-    .get(input.targetRunnerId, snapshot.agent);
-  if (!installed) return { eligible: false, failure: "not_installed" };
+  const installed = currentRunnerAgentVersion(db, input.targetRunnerId, snapshot.agent);
+  if (installed === null) return { eligible: false, failure: "not_installed" };
   return {
     eligible: true,
     restoreSession: {
@@ -154,17 +120,13 @@ export function planSessionRestore(
     commitSha: snapshot.commitSha,
     turn: snapshot.turn,
     sourceRunnerId: snapshot.runnerId,
-    targetVersion: installed.version,
+    targetVersion: installed,
   };
 }
 
 /** How the run's earlier runner became unusable, after its name. */
 export function runnerGoneReason(db: Database, runnerId: string, onlineSince: number): string {
-  const runner = db
-    .query<{ status: string; revokedAt: number | null; lastSeenAt: number | null }, [string]>(
-      "SELECT status,revoked_at AS revokedAt,last_seen_at AS lastSeenAt FROM runner WHERE id=?",
-    )
-    .get(runnerId);
+  const runner = runnerStanding(db, runnerId);
   if (!runner) return "is gone";
   if (runner.revokedAt !== null || runner.status === "revoked") return "was revoked";
   if (runner.status === "draining") return "is draining";
@@ -189,9 +151,7 @@ export function sessionMoveNotice(input: {
         versions?: { saved: string; savedOn: string; target: string };
       };
 }): string {
-  const name = (id: string) =>
-    input.db.query<{ name: string }, [string]>("SELECT name FROM runner WHERE id=?").get(id)
-      ?.name ?? id;
+  const name = (id: string) => storedRunnerName(input.db, id) ?? id;
   const to = name(input.to);
   const moved =
     input.gone === undefined

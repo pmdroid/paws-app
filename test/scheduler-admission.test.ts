@@ -16,6 +16,8 @@ import {
   listQueuePositions,
   putWorkspaceUser,
   recordLinearInstallation,
+  settled,
+  sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue, readyItems, syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -265,11 +267,13 @@ test("a waiting item's place in line moves up as items ahead start or leave", ()
     const ready = ["a", "b", "c", "d"];
     for (const [index, id] of ready.entries()) insertQueuedItem(db, { id, now: index + 1 });
     const line = () =>
-      listQueuePositions(db).map(({ itemId, position, busySlots, totalSlots }) => [
-        itemId,
-        position,
-        `${busySlots}/${totalSlots}`,
-      ]);
+      settled(listQueuePositions(sqliteDb(db))).map(
+        ({ itemId, position, busySlots, totalSlots }) => [
+          itemId,
+          position,
+          `${busySlots}/${totalSlots}`,
+        ],
+      );
 
     assert.deepEqual(workspaceDispatch(db, { now: 1000 }), []);
     assert.deepEqual(line(), [
@@ -278,7 +282,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", ()
       ["c", 3, "2/2"],
       ["d", 4, "2/2"],
     ]);
-    assert.deepEqual(getQueuePosition(db, "c"), {
+    assert.deepEqual(settled(getQueuePosition(sqliteDb(db), "c")), {
       itemId: "c",
       position: 3,
       busySlots: 2,
@@ -303,7 +307,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", ()
       ["c", 1, "2/2"],
       ["d", 2, "2/2"],
     ]);
-    assert.equal(getQueuePosition(db, "b"), null);
+    assert.equal(settled(getQueuePosition(sqliteDb(db), "b")), null);
 
     // With no runner online, admission is unlimited as in local execution, and there is no line.
     db.run("UPDATE runner SET last_seen_at=0");

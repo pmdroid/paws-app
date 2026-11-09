@@ -102,6 +102,7 @@ export function askWithLink(
     /** The item version the ask was decided on; a newer item makes the ask stale. */
     version?: number;
     rounds?: LinkAskRounds;
+    findings?: string;
   },
 ): { question: StoredQuestion; linkAsk: LinkAsk } {
   if (!linkAskAvailable(input.publicUrl)) throw new Error(LINK_ASK_NEEDS_PUBLIC_URL);
@@ -130,6 +131,7 @@ export function askWithLink(
       detail: input.detail,
       answerers,
       ...(input.rounds === undefined ? {} : { rounds: input.rounds }),
+      ...(input.findings ? { findings: input.findings } : {}),
       now: input.now,
     });
     enqueueJobOnce(db, {

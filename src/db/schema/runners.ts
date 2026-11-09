@@ -263,6 +263,7 @@ export const runnerHelper = sqliteTable(
     acknowledgedAt: integer("acknowledged_at"),
     endedAt: integer("ended_at"),
     result: text(),
+    purpose: text(),
   },
   (table) => [
     index("runner_helper_pending").on(table.runnerId, table.acknowledgedAt, table.expiresAt),
@@ -299,12 +300,29 @@ export const runnerCapacity = sqliteTable(
     capacity: integer().notNull(),
     ceiling: integer(),
     desired: integer(),
+    conversation: integer(),
   },
   () => [
     check("runner_capacity_check_1", sql`capacity BETWEEN 1 AND 16`),
     check("runner_capacity_check_2", sql`ceiling IS NULL OR ceiling BETWEEN 1 AND 16`),
     check("runner_capacity_check_3", sql`desired IS NULL OR desired BETWEEN 1 AND 16`),
   ],
+);
+
+export const runnerReservation = sqliteTable(
+  "runner_reservation",
+  {
+    runId: text("run_id")
+      .primaryKey()
+      .notNull()
+      .references(() => run.id),
+    runnerId: text("runner_id")
+      .notNull()
+      .references(() => runner.id),
+    instanceId: text("instance_id").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (table) => [index("runner_reservation_runner").on(table.runnerId, table.expiresAt)],
 );
 
 export const runnerHostStatus = sqliteTable(
@@ -822,5 +840,24 @@ export const runnerExecutionUsage = sqliteTable(
       "runner_execution_usage_check_8",
       sql`account_fallback IS NULL OR length(account_fallback) BETWEEN 1 AND 500`,
     ),
+  ],
+);
+
+export const runnerFileObject = sqliteTable(
+  "runner_file_object",
+  {
+    key: text().primaryKey().notNull(),
+    runId: text("run_id").notNull(),
+    commandId: text("command_id").notNull(),
+    kind: text().notNull(),
+    name: text().notNull(),
+    digest: text().notNull(),
+    sha256: text().notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("runner_file_object_run").on(table.runId),
+    index("runner_file_object_command").on(table.commandId, table.kind),
+    check("runner_file_object_check_1", sql`kind IN ('input','artifact')`),
   ],
 );

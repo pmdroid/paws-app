@@ -1,5 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { eq } from "drizzle-orm";
 import type { TaskMode } from "../core";
+import { settled, sqliteDb, type Q } from "./db";
+import { orm } from "./orm";
+import { workItemTask } from "./schema";
 import { immediate } from "./tx";
 import { applyWorkItemEvent, cancelAdvancingJobs, getWorkItem } from "./items";
 import { enqueueOutboxOnce } from "./outbox";
@@ -8,12 +12,44 @@ import { artifactPublicationReady, listArtifacts } from "./artifacts";
 import { getLinearSessionGeneration } from "./linear-sessions";
 import { enqueueIssueStatus } from "./linear-delegation";
 
-export function getTaskMode(db: Database, itemId: string): TaskMode | null {
-  return (
-    db
-      .query<{ mode: TaskMode }, [string]>("SELECT mode FROM work_item_task WHERE item_id = ?")
-      .get(itemId)?.mode ?? null
+type TaskRow = typeof workItemTask.$inferSelect;
+
+function* taskColumnSteps<K extends "mode" | "generation" | "repositoryContext">(
+  q: Q,
+  itemId: string,
+  column: K,
+) {
+  const { workItemTask: task } = q.t;
+  const row = yield* q.one(
+    q.orm.select({ value: task[column] }).from(task).where(eq(task.itemId, itemId)),
   );
+  return row?.value as TaskRow[K] | undefined;
+}
+
+export function* getTaskModeSteps(q: Q, itemId: string) {
+  return ((yield* taskColumnSteps(q, itemId, "mode")) as TaskMode | undefined) ?? null;
+}
+
+export function getTaskMode(db: Database, itemId: string): TaskMode | null {
+  return settled(sqliteDb(db).run((q) => getTaskModeSteps(q, itemId)));
+}
+
+export function* saveTaskModeSteps(
+  q: Q,
+  itemId: string,
+  mode: TaskMode,
+  generation = 0,
+  repository = false,
+) {
+  yield* q.exec(
+    q.orm
+      .insert(q.t.workItemTask)
+      .values({ itemId, mode, generation, repositoryContext: repository ? 1 : 0 })
+      .onConflictDoNothing(),
+  );
+  const saved = yield* getTaskModeSteps(q, itemId);
+  if (saved !== mode) throw new Error("Task mode already selected");
+  return saved;
 }
 
 export function saveTaskMode(
@@ -23,35 +59,25 @@ export function saveTaskMode(
   generation = 0,
   repository = false,
 ): TaskMode {
-  return immediate(db, () => {
-    db.run(
-      "INSERT OR IGNORE INTO work_item_task (item_id, mode, generation, repository_context) VALUES (?, ?, ?, ?)",
-      [itemId, mode, generation, repository ? 1 : 0],
-    );
-    const saved = getTaskMode(db, itemId);
-    if (saved !== mode) throw new Error("Task mode already selected");
-    return saved;
-  });
+  return settled(
+    sqliteDb(db).transaction((q) => saveTaskModeSteps(q, itemId, mode, generation, repository)),
+  );
+}
+
+export function* taskRequiresRepositorySteps(q: Q, itemId: string) {
+  return (yield* taskColumnSteps(q, itemId, "repositoryContext")) === 1;
 }
 
 export function taskRequiresRepository(db: Database, itemId: string): boolean {
-  return (
-    db
-      .query<{ repository_context: number }, [string]>(
-        "SELECT repository_context FROM work_item_task WHERE item_id = ?",
-      )
-      .get(itemId)?.repository_context === 1
-  );
+  return settled(sqliteDb(db).run((q) => taskRequiresRepositorySteps(q, itemId)));
+}
+
+export function* getTaskModeGenerationSteps(q: Q, itemId: string) {
+  return (yield* taskColumnSteps(q, itemId, "generation")) ?? 0;
 }
 
 export function getTaskModeGeneration(db: Database, itemId: string): number {
-  return (
-    db
-      .query<{ generation: number }, [string]>(
-        "SELECT generation FROM work_item_task WHERE item_id = ?",
-      )
-      .get(itemId)?.generation ?? 0
-  );
+  return settled(sqliteDb(db).run((q) => getTaskModeGenerationSteps(q, itemId)));
 }
 
 export function selectTaskModeForTurn(
@@ -75,10 +101,11 @@ export function selectTaskModeForTurn(
     if (saved === "code") return saved;
     if (getTaskModeGeneration(db, itemId) >= generation)
       throw new Error("Task outcome changes require a newer accepted turn");
-    db.run(
-      "UPDATE work_item_task SET mode = ?, generation = ?, repository_context = ?, response = NULL WHERE item_id = ?",
-      [mode, generation, repository ? 1 : 0, itemId],
-    );
+    orm(db)
+      .update(workItemTask)
+      .set({ mode, generation, repositoryContext: repository ? 1 : 0, response: null })
+      .where(eq(workItemTask.itemId, itemId))
+      .run();
     return mode;
   });
 }
@@ -133,7 +160,7 @@ function completeResultTask(
     if (getTaskMode(db, itemId) !== mode)
       throw new Error(`Only ${mode} tasks complete at this response boundary`);
     if (!item.sessionKey) throw new Error("Answer task has no session");
-    db.run("UPDATE work_item_task SET response = ? WHERE item_id = ?", [response, itemId]);
+    orm(db).update(workItemTask).set({ response }).where(eq(workItemTask.itemId, itemId)).run();
     applyWorkItemEvent(db, itemId, mode === "answer" ? "answer_completed" : "artifact_completed");
     if (item.currentRunId) markRun(db, item.currentRunId, "ended", now);
     cancelAdvancingJobs(db, itemId, `${mode}_completed`, now);

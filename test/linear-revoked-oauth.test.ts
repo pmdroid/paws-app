@@ -4,7 +4,6 @@ import { isLinearAppRevoked, recordLinearInstallation, revokeLinearInstallation 
 import {
   createLinearAuth,
   createLinearClient,
-  linearTokenPath,
   openLinear,
   readStoredToken,
   writeStoredToken,
@@ -22,7 +21,7 @@ function fixture() {
   cleanup.push(() => db.close());
   recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
   const home = tempHome();
-  const path = linearTokenPath(join(home, "secrets"));
+  const secretsDir = join(home, "secrets");
   const token: StoredLinearToken = {
     accessToken: "fake-old-access",
     refreshToken: "fake-old-refresh",
@@ -30,10 +29,10 @@ function fixture() {
     scope: "read,write",
     actor: "app",
   };
-  writeStoredToken(path, token);
+  writeStoredToken(db, secretsDir, token);
   const revoke = () =>
     revokeLinearInstallation(db, { ...scope, eventKey: "revoked", createdAtMs: 2 });
-  return { db, home, path, token, revoke, allowed: () => !isLinearAppRevoked(db, scope) };
+  return { db, home, secretsDir, token, revoke, allowed: () => !isLinearAppRevoked(db, scope) };
 }
 
 test("known revocation blocks fresh credentials and refresh without a network request", async () => {
@@ -41,7 +40,7 @@ test("known revocation blocks fresh credentials and refresh without a network re
   let requests = 0;
   const auth = createLinearAuth({
     db: f.db,
-    tokenPath: f.path,
+    secretsDir: f.secretsDir,
     clientId: "client",
     clientSecret: "fake-secret",
     isAuthorized: f.allowed,
@@ -55,20 +54,20 @@ test("known revocation blocks fresh credentials and refresh without a network re
   await expect(auth.ensureFresh()).rejects.toThrow("revoked");
   await expect(auth.forceRefresh()).rejects.toThrow("revoked");
   expect(requests).toBe(0);
-  expect(readStoredToken(f.path)).toEqual(f.token);
+  expect(readStoredToken(f.db, f.secretsDir)).toEqual(f.token);
 });
 
 test.each([false, true])(
   "revocation fences a pending refresh and preserves operator replacement=%s",
   async (replace) => {
     const f = fixture();
-    writeStoredToken(f.path, { ...f.token, expiresAtMs: 0 });
+    writeStoredToken(f.db, f.secretsDir, { ...f.token, expiresAtMs: 0 });
     const started = Promise.withResolvers<void>();
     const released = Promise.withResolvers<Response>();
     let requests = 0;
     const auth = createLinearAuth({
       db: f.db,
-      tokenPath: f.path,
+      secretsDir: f.secretsDir,
       clientId: "client",
       clientSecret: "fake-secret",
       isAuthorized: f.allowed,
@@ -84,7 +83,7 @@ test.each([false, true])(
     const expected = replace
       ? { ...f.token, accessToken: "fake-operator-access", refreshToken: "fake-operator-refresh" }
       : { ...f.token, expiresAtMs: 0 };
-    if (replace) writeStoredToken(f.path, expected);
+    if (replace) writeStoredToken(f.db, f.secretsDir, expected);
     released.resolve(
       Response.json({
         access_token: "fake-stale-access",
@@ -93,7 +92,7 @@ test.each([false, true])(
       }),
     );
     await expect(pending).rejects.toThrow();
-    expect(readStoredToken(f.path)).toEqual(expected);
+    expect(readStoredToken(f.db, f.secretsDir)).toEqual(expected);
     await expect(auth.ensureFresh()).rejects.toThrow("revoked");
     expect(requests).toBe(1);
   },
@@ -103,7 +102,7 @@ test("revocation after token load fences the GraphQL request before transport di
   const f = fixture();
   const auth = createLinearAuth({
     db: f.db,
-    tokenPath: f.path,
+    secretsDir: f.secretsDir,
     clientId: "client",
     clientSecret: "fake-secret",
     isAuthorized: f.allowed,
@@ -166,7 +165,7 @@ test("revocation for another client or app user does not block the configured in
   expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: "other-app" })).toBe(false);
   const auth = createLinearAuth({
     db: f.db,
-    tokenPath: f.path,
+    secretsDir: f.secretsDir,
     clientId: "client",
     clientSecret: "fake-secret",
     isAuthorized: f.allowed,

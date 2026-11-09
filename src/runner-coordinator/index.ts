@@ -35,6 +35,8 @@ import {
   createRunnerTranscriptsHttp,
   type RunnerTranscriptObjects,
 } from "../runner-transcripts";
+import { createSealedRunnerFiles, type RunFileObjects } from "../run-files";
+import { runnerCommandRuns } from "../db";
 import {
   createAgentSessions,
   createAgentSessionsHttp,
@@ -81,6 +83,7 @@ export async function openRunnerCoordinator(options: {
   transcripts?: { objects: RunnerTranscriptObjects; key: Buffer };
   /** Encrypted agent session snapshot storage and its key from `~/.paws/secrets`. */
   agentSessions?: { objects: AgentSessionObjects; key: Buffer };
+  runnerFiles?: { objects: RunFileObjects; key: Buffer };
   eventKey: Buffer;
   discoverModels?: boolean;
   /** Queue login_check commands in the background so agent sign-in status stays current. */
@@ -112,7 +115,14 @@ export async function openRunnerCoordinator(options: {
     now: options.now,
   });
   const workHttp = createRunnerWorkHttp(work, { skillsRoot: options.skillsRoot });
-  const inputs = createRunnerInputStore({ root: join(options.root, "inputs"), work });
+  const runnerFiles = options.runnerFiles
+    ? createSealedRunnerFiles({ db: options.db, now: options.now, ...options.runnerFiles })
+    : undefined;
+  const inputs = createRunnerInputStore({
+    root: join(options.root, "inputs"),
+    work,
+    remote: runnerFiles,
+  });
   const helpers = createRunnerHelpers({
     db: options.db,
     keyId: signing.signingKeys[0].keyId,
@@ -148,7 +158,20 @@ export async function openRunnerCoordinator(options: {
     },
   });
   const models = createRunnerModels({ db: options.db, work, now: options.now });
-  const artifacts = createRunnerArtifactStore({ root: join(options.root, "artifacts"), work });
+  const artifacts = createRunnerArtifactStore({
+    root: join(options.root, "artifacts"),
+    work,
+    remote: runnerFiles && { files: runnerFiles, db: options.db },
+  });
+  if (runnerFiles) {
+    try {
+      const commands = runnerCommandRuns(options.db);
+      await inputs.migrateLocal(commands);
+      await artifacts.migrateLocal(commands);
+    } catch (error) {
+      journalCaught(error, "runner-coordinator.openRunnerCoordinator.migrateLocal", null);
+    }
+  }
   const repository = options.repositoryAccess
     ? createRunnerRepositoryAccess({ ...options.repositoryAccess, work, now: options.now })
     : undefined;
@@ -264,6 +287,15 @@ export async function openRunnerCoordinator(options: {
   const pruneTimer = agentSessions ? setInterval(pruneAgentSessions, 60_000) : undefined;
   pruneTimer?.unref();
   pruneAgentSessions();
+  const pruneRunnerFiles = () =>
+    void runnerFiles
+      ?.prune()
+      .catch((error: unknown) =>
+        journalCaught(error, "runner-coordinator.openRunnerCoordinator.pruneRunnerFiles", null),
+      );
+  const runnerFilesTimer = runnerFiles ? setInterval(pruneRunnerFiles, 3_600_000) : undefined;
+  runnerFilesTimer?.unref();
+  pruneRunnerFiles();
   return {
     port: listener.port,
     signingKeys: signing.signingKeys,
@@ -279,6 +311,7 @@ export async function openRunnerCoordinator(options: {
     transcripts,
     agentSessions,
     agentRead,
+    runnerFiles,
     signRetroCommand: (command: RunnerRetroCommand) =>
       signRunnerRetroCommand({
         keyId: signing.signingKeys[0].keyId,
@@ -303,6 +336,7 @@ export async function openRunnerCoordinator(options: {
       clearInterval(modelTimer);
       clearInterval(signInTimer);
       clearInterval(pruneTimer);
+      clearInterval(runnerFilesTimer);
       await listener?.stop();
     },
   };

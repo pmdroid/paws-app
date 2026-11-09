@@ -8,12 +8,12 @@ import {
   delegatedLinearUserId,
   ensureLinearSession,
   insertQueuedItem,
-  migrate,
+  legacyMigrate,
   migrations,
   openDatabase,
 } from "../src/db";
 import { handleStatusRequest } from "../src/dashboard";
-import { tempDb } from "./helpers";
+import { legacyTempDb } from "./helpers";
 
 function applyMigrationsUntil(db: Database, lastId: string): void {
   db.run(
@@ -59,7 +59,7 @@ test("migration 061 keeps the task actor that has no workspace user", () => {
     db.run(
       "INSERT INTO linear_session_task(session_id,epic_id,owner_actor_id) VALUES('session','epic','linear-actor')",
     );
-    migrate(db);
+    legacyMigrate(db);
     expect(delegatedLinearUserId(db, "item")).toBe("linear-actor");
   } finally {
     db.close();
@@ -67,7 +67,7 @@ test("migration 061 keeps the task actor that has no workspace user", () => {
 });
 
 test("binding a session keeps an actor that has no workspace user", () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     const item = insertQueuedItem(db, { id: "bound-item", sessionKey: "bound-session", now: 1 });
     ensureLinearSession(db, { sessionId: "bound-session", creatorId: "linear-creator", now: 1 });
@@ -79,7 +79,7 @@ test("binding a session keeps an actor that has no workspace user", () => {
 });
 
 test("migration 061 drops the old session link table and columns", () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     expect(
       db.query("SELECT 1 FROM schema_migration WHERE id = '061_drop_old_session_link'").get(),
@@ -101,7 +101,7 @@ test("migration 061 drops the old session link table and columns", () => {
 });
 
 test("a stop command resolves the session through session_key alone", () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     const item = insertQueuedItem(db, { id: "stop-item", sessionKey: "stop-session", now: 1 });
     expect(
@@ -124,7 +124,7 @@ test("a stop command resolves the session through session_key alone", () => {
 });
 
 test("a transcript lookup resolves the session through session_key alone", async () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     const item = insertQueuedItem(db, {
       id: "transcript-item",
@@ -148,7 +148,7 @@ test("a transcript lookup resolves the session through session_key alone", async
 });
 
 test("the scheduler resolves a session item through session_key alone", () => {
-  const db = tempDb();
+  const db = legacyTempDb();
   try {
     const item = insertQueuedItem(db, { id: "sched-item", sessionKey: "sched-session", now: 1 });
     ensureLinearSession(db, { sessionId: "sched-session", issueId: item.linearIssueId, now: 1 });

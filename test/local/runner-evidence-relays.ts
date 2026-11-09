@@ -246,7 +246,7 @@ export async function probeRunnerEvidenceRelays(
     });
     await daemon.uploadArtifact(run.id, artifactChunk(1), grant.token);
     assert.deepEqual(
-      Buffer.from(await artifacts.snapshot(run.id, 1, artifact).bytes.arrayBuffer()),
+      Buffer.from(await (await artifacts.snapshot(run.id, 1, artifact)).bytes.arrayBuffer()),
       bytes,
     );
     await assert.rejects(

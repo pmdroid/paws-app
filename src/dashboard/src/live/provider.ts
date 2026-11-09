@@ -45,6 +45,8 @@ import type {
 } from "../../../db";
 import {
   getCandidateRisk,
+  openQuestionKind,
+  runnerWorkActive,
   getRiskFix,
   latestCandidateRisk,
   latestRiskFix,
@@ -83,6 +85,8 @@ import {
   listMergeQueues,
   runnerCapacityWait,
   listQueuePositions,
+  settled,
+  sqliteDb,
   listRuns,
   runAgentSetup,
   runRunnerName,
@@ -951,7 +955,9 @@ function readIssueScope(db: Database, options: LiveStatusOptions, only?: string)
   const openQuestions = listOpenQuestions(db);
   const env = options.env ?? process.env;
   const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
-  const queue = new Map(listQueuePositions(db).map((entry) => [entry.itemId, entry]));
+  const queue = new Map(
+    settled(listQueuePositions(sqliteDb(db))).map((entry) => [entry.itemId, entry]),
+  );
   const queues = listMergeQueues(db);
   const merging = mergePlaces(queues, visible);
   const linearRequests = linearRequestsByItem(db);
@@ -1449,15 +1455,9 @@ function stageTimesOf(record: WorkItemRecord): StatusStageTimes {
  */
 function runnerPhase(db: Database, runId: string | null): DoingPhase | null {
   if (runId === null) return null;
-  const row = db
-    .query<{ agent: number }, [string]>(
-      `SELECT EXISTS(SELECT 1 FROM runner_event e WHERE e.run_id=w.run_id
-       AND e.generation=w.generation AND e.type='activity') AS agent
-       FROM runner_work w WHERE w.run_id=?`,
-    )
-    .get(runId);
-  if (row === null) return null;
-  return row.agent === 1 ? "agent" : "preparing";
+  const active = runnerWorkActive(db, runId);
+  if (active === null) return null;
+  return active ? "agent" : "preparing";
 }
 
 export function questionLine(body: string): string {
@@ -1909,12 +1909,8 @@ const PAWS_ANSWER_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 function answerableInPaws(db: Database, id: string): boolean {
-  const row = db
-    .query<{ kind: string }, [string]>(
-      "SELECT kind FROM question WHERE id = ? AND status = 'open' AND cancelled_at IS NULL",
-    )
-    .get(id);
-  return row !== null && PAWS_ANSWER_KINDS.has(row.kind);
+  const kind = openQuestionKind(db, id);
+  return kind !== null && PAWS_ANSWER_KINDS.has(kind);
 }
 
 function questionLinks(

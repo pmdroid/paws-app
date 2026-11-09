@@ -2,17 +2,25 @@ import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
   closeRetro,
+  collectingRetroIds,
   getRetro,
   immediate,
+  latestPublishedRetro,
+  latestRetro,
   listRetroItems,
+  listRetroSettingsRevisions,
   listWorkspaceMembers,
   listWorkspaceRepositoryNames,
   newRetroId,
   readRetroArtifact,
   recordRetroGeneration,
+  recordRetroOccurrence,
   recordRetroScheduleRun,
   recordRetroScheduleState,
+  retroHasUnfinishedDispatch,
+  retroOccurrence,
   retroScheduleRuntime,
+  retroSettingsWorkspaces,
   retroWatermarks,
   type Retro,
   type RetroOrigin,
@@ -184,26 +192,10 @@ type SchedulePlan =
     };
 
 function schedulePlan(db: Database, workspaceId: string, now: number): SchedulePlan {
-  const rows = db
-    .query<
-      {
-        revision: number;
-        schedule: string;
-        repositories: string;
-        agentProfile: string;
-        createdBy: string;
-        createdAt: number;
-      },
-      [string]
-    >(
-      `SELECT revision, schedule, repositories, agent_profile AS agentProfile,
-         created_by AS createdBy, created_at AS createdAt
-       FROM retro_settings_revision WHERE workspace_id = ? ORDER BY revision DESC`,
-    )
-    .all(workspaceId);
+  const rows = listRetroSettingsRevisions(db, workspaceId);
   const latest = rows[0];
   if (latest === undefined) return { saved: false, schedule: proposedRetroSettings([]).schedule };
-  const read = (text: string) => JSON.parse(text) as RetroSchedule;
+  const read = (stored: Record<string, unknown>) => stored as RetroSchedule;
   const key = (schedule: RetroSchedule) =>
     JSON.stringify([schedule.cadence, schedule.weekday, schedule.time, schedule.timeZone]);
   const schedule = read(latest.schedule);
@@ -221,8 +213,8 @@ function schedulePlan(db: Database, workspaceId: string, now: number): ScheduleP
     saved: true,
     revision: latest.revision,
     schedule,
-    repositories: JSON.parse(latest.repositories) as string[],
-    agent: (JSON.parse(latest.agentProfile) as RetroAgentProfile).agent,
+    repositories: latest.repositories,
+    agent: (latest.agentProfile as RetroAgentProfile).agent,
     createdBy: latest.createdBy,
     active,
     base,
@@ -232,33 +224,18 @@ function schedulePlan(db: Database, workspaceId: string, now: number): ScheduleP
 }
 
 function openRetro(db: Database, workspaceId: string): Retro | null {
-  const row = db
-    .query<{ id: string }, [string]>(
-      `SELECT id FROM retro WHERE workspace_id = ? AND state IN (${OPEN_STATES.map((state) => `'${state}'`).join(",")})
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-    )
-    .get(workspaceId);
-  return row === null ? null : getRetro(db, row.id);
+  return latestRetro(db, workspaceId, OPEN_STATES);
 }
 
 function retriesSpent(db: Database, retro: Retro): boolean {
   if (retro.state !== "failed") return false;
-  const unsettled = db
-    .query(
-      "SELECT 1 FROM retro_dispatch WHERE retro_id = ? AND (released_at IS NULL OR settled_at IS NULL)",
-    )
-    .get(retro.id);
-  return unsettled === null && retroGenerationView(db, retro.id)?.retry === null;
+  return (
+    !retroHasUnfinishedDispatch(db, retro.id) && retroGenerationView(db, retro.id)?.retry === null
+  );
 }
 
 function latestPublished(db: Database, workspaceId: string): Retro | null {
-  const row = db
-    .query<{ id: string }, [string]>(
-      `SELECT id FROM retro WHERE workspace_id = ? AND state = 'published'
-       ORDER BY window_end DESC, id DESC LIMIT 1`,
-    )
-    .get(workspaceId);
-  return row === null ? null : getRetro(db, row.id);
+  return latestPublishedRetro(db, workspaceId);
 }
 
 export type RetroCatalogSource = (principal: {
@@ -325,14 +302,7 @@ type StoredOccurrence = {
 };
 
 function storedOccurrence(db: Database, retroId: string): StoredOccurrence | null {
-  return db
-    .query<StoredOccurrence, [string]>(
-      `SELECT origin, occurrence_at AS occurrenceAt, time_zone AS timeZone, local_date AS localDate,
-         local_time AS localTime, utc_offset_minutes AS utcOffsetMinutes,
-         local_adjustment AS adjustment, requested_by AS requestedBy
-       FROM retro_occurrence WHERE retro_id = ?`,
-    )
-    .get(retroId);
+  return retroOccurrence(db, retroId) as StoredOccurrence | null;
 }
 
 export function createRetroScheduler(options: {
@@ -463,28 +433,22 @@ export function createRetroScheduler(options: {
       });
       if (!frozen.ok) return frozen;
       if (frozen.created)
-        db.run(
-          `INSERT INTO retro_occurrence (retro_id, workspace_id, origin, occurrence_at,
-             window_start, window_end, time_zone, local_date, local_time, utc_offset_minutes,
-             local_adjustment, settings_revision, requested_by, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-          [
-            frozen.retro.id,
-            input.workspaceId,
-            input.origin,
-            input.occurrence.at,
-            start,
-            end,
-            input.occurrence.timeZone,
-            input.occurrence.localDate,
-            input.occurrence.localTime,
-            input.occurrence.utcOffsetMinutes,
-            input.occurrence.adjustment,
-            frozen.retro.settingsRevision,
-            input.requestedBy,
-            at,
-          ],
-        );
+        recordRetroOccurrence(db, {
+          retroId: frozen.retro.id,
+          workspaceId: input.workspaceId,
+          origin: input.origin,
+          occurrenceAt: input.occurrence.at,
+          windowStart: start,
+          windowEnd: end,
+          timeZone: input.occurrence.timeZone,
+          localDate: input.occurrence.localDate,
+          localTime: input.occurrence.localTime,
+          utcOffsetMinutes: input.occurrence.utcOffsetMinutes,
+          localAdjustment: input.occurrence.adjustment,
+          settingsRevision: frozen.retro.settingsRevision,
+          requestedBy: input.requestedBy,
+          createdAt: at,
+        });
       consume(frozen.retro.id);
       return { ok: true, retro: frozen.retro, created: frozen.created };
     });
@@ -527,12 +491,7 @@ export function createRetroScheduler(options: {
   }
 
   function advance(workspaceId: string) {
-    const collecting = db
-      .query<{ id: string }, [string]>(
-        "SELECT id FROM retro WHERE workspace_id = ? AND state = 'collecting' ORDER BY created_at",
-      )
-      .all(workspaceId);
-    for (const { id } of collecting) collect(getRetro(db, id)!);
+    for (const id of collectingRetroIds(db, workspaceId)) collect(getRetro(db, id)!);
     const plan = schedulePlan(db, workspaceId, now());
     if (!plan.saved) return;
     const state = (nextDueAt: number | null, blockedReason: string | null) =>
@@ -580,12 +539,7 @@ export function createRetroScheduler(options: {
             empty: emptyPublished(published),
           };
     const open = openRetro(db, workspaceId);
-    const latestRow = db
-      .query<{ id: string }, [string]>(
-        "SELECT id FROM retro WHERE workspace_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
-      )
-      .get(workspaceId);
-    const latest = latestRow === null ? null : getRetro(db, latestRow.id);
+    const latest = latestRetro(db, workspaceId);
     const closedFailure =
       latest !== null &&
       (latest.state === "abandoned" || latest.state === "coverage_failed") &&
@@ -662,12 +616,7 @@ export function createRetroScheduler(options: {
 
   return {
     tick() {
-      const workspaces = db
-        .query<{ workspaceId: string }, []>(
-          "SELECT DISTINCT workspace_id AS workspaceId FROM retro_settings_revision ORDER BY 1",
-        )
-        .all();
-      for (const { workspaceId } of workspaces) {
+      for (const workspaceId of retroSettingsWorkspaces(db)) {
         try {
           advance(workspaceId);
         } catch (error) {

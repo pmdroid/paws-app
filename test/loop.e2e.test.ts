@@ -230,7 +230,7 @@ test.each([false, true, "cap"] as const)(
           metadata("linear.session.plan")?.plan?.[0]?.status !== "inProgress" ||
           metadata("linear.session.plan")?.plan?.[0]?.content !== "Repair missing output")
       ) {
-        while (outbox.tick().length > 0) await outbox.idle();
+        while ((await outbox.tick()).length > 0) await outbox.idle();
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
       expect(tracker.progress.map((update) => update.body)).not.toContain(
@@ -295,7 +295,7 @@ test.each([false, true, "cap"] as const)(
       }
       if (release) writeFileSync(release, "go");
       await running;
-      while (outbox.tick().length > 0) await outbox.idle();
+      while ((await outbox.tick()).length > 0) await outbox.idle();
       expect(stateOf(db, "ENG-302")).toBe("merge_queue");
     } finally {
       writeFileSync(release, "go");
@@ -372,7 +372,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "retry"));
     running = tickWithRestarts(jobs, orchestrator, db);
     await waitFor(entered(1));
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(started()).toHaveLength(1);
     const item = listWorkItems(db)[0]!;
     failWorkItem(db, item, "run_error", "The run failed.", Date.now());
@@ -381,7 +381,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
     await running;
     running = tickWithRestarts(jobs, orchestrator, db);
     await waitFor(entered(2));
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(started(), debug(layout, db)).toHaveLength(2);
   } finally {
     writeFileSync(release, "go");
@@ -1263,7 +1263,7 @@ test("an unconfigured repository halts with an error and never completes the ses
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "failure"));
     await tickWithRestarts(jobs, orchestrator, db);
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(stateOf(db, "ENG-99")).toBe("failed");
     expect(
       tracker.progress.some(
@@ -3145,7 +3145,7 @@ test("a repository without a Closeout policy merges without Closeout checks or a
     }
     expect(stateOf(db, "ENG-975"), debug(layout, db)).toBe("merged");
     expect(github.merged).toHaveLength(1);
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(tracker.questions).toHaveLength(0);
     expect(listCloseoutRecoveries(db, listWorkItems(db)[0]!.id)).toHaveLength(0);
   } finally {
@@ -3393,7 +3393,7 @@ async function runGitHubQueue(
       }
       await Bun.sleep(25);
     }
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     return {
       state: stateOf(db, "ENG-95"),
       implementRuns,
@@ -3640,7 +3640,7 @@ async function runCiFix(options: {
       const state = stateOf(db, "ENG-94") ?? "";
       if (["merged", "failed"].includes(state)) break;
       if (state === "awaiting_input" && findOpenQuestion(db, "ses_1")) {
-        while (outbox.tick().length > 0) await outbox.idle();
+        while ((await outbox.tick()).length > 0) await outbox.idle();
         if (options.answer === undefined || answered) break;
         answered = true;
         await orchestrator.onLinearEvent(
@@ -3649,7 +3649,7 @@ async function runCiFix(options: {
       }
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     return {
       state: stateOf(db, "ENG-94"),
       linearCalls,
@@ -3865,11 +3865,11 @@ test("an unreadable CI read retries the merge job and fails the task with the re
         JOB_KIND.merge,
       ]);
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) {
-        outbox.tick();
+        await outbox.tick();
         await Bun.sleep(25);
       }
     }
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(stateOf(db, "ENG-93"), debug(layout, db)).toBe("failed");
     expect(reads, debug(layout, db)).toBe(6);
     expect(
@@ -3972,11 +3972,11 @@ test.each([
       });
       while (Date.now() < deadline && !["failed", "merged"].includes(stateOf(db, "ENG-94") ?? "")) {
         if ((await tickWithRestarts(jobs, orchestrator, db)) === null) {
-          outbox.tick();
+          await outbox.tick();
           await Bun.sleep(25);
         }
       }
-      while (outbox.tick().length > 0) await outbox.idle();
+      while ((await outbox.tick()).length > 0) await outbox.idle();
       expect(stateOf(db, "ENG-94"), debug(layout, db)).toBe(
         outcome === "merges" ? "merged" : "failed",
       );
@@ -4116,7 +4116,7 @@ async function runRebaseConflict(
         idempotencyKey: `pull-request-ready:${listWorkItems(db).find((item) => item.linearIdentifier === identifier)!.id}:${getLinearSessionGeneration(db, "ses_1")}`,
         payload: { sessionId: "ses_1", kind: "response", body: "Opened pull request #1." },
       });
-      while (outbox.tick().length > 0) await outbox.idle();
+      while ((await outbox.tick()).length > 0) await outbox.idle();
       await orchestrator.onLinearEvent(
         linearEvent("prompted", "Fix merge conflicts", null, `rebase-${mode}`),
       );
@@ -4154,7 +4154,7 @@ async function runRebaseConflict(
       }
     };
     await settle();
-    while (outbox.tick().length > 0) await outbox.idle();
+    while ((await outbox.tick()).length > 0) await outbox.idle();
     const prompts: string[] = [];
     for (const file of implementResults) {
       if (!existsSync(file)) continue;

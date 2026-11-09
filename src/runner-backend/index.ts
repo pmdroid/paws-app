@@ -40,6 +40,14 @@ import {
   runnerLeaseCutoff,
   clearRunnerSessionMove,
   noteRunnerSessionMove,
+  recordItemCandidate,
+  releaseRunnerReservation,
+  reserveRunnerSlot,
+  runnerReservationHolder,
+  unassignedRunnerReservations,
+  settled,
+  sqliteDb,
+  type Db,
 } from "../db";
 import {
   ArtifactRejectedError,
@@ -72,8 +80,10 @@ import {
   CLOSEOUT_RULES_FIRST_RUNNER_VERSION,
   CLOSEOUT_FOCUS_RUNNER_VERSION,
   PULL_REQUEST_DRAFT_RUNNER_VERSION,
+  QUESTION_ENDS_TURN_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
   SUGGESTED_FINDINGS_RUNNER_VERSION,
+  REVIEW_FINDINGS_RUNNER_VERSION,
   GITHUB_READ_RUNNER_VERSION,
   REVIEW_EXPLANATION_LIMIT,
   REVIEW_LOCATION_LIMIT,
@@ -95,6 +105,8 @@ import { fastForwardToBranchTip } from "./candidate";
 import { agentName, usageLimitWait } from "./usage-limit-wait";
 import { createRemoteCancellation } from "./cancel";
 import { createRemoteHandover } from "./handover";
+import { conversationTurns } from "./conversation";
+import type { RunnerHelpers } from "../runner-helpers";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
 import {
   CheckpointLookupFailed,
@@ -165,7 +177,15 @@ const RUN_HUNG_THOUGHT = (minutes: number) =>
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 const NO_FREE_CAPACITY = ": no free capacity";
 const ACCOUNT_CONCURRENCY_LIMIT = ": account at its concurrency limit";
-type SessionHolder = { runnerId: string; agent: string; sessionId: string; bindingId: string };
+type SessionHolder = {
+  runnerId: string;
+  agent: string;
+  sessionId: string;
+  bindingId: string;
+  runId: string;
+  model: string | null;
+  account?: { accountId: string; bindingId: string };
+};
 
 function earlierSession(
   db: Database,
@@ -200,9 +220,10 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
       ),
     ) as {
       runnerId?: string;
+      runId?: string;
       checkpoint?: boolean;
-      profile?: { agent?: string };
-      account?: { bindingId?: string };
+      profile?: { agent?: string; model?: string | null };
+      account?: { accountId: string; bindingId: string };
     };
     if (command.checkpoint === false) continue;
     const result = JSON.parse(row.payload) as {
@@ -215,7 +236,11 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
       result.stopReason !== "error" ||
       (result.errorMessage !== undefined &&
         quotaSignal(result.errorMessage, row.receivedAt)?.state === "exhausted");
-    return command.runnerId && command.profile?.agent && resumable && result.sessionId
+    return command.runnerId &&
+      command.runId &&
+      command.profile?.agent &&
+      resumable &&
+      result.sessionId
       ? {
           runnerId: command.runnerId,
           agent: command.profile.agent,
@@ -223,6 +248,9 @@ function sessionHolder(db: Database, itemId: string): SessionHolder | undefined 
           bindingId:
             command.account?.bindingId ??
             legacyAgentBindingId(command.runnerId, command.profile.agent as RunnerCodingAgent),
+          runId: command.runId,
+          model: command.profile.model ?? null,
+          ...(command.account ? { account: command.account } : {}),
         }
       : undefined;
   }
@@ -344,6 +372,8 @@ function snapshotCommit(workspace: string, repository: { owner: string; repo: st
 
 export function createRemoteAgentRunner(options: {
   db: Database;
+  /** The async `Db` over `db` for converted code. Defaults to `sqliteDb(db)`. */
+  store?: Db;
   work: RunnerWork;
   results: RunnerResults;
   health: RunnerHealth;
@@ -372,6 +402,7 @@ export function createRemoteAgentRunner(options: {
   /** How long a run may go without a runner event before Paws stops it, confirmed or not. */
   hungRunMs?: number;
   placement?: RunnerPlacement;
+  instanceId?: string;
   agentRead?: {
     open(input: {
       commandId: string;
@@ -389,7 +420,11 @@ export function createRemoteAgentRunner(options: {
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const silentRunMs = options.silentRunMs ?? DEFAULT_SILENT_RUN_MS;
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
+  const instanceId = options.instanceId ?? randomUUID();
   const reservations = new Map<string, string>();
+  const reserved = (runId: string) =>
+    reservations.has(runId) ||
+    settled(runnerReservationHolder(sqliteDb(db), runId, now())) !== null;
   const readers = new Set<string>();
   /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
   const toldLost = new Set<string>();
@@ -509,7 +544,7 @@ export function createRemoteAgentRunner(options: {
             ...placement,
             reserved: unassigned(runId ?? undefined),
           });
-          if (!runId || reservations.has(runId)) return [];
+          if (!runId || reserved(runId)) return [];
           const pending = unassigned(runId);
           return candidates
             .filter((runner) => {
@@ -616,7 +651,9 @@ export function createRemoteAgentRunner(options: {
   }
   /** Reservations per runner whose run has no runner_work row there yet. */
   function unassigned(excludeRunId = "") {
-    const counts = new Map<string, number>();
+    const counts = settled(
+      unassignedRunnerReservations(sqliteDb(db), now(), instanceId, excludeRunId),
+    );
     const assigned = new Map(
       db
         .query<{ runId: string; runnerId: string }, [string]>(
@@ -678,7 +715,6 @@ export function createRemoteAgentRunner(options: {
       ];
     placement.signal?.throwIfAborted();
     offered.push(...new Set(candidates.map((runner) => runner.id)));
-    const pending = unassigned(item.currentRunId);
     for (const runner of candidates) {
       if (runner.id === placement.handedOverFrom) {
         rejected.push(`${runner.id}: handed the session over`);
@@ -691,26 +727,49 @@ export function createRemoteAgentRunner(options: {
         rejected.push(`${runner.id}: excluded after failed attempt`);
         continue;
       }
-      const reserved = pending.get(runner.id) ?? 0;
-      if (reservations.has(item.currentRunId)) {
+      if (reserved(item.currentRunId)) {
         rejected.push(`${runner.id}: the run is already being placed`);
         continue;
       }
-      const held =
-        runnerSlotsHeldBetweenCommands(db, runner.id, now(), item.currentRunId) +
-        pinnedSlotsReserved(db, runner.id, itemId, now());
-      if (!runnerHasCapacity(db, runner.id, now(), item.currentRunId, reserved + held)) {
+      const free = () =>
+        runnerHasCapacity(
+          db,
+          runner.id,
+          now(),
+          item.currentRunId!,
+          (unassigned(item.currentRunId!).get(runner.id) ?? 0) +
+            runnerSlotsHeldBetweenCommands(db, runner.id, now(), item.currentRunId!) +
+            pinnedSlotsReserved(db, runner.id, itemId, now()),
+        );
+      if (!free()) {
         rejected.push(`${runner.id}${NO_FREE_CAPACITY}`);
         continue;
       }
       try {
-        immediate(db, () => {
+        const taken = immediate(db, () => {
+          if (!free()) return NO_FREE_CAPACITY;
+          if (
+            !settled(
+              reserveRunnerSlot(sqliteDb(db), {
+                runId: item.currentRunId!,
+                runnerId: runner.id,
+                instanceId,
+                now: now(),
+              }),
+            )
+          )
+            return ": the run is already being placed";
           const mode = getTaskMode(db, itemId);
           if (isResponseTaskMode(mode))
             work.scopeTask(item.currentRunId!, runner.workspaceId, work.identity(runner.id).userId);
           else work.scope(item.currentRunId!, runner.workspaceId);
           releasePinnedSlot(db, itemId);
+          return null;
         });
+        if (taken) {
+          rejected.push(`${runner.id}${taken}`);
+          continue;
+        }
         reservations.set(item.currentRunId, runner.id);
         return { ...runner, runId: item.currentRunId };
       } catch (error) {
@@ -766,7 +825,7 @@ export function createRemoteAgentRunner(options: {
         command.prompt === `${closeoutPrompt}\n\n${readPrompt}`);
     if (closeoutPrompt !== undefined && (command.type !== type || !sameCloseout)) {
       // The run holds one command at a time, so the stale one would block the new assignment.
-      if (!reservations.has(runId)) {
+      if (!reserved(runId)) {
         try {
           const issuedAt = now();
           work.enqueue({
@@ -786,7 +845,13 @@ export function createRemoteAgentRunner(options: {
       return undefined;
     }
     if (command.type !== type) return undefined;
-    if (reservations.has(runId)) throw new RunnerCapacityWait([row.runnerId]);
+    if (
+      reservations.has(runId) ||
+      !settled(
+        reserveRunnerSlot(sqliteDb(db), { runId, runnerId: row.runnerId, instanceId, now: now() }),
+      )
+    )
+      throw new RunnerCapacityWait([row.runnerId]);
     reservations.set(runId, row.runnerId);
     return {
       selected: {
@@ -813,6 +878,7 @@ export function createRemoteAgentRunner(options: {
   const cancelItem = createRemoteCancellation({ ...options, checkpoint: checkpointBeforeStop });
   const handOverItem = createRemoteHandover(options);
   return {
+    store: options.store ?? sqliteDb(db),
     cancelItem,
     handOverItem,
     runInProgress: (runId: string) => readers.has(runId),
@@ -1245,6 +1311,13 @@ export function createRemoteAgentRunner(options: {
                 !taskScope && input.role === "implementer" && input.networkGit
                   ? await remoteStart(scoped, input.networkGit)
                   : undefined;
+              if (!taskScope && scoped.repository && scoped.item.branchName)
+                recordItemCandidate(db, {
+                  itemId,
+                  sha: await candidateHead(scoped.repository),
+                  branch: scoped.item.branchName,
+                  recordedAt: now(),
+                });
               phase("start_commit");
               // A runner command does not carry the caller's session, so a resume replays.
               const replayed = input.resume?.replayPrompt ?? input.prompt;
@@ -1300,17 +1373,18 @@ export function createRemoteAgentRunner(options: {
               if (prepared.prompt.length > 65_536 && !options.inputs)
                 throw new Error("Remote conversation context transfer is unavailable");
               const inputFiles = files.length
-                ? options.inputs!.stage(
+                ? await options.inputs!.stage(
                     commandId,
                     files.map((file) => ({
                       ...file,
                       path: relative(input.worktreePath, file.path).split(sep).join("/"),
                     })),
+                    selected.runId,
                   )
                 : undefined;
               const promptContext =
                 prepared.prompt.length > 65_536
-                  ? options.inputs!.stagePrompt(commandId, prepared.prompt)
+                  ? await options.inputs!.stagePrompt(commandId, prepared.prompt, selected.runId)
                   : undefined;
               phase("prompt");
               // A run that leaves its pinned runner may continue its saved agent session there.
@@ -1687,12 +1761,28 @@ export function createRemoteAgentRunner(options: {
                       versionAtLeast(runnerVersion, SUGGESTED_FINDINGS_RUNNER_VERSION)
                         ? { suggestedFindings: input.suggestedFindings.slice(0, 50) }
                         : {}),
+                      ...(input.role !== "reviewer" &&
+                      input.reviewFindings?.length &&
+                      versionAtLeast(runnerVersion, REVIEW_FINDINGS_RUNNER_VERSION)
+                        ? {
+                            reviewFindings: input.reviewFindings.slice(0, 20).map((group) => ({
+                              reviewId: group.reviewId,
+                              lines: group.lines.slice(0, 21).map((line) => line.slice(0, 4000)),
+                            })),
+                          }
+                        : {}),
                       ...(githubRead ? { githubRead: true as const } : {}),
                       ...(input.role !== "reviewer" &&
                       input.ciRerun &&
                       input.readOnly !== true &&
                       versionAtLeast(runnerVersion, CI_RERUN_RUNNER_VERSION)
                         ? { ciRerun: true as const }
+                        : {}),
+                      ...(input.role !== "reviewer" &&
+                      input.askTeam &&
+                      input.readOnly !== true &&
+                      versionAtLeast(runnerVersion, QUESTION_ENDS_TURN_RUNNER_VERSION)
+                        ? { questionEndsTurn: true as const }
                         : {}),
                       ...(resumeSessionId ? { resumeSessionId } : {}),
                       ...(restoreCheckpoint &&
@@ -1713,7 +1803,11 @@ export function createRemoteAgentRunner(options: {
               };
               try {
                 immediate(db, () => {
-                  if (!runnerHasCapacity(db, selected.id, now(), selected.runId))
+                  const others =
+                    settled(
+                      unassignedRunnerReservations(sqliteDb(db), now(), instanceId, selected.runId),
+                    ).get(selected.id) ?? 0;
+                  if (!runnerHasCapacity(db, selected.id, now(), selected.runId, others))
                     throw new RetryableRunnerError(
                       selected.id,
                       "Runner became busy before assignment",
@@ -1723,6 +1817,7 @@ export function createRemoteAgentRunner(options: {
                       true,
                     );
                   work.assign(assigned);
+                  settled(releaseRunnerReservation(sqliteDb(db), selected.runId, instanceId));
                   options.placement?.started({
                     commandId: assigned.id,
                     runnerId: selected.id,
@@ -2110,7 +2205,7 @@ export function createRemoteAgentRunner(options: {
               } else if (event.type === "artifact" && !answered) {
                 if (!input.publishArtifact || !options.artifacts)
                   throw new Error("Remote artifact publication is unavailable");
-                const snapshot = options.artifacts.snapshot(
+                const snapshot = await options.artifacts.snapshot(
                   assigned.runId,
                   assigned.generation,
                   event.artifact,
@@ -2150,7 +2245,11 @@ export function createRemoteAgentRunner(options: {
                 signal.throwIfAborted();
               }
               if (event.type === "pull_request")
-                await input.pullRequest?.update({ title: event.title, body: event.body });
+                await input.pullRequest?.update({
+                  title: event.title,
+                  body: event.body,
+                  ...(event.remaining ? { remaining: event.remaining } : {}),
+                });
               if (event.type === "closeout") await input.closeoutProgress?.record(event.progress);
               if (event.type === "plan")
                 await emit(
@@ -2381,6 +2480,13 @@ export function createRemoteAgentRunner(options: {
               mainSha ? [baseSha!, mainSha] : [baseSha!],
               complete.candidateSha,
             );
+            work.current(assigned.runId, assigned.generation);
+            recordItemCandidate(db, {
+              itemId,
+              sha: complete.candidateSha,
+              branch: scoped.item.branchName,
+              recordedAt: now(),
+            });
             if (complete.stopReason !== "end_turn" || complete.errorMessage)
               saveCheckpoint(db, itemId, {
                 ...getWorkItem(db, itemId)?.checkpoint,
@@ -2560,6 +2666,7 @@ export function createRemoteAgentRunner(options: {
             if (readCommand) await options.agentRead?.close(readCommand);
             // Keep attachment fenced through cleanup, then free the slot before returning.
             reservations.delete(selected.runId);
+            settled(releaseRunnerReservation(sqliteDb(db), selected.runId, instanceId));
           }
         }
       };
@@ -2603,6 +2710,15 @@ export function createRemoteAgentRunner(options: {
 }
 
 export { createRemoteSessionAgentRunner } from "./helpers";
+export type { ConversationTurns } from "./conversation";
+
+export function createConversationTurns(options: {
+  db: Database;
+  helpers: RunnerHelpers;
+  now?: () => number;
+}) {
+  return conversationTurns({ ...options, holder: (itemId) => sessionHolder(options.db, itemId) });
+}
 
 export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";
 export { recordRunnerCheckpoint } from "./checkpoint";

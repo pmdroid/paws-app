@@ -7,6 +7,7 @@
     "scripts/*.ts",
     "test/**/*.test.ts",
     "test/local/*.ts",
+    "test/proofs/*.ts",
     ".agents/probes/*.ts"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.ts", "test/**/*.ts"],
@@ -16,8 +17,7 @@
     "@agentclientprotocol/codex-acp",
     "@xai-official/grok",
     "@opencode/cli",
-    "@tailwindcss/cli",
-    "drizzle-kit"
+    "@tailwindcss/cli"
   ],
   "ignoreExportsUsedInFile": true
 }

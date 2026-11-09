@@ -1,0 +1,4 @@
+src/db/repository-catalog.ts | return db .query<CatalogEntry, []>( | not yet converted to Drizzle
+src/db/repository-catalog.ts | db.run("DELETE FROM repository_catalog"); | not yet converted to Drizzle
+src/db/repository-catalog.ts | db.run( | not yet converted to Drizzle
+src/db/repository-catalog.ts | return db .query<{ repository: string }, [string]>( | not yet converted to Drizzle

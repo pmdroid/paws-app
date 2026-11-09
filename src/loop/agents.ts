@@ -143,14 +143,16 @@ export function implementPrompt(input: {
     "Work only in this repository.",
     "History older than the last 200 commits has no file contents in this checkout, so git show or git blame on old versions can fail. Read the current files instead.",
     ...(input.hiddenPaths?.length ? [hiddenPathsPrompt(input.hiddenPaths)] : []),
+    "When this repository has `test/proofs/` and you change how an item moves through Paws (Linear, GitHub, merge, questions), add or update a proof scenario in `test/proofs/` that shows the new behaviour, and run `bun run verify:proof <name>`.",
     "For a command expected to take more than a few minutes, start it once and wait on it with your own tools, for example run it in the background and wait for it to finish, rather than polling it in a loop.",
-    "When you need a product decision, call ask_team with select options when there is a closed set of choices.",
+    "When you need a product decision, call ask_team with select options when there is a closed set of choices. ask_team ends your turn, and the answer arrives as your next message, so state the question completely and stop working on that path.",
     "Call update_plan with the full working checklist whenever the steps or their statuses change. Statuses are pending, inProgress, completed, and canceled. Leave verification and publication out of that list.",
     POST_UPDATE_PROMPT,
     REPLY_PROMPT,
     closeoutPrompt(),
     ...(input.closeoutFocus ? [closeoutFocusPrompt(input.closeoutFocus)] : []),
     "When the code change is ready, call open_pull_request with a title and a description of what changed, why, and how you verified it.",
+    "This item ends when its pull request merges. When you split the work into several pull requests, ship one and list the rest in open_pull_request's `remaining` (at most 3 parts, each a title and a scope naming the files and what is left); Paws files each part as a sub-issue delegated to Paws after the merge. For more than 3 parts, call ask_team.",
     "Commit your work yourself in reviewable steps, each with a message that says what changed and why. Paws commits anything you leave uncommitted when you finish.",
   ].join("\n");
   if (input.handoff === undefined || input.handoff.trim() === "") return brief;

@@ -7,17 +7,24 @@ import {
   OutboxDispatcher,
   applyWorkItemEvent,
   bindLinearSessionTask,
+  clearQueueWait,
   ensureLinearSession,
+  getQueuePosition,
   getWorkItem,
   insertQueuedItem,
   listOutbox,
+  listQueuePositions,
   putWorkspaceUser,
+  queueWaitSince,
   saveQueuePositions,
   syncWorkspaceMember,
+  settled,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, type SessionUpdate } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import { createLiveStatusProvider } from "../src/dashboard";
+import { forEachDialect, insertWorkItem } from "./dialects";
 import { tempDb, tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
 
@@ -159,17 +166,25 @@ test("the status API shows a queued item's place in line until it starts", () =>
   try {
     insertQueuedItem(db, { id: "ahead", now: 0 });
     insertQueuedItem(db, { id: "waiting", now: 1 });
-    saveQueuePositions(db, ["ahead", "waiting"], { busy: 4, total: 4 }, 2);
+    settled(saveQueuePositions(sqliteDb(db), ["ahead", "waiting"], { busy: 4, total: 4 }, 2));
     const queueOf = (id: string) =>
       createLiveStatusProvider(db)
         .issues()
         .issues.find((item) => item.id === id)?.queue;
     expect(queueOf("waiting")).toEqual({ position: 2, busySlots: 4, totalSlots: 4 });
     applyWorkItemEvent(db, "ahead", "dispatched");
-    saveQueuePositions(db, ["waiting"], { busy: 4, total: 4 }, 3);
+    settled(saveQueuePositions(sqliteDb(db), ["waiting"], { busy: 4, total: 4 }, 3));
     expect(queueOf("ahead")).toBeUndefined();
     expect(queueOf("waiting")).toEqual({ position: 1, busySlots: 4, totalSlots: 4 });
-    saveQueuePositions(db, ["waiting"], { busy: 4, total: 4 }, 4, new Map([["waiting", 3]]));
+    settled(
+      saveQueuePositions(
+        sqliteDb(db),
+        ["waiting"],
+        { busy: 4, total: 4 },
+        4,
+        new Map([["waiting", 3]]),
+      ),
+    );
     expect(queueOf("waiting")).toEqual({ position: 1, busySlots: 4, totalSlots: 4, ownerCap: 3 });
   } finally {
     db.close();
@@ -289,6 +304,67 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
     expect(summary()).toBe("PAS-2: recovering an interrupted turn");
   } finally {
     await orchestrator.shutdown();
+    db.close();
+  }
+});
+
+forEachDialect((open) => {
+  test("an item's wait starts once per version and clears", async () => {
+    const { db, close } = await open();
+    try {
+      await insertWorkItem(db, "waiting");
+      expect(await queueWaitSince(db, "waiting", 1, 100)).toBe(100);
+      expect(await queueWaitSince(db, "waiting", 1, 200)).toBe(100);
+      expect(await queueWaitSince(db, "waiting", 2, 300)).toBe(300);
+      await clearQueueWait(db, "waiting");
+      expect(await queueWaitSince(db, "waiting", 2, 400)).toBe(400);
+    } finally {
+      await close();
+    }
+  });
+
+  test("the waiting line is replaced on every save and empties without slots", async () => {
+    const { db, close } = await open();
+    try {
+      for (const id of ["a", "b", "c"]) await insertWorkItem(db, id);
+      await saveQueuePositions(db, ["a", "b", "c"], { busy: 2, total: 2 }, 1, new Map([["c", 3]]));
+      expect(await listQueuePositions(db)).toEqual([
+        { itemId: "a", position: 1, busySlots: 2, totalSlots: 2, ownerCap: null },
+        { itemId: "b", position: 2, busySlots: 2, totalSlots: 2, ownerCap: null },
+        { itemId: "c", position: 3, busySlots: 2, totalSlots: 2, ownerCap: 3 },
+      ]);
+      await saveQueuePositions(db, ["c", "b"], { busy: 1, total: 2 }, 2);
+      expect(await getQueuePosition(db, "b")).toEqual({
+        itemId: "b",
+        position: 2,
+        busySlots: 1,
+        totalSlots: 2,
+        ownerCap: null,
+      });
+      expect(await getQueuePosition(db, "a")).toBeNull();
+      await saveQueuePositions(db, ["a"], null, 3);
+      expect(await listQueuePositions(db)).toEqual([]);
+    } finally {
+      await close();
+    }
+  });
+});
+
+test("on SQLite the functions settle before they return, and settled() refuses a pending promise", () => {
+  const db = tempDb();
+  try {
+    insertQueuedItem(db, { id: "a", now: 0 });
+    const since = queueWaitSince(sqliteDb(db), "a", 1, 5);
+    expect(Bun.peek.status(since)).toBe("fulfilled");
+    expect(settled(since)).toBe(5);
+    settled(saveQueuePositions(sqliteDb(db), ["a"], { busy: 1, total: 1 }, 1));
+    expect(settled(getQueuePosition(sqliteDb(db), "a"))?.position).toBe(1);
+    expect(() => settled(new Promise(() => {}))).toThrow("pending");
+    expect(() =>
+      settled(saveQueuePositions(sqliteDb(db), ["missing"], { busy: 1, total: 1 }, 2)),
+    ).toThrow("FOREIGN KEY");
+    expect(settled(getQueuePosition(sqliteDb(db), "a"))?.position).toBe(1);
+  } finally {
     db.close();
   }
 });

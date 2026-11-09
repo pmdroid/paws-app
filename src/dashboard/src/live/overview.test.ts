@@ -202,22 +202,24 @@ describe("overview resource", () => {
     for (const issue of live.issues().issues) live.issue(issue.id);
     live.mergeQueue();
     const detail = statements.splice(0);
+    // A whole closeout_step row, as raw SQL or as Drizzle writes it.
+    const wholeStep = /SELECT \* FROM closeout_step|"stdout".* from "closeout_step"/s;
     const unrelated = [
-      /SELECT \* FROM closeout_step/,
+      wholeStep,
       /\bstdout\b/,
-      /FROM evidence\b/,
-      /FROM ci_round\b/,
-      /FROM agent_closeout_event\b/,
-      /FROM closeout_round\b/,
-      /FROM run_agent_setup\b/,
-      /FROM visual_review_mark\b/,
-      /FROM work_item_merge_settings\b/,
+      /FROM "?evidence\b/i,
+      /FROM "?ci_round\b/i,
+      /FROM "?agent_closeout_event\b/i,
+      /FROM "?closeout_round\b/i,
+      /FROM "?run_agent_setup\b/i,
+      /FROM "?visual_review_mark\b/i,
+      /FROM "?work_item_merge_settings\b/i,
     ];
     for (const pattern of unrelated)
       expect(overview.filter((sql) => pattern.test(sql))).toEqual([]);
-    expect(detail.some((sql) => /SELECT \* FROM closeout_step/.test(sql))).toBe(true);
-    expect(detail.some((sql) => /FROM agent_closeout_event\b/.test(sql))).toBe(true);
-    expect(detail.some((sql) => /FROM work_item_merge_settings\b/.test(sql))).toBe(true);
+    expect(detail.some((sql) => wholeStep.test(sql))).toBe(true);
+    expect(detail.some((sql) => /FROM "?agent_closeout_event\b/i.test(sql))).toBe(true);
+    expect(detail.some((sql) => /FROM "?work_item_merge_settings\b/i.test(sql))).toBe(true);
     expect(overview.length).toBeLessThan(detail.length);
     expect(body).not.toContain("check output that only the issue page reads");
   });

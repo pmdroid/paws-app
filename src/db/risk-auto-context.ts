@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { immediate } from "./tx";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q } from "./db";
 
 /** Inputs observed by the lane, never an automatic approval. */
 export type RiskAutoContext = {
@@ -13,6 +14,34 @@ export type RiskAutoContext = {
   approvalKind?: "exact" | "same_patch" | "fix";
 };
 
+export function* saveRiskAutoContextSteps(
+  q: Q,
+  itemId: string,
+  head: string,
+  context: RiskAutoContext | null,
+) {
+  const { riskAutoContext } = q.t;
+  if (context === null) {
+    yield* q.exec(q.orm.delete(riskAutoContext).where(eq(riskAutoContext.itemId, itemId)));
+    return;
+  }
+  yield* q.exec(
+    q.orm
+      .delete(riskAutoContext)
+      .where(and(eq(riskAutoContext.itemId, itemId), ne(riskAutoContext.head, head))),
+  );
+  yield* q.exec(
+    q.orm
+      .insert(riskAutoContext)
+      .values({ itemId, head, context: JSON.stringify(context) })
+      .onConflictDoUpdate({
+        target: [riskAutoContext.itemId, riskAutoContext.head],
+        set: { context: sql`excluded.context` },
+        setWhere: sql`${riskAutoContext.context} != excluded.context`,
+      }),
+  );
+}
+
 /** Keep only the most recently evaluated head; identical polls make no writes. */
 export function saveRiskAutoContext(
   db: Database,
@@ -20,33 +49,29 @@ export function saveRiskAutoContext(
   head: string,
   context: RiskAutoContext | null,
 ): void {
-  immediate(db, () => {
-    if (context === null) {
-      db.run("DELETE FROM risk_auto_context WHERE item_id = ?", [itemId]);
-      return;
-    }
-    db.run("DELETE FROM risk_auto_context WHERE item_id = ? AND head != ?", [itemId, head]);
-    db.run(
-      `INSERT INTO risk_auto_context (item_id, head, context) VALUES (?, ?, ?)
-      ON CONFLICT (item_id, head) DO UPDATE SET context = excluded.context
-      WHERE context != excluded.context`,
-      [itemId, head, JSON.stringify(context)],
-    );
-  });
+  settled(sqliteDb(db).transaction((q) => saveRiskAutoContextSteps(q, itemId, head, context)));
+}
+
+/** An item keeps one row, so ordering by `head` only makes the pick deterministic. */
+export function* getRiskAutoContextSteps(q: Q, itemId: string) {
+  const { riskAutoContext } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ head: riskAutoContext.head, context: riskAutoContext.context })
+      .from(riskAutoContext)
+      .where(eq(riskAutoContext.itemId, itemId))
+      .orderBy(desc(riskAutoContext.head))
+      .limit(1),
+  );
+  if (!row) return null;
+  return { head: row.head, context: contextOf(row.context) };
 }
 
 export function getRiskAutoContext(
   db: Database,
   itemId: string,
 ): { head: string; context: RiskAutoContext } | null {
-  const row = db
-    .query<{ head: string; context: string }, [string]>(
-      "SELECT head, context FROM risk_auto_context WHERE item_id = ? ORDER BY rowid DESC LIMIT 1",
-    )
-    .get(itemId);
-  if (!row) return null;
-  const value = contextOf(row.context);
-  return { head: row.head, context: value };
+  return settled(sqliteDb(db).run((q) => getRiskAutoContextSteps(q, itemId)));
 }
 
 function contextOf(text: string): RiskAutoContext {
@@ -79,14 +104,23 @@ function contextOf(text: string): RiskAutoContext {
   return value;
 }
 
+export function* listRiskAutoContextsSteps(q: Q) {
+  const { riskAutoContext } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        itemId: riskAutoContext.itemId,
+        head: riskAutoContext.head,
+        context: riskAutoContext.context,
+      })
+      .from(riskAutoContext),
+  );
+  return rows.map((row) => ({ ...row, context: contextOf(row.context) }));
+}
+
 /** Restored outside the request path so file watches survive a process restart. */
 export function listRiskAutoContexts(
   db: Database,
 ): Array<{ itemId: string; head: string; context: RiskAutoContext }> {
-  return db
-    .query<{ itemId: string; head: string; context: string }, []>(
-      "SELECT item_id AS itemId, head, context FROM risk_auto_context",
-    )
-    .all()
-    .map((row) => ({ ...row, context: contextOf(row.context) }));
+  return settled(sqliteDb(db).run((q) => listRiskAutoContextsSteps(q)));
 }

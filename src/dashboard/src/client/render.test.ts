@@ -555,6 +555,18 @@ describe("status views", () => {
     expect(html).not.toContain("Answer in the source conversation to continue.");
   });
 
+  test("a merge GitHub refused renders its Retry merge button", () => {
+    const snapshot = fullStatusFixture();
+    const question = snapshot.questions[0]!;
+    question.answerable = true;
+    question.options = ["Retry merge"];
+    question.body =
+      "GitHub refused to merge the pull request with status 405.\n\nGitHub says: At least 1 approving review is required.";
+    const html = render(model({ snapshot, route: { view: "questions", id: question.id } })).content;
+    expect(html).toContain('type="submit" name="option" value="Retry merge"');
+    expect(html).toContain("At least 1 approving review is required.");
+  });
+
   test("a question that is not answerable keeps its read-only options", () => {
     const snapshot = fullStatusFixture();
     const question = snapshot.questions[0]!;

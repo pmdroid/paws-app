@@ -70,9 +70,11 @@ export type {
 } from "./repositories";
 export { isMergeConflictRequest } from "./merge-conflict-request";
 export { createInboxStore } from "./inbox";
-export type { CommitResult, InboxStore, QueuedLinearEvent } from "./inbox";
+export type { CommitResult, InboxClaim, InboxStore, QueuedLinearEvent } from "./inbox";
 export {
   INTAKE_CONCURRENCY,
+  INTAKE_LEASE_MS,
+  INTAKE_POLL_MS,
   INTAKE_RETRY_MS,
   createIntakeQueue,
   createLinearIntake,
@@ -85,6 +87,7 @@ export {
   LINEAR_APP_SCOPES,
   createLinearAuth,
   exchangeLinearCode,
+  importLinearTokenFile,
   linearAuthorizeUrl,
   readLinearEnv,
   readStoredToken,
@@ -95,6 +98,7 @@ export {
 export type { FetchLike, LinearAuth, LinearEnv, StoredLinearToken } from "./oauth";
 export {
   LOW_BUDGET_FRACTION,
+  POLL_DUE_CURSOR,
   POLL_INTERVAL_FAILING_MS,
   POLL_INTERVAL_LOW_BUDGET_MS,
   POLL_INTERVAL_WEBHOOK_MS,

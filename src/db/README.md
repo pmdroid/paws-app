@@ -1,6 +1,6 @@
 # Database
 
-Paws keeps its state in one SQLite file opened by `openDatabase()` in `src/db/open.ts`. The schema is defined by the migrations: the frozen list in `src/db/migrations.ts`, then one file per migration in [migrations/](migrations/README.md).
+Paws keeps its state in one SQLite file opened by `openDatabase()` in `src/db/open.ts`. The schema is the Drizzle schema in `src/db/schema/`, and drizzle-kit migrations in [drizzle/](drizzle/) create and change it. `migrate(db)` applies the ones a database has not recorded in `__drizzle_migrations`, starting with `0000_baseline` on a new database.
 
 ## Drizzle
 
@@ -8,20 +8,127 @@ Paws keeps its state in one SQLite file opened by `openDatabase()` in `src/db/op
 
 The typed schema lives in `src/db/schema/`, one file per area, exported through `src/db/schema/index.ts`. What Drizzle cannot express is in `src/db/schema/raw.ts`: `STRICT` and `WITHOUT ROWID` tables, `COLLATE` columns, and the exact SQL of virtual tables and triggers.
 
-### Regenerate the schema
+## Migrations
 
-After adding a migration, regenerate the schema from a database built by every migration:
+Migrations are drizzle-kit migrations, append-only and generated from the schema (`drizzle.config.ts`). To change the schema, edit `src/db/schema/`, then generate a migration named for what it does:
 
 ```sh
-bun scripts/db-schema.ts
+bun x drizzle-kit generate --name pull_comment_author
 ```
 
-The script migrates a temporary database, runs `drizzle-kit pull` on it, and rewrites `src/db/schema/` from the result. `pull` reads `CHECK` constraints, partial and expression indexes, composite primary key order and some defaults wrongly, so the script replaces those with what `sqlite_master` and the table pragmas say. Do not edit the generated files by hand; change the script.
+drizzle-kit writes `src/db/drizzle/<NNNN>_<name>.sql`, its snapshot in `meta/` and an entry in `meta/_journal.json`. Commit all three.
 
-### Drift test
+Anything drizzle-kit can't express is a custom migration with hand-written SQL: a `STRICT` table, a trigger, a virtual table, a data backfill. Generate an empty one and write the SQL into it, separating statements with `--> statement-breakpoint`:
+
+```sh
+bun x drizzle-kit generate --custom --name pull_comment_backfill
+```
+
+Update `raw.ts` with what the custom SQL adds that the schema cannot say (`STRICT`, a trigger), so the drift test passes.
+
+A shipped migration, its snapshot and its journal entry are never edited, renamed or deleted; the `migrations-append-only` Closeout rule refuses that. drizzle-kit applies a migration only when its journal `when` is later than the last one a database recorded, so a branch whose migration was generated before another one merged regenerates it on top of `main`.
+
+`0000_baseline` is the exact `sqlite_master` SQL of the schema the legacy migrations built, so `STRICT`, `CHECK`s, indexes and triggers are what they were. Its snapshot is the Drizzle schema.
+
+### The legacy migrations
+
+The hand-written migrations (`src/db/migrations.ts` and the files in `src/db/migrations/`, run by `legacyMigrate()`) no longer build Paws's database; only older tests use them, and they take no new files. A database they built is set aside at startup by `setAsideLegacyDatabase()`, and Paws starts on a fresh one ([database reset](../../docs/database-reset.md)).
+
+## Postgres
+
+Postgres is an option next to SQLite; SQLite stays the default. `openPostgres(url)` (`postgres.ts`) opens a Drizzle database on Bun's Postgres client, and `paws db check` uses it to apply the Postgres migrations and report; Paws itself does not run on Postgres yet ([Postgres (preview)](../../docs/postgres.md)). `src/db/schema-pg/` (pg-core) mirrors `src/db/schema/` file for file and table for table: the same column names in the same order, nullability, defaults, primary, foreign and unique keys, indexes, partial indexes and `CHECK`s. Its migrations are in [drizzle-pg/](drizzle-pg/), generated with their own config:
+
+```sh
+bun x drizzle-kit generate --config drizzle.pg.config.ts --name pull_comment_author
+```
+
+A schema change edits both schemas and generates a migration for each. The Postgres migrations are append-only like the SQLite ones.
+
+One rule per kind maps SQLite to Postgres:
+
+| SQLite                                             | Postgres                                                                                                                                                                    |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INTEGER`, timestamps included                     | `bigint` (mode `number`)                                                                                                                                                    |
+| `INTEGER` with a `CHECK (x IN (0, 1))` (a boolean) | `integer`                                                                                                                                                                   |
+| `INTEGER PRIMARY KEY` (the rowid)                  | `bigint generated by default as identity`                                                                                                                                   |
+| `REAL`                                             | `double precision`                                                                                                                                                          |
+| `TEXT` with a `json_valid(x)` `CHECK`              | `jsonb`; the `json_valid` `CHECK` is dropped because `jsonb` only holds valid JSON, `json_type` becomes `jsonb_typeof` and `json_array_length` becomes `jsonb_array_length` |
+| `TEXT COLLATE NOCASE`                              | `citext`, so keys over it stay case-insensitive; `0000_baseline` starts with `CREATE EXTENSION IF NOT EXISTS citext`                                                        |
+| other `TEXT`                                       | `text`                                                                                                                                                                      |
+| `json_extract(x, '$.a.b')` in an index             | `(x->'a'->>'b')`                                                                                                                                                            |
+| `IS NOT 'v'`, `NOT GLOB '*[^0-9A-Za-z]*'`          | `IS DISTINCT FROM 'v'`, `!~ '[^0-9A-Za-z]'`                                                                                                                                 |
+
+Triggers and `STRICT` have no Postgres counterpart yet. The `decision_memory_search` FTS table has none either: Postgres searches decisions through the generated `tsvector` column `decision_memory.search`, the one column SQLite doesn't have. Postgres cuts identifiers at 63 bytes, so a long generated constraint name is stored shortened.
+
+`pgliteDb()` in `test/pglite.ts` returns a Drizzle database on PGlite (in-process Postgres) with the Postgres migrations applied. `test/db-dialect-drift.test.ts` fails, naming the table and column, when the two schemas differ in tables, column names or order, nullability or primary keys; `test/db-pg-migrations.test.ts` applies `0000_baseline` to PGlite and fails when the Postgres schema has a change no migration carries.
+
+## The async `Db` interface
+
+Paws moves to Postgres: embedded PGlite on a single host, a Postgres server through `[database] url` for a multi-process install. Until startup switches, SQLite stays the running database, so the database layer becomes async one module at a time and each query is written once, against the Postgres schema. A converted module takes a `Db` from `src/db/db.ts` instead of a `bun:sqlite` `Database`:
+
+- `sqliteDb(database)` wraps today's database, one per connection.
+- `postgresDb(pg)` wraps a Drizzle Postgres database: `postgresDb(openPostgres(url))`, `postgresDb(await openPglite(dir))`, or in-memory PGlite in tests. `openPglite(dir)` opens a persistent PGlite directory and applies the Postgres migrations it has not applied yet.
+
+A converted function is a generator that `db.run()` drives:
+
+```ts
+export function clearQueueWait(db: Db, itemId: string): Promise<void> {
+  return db.run(function* (q) {
+    const { itemWait } = q.t;
+    yield* q.exec(
+      q.orm.delete(itemWait).where(and(eq(itemWait.itemId, itemId), eq(itemWait.kind, "queue"))),
+    );
+  });
+}
+```
+
+- `q.orm` is typed as the Postgres Drizzle database and `q.t` as `pgSchema`. On SQLite they are the SQLite Drizzle database and `schema`, which export the same table names, so the query builds on either.
+- `yield* q.all(query)` returns the rows, `yield* q.one(query)` the first row or `undefined`, and `yield* q.exec(query)` runs it and returns nothing.
+- `q.dialect` picks a different `sql` fragment where the SQL differs (JSON and date functions, `MIN`/`LEAST`). It is the only per-dialect code.
+- To count changed rows, add `.returning()` and take the length; don't read `changes` or `rowCount`.
+- On SQLite, `db.run()` runs each yielded query at once and returns an already-settled promise. On Postgres it awaits each one.
+- `db.transaction(function* (q) { … })` is `BEGIN IMMEDIATE … COMMIT` on SQLite, run synchronously so no other code runs inside it, and a Postgres transaction otherwise. When the body throws, all of its writes roll back. `yield* q.transaction(function* (q) { … })` inside a body is a savepoint, and so is `db.transaction()` called inside a synchronous `immediate()` on SQLite: it commits with the outer transaction.
+- A function whose generator another generator calls inside a transaction exports it as `<name>Steps(q, …)`, and the caller runs `yield* fooSteps(q, …)`. Add one only when such a caller exists.
+
+`src/db/queue-wait.ts` is the worked example. `src/db/linear-budget.ts` still writes each query once per dialect through `db.orm` and `db.sync()`; its conversion issue moves it to `db.run()` and removes `sync()`.
+
+### The store
+
+Startup (`startPaws()` in `src/index.ts`) opens the database and creates one `Db` over it, `store = sqliteDb(db)`, and passes it beside `db` to every holder of the database: `PawsProcess.store`, `startLoops()` (`JobLoop.store`, `OutboxDispatcher.store`), `attachOrchestrator()` (`Orchestrator.store`), `startServer()` (`store` in the route context, from `serverStore()`) and `createRemoteAgentRunner()` (its `store`). A holder given only `db`, as most tests do, takes `sqliteDb(db)`, which is the same handle because `sqliteDb()` keeps one per connection. Converted code reaches the database through its holder's `store` (`await this.store.run((q) => fooSteps(q, …))`, `this.store.transaction(…)`) and does not call `sqliteDb()` itself; when startup runs on Postgres, `store` is the Postgres handle.
+
+### Converting a module
+
+1. Change `database: Database` to `db: Db`, return `Promise<T>`, and move the body into `db.run(function* (q) { … })`, or `db.transaction()` when it writes more than one statement. Build each query on `q.orm` and `q.t` and `yield*` it through `q.all`, `q.one` or `q.exec`.
+2. An async caller awaits the function. A caller that is still synchronous, such as `dispatch()` inside its `immediate()` transaction, unwraps it with `settled(f(sqliteDb(database), …))`. `settled()` throws if the promise has not settled, which happens only off SQLite. When that caller becomes async, replace `settled(…)` with `await`.
+3. Run the module's tests on both dialects.
+4. Remove the module's lines from its own allowlist file, `scripts/raw-sql-allowlist/<path with / as __>.txt` (`src__db__jobs.ts.txt` for `src/db/jobs.ts`), and delete the file once it is empty. `bun run raw-sql` names the file of each stale entry.
+
+A feature module is re-exported whole from `index.ts` with `export * from "./<module>";`, so a new `…Steps` export needs no `index.ts` change. Only infrastructure (`db.ts`, `orm.ts`, `open.ts`, the migrations, `postgres.ts`, `db-check.ts`, `ddl.ts`, `schema`, `schema-pg`) keeps an explicit list. Two modules can't export the same name: `export *` makes that a type error, so rename one. A conversion then edits only its module, its tests and its allowlist file, and conversions of different modules merge without conflicts.
+
+### Tests on both dialects
+
+`forEachDialect()` in `test/dialects.ts` runs a suite once on SQLite and once on PGlite. Each test opens its own database and closes it:
+
+```ts
+forEachDialect((open) => {
+  test("an item's wait starts once per version", async () => {
+    const { db, close } = await open();
+    try {
+      await insertWorkItem(db, "waiting");
+      expect(await queueWaitSince(db, "waiting", 1, 100)).toBe(100);
+    } finally {
+      await close();
+    }
+  });
+});
+```
+
+Seed rows through `db.run()` (`insertWorkItem()` does the work item, and `insertWorkItemSteps()` inside a transaction), not through a SQLite-only helper. Tests that drive a still-synchronous caller stay SQLite-only.
+
+## Drift test
 
 ```sh
 bun test test/db-schema-drift.test.ts
 ```
 
-It builds a database with today's migrations and compares it with the Drizzle schema plus `raw.ts`: tables, columns, types, nullability, defaults, collations, primary and foreign keys, unique constraints, indexes, `CHECK`s, `STRICT`, `WITHOUT ROWID`, `AUTOINCREMENT`, virtual tables and triggers. Each difference names the table and column or constraint. A migration without a regenerated schema fails it.
+It builds a database from the drizzle-kit migrations and compares it with the Drizzle schema plus `raw.ts`: tables, columns, types, nullability, defaults, collations, primary and foreign keys, unique constraints, indexes, `CHECK`s, `STRICT`, `WITHOUT ROWID`, `AUTOINCREMENT`, virtual tables and triggers. Each difference names the table and column or constraint. A custom migration whose SQL the schema does not describe fails it. `test/db-drizzle-migrations.test.ts` fails when the schema has a change that no generated migration carries.

@@ -119,7 +119,7 @@ test("the dispatcher settles one session while another session's transport stays
     });
   const status = (key: string) => listOutbox(db).find((row) => row.orderingKey === key)?.status;
   try {
-    expect(dispatcher.tick()).toHaveLength(2);
+    expect(await dispatcher.tick()).toHaveLength(2);
     await dispatcher.idle((row) => row.orderingKey === "B");
     expect(status("B")).toBe("sent");
     expect(status("A")).toBe("pending");

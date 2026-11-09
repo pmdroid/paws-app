@@ -33,6 +33,10 @@ import {
   handleEvidenceRequest,
   handleVisualReviewChanges,
   VISUAL_REVIEW_CHANGES_PATH,
+  closeoutEvidenceItemOf,
+  hydrateItemCloseoutEvidence,
+  type EvidenceObjects,
+  type EvidenceStorage,
   type VisualReviewChanges,
 } from "../evidence";
 import {
@@ -64,7 +68,9 @@ import {
   getWorkItem,
   hotFiles,
   listWorkspaceRepositoryNames,
+  sqliteDb,
   workspaceSessionIds,
+  type Db,
 } from "../db";
 import {
   handleWorkspaceGitHubIntegration,
@@ -154,15 +160,20 @@ export type ServerOptions = {
   webhooks?: boolean;
   /** Engine database. The dashboard resources read it. Omit it for empty live resources. */
   db?: Database;
+  /** The async `Db` over `db` for converted routes. Defaults to `sqliteDb(db)`. */
+  store?: Db;
   /** Clock for local health checks. */
   healthNow?: () => number;
   /** Job-loop liveness, read by `/health` apart from the listener accepting connections. */
   jobLoop?: () => JobLoopLiveness | null;
   healthDisk?: HealthOptions["disk"];
+  instanceId?: string;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
   evidenceDir?: string;
+  evidenceObjects?: EvidenceObjects;
+  closeoutEvidence?: EvidenceStorage;
   visualReviewChanges?: VisualReviewChanges;
   readLinearArtifact?: ReadLinearArtifact;
   startLinearSession?: StartLinearSession;
@@ -189,6 +200,11 @@ export type ServerOptions = {
   };
 };
 
+/** The `Db` the routes reach: the one startup passes, or `sqliteDb(db)`. */
+export function serverStore(options: Pick<ServerOptions, "db" | "store">): Db | undefined {
+  return options.store ?? (options.db ? sqliteDb(options.db) : undefined);
+}
+
 export function startServer(options: ServerOptions = {}): Bun.Server<undefined> {
   const hostname = options.hostname ?? DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
@@ -199,6 +215,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
   const linearWebhook = options.linearWebhook;
   const webhooks = options.webhooks ?? webhookChecksNeeded();
   const db = options.db;
+  const store = serverStore(options);
   const health = createHealthReport({
     db,
     linearWebhook: webhooks && Boolean(linearWebhookSecret),
@@ -206,6 +223,7 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
     now: options.healthNow,
     ...(options.jobLoop === undefined ? {} : { jobLoop: options.jobLoop }),
     ...(options.healthDisk === undefined ? {} : { disk: options.healthDisk }),
+    ...(options.instanceId === undefined ? {} : { instanceId: options.instanceId }),
   });
   const statusEnv = options.statusEnv;
   const closeoutHome = options.closeoutHome;
@@ -266,10 +284,13 @@ export function startServer(options: ServerOptions = {}): Bun.Server<undefined> 
             : {}),
           ...(options.skillSettings ? { skillSettings: options.skillSettings } : {}),
           ...(db ? { db } : {}),
+          ...(store ? { store } : {}),
           ...(statusEnv ? { statusEnv } : {}),
           ...(closeoutHome ? { closeoutHome } : {}),
           ...(evidenceRoot ? { evidenceRoot } : {}),
           ...(options.evidenceDir ? { evidenceDir: options.evidenceDir } : {}),
+          ...(options.evidenceObjects ? { evidenceObjects: options.evidenceObjects } : {}),
+          ...(options.closeoutEvidence ? { closeoutEvidence: options.closeoutEvidence } : {}),
           ...(options.visualReviewChanges
             ? { visualReviewChanges: options.visualReviewChanges }
             : {}),
@@ -319,10 +340,13 @@ type Secrets = {
   agentSettings?: ServerOptions["agentSettings"] & { csrfToken: string };
   skillSettings?: ServerOptions["skillSettings"];
   db?: Database;
+  store?: Db;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
   evidenceRoot?: string;
   evidenceDir?: string;
+  evidenceObjects?: EvidenceObjects;
+  closeoutEvidence?: EvidenceStorage;
   visualReviewChanges?: VisualReviewChanges;
 };
 
@@ -506,6 +530,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     return (await handleVisualReviewChanges(request, {
       db: secrets.db,
       root: secrets.evidenceDir,
+      objects: secrets.evidenceObjects,
       principal,
       sessionIds,
       submit: secrets.visualReviewChanges,
@@ -534,6 +559,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     return (await handleEvidenceRequest(request, {
       db: secrets.db,
       root: secrets.evidenceDir,
+      objects: secrets.evidenceObjects,
       sessionIds,
     }))!;
   }
@@ -694,6 +720,14 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }));
     if (settings !== null) return settings;
   }
+  const closeoutItem = secrets.closeoutEvidence ? closeoutEvidenceItemOf(request) : null;
+  if (closeoutItem !== null && secrets.db)
+    await hydrateItemCloseoutEvidence(
+      secrets.db,
+      secrets.closeoutEvidence!,
+      closeoutItem,
+      sessionIds,
+    ).catch((error: unknown) => journalCaught(error, "serve.hydrateItemCloseoutEvidence", null));
   const status = await handleStatusRequest(request, {
     csrfToken,
     resourceCache: dashboardResources,

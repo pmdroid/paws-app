@@ -3,9 +3,8 @@ import { askWithLink, linkAskAvailable } from "./link-ask";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import type { EvidenceApproval, ResolvedEvidence } from "../closeout";
+import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 import { JOB_KIND } from "../core";
 import {
   type LinkAsk,
@@ -105,7 +104,7 @@ export async function planVisualReviewCarry(
   itemId: string,
   checkId: string,
   evidenceIds: readonly string[],
-  evidenceRoot: string | undefined,
+  storage: EvidenceStorage | undefined,
 ): Promise<VisualReviewCarryPlan> {
   const plan: VisualReviewCarryPlan = { carried: [], approved: new Map() };
   const approved = humanApprovedScreens(db, itemId, checkId).flatMap((origin) => {
@@ -125,10 +124,10 @@ export async function planVisualReviewCarry(
       continue;
     }
     if (
-      evidenceRoot !== undefined &&
+      storage !== undefined &&
       seen.mediaType.startsWith("image/") &&
       row.mediaType.startsWith("image/") &&
-      (await looksTheSame(evidenceRoot, seen.id, row.id))
+      (await looksTheSame(db, storage, seen.id, row.id))
     ) {
       plan.carried.push({ ...origin, evidenceId: id, match: "similar" });
       continue;
@@ -138,11 +137,16 @@ export async function planVisualReviewCarry(
   return plan;
 }
 
-async function looksTheSame(root: string, before: string, after: string): Promise<boolean> {
+async function looksTheSame(
+  db: Database,
+  storage: EvidenceStorage,
+  before: string,
+  after: string,
+): Promise<boolean> {
   try {
     const [a, b] = await Promise.all([
-      readFile(path.join(root, before)),
-      readFile(path.join(root, after)),
+      readEvidenceBytes(db, storage, before),
+      readEvidenceBytes(db, storage, after),
     ]);
     return (await compareScreenshots(a, b))?.same === true;
   } catch (caughtError1) {

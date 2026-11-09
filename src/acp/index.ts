@@ -144,6 +144,7 @@ export {
   type RunAgentOptions,
   type RunAgentResult,
   type RunOutcome,
+  type ReviewFindingGroup,
   type SuggestedFindingLine,
 } from "./types";
 export {
@@ -155,6 +156,7 @@ export {
   removeCandidateRef,
   removeWorktree,
   resolveStartRef,
+  restoreCandidateRef,
   worktreeMergedInto,
   type CandidateHead,
   type Mirror,

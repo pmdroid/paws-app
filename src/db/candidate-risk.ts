@@ -1,5 +1,9 @@
 import type { Database } from "bun:sqlite";
+import { and, desc, eq } from "drizzle-orm";
 import type { RiskClassification, RiskMatch, RiskTier } from "../core";
+import { settled, sqliteDb, type Q } from "./db";
+import { jsonValue, parsedJson } from "./json-text";
+import type { candidateRisk } from "./schema-pg";
 
 /**
  * The risk tier of one candidate head, from the paths it changes since its base commit. A head
@@ -14,60 +18,72 @@ export type CandidateRisk = RiskClassification & {
   matches?: RiskMatch[];
 };
 
-/** Records the tier for a head. A head is classified once against its base; a repeat replaces it. */
-export function saveCandidateRisk(db: Database, risk: CandidateRisk): void {
-  db.run(
-    `INSERT INTO candidate_risk (item_id, head_sha, base_sha, tier, paths, matches, classified_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (item_id, head_sha) DO UPDATE SET
-       base_sha = excluded.base_sha, tier = excluded.tier, paths = excluded.paths,
-       matches = excluded.matches, classified_at = excluded.classified_at`,
-    [
-      risk.itemId,
-      risk.head,
-      risk.base,
-      risk.tier,
-      JSON.stringify(risk.paths),
-      risk.matches === undefined ? null : JSON.stringify(risk.matches),
-      risk.classifiedAt,
-    ],
+export function* saveCandidateRiskSteps(q: Q, risk: CandidateRisk) {
+  const { candidateRisk } = q.t;
+  const values = {
+    baseSha: risk.base,
+    tier: risk.tier,
+    paths: jsonValue(q, risk.paths),
+    matches: risk.matches === undefined ? null : jsonValue(q, risk.matches),
+    classifiedAt: risk.classifiedAt,
+  };
+  yield* q.exec(
+    q.orm
+      .insert(candidateRisk)
+      .values({ itemId: risk.itemId, headSha: risk.head, ...values })
+      .onConflictDoUpdate({ target: [candidateRisk.itemId, candidateRisk.headSha], set: values }),
   );
 }
 
-type Row = {
-  itemId: string;
-  head: string;
-  base: string;
-  tier: RiskTier;
-  paths: string;
-  matches: string | null;
-  classifiedAt: number;
-};
+/** Records the tier for a head. A head is classified once against its base; a repeat replaces it. */
+export function saveCandidateRisk(db: Database, risk: CandidateRisk): void {
+  settled(sqliteDb(db).run((q) => saveCandidateRiskSteps(q, risk)));
+}
 
-const SELECT = `SELECT item_id AS itemId, head_sha AS head, base_sha AS base, tier, paths,
-  matches, classified_at AS classifiedAt FROM candidate_risk`;
+type Row = typeof candidateRisk.$inferSelect;
+
+export function* getCandidateRiskSteps(q: Q, itemId: string, head: string) {
+  const { candidateRisk } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(candidateRisk)
+      .where(and(eq(candidateRisk.itemId, itemId), eq(candidateRisk.headSha, head))),
+  );
+  return row ? fromRow(q, row) : null;
+}
 
 export function getCandidateRisk(db: Database, itemId: string, head: string): CandidateRisk | null {
-  const row = db
-    .query<Row, [string, string]>(`${SELECT} WHERE item_id = ? AND head_sha = ?`)
-    .get(itemId, head);
-  return row ? fromRow(row) : null;
+  return settled(sqliteDb(db).run((q) => getCandidateRiskSteps(q, itemId, head)));
+}
+
+/** Ties on `classified_at` go to the greater head SHA. */
+export function* latestCandidateRiskSteps(q: Q, itemId: string) {
+  const { candidateRisk } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(candidateRisk)
+      .where(eq(candidateRisk.itemId, itemId))
+      .orderBy(desc(candidateRisk.classifiedAt), desc(candidateRisk.headSha))
+      .limit(1),
+  );
+  return row ? fromRow(q, row) : null;
 }
 
 /** The most recently classified head of the item. */
 export function latestCandidateRisk(db: Database, itemId: string): CandidateRisk | null {
-  const row = db
-    .query<Row, [string]>(
-      `${SELECT} WHERE item_id = ? ORDER BY classified_at DESC, rowid DESC LIMIT 1`,
-    )
-    .get(itemId);
-  return row ? fromRow(row) : null;
+  return settled(sqliteDb(db).run((q) => latestCandidateRiskSteps(q, itemId)));
 }
 
-function fromRow({ matches, ...row }: Row): CandidateRisk {
+function fromRow(q: Q, row: Row): CandidateRisk {
   return {
-    ...row,
-    paths: JSON.parse(row.paths) as string[],
-    ...(matches === null ? {} : { matches: JSON.parse(matches) as RiskMatch[] }),
+    itemId: row.itemId,
+    head: row.headSha,
+    base: row.baseSha,
+    tier: row.tier as RiskTier,
+    paths: parsedJson<string[]>(q, row.paths),
+    classifiedAt: row.classifiedAt,
+    ...(row.matches === null ? {} : { matches: parsedJson<RiskMatch[]>(q, row.matches) }),
   };
 }

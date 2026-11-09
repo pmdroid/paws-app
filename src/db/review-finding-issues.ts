@@ -1,24 +1,14 @@
 import type { Database } from "bun:sqlite";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { reviewFindingKey as coreFindingKey } from "../core";
-import { immediate } from "./tx";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 /** Where a finding points: its path and its line, or `first-last`. */
 export type ReviewFindingPlace = { path: string; lines: string };
 
 /** The Linear issue filed from a pre-existing review finding. */
-export type ReviewFindingIssue = {
-  key: string;
-  repository: string;
-  path: string;
-  lines: string;
-  linearIssueId: string;
-  identifier: string;
-  url: string | null;
-  itemId: string | null;
-  filedBy: string | null;
-  filedAt: number;
-};
+export type ReviewFindingIssue = Q["t"]["reviewFindingIssue"]["$inferSelect"];
 
 /**
  * The path and lines of `path:line`, `path:line:column` or `path:first-last`, read as
@@ -51,133 +41,151 @@ export function reviewFindingKey(input: {
     .digest("hex");
 }
 
-type Row = {
-  key: string;
-  repository: string;
-  path: string;
-  lines: string;
-  linear_issue_id: string;
-  identifier: string;
-  url: string | null;
-  item_id: string | null;
-  filed_by: string | null;
-  filed_at: number;
-};
-
-const fromRow = (row: Row): ReviewFindingIssue => ({
-  key: row.key,
-  repository: row.repository,
-  path: row.path,
-  lines: row.lines,
-  linearIssueId: row.linear_issue_id,
-  identifier: row.identifier,
-  url: row.url,
-  itemId: row.item_id,
-  filedBy: row.filed_by,
-  filedAt: row.filed_at,
-});
+export function* getReviewFindingIssueSteps(q: Q, key: string): Steps<ReviewFindingIssue | null> {
+  const { reviewFindingIssue } = q.t;
+  return (
+    (yield* q.one(
+      q.orm.select().from(reviewFindingIssue).where(eq(reviewFindingIssue.key, key)),
+    )) ?? null
+  );
+}
 
 export function getReviewFindingIssue(db: Database, key: string): ReviewFindingIssue | null {
-  const row = db.query<Row, [string]>("SELECT * FROM review_finding_issue WHERE key=?").get(key);
-  return row === null ? null : fromRow(row);
+  return settled(sqliteDb(db).run((q) => getReviewFindingIssueSteps(q, key)));
 }
 
 /** The filed issues of `keys`, by key. */
-export function reviewFindingIssues(
-  db: Database,
+export function* reviewFindingIssuesSteps(
+  q: Q,
   keys: readonly string[],
-): Map<string, ReviewFindingIssue> {
+): Steps<Map<string, ReviewFindingIssue>> {
+  const { reviewFindingIssue } = q.t;
   const unique = [...new Set(keys)];
   const found = new Map<string, ReviewFindingIssue>();
   for (let start = 0; start < unique.length; start += 500) {
     const chunk = unique.slice(start, start + 500);
-    const rows = db
-      .query<Row, string[]>(
-        `SELECT * FROM review_finding_issue WHERE key IN (${chunk.map(() => "?").join(",")})`,
-      )
-      .all(...chunk);
-    for (const row of rows) found.set(row.key, fromRow(row));
+    const rows = yield* q.all(
+      q.orm.select().from(reviewFindingIssue).where(inArray(reviewFindingIssue.key, chunk)),
+    );
+    for (const row of rows) found.set(row.key, row);
   }
   return found;
 }
 
+export function reviewFindingIssues(
+  db: Database,
+  keys: readonly string[],
+): Map<string, ReviewFindingIssue> {
+  return settled(sqliteDb(db).run((q) => reviewFindingIssuesSteps(q, keys)));
+}
+
 /** Stores the filed issue unless one is already stored for its key; returns the stored one. */
+export function* saveReviewFindingIssueSteps(
+  q: Q,
+  issue: ReviewFindingIssue,
+): Steps<ReviewFindingIssue> {
+  const { reviewFindingIssue } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(reviewFindingIssue)
+      .values(issue)
+      .onConflictDoNothing({ target: reviewFindingIssue.key }),
+  );
+  return (yield* getReviewFindingIssueSteps(q, issue.key))!;
+}
+
 export function saveReviewFindingIssue(
   db: Database,
   issue: ReviewFindingIssue,
 ): ReviewFindingIssue {
-  db.run(
-    `INSERT INTO review_finding_issue
-    (key, repository, path, lines, linear_issue_id, identifier, url, item_id, filed_by, filed_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO NOTHING`,
-    [
-      issue.key,
-      issue.repository,
-      issue.path,
-      issue.lines,
-      issue.linearIssueId,
-      issue.identifier,
-      issue.url,
-      issue.itemId,
-      issue.filedBy,
-      issue.filedAt,
-    ],
+  return settled(sqliteDb(db).run((q) => saveReviewFindingIssueSteps(q, issue)));
+}
+
+type ReviewFindingIssueClaimInput = {
+  key: string;
+  finding: { repository: string; location: string; text: string };
+  itemId: string | null;
+  by: string;
+  now: number;
+};
+
+/** Run inside a transaction: the accepted check and the claim are one step. */
+export function* claimReviewFindingIssueSteps(
+  q: Q,
+  input: ReviewFindingIssueClaimInput,
+): Steps<boolean> {
+  const { improvement, improvementSource, reviewFinding, reviewFindingIssueClaim } = q.t;
+  const findingKey = coreFindingKey(input.finding);
+  const accepted = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(reviewFinding)
+      .innerJoin(
+        improvementSource,
+        and(
+          eq(improvementSource.sourceKind, "daily_finding"),
+          sql`${improvementSource.sourceKey} LIKE '%#' || ${reviewFinding.id} || ':%'`,
+        ),
+      )
+      .innerJoin(improvement, eq(improvement.id, improvementSource.improvementId))
+      .where(and(eq(reviewFinding.dedupeKey, findingKey), eq(improvement.reviewState, "accepted")))
+      .limit(1),
   );
-  return getReviewFindingIssue(db, issue.key)!;
+  if (accepted !== undefined) return false;
+  yield* q.exec(
+    q.orm
+      .insert(reviewFindingIssueClaim)
+      .values({
+        key: input.key,
+        findingKey,
+        itemId: input.itemId,
+        claimedBy: input.by,
+        claimedAt: input.now,
+      })
+      .onConflictDoNothing({ target: reviewFindingIssueClaim.key }),
+  );
+  return true;
 }
 
 export function claimReviewFindingIssue(
   db: Database,
-  input: {
-    key: string;
-    finding: { repository: string; location: string; text: string };
-    itemId: string | null;
-    by: string;
-    now: number;
-  },
+  input: ReviewFindingIssueClaimInput,
 ): boolean {
-  const findingKey = coreFindingKey(input.finding);
-  return immediate(db, () => {
-    const accepted = db
-      .query(
-        `SELECT 1 FROM review_finding AS finding
-         JOIN improvement_source AS source ON source.source_kind = 'daily_finding'
-           AND instr(source.source_key, '#' || finding.id || ':') > 0
-         JOIN improvement ON improvement.id = source.improvement_id
-         WHERE finding.dedupe_key = ? AND improvement.review_state = 'accepted' LIMIT 1`,
-      )
-      .get(findingKey);
-    if (accepted !== null) return false;
-    db.run(
-      `INSERT INTO review_finding_issue_claim (key, finding_key, item_id, claimed_by, claimed_at)
-       VALUES (?, ?, ?, ?, ?) ON CONFLICT(key) DO NOTHING`,
-      [input.key, findingKey, input.itemId, input.by, input.now],
-    );
-    return true;
-  });
+  return settled(sqliteDb(db).transaction((q) => claimReviewFindingIssueSteps(q, input)));
 }
 
 export type ReviewFindingIssueClaim = { findingKey: string; issue: ReviewFindingIssue | null };
 
-export function reviewFindingIssueClaims(
-  db: Database,
-  findings: readonly {
-    key: string;
-    repository: string;
-    path: string;
-    lines: string;
-    text: string;
-  }[],
-): Map<string, ReviewFindingIssueClaim> {
+type ClaimedFinding = {
+  key: string;
+  repository: string;
+  path: string;
+  lines: string;
+  text: string;
+};
+
+export function* reviewFindingIssueClaimsSteps(
+  q: Q,
+  findings: readonly ClaimedFinding[],
+): Steps<Map<string, ReviewFindingIssueClaim>> {
+  const { reviewFindingIssueClaim } = q.t;
   const claims = new Map<string, ReviewFindingIssueClaim>();
   if (findings.length === 0) return claims;
-  const rows = db
-    .query<{ findingKey: string; key: string }, [string]>(
-      `SELECT finding_key AS findingKey, key FROM review_finding_issue_claim
-       WHERE finding_key IN (SELECT value FROM json_each(?))`,
-    )
-    .all(JSON.stringify(findings.map((f) => f.key)));
-  const byFinding = new Map(rows.map((row) => [row.findingKey, row.key]));
+  const keys = [...new Set(findings.map((finding) => finding.key))];
+  const byFinding = new Map<string, string>();
+  for (let start = 0; start < keys.length; start += 500) {
+    const rows = yield* q.all(
+      q.orm
+        .select({
+          findingKey: reviewFindingIssueClaim.findingKey,
+          key: reviewFindingIssueClaim.key,
+        })
+        .from(reviewFindingIssueClaim)
+        .where(inArray(reviewFindingIssueClaim.findingKey, keys.slice(start, start + 500)))
+        .orderBy(reviewFindingIssueClaim.claimedAt, reviewFindingIssueClaim.key),
+    );
+    for (const row of rows) byFinding.set(row.findingKey, row.key);
+  }
   for (const finding of findings) {
     const issueKey =
       byFinding.get(finding.key) ??
@@ -186,9 +194,16 @@ export function reviewFindingIssueClaims(
         location: `${finding.path}:${finding.lines}`,
         text: finding.text,
       });
-    const issue = issueKey === null ? null : getReviewFindingIssue(db, issueKey);
+    const issue = issueKey === null ? null : yield* getReviewFindingIssueSteps(q, issueKey);
     if (byFinding.has(finding.key) || issue !== null)
       claims.set(finding.key, { findingKey: finding.key, issue });
   }
   return claims;
+}
+
+export function reviewFindingIssueClaims(
+  db: Database,
+  findings: readonly ClaimedFinding[],
+): Map<string, ReviewFindingIssueClaim> {
+  return settled(sqliteDb(db).run((q) => reviewFindingIssueClaimsSteps(q, findings)));
 }

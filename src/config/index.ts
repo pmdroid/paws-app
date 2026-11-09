@@ -24,12 +24,15 @@ export type {
   PawsSetupConfig,
   TrackerKind,
 } from "./file";
+export { readConfigText, useSavedSettingsReader, useSettingsStore } from "./settings-store";
+export type { SettingsStore } from "./settings-store";
 export { checkMemberVmValue, isMemberVmPool, renderMemberVmSettings } from "./member-vm";
 export type { MemberVmKey, MemberVmSize } from "./member-vm";
 export { ensureLayout, pawsPaths, sweepTmpDir } from "./paths";
 export type { PawsPaths } from "./paths";
 export { LINEAR_WORKSPACE_REQUIRED, loadRuntime } from "./runtime";
-export type { RuntimeConfig } from "./runtime";
+export { describeDatabaseUrl, POSTGRES_NOT_YET, redactDatabaseUrl } from "./database";
+export type { PawsRole, RuntimeConfig } from "./runtime";
 export { loadGitHubAppCredentials, saveGitHubAppCredentials } from "./github-app";
 export type { GitHubAppCredentials } from "./github-app";
 

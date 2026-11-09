@@ -426,7 +426,12 @@ export function createDirectWorkerSupervisor(options: {
       }
       if (asAgent && options.spool) {
         const { command } = readRunnerJob(options.spool, executionId);
-        if (command.type === "run" || command.type === "review" || command.type === "retro")
+        if (
+          command.type === "run" ||
+          command.type === "review" ||
+          command.type === "retro" ||
+          (command.type === "helper" && command.conversation)
+        )
           prepareRunnerWorkRoot(
             workRoot,
             { runnerUid: options.spool.runnerUid, agentGid: options.spool.agentGid },

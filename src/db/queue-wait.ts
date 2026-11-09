@@ -1,21 +1,42 @@
-import type { Database } from "bun:sqlite";
+import { and, asc, eq, ne, sql } from "drizzle-orm";
+import type { Db, Q } from "./db";
 
-export function queueWaitSince(db: Database, itemId: string, version: number, now: number): number {
-  db.run("INSERT OR IGNORE INTO queue_wait(item_id,version,since) VALUES(?,?,?)", [
-    itemId,
-    version,
-    now,
-  ]);
-  return db
-    .query<{ since: number }, [string, number]>(
-      "SELECT since FROM queue_wait WHERE item_id=? AND version=?",
-    )
-    .get(itemId, version)!.since;
+export function queueWaitSince(
+  db: Db,
+  itemId: string,
+  version: number,
+  now: number,
+): Promise<number> {
+  return db.run(function* (q) {
+    const { itemWait } = q.t;
+    yield* q.exec(
+      q.orm
+        .insert(itemWait)
+        .values({ itemId, kind: "queue", version, since: now })
+        .onConflictDoUpdate({
+          target: [itemWait.itemId, itemWait.kind],
+          set: { version, since: now },
+          setWhere: ne(itemWait.version, sql`excluded.version`),
+        }),
+    );
+    const row = yield* q.one(
+      q.orm
+        .select({ since: itemWait.since })
+        .from(itemWait)
+        .where(and(eq(itemWait.itemId, itemId), eq(itemWait.kind, "queue"))),
+    );
+    return row!.since;
+  });
 }
 
 /** Forget when an item began waiting for a slot, so its start timeout counts from the next wait. */
-export function clearQueueWait(db: Database, itemId: string): void {
-  db.run("DELETE FROM queue_wait WHERE item_id=?", [itemId]);
+export function clearQueueWait(db: Db, itemId: string): Promise<void> {
+  return db.run(function* (q) {
+    const { itemWait } = q.t;
+    yield* q.exec(
+      q.orm.delete(itemWait).where(and(eq(itemWait.itemId, itemId), eq(itemWait.kind, "queue"))),
+    );
+  });
 }
 
 /** A queued item's place among the items waiting for a runner slot. */
@@ -30,31 +51,52 @@ export type QueuePosition = {
 
 /** Replace the waiting line. The scheduler writes it after every admission pass. */
 export function saveQueuePositions(
-  db: Database,
+  db: Db,
   waiting: readonly string[],
   slots: { busy: number; total: number } | null,
   now: number,
   ownerCaps: ReadonlyMap<string, number> = new Map(),
-): void {
-  db.run("DELETE FROM queue_position");
-  if (slots === null) return;
-  waiting.forEach((itemId, index) =>
-    db.run(
-      "INSERT INTO queue_position(item_id,position,busy_slots,total_slots,owner_cap,updated_at) VALUES(?,?,?,?,?,?)",
-      [itemId, index + 1, slots.busy, slots.total, ownerCaps.get(itemId) ?? null, now],
-    ),
+): Promise<void> {
+  const rows =
+    slots === null
+      ? []
+      : waiting.map((itemId, index) => ({
+          itemId,
+          position: index + 1,
+          busySlots: slots.busy,
+          totalSlots: slots.total,
+          ownerCap: ownerCaps.get(itemId) ?? null,
+          updatedAt: now,
+        }));
+  return db.transaction(function* (q) {
+    yield* q.exec(q.orm.delete(q.t.queuePosition));
+    if (rows.length > 0) yield* q.exec(q.orm.insert(q.t.queuePosition).values(rows));
+  });
+}
+
+function* listSteps(q: Q) {
+  const { queuePosition } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        itemId: queuePosition.itemId,
+        position: queuePosition.position,
+        busySlots: queuePosition.busySlots,
+        totalSlots: queuePosition.totalSlots,
+        ownerCap: queuePosition.ownerCap,
+      })
+      .from(queuePosition)
+      .orderBy(asc(queuePosition.position)),
   );
 }
 
-export function listQueuePositions(db: Database): QueuePosition[] {
-  return db
-    .query<QueuePosition, []>(
-      `SELECT item_id AS itemId,position,busy_slots AS busySlots,total_slots AS totalSlots,owner_cap AS ownerCap
-       FROM queue_position ORDER BY position`,
-    )
-    .all();
+export function listQueuePositions(db: Db): Promise<QueuePosition[]> {
+  return db.run(listSteps);
 }
 
-export function getQueuePosition(db: Database, itemId: string): QueuePosition | null {
-  return listQueuePositions(db).find((entry) => entry.itemId === itemId) ?? null;
+export function getQueuePosition(db: Db, itemId: string): Promise<QueuePosition | null> {
+  return db.run(function* (q) {
+    const entries = yield* listSteps(q);
+    return entries.find((entry) => entry.itemId === itemId) ?? null;
+  });
 }

@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { enqueueJob } from "./jobs";
+import { emitJobReady, enqueueJobSteps } from "./jobs";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 /**
  * A queued item held because its delegator has no runner Paws may use. The scheduler skips it,
@@ -19,65 +21,121 @@ export type RunnerSetupHold = {
   notifiedAt: number | null;
 };
 
+function holdColumns(q: Q) {
+  const { runnerSetupHold } = q.t;
+  return {
+    itemId: runnerSetupHold.itemId,
+    ownerUserId: runnerSetupHold.ownerUserId,
+    reason: sql<RunnerSetupHold["reason"]>`${runnerSetupHold.reason}`,
+    runnerId: runnerSetupHold.runnerId,
+    agent: runnerSetupHold.agent,
+    runId: runnerSetupHold.runId,
+    since: runnerSetupHold.since,
+    notifiedAt: runnerSetupHold.notifiedAt,
+  };
+}
+
+export function* getRunnerSetupHoldSteps(q: Q, itemId: string): Steps<RunnerSetupHold | null> {
+  const { runnerSetupHold } = q.t;
+  const row = yield* q.one(
+    q.orm.select(holdColumns(q)).from(runnerSetupHold).where(eq(runnerSetupHold.itemId, itemId)),
+  );
+  return row ?? null;
+}
+
 export function getRunnerSetupHold(db: Database, itemId: string): RunnerSetupHold | null {
-  return db
-    .query<RunnerSetupHold, [string]>(
-      `SELECT item_id AS itemId,owner_user_id AS ownerUserId,reason,runner_id AS runnerId,agent,
-       run_id AS runId,since,notified_at AS notifiedAt FROM runner_setup_hold WHERE item_id=?`,
-    )
-    .get(itemId);
+  return settled(sqliteDb(db).run((q) => getRunnerSetupHoldSteps(q, itemId)));
+}
+
+export function* listRunnerSetupHoldsSteps(q: Q, ownerUserId?: string): Steps<RunnerSetupHold[]> {
+  const { runnerSetupHold } = q.t;
+  return yield* q.all(
+    q.orm
+      .select(holdColumns(q))
+      .from(runnerSetupHold)
+      .where(ownerUserId === undefined ? undefined : eq(runnerSetupHold.ownerUserId, ownerUserId))
+      .orderBy(asc(runnerSetupHold.since), asc(runnerSetupHold.itemId)),
+  );
 }
 
 export function listRunnerSetupHolds(db: Database, ownerUserId?: string): RunnerSetupHold[] {
-  const select = `SELECT item_id AS itemId,owner_user_id AS ownerUserId,reason,runner_id AS runnerId,
-       agent,run_id AS runId,since,notified_at AS notifiedAt FROM runner_setup_hold`;
-  return ownerUserId === undefined
-    ? db.query<RunnerSetupHold, []>(`${select} ORDER BY since,item_id`).all()
-    : db
-        .query<RunnerSetupHold, [string]>(`${select} WHERE owner_user_id=? ORDER BY since,item_id`)
-        .all(ownerUserId);
+  return settled(sqliteDb(db).run((q) => listRunnerSetupHoldsSteps(q, ownerUserId)));
+}
+
+type HoldInput = {
+  itemId: string;
+  ownerUserId: string | null;
+  reason: RunnerSetupHold["reason"];
+  runnerId?: string | null;
+  agent?: string | null;
+  runId?: string | null;
+  now: number;
+};
+
+export function* holdForRunnerSetupSteps(q: Q, input: HoldInput): Steps<RunnerSetupHold> {
+  const { runnerSetupHold } = q.t;
+  const hold = {
+    ownerUserId: input.ownerUserId,
+    reason: input.reason,
+    runnerId: input.runnerId ?? null,
+    agent: input.agent ?? null,
+  };
+  yield* q.exec(
+    q.orm
+      .insert(runnerSetupHold)
+      .values({ itemId: input.itemId, ...hold, runId: input.runId ?? null, since: input.now })
+      .onConflictDoUpdate({
+        target: runnerSetupHold.itemId,
+        set: { ...hold, runId: sql`COALESCE(excluded.run_id,${runnerSetupHold.runId})` },
+      }),
+  );
+  return (yield* getRunnerSetupHoldSteps(q, input.itemId))!;
 }
 
 /**
  * Hold a queued item for runner setup. A hold that already exists keeps its `since` and
  * `notified_at` and takes the latest reason. Call inside the transaction that queues the item.
  */
-export function holdForRunnerSetup(
-  db: Database,
-  input: {
-    itemId: string;
-    ownerUserId: string | null;
-    reason: RunnerSetupHold["reason"];
-    runnerId?: string | null;
-    agent?: string | null;
-    runId?: string | null;
-    now: number;
-  },
-): RunnerSetupHold {
-  db.run(
-    `INSERT INTO runner_setup_hold(item_id,owner_user_id,reason,runner_id,agent,run_id,since)
-     VALUES(?,?,?,?,?,?,?)
-     ON CONFLICT(item_id) DO UPDATE SET owner_user_id=excluded.owner_user_id,
-     reason=excluded.reason,runner_id=excluded.runner_id,agent=excluded.agent,
-     run_id=COALESCE(excluded.run_id,runner_setup_hold.run_id)`,
-    [
-      input.itemId,
-      input.ownerUserId,
-      input.reason,
-      input.runnerId ?? null,
-      input.agent ?? null,
-      input.runId ?? null,
-      input.now,
-    ],
+export function holdForRunnerSetup(db: Database, input: HoldInput): RunnerSetupHold {
+  return settled(sqliteDb(db).run((q) => holdForRunnerSetupSteps(q, input)));
+}
+
+export function* markRunnerSetupNotifiedSteps(q: Q, itemId: string, now: number): Steps<void> {
+  const { runnerSetupHold } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(runnerSetupHold)
+      .set({ notifiedAt: now })
+      .where(and(eq(runnerSetupHold.itemId, itemId), isNull(runnerSetupHold.notifiedAt))),
   );
-  return getRunnerSetupHold(db, input.itemId)!;
 }
 
 export function markRunnerSetupNotified(db: Database, itemId: string, now: number): void {
-  db.run("UPDATE runner_setup_hold SET notified_at=? WHERE item_id=? AND notified_at IS NULL", [
-    now,
-    itemId,
-  ]);
+  settled(sqliteDb(db).run((q) => markRunnerSetupNotifiedSteps(q, itemId, now)));
+}
+
+export function* releaseRunnerSetupHoldSteps(q: Q, itemId: string, now?: number): Steps<boolean> {
+  const { runnerSetupHold, runnerSetupResume } = q.t;
+  const hold = yield* getRunnerSetupHoldSteps(q, itemId);
+  if (!hold) return false;
+  const deleted = yield* q.all(
+    q.orm
+      .delete(runnerSetupHold)
+      .where(eq(runnerSetupHold.itemId, itemId))
+      .returning({ itemId: runnerSetupHold.itemId }),
+  );
+  if (deleted.length === 0) return false;
+  if (hold.runId !== null && now !== undefined)
+    yield* q.exec(
+      q.orm
+        .insert(runnerSetupResume)
+        .values({ itemId, runId: hold.runId, releasedAt: now })
+        .onConflictDoUpdate({
+          target: runnerSetupResume.itemId,
+          set: { runId: hold.runId, releasedAt: now },
+        }),
+    );
+  return true;
 }
 
 /**
@@ -86,16 +144,18 @@ export function markRunnerSetupNotified(db: Database, itemId: string, now: numbe
  * resume the item once. Call inside the transaction that posts the resume.
  */
 export function releaseRunnerSetupHold(db: Database, itemId: string, now?: number): boolean {
-  const hold = getRunnerSetupHold(db, itemId);
-  if (!hold || db.run("DELETE FROM runner_setup_hold WHERE item_id=?", [itemId]).changes === 0)
-    return false;
-  if (hold.runId !== null && now !== undefined)
-    db.run(
-      `INSERT INTO runner_setup_resume(item_id,run_id,released_at) VALUES(?,?,?)
-       ON CONFLICT(item_id) DO UPDATE SET run_id=excluded.run_id,released_at=excluded.released_at`,
-      [itemId, hold.runId, now],
-    );
-  return true;
+  return settled(sqliteDb(db).run((q) => releaseRunnerSetupHoldSteps(q, itemId, now)));
+}
+
+export function* takeRunnerSetupResumeSteps(q: Q, itemId: string, runId: string): Steps<boolean> {
+  const { runnerSetupResume } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .delete(runnerSetupResume)
+      .where(eq(runnerSetupResume.itemId, itemId))
+      .returning({ runId: runnerSetupResume.runId }),
+  );
+  return row?.runId === runId;
 }
 
 /**
@@ -103,12 +163,40 @@ export function releaseRunnerSetupHold(db: Database, itemId: string, now?: numbe
  * instead of opening a new one. Consumes the record either way.
  */
 export function takeRunnerSetupResume(db: Database, itemId: string, runId: string): boolean {
-  const row = db
-    .query<{ runId: string }, [string]>(
-      "DELETE FROM runner_setup_resume WHERE item_id=? RETURNING run_id AS runId",
-    )
-    .get(itemId);
-  return row?.runId === runId;
+  return settled(sqliteDb(db).run((q) => takeRunnerSetupResumeSteps(q, itemId, runId)));
+}
+
+export function* enqueueRunnerSetupCheckSteps(
+  q: Q,
+  ownerUserId: string,
+  now: number,
+): Steps<boolean> {
+  const { job } = q.t;
+  const owner =
+    q.dialect === "sqlite"
+      ? sql`json_extract(${job.payload},'$.ownerUserId')`
+      : sql`(${job.payload}->>'ownerUserId')`;
+  const pending = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.runnerSetupCheck),
+          eq(job.status, "pending"),
+          sql`${owner} = ${ownerUserId}`,
+        ),
+      )
+      .limit(1),
+  );
+  if (pending) return false;
+  yield* enqueueJobSteps(q, {
+    queue: JOB_KIND.runnerSetupCheck,
+    payload: { ownerUserId },
+    maxAttempts: 3,
+    now,
+  });
+  return true;
 }
 
 /**
@@ -116,17 +204,6 @@ export function takeRunnerSetupResume(db: Database, itemId: string, runId: strin
  * rule the triggers of migration 144 follow.
  */
 export function enqueueRunnerSetupCheck(db: Database, ownerUserId: string, now: number): void {
-  const pending = db
-    .query(
-      `SELECT 1 FROM job WHERE queue=? AND status='pending'
-       AND json_extract(payload,'$.ownerUserId')=? LIMIT 1`,
-    )
-    .get(JOB_KIND.runnerSetupCheck, ownerUserId);
-  if (pending) return;
-  enqueueJob(db, {
-    queue: JOB_KIND.runnerSetupCheck,
-    payload: { ownerUserId },
-    maxAttempts: 3,
-    now,
-  });
+  if (settled(sqliteDb(db).run((q) => enqueueRunnerSetupCheckSteps(q, ownerUserId, now))))
+    emitJobReady(db);
 }

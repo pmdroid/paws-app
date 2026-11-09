@@ -64,6 +64,8 @@ export const RUNNER_ORCHESTRATION_SCENARIOS = [
   "rebase-unreachable",
   "rebase-empty-report",
   "rebase-rate-limited",
+  "rebase-missing-result",
+  "rebase-missing-twice",
 ] as const;
 
 export async function probeRunnerOrchestration(
@@ -553,28 +555,45 @@ export async function probeRunnerOrchestration(
                   !reverifying ||
                   (scenario === "rebase-failing" &&
                     calls.filter((call) => call.checks && call.reverifying).length === 1);
+                const missing =
+                  reverifying &&
+                  (scenario === "rebase-missing-twice" ||
+                    (scenario === "rebase-missing-result" &&
+                      calls.filter((call) => call.checks && call.reverifying).length === 1));
                 return {
                   ...result,
                   closeoutReport: JSON.stringify({
                     required: ["prepare", "check"].map((id) => ({
                       id,
-                      status: failing && id === "check" ? "failed" : "passed",
-                      result: {
-                        argv: ["/forbidden-local-check", id === "prepare" ? "setup" : "check"],
-                        head,
-                        exitCode: failing && id === "check" ? 1 : 0,
-                        timedOut: false,
-                        durationMs: 42,
-                        timeoutSeconds: 5,
-                        stdout:
-                          failing && id === "check"
-                            ? `RUNNER_CHECK_FAILED on ${head}\n`
-                            : `runner ${id} output\n`,
-                        stderr: "",
-                        truncated: false,
-                      },
+                      status:
+                        missing && id === "check"
+                          ? "missing"
+                          : failing && id === "check"
+                            ? "failed"
+                            : "passed",
+                      ...(missing && id === "check"
+                        ? {}
+                        : {
+                            result: {
+                              argv: [
+                                "/forbidden-local-check",
+                                id === "prepare" ? "setup" : "check",
+                              ],
+                              head,
+                              exitCode: failing && id === "check" ? 1 : 0,
+                              timedOut: false,
+                              durationMs: 42,
+                              timeoutSeconds: 5,
+                              stdout:
+                                failing && id === "check"
+                                  ? `RUNNER_CHECK_FAILED on ${head}\n`
+                                  : `runner ${id} output\n`,
+                              stderr: "",
+                              truncated: false,
+                            },
+                          }),
                     })),
-                    pending: [],
+                    pending: missing ? ["check"] : [],
                     blocked: null,
                     bypassed: false,
                   }),
@@ -747,6 +766,7 @@ export async function probeRunnerOrchestration(
                 ),
               };
             },
+            db,
           );
         },
       },
@@ -966,6 +986,7 @@ export async function probeRunnerOrchestration(
             held,
           ]);
           await git(["--git-dir", mirror, "update-ref", "-d", candidate]);
+          db.run("DELETE FROM item_candidate WHERE item_id = ?", [item.id]);
         }
         const reverifyId = merging
           ? listJobs(db).find((job) => job.queue === JOB_KIND.merge && job.status === "pending")!.id
@@ -1020,12 +1041,20 @@ export async function probeRunnerOrchestration(
             );
             assert(!question.body.includes("Checks you can bypass"), question.body);
             assert(!question.body.includes("output is missing"), question.body);
+          } else if (scenario === "rebase-missing-twice") {
+            assert.equal(verified.state, "awaiting_input");
+            assert.equal(reverifyChecks.length, 2);
+            assert(question);
+            assert(question.body.includes("no result for check (it never started)"), question.body);
           } else {
             assert.equal(verified.state, "merged", question?.body ?? "no question");
             assert.equal(question, null);
             assert(rebased && rebased !== accepted);
             await git(["-C", source, "merge-base", "--is-ancestor", movedMain, rebased]);
-            assert.equal(reverifyChecks.length, scenario === "rebase-rate-limited" ? 3 : 1);
+            assert.equal(
+              reverifyChecks.length,
+              scenario === "rebase-rate-limited" ? 3 : scenario === "rebase-missing-result" ? 2 : 1,
+            );
             assert.deepEqual(
               db
                 .query<{ payload: string }, []>("SELECT payload FROM outbox")

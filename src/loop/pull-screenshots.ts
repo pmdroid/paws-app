@@ -1,7 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 import { listEvidence, type StoredEvidence } from "../db";
 import type { StoredEvidenceFiles } from "../github";
 import { journalCaught } from "../journal";
@@ -34,19 +33,19 @@ export function pullRequestScreenshotRows(db: Database, itemId: string): StoredE
 export async function pullRequestScreenshots(input: {
   db: Database;
   itemId: string;
-  root: string | undefined;
+  storage: EvidenceStorage | undefined;
   owner: string;
   repo: string;
   store: (files: { bytes: Uint8Array; extension: string }[]) => Promise<StoredEvidenceFiles>;
   journal?: (line: string) => void;
 }): Promise<string> {
   const rows = pullRequestScreenshotRows(input.db, input.itemId);
-  if (rows.length === 0 || input.root === undefined) return "";
-  const root = input.root;
+  if (rows.length === 0 || input.storage === undefined) return "";
+  const storage = input.storage;
   try {
     const files = await Promise.all(
       rows.map(async (row) => ({
-        bytes: await readEvidence(root, row),
+        bytes: await readEvidence(input.db, storage, row),
         extension: EXTENSIONS[row.mediaType]!,
       })),
     );
@@ -71,8 +70,12 @@ export async function pullRequestScreenshots(input: {
   }
 }
 
-async function readEvidence(root: string, row: StoredEvidence): Promise<Uint8Array> {
-  const bytes = new Uint8Array(await readFile(join(root, row.id)));
+async function readEvidence(
+  db: Database,
+  storage: EvidenceStorage,
+  row: StoredEvidence,
+): Promise<Uint8Array> {
+  const bytes = await readEvidenceBytes(db, storage, row.id);
   if (
     bytes.byteLength !== row.sizeBytes ||
     createHash("sha256").update(bytes).digest("hex") !== row.sha256

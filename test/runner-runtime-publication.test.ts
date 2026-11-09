@@ -264,8 +264,9 @@ async function fixture(options: { crashAt?: CrashPoint; moved?: boolean; freeze?
       .at(-1)!
       .tick()
       .catch(() => {});
-  async function settle(until: () => boolean, limit = 400) {
-    for (let index = 0; index < limit && !until(); index++) {
+  // Bounded by time, not tick count: a slow CI shard needs more ticks for the same steps.
+  async function settle(until: () => boolean, ms = 10_000) {
+    for (const deadline = Date.now() + ms; Date.now() < deadline && !until();) {
       await tick();
       await Bun.sleep(1);
     }

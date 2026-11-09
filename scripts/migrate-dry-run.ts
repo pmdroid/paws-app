@@ -13,7 +13,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, migrations, openDatabase } from "../src/db";
+import { appliedMigrations, migrate, migrationTags, openDatabase } from "../src/db";
 
 export function migrateDryRun(source: string): { applied: string[] } {
   if (!existsSync(source)) throw new Error(`No database at ${source}`);
@@ -28,15 +28,16 @@ export function migrateDryRun(source: string): { applied: string[] } {
     }
     const db = openDatabase(copy);
     try {
-      const before = appliedIds(db);
+      if (isLegacy(db))
+        throw new Error(
+          "This database is from before drizzle-kit migrations; Paws sets it aside and starts on a fresh one",
+        );
+      const before = appliedMigrations(db).applied;
       migrate(db);
-      const after = appliedIds(db);
       const problems = db.query("PRAGMA foreign_key_check").all();
       if (problems.length > 0)
         throw new Error(`Foreign key check failed: ${JSON.stringify(problems)}`);
-      return {
-        applied: migrations.map((m) => m.id).filter((id) => after.has(id) && !before.has(id)),
-      };
+      return { applied: migrationTags().slice(before, appliedMigrations(db).applied) };
     } finally {
       db.close();
     }
@@ -45,15 +46,8 @@ export function migrateDryRun(source: string): { applied: string[] } {
   }
 }
 
-function appliedIds(db: Database): Set<string> {
-  const table = db.query("SELECT 1 FROM sqlite_master WHERE name='schema_migration'").get();
-  if (!table) return new Set();
-  return new Set(
-    db
-      .query<{ id: string }, []>("SELECT id FROM schema_migration")
-      .all()
-      .map((row) => row.id),
-  );
+function isLegacy(db: Database): boolean {
+  return db.query("SELECT 1 FROM sqlite_master WHERE name = 'schema_migration'").get() !== null;
 }
 
 if (import.meta.main) {

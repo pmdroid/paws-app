@@ -12,6 +12,7 @@ import {
 } from "./file";
 import { pawsPaths } from "./paths";
 import { loadGitHubAppCredentials } from "./github-app";
+import { checkDatabaseUrl } from "./database";
 
 export const LINEAR_WORKSPACE_REQUIRED =
   "Paws needs a Linear workspace. Set PAWS_PUBLIC_DASHBOARD=1 with PAWS_PUBLIC_URL and the Linear app OAuth client, restart Paws, then sign in to the dashboard as a Linear workspace admin (docs/workspace-access.md).";
@@ -20,8 +21,13 @@ export const LINEAR_WORKSPACE_REQUIRED =
  * What the process runs with. `config.toml` and the secret files it names
  * are the source. Environment variables override a single field when set.
  */
+export type PawsRole = "all" | "web" | "worker";
+
+const PAWS_ROLES: readonly PawsRole[] = ["all", "web", "worker"];
+
 export type RuntimeConfig = {
   env: PawsEnv;
+  role: PawsRole;
   file: PawsConfigFile;
   /** True when `config.toml` was present. */
   configured: boolean;
@@ -29,9 +35,11 @@ export type RuntimeConfig = {
   linearTeam: string | null;
   linearTeamId: string | null;
   linearViewerId: string | null;
-  /** OAuth access token for agent-session mode. Not logged. */
+  /** `LINEAR_ACCESS_TOKEN`, stored once when no token is in the database. Not logged. */
   linearAccessToken: string | null;
   linearRefreshToken: string | null;
+  /** Token file an older install wrote; startup imports it once. */
+  linearTokenFile: string;
   linearClientId: string | null;
   linearClientSecret: string | null;
   linearOrganizationId: string | null;
@@ -42,6 +50,7 @@ export type RuntimeConfig = {
   publicUrl: string | null;
   maxAwakeMs: number;
   webhooks: boolean;
+  databaseUrl: string | null;
 };
 
 export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
@@ -71,12 +80,21 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     }
   }
 
-  const secrets = readLinearSecrets(env.home, file);
-  const linearAccessToken = optional(source, "LINEAR_ACCESS_TOKEN") ?? secrets.accessToken;
+  let databaseUrl = file.databaseUrl ?? null;
+  const databaseEnv = optional(source, "PAWS_DATABASE_URL");
+  if (databaseEnv !== null) {
+    try {
+      databaseUrl = checkDatabaseUrl(databaseEnv, "PAWS_DATABASE_URL");
+    } catch (error) {
+      configError ??= (error as Error).message;
+    }
+  }
+  const secrets = readLinearClient(env.home, file);
   const githubAuth: GitHubConfigAuth = "app";
 
   return {
     env,
+    role: readRole(optional(source, "PAWS_ROLE")),
     file,
     configured,
     configError,
@@ -86,8 +104,9 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
       optional(source, "LINEAR_APP_USER_ID") ??
       optional(source, "LINEAR_VIEWER_ID") ??
       file.linearViewerId,
-    linearAccessToken,
-    linearRefreshToken: optional(source, "LINEAR_REFRESH_TOKEN") ?? secrets.refreshToken,
+    linearAccessToken: optional(source, "LINEAR_ACCESS_TOKEN"),
+    linearRefreshToken: optional(source, "LINEAR_REFRESH_TOKEN"),
+    linearTokenFile: secretPath(env.home, file.linearSecret ?? "secrets/linear-oauth.json")!,
     linearClientId: optional(source, "LINEAR_CLIENT_ID") ?? secrets.clientId,
     linearClientSecret: optional(source, "LINEAR_CLIENT_SECRET") ?? secrets.clientSecret,
     linearOrganizationId: optional(source, "LINEAR_ORGANIZATION_ID"),
@@ -98,7 +117,16 @@ export function loadRuntime(source: EnvSource = process.env): RuntimeConfig {
     maxAwakeMs:
       positiveInt(optional(source, "PAWS_MAX_AWAKE_MS")) ?? file.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS,
     webhooks: resolveWebhooks(file, source),
+    databaseUrl,
   };
+}
+
+function readRole(value: string | null): PawsRole {
+  if (value === null) return "all";
+  const role = PAWS_ROLES.find((known) => known === value);
+  if (role === undefined)
+    throw new Error(`PAWS_ROLE must be one of ${PAWS_ROLES.join(", ")}, got ${value}`);
+  return role;
 }
 
 function resolveWebhooks(file: PawsConfigFile, source: EnvSource): boolean {
@@ -108,19 +136,12 @@ function resolveWebhooks(file: PawsConfigFile, source: EnvSource): boolean {
   return file.webhooks === true;
 }
 
-type LinearSecrets = {
-  accessToken: string | null;
-  refreshToken: string | null;
-  clientId: string | null;
-  clientSecret: string | null;
-};
-
-function readLinearSecrets(home: string, file: PawsConfigFile): LinearSecrets {
+function readLinearClient(
+  home: string,
+  file: PawsConfigFile,
+): { clientId: string | null; clientSecret: string | null } {
   const client = readJson(home, file.linearClientFile ?? "secrets/linear-client.json");
-  const oauth = readJson(home, file.linearSecret ?? "secrets/linear-oauth.json");
   return {
-    accessToken: jsonString(oauth, "accessToken"),
-    refreshToken: jsonString(oauth, "refreshToken"),
     clientId: jsonString(client, "clientId"),
     clientSecret: jsonString(client, "clientSecret"),
   };
