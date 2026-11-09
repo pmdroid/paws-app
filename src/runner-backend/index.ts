@@ -2604,9 +2604,9 @@ export function createRemoteAgentRunner(options: {
                 .filter((event) => event.type === "checkpoint" && event.reason === "stop")
                 .at(-1)
             : undefined;
-          // From this release a stop with no sha means the worktree's tree equals the base, so
-          // restarting from the base loses nothing: the snapshot adds every tracked and untracked
-          // change, and a failed save sets `dropped`. Before it, a failed save looked the same.
+          // From this release a stop with no sha means the worktree equals the base, so restarting
+          // from the base loses nothing; a failed or unprovable save sets `dropped`. Before it, a
+          // failed save looked the same.
           const interruptionSaved =
             versionAtLeast(hostVersion(selected.id), INTERRUPT_RECOVERY_RUNNER_VERSION) &&
             stopCheckpoint?.type === "checkpoint" &&

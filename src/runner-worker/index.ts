@@ -1861,7 +1861,19 @@ export async function executeRunnerCommand(
         if (saved.sha === run.repository.baseSha) {
           // The base is already the item's checkpoint, unless this turn saved work since.
           if (checkpointed === undefined) {
-            if (reason === "stop") emit({ type: "checkpoint", reason });
+            if (reason === "stop") {
+              // The snapshot skips what the index marks unchanged, so "nothing new" is unproven.
+              const tracked = await invokeGit(["-C", worktree, "ls-files", "-v", "-z"]);
+              const hidden = tracked
+                .split("\0")
+                .some(
+                  (entry) =>
+                    /^[a-z] /.test(entry) ||
+                    (entry.startsWith("S ") && existsSync(join(worktree, entry.slice(2)))),
+                );
+              if (hidden) throw new Error("The index hides files that may hold unsaved work");
+              emit({ type: "checkpoint", reason });
+            }
             return true;
           }
           // A worktree back at the base replaces the earlier checkpoint with a WIP commit of it,

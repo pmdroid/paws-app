@@ -620,7 +620,8 @@ export async function probeRunnerBackend(
         [runnerId, version, Date.now()],
       );
     runnerAt("0.1.75");
-    const early = backend.forItem(stopped.id)(input(stopped));
+    const stoppedAgent = backend.forItem(stopped.id);
+    const early = stoppedAgent(input(stopped));
     const earlyCommand = await next();
     if (earlyCommand.type !== "run") throw new Error("Expected an implementation run");
     const earlyToken = work.issueGrant({
@@ -683,6 +684,31 @@ export async function probeRunnerBackend(
     assert.equal(await git(["-C", source, "rev-parse", "HEAD"]), head);
     assert.equal(fetched, fetchedBefore);
     fetched = fetchedBefore;
+    // The limit is per agent turn: the next turn, even through the same closure, gets its own.
+    const interrupt = (command: Extract<Awaited<ReturnType<typeof next>>, { type: "run" }>) => {
+      const token = work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      }).token;
+      const sent = { runnerId, runId: command.runId, generation: command.generation, token };
+      work.event({ ...sent, sequence: 1, event: { type: "checkpoint", reason: "stop" } });
+      results.submit({
+        ...sent,
+        result: { ...result(command), stopReason: "cancelled", cancelled: true, interrupted: true },
+      });
+    };
+    const runCommand = async () => {
+      let command = await next();
+      if (command.type === "cancel") command = await next();
+      if (command.type !== "run") throw new Error("Expected a run command");
+      return command;
+    };
+    const laterTurn = stoppedAgent(input(stopped));
+    interrupt(await runCommand());
+    interrupt(await runCommand());
+    assert.equal((await laterTurn).stopReason, "cancelled");
     observe("an unsolicited interruption saves WIP and restarts only once", true, {
       wipCommit: head,
     });

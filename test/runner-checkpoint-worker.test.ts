@@ -437,6 +437,36 @@ test.skipIf(!linux)(
   },
 );
 
+for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
+  test.skipIf(!linux)(`an edit hidden by ${flag} prevents automatic restart`, async () => {
+    const context = await fixture();
+    const result = await context.execute({
+      checkpointIntervalMs: 3_600_000,
+      async runAgent(options) {
+        await git(["-C", options.worktreePath, "update-index", flag, "original.txt"]);
+        writeFileSync(join(options.worktreePath, "original.txt"), "changed by the agent");
+        return {
+          role: "implementer",
+          stopReason: "cancelled",
+          cancelled: true,
+          interrupted: true,
+          timedOut: false,
+          authRequired: false,
+          agentExited: true,
+        };
+      },
+    });
+    expect(context.checkpoints()).toEqual([
+      { type: "checkpoint", reason: "stop", dropped: expect.any(String) },
+    ]);
+    expect(result.run).toMatchObject({
+      stopReason: "error",
+      cancelled: false,
+      interrupted: false,
+    });
+  });
+}
+
 for (const failure of ["snapshot", "bundle preparation"] as const) {
   test.skipIf(!linux)(`a failed interruption ${failure} prevents automatic restart`, async () => {
     const context = await fixture();
