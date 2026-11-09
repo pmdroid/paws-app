@@ -93,7 +93,7 @@ export function failingTest(): CheckNodes {
       databaseId: 77,
       checkSuite: { app: { slug: "github-actions" } },
     },
-    { name: "e2e", conclusion: null, detailsUrl: "https://ci.example/2" },
+    { name: "e2e", conclusion: "SUCCESS", detailsUrl: "https://ci.example/2" },
   ];
 }
 

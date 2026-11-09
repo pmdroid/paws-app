@@ -2,7 +2,7 @@ import { journalCaught } from "../journal";
 import { z } from "zod";
 import { acquireOperationToken } from "./auth/provider";
 import type { GitHubTokenProvider } from "./auth/types";
-import { readMergeReadiness, type FailedCheck } from "./readiness";
+import { readMergeReadiness, type Readiness, type FailedCheck } from "./readiness";
 import type { GitHubClient } from "./types";
 
 /** GitHub's `MergeQueueEntryState`. */
@@ -351,7 +351,7 @@ export type GitHubQueueMergeResult =
   /** Waiting for the pull request's own checks before it joins the queue. */
   | { outcome: "checks_pending"; message: string }
   | { outcome: "queued"; position: number | null; state: MergeQueueEntryState }
-  | { outcome: "ci_failed"; message: string; failedChecks: FailedCheck[] }
+  | { outcome: "ci_failed"; message: string; failedChecks: FailedCheck[]; readiness: Readiness }
   | { outcome: "removed"; removal: MergeQueueRemoval }
   | { outcome: "closed"; message: string }
   | { outcome: "unreadable"; message: string }
@@ -420,6 +420,7 @@ export async function githubQueueMerge(
       outcome: "ci_failed",
       message: readiness.message,
       failedChecks: readiness.failedChecks ?? [],
+      readiness,
     };
   if (readiness.outcome !== "ready") {
     if (readiness.message.startsWith("could not read"))

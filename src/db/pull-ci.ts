@@ -230,3 +230,49 @@ function mapRow(q: Q, row: Row): PullCiFailureRecord {
     outcome: row.outcome as PullCiOutcome | null,
   };
 }
+
+/** Keep the lane timer in the existing failure row without scheduling review feedback. */
+export function laneCiFailureTime(
+  db: Database,
+  failure: Omit<PullCiFailureRecord, "handledAt" | "outcome">,
+): number {
+  return settled(
+    sqliteDb(db).run(function* (q) {
+      const t = q.t.pullCiFailure;
+      const row = yield* selectFailureSteps(q, failure.itemId, failure.head);
+      const first = row?.laneFirstFailureAt ?? failure.observedAt;
+      yield* q.exec(
+        q.orm
+          .insert(t)
+          .values({
+            ...failure,
+            failedChecks: jsonValue(q, failure.failedChecks),
+            checks: jsonValue(q, failure.checks),
+            laneFirstFailureAt: first,
+            handledAt: failure.observedAt,
+            outcome: "cleared",
+          })
+          .onConflictDoUpdate({
+            target: [t.itemId, t.head],
+            set: { laneFirstFailureAt: first },
+          }),
+      );
+      return first;
+    }),
+  );
+}
+
+/** Observing another head invalidates the old collection window. */
+export function resetOtherLaneCiFailures(db: Database, itemId: string, head: string): void {
+  settled(
+    sqliteDb(db).run(function* (q) {
+      const t = q.t.pullCiFailure;
+      yield* q.exec(
+        q.orm
+          .update(t)
+          .set({ laneFirstFailureAt: null })
+          .where(and(eq(t.itemId, itemId), ne(t.head, head))),
+      );
+    }),
+  );
+}

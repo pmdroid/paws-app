@@ -100,7 +100,7 @@ function fixtureGitHub(input: {
   noCi?: boolean;
 }): {
   client: GitHubClient;
-  ci: { pending: boolean };
+  ci: { pending: boolean; failed: boolean };
   calls: GitHubCall[];
   closed: Set<number>;
   merged: Map<number, string>;
@@ -110,7 +110,7 @@ function fixtureGitHub(input: {
   const calls: GitHubCall[] = [];
   const closed = new Set<number>();
   const merged = new Map<number, string>();
-  const ci = { pending: input.ciPending ?? false };
+  const ci = { pending: input.ciPending ?? false, failed: false };
   const comments = new Map<number, { body: string; html_url: string }[]>();
   const pullJson = (number: number) => ({
     number,
@@ -132,6 +132,12 @@ function fixtureGitHub(input: {
         body.data.repository.object.statusCheckRollup.state = "PENDING";
         body.data.repository.object.statusCheckRollup.contexts.nodes[0]!.conclusion = null;
       }
+      if (ci.failed)
+        body.data.repository.object.statusCheckRollup.contexts.nodes.push({
+          ...body.data.repository.object.statusCheckRollup.contexts.nodes[0]!,
+          name: "acme failure",
+          conclusion: "FAILURE",
+        });
       return { status: 200, body };
     }
     const required = fakeRequiredChecks(request);

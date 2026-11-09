@@ -44,6 +44,7 @@ import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import { MERGE_DENIAL_LIMIT, RETRY_MERGE, mergeDeniedQuestion } from "./merge-denied";
 import type { MergeFacts, RiskApproval } from "./mergeable";
 import {
+  collectCiFailure,
   REBASE_CONFLICT_INSTRUCTION,
   REBASE_CONFLICT_THOUGHT,
   askHelp,
@@ -283,6 +284,7 @@ export async function advanceMerge(
   const turn = await laneTurn({
     read: () => readPullFacts(lane),
     facts: (facts) => {
+      facts.readiness = collectCiFailure(merge, pull.number, facts.head, facts.readiness);
       mainPolicy = caps.policyDigests(item, published.worktree);
       return mergeFacts(db, item.id, facts, mainPolicy, mergeSettings.mainMoved, {
         head: published.head,
@@ -457,12 +459,18 @@ export async function advanceMerge(
       ciRound(merge, head, readiness.checks, next, ciFixLimit, fix);
     if (
       step.kind === "return" &&
-      sendBack(merge, "ci-failed", (fixes) => fixes < ciFixLimit, ciFixHandoff(checks), {
-        thought: (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
-        record: (_, attempt) => round("agent", attempt),
-        failedChecks: checks,
-        pullNumber: pull.number,
-      })
+      sendBack(
+        merge,
+        "ci-failed",
+        (fixes) => fixes < ciFixLimit,
+        ciFixHandoff(checks, readiness.waitingChecks),
+        {
+          thought: (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
+          record: (_, attempt) => round("agent", attempt),
+          failedChecks: checks,
+          pullNumber: pull.number,
+        },
+      )
     )
       return { kind: "returned" };
     if (askHelp(merge, ciFixQuestion(checks, ciFixLimit, pull.url), "budget_spent")) {

@@ -1,0 +1,1 @@
+ALTER TABLE "pull_ci_failure" ADD COLUMN "lane_first_failure_at" bigint;
