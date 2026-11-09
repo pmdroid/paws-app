@@ -1689,7 +1689,10 @@ export async function executeRunnerCommand(
                 worktree,
                 executable: providerCli(agentName),
                 env: input.env ?? agentEnv,
-                timeoutMs: Math.max(1, command.expiresAt - Date.now()),
+                // The runtime renews authority and aborts the worker when it ends.
+                timeoutMs: input.signal
+                  ? 2_147_483_647
+                  : Math.max(1, command.expiresAt - Date.now()),
                 ...(input.signal ? { signal: input.signal } : {}),
                 onText: (text) => {
                   reviewText = text;
@@ -1950,12 +1953,13 @@ export async function executeRunnerCommand(
         : undefined;
     const questionEndsTurn = runCommand?.questionEndsTurn === true;
     const lifetime = new AbortController();
-    const lifetimeTimer = talk
-      ? setTimeout(
-          () => lifetime.abort(),
-          Math.max(0, command.expiresAt - Date.now() - CONVERSATION_RESULT_MARGIN_MS),
-        )
-      : undefined;
+    const lifetimeTimer =
+      talk && !options.signal
+        ? setTimeout(
+            () => lifetime.abort(),
+            Math.max(0, command.expiresAt - Date.now() - CONVERSATION_RESULT_MARGIN_MS),
+          )
+        : undefined;
     const current: RunAgentOptions =
       handover || checkpoints || questionEndsTurn || talk
         ? {

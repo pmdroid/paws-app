@@ -108,3 +108,6 @@ export const REVIEW_FINDINGS_RUNNER_VERSION: RunnerVersion = [0, 1, 74];
 /** First runner release that asks for missing repository toolchains before starting an agent. */
 export const TOOLCHAIN_PREFLIGHT_RUNNER_VERSION: RunnerVersion = [0, 1, 75];
 export const CONVERSATION_RUNNER_VERSION: RunnerVersion = [0, 1, 74];
+
+/** First runner release that bridges a control-plane stall past the signed turn expiry. */
+export const TURN_STALL_GRACE_RUNNER_VERSION: RunnerVersion = [0, 1, 75];

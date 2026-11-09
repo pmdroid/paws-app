@@ -32,6 +32,8 @@ import {
 
 type Command = Extract<RunnerCommand, { type: "probe" | "login_check" | "login" | "helper" }>;
 type Entry = {
+  unreachable?: boolean;
+  renewedUntil?: number;
   id: string;
   command: Command;
   deadline: number;
@@ -247,8 +249,12 @@ export async function openRunnerHealthRuntime(options: {
     if (
       closed ||
       entry.stopped ||
-      now() >= entry.command.expiresAt ||
-      monotonic() >= entry.deadline ||
+      (entry.unreachable &&
+      entry.command.type === "helper" &&
+      entry.command.purpose === "conversation"
+        ? now() >= (entry.renewedUntil ?? entry.command.expiresAt) + 300_000
+        : now() >= (entry.renewedUntil ?? entry.command.expiresAt) ||
+          monotonic() >= entry.deadline) ||
       options.daemon.status().phase !== "paired"
     )
       throw new Error("Runner health command has expired");
@@ -261,13 +267,12 @@ export async function openRunnerHealthRuntime(options: {
       if (entry.command.type === "helper") {
         if (!options.daemon.helperLease) throw new Error("Runner helper lease is unavailable");
         const lease = await options.daemon.helperLease(entry.command.id);
-        if (lease.expiresAt !== entry.command.expiresAt)
-          throw new Error("Runner helper lease changed");
+        entry.renewedUntil = lease.expiresAt;
       } else await options.daemon.heartbeat();
-      check(entry);
+      entry.unreachable = false;
       entry.deadline = Math.min(
         started + 60_000,
-        monotonic() + Math.max(0, entry.command.expiresAt - now()),
+        monotonic() + Math.max(0, (entry.renewedUntil ?? entry.command.expiresAt) - now()),
       );
     })().finally(() => {
       entry.pulsing = undefined;
@@ -289,7 +294,17 @@ export async function openRunnerHealthRuntime(options: {
     }
     try {
       check(entry);
-      if (entry.command.type === "helper") await pulse(entry);
+      if (entry.command.type === "helper") {
+        try {
+          await pulse(entry);
+        } catch (error) {
+          if (error instanceof RunnerRequestError && [401, 403, 409, 410].includes(error.status))
+            throw error;
+          entry.unreachable = true;
+          check(entry);
+          return "held";
+        }
+      }
       check(entry);
       if (entry.command.type === "login") {
         if (!options.daemon.exchangeLogin)
@@ -512,6 +527,17 @@ export async function openRunnerHealthRuntime(options: {
       void pulse(entry)
         .catch(async (caughtError6) => {
           journalCaught(caughtError6, "runner-health-runtime.openRunnerHealthRuntime.pulse", null);
+          if (
+            entry.command.type === "helper" &&
+            entry.command.purpose === "conversation" &&
+            !(
+              caughtError6 instanceof RunnerRequestError &&
+              [401, 403, 409, 410].includes(caughtError6.status)
+            )
+          ) {
+            entry.unreachable = true;
+            return;
+          }
           if (
             (active === entry || talks.get(entry.id) === entry) &&
             entry.command.type === "helper"
