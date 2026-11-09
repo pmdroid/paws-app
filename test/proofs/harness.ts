@@ -234,6 +234,7 @@ export type ProofContext = {
   setRepositoryCi(ci: "required" | "none"): void;
   delegate(): Promise<void>;
   answerInLinear(answer: string): Promise<void>;
+  replyInLinear(reply: string): Promise<void>;
   stopInLinear(): Promise<void>;
   cancelInLinear(): Promise<void>;
   waitFor(what: string, done: () => boolean, timeoutMs?: number): Promise<boolean>;
@@ -402,6 +403,14 @@ export async function runProof(name: string, proof: Proof, dir: string) {
         activityId: `proof-answer-${actions.length}`,
         actorId: "acme-user",
         body: answer,
+      });
+    },
+    async replyInLinear(reply) {
+      act(`Reply in the ${ACME.identifier} agent session: ${reply}`);
+      await event("prompted", {
+        activityId: `proof-reply-${actions.length}`,
+        actorId: "acme-user",
+        body: reply,
       });
     },
     async stopInLinear() {

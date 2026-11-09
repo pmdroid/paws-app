@@ -141,6 +141,11 @@ export function briefValues(input: WorkContextInput): BriefValues {
  * contributes nothing, and a block that becomes blank is left out so the blank lines around it collapse.
  * Values are inserted once: braces in issue and comment text stay text.
  */
+export function briefShowsUserUpdates(template: string | null): boolean {
+  if (template === null) return true;
+  return [...template.matchAll(PLACEHOLDER)].some((match) => match[1]!.trim() === "user_updates");
+}
+
 export function renderWorkContext(template: string | null, input: WorkContextInput): string {
   if (template === null || template === defaultBriefTemplate()) return legacyWorkContext(input);
   return renderBriefTemplate(template, briefValues(input));
