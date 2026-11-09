@@ -62,6 +62,47 @@ forEachDialect((open) => {
     }
   });
 
+  test("overlapping announcements, Stops and comment keys retain one outcome", async () => {
+    const { db, close } = await open();
+    try {
+      await db.transaction((q) =>
+        recordLinearTurnSteps(q, {
+          sessionId: "race",
+          eventKey: "turn",
+          activityId: null,
+          actorId: null,
+          body: "update",
+          payload: "{}",
+          createdAtMs: 1,
+          now: 1,
+        }),
+      );
+      const announce = () => db.transaction((q) => announceLinearTurnSteps(q, "race", "turn", 2));
+      expect((await Promise.all([announce(), announce()])).sort()).toEqual([false, true]);
+      expect((await db.run((q) => getLinearSessionSteps(q, "race")))?.generation).toBe(1);
+      expect(await db.run((q) => listOutboxSteps(q, "race"))).toHaveLength(1);
+      const stop = () => db.transaction((q) => acceptLinearStopSteps(q, "race", "stop", 3));
+      const stops = await Promise.all([stop(), stop()]);
+      expect(stops.filter((value) => value === null)).toHaveLength(1);
+      expect(stops.filter((value) => value === 2)).toHaveLength(1);
+      expect((await db.run((q) => getLinearSessionSteps(q, "race")))?.stoppedAt).toBe(3);
+      const gather = (key: string) =>
+        db.transaction((q) =>
+          gatherLinearCommentsSteps(q, "item", 0, { quietMs: 10, maxMs: 25 }, key),
+        );
+      expect((await Promise.all([gather("comment-a"), gather("comment-b")])).sort()).toEqual([
+        false,
+        true,
+      ]);
+      const jobs = await db.run(function* (q) {
+        return yield* q.all(q.orm.select().from(q.t.job));
+      });
+      expect(jobs).toHaveLength(1);
+    } finally {
+      await close();
+    }
+  });
+
   test("issue status respects delegation ownership and deduplicates", async () => {
     const { db, close } = await open();
     try {

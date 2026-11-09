@@ -445,11 +445,23 @@ export function getLinearSessionGeneration(db: Database, sessionId: string): num
   return settled(sqliteDb(db).run((q) => getLinearSessionGenerationSteps(q, sessionId)));
 }
 
+// SQLite's write transaction serializes these operations. Postgres needs the same
+// session-wide exclusion before any turn, receipt or stopped-generation reads.
+function* lockLinearSessionSteps(q: Q, sessionId: string): Steps<void> {
+  if (q.dialect === "postgres")
+    yield* q.exec(
+      q.orm.select({
+        lock: sql`pg_advisory_xact_lock(hashtextextended(${`linear-session:${sessionId}`}, 0))`,
+      }),
+    );
+}
+
 export function* advanceLinearSessionGenerationSteps(
   q: Q,
   sessionId: string,
   options: { stop?: boolean; now?: number } = {},
 ): Steps<number> {
+  yield* lockLinearSessionSteps(q, sessionId);
   yield* ensureLinearSessionSteps(q, { sessionId, now: options.now });
   const generation = yield* advanceOutboxSessionSteps(q, "linear", sessionId, options);
   yield* q.exec(
@@ -561,6 +573,7 @@ export function* announceLinearTurnSteps(
   eventKey: string,
   now = Date.now(),
 ): Steps<boolean> {
+  yield* lockLinearSessionSteps(q, sessionId);
   const turn = yield* q.one(
     q.orm
       .select({
@@ -666,6 +679,7 @@ export function* acceptLinearStopSteps(
   eventKey: string,
   now: number,
 ): Steps<number | null> {
+  yield* lockLinearSessionSteps(q, sessionId);
   if (
     yield* q.one(
       q.orm

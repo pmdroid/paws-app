@@ -330,6 +330,13 @@ export function* gatherLinearCommentsSteps(
   wait: PullFeedbackWait,
   jobKey: string,
 ): Steps<boolean> {
+  // Different comment keys still share one pending quiet window for this item.
+  if (q.dialect === "postgres")
+    yield* q.exec(
+      q.orm.select({
+        lock: sql`pg_advisory_xact_lock(hashtextextended(${`linear-comments:${itemId}`}, 0))`,
+      }),
+    );
   const { job } = q.t;
   const item =
     q.dialect === "postgres"
