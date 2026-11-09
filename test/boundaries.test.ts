@@ -35,6 +35,7 @@ const MODULES = [
   "settings",
   "dashboard",
   "host",
+  "host-operation",
   "loop",
   "doctor",
   "install",
@@ -108,7 +109,8 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   credentials: ["journal", "db"],
   slack: ["journal", "config", "credentials", "webhook-body"],
   core: [],
-  db: ["journal", "core", "runner-protocol", "dashboard-links"],
+  "host-operation": [],
+  db: ["journal", "core", "runner-protocol", "dashboard-links", "host-operation"],
   linear: ["journal", "core", "credentials", "db", "webhook-body"],
   intake: ["journal", "core", "db", "linear", "dashboard-links"],
   "execution-controls": ["journal", "core", "db", "workspace"],
@@ -168,7 +170,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
     "closeout-spec",
   ],
   "agent-catalog": ["journal", "db"],
-  host: ["journal", "core", "db"],
+  host: ["journal", "core", "db", "host-operation"],
   loop: [
     "journal",
     "workspace",
@@ -361,6 +363,14 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
 };
 
 describe("module boundaries", () => {
+  test("core imports no Node built-ins, because the dashboard bundle includes it", () => {
+    const nodeImports = walk(join(SRC, "core"))
+      .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+      .filter((file) => /from\s+"node:|require\(\s*"node:/.test(readFileSync(file, "utf8")))
+      .map((file) => relative(SRC, file));
+    expect(nodeImports).toEqual([]);
+  });
+
   test("every module has an index and only imports allowed public APIs", () => {
     for (const name of MODULES) {
       expect(statSync(join(SRC, name, "index.ts")).isFile()).toBe(true);

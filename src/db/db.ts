@@ -1,4 +1,4 @@
-import { measureHostOperation } from "../core";
+import { measureHostOperation } from "../host-operation";
 import type { Database } from "bun:sqlite";
 import { sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";

@@ -1,7 +1,7 @@
 import { systemClock, type Clock } from "../core";
 import { journal } from "../journal";
 
-import { sampleHostOperations } from "../core";
+import { sampleHostOperations } from "../host-operation";
 
 export function createLagWatchdog(input: {
   clock?: Clock;

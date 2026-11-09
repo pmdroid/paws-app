@@ -215,6 +215,4 @@ export {
   type BriefValues,
 } from "./brief-template";
 
-export { trackHostOperation, sampleHostOperations, measureHostOperation } from "./host-operation";
-
 export { quotaSignal, usageLimitCause, usageLimitNotice, type QuotaSignal } from "./quota";
