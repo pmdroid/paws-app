@@ -3,13 +3,16 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   claimNextJob,
+  markRun,
   enqueueJob,
   getWorkItem,
   insertQueuedItem,
+  insertRun,
   listJobs,
   migrate,
   openDatabase,
   saveCheckpoint,
+  setCurrentRun,
 } from "../../src/db";
 import { answer, findOpenQuestion } from "../../src/questions";
 import { recoverStalledCloseout } from "../../src/loop/closeout-stall";
@@ -44,6 +47,19 @@ export default {
           cancel: async () => {},
           journal: (line) => lines.push(line),
         });
+        if (attempt === 0) {
+          // The real re-verify closes the quiet run and opens a new one on the same head.
+          markRun(db, getWorkItem(db, "quiet")!.currentRunId!, "lost", clock.now());
+          const rerun = insertRun(db, {
+            itemId: "quiet",
+            kind: "recheck",
+            agent: "cursor",
+            status: "active",
+            freshSession: true,
+            now: clock.now(),
+          });
+          setCurrentRun(db, "quiet", rerun.id);
+        }
       }
       proof.expect(
         "only one automatic retry was queued",

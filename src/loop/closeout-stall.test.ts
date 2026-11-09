@@ -7,14 +7,18 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   claimNextJob,
+  markRun,
   enqueueJob,
   getWorkItem,
   insertQueuedItem,
+  insertRun,
   listJobs,
   migrate,
   openDatabase,
   recordAgentCloseout,
   saveCheckpoint,
+  setCurrentRun,
+  startUsagePause,
 } from "../db";
 import { answer, findOpenQuestion } from "../questions";
 import { questionEffects } from "./question-effects";
@@ -57,6 +61,8 @@ test("quiet verification retries once across restart, then asks a person", async
     );
     await check();
     expect(lines).toHaveLength(0);
+    expect(cancelled).toHaveLength(0);
+    expect(listJobs(db)).toHaveLength(0);
     // Restart with no in-memory Closeout operation and retain the last event's clock.
     db.close();
     db = openDatabase(path);
@@ -74,6 +80,18 @@ test("quiet verification retries once across restart, then asks a person", async
       listJobs(db).filter((j) => j.queue === JOB_KIND.reverify && j.id !== oldJob),
     ).toHaveLength(1);
     expect(lines).toEqual(["closeout stalled for 31 min, re-running once"]);
+    // The real re-verify closes the quiet run and opens a new one on the same head.
+    const prior = getWorkItem(db, "stalled")!.currentRunId!;
+    markRun(db, prior, "lost", clock.now());
+    const rerun = insertRun(db, {
+      itemId: "stalled",
+      kind: "recheck",
+      agent: "cursor",
+      status: "active",
+      freshSession: true,
+      now: clock.now(),
+    });
+    setCurrentRun(db, "stalled", rerun.id);
     db.close();
     db = openDatabase(path);
     clock.advance(31 * 60_000);
@@ -103,5 +121,43 @@ test("quiet verification retries once across restart, then asks a person", async
   } finally {
     db.close();
     rmSync(root, { recursive: true });
+  }
+});
+
+function verifyingItem(id: string, db: ReturnType<typeof openDatabase>, now: number) {
+  insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now });
+  beginImplementRun(db, id, now);
+  applyWorkItemEvent(db, id, "turn_ended", { now });
+  saveCheckpoint(db, id, { phase: "verifying", baseSha: "base", wipCommit: "head" });
+}
+
+test("a usage pause is not a stall, and one failed cancel leaves the other items recovered", async () => {
+  const db = openDatabase(":memory:");
+  try {
+    migrate(db);
+    const clock = new FakeClock(Date.now() + 1000);
+    for (const id of ["paused", "broken", "quiet"]) verifyingItem(id, db, clock.now());
+    startUsagePause(db, {
+      runId: getWorkItem(db, "paused")!.currentRunId!,
+      itemId: "paused",
+      agent: "cursor",
+      runnerId: null,
+      pausedAt: clock.now(),
+      resetsAt: null,
+      resumeAt: clock.now() + 120 * 60_000,
+    });
+    clock.advance(31 * 60_000);
+    const lines: string[] = [];
+    await recoverStalledCloseout(db, {
+      now: clock.now(),
+      cancel: async (id) => {
+        if (id === "broken") throw new Error("runner did not confirm");
+      },
+      journal: (line) => lines.push(line),
+    });
+    const retried = listJobs(db).map((job) => (job.payload as { itemId: string }).itemId);
+    expect(retried).toEqual(["quiet"]);
+  } finally {
+    db.close();
   }
 });
