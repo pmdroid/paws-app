@@ -115,6 +115,8 @@ export async function executeCommand(input: {
         ...(input.onOutput ? { onText: input.onOutput } : {}),
       }),
     ),
+  ).catch((cause) =>
+    notStarted(`Could not prepare Closeout command check: ${String(cause)}`),
   );
   const durationMs = Math.max(0, Date.now() - started);
   const after = await porcelain(input.cwd, env);
