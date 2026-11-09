@@ -81,6 +81,20 @@ A Stop from the Paws dashboard, workspace revocation, a fresh-start re-delegatio
 
 The keepalive (`KEEPALIVE_MS` in `src/loop/activity.ts`, `WAIT_KEEPALIVE_MS` in `src/scheduler/waits.ts`) is 25 minutes, below Linear's 30-minute stale window (`LINEAR_STALE_MS`). Its body is the agent's current plan step, else the last `post_update` line, else the phase. A lifecycle thought with an identical body is not posted twice within one phase.
 
+### A reply in the session
+
+A person's reply in the item's agent session is stored as a pending `linear_turn` until a turn takes it. What happens next depends on what the item is doing:
+
+- **An agent turn runs** (`running`): a runner that takes follow-ups gets the reply in the live prompt, and the session hears "Sent your update to the running agent." Otherwise Paws announces the reply ("Received your update.", which opens a new session generation), interrupts the turn and applies `restart(item, follow_up)` with the reply as the handoff. A `recovering` item is interrupted and restarted the same way: no verdict is in flight, and its next step runs the agent anyway.
+- **Closeout verifies it** (`verifying`, with the verification running): the reply waits, and Closeout finishes and records its verdict. The reply is not announced, so the session generation and the verdict's activities stay. The session gets one thought, "Got it. I'll pick this up once verification finishes.", which follows the post-PR rule. When the verification job ends:
+  - **Rejected** with fix rounds left: the findings turn takes the reply in its brief, once, as a `User update:` beside the findings handoff. Unlike a reply that restarts the item, it does not reset the fix-round window or the time limits.
+  - **A question:** the reply keeps waiting, and the turn that follows the answer takes it in its brief.
+  - **Accepted:** the item enters the merge queue, and the reply goes as one that arrives there now: to a conversation helper when the runner takes conversations, otherwise `restart(item, follow_up)`. If the pull request merges first, the reply is a reply after the merge.
+  - **No result:** Closeout retries as it would without the reply, and the reply waits for that verdict. If the run failed instead, `restart(item, follow_up)` sends the failed item back with the reply.
+- **At rest** (`queued`, `merge_queue`, `failed`): the reply is announced and, from `queued` or `merge_queue`, goes to a conversation helper when the runner takes conversations (see [Ordinary issue comments](#ordinary-issue-comments)); otherwise `restart(item, follow_up)` sends the item back with it.
+
+A reply to an open question answers it (see [Closeout needs help](#closeout-needs-help)), and a reply to a paused item resumes it (see below). Linear's stop button still interrupts Closeout.
+
 ### Ordinary issue comments
 
 A comment on a delegated issue, outside the agent session's thread, reaches the issue's work too. The Linear webhook must subscribe to `Comment` events; the catch-up poll reads the same comments when a delivery is missed. `src/linear/comments.ts` reads the documented payload: `type: "Comment"`, `action` `create`, `update` or `remove`, `data.id`, `data.body`, `data.issueId`, `data.userId`, `data.parentId`, `data.createdAt`, `data.updatedAt`, `data.botActor`, `data.issue.team.id`, the signed `actor` and `organizationId`.

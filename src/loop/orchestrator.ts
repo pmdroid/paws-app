@@ -1051,7 +1051,14 @@ export class Orchestrator {
         (await this.forwardFollowUp(event.sessionId, turn))
       )
         return;
-      if (turn && announceLinearTurn(this.db, event.sessionId, turn.eventKey, this.now())) {
+      const verifying =
+        turn?.state === "pending" && turn.announcedGeneration === null
+          ? this.closeoutHoldsReply(event.sessionId)
+          : null;
+      if (turn && verifying) {
+        this.post(verifying, "thought", REPLY_WAITS_FOR_CLOSEOUT, `turn:ack:${turn.eventKey}`);
+        await this.flush();
+      } else if (turn && announceLinearTurn(this.db, event.sessionId, turn.eventKey, this.now())) {
         for (const live of this.live.values())
           if (this.itemsForSession(event.sessionId).some((item) => item.id === live.itemId))
             live.controller.abort(FOLLOW_UP_INTERRUPTION);
@@ -1313,6 +1320,7 @@ export class Orchestrator {
       const questionItem = question
         ? await this.store.run((q) => getWorkItemSteps(q, question.itemId))
         : null;
+      let held = false;
       if (event.sessionId && event.body) {
         const sessionId = event.sessionId;
         const session = await this.store.transaction((q) =>
@@ -1332,9 +1340,11 @@ export class Orchestrator {
         }
         const turn = await this.recordTurn(event);
         if (turn?.state !== "pending") return;
+        held = turn.announcedGeneration === null;
         event = { ...event, dedupeKey: turn.eventKey, body: turn.body, payload: turn.payload };
       }
       if (!question && event.sessionId) {
+        if (held && this.heldReplyWaits(event.sessionId)) return;
         await this.resumeLinearSession(event.sessionId);
         return;
       }
@@ -1912,15 +1922,13 @@ export class Orchestrator {
     jobs.register(JOB_KIND.start, async (job, context) => {
       if (await this.waitingForConversation(job, context)) return;
       if (this.waitingForRunnerSlot(job)) return;
-      await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
-      await this.settleVerifying(job, context);
+      await this.runExecutionJob(job, context);
     });
     jobs.register(JOB_KIND.resume, async (job, context) => {
       if (await this.waitingForConversation(job, context)) return;
       if (this.waitingForRunnerSlot(job)) return;
       if (await this.mergeInsteadOfTurn(job, context)) return;
-      await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
-      await this.settleVerifying(job, context);
+      await this.runExecutionJob(job, context);
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
@@ -1964,6 +1972,7 @@ export class Orchestrator {
             ),
           );
           await this.settleVerifying(job, context);
+          await this.deliverRepliesHeldForCloseout(job);
         } catch (error) {
           if (error instanceof VerificationHeld && context.isCurrent()) {
             const held = itemId === null ? null : getWorkItem(this.db, itemId);
@@ -1971,7 +1980,10 @@ export class Orchestrator {
             return;
           }
           const wait = this.nextRunnerWait(job, error);
-          if (!wait || !context.isCurrent()) throw error;
+          if (!wait || !context.isCurrent()) {
+            await this.deliverRepliesHeldForCloseout(job, true);
+            throw error;
+          }
           journalCaught(
             error,
             "orchestrator.register.runLeasedJob",
@@ -7497,6 +7509,17 @@ export class Orchestrator {
     return true;
   }
 
+  private async runExecutionJob(job: Job, context: JobContext): Promise<void> {
+    let threw = true;
+    try {
+      await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
+      await this.settleVerifying(job, context);
+      threw = false;
+    } finally {
+      await this.deliverRepliesHeldForCloseout(job, threw);
+    }
+  }
+
   private async runLeasedJob(
     job: Job,
     context: JobContext,
@@ -8017,6 +8040,48 @@ export class Orchestrator {
     }
   }
 
+  private closeoutHoldsReply(sessionId: string): WorkItemRecord | null {
+    const live = this.itemsForSession(sessionId).filter((item) => this.isLive(item.id));
+    const item = live.length === 1 ? live[0]! : null;
+    const owner = item ? this.leasedJobs.get(item.id)?.queue : undefined;
+    return item?.state === "verifying" &&
+      !item.cancelRequested &&
+      [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify].some((queue) => queue === owner)
+      ? item
+      : null;
+  }
+
+  private heldReplyWaits(sessionId: string, exceptJobId?: number): boolean {
+    if (this.closeoutHoldsReply(sessionId) !== null) return true;
+    const routed = workItemForSession(this.db, sessionId);
+    const item = routed ? getWorkItem(this.db, routed.id) : null;
+    if (!item || item.cancelRequested) return false;
+    if (["queued", "running", "recovering", "paused"].includes(item.state)) return true;
+    if (item.state === "verifying")
+      return [JOB_KIND.reverify, JOB_KIND.start, JOB_KIND.resume].some((queue) =>
+        hasOpenItemJob(this.db, queue, item.id, exceptJobId),
+      );
+    return item.state === "awaiting_input" && findOpenQuestion(this.db, sessionId) !== null;
+  }
+
+  private async deliverRepliesHeldForCloseout(job: Job, threw = false): Promise<void> {
+    const itemId = readString(job.payload, "itemId");
+    const item = itemId === null ? null : getWorkItem(this.db, itemId);
+    const sessionId = item?.sessionKey ?? null;
+    if (
+      item === null ||
+      sessionId === null ||
+      this.shuttingDown ||
+      (threw && item.state === "verifying") ||
+      !listPendingLinearTurns(this.db, sessionId).some(
+        (turn) => turn.announcedGeneration === null,
+      ) ||
+      this.heldReplyWaits(sessionId, job.id)
+    )
+      return;
+    await this.deliverHeldReplies(item.id);
+  }
+
   private async tellCleanupBlocked(itemId: string, sessionId: string): Promise<void> {
     const { blockedAt } = getConversation(this.db, itemId);
     enqueueOutboxOnce(this.db, {
@@ -8160,7 +8225,9 @@ export class Orchestrator {
       item.cancelRequested ||
       sessionId === null ||
       findOpenQuestion(this.db, sessionId) !== null ||
-      listPendingLinearTurns(this.db, sessionId).length > 0 ||
+      listPendingLinearTurns(this.db, sessionId).some(
+        (turn) => turn.announcedGeneration !== null,
+      ) ||
       hasOpenItemJob(this.db, JOB_KIND.reverify, item.id, job.id);
     if (moving) return;
     const head = item.checkpoint?.wipCommit ?? "";
@@ -9889,6 +9956,7 @@ const ACCEPTED_ON_REMOTE =
 const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;
 const OUTBOX_WAIT_MS = 30_000;
+const REPLY_WAITS_FOR_CLOSEOUT = "Got it. I'll pick this up once verification finishes.";
 const FIRST_ACTIVITY_HOLD_MS = 5_000;
 const CHECKS_RATE_LIMIT_RETRY_MS = 60_000;
 const CHECKS_RATE_LIMIT_WAIT_MS = 60 * 60_000;

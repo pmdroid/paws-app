@@ -274,7 +274,7 @@ async function until(condition: () => boolean): Promise<void> {
   throw new Error("Fixture condition did not arrive");
 }
 
-for (const phase of ["implement", "review"] as const) {
+for (const phase of ["implement"] as const) {
   test(`ordinary update interrupts ${phase}, joins cleanup and resumes full context after restart`, async () => {
     const f = fixture(phase);
     try {
@@ -325,6 +325,43 @@ for (const phase of ["implement", "review"] as const) {
     }
   }, 15000);
 }
+
+test("ordinary updates during the Closeout review wait and reach the findings turn once", async () => {
+  const f = fixture("review");
+  try {
+    await f.orchestrator.onLinearEvent(event("created", null, 1));
+    const first = tickWithRestarts(f.jobs, f.orchestrator, f.db);
+    await until(() => f.prompts().some((row) => row.purpose === "review"));
+    await Promise.all([
+      f.orchestrator.onLinearEvent(event("update-one", "FIRST_UPDATE", 2)),
+      f.orchestrator.onLinearEvent(event("update-two", "SECOND_UPDATE", 3)),
+    ]);
+    expect(f.item().state).toBe("verifying");
+    expect(
+      listPendingLinearTurns(f.db, "session").map((turn) => [turn.body, turn.announcedGeneration]),
+    ).toEqual([
+      ["FIRST_UPDATE", null],
+      ["SECOND_UPDATE", null],
+    ]);
+    expect(
+      listOutbox(f.db).filter((row) => row.idempotencyKey.startsWith("turn:ack:")),
+    ).not.toHaveLength(0);
+    writeFileSync(`${f.evidence}.release`, "");
+    await first;
+
+    const fix = f
+      .prompts()
+      .filter((row) => row.purpose === "fix")
+      .at(-1)!.prompt;
+    expect(fix).toContain("INITIAL_CONTEXT");
+    expect(fix.split("FIRST_UPDATE").length - 1).toBe(1);
+    expect(fix.split("SECOND_UPDATE").length - 1).toBe(1);
+    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(f.item().state).toBe("merge_queue");
+  } finally {
+    await f.close();
+  }
+}, 15000);
 
 test("new prompt after completion creates a new task and preserves the terminal task and source issue", async () => {
   const f = fixture(null);

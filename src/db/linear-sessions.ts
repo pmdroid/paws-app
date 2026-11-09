@@ -44,6 +44,7 @@ export type StoredLinearTurn = {
   ordinal: number;
   itemId: string | null;
   state: "pending" | "applied" | "cancelled";
+  announcedGeneration: number | null;
 };
 
 export function* getLinearSessionSteps(q: Q, sessionId: string): Steps<StoredLinearSession | null> {
@@ -518,6 +519,7 @@ function mapTurn(row: Q["t"]["linearTurn"]["$inferSelect"]): StoredLinearTurn {
     ordinal: row.ordinal,
     itemId: row.itemId,
     state: row.state as StoredLinearTurn["state"],
+    announcedGeneration: row.announcedGeneration,
   };
 }
 

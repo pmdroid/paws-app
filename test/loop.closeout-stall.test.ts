@@ -14,11 +14,13 @@ import {
   JobLoop,
   OutboxDispatcher,
   enqueueJob,
+  getLinearSessionGeneration,
   getLinkAsk,
   getRun,
   getWorkItem,
   listCloseoutRecoveries,
   listJobs,
+  listPendingLinearTurns,
   listWorkItems,
   migrate,
   openDatabase,
@@ -119,6 +121,197 @@ test("a fix_failed verdict after the live operation was aborted restarts the ite
     ).toHaveLength(1);
     expect(f.stalls()).toEqual([]);
   } finally {
+    await f.close();
+  }
+}, 90_000);
+
+const REPLY = "Also cover the empty state.";
+const WAITS = "Got it. I'll pick this up once verification finishes.";
+
+function reply(body: string): AcceptedLinearEvent {
+  return {
+    dedupeKey: `activity:${body}`,
+    deliveryId: null,
+    source: "webhook",
+    action: "prompted",
+    sessionId: "ses_1",
+    issueId: "issue",
+    activityId: `act-${body}`,
+    actorId: "human-1",
+    body,
+    signal: null,
+    updatedAtMs: Date.now() + 1_000,
+    payload: "{}",
+  };
+}
+
+function itemEvents(db: Database, itemId: string): string[] {
+  return db
+    .query<{ event: string }, [string]>(
+      "SELECT event FROM work_item_event WHERE item_id = ? ORDER BY id",
+    )
+    .all(itemId)
+    .map((row) => row.event);
+}
+
+function occurrences(text: string, part: string): number {
+  return text.split(part).length - 1;
+}
+
+test("a reply during Closeout waits for the verdict instead of aborting it", async () => {
+  const f = await verifyingWithHeldGate();
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    const generation = getLinearSessionGeneration(f.db, "ses_1");
+    await f.orchestrator.onLinearEvent(reply(REPLY));
+    await f.flush();
+
+    expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
+    expect(getLinearSessionGeneration(f.db, "ses_1")).toBe(generation);
+    expect(listPendingLinearTurns(f.db, "ses_1")).toMatchObject([
+      { body: REPLY, announcedGeneration: null },
+    ]);
+    const bodies = f.tracker.progress.map((update) => update.body);
+    expect(bodies.filter((body) => body === WAITS)).toHaveLength(1);
+    expect(bodies).not.toContain("Received your update.");
+    await f.orchestrator.onLinearEvent(reply(REPLY));
+    await f.flush();
+    expect(f.tracker.progress.filter((update) => update.body === WAITS)).toHaveLength(1);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
+
+    f.release();
+    await f.turn;
+    expect(itemEvents(f.db, item.id)).toContain("closeout_accepted");
+    expect(getWorkItem(f.db, item.id)?.acceptedHead).toBe(f.gate.runs[0]!.headSha);
+    expect(restartReasons(f.db, item.id)).toEqual(["follow_up"]);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("queued");
+    const resumes = listJobs(f.db).filter(
+      (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+    );
+    expect(resumes).toHaveLength(1);
+    expect((resumes[0]!.payload as { handoff: string }).handoff).toContain(REPLY);
+    expect(f.stalls()).toEqual([]);
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+test("a reply during a rejecting Closeout rides the findings restart into the next prompt once", async () => {
+  const f = await verifyingWithHeldGate();
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    await f.orchestrator.onLinearEvent(reply(REPLY));
+    f.gate.next = fixFailed(f.gate.runs[0]!.headSha);
+    f.release();
+    await f.turn;
+
+    expect(restartReasons(f.db, item.id)).toEqual(["findings"]);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("queued");
+    expect(listPendingLinearTurns(f.db, "ses_1").map((turn) => turn.body)).toEqual([REPLY]);
+    expect(f.stalls()).toEqual([]);
+
+    f.gate.next = { decision: "accepted", exhausted: false, summary: "fake accepted" };
+    f.db.run("UPDATE runner_work SET ended_at=?", [Date.now()]);
+    f.orchestrator.reconcileExecution();
+    await f.tickResume();
+    const fixes = f.prompts.filter((prompt) => prompt.includes("Fix the P1 review finding."));
+    expect(fixes).toHaveLength(1);
+    expect(occurrences(fixes[0]!, REPLY)).toBe(1);
+    expect(fixes[0]).toContain(`User update:\n${REPLY}`);
+    expect(listPendingLinearTurns(f.db, "ses_1")).toEqual([]);
+    expect(restartReasons(f.db, item.id)).toEqual(["findings"]);
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+test("a reply during Closeout that ends in a question waits for its answer", async () => {
+  const f = await verifyingWithHeldGate();
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    await f.orchestrator.onLinearEvent(reply(REPLY));
+    const verdict = fixFailed(f.gate.runs[0]!.headSha);
+    f.gate.next = {
+      ...verdict,
+      decision: "rejected",
+      exhausted: true,
+      result: {
+        ...verdict.result!,
+        outcome: "exhausted",
+        decision: {
+          ...verdict.result!.decision!,
+          items: [{ id: "test", kind: "command", state: "exhausted", message: "still failing" }],
+        },
+      },
+    };
+    f.release();
+    await f.turn;
+
+    expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
+    expect(findOpenQuestion(f.db, "ses_1")?.kind).toBe("closeout-help");
+    expect(restartReasons(f.db, item.id)).toEqual([]);
+    expect(listPendingLinearTurns(f.db, "ses_1").map((turn) => turn.body)).toEqual([REPLY]);
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+test("a reply during a Closeout run that fails restarts the failed item with it", async () => {
+  const f = await verifyingWithHeldGate();
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    await f.orchestrator.onLinearEvent(reply(REPLY));
+    f.throwFromRun(new Error("fixture Closeout transport lost"));
+    f.release();
+    await f.turn;
+
+    expect(itemEvents(f.db, item.id)).toContain("closeout_infra_failed");
+    expect(restartReasons(f.db, item.id)).toEqual(["follow_up"]);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("queued");
+    const resume = listJobs(f.db).find(
+      (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+    );
+    expect((resume!.payload as { handoff: string }).handoff).toContain(REPLY);
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+test("a reply waits through a Closeout retry and goes on after its verdict", async () => {
+  const f = await verifyingWithHeldGate();
+  try {
+    const item = listWorkItems(f.db)[0]!;
+    await f.orchestrator.onLinearEvent(reply(REPLY));
+    f.throwFromRun(new DOMException("The operation was aborted.", "AbortError"));
+    const interrupted = f.orchestrator.interruptLinearSession("ses_1");
+    f.release();
+    await f.turn;
+    await interrupted;
+
+    expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
+    const [retry, ...rest] = closeoutFaultJobs(f.db);
+    expect(rest).toEqual([]);
+    expect(retry?.status).toBe("pending");
+    expect(restartReasons(f.db, item.id)).toEqual([]);
+    expect(listPendingLinearTurns(f.db, "ses_1").map((turn) => turn.body)).toEqual([REPLY]);
+
+    f.throwFromRun(null);
+    f.db.run("UPDATE job SET run_at = 0 WHERE id = ?", [retry!.id]);
+    await f.tickReverify();
+    expect(itemEvents(f.db, item.id)).toContain("closeout_accepted");
+    expect(restartReasons(f.db, item.id)).toEqual(["follow_up"]);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("queued");
+  } finally {
+    f.release();
+    await f.turn;
     await f.close();
   }
 }, 90_000);
@@ -1014,8 +1207,10 @@ async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boo
     return verdict;
   };
   const lines: string[] = [];
+  const prompts: string[] = [];
   let launches = 0;
-  const launch: AgentLaunch = () => {
+  const launch: AgentLaunch = (input) => {
+    prompts.push(input.prompt);
     launches += 1;
     const scriptPath = path.join(layout.root, `script-${launches}.json`);
     const resultPath = path.join(layout.root, `result-${launches}.json`);
@@ -1090,6 +1285,7 @@ async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boo
     },
     turn,
     tracker,
+    prompts,
     get orchestrator() {
       return orchestrator;
     },
@@ -1100,6 +1296,7 @@ async function verifyingWithHeldGate(options: { publicUrl?: string; remote?: boo
       orchestrator = attach();
     },
     tickReverify: () => jobs.tick([JOB_KIND.reverify]),
+    tickResume: () => jobs.tick([JOB_KIND.resume]),
     async tickAll() {
       while ((await jobs.tick()) !== null);
       await flush();

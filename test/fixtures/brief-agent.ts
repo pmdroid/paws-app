@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const purpose = process.argv[2];
@@ -40,7 +40,9 @@ for await (const line of createInterface({ input: process.stdin })) {
   } else if (message.method === "session/prompt") {
     const prompt = message.params?.prompt?.map((block) => block.text ?? "").join("\n") ?? "";
     if (evidence) appendFileSync(evidence, `${JSON.stringify({ purpose, prompt })}\n`);
-    if (behavior === "hang") {
+    if (behavior === "hang" && purpose === "review") {
+      while (!existsSync(`${evidence}.release`)) await Bun.sleep(10);
+    } else if (behavior === "hang") {
       for (const [sessionUpdate, text] of [
         ["agent_message_chunk", "PUBLIC_OBSERVATION"],
         ["agent_thought_chunk", "PRIVATE_HIDDEN"],
