@@ -2,19 +2,34 @@ import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { systemClock } from "../core";
 import { resumeAccountHealthNowSteps } from "./agent-account-health";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
-import { accrueAwake } from "./items";
-import { orm } from "./orm";
+import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { accrueAwakeSteps } from "./items";
 import { usagePause as usagePauseTable } from "./schema";
-import { immediate } from "./tx";
 
 /** A run waiting for its agent's usage limit to reset. */
 export type UsagePause = typeof usagePauseTable.$inferSelect;
 
 export function startUsagePause(db: Database, pause: UsagePause, mono = systemClock.mono()): void {
-  immediate(db, () => {
-    accrueAwake(db, pause.itemId, mono, pause.pausedAt);
-    orm(db)
+  settled(sqliteDb(db).transaction((q) => startUsagePauseSteps(q, pause, mono)));
+}
+
+export async function startUsagePauseAsync(
+  store: Db,
+  pause: UsagePause,
+  mono = systemClock.mono(),
+): Promise<void> {
+  await store.transaction((q) => startUsagePauseSteps(q, pause, mono));
+}
+
+export function* startUsagePauseSteps(
+  q: Q,
+  pause: UsagePause,
+  mono = systemClock.mono(),
+): Steps<void> {
+  const usagePauseTable = q.t.usagePause;
+  yield* accrueAwakeSteps(q, pause.itemId, mono, pause.pausedAt);
+  yield* q.exec(
+    q.orm
       .insert(usagePauseTable)
       .values({
         runId: pause.runId,
@@ -34,9 +49,8 @@ export function startUsagePause(db: Database, pause: UsagePause, mono = systemCl
           resumeAt: pause.resumeAt,
           pausedAt: pause.pausedAt,
         },
-      })
-      .run();
-  });
+      }),
+  );
 }
 
 export function* usagePauseSteps(q: Q, runId: string): Steps<UsagePause | null> {
@@ -68,11 +82,27 @@ export function endUsagePause(
   mono = systemClock.mono(),
   now = systemClock.now(),
 ): void {
-  immediate(db, () => {
-    const pause = usagePause(db, runId);
-    if (pause) accrueAwake(db, pause.itemId, mono, now);
-    orm(db).delete(usagePauseTable).where(eq(usagePauseTable.runId, runId)).run();
-  });
+  settled(sqliteDb(db).transaction((q) => endUsagePauseSteps(q, runId, mono, now)));
+}
+
+export async function endUsagePauseAsync(
+  store: Db,
+  runId: string,
+  mono = systemClock.mono(),
+  now = systemClock.now(),
+): Promise<void> {
+  await store.transaction((q) => endUsagePauseSteps(q, runId, mono, now));
+}
+
+export function* endUsagePauseSteps(
+  q: Q,
+  runId: string,
+  mono = systemClock.mono(),
+  now = systemClock.now(),
+): Steps<void> {
+  const pause = yield* usagePauseSteps(q, runId);
+  if (pause) yield* accrueAwakeSteps(q, pause.itemId, mono, now);
+  yield* q.exec(q.orm.delete(q.t.usagePause).where(eq(q.t.usagePause.runId, runId)));
 }
 
 export function* resumeUsagePauseNowSteps(q: Q, runId: string, now: number): Steps<boolean> {
