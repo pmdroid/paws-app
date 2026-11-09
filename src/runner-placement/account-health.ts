@@ -8,7 +8,7 @@ import {
 } from "../db";
 import type { RunnerHelperResult, RunnerResult } from "../runner-protocol";
 import { RUNNER_ONLINE_MS } from "./eligible";
-import { quotaSignal, type QuotaSignal } from "./quota";
+import { quotaSignal, type QuotaSignal } from "../core";
 
 export type AgentFailureKind = "ok" | "quota" | "auth" | "provider" | "model" | "runner" | "task";
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { afterAll, expect, test } from "bun:test";
-import { PawsShutdown } from "../src/core";
+import { PawsShutdown, usageLimitNotice } from "../src/core";
 import {
   beginImplementRun,
   bindLinearSessionTask,
@@ -19,6 +19,7 @@ import {
 } from "../src/db";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
+import { describeRunnerFailure } from "../src/runner-failure";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerPlacement } from "../src/runner-placement";
@@ -48,6 +49,29 @@ test("an uninterrupted usage-limit result with a candidate pauses until a resume
   expect(result.cancelAcknowledged, result.detail).toBe(true);
   expect(result.finished, result.detail).toMatchObject({ stopReason: "end_turn" });
   expect(result.head, result.detail).toBe(result.candidateSha);
+}, 60_000);
+
+test("a run ending on Codex's usage-limit text pauses the account until the stated time and is not retried first", async () => {
+  const reset = new Date(2030, 10, 11, 6, 35).getTime();
+  const result = await usageLimitScenario(
+    false,
+    "resume",
+    `Run failed during agent: ${describeRunnerFailure(
+      new Error(
+        "Internal error: You've hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 11th, 2030 6:35 AM.",
+      ),
+      [],
+      true,
+    )}`,
+  );
+  expect(result.paused, result.detail).toEqual({ resetsAt: reset });
+  expect(result.policyAtPause?.cooldown_until, result.detail).toBe(reset);
+  expect(result.limitedReceipt, result.detail).toMatchObject({ outcome: "quota_exhausted" });
+  expect(result.attemptsAtPause, result.detail).toBe(1);
+  expect(result.pauseNotices, result.detail).toEqual([
+    `Paused: ${usageLimitNotice("claude", reset + 60_000, result.limitedAt)}`,
+  ]);
+  expect(result.finished, result.detail).toMatchObject({ stopReason: "end_turn" });
 }, 60_000);
 
 test("a usage-limit pause ends as soon as the agent is ready on a runner again", async () => {
@@ -108,6 +132,7 @@ async function usageLimitScenario(
     | "foreign-workspace"
     | "foreign-owner"
     | "before-pause" = "resume",
+  limitMessage = LIMIT,
 ) {
   const switchProfiles = wake === "profiles";
   const root = mkdtempSync(join(tmpdir(), "paws-usage-restart-"));
@@ -324,6 +349,8 @@ async function usageLimitScenario(
   let selectedAgent: "claude" | "codex" = "claude";
   const agents: string[] = [];
   let pauseEvents = 0;
+  let attemptsAtPause = 0;
+  const pauseNotices: string[] = [];
   let pauseObservedAt = 0;
   let foreignReady = 0;
   const handled = new Set<string>();
@@ -339,6 +366,7 @@ async function usageLimitScenario(
           .get();
         if (pause && !sim.pause) {
           sim.pause = { resetsAt: pause.resetsAt };
+          attemptsAtPause = agents.length;
           sim.policyAtPause = policy();
           pauseObservedAt = Date.now();
           if (switchProfiles) selectedAgent = "codex";
@@ -396,7 +424,7 @@ async function usageLimitScenario(
               agentExited: true,
               candidateSha,
               identity: { session: `session-${command.id}`, model: "fixture", provider: "fixture" },
-              ...(limited ? { errorMessage: LIMIT } : {}),
+              ...(limited ? { errorMessage: limitMessage } : {}),
             },
           });
         }
@@ -415,7 +443,10 @@ async function usageLimitScenario(
     profile: { agent: "claude" as const, model: null },
     resolveProfiles: () => ({ profile: { agent: selectedAgent, model: null } }),
     onEvent: (event: { type: string; text?: string }) => {
-      if (event.type === "progress" && event.text?.startsWith("Paused:")) pauseEvents++;
+      if (event.type === "progress" && event.text?.startsWith("Paused:")) {
+        pauseEvents++;
+        pauseNotices.push(event.text);
+      }
     },
     // GitHub, served from the bare origin, so the run never reaches the network.
     networkGit: (args: string[]) => git(args.map((arg) => (arg === GITHUB_URL ? origin : arg))),
@@ -456,6 +487,8 @@ async function usageLimitScenario(
     return {
       candidateSha,
       pauseEvents,
+      attemptsAtPause,
+      pauseNotices,
       foreignReady,
       recoveredBeforePause,
       agents,

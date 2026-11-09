@@ -51,7 +51,7 @@ export function quotaSignal(message: string, now: number): QuotaSignal | null {
       if (Number.isSafeInteger(parsed) && parsed >= now) resetsAt = parsed;
     }
   }
-  if (resetsAt === null) resetsAt = clockReset(text, now);
+  if (resetsAt === null) resetsAt = clockReset(text, now) ?? localRetryAt(text, now);
   return {
     state: exhausted ? "exhausted" : "low",
     resetsAt,
@@ -114,4 +114,52 @@ function clockReset(text: string, now: number): number | null {
   return null;
 }
 
+/**
+ * Codex names its reset in the machine's local time, with no zone: "try again at Nov 11th, 2026
+ * 6:35 AM", or only "6:35 AM" when the reset is today.
+ */
+function localRetryAt(text: string, now: number): number | null {
+  const match =
+    /try\s+again\s+at\s+(?:([a-z]{3})[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?,\s*(\d{4})\s+)?(\d{1,2}):(\d{2})\s*(am|pm)\b/i.exec(
+      text,
+    );
+  if (!match || Number(match[4]) > 12) return null;
+  const month = match[1] ? MONTHS.indexOf(match[1].toLowerCase()) : null;
+  if (month === -1) return null;
+  const hour = (Number(match[4]) % 12) + (match[6]!.toLowerCase() === "pm" ? 12 : 0);
+  const minute = Number(match[5]);
+  const today = new Date(now);
+  const candidates =
+    month === null
+      ? [0, 1].map((day) =>
+          new Date(
+            today.getFullYear(),
+            today.getMonth(),
+            today.getDate() + day,
+            hour,
+            minute,
+          ).getTime(),
+        )
+      : [new Date(Number(match[3]), month, Number(match[2]), hour, minute).getTime()];
+  return candidates.find((at) => at >= now) ?? null;
+}
+
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/**
+ * The runner's fixed text for an agent stopped at its usage limit. It carries only the parsed reset
+ * time, which `quotaSignal` reads back on the Paws host, where the machine-local time is unknown.
+ */
+export function usageLimitCause(resetsAt: number | null): string {
+  return resetsAt === null
+    ? "usage limit reached."
+    : `usage limit reached; resets ${new Date(resetsAt).toISOString()}.`;
+}
+
+/** What a person reads about a paused run, on the item and in Linear. */
+export function usageLimitNotice(agent: string, resumeAt: number, now: number): string {
+  const time = new Date(resumeAt).toISOString();
+  const day =
+    time.slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? "" : `${time.slice(0, 10)} `;
+  return `${agent.charAt(0).toUpperCase()}${agent.slice(1)} usage limit reached; resumes at ${day}${time.slice(11, 16)} UTC.`;
+}

@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import type { RunAgentOptions } from "../acp";
+import { usageLimitNotice } from "../core";
 import { endUsagePause, startUsagePause, usagePause } from "../db";
 import type { UsageLimitWait } from "./failover";
 
@@ -34,7 +35,7 @@ export function usageLimitWait(
       try {
         await input.onEvent?.({
           type: "progress",
-          text: `Paused: ${agent} reached its usage limit. Paws continues at ${clockTime(limit.resumeAt, now())}.`,
+          text: `Paused: ${usageLimitNotice(limit.agent, limit.resumeAt, now())}`,
         });
         for (;;) {
           const wait = (usagePause(db, runId)?.resumeAt ?? 0) - now();
@@ -59,11 +60,4 @@ export function usageLimitWait(
 
 export function agentName(agent: string): string {
   return agent.charAt(0).toUpperCase() + agent.slice(1);
-}
-
-function clockTime(at: number, now: number): string {
-  const time = new Date(at).toISOString();
-  const day =
-    time.slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? "" : `${time.slice(0, 10)} `;
-  return `${day}${time.slice(11, 16)} UTC`;
 }

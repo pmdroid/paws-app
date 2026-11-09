@@ -214,7 +214,7 @@ function journeyBase(
           step: fix ? "fixing" : "implementing",
           tone: "now",
           headline: "Paused · usage limit",
-          reason: `The agent hit its usage limit and is paused until ${utcClock(run.usagePause.resumeAt)} UTC.`,
+          reason: `${run.usagePause.agent} usage limit reached; resumes at ${run.usagePause.resumeAt.slice(0, 10)} ${utcClock(run.usagePause.resumeAt)} UTC.`,
         };
       if (fix)
         return {

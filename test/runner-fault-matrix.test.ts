@@ -205,7 +205,7 @@ test("a usage limit is waited out inside failover and the task reaches Closeout 
   expect(result.faultedAttempts, result.detail).toBe(1);
   expect(result.runs, result.detail).toEqual(["implement:ended"]);
   expect(
-    result.thoughts.some((body) => body.includes("reached its usage limit")),
+    result.thoughts.some((body) => body.includes("usage limit reached")),
     result.detail,
   ).toBe(true);
 }, 60_000);
@@ -224,11 +224,11 @@ test("a usage limit while the implementer is prepared posts one thought naming t
   expect(result.errors, result.detail).toEqual([]);
   expect(result.faultedAttempts, result.detail).toBe(1);
   expect(
-    result.thoughts.filter((body) => body.includes("reached its usage limit")),
+    result.thoughts.filter((body) => body.includes("usage limit reached")),
     result.detail,
   ).toEqual([
     expect.stringMatching(
-      /^Paused: Claude reached its usage limit\. Paws continues at (?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2} UTC\.$/,
+      /^Paused: Claude usage limit reached; resumes at (?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2} UTC\.$/,
     ),
   ]);
 }, 60_000);

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { quotaSignal } from "../src/runner-placement/quota";
+import { quotaSignal, usageLimitNotice } from "../src/core";
 
 const now = Date.parse("2026-10-13T12:00:00Z");
 test("Quota exhaustion uses explicit reset evidence and keeps unknown cooldown separate", () => {
@@ -86,4 +86,37 @@ test("Quota warning remains usable and ordinary errors cannot invent provider li
   ])
     expect(quotaSignal(text, now)).toBeNull();
   expect(quotaSignal("quota exhausted; resets at 2025-10-13T13:30:00Z", now)?.resetsAt).toBeNull();
+});
+
+const CODEX_LIMIT =
+  "You've hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at";
+
+test("Codex's usage-limit text gives its reset in local time", () => {
+  const at = new Date(2026, 10, 9, 8, 31).getTime();
+  const reset = new Date(2026, 10, 11, 6, 35).getTime();
+  expect(quotaSignal(`${CODEX_LIMIT} Nov 11th, 2026 6:35 AM.`, at)).toEqual({
+    state: "exhausted",
+    resetsAt: reset,
+    cooldownUntil: reset,
+  });
+  expect(quotaSignal(`${CODEX_LIMIT} 6:35 PM.`, at)?.resetsAt).toBe(
+    new Date(2026, 10, 9, 18, 35).getTime(),
+  );
+  expect(quotaSignal(`${CODEX_LIMIT} 6:35 AM.`, at)?.resetsAt).toBe(
+    new Date(2026, 10, 10, 6, 35).getTime(),
+  );
+  expect(quotaSignal(`${CODEX_LIMIT} Nov 1st, 2026 6:35 AM.`, at)).toMatchObject({
+    state: "exhausted",
+    resetsAt: null,
+  });
+});
+
+test("a usage-limit notice names the agent and the resume time", () => {
+  const at = Date.parse("2026-11-09T08:31:00.000Z");
+  expect(usageLimitNotice("codex", Date.parse("2026-11-09T18:36:00.000Z"), at)).toBe(
+    "Codex usage limit reached; resumes at 18:36 UTC.",
+  );
+  expect(usageLimitNotice("codex", Date.parse("2026-11-11T06:36:00.000Z"), at)).toBe(
+    "Codex usage limit reached; resumes at 2026-11-11 06:36 UTC.",
+  );
 });

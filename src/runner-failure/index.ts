@@ -1,4 +1,4 @@
-import { isAgentServiceError } from "../core";
+import { isAgentServiceError, quotaSignal, usageLimitCause } from "../core";
 import { journalCaught } from "../journal";
 import { ZodError } from "zod";
 import { RunnerRequestError, RunnerTransportError } from "../runner-daemon";
@@ -123,20 +123,25 @@ export function describeRunnerFailure(
     const exit = /\b(?:exit(?:ed)?(?: with)?(?: code)?|exit code)[: ]+(-?\d{1,3})(?!\d)/i.exec(
       error.message,
     );
-    cause = isAgentServiceError(error.message)
-      ? "api_error: temporary provider failure."
-      : /attribution rejected/.test(error.message)
-        ? "Commit attribution rejected."
-        : abort
-          ? `turn aborted: ${abort[1]!.toLowerCase()}`
-          : exit
-            ? `agent exited with code ${exit[1]}`
-            : [
-                  "Runner response exceeds size limit",
-                  "ACP process cleanup could not be verified",
-                ].includes(error.message)
-              ? error.message
-              : "Error.";
+    // Before the service check: a usage limit can arrive as "Internal error: You've hit…".
+    const limit = quotaSignal(error.message, Date.now());
+    cause =
+      limit?.state === "exhausted"
+        ? usageLimitCause(limit.resetsAt)
+        : isAgentServiceError(error.message)
+          ? "api_error: temporary provider failure."
+          : /attribution rejected/.test(error.message)
+            ? "Commit attribution rejected."
+            : abort
+              ? `turn aborted: ${abort[1]!.toLowerCase()}`
+              : exit
+                ? `agent exited with code ${exit[1]}`
+                : [
+                      "Runner response exceeds size limit",
+                      "ACP process cleanup could not be verified",
+                    ].includes(error.message)
+                  ? error.message
+                  : "Error.";
   } else if (error instanceof RunnerCliFailure) cause = error.message;
   else if (error instanceof RunnerTransportError) cause = transportCause(error);
   else if (error instanceof RunnerRequestError) cause = requestCause(error);

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { RunAgentOptions, RunAgentResult } from "../acp";
+import { quotaSignal, usageLimitCause } from "../core";
 import {
   failoverCallId,
   RetryableRunnerError,
@@ -314,6 +315,45 @@ describe("a review whose agent is limited everywhere moves to the fallback profi
     expect(runners.progress).toEqual([
       "claude reached its usage limit on every runner. Reviewing with codex gpt-6-sol instead.",
     ]);
+  });
+
+  test("a Codex usage limit moves the review to the configured fallback", async () => {
+    const reset = new Date(2030, 10, 11, 6, 35).getTime();
+    const { resetsAt } = quotaSignal(
+      `Run failed during agent: ${usageLimitCause(reset)}`,
+      reset - 3_600_000,
+    )!;
+    expect(resetsAt).toBe(reset);
+    const reviewed: string[] = [];
+    const pauses: number[] = [];
+    const attempt: FailoverAttempt = async (options, _excluded, limit) => {
+      if (options.profile?.agent === "codex" && limit)
+        throw new UsageLimitPause("codex", limit.resumeAt, limit.resetsAt, limit.runnerId);
+      reviewed.push(options.profile!.agent);
+      if (options.profile?.agent === "codex")
+        throw new RetryableRunnerError(
+          "agentbox",
+          "The reviewer agent reached its usage limit.",
+          "/nonexistent/acp.jsonl",
+          false,
+          { resetsAt },
+        );
+      return { ...done(), role: "reviewer" };
+    };
+    const result = await runWithFailover(
+      { ...input(), role: "reviewer", profile: codex, fallbackProfile: claude },
+      attempt,
+      async () => undefined,
+      {
+        now: () => reset - 3_600_000,
+        async pause(limit: UsageLimitPause) {
+          pauses.push(limit.resumeAt);
+        },
+      },
+    );
+    expect(result.stopReason).toBe("end_turn");
+    expect(reviewed).toEqual(["codex", "claude"]);
+    expect(pauses).toEqual([]);
   });
 
   test("without a fallback profile the review waits for the reset as before", async () => {

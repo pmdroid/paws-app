@@ -212,6 +212,7 @@ import {
   RunnerSlotsBusyError,
   AgentServiceError,
   isAgentServiceError,
+  usageLimitNotice,
   ordinal,
   queueLine,
   systemClock,
@@ -2460,7 +2461,11 @@ export class Orchestrator {
           retry: retryCount(job.payload),
           delayMs,
           handoff: readString(job.payload, "handoff"),
-          message: `The agent reached its usage limit. Paws continues at ${new Date(resetAt).toISOString().slice(11, 16)} UTC.`,
+          message: usageLimitNotice(
+            (error as Error & { agent: string }).agent,
+            resetAt,
+            this.now(),
+          ),
           now: this.now(),
         });
         journalCaught(

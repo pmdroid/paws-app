@@ -1,6 +1,6 @@
 import type { RunnerProfile, RunnerResult, RunnerHelperResult } from "../runner-protocol";
 
-export { quotaSignal, type QuotaSignal } from "./quota";
+export { quotaSignal, type QuotaSignal } from "../core";
 export {
   BINDING_REASON_TEXT,
   bindingReadiness,
