@@ -179,5 +179,8 @@ with its default profile for this item only; **I fixed the label** reads the
 labels again. The agent session names a label's effect, for example
 `Implementer: Opus (label)`.
 
+An item about to wait for a runner has its labels read first when presets exist,
+so it waits for, or starts on, a runner with the labelled agent.
+
 The existing admin-protected `/api/settings/agents` endpoint reads and writes
 a `presets` object keyed by name alongside `defaults` and `projects`.

@@ -922,6 +922,7 @@ export class Orchestrator {
     { journal: (line) => (this.options.journal ?? journal)(line) },
   );
   private shuttingDown = false;
+  private readonly admissionLabelReads = new Set<string>();
   private readonly activitySeqs = new Map<string, number>();
   private waitFaces = new Map<string, string>();
   private readonly activityRequests = new Map<number, AbortSignal>();
@@ -6967,7 +6968,10 @@ export class Orchestrator {
               return ownerHasRunner(itemId, this.implementerAgent(item, config), this.now());
             },
             onRunnerSetup: (itemIds: readonly string[]) =>
-              this.noteRunnerSetup(itemIds, (item) => this.implementerAgent(item, config)),
+              this.noteRunnerSetup(
+                itemIds.filter((id) => !this.awaitsAdmissionLabels(id, config)),
+                (item) => this.implementerAgent(item, config),
+              ),
           }
         : {}),
     });
@@ -6978,8 +6982,91 @@ export class Orchestrator {
     return resolveAgentProfiles(
       config,
       repository ? `${repository.owner}/${repository.repo}` : undefined,
-      item.currentRunId ? this.readProfileSnapshot(item.currentRunId)?.profileLabels : undefined,
+      this.knownProfileLabels(item),
     ).implementer.agent;
+  }
+
+  /** The labels read for this queue entry, or else the ones the last run used. */
+  private knownProfileLabels(item: WorkItemRecord): ProfileLabels | undefined {
+    return (
+      this.keptAdmissionLabels(item)?.labels ??
+      (item.currentRunId ? this.readProfileSnapshot(item.currentRunId)?.profileLabels : undefined)
+    );
+  }
+
+  private admissionLabelsFile(itemId: string): string {
+    return join(runDir(this.options.pawsRoot, itemId), "admission-labels.json");
+  }
+
+  private keptAdmissionLabels(item: WorkItemRecord): { labels?: ProfileLabels } | null {
+    const file = this.admissionLabelsFile(item.id);
+    if (!existsSync(file)) return null;
+    try {
+      const kept = JSON.parse(readFileSync(file, "utf8")) as {
+        version: number;
+        labels?: ProfileLabels;
+      };
+      return kept.version === item.version ? kept : null;
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.keptAdmissionLabels",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Admission is synchronous and picks the agent before a run exists. An item about to be held
+   * for a runner may carry a label that names an agent its owner can use, so its labels are read
+   * once per queue entry, and the scheduler looks again. Returns whether that read is under way.
+   * Without presets a label can't change the agent, and nothing is read.
+   */
+  private awaitsAdmissionLabels(
+    itemId: string,
+    config: ReturnType<typeof loadConfigFile>,
+  ): boolean {
+    if (this.admissionLabelReads.has(itemId)) return true;
+    const item = getWorkItem(this.db, itemId);
+    if (
+      !item ||
+      !this.tracker?.issueRepositoryHints ||
+      Object.keys(readAgentSettings(config).presets ?? {}).length === 0 ||
+      this.keptAdmissionLabels(item)
+    )
+      return false;
+    this.admissionLabelReads.add(itemId);
+    void this.readAdmissionLabels(item);
+    return true;
+  }
+
+  private async readAdmissionLabels(item: WorkItemRecord): Promise<void> {
+    try {
+      const previous = item.currentRunId ? this.readProfileSnapshot(item.currentRunId) : null;
+      const labels = await this.forItem({ itemId: item.id }, () =>
+        this.readProfileLabels(item, previous?.profileLabels, previous?.defaultRoles),
+      );
+      mkdirSync(runDir(this.options.pawsRoot, item.id), { recursive: true, mode: 0o700 });
+      writeFileSync(
+        this.admissionLabelsFile(item.id),
+        JSON.stringify({ version: item.version, labels }),
+        { mode: 0o600 },
+      );
+      this.admissionLabelReads.delete(item.id);
+      if (!this.shuttingDown) this.dispatch();
+    } catch (error) {
+      this.admissionLabelReads.delete(item.id);
+      journalCaught(
+        error,
+        "orchestrator.readAdmissionLabels",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+    }
   }
 
   /**
