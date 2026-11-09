@@ -135,7 +135,7 @@ export function collectCiFailure(
 }
 
 export async function observeHeldCi(
-  { db, item, caps }: MergeContext,
+  { db, store, item, caps }: MergeContext,
   pull: { number: number; head: string },
 ): Promise<void> {
   const ci = await caps.readPullCi(item, pull).catch((error: unknown): PullCi => {
@@ -162,7 +162,7 @@ export async function observeHeldCi(
       clearPullCiFailures(db, item.id, pull.head, caps.now());
       return;
     }
-    const collected = collectCiFailure({ db, item, caps }, pull.number, pull.head, {
+    const collected = collectCiFailure({ db, store, item, caps }, pull.number, pull.head, {
       outcome: "ci_failed",
       message: ci.message ?? "CI failed on the candidate commit",
       failedChecks: ci.failedChecks,
