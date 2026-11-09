@@ -204,16 +204,22 @@ function originMainFiles(
 export function confirmedOriginMain(
   input: Pick<LoadPolicyInput, "repo" | "git">,
 ): { ok: true; commit: string } | { ok: false; message: string } {
-  const fetched = input.git.fetchOriginMain(input.repo);
-  if (!fetched.ok) return { ok: false, message: unavailable(fetched.stderr) };
-  const commit = fetched.commit.trim().toLowerCase();
-  if (!isSha(commit)) return { ok: false, message: "origin/main is unavailable" };
-  const listed = input.git.lsRemoteOriginMain(input.repo);
-  if (!listed.ok) return { ok: false, message: unavailable(listed.stderr) };
-  const remote = remoteSha(listed.stdout);
-  if (remote === undefined || remote !== commit)
-    return { ok: false, message: "origin/main is unavailable" };
-  return { ok: true, commit };
+  for (let attempt = 1; ; attempt++) {
+    const fetched = input.git.fetchOriginMain(input.repo);
+    if (!fetched.ok) return { ok: false, message: unavailable(fetched.stderr) };
+    const commit = fetched.commit.trim().toLowerCase();
+    if (!isSha(commit)) return { ok: false, message: "origin/main is unavailable" };
+    const listed = input.git.lsRemoteOriginMain(input.repo);
+    if (!listed.ok) return { ok: false, message: unavailable(listed.stderr) };
+    const remote = remoteSha(listed.stdout);
+    if (remote === undefined) return { ok: false, message: "origin/main is unavailable" };
+    if (remote === commit) return { ok: true, commit };
+    if (attempt === 3)
+      return {
+        ok: false,
+        message: `origin/main is unavailable (fetched ${commit}, remote ${remote} after 3 attempts)`,
+      };
+  }
 }
 
 const ABSENT_POLICY: ResolvedPolicy = {
