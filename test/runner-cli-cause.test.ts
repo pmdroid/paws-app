@@ -270,12 +270,19 @@ test("adapter end reasons retain detail but scrub secrets and stay bounded", () 
     "turn aborted: interrupted",
   );
   expect(describeRunnerFailure(new Error(`turn aborted: ${TOKEN}`), [TOKEN], true)).toBe("Error.");
-  expect(describeRunnerFailure(new Error("x".repeat(1000)), [], true).length).toBeLessThanOrEqual(CAUSE_LIMIT);
+  expect(describeRunnerFailure(new Error("x".repeat(1000)), [], true).length).toBeLessThanOrEqual(
+    CAUSE_LIMIT,
+  );
 });
 
-
 test("unrecognized adapter output cannot disclose arbitrary credentials", () => {
-  expect(describeRunnerFailure(new Error("API key sk-private123: network failed"), [], true)).toBe("Error.");
-  expect(describeRunnerFailure(new Error("turn aborted: interrupted; token=private123"), [], true)).toBe("turn aborted: interrupted");
-  expect(describeRunnerFailure(new Error("adapter exited with code 1: private123"), [], true)).toBe("agent exited with code 1");
+  expect(describeRunnerFailure(new Error("API key sk-private123: network failed"), [], true)).toBe(
+    "Error.",
+  );
+  expect(
+    describeRunnerFailure(new Error("turn aborted: interrupted; token=private123"), [], true),
+  ).toBe("turn aborted: interrupted");
+  expect(describeRunnerFailure(new Error("adapter exited with code 1: private123"), [], true)).toBe(
+    "agent exited with code 1",
+  );
 });

@@ -654,7 +654,10 @@ export async function probeRunnerWorker(
     launch: oversizedAgent.launch,
   });
   assert.equal(oversized.run.stopReason, "error");
-  assert.match(oversized.run.errorMessage!, /Run failed during agent: Runner response exceeds size limit/);
+  assert.match(
+    oversized.run.errorMessage!,
+    /Run failed during agent: Runner response exceeds size limit/,
+  );
   assert.equal(
     JSON.parse(readFileSync(join(oversizedOutput, "result.json"), "utf8")).run.errorMessage,
     oversized.run.errorMessage,

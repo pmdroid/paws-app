@@ -164,8 +164,7 @@ test("task worker refuses a replaced prepared workspace before ACP dispatch", as
     const workRoot = join(root, "work");
     const outputDirectory = join(root, "output");
     const home = join(root, "home");
-    for (const path of [workRoot, outputDirectory, home])
-      mkdirSync(path, { mode: 0o700 });
+    for (const path of [workRoot, outputDirectory, home]) mkdirSync(path, { mode: 0o700 });
     symlinkSync(home, join(workRoot, executionId));
     await expect(
       executeRunnerCommand({

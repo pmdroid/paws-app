@@ -2015,7 +2015,12 @@ export async function executeRunnerCommand(
     if (eventFailure) throw eventFailure;
     if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
       throw new Error("Runner response exceeds size limit");
-    if (run.stopReason === "error" && run.errorMessage && !installFailure && !(command.type === "review" && command.reviewCommand))
+    if (
+      run.stopReason === "error" &&
+      run.errorMessage &&
+      !installFailure &&
+      !(command.type === "review" && command.reviewCommand)
+    )
       run.errorMessage = workerFailure(
         installFailure ? "mise" : "agent",
         new Error(run.errorMessage),
@@ -2247,7 +2252,8 @@ export async function executeRunnerCommand(
     }
     return result;
   } catch (error) {
-    if ((!repository && !task) || failurePhase === "checkout" || failurePhase === "mise") throw error;
+    if ((!repository && !task) || failurePhase === "checkout" || failurePhase === "mise")
+      throw error;
     const result: RunnerWorkerResult = {
       executionId: job.executionId,
       commandId: command.id,

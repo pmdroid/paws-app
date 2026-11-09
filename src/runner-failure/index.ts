@@ -115,15 +115,19 @@ export function describeRunnerFailure(
 ): string {
   let cause: string;
   if (preserveMessage && error instanceof Error) {
-    const abort = /\bturn aborted: (interrupted|cancelled|canceled|timeout|timed out)(?![\w-])/i.exec(error.message);
-    const exit = /\b(?:exit(?:ed)?(?: with)?(?: code)?|exit code)[: ]+(-?\d{1,3})(?!\d)/i.exec(error.message);
+    const abort =
+      /\bturn aborted: (interrupted|cancelled|canceled|timeout|timed out)(?![\w-])/i.exec(
+        error.message,
+      );
+    const exit = /\b(?:exit(?:ed)?(?: with)?(?: code)?|exit code)[: ]+(-?\d{1,3})(?!\d)/i.exec(
+      error.message,
+    );
     cause = abort
       ? `turn aborted: ${abort[1]!.toLowerCase()}`
       : exit
         ? `agent exited with code ${exit[1]}`
         : describeRunnerFailure(error, secrets);
-  }
-  else if (error instanceof RunnerCliFailure) cause = error.message;
+  } else if (error instanceof RunnerCliFailure) cause = error.message;
   else if (error instanceof RunnerTransportError) cause = transportCause(error);
   else if (error instanceof RunnerRequestError) cause = requestCause(error);
   else if (error instanceof ZodError) cause = zodCause(error);
