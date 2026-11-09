@@ -33,6 +33,7 @@ import {
   preExistingFindings,
   retryBaseline as readRetryBaseline,
   reviewRecordsSince,
+  setAsideUnreadableReviews,
   parseLocation,
   reviewRoundFindings,
   reviewRequirements,
@@ -556,6 +557,21 @@ async function loadReviewFindings(
     records = await reviewRecordsSince(evidenceDir, []);
   } catch (error) {
     journalCaught(error, "run.reviewOutputUnreadable", input.taskId);
+    const required = reviewRequirements(decisionRepo(input), input.home, input.policyRoot);
+    const setAside = required.ok
+      ? await setAsideUnreadableReviews(
+          evidenceDir,
+          required.items.map((item) => item.id),
+        ).catch((caughtError: unknown) => {
+          journalCaught(caughtError, "run.setAsideUnreadableReviews", input.taskId);
+          return [];
+        })
+      : [];
+    if (
+      setAside.length === 0 &&
+      !first.items.some((item) => item.kind === "review" && item.state === "failed")
+    )
+      return null;
     const detail = `review output unreadable: ${error instanceof Error ? error.message : String(error)}`;
     return { ...failure("blocked", null, detail, input.head), reviewerFault: detail };
   }

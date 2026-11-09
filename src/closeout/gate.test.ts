@@ -637,6 +637,53 @@ describe("closeout gate", () => {
     }
   });
 
+  test("an unreadable acme review record is set aside so the retry reviews again", async () => {
+    const repo = await originRepo({
+      ".agents/closeout.yaml": policy([reviewItem("independent-review")]),
+      ".agents/skills/adversarial-review/SKILL.md": SKILL,
+    });
+    let reviews = 0;
+    try {
+      const input = {
+        worktree: repo.dir,
+        taskId: TASK,
+        base: repo.head,
+        head: repo.head,
+        candidate: candidate(),
+        home: repo.home,
+        pawsHome: repo.pawsHome,
+        reviewer: {
+          async review() {
+            reviews += 1;
+            return { session: "acme-review", model: "codex", provider: "openai", findings: [] };
+          },
+        },
+      };
+      await evaluateCandidate(input);
+      expect(reviews).toBe(1);
+      const records = [
+        ...new Bun.Glob("**/independent-review/*.json").scanSync({
+          cwd: repo.pawsHome,
+          absolute: true,
+          dot: true,
+        }),
+      ];
+      expect(records).toHaveLength(1);
+      await writeFile(records[0]!, '{ "acme": ');
+
+      const unreadable = await evaluateCandidate(input);
+      expect(unreadable.reviewerFault).toContain("review output unreadable");
+      expect(reviews).toBe(1);
+
+      const retried = await evaluateCandidate(input);
+      expect(reviews).toBe(2);
+      expect(retried.reviewerFault).toBeUndefined();
+      expect(retried.outcome).toBe("accepted");
+    } finally {
+      await repo.cleanup();
+    }
+  });
+
   test("the review step records failOn and which findings are in pre-existing code", async () => {
     const repo = await originRepo({
       ".agents/closeout.yaml": policy([reviewItem("adversarial-review")]),

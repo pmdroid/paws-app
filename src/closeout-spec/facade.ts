@@ -12,6 +12,7 @@ import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { lstatSync, statSync } from "node:fs";
+import { rename } from "node:fs/promises";
 import { join } from "node:path";
 import { attemptsLeft, evaluate, type EvaluateRequest } from "./evaluate/evaluate";
 import { PAWS_CLOSEOUT_NAME, PAWS_CLOSEOUT_VERSION, type EvaluateTrust } from "./evaluate/trust";
@@ -487,6 +488,23 @@ export async function reviewRecordsSince(
     (record): record is ReviewRecord =>
       record.recordType === "review" && !before.has(evidenceAttemptKey(record)),
   );
+}
+
+export async function setAsideUnreadableReviews(
+  evidenceDir: string,
+  reviewIds: readonly string[],
+): Promise<string[]> {
+  const store = createEvidenceStore({ root: evidenceDir });
+  const moved: string[] = [];
+  for (;;) {
+    const { invalid } = await store.load();
+    const itemId = invalid?.path?.split("/").at(-2);
+    if (invalid?.path === undefined || itemId === undefined || !reviewIds.includes(itemId))
+      return moved;
+    const file = join(evidenceDir, invalid.path);
+    await rename(file, `${file}.unreadable`);
+    moved.push(invalid.path);
+  }
 }
 
 /**
