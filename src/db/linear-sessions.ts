@@ -450,9 +450,11 @@ export function getLinearSessionGeneration(db: Database, sessionId: string): num
 function* lockLinearSessionSteps(q: Q, sessionId: string): Steps<void> {
   if (q.dialect === "postgres")
     yield* q.exec(
-      q.orm.select({
-        lock: sql`pg_advisory_xact_lock(hashtextextended(${`linear-session:${sessionId}`}, 0))`,
-      }),
+      q.orm
+        .select({
+          lock: sql`pg_advisory_xact_lock(hashtextextended(${`linear-session:${sessionId}`}, 0))`,
+        })
+        .from(sql`(SELECT 1) AS lock_scope`),
     );
 }
 

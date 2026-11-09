@@ -333,9 +333,11 @@ export function* gatherLinearCommentsSteps(
   // Different comment keys still share one pending quiet window for this item.
   if (q.dialect === "postgres")
     yield* q.exec(
-      q.orm.select({
-        lock: sql`pg_advisory_xact_lock(hashtextextended(${`linear-comments:${itemId}`}, 0))`,
-      }),
+      q.orm
+        .select({
+          lock: sql`pg_advisory_xact_lock(hashtextextended(${`linear-comments:${itemId}`}, 0))`,
+        })
+        .from(sql`(SELECT 1) AS lock_scope`),
     );
   const { job } = q.t;
   const item =
