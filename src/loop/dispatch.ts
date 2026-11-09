@@ -13,6 +13,7 @@ import type {
 } from "../linear";
 import type { OutboxRow, OutboxDeliveryContext } from "../db";
 import {
+  askedQuestionOpen,
   enqueueOutboxOnce,
   getEvidence,
   getPlanProposal,
@@ -141,11 +142,7 @@ export async function deliverLinearOutbox(
     if (
       db &&
       !canReportProgress(db, message.orderingKey ?? "", message.generation ?? 0, message.id) &&
-      !db
-        .query(
-          "SELECT 1 FROM work_item_event e JOIN question q ON q.id=e.payload_digest WHERE e.kind='ask' AND q.session_id=? AND q.id=? AND q.cancelled_at IS NULL AND q.status='open' LIMIT 1",
-        )
-        .get(message.orderingKey, readString(payload, "questionId"))
+      !askedQuestionOpen(db, message.orderingKey ?? "", readString(payload, "questionId") ?? "")
     )
       return;
     return postElicitation(payload, tracker, options, db);

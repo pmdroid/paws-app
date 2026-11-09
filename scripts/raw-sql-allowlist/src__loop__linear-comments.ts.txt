@@ -1,4 +1,0 @@
-src/loop/linear-comments.ts | const items = db .query<{ id: string; state: string; created_at: number }, [string]>( | not yet converted to Drizzle
-src/loop/linear-comments.ts | db .query("SELECT 1 FROM linear_stop_receipt WHERE session_id = ? AND generation > ?") | not yet converted to Drizzle
-src/loop/linear-comments.ts | db .query( | not yet converted to Drizzle
-src/loop/linear-comments.ts | db .query<{ session_id: string }, [string]>( | not yet converted to Drizzle

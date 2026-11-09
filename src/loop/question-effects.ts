@@ -11,6 +11,10 @@ import {
 } from "../core";
 import { startFreshBudget } from "./time-budget";
 import {
+  hasLiveJob,
+  pendingAnswerHandoffs,
+  setQuestionHandoffVersion,
+  setRetryAnswer,
   agentTurnStage,
   applyLinearTurns,
   announceLinearTurn,
@@ -82,10 +86,7 @@ export function retryCloseout(
   question: StoredQuestion,
   input: { now: number; answer?: string },
 ): void {
-  db.run("UPDATE question SET answer=?, handoff_version=0 WHERE id=?", [
-    input.answer ?? RETRY_CLOSEOUT,
-    question.id,
-  ]);
+  setRetryAnswer(db, question.id, input.answer ?? RETRY_CLOSEOUT);
   verifyAgain(db, question, { now: input.now, key: "retry-closeout" });
 }
 
@@ -110,16 +111,15 @@ export function questionEffects(
   ) => {
     const item = getWorkItem(db, question.itemId);
     if (!item) return;
-    const pending = db
-      .query<
-        { id: string; body: string; options: string | null; answer: string },
-        [string, string]
-      >(
-        `SELECT id,body,options,answer FROM question WHERE item_id=? AND session_id=?
-       AND status='answered' AND cancelled_at IS NULL AND handoff_version IS NULL
-       AND kind NOT IN ('visual-review','runner-wait','runner-repository','github-auth','link','push-outage','policy-outage') ORDER BY answered_at,rowid`,
-      )
-      .all(item.id, question.sessionId);
+    const pending = pendingAnswerHandoffs(db, item.id, question.sessionId, [
+      "visual-review",
+      "runner-wait",
+      "runner-repository",
+      "github-auth",
+      "link",
+      "push-outage",
+      "policy-outage",
+    ]);
     const handoffs = pending.map((entry) =>
       entry.id === question.id
         ? body
@@ -139,8 +139,7 @@ export function questionEffects(
     if (jobId !== null) {
       markHandoffsCarried(db, held);
       const version = getWorkItem(db, item.id)!.version;
-      for (const entry of pending)
-        db.run("UPDATE question SET handoff_version=? WHERE id=?", [version, entry.id]);
+      for (const entry of pending) setQuestionHandoffVersion(db, entry.id, version);
     }
   };
   const resume = (question: StoredQuestion, held: readonly HeldHandoff[] = []) => {
@@ -269,7 +268,7 @@ export function questionEffects(
     if (findOpenQuestion(db, question.sessionId)?.itemId === question.itemId) return;
     const answer = question.answer ?? "";
     const decision = planDecision(answer, proposal.drafts.length);
-    db.run("UPDATE question SET handoff_version=0 WHERE id=?", [question.id]);
+    setQuestionHandoffVersion(db, question.id, 0);
     if (decision === "edit-ask") {
       const asked = ask(
         db,
@@ -325,12 +324,7 @@ export function questionEffects(
       const item = getWorkItem(db, question.itemId);
       if (item?.state !== "awaiting_input") return;
       applyWorkItemEvent(db, item.id, "reverify_requested", { now: input.now });
-      const live = db
-        .query(
-          "SELECT 1 FROM job WHERE status='running' AND locked_until>? AND json_extract(payload,'$.itemId')=?",
-        )
-        .get(input.now, item.id);
-      if (!live)
+      if (!hasLiveJob(db, item.id, input.now))
         enqueueJobOnce(db, {
           queue: JOB_KIND.reverify,
           jobKey: `runner-wait:${question.id}`,

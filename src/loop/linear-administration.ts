@@ -2,6 +2,7 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { isTerminalWorkItemState, type LinearCommand, type WorkItemState } from "../core";
 import {
+  issueItemsCreatedBy,
   applyLinearCommand,
   mergeCallInFlight,
   changeLinearTeamAccess,
@@ -245,24 +246,8 @@ function openIssueTasks(
   db: Database,
   closed: LinearIssueClosed,
 ): { id: string; identifier: string; state: WorkItemState; sessionKey: string | null }[] {
-  return db
-    .query<
-      {
-        id: string;
-        identifier: string;
-        state: WorkItemState;
-        sessionKey: string | null;
-        organizationId: string | null;
-      },
-      [string, number]
-    >(
-      `SELECT w.id, w.linear_identifier AS identifier, w.state, w.session_key AS sessionKey,
-              s.organization_id AS organizationId
-       FROM work_item w LEFT JOIN linear_session s ON s.session_id = w.session_key
-       WHERE w.linear_issue_id = ? AND w.created_at <= ?
-       ORDER BY w.created_at, w.id`,
-    )
-    .all(closed.issueId, closed.closedAtMs)
+  return issueItemsCreatedBy(db, closed.issueId, closed.closedAtMs)
+    .map((row) => ({ ...row, state: row.state as WorkItemState }))
     .filter(
       (row) =>
         !isTerminalWorkItemState(row.state) &&

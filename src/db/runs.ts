@@ -361,3 +361,19 @@ export function* latestRunningAnswerSteps(q: Q, runId: string): Steps<AnsweredRu
 export function latestRunningAnswer(db: Database, runId: string): AnsweredRunQuestion | null {
   return settled(sqliteDb(db).run((q) => latestRunningAnswerSteps(q, runId)));
 }
+
+/** When any of these items' runs last changed, or null when they have none. */
+export function* latestRunUpdateSteps(q: Q, itemIds: readonly string[]) {
+  const { run } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ at: sql`MAX(${run.updatedAt})`.mapWith(Number) })
+      .from(run)
+      .where(inArray(run.itemId, [...itemIds])),
+  );
+  return row?.at ?? null;
+}
+
+export function latestRunUpdate(db: Database, itemIds: readonly string[]): number | null {
+  return settled(sqliteDb(db).run((q) => latestRunUpdateSteps(q, itemIds)));
+}

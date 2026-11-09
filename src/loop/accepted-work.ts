@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, type WorkItemState } from "../core";
 import {
+  cancelAcceptedWorkJobs,
+  latestMergeJobSummary,
   applyWorkItemEvent,
   closeoutPolicyDigests,
   pendingRestartHandoff,
@@ -67,14 +69,7 @@ export function mergeAcceptedWork(
     const head = item.acceptedHead;
     const verdict = closeoutPolicyDigests(db, itemId, head);
     if (verdict !== null && verdict.decision !== "accepted") return false;
-    db.run(
-      `UPDATE job
-       SET status = 'cancelled', last_error = 'accepted_work', locked_by = NULL,
-           locked_until = NULL, finished_at = ?
-       WHERE status IN ('pending', 'running') AND queue IN (?, ?) AND id <> ?
-         AND json_extract(payload, '$.itemId') = ?`,
-      [input.now, JOB_KIND.start, JOB_KIND.resume, input.exceptJobId ?? -1, itemId],
-    );
+    cancelAcceptedWorkJobs(db, itemId, input.now, input.exceptJobId);
     if (item.currentRunId !== null) {
       const run = getRun(db, item.currentRunId);
       if (run?.status === "active" || run?.status === "provisioning")
@@ -84,13 +79,7 @@ export function mergeAcceptedWork(
     saveCheckpoint(db, itemId, { ...item.checkpoint, phase: "merge_queue", wipCommit: head });
     leaveMergeQueue(db, itemId);
     const queued = getWorkItem(db, itemId)!;
-    const summary =
-      db
-        .query<{ summary: string | null }, [string, string]>(
-          `SELECT json_extract(payload, '$.summary') AS summary FROM job
-           WHERE queue = ? AND json_extract(payload, '$.itemId') = ? ORDER BY id DESC LIMIT 1`,
-        )
-        .get(JOB_KIND.merge, itemId)?.summary ?? "Closeout accepted.";
+    const summary = latestMergeJobSummary(db, itemId) ?? "Closeout accepted.";
     enqueueJobOnce(db, {
       queue: JOB_KIND.merge,
       jobKey: `merge:${itemId}:${head}:accepted:${queued.version}`,

@@ -1,2 +1,0 @@
-src/loop/suggested-findings.ts | db .query<{ id: number }, [string, string]>( | not yet converted to Drizzle
-src/loop/suggested-findings.ts | const queued = db .query<{ n: number }, [string, string, string]>( | not yet converted to Drizzle

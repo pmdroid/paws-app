@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { parentTaskKeySql } from "../core";
 import {
+  delegationParentTaskKey,
   ensureLinearSessionSteps,
   workItemForSession,
   type Q,
@@ -56,12 +56,8 @@ export function sessionTaskKey(db: Database, session: StoredLinearSession): stri
   const delegationId =
     workItemForSession(db, session.sessionId)?.delegationId ?? session.delegationId;
   if (delegationId) {
-    const row = db
-      .query<{ task_key: string | null }, [string]>(
-        `SELECT ${parentTaskKeySql("work_item")} AS task_key FROM work_item WHERE delegation_id = ? ORDER BY created_at, position, id LIMIT 1`,
-      )
-      .get(delegationId);
-    if (row?.task_key) return row.task_key;
+    const taskKey = delegationParentTaskKey(db, delegationId);
+    if (taskKey) return taskKey;
   }
   return `session:${session.sessionId}`;
 }

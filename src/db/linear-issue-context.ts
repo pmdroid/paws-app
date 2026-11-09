@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
+import { jsonField } from "./json-text";
 
 export function* linearSessionsForIssueContextSteps(q: Q, issueId: string) {
   const { linearSession, workItem } = q.t;
@@ -58,4 +59,23 @@ export function* getLinearIssueContextSteps(q: Q, sessionId: string) {
       .orderBy(asc(linearIssueContext.issueId)),
   );
   return rows.map((row) => row.context).join("\n\n");
+}
+
+/** The team name from the session's newest webhook that carries one. */
+export function* sessionIssueTeamNameSteps(q: Q, sessionId: string) {
+  const { inboxEvent } = q.t;
+  const name = jsonField(q, inboxEvent.payload, "agentSession", "issue", "team", "name");
+  const row = yield* q.one(
+    q.orm
+      .select({ name })
+      .from(inboxEvent)
+      .where(and(eq(inboxEvent.sessionId, sessionId), sql`trim(coalesce(${name}, '')) <> ''`))
+      .orderBy(desc(inboxEvent.receivedAt))
+      .limit(1),
+  );
+  return row?.name ?? null;
+}
+
+export function sessionIssueTeamName(db: Database, sessionId: string): string | null {
+  return settled(sqliteDb(db).run((q) => sessionIssueTeamNameSteps(q, sessionId)));
 }
