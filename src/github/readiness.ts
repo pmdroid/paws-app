@@ -125,6 +125,7 @@ export type Readiness = {
   outcome: "ready" | "pending" | "blocked" | "sha_moved" | "ci_failed";
   message: string;
   failedChecks?: FailedCheck[];
+  waitingChecks?: { name: string; url: string | null }[];
   /** Every check on the head, set when CI failed. */
   checks?: CiCheck[];
   onlyCancelled?: true;
@@ -418,12 +419,22 @@ function judgeChecks(
   const checks = all.filter((check) => !optional(check, required, all));
   const failed = checks.filter((check) => FAILED.has(check.result ?? ""));
   if (failed.length > 0) {
+    const reported = new Set(all.map((check) => check.name));
+    const waitingChecks = [
+      ...checks
+        .filter((c) => !GREEN.has(c.result ?? "") && !FAILED.has(c.result ?? ""))
+        .map(({ name, url }) => ({ name, url })),
+      ...[...required].filter((name) => !reported.has(name)).map((name) => ({ name, url: null })),
+    ];
     const failedOnBase = new Set(
       baseChecks.filter((check) => FAILED.has(check.result ?? "")).map((check) => check.name),
     );
     return {
       outcome: "ci_failed",
-      message: "CI failed on the candidate commit",
+      message: waitingChecks.length
+        ? `CI failed: ${failed.map((c) => c.name).join(", ")}; waiting for ${waitingChecks.map((c) => c.name).join(", ")} to finish (up to 20 min)`
+        : "CI failed on the candidate commit",
+      ...(waitingChecks.length ? { waitingChecks } : {}),
       failedChecks: failed.map((check) => ({
         name: check.name,
         url: check.url,

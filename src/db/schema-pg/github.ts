@@ -244,6 +244,7 @@ export const pullCiFailure = pgTable(
     failedChecks: jsonb("failed_checks").notNull(),
     checks: jsonb().notNull(),
     observedAt: bigint("observed_at", { mode: "number" }).notNull(),
+    laneFirstFailureAt: bigint("lane_first_failure_at", { mode: "number" }),
     handledAt: bigint("handled_at", { mode: "number" }),
     outcome: text(),
   },

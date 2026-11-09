@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
+  laneCiFailureTime,
+  resetOtherLaneCiFailures,
   applyWorkItemEvent,
   beginMergeCall,
   mergeStopRequested,
@@ -281,7 +283,26 @@ export async function advanceMerge(
   let mainPolicy: PolicyRead | undefined;
   let mergedPolicyError: MergeResultPolicyError | undefined;
   const turn = await laneTurn({
-    read: () => readPullFacts(lane),
+    read: async () => {
+      const facts = await readPullFacts(lane);
+      if (facts.kind !== "facts") return facts;
+      resetOtherLaneCiFailures(db, item.id, facts.head);
+      const ci = facts.readiness;
+      if (ci.outcome === "ci_failed") {
+        const first = laneCiFailureTime(db, {
+          itemId: item.id,
+          head: facts.head,
+          pullNumber: pull.number,
+          itemVersion: item.version,
+          failedChecks: ci.failedChecks ?? [],
+          checks: ci.checks ?? [],
+          observedAt: caps.now(),
+        });
+        if (ci.waitingChecks?.length && caps.now() - first < 20 * 60_000)
+          facts.readiness = { ...ci, outcome: "pending" };
+      }
+      return facts;
+    },
     facts: (facts) => {
       mainPolicy = caps.policyDigests(item, published.worktree);
       return mergeFacts(db, item.id, facts, mainPolicy, mergeSettings.mainMoved, {
@@ -457,12 +478,18 @@ export async function advanceMerge(
       ciRound(merge, head, readiness.checks, next, ciFixLimit, fix);
     if (
       step.kind === "return" &&
-      sendBack(merge, "ci-failed", (fixes) => fixes < ciFixLimit, ciFixHandoff(checks), {
-        thought: (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
-        record: (_, attempt) => round("agent", attempt),
-        failedChecks: checks,
-        pullNumber: pull.number,
-      })
+      sendBack(
+        merge,
+        "ci-failed",
+        (fixes) => fixes < ciFixLimit,
+        ciFixHandoff(checks, readiness.waitingChecks),
+        {
+          thought: (attempt) => ciFixRoundLine(checks, attempt, ciFixLimit),
+          record: (_, attempt) => round("agent", attempt),
+          failedChecks: checks,
+          pullNumber: pull.number,
+        },
+      )
     )
       return { kind: "returned" };
     if (askHelp(merge, ciFixQuestion(checks, ciFixLimit, pull.url), "budget_spent")) {

@@ -419,7 +419,7 @@ test("no CI still waits for unresolved review threads", async () => {
   expect(result).toMatchObject({ outcome: "pending", unresolvedThreads: 1 });
 });
 
-test("a failing check fails CI with its name, even while others still run", async () => {
+test("a failing check names the checks still running for the lane to wait", async () => {
   for (const conclusion of ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"]) {
     const result = await readOnce(() =>
       withChecks([
@@ -439,7 +439,8 @@ test("a failing check fails CI with its name, even while others still run", asyn
     });
     expect(result).toEqual({
       outcome: "ci_failed",
-      message: "CI failed on the candidate commit",
+      message: "CI failed: build; waiting for lint to finish (up to 20 min)",
+      waitingChecks: [{ name: "lint", url: "https://ci.example/lint" }],
       failedChecks: [
         { name: "build", url: "https://ci.example/build", logTail: null, failsOnBase: false },
       ],

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../core";
 import {
+  resetOtherLaneCiFailures,
   applyWorkItemEvent,
   claimNextJob,
   enqueueJob,
@@ -453,7 +454,7 @@ describe("advanceMerge on a CI failure", () => {
     expect(rounds[0]?.checks.map((check) => [check.name, check.state])).toEqual([
       ["lint", "passed"],
       ["test", "failed"],
-      ["e2e", "running"],
+      ["e2e", "passed"],
     ]);
     expect(rounds[0]?.checks[1]).toMatchObject({
       url: "https://ci.example/1",
@@ -797,4 +798,54 @@ describe("advanceMerge while the pull request waits for a review", () => {
     expect(resumes(h).map((payload) => payload.handoff)).toEqual([REBASE_CONFLICT_INSTRUCTION]);
     expect(h.bodies("afterPullRequest")).toEqual([NOTICE]);
   });
+});
+
+describe("CI failure collection window", () => {
+  for (const finish of ["FAILURE", "SUCCESS", null]) {
+    test(`acme waits for all checks: ${finish ?? "20 minute cap"}`, async () => {
+      const h = await start();
+      await h.addItem("ACME-1440");
+      let conclusion: string | null = null;
+      h.state.ci = () => [
+        { name: "acme test", conclusion: "FAILURE", detailsUrl: "https://ci.example/test" },
+        { name: "acme shard", conclusion, detailsUrl: "https://ci.example/shard" },
+      ];
+      expect(await h.pass("ACME-1440")).toMatchObject({
+        kind: "wait",
+        reason: "ci",
+        message: "CI failed: acme test; waiting for acme shard to finish (up to 20 min)",
+      });
+      expect(resumes(h)).toEqual([]);
+      h.clock.advance(19 * 60_000);
+      expect(await h.pass("ACME-1440")).toMatchObject({ kind: "wait", reason: "ci" });
+      expect(resumes(h)).toEqual([]);
+      conclusion = finish;
+      if (finish === null) h.clock.advance(60_000);
+      expect(await h.pass("ACME-1440")).toEqual({ kind: "returned" });
+      const turns = resumes(h);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]!.handoff).toContain("acme test");
+      if (finish === "FAILURE") expect(turns[0]!.handoff).toContain("- acme shard");
+      if (finish === "SUCCESS") expect(turns[0]!.handoff).not.toContain("acme shard");
+      if (finish === null)
+        expect(turns[0]!.handoff).toContain("acme shard (https://ci.example/shard): still running");
+    });
+  }
+});
+
+test("acme head movement starts a fresh CI collection window", async () => {
+  const h = await start();
+  const item = await h.addItem("ACME-1441");
+  h.state.ci = () => [
+    { name: "acme test", conclusion: "FAILURE", detailsUrl: null },
+    { name: "acme shard", conclusion: null, detailsUrl: null },
+  ];
+  expect(await h.pass("ACME-1441")).toMatchObject({ kind: "wait", reason: "ci" });
+  h.clock.advance(19 * 60_000);
+  resetOtherLaneCiFailures(h.db, "ACME-1441", "another-head");
+  // Returning to the original head must also start a new window.
+  expect(await h.pass("ACME-1441")).toMatchObject({ kind: "wait", head: item.accepted });
+  h.clock.advance(60_000);
+  expect(await h.pass("ACME-1441")).toMatchObject({ kind: "wait", reason: "ci" });
+  expect(resumes(h)).toEqual([]);
 });
