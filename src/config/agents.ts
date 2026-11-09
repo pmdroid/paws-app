@@ -171,7 +171,7 @@ export function resolveAgentProfiles(
     }
     return preset;
   };
-  const implementer = select("implementer");
+  let implementer = select("implementer");
   let reviewer = select("reviewer");
   if (
     labels?.reviewer !== undefined &&
@@ -182,12 +182,31 @@ export function resolveAgentProfiles(
     labelProblems.push({ role: "reviewer", label: labels.reviewer, reason: "same_as_implementer" });
     reviewer = project?.reviewer ?? settings.defaults.reviewer;
   }
+  // A label can also collide with an inherited reviewer, including after a rejected
+  // reviewer label has fallen back to the repository profile.
+  if (
+    labels?.implementer !== undefined &&
+    reviewer.agent === implementer.agent &&
+    reviewer.model === implementer.model &&
+    !labelProblems.some((problem) => problem.role === "implementer")
+  ) {
+    labelProblems.push({
+      role: "implementer",
+      label: labels.implementer,
+      reason: "same_as_implementer",
+    });
+    implementer = project?.implementer ?? settings.defaults.implementer;
+  }
   const fallback = settings.defaults.reviewerFallback;
   return {
     implementer,
     ...(labels === undefined ? {} : { labelProblems }),
     reviewer,
-    ...(fallback && fallback.agent !== reviewer.agent ? { reviewerFallback: fallback } : {}),
+    ...(fallback &&
+    fallback.agent !== reviewer.agent &&
+    (fallback.agent !== implementer.agent || fallback.model !== implementer.model)
+      ? { reviewerFallback: fallback }
+      : {}),
   };
 }
 

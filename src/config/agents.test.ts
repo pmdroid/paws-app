@@ -88,3 +88,36 @@ test("preset names and profiles are validated, including duplicates after trimmi
     parseAgentSettings({ ...settings, presets: { Bad: { agent: "unknown", model: "x" } } }),
   ).toThrow();
 });
+
+test("an implementer label cannot match an inherited project or global reviewer", () => {
+  for (const repo of ["acme/app", "acme/other"]) {
+    const cfg = config();
+    const inherited = resolveAgentProfiles(cfg, repo);
+    cfg.agentSettings!.presets!.Same = { ...inherited.reviewer, effort: "high" };
+    expect(resolveAgentProfiles(cfg, repo, { implementer: "Same" })).toEqual({
+      ...inherited,
+      labelProblems: [{ role: "implementer", label: "Same", reason: "same_as_implementer" }],
+    });
+  }
+});
+
+test("rejecting a reviewer label also checks the inherited reviewer against the implementer", () => {
+  const cfg = config();
+  cfg.agentSettings!.presets!.Same = settings.projects[0].reviewer;
+  const result = resolveAgentProfiles(cfg, "acme/app", { implementer: "Same", reviewer: "Same" });
+  expect(result.implementer).toEqual(settings.defaults.implementer);
+  expect(result.reviewer).toEqual(settings.projects[0].reviewer);
+  expect(result.labelProblems).toHaveLength(2);
+});
+
+test("fallback cannot review a matching label-selected implementer, but a different model can", () => {
+  const cfg = config();
+  cfg.agentSettings!.presets!.Grok = { ...settings.defaults.reviewerFallback };
+  expect(
+    resolveAgentProfiles(cfg, "acme/app", { implementer: "Grok" }).reviewerFallback,
+  ).toBeUndefined();
+  cfg.agentSettings!.presets!.Grok.model = "another-model";
+  expect(resolveAgentProfiles(cfg, "acme/app", { implementer: "Grok" }).reviewerFallback).toEqual(
+    settings.defaults.reviewerFallback,
+  );
+});
