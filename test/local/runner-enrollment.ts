@@ -123,11 +123,12 @@ export async function probeRunnerEnrollment(
     disconnect: () => {},
     now: () => now,
   });
+  let catalog: string[] = [];
   const http = createRunnerHttp(control, {
     hostConfig: () => ({
       controlPlaneUrl: "https://paws.example.invalid",
       runnerApiUrl: "https://paws.example.invalid:8788",
-      allowedRepositories: ["local/fixture"],
+      allowedRepositories: catalog,
     }),
   });
   const runners = () =>
@@ -143,6 +144,26 @@ export async function probeRunnerEnrollment(
       () => control.createEnrollment(inactive, { name: "inactive-host" }),
       /Active workspace membership/,
     );
+    const refused = await http.browser(
+      post("/api/runners/enrollments", { name: "member-host" }),
+      member,
+      [],
+    );
+    assert.equal(refused?.status, 409);
+    assert.deepEqual(await refused!.json(), {
+      error: "Connect GitHub and add a repository before adding a runner.",
+    });
+    assert.equal(
+      db.query<{ count: number }, []>("SELECT count(*) AS count FROM runner_enrollment").get()!
+        .count,
+      0,
+    );
+    observe("an empty repository catalog answers 409 and creates no token", true, {
+      status: 409,
+      tokens: 0,
+    });
+
+    catalog = ["owner/repo"];
     const minted = await http.browser(
       post("/api/runners/enrollments", { name: "member-host" }),
       member,
@@ -152,10 +173,11 @@ export async function probeRunnerEnrollment(
     const issued = (await minted!.json()) as {
       token: string;
       expiresAt: number;
-      config: { runnerApiUrl: string };
+      config: { runnerApiUrl: string; allowedRepositories: string[] };
     };
     assert.equal(issued.expiresAt, now + 10 * 60_000);
     assert.equal(issued.config.runnerApiUrl, "https://paws.example.invalid:8788");
+    assert.deepEqual(issued.config.allowedRepositories, ["owner/repo"]);
     const stored = db
       .query<{ token_hash: string }, []>("SELECT token_hash FROM runner_enrollment")
       .all();

@@ -1855,6 +1855,8 @@ export function createRunners() {
     root!.querySelector("#runner-enrollment")?.addEventListener("submit", (event) => {
       event.preventDefault();
       void change(async () => {
+        // A refused request must not leave the previous command on screen.
+        enrollment = null;
         enrollment = await api<HostEnrollment>("/api/runners/enrollments", {
           name: hostName.trim(),
         });

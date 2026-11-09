@@ -91,3 +91,51 @@ test("the extra usage switch posts the runner agent's extra-usage route", async 
   expect(JSON.parse(String(post!.init!.body))).toEqual({ extraUsage: true });
   expect(new Headers(post!.init!.headers).get("x-paws-csrf")).toBe("token-1");
 });
+
+test("Add a runner shows the 409 message instead of a command", async () => {
+  const message = "Connect GitHub and add a repository before adding a runner.";
+  let refused = false;
+  const fallback = globalThis.fetch;
+  globalThis.fetch = (async (url: URL | string, init?: RequestInit) => {
+    if (new URL(String(url), ORIGIN).pathname !== "/api/runners/enrollments")
+      return fallback(url as string, init);
+    requests.push({ url: "/api/runners/enrollments", init });
+    return refused
+      ? Response.json({ error: message }, { status: 409 })
+      : Response.json({
+          token: "tok_en-123",
+          expiresAt: Date.now() + 600_000,
+          name: "new-box",
+          config: {
+            controlPlaneUrl: "https://paws.example.com",
+            runnerApiUrl: "https://paws.example.com:8788",
+            allowedRepositories: ["owner/repo"],
+          },
+        });
+  }) as unknown as typeof fetch;
+  const root = window.document.createElement("div") as unknown as HTMLElement;
+  window.document.body.append(root as unknown as Parameters<typeof window.document.body.append>[0]);
+  createRunners().mount(root, ORIGIN, "live", null);
+  await settle();
+  root.querySelector<HTMLElement>("[data-runner-add]")!.click();
+  await settle();
+  const submit = async () => {
+    const input = root.querySelector<HTMLInputElement>('input[name="host-name"]')!;
+    input.value = "new-box";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }) as unknown as Event);
+    root
+      .querySelector("#runner-enrollment")!
+      .dispatchEvent(
+        new window.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+      );
+    await settle();
+  };
+  await submit();
+  expect(root.querySelector("#runner-enroll-command")?.textContent).toContain("tok_en-123");
+  refused = true;
+  await submit();
+  const dialog = root.querySelector("#runner-add-dialog")!;
+  expect(dialog.querySelector('[role="alert"]')?.textContent).toBe(message);
+  expect(root.querySelector("#runner-enroll-command")).toBeNull();
+  expect(dialog.textContent).not.toContain("tok_en-123");
+});
