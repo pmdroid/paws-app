@@ -1,3 +1,11 @@
+import {
+  getTaskMergeSettingsSteps,
+  keepTaskLinearReadSteps,
+  keepTaskMergeSettingsSteps,
+  mergeCallInFlightSteps,
+  saveCandidatePathsSteps,
+  saveCandidateRiskSteps,
+} from "../db";
 import { getItemPullRequestSteps, recordItemCandidateSteps } from "../db";
 import { parkLeasedJobSteps } from "../db";
 import {
@@ -224,14 +232,12 @@ import {
   transientRetryDelayMs,
 } from "../core";
 import {
-  saveCandidateRisk,
   listWaitingProfileRuns,
   getTaskMode,
   assertLinearSessionCleanup,
   cancelOpenJobs,
   getLinearSessionAccess,
   getConfirmedRemoteMerge,
-  mergeCallInFlight,
   type ConfirmedRemoteMerge,
   getLinearTaskDelegation,
   getTaskModeGeneration,
@@ -256,7 +262,6 @@ import {
   configureWorkItem,
   enqueueJobOnce,
   recordRebaseReturn,
-  saveCandidatePaths,
   enqueueOutboxOnce,
   lastOutboxSequence,
   attachSessionUpdates,
@@ -368,7 +373,6 @@ import {
   keepTaskLinearRead,
   linearActivitiesListedAt,
   markLinearActivitiesListed,
-  keepTaskMergeSettings,
   type TaskMergeSettings,
   delegatedLinearUserId,
   resetAwakeTime,
@@ -5305,11 +5309,11 @@ export class Orchestrator {
   private async mergedOutsideLane(
     item: WorkItemRecord,
   ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null | "unknown"> {
-    const pull = getItemPullRequest(this.db, item.id);
+    const pull = await this.store.run((q) => getItemPullRequestSteps(q, item.id));
     const repository = pull ? this.repositoryForItem(item) : null;
     const github = repository ? this.githubForRepository(repository) : null;
     if (!pull) {
-      if (mergeCallInFlight(this.db, item.id))
+      if (await this.store.run((q) => mergeCallInFlightSteps(q, item.id)))
         throw new Error("Cannot reconcile an in-flight merge: the pull request record is missing.");
       return null;
     }
@@ -5675,7 +5679,9 @@ export class Orchestrator {
         : (await run(["merge-base", ref, await this.upstreamMainRef(worktree, item.id)])).trim();
     const changed = await changedPaths(run, base, head);
     // Every changed path, so the scheduler can hold work that changes the same hot files.
-    saveCandidatePaths(this.db, { itemId: item.id, head, paths: changed, recordedAt: this.now() });
+    await this.store.run((q) =>
+      saveCandidatePathsSteps(q, { itemId: item.id, head, paths: changed, recordedAt: this.now() }),
+    );
     const risk = await classifyPathsRisk({
       git: run,
       base,
@@ -5685,7 +5691,9 @@ export class Orchestrator {
         `${repository.owner}/${repository.repo}`,
       ),
     });
-    saveCandidateRisk(this.db, { itemId: item.id, head, base, ...risk, classifiedAt: this.now() });
+    await this.store.run((q) =>
+      saveCandidateRiskSteps(q, { itemId: item.id, head, base, ...risk, classifiedAt: this.now() }),
+    );
     return risk;
   }
 
@@ -5740,7 +5748,9 @@ export class Orchestrator {
 
   private async settleMerge(payload: unknown, step: MergeStep): Promise<void> {
     if (step.kind !== "failed" && step.kind !== "merged") return;
-    const item = getWorkItem(this.db, readString(payload, "itemId") ?? "");
+    const item = await this.store.run((q) =>
+      getWorkItemSteps(q, readString(payload, "itemId") ?? ""),
+    );
     if (!item) return;
     if (step.kind === "failed") {
       await this.fail(item, step.reason, step.message);
@@ -5983,7 +5993,7 @@ export class Orchestrator {
     signal?: AbortSignal,
     readPolicy = () => this.readMergePolicy(),
   ): Promise<TaskMergeSettings> {
-    const kept = getTaskMergeSettings(this.db, item.id);
+    const kept = await this.store.run((q) => getTaskMergeSettingsSteps(q, item.id));
     if (kept) return kept;
     const policy = readPolicy();
     let context: LinearMergeContext | null = { projectId: null, labels: [] };
@@ -6005,14 +6015,12 @@ export class Orchestrator {
         );
       }
     }
-    if (context?.overview !== undefined)
-      keepTaskLinearRead(
-        this.db,
-        item.id,
-        "project_overview",
-        projectOverviewText(context.overview),
-        this.now(),
+    if (context?.overview !== undefined) {
+      const overview = projectOverviewText(context.overview);
+      await this.store.run((q) =>
+        keepTaskLinearReadSteps(q, item.id, "project_overview", overview, this.now()),
       );
+    }
     const resolved = resolveMergeSettings(context ?? { projectId: null, labels: [] }, policy);
     const settings: TaskMergeSettings = {
       order: resolved.order,
@@ -6023,7 +6031,8 @@ export class Orchestrator {
         ...(context ? { projectId: context.projectId, labels: context.labels } : {}),
       },
     };
-    if (context !== null) keepTaskMergeSettings(this.db, item.id, settings, this.now());
+    if (context !== null)
+      await this.store.run((q) => keepTaskMergeSettingsSteps(q, item.id, settings, this.now()));
     return settings;
   }
 
