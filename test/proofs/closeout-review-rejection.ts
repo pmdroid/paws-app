@@ -79,7 +79,10 @@ items:
   agent: (input) =>
     ["implement", "fix"].includes(input.purpose)
       ? input.prompt.includes(FAILURE)
-        ? commit(input.worktree, "shelf a: 12\nshelf b: 7\n", "Count shelf b")
+        ? [
+            { type: "get_closeout" },
+            ...commit(input.worktree, "shelf a: 12\nshelf b: 7\n", "Count shelf b"),
+          ]
         : commit(input.worktree, "shelf a: 12\n", "Count widgets per shelf")
       : [],
   async run(proof) {
@@ -107,6 +110,15 @@ items:
         turns[1]!.prompt.includes(FAILURE) &&
         turns[1]!.prompt.includes("widgets.txt:1"),
       { purposes, fixPrompt: turns[1]?.prompt.slice(0, 2_000) ?? null },
+    );
+    const report = JSON.parse(proof.closeoutReports()[0] ?? "{}") as {
+      required?: { id: string; findings?: string[] }[];
+    };
+    const listed = report.required?.find((entry) => entry.id === "independent-review")?.findings;
+    proof.expect(
+      "get_closeout lists the finding with its text and location",
+      listed?.some((line) => line.includes(FAILURE) && line.includes("widgets.txt:1")) === true,
+      report.required?.map((entry) => ({ id: entry.id, findings: entry.findings })) ?? null,
     );
     proof.expect(
       "the rejected finding was stored before restart",

@@ -1,6 +1,6 @@
 import { createCloseoutGate, type CodexReviewer } from "../../src/closeout";
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { systemClock, WORK_ITEM_STATES } from "../../src/core";
 import {
@@ -221,6 +221,7 @@ export type ProofContext = {
   /** Someone else pushes a commit to origin main. */
   pushToMain(path: string, content: string, message: string): Promise<void>;
   storedReviewFindings(): number;
+  closeoutReports(): string[];
   heldWork(): { activeRuns: number; reservations: number; runningJobs: number };
   delegate(): Promise<void>;
   answerInLinear(answer: string): Promise<void>;
@@ -369,6 +370,12 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       await git("-C", seed, "push", "-q", "origin", "HEAD:main");
     },
     storedReviewFindings: () => count("SELECT count(*) AS n FROM review_finding"),
+    closeoutReports: () =>
+      launches.flatMap((_, index) => {
+        const file = join(dir, `agent-${index + 1}-result.json`);
+        if (!existsSync(file)) return [];
+        return (JSON.parse(readFileSync(file, "utf8")) as { closeouts?: string[] }).closeouts ?? [];
+      }),
     heldWork: () => ({
       activeRuns: count("SELECT count(*) AS n FROM run WHERE status IN ('active', 'provisioning')"),
       reservations: count("SELECT count(*) AS n FROM runner_reservation"),
