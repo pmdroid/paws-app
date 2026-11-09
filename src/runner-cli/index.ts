@@ -13,7 +13,7 @@ import {
   runnerAccountBindings,
 } from "../runner-execution";
 import { runRunnerWorker } from "../runner-worker";
-import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "./cause";
+import { describeRunnerFailure, RunnerCliFailure, journalRunnerFailure } from "../runner-failure";
 import { runPairedDaemon } from "./daemon";
 
 export {
@@ -23,7 +23,7 @@ export {
   RunnerCliFailure,
   runnerFailureLine,
   journalRunnerFailure,
-} from "./cause";
+} from "../runner-failure";
 
 const SHARED_UMASK = 0o007;
 

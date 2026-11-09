@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { and, desc, eq, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { workspaceMemberUsableWhere } from "./workspace";
 import { jsonValue, parsedJson } from "./json-text";
@@ -531,4 +531,99 @@ export function failFindingGroupRun(
   error: string,
 ): void {
   sync(db, (q) => failFindingGroupRunSteps(q, runId, finishedAt, error));
+}
+
+type GroupAction = NonNullable<FindingGroup["action"]>;
+
+export function* claimFindingGroupActionSteps(
+  q: Q,
+  id: string,
+  action: GroupAction,
+  members: readonly number[],
+) {
+  const { findingGroup: g } = q.t;
+  const claimed = yield* q.all(
+    q.orm
+      .update(g)
+      .set({ action, memberIds: jsonValue(q, members) })
+      .where(and(eq(g.id, id), eq(g.status, "open"), or(isNull(g.action), eq(g.action, action))))
+      .returning({ id: g.id }),
+  );
+  return claimed.length;
+}
+
+export function claimFindingGroupAction(
+  db: Database,
+  id: string,
+  action: GroupAction,
+  members: readonly number[],
+): number {
+  return settled(sqliteDb(db).run((q) => claimFindingGroupActionSteps(q, id, action, members)));
+}
+
+export type FindingGroupClose = {
+  id: string;
+  status: Exclude<FindingGroup["status"], "open">;
+  reason: string | null;
+  by: string;
+  now: number;
+  filedIssue: string | null;
+};
+
+export function* closeFindingGroupSteps(q: Q, input: FindingGroupClose) {
+  const { findingGroup: g } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(g)
+      .set({
+        status: input.status,
+        statusReason: input.reason,
+        statusBy: input.by,
+        statusAt: input.now,
+        filedIssue: input.filedIssue,
+      })
+      .where(eq(g.id, input.id)),
+  );
+}
+
+export function closeFindingGroup(db: Database, input: FindingGroupClose): void {
+  settled(sqliteDb(db).run((q) => closeFindingGroupSteps(q, input)));
+}
+
+export function* releaseFindingGroupActionSteps(q: Q, id: string, action: GroupAction) {
+  const { findingGroup: g } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(g)
+      .set({ action: null })
+      .where(and(eq(g.id, id), eq(g.status, "open"), eq(g.action, action))),
+  );
+}
+
+export function releaseFindingGroupAction(db: Database, id: string, action: GroupAction): void {
+  settled(sqliteDb(db).run((q) => releaseFindingGroupActionSteps(q, id, action)));
+}
+
+export function* findingHasGroupActionSteps(q: Q, workspaceId: string, findingId: number) {
+  const { findingGroup: g } = q.t;
+  const member =
+    q.dialect === "sqlite"
+      ? sql`EXISTS(SELECT 1 FROM json_each(${g.memberIds}) WHERE value=${findingId})`
+      : sql`${g.memberIds} @> jsonb_build_array(CAST(${findingId} AS bigint))`;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(g)
+      .where(and(eq(g.workspaceId, workspaceId), eq(g.status, "open"), isNotNull(g.action), member))
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+export function findingHasGroupAction(
+  db: Database,
+  workspaceId: string,
+  findingId: number,
+): boolean {
+  return settled(sqliteDb(db).run((q) => findingHasGroupActionSteps(q, workspaceId, findingId)));
 }

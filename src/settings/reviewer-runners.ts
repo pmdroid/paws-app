@@ -1,17 +1,11 @@
 import type { Database } from "bun:sqlite";
 import type { AgentSettings, ImplementerName } from "../config";
+import { runnerAgentReadiness } from "../db";
 
 export type RunnerReadiness = { name: string; ready: boolean };
 
 export function activeRunnerReadiness(db: Database, agent: ImplementerName): RunnerReadiness[] {
-  return db
-    .query<{ name: string; ready: number }, [string]>(
-      `SELECT r.name,COALESCE(p.ready=1 AND p.auth_expired=0,0) AS ready FROM runner r
-       LEFT JOIN runner_agent_policy p ON p.runner_id=r.id AND p.agent=?
-       WHERE r.status='active' AND r.revoked_at IS NULL ORDER BY r.name`,
-    )
-    .all(agent)
-    .map((row) => ({ name: row.name, ready: row.ready === 1 }));
+  return runnerAgentReadiness(db, agent);
 }
 
 export function reviewerRunnerWarnings(

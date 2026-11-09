@@ -113,6 +113,7 @@ export function readRunnerResultFile(
     | "candidate.bundle"
     | "events.jsonl"
     | "result.json"
+    | "phase.txt"
     | "retro-result.json"
     | "runtimes.json"
     | "session.json"
@@ -123,6 +124,7 @@ export function readRunnerResultFile(
     "candidate.bundle": 536_870_912,
     "events.jsonl": 16_777_216,
     "result.json": 1_048_576,
+    "phase.txt": 32,
     "retro-result.json": 1_048_576,
     "runtimes.json": 65_536,
     "session.json": 65_536,

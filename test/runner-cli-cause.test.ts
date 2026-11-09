@@ -1,3 +1,4 @@
+import { isAgentServiceError } from "../src/core";
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -263,4 +264,46 @@ test("a refused request names the request, its status and Paws' reason", () => {
       new RunnerRequestError(403, "POST", "/v1/events", 12, "token abc_123 bad"),
     ),
   ).toBe("Paws answered HTTP 403 from /v1/events.");
+});
+
+test("adapter end reasons retain detail but scrub secrets and stay bounded", () => {
+  expect(describeRunnerFailure(new Error("turn aborted: interrupted"), [], true)).toBe(
+    "turn aborted: interrupted",
+  );
+  expect(describeRunnerFailure(new Error(`turn aborted: ${TOKEN}`), [TOKEN], true)).toBe("Error.");
+  expect(describeRunnerFailure(new Error("x".repeat(1000)), [], true).length).toBeLessThanOrEqual(
+    CAUSE_LIMIT,
+  );
+});
+
+test("unrecognized adapter output cannot disclose arbitrary credentials", () => {
+  expect(describeRunnerFailure(new Error("API key sk-private123: network failed"), [], true)).toBe(
+    "Error.",
+  );
+  expect(
+    describeRunnerFailure(new Error("turn aborted: interrupted; token=private123"), [], true),
+  ).toBe("turn aborted: interrupted");
+  expect(describeRunnerFailure(new Error("adapter exited with code 1: private123"), [], true)).toBe(
+    "agent exited with code 1",
+  );
+});
+
+test("commit attribution rejection retains a fixed diagnostic without commit details", () => {
+  expect(
+    describeRunnerFailure(
+      new Error("Commit attribution rejected: private repository details"),
+      [],
+      true,
+    ),
+  ).toBe("Commit attribution rejected.");
+});
+
+test("worker reasons reject plain-sentence secrets and retain service retry classification", () => {
+  for (const message of ["Password is SecretValue", "Error: Password is SecretValue"])
+    expect(describeRunnerFailure(new Error(message), [], true)).toBe("Error.");
+  for (const message of ["Internal error", "API Error: 503 secret", "overloaded_error secret"]) {
+    const reason = describeRunnerFailure(new Error(message), [], true);
+    expect(isAgentServiceError(`Run failed during agent: ${reason}`)).toBe(true);
+    expect(reason).not.toContain("secret");
+  }
 });

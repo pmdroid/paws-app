@@ -848,3 +848,26 @@ export function* failedCloseoutReviewsSteps(
   }));
   return { taskId: run.taskId, head: run.head, reviews };
 }
+
+export function* latestCloseoutProgressMarkerSteps(q: Q, itemId: string) {
+  const { closeoutProgress: c } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({
+        id: c.id,
+        head: c.head,
+        base: c.base,
+        policy_digest: c.policyDigest,
+        decision: c.decision,
+      })
+      .from(c)
+      .where(eq(c.itemId, itemId))
+      .orderBy(desc(c.updatedAt), desc(c.id))
+      .limit(1),
+  );
+  return row ?? null;
+}
+
+export function latestCloseoutProgressMarker(db: Database, itemId: string) {
+  return settled(sqliteDb(db).run((q) => latestCloseoutProgressMarkerSteps(q, itemId)));
+}
