@@ -9621,9 +9621,8 @@ export class Orchestrator {
   > {
     const repository = this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
-    // A runner-backed code item has no worktree; origin/main is read in the bare mirror.
-    const mirror =
-      !!this.options.remoteExecution && !isResponseTaskMode(getTaskMode(this.db, item.id));
+    // A runner-backed item has no git checkout here; origin/main is read in the bare mirror.
+    const mirror = !!this.options.remoteExecution;
     const repo = mirror ? this.itemHead(item).repo : input.worktreePath;
     const runtimes = {
       runtimes: () => this.runtimeList(item, repo, mirror ? "mirror" : "checkout"),
@@ -9711,8 +9710,21 @@ export class Orchestrator {
     repo: string,
     source: "checkout" | "mirror",
   ): Promise<RuntimeList> {
-    const runId = getWorkItem(this.db, item.id)?.currentRunId ?? item.id;
-    return this.runtimeLists.read(item.id, runId, repo, source);
+    const current = getWorkItem(this.db, item.id) ?? item;
+    const runId = current.currentRunId ?? item.id;
+    return this.runtimeLists.read(item.id, runId, repo, source, () => this.fetchMirror(current));
+  }
+
+  /** Builds or refreshes the item's bare mirror the way a run's preflight does. */
+  private async fetchMirror(item: WorkItemRecord): Promise<void> {
+    const repository = this.repositoryForItem(item);
+    const signal = this.signalForItem(item.id);
+    if (!repository || !signal) return;
+    await ensureBareMirror({
+      ...repository,
+      pawsRoot: this.options.pawsRoot,
+      networkGit: this.repositoryGit(item, repository, signal, "read"),
+    });
   }
 
   /**

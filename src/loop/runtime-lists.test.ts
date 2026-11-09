@@ -152,3 +152,64 @@ test("a mirror that is not cloned is not retried, and still gets its notice", as
   expect(list.notices).toHaveLength(1);
   expect(journal).toHaveLength(1);
 });
+
+const MIRROR = "/paws/repos/acme/widgets.git";
+const NOT_CLONED = { ok: false, message: `${MIRROR} is not cloned`, absent: true } as const;
+const MISE_FILES = new Map([["mise.toml", new TextEncoder().encode('[tools]\nbun = "1.4.2"\n')]]);
+
+function fakeMirror(afterFetch: Parameters<typeof createRuntimeLists>[0]["mirrorMain"]) {
+  const journal: string[] = [];
+  const slept: number[] = [];
+  let fetches = 0;
+  return {
+    journal,
+    slept,
+    fetches: () => fetches,
+    fetchMirror: async () => void fetches++,
+    lists: createRuntimeLists(
+      {
+        originMain: () => ({ ok: true, commit: "a".repeat(40) }),
+        mirrorMain: (repo) => (fetches ? afterFetch(repo) : NOT_CLONED),
+        rootFilesAt: () => ({ ok: true, files: MISE_FILES }),
+      },
+      { journal: (line) => journal.push(line), sleep: async (ms) => void slept.push(ms) },
+    ),
+  };
+}
+
+test("a mirror that is not built yet is fetched once and its runtimes come back", async () => {
+  const mirror = fakeMirror(() => ({ ok: true, commit: "a".repeat(40) }));
+  const list = await mirror.lists.read("acme-item", "run-1", MIRROR, "mirror", mirror.fetchMirror);
+  expect(list).toEqual({ runtimes: [{ tool: "bun", version: "1.4.2" }], notices: [] });
+  expect(mirror.fetches()).toBe(1);
+  expect(mirror.slept).toEqual([]);
+  expect(mirror.journal).toEqual([]);
+});
+
+test("a fetch that still yields no origin/main gets one notice and no retries", async () => {
+  const mirror = fakeMirror((repo) => ({ ok: false, message: `${repo} has no origin/main` }));
+  const first = await mirror.lists.read("acme-item", "run-1", MIRROR, "mirror", mirror.fetchMirror);
+  expect(first.runtimes).toEqual([]);
+  expect(first.notices).toEqual([
+    `Couldn't read mise.toml at origin/main: ${MIRROR} has no origin/main. Paws sent no runtimes, so tools the repository pins are missing from the agent's PATH.`,
+  ]);
+  expect(mirror.fetches()).toBe(1);
+  expect(mirror.slept).toEqual([]);
+  const again = await mirror.lists.read("acme-item", "run-1", MIRROR, "mirror", mirror.fetchMirror);
+  expect(again).toEqual({ runtimes: [], notices: [] });
+  expect(mirror.journal).toHaveLength(1);
+});
+
+test("a fetch that fails is journaled and the run still gets its one notice", async () => {
+  const mirror = fakeMirror(() => NOT_CLONED);
+  const list = await mirror.lists.read("acme-item", "run-1", MIRROR, "mirror", async () => {
+    throw new Error("GitHub sign-in is required.");
+  });
+  expect(list.notices).toEqual([
+    `Couldn't read mise.toml at origin/main: ${MIRROR} is not cloned. Paws sent no runtimes, so tools the repository pins are missing from the agent's PATH.`,
+  ]);
+  expect(mirror.journal).toEqual([
+    "runtimes item=acme-item run=run-1 fetch error=GitHub sign-in is required.",
+    `runtimes item=acme-item run=run-1 unread error=${MIRROR} is not cloned`,
+  ]);
+});

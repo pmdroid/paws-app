@@ -34,10 +34,12 @@ export function createRuntimeLists(
       runId: string,
       repo: string,
       source: "checkout" | "mirror" = "checkout",
+      fetchMirror?: () => Promise<void>,
     ): Promise<RuntimeList> {
       const cached = cache.get(itemId);
       const sameRun = cached?.runId === runId;
       let failure = "";
+      let fetched = false;
       for (let attempt = 0; ; attempt++) {
         const main = source === "mirror" ? reader.mirrorMain(repo) : reader.originMain(repo);
         if (main.ok && sameRun && cached.mainCommit === main.commit)
@@ -48,8 +50,17 @@ export function createRuntimeLists(
           return remember(main.ok ? main.commit : null, list);
         }
         failure = load.message;
+        // A mirror that is not built yet is not a final answer: build it once and read again.
+        if (!main.ok && main.absent && fetchMirror && !fetched) {
+          fetched = true;
+          await fetchMirror().catch((error: unknown) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            options.journal?.(`runtimes item=${itemId} run=${runId} fetch error=${reason}`);
+          });
+          continue;
+        }
         const delay = RUNTIME_READ_RETRY_MS[attempt];
-        if (delay === undefined || (!main.ok && main.absent)) break;
+        if (delay === undefined || (!main.ok && (main.absent || fetched))) break;
         await sleep(delay);
       }
       if (sameRun && cached.unread) return { runtimes: [], notices: [] };
