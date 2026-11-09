@@ -627,7 +627,7 @@ describe("merge poll backstop", () => {
 describe("slow CI question", () => {
   const checks = "Waiting for checks: lint, test (1/4)";
 
-  async function askedAboutSlowCi() {
+  async function askedAboutSlowCi(waiting = checks) {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", now: clock.now() });
     beginImplementRun(db, "eng-1", clock.now());
@@ -643,8 +643,8 @@ describe("slow CI question", () => {
     expect(await parkMerge(sqliteDb(db), again, clock.now(), { reason: "ci", head: "h" })).toBe(
       "ask",
     );
-    expect(askAboutSlowCi(db, "eng-1", { checks, now: clock.now() })).toBe(true);
-    expect(askAboutSlowCi(db, "eng-1", { checks, now: clock.now() })).toBe(false);
+    expect(askAboutSlowCi(db, "eng-1", { checks: waiting, now: clock.now() })).toBe(true);
+    expect(askAboutSlowCi(db, "eng-1", { checks: waiting, now: clock.now() })).toBe(false);
     completeJob(db, again, clock.now());
     return { db, clock };
   }
@@ -666,7 +666,28 @@ describe("slow CI question", () => {
     expect(questions[0]!.body).toContain(checks);
     expect(questions[0]!.body).toContain(`\`${worktreeBranch(getWorkItem(db, "eng-1")!)}\``);
     expect(JSON.parse(questions[0]!.options)).toEqual(["Merge the accepted work", "Stop"]);
+    expect(questions[0]!.body).toStartWith("GitHub CI is still pending 6 hours after it started");
+    expect(questions[0]!.body).not.toContain('ci = "none"');
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
+  });
+
+  test("no check reported for six hours asks without promising CI will pass, and names the setting", async () => {
+    const noChecks =
+      'No CI checks reported yet. If acme/app has no CI, set ci = "none" under [merge.repositories."acme/app"] in config.toml.';
+    const { db } = await askedAboutSlowCi(noChecks);
+    const [question] = db
+      .query<{ body: string; options: string }, []>("SELECT body, options FROM question")
+      .all();
+    expect(question!.body).toStartWith(
+      "No GitHub CI check has reported on the accepted head in 6 hours; merge or stop?",
+    );
+    expect(question!.body).toContain(noChecks);
+    expect(question!.body).toContain(
+      'merges once checks report and pass, or on the next pass after ci = "none" is set for the repository',
+    );
+    expect(question!.body).toContain("this question comes back in 6 hours");
+    expect(question!.body).not.toContain("merges once it passes");
+    expect(JSON.parse(question!.options)).toEqual(["Merge the accepted work", "Stop"]);
   });
 
   test("Merge returns the accepted head to the merge queue and starts a fresh wait", async () => {

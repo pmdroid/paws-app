@@ -465,8 +465,14 @@ function judgeChecks(
   return { outcome: "ready", message: `CI passed.${notes}` };
 }
 
+const NO_CHECKS_YET = "No CI checks reported yet.";
+
 function noChecksYet(repository: string): string {
-  return `No CI checks reported yet. If ${repository} has no CI, set ci = "none" under [merge.repositories."${repository}"] in config.toml.`;
+  return `${NO_CHECKS_YET} If ${repository} has no CI, set ci = "none" under [merge.repositories."${repository}"] in config.toml.`;
+}
+
+export function noCiChecksReported(message: string): boolean {
+  return message.startsWith(NO_CHECKS_YET);
 }
 
 /**

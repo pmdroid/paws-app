@@ -105,7 +105,7 @@ export type {
   RebaseResult,
   SerialMergeInput,
 } from "./merge";
-export { readHeadCheckRuns, readPullCi } from "./readiness";
+export { noCiChecksReported, readHeadCheckRuns, readPullCi } from "./readiness";
 export { rerunFailedCi, CI_ALREADY_RERUN, CI_RERUN_PERMISSION_MISSING } from "./ci-rerun";
 export type { CiRerunInput } from "./ci-rerun";
 export type {
