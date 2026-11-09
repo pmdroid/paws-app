@@ -6,6 +6,8 @@ import { FakeClock, JOB_KIND } from "../core";
 import {
   applyWorkItemEvent,
   beginImplementRun,
+  claimNextJob,
+  enqueueJob,
   getWorkItem,
   insertQueuedItem,
   listJobs,
@@ -58,10 +60,19 @@ test("quiet verification retries once across restart, then asks a person", async
     // Restart with no in-memory Closeout operation and retain the last event's clock.
     db.close();
     db = openDatabase(path);
+    const oldJob = enqueueJob(db, {
+      queue: JOB_KIND.reverify,
+      payload: { itemId: "stalled" },
+      now: clock.now(),
+    });
+    claimNextJob(db, { now: clock.now(), leaseMs: 60 * 60_000 });
     clock.advance(31 * 60_000);
     await check();
+    expect(listJobs(db).find((job) => job.id === oldJob)?.status).toBe("cancelled");
     await check();
-    expect(listJobs(db).filter((j) => j.queue === JOB_KIND.reverify)).toHaveLength(1);
+    expect(
+      listJobs(db).filter((j) => j.queue === JOB_KIND.reverify && j.id !== oldJob),
+    ).toHaveLength(1);
     expect(lines).toEqual(["closeout stalled for 31 min, re-running once"]);
     db.close();
     db = openDatabase(path);
@@ -73,7 +84,9 @@ test("quiet verification retries once across restart, then asks a person", async
       "Send back to the agent",
     ]);
     expect(cancelled).toHaveLength(2);
-    expect(listJobs(db).filter((j) => j.queue === JOB_KIND.reverify)).toHaveLength(1);
+    expect(
+      listJobs(db).filter((j) => j.queue === JOB_KIND.reverify && j.id !== oldJob),
+    ).toHaveLength(1);
     answer(
       db,
       {

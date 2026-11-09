@@ -2,6 +2,8 @@ import { FakeClock, JOB_KIND } from "../../src/core";
 import {
   applyWorkItemEvent,
   beginImplementRun,
+  claimNextJob,
+  enqueueJob,
   getWorkItem,
   insertQueuedItem,
   listJobs,
@@ -28,6 +30,12 @@ export default {
       beginImplementRun(db, "quiet", clock.now());
       applyWorkItemEvent(db, "quiet", "turn_ended", { now: clock.now() });
       saveCheckpoint(db, "quiet", { phase: "verifying", baseSha: "base", wipCommit: "head" });
+      const oldJob = enqueueJob(db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: "quiet" },
+        now: clock.now(),
+      });
+      claimNextJob(db, { now: clock.now(), leaseMs: 60 * 60_000 });
       const lines: string[] = [];
       for (let attempt = 0; attempt < 2; attempt++) {
         clock.advance(31 * 60_000);
@@ -39,7 +47,11 @@ export default {
       }
       proof.expect(
         "only one automatic retry was queued",
-        listJobs(db).filter((j) => j.queue === JOB_KIND.reverify).length === 1,
+        listJobs(db).filter((j) => j.queue === JOB_KIND.reverify && j.id !== oldJob).length === 1,
+      );
+      proof.expect(
+        "the leased quiet job was cancelled",
+        listJobs(db).find((job) => job.id === oldJob)?.status === "cancelled",
       );
       proof.expect("one retry journal line", lines.length === 1, lines);
       proof.expect(
