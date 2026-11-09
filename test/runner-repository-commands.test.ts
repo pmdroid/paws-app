@@ -88,7 +88,7 @@ function fixture(file = ":memory:") {
     checkpointBot: async () => bot,
     now: () => now,
   });
-  const enqueue = (expiresIn = 120_000) =>
+  const enqueue = (expiresIn = 120_000, title?: string) =>
     enqueueRepositoryCommand(db, {
       runnerId: "runner-a",
       workspaceId: workspace,
@@ -99,6 +99,7 @@ function fixture(file = ":memory:") {
       main: "b".repeat(40),
       bot,
       expiresAt: now + expiresIn,
+      ...(title ? { title } : {}),
       now,
     });
   const post = (path: string, runnerId: string, body: unknown, token?: string) => {
@@ -171,6 +172,15 @@ test("an enqueued repository command is delivered once, signed, to its runner", 
   expect(repositoryCommandState(f.db, id)).toBe("delivered");
   expect((await f.ack(id, "runner-b"))!.status).toBe(403);
   expect((await f.ack(id, "runner-a"))!.status).toBe(200);
+});
+
+test("the pull request title goes only to a runner that accepts it", async () => {
+  const f = fixture();
+  f.enqueue(120_000, "Add widgets");
+  expect((await f.poll("runner-a"))[0]).not.toHaveProperty("title");
+  f.db.run("UPDATE runner_host_status SET runner_version='0.1.75'");
+  f.enqueue(120_000, "Add widgets");
+  expect((await f.poll("runner-a"))[0]).toMatchObject({ title: "Add widgets" });
 });
 
 test("a grant and a credential go only to the delivered runner while the command is current", async () => {

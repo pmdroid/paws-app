@@ -1,7 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { validateCandidateAttribution } from "../src/acp";
+import { appBotCommitIdentity, commitIdentityEnv, type GitCommitPolicy } from "../src/core";
 import { runGitHubGit } from "../src/github";
 import type { RunnerCommand, RunnerRepositoryCommand } from "../src/runner-protocol";
 import { createRunnerRepositories } from "../src/runner-repositories";
@@ -24,17 +34,21 @@ const env = {
 const bot = { appId: "99", login: "paws-test[bot]", id: 88 };
 const branch = "paws/item-1";
 
-function git(args: string[], cwd: string, stdin?: string) {
+function git(args: string[], cwd: string, stdin?: string, identity?: Record<string, string>) {
   const child = Bun.spawnSync(["git", ...args], {
     cwd,
-    env: { ...env, HOME: cwd },
+    env: { ...env, ...identity, HOME: cwd },
     ...(stdin === undefined ? {} : { stdin: Buffer.from(stdin) }),
   });
   if (child.exitCode !== 0) throw new Error(child.stderr.toString());
   return child.stdout.toString().trim();
 }
 
-function fixture(options: { conflict?: boolean } = {}) {
+const ADA = "Co-authored-by: Ada <ada@acme.dev>";
+const GRACE = "Co-authored-by: Grace <grace@acme.dev>";
+const TITLE = "Add the acme widgets";
+
+function fixture(options: { conflict?: boolean; shape?: "three" | "single" } = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-repository-rebase-"));
   roots.push(root);
   const source = join(root, "source");
@@ -42,18 +56,31 @@ function fixture(options: { conflict?: boolean } = {}) {
   const agentHome = join(root, "agent");
   mkdirSync(source);
   mkdirSync(agentHome);
-  const commit = (file: string, content: string, message: string) => {
+  const commit = (file: string, content: string, message: string, author?: string) => {
     writeFileSync(join(source, file), content);
     git(["add", "."], source);
-    git(["commit", "-q", "-m", message], source);
+    git(["commit", "-q", ...(author ? [`--author=${author}`] : []), "-m", message], source);
     return git(["rev-parse", "HEAD"], source);
   };
   git(["init", "-q", "-b", "main"], source);
   commit("main.txt", "base\n", "base");
   const base = commit("shared.txt", "base\n", "shared");
   git(["checkout", "-q", "-b", branch], source);
-  commit(options.conflict ? "main.txt" : "shared.txt", "branch one\n", "branch one");
-  const head = commit("branch.txt", "branch two\n", "branch two");
+  let head: string;
+  if (options.shape === "single") {
+    head = commit("shared.txt", "only\n", `only commit\n\nWhy it exists.\n\n${ADA}`);
+  } else if (options.shape === "three") {
+    commit("shared.txt", "one\n", `first change\n\n${ADA}`, "First <first@acme.dev>");
+    commit("branch.txt", "two\n", `second change\n\n${ADA}`);
+    head = commit(
+      options.conflict ? "main.txt" : "other.txt",
+      "three\n",
+      `third change\n\n${GRACE}`,
+    );
+  } else {
+    commit(options.conflict ? "main.txt" : "shared.txt", "branch one\n", "branch one");
+    head = commit("branch.txt", "branch two\n", "branch two");
+  }
   git(["checkout", "-q", "main"], source);
   const main = commit("main.txt", "main moved\n", "main moved");
   git(["clone", "-q", "--bare", source, origin], root);
@@ -74,6 +101,7 @@ function fixture(options: { conflict?: boolean } = {}) {
     head,
     main,
     bot,
+    title: TITLE,
   };
   const calls: { operation: string; token: string; lease?: string }[] = [];
   const networkGit = async (input: Parameters<typeof runGitHubGit>[0]) => {
@@ -127,23 +155,16 @@ function fixture(options: { conflict?: boolean } = {}) {
   };
 }
 
-function patchIds(cwd: string, range: string) {
-  const patches = git(["log", "-p", "--reverse", range], cwd);
-  return git(["patch-id", "--stable"], cwd, `${patches}\n`)
-    .split("\n")
-    .map((line) => line.split(" ")[0]);
-}
-
 test("a clean rebase pushes a head on main with the branch's own patches, under the lease", async () => {
   const f = fixture();
   const result = await f.rebase();
   if (result.outcome !== "rebased") throw new Error(JSON.stringify(result));
   expect(f.tip()).toBe(result.head);
   git(["merge-base", "--is-ancestor", f.command.main, result.head], f.origin);
-  expect(patchIds(f.origin, `${result.head}~2..${result.head}`)).toEqual(
-    patchIds(f.origin, `${f.base}..${f.command.head}`),
+  expect(git(["diff", f.command.main, result.head], f.origin)).toBe(
+    git(["diff", f.base, f.command.head], f.origin),
   );
-  expect(git(["rev-list", "--count", `${f.command.main}..${result.head}`], f.origin)).toBe("2");
+  expect(git(["rev-list", "--count", `${f.command.main}..${result.head}`], f.origin)).toBe("1");
   expect(git(["log", "-1", "--format=%an <%ae>|%ce", result.head], f.origin)).toBe(
     "Author <author@example.invalid>|88+paws-test[bot]@users.noreply.github.com",
   );
@@ -164,6 +185,108 @@ test("a conflict returns the files, pushes nothing and leaves no worktree", asyn
   expect(f.tip()).toBe(f.command.head);
   expect(f.calls.map((call) => call.operation)).toEqual(["clone"]);
   f.clean();
+});
+
+test("a 3-commit branch on a moved main becomes one commit titled for the pull request", async () => {
+  const f = fixture({ shape: "three" });
+  const result = await f.rebase();
+  if (result.outcome !== "rebased") throw new Error(JSON.stringify(result));
+  expect(f.tip()).toBe(result.head);
+  expect(git(["rev-parse", `${result.head}^`], f.origin)).toBe(f.command.main);
+  expect(git(["diff", "--name-only", f.command.main, result.head], f.origin).split("\n")).toEqual([
+    "branch.txt",
+    "other.txt",
+    "shared.txt",
+  ]);
+  expect(git(["show", `${result.head}:main.txt`], f.origin)).toBe("main moved");
+  expect(git(["log", "-1", "--format=%B", result.head], f.origin)).toBe(
+    `${TITLE}\n\nfirst change\nsecond change\nthird change\n\n${ADA}\n${GRACE}`,
+  );
+  expect(git(["log", "-1", "--format=%an <%ae>|%ce", result.head], f.origin)).toBe(
+    "First <first@acme.dev>|88+paws-test[bot]@users.noreply.github.com",
+  );
+  expect(f.calls.at(-1)!.lease).toBe(f.command.head);
+  f.clean();
+});
+
+test("a 3-commit branch that conflicts reports the conflicting files", async () => {
+  const f = fixture({ shape: "three", conflict: true });
+  expect(await f.rebase()).toEqual({ outcome: "conflict", files: ["main.txt"] });
+  expect(f.tip()).toBe(f.command.head);
+  expect(f.calls.map((call) => call.operation)).toEqual(["clone"]);
+  f.clean();
+});
+
+test("a single-commit branch keeps its message", async () => {
+  const f = fixture({ shape: "single" });
+  const result = await f.rebase();
+  if (result.outcome !== "rebased") throw new Error(JSON.stringify(result));
+  expect(git(["rev-parse", `${result.head}^`], f.origin)).toBe(f.command.main);
+  expect(git(["log", "-1", "--format=%B", result.head], f.origin)).toBe(
+    `only commit\n\nWhy it exists.\n\n${ADA}`,
+  );
+  f.clean();
+});
+
+test("a candidate pushed to a moved branch lands on its tip as one commit", async () => {
+  const f = fixture();
+  const human = { id: 7, login: "ada", name: "Ada", email: "ada@acme.dev" };
+  const policy: GitCommitPolicy = { bot, credit: human };
+  const identity = commitIdentityEnv(appBotCommitIdentity(bot)) as Record<string, string>;
+  const repositories = createRunnerRepositories({
+    root: join(f.root, "publish-cache"),
+    home: f.root,
+    agentHome: f.agentHome,
+    credential: async () => "synthetic-write-token",
+    networkGit: f.networkGit,
+  });
+  const run = {
+    id: "01J00000000000000000PUBLISH",
+    type: "run",
+    runnerId: "runner",
+    workspaceId: "workspace",
+    runId: "01J000000000000000000RUN01",
+    itemId: "item",
+    generation: 1,
+    issuedAt: 1,
+    expiresAt: Date.now() + 60_000,
+    profile: { agent: "claude", model: "fixture-model" },
+    repository: {
+      owner: "acme",
+      repo: "widgets",
+      remoteUrl: "https://github.com/acme/widgets.git",
+      baseSha: f.base,
+    },
+    prompt: "Implement the request",
+    pullRequestDraft: { title: TITLE, body: "Body" },
+    commitPolicy: policy,
+  } as Extract<RunnerCommand, { type: "run" }>;
+  await repositories.prepare(run);
+  git(["checkout", "-q", "-b", "candidate", f.base], f.source);
+  for (const name of ["c1", "c2"]) {
+    writeFileSync(join(f.source, `${name}.txt`), `${name}\n`);
+    git(["add", "."], f.source);
+    git(["commit", "-q", "-m", `candidate ${name}\n\n${ADA}`], f.source, undefined, identity);
+  }
+  const sha = git(["rev-parse", "HEAD"], f.source);
+  const path = join(f.root, "candidate.bundle");
+  git(["bundle", "create", "-q", path, "HEAD"], f.source);
+  const published = await repositories.publish(run, {
+    bundle: readFileSync(path),
+    sha,
+    branch,
+    rebase: true,
+  });
+  expect(f.tip()).toBe(published);
+  expect(git(["rev-parse", `${published}^`], f.origin)).toBe(f.command.head);
+  expect(git(["log", "-1", "--format=%B", published], f.origin)).toBe(
+    `${TITLE}\n\ncandidate c1\ncandidate c2\n\n${ADA}`,
+  );
+  expect(git(["show", `${published}:c2.txt`], f.origin)).toBe("c2");
+  await validateCandidateAttribution(f.origin, f.command.head, published, policy, {
+    ...env,
+    HOME: f.root,
+  });
 });
 
 test("a branch that moved fails the lease and keeps what is on GitHub", async () => {

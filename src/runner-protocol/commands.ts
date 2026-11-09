@@ -366,6 +366,7 @@ export const RunnerCommandSchema = z
       head: sha,
       main: sha,
       bot: RunnerCheckpointBotSchema,
+      title: oneLine(256).optional(),
     }),
     z.strictObject({
       ...common,

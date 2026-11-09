@@ -112,6 +112,7 @@ import {
   journal,
   getLinearSessionAccess,
   delegatedLinearUserId,
+  getPullRequestDraft,
   getWorkItemRepository,
   getWorkItemRepositoryChoice,
   getWorkItemRepositoryAnswer,
@@ -1508,6 +1509,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                     head: heads.head,
                     main: heads.main,
                     bot,
+                    title: (getPullRequestDraft(db, item.id)?.title ?? item.title)
+                      .replace(/[\0\r\n]+/g, " ")
+                      .slice(0, 256),
                     now,
                   },
                   signal,
