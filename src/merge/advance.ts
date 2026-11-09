@@ -26,7 +26,7 @@ import {
   type Db,
   type TaskMergeSettings,
   type WorkItemRecord,
-  getItemCandidateSteps,
+  getItemCandidate,
   recordItemCandidateSteps,
   wakeMergesBehindSteps,
 } from "../db";
@@ -257,7 +257,7 @@ export async function advanceMerge(
   }
   const lane: SerialMergeInput = {
     publishedAt: (head) => {
-      const candidate = await store.run((q) => getItemCandidateSteps(q, item.id));
+      const candidate = getItemCandidate(db, item.id);
       return candidate?.sha === head ? candidate.recordedAt : null;
     },
     worktree: published.worktree,
