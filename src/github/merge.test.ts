@@ -835,6 +835,7 @@ function lane(
 ): SerialMergeInput {
   return {
     ...creds(client),
+    ci: "required",
     worktree: repo.work,
     issue: "ENG-8",
     prNumber: pr,

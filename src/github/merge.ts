@@ -13,7 +13,7 @@ import { pushDenial, pushWithLease } from "./push";
 import { gitTempDirectory } from "./temp";
 import { pushOutageCause } from "./transport";
 import { readPullMergeable } from "./pull-mergeable";
-import { waitForMergeReadiness, type Readiness } from "./readiness";
+import { waitForMergeReadiness, type Readiness, type RepositoryCi } from "./readiness";
 import { readPullReview, type PullReview } from "./review";
 import { isTransient } from "../core";
 import {
@@ -32,7 +32,7 @@ export type SerialMergeInput = {
    * so its S is its candidate ref in the bare mirror.
    */
   ref?: string;
-  publishedAt?: (head: string) => number | null;
+  ci: RepositoryCi;
   issue: string;
   branchKey?: string;
   owner: string;

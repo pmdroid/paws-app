@@ -26,7 +26,6 @@ import {
   type Db,
   type TaskMergeSettings,
   type WorkItemRecord,
-  getItemCandidate,
   recordItemCandidateSteps,
   wakeMergesBehindSteps,
 } from "../db";
@@ -256,10 +255,7 @@ export async function advanceMerge(
     if (caps.stopped()) return { kind: "obsolete" };
   }
   const lane: SerialMergeInput = {
-    publishedAt: (head) => {
-      const candidate = getItemCandidate(db, item.id);
-      return candidate?.sha === head ? candidate.recordedAt : null;
-    },
+    ci: caps.ci(`${repository.owner}/${repository.repo}`),
     worktree: published.worktree,
     ...(published.ref ? { ref: published.ref } : {}),
     issue: item.linearIdentifier,

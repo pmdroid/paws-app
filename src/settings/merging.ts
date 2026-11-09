@@ -4,13 +4,16 @@ import {
   DEFAULT_IGNORED_COMMENT_BOTS,
   ignoredCommentMarkers,
   loadConfigFile,
+  parseCiSettings,
   parseCommentWait,
   parseHighRiskPathSettings,
   parseIgnoredCommentSettings,
   parseMergePolicy,
   readMergeSettings,
+  repositoryCi,
   storedMerge,
   writeMergePolicy,
+  type CiSetting,
   type CommentWait,
   type CommentWaitInput,
   type IgnoredComments,
@@ -86,6 +89,8 @@ export type HighRiskRepositoryView = {
 
 type IgnoredCommentsView = IgnoredComments & { repository: string };
 
+type RepositoryCiView = { repository: string; ci: CiSetting };
+
 export const MERGE_SETTINGS_PATH = "/api/settings/merging";
 
 const ORDER_NAMES: Record<MergeChoice["order"], string> = {
@@ -137,6 +142,7 @@ export async function handleMergeSettingsRequest(
         options,
       ),
       ignoredComments: ignoredCommentsView(policy, options),
+      ci: ciView(policy, options),
       choices,
       ...(choicesError ? { choicesError } : {}),
       ...(options.githubQueues ? await githubQueueView(options.githubQueues) : {}),
@@ -160,6 +166,7 @@ export async function handleMergeSettingsRequest(
   let commentWait: CommentWaitInput | undefined;
   let autoApproveHighRisk: boolean | undefined;
   let ignoredComments: Record<string, IgnoredComments> | undefined;
+  let ci: Record<string, CiSetting> | undefined;
   try {
     if (isRecord(body) && "ignoredComments" in body) {
       const { ignoredComments: lists, ...rest } = body;
@@ -176,6 +183,11 @@ export async function handleMergeSettingsRequest(
           400,
         );
       }
+      body = rest;
+    }
+    if (isRecord(body) && "ci" in body) {
+      const { ci: settings, ...rest } = body;
+      ci = parseCiSettings(settings);
       body = rest;
     }
     if (isRecord(body) && "highRiskPaths" in body) {
@@ -244,6 +256,7 @@ export async function handleMergeSettingsRequest(
       highRiskPaths,
       commentWait,
       ignoredComments,
+      ci,
     );
   } catch (caughtError6) {
     journalCaught(caughtError6, "merging.handleMergeSettingsRequest.writeMergePolicy", null);
@@ -290,6 +303,10 @@ export async function handleMergeSettingsRequest(
     journalCaught(caughtError, "merging.handleMergeSettingsRequest.readSaved", null);
   }
   const ignoredAfter = after ? ignoredCommentsView(after, options) : [];
+  const ciAfter = after ? ciView(after, options) : [];
+  if (ci !== undefined)
+    for (const change of ciChanges(before ? ciView(before, options) : [], ciAfter))
+      options.audit?.("settings.merging", change);
   if (ignoredComments !== undefined)
     for (const change of ignoredCommentChanges(
       before ? ignoredCommentsView(before, options) : [],
@@ -305,6 +322,7 @@ export async function handleMergeSettingsRequest(
       .map(([repository, paths]) => ({ repository, paths })),
     highRiskRepositories: await highRiskRepositoriesView(saved, options),
     ignoredComments: ignoredAfter,
+    ci: ciAfter,
   });
 }
 
@@ -365,6 +383,30 @@ function ignoredCommentsView(
     ],
     ignoreCommentMarkers: ignoredCommentMarkers(settings, repository),
   }));
+}
+
+function ciView(settings: MergeSettings, options: MergeSettingsOptions): RepositoryCiView[] {
+  const configured = Object.entries(settings.repositories)
+    .filter(([, value]) => value.ci !== undefined)
+    .map(([name]) => name);
+  return repositoryNames(configured, options).map((repository) => ({
+    repository,
+    ci: repositoryCi(settings, repository),
+  }));
+}
+
+function ciChanges(
+  before: readonly RepositoryCiView[],
+  after: readonly RepositoryCiView[],
+): string[] {
+  const old = new Map(before.map((entry) => [entry.repository.toLowerCase(), entry]));
+  const next = new Map(after.map((entry) => [entry.repository.toLowerCase(), entry]));
+  return [...new Set([...old.keys(), ...next.keys()])].flatMap((key) => {
+    const from = old.get(key)?.ci ?? "required";
+    const to = next.get(key)?.ci ?? "required";
+    const repository = next.get(key)?.repository ?? old.get(key)!.repository;
+    return from === to ? [] : [`CI for ${repository}: ${from} → ${to}`];
+  });
 }
 
 function ignoredCommentChanges(

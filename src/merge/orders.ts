@@ -42,6 +42,7 @@ import {
   type GitHubBinding,
   type Readiness,
   type PullCi,
+  type RepositoryCi,
   type PullMergeable,
 } from "../github";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from "./ci-fix";
@@ -240,6 +241,7 @@ export type OrderCapabilities = {
   ciFixAttempts(item: WorkItemRecord): number;
   feedbackWait(): PullFeedbackWait;
   readPullCi(item: WorkItemRecord, pull: { number: number; head: string }): Promise<PullCi>;
+  ci(repository: string): RepositoryCi;
   /** GitHub's `mergeable` for the item's pull request, read again while GitHub computes it. */
   readPull(item: WorkItemRecord, pullNumber: number): Promise<PullMergeable | null>;
   /**
@@ -502,6 +504,7 @@ export async function mergeThroughGitHubQueue(
     repo: repository.repo,
     prNumber: pull.number,
     head,
+    ci: caps.ci(name),
     client: github.client,
     appId: github.appId,
     installationId: github.installationId,

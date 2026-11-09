@@ -38,6 +38,7 @@ import {
   type FakeMergeQueue,
   type GitHubClient,
   type GitHubResponse,
+  type RepositoryCi,
 } from "../github";
 import {
   advanceMerge,
@@ -177,6 +178,7 @@ export async function mergeHarness(
     /** GitHub's "Require branches to be up to date before merging" on main. */
     upToDateRule: false,
     packages: [] as string[],
+    repositoryCi: "required" as RepositoryCi,
     /** The risk approval the lane reads for head S; normal tier unless a test says otherwise. */
     risk: (_head: string): RiskApproval => "not_required",
     /** Heads the lane asked a person to approve. */
@@ -494,9 +496,11 @@ export async function mergeHarness(
           repo: "app",
           prNumber: pull.number,
           head: pull.head,
+          ci: state.repositoryCi,
           tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
         });
       },
+      ci: () => state.repositoryCi,
       readPull: (_, prNumber) => readPull(prNumber),
       mergeLane: (current) => state.lanes.get(current.id) ?? "",
       dependencyHold: (itemId) => {

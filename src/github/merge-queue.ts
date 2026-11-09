@@ -2,7 +2,12 @@ import { journalCaught } from "../journal";
 import { z } from "zod";
 import { acquireOperationToken } from "./auth/provider";
 import type { GitHubTokenProvider } from "./auth/types";
-import { readMergeReadiness, type Readiness, type FailedCheck } from "./readiness";
+import {
+  readMergeReadiness,
+  type Readiness,
+  type FailedCheck,
+  type RepositoryCi,
+} from "./readiness";
 import type { GitHubClient } from "./types";
 
 /** GitHub's `MergeQueueEntryState`. */
@@ -333,6 +338,7 @@ export type GitHubQueueMergeInput = {
   prNumber: number;
   /** The head Closeout accepted. GitHub refuses to queue another head. */
   head: string;
+  ci: RepositoryCi;
   client: GitHubClient;
   appId?: string;
   installationId?: string;
@@ -412,6 +418,7 @@ export async function githubQueueMerge(
     repo: input.repo,
     prNumber: input.prNumber,
     head: input.head,
+    ci: input.ci,
   });
   if (readiness.outcome === "pending")
     return { outcome: "checks_pending", message: readiness.message };

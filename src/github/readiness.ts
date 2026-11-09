@@ -162,6 +162,8 @@ type Check = {
 export const LOG_TAIL_LINES = 60;
 export const LOG_TAIL_CHARS = 6000;
 
+export type RepositoryCi = "required" | "none";
+
 type ReadinessInput = {
   client: GitHubClient;
   token: () => Promise<string>;
@@ -169,8 +171,7 @@ type ReadinessInput = {
   repo: string;
   prNumber: number;
   head: string;
-  /** Paws publication time for the exact requested head, in milliseconds. */
-  publishedAt?: (head: string) => number | null;
+  ci: RepositoryCi;
   sleep?: (ms: number) => Promise<void>;
   isCancelled?: () => boolean;
   onWait?: (message: string) => Promise<void>;
@@ -308,8 +309,8 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
       checks,
       latestPerName(baseChecks, (check) => check),
       required,
-      baseBranch,
-      input.publishedAt?.(input.head) ?? null,
+      input.ci,
+      `${input.owner}/${input.repo}`,
     );
     if (ci.outcome === "ci_failed") return await withLogTails(input, token, ci, checks);
     if (ci.outcome !== "ready") return ci;
@@ -413,8 +414,8 @@ function judgeChecks(
   all: Check[],
   baseChecks: Check[],
   required: Set<string>,
-  baseBranch: string,
-  pushedAt: number | null,
+  ci: RepositoryCi,
+  repository: string,
 ): Readiness {
   const checks = all.filter((check) => !optional(check, required, all));
   const failed = checks.filter((check) => FAILED.has(check.result ?? ""));
@@ -444,19 +445,12 @@ function judgeChecks(
     };
   }
   if (checks.length === 0 && required.size === 0) {
-    const pushed = pushedAt ?? Number.NaN;
-    if (
-      all.length === 0 &&
-      baseChecks.length === 0 &&
-      Number.isFinite(pushed) &&
-      Date.now() - pushed >= 5 * 60_000
-    ) {
+    if (ci === "none")
       return {
         outcome: "ready",
-        message: `No CI on this repository: no checks on the candidate or on ${baseBranch}, and none required.`,
+        message: `No CI checks to wait for: ${repository} is configured without CI (ci = "none").`,
       };
-    }
-    return { outcome: "pending", message: "Waiting for CI on the candidate commit." };
+    return { outcome: "pending", message: noChecksYet(repository) };
   }
   const reported = new Set(all.map((check) => check.name));
   const waiting = new Set([...required].filter((name) => !reported.has(name)));
@@ -469,6 +463,10 @@ function judgeChecks(
     };
   }
   return { outcome: "ready", message: `CI passed.${notes}` };
+}
+
+function noChecksYet(repository: string): string {
+  return `No CI checks reported yet. If ${repository} has no CI, set ci = "none" under [merge.repositories."${repository}"] in config.toml.`;
 }
 
 /**
@@ -715,6 +713,7 @@ export async function readPullCi(input: {
   repo: string;
   prNumber: number;
   head: string;
+  ci: RepositoryCi;
   tokenProvider?: GitHubTokenProvider;
   appId?: string;
   installationId?: string;
@@ -726,6 +725,7 @@ export async function readPullCi(input: {
     repo: input.repo,
     prNumber: input.prNumber,
     head: input.head,
+    ci: input.ci,
     token: () => acquireOperationToken(input, "merge"),
   });
   if (read.passed !== undefined) return { state: "green", checks: read.passed };

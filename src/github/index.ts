@@ -108,7 +108,14 @@ export type {
 export { readHeadCheckRuns, readPullCi } from "./readiness";
 export { rerunFailedCi, CI_ALREADY_RERUN, CI_RERUN_PERMISSION_MISSING } from "./ci-rerun";
 export type { CiRerunInput } from "./ci-rerun";
-export type { FailedCheck, HeadChecks, PassedCheck, PullCi, Readiness } from "./readiness";
+export type {
+  FailedCheck,
+  HeadChecks,
+  PassedCheck,
+  PullCi,
+  Readiness,
+  RepositoryCi,
+} from "./readiness";
 export { createAppTokenProvider, parseGitHubRemote, runGitHubGit } from "./auth";
 export type {
   AppTokenProviderOptions,

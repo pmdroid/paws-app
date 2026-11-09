@@ -673,6 +673,21 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     ]);
   });
 
+  test("a repository without checks joins the GitHub merge queue only under ci none", async () => {
+    const { h, queue } = await githubQueue();
+    h.state.ci = () => [];
+    expect(await h.pass("ENG-1")).toMatchObject({
+      kind: "wait",
+      reason: "ci",
+      message:
+        'No CI checks reported yet. If acme/app has no CI, set ci = "none" under [merge.repositories."acme/app"] in config.toml.',
+    });
+    expect(queue.enqueued).toHaveLength(0);
+    h.state.repositoryCi = "none";
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ahead" });
+    expect(queue.enqueued).toHaveLength(1);
+  });
+
   test("a removal for a failing check goes back to the agent, and the fix is queued again", async () => {
     const { h, queue } = await githubQueue();
     await h.pass("ENG-1");

@@ -2,8 +2,9 @@ import { join } from "node:path";
 import { ACME, type Proof } from "./harness";
 
 export default {
-  covers: ["src/github/readiness.ts", "src/github/fake.ts"],
-  summary: "An accepted head pushed six minutes ago merges in a repository with no CI.",
+  covers: ["src/github/readiness.ts", "src/github/fake.ts", "src/config/merge.ts"],
+  summary:
+    'A repository without CI waits for checks by default and names the setting, then merges at once after a person sets ci = "none" for it.',
   noCi: true,
   agent: (input) =>
     input.purpose === "implement"
@@ -21,17 +22,22 @@ export default {
   async run(proof) {
     await proof.delegate();
     await proof.waitFor(
-      "the fresh published head waits",
+      "the accepted head waits in the merge queue",
       () => proof.itemState() === "merge_queue",
     );
+    const named = await proof.waitFor("the merge waits for CI and names the setting", () =>
+      (proof.mergeWait()?.message ?? "").includes('set ci = "none"'),
+    );
     proof.expect(
-      "a fresh head has not merged",
+      'with the default ci = "required", the merge waits for checks and says how to mark the repository as having no CI',
+      named && proof.mergeWait()?.reason === "ci",
+      proof.mergeWait(),
+    );
+    proof.expect(
+      "nothing merged while the repository requires CI",
       !proof.github.calls.some((call) => call.method === "PUT" && call.path.endsWith("/merge")),
     );
-    proof.expect(
-      "age the Paws publication record",
-      await proof.waitFor("publication is recorded", () => proof.ageCandidate()),
-    );
+    proof.setRepositoryCi("none");
     const merged = await proof.waitFor(
       "the item is merged",
       () => ["merged", "failed", "manual", "cancelled"].includes(proof.itemState() ?? ""),
