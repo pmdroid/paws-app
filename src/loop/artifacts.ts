@@ -11,6 +11,7 @@ import type {
   PublishedArtifact,
 } from "../acp";
 import {
+  linearSessionGeneration,
   beginArtifactAttempt,
   requestArtifactAttachment,
   artifactAttachmentRequested,
@@ -263,13 +264,7 @@ export function createEvidenceArtifactPublisher(options: {
 }
 
 function sessionGeneration(db: Database, sessionId: string): number {
-  return (
-    db
-      .query<{ generation: number }, [string]>(
-        "SELECT generation FROM outbox_session_fence WHERE target = 'linear' AND ordering_key = ?",
-      )
-      .get(sessionId)?.generation ?? 0
-  );
+  return linearSessionGeneration(db, sessionId);
 }
 
 export function createLinearArtifactPublisher(options: {

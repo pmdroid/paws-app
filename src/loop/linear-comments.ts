@@ -1,6 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { isTerminalWorkItemState, parentIssueIdSql } from "../core";
+import { isTerminalWorkItemState } from "../core";
 import {
+  commentOpenedAgentSession,
+  itemsForLinearIssue,
+  linearStoppedAfter,
+  parentIssueSession,
   applyLinearTurns,
   DEFAULT_PULL_FEEDBACK_WAIT,
   enqueueOutboxOnce,
@@ -126,11 +130,7 @@ export function routeLinearComment(
   if (!agent && (comment.botActor !== null || (comment.actorType ?? "user") !== "user"))
     return settle("ignored", "bot");
   if (inAgentSession(db, comment, policy.appUserId)) return settle("ignored", "agent_session");
-  const items = db
-    .query<{ id: string; state: string; created_at: number }, [string]>(
-      "SELECT id, state, created_at FROM work_item WHERE linear_issue_id = ? ORDER BY created_at DESC, id",
-    )
-    .all(comment.issueId);
+  const items = itemsForLinearIssue(db, comment.issueId);
   const open = items.filter(
     (row) => !isTerminalWorkItemState(row.state as WorkItemRecord["state"]),
   );
@@ -150,7 +150,7 @@ export function routeLinearComment(
     return settle("ignored", "not_delegated");
   }
   const item = getWorkItem(db, open[0]!.id)!;
-  if (comment.createdAtMs < open[0]!.created_at) return settle("ignored", "before_delegation");
+  if (comment.createdAtMs < open[0]!.createdAt) return settle("ignored", "before_delegation");
   if (item.cancelRequested) return settle("ignored", "ended");
   if (item.sessionKey === null) return settle("rejected", "no_session");
   const session = getLinearSession(db, item.sessionKey);
@@ -639,12 +639,7 @@ function staleReason(
   if (comment.sessionId === null || item.sessionKey !== comment.sessionId) return "superseded";
   const session = getLinearSession(db, comment.sessionId);
   if (session === null || session.stoppedAt !== null) return "session_stopped";
-  if (
-    db
-      .query("SELECT 1 FROM linear_stop_receipt WHERE session_id = ? AND generation > ?")
-      .get(comment.sessionId, comment.generation ?? 0) !== null
-  )
-    return "session_stopped";
+  if (linearStoppedAfter(db, comment.sessionId, comment.generation ?? 0)) return "session_stopped";
   if (inAgentSession(db, comment, policy.appUserId)) return "agent_session";
   if (policy.recheck && comment.authorId !== null) {
     const teamId = getLinearSessionInstallation(db, comment.sessionId)?.teamId ?? null;
@@ -676,38 +671,12 @@ function inAgentSession(
     return true;
   const ids =
     comment.parentId === null ? [comment.commentId] : [comment.commentId, comment.parentId];
-  for (const id of ids)
-    if (
-      db
-        .query(
-          `SELECT 1 FROM inbox_event WHERE issue_id = ?1 AND action IN ('created','prompted')
-             AND json_valid(payload) AND (
-               json_extract(payload, '$.agentActivity.sourceCommentId') = ?2
-               OR json_extract(payload, '$.agentSession.sourceCommentId') = ?2
-               OR json_extract(payload, '$.agentSession.commentId') = ?2
-               OR json_extract(payload, '$.agentSession.comment.id') = ?2
-               OR json_extract(payload, '$.sourceCommentId') = ?2)
-           LIMIT 1`,
-        )
-        .get(comment.issueId, id) !== null
-    )
-      return true;
+  for (const id of ids) if (commentOpenedAgentSession(db, comment.issueId, id)) return true;
   return false;
 }
 
 function parentSession(db: Database, issueId: string): string | null {
-  return (
-    db
-      .query<{ session_id: string }, [string]>(
-        `SELECT s.session_id FROM linear_session s
-         WHERE s.issue_id = ?1 AND s.stopped_at IS NULL
-           AND EXISTS (SELECT 1 FROM work_item w WHERE w.linear_issue_id <> ?1
-                         AND ${parentIssueIdSql("w")} = ?1
-                         AND w.state NOT IN ('completed','merged','cancelled'))
-         ORDER BY s.created_at DESC LIMIT 1`,
-      )
-      .get(issueId)?.session_id ?? null
-  );
+  return parentIssueSession(db, issueId);
 }
 
 function who(comment: LinearCommentRecord): string {

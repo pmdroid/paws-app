@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
+import { JOB_KIND } from "../core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { jsonField } from "./json-text";
+import { least } from "./pull-comments";
 
 /**
  * GitHub refuses pushes from the Paws App to a repository with no reason (PAS-867). While the row
@@ -137,4 +140,25 @@ export function* endPushOutageSteps(q: Q, repository: string): Steps<PushOutage 
 /** Ends the outage. Returns the row it removed, or null when there was none. */
 export function endPushOutage(db: Database, repository: string): PushOutage | null {
   return settled(sqliteDb(db).run((q) => endPushOutageSteps(q, repository)));
+}
+
+/** Merge jobs parked on the outage run by `now`, when the outage ends. */
+export function* releasePushOutageJobsSteps(q: Q, repository: string, now: number): Steps<void> {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({ runAt: least(q, sql`${job.runAt}`, sql`${now}`) })
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.merge),
+          eq(job.status, "pending"),
+          eq(jsonField(q, job.payload, "pushOutage"), repository),
+        ),
+      ),
+  );
+}
+
+export function releasePushOutageJobs(db: Database, repository: string, now: number): void {
+  settled(sqliteDb(db).run((q) => releasePushOutageJobsSteps(q, repository, now)));
 }

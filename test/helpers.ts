@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { candidateRef, mirrorPath, type RunAgentOptions, type RunAgentResult } from "../src/acp";
@@ -23,8 +23,10 @@ export function tempHome(): string {
 // dozen fsyncs). Pay that once while this module loads; tests use memory.
 const template = join(tempHome(), "paws.db");
 const warm = openDatabase(template);
+let templateBytes: Uint8Array;
 try {
   migrate(warm);
+  templateBytes = warm.serialize();
 } finally {
   warm.close();
 }
@@ -60,9 +62,10 @@ export function legacyMigratedDatabase(path: string): Database {
 
 // Migrating a new file database commits once per migration, about 0.6 s of
 // fsyncs alone and many times that on a loaded disk. A test that needs a file
-// starts from a copy of the database migrated above instead.
+// starts from the snapshot migrated above instead. Keep it in memory: temporary
+// directory cleanup must not invalidate the template for later tests in a worker.
 export function migratedDatabase(path: string): Database {
-  copyFileSync(template, path);
+  writeFileSync(path, templateBytes);
   const db = openDatabase(path);
   migrate(db);
   return db;

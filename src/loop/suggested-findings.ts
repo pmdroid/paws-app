@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
+  latestItemJobId,
+  runningJobId,
   decideSuggestedFindings,
   getSuggestionTurn,
   getWorkItem,
@@ -144,24 +146,12 @@ export function waitingSuggestions(db: Database, itemId: string): SuggestedFindi
 }
 
 export function suggestionTurnRunning(db: Database, itemId: string): number | null {
-  return (
-    db
-      .query<{ id: number }, [string, string]>(
-        `SELECT id FROM job WHERE queue = ? AND job_key = ? AND status = 'running'`,
-      )
-      .get(JOB_KIND.resume, suggestionTurnJobKey(itemId))?.id ?? null
-  );
+  return runningJobId(db, JOB_KIND.resume, suggestionTurnJobKey(itemId));
 }
 
 function restartComing(db: Database, itemId: string): boolean {
-  const queued = db
-    .query<{ n: number }, [string, string, string]>(
-      `SELECT count(*) AS n FROM job WHERE queue IN (?, ?) AND status = 'pending'
-       AND json_extract(payload, '$.itemId') = ?`,
-    )
-    .get(JOB_KIND.start, JOB_KIND.resume, itemId);
   return (
-    (queued?.n ?? 0) > 0 ||
+    latestItemJobId(db, itemId, [JOB_KIND.start, JOB_KIND.resume], ["pending"]) !== null ||
     pendingPullComments(db, itemId).length > 0 ||
     pendingChangeRequests(db, itemId).length > 0 ||
     pendingPullCiFailures(db, itemId).length > 0 ||
