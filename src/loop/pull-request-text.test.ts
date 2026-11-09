@@ -9,6 +9,7 @@ import {
   recordItemPullRequest,
   savePullRequestDraft,
   savePullRequestText,
+  sqliteDb,
 } from "../db";
 import { openPullRequest, publishedPullRequestBody, type GitHubBinding } from "../github";
 import { intakeDelegatedIssue } from "../intake";
@@ -108,7 +109,7 @@ async function fixture(
     const previous = getPullRequestDraft(db, itemId);
     savePullRequestDraft(db, itemId, draft, 2);
     return applyPullRequestDraft({
-      db,
+      store: sqliteDb(db),
       itemId,
       issue: "DEP-686",
       draft,

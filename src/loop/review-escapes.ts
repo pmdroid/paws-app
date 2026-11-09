@@ -1,7 +1,7 @@
-import type { Database } from "bun:sqlite";
 import {
-  openReviewEscapes,
-  settleReviewEscape,
+  openReviewEscapesSteps,
+  settleReviewEscapeSteps,
+  type Db,
   type NotEscapeReason,
   type ReviewEscapeRecord,
 } from "../db";
@@ -63,24 +63,22 @@ export function classifyReviewEscape(
  * next acceptance. The number settled.
  */
 export async function settleReviewEscapes(
-  db: Database,
+  store: Db,
   input: { itemId: string; fixHead: string; base: string; now: number; read: FixDiffReader },
 ): Promise<number> {
   let settled = 0;
-  for (const candidate of openReviewEscapes(db, input.itemId)) {
+  for (const candidate of await store.run((q) => openReviewEscapesSteps(q, input.itemId))) {
     if (candidate.acceptedHead === input.fixHead) continue;
     const diff = await input.read(candidate.acceptedHead, input.fixHead, input.base);
     const verdict = classifyReviewEscape(candidate, diff);
-    if (
-      settleReviewEscape(db, candidate.id, {
-        fixHead: input.fixHead,
-        files: diff.files,
-        escape: verdict.escape,
-        notEscapeReason: verdict.escape ? null : verdict.reason,
-        now: input.now,
-      })
-    )
-      settled++;
+    const settlement = {
+      fixHead: input.fixHead,
+      files: diff.files,
+      escape: verdict.escape,
+      notEscapeReason: verdict.escape ? null : verdict.reason,
+      now: input.now,
+    };
+    if (await store.run((q) => settleReviewEscapeSteps(q, candidate.id, settlement))) settled++;
   }
   return settled;
 }

@@ -15,6 +15,7 @@ import {
   unpostedReviewReplies,
   unreportedReviewReplies,
   type PullFeedbackWait,
+  sqliteDb,
 } from "../db";
 import {
   commentOnPullRequest,
@@ -364,7 +365,7 @@ describe("Paws replies to every handed-off comment", () => {
     const head = "abcdef1234567890";
     expect(
       await postReviewReplies(
-        db,
+        sqliteDb(db),
         { itemId: "eng-1", pullNumber: 7, head, now: () => 3_000 },
         github,
       ),
@@ -392,7 +393,7 @@ describe("Paws replies to every handed-off comment", () => {
     expect(unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
     expect(
       await postReviewReplies(
-        db,
+        sqliteDb(db),
         { itemId: "eng-1", pullNumber: 7, head, now: () => 4_000 },
         github,
       ),
@@ -418,7 +419,7 @@ describe("Paws replies to every handed-off comment", () => {
     );
     recordAgentReviewReplies(db, "eng-1", "R1 answered: A fresh read is required.", 2_000);
     await postReviewReplies(
-      db,
+      sqliteDb(db),
       {
         itemId: "eng-1",
         pullNumber: 7,
@@ -486,7 +487,7 @@ describe("Paws replies to every handed-off comment", () => {
         await github.resolveReviewThread(threadId);
       },
     };
-    await expect(postReviewReplies(db, input, failing)).rejects.toThrow(
+    await expect(postReviewReplies(sqliteDb(db), input, failing)).rejects.toThrow(
       "GitHub review replies failed",
     );
     expect(replies.replies).toHaveLength(2);
@@ -494,7 +495,7 @@ describe("Paws replies to every handed-off comment", () => {
     expect(replies.resolved).toEqual(["RT_1"]);
     expect(attempts).toEqual(["RT_0", "RT_1"]);
     expect(unpostedReviewReplies(db, "eng-1", 7)).toEqual([]);
-    expect(await postReviewReplies(db, input, failing)).toBe(0);
+    expect(await postReviewReplies(sqliteDb(db), input, failing)).toBe(0);
     expect(replies.replies).toHaveLength(2);
     expect(replies.comments).toHaveLength(1);
     expect(attempts).toEqual(["RT_0", "RT_1"]);

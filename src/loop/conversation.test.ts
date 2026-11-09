@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
-import { getConversation, migrate, openDatabase, saveConversation } from "../db";
+import { getConversation, migrate, openDatabase, saveConversation, sqliteDb } from "../db";
 import { executeItem, FOLLOW_UP_INTERRUPTION } from "../acp";
 import { createAcpFixRunner } from "./agents";
 import { durableConversation } from "./conversation";
@@ -46,7 +46,7 @@ test("recovery consumes only new public transcript observations once after an in
     );
     db.close();
     db = openDatabase(dbPath);
-    await durableConversation(db, "item");
+    await durableConversation(sqliteDb(db), "item");
     const recovered = getConversation(db, "item");
     expect(recovered.transcript).toBeNull();
     expect(recovered.entries).toContain("INITIAL_REQUEST");
@@ -56,7 +56,7 @@ test("recovery consumes only new public transcript observations once after an in
     expect(recovered.entries).not.toContain("ALREADY_SAVED");
     db.close();
     db = openDatabase(dbPath);
-    await durableConversation(db, "item");
+    await durableConversation(sqliteDb(db), "item");
     expect(getConversation(db, "item").entries).toBe(recovered.entries);
   } finally {
     db.close();
@@ -89,7 +89,7 @@ test("executor and Closeout fixer share the durable ACP conversation through rea
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item','epic','issue','ENG-1','Task','running','paws/eng-1',0,1)",
     );
-    const runner = await durableConversation(db, "item");
+    const runner = await durableConversation(sqliteDb(db), "item");
     const agent = new URL("../../test/fixtures/brief-agent.ts", import.meta.url).pathname;
     const launch = (purpose: string) => ({
       command: process.execPath,
@@ -149,7 +149,7 @@ test("a failed pending snapshot cannot start an ACP process", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   try {
-    const runner = await durableConversation(db, "missing-item");
+    const runner = await durableConversation(sqliteDb(db), "missing-item");
     await expect(
       runner({
         role: "implementer",
@@ -200,7 +200,7 @@ test("a concurrent prompt rejects without replacing the active transcript snapsh
     );
     let ready!: () => void;
     const started = new Promise<void>((resolve) => (ready = resolve));
-    const runner = await durableConversation(db, "item");
+    const runner = await durableConversation(sqliteDb(db), "item");
     const options = {
       role: "implementer" as const,
       itemId: "item",

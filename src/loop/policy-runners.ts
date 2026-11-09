@@ -1,9 +1,9 @@
-import type { Database } from "bun:sqlite";
 import { policyKeys } from "../closeout";
 import {
-  clearPolicyRunnerWarning,
-  policyKeysLowestRunnerLacks,
-  savePolicyRunnerWarning,
+  clearPolicyRunnerWarningSteps,
+  policyKeysLowestRunnerLacksSteps,
+  savePolicyRunnerWarningSteps,
+  type Db,
   type PolicyRunnerWarning,
 } from "../db";
 import { journal } from "../journal";
@@ -15,24 +15,23 @@ import { RUNNER_OFFLINE_MS } from "./runner-wait";
  * journaled once per policy digest and runner release; the runner leaves the key out and runs the
  * rest. Returns the warning, or null when every online runner knows every key or none is online.
  */
-export function checkPolicyRunners(
-  db: Database,
+export async function checkPolicyRunners(
+  store: Db,
   input: {
     repository: string;
     digest: string;
     files: ReadonlyMap<string, Uint8Array>;
     now: number;
   },
-): PolicyRunnerWarning | null {
-  const lacks = policyKeysLowestRunnerLacks(
-    db,
-    policyKeys(input.files),
-    input.now - RUNNER_OFFLINE_MS,
+): Promise<PolicyRunnerWarning | null> {
+  const keysNow = policyKeys(input.files);
+  const lacks = await store.run((q) =>
+    policyKeysLowestRunnerLacksSteps(q, keysNow, input.now - RUNNER_OFFLINE_MS),
   );
   if (lacks === null) return null;
   const { runnerVersion, keys } = lacks;
   if (keys.length === 0) {
-    if (clearPolicyRunnerWarning(db, input.repository))
+    if (await store.run((q) => clearPolicyRunnerWarningSteps(q, input.repository)))
       journal(
         `closeout policy ${input.digest} for ${input.repository}: every online runner knows its keys`,
       );
@@ -45,7 +44,7 @@ export function checkPolicyRunners(
     keys,
     checkedAt: input.now,
   };
-  if (savePolicyRunnerWarning(db, warning))
+  if (await store.run((q) => savePolicyRunnerWarningSteps(q, warning)))
     journal(
       `closeout policy ${input.digest} for ${input.repository} uses ${keys
         .map((entry) => `${entry.key} (runner ${entry.needs})`)

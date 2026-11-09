@@ -1,12 +1,11 @@
-import type { Database } from "bun:sqlite";
-import { commentingApps, type ReviewCheckWait, type WorkItemRecord } from "../db";
+import { commentingAppsSteps, type Db, type ReviewCheckWait, type WorkItemRecord } from "../db";
 import type { HeadChecks } from "../github";
 import type { PullReviewCapabilities } from "./pull-reviews";
 
 export type ReviewChecks = { head: string | null; pending: string[] | null; until: number };
 
 export async function readReviewChecks(
-  db: Database,
+  store: Db,
   input: {
     owner: string;
     repo: string;
@@ -18,7 +17,7 @@ export async function readReviewChecks(
   },
 ): Promise<ReviewChecks> {
   const apps = new Set([
-    ...commentingApps(db, input.owner, input.repo),
+    ...(await store.run((q) => commentingAppsSteps(q, input.owner, input.repo))),
     ...input.configured.map((slug) => slug.toLowerCase()),
   ]);
   const fallback = input.since + input.maxMs;

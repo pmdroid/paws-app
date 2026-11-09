@@ -1,6 +1,5 @@
 import { journalCaught } from "../journal";
 import { stat } from "node:fs/promises";
-import type { Database } from "bun:sqlite";
 import {
   AcpCleanupError,
   createAcpPromptLifecycle,
@@ -10,14 +9,14 @@ import {
   type RunAgentOptions,
   type RunAgentResult,
 } from "../acp";
-import { getConversation, saveConversation } from "../db";
+import { getConversationSteps, saveConversationSteps, type Db } from "../db";
 
 export async function durableConversation(
-  db: Database,
+  store: Db,
   itemId: string,
   runner?: (options: RunAgentOptions) => Promise<RunAgentResult>,
 ) {
-  const stored = getConversation(db, itemId);
+  const stored = await store.run((q) => getConversationSteps(q, itemId));
   if (stored.blocked) throw new AcpCleanupError("Prior ACP process cleanup could not be verified");
   const history = JSON.parse(stored.entries) as AcpConversationEntry[];
   if (stored.transcript) {
@@ -32,7 +31,8 @@ export async function durableConversation(
         "optional file may be absent",
       );
     }
-    saveConversation(db, itemId, JSON.stringify(history), null);
+    const entries = JSON.stringify(history);
+    await store.run((q) => saveConversationSteps(q, itemId, entries, null));
   }
   const lifecycle = createAcpPromptLifecycle(history, runner);
   let active = false;
@@ -54,14 +54,11 @@ export async function durableConversation(
           throw error;
         },
       );
-      saveConversation(
-        db,
-        itemId,
-        JSON.stringify([...lifecycle.snapshot(), { kind: "request", body: options.prompt }]),
-        transcript,
-        false,
-        offset,
-      );
+      const entries = JSON.stringify([
+        ...lifecycle.snapshot(),
+        { kind: "request", body: options.prompt },
+      ]);
+      await store.run((q) => saveConversationSteps(q, itemId, entries, transcript, false, offset));
       let blocked = false;
       try {
         return await lifecycle.prompt(options);
@@ -69,7 +66,8 @@ export async function durableConversation(
         blocked = error instanceof AcpCleanupError;
         throw error;
       } finally {
-        saveConversation(db, itemId, JSON.stringify(lifecycle.snapshot()), null, blocked);
+        const finished = JSON.stringify(lifecycle.snapshot());
+        await store.run((q) => saveConversationSteps(q, itemId, finished, null, blocked));
       }
     } finally {
       active = false;

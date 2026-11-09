@@ -701,7 +701,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               invalidateAuthorization({ issueId: notification.issueId });
               await linearTaskAccess.reconcile(notification.issueId);
               await orchestrator?.reconcileExecution();
-              await refreshLinearNotificationContext(db, linear?.tracker ?? null, notification);
+              await refreshLinearNotificationContext(store, linear?.tracker ?? null, notification);
             }),
           notify: (command) => {
             if (orchestrator === null) throw new Error("The loop is not attached.");
@@ -1915,7 +1915,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       // Enqueued once by a migration; it fills the Findings page from the review evidence of runs
       // Closeout accepted before the page stored findings.
       created.jobs.register(REVIEW_FINDINGS_BACKFILL_JOB, () =>
-        backfillReviewFindings({ db, pawsRoot: paths.home }).then(({ runs, recorded, gone }) =>
+        backfillReviewFindings({ store, pawsRoot: paths.home }).then(({ runs, recorded, gone }) =>
           journal(
             `review findings backfilled: ${runs} accepted runs, ${recorded} findings, ${gone} gone`,
           ),

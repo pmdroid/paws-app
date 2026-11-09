@@ -15,6 +15,8 @@ import {
   recordSuggestedFindings,
   recordSuggestionTurn,
   suggestedFindings,
+  suggestedFindingsSteps,
+  type Db,
   type SuggestedFindingRecord,
   type WorkItemRecord,
 } from "../db";
@@ -40,15 +42,15 @@ export function suggestionTurnJobKey(itemId: string): string {
 }
 
 export async function acceptedSuggestions(
-  db: Database,
+  store: Db,
   item: WorkItemRecord,
   pawsRoot: string,
 ): Promise<OpenFinding[]> {
   if (item.acceptedHead === null) return [];
-  const findings = await openFindings(db, item, item.acceptedHead, pawsRoot);
+  const findings = await openFindings(store, item, item.acceptedHead, pawsRoot);
   return withDecisions(
     findings.filter((finding) => finding.why === "below failOn"),
-    suggestedFindings(db, item.id),
+    await store.run((q) => suggestedFindingsSteps(q, item.id)),
   );
 }
 
