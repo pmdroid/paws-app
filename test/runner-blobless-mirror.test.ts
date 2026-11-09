@@ -1,6 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/acp";
@@ -170,6 +178,45 @@ async function fixture(options: { fullMirror?: boolean; skipPrefetch?: boolean }
     lazyFetches,
   };
 }
+
+test.skipIf(!linux)(
+  "a fetch whose new blob deltas against a blob the mirror lacks asks for no blobs",
+  async () => {
+    const f = await fixture();
+    const work = join(f.root, "work");
+    const inWork = (...args: string[]) => git(["-C", work, ...args], { env });
+    await git(["clone", "-q", f.origin, work], { env });
+    const body = Array.from(
+      { length: 3000 },
+      (_, line) => `${line} ${randomBytes(12).toString("hex")}`,
+    ).join("\n");
+    writeFileSync(join(work, "delta.txt"), `${body}\n`);
+    await inWork("add", ".");
+    await inWork("commit", "-q", "-m", "delta base");
+    await inWork("push", "-q", "origin", "main");
+    const base = (await inWork("rev-parse", "HEAD:delta.txt")).trim();
+    await git(["clone", "-q", "--bare", "--filter=blob:none", `file://${f.origin}`, f.mirror], {
+      env,
+    });
+    chmodSync(f.mirror, 0o700);
+    const refuse = join(f.root, "refuse-upload-pack");
+    await git(["--git-dir", f.mirror, "config", "remote.origin.uploadpack", refuse], { env });
+    writeFileSync(join(work, "delta.txt"), `${body}\nappended\n`);
+    await inWork("commit", "-q", "-am", "delta on the blob the mirror lacks");
+    await inWork("push", "-q", "origin", "main");
+    const tip = (await inWork("rev-parse", "HEAD")).trim();
+
+    const prepared = await f.repositories.prepare(f.command);
+
+    expect(f.inMirror(["rev-parse", "refs/heads/main"]).stdout.toString().trim()).toBe(tip);
+    expect(f.inMirror(["cat-file", "-e", base]).exitCode).not.toBe(0);
+    expect(f.inMirror(["config", "--get-regexp", "promisor"]).stdout.toString().trim()).toBe(
+      "remote.origin.promisor true",
+    );
+    expect(f.lazyFetches()).toBe("");
+    rmSync(prepared.bundle, { force: true });
+  },
+);
 
 test.skipIf(!linux)(
   "a fresh mirror is a blobless partial clone that prefetches exactly the snapshot's blobs with the credential",
