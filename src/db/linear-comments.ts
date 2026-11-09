@@ -1,8 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
-import { enqueueJobOnce } from "./jobs";
+import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { enqueueJobOnceSteps, emitJobReady } from "./jobs";
 import { jsonField } from "./json-text";
 import type { PullFeedbackWait } from "./pull-comments";
 
@@ -323,6 +323,39 @@ export function linearCommentAuthor(db: Database, commentId: string): string | n
   return settled(sqliteDb(db).run((q) => linearCommentAuthorSteps(q, commentId)));
 }
 
+export function* gatherLinearCommentsSteps(
+  q: Q,
+  itemId: string,
+  receivedAt: number,
+  wait: PullFeedbackWait,
+  jobKey: string,
+): Steps<boolean> {
+  const { job } = q.t;
+  const item =
+    q.dialect === "postgres"
+      ? sql`${job.payload}->>'linearCommentsFor'`
+      : sql`json_extract(${job.payload}, '$.linearCommentsFor')`;
+  const pending = and(
+    eq(job.status, "pending"),
+    eq(job.queue, JOB_KIND.linearComments),
+    eq(item, itemId),
+  );
+  const runAt =
+    q.dialect === "postgres"
+      ? sql`LEAST(GREATEST(${job.runAt}, ${receivedAt + wait.quietMs}), ${job.createdAt} + ${Math.max(wait.maxMs, wait.quietMs)})`
+      : sql`MIN(MAX(${job.runAt}, ${receivedAt + wait.quietMs}), ${job.createdAt} + ${Math.max(wait.maxMs, wait.quietMs)})`;
+  yield* q.exec(q.orm.update(job).set({ runAt }).where(pending));
+  if (yield* q.one(q.orm.select({ id: job.id }).from(job).where(pending).limit(1))) return false;
+  const { inserted } = yield* enqueueJobOnceSteps(q, {
+    queue: JOB_KIND.linearComments,
+    jobKey,
+    payload: { linearCommentsFor: itemId },
+    runAt: receivedAt + wait.quietMs,
+    now: receivedAt,
+  });
+  return inserted;
+}
+
 export function gatherLinearComments(
   db: Database,
   itemId: string,
@@ -330,30 +363,23 @@ export function gatherLinearComments(
   wait: PullFeedbackWait,
   jobKey: string,
 ): void {
-  db.run(
-    `UPDATE job SET run_at = MIN(MAX(run_at, ?), created_at + ?)
-     WHERE status = 'pending' AND queue = ? AND json_extract(payload, '$.linearCommentsFor') = ?`,
-    [
-      receivedAt + wait.quietMs,
-      Math.max(wait.maxMs, wait.quietMs),
-      JOB_KIND.linearComments,
-      itemId,
-    ],
+  const inserted = settled(
+    sqliteDb(db).transaction((q) => gatherLinearCommentsSteps(q, itemId, receivedAt, wait, jobKey)),
   );
-  const gathering = db
-    .query<{ n: number }, [string, string]>(
-      `SELECT count(*) AS n FROM job WHERE queue = ? AND status = 'pending'
-       AND json_extract(payload, '$.linearCommentsFor') = ?`,
-    )
-    .get(JOB_KIND.linearComments, itemId);
-  if ((gathering?.n ?? 0) > 0) return;
-  enqueueJobOnce(db, {
-    queue: JOB_KIND.linearComments,
-    jobKey,
-    payload: { linearCommentsFor: itemId },
-    runAt: receivedAt + wait.quietMs,
-    now: receivedAt,
-  });
+  if (inserted) emitJobReady(db);
+}
+
+export async function gatherLinearCommentsAsync(
+  store: Db,
+  itemId: string,
+  receivedAt: number,
+  wait: PullFeedbackWait,
+  jobKey: string,
+): Promise<void> {
+  const inserted = await store.transaction((q) =>
+    gatherLinearCommentsSteps(q, itemId, receivedAt, wait, jobKey),
+  );
+  if (inserted) emitJobReady(store);
 }
 
 function mapRow(row: Q["t"]["linearComment"]["$inferSelect"]): LinearCommentRecord {
