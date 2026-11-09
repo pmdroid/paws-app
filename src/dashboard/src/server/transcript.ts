@@ -1,13 +1,13 @@
 import { journalCaught } from "../journal";
-import { getRun, getWorkItem } from "../../../db";
+import { getRunSteps, getWorkItemSteps, sqliteDb } from "../../../db";
 import { fullAgentTranscript } from "../live/transcript";
 import { dashboardOrigin } from "./request-origin";
 import type { StatusServerOptions } from "./handler";
 
-export function handleAgentTranscriptRequest(
+export async function handleAgentTranscriptRequest(
   request: Request,
   options: StatusServerOptions,
-): Response | null {
+): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== "/api/runs/transcript") return null;
   const headers = {
@@ -23,8 +23,9 @@ export function handleAgentTranscriptRequest(
   const runId = url.searchParams.get("run") ?? "";
   if (!options.db || !/^[A-Za-z0-9_-]{1,128}$/.test(runId))
     return new Response("Not found", { status: 404, headers });
-  const run = getRun(options.db, runId);
-  const item = run ? getWorkItem(options.db, run.itemId) : null;
+  const store = options.store ?? sqliteDb(options.db);
+  const run = await store.run((q) => getRunSteps(q, runId));
+  const item = run ? await store.run((q) => getWorkItemSteps(q, run.itemId)) : null;
   const session = item?.sessionKey ?? null;
   if (
     !run ||
