@@ -52,6 +52,7 @@ export type CloseoutGateOptions = {
   reportDir?: string;
   recorder?: GateInput["recorder"];
   maxFixAttempts?: number;
+  reviewRetryDelaysMs?: readonly number[];
   retryBaseline?: readonly string[];
   bypasses?: GateInput["bypasses"];
   progress?: GateInput["progress"];
@@ -95,6 +96,9 @@ export function createCloseoutGate(options: CloseoutGateOptions): CloseoutGate {
         ...(options.reportDir ? { reportDir: options.reportDir } : {}),
         ...(options.recorder ? { recorder: options.recorder } : {}),
         ...(options.maxFixAttempts !== undefined ? { maxFixAttempts: options.maxFixAttempts } : {}),
+        ...(options.reviewRetryDelaysMs !== undefined
+          ? { reviewRetryDelaysMs: options.reviewRetryDelaysMs }
+          : {}),
         ...(options.bypasses ? { bypasses: options.bypasses } : {}),
         ...(options.retryBaseline ? { retryBaseline: options.retryBaseline } : {}),
         ...(options.progress ? { progress: options.progress } : {}),
