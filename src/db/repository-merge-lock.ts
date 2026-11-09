@@ -93,3 +93,27 @@ export function readRepositoryMergeLock(
     return row ?? null;
   });
 }
+
+export function holdRepositoryMergeLocksForItem(
+  db: Db,
+  input: { itemId: string; now: number; ttlMs: number },
+): Promise<boolean> {
+  return db.run(function* (q) {
+    const { repositoryMergeLock: lock } = q.t;
+    const held = yield* q.all(
+      q.orm
+        .update(lock)
+        .set({ expiresAt: input.now + input.ttlMs })
+        .where(eq(lock.itemId, input.itemId))
+        .returning({ holder: lock.holder }),
+    );
+    return held.length > 0;
+  });
+}
+
+export function releaseRepositoryMergeLocksForItem(db: Db, itemId: string): Promise<void> {
+  return db.run(function* (q) {
+    const { repositoryMergeLock: lock } = q.t;
+    yield* q.exec(q.orm.delete(lock).where(eq(lock.itemId, itemId)));
+  });
+}

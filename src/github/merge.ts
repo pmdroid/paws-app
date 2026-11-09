@@ -56,6 +56,7 @@ export type SerialMergeInput = {
   commitEnv?: Record<string, string>;
   sleep?: (ms: number) => Promise<void>;
   isCancelled?: () => boolean;
+  stillHeld?: () => Promise<boolean>;
   /**
    * `[merge] main_moved = "overlap"`: compare main's new commits with the pull request's files,
    * grouped by these package roots, when S is behind main.
@@ -312,6 +313,14 @@ export async function squashPull(
       head: expectedHead,
       message: recheck.message,
       readiness: recheck,
+    };
+  if (input.stillHeld && !(await input.stillHeld()))
+    return {
+      merged: false,
+      outcome: "blocked",
+      branch,
+      head: expectedHead,
+      message: "the repository squash lock was lost",
     };
   // A stop or withdrawn publication during the reads must still win.
   if (input.isCancelled?.()) return cancelled(branch);

@@ -200,7 +200,7 @@ export async function advanceMerge(
   try {
     return await laneAttempt(db, store, input, caps, squashLock);
   } finally {
-    await squashLock.release();
+    await squashLock.finish();
   }
 }
 
@@ -365,6 +365,11 @@ async function laneAttempt(
       const squashed = await squashPull(
         {
           ...lane,
+          stillHeld: async () => {
+            const stillHeld = await squashLock.confirm();
+            if (!stillHeld) lockBusy = true;
+            return stillHeld;
+          },
           beforeMergeCall: (expectedHead) => beginMergeCall(db, item.id, expectedHead, caps.now()),
         },
         { head, base: facts.base },
@@ -372,7 +377,7 @@ async function laneAttempt(
       );
       if (!squashed.merged && squashed.outcome !== "unknown")
         await store.run((q) => endMergeCallSteps(q, item.id));
-      if (!squashed.merged) await squashLock.release();
+      if (!squashed.merged && squashed.outcome !== "unknown") await squashLock.release();
       return squashed;
     },
   });

@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 import {
   acquireRepositoryMergeLock,
+  holdRepositoryMergeLocksForItem,
   readRepositoryMergeLock,
   releaseRepositoryMergeLock,
+  releaseRepositoryMergeLocksForItem,
   renewRepositoryMergeLock,
   repositoryMergeLockKey,
 } from "../src/db";
@@ -90,6 +92,36 @@ forEachDialect((open) => {
       expect(await acquireRepositoryMergeLock(db, lane("a", "acme/app"))).toBe(true);
       expect(await acquireRepositoryMergeLock(db, lane("b", "acme/api"))).toBe(true);
       expect(await acquireRepositoryMergeLock(db, lane("c", "other/app"))).toBe(true);
+      expect((await readRepositoryMergeLock(db, "acme/api"))?.holder).toBe("b");
+    } finally {
+      await close();
+    }
+  });
+
+  test("an item's lock is held past its turn and released by item, never another item's", async () => {
+    const { db, close } = await open();
+    try {
+      expect(await acquireRepositoryMergeLock(db, lane("a", "acme/app"))).toBe(true);
+      expect(await acquireRepositoryMergeLock(db, lane("b", "acme/api"))).toBe(true);
+      expect(
+        await holdRepositoryMergeLocksForItem(db, {
+          itemId: "item-a",
+          now: 50_000,
+          ttlMs: 10 * TTL,
+        }),
+      ).toBe(true);
+      expect(await readRepositoryMergeLock(db, "acme/app")).toMatchObject({
+        holder: "a",
+        expiresAt: 50_000 + 10 * TTL,
+      });
+      expect(await acquireRepositoryMergeLock(db, lane("c", "acme/app", 50_000 + TTL))).toBe(false);
+      expect(
+        await holdRepositoryMergeLocksForItem(db, { itemId: "item-c", now: 50_000, ttlMs: TTL }),
+      ).toBe(false);
+      await releaseRepositoryMergeLocksForItem(db, "item-c");
+      expect((await readRepositoryMergeLock(db, "acme/app"))?.holder).toBe("a");
+      await releaseRepositoryMergeLocksForItem(db, "item-a");
+      expect(await readRepositoryMergeLock(db, "acme/app")).toBeNull();
       expect((await readRepositoryMergeLock(db, "acme/api"))?.holder).toBe("b");
     } finally {
       await close();
