@@ -22,6 +22,7 @@ export const AGENT_READ_PERMISSIONS = {
 
 export const ACTIONS_RERUN_PERMISSIONS = {
   actions: "write",
+  contents: "read",
   metadata: "read",
 } as const;
 

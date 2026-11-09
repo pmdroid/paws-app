@@ -124,7 +124,7 @@ describe("GitHub App tokens", () => {
     expect(seen[0]).toEqual({ method: "DELETE", path: "/installation/token", token: "ghs_done" });
   });
 
-  test("the CI re-run token holds only Actions write and metadata read", () => {
+  test("the CI re-run token holds only Actions write, contents read and metadata read", () => {
     const now = new Date();
     expect(
       assertScopedToken(
