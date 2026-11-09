@@ -4845,9 +4845,7 @@ export class Orchestrator {
                 location: finding.location,
                 text: finding.explanation,
                 bugClass: bugClass(finding.explanation),
-                why: review.preExisting?.includes(finding)
-                  ? ("pre-existing" as const)
-                  : ("meets failOn" as const),
+                why: "meets failOn" as const,
               })),
           ),
           reviewed: [],
