@@ -142,3 +142,34 @@ Rebase returns are not configurable: three in a row on a known main commit or a 
 Grouping bounds each helper prompt to 65,000 characters. Linear title reads stop at each team’s share of a 65,000-character total, with at most 1,000 titles per team. Large snapshots rotate a batch of findings and the sampled issue titles daily; finding text is capped at 4,000 characters and titles at 500. Partial snapshots are revisited without requiring another finding change. Grouping helpers have a ten-minute command lifetime.
 
 Grouping is maintenance work. An interactive classification or repository-selection helper fences an unfinished grouping helper only when dispatch commits to that runner. Ranking prefers an idle helper slot and never interrupts grouping. The runner has one helper slot independently of its work capacity; the interrupted grouping turn still counts against its daily allowance. This is the issue’s explicit cost cap, confirmed by the team: report preemption as a failed attempt and pick the findings up on the next UTC day. Overflow processing saves the last processed finding ID and resumes after it, including when earlier findings close. A batch wraps from the tail to the head to fill its prompt budget. Legacy list-position cursors start a fresh pass. It preserves groups outside the processed batch, finishes a pass through the snapshot, then records an explicit skip reason while the findings stay unchanged.
+
+### Agent presets and Linear labels
+
+Named profiles can be stored alongside agent defaults and project overrides:
+
+```toml
+[agents.presets.Opus]
+agent = "claude"
+model = "opus"
+effort = "high"
+
+[agents.presets.Codex]
+agent = "codex"
+model = "codex"
+```
+
+Presets use the same agent, model and optional effort validation as other profiles.
+Names contain 1–40 letters, digits, spaces, dots, underscores or hyphens.
+Matching ignores case and surrounding spaces; duplicate names under that comparison
+are refused. Quote TOML names containing spaces or dots.
+
+The Linear label groups are **Implementer** and **Reviewer**. Each group's label
+name identifies a preset. The profile resolver accepts these names independently:
+label preset, then repository override, then global default. Unknown names and
+reviewer labels matching the implementer's agent and model return label problems
+and retain the inherited profile for that role. Reviewer fallback is still omitted
+when it uses the resolved reviewer's agent. Reading these labels from Linear is
+follow-up work; adding labels alone does not yet change a run.
+
+The existing admin-protected `/api/settings/agents` endpoint reads and writes
+a `presets` object keyed by name alongside `defaults` and `projects`.

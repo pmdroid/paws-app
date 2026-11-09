@@ -184,7 +184,7 @@ test("session conflicts report one actionable error without suggesting another r
         await admit("new");
       },
     ),
-  ).rejects.toThrow("PAS-372");
+  ).resolves.toBe(false);
   expect(tracker.progress.filter((update) => update.kind === "error")).toEqual([
     {
       sessionId: "new",

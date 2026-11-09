@@ -15,15 +15,12 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { JOB_KIND, type RestartReason } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
-import { halt } from "./halt";
-import { applyWorkItemEvent, saveCheckpoint, type WorkItemRecord } from "./items";
-import { reenqueueJob } from "./jobs";
-import { mergeCallInFlight } from "./remote-merges";
-import { orm } from "./orm";
-import { markRun } from "./runs";
-import { workItem } from "./schema";
-import { immediate } from "./tx";
+import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { haltSteps } from "./halt";
+import { applyWorkItemEventSteps, saveCheckpointSteps, type WorkItemRecord } from "./items";
+import { emitJobReady, reenqueueJobSteps } from "./jobs";
+import { mergeCallInFlightSteps } from "./remote-merges";
+import { markRunSteps } from "./runs";
 
 export type RestartHandoff = {
   reason: RestartReason;
@@ -45,60 +42,79 @@ export function restart(
   item: WorkItemRecord,
   handoff: RestartHandoff,
 ): number | null {
-  return immediate(db, () => {
-    if (mergeCallInFlight(db, item.id)) return null;
-    if (!halt(db, item, handoff.now)) return null;
-    if (item.currentRunId) markRun(db, item.currentRunId, "ended", handoff.now);
-    if (item.state === "failed")
-      orm(db)
+  const result = settled(sqliteDb(db).transaction((q) => restartSteps(q, item, handoff)));
+  if (result?.armed) emitJobReady(db);
+  return result?.id ?? null;
+}
+
+export async function restartAsync(
+  store: Db,
+  item: WorkItemRecord,
+  handoff: RestartHandoff,
+): Promise<number | null> {
+  const result = await store.transaction((q) => restartSteps(q, item, handoff));
+  if (result?.armed) emitJobReady(store);
+  return result?.id ?? null;
+}
+
+export function* restartSteps(
+  q: Q,
+  item: WorkItemRecord,
+  handoff: RestartHandoff,
+): Steps<{ id: number; armed: boolean } | null> {
+  const { workItem } = q.t;
+  if (yield* mergeCallInFlightSteps(q, item.id)) return null;
+  if (!(yield* haltSteps(q, item, handoff.now))) return null;
+  if (item.currentRunId) yield* markRunSteps(q, item.currentRunId, "ended", handoff.now);
+  if (item.state === "failed")
+    yield* q.exec(
+      q.orm
         .update(workItem)
         .set({ cancelRequested: 0, recoveryAttempts: 0 })
-        .where(eq(workItem.id, item.id))
-        .run();
-    const record = {
-      kind: "restart" as const,
-      reason: handoff.reason,
-      payloadDigest: createHash("sha256").update(handoff.body).digest("hex"),
-      now: handoff.now,
-    };
-    const queued = applyWorkItemEvent(db, item.id, "restart", record);
-    if (item.checkpoint) saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "running" });
-    const jobKey = handoff.jobKey ?? `restart:${item.id}:${queued.version}`;
-    const after = latestHumanTurn(db, item.id);
-    const payload = {
-      itemId: item.id,
-      runId: item.currentRunId,
-      handoff: handoff.body,
-      reason: handoff.reason,
-      ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
-      ...(handoff.fixRound ? { fixRound: true } : {}),
-    };
-    const job = reenqueueJob(
-      db,
-      {
-        queue: JOB_KIND.resume,
-        jobKey,
-        payload,
-        now: handoff.now,
-      },
-      (previous) => {
-        if (!FIX_REASONS.includes(handoff.reason) && !handoff.fixRound) return payload;
-        const old = previous?.payload as
-          | { fixRoundsAfter?: number; fixRounds?: number }
-          | undefined;
-        const inWindow =
-          old?.fixRoundsAfter === after ||
-          (old?.fixRoundsAfter === undefined && previous !== null && previous.activationId > after);
-        return {
-          ...payload,
-          fixRounds: (inWindow ? (old?.fixRounds ?? 1) : 0) + 1,
-          fixRoundsAfter: after,
-        };
-      },
+        .where(eq(workItem.id, item.id)),
     );
-    if (!job.pending) throw new Error("restart requires a pending resume job");
-    return job.id;
-  });
+  const record = {
+    kind: "restart" as const,
+    reason: handoff.reason,
+    payloadDigest: createHash("sha256").update(handoff.body).digest("hex"),
+    now: handoff.now,
+  };
+  const queued = yield* applyWorkItemEventSteps(q, item.id, "restart", record);
+  if (item.checkpoint)
+    yield* saveCheckpointSteps(q, item.id, { ...item.checkpoint, phase: "running" });
+  const jobKey = handoff.jobKey ?? `restart:${item.id}:${queued.version}`;
+  const after = yield* latestHumanTurnSteps(q, item.id);
+  const payload = {
+    itemId: item.id,
+    runId: item.currentRunId,
+    handoff: handoff.body,
+    reason: handoff.reason,
+    ...(handoff.limit !== undefined ? { limit: handoff.limit } : {}),
+    ...(handoff.fixRound ? { fixRound: true } : {}),
+  };
+  const job = yield* reenqueueJobSteps(
+    q,
+    {
+      queue: JOB_KIND.resume,
+      jobKey,
+      payload,
+      now: handoff.now,
+    },
+    (previous) => {
+      if (!FIX_REASONS.includes(handoff.reason) && !handoff.fixRound) return payload;
+      const old = previous?.payload as { fixRoundsAfter?: number; fixRounds?: number } | undefined;
+      const inWindow =
+        old?.fixRoundsAfter === after ||
+        (old?.fixRoundsAfter === undefined && previous !== null && previous.activationId > after);
+      return {
+        ...payload,
+        fixRounds: (inWindow ? (old?.fixRounds ?? 1) : 0) + 1,
+        fixRoundsAfter: after,
+      };
+    },
+  );
+  if (!job.pending) throw new Error("restart requires a pending resume job");
+  return { id: job.id, armed: job.armed };
 }
 
 const FIX_REASONS: readonly string[] = ["findings", "ci", "review"];
@@ -192,6 +208,10 @@ export function* fixRoundsSteps(q: Q, itemId: string): Steps<number> {
 /** Fix restarts since the latest human turn, including repeated uses of one job row. */
 export function fixRounds(db: Database, itemId: string): number {
   return settled(sqliteDb(db).run((q) => fixRoundsSteps(q, itemId)));
+}
+
+export async function fixRoundsAsync(store: Db, itemId: string): Promise<number> {
+  return store.run((q) => fixRoundsSteps(q, itemId));
 }
 
 export function* restartLimitSteps(q: Q, itemId: string): Steps<number | null> {

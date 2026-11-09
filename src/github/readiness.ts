@@ -44,7 +44,10 @@ const responseSchema = z.object({
   errors: z.array(z.unknown()).optional(),
   data: z.object({
     repository: z.object({
-      object: z.object({ oid: z.string(), statusCheckRollup: rollupSchema }),
+      object: z.object({
+        oid: z.string(),
+        statusCheckRollup: rollupSchema,
+      }),
       pullRequest: z.object({
         headRefOid: z.string(),
         state: z.enum(["OPEN", "CLOSED", "MERGED"]),
@@ -122,6 +125,7 @@ export type Readiness = {
   outcome: "ready" | "pending" | "blocked" | "sha_moved" | "ci_failed";
   message: string;
   failedChecks?: FailedCheck[];
+  waitingChecks?: { name: string; url: string | null }[];
   /** Every check on the head, set when CI failed. */
   checks?: CiCheck[];
   onlyCancelled?: true;
@@ -165,6 +169,8 @@ type ReadinessInput = {
   repo: string;
   prNumber: number;
   head: string;
+  /** Paws publication time for the exact requested head, in milliseconds. */
+  publishedAt?: (head: string) => number | null;
   sleep?: (ms: number) => Promise<void>;
   isCancelled?: () => boolean;
   onWait?: (message: string) => Promise<void>;
@@ -302,6 +308,8 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
       checks,
       latestPerName(baseChecks, (check) => check),
       required,
+      baseBranch,
+      input.publishedAt?.(input.head) ?? null,
     );
     if (ci.outcome === "ci_failed") return await withLogTails(input, token, ci, checks);
     if (ci.outcome !== "ready") return ci;
@@ -319,7 +327,10 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
         }
       : {
           outcome: "ready",
-          message: `CI passed and all review threads are resolved.${skippedNote(checks)}${optionalNote(checks, required)}`,
+          message:
+            checks.length === 0
+              ? ci.message
+              : `CI passed and all review threads are resolved.${skippedNote(checks)}${optionalNote(checks, required)}`,
           passed,
         };
   } catch (error) {
@@ -398,16 +409,32 @@ function startedLater(
   return false;
 }
 
-function judgeChecks(all: Check[], baseChecks: Check[], required: Set<string>): Readiness {
+function judgeChecks(
+  all: Check[],
+  baseChecks: Check[],
+  required: Set<string>,
+  baseBranch: string,
+  pushedAt: number | null,
+): Readiness {
   const checks = all.filter((check) => !optional(check, required, all));
   const failed = checks.filter((check) => FAILED.has(check.result ?? ""));
   if (failed.length > 0) {
+    const reported = new Set(all.map((check) => check.name));
+    const waitingChecks = [
+      ...checks
+        .filter((c) => !GREEN.has(c.result ?? "") && !FAILED.has(c.result ?? ""))
+        .map(({ name, url }) => ({ name, url })),
+      ...[...required].filter((name) => !reported.has(name)).map((name) => ({ name, url: null })),
+    ];
     const failedOnBase = new Set(
       baseChecks.filter((check) => FAILED.has(check.result ?? "")).map((check) => check.name),
     );
     return {
       outcome: "ci_failed",
-      message: "CI failed on the candidate commit",
+      message: waitingChecks.length
+        ? `CI failed: ${failed.map((c) => c.name).join(", ")}; waiting for ${waitingChecks.map((c) => c.name).join(", ")} to finish (up to 20 min)`
+        : "CI failed on the candidate commit",
+      ...(waitingChecks.length ? { waitingChecks } : {}),
       failedChecks: failed.map((check) => ({
         name: check.name,
         url: check.url,
@@ -417,6 +444,18 @@ function judgeChecks(all: Check[], baseChecks: Check[], required: Set<string>): 
     };
   }
   if (checks.length === 0 && required.size === 0) {
+    const pushed = pushedAt ?? Number.NaN;
+    if (
+      all.length === 0 &&
+      baseChecks.length === 0 &&
+      Number.isFinite(pushed) &&
+      Date.now() - pushed >= 5 * 60_000
+    ) {
+      return {
+        outcome: "ready",
+        message: `No CI on this repository: no checks on the candidate or on ${baseBranch}, and none required.`,
+      };
+    }
     return { outcome: "pending", message: "Waiting for CI on the candidate commit." };
   }
   const reported = new Set(all.map((check) => check.name));
@@ -660,7 +699,13 @@ async function readRequiredChecks(
 export type PullCi =
   | { state: "green"; checks: PassedCheck[] }
   | { state: "pending"; message: string }
-  | { state: "failed"; failedChecks: FailedCheck[]; checks: CiCheck[] }
+  | {
+      state: "failed";
+      failedChecks: FailedCheck[];
+      checks: CiCheck[];
+      waitingChecks?: Readiness["waitingChecks"];
+      message?: string;
+    }
   /** The head is not the pull request's, the pull request is closed, or GitHub was unreadable. */
   | { state: "unknown"; message: string; moved?: true };
 
@@ -685,7 +730,12 @@ export async function readPullCi(input: {
   });
   if (read.passed !== undefined) return { state: "green", checks: read.passed };
   if (read.outcome === "ci_failed")
-    return { state: "failed", failedChecks: read.failedChecks ?? [], checks: read.checks ?? [] };
+    return {
+      state: "failed",
+      failedChecks: read.failedChecks ?? [],
+      checks: read.checks ?? [],
+      ...(read.waitingChecks ? { waitingChecks: read.waitingChecks, message: read.message } : {}),
+    };
   if (read.outcome === "pending") return { state: "pending", message: read.message };
   if (read.outcome === "sha_moved") return { state: "unknown", message: read.message, moved: true };
   return { state: "unknown", message: read.message };

@@ -192,7 +192,8 @@ import {
   type GitHubBinding,
   type GitHubTokenProvider,
 } from "./github";
-import { startHost } from "./host";
+import { startHost, createLagWatchdog } from "./host";
+import { recoverRunnerWorkStall } from "./runner-work";
 import {
   checkRedelegation,
   createInboxStore,
@@ -1968,6 +1969,14 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   });
   jobLoop = loops.jobs;
 
+  const lagTimer = setInterval(
+    createLagWatchdog({
+      recover: (lag, startedAt) => recoverRunnerWorkStall(db, startedAt, lag),
+    }),
+    1000,
+  );
+  lagTimer.unref();
+  abort.signal.addEventListener("abort", () => clearInterval(lagTimer), { once: true });
   const host = startHost({
     db,
     clock: options?.hostClock,

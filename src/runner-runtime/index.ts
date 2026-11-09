@@ -125,6 +125,7 @@ type Active = {
   idleMs: number;
   workMs: number;
   workLimitMs: number;
+  stallDeadline?: number;
   /** Monotonic time of the heartbeat that reported the server lease and alive mark. */
   agreedAt?: number;
   /** Wall time of that heartbeat. */
@@ -1040,6 +1041,15 @@ export async function openRunnerRuntime(options: {
     return entry.quiesced;
   }
   function expired(entry: Active) {
+    // A running worker may bridge an unavailable control plane, but never a refusal.
+    if (
+      (unreachable || pulsing !== undefined) &&
+      entry.execution.phase === "running" &&
+      entry.execution.command.type === "review"
+    )
+      return (
+        now() >= Math.max(entry.execution.command.expiresAt, entry.serverLeaseUntil ?? 0) + 300_000
+      );
     return (
       entry.workMs >= entry.workLimitMs || monotonic() >= entry.deadline + RUNNER_LEASE_GRACE_MS
     );
@@ -1212,6 +1222,15 @@ export async function openRunnerRuntime(options: {
             entry.serverAliveAt = response.aliveAt;
             entry.serverLeaseUntil = serverExpiry.get(key(entry.execution.command));
             entry.offlineBudgetMs = response.offlineBudgetMs;
+            if (entry.execution.command.type === "review")
+              entry.workLimitMs = Math.max(
+                entry.workLimitMs,
+                entry.workMs + Math.max(0, (entry.serverLeaseUntil ?? now()) - now()),
+              );
+            entry.stallDeadline = Math.max(
+              entry.stallDeadline ?? 0,
+              observed + Math.max(0, (entry.serverLeaseUntil ?? now()) - now()) + 300_000,
+            );
             entry.deadline = deadline;
           }
         }
@@ -2003,6 +2022,7 @@ export async function openRunnerRuntime(options: {
           idleMs: 0,
           workMs: 0,
           workLimitMs: Math.max(0, command.expiresAt - now()),
+          stallDeadline: monotonic() + Math.max(0, command.expiresAt - now()) + 300_000,
           ...(advertisedBudget === undefined ||
           advertisedAliveAt === undefined ||
           agreedPulseAt === undefined ||

@@ -214,3 +214,5 @@ export {
   renderWorkContext,
   type BriefValues,
 } from "./brief-template";
+
+export { trackHostOperation, sampleHostOperations, measureHostOperation } from "./host-operation";

@@ -4,6 +4,8 @@ import { settled, sqliteDb, type Q } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 
 export type CiRoundCheck = {
+  /** Non-optional check unfinished when the CI collection window expired. */
+  waitingForCiFix?: true;
   name: string;
   state: "passed" | "failed" | "running" | "skipped";
   url: string | null;

@@ -231,3 +231,80 @@ test("waiting-run toggle is off by default and save feedback includes the run co
     "Saved. 1 waiting run will switch at their next step.",
   );
 });
+
+test("preset rows render, add, remove, save and show API name errors on the row", async () => {
+  const { Window } = await import("happy-dom");
+  const { createAgentSettings } = await import("./agent-settings");
+  const win = new Window();
+  const globals = [
+    "window",
+    "document",
+    "Element",
+    "HTMLElement",
+    "HTMLInputElement",
+    "HTMLSelectElement",
+    "CSS",
+    "requestAnimationFrame",
+  ] as const;
+  const previous = new Map<string, unknown>();
+  const host = globalThis as Record<string, unknown>;
+  for (const key of globals) {
+    previous.set(key, host[key]);
+    host[key] = key === "window" ? win : (win as unknown as Record<string, unknown>)[key];
+  }
+  const originalFetch = globalThis.fetch;
+  const data = {
+    ...settings(),
+    presets: { Opus: { agent: "claude" as const, model: "sonnet", effort: "high" } },
+  };
+  let body: AgentSettings | undefined;
+  let error: string | undefined;
+  globalThis.fetch = (async (url, init) => {
+    if (String(url).includes("/models")) return Response.json({ catalogs: view().catalogs });
+    if (init?.method === "PUT") {
+      body = JSON.parse(String(init.body));
+      return error ? Response.json({ error }, { status: 400 }) : Response.json(body);
+    }
+    return Response.json(data);
+  }) as typeof fetch;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+  try {
+    const root = win.document.createElement("div") as unknown as HTMLElement;
+    // A detached root avoids starting the catalog polling timer.
+    createAgentSettings(() => {}).mount(root, "http://localhost:8787");
+    await settle();
+    expect(root.querySelector<HTMLInputElement>("#preset-0-name")?.value).toBe("Opus");
+    expect(root.querySelector("#preset-0-implementer-effort")?.innerHTML).toContain("high");
+    const click = (action: string) =>
+      (root.querySelector(`[data-settings="${action}"]`) as HTMLElement).click();
+    click("add-preset");
+    const input = root.querySelector<HTMLInputElement>("#preset-1-name")!;
+    input.value = "Codex";
+    input.dispatchEvent(new win.Event("input", { bubbles: true }) as never);
+    const submit = () =>
+      root
+        .querySelector("form")!
+        .dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as never);
+    submit();
+    await settle();
+    expect(body?.presets).toEqual({ Opus: data.presets.Opus, Codex: data.defaults.implementer });
+    click("remove-preset");
+    expect(root.querySelector<HTMLInputElement>("#preset-0-name")?.value).toBe("Codex");
+    const name = root.querySelector<HTMLInputElement>("#preset-0-name")!;
+    name.value = "opus";
+    name.dispatchEvent(new win.Event("input", { bubbles: true }) as never);
+    error = "Duplicate preset: opus";
+    submit();
+    await settle();
+    expect(root.querySelector('[data-preset-row="0"] [role="alert"]')?.textContent).toBe(error);
+    expect(root.querySelector("#preset-0-name")?.getAttribute("aria-invalid")).toBe("true");
+    error = JSON.stringify([{ path: ["presets", "opus"], message: "Invalid key in record" }]);
+    submit();
+    await settle();
+    expect(root.querySelector('[data-preset-row="0"] [role="alert"]')?.textContent).toBe(error);
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [key, value] of previous) host[key] = value;
+    await win.happyDOM.close();
+  }
+});

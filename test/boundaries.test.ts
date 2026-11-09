@@ -236,6 +236,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   ],
   "runner-worker": [
     "runner-failure",
+    "runtimes",
     "journal",
     "live-preview",
     "closeout-spec",

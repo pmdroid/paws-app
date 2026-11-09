@@ -80,6 +80,7 @@ function isSettingsSection(section: string): boolean {
     name === "agents" ||
     within("agents.defaults") ||
     within("agents.projects") ||
+    within("agents.presets") ||
     within("merge") ||
     name === "queue" ||
     within("time_limits") ||

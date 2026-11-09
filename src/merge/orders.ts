@@ -4,6 +4,8 @@ import { journal, journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
 import {
+  laneCiFailureTime,
+  resetOtherLaneCiFailures,
   artifactPublicationReady,
   clearPullCiFailures,
   getItemPullRequest,
@@ -36,6 +38,7 @@ import {
   githubQueueMerge,
   readPullReview,
   type GitHubBinding,
+  type Readiness,
   type PullCi,
   type PullMergeable,
 } from "../github";
@@ -106,6 +109,29 @@ export async function feedbackHold(
   return reviewHold(db, item.id, caps.now(), caps.feedbackWait());
 }
 
+/** All merge paths use the same durable first-failure window, including fresh squash reads. */
+export function collectCiFailure(
+  { db, item, caps }: MergeContext,
+  pullNumber: number,
+  head: string,
+  ci: Readiness,
+): Readiness {
+  resetOtherLaneCiFailures(db, item.id, head);
+  if (ci.outcome !== "ci_failed") return ci;
+  const first = laneCiFailureTime(db, {
+    itemId: item.id,
+    head,
+    pullNumber,
+    itemVersion: item.version,
+    failedChecks: ci.failedChecks ?? [],
+    checks: ci.checks ?? [],
+    observedAt: caps.now(),
+  });
+  return ci.waitingChecks?.length && caps.now() - first < 20 * 60_000
+    ? { ...ci, outcome: "pending" }
+    : ci;
+}
+
 export async function observeHeldCi(
   { db, item, caps }: MergeContext,
   pull: { number: number; head: string },
@@ -125,6 +151,7 @@ export async function observeHeldCi(
       mergeStopRequested(db, item.id)
     )
       return;
+    resetOtherLaneCiFailures(db, item.id, pull.head);
     if (ci.state === "unknown") {
       settlePullCiFailures(db, pendingPullCiFailures(db, item.id), "dropped", caps.now());
       return;
@@ -133,6 +160,15 @@ export async function observeHeldCi(
       clearPullCiFailures(db, item.id, pull.head, caps.now());
       return;
     }
+    const collected = collectCiFailure({ db, item, caps }, pull.number, pull.head, {
+      outcome: "ci_failed",
+      message: ci.message ?? "CI failed on the candidate commit",
+      failedChecks: ci.failedChecks,
+      checks: ci.checks,
+      waitingChecks: ci.waitingChecks,
+    });
+    if (collected.outcome === "pending") return;
+    const waiting = new Set(ci.waitingChecks?.map((check) => check.name));
     recordPullCiFailure(
       db,
       {
@@ -141,7 +177,22 @@ export async function observeHeldCi(
         pullNumber: pull.number,
         itemVersion: current.version,
         failedChecks: ci.failedChecks,
-        checks: ci.checks,
+        checks: [
+          ...ci.checks.map((check) =>
+            waiting.has(check.name) ? { ...check, waitingForCiFix: true as const } : check,
+          ),
+          ...(ci.waitingChecks ?? [])
+            .filter((check) => !ci.checks.some((c) => c.name === check.name))
+            .map((check) => ({
+              ...check,
+              state: "running" as const,
+              waitingForCiFix: true as const,
+              startedAt: null,
+              completedAt: null,
+              logTail: null,
+              logSource: null,
+            })),
+        ],
         observedAt: caps.now(),
       },
       caps.feedbackWait(),
@@ -439,6 +490,7 @@ export async function mergeThroughGitHubQueue(
   const { db, item, caps } = merge;
   const { repository, github, pull, head } = published;
   const name = `${repository.owner}/${repository.repo}`;
+  resetOtherLaneCiFailures(db, item.id, head);
   const watch = githubQueueWatch(payload) ?? { queued: false };
   const result = await githubQueueMerge({
     owner: repository.owner,
@@ -506,8 +558,19 @@ export async function mergeThroughGitHubQueue(
         confirmedAt: caps.now(),
       });
       return { kind: "merged" };
-    case "ci_failed":
-      return githubQueueCiFailed(merge, head, result.failedChecks, pull, CI_FIX_SOURCE.pull);
+    case "ci_failed": {
+      const ci = collectCiFailure(merge, pull.number, head, result.readiness);
+      if (ci.outcome === "pending")
+        return { kind: "wait", reason: "ci", message: ci.message, head, githubQueue: watch };
+      return githubQueueCiFailed(
+        merge,
+        head,
+        result.failedChecks,
+        pull,
+        CI_FIX_SOURCE.pull,
+        ci.waitingChecks,
+      );
+    }
     case "removed": {
       const { removal } = result;
       const why = removal.reason ? ` (${removal.reason})` : "";
@@ -584,6 +647,7 @@ async function githubQueueCiFailed(
   checks: readonly FailedCiCheck[],
   pull: { number: number; url: string | null },
   source: string,
+  running: readonly FailedCiCheck[] = [],
 ): Promise<MergeStep> {
   const limit = merge.caps.ciFixAttempts(merge.item);
   const failed = checks.map((check) => ({
@@ -596,12 +660,18 @@ async function githubQueueCiFailed(
     logSource: null,
   }));
   if (
-    sendBack(merge, "ci-failed", (fixes) => fixes < limit, `${source}\n\n${ciFixHandoff(checks)}`, {
-      thought: (attempt) => ciFixRoundLine(checks, attempt, limit),
-      record: (_, attempt) => ciRound(merge, head, failed, "agent", limit, attempt),
-      failedChecks: checks,
-      pullNumber: pull.number,
-    })
+    sendBack(
+      merge,
+      "ci-failed",
+      (fixes) => fixes < limit,
+      `${source}\n\n${ciFixHandoff(checks, running)}`,
+      {
+        thought: (attempt) => ciFixRoundLine(checks, attempt, limit),
+        record: (_, attempt) => ciRound(merge, head, failed, "agent", limit, attempt),
+        failedChecks: checks,
+        pullNumber: pull.number,
+      },
+    )
   )
     return { kind: "returned" };
   if (askHelp(merge, ciFixQuestion(checks, limit, pull.url), "budget_spent")) {

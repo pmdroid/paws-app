@@ -246,6 +246,7 @@ export const pullCiFailure = sqliteTable(
     failedChecks: text("failed_checks").notNull(),
     checks: text().notNull(),
     observedAt: integer("observed_at").notNull(),
+    laneFirstFailureAt: integer("lane_first_failure_at"),
     handledAt: integer("handled_at"),
     outcome: text(),
   },

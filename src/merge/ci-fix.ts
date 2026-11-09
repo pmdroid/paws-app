@@ -8,10 +8,16 @@ export type FailedCiCheck = {
   failsOnBase?: boolean;
 };
 
-export function ciFixHandoff(checks: readonly FailedCiCheck[]): string {
+export function ciFixHandoff(
+  checks: readonly FailedCiCheck[],
+  running: readonly FailedCiCheck[] = [],
+): string {
   return [
     "CI failed on the pull request. Failed checks:",
     ...checkList(checks),
+    ...running.map(
+      (check) => `- ${check.name}${check.url ? ` (${check.url})` : ""}: still running`,
+    ),
     ...checks.flatMap(logSection),
     "When `gh` is signed in, `gh run view <run-id> --log-failed` prints a failed job's whole log.",
     "Run the same checks in this repository to reproduce the failures, fix the code so the change still does what the issue asks, and run the checks again.",

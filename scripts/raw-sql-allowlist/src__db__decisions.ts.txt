@@ -1,3 +1,0 @@
-src/db/decisions.ts | const open = db .query<{ id: number }, [string, string]>( | not yet converted to Drizzle
-src/db/decisions.ts | db.run( | not yet converted to Drizzle
-src/db/decisions.ts | const last = db .query<{ payload: string }, [string, string]>( | not yet converted to Drizzle

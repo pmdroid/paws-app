@@ -1,3 +1,4 @@
+import { runnerCommandAuthorityUntil, extendStalledRunnerWork } from "../db";
 import {
   acknowledgeRunnerCommand,
   assignRunnerWork,
@@ -334,7 +335,7 @@ export function createRunnerWork(options: {
       command.generation !== work.generation
     )
       throw new Error("Run command binding changed.");
-    return command;
+    return { ...command, expiresAt: runnerCommandAuthorityUntil(db, work.commandId) };
   }
   function authorized(
     input: {
@@ -793,3 +794,8 @@ export function createRunnerWork(options: {
   };
 }
 export type RunnerWork = ReturnType<typeof createRunnerWork>;
+
+// Use the same monotonic lease extension as heartbeat renewal.
+export function recoverRunnerWorkStall(db: Database, startedAt: number, lagMs: number): void {
+  extendStalledRunnerWork(db, startedAt, lagMs);
+}
