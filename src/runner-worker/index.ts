@@ -1,4 +1,5 @@
 import { describeRunnerFailure } from "../runner-failure";
+import { RUNTIME_FILES } from "../runtimes";
 import { journalCaught, startPhaseClock } from "../journal";
 import {
   createLivePreviewSystem,
@@ -1145,6 +1146,51 @@ export async function executeRunnerCommand(
             throw new Error("Unsafe runner input workspace");
         }
         writeFileSync(join(worktree, file.path), file.bytes, { flag: "wx", mode: 0o600 });
+      }
+    }
+    // Runtime declarations come from trusted main. Carry its configuration into an older
+    // candidate on retry too, but preserve configuration edited by the agent or checkpoint.
+    if (command.type === "run" && command.repository.mainSha && !resumed) {
+      const main = command.repository.mainSha;
+      const ancestor = (await invokeGit(["-C", worktree, "merge-base", "HEAD", main])).trim();
+      const changed = (
+        await invokeGit([
+          "-C",
+          worktree,
+          "diff",
+          "--name-only",
+          ancestor,
+          main,
+          "--",
+          ...RUNTIME_FILES,
+        ])
+      )
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      for (const file of changed) {
+        const local = await invokeGit([
+          "-C",
+          worktree,
+          "diff",
+          "--name-only",
+          ancestor,
+          "--",
+          file,
+        ]);
+        const dirty = await invokeGit(["-C", worktree, "status", "--porcelain", "--", file]);
+        if (local.trim() || dirty.trim()) continue;
+        await invokeGit([
+          "-C",
+          worktree,
+          "restore",
+          "--source",
+          main,
+          "--staged",
+          "--worktree",
+          "--",
+          file,
+        ]);
       }
     }
     phase("checkout");
@@ -2317,12 +2363,6 @@ export async function executeRunnerCommand(
   }
 }
 
-/**
- * Install the command's runtimes with mise before the agent starts. Returns the one line
- * that fails the task when an install fails or runs past its cap, and otherwise each
- * runtime's pinned bin dir for the agent's and Closeout's `PATH`.
- * The install time goes to the runner's log; the start line in Linear names the runtimes.
- */
 // Keep discovery bounded: root projects, direct children, and conventional workspace apps.
 function missingToolchainQuestion(worktree: string, path: string): string | undefined {
   const directories = [""];
@@ -2361,9 +2401,15 @@ function missingToolchainQuestion(worktree: string, path: string): string | unde
     }
   }
   if (!missing.length) return;
-  return `${missing.join("\n")} Add it to mise.toml at the repository root and answer to retry:\n\n[tools]\n${[...lines].join("\n")}`;
+  return `${missing.join("\n")} Add these entries to the existing [tools] table in mise.toml at the repository root, or create that table if absent. Commit the configuration to main, then answer to retry (do not add a second [tools] header):\n\n[tools]\n${[...lines].join("\n")}`;
 }
 
+/**
+ * Install the command's runtimes with mise before the agent starts. Returns the one line
+ * that fails the task when an install fails or runs past its cap, and otherwise each
+ * runtime's pinned bin dir for the agent's and Closeout's `PATH`.
+ * The install time goes to the runner's log; the start line in Linear names the runtimes.
+ */
 async function installCommandRuntimes(
   command: RunnerJob["command"],
   executionId: string,

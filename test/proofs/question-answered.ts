@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { type LaunchInput, type Proof } from "./harness";
 
 const QUESTION =
-  'Cargo.toml needs cargo, which isn\'t installed on the runner. Add it to mise.toml at the repository root and answer to retry:\n\n[tools]\nrust = "stable"';
+  'Cargo.toml needs cargo, which isn\'t installed on the runner. Add these entries to the existing [tools] table in mise.toml at the repository root, or create that table if absent. Commit the configuration to main, then answer to retry (do not add a second [tools] header):\n\n[tools]\nrust = "stable"';
 const ANSWER = "Added rust to mise.toml; retry.";
 const COMMIT = "Count widgets per shelf, empty shelves as 0";
 
@@ -66,6 +66,11 @@ export default {
     );
     const askingRun = proof.itemRunId();
 
+    await proof.pushToMain(
+      "mise.toml",
+      '[tools]\nrust = "stable"\n',
+      "Declare the missing Rust toolchain",
+    );
     await proof.answerInLinear(ANSWER);
     const merged = await proof.waitFor(
       "the item is merged",
@@ -88,6 +93,10 @@ export default {
         resumedWithAnswer: resumed.length,
         runs: { asking: askingRun, final: proof.itemRunId() },
       },
+    );
+    proof.expect(
+      "the toolchain configuration remains on merged main",
+      (await proof.originMainFiles()).includes("mise.toml"),
     );
     const log = await proof.originMainLog();
     proof.expect("the resumed turn's commit is merged into origin main", log.includes(COMMIT), log);
