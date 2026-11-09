@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "bun:test";
+import { createCloseoutGate } from "../src/closeout";
 import { systemClock, JOB_KIND } from "../src/core";
 import {
   JobLoop,
@@ -616,6 +617,7 @@ test("the implementer's prompt includes the project overview with its mock links
     jobs,
     outbox,
     pawsRoot: layout.pawsRoot,
+    closeoutGate: (options) => createCloseoutGate({ ...options, reviewRetryDelaysMs: [0, 0, 0] }),
     home: layout.home,
     tracker,
     repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
