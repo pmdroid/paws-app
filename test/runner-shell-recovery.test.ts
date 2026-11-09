@@ -132,7 +132,11 @@ async function runWithSessions(sessions: FakeStep[][]) {
       result,
       questions,
       // A Grok turn's end also logs its session snapshot; only shell events matter here.
-      logged: logged.filter((line) => !line.includes('"event":"agent_session_snapshot')),
+      logged: logged.filter(
+        (line) =>
+          !line.includes('"event":"agent_session_snapshot') &&
+          !line.includes('"event":"worker_phase"'),
+      ),
       spawns: Number(readFileSync(`${script}.spawns`, "utf8")),
       events: readFileSync(join(outputDirectory, "events.jsonl"), "utf8")
         .split("\n")
