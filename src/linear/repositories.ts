@@ -148,9 +148,9 @@ export function createLinearRepositoryMethods(client: LinearClient): LinearRepos
         issueLabels: repoLabels(issue["labels"]),
         profileLabels: Object.fromEntries(
           nodes(issue["labels"]).flatMap((label) => {
-            if (!isRecord(label) || typeof label["name"] !== "string" || !isRecord(label["parent"]))
-              return [];
-            const role = String(label["parent"]["name"]).toLowerCase();
+            if (!isRecord(label) || typeof label["name"] !== "string") return [];
+            const group = dig(label["parent"], "name");
+            const role = typeof group === "string" ? group.toLowerCase() : "";
             return role === "implementer" || role === "reviewer" ? [[role, label["name"]]] : [];
           }),
         ),

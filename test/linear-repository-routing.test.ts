@@ -625,7 +625,8 @@ test("a retried repository selection reuses the hints and suggestions it already
     workspaceDispatch(f.db, { now: f.clock.now() });
     await f.jobs.tick();
     expect(getWorkItemRepository(f.db, itemId)).toEqual(repositories[1]!);
-    expect([hintReads, suggestionReads]).toEqual([1, 3]);
+    // The retry selects from what it kept; the second read is the new run's profile labels.
+    expect([hintReads, suggestionReads]).toEqual([2, 3]);
   } finally {
     f.db.close();
   }

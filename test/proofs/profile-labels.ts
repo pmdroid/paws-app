@@ -36,6 +36,12 @@ export default {
       "question names the problem preset",
       JSON.stringify(proof.linear.questions).includes("Acme unknown"),
     );
+    const held = proof.heldWork();
+    proof.expect(
+      "the item waits for input with no run or slot held",
+      proof.itemState() === "awaiting_input" && held.activeRuns === 0 && held.reservations === 0,
+      { state: proof.itemState(), held },
+    );
     await proof.answerInLinear("Use the default");
     await proof.waitFor(
       "default profile completes the issue",
