@@ -157,7 +157,7 @@ class ReleaseVerification(unittest.TestCase):
                 runtime.write_bytes(b"synthetic Bun runtime")
                 output = self.root / ("package-" + str(index))
                 arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output, mise=None, gh=None)
-                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh"):
+                with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.4\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh"):
                     if index == 0:
                         packager.pack(arguments)
                         members = release.inspect_archive(output / "artifact.tar")
@@ -190,13 +190,13 @@ class ReleaseVerification(unittest.TestCase):
         runtime.write_bytes(b"synthetic Bun runtime")
         output = self.root / "package-unsafe"
         arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=output, mise=None, gh=None)
-        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh"):
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.4\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh"):
             packager.pack(arguments)
         members = release.inspect_archive(output / "artifact.tar")
         self.assertIn("app/node_modules/media/index.js", members)
         self.assertFalse(any("av01" in name or "odd" in name for name in members))
         (source / "src/bad,name.ts").write_bytes(b"source")
-        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh"):
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.4\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh"):
             with self.assertRaises(ValueError):
                 packager.pack(argparse.Namespace(**{**vars(arguments), "output": self.root / "package-unsafe-src"}))
 
@@ -256,7 +256,7 @@ class ReleaseVerification(unittest.TestCase):
         runtime.write_bytes(b"synthetic Bun runtime")
         arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-production", mise=None, gh=None)
         def patches():
-            return mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=production), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh")
+            return mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.4\n")), mock.patch.object(packager, "install_production", return_value=production), mock.patch.object(packager.release, "download_mise", return_value=b"\x7fELFsynthetic-mise"), mock.patch.object(packager.release, "download_gh", return_value=b"\x7fELFsynthetic-gh")
         first, second, third, fourth = patches()
         with first, second, third, fourth:
             packager.pack(arguments)
@@ -287,7 +287,7 @@ class ReleaseVerification(unittest.TestCase):
         runtime = self.root / "bun-agent-pins"
         runtime.write_bytes(b"synthetic Bun runtime")
         arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-agent-pins", mise=None, gh=None)
-        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"):
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.4\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"):
             with self.assertRaisesRegex(ValueError, "agent-manifest.py"):
                 packager.pack(arguments)
 
@@ -338,7 +338,7 @@ class ReleaseVerification(unittest.TestCase):
         mise = self.root / "mise-tampered"
         mise.write_bytes(b"\x7fELFtampered mise")
         arguments = argparse.Namespace(source=source, bun=runtime, version="1.2.3", platform={"x86_64":"linux-x64","aarch64":"linux-arm64"}[platform.machine()], output=self.root / "package-mise", mise=mise, gh=None)
-        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"):
+        with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.4\n")), mock.patch.object(packager, "install_production", return_value=source / "node_modules"):
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 packager.pack(arguments)
         self.assertFalse((self.root / "package-mise/artifact.tar").exists())
@@ -393,7 +393,7 @@ class ReleaseVerification(unittest.TestCase):
                 archive.addfile(extra, io.BytesIO(b"x" * extra.size) if extra.isfile() else None)
 
     def sign(self, changes=None):
-        manifest = {"format": 1, "version": "1.2.3", "platform": {"x86_64": "linux-x64", "aarch64": "linux-arm64"}[platform.machine()], "bunVersion": "1.4.2", "artifactSha256": hashlib.sha256(self.artifact.read_bytes()).hexdigest()}
+        manifest = {"format": 1, "version": "1.2.3", "platform": {"x86_64": "linux-x64", "aarch64": "linux-arm64"}[platform.machine()], "bunVersion": "1.4.4", "artifactSha256": hashlib.sha256(self.artifact.read_bytes()).hexdigest()}
         manifest.update(changes or {})
         self.manifest.write_text(json.dumps(manifest))
         self.openssl("pkeyutl", "-sign", "-rawin", "-inkey", str(self.private), "-in", str(self.manifest), "-out", str(self.signature))
@@ -405,7 +405,7 @@ class ReleaseVerification(unittest.TestCase):
 
     def test_exact_signed_manifest_and_artifact_verify(self):
         self.assertEqual(self.verify()["version"], "1.2.3")
-        self.assertEqual(self.verify()["bunVersion"], "1.4.2")
+        self.assertEqual(self.verify()["bunVersion"], "1.4.4")
 
     def test_unsigned_changed_manifest_and_changed_artifact_fail(self):
         original = self.signature.read_bytes()

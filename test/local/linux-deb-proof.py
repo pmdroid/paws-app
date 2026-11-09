@@ -67,7 +67,7 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
             digest = hashlib.file_digest(completed, "sha256").hexdigest()
         assert first.with_suffix(".deb.sha256").read_text() == f"{digest}  {first.name}\n"
         install(first)
-        assert run(["/opt/paws-runner/bin/bun", "--version"]).strip() == "1.4.2"
+        assert run(["/opt/paws-runner/bin/bun", "--version"]).strip() == "1.4.4"
         runner_bin = pathlib.Path("/opt/paws-runner/bin/paws-runner")
         assert runner_bin.is_symlink() and os.readlink(runner_bin) == "../current/bin/paws-runner" and runner_bin.read_bytes() == source.installer.release.RUNNER_LAUNCHER
         assert "ExecStart=/opt/paws-runner/bin/paws-runner runner daemon --config /etc/paws-runner/config.json\n" in pathlib.Path("/etc/systemd/system/paws-runner.service").read_text()

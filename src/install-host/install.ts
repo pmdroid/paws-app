@@ -45,7 +45,7 @@ import {
   type TlsPaths,
 } from "./tls";
 
-export const BUN_VERSION = "1.4.2";
+export const BUN_VERSION = "1.4.4";
 export const MISE_BUN_COMMAND = `mise use -g bun@${BUN_VERSION}`;
 export const DEFAULT_CHECKOUT = "~/.local/share/paws/app";
 const DEFAULT_RUNNER_PORT = "8788";
