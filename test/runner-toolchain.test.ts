@@ -160,7 +160,7 @@ for (const [
           },
         });
       const result = await execute();
-      expect(TOOLCHAIN_PREFLIGHT_RUNNER_VERSION).toEqual([0, 1, 74]);
+      expect(TOOLCHAIN_PREFLIGHT_RUNNER_VERSION).toEqual([0, 1, 75]);
       expect(result.run.stopReason).toBe("end_turn");
       expect(existsSync(join(root, "trace.json"))).toBe(!blocked);
       expect(Boolean(question)).toBe(blocked);
