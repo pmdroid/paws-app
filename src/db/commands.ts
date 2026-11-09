@@ -9,28 +9,28 @@ import {
   transition,
   type LinearCommand,
 } from "../core";
-import { forwardCommand } from "./command-delivery";
-import { applyWorkItemEvent, getWorkItem, type WorkItemRecord } from "./items";
+import { commandInstance, forwardCommandSteps } from "./command-delivery";
+import { applyWorkItemEventSteps, getWorkItemSteps, type WorkItemRecord } from "./items";
 import {
-  claimNextJob,
-  completeJob,
-  parkLeasedJob,
+  claimNextJobSteps,
+  completeJobSteps,
+  parkLeasedJobSteps,
   emitJobReady,
-  enqueueJobOnce,
   enqueueJobOnceSteps,
   errorText,
-  noteJobError,
+  noteJobErrorSteps,
 } from "./jobs";
-import { enqueueOutboxOnce, stopOutboxSession, advanceOutboxSession } from "./outbox";
-import { withOpenFindings } from "./open-findings";
-import { markRun } from "./runs";
-import { halt } from "./halt";
-import { enqueueEndedSessionFace, stoppedResponse } from "./stop-response";
-import { mergeCallInFlight, getConfirmedRemoteMerge } from "./remote-merges";
-import { orm } from "./orm";
-import { job as jobTable, question, workItem } from "./schema";
-import { immediate } from "./tx";
-import { settled, sqliteDb, type Q } from "./db";
+import {
+  enqueueOutboxOnceSteps,
+  stopOutboxSessionSteps,
+  advanceOutboxSessionSteps,
+} from "./outbox";
+import { withOpenFindingsSteps } from "./open-findings";
+import { markRunSteps } from "./runs";
+import { haltSteps } from "./halt";
+import { enqueueEndedSessionFaceSteps, stoppedResponseSteps } from "./stop-response";
+import { mergeCallInFlightSteps, getConfirmedRemoteMergeSteps } from "./remote-merges";
+import { settled, sqliteDb, type Q, type Db, type Steps } from "./db";
 
 export function* enqueueCommandSteps(q: Q, command: LinearCommand, now = command.requestedAt) {
   return yield* enqueueJobOnceSteps(q, {
@@ -68,38 +68,84 @@ export function applyLinearCommand(
    */
   options: CommandOptions = {},
 ): { applied: boolean; deferred?: boolean } {
-  return immediate(db, () => {
-    const result = applyCommandRows(db, command, now, response, options);
-    if (result.applied) forwardCommand(db, command, now);
-    return result;
-  });
+  const notifications = { ready: false };
+  const result = settled(
+    sqliteDb(db).transaction((q) =>
+      applyLinearCommandSteps(
+        q,
+        command,
+        now,
+        response,
+        options,
+        commandInstance(db),
+        notifications,
+      ),
+    ),
+  );
+  if (notifications.ready) emitJobReady(db);
+  return result;
 }
 
-function applyCommandRows(
-  db: Database,
+export function* applyLinearCommandSteps(
+  q: Q,
+  command: LinearCommand,
+  now = command.requestedAt,
+  response?: string,
+  options: CommandOptions = {},
+  self?: string,
+  notifications = { ready: false },
+): Steps<{ applied: boolean; deferred?: boolean }> {
+  const result = yield* applyCommandRowsSteps(q, command, now, response, options, notifications);
+  if (result.applied && self !== undefined) {
+    const forwarded = yield* forwardCommandSteps(q, self, command, now);
+    notifications.ready ||= forwarded.inserted;
+  }
+  return result;
+}
+export async function applyLinearCommandAsync(
+  store: Db,
+  command: LinearCommand,
+  now = command.requestedAt,
+  response?: string,
+  options: CommandOptions = {},
+  self?: string,
+) {
+  const notifications = { ready: false };
+  const result = await store.transaction((q) =>
+    applyLinearCommandSteps(q, command, now, response, options, self, notifications),
+  );
+  if (notifications.ready) emitJobReady(store);
+  return result;
+}
+
+export function* applyCommandRowsSteps(
+  q: Q,
   command: LinearCommand,
   now: number,
   response: string | undefined,
   options: CommandOptions,
-): { applied: boolean; deferred?: boolean } {
-  return immediate(db, () => {
-    const item = getWorkItem(db, command.itemId);
+  notifications = { ready: false },
+): Steps<{ applied: boolean; deferred?: boolean }> {
+  return yield* q.transaction(function* (tx0) {
+    const { workItem, question, job: jobTable } = tx0.t;
+    const item = yield* getWorkItemSteps(tx0, command.itemId);
     if (item === null) return { applied: false };
-    if (mergeCallInFlight(db, item.id)) {
+    if (yield* mergeCallInFlightSteps(tx0, item.id)) {
       // The command row is the durable request. Do not fence the lane before it records GitHub's fact.
-      enqueueJobOnce(db, {
+      const enqueued = yield* enqueueJobOnceSteps(tx0, {
         queue: JOB_KIND.command,
         jobKey: `cmd:${command.type}:${command.itemId}:${command.requestedAt}`,
         payload: { ...command, response, options },
         now,
         runAt: now + 1_000,
       });
+      notifications.ready ||= enqueued.inserted;
       return { applied: false, deferred: true };
     }
     if (item.state === "merged") {
-      const fact = getConfirmedRemoteMerge(db, item.id);
+      const fact = yield* getConfirmedRemoteMergeSteps(tx0, item.id);
       if (fact)
-        enqueueOutboxOnce(db, {
+        yield* enqueueOutboxOnceSteps(tx0, {
           target: OUTBOX_ACTIVITY.target,
           op: OUTBOX_ACTIVITY.op,
           orderingKey: item.sessionKey ?? item.id,
@@ -121,50 +167,59 @@ function applyCommandRows(
       options.keepPullRequest !== false &&
       (item.state === "paused" || transition(item.state, "pause").ok)
     )
-      return pauseFromLinear(db, item, now);
+      return yield* pauseFromLinearSteps(tx0, item, now);
     if (!transition(item.state, "cancel").ok) return { applied: false };
     try {
-      immediate(db, () => {
-        if (!halt(db, item, now)) throw new Error("Stop owner changed");
-        applyWorkItemEvent(db, item.id, "cancel", { now });
+      yield* tx0.transaction(function* (tx1) {
+        if (!(yield* haltSteps(tx1, item, now))) throw new Error("Stop owner changed");
+        yield* applyWorkItemEventSteps(tx1, item.id, "cancel", { now });
       });
     } catch (caughtError1) {
       journalCaught(caughtError1, "commands.applyLinearCommand.applyWorkItemEvent", command.itemId);
       return { applied: false };
     }
-    orm(db).update(workItem).set({ cancelRequested: 1 }).where(eq(workItem.id, item.id)).run();
-    orm(db)
-      .update(question)
-      .set({ cancelledAt: now })
-      .where(
-        and(
-          eq(question.itemId, item.id),
-          inArray(question.status, ["open", "queued"]),
-          isNull(question.cancelledAt),
+    yield* tx0.exec(
+      tx0.orm.update(workItem).set({ cancelRequested: 1 }).where(eq(workItem.id, item.id)),
+    );
+    yield* tx0.exec(
+      tx0.orm
+        .update(question)
+        .set({ cancelledAt: now })
+        .where(
+          and(
+            eq(question.itemId, item.id),
+            inArray(question.status, ["open", "queued"]),
+            isNull(question.cancelledAt),
+          ),
         ),
-      )
-      .run();
-    if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
+    );
+    if (item.currentRunId !== null) yield* markRunSteps(tx0, item.currentRunId, "lost", now);
     const keepPullRequest =
       options.keepPullRequest ?? (command.type === "stop" && command.source === "linear");
     const closing =
       options.closePullRequest !== undefined ||
       (!keepPullRequest &&
         (item.state === "merge_queue" ||
-          orm(db)
-            .select({ one: sql`1` })
-            .from(jobTable)
-            .where(
-              and(
-                or(eq(jobTable.queue, JOB_KIND.merge), like(jobTable.queue, `${JOB_KIND.merge}.%`)),
-                sql`json_extract(${jobTable.payload}, '$.itemId') = ${item.id}`,
+          (yield* tx0.one(
+            tx0.orm
+              .select({ one: sql`1` })
+              .from(jobTable)
+              .where(
+                and(
+                  or(
+                    eq(jobTable.queue, JOB_KIND.merge),
+                    like(jobTable.queue, `${JOB_KIND.merge}.%`),
+                  ),
+                  tx0.dialect === "sqlite"
+                    ? sql`json_extract(${jobTable.payload}, '$.itemId') = ${item.id}`
+                    : sql`${jobTable.payload}->>'itemId' = ${item.id}`,
+                ),
               ),
-            )
-            .get() !== undefined));
-    if (closing)
-      enqueueJobOnce(db, {
+          )) !== undefined));
+    if (closing) {
+      const enqueued = yield* enqueueJobOnceSteps(tx0, {
         queue: JOB_KIND.closeStoppedPull,
-        jobKey: `close-stopped:${item.id}:${getWorkItem(db, item.id)!.version}`,
+        jobKey: `close-stopped:${item.id}:${(yield* getWorkItemSteps(tx0, item.id))!.version}`,
         payload: {
           itemId: item.id,
           ...(options.closePullRequest ? { comment: options.closePullRequest.comment } : {}),
@@ -172,12 +227,14 @@ function applyCommandRows(
         now,
       });
 
+      notifications.ready ||= enqueued.inserted;
+    }
     const sessionId = item.sessionKey ?? item.id;
     const closed =
       response?.startsWith("Closed:") === true || options.closePullRequest !== undefined;
     const generation = !closed
-      ? stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now)
-      : advanceOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, { now });
+      ? yield* stopOutboxSessionSteps(tx0, OUTBOX_ACTIVITY.target, sessionId, now)
+      : yield* advanceOutboxSessionSteps(tx0, OUTBOX_ACTIVITY.target, sessionId, { now });
     const origin = command.source === "dashboard" ? "Paws" : "Linear";
     const lead =
       response ??
@@ -189,15 +246,15 @@ function applyCommandRows(
     const text =
       options.responseOnly && response !== undefined
         ? response
-        : withOpenFindings(
-            db,
+        : yield* withOpenFindingsSteps(
+            tx0,
             item.id,
-            stoppedResponse(db, item, lead, {
+            yield* stoppedResponseSteps(tx0, item, lead, {
               reason: response !== undefined,
               pullClosing: closing,
             }),
           );
-    enqueueOutboxOnce(db, {
+    yield* enqueueOutboxOnceSteps(tx0, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
       orderingKey: sessionId,
@@ -209,7 +266,13 @@ function applyCommandRows(
       payload: { sessionId, kind: "response", body: text, id: crypto.randomUUID() },
       now,
     });
-    enqueueEndedSessionFace(db, { sessionId, generation, item, outcome: "stopped", now });
+    yield* enqueueEndedSessionFaceSteps(tx0, {
+      sessionId,
+      generation,
+      item,
+      outcome: "stopped",
+      now,
+    });
     // The issue's status stays with people and the GitHub integration.
     return { applied: true };
   });
@@ -223,12 +286,16 @@ type CommandOptions = {
 
 const LINEAR_PAUSED_RESPONSE = "Paused. Reply here or re-delegate to continue.";
 
-function pauseFromLinear(db: Database, item: WorkItemRecord, now: number): { applied: boolean } {
+export function* pauseFromLinearSteps(
+  q: Q,
+  item: WorkItemRecord,
+  now: number,
+): Steps<{ applied: boolean }> {
   if (item.state !== "paused") {
     try {
-      immediate(db, () => {
-        if (!halt(db, item, now)) throw new Error("Stop owner changed");
-        applyWorkItemEvent(db, item.id, "pause", { now });
+      yield* q.transaction(function* (tx2) {
+        if (!(yield* haltSteps(tx2, item, now))) throw new Error("Stop owner changed");
+        yield* applyWorkItemEventSteps(tx2, item.id, "pause", { now });
       });
     } catch (caughtError) {
       journalCaught(caughtError, "commands.pauseFromLinear.applyWorkItemEvent", item.id);
@@ -236,8 +303,8 @@ function pauseFromLinear(db: Database, item: WorkItemRecord, now: number): { app
     }
   }
   const sessionId = item.sessionKey ?? item.id;
-  const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
-  enqueueOutboxOnce(db, {
+  const generation = yield* stopOutboxSessionSteps(q, OUTBOX_ACTIVITY.target, sessionId, now);
+  yield* enqueueOutboxOnceSteps(q, {
     target: OUTBOX_ACTIVITY.target,
     op: OUTBOX_ACTIVITY.op,
     orderingKey: sessionId,
@@ -254,19 +321,19 @@ function pauseFromLinear(db: Database, item: WorkItemRecord, now: number): { app
  * A person takes the item over: Paws halts it, applies `take_over` and ends the session with
  * one response. Nothing restarts, verifies or merges the item afterwards.
  */
-export function takeOverItem(
-  db: Database,
+export function* takeOverItemSteps(
+  q: Q,
   itemId: string,
   who: string,
   now = Date.now(),
-): { applied: boolean } {
-  return immediate(db, () => {
-    const item = getWorkItem(db, itemId);
+): Steps<{ applied: boolean }> {
+  return yield* q.transaction(function* (tx3) {
+    const item = yield* getWorkItemSteps(tx3, itemId);
     if (item === null || !transition(item.state, "take_over").ok) return { applied: false };
-    applyWorkItemEvent(db, item.id, "take_over", { now, actor: who });
+    yield* applyWorkItemEventSteps(tx3, item.id, "take_over", { now, actor: who });
     const sessionId = item.sessionKey ?? item.id;
-    const generation = stopOutboxSession(db, OUTBOX_ACTIVITY.target, sessionId, now);
-    enqueueOutboxOnce(db, {
+    const generation = yield* stopOutboxSessionSteps(tx3, OUTBOX_ACTIVITY.target, sessionId, now);
+    yield* enqueueOutboxOnceSteps(tx3, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
       orderingKey: sessionId,
@@ -281,41 +348,106 @@ export function takeOverItem(
       },
       now,
     });
-    enqueueEndedSessionFace(db, { sessionId, generation, item, outcome: "manual", now });
+    yield* enqueueEndedSessionFaceSteps(tx3, {
+      sessionId,
+      generation,
+      item,
+      outcome: "manual",
+      now,
+    });
     return { applied: true };
   });
 }
 
-export function drainCommands(db: Database, bus: CommandBus, now = Date.now()): number {
+export function* drainCommandsSteps(
+  q: Q,
+  delivered: (command: LinearCommand) => void,
+  now = Date.now(),
+  self?: string,
+  ready: () => void = () => {},
+): Steps<number> {
   let handled = 0;
   for (;;) {
-    const job = claimNextJob(db, { workerId: "command-drain", now, queues: [JOB_KIND.command] });
+    const job = yield* claimNextJobSteps(q, {
+      workerId: "command-drain",
+      now,
+      queues: [JOB_KIND.command],
+    });
     if (job === null) break;
     const command = parseLinearCommand(job.payload);
     const saved = job.payload as {
       response?: string;
       options?: CommandOptions;
     };
+    const notifications = { ready: false };
     const result =
-      command !== null ? applyLinearCommand(db, command, now, saved.response, saved.options) : null;
+      command !== null
+        ? yield* q.transaction((tx) =>
+            applyLinearCommandSteps(
+              tx,
+              command,
+              now,
+              saved.response,
+              saved.options,
+              self,
+              notifications,
+            ),
+          )
+        : null;
+    if (notifications.ready) ready();
     if (result?.deferred) {
-      parkLeasedJob(db, job, { runAt: now + 1_000, payload: job.payload, attempts: 0, now });
+      yield* parkLeasedJobSteps(q, job, {
+        runAt: now + 1_000,
+        payload: job.payload,
+        attempts: 0,
+        now,
+      });
       handled += 1;
       continue;
     }
     const applied = result?.applied === true;
-    const completed = completeJob(db, job, now);
+    const completed = yield* completeJobSteps(q, job, now);
     if (applied && completed && command !== null) {
       try {
-        bus.emit(command);
+        delivered(command);
       } catch (error) {
         journalCaught(error, "commands.drainCommands.emit", command.itemId);
-        noteJobError(db, job.id, errorText(error));
+        yield* noteJobErrorSteps(q, job.id, errorText(error));
       }
     }
     handled += 1;
   }
   return handled;
+}
+
+export function drainCommands(db: Database, bus: CommandBus, now = Date.now()): number {
+  return settled(
+    sqliteDb(db).run((q) =>
+      drainCommandsSteps(
+        q,
+        (command) => bus.emit(command),
+        now,
+        commandInstance(db),
+        () => emitJobReady(db),
+      ),
+    ),
+  );
+}
+export async function drainCommandsAsync(
+  store: Db,
+  bus: CommandBus,
+  now = Date.now(),
+  self?: string,
+): Promise<number> {
+  return await store.run((q) =>
+    drainCommandsSteps(
+      q,
+      (command) => bus.emit(command),
+      now,
+      self,
+      () => emitJobReady(store),
+    ),
+  );
 }
 
 /** Enqueue the command and apply it before returning, ahead of the main loop. */
@@ -324,13 +456,66 @@ export function submitCommand(
   bus: CommandBus,
   command: LinearCommand,
 ): { applied: boolean } {
-  const before = getWorkItem(db, command.itemId)?.state;
-  enqueueCommand(db, command);
-  drainCommands(db, bus, command.requestedAt);
-  const after = getWorkItem(db, command.itemId);
+  return settled(
+    sqliteDb(db).run((q) =>
+      submitCommandSteps(
+        q,
+        command,
+        (c) => bus.emit(c),
+        () => emitJobReady(db),
+        commandInstance(db),
+      ),
+    ),
+  );
+}
+export function* submitCommandSteps(
+  q: Q,
+  command: LinearCommand,
+  delivered: (command: LinearCommand) => void,
+  ready: () => void,
+  self?: string,
+): Steps<{ applied: boolean }> {
+  const before = (yield* getWorkItemSteps(q, command.itemId))?.state;
+  const enqueued = yield* enqueueCommandSteps(q, command);
+  if (enqueued.inserted) ready();
+  yield* drainCommandsSteps(q, delivered, command.requestedAt, self, ready);
+  const after = yield* getWorkItemSteps(q, command.itemId);
   return {
     applied:
       (before !== "cancelled" && after?.state === "cancelled") ||
       (before !== "paused" && after?.state === "paused"),
   };
+}
+export async function submitCommandAsync(
+  store: Db,
+  bus: CommandBus,
+  command: LinearCommand,
+  self?: string,
+) {
+  return await store.run((q) =>
+    submitCommandSteps(
+      q,
+      command,
+      (c) => bus.emit(c),
+      () => emitJobReady(store),
+      self,
+    ),
+  );
+}
+
+export function takeOverItem(
+  db: Database,
+  itemId: string,
+  who: string,
+  now = Date.now(),
+): { applied: boolean } {
+  return settled(sqliteDb(db).transaction((q) => takeOverItemSteps(q, itemId, who, now)));
+}
+export async function takeOverItemAsync(
+  store: Db,
+  itemId: string,
+  who: string,
+  now = Date.now(),
+): Promise<{ applied: boolean }> {
+  return await store.transaction((q) => takeOverItemSteps(q, itemId, who, now));
 }

@@ -21,6 +21,10 @@ export const COMMAND_DELIVERY_MS = 1_000;
 
 const boundInstances = new WeakMap<Database, string>();
 
+export function commandInstance(db: Database): string | undefined {
+  return boundInstances.get(db);
+}
+
 export function bindInstance(db: Database, instanceId: string): void {
   boundInstances.set(db, instanceId);
 }
