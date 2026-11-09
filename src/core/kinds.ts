@@ -16,6 +16,7 @@ export const JOB_KIND = {
    */
   pullComments: "github.pull_comments",
   linearComments: "linear.comments",
+  heldReply: "linear.held_reply",
   catchup: "linear.catchup",
   visualReviewReminder: "linear.visual_review_reminder",
   /** The one reminder of an open link ask, 24 hours after it was asked. */

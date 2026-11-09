@@ -630,7 +630,7 @@ import {
 import { deliverLinearOutbox } from "./dispatch";
 import { durableConversation } from "./conversation";
 import { createLinearSessionProgress } from "./session-progress";
-import { renderWorkContext, withLeftForLater } from "../core";
+import { briefShowsUserUpdates, renderWorkContext, withLeftForLater } from "../core";
 import { recordLinearSessionEventSteps, sessionTaskKey } from "./linear-routing";
 import {
   createEvidenceArtifactPublisher,
@@ -1056,6 +1056,13 @@ export class Orchestrator {
           ? this.closeoutHoldsReply(event.sessionId)
           : null;
       if (turn && verifying) {
+        enqueueJobOnce(this.db, {
+          queue: JOB_KIND.heldReply,
+          jobKey: `held-reply:${event.sessionId}:${turn.eventKey}`,
+          payload: { heldReplyFor: event.sessionId },
+          runAt: this.now() + HELD_REPLY_POLL_MS,
+          now: this.now(),
+        });
         this.post(verifying, "thought", REPLY_WAITS_FOR_CLOSEOUT, `turn:ack:${turn.eventKey}`);
         await this.flush();
       } else if (turn && announceLinearTurn(this.db, event.sessionId, turn.eventKey, this.now())) {
@@ -1941,6 +1948,7 @@ export class Orchestrator {
         (await this.waitingForConversation(job, context))
       )
         return;
+      let verified: "settled" | "threw" | null = null;
       await this.failOnLastAttempt(job, context, "reverify", async () => {
         if (this.reverifyHeld(item)) {
           await this.waitForVerification(job, context, item);
@@ -1972,7 +1980,7 @@ export class Orchestrator {
             ),
           );
           await this.settleVerifying(job, context);
-          await this.deliverRepliesHeldForCloseout(job);
+          verified = "settled";
         } catch (error) {
           if (error instanceof VerificationHeld && context.isCurrent()) {
             const held = itemId === null ? null : getWorkItem(this.db, itemId);
@@ -1981,7 +1989,7 @@ export class Orchestrator {
           }
           const wait = this.nextRunnerWait(job, error);
           if (!wait || !context.isCurrent()) {
-            await this.deliverRepliesHeldForCloseout(job, true);
+            verified = "threw";
             throw error;
           }
           journalCaught(
@@ -1996,6 +2004,8 @@ export class Orchestrator {
           if (waitingId) this.settleItemAwake(waitingId);
           waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
         }
+      }).finally(async () => {
+        if (verified !== null) await this.deliverRepliesHeldForCloseout(job, verified === "threw");
       });
     });
     jobs.register(JOB_KIND.merge, async (job, context) => {
@@ -2111,6 +2121,12 @@ export class Orchestrator {
       );
       if (step === "wait" && context.isCurrent())
         waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+    });
+    jobs.register(JOB_KIND.heldReply, async (job, context) => {
+      const sessionId = (job.payload as { heldReplyFor?: unknown }).heldReplyFor;
+      if (typeof sessionId !== "string" || !context.isCurrent()) return;
+      if ((await this.wakeHeldReplies(sessionId)) === "wait" && context.isCurrent())
+        waitForMergeTurn(this.db, job, this.now(), HELD_REPLY_POLL_MS);
     });
     jobs.register(JOB_KIND.pullComments, async (job, context) => {
       const itemId = (job.payload as { pullCommentsFor?: unknown }).pullCommentsFor;
@@ -3506,12 +3522,15 @@ export class Orchestrator {
       }
       if (working !== undefined) this.startPost(working);
       if (!this.taskAccess()) this.postStatus(item, "started");
+      const heldReplies = this.heldRepliesOutsideBrief(item)
+        .filter((body) => !handoff?.includes(body))
+        .map((body) => `User update:\n${body}`);
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const checkout = this.runCheckout(item);
       const comments = this.linearCommentBrief(item);
       const suggestions = returned === null ? "" : await this.suggestionBrief(item, repository);
-      const turnHandoff = [handoff, comments?.text, suggestions]
+      const turnHandoff = [handoff, ...heldReplies, comments?.text, suggestions]
         .filter((part) => part)
         .join("\n\n");
       const focus = closeoutFocus(this.db, item.id, returned?.reason);
@@ -8040,6 +8059,29 @@ export class Orchestrator {
     }
   }
 
+  private async wakeHeldReplies(sessionId: string): Promise<"wait" | "done"> {
+    let step: "wait" | "done" = "done";
+    const done = (this.sessionEvents.get(sessionId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(async () => {
+        if (
+          !listPendingLinearTurns(this.db, sessionId).some(
+            (turn) => turn.announcedGeneration === null,
+          )
+        )
+          return;
+        if (this.heldReplyWaits(sessionId)) step = "wait";
+        else await this.resumeLinearSession(sessionId);
+      });
+    this.sessionEvents.set(sessionId, done);
+    try {
+      await done;
+    } finally {
+      if (this.sessionEvents.get(sessionId) === done) this.sessionEvents.delete(sessionId);
+    }
+    return step;
+  }
+
   private closeoutHoldsReply(sessionId: string): WorkItemRecord | null {
     const live = this.itemsForSession(sessionId).filter((item) => this.isLive(item.id));
     const item = live.length === 1 ? live[0]! : null;
@@ -8393,12 +8435,7 @@ export class Orchestrator {
           .map((snapshot) => JSON.parse(snapshot) as LinearActivitySnapshot)
           .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral)
       : [];
-    const repository = this.repositoryForItem(item);
-    const template = resolveBriefTemplate(
-      loadConfigFile(join(this.options.pawsRoot, "config.toml")),
-      repository ? `${repository.owner}/${repository.repo}` : null,
-    );
-    return renderWorkContext(template, {
+    return renderWorkContext(this.briefTemplate(item), {
       brief: item.brief,
       projectOverview:
         (getTaskLinearRead(this.db, item.id, "project_overview") as string | undefined) ?? "",
@@ -8407,6 +8444,21 @@ export class Orchestrator {
       sessionContext: item.sessionKey ? getLinearSessionContext(this.db, item.sessionKey) : "",
       activities,
     });
+  }
+
+  private briefTemplate(item: WorkItemRecord): string | null {
+    const repository = this.repositoryForItem(item);
+    return resolveBriefTemplate(
+      loadConfigFile(join(this.options.pawsRoot, "config.toml")),
+      repository ? `${repository.owner}/${repository.repo}` : null,
+    );
+  }
+
+  private heldRepliesOutsideBrief(item: WorkItemRecord): string[] {
+    if (!item.sessionKey || briefShowsUserUpdates(this.briefTemplate(item))) return [];
+    return listPendingLinearTurns(this.db, item.sessionKey)
+      .filter((turn) => turn.announcedGeneration === null)
+      .map((turn) => turn.body);
   }
 
   private artifactPublisher(item: WorkItemRecord) {
@@ -9957,6 +10009,7 @@ const LINEAR_RATE_LIMITED = /Linear GraphQL: RATELIMITED/;
 const RATE_LIMIT_RETRY_MS = 5_000;
 const OUTBOX_WAIT_MS = 30_000;
 const REPLY_WAITS_FOR_CLOSEOUT = "Got it. I'll pick this up once verification finishes.";
+const HELD_REPLY_POLL_MS = 30_000;
 const FIRST_ACTIVITY_HOLD_MS = 5_000;
 const CHECKS_RATE_LIMIT_RETRY_MS = 60_000;
 const CHECKS_RATE_LIMIT_WAIT_MS = 60 * 60_000;

@@ -207,6 +207,7 @@ export {
   BRIEF_PLACEHOLDERS,
   BRIEF_RUN_SAMPLES,
   briefSectionSizes,
+  briefShowsUserUpdates,
   briefTemplateProblem,
   defaultBriefTemplate,
   previewBriefValues,
