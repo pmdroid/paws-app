@@ -13,6 +13,7 @@ import {
   pullRequestDraftKey,
   scrubCommandEnv,
   usesPullRequestDraft,
+  withPrivateTemp,
   withPullRequestDraft,
   type PullRequestDraft,
 } from "./run/env";
@@ -1260,7 +1261,24 @@ function commandEnv({ runtimeBinPaths = [], basePath, bail, env: extra }: CheckP
 
 const OUTPUT_DRAIN_MS = 1_000;
 
-function runCommand(
+type CommandOutcome = Awaited<ReturnType<typeof spawnCommand>>;
+
+async function runCommand(
+  workspace: string,
+  argv: readonly string[],
+  timeoutSeconds: number,
+  signal?: AbortSignal,
+  path?: CheckPath,
+): Promise<CommandOutcome> {
+  return withPrivateTemp({}, (temp) =>
+    spawnCommand(workspace, argv, timeoutSeconds, signal, {
+      ...path,
+      env: { ...path?.env, ...temp },
+    }),
+  );
+}
+
+function spawnCommand(
   workspace: string,
   argv: readonly string[],
   timeoutSeconds: number,
