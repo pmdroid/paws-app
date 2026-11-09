@@ -306,7 +306,7 @@ async function setup() {
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",
     });
-    return { id, runId: run.id };
+    return { id, runId: run.id, sessionKey };
   }
   /** One turn of `record`, which runs until a runner finishes it or `stop` aborts it. */
   function turn(
@@ -1119,8 +1119,10 @@ test("a replay attaches to a question already stored by an earlier attachment", 
   context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   db.run(
     "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
-    [workspaceId(), record.id, record.runId, record.id, "Which delimiter?", context.now],
+    [workspaceId(), record.id, record.runId, record.sessionKey, "Which delimiter?", context.now],
   );
+  // Opening the question bumped the item version; that alone must not make the replay stale.
+  db.run("UPDATE work_item SET version=version+1 WHERE id=?", [record.id]);
   let asks = 0;
   const turn = context.turn(record, [], async () => {
     asks++;
@@ -1154,4 +1156,77 @@ test("a replay attaches to a question already stored by an earlier attachment", 
   );
   expect(context.answers(command, 2)).toEqual([]);
   expect(await resumed.running).toMatchObject({ stopReason: "end_turn" });
+});
+
+for (const [owner, change] of [
+  ["is cancelled", "cancel_requested=1"],
+  ["has no current run", "current_run_id=NULL"],
+] as const) {
+  test(`a replay gets no answer when the item ${owner}, before or after attaching`, async () => {
+    for (const whileAttached of [false, true]) {
+      const { db, runners } = context;
+      const record = context.item();
+      db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+      db.run(
+        "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
+        [
+          workspaceId(),
+          record.id,
+          record.runId,
+          record.sessionKey,
+          "Which delimiter?",
+          context.now,
+        ],
+      );
+      let asks = 0;
+      const turn = context.turn(record, [], async () => {
+        asks++;
+        return { answer: "Never asked." };
+      });
+      const command = (await context.next(runners.a)) as RunCommand;
+      const stale = () => db.run(`UPDATE work_item SET ${change} WHERE id=?`, [record.id]);
+      context.events(command, runners.a, [
+        { type: "question", text: "Which delimiter?", options: [] },
+      ]);
+      // Nothing awaits before this `stale()`, so the backend has not read the event yet.
+      if (!whileAttached) stale();
+      else {
+        expect(await context.next(runners.a, 50)).toBeNull();
+        stale();
+        db.run("UPDATE question SET status='answered',answer='Too late.' WHERE run_id=?", [
+          record.runId,
+        ]);
+      }
+      expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
+      // The run's lease checks may refuse this turn before the question owner check does.
+      expect(await turn.running).toBeInstanceOf(Error);
+      expect(asks).toBe(0);
+      expect(
+        db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
+      ).toEqual([]);
+    }
+  });
+}
+
+test("a replay fails as stale when the open question belongs to an earlier session", async () => {
+  const { db, runners } = context;
+  const record = context.item();
+  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  db.run(
+    "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
+    [workspaceId(), record.id, record.runId, "earlier-session", "Which delimiter?", context.now],
+  );
+  let asks = 0;
+  const turn = context.turn(record, [], async () => {
+    asks++;
+    return { answer: "Never asked." };
+  });
+  const command = (await context.next(runners.a)) as RunCommand;
+  context.events(command, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
+  expect(await turn.running).toMatchObject({ message: "Question owner is stale" });
+  expect(asks).toBe(0);
+  expect(db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId)).toEqual(
+    [],
+  );
 });

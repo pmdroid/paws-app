@@ -2309,6 +2309,10 @@ export function createRemoteAgentRunner(options: {
                     ? await (async () => {
                         for (;;) {
                           signal.throwIfAborted();
+                          if (
+                            !ownsAskedQuestion(db, stored.itemId, selected.runId, stored.sessionId)
+                          )
+                            throw new Error("Question owner is stale");
                           const current = questionRowById(db, stored.id);
                           if (
                             !current ||
@@ -2792,6 +2796,25 @@ const HANDOVER_FAILURE_STEP = {
 
 /** A run's handover within one failover call: the runner it left, and whether Linear heard why it waits. */
 type HandoverMove = { from?: string; repository?: string; waiting?: boolean };
+
+/**
+ * The owner checks of `ask()` for a question this run already opened. The item version is left
+ * out because opening the question bumped it.
+ */
+function ownsAskedQuestion(
+  db: Database,
+  itemId: string,
+  runId: string,
+  sessionId: string,
+): boolean {
+  const item = getWorkItem(db, itemId);
+  return (
+    item !== null &&
+    !item.cancelRequested &&
+    item.sessionKey === sessionId &&
+    item.currentRunId === runId
+  );
+}
 
 /**
  * Whether the run still waits on a question it asked. A question asked outside the question
