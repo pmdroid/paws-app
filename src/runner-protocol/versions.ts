@@ -105,4 +105,6 @@ export const AGENT_USER_RUNNER_VERSION: RunnerVersion = [0, 1, 73];
 export const PULL_REQUEST_DRAFT_RUNNER_VERSION: RunnerVersion = [0, 1, 73];
 export const QUESTION_ENDS_TURN_RUNNER_VERSION: RunnerVersion = [0, 1, 74];
 export const REVIEW_FINDINGS_RUNNER_VERSION: RunnerVersion = [0, 1, 74];
+/** First runner release that asks for missing repository toolchains before starting an agent. */
+export const TOOLCHAIN_PREFLIGHT_RUNNER_VERSION: RunnerVersion = [0, 1, 75];
 export const CONVERSATION_RUNNER_VERSION: RunnerVersion = [0, 1, 74];

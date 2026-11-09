@@ -1,4 +1,5 @@
 import { describeRunnerFailure } from "../runner-failure";
+import { RUNTIME_FILES } from "../runtimes";
 import { journalCaught, startPhaseClock } from "../journal";
 import {
   createLivePreviewSystem,
@@ -1147,6 +1148,51 @@ export async function executeRunnerCommand(
         writeFileSync(join(worktree, file.path), file.bytes, { flag: "wx", mode: 0o600 });
       }
     }
+    // Runtime declarations come from trusted main. Carry its configuration into an older
+    // candidate on retry too, but preserve configuration edited by the agent or checkpoint.
+    if (command.type === "run" && command.repository.mainSha && !resumed) {
+      const main = command.repository.mainSha;
+      const ancestor = (await invokeGit(["-C", worktree, "merge-base", "HEAD", main])).trim();
+      const changed = (
+        await invokeGit([
+          "-C",
+          worktree,
+          "diff",
+          "--name-only",
+          ancestor,
+          main,
+          "--",
+          ...RUNTIME_FILES,
+        ])
+      )
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      for (const file of changed) {
+        const local = await invokeGit([
+          "-C",
+          worktree,
+          "diff",
+          "--name-only",
+          ancestor,
+          "--",
+          file,
+        ]);
+        const dirty = await invokeGit(["-C", worktree, "status", "--porcelain", "--", file]);
+        if (local.trim() || dirty.trim()) continue;
+        await invokeGit([
+          "-C",
+          worktree,
+          "restore",
+          "--source",
+          main,
+          "--staged",
+          "--worktree",
+          "--",
+          file,
+        ]);
+      }
+    }
     phase("checkout");
     enterPhase("mise");
     const installed = await installCommandRuntimes(command, job.executionId, options, emit);
@@ -1188,6 +1234,10 @@ export async function executeRunnerCommand(
     const closeoutBasePath = withAgentBin(agentEnv.PATH);
     // Pinned bin dirs, not shims: nothing on PATH reads the repository's mise config.
     agentEnv.PATH = withAgentBin(prependRuntimePath(installed.binPaths, agentEnv.PATH));
+    const toolchainQuestion =
+      command.type === "run" && !installed.failure
+        ? missingToolchainQuestion(worktree, agentEnv.PATH ?? "")
+        : undefined;
     const prompt =
       repository || task || command.type === "helper"
         ? (options.inputs?.prompt ?? command.prompt)
@@ -1882,14 +1932,20 @@ export async function executeRunnerCommand(
     const interrupt = new AbortController();
     const watch = new AbortController();
     const handover =
-      runCommand && options.handover && installFailure === undefined
+      runCommand &&
+      options.handover &&
+      installFailure === undefined &&
+      toolchainQuestion === undefined
         ? watchHandover(interrupt, watch.signal)
         : undefined;
     const halt = new AbortController();
     let endTurn!: () => void;
     const turnDone = new Promise<void>((resolve) => (endTurn = resolve));
     const checkpoints =
-      runCommand && runCommand.checkpoint !== false && installFailure === undefined
+      runCommand &&
+      runCommand.checkpoint !== false &&
+      installFailure === undefined &&
+      toolchainQuestion === undefined
         ? watchCheckpoints(watch.signal, halt, turnDone)
         : undefined;
     const questionEndsTurn = runCommand?.questionEndsTurn === true;
@@ -1913,7 +1969,7 @@ export async function executeRunnerCommand(
             ]),
           }
         : agent;
-    if (runCommand?.livePreview && installFailure === undefined)
+    if (runCommand?.livePreview && installFailure === undefined && toolchainQuestion === undefined)
       preview = startLivePreview({
         preview: runCommand.livePreview,
         runner: runCommand.runnerId,
@@ -1934,21 +1990,55 @@ export async function executeRunnerCommand(
         journalCaught(error, "runner-worker.livePreview.start", runCommand.itemId);
         return null;
       });
+    if (toolchainQuestion) {
+      if (!options.answer) throw new Error("Runner question channel is unavailable");
+      // Restoring a checkpoint leaves its edits dirty over HEAD. Save them before the
+      // question can end this turn; a commit failure must not publish the older HEAD.
+      await bounded("commit", (signal) =>
+        commitCheckpoint(
+          worktree,
+          runCommand!.commitPolicy
+            ? commitPolicyMessage(QUESTION_COMMIT_MESSAGE, runCommand!.commitPolicy)
+            : QUESTION_COMMIT_MESSAGE,
+          signal,
+          undefined,
+          env,
+          inputFiles.map((file) => file.path),
+          runCommand!.commitPolicy
+            ? appBotCommitIdentity(runCommand!.commitPolicy.bot)
+            : runCommand!.checkpointBot
+              ? appBotCommitIdentity(runCommand!.checkpointBot)
+              : undefined,
+        ),
+      );
+      const requestId = randomUUID();
+      emit({ type: "question", requestId, question: toolchainQuestion, options: [] });
+      await options.answer(requestId, options.signal ?? new AbortController().signal);
+    }
     enterPhase("agent");
     let run: RunAgentResult =
-      installFailure !== undefined
+      toolchainQuestion !== undefined
         ? {
             role: agent.role,
-            stopReason: "error",
-            errorMessage: installFailure,
+            stopReason: "end_turn",
             cancelled: false,
             timedOut: false,
             authRequired: false,
             agentExited: false,
           }
-        : runCommand && options.followUp
-          ? await runWithFollowUps(current, options.followUp, runner).finally(endTurn)
-          : await runner(current).finally(endTurn);
+        : installFailure !== undefined
+          ? {
+              role: agent.role,
+              stopReason: "error",
+              errorMessage: installFailure,
+              cancelled: false,
+              timedOut: false,
+              authRequired: false,
+              agentExited: false,
+            }
+          : runCommand && options.followUp
+            ? await runWithFollowUps(current, options.followUp, runner).finally(endTurn)
+            : await runner(current).finally(endTurn);
     endTurn();
     turnFinished = true;
     waits.stop();
@@ -2141,7 +2231,8 @@ export async function executeRunnerCommand(
       } else result.reviewText = reviewText;
     };
     enterPhase("push");
-    if (repository && run.agentExited && clean) await recordCandidate();
+    if (repository && (run.agentExited || toolchainQuestion !== undefined) && clean)
+      await recordCandidate();
     else if (repository && run.agentExited && wip) {
       await recordCandidate().catch((caughtError3) => {
         journalCaught(
@@ -2290,6 +2381,53 @@ export async function executeRunnerCommand(
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
     closeSync(eventJournal);
   }
+}
+
+// Keep discovery bounded: root projects, direct children, and conventional workspace apps.
+function missingToolchainQuestion(worktree: string, path: string): string | undefined {
+  const directories = [""];
+  for (const entry of readdirSync(worktree, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === ".git") continue;
+    directories.push(entry.name);
+    if (entry.name === "apps" || entry.name === "packages")
+      for (const child of readdirSync(join(worktree, entry.name), { withFileTypes: true }))
+        if (child.isDirectory()) directories.push(`${entry.name}/${child.name}`);
+  }
+  const tools = [
+    ["Cargo.toml", "cargo", 'rust = "stable"'],
+    ["go.mod", "go", 'go = "latest"'],
+    ["pyproject.toml", "python3", 'python = "3.12"'],
+    ["Gemfile", "ruby", 'ruby = "3.3"'],
+    ["bun.lock", "bun", 'bun = "latest"'],
+    ["bun.lockb", "bun", 'bun = "latest"'],
+    ["package.json", "node", 'node = "lts"'],
+  ] as const;
+  const missing = new Map<string, { manifest: string; count: number }>();
+  const lines = new Set<string>();
+  for (const directory of directories.sort()) {
+    const root = join(worktree, directory);
+    for (const [manifest, tool, line] of tools) {
+      if (
+        manifest === "package.json" &&
+        (existsSync(join(root, "bun.lock")) || existsSync(join(root, "bun.lockb")))
+      )
+        continue;
+      if (!existsSync(join(root, manifest)) || Bun.which(tool, { PATH: path, cwd: worktree }))
+        continue;
+      const found = missing.get(tool);
+      if (found) found.count++;
+      else
+        missing.set(tool, { manifest: `${directory ? `${directory}/` : ""}${manifest}`, count: 1 });
+      lines.add(line);
+    }
+  }
+  if (!missing.size) return;
+  // One representative manifest per tool keeps large repositories within the protocol limit.
+  const descriptions = [...missing].map(
+    ([tool, { manifest, count }]) =>
+      `${manifest.slice(0, 1_000)}${count > 1 ? ` (and ${count - 1} other manifests)` : ""} needs ${tool}, which isn't installed on the runner.`,
+  );
+  return `${descriptions.join("\n")} Add these entries to the existing [tools] table in mise.toml at the repository root, or create that table if absent. Commit the configuration to main, then answer to retry (do not add a second [tools] header):\n\n[tools]\n${[...lines].join("\n")}`;
 }
 
 /**
