@@ -1,5 +1,37 @@
 import {
-  workspaceMemberUsableSql,
+  acknowledgeRunnerCommand,
+  assignRunnerWork,
+  availableRunnerIdentity,
+  confirmRunnerWork,
+  confirmRunnerWorkTeardown,
+  deleteRunnerWorkGrants,
+  deliverableRunnerCommands,
+  endRunnerWork,
+  extendRunnerWorkLease,
+  finishRunnerWork,
+  getRun,
+  insertRunnerCommand,
+  insertRunnerEvent,
+  insertRunnerWorkGrant,
+  linearSessionClientId,
+  loseRunnerWork,
+  noteRunnerLiveReport,
+  noteRunnerSeen,
+  noteRunnerTerminations,
+  openRunnerAssignments,
+  runnerCheckpointPending,
+  runnerCommandAcknowledgedBy,
+  runnerCommandEnvelope,
+  runnerHostVersion,
+  runnerResultForCommand,
+  runnerWorkAssignment,
+  runnerWorkGrantValid,
+  runnerWorkStillReported,
+  setRunnerWorkLastSequence,
+  storedRunnerEvent,
+  type RunnerAssignment as Assignment,
+  workspaceInLinearOrganization,
+  workspaceSessionRepositoryAllowed,
   listSkills,
   recordCommandAccount,
   recordRunnerAccountCapability,
@@ -10,7 +42,6 @@ import {
   recordRunnerRuntimes,
   recordRunnerSkills,
   runnerAgentTargets,
-  teamRepositoryAllowedSql,
   lastInstanceHeartbeat,
   runnerLeaseCutoff,
   getLinearSessionAccess,
@@ -63,29 +94,10 @@ import {
   deliverRepositoryCommands,
   repositoryCommandDeliveredTo,
 } from "../runner-repository-commands";
-import {
-  openRunnerEvent,
-  payloadSha256,
-  RUNNER_EVENT_COLUMNS,
-  sealRunnerEvent,
-  type StoredRunnerEvent,
-} from "./events";
+import { openRunnerEvent, payloadSha256, sealRunnerEvent, type StoredRunnerEvent } from "./events";
 
 export { RunnerEventSchema, type RunnerEvent } from "../runner-protocol";
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
-type Assignment = {
-  runId: string;
-  runnerId: string;
-  workspaceId: string;
-  generation: number;
-  runnerFence: number;
-  commandId: string;
-  leaseUntil: number;
-  lastSequence: number;
-  endedAt: number | null;
-};
-const columns =
-  "run_id AS runId,runner_id AS runnerId,workspace_id AS workspaceId,generation,runner_fence AS runnerFence,command_id AS commandId,lease_until AS leaseUntil,last_sequence AS lastSequence,ended_at AS endedAt";
 
 /**
  * Work the runner acknowledged this long ago and no longer reports is lost. The margin covers a
@@ -115,18 +127,10 @@ export function createRunnerWork(options: {
   const { eventKey } = options;
   const now = options.now ?? Date.now;
   function assignment(runId: string) {
-    return db
-      .query<Assignment, [string]>(`SELECT ${columns} FROM runner_work WHERE run_id=?`)
-      .get(runId);
+    return runnerWorkAssignment(db, runId);
   }
   function availableIdentity(id: string) {
-    return db
-      .query<{ workspaceId: string; userId: string; fence: number; status: string }, [string]>(
-        `SELECT r.workspace_id AS workspaceId,r.owner_user_id AS userId,r.fence,r.status FROM runner r
-      JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
-      WHERE r.id=? AND r.revoked_at IS NULL AND r.status<>'revoked' AND ${workspaceMemberUsableSql("m")}`,
-      )
-      .get(id);
+    return availableRunnerIdentity(db, id);
   }
   /** Registered skills a runner should have installed. Removed ones are left out, so runners delete them. */
   function skillManifest(): RunnerSkill[] {
@@ -146,19 +150,11 @@ export function createRunnerWork(options: {
     return row;
   }
   function activeTask(runId: string, allowPendingQuestion = false) {
-    const execution = db
-      .query<{ itemId: string; status: string }, [string]>(
-        "SELECT item_id AS itemId,status FROM run WHERE id=?",
-      )
-      .get(runId);
+    const execution = getRun(db, runId);
     const item = execution ? getWorkItem(db, execution.itemId) : null;
     // A run Paws stops for a cap or a restart publishes its WIP commit first: until that
     // checkpoint request expires, its runner may still send the commit and push it.
-    const checkpointing =
-      item?.currentRunId === runId &&
-      db
-        .query("SELECT 1 FROM runner_command WHERE run_id=? AND kind='checkpoint' AND expires_at>?")
-        .get(runId, now()) !== null;
+    const checkpointing = item?.currentRunId === runId && runnerCheckpointPending(db, runId, now());
     if (
       !item ||
       item.currentRunId !== runId ||
@@ -182,12 +178,15 @@ export function createRunnerWork(options: {
     const { item, sessionId } = activeTask(runId, allowPendingQuestion);
     const repository = getWorkItemRepository(db, item.id);
     if (!repository) throw new Error("Run repository is not bound.");
-    const mapped = db
-      .query(
-        `SELECT 1 FROM workspace w JOIN linear_session s ON s.organization_id=w.linear_organization_id WHERE w.id=?1 AND s.session_id=?2 AND ${teamRepositoryAllowedSql("w.id", "s.team_id", "lower(?3)")}`,
+    if (
+      !workspaceSessionRepositoryAllowed(
+        db,
+        workspaceId,
+        sessionId,
+        `${repository.owner}/${repository.repo}`,
       )
-      .get(workspaceId, sessionId, `${repository.owner}/${repository.repo}`);
-    if (!mapped) throw new Error("Run is outside the runner workspace repository access.");
+    )
+      throw new Error("Run is outside the runner workspace repository access.");
     return { item, repository };
   }
   function responseTask(
@@ -199,21 +198,15 @@ export function createRunnerWork(options: {
     const { item, sessionId } = activeTask(runId, allowPendingQuestion);
     const session = getLinearSession(db, sessionId);
     const purpose = getTaskMode(db, item.id);
-    const installation = db
-      .query<{ clientId: string | null }, [string]>(
-        "SELECT oauth_client_id AS clientId FROM linear_session WHERE session_id=?",
-      )
-      .get(sessionId);
+    const clientId = linearSessionClientId(db, sessionId);
     if (
       !session ||
       session.stoppedAt !== null ||
-      !installation?.clientId ||
+      !clientId ||
       (purpose !== "answer" && purpose !== "artifact" && purpose !== "plan") ||
-      !db
-        .query("SELECT 1 FROM workspace WHERE id=? AND linear_organization_id=?")
-        .get(workspaceId, session.organizationId) ||
+      !workspaceInLinearOrganization(db, workspaceId, session.organizationId) ||
       (userId !== undefined &&
-        !workspaceSessionIds(db, workspaceId, userId, installation.clientId).includes(sessionId))
+        !workspaceSessionIds(db, workspaceId, userId, clientId).includes(sessionId))
     )
       throw new RunnerWorkFencedError("Linear response task authority changed");
     return {
@@ -248,15 +241,7 @@ export function createRunnerWork(options: {
   }
   /** Whether the runner's latest heartbeat named this run among the work it still runs. */
   function stillReported(runnerId: string, runId: string) {
-    return (
-      db
-        .query(
-          `SELECT 1 FROM runner_work w JOIN runner r ON r.id=w.runner_id
-          WHERE w.run_id=? AND r.id=? AND w.confirmed_at IS NOT NULL
-          AND r.live_reported_at IS NOT NULL AND w.confirmed_at>=r.live_reported_at`,
-        )
-        .get(runId, runnerId) !== null
-    );
+    return runnerWorkStillReported(db, runnerId, runId);
   }
   function live(
     runnerId: string,
@@ -321,32 +306,23 @@ export function createRunnerWork(options: {
           budgetMs: credit.offlineBudgetMs,
         })
       : leaseUntil + RUNNER_LEASE_GRACE_MS;
-    db.run("UPDATE runner_work SET lease_until=MAX(lease_until,?) WHERE run_id=?", [
-      Math.max(leaseUntil, authorityUntil - RUNNER_LEASE_GRACE_MS),
+    extendRunnerWorkLease(
+      db,
       work.runId,
-    ]);
+      Math.max(leaseUntil, authorityUntil - RUNNER_LEASE_GRACE_MS),
+    );
     return leaseUntil;
   }
   function accepted(work: Assignment) {
-    return (
-      db
-        .query("SELECT 1 FROM runner_result WHERE run_id=? AND generation=? AND command_id=?")
-        .get(work.runId, work.generation, work.commandId) !== null
-    );
+    return runnerResultForCommand(db, work, work.commandId) !== null;
   }
   function acknowledgedBy(work: Assignment, at: number) {
-    return (
-      db
-        .query("SELECT 1 FROM runner_command WHERE id=? AND acknowledged_at<=?")
-        .get(work.commandId, at) !== null
-    );
+    return runnerCommandAcknowledgedBy(db, work.commandId, at);
   }
   function workCommand(work: Assignment): WorkCommand {
-    const row = db
-      .query<{ envelope: string }, [string]>("SELECT envelope FROM runner_command WHERE id=?")
-      .get(work.commandId);
-    if (!row) throw new Error("Run command is unavailable.");
-    const envelope = JSON.parse(row.envelope) as { payload: string };
+    const stored = runnerCommandEnvelope(db, work.commandId);
+    if (stored === null) throw new Error("Run command is unavailable.");
+    const envelope = JSON.parse(stored) as { payload: string };
     const command = RunnerCommandSchema.parse(
       JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")),
     );
@@ -371,21 +347,23 @@ export function createRunnerWork(options: {
   ): Assignment {
     const at = now();
     const work = live(input.runnerId, input.runId, input.generation, at, allowPendingQuestion);
-    const grant = db
-      .query(
-        "SELECT 1 FROM runner_work_grant WHERE token_hash=? AND run_id=? AND generation=? AND expires_at>?",
+    if (
+      !runnerWorkGrantValid(
+        db,
+        {
+          tokenHash: workspaceTokenHash(input.token),
+          runId: input.runId,
+          generation: input.generation,
+        },
+        at,
       )
-      .get(workspaceTokenHash(input.token), input.runId, input.generation, at);
-    if (!grant) throw new Error("Run grant is invalid or expired.");
+    )
+      throw new Error("Run grant is invalid or expired.");
     return work;
   }
   function supportsAgent(runnerId: string, agent: string) {
     if (agent !== "opencode") return true;
-    const version = db
-      .query<{ version: string | null }, [string]>(
-        "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-      )
-      .get(runnerId)?.version;
+    const version = runnerHostVersion(db, runnerId);
     const parts = version
       ?.match(/^(\d+)\.(\d+)\.(\d+)(?:$|[-+])/)
       ?.slice(1)
@@ -408,18 +386,15 @@ export function createRunnerWork(options: {
       command,
     });
     recordCommandAccount(db, command, now());
-    db.run(
-      "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at) VALUES(?,?,?,?,?,?,?)",
-      [
-        command.id,
-        command.runnerId,
-        "runId" in command ? command.runId : null,
-        "generation" in command ? command.generation : null,
-        command.type,
-        JSON.stringify(envelope),
-        command.expiresAt,
-      ],
-    );
+    insertRunnerCommand(db, {
+      id: command.id,
+      runnerId: command.runnerId,
+      runId: "runId" in command ? command.runId : null,
+      generation: "generation" in command ? command.generation : null,
+      kind: command.type,
+      envelope,
+      expiresAt: command.expiresAt,
+    });
     return envelope;
   }
   return {
@@ -492,30 +467,22 @@ export function createRunnerWork(options: {
           command.type === "run" &&
           command.livePreview &&
           !runnerReleaseAtLeast(
-            db
-              .query<{ version: string | null }, [string]>(
-                "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-              )
-              .get(command.runnerId)?.version,
+            runnerHostVersion(db, command.runnerId),
             LIVE_PREVIEW_RUNNER_VERSION,
           )
         )
           delete command.livePreview;
         const envelope = queue(command);
-        db.run(
-          `INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until)
-          VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET runner_id=excluded.runner_id,workspace_id=excluded.workspace_id,generation=excluded.generation,runner_fence=excluded.runner_fence,command_id=excluded.command_id,lease_until=excluded.lease_until,last_sequence=0,consumed_sequence=0,ended_at=NULL,confirmed_at=NULL,lost_at=NULL,teardown_confirmed_at=NULL`,
-          [
-            command.runId,
-            command.runnerId,
-            command.workspaceId,
-            command.generation,
-            accepting.fence,
-            command.id,
-            leaseUntil,
-          ],
-        );
-        db.run("DELETE FROM runner_work_grant WHERE run_id=?", [command.runId]);
+        assignRunnerWork(db, {
+          runId: command.runId,
+          runnerId: command.runnerId,
+          workspaceId: command.workspaceId,
+          generation: command.generation,
+          runnerFence: accepting.fence,
+          commandId: command.id,
+          leaseUntil,
+        });
+        deleteRunnerWorkGrants(db, command.runId);
         recordRunAgentSetup(db, {
           runId: command.runId,
           runnerId: command.runnerId,
@@ -555,12 +522,8 @@ export function createRunnerWork(options: {
           const work = assignment(command.runId);
           if (!work || work.runnerId !== command.runnerId || work.generation !== command.generation)
             throw new Error("Cancellation assignment changed.");
-          db.run("UPDATE runner_work SET ended_at=? WHERE run_id=? AND generation=?", [
-            now(),
-            work.runId,
-            work.generation,
-          ]);
-          db.run("DELETE FROM runner_work_grant WHERE run_id=?", [work.runId]);
+          endRunnerWork(db, work.runId, work.generation, now());
+          deleteRunnerWorkGrants(db, work.runId);
         }
         // A handover keeps the work live: the runner still publishes its WIP commit and result.
         // So does a checkpoint: the runner publishes the WIP commit while the agent goes on.
@@ -589,19 +552,12 @@ export function createRunnerWork(options: {
       const routine = nextRoutineHealthCommand(db, runnerId, now());
       let ordinal = 0;
       while (result.length < 16) {
-        const rows = db
-          .query<
-            { ordinal: number; envelope: string; runId: string | null; generation: number | null },
-            [string, number, number, number]
-          >(
-            `SELECT c.ordinal,c.envelope,c.run_id AS runId,c.generation FROM runner_command c
-            LEFT JOIN runner_work w ON w.run_id=c.run_id
-            WHERE c.runner_id=? AND c.acknowledged_at IS NULL AND c.expires_at>? AND c.ordinal>?
-            AND (c.kind NOT IN ('run','review') OR
-              (w.runner_id=c.runner_id AND w.generation=c.generation AND w.ended_at IS NULL AND w.lease_until>?))
-            ORDER BY c.ordinal LIMIT 64`,
-          )
-          .all(runnerId, now(), ordinal, runnerLeaseCutoff(now()));
+        const rows = deliverableRunnerCommands(db, {
+          runnerId,
+          now: now(),
+          after: ordinal,
+          leaseCutoff: runnerLeaseCutoff(now()),
+        });
         for (const row of rows) {
           ordinal = row.ordinal;
           const envelope = JSON.parse(row.envelope) as SignedRunnerCommand;
@@ -635,10 +591,7 @@ export function createRunnerWork(options: {
     acknowledge(runnerId: string, commandId: string) {
       runner(runnerId);
       if (
-        db.run(
-          "UPDATE runner_command SET acknowledged_at=COALESCE(acknowledged_at,?) WHERE id=? AND runner_id=?",
-          [now(), commandId, runnerId],
-        ).changes !== 1 &&
+        acknowledgeRunnerCommand(db, runnerId, commandId, now()) !== 1 &&
         !repositoryCommandDeliveredTo(db, runnerId, commandId)
       )
         throw new Error("Runner command is unknown.");
@@ -670,11 +623,7 @@ export function createRunnerWork(options: {
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
       return immediate(db, () => {
         runner(runnerId);
-        const storedVersion = db
-          .query<{ version: string | null }, [string]>(
-            "SELECT runner_version AS version FROM runner_host_status WHERE runner_id=?",
-          )
-          .get(runnerId)?.version;
+        const storedVersion = runnerHostVersion(db, runnerId);
         const aliveAt = lastInstanceHeartbeat(db);
         const offlineCredit =
           aliveAt !== null &&
@@ -683,7 +632,7 @@ export function createRunnerWork(options: {
             : undefined;
         const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling, conversations);
         const at = now();
-        db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
+        noteRunnerSeen(db, runnerId, at);
         if (Object.values(host).some((value) => value !== undefined))
           recordRunnerHostStatus(db, runnerId, host, at);
         const skills: RunnerSkill[] | undefined = installed && skillManifest();
@@ -702,20 +651,9 @@ export function createRunnerWork(options: {
           });
         // A receipt ACK and an expired command never confirm worker termination.
         // Only a generation/command-bound broker confirmation releases cleanup ownership.
-        for (const entry of terminated ?? []) {
-          db.run(
-            `UPDATE runner_work SET teardown_confirmed_at=COALESCE(teardown_confirmed_at,?)
-            WHERE runner_id=? AND run_id=? AND generation=? AND (command_id=? OR EXISTS(
-              SELECT 1 FROM runner_command c WHERE c.id=? AND c.runner_id=runner_work.runner_id
-                AND c.run_id=runner_work.run_id AND c.generation=runner_work.generation AND c.kind='cancel'))`,
-            [at, runnerId, entry.runId, entry.generation, entry.commandId, entry.commandId],
-          );
-        }
-        const rows = db
-          .query<Assignment, [string]>(
-            `SELECT ${columns} FROM runner_work WHERE runner_id=? AND ended_at IS NULL`,
-          )
-          .all(runnerId);
+        for (const entry of terminated ?? [])
+          confirmRunnerWorkTeardown(db, { ...entry, runnerId, at });
+        const rows = openRunnerAssignments(db, runnerId);
         const leases: { runId: string; generation: number; expiresAt: number }[] = [];
         const fenced: { runId: string; generation: number }[] = [];
         const causal = running !== undefined && liveAfter !== undefined;
@@ -735,18 +673,10 @@ export function createRunnerWork(options: {
               settled,
               named || !causal || observed ? named : undefined,
             );
-            if (named)
-              db.run("UPDATE runner_work SET confirmed_at=? WHERE run_id=? AND generation=?", [
-                at,
-                row.runId,
-                row.generation,
-              ]);
+            if (named) confirmRunnerWork(db, { runId: row.runId, generation: row.generation, at });
             else if (running && !settled && observed) {
-              db.run(
-                "UPDATE runner_work SET ended_at=?,lost_at=? WHERE run_id=? AND generation=?",
-                [at, at, row.runId, row.generation],
-              );
-              db.run("DELETE FROM runner_work_grant WHERE run_id=?", [row.runId]);
+              loseRunnerWork(db, row.runId, row.generation, at);
+              deleteRunnerWorkGrants(db, row.runId);
               fenced.push({ runId: row.runId, generation: row.generation });
               continue;
             }
@@ -758,29 +688,18 @@ export function createRunnerWork(options: {
             });
           } catch (caughtError2) {
             journalCaught(caughtError2, "control.heartbeat.live", null);
-            db.run("UPDATE runner_work SET ended_at=? WHERE run_id=? AND generation=?", [
-              at,
-              row.runId,
-              row.generation,
-            ]);
-            db.run("DELETE FROM runner_work_grant WHERE run_id=?", [row.runId]);
+            endRunnerWork(db, row.runId, row.generation, at);
+            deleteRunnerWorkGrants(db, row.runId);
             fenced.push({ runId: row.runId, generation: row.generation });
           }
         }
         // A run Paws already ended that the runner still names keeps its process alive there, so
         // a conversation blocked on its cleanup stays blocked until a report leaves it out.
-        if (reported && terminated)
-          db.run("UPDATE runner SET terminations_since=COALESCE(terminations_since,?) WHERE id=?", [
-            at,
-            runnerId,
-          ]);
+        if (reported && terminated) noteRunnerTerminations(db, runnerId, at);
         if (reported) {
-          db.run("UPDATE runner SET live_reported_at=? WHERE id=?", [at, runnerId]);
+          noteRunnerLiveReport(db, runnerId, at);
           for (const { runId, generation } of reported)
-            db.run(
-              "UPDATE runner_work SET confirmed_at=? WHERE runner_id=? AND run_id=? AND generation=?",
-              [at, runnerId, runId, generation],
-            );
+            confirmRunnerWork(db, { runId, generation, at, runnerId });
         }
         return {
           leases,
@@ -808,13 +727,13 @@ export function createRunnerWork(options: {
         const token = workspaceSecret();
         const leaseUntil = work.leaseUntil > now() ? work.leaseUntil : renew(work, now());
         const expiresAt = Math.min(leaseUntil, now() + 60_000);
-        db.run("DELETE FROM runner_work_grant WHERE run_id=?", [input.runId]);
-        db.run("INSERT INTO runner_work_grant VALUES(?,?,?,?)", [
-          workspaceTokenHash(token),
-          input.runId,
-          input.generation,
+        deleteRunnerWorkGrants(db, input.runId);
+        insertRunnerWorkGrant(db, {
+          tokenHash: workspaceTokenHash(token),
+          runId: input.runId,
+          generation: input.generation,
           expiresAt,
-        ]);
+        });
         return { token, expiresAt };
       });
     },
@@ -831,12 +750,8 @@ export function createRunnerWork(options: {
         throw new Error("Event sequence is invalid.");
       return immediate(db, () => {
         const at = now();
-        const saved = db
-          .query<StoredRunnerEvent, [string, number, number]>(
-            `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
-             WHERE run_id=? AND generation=? AND sequence=?`,
-          )
-          .get(input.runId, input.generation, input.sequence);
+        const key = { runId: input.runId, generation: input.generation, sequence: input.sequence };
+        const saved = storedRunnerEvent(db, key, key.sequence);
         const work = authorized(input, saved !== null);
         const command = workCommand(work);
         if (
@@ -852,26 +767,8 @@ export function createRunnerWork(options: {
         }
         if (input.sequence !== work.lastSequence + 1) throw new Error("Event sequence has a gap.");
         const sealed = sealRunnerEvent(eventKey, input, event);
-        db.run(
-          `INSERT INTO runner_event(run_id,generation,sequence,payload,received_at,key_id,
-           payload_sha256,type,handed_over,reason) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-          [
-            input.runId,
-            input.generation,
-            input.sequence,
-            sealed.payload,
-            at,
-            sealed.keyId,
-            sealed.payloadSha256,
-            sealed.type,
-            sealed.handedOver,
-            sealed.reason,
-          ],
-        );
-        db.run("UPDATE runner_work SET last_sequence=? WHERE run_id=?", [
-          input.sequence,
-          input.runId,
-        ]);
+        insertRunnerEvent(db, key, sealed, at);
+        setRunnerWorkLastSequence(db, input.runId, input.sequence);
         return { duplicate: false };
       });
     },
@@ -888,14 +785,9 @@ export function createRunnerWork(options: {
     },
     finish(runId: string, generation: number) {
       immediate(db, () => {
-        if (
-          db.run(
-            "UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=? AND generation=? AND ended_at IS NULL",
-            [now(), now(), runId, generation],
-          ).changes !== 1
-        )
+        if (finishRunnerWork(db, runId, generation, now()) !== 1)
           throw new Error("Run assignment changed.");
-        db.run("DELETE FROM runner_work_grant WHERE run_id=?", [runId]);
+        deleteRunnerWorkGrants(db, runId);
       });
     },
   };
