@@ -177,9 +177,10 @@ test("an enqueued repository command is delivered once, signed, to its runner", 
 
 test("the pull request title goes only to a runner that accepts it", async () => {
   const f = fixture();
+  f.db.run("UPDATE runner_host_status SET runner_version='0.1.75'");
   f.enqueue(120_000, "Add widgets");
   expect((await f.poll("runner-a"))[0]).not.toHaveProperty("title");
-  f.db.run("UPDATE runner_host_status SET runner_version='0.1.75'");
+  f.db.run("UPDATE runner_host_status SET runner_version='0.1.76'");
   f.enqueue(120_000, "Add widgets");
   expect((await f.poll("runner-a"))[0]).toMatchObject({ title: "Add widgets" });
 });
