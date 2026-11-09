@@ -49,7 +49,13 @@ import {
 } from "../db";
 import { blockingIssues, readyItems } from "../intake";
 import { createAdmission, type ItemAdmission } from "./admission";
-import { itemWaits, overlapLine, postWaitKeepalives, type ItemWait } from "./waits";
+import {
+  itemWaits,
+  overlapLine,
+  postConflictHolds,
+  postWaitKeepalives,
+  type ItemWait,
+} from "./waits";
 
 const TICK = "scheduler.tick";
 const RUNNER_SEEN_MS = 60_000;
@@ -712,6 +718,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
       new Map(slots ? line.map((id, index) => [id, index + 1]) : []),
     );
     postWaitKeepalives(db, waits, now);
+    postConflictHolds(db, waits, now);
     return {
       admitted,
       waits,
