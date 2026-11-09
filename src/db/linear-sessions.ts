@@ -18,12 +18,9 @@ import {
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { IN_FLIGHT_ITEM_STATES, JOB_KIND, parentIssueIdSql } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 import { mergeLaneSql } from "./jobs";
-import { orm } from "./orm";
-import { advanceOutboxSession, enqueueOutboxOnce } from "./outbox";
-import * as schema from "./schema";
-import { immediate } from "./tx";
+import { advanceOutboxSessionSteps, enqueueOutboxOnceSteps } from "./outbox";
 
 export type StoredLinearSession = {
   sessionId: string;
@@ -448,33 +445,65 @@ export function getLinearSessionGeneration(db: Database, sessionId: string): num
   return settled(sqliteDb(db).run((q) => getLinearSessionGenerationSteps(q, sessionId)));
 }
 
+// SQLite's write transaction serializes these operations. Postgres needs the same
+// session-wide exclusion before any turn, receipt or stopped-generation reads.
+function* lockLinearSessionSteps(q: Q, sessionId: string): Steps<void> {
+  if (q.dialect === "postgres")
+    yield* q.exec(
+      q.orm
+        .select({
+          lock: sql`pg_advisory_xact_lock(hashtextextended(${`linear-session:${sessionId}`}, 0))`,
+        })
+        .from(sql`(SELECT 1) AS lock_scope`),
+    );
+}
+
+export function* advanceLinearSessionGenerationSteps(
+  q: Q,
+  sessionId: string,
+  options: { stop?: boolean; now?: number } = {},
+): Steps<number> {
+  yield* lockLinearSessionSteps(q, sessionId);
+  yield* ensureLinearSessionSteps(q, { sessionId, now: options.now });
+  const generation = yield* advanceOutboxSessionSteps(q, "linear", sessionId, options);
+  yield* q.exec(
+    q.orm
+      .update(q.t.linearSession)
+      .set({ generation, stoppedAt: options.stop ? (options.now ?? Date.now()) : null })
+      .where(eq(q.t.linearSession.sessionId, sessionId)),
+  );
+  if (options.stop)
+    yield* q.exec(
+      q.orm
+        .update(q.t.linearTurn)
+        .set({ state: "cancelled" })
+        .where(
+          and(
+            eq(q.t.linearTurn.sessionId, sessionId),
+            eq(q.t.linearTurn.state, "pending"),
+            lte(q.t.linearTurn.createdAtMs, options.now ?? Date.now()),
+          ),
+        ),
+    );
+  return generation;
+}
+
 export function advanceLinearSessionGeneration(
   db: Database,
   sessionId: string,
   options: { stop?: boolean; now?: number } = {},
 ): number {
-  return immediate(db, () => {
-    ensureLinearSession(db, { sessionId, now: options.now });
-    const generation = advanceOutboxSession(db, "linear", sessionId, options);
-    orm(db)
-      .update(schema.linearSession)
-      .set({ generation, stoppedAt: options.stop ? (options.now ?? Date.now()) : null })
-      .where(eq(schema.linearSession.sessionId, sessionId))
-      .run();
-    if (options.stop)
-      orm(db)
-        .update(schema.linearTurn)
-        .set({ state: "cancelled" })
-        .where(
-          and(
-            eq(schema.linearTurn.sessionId, sessionId),
-            eq(schema.linearTurn.state, "pending"),
-            lte(schema.linearTurn.createdAtMs, options.now ?? Date.now()),
-          ),
-        )
-        .run();
-    return generation;
-  });
+  return settled(
+    sqliteDb(db).transaction((q) => advanceLinearSessionGenerationSteps(q, sessionId, options)),
+  );
+}
+
+export async function advanceLinearSessionGenerationAsync(
+  store: Db,
+  sessionId: string,
+  options: { stop?: boolean; now?: number } = {},
+): Promise<number> {
+  return await store.transaction((q) => advanceLinearSessionGenerationSteps(q, sessionId, options));
 }
 
 function mapTurn(row: Q["t"]["linearTurn"]["$inferSelect"]): StoredLinearTurn {
@@ -540,61 +569,81 @@ export function getLinearTurnGeneration(
   );
 }
 
+export function* announceLinearTurnSteps(
+  q: Q,
+  sessionId: string,
+  eventKey: string,
+  now = Date.now(),
+): Steps<boolean> {
+  yield* lockLinearSessionSteps(q, sessionId);
+  const turn = yield* q.one(
+    q.orm
+      .select({
+        announcedGeneration: q.t.linearTurn.announcedGeneration,
+        state: q.t.linearTurn.state,
+        createdAtMs: q.t.linearTurn.createdAtMs,
+      })
+      .from(q.t.linearTurn)
+      .where(and(eq(q.t.linearTurn.eventKey, eventKey), eq(q.t.linearTurn.sessionId, sessionId))),
+  );
+  if (!turn || turn.state !== "pending" || turn.announcedGeneration !== null) return false;
+  const session = yield* getLinearSessionSteps(q, sessionId);
+  if (
+    session?.stoppedAt !== null &&
+    session?.stoppedAt !== undefined &&
+    turn.createdAtMs <= session.stoppedAt
+  ) {
+    yield* q.exec(
+      q.orm
+        .update(q.t.linearTurn)
+        .set({ state: "cancelled" })
+        .where(eq(q.t.linearTurn.eventKey, eventKey)),
+    );
+    return false;
+  }
+  const generation = yield* advanceLinearSessionGenerationSteps(q, sessionId, { now });
+  yield* q.exec(
+    q.orm
+      .update(q.t.linearTurn)
+      .set({ announcedGeneration: generation })
+      .where(eq(q.t.linearTurn.eventKey, eventKey)),
+  );
+  yield* enqueueOutboxOnceSteps(q, {
+    target: "linear",
+    op: "activity",
+    orderingKey: sessionId,
+    generation,
+    delivery: "critical",
+    idempotencyKey: `turn:ack:${eventKey}`,
+    payload: {
+      sessionId,
+      kind: "thought",
+      body: "Received your update.",
+      id: crypto.randomUUID(),
+    },
+    now,
+  });
+  return true;
+}
+
 export function announceLinearTurn(
   db: Database,
   sessionId: string,
   eventKey: string,
   now = Date.now(),
 ): boolean {
-  return immediate(db, () => {
-    const turn = orm(db)
-      .select({
-        announcedGeneration: schema.linearTurn.announcedGeneration,
-        state: schema.linearTurn.state,
-        createdAtMs: schema.linearTurn.createdAtMs,
-      })
-      .from(schema.linearTurn)
-      .where(
-        and(eq(schema.linearTurn.eventKey, eventKey), eq(schema.linearTurn.sessionId, sessionId)),
-      )
-      .get();
-    if (!turn || turn.state !== "pending" || turn.announcedGeneration !== null) return false;
-    const session = getLinearSession(db, sessionId);
-    if (
-      session?.stoppedAt !== null &&
-      session?.stoppedAt !== undefined &&
-      turn.createdAtMs <= session.stoppedAt
-    ) {
-      orm(db)
-        .update(schema.linearTurn)
-        .set({ state: "cancelled" })
-        .where(eq(schema.linearTurn.eventKey, eventKey))
-        .run();
-      return false;
-    }
-    const generation = advanceLinearSessionGeneration(db, sessionId, { now });
-    orm(db)
-      .update(schema.linearTurn)
-      .set({ announcedGeneration: generation })
-      .where(eq(schema.linearTurn.eventKey, eventKey))
-      .run();
-    enqueueOutboxOnce(db, {
-      target: "linear",
-      op: "activity",
-      orderingKey: sessionId,
-      generation,
-      delivery: "critical",
-      idempotencyKey: `turn:ack:${eventKey}`,
-      payload: {
-        sessionId,
-        kind: "thought",
-        body: "Received your update.",
-        id: crypto.randomUUID(),
-      },
-      now,
-    });
-    return true;
-  });
+  return settled(
+    sqliteDb(db).transaction((q) => announceLinearTurnSteps(q, sessionId, eventKey, now)),
+  );
+}
+
+export async function announceLinearTurnAsync(
+  store: Db,
+  sessionId: string,
+  eventKey: string,
+  now = Date.now(),
+): Promise<boolean> {
+  return await store.transaction((q) => announceLinearTurnSteps(q, sessionId, eventKey, now));
 }
 
 export function* discardLinearTurnsSteps(
@@ -626,37 +675,56 @@ export function discardLinearTurns(
   settled(sqliteDb(db).transaction((q) => discardLinearTurnsSteps(q, sessionId, eventKeys)));
 }
 
+export function* acceptLinearStopSteps(
+  q: Q,
+  sessionId: string,
+  eventKey: string,
+  now: number,
+): Steps<number | null> {
+  yield* lockLinearSessionSteps(q, sessionId);
+  if (
+    yield* q.one(
+      q.orm
+        .select({ one: sql`1` })
+        .from(q.t.linearStopReceipt)
+        .where(
+          and(
+            eq(q.t.linearStopReceipt.sessionId, sessionId),
+            eq(q.t.linearStopReceipt.eventKey, eventKey),
+          ),
+        ),
+    )
+  )
+    return null;
+  const session = yield* ensureLinearSessionSteps(q, { sessionId, now });
+  const generation =
+    session.stoppedAt === null
+      ? yield* advanceLinearSessionGenerationSteps(q, sessionId, { stop: true, now })
+      : session.generation;
+  yield* q.exec(
+    q.orm.insert(q.t.linearStopReceipt).values({ sessionId, eventKey, generation, createdAt: now }),
+  );
+  return generation;
+}
+
 export function acceptLinearStop(
   db: Database,
   sessionId: string,
   eventKey: string,
   now: number,
 ): number | null {
-  return immediate(db, () => {
-    if (
-      orm(db)
-        .select({ one: sql`1` })
-        .from(schema.linearStopReceipt)
-        .where(
-          and(
-            eq(schema.linearStopReceipt.sessionId, sessionId),
-            eq(schema.linearStopReceipt.eventKey, eventKey),
-          ),
-        )
-        .get()
-    )
-      return null;
-    const session = ensureLinearSession(db, { sessionId, now });
-    const generation =
-      session.stoppedAt === null
-        ? advanceLinearSessionGeneration(db, sessionId, { stop: true, now })
-        : session.generation;
-    orm(db)
-      .insert(schema.linearStopReceipt)
-      .values({ sessionId, eventKey, generation, createdAt: now })
-      .run();
-    return generation;
-  });
+  return settled(
+    sqliteDb(db).transaction((q) => acceptLinearStopSteps(q, sessionId, eventKey, now)),
+  );
+}
+
+export async function acceptLinearStopAsync(
+  store: Db,
+  sessionId: string,
+  eventKey: string,
+  now: number,
+): Promise<number | null> {
+  return await store.transaction((q) => acceptLinearStopSteps(q, sessionId, eventKey, now));
 }
 
 export function* releaseIdleSessionItemSteps(q: Q, itemId: string, now: number): Steps<void> {

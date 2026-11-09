@@ -1,9 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import { delegationIssueIdSql } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 import type { WorkItemRecord } from "./items";
-import { enqueueOutboxOnce } from "./outbox";
+import { enqueueOutboxOnceSteps } from "./outbox";
 
 export type LinearTaskDelegation = {
   appUserId: string;
@@ -45,16 +45,16 @@ export function getLinearTaskDelegation(
  * delegated to Paws without a human actor is not Paws's to move, as in the orchestrator.
  * `fence` places the row in a stopped session: Stop drops and blocks every other delivery.
  */
-export function enqueueIssueStatus(
-  db: Database,
+export function* enqueueIssueStatusSteps(
+  q: Q,
   item: Pick<WorkItemRecord, "id" | "linearIssueId" | "sessionKey" | "version">,
   stateType: "completed" | "canceled",
   now: number,
   fence?: { delivery: "stop"; generation: number },
-): void {
-  const owner = getLinearTaskDelegation(db, item.id, item.linearIssueId);
+): Steps<void> {
+  const owner = yield* getLinearTaskDelegationSteps(q, item.id, item.linearIssueId);
   if (owner !== null && !owner.humanActorId) return;
-  enqueueOutboxOnce(db, {
+  yield* enqueueOutboxOnceSteps(q, {
     target: "linear",
     op: "status",
     orderingKey: item.sessionKey ?? item.id,
@@ -63,6 +63,26 @@ export function enqueueIssueStatus(
     ...fence,
     now,
   });
+}
+
+export function enqueueIssueStatus(
+  db: Database,
+  item: Pick<WorkItemRecord, "id" | "linearIssueId" | "sessionKey" | "version">,
+  stateType: "completed" | "canceled",
+  now: number,
+  fence?: { delivery: "stop"; generation: number },
+): void {
+  settled(sqliteDb(db).transaction((q) => enqueueIssueStatusSteps(q, item, stateType, now, fence)));
+}
+
+export async function enqueueIssueStatusAsync(
+  store: Db,
+  item: Pick<WorkItemRecord, "id" | "linearIssueId" | "sessionKey" | "version">,
+  stateType: "completed" | "canceled",
+  now: number,
+  fence?: { delivery: "stop"; generation: number },
+): Promise<void> {
+  await store.transaction((q) => enqueueIssueStatusSteps(q, item, stateType, now, fence));
 }
 
 type LinearTaskDelegationInput = {
