@@ -233,3 +233,35 @@ describe("agent settings config", () => {
     );
   });
 });
+
+test("presets-only legacy Codex config survives setup and implementer writes", () => {
+  const path = join(tempHome(), "config.toml");
+  writeFileSync(
+    path,
+    '[agents]\nimplementer = "codex"\n[agents.presets.Opus]\nagent = "claude"\nmodel = "opus"\n',
+  );
+  const before = resolveAgentProfiles(loadConfigFile(path), "acme/app");
+  const presets = readAgentSettings(loadConfigFile(path)).presets;
+  const setup = {
+    linearTeam: "ACME",
+    linearTeamId: "team-acme",
+    linearViewerId: "viewer",
+    linearSecret: "secrets/linear-api-key",
+    linearClientFile: null,
+    githubAuth: "app" as const,
+    repo: "acme/app",
+    checkout: "/tmp/checkout",
+    maxAwakeMs: 1_000,
+    implementer: "codex" as const,
+  };
+  expect(writeConfigFile(path, setup)).toBe(true);
+  expect(writeConfigFile(path, setup)).toBe(false);
+  expect(resolveAgentProfiles(loadConfigFile(path), "acme/app")).toEqual(before);
+  expect(readAgentSettings(loadConfigFile(path)).presets).toEqual(presets);
+  for (const implementer of ["codex", "claude", "codex"] as const) {
+    writeImplementer(path, implementer);
+    expect(resolveAgentProfiles(loadConfigFile(path)).implementer.agent).toBe(implementer);
+    expect(readAgentSettings(loadConfigFile(path)).presets).toEqual(presets);
+    expect(readFileSync(path, "utf8")).not.toContain("[agents.defaults");
+  }
+});
