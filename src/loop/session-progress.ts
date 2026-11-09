@@ -186,7 +186,7 @@ export function createLinearSessionProgress(
     );
   }
 
-  function publishPlan() {
+  function publishPlan(final = false) {
     preserveHostProgress();
     if (started) endWaits();
     const phaseIndex =
@@ -220,7 +220,7 @@ export function createLinearSessionProgress(
     publish(
       "linear.session.plan",
       { sessionId, plan: [...waits, ...agentSteps, ...milestones] },
-      phase === "completed",
+      final || phase === "completed",
     );
   }
 
@@ -256,7 +256,7 @@ export function createLinearSessionProgress(
           : reason === "review"
             ? "Fix review findings"
             : reason === "conflict"
-              ? "Resolve merge conflict"
+              ? "Fix merge conflicts"
               : `Fix Closeout findings (${round} of ${limit})`;
       milestones = milestones.map((step) =>
         step.status === "inProgress" && step.content !== "Merge verified changes"
@@ -265,7 +265,8 @@ export function createLinearSessionProgress(
       );
       milestones.push({ content, status: "inProgress" });
       if (!afterPr()) phase = "fixing";
-      publishPlan();
+      // Due now, with the summary below: the turn's new step should not lag it by the interval.
+      publishPlan(true);
       publish(
         "linear.session.summary",
         {

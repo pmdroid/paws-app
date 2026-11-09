@@ -1,0 +1,87 @@
+import { join } from "node:path";
+import { type Proof } from "./harness";
+
+const CONFLICT = "Main moved and #";
+
+const commit = (worktree: string, message: string) => [
+  { type: "terminal" as const, command: "git", args: ["add", "widgets.txt"], cwd: worktree },
+  {
+    type: "terminal" as const,
+    command: "git",
+    args: [
+      "-c",
+      "user.name=Acme Agent",
+      "-c",
+      "user.email=agent@acme.test",
+      "commit",
+      "-q",
+      "-m",
+      message,
+    ],
+    cwd: worktree,
+  },
+];
+
+export default {
+  covers: [
+    "src/merge/**",
+    "src/loop/activity-policy.ts",
+    "src/loop/session-progress.ts",
+    "src/scheduler/waits.ts",
+  ],
+  summary:
+    "Main changes the file the pull request changes after the pull request response; the Linear session gets one merge-conflict thought and the rebase turn's plan shows Fix merge conflicts.",
+  ciPending: true,
+  agent: (input) => {
+    if (input.purpose !== "implement") return [];
+    // The rebase turn lasts long enough for its plan update to go out before Closeout runs.
+    if (input.prompt.includes("no longer rebases cleanly"))
+      return [
+        {
+          type: "update",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Rebasing." },
+          },
+          delayMs: 3_000,
+        },
+      ];
+    return [
+      { type: "fs_write", path: join(input.worktree, "widgets.txt"), content: "12\n" },
+      ...commit(input.worktree, "Count widgets per shelf"),
+    ];
+  },
+  async run(proof) {
+    await proof.delegate();
+    await proof.waitFor(
+      "Closeout accepts and the item waits in the merge queue on CI",
+      () =>
+        proof.itemState() === "merge_queue" &&
+        proof.github.calls.some((call) => call.path === "/graphql"),
+    );
+    await proof.pushToMain("widgets.txt", "99\n", "Set the acme widget count");
+    proof.github.ci.pending = false;
+
+    const thoughts = () =>
+      proof.linear.progress.filter(
+        (entry) => entry.kind === "thought" && entry.body.startsWith(CONFLICT),
+      );
+    const fixing = () =>
+      proof.linear.sessionUpdates.some((update) =>
+        update.plan?.some(
+          (step) => step.content === "Fix merge conflicts" && step.status === "inProgress",
+        ),
+      );
+    await proof.waitFor("the conflict reaches the session", () => thoughts().length > 0, 60_000);
+    await proof.waitFor("the rebase turn's plan shows the step", fixing, 60_000);
+    await proof.waitFor("later deliveries settle", () => false, 1_000);
+
+    proof.expect(
+      "the session gets exactly one merge-conflict thought",
+      thoughts().length === 1 &&
+        /now conflicts with it\. Rebasing onto main\.$/.test(thoughts()[0]!.body),
+      thoughts().map((entry) => entry.body),
+    );
+    proof.expect("the rebase turn's plan shows Fix merge conflicts", fixing());
+  },
+} satisfies Proof;
