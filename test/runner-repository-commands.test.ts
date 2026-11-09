@@ -17,6 +17,7 @@ import { createRepositoryCommandAccess } from "../src/runner-repository-access";
 import {
   createRepositoryCommandsHttp,
   enqueueRepositoryCommand,
+  rebaseCommitTitle,
   rebaseOnRunner,
   recordRepositoryCommandResult,
   repositoryCommandState,
@@ -181,6 +182,14 @@ test("the pull request title goes only to a runner that accepts it", async () =>
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.75'");
   f.enqueue(120_000, "Add widgets");
   expect((await f.poll("runner-a"))[0]).toMatchObject({ title: "Add widgets" });
+});
+
+test("a rebase title is one trimmed well-formed line of at most 256 units, or none", () => {
+  expect(rebaseCommitTitle("  Add\r\nwidgets\0now  ")).toBe("Add widgets now");
+  expect(rebaseCommitTitle(" \n ")).toBeUndefined();
+  expect(rebaseCommitTitle("")).toBeUndefined();
+  expect(rebaseCommitTitle("a".repeat(300))).toBe("a".repeat(256));
+  expect(rebaseCommitTitle(`${"a".repeat(255)}😀`)).toBe("a".repeat(255));
 });
 
 test("a grant and a credential go only to the delivered runner while the command is current", async () => {

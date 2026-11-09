@@ -325,7 +325,7 @@ import {
 } from "./runner-coordinator";
 import { createRunnerSessionMoves } from "./runner-control";
 import { cacheRepositoryCredentials } from "./runner-repository-access";
-import { rebaseOnRunner } from "./runner-repository-commands";
+import { rebaseCommitTitle, rebaseOnRunner } from "./runner-repository-commands";
 import {
   encryptRunnerEvents,
   loadRunnerEventKey,
@@ -1494,6 +1494,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 const name = `${repository.owner}/${repository.repo}`;
                 const bot = await repositoryAccess?.checkpointBot?.(name);
                 if (!bot) return { outcome: "failed" as const, reason: "no GitHub App bot" };
+                const title = rebaseCommitTitle(
+                  getPullRequestDraft(db, item.id)?.title ?? item.title,
+                );
                 return rebaseOnRunner(
                   db,
                   {
@@ -1509,9 +1512,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                     head: heads.head,
                     main: heads.main,
                     bot,
-                    title: (getPullRequestDraft(db, item.id)?.title ?? item.title)
-                      .replace(/[\0\r\n]+/g, " ")
-                      .slice(0, 256),
+                    ...(title ? { title } : {}),
                     now,
                   },
                   signal,

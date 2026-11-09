@@ -100,6 +100,16 @@ function itemMatches(db: Database, command: RunnerRepositoryCommand) {
   );
 }
 
+export function rebaseCommitTitle(title: string): string | undefined {
+  return (
+    title
+      .replace(/[\0\r\n]+/g, " ")
+      .slice(0, 256)
+      .replace(/[\ud800-\udbff]$/, "")
+      .trim() || undefined
+  );
+}
+
 export function enqueueRepositoryCommand(db: Database, input: RepositoryCommandInput): string {
   const { now, ...fields } = input;
   const at = now ?? Date.now();
