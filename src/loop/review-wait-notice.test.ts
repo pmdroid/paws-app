@@ -15,6 +15,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../db";
 import type { GitHubBinding } from "../github";
 import { createFakeTracker } from "../linear";
@@ -82,7 +83,7 @@ async function fixture() {
     },
     wake: (head: string) =>
       mergeQueueTurn(
-        { db, item: getWorkItem(db, "ENG-7")!, caps },
+        { db, store: sqliteDb(db), item: getWorkItem(db, "ENG-7")!, caps },
         { owner: "acme", repo: "app" },
         github,
         { number: 7, url: PULL_URL, head },

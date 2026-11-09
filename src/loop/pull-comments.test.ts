@@ -19,6 +19,7 @@ import {
   pendingPullComments,
   recordItemPullRequest,
   PULL_COMMENT_SETTLE_MS,
+  sqliteDb,
 } from "../db";
 import {
   createFakeCheckRuns,
@@ -574,6 +575,7 @@ describe("timing", () => {
     expect(await handlePullComments(db, "eng-1", caps)).toBe("wait");
     const step = await advanceMerge(
       db,
+      sqliteDb(db),
       { itemId: "eng-1", payload: {}, jobId: 1 },
       laneCapabilities(),
     );
@@ -623,7 +625,12 @@ describe("review apps still checking the head", () => {
       [JSON.stringify(f.reviewWaits.at(-1)), JOB_KIND.pullComments],
     );
     expect(
-      await advanceMerge(f.db, { itemId: "eng-1", payload: {}, jobId: 1 }, laneCapabilities()),
+      await advanceMerge(
+        f.db,
+        sqliteDb(f.db),
+        { itemId: "eng-1", payload: {}, jobId: 1 },
+        laneCapabilities(),
+      ),
     ).toMatchObject({ kind: "wait", message: "Waiting for review checks on h: Acme Lint." });
 
     f.tick(120_000);

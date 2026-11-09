@@ -2018,7 +2018,7 @@ export class Orchestrator {
       if (waiting === undefined) return;
       const waitingId = readString(job.payload, "itemId");
       if (waitingId) this.settleItemAwake(waitingId);
-      const parked = parkMerge(this.db, job, this.now(), waiting);
+      const parked = await parkMerge(this.store, job, this.now(), waiting);
       if (parked === "parked" || parked === "lost") return;
       const itemId = readString(job.payload, "itemId");
       if (
@@ -2040,7 +2040,7 @@ export class Orchestrator {
     jobs.register(JOB_KIND.queueConflicts, async (job, context) => {
       const sweep = queueConflictSweep(job.payload);
       if (sweep === null || !context.isCurrent()) return;
-      await returnQueuedConflicts(this.db, sweep, {
+      await returnQueuedConflicts(this.db, this.store, sweep, {
         ask,
         restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
         now: () => this.now(),
@@ -5211,6 +5211,7 @@ export class Orchestrator {
     };
     return advanceMerge(
       this.db,
+      this.store,
       { itemId, payload, jobId },
       {
         ...this.orderCapabilities(itemId),

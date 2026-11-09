@@ -8,28 +8,30 @@ import {
   resetOtherLaneCiFailures,
   artifactPublicationReady,
   clearPullCiFailures,
-  getItemPullRequest,
-  getLinearSessionGeneration,
+  getItemPullRequestSteps,
+  getLinearSessionGenerationSteps,
   getWorkItem,
+  getWorkItemSteps,
   immediate,
-  joinMergeQueue,
-  leaveMergeQueue,
-  markMergeQueueNotified,
+  joinMergeQueueSteps,
+  leaveMergeQueueSteps,
+  markMergeQueueNotifiedSteps,
   mergeQueuePosition,
   pendingChangeRequests,
   pendingPullCiFailures,
   pendingLinearComments,
   pendingPullComments,
   pullReviewCheckWait,
-  rebaseReturnedFor,
+  rebaseReturnedForSteps,
   recordPullCiFailure,
   settlePullCiFailures,
   wakePullReviews,
   recordCiRound,
-  recordConfirmedRemoteMerge,
+  recordConfirmedRemoteMergeSteps,
   recordRebaseReturn,
   type CiRound,
   type CiRoundCheck,
+  type Db,
   type PullFeedbackWait,
   type WorkItemRecord,
 } from "../db";
@@ -100,9 +102,9 @@ export async function feedbackHold(
   merge: MergeContext,
   payload: unknown,
 ): Promise<MergeStep | null> {
-  const { db, item, caps } = merge;
+  const { db, store, item, caps } = merge;
   if (!feedbackPending(db, item.id)) return null;
-  const pull = getItemPullRequest(db, item.id);
+  const pull = await store.run((q) => getItemPullRequestSteps(q, item.id));
   const head = ciWaitVerification(payload)?.head ?? item.checkpoint?.wipCommit;
   if (pull !== null && head) await observeHeldCi(merge, { number: pull.pullNumber, head });
   if (caps.stopped()) return { kind: "obsolete" };
@@ -133,7 +135,7 @@ export function collectCiFailure(
 }
 
 export async function observeHeldCi(
-  { db, item, caps }: MergeContext,
+  { db, store, item, caps }: MergeContext,
   pull: { number: number; head: string },
 ): Promise<void> {
   const ci = await caps.readPullCi(item, pull).catch((error: unknown): PullCi => {
@@ -160,7 +162,7 @@ export async function observeHeldCi(
       clearPullCiFailures(db, item.id, pull.head, caps.now());
       return;
     }
-    const collected = collectCiFailure({ db, item, caps }, pull.number, pull.head, {
+    const collected = collectCiFailure({ db, store, item, caps }, pull.number, pull.head, {
       outcome: "ci_failed",
       message: ci.message ?? "CI failed on the candidate commit",
       failedChecks: ci.failedChecks,
@@ -256,6 +258,7 @@ export type OrderCapabilities = {
 
 export type MergeContext = {
   db: Database;
+  store: Db;
   item: WorkItemRecord;
   caps: OrderCapabilities;
 };
@@ -335,7 +338,7 @@ export function ciRound(
 }
 
 export async function mergeQueueTurn(
-  { db, item, caps }: MergeContext,
+  { db, store, item, caps }: MergeContext,
   repository: { owner: string; repo: string },
   github: GitHubBinding,
   pull: { number: number; url: string | null; head: string },
@@ -358,34 +361,35 @@ export async function mergeQueueTurn(
       reason: "review",
     };
   if (review === "required" || review === "changes_requested") {
-    leaveMergeQueue(db, item.id);
+    await store.run((q) => leaveMergeQueueSteps(q, item.id));
     // Reviewers do not approve a conflicting pull request, so the rebase does not wait for them.
-    const conflict = await reviewWaitConflict({ db, item, caps }, pull.number);
+    const conflict = await reviewWaitConflict({ db, store, item, caps }, pull.number);
     if (caps.stopped()) return undefined;
     if (conflict) return conflict;
     const body =
       review === "required"
         ? `Waiting for an approving review on pull request #${prNumber}. It joins the ${name} merge queue once approved.`
         : `Changes were requested on pull request #${prNumber}. It joins the ${name} merge queue once approved.`;
-    caps.voice.afterPullRequest(
-      item,
-      reviewWaitNotice(review, prNumber, pull.url, name),
-      reviewWaitKey(db, item, caps, review, pull.head),
-    );
-    await observeHeldCi({ db, item, caps }, pull);
+    const notice = reviewWaitNotice(review, prNumber, pull.url, name);
+    const key = await reviewWaitKey(store, item, caps, review, pull.head);
+    caps.voice.afterPullRequest(item, notice, key);
+    await observeHeldCi({ db, store, item, caps }, pull);
     if (caps.stopped()) return undefined;
     return { message: body, queued: true, reason: "review" };
   }
-  joinMergeQueue(db, {
-    itemId: item.id,
-    repository: name,
-    lane: caps.mergeLane(item),
-    now: caps.now(),
-  });
+  await store.run((q) =>
+    joinMergeQueueSteps(q, {
+      itemId: item.id,
+      repository: name,
+      lane: caps.mergeLane(item),
+      now: caps.now(),
+    }),
+  );
   const place = mergeQueuePosition(db, item.id, held);
   if (place === null) return undefined;
   // A busy task ahead keeps its place but does not hold the lane: the first ready task moves.
-  const next = place.nextItemId ? getWorkItem(db, place.nextItemId) : null;
+  const nextId = place.nextItemId;
+  const next = nextId ? await store.run((q) => getWorkItemSteps(q, nextId)) : null;
   const first = `${next?.linearIdentifier ?? "The task ahead"} merges first.`;
   if (
     place.notifiedPosition !== place.position &&
@@ -394,7 +398,7 @@ export async function mergeQueueTurn(
     const line = mergeQueueLine(place);
     const body = place.nextItemId === null ? `${line}. Merging next.` : `${line}. ${first}`;
     caps.voice.status(item, body, `${item.id}:merge-queue:${place.readyAt}:${place.position}`);
-    markMergeQueueNotified(db, item.id, place.position);
+    await store.run((q) => markMergeQueueNotifiedSteps(q, item.id, place.position));
   }
   if (place.nextItemId === null) return undefined;
   return { message: `${mergeQueueLine(place)}. ${first}`, queued: true, reason: "ahead" };
@@ -409,10 +413,10 @@ async function reviewWaitConflict(
   merge: MergeContext,
   prNumber: number,
 ): Promise<Extract<MergeStep, { kind: "returned" | "asked" }> | null> {
-  const { db, item, caps } = merge;
+  const { db, store, item, caps } = merge;
   const read = await caps.readPull(item, prNumber);
   if (caps.stopped() || read === null || !read.open || read.merges !== "conflict") return null;
-  if (rebaseReturnedFor(db, item.id, read.head)) return null;
+  if (await store.run((q) => rebaseReturnedForSteps(q, item.id, read.head))) return null;
   const base = await caps.fetchMain(item).catch((error: unknown) => {
     journalCaught(error, "orders.reviewWaitConflict.fetchMain", item.id);
     return null;
@@ -470,15 +474,16 @@ function reviewWaitNotice(
     : `Changes were requested on ${pull}. Paws collects the review feedback before the next fix turn, and the pull request joins the ${repository} merge queue once approved.`;
 }
 
-function reviewWaitKey(
-  db: Database,
+async function reviewWaitKey(
+  store: Db,
   item: WorkItemRecord,
   caps: OrderCapabilities,
   review: string,
   head: string,
-): string {
+): Promise<string> {
   const session = caps.session(item);
-  const generation = session === null ? 0 : getLinearSessionGeneration(db, session);
+  const generation =
+    session === null ? 0 : await store.run((q) => getLinearSessionGenerationSteps(q, session));
   return `merge-review:${item.id}:${generation}:${review}:${head}`;
 }
 
@@ -487,7 +492,7 @@ export async function mergeThroughGitHubQueue(
   payload: unknown,
   published: MergePull,
 ): Promise<MergeStep | "no_queue"> {
-  const { db, item, caps } = merge;
+  const { db, store, item, caps } = merge;
   const { repository, github, pull, head } = published;
   const name = `${repository.owner}/${repository.repo}`;
   resetOtherLaneCiFailures(db, item.id, head);
@@ -548,15 +553,17 @@ export async function mergeThroughGitHubQueue(
       };
     }
     case "merged":
-      recordConfirmedRemoteMerge(db, {
-        itemId: item.id,
-        repositoryOwner: repository.owner,
-        repositoryName: repository.repo,
-        pullNumber: pull.number,
-        pullUrl: pull.url,
-        mergeSha: result.sha,
-        confirmedAt: caps.now(),
-      });
+      await store.transaction((q) =>
+        recordConfirmedRemoteMergeSteps(q, {
+          itemId: item.id,
+          repositoryOwner: repository.owner,
+          repositoryName: repository.repo,
+          pullNumber: pull.number,
+          pullUrl: pull.url,
+          mergeSha: result.sha,
+          confirmedAt: caps.now(),
+        }),
+      );
       return { kind: "merged" };
     case "ci_failed": {
       const ci = collectCiFailure(merge, pull.number, head, result.readiness);
