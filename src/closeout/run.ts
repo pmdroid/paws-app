@@ -275,6 +275,8 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
   }
 
   const first = toGateDecision(ran);
+  const unreadable = await loadReviewFindings(input, first, reviewFindings, reviewAttempts);
+  if (unreadable) return unreadable;
   const reviewed = early?.gaps ?? [];
   const gaps = reviewGaps(first).filter((item) => !reviewed.some((entry) => entry.id === item.id));
   if (
@@ -533,10 +535,58 @@ async function decideRecorded(input: EvaluateInput): Promise<Evaluation> {
   if (judged.gate !== CLOSEOUT_GATE) {
     return failure("invalid", exitOf(judged.decision), "decision gate is not beforePR", input.head);
   }
-  return applyBypasses(
-    finish(toGateDecision(judged), input.base, input.head, []),
-    input.bypasses ?? [],
-  );
+  const decision = toGateDecision(judged);
+  const findings: ReviewFindings[] = [];
+  const attempts = new Map<string, number>();
+  const unreadable = await loadReviewFindings(input, decision, findings, attempts);
+  if (unreadable) return unreadable;
+  publishReviews(input, decision, findings, attempts, new Map());
+  return applyBypasses(finish(decision, input.base, input.head, findings), input.bypasses ?? []);
+}
+
+async function loadReviewFindings(
+  input: EvaluateInput,
+  first: DecisionDocument,
+  reviewFindings: ReviewFindings[],
+  reviewAttempts: Map<string, number>,
+): Promise<Evaluation | null> {
+  const evidenceDir = evidencePath(input.taskId, input.pawsHome);
+  let records;
+  try {
+    records = await reviewRecordsSince(evidenceDir, []);
+  } catch (error) {
+    journalCaught(error, "run.reviewOutputUnreadable", input.taskId);
+    const detail = `review output unreadable: ${error instanceof Error ? error.message : String(error)}`;
+    return { ...failure("blocked", null, detail, input.head), reviewerFault: detail };
+  }
+  for (const item of first.items) {
+    if (item.kind !== "review" || reviewFindings.some((entry) => entry.itemId === item.id))
+      continue;
+    const record = records.findLast(
+      (entry) =>
+        entry.head === input.head &&
+        entry.policyDigest === first.policy.digest &&
+        entry.itemId === item.id &&
+        entry.attempt === item.attempt,
+    );
+    if (!record) {
+      if (item.state === "failed") {
+        const detail = `review output unreadable for ${item.id}: no readable findings for attempt ${item.attempt}`;
+        journalCaught(new Error(detail), "run.reviewOutputUnreadable", input.taskId);
+        return { ...failure("blocked", null, detail, input.head), reviewerFault: detail };
+      }
+      continue;
+    }
+    const preExisting = await preExistingFindings(
+      decisionRepo(input),
+      input.base,
+      input.head,
+      record.findings,
+    );
+    reviewFindings.push({ itemId: item.id, findings: record.findings, preExisting });
+    reviewAttempts.set(item.id, record.attempt);
+  }
+  return null;
 }
 
 async function attemptFix(
@@ -846,7 +896,7 @@ export class PolicyFetchError extends Error {
 
 const REVIEW_RETRY_DELAYS_MS = [30_000, 120_000, 300_000];
 const TRANSIENT_REVIEW_ERROR =
-  /rate.?limit|too many requests|\b429\b|\b5\d\d\b|overloaded|temporarily unavailable/i;
+  /rate.?limit|too many requests|\b429\b|\b5\d\d\b|overloaded|temporarily unavailable|invalid review findings|review output unreadable/i;
 
 async function reviewWithRetries<T>(input: EvaluateInput, review: () => Promise<T>): Promise<T> {
   const delays = input.reviewRetryDelaysMs ?? REVIEW_RETRY_DELAYS_MS;
@@ -930,7 +980,9 @@ async function addReviewEvidence(
       if (isTransient(error)) throw error;
       journalCaught(error, "run.addReviewEvidence.addReview", input.taskId);
       const message = error instanceof Error ? error.message : String(error);
-      const detail = scrub(`reviewer failed for ${item.id}: ${message}`);
+      const detail = scrub(
+        `reviewer failed for ${item.id}: ${/invalid review findings/i.test(message) ? "review output unreadable: " : ""}${message}`,
+      );
       noteReview(input, identity, item.id, "blocked", detail, null, item.attempt ?? null, null, {
         durationMs: Date.now() - started,
         tokens,
@@ -1316,7 +1368,7 @@ async function finalResult(
   const approvals = evaluation && held.size > 0 ? await ruleApprovals(input, evaluation, held) : [];
   const left = handoff === undefined ? null : await fixesLeft(input, head, decision);
   const result: GateResult = {
-    ...(handoff ? { handoff } : {}),
+    ...(handoff ? { handoff, reviewFindings: evaluation?.reviewFindings } : {}),
     ...(left !== null ? { fixesLeft: left } : {}),
     outcome,
     taskId: input.taskId,

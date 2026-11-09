@@ -124,6 +124,7 @@ export type GateResult = {
    */
   ruleApprovals?: RuleApproval[];
   reviewerFault?: string;
+  reviewFindings?: ReviewFindings[];
 };
 
 /** A failed `onFail: approve` rule waiting for a person, with what the agent gets if it is sent back. */

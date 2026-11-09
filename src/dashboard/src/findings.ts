@@ -35,7 +35,7 @@ export type FindingView = {
   review: string;
   text: string;
   bugClass: string;
-  why: "pre-existing" | "below failOn";
+  why: "pre-existing" | "below failOn" | "meets failOn";
   firstSeenAt: string;
   lastSeenAt: string;
   /** How many items reported it, including ones the reader cannot open. */
