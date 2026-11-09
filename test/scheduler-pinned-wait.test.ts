@@ -44,8 +44,8 @@ function fixture() {
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('A',1)");
   const work = (runId: string, ended: number | null) =>
     db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,'A','ws-1',1,0,?,?,?)",
-      [runId, `cmd-${runId}`, NOW + 60_000, ended],
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(?,'A','ws-1',1,0,?,?,?,?)",
+      [runId, `cmd-${runId}`, NOW + 60_000, ended, ended],
     );
 
   insertQueuedItem(db, { id: "busy", now: 0 });
@@ -80,7 +80,11 @@ function fixture() {
     db.query<{ runAt: number }, [number]>("SELECT run_at AS runAt FROM job WHERE id=?").get(resume)!
       .runAt;
   const free = (at: number) => {
-    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [at, busy]);
+    db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
+      at,
+      at,
+      busy,
+    ]);
     db.run("UPDATE run SET status='ended' WHERE id=?", [busy]);
   };
   return { db, runAt, free };

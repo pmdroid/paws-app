@@ -30,6 +30,7 @@ import {
 import { dashboardUrl } from "../dashboard-links";
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
+import type { ItemRunnerVerdicts, RunnerHostRefusal } from "../db";
 import {
   AFTER_PULL_REQUEST_RESPONSE,
   canReportProgress as canReportSessionProgress,
@@ -815,6 +816,12 @@ export type OrchestratorOptions = {
    * item out of the slot line and its start timeout. Null when it cannot tell. SQLite only.
    */
   ownerHasRunner?: (itemId: string, agent: string, now: number) => boolean | null;
+  itemRunners?: (
+    itemId: string,
+    profile: { agent: string; model?: string | null },
+    now: number,
+  ) => ItemRunnerVerdicts | null;
+  onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
   /**
    * Why the item's owner has no runner they may use for this agent, for the runner-setup hold
    * and its thought. Null when a runner is usable or only offline. SQLite only.
@@ -7003,7 +7010,8 @@ export class Orchestrator {
     let config: ReturnType<typeof loadConfigFile> | null = null;
     try {
       this.reconcileAgentSettings();
-      if (ownerHasRunner) config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+      if (ownerHasRunner || this.options.itemRunners)
+        config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
     } catch (caughtError15) {
       journalCaught(
         caughtError15,
@@ -7024,6 +7032,20 @@ export class Orchestrator {
       ...this.options.scheduling?.(),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
       onWaits: (waits) => this.noteWaits(waits),
+      ...(this.options.itemRunners
+        ? {
+            itemRunners: (itemId: string) => {
+              const item = getWorkItem(this.db, itemId);
+              return item && config
+                ? this.options.itemRunners!(
+                    itemId,
+                    this.implementerProfile(item, config),
+                    this.now(),
+                  )
+                : null;
+            },
+          }
+        : {}),
       ...(ownerHasRunner && config
         ? {
             ownerHasRunner: (q: Q, itemId: string) =>
@@ -7033,6 +7055,9 @@ export class Orchestrator {
                 itemIds.filter((id) => !this.awaitsAdmissionLabels(id, config)),
                 (item) => this.implementerAgent(item, config),
               ),
+            ...(this.options.onRunnerHostRefusals
+              ? { onRunnerHostRefusals: this.options.onRunnerHostRefusals }
+              : {}),
           }
         : {}),
     });
@@ -7040,6 +7065,15 @@ export class Orchestrator {
 
   private implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
     return implementerAgentFor(config, this.repositoryForItem(item), this.knownProfileLabels(item));
+  }
+
+  private implementerProfile(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
+    const repository = this.repositoryForItem(item);
+    return resolveAgentProfiles(
+      config,
+      repository ? `${repository.owner}/${repository.repo}` : undefined,
+      this.knownProfileLabels(item),
+    ).implementer;
   }
 
   private *itemSessionSteps(q: Q, itemId: string): Steps<string | null> {
@@ -7228,7 +7262,9 @@ export class Orchestrator {
       } else if (wait.kind === "runner")
         progress.wait(
           "Wait for a runner",
-          `${name}: ${ordinal(wait.position)} in line for a runner`,
+          wait.noRunner
+            ? `${name}: ${wait.noRunner}`
+            : `${name}: ${ordinal(wait.position)} in line for a runner`,
         );
       else if (wait.kind === "paused")
         progress.status(`${name}: paused by ${wait.by ?? "a workspace member"}`);

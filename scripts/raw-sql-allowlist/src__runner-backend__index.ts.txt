@@ -1,5 +1,3 @@
-src/runner-backend/index.ts | const rows = db .query<{ envelope: string; payload: string; receivedAt: number }, [string]>( | not yet converted to Drizzle
-src/runner-backend/index.ts | const row = db .query<{ runnerId: string; kind: string | null; envelope: string | null }, [string]>( | not yet converted to Drizzle
 src/runner-backend/index.ts | db .query<{ resetsAt: number | null }, [string, string | null, number]>( | not yet converted to Drizzle
 src/runner-backend/index.ts | return db .query<{ version: string | null }, [string]>( | not yet converted to Drizzle
 src/runner-backend/index.ts | const version = db .query<{ version: string | null }, [string]>( | not yet converted to Drizzle

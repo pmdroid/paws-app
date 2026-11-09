@@ -25,6 +25,7 @@ export const JOB_KIND = {
   /** Written by the SQLite triggers of migration 144, one pending job per hold owner. */
   runnerSetupCheck: "runner_setup.check",
   runnerRepositoryCheck: "runner_repository.check",
+  schedulerTick: "scheduler.tick",
 } as const;
 
 /** Activity rows the host posts. Delivery to Linear is a later dispatcher. */

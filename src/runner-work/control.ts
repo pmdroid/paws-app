@@ -39,6 +39,8 @@ import {
   recordRunnerAccountCapability,
   recordRunAgentSetup,
   recordRunnerCapacity,
+  runnerStanding,
+  wakeRunnerSlotWaits,
   recordRunnerAgents,
   recordRunnerRepositories,
   recordRunnerRuntimes,
@@ -633,8 +635,16 @@ export function createRunnerWork(options: {
           runnerReleaseAtLeast(host.runnerVersion ?? storedVersion, OFFLINE_LEASE_RUNNER_VERSION)
             ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt }
             : undefined;
-        const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling, conversations);
         const at = now();
+        const reconnected = (runnerStanding(db, runnerId)?.lastSeenAt ?? 0) <= at - 60_000;
+        const concurrency = recordRunnerCapacity(
+          db,
+          runnerId,
+          capacity,
+          ceiling,
+          conversations,
+          at,
+        );
         noteRunnerSeen(db, runnerId, at);
         if (Object.values(host).some((value) => value !== undefined))
           recordRunnerHostStatus(db, runnerId, host, at);
@@ -644,6 +654,7 @@ export function createRunnerWork(options: {
         if (agents) recordRunnerAgents(db, runnerId, agents, at);
         if (repositories !== undefined) recordRunnerRepositories(db, runnerId, repositories, at);
         recordRunnerAccountCapability(db, runnerId, accounts, at);
+        if (reconnected) wakeRunnerSlotWaits(db, runnerId, at);
         const targets: RunnerAgentTarget[] | undefined =
           agents &&
           runnerAgentTargets(db, runnerId).flatMap((target) => {

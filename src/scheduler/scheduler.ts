@@ -28,6 +28,10 @@ import {
   releaseIdleSessionItemSteps,
   runnerTaskSlotsSteps,
   runPendingJobNowSteps,
+  runnerOccupancySteps,
+  runnerSlotsHeldBetweenCommandsSteps,
+  unassignedRunnerReservationsSteps,
+  schedulerRunnerSlotsSteps,
   saveItemScheduling,
   saveSchedulerAdmissionSteps,
   schedulerItemsSteps,
@@ -43,7 +47,10 @@ import {
   savePinnedSlotsSteps,
   settled,
   type Db,
+  RUNNER_FULL,
   type ItemHold,
+  type ItemRunnerVerdicts,
+  type RunnerHostRefusal,
   type PinnedSlot,
   type JobLoop,
   type Q,
@@ -60,7 +67,7 @@ import {
   type ItemWait,
 } from "./waits";
 
-const TICK = "scheduler.tick";
+const TICK = JOB_KIND.schedulerTick;
 const RUNNER_SEEN_MS = 60_000;
 type Item = SchedulerItem;
 type Admission = {
@@ -85,6 +92,8 @@ export type SchedulerOptions = {
   /** Queued items whose owner has no runner they may use, after every admission pass. */
   onRunnerSetup?: (itemIds: readonly string[]) => void;
   onWaits?: (waits: readonly ItemWait[]) => void;
+  itemRunners?: (itemId: string) => ItemRunnerVerdicts | null;
+  onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
   ownerCap?: number | null;
   log?: (line: string) => void;
 };
@@ -103,6 +112,7 @@ const HOLD_LINES: Record<ItemHold["reason"], string> = {
 function holdLine(hold: ItemHold): string {
   if (hold.reason === "overlap" && hold.blockers.length)
     return overlapLine(hold.blockers[0]!, hold.files ?? [], hold.start);
+  if (hold.reason === "slot" && hold.blockers[0]) return hold.blockers[0];
   return hold.reason === "blocked" && hold.blockers.length
     ? `blocked by ${hold.blockers.join(", ")}`
     : HOLD_LINES[hold.reason];
@@ -294,19 +304,52 @@ export function hintedPaths(brief: string | null): string[] {
 function* taskSlots(
   q: Q,
   now: number,
+  excludeRunId = "",
 ): Steps<{ total: number; busy: number; open: Map<string, number> } | null> {
   const runners = yield* runnerTaskSlotsSteps(q, now, now - RUNNER_SEEN_MS);
   if (!runners.length) return null;
+  const reservations = yield* unassignedRunnerReservationsSteps(q, now, "");
+  const occupancy = [];
+  for (const runner of runners) {
+    const { capacity, occupied } = yield* runnerOccupancySteps(q, runner.id, now, excludeRunId);
+    const between = yield* runnerSlotsHeldBetweenCommandsSteps(q, runner.id, now, excludeRunId);
+    occupancy.push({
+      id: runner.id,
+      capacity,
+      used: occupied + between + (reservations.get(runner.id) ?? 0),
+    });
+  }
   return {
-    total: runners.reduce((total, runner) => total + runner.capacity, 0),
-    busy: runners.reduce((busy, runner) => busy + Math.min(runner.used, runner.capacity), 0),
+    total: occupancy.reduce((total, runner) => total + runner.capacity, 0),
+    busy: occupancy.reduce((busy, runner) => busy + Math.min(runner.used, runner.capacity), 0),
     open: new Map(
-      runners.map((runner) => [
+      occupancy.map((runner) => [
         runner.id,
         runner.capacity - Math.min(runner.used, runner.capacity),
       ]),
     ),
   };
+}
+
+function hostRefusals(verdicts: readonly ItemRunnerVerdicts[]): RunnerHostRefusal[] {
+  const runners = new Map<string, { all: boolean; refusals: Map<string, RunnerHostRefusal> }>();
+  for (const { repository, agent, runners: answers } of verdicts)
+    for (const answer of answers) {
+      const entry = runners.get(answer.id) ?? { all: true, refusals: new Map() };
+      runners.set(answer.id, entry);
+      if (answer.hostConfig === null || repository === null) {
+        entry.all = false;
+        continue;
+      }
+      entry.refusals.set(`${repository}:${answer.hostConfig}`, {
+        runnerId: answer.id,
+        runnerName: answer.name,
+        repository,
+        kind: answer.hostConfig,
+        agent,
+      });
+    }
+  return [...runners.values()].flatMap((entry) => (entry.all ? [...entry.refusals.values()] : []));
 }
 
 type PinnedWait = {
@@ -547,7 +590,11 @@ async function admit(
       yield* dropSchedulerAdmissionSteps(q, row.itemId);
     }
     for (const item of items)
-      if (holdsSession(item) && !held.some((entry) => entry.itemId === item.id)) {
+      if (
+        item.state !== "queued" &&
+        holdsSession(item) &&
+        !held.some((entry) => entry.itemId === item.id)
+      ) {
         const entry = footprint(item, options);
         const jobId = yield* latestItemJobIdSteps(
           q,
@@ -582,6 +629,50 @@ async function admit(
       a.id.localeCompare(b.id);
     const candidates = items.filter((item) => ready.has(item.id)).sort(rank);
     const slots = yield* taskSlots(q, now);
+    // A restart can reuse the slot its active run holds between commands. Credit only
+    // that candidate, and consume no additional slot when it resumes on the holder.
+    const credits = new Map<string, Map<string, number>>();
+    if (slots)
+      for (const item of candidates) {
+        if (!item.currentRunId) continue;
+        const excluding = yield* taskSlots(q, now, item.currentRunId);
+        if (excluding)
+          credits.set(
+            item.id,
+            new Map(
+              [...slots.open].map(([id, open]) => [
+                id,
+                Math.min(1, Math.max(0, (excluding.open.get(id) ?? 0) - open)),
+              ]),
+            ),
+          );
+      }
+    const credit = (itemId: string, runnerId: string) => credits.get(itemId)?.get(runnerId) ?? 0;
+    const answers = new Map<string, ItemRunnerVerdicts | null>();
+    const verdictsFor = (itemId: string): ItemRunnerVerdicts | null => {
+      if (!options.itemRunners) return null;
+      if (!answers.has(itemId)) answers.set(itemId, options.itemRunners(itemId));
+      return answers.get(itemId)!;
+    };
+    const openRunner = (itemId: string): string | null | undefined => {
+      const verdicts = verdictsFor(itemId);
+      if (!options.itemRunners) return undefined;
+      if (!verdicts) return null;
+      const open = (id: string) => (slots?.open.get(id) ?? 0) + credit(itemId, id);
+      const free = verdicts.runners.filter(
+        (runner) => runner.rejection === null && open(runner.id) > 0,
+      );
+      return free[0]?.id ?? null;
+    };
+    const choices = new Map<string, string>();
+    const takeSlot = (itemId: string): boolean => {
+      const runnerId = openRunner(itemId);
+      if (runnerId === undefined) return true;
+      if (runnerId === null) return false;
+      slots!.open.set(runnerId, slots!.open.get(runnerId)! - 1 + credit(itemId, runnerId));
+      choices.set(itemId, runnerId);
+      return true;
+    };
     const pins = slots
       ? (yield* pinnedWaits(q, now))
           .filter((pin) => byId.has(pin.itemId) && pin.runnerIds.some((id) => slots.open.has(id)))
@@ -620,6 +711,19 @@ async function admit(
           (item.state === "queued" && held.some((entry) => entry.itemId === item.id))),
     ).length;
     let free = slots === null ? Infinity : slots.total - slots.busy - reserved;
+    const assignedRunners = new Map(
+      (yield* schedulerRunnerSlotsSteps(q, now)).map((row) => [row.itemId, row.runnerId]),
+    );
+    for (const item of items)
+      if (
+        !item.placed &&
+        (item.placing ||
+          (item.state === "queued" && held.some((entry) => entry.itemId === item.id)))
+      ) {
+        const assigned = assignedRunners.get(item.id);
+        if (assigned && slots) slots.open.set(assigned, (slots.open.get(assigned) ?? 0) - 1);
+        else takeSlot(item.id);
+      }
     const running = new Map<string, number>();
     for (const item of items)
       if (
@@ -663,7 +767,9 @@ async function admit(
     for (const { item, capped } of order) {
       if (capped || setup.has(item.id)) continue;
       yield* claimPinned(item);
-      if (free <= 0) break;
+      const runnerId = openRunner(item.id);
+      const reused = runnerId ? credit(item.id, runnerId) : 0;
+      if (free + reused <= 0) continue;
       const next = footprint(item, options);
       if (held.some((entry) => byId.get(entry.itemId)?.issueId === item.issueId)) continue;
       // Work admitted earlier in this tick runs too.
@@ -672,6 +778,7 @@ async function admit(
         overlaps.set(item.id, overlap);
         continue;
       }
+      if (!takeSlot(item.id)) continue;
       yield* cancelPendingItemJobsSteps(q, JOB_KIND.start, item.id, now);
       const handoff = options.handoffForItem
         ? yield* options.handoffForItem(q, item.id)
@@ -691,17 +798,28 @@ async function admit(
         repositoryKey: next.repositoryKey,
         sessionId: next.sessionId,
         now,
+        ...(choices.has(item.id) ? { runnerId: choices.get(item.id)! } : {}),
       });
       held.push(next);
       occupants.push(item);
       admitted.push(item.id);
-      free -= 1;
+      free -= 1 - reused;
     }
     yield* claimPinned();
     yield* savePinnedSlotsSteps(q, reservedSlots);
     const waiting = order.filter(
       ({ item }) => !admitted.includes(item.id) && !setup.has(item.id) && !overlaps.has(item.id),
     );
+    const noRunnerLine = (itemId: string): string | null => {
+      if (openRunner(itemId) !== null) return null;
+      const verdicts = verdictsFor(itemId);
+      if (!verdicts) return "Waiting for placement scope to become available";
+      if (!verdicts.runners.length)
+        return `No runner can take ${verdicts.repository ?? "this item"}: no paired runners available to its owner`;
+      return `No runner can take ${verdicts.repository ?? "this item"}: ${verdicts.runners
+        .map((runner) => `${runner.name}: ${runner.rejection ?? RUNNER_FULL}`)
+        .join("; ")}`;
+    };
     const line = [
       ...waiting.filter(({ capped }) => !capped),
       ...waiting.filter(({ capped }) => capped),
@@ -724,11 +842,14 @@ async function admit(
           blockers: start.held === "blocked" ? yield* blockingIssuesSteps(q, item.id) : [],
         });
     holds.push(
-      ...waiting.map(({ item, capped }): ItemHold => ({
-        itemId: item.id,
-        reason: capped ? "cap" : "slot",
-        blockers: [],
-      })),
+      ...waiting.map(({ item, capped }): ItemHold => {
+        const noRunner = capped ? null : noRunnerLine(item.id);
+        return {
+          itemId: item.id,
+          reason: capped ? "cap" : "slot",
+          blockers: noRunner === null ? [] : [noRunner],
+        };
+      }),
       ...[...overlaps].map(([itemId, overlap]): ItemHold => ({
         itemId,
         reason: "overlap",
@@ -764,6 +885,14 @@ async function admit(
       waiting: waiting.map(({ item }) => item.id),
       setup: [...setup],
       changes,
+      hostRefusals: hostRefusals(
+        items
+          .filter((item) => item.state === "queued" && !item.cancelRequested && !item.absent)
+          .flatMap((item) => {
+            const verdicts = verdictsFor(item.id);
+            return verdicts ? [verdicts] : [];
+          }),
+      ),
     };
   });
   if (result.armed) emitJobReady(store);
@@ -771,6 +900,7 @@ async function admit(
   options.onWaiting?.(result.waiting);
   options.onRunnerSetup?.(result.setup);
   options.onWaits?.(result.waits);
+  options.onRunnerHostRefusals?.(result.hostRefusals, now);
   return result.admitted;
 }
 

@@ -249,9 +249,10 @@ function placeOnRunner(db: ReturnType<typeof tempDb>, itemId: string): void {
 }
 
 function leaveRunner(db: ReturnType<typeof tempDb>, itemId: string): void {
-  db.run("UPDATE runner_work SET ended_at=0 WHERE run_id IN (SELECT id FROM run WHERE item_id=?)", [
-    itemId,
-  ]);
+  db.run(
+    "UPDATE runner_work SET ended_at=0,teardown_confirmed_at=0 WHERE run_id IN (SELECT id FROM run WHERE item_id=?)",
+    [itemId],
+  );
   db.run("UPDATE run SET status='ended' WHERE item_id=?", [itemId]);
 }
 

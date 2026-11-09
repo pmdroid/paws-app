@@ -27,6 +27,7 @@ export type ItemWait = {
   | {
       kind: "runner";
       position: number;
+      noRunner?: string;
       restart: Exclude<RestartReason, "follow_up" | "answer"> | null;
     }
   | { kind: "paused"; by: string | null }
@@ -118,6 +119,7 @@ export function* itemWaitsSteps(
           ...base,
           kind: "runner",
           position,
+          ...(hold.reason === "slot" && hold.blockers[0] ? { noRunner: hold.blockers[0] } : {}),
           restart: yield* restartReasonSteps(q, item.id),
         });
     }
@@ -155,7 +157,10 @@ export function waitingLine(wait: ItemWait): string | null {
         ? `Still waiting for ${wait.blockers.join(", ")}.`
         : "Still waiting for a blocking issue."
     } Paws checks blockers in Linear every minute while it waits.`;
-  if (wait.kind === "runner") return `Still ${ordinal(wait.position)} in line for a runner.`;
+  if (wait.kind === "runner")
+    return wait.noRunner
+      ? `Still waiting. ${wait.noRunner}.`
+      : `Still ${ordinal(wait.position)} in line for a runner.`;
   return null;
 }
 

@@ -25,6 +25,7 @@ import {
   setRunnerAgentSignedIn,
   storedAgentBindingId,
   updateRunnerLogin,
+  wakeRunnerSlotWaits,
   workspaceMember,
   type RunnerLoginRow,
 } from "../db";
@@ -296,6 +297,7 @@ export function createRunnerLogin(options: {
         if (update.state === "connected" && row.bindingId !== null) inputs.delete(id);
         if (update.state === "connected" && row.bindingId === null) {
           setRunnerAgentSignedIn(db, runnerId, row.agent, true);
+          wakeRunnerSlotWaits(db, runnerId, now());
           inputs.delete(id);
           signedIn = { runnerId, agent: row.agent };
         }

@@ -221,6 +221,7 @@ export const ACME = {
 export type Assertion = { name: string; passed: boolean; observed: unknown };
 
 export type ProofContext = {
+  database: ReturnType<typeof openDatabase>;
   linear: FakeTracker;
   github: ReturnType<typeof fixtureGitHub>;
   launches: LaunchInput[];
@@ -363,6 +364,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     console.log(`ACT ${action}`);
   };
   const context: ProofContext = {
+    database: db,
     linear,
     github,
     launches,
