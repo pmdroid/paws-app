@@ -105,7 +105,8 @@ function errorClass(error: unknown): string {
 /**
  * A short cause for a runner command failure. It names an error class, a host or `host:port`, an
  * HTTP status, or a fixed sentence the runner wrote, and never a response body, file contents,
- * token or other secret. Worker callers may preserve a scrubbed adapter message. Any `secrets` value found in the result reduces it to the error class.
+ * token or other secret. Workers may retain recognized adapter end reasons.
+ * Any `secrets` value found in the result reduces it to the error class.
  */
 export function describeRunnerFailure(
   error: unknown,
@@ -113,10 +114,15 @@ export function describeRunnerFailure(
   preserveMessage = false,
 ): string {
   let cause: string;
-  if (preserveMessage && error instanceof Error)
-    // Adapter output is untrusted; collapse control characters to keep one log line.
-    // eslint-disable-next-line no-control-regex
-    cause = error.message.replace(/[\r\n\x00-\x1f]+/g, " ");
+  if (preserveMessage && error instanceof Error) {
+    const abort = /\bturn aborted: (interrupted|cancelled|canceled|timeout|timed out)(?![\w-])/i.exec(error.message);
+    const exit = /\b(?:exit(?:ed)?(?: with)?(?: code)?|exit code)[: ]+(-?\d{1,3})(?!\d)/i.exec(error.message);
+    cause = abort
+      ? `turn aborted: ${abort[1]!.toLowerCase()}`
+      : exit
+        ? `agent exited with code ${exit[1]}`
+        : describeRunnerFailure(error, secrets);
+  }
   else if (error instanceof RunnerCliFailure) cause = error.message;
   else if (error instanceof RunnerTransportError) cause = transportCause(error);
   else if (error instanceof RunnerRequestError) cause = requestCause(error);

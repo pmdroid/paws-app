@@ -644,19 +644,21 @@ export async function probeRunnerWorker(
     { type: "end" },
   ]);
   const oversizedOutput = output(8);
-  await assert.rejects(
-    execute({
-      job: job(8, "review"),
-      repositoryBundle,
-      outputDirectory: oversizedOutput,
-      workRoot: join(root, "work"),
-      home,
-      resultsGid: process.getgid!(),
-      launch: oversizedAgent.launch,
-    }),
-    /Runner response exceeds size limit/,
+  const oversized = await execute({
+    job: job(8, "review"),
+    repositoryBundle,
+    outputDirectory: oversizedOutput,
+    workRoot: join(root, "work"),
+    home,
+    resultsGid: process.getgid!(),
+    launch: oversizedAgent.launch,
+  });
+  assert.equal(oversized.run.stopReason, "error");
+  assert.match(oversized.run.errorMessage!, /Run failed during agent: Runner response exceeds size limit/);
+  assert.equal(
+    JSON.parse(readFileSync(join(oversizedOutput, "result.json"), "utf8")).run.errorMessage,
+    oversized.run.errorMessage,
   );
-  assert.throws(() => readFileSync(join(oversizedOutput, "result.json")));
   // The prompt response ends the turn, so an update sent after it is ignored
   // rather than racing teardown into the review text and the journal.
   const lateAgent = launch(9, [
