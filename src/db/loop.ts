@@ -1,4 +1,4 @@
-import { trackHostOperation } from "../core";
+import { trackHostOperation } from "../host-operation";
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
