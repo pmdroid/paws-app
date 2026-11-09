@@ -8,6 +8,7 @@ import {
   immediate,
   recordRunnerAgentUsage,
   runnerAgentCheckStates,
+  wakeRunnerSlotWaits,
   runnerAgentUsage,
   runnerLaneHelperWaiting,
   workspaceMember,
@@ -385,11 +386,13 @@ export function createRunnerHealth(options: {
           result.login &&
           observe(result.login.authenticated ? "ok" : "auth_required", "auth") &&
           legacy
-        )
+        ) {
           db.run(
             "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?1,?2,?3,1-?3) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=?3,auth_expired=1-?3",
             [runnerId, assigned.agent, result.login.authenticated ? 1 : 0],
           );
+          if (result.login.authenticated) wakeRunnerSlotWaits(db, runnerId, at);
+        }
         if (legacy && result.agentLimits)
           recordRunnerAgentUsage(db, {
             runnerId,

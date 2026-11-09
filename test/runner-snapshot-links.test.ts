@@ -144,18 +144,35 @@ test.skipIf(!supported)("a snapshot extracted under the runner's umask publishes
   }
 });
 
+function setIdBitRefused(mode: number): boolean {
+  if (!supported || (mode & 0o6000) === 0) return false;
+  const probe = mkdtempSync(join(tmpdir(), "paws-snapshot-mode-"));
+  try {
+    chmodSync(probe, mode);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EPERM") return true;
+    throw error;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+}
+
 for (const mode of [0o777, 0o2750, 0o4750, 0o1750]) {
-  test.skipIf(!supported)(`a source directory with mode ${mode.toString(8)} is rejected`, () => {
-    const f = fixture();
-    try {
-      chmodSync(join(f.source, "nested"), mode);
-      expect(() => f.publish()).toThrow(
-        `Unsafe task repository directory: nested (${owner()} ${mode.toString(8)})`,
-      );
-    } finally {
-      rmSync(f.root, { recursive: true, force: true });
-    }
-  });
+  test.skipIf(!supported || setIdBitRefused(mode))(
+    `a source directory with mode ${mode.toString(8)} is rejected`,
+    () => {
+      const f = fixture();
+      try {
+        chmodSync(join(f.source, "nested"), mode);
+        expect(() => f.publish()).toThrow(
+          `Unsafe task repository directory: nested (${owner()} ${mode.toString(8)})`,
+        );
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    },
+  );
 }
 
 test.skipIf(!supported)("the repository root is named as . in the error", () => {

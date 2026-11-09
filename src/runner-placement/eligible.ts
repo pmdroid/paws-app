@@ -117,7 +117,7 @@ export function runnerSetupNeed(
 }
 
 /** The workspace, team, owner and project leads of a work item, or null when one is unknown. */
-function itemOwnerScope(db: Database, itemId: string) {
+export function itemOwnerScope(db: Database, itemId: string) {
   const scope = db
     .query<
       {
@@ -269,6 +269,10 @@ const OUT_OF_SCOPE = new Set<EligibleRunnerReason>([
   "owner-inactive",
   "owner-not-in-team",
 ]);
+
+export function isInRunnerScope(reason: EligibleRunnerReason): boolean {
+  return !OUT_OF_SCOPE.has(reason);
+}
 
 function itemRepositoryRunners(db: Database, input: { itemId: string; now?: number }) {
   const scope = itemOwnerScope(db, input.itemId);

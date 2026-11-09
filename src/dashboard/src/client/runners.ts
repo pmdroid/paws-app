@@ -33,6 +33,7 @@ export type Runner = {
   /** The owner's display name; older Paws releases do not send it. */
   ownerName?: string | null;
   status: RunnerStatus;
+  hostWarnings?: readonly string[];
   hasRunWork?: boolean;
   metrics: {
     cpuPercent: number | null;
@@ -661,6 +662,9 @@ export function runnerRowMarkup(
     runner.status !== "revoked" && runner.skills?.some((skill) => skill.state === "failed")
       ? '<span class="tag bad">Skill install failed</span>'
       : "",
+    ...(runner.status === "revoked" ? [] : (runner.hostWarnings ?? [])).map(
+      (line) => `<span class="tag warn">${esc(line)}</span>`,
+    ),
   ].join("");
   const os = [runner.os?.id, runner.os?.version].filter(Boolean).join(" ");
   const meta = [
@@ -1240,7 +1244,15 @@ export function runnerDetailMarkup(
   const head = `<div class="runner-head"><div class="runner-title"><h2 id="runner-${id}-name">${esc(runner.name)}</h2>${statusLine(runner, view)}<p class="runner-meta" title="${esc(metrics ? new Date(metrics.reportedAt).toLocaleString() : "")}">${meta}</p></div>${pauseMarkup(runner, { manages: manages || owns, busy: view.busy })}</div>`;
   const block = (key: string, title: string, aside: string, body: string) =>
     `<section class="runner-block" aria-labelledby="runner-${id}-${key}"><div class="runner-block-head"><h3 id="runner-${id}-${key}">${title}</h3>${aside}</div>${body}</section>`;
-  const card = `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name">${head}${firstActivation(runner) ? "<p>Sign in the coding agents this runner should use, then turn it on.</p>" : ""}${
+  const hostWarnings = revoked
+    ? ""
+    : (runner.hostWarnings ?? [])
+        .map(
+          (line) =>
+            `<p class="tag warn whitespace-normal" data-runner-host-warning>${esc(line)}</p>`,
+        )
+        .join("");
+  const card = `<section class="runner-section" data-runner-card="${id}" aria-labelledby="runner-${id}-name">${head}${hostWarnings}${firstActivation(runner) ? "<p>Sign in the coding agents this runner should use, then turn it on.</p>" : ""}${
     revoked
       ? ""
       : block(

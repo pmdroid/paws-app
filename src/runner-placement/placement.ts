@@ -13,7 +13,6 @@ import {
   runnerExecutionReceipt,
   runnerIdentity,
   runnerPlacementPolicy,
-  runnerRepositoryRefusal,
   sessionRepositoriesAllowed,
   setRunnerAgentCooldown,
   settleRunnerAgent,
@@ -27,6 +26,8 @@ import {
   immediate,
   runnerHasCapacity,
   pinnedSlotsReserved,
+  schedulerRunnerSlots,
+  setSchedulerRunnerSlot,
   runnerHelperAvailability,
   runnerOccupancy,
   runnerSlotsHeldBetweenCommands,
@@ -35,28 +36,20 @@ import {
   workspaceSessionIds,
   findingGroupingAdmins,
   commandAccount,
-  legacyAgentAccountId,
   legacyAgentBindingId,
-  legacyBindingAccountHealth,
   recordAccountObservation,
   type AccountObservation,
 } from "../db";
 import type { RunnerCodingAgent } from "../runner-protocol";
-import type {
-  EligibleRunner,
-  PlacementAccount,
-  PlacementPurpose,
-  PlacementReason,
-  PlacementRequest,
-  RunnerPlacement,
-} from "./index";
+import type { PlacementAccount, PlacementReason, PlacementRequest, RunnerPlacement } from "./index";
 import {
   eligibleRunners,
   itemRepositoryRefusals,
   runnerSetupNeed,
   RUNNER_ONLINE_MS,
 } from "./eligible";
-import { accountHealthBlock, BINDING_REASON_TEXT, classifyAgentFailure } from "./account-health";
+import { classifyAgentFailure } from "./account-health";
+import { repositoryRejection, signInFit } from "./fit";
 
 /** Receipt outcomes whose first `finished()` call returned `retryable: true`. */
 const RETRYABLE_OUTCOMES = new Set([
@@ -82,8 +75,12 @@ export const LOAD_HISTORY_MS = 6 * 60 * 60_000;
 /** Finished work loses half its weight in recent load every hour. */
 export const LOAD_HALF_LIFE_MS = 60 * 60_000;
 
-type AccountRefusal = { reason: string; until?: number };
-type AccountFit = { account: PlacementAccount; low: boolean };
+/** Placement authority cannot currently authorize this task. */
+export class PlacementUnavailableError extends Error {}
+
+type SessionWait = { runnerId: string; since: number; seen: number };
+// Admission previews and execution must observe the same session grace period.
+const sessionWaitsByDatabase = new WeakMap<Database, Map<string, SessionWait>>();
 
 export function createRunnerPlacement(options: {
   db: Database;
@@ -104,7 +101,8 @@ export function createRunnerPlacement(options: {
     }
   >();
   // Per item: since when placement has held a task for its busy session runner.
-  const sessionWaits = new Map<string, { runnerId: string; since: number; seen: number }>();
+  const sessionWaits = sessionWaitsByDatabase.get(db) ?? new Map<string, SessionWait>();
+  sessionWaitsByDatabase.set(db, sessionWaits);
   function admissionKey(
     runnerId: string,
     input: Pick<PlacementRequest, "itemId" | "sessionId" | "purpose" | "role" | "profile">,
@@ -126,7 +124,7 @@ export function createRunnerPlacement(options: {
   function scope(input: PlacementRequest) {
     const item = input.itemId ? getWorkItem(db, input.itemId) : null;
     if (input.itemId && (!item || item.cancelRequested))
-      throw new Error("Runner task is unavailable");
+      throw new PlacementUnavailableError("Runner task is unavailable");
     const sessionId = input.sessionId ?? item?.sessionKey ?? null;
     const session = sessionId ? getLinearSession(db, sessionId) : null;
     if (
@@ -135,16 +133,16 @@ export function createRunnerPlacement(options: {
       !session.organizationId ||
       getLinearSessionAccess(db, session.sessionId) !== "allowed"
     )
-      throw new Error("Runner session authority is unavailable");
+      throw new PlacementUnavailableError("Runner session authority is unavailable");
     if (input.sessionId && item && item.sessionKey !== input.sessionId)
-      throw new Error("Runner task session changed");
+      throw new PlacementUnavailableError("Runner task session changed");
     const found = workspaceForOrganization(db, session.organizationId);
-    if (!found) throw new Error("Runner workspace is unavailable");
+    if (!found) throw new PlacementUnavailableError("Runner workspace is unavailable");
     const workspace = { id: found.id };
     const repository = item ? getWorkItemRepository(db, item.id) : null;
     const issueId =
       item?.linearIssueId ?? session.issueId ?? (input.findingGroups ? session.sessionId : null);
-    if (!issueId) throw new Error("Runner issue authority is unavailable");
+    if (!issueId) throw new PlacementUnavailableError("Runner issue authority is unavailable");
     const placement = item
       ? {
           ownerUserId: itemOwnerUserId(db, item.id),
@@ -216,7 +214,7 @@ export function createRunnerPlacement(options: {
   /** Who the work belongs to and where, for `eligibleRunners`. Throws when nobody may run it. */
   function eligibility(current: ReturnType<typeof scope>) {
     const teamId = linearSessionInstallation(db, current.session.sessionId)?.teamId;
-    if (!teamId) throw new Error("Runner issue team is unavailable");
+    if (!teamId) throw new PlacementUnavailableError("Runner issue team is unavailable");
     const repository = current.repository
       ? `${current.repository.owner}/${current.repository.repo}`.toLowerCase()
       : null;
@@ -224,12 +222,12 @@ export function createRunnerPlacement(options: {
       repository !== null &&
       !sessionRepositoriesAllowed(db, [current.session.sessionId], [repository]).has(repository)
     )
-      throw new Error("Runner repository is outside workspace access");
+      throw new PlacementUnavailableError("Runner repository is outside workspace access");
     const requester = current.ownership
       ? workspaceUserIdForLinearUser(db, current.ownership)
       : null;
     if (!requester || !workspaceMemberUsable(workspaceMember(db, current.workspace.id, requester)))
-      throw new Error("Runner requester is not an active workspace member");
+      throw new PlacementUnavailableError("Runner requester is not an active workspace member");
     return {
       workspaceId: current.workspace.id,
       teamId,
@@ -280,40 +278,6 @@ export function createRunnerPlacement(options: {
     if (kind !== "quota") return null;
     return quotaRecheckAt(db, commandId, owner.workspaceId);
   }
-  function signInFit(
-    runner: Pick<EligibleRunner, "id" | "cooldownUntil" | "quotaState"> & { signedIn: boolean },
-    workspaceId: string,
-    input: {
-      agent: RunnerCodingAgent;
-      model: string | null | undefined;
-      purpose: PlacementPurpose;
-      at: number;
-    },
-  ): AccountFit | AccountRefusal {
-    const { agent, at, purpose } = input;
-    if (!runner.signedIn) return { reason: "agent not signed in" };
-    if (runner.cooldownUntil > at)
-      return { reason: "agent quota cooldown", until: runner.cooldownUntil };
-    const bindingId = legacyAgentBindingId(runner.id, agent);
-    const health = accountHealthBlock(
-      db,
-      bindingId,
-      legacyBindingAccountHealth(db, runner.id, agent, input.model).filter(
-        (row) => row.kind !== "quota" && row.kind !== "auth",
-      ),
-      at,
-      purpose,
-    );
-    if (health)
-      return {
-        reason: BINDING_REASON_TEXT[health.reason],
-        ...(health.until !== null ? { until: health.until } : {}),
-      };
-    return {
-      account: { accountId: legacyAgentAccountId(workspaceId, agent), bindingId, named: false },
-      low: runner.quotaState === "low",
-    };
-  }
   function admit(
     input: Parameters<RunnerPlacement["started"]>[0],
     account: PlacementAccount,
@@ -328,6 +292,7 @@ export function createRunnerPlacement(options: {
       throw new PlacementRaceError("The command does not carry the sign-in placement chose");
     const runner = runnerAgentQuota(db, input.runnerId, agent);
     const fit = signInFit(
+      db,
       {
         id: input.runnerId,
         cooldownUntil: runner?.cooldownUntil ?? 0,
@@ -342,236 +307,244 @@ export function createRunnerPlacement(options: {
     if (fit.account.bindingId !== account.bindingId)
       throw new PlacementRaceError("The agent sign-in changed before assignment");
   }
-  return {
-    async candidates(input) {
-      input.signal?.throwIfAborted();
-      if (!input.profile) throw new Error("Runner agent profile is required");
-      const current = scope(input);
-      const binding = authority(current);
-      const at = now();
-      // A task runs on the runners of the person who delegated it, then on the shared runners
-      // of its Linear project leads.
-      // Preparation probes identities without moving a checkout or resuming an agent session.
-      const pinnedRunnerId = input.purpose === "prepare" ? undefined : input.pinnedRunnerId;
-      const pinned =
-        pinnedRunnerId && pinnedRunnerId !== input.handedOverFrom
-          ? runnerIdentity(db, pinnedRunnerId)
-          : null;
-      const pinnedOnline =
-        pinned !== null &&
-        pinned.status === "active" &&
-        pinned.revokedAt === null &&
-        pinned.lastSeenAt !== null &&
-        pinned.lastSeenAt > at - RUNNER_ONLINE_MS;
-      const groupingSession =
-        input.findingGroups && input.purpose === "helper"
-          ? linearSessionInstallation(db, current.session.sessionId)
-          : null;
-      if (input.findingGroups && !groupingSession?.teamId)
-        throw new Error("Runner issue team is unavailable");
-      const scopes =
-        input.findingGroups && input.purpose === "helper"
-          ? findingGroupingAdmins(db, current.workspace.id).flatMap((admin) =>
-              groupingSession?.clientId &&
-              workspaceSessionIds(
-                db,
-                current.workspace.id,
-                admin.userId,
-                groupingSession.clientId,
-              ).includes(current.session.sessionId)
-                ? [
-                    {
-                      workspaceId: current.workspace.id,
-                      teamId: groupingSession.teamId!,
-                      ownerUserId: admin.userId,
-                      leadUserIds: [] as string[],
-                    },
-                  ]
-                : [],
-            )
-          : [eligibility(current)];
-      const agent = input.profile.agent as RunnerCodingAgent;
-      const rows = scopes
-        .flatMap((owner) =>
-          eligibleRunners(db, {
-            ...owner,
-            agent,
-            purpose: input.findingGroups ? "work" : input.purpose,
-            now: at,
-            includeRevoked: true,
-          }).map((runner) => ({
-            ...runner,
-            own: runner.eligible ? runner.reason === "own" : runner.ownerId === owner.ownerUserId,
-            signedIn: runner.eligible,
-          })),
-        )
-        .filter((runner) => {
-          const reason = !runner.eligible
-            ? runner.reason
-            : pinnedOnline && runner.id !== pinnedRunnerId
-              ? "run pinned to another online runner"
-              : null;
-          if (reason) input.onRejected?.(runner.id, reason);
-          return reason === null;
-        });
-      const lastImplementation = input.itemId
-        ? lastSuccessfulImplementation(db, input.itemId)
+  function select(input: PlacementRequest, preview = false) {
+    input.signal?.throwIfAborted();
+    if (!input.profile) throw new Error("Runner agent profile is required");
+    const current = scope(input);
+    const admissionRunner =
+      !preview && input.purpose === "work" && input.role === "implementer" && input.itemId
+        ? schedulerRunnerSlots(db, now()).find((row) => row.itemId === input.itemId)?.runnerId
         : null;
-      const ranked = rows.flatMap((runner) => {
-        const reject = (reason: string) => {
-          input.onRejected?.(runner.id, reason);
-          return [];
-        };
-        const helper =
-          input.purpose === "helper"
-            ? runnerHelperAvailability(db, runner.id, at, !input.findingGroups)
-            : null;
-        if (helper && !helper.available)
-          return reject("helper already running or no free capacity");
-        if (runner.id === input.handedOverFrom) return reject("handed the session over");
-        const repositoryRefusal = current.repository
-          ? runnerRepositoryRefusal(
+    const binding = authority(current);
+    const at = now();
+    // A task runs on the runners of the person who delegated it, then on the shared runners
+    // of its Linear project leads.
+    // Preparation probes identities without moving a checkout or resuming an agent session.
+    const pinnedRunnerId = input.purpose === "prepare" ? undefined : input.pinnedRunnerId;
+    const pinned =
+      pinnedRunnerId && pinnedRunnerId !== input.handedOverFrom
+        ? runnerIdentity(db, pinnedRunnerId)
+        : null;
+    const pinnedOnline =
+      pinned !== null &&
+      pinned.status === "active" &&
+      pinned.revokedAt === null &&
+      pinned.lastSeenAt !== null &&
+      pinned.lastSeenAt > at - RUNNER_ONLINE_MS;
+    const groupingSession =
+      input.findingGroups && input.purpose === "helper"
+        ? linearSessionInstallation(db, current.session.sessionId)
+        : null;
+    if (input.findingGroups && !groupingSession?.teamId)
+      throw new PlacementUnavailableError("Runner issue team is unavailable");
+    const scopes =
+      input.findingGroups && input.purpose === "helper"
+        ? findingGroupingAdmins(db, current.workspace.id).flatMap((admin) =>
+            groupingSession?.clientId &&
+            workspaceSessionIds(
               db,
-              runner.id,
-              `${current.repository.owner}/${current.repository.repo}`,
-            )
-          : null;
-        if (repositoryRefusal)
-          return reject(
-            repositoryRefusal.list === "admin"
-              ? "repository not allowed on the runner's page"
-              : "repository not allowed in the runner's host config",
-          );
-        // Retry exclusions avoid failed hosts for unpinned work. A live run retries a fresh
-        // session on its pinned host instead of moving its checkout and held slot.
-        if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline)
-          return reject("excluded after failed attempt");
-        const fit = signInFit(runner, current.workspace.id, {
-          agent,
-          model: input.profile?.model,
-          purpose: input.purpose,
-          at,
-        });
-        if ("reason" in fit) {
-          input.onRejected?.(
-            runner.id,
-            fit.reason,
-            ...(fit.until !== undefined ? [fit.until] : []),
-          );
-          return [];
-        }
-        // Preparation must probe fresh identities; preflight compares them against each other.
-        // A fresh session may correct a reported model mismatch. The work receipt still rejects
-        // actual implementer-model reuse, and failover bounds the number of attempts.
-        if (
-          !(pinnedOnline && input.excludeRunnerIds?.includes(runner.id)) &&
-          input.purpose !== "prepare" &&
-          input.role === "reviewer" &&
-          lastImplementation?.model &&
-          (input.profile?.model ?? runner.resolvedModel) === lastImplementation.model
-        )
-          return reject("reviewer model matches implementation model");
-        const reviewRank =
-          input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
-        const rank = (helper?.preempts ? 1000 : 0) + reviewRank * 10 + (runner.own ? 0 : 1);
-        return [{ runner, ...fit, rank, extra: runner.quotaState === "spent_extra" }];
-      });
-      // A run leaving its pinned runner goes first to a free runner that can restore its saved
-      // agent session, the agent version that wrote it ahead of other versions. It never waits
-      // for a busy one: the others follow, and the restore falls back there with its reason.
-      const restore =
-        pinnedRunnerId && !pinnedOnline && input.role === "implementer" && input.purpose === "work"
-          ? input.restore
-          : undefined;
-      const restorers = new Set<string>();
-      if (restore) {
-        const runId = current.item?.currentRunId ?? "";
-        for (const entry of ranked) {
-          const id = entry.runner.id;
-          const target = restore(id, entry.account);
-          const free =
-            target &&
-            runnerHasCapacity(
-              db,
-              id,
-              at,
-              runId,
-              (input.reserved?.get(id) ?? 0) + runnerSlotsHeldBetweenCommands(db, id, at, runId),
-            );
-          entry.rank += !free ? 200 : target.sameVersion ? 0 : 100;
-          if (free) restorers.add(`${id}:${entry.account.bindingId}`);
-        }
-      }
-      const session =
-        !pinnedRunnerId &&
-        input.role === "implementer" &&
-        input.purpose === "work" &&
-        input.session;
-      const holder = session
-        ? ranked.find(
-            ({ runner, account }) =>
-              runner.id === session.runnerId &&
-              (session.bindingId === undefined || account.bindingId === session.bindingId),
+              current.workspace.id,
+              admin.userId,
+              groupingSession.clientId,
+            ).includes(current.session.sessionId)
+              ? [
+                  {
+                    workspaceId: current.workspace.id,
+                    teamId: groupingSession.teamId!,
+                    ownerUserId: admin.userId,
+                    leadUserIds: [] as string[],
+                  },
+                ]
+              : [],
           )
-        : undefined;
-      let heldForSession = false;
-      if (holder && input.itemId) {
-        const runId = current.item?.currentRunId ?? "";
-        const held =
-          runnerSlotsHeldBetweenCommands(db, holder.runner.id, at, runId) +
-          (input.reserved?.get(holder.runner.id) ?? 0) +
-          pinnedSlotsReserved(db, holder.runner.id, input.itemId, at);
-        if (runnerHasCapacity(db, holder.runner.id, at, runId, held)) {
-          holder.rank = -1;
-          sessionWaits.delete(input.itemId);
-        } else {
-          const waiting = sessionWaits.get(input.itemId);
-          const since =
-            waiting?.runnerId === holder.runner.id && at - waiting.seen < 2 * SESSION_GRACE_MS
-              ? waiting.since
-              : at;
-          sessionWaits.set(input.itemId, { runnerId: holder.runner.id, since, seen: at });
-          heldForSession = at - since < SESSION_GRACE_MS;
-        }
-      } else if (session && input.itemId) sessionWaits.delete(input.itemId);
-      if (heldForSession) ranked.splice(0, ranked.length, holder!);
-      const load = runnerLoad(
-        ranked.map(({ runner }) => runner.id),
+        : [eligibility(current)];
+    const agent = input.profile.agent as RunnerCodingAgent;
+    const rows = scopes
+      .flatMap((owner) =>
+        eligibleRunners(db, {
+          ...owner,
+          agent,
+          purpose: input.findingGroups ? "work" : input.purpose,
+          now: at,
+          includeRevoked: true,
+        }).map((runner) => ({
+          ...runner,
+          own: runner.eligible ? runner.reason === "own" : runner.ownerId === owner.ownerUserId,
+          signedIn: runner.eligible,
+        })),
+      )
+      .filter((runner) => {
+        const reason = !runner.eligible
+          ? runner.reason
+          : pinnedOnline && runner.id !== pinnedRunnerId
+            ? "run pinned to another online runner"
+            : null;
+        if (reason) input.onRejected?.(runner.id, reason);
+        return reason === null;
+      });
+    const lastImplementation = input.itemId ? lastSuccessfulImplementation(db, input.itemId) : null;
+    const ranked = rows.flatMap((runner) => {
+      const reject = (reason: string) => {
+        input.onRejected?.(runner.id, reason);
+        return [];
+      };
+      const helper =
+        input.purpose === "helper"
+          ? runnerHelperAvailability(db, runner.id, at, !input.findingGroups)
+          : null;
+      if (helper && !helper.available) return reject("helper already running or no free capacity");
+      if (runner.id === input.handedOverFrom) return reject("handed the session over");
+      const repositoryRefusal =
+        current.repository &&
+        repositoryRejection(
+          db,
+          runner.id,
+          `${current.repository.owner}/${current.repository.repo}`,
+        );
+      if (repositoryRefusal) return reject(repositoryRefusal);
+      // Retry exclusions avoid failed hosts for unpinned work. A live run retries a fresh
+      // session on its pinned host instead of moving its checkout and held slot.
+      if (input.excludeRunnerIds?.includes(runner.id) && !pinnedOnline)
+        return reject("excluded after failed attempt");
+      const fit = signInFit(db, runner, current.workspace.id, {
+        agent,
+        model: input.profile?.model,
+        purpose: input.purpose,
         at,
-        input.reserved,
-      );
-      ranked.sort(
-        (a, b) =>
-          Number(a.extra) - Number(b.extra) ||
-          a.rank - b.rank ||
-          load.get(a.runner.id)!.current - load.get(b.runner.id)!.current ||
-          Number(a.low) - Number(b.low) ||
-          load.get(a.runner.id)!.recent - load.get(b.runner.id)!.recent ||
-          a.runner.virtualFinish - b.runner.virtualFinish ||
-          a.runner.lastUsedAt - b.runner.lastUsedAt ||
-          a.runner.id.localeCompare(b.runner.id),
-      );
-      for (const [key, admission] of admissions)
-        if (admission.expiresAt <= at) admissions.delete(key);
-      for (const { runner, account, extra } of ranked)
-        admissions.set(admissionKey(runner.id, input, account.bindingId), {
-          request: input,
-          account,
-          scope: binding,
-          policy: policy(runner.id, input.profile?.agent),
-          reason: restorers.has(`${runner.id}:${account.bindingId}`)
-            ? "session_restore"
-            : extra
-              ? "extra_usage"
-              : null,
-          expiresAt: at + 15_000,
-        });
-      return ranked.map(({ runner, account }) => ({
-        id: runner.id,
-        workspaceId: runner.workspaceId,
+      });
+      if ("reason" in fit) {
+        input.onRejected?.(runner.id, fit.reason, ...(fit.until !== undefined ? [fit.until] : []));
+        return [];
+      }
+      // Preparation must probe fresh identities; preflight compares them against each other.
+      // A fresh session may correct a reported model mismatch. The work receipt still rejects
+      // actual implementer-model reuse, and failover bounds the number of attempts.
+      if (
+        !(pinnedOnline && input.excludeRunnerIds?.includes(runner.id)) &&
+        input.purpose !== "prepare" &&
+        input.role === "reviewer" &&
+        lastImplementation?.model &&
+        (input.profile?.model ?? runner.resolvedModel) === lastImplementation.model
+      )
+        return reject("reviewer model matches implementation model");
+      const reviewRank =
+        input.role === "reviewer" && lastImplementation?.runnerId === runner.id ? 1 : 0;
+      const rank = (helper?.preempts ? 1000 : 0) + reviewRank * 10 + (runner.own ? 0 : 1);
+      return [{ runner, ...fit, rank, extra: runner.quotaState === "spent_extra" }];
+    });
+    // A run leaving its pinned runner goes first to a free runner that can restore its saved
+    // agent session, the agent version that wrote it ahead of other versions. It never waits
+    // for a busy one: the others follow, and the restore falls back there with its reason.
+    const restore =
+      pinnedRunnerId && !pinnedOnline && input.role === "implementer" && input.purpose === "work"
+        ? input.restore
+        : undefined;
+    const restorers = new Set<string>();
+    if (restore) {
+      const runId = current.item?.currentRunId ?? "";
+      for (const entry of ranked) {
+        const id = entry.runner.id;
+        const target = restore(id, entry.account);
+        const free =
+          target &&
+          runnerHasCapacity(
+            db,
+            id,
+            at,
+            runId,
+            (input.reserved?.get(id) ?? 0) + runnerSlotsHeldBetweenCommands(db, id, at, runId),
+          );
+        entry.rank += !free ? 200 : target.sameVersion ? 0 : 100;
+        if (free) restorers.add(`${id}:${entry.account.bindingId}`);
+      }
+    }
+    const session =
+      !pinnedRunnerId && input.role === "implementer" && input.purpose === "work" && input.session;
+    const holder = session
+      ? ranked.find(
+          ({ runner, account }) =>
+            runner.id === session.runnerId &&
+            (session.bindingId === undefined || account.bindingId === session.bindingId),
+        )
+      : undefined;
+    let heldForSession = false;
+    if (holder && input.itemId) {
+      const runId = current.item?.currentRunId ?? "";
+      const held =
+        runnerSlotsHeldBetweenCommands(db, holder.runner.id, at, runId) +
+        (input.reserved?.get(holder.runner.id) ?? 0) +
+        pinnedSlotsReserved(db, holder.runner.id, input.itemId, at);
+      if (runnerHasCapacity(db, holder.runner.id, at, runId, held)) {
+        holder.rank = -1;
+        sessionWaits.delete(input.itemId);
+      } else {
+        const waiting = sessionWaits.get(input.itemId);
+        const since =
+          waiting?.runnerId === holder.runner.id && at - waiting.seen < 2 * SESSION_GRACE_MS
+            ? waiting.since
+            : at;
+        sessionWaits.set(input.itemId, { runnerId: holder.runner.id, since, seen: at });
+        heldForSession = at - since < SESSION_GRACE_MS;
+      }
+    } else if (session && input.itemId) sessionWaits.delete(input.itemId);
+    if (heldForSession) ranked.splice(0, ranked.length, holder!);
+    const load = runnerLoad(
+      ranked.map(({ runner }) => runner.id),
+      at,
+      input.reserved,
+    );
+    ranked.sort(
+      (a, b) =>
+        Number(a.extra) - Number(b.extra) ||
+        a.rank - b.rank ||
+        load.get(a.runner.id)!.current - load.get(b.runner.id)!.current ||
+        Number(a.low) - Number(b.low) ||
+        load.get(a.runner.id)!.recent - load.get(b.runner.id)!.recent ||
+        a.runner.virtualFinish - b.runner.virtualFinish ||
+        a.runner.lastUsedAt - b.runner.lastUsedAt ||
+        a.runner.id.localeCompare(b.runner.id),
+    );
+    if (admissionRunner) {
+      const runId = current.item?.currentRunId ?? "";
+      const free = (id: string) =>
+        runnerHasCapacity(
+          db,
+          id,
+          at,
+          runId,
+          runnerSlotsHeldBetweenCommands(db, id, at, runId) +
+            (input.reserved?.get(id) ?? 0) +
+            pinnedSlotsReserved(db, id, input.itemId!, at),
+        );
+      const chosen = ranked.find(({ runner }) => runner.id === admissionRunner && free(runner.id));
+      const replacement = chosen ?? ranked.find(({ runner }) => free(runner.id));
+      if (!chosen) setSchedulerRunnerSlot(db, input.itemId!, replacement?.runner.id ?? null);
+      if (replacement) ranked.splice(0, ranked.length, replacement);
+    }
+    for (const [key, admission] of admissions)
+      if (admission.expiresAt <= at) admissions.delete(key);
+    for (const { runner, account, extra } of ranked)
+      admissions.set(admissionKey(runner.id, input, account.bindingId), {
+        request: input,
         account,
-      }));
-    },
+        scope: binding,
+        policy: policy(runner.id, input.profile?.agent),
+        reason: restorers.has(`${runner.id}:${account.bindingId}`)
+          ? "session_restore"
+          : extra
+            ? "extra_usage"
+            : null,
+        expiresAt: at + 15_000,
+      });
+    return ranked.map(({ runner, account }) => ({
+      id: runner.id,
+      workspaceId: runner.workspaceId,
+      account,
+    }));
+  }
+  return {
+    preview: (input) => select(input, true),
+    candidates: async (input) => select(input),
     setupNeed(input) {
       if (!input.profile) return null;
       const current = scope(input);

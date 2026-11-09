@@ -23,6 +23,7 @@ import {
   type Usage,
   updatedLabel,
 } from "./runners";
+import { esc } from "./format";
 import { parseRoute, routeHref } from "./route";
 
 const now = 1_000_000_000;
@@ -85,6 +86,13 @@ const view = {
 
 describe("runner list rows", () => {
   const row = { now, serverVersion: "1.2.0" };
+
+  test("a runner that refuses waiting work for its host config shows the warning", () => {
+    const line = "goldbox can't take pmdroid/paws-app (not in its allowed repositories)";
+    const warned = { ...runner, hostWarnings: [line] };
+    expect(runnerRowMarkup(warned, row)).toContain(esc(line));
+    expect(runnerRowMarkup(runner, row)).not.toContain("can&#39;t take");
+  });
 
   test("a row links to the runner and summarizes its state", () => {
     const html = runnerRowMarkup(runner, row);

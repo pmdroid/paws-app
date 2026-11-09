@@ -1135,3 +1135,42 @@ export function setRunnerWorkConsumedSequence(
     sqliteDb(db).run((q) => setRunnerWorkConsumedSequenceSteps(q, runId, generation, sequence)),
   );
 }
+
+export function itemSessionResults(db: Database, itemId: string) {
+  return settled(
+    sqliteDb(db).run(function* (q: Q) {
+      const { runnerResult: result, runnerCommand: command, run } = q.t;
+      return yield* q.all(
+        q.orm
+          .select({
+            envelope: jsonText(q, command.envelope),
+            payload: jsonText(q, result.payload),
+            receivedAt: result.receivedAt,
+          })
+          .from(result)
+          .innerJoin(command, eq(command.id, result.commandId))
+          .innerJoin(run, eq(run.id, result.runId))
+          .where(and(eq(run.itemId, itemId), eq(command.kind, "run")))
+          .orderBy(desc(result.receivedAt), desc(result.generation)),
+      );
+    }),
+  );
+}
+export function runPlacementCommand(db: Database, runId: string) {
+  return settled(
+    sqliteDb(db).run(function* (q: Q) {
+      const { runnerWork: work, runnerCommand: command } = q.t;
+      return yield* q.one(
+        q.orm
+          .select({
+            runnerId: work.runnerId,
+            kind: command.kind,
+            envelope: jsonText(q, command.envelope),
+          })
+          .from(work)
+          .leftJoin(command, eq(command.id, work.commandId))
+          .where(eq(work.runId, runId)),
+      );
+    }),
+  );
+}

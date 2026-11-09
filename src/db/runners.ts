@@ -21,7 +21,12 @@ import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { jsonField } from "./json-text";
 import { auditWorkspaceAccessSteps, workspaceMemberUsableWhere } from "./workspace";
 import { endRevokedRunnerAuthoritySteps, runnerLeaseCutoff } from "./runner-lease";
-import { conversationsInUseSteps, workHelperSql } from "./runner-capacity";
+import { emitJobReady } from "./jobs";
+import {
+  conversationsInUseSteps,
+  wakeRunnerSlotWaitsSteps,
+  workHelperSql,
+} from "./runner-capacity";
 import {
   AGENT_USER_RUNNER_VERSION,
   runnerReleaseAtLeast,
@@ -793,7 +798,9 @@ type RunnerStatusUpdate = {
 };
 
 export function updateRunnerStatus(db: Database, input: RunnerStatusUpdate): string[] {
-  return settled(sqliteDb(db).transaction((q) => updateRunnerStatusSteps(q, input)));
+  const fingerprints = settled(sqliteDb(db).transaction((q) => updateRunnerStatusSteps(q, input)));
+  if (input.status === "active") emitJobReady(db);
+  return fingerprints;
 }
 
 export function* updateRunnerStatusSteps(q: Q, input: RunnerStatusUpdate): Steps<string[]> {
@@ -817,6 +824,7 @@ export function* updateRunnerStatusSteps(q: Q, input: RunnerStatusUpdate): Steps
       .returning({ id: runner.id }),
   );
   if (changed.length !== 1) throw new Error("Runner is unavailable.");
+  if (input.status === "active") yield* wakeRunnerSlotWaitsSteps(q, input.runnerId, input.now);
   const certificates = yield* q.all(
     q.orm
       .select({ fingerprint: runnerCertificate.fingerprint })
