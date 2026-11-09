@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { candidateRef, mirrorPath } from "../src/acp";
+import { PawsShutdown } from "../src/core";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import {
   beginImplementRun,
@@ -311,7 +312,7 @@ async function setup() {
   function turn(
     record: { id: string; runId: string },
     notices: string[],
-    question?: "answered" | "open" | "stale",
+    question?: "answered" | "open" | "stale" | "waiting",
   ) {
     const stop = new AbortController();
     stops.add(stop);
@@ -332,6 +333,12 @@ async function setup() {
                 // The question store records the question, answered or still open.
                 async ask(request: { question: string }) {
                   if (question === "stale") throw new Error("Question owner is stale");
+                  if (question === "waiting")
+                    return await new Promise<never>((_, reject) =>
+                      stop.signal.addEventListener("abort", () => reject(stop.signal.reason), {
+                        once: true,
+                      }),
+                    );
                   db.run(
                     `INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at)
                      VALUES(?,?,?,?,'agent',?,?,?)`,
@@ -584,6 +591,31 @@ test("a question that cannot be asked keeps the turn's work as a WIP commit befo
   context.events(onA, runners.a, [{ type: "checkpoint", reason: "stop", sha: wip }]);
   expect(await context.next(runners.a)).toMatchObject({ type: "cancel", runId: onA.runId });
   expect(await running).toMatchObject({ message: "Question owner is stale" });
+  expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(wip);
+});
+
+test("a Paws shutdown while the run waits on its question keeps the turn's work before the cancel", async () => {
+  const { db, runners } = context;
+  const record = context.item();
+  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  db.run("UPDATE runner_host_status SET runner_version='0.1.73' WHERE runner_id=?", [runners.a]);
+  const { running, stop } = context.turn(record, [], "waiting");
+  const onA = (await context.next(runners.a)) as RunCommand;
+  context.events(onA, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  for (
+    let index = 0;
+    index < 5000 &&
+    !db.query("SELECT 1 FROM runner_work WHERE run_id=? AND consumed_sequence>0").get(onA.runId);
+    index++
+  )
+    await delay(1);
+  db.run("UPDATE work_item SET state='awaiting_input' WHERE id=?", [record.id]);
+  stop.abort(new PawsShutdown());
+  expect(await context.next(runners.a)).toMatchObject({ type: "checkpoint", runId: onA.runId });
+  const wip = "b".repeat(40);
+  context.events(onA, runners.a, [{ type: "checkpoint", reason: "stop", sha: wip }]);
+  expect(await context.next(runners.a)).toMatchObject({ type: "cancel", runId: onA.runId });
+  await running;
   expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(wip);
 });
 
