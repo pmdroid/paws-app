@@ -48,6 +48,7 @@ export function fakeMergeReadiness(head: string) {
       repository: {
         object: {
           oid: head,
+          pushedAt: null as string | null,
           statusCheckRollup: {
             state: "SUCCESS",
             contexts: fakeContexts([{ name: "ci", conclusion: "SUCCESS", detailsUrl: null }]),
