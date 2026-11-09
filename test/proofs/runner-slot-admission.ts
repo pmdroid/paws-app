@@ -5,7 +5,7 @@ import {
   recordRunnerRepositories,
   schedulerRunnerSlots,
 } from "../../src/db";
-import { createRunnerPlacement } from "../../src/runner-placement";
+import { createRunnerPlacement, itemRunnerVerdicts } from "../../src/runner-placement";
 import { JOB_KIND } from "../../src/core";
 import { workspaceWithRunners, REPOSITORY, NOW } from "../runner-slot-fixture";
 import type { Proof } from "./harness";
@@ -26,6 +26,12 @@ export default {
   async run(proof) {
     const db = proof.database;
     const { pair, queue, pass } = workspaceWithRunners(db);
+    queue("stopped");
+    db.run("UPDATE linear_session SET stopped_at=? WHERE session_id=?", [NOW, "session-stopped"]);
+    proof.expect(
+      "unavailable authority returns an item verdict without aborting admission",
+      itemRunnerVerdicts(db, { itemId: "stopped", agent: "claude", now: NOW }) === null,
+    );
     const goldbox = pair("goldbox", 6, ["other/repo"]);
     for (const id of ["a", "b", "c"]) queue(id);
     proof.expect("a repository refused everywhere stays queued", pass().length === 0);

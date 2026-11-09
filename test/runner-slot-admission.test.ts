@@ -440,3 +440,15 @@ test("a queued resume keeps its online pin and reservation past historical ended
   });
   expect(offered.map((r) => r.id)).toEqual([pinned]);
 });
+
+test("unavailable session authority holds only its item and does not abort unrelated admission", () => {
+  const db = tempDb();
+  const { pair, queue, pass } = workspaceWithRunners(db);
+  pair("agentbox", 2, [REPOSITORY]);
+  queue("a-stopped");
+  queue("b-ready");
+  db.run("UPDATE linear_session SET stopped_at=? WHERE session_id=?", [NOW, "session-a-stopped"]);
+  expect(itemRunnerVerdicts(db, { itemId: "a-stopped", agent: "claude", now: NOW })).toBeNull();
+  expect(pass()).toEqual(["b-ready"]);
+  expect(getWorkItem(db, "a-stopped")?.state).toBe("queued");
+});

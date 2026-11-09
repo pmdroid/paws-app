@@ -1,5 +1,5 @@
 import { itemWorkPlacement } from "./session";
-import { createRunnerPlacement } from "./placement";
+import { createRunnerPlacement, PlacementUnavailableError } from "./placement";
 import type { Database } from "bun:sqlite";
 import {
   getRunner,
@@ -112,13 +112,19 @@ export function itemRunnerVerdicts(
       });
       return verdict("reason" in fit ? fit.reason : null, null);
     });
-  const order = createRunnerPlacement({ db, now: () => input.now }).preview!({
-    itemId: input.itemId,
-    profile: { agent: input.agent as RunnerCodingAgent, model: input.model },
-    role: "implementer",
-    purpose: "work",
-    ...itemWorkPlacement(db, input.itemId, input.agent),
-  }).map((r) => r.id);
+  let order: string[];
+  try {
+    order = createRunnerPlacement({ db, now: () => input.now }).preview!({
+      itemId: input.itemId,
+      profile: { agent: input.agent as RunnerCodingAgent, model: input.model },
+      role: "implementer",
+      purpose: "work",
+      ...itemWorkPlacement(db, input.itemId, input.agent),
+    }).map((r) => r.id);
+  } catch (error) {
+    if (error instanceof PlacementUnavailableError) return null;
+    throw error;
+  }
   for (const runner of runners)
     if (runner.rejection === null && !order.includes(runner.id))
       runner.rejection = "not available for this placement";

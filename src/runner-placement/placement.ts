@@ -75,6 +75,9 @@ export const LOAD_HISTORY_MS = 6 * 60 * 60_000;
 /** Finished work loses half its weight in recent load every hour. */
 export const LOAD_HALF_LIFE_MS = 60 * 60_000;
 
+/** Placement authority cannot currently authorize this task. */
+export class PlacementUnavailableError extends Error {}
+
 export function createRunnerPlacement(options: {
   db: Database;
   sessionActor?: (sessionId: string) => string | undefined;
@@ -116,7 +119,7 @@ export function createRunnerPlacement(options: {
   function scope(input: PlacementRequest) {
     const item = input.itemId ? getWorkItem(db, input.itemId) : null;
     if (input.itemId && (!item || item.cancelRequested))
-      throw new Error("Runner task is unavailable");
+      throw new PlacementUnavailableError("Runner task is unavailable");
     const sessionId = input.sessionId ?? item?.sessionKey ?? null;
     const session = sessionId ? getLinearSession(db, sessionId) : null;
     if (
@@ -125,16 +128,16 @@ export function createRunnerPlacement(options: {
       !session.organizationId ||
       getLinearSessionAccess(db, session.sessionId) !== "allowed"
     )
-      throw new Error("Runner session authority is unavailable");
+      throw new PlacementUnavailableError("Runner session authority is unavailable");
     if (input.sessionId && item && item.sessionKey !== input.sessionId)
-      throw new Error("Runner task session changed");
+      throw new PlacementUnavailableError("Runner task session changed");
     const found = workspaceForOrganization(db, session.organizationId);
-    if (!found) throw new Error("Runner workspace is unavailable");
+    if (!found) throw new PlacementUnavailableError("Runner workspace is unavailable");
     const workspace = { id: found.id };
     const repository = item ? getWorkItemRepository(db, item.id) : null;
     const issueId =
       item?.linearIssueId ?? session.issueId ?? (input.findingGroups ? session.sessionId : null);
-    if (!issueId) throw new Error("Runner issue authority is unavailable");
+    if (!issueId) throw new PlacementUnavailableError("Runner issue authority is unavailable");
     const placement = item
       ? {
           ownerUserId: itemOwnerUserId(db, item.id),
@@ -206,7 +209,7 @@ export function createRunnerPlacement(options: {
   /** Who the work belongs to and where, for `eligibleRunners`. Throws when nobody may run it. */
   function eligibility(current: ReturnType<typeof scope>) {
     const teamId = linearSessionInstallation(db, current.session.sessionId)?.teamId;
-    if (!teamId) throw new Error("Runner issue team is unavailable");
+    if (!teamId) throw new PlacementUnavailableError("Runner issue team is unavailable");
     const repository = current.repository
       ? `${current.repository.owner}/${current.repository.repo}`.toLowerCase()
       : null;
@@ -214,12 +217,12 @@ export function createRunnerPlacement(options: {
       repository !== null &&
       !sessionRepositoriesAllowed(db, [current.session.sessionId], [repository]).has(repository)
     )
-      throw new Error("Runner repository is outside workspace access");
+      throw new PlacementUnavailableError("Runner repository is outside workspace access");
     const requester = current.ownership
       ? workspaceUserIdForLinearUser(db, current.ownership)
       : null;
     if (!requester || !workspaceMemberUsable(workspaceMember(db, current.workspace.id, requester)))
-      throw new Error("Runner requester is not an active workspace member");
+      throw new PlacementUnavailableError("Runner requester is not an active workspace member");
     return {
       workspaceId: current.workspace.id,
       teamId,
@@ -328,7 +331,7 @@ export function createRunnerPlacement(options: {
         ? linearSessionInstallation(db, current.session.sessionId)
         : null;
     if (input.findingGroups && !groupingSession?.teamId)
-      throw new Error("Runner issue team is unavailable");
+      throw new PlacementUnavailableError("Runner issue team is unavailable");
     const scopes =
       input.findingGroups && input.purpose === "helper"
         ? findingGroupingAdmins(db, current.workspace.id).flatMap((admin) =>
