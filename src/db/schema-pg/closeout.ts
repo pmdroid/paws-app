@@ -427,7 +427,7 @@ export const reviewFinding = pgTable(
     index("review_finding_last_seen").on(table.status, table.lastSeenAt.desc()),
     index("review_finding_path").on(table.repository, table.review, table.path),
     check("review_finding_check_1", sql`severity IN ('P0', 'P1', 'P2', 'P3')`),
-    check("review_finding_check_2", sql`why IN ('pre-existing', 'below failOn')`),
+    check("review_finding_check_2", sql`why IN ('pre-existing', 'below failOn', 'meets failOn')`),
     check("review_finding_check_3", sql`status IN ('open', 'filed', 'dismissed', 'gone')`),
   ],
 );

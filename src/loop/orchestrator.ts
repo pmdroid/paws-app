@@ -50,6 +50,8 @@ import {
   saveHumanRetryWindow,
   fixRounds,
   jobVersionCurrent,
+  recordReviewFindings,
+  failedCloseoutReviews,
   restartLimit,
   runnerHoldsRunWork,
   runnerWorkHasResult,
@@ -158,6 +160,7 @@ import {
   bypassable,
   readReviewRounds,
   reviewFindingText,
+  bugClass,
   snapshotRetryBaseline,
   storedReviewFindings,
   loggedSessionCloseout,
@@ -4817,6 +4820,36 @@ export class Orchestrator {
     const rounds = fixRounds(this.db, item.id);
     const limit = this.fixRoundLimit(item);
     if (failed && !exhausted && !setupFailed && rounds < limit) {
+      const reviews = result?.reviewFindings ?? [];
+      const repository = this.repositoryForItem(item);
+      const judgedReviews = failedCloseoutReviews(this.db, item.id)?.reviews ?? [];
+      if (repository && reviews.length > 0)
+        recordReviewFindings(this.db, {
+          itemId: item.id,
+          repository: `${repository.owner}/${repository.repo}`,
+          head: result!.head,
+          seenAt: this.now(),
+          findings: reviews.flatMap((review) =>
+            review.findings
+              .filter((finding) => {
+                const failOn = judgedReviews.find((entry) => entry.id === review.itemId)?.failOn;
+                return (
+                  !review.preExisting?.includes(finding) &&
+                  failOn != null &&
+                  finding.severity <= failOn
+                );
+              })
+              .map((finding) => ({
+                review: review.itemId,
+                severity: finding.severity,
+                location: finding.location,
+                text: finding.explanation,
+                bugClass: bugClass(finding.explanation),
+                why: "meets failOn" as const,
+              })),
+          ),
+          reviewed: [],
+        });
       const reads = await this.readPendingFeedback(current);
       this.assertJobCurrent(item.id);
       immediate(this.db, () => {

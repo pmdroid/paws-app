@@ -108,6 +108,7 @@ export {
   reviewRequirements,
   reviewRoundFindings,
   run,
+  setAsideUnreadableReviews,
   trustedPolicyFiles,
   trustedMirrorMain,
   trustedOriginMain,

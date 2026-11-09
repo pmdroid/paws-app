@@ -1,0 +1,2 @@
+ALTER TABLE "review_finding" DROP CONSTRAINT "review_finding_check_2";--> statement-breakpoint
+ALTER TABLE "review_finding" ADD CONSTRAINT "review_finding_check_2" CHECK (why IN ('pre-existing', 'below failOn', 'meets failOn'));
