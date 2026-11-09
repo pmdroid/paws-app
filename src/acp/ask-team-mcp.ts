@@ -195,7 +195,7 @@ const START_WORK_TOOL = {
 const GET_CLOSEOUT_TOOL = {
   name: "get_closeout",
   description:
-    "Refresh workspace changes and return the required closeout checks with hints, matched paths, statuses, remaining failed attempts and different_model requirements. pending lists the ids to run in order with run_closeout. blocked explains exhausted retries. Call after edits and before finishing. Later edits can invalidate passed checks. This tool does not run checks. A failed command check holds back the others: run it first, and detail says which check to fix before the rest run. Once every command check passed, it runs each listed rule's probe once per change and returns its result in rules: a nonzero exitCode means the change breaks that rule. Rule results do not change pending or blocked. A null remaining_attempts means unlimited retries. Reviews are listed and are not pending.",
+    "Refresh workspace changes and return the required closeout checks with hints, matched paths, statuses, remaining failed attempts and different_model requirements. pending lists the ids to run in order with run_closeout. blocked explains exhausted retries. Call after edits and before finishing. Later edits can invalidate passed checks. The running array lists executing checks and their start times. Poll get_closeout while a check is running. This tool does not run checks. A failed command check holds back the others: run it first, and detail says which check to fix before the rest run. Once every command check passed, it runs each listed rule's probe once per change and returns its result in rules: a nonzero exitCode means the change breaks that rule. Rule results do not change pending or blocked. A null remaining_attempts means unlimited retries. Reviews are listed and are not pending.",
   inputSchema: {
     type: "object",
     properties: {},
@@ -206,7 +206,7 @@ const GET_CLOSEOUT_TOOL = {
 const RUN_CLOSEOUT_TOOL = {
   name: "run_closeout",
   description:
-    "Run a pending closeout check by id, including matching setup steps, and return its result. Review checks are not run by this tool. Call get_closeout again after edits because passed checks can go stale.",
+    'Run a pending closeout check by id, including matching setup steps, and return its result. Waits at most 240 seconds, then returns { status: "running", check, started_at } while the check continues. Duplicate calls return the same running status. Poll get_closeout until it finishes. Review checks are not run by this tool. Call get_closeout again after edits because passed checks can go stale.',
   inputSchema: {
     type: "object",
     properties: {

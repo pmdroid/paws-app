@@ -10,6 +10,7 @@ import type { CommandRunRequest, CommandRunResult, CommandRunner } from "../type
 import {
   credentialSecrets,
   scrubCommandEnv,
+  withPrivateTemp,
   withPullRequestDraft,
   type PullRequestDraft,
 } from "./env";
@@ -107,11 +108,13 @@ export async function executeCommand(input: {
   const before = await porcelain(input.cwd, env);
   const expected = input.expectedHead ?? (await readHead(input.cwd, env)) ?? "";
   const started = Date.now();
-  const spawned = await withPullRequestDraft(env, input.pullRequest, (childEnv) =>
-    spawnArgv(input.argv, input.cwd, childEnv, input.timeoutSeconds, {
-      secrets,
-      ...(input.onOutput ? { onText: input.onOutput } : {}),
-    }),
+  const spawned = await withPullRequestDraft(env, input.pullRequest, (draftEnv) =>
+    withPrivateTemp(draftEnv, (childEnv) =>
+      spawnArgv(input.argv, input.cwd, childEnv, input.timeoutSeconds, {
+        secrets,
+        ...(input.onOutput ? { onText: input.onOutput } : {}),
+      }),
+    ),
   );
   const durationMs = Math.max(0, Date.now() - started);
   const after = await porcelain(input.cwd, env);
