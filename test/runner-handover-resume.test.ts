@@ -4,8 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { candidateRef, mirrorPath } from "../src/acp";
 import { PawsShutdown } from "../src/core";
+import { candidateRef, mirrorPath } from "../src/acp";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import {
   beginImplementRun,
@@ -306,13 +306,18 @@ async function setup() {
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",
     });
-    return { id, runId: run.id };
+    return { id, runId: run.id, sessionKey };
   }
   /** One turn of `record`, which runs until a runner finishes it or `stop` aborts it. */
   function turn(
     record: { id: string; runId: string },
     notices: string[],
-    question?: "answered" | "open" | "stale" | "waiting",
+    question?:
+      | "answered"
+      | "open"
+      | "stale"
+      | "waiting"
+      | ((request: { question: string }) => Promise<{ answer: string }>),
   ) {
     const stop = new AbortController();
     stops.add(stop);
@@ -339,6 +344,7 @@ async function setup() {
                         once: true,
                       }),
                     );
+                  if (typeof question === "function") return question(request);
                   db.run(
                     `INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at)
                      VALUES(?,?,?,?,'agent',?,?,?)`,
@@ -409,6 +415,16 @@ async function setup() {
     git,
     runners,
     backend,
+    results,
+    answers(command: RunCommand, after = 0) {
+      return results.answers({
+        runnerId: runners.a,
+        runId: command.runId,
+        generation: command.generation,
+        token: grant(command, runners.a),
+        after,
+      });
+    },
     principal,
     workspaceId: workspace.id,
     item,
@@ -1011,4 +1027,206 @@ test("the work turn after start_work waits for a slot on the session's runner, t
   expect(onA.checkpoint).not.toBe(false);
   context.submit(onA, runners.a, { candidateSha: context.base });
   expect(await work.running).toMatchObject({ stopReason: "end_turn" });
+});
+
+test("replayed questions attach to the open answer without asking or cancelling again", async () => {
+  const { db, runners } = context;
+  const record = context.item();
+  context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  let asks = 0;
+  const ask = async (request: { question: string }) => {
+    asks++;
+    db.run(
+      "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
+      [workspaceId(), record.id, record.runId, record.id, request.question, context.now],
+    );
+    for (;;) {
+      const row = db
+        .query<{ answer: string | null }, [string]>("SELECT answer FROM question WHERE run_id=?")
+        .get(record.runId);
+      if (row?.answer) return { answer: row.answer };
+      await delay(1);
+    }
+  };
+  const first = context.turn(record, [], ask);
+  const command = (await context.next(runners.a)) as RunCommand;
+  const event = { type: "question" as const, text: "Which delimiter?", options: [] };
+  context.events(command, runners.a, [event]);
+  for (let i = 0; i < 5000; i++) {
+    if (asks > 0) break;
+    await delay(1);
+  }
+  // Replay while the first ask is still waiting on its answer.
+  context.events(command, runners.a, [event, event]);
+  expect(await context.next(runners.a, 50)).toBeNull();
+  expect(asks).toBe(1);
+  db.run("UPDATE question SET status='answered',answer='Use commas.' WHERE run_id=?", [
+    record.runId,
+  ]);
+  for (let i = 0; i < 1000; i++) {
+    if (context.results.answered(command.runId, command.generation, 3)) break;
+    await delay(1);
+  }
+  expect(context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
+  expect(
+    db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
+  ).toHaveLength(3);
+  expect(context.answers(command).map(({ sequence, answer }) => ({ sequence, answer }))).toEqual(
+    [1, 2, 3].map((sequence) => ({ sequence, answer: "Use commas." })),
+  );
+  expect(context.answers(command, 3)).toEqual([]);
+  // A later answered request must not be held behind an unanswered duplicate.
+  context.events(command, runners.a, [{ type: "question", text: "Which encoding?", options: [] }]);
+  context.results.answer({
+    runId: command.runId,
+    generation: command.generation,
+    sequence: 4,
+    answer: "UTF-8",
+  });
+  expect(context.answers(command, 3)).toEqual([{ sequence: 4, answer: "UTF-8" }]);
+  expect(await context.next(runners.a, 50)).toBeNull();
+  expect(asks).toBe(1);
+  context.submit(command, runners.a, { candidateSha: context.base });
+  expect(await first.running).toMatchObject({ stopReason: "end_turn" });
+});
+
+test("different text while a question is open still fails as overlapping questions", async () => {
+  const { runners } = context;
+  const record = context.item();
+  context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  let release!: (answer: { answer: string }) => void;
+  const turn = context.turn(
+    record,
+    [],
+    async () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  const command = (await context.next(runners.a)) as RunCommand;
+  context.events(command, runners.a, [
+    { type: "question", text: "Which delimiter?", options: [] },
+    { type: "question", text: "Which encoding?", options: [] },
+  ]);
+  expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
+  release({ answer: "Unused after cancellation" });
+  expect(String(await turn.running)).toContain("overlapping questions");
+});
+
+test("a replay attaches to a question already stored by an earlier attachment", async () => {
+  const { db, runners } = context;
+  const record = context.item();
+  context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  db.run(
+    "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
+    [workspaceId(), record.id, record.runId, record.sessionKey, "Which delimiter?", context.now],
+  );
+  // Opening the question bumped the item version; that alone must not make the replay stale.
+  db.run("UPDATE work_item SET version=version+1 WHERE id=?", [record.id]);
+  let asks = 0;
+  const turn = context.turn(record, [], async () => {
+    asks++;
+    throw new Error("Question owner is stale");
+  });
+  const command = (await context.next(runners.a)) as RunCommand;
+  context.events(command, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  expect(await context.next(runners.a, 50)).toBeNull();
+  expect(asks).toBe(0);
+  // The first sequence was consumed before Paws restarted; the runner replays at sequence 2.
+  turn.stop.abort(new PawsShutdown());
+  await turn.running;
+  const resumed = context.turn(record, [], "stale");
+  context.events(command, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  expect(await context.next(runners.a, 50)).toBeNull();
+  db.run("UPDATE question SET status='answered',answer='Use commas.' WHERE run_id=?", [
+    record.runId,
+  ]);
+  for (let i = 0; i < 1000; i++) {
+    if (context.results.answered(command.runId, command.generation, 2)) break;
+    await delay(1);
+  }
+  expect(context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
+  expect(
+    db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
+  ).toHaveLength(2);
+  expect(await context.next(runners.a, 50)).toBeNull();
+  context.submit(command, runners.a, { candidateSha: context.base });
+  expect(context.answers(command).map(({ sequence, answer }) => ({ sequence, answer }))).toEqual(
+    [1, 2].map((sequence) => ({ sequence, answer: "Use commas." })),
+  );
+  expect(context.answers(command, 2)).toEqual([]);
+  expect(await resumed.running).toMatchObject({ stopReason: "end_turn" });
+});
+
+for (const [owner, change] of [
+  ["is cancelled", "cancel_requested=1"],
+  ["has no current run", "current_run_id=NULL"],
+] as const) {
+  test(`a replay gets no answer when the item ${owner}, before or after attaching`, async () => {
+    for (const whileAttached of [false, true]) {
+      const { db, runners } = context;
+      const record = context.item();
+      db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+      db.run(
+        "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
+        [
+          workspaceId(),
+          record.id,
+          record.runId,
+          record.sessionKey,
+          "Which delimiter?",
+          context.now,
+        ],
+      );
+      let asks = 0;
+      const turn = context.turn(record, [], async () => {
+        asks++;
+        return { answer: "Never asked." };
+      });
+      const command = (await context.next(runners.a)) as RunCommand;
+      const stale = () => db.run(`UPDATE work_item SET ${change} WHERE id=?`, [record.id]);
+      context.events(command, runners.a, [
+        { type: "question", text: "Which delimiter?", options: [] },
+      ]);
+      // Nothing awaits before this `stale()`, so the backend has not read the event yet.
+      if (!whileAttached) stale();
+      else {
+        expect(await context.next(runners.a, 50)).toBeNull();
+        stale();
+        db.run("UPDATE question SET status='answered',answer='Too late.' WHERE run_id=?", [
+          record.runId,
+        ]);
+      }
+      expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
+      // The run's lease checks may refuse this turn before the question owner check does.
+      expect(await turn.running).toBeInstanceOf(Error);
+      expect(asks).toBe(0);
+      expect(
+        db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
+      ).toEqual([]);
+    }
+  });
+}
+
+test("a replay fails as stale when the open question belongs to an earlier session", async () => {
+  const { db, runners } = context;
+  const record = context.item();
+  db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  db.run(
+    "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
+    [workspaceId(), record.id, record.runId, "earlier-session", "Which delimiter?", context.now],
+  );
+  let asks = 0;
+  const turn = context.turn(record, [], async () => {
+    asks++;
+    return { answer: "Never asked." };
+  });
+  const command = (await context.next(runners.a)) as RunCommand;
+  context.events(command, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
+  expect(await turn.running).toMatchObject({ message: "Question owner is stale" });
+  expect(asks).toBe(0);
+  expect(db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId)).toEqual(
+    [],
+  );
 });

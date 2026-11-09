@@ -18,6 +18,10 @@ import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
+  unansweredRunnerQuestions,
+  setRunnerWorkConsumedSequence,
+  askedQuestionRow,
+  questionRowById,
   workspaceMemberUsableSql,
   getTaskMode,
   closeFallbackAttempts,
@@ -1027,6 +1031,8 @@ export function createRemoteAgentRunner(options: {
         const signal = controller.signal;
         let command: WorkCommand | undefined;
         let question: Promise<void> | undefined;
+        let questionText: string | undefined;
+        let questionAnswer: string | undefined;
         let questionError: unknown;
         let publishedEffects = false;
         let asked = false;
@@ -2270,25 +2276,75 @@ export function createRemoteAgentRunner(options: {
                   },
                   origin,
                 );
-              if (event.type === "question") {
-                if (question) throw new Error("Remote runner sent overlapping questions");
+              if (
+                event.type === "question" &&
+                results.answered(assigned.runId, assigned.generation, row.sequence) === null
+              ) {
+                if (question) {
+                  if (questionText !== event.text)
+                    throw new Error("Remote runner sent overlapping questions");
+                  if (questionAnswer !== undefined)
+                    results.answer({
+                      runId: assigned.runId,
+                      generation: assigned.generation,
+                      sequence: row.sequence,
+                      answer: questionAnswer,
+                    });
+                  cursor = row.sequence;
+                  setRunnerWorkConsumedSequence(db, assigned.runId, assigned.generation, cursor);
+                  continue;
+                }
+                const stored = askedQuestionRow(db, selected.runId, "agent");
+                if (stored && stored.body !== event.text)
+                  throw new Error("Remote runner sent overlapping questions");
                 if (!input.askTeam) throw new Error("Remote question channel is unavailable");
                 publishedEffects = true;
                 asked = true;
                 await emit({ type: "ask_team", question: event.text, phase: "asked" });
                 const currentCommand = assigned;
+                questionText = event.text;
+                questionAnswer = undefined;
                 question = (async () => {
-                  const answer = await input.askTeam!.ask(
-                    { question: event.text, options: event.options, context: event.context },
-                    { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
-                  );
+                  const answer = stored
+                    ? await (async () => {
+                        for (;;) {
+                          signal.throwIfAborted();
+                          if (
+                            !ownsAskedQuestion(db, stored.itemId, selected.runId, stored.sessionId)
+                          )
+                            throw new Error("Question owner is stale");
+                          const current = questionRowById(db, stored.id);
+                          if (
+                            !current ||
+                            current.status === "cancelled" ||
+                            current.cancelledAt !== null
+                          )
+                            throw new Error("Remote runner question was cancelled");
+                          if (current.status === "answered" && current.answer !== null)
+                            return { answer: current.answer };
+                          await delay(interval, undefined, { signal });
+                        }
+                      })()
+                    : await input.askTeam!.ask(
+                        { question: event.text, options: event.options, context: event.context },
+                        { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
+                      );
                   signal.throwIfAborted();
-                  results.answer({
-                    runId: currentCommand.runId,
-                    generation: currentCommand.generation,
-                    sequence: row.sequence,
-                    answer: answer.answer,
-                  });
+                  questionAnswer = answer.answer;
+                  // Replays have distinct journal sequences. Answer every outstanding copy,
+                  // including copies consumed by an attachment before this one.
+                  for (const pending of unansweredRunnerQuestions(db, currentCommand, [
+                    "question",
+                  ])) {
+                    const replay = scrub(work.openEvent(pending));
+                    if (replay.type !== "question" || replay.text !== event.text) continue;
+                    results.answer({
+                      runId: currentCommand.runId,
+                      generation: currentCommand.generation,
+                      sequence: pending.sequence,
+                      answer: answer.answer,
+                    });
+                  }
                   await emit({
                     type: "ask_team",
                     question: event.text,
@@ -2740,6 +2796,25 @@ const HANDOVER_FAILURE_STEP = {
 
 /** A run's handover within one failover call: the runner it left, and whether Linear heard why it waits. */
 type HandoverMove = { from?: string; repository?: string; waiting?: boolean };
+
+/**
+ * The owner checks of `ask()` for a question this run already opened. The item version is left
+ * out because opening the question bumped it.
+ */
+function ownsAskedQuestion(
+  db: Database,
+  itemId: string,
+  runId: string,
+  sessionId: string,
+): boolean {
+  const item = getWorkItem(db, itemId);
+  return (
+    item !== null &&
+    !item.cancelRequested &&
+    item.sessionKey === sessionId &&
+    item.currentRunId === runId
+  );
+}
 
 /**
  * Whether the run still waits on a question it asked. A question asked outside the question
