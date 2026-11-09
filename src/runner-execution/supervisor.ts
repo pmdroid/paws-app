@@ -292,6 +292,20 @@ export function createDirectWorkerSupervisor(options: {
       await admit(executionId, true);
     },
     start: (executionId) => admit(executionId, false),
+    async exitStatus(executionId) {
+      if (!asAgentFor(executionId)) return undefined;
+      const shown = await systemctl([
+        "show",
+        "--property=ExecMainCode",
+        "--property=ExecMainStatus",
+        agentUnit(executionId),
+      ]);
+      if (shown.code !== 0) return undefined;
+      const code = /^ExecMainCode=(1|2|3)$/m.exec(shown.output)?.[1];
+      const status = /^ExecMainStatus=(\d{1,3})$/m.exec(shown.output)?.[1];
+      if (!code || !status) return undefined;
+      return code === "1" ? `code ${status}` : `signal ${status}`;
+    },
     log(executionId) {
       try {
         const text = readFileSync(logPath(executionId), "utf8").slice(-4000);

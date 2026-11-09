@@ -4,6 +4,7 @@ export interface RunnerBrokerClient {
   stop(executionId: string): Promise<void>;
   alive?(executionId: string): boolean;
   log?(executionId: string): string;
+  exitStatus?(executionId: string): Promise<string | undefined>;
   resume?(executionId: string): Promise<void>;
   /** Stops processes of executions that have no running worker. Returns how many it found. */
   sweep?(): Promise<number>;
