@@ -167,6 +167,7 @@ describe("GitHub operation tokens", () => {
     const lane = {
       tokenProvider: provider,
       worktree: fake.root,
+      ci: "required" as const,
       issue: "ENG-17",
       owner: "pmdroid",
       repo: "paws-demo",

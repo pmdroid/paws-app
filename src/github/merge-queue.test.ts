@@ -34,6 +34,7 @@ function harness(options: { branches?: string[]; failing?: boolean; pending?: bo
     githubQueueMerge({
       owner: "acme",
       repo: "platform",
+      ci: "required",
       prNumber: 7,
       head: HEAD,
       client,

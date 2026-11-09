@@ -152,11 +152,13 @@ function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
     fetchMain: unused("fetchMain"),
     ciFixAttempts: () => state.limit,
     feedbackWait: () => wait,
+    ci: () => "required",
     readPullCi: (_, pull) =>
       readPullCi({
         client,
         owner: "acme",
         repo: "one",
+        ci: "required",
         prNumber: pull.number,
         head: pull.head,
         tokenProvider,

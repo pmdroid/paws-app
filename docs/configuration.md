@@ -110,6 +110,12 @@ order = "ci-green"
   Settings › Merging › Ignored PR comments edits both lists for each repository, one entry per line: **Bot accounts** (`ignore_comment_bots`) and **Comment markers** (`ignore_comment_markers`). An invalid entry is shown next to its field and nothing is saved. A saved change applies to the next comment, without a restart.
 
 - **`[merge.repositories."owner/repo"] suggested_findings`**: what Paws does with review findings below the review's `failOn` in code the pull request changed. `"off"` only lists them under the pull request's Open findings. `"next_turn"` (default) also hands them to the agent as suggestions in the next restart the item gets for any other reason. `"own_turn"` also starts one restart for them right after acceptance, once per item. A change applies to the next publication or restart, without a restart of Paws. [Suggested findings](closeout.md#suggested-findings) has the details.
+- **`[merge.repositories."owner/repo"] ci`**: whether the repository runs CI. `"required"` (default): a head merges only once its checks report and pass, so a head with no checks and none required by the branch rules waits, and the wait message says to set `ci = "none"` if the repository has no CI. `"none"`: a head with no checks and none required is ready at once, with "No CI checks to wait for: owner/repo is configured without CI (ci = "none")."; a required check that has not reported still holds the merge, and checks that do report are judged as usual. It applies to the merge lane, the GitHub merge queue order and Closeout's [re-checks](closeout.md#re-checks-take-green-ci) on their next read, without a restart of Paws. The Settings API (`PUT /api/settings/merging`) sets it as `ci: [{ "repository": "owner/repo", "ci": "none" }]`, which replaces every repository's value (one left out is `"required"`); a body without `ci` keeps the stored values, and `GET` lists each repository with its value. Each change is recorded in the audit history.
+
+  ```toml
+  [merge.repositories."acme/docs-site"]
+  ci = "none"
+  ```
 
 The merge lane squashes head S only when `mergeable(S)` holds: the pull request head is S, S contains the current `main`, Closeout accepted S under the current policy digest (while main's policy does not load, the lane holds the queue instead of sending items back), CI is green for S, no review thread is unresolved and branch protection is satisfied. [After acceptance](closeout.md#after-acceptance) has the details.
 

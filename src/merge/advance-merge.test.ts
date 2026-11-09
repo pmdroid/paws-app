@@ -120,6 +120,36 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     expect(h.verified).toEqual([]);
   });
 
+  test("no checks waits under ci required and names the setting, and merges at once under ci none", async () => {
+    const h = await start();
+    const item = await h.addItem("ENG-1");
+    h.state.ci = () => [];
+    expect(await h.pass("ENG-1")).toMatchObject({
+      kind: "wait",
+      reason: "ci",
+      head: item.accepted,
+      message:
+        'No CI checks reported yet. If acme/app has no CI, set ci = "none" under [merge.repositories."acme/app"] in config.toml.',
+    });
+    expect(h.github.merged).toEqual([]);
+    h.state.repositoryCi = "none";
+    expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
+    expect(h.github.merged).toEqual([
+      { repository: "acme/app", number: 1, expectedHeadSha: item.accepted },
+    ]);
+  });
+
+  test("ci none still sends a failing check back to the agent", async () => {
+    const h = await start();
+    await h.addItem("ENG-1");
+    h.state.repositoryCi = "none";
+    h.state.ci = () => [
+      { name: "build", conclusion: "FAILURE", detailsUrl: "https://ci.example/build" },
+    ];
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(h.github.merged).toEqual([]);
+  });
+
   test("main moved: the lane rebases, pushes and sends the new head to Closeout without merging", async () => {
     const h = await start();
     const item = await h.addItem("ENG-1");

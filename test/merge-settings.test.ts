@@ -11,6 +11,8 @@ import {
   parseConfigToml,
   readMergeSettings,
   highRiskPaths,
+  parseCiSettings,
+  repositoryCi,
   repositoryPackages,
   resolveMergeSettings,
   reviewApps,
@@ -262,6 +264,48 @@ packages = ["apps/*", "packages/*"]
     ).toThrow("suggested_findings");
   });
 
+  test("a repository's ci setting round-trips, and a missing key means required", () => {
+    const config = parseConfigToml(
+      `[merge.repositories."acme/platform"]\nci = "none"\n\n[merge.repositories."acme/web"]\nci = "required"\n`,
+    );
+    const settings = readMergeSettings(config);
+    expect(repositoryCi(settings, "Acme/Platform")).toBe("none");
+    expect(repositoryCi(settings, "acme/web")).toBe("required");
+    expect(repositoryCi(settings, "acme/api")).toBe("required");
+    const path = join(tempHome(), "config.toml");
+    writeMergePolicy(path, settings, storedMerge(config));
+    expect(readFileSync(path, "utf8")).toContain(
+      '[merge.repositories."acme/platform"]\npackages = []\nci = "none"\n',
+    );
+    expect(readMergeSettings(loadConfigFile(path)).repositories).toEqual(settings.repositories);
+    expect(() =>
+      parseConfigToml(`[merge.repositories."acme/platform"]\nci = "optional"\n`),
+    ).toThrow("ci");
+  });
+
+  test("the ci settings body names each repository once with required or none", () => {
+    expect(
+      parseCiSettings([
+        { repository: "acme/platform", ci: "none" },
+        { repository: "acme/web", ci: "required" },
+      ]),
+    ).toEqual({ "acme/platform": "none", "acme/web": "required" });
+    for (const [body, message] of [
+      [[{ repository: "acme/web", ci: "off" }], "ci.0.ci"],
+      [[{ repository: "nope", ci: "none" }], "must be owner/repo"],
+      [
+        [
+          { repository: "acme/web", ci: "none" },
+          { repository: "ACME/web", ci: "required" },
+        ],
+        "lists a repository twice",
+      ],
+      [[{ repository: "acme/web", ci: "none", extra: 1 }], "ci.0"],
+      [{ "acme/web": "none" }, "ci"],
+    ] as const)
+      expect(() => parseCiSettings(body)).toThrow(message);
+  });
+
   test("the pull request comment wait reads, defaults and stays within bounds", () => {
     expect(readMergeSettings(parseConfigToml("")).commentWait).toEqual({
       quietSeconds: 60,
@@ -353,6 +397,7 @@ describe("Merging settings API", () => {
       highRiskPaths: [],
       highRiskRepositories: [],
       ignoredComments: [],
+      ci: [],
       choices: {
         projects: [
           { id: PAWS, name: "Paws" },
@@ -434,6 +479,7 @@ describe("Merging settings API", () => {
       highRiskPaths: [],
       highRiskRepositories: [],
       ignoredComments: [],
+      ci: [],
     });
     const text = readFileSync(options.configPath, "utf8");
     expect(text).toContain("max_turns = 31");
@@ -555,6 +601,56 @@ describe("Merging settings API", () => {
           )
         )?.status,
       ).toBe(400);
+  });
+
+  test("PUT saves each repository's ci setting, audits it, and a body without it keeps it", async () => {
+    const { options, audits } = fixture();
+    options.repos = ["acme/web"];
+    writeFileSync(
+      options.configPath,
+      '[merge.repositories."acme/platform"]\npackages = ["apps/*"]\nhigh_risk_paths = ["src/auth/**"]\n',
+    );
+    const valid = { default: { order: "queue", mainMoved: "ci" }, projects: [], rules: [] };
+    const before = (await (await handleMergeSettingsRequest(request(), options))!.json()) as {
+      ci: unknown;
+    };
+    expect(before.ci).toEqual([{ repository: "acme/web", ci: "required" }]);
+    const saved = await handleMergeSettingsRequest(
+      request("PUT", { ...valid, ci: [{ repository: "acme/platform", ci: "none" }] }),
+      options,
+    );
+    expect(saved?.status).toBe(200);
+    expect(((await saved!.json()) as { ci: unknown }).ci).toEqual([
+      { repository: "acme/platform", ci: "none" },
+      { repository: "acme/web", ci: "required" },
+    ]);
+    expect(readMergeSettings(loadConfigFile(options.configPath)).repositories).toEqual({
+      "acme/platform": { packages: ["apps/*"], highRiskPaths: ["src/auth/**"], ci: "none" },
+    });
+    expect(audits.filter(([, subject]) => subject.startsWith("CI for"))).toEqual([
+      ["settings.merging", "CI for acme/platform: required → none"],
+    ]);
+
+    await handleMergeSettingsRequest(request("PUT", valid), options);
+    expect(
+      repositoryCi(readMergeSettings(loadConfigFile(options.configPath)), "acme/platform"),
+    ).toBe("none");
+
+    await handleMergeSettingsRequest(request("PUT", { ...valid, ci: [] }), options);
+    expect(readMergeSettings(loadConfigFile(options.configPath)).repositories).toEqual({
+      "acme/platform": { packages: ["apps/*"], highRiskPaths: ["src/auth/**"] },
+    });
+    expect(audits.filter(([, subject]) => subject.startsWith("CI for"))).toEqual([
+      ["settings.merging", "CI for acme/platform: required → none"],
+      ["settings.merging", "CI for acme/platform: none → required"],
+    ]);
+
+    const refused = await handleMergeSettingsRequest(
+      request("PUT", { ...valid, ci: [{ repository: "acme/web", ci: "sometimes" }] }),
+      options,
+    );
+    expect(refused?.status).toBe(400);
+    expect(((await refused!.json()) as { error: string }).error).toContain("ci.0.ci");
   });
 
   test("High-risk paths list each repository with its settings and its file read-only", async () => {

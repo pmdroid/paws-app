@@ -264,7 +264,7 @@ When Closeout accepts head S, it writes an accept row: S, the policy digest it r
 2. S contains the current `main`. Under `[merge] main_moved = "overlap"`, a head whose files main's new commits do not touch also counts.
 3. An accept row exists for S under the current policy digest. Under `main_moved = "ci"` or `"overlap"`, a head the lane rebased from the accepted head carries that head's row.
 4. A high-risk head satisfies the risk approval gate: a manual approval, or the opt-in clean-review check described under [`auto_approve_high_risk`](configuration.md#merge). Automatic approval requires both named reviews at exactly S, even after a rebase, and never carries to another head. Changes to the risk rules or agent instructions always need a person.
-5. CI is green for S: no check on S failed, every check that started on S finished as success, skipped or neutral, and every check the branch rules require has reported. A check that ran on `main` but never started on S does not count, so a job that path filters skip is never waited for.
+5. CI is green for S: no check on S failed, every check that started on S finished as success, skipped or neutral, and every check the branch rules require has reported. A check that ran on `main` but never started on S does not count, so a job that path filters skip is never waited for. A head with no checks at all, and none required, is not green under the default `ci = "required"` for the repository: it waits with "No CI checks reported yet. If owner/repo has no CI, set ci = "none" under [merge.repositories."owner/repo"] in config.toml.". Under `ci = "none"` ([configuration](configuration.md#merge)) it is green at once; checks that do report on S are still judged as above.
 6. No review thread is unresolved.
 7. Branch protection is satisfied.
 
@@ -282,7 +282,7 @@ When `mergeable(S)` is false, the first failing condition decides:
 
 - **No accept row for S, or the policy changed.** S goes back to `verifying`.
 - **CI failed.** `restart(item, ci)` while fix rounds are left, then a question.
-- **CI pending, threads open or protection unsatisfied.** The item waits in `merge_queue`.
+- **CI pending, threads open or protection unsatisfied.** The item waits in `merge_queue`. When CI is still pending six hours after the wait on a head began, Paws asks with `ask()` whether to merge or stop, quoting the wait message. "Merge the accepted work" starts a fresh wait without an agent turn, so while CI stays pending the question comes back six hours after each such answer. When no check has reported at all on a `ci = "required"` repository, the question says so in its heading and wait message, and says that the merge happens only once checks report and pass or `ci = "none"` is set for the repository.
 
 A rebase that conflicts is a rebase return: `restart(item, conflict)` with the conflicting files, after the lane is released, and with the pull request comments already waiting on the item. Returns are limited to three in a row on a known main commit and six in any rolling hour. A push rejected because the candidate conflicts with the moved branch spends the same return budget, including the consecutive limit. Other conflicts on an unknown main count only toward the hour. A newer main does not refill the budget; only a person's reply does. When either limit is reached, Paws asks with the main commits and files involved.
 
@@ -314,7 +314,7 @@ A command check can name the GitHub checks that run the same command in CI with 
 A re-check of an item already in the merge queue (after a CI fix, a conflict fix, or a re-verify) reads CI on the pull request head before it runs Closeout. A first Closeout run, before Closeout ever accepted a head, is unchanged.
 
 - **CI green.** Each mapped check whose pattern matches at least one check, all `SUCCESS`, is recorded as passed from CI: the record keeps the run URL and each check's conclusion, and its line reads "from CI run <link>: `test (0/4)` success, …". The other checks, the rules, the reviews and the evidence checks run on the new head as usual. On a remote runner, the checks run tells the agent to skip the mapped ids.
-- **CI pending.** The re-check waits for it, reading again every 15 seconds for up to 45 minutes, rather than running the suite itself. After that it runs the checks.
+- **CI pending.** The re-check waits for it, reading again every 15 seconds for up to 45 minutes, rather than running the suite itself. After that it runs the checks. A head without checks in a repository with `ci = "none"` is not pending: the checks run at once.
 - **CI red.** No check runs: the item goes to a CI fix round, `restart(item, ci)` with the failing checks, while fix rounds are left. With none left, the checks run and Paws asks as usual.
 - **CI unreadable,** or the head is not the pull request's: the checks run as before.
 

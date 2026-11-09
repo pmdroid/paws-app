@@ -62,6 +62,7 @@ export {
   MAX_CI_FIX_ATTEMPTS,
   MERGE_ORDERS,
   highRiskPaths,
+  parseCiSettings,
   parseCommentWait,
   parseHighRiskPathSettings,
   parseIgnoredCommentSettings,
@@ -69,6 +70,7 @@ export {
   parseMergeSettings,
   mergeLaneKey,
   readMergeSettings,
+  repositoryCi,
   repositoryPackages,
   resolveMergeSettings,
   storedMerge,
@@ -76,6 +78,7 @@ export {
   writeMergePolicy,
 } from "./merge";
 export type {
+  CiSetting,
   CommentWait,
   CommentWaitInput,
   IgnoredComments,

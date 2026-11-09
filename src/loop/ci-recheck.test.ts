@@ -50,6 +50,7 @@ function recheck(
   sleeps: number[] = [],
   mappings = MAPPINGS,
   mergeable?: (PullMergeable | null)[],
+  ci: "required" | "none" = "required",
 ) {
   const waits: string[] = [];
   let now = 0;
@@ -69,6 +70,7 @@ function recheck(
           client,
           owner: "pmdroid",
           repo: "paws-app",
+          ci,
           prNumber: 7,
           head: HEAD,
           tokenProvider: { mode: "app", tokenFor: async () => "synthetic-token" },
@@ -84,6 +86,19 @@ function recheck(
     }),
   };
 }
+
+test("no checks waits for CI under ci required and runs the checks at once under ci none", async () => {
+  const required = recheck(github([[]]).client);
+  expect(await required.result).toEqual({ kind: "check", fromCi: [] });
+  expect(required.waits).toEqual([
+    'No CI checks reported yet. If pmdroid/paws-app has no CI, set ci = "none" under [merge.repositories."pmdroid/paws-app"] in config.toml.',
+  ]);
+  const sleeps: number[] = [];
+  const none = recheck(github([[]]).client, sleeps, MAPPINGS, undefined, "none");
+  expect(await none.result).toEqual({ kind: "check", fromCi: [] });
+  expect(none.waits).toEqual([]);
+  expect(sleeps).toEqual([]);
+});
 
 test("green CI gives each mapped check its run and conclusions; an unmapped check runs", async () => {
   const fake = github([

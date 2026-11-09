@@ -40,6 +40,7 @@ describe("the merge lane runs Closeout on a rebased head before it merges", () =
     const client = mergingClient(repo.bare);
     const lane = {
       ...creds(client),
+      ci: "required" as const,
       worktree: repo.work,
       issue: "ENG-5",
       prNumber: 5,

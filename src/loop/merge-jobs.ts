@@ -24,6 +24,7 @@ import {
   mainMoved,
   type QueueConflictSweep,
 } from "../merge";
+import { noCiChecksReported } from "../github";
 import { ask } from "./operations";
 import { prepareCommentDelivery, type PullCommentFilter } from "./pull-comments";
 import { recordReviewDelivery } from "./pull-reviews";
@@ -263,15 +264,20 @@ export function askAboutSlowCi(
   const item = getWorkItem(db, itemId);
   if (!item?.sessionKey || item.cancelRequested || item.state !== "merge_queue") return false;
   const hours = Math.round(MERGE_CI_ASK_AFTER_MS / (60 * 60_000));
+  const noChecks = noCiChecksReported(input.checks);
   ask(
     db,
     { itemId, runId: item.currentRunId, sessionId: item.sessionKey, version: item.version },
     "time-limit",
     [
-      `GitHub CI is still pending ${hours} hours after it started on the accepted head; merge or stop?`,
+      noChecks
+        ? `No GitHub CI check has reported on the accepted head in ${hours} hours; merge or stop?`
+        : `GitHub CI is still pending ${hours} hours after it started on the accepted head; merge or stop?`,
       input.checks,
       `The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
-      `${TIME_LIMIT_MERGE} keeps waiting for CI and merges once it passes, without another agent turn. Stop ends the task without merging: the branch and its pull request stay.`,
+      noChecks
+        ? `${TIME_LIMIT_MERGE} keeps waiting, without another agent turn: it merges once checks report and pass, or on the next pass after ci = "none" is set for the repository. Until one of those happens, the merge waits and this question comes back in ${hours} hours. Stop ends the task without merging: the branch and its pull request stay.`
+        : `${TIME_LIMIT_MERGE} keeps waiting for CI and merges once it passes, without another agent turn. Stop ends the task without merging: the branch and its pull request stay.`,
     ].join("\n\n"),
     { options: [TIME_LIMIT_MERGE, "Stop"], reason: SLOW_CI_REASON, now: input.now },
   );

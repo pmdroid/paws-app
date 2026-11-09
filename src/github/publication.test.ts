@@ -207,6 +207,7 @@ test("clone, refresh, push, PR and serial rebase merge retain ordinary behavior"
   await chmod(path.join(f.root, "pre-rebase"), 0o700);
   const lane = {
     worktree: f.worktree,
+    ci: "required" as const,
     issue: "ENG-38",
     owner: "synthetic",
     repo: "repo",

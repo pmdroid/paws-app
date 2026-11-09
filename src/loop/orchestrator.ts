@@ -125,6 +125,7 @@ import {
   loadConfigFile,
   mergeLaneKey,
   readMergeSettings,
+  repositoryCi,
   repositoryPackages,
   reviewApps,
   readQueueSettings,
@@ -440,6 +441,7 @@ import {
   type GitHubBinding,
   type GitHubTokenProvider,
   type PullMergeable,
+  type RepositoryCi,
 } from "../github";
 import {
   asksForFreshStart,
@@ -4631,6 +4633,7 @@ export class Orchestrator {
           repo: repository.repo,
           prNumber: pull.pullNumber,
           head,
+          ci: this.repositoryCi(repository),
           ...this.gitHubCredentials(github),
         });
       },
@@ -5816,9 +5819,11 @@ export class Orchestrator {
           repo: repository.repo,
           prNumber: pull.number,
           head: pull.head,
+          ci: this.repositoryCi(repository),
           ...this.gitHubCredentials(github),
         });
       },
+      ci: (repository) => this.repositoryCi(repository),
       readPull: (item, pullNumber) =>
         this.readItemPull(item, pullNumber, this.signalForItem(item.id)),
       restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
@@ -5874,6 +5879,26 @@ export class Orchestrator {
         this.options.journal,
       );
       return DEFAULT_QUEUE_START_TIMEOUT_HOURS;
+    }
+  }
+
+  private repositoryCi(repository: string | { owner: string; repo: string }): RepositoryCi {
+    const name =
+      typeof repository === "string" ? repository : `${repository.owner}/${repository.repo}`;
+    try {
+      return repositoryCi(
+        readMergeSettings(loadConfigFile(join(this.options.pawsRoot, "config.toml"))),
+        name,
+      );
+    } catch (caughtError) {
+      journalCaught(
+        caughtError,
+        "orchestrator.repositoryCi",
+        null,
+        undefined,
+        this.options.journal,
+      );
+      return "required";
     }
   }
 
@@ -7878,6 +7903,7 @@ export class Orchestrator {
           ...target,
           prNumber: pull.pullNumber,
           head,
+          ci: this.repositoryCi(repository),
           ...this.gitHubCredentials(github),
         }),
       now: () => this.now(),

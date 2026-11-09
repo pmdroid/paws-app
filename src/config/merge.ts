@@ -36,6 +36,9 @@ export const MERGE_ORDERS = ["queue", "ci-green", "github-queue"] as const;
 export const MAIN_MOVED = ["overlap", "green", "ci", "closeout"] as const;
 export const SUGGESTED_FINDINGS = ["off", "next_turn", "own_turn"] as const;
 export type SuggestedFindingsMode = (typeof SUGGESTED_FINDINGS)[number];
+export const CI_SETTINGS = ["required", "none"] as const;
+export type CiSetting = (typeof CI_SETTINGS)[number];
+export const DEFAULT_CI_SETTING: CiSetting = "required";
 
 /**
  * Which merge-queue lane an item joins in its repository. `project` (default): one lane per Linear
@@ -71,6 +74,7 @@ export type MergeRepositories = Record<
     reviewApps?: string[];
     highRiskPaths?: string[];
     suggestedFindings?: SuggestedFindingsMode;
+    ci?: CiSetting;
   }
 >;
 export type MergeSettings = MergePolicy & {
@@ -221,6 +225,7 @@ const tomlSchema = z.object({
               .optional(),
             high_risk_paths: highRiskGlobs.optional(),
             suggested_findings: z.enum(SUGGESTED_FINDINGS).optional(),
+            ci: z.enum(CI_SETTINGS).optional(),
           }),
         )
         .optional(),
@@ -501,6 +506,55 @@ export function suggestedFindingsMode(
   );
 }
 
+export function repositoryCi(settings: MergeSettings, repository: string): CiSetting {
+  const wanted = repository.toLowerCase();
+  return (
+    Object.entries(settings.repositories).find(([name]) => name.toLowerCase() === wanted)?.[1].ci ??
+    DEFAULT_CI_SETTING
+  );
+}
+
+export function parseCiSettings(value: unknown): Record<string, CiSetting> {
+  const result = z
+    .array(
+      z.strictObject({
+        repository: z.string().regex(REPOSITORY, "must be owner/repo"),
+        ci: z.enum(CI_SETTINGS),
+      }),
+    )
+    .max(100)
+    .refine(
+      (list) => new Set(list.map((entry) => entry.repository.toLowerCase())).size === list.length,
+      { message: "lists a repository twice" },
+    )
+    .safeParse(value);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    throw new Error(
+      `ci${issue?.path.length ? `.${issue.path.join(".")}` : ""} ${issue?.message ?? "is invalid"}`,
+    );
+  }
+  return Object.fromEntries(result.data.map((entry) => [entry.repository, entry.ci]));
+}
+
+export function withCiSettings(
+  repositories: MergeRepositories,
+  ci: Record<string, CiSetting>,
+): MergeRepositories {
+  const next: MergeRepositories = {};
+  for (const [name, value] of Object.entries(repositories)) {
+    const { ci: _old, ...rest } = value;
+    next[name] = rest;
+  }
+  for (const [repository, setting] of Object.entries(ci)) {
+    if (setting === DEFAULT_CI_SETTING) continue;
+    const name =
+      Object.keys(next).find((key) => key.toLowerCase() === repository.toLowerCase()) ?? repository;
+    next[name] = { packages: [], ...next[name], ci: setting };
+  }
+  return next;
+}
+
 /**
  * The Settings › Merging › High-risk paths body: `[{ repository, paths }]`. It replaces every
  * repository's list; a repository left out has none.
@@ -599,6 +653,7 @@ export function parseMergeTables(
                 ...(value.suggested_findings === undefined
                   ? {}
                   : { suggestedFindings: value.suggested_findings }),
+                ...(value.ci === undefined ? {} : { ci: value.ci }),
               },
             ]),
           ),
@@ -734,7 +789,7 @@ export function renderMergeSettings(settings: StoredMerge): string {
           value.suggestedFindings === undefined
             ? ""
             : `suggested_findings = ${JSON.stringify(value.suggestedFindings)}\n`
-        }`,
+        }${value.ci === undefined ? "" : `ci = ${JSON.stringify(value.ci)}\n`}`,
     ),
   ].join("");
 }
@@ -767,13 +822,15 @@ export function writeMergePolicy(
   riskPaths?: Record<string, string[]>,
   wait?: CommentWaitInput,
   ignored?: Record<string, IgnoredComments>,
+  ci?: Record<string, CiSetting>,
 ): void {
   const withPaths =
     riskPaths === undefined
       ? current.repositories
       : withHighRiskPaths(current.repositories ?? {}, riskPaths);
-  const repositories =
+  const withIgnored =
     ignored === undefined ? withPaths : withIgnoredComments(withPaths ?? {}, ignored);
+  const repositories = ci === undefined ? withIgnored : withCiSettings(withIgnored ?? {}, ci);
   updateConfigText(path, (text) =>
     setMergeSettingsText(text, {
       ...policy.default,

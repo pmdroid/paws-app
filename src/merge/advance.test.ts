@@ -46,6 +46,7 @@ function capabilities(overrides: Partial<MergeCapabilities> = {}) {
     ciFixAttempts: () => 3,
     feedbackWait: () => DEFAULT_PULL_FEEDBACK_WAIT,
     readPullCi: unused("readPullCi"),
+    ci: () => "required",
     readPull: unused("readPull"),
     dependencyHold: () => null,
     mergeLane: () => "",

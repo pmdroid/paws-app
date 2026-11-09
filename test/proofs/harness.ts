@@ -3,8 +3,6 @@ import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { systemClock, WORK_ITEM_STATES } from "../../src/core";
 import {
-  getItemCandidate,
-  recordItemCandidate,
   JobLoop,
   OutboxDispatcher,
   listWorkItemEventRows,
@@ -232,7 +230,8 @@ export type ProofContext = {
   /** Someone else pushes a commit to origin main. */
   pushToMain(path: string, content: string, message: string): Promise<void>;
   heldWork(): { activeRuns: number; reservations: number; runningJobs: number };
-  ageCandidate(): boolean;
+  mergeWait(): { reason: string; message?: string } | null;
+  setRepositoryCi(ci: "required" | "none"): void;
   delegate(): Promise<void>;
   answerInLinear(answer: string): Promise<void>;
   stopInLinear(): Promise<void>;
@@ -377,12 +376,21 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       reservations: count("SELECT count(*) AS n FROM runner_reservation"),
       runningJobs: count("SELECT count(*) AS n FROM job WHERE status = 'running'"),
     }),
-    ageCandidate() {
-      const item = items()[0];
-      const candidate = item && getItemCandidate(db, item.id);
-      if (!candidate) return false;
-      recordItemCandidate(db, { ...candidate, recordedAt: Date.now() - 6 * 60_000 });
-      return true;
+    mergeWait() {
+      const row = db
+        .query("SELECT payload FROM job WHERE queue = 'github.merge' ORDER BY id DESC LIMIT 1")
+        .get() as { payload: string } | null;
+      const wait = row ? (JSON.parse(row.payload) as { mergeWait?: unknown }).mergeWait : null;
+      return wait && typeof wait === "object"
+        ? (wait as { reason: string; message?: string })
+        : null;
+    },
+    setRepositoryCi(ci) {
+      act(`Set ci = "${ci}" for ${ACME.repository} under [merge.repositories] in config.toml`);
+      writeFileSync(
+        join(pawsRoot, "config.toml"),
+        `[agents]\nimplementer = "claude"\n\n[merge.repositories."${ACME.repository}"]\npackages = []\nci = "${ci}"\n`,
+      );
     },
     async delegate() {
       act(`Delegate ${ACME.identifier} to Paws in Linear`);
