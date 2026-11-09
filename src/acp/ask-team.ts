@@ -180,6 +180,8 @@ export function askTeamMcpEntry(): { command: string; args: string[] } {
  */
 type BridgeFinish = { pullRequestOpened: boolean; nudged: boolean; draft?: PullRequestDraft };
 
+type RunningCheck = { status: "running"; check: string; started_at: string };
+
 interface HostToolBridgeOptions {
   socketPath: string;
   hook?: AskTeamHook;
@@ -199,6 +201,8 @@ interface HostToolBridgeOptions {
   runtimeBinPaths?: readonly string[];
   /** `PATH` for Closeout checks before the runtime bin dirs. Defaults to this process's `PATH`. */
   closeoutBasePath?: string;
+  /** Tool wait only; execution keeps the check timeout. */
+  closeoutWaitMs?: number;
   commandGuard?: GuardContext;
   allowCloseoutRun?: boolean;
   closeoutRulesFirst?: boolean;
@@ -311,7 +315,8 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
       })
     : undefined;
   const allowCloseoutRun = options.allowCloseoutRun !== false;
-  const bridge = { ...options, ...(closeout ? { closeout } : {}) };
+  const runningChecks = new Map<string, RunningCheck>();
+  const bridge = { ...options, runningChecks, ...(closeout ? { closeout } : {}) };
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
@@ -384,7 +389,7 @@ export async function startAskTeamBridge(options: HostToolBridgeOptions): Promis
 
 async function handleConnection(
   socket: Socket,
-  options: HostToolBridgeOptions,
+  options: HostToolBridgeOptions & { runningChecks: Map<string, RunningCheck> },
   finish: BridgeFinish,
 ): Promise<void> {
   socket.setEncoding("utf8");
@@ -441,10 +446,16 @@ async function handleConnection(
                 // Implement and fix turns see each rule's result; read-only turns only list rules.
                 probes: options.allowCloseoutRun !== false,
               })
-            : await options.closeout.run(
+            : await runCloseoutWithinWait(
+                options,
                 closeoutId(parsed.arguments ?? {}),
                 closeoutModel(parsed.arguments),
               );
+        if (parsed.tool === "get_closeout")
+          answer = JSON.stringify({
+            ...JSON.parse(answer),
+            running: [...options.runningChecks.values()],
+          });
         if (parsed.tool === "get_closeout")
           answer = withSuggested(
             withReviewFindings(answer, options.reviewFindings),
@@ -840,6 +851,41 @@ function authorizeCloseout(
     guard,
   );
   if (!decision.allow) throw new Error(decision.reason);
+}
+
+/** The session records completion even after the tool has returned running. */
+async function runCloseoutWithinWait(
+  options: HostToolBridgeOptions & { runningChecks: Map<string, RunningCheck> },
+  id: string,
+  model: string | undefined,
+): Promise<string> {
+  const existing = options.runningChecks.get(id);
+  if (existing) return JSON.stringify(existing);
+  const running: RunningCheck = {
+    status: "running",
+    check: id,
+    started_at: new Date().toISOString(),
+  };
+  options.runningChecks.set(id, running);
+  const result = Promise.resolve()
+    .then(() => options.closeout!.run(id, model))
+    .finally(() => options.runningChecks.delete(id));
+  // Observe errors even when the caller has stopped waiting.
+  void result.catch((error) => journalCaught(error, "ask-team.runCloseoutWithinWait", null));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      result,
+      new Promise<string>((resolve) => {
+        timer = setTimeout(
+          () => resolve(JSON.stringify(running)),
+          options.closeoutWaitMs ?? 240_000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function closeoutId(value: Record<string, unknown>): string {
