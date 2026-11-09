@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
+  openItemIdForPull,
   fixRounds,
   getItemPullRequest,
   getWorkItem,
@@ -232,17 +233,8 @@ function itemForPull(
   repo: string,
   pullNumber: number,
 ): WorkItemRecord | null {
-  const row = db
-    .query<{ id: string }, [string, string, number]>(
-      `SELECT i.id FROM work_item i
-       JOIN work_item_repository r ON r.item_id = i.id
-       JOIN item_pull_request p ON p.item_id = i.id
-       WHERE lower(r.owner) = lower(?) AND lower(r.repo) = lower(?) AND p.pull_number = ?
-         AND i.state NOT IN ('cancelled','merged','completed','failed','manual')
-       ORDER BY i.created_at DESC LIMIT 1`,
-    )
-    .get(owner, repo, pullNumber);
-  return row === null ? null : getWorkItem(db, row.id);
+  const id = openItemIdForPull(db, owner, repo, pullNumber);
+  return id === null ? null : getWorkItem(db, id);
 }
 
 /**

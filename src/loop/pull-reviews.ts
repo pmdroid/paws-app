@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
+  openItemIdsForRepository,
   enqueueOutboxOnce,
   fixRounds,
   getPullReview,
@@ -106,15 +107,7 @@ export function itemForBranch(
   repo: string,
   branch: string,
 ): WorkItemRecord | null {
-  const ids = db
-    .query<{ id: string }, [string, string]>(
-      `SELECT i.id FROM work_item i JOIN work_item_repository r ON r.item_id = i.id
-       WHERE lower(r.owner) = lower(?) AND lower(r.repo) = lower(?)
-         AND i.state NOT IN ('cancelled','merged','completed','failed','manual')
-       ORDER BY i.created_at DESC`,
-    )
-    .all(owner, repo);
-  for (const { id } of ids) {
+  for (const id of openItemIdsForRepository(db, owner, repo)) {
     const item = getWorkItem(db, id);
     if (item && (item.branchName || worktreeBranch(item)) === branch) return item;
   }

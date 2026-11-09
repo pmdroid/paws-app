@@ -2,6 +2,8 @@ import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
+  outboxKeyExists,
+  setQuestionHandoffVersion,
   applyLinearTurns,
   applyWorkItemEvent,
   approveCloseoutBypassChecks,
@@ -153,10 +155,7 @@ export function remindLinkAsk(db: Database, questionId: string, now: number): bo
     if (question?.status !== "open" || linkAsk === null || linkAsk.closedAt !== null) return false;
     const item = getWorkItem(db, question.itemId);
     if (item === null || item.cancelRequested || ENDED.has(item.state)) return false;
-    const before = db
-      .query<{ id: number }, [string]>("SELECT id FROM outbox WHERE idempotency_key = ?")
-      .get(`link-ask-reminder:${questionId}`);
-    if (before !== null) return false;
+    if (outboxKeyExists(db, `link-ask-reminder:${questionId}`)) return false;
     enqueueOutboxOnce(db, {
       target: "linear",
       op: "elicitation",
@@ -443,7 +442,7 @@ export function reverifyBypassed(
     (entry) => entry.questionId === linkAsk.questionId,
   );
   if (recovery === undefined || item.state !== "awaiting_input") return false;
-  db.run("UPDATE question SET handoff_version=0 WHERE id=?", [linkAsk.questionId]);
+  setQuestionHandoffVersion(db, linkAsk.questionId, 0);
   applyWorkItemEvent(db, item.id, "reverify_requested", { now });
   saveCheckpoint(db, item.id, {
     phase: "verifying",
@@ -636,9 +635,5 @@ function handBack(
     jobKey: `resume:link-ask:${question.id}`,
     now,
   });
-  if (jobId !== null)
-    db.run("UPDATE question SET handoff_version = ? WHERE id = ?", [
-      getWorkItem(db, item.id)!.version,
-      question.id,
-    ]);
+  if (jobId !== null) setQuestionHandoffVersion(db, question.id, getWorkItem(db, item.id)!.version);
 }

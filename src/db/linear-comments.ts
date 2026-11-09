@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { enqueueJobOnce } from "./jobs";
+import { jsonField } from "./json-text";
 import type { PullFeedbackWait } from "./pull-comments";
 
 export type LinearCommentState =
@@ -384,4 +385,39 @@ function mapRow(row: Q["t"]["linearComment"]["$inferSelect"]): LinearCommentReco
     via: row.via as LinearCommentVia | null,
     settledAt: row.settledAt,
   };
+}
+
+/** Whether a webhook for this issue already carried the comment into an agent session. */
+export function* commentOpenedAgentSessionSteps(q: Q, issueId: string, commentId: string) {
+  const { inboxEvent } = q.t;
+  const { payload } = inboxEvent;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(inboxEvent)
+      .where(
+        and(
+          eq(inboxEvent.issueId, issueId),
+          inArray(inboxEvent.action, ["created", "prompted"]),
+          q.dialect === "sqlite" ? sql`json_valid(${payload})` : undefined,
+          or(
+            eq(jsonField(q, payload, "agentActivity", "sourceCommentId"), commentId),
+            eq(jsonField(q, payload, "agentSession", "sourceCommentId"), commentId),
+            eq(jsonField(q, payload, "agentSession", "commentId"), commentId),
+            eq(jsonField(q, payload, "agentSession", "comment", "id"), commentId),
+            eq(jsonField(q, payload, "sourceCommentId"), commentId),
+          ),
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+export function commentOpenedAgentSession(
+  db: Database,
+  issueId: string,
+  commentId: string,
+): boolean {
+  return settled(sqliteDb(db).run((q) => commentOpenedAgentSessionSteps(q, issueId, commentId)));
 }

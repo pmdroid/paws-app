@@ -1,8 +1,9 @@
 import {
+  sessionIssueTeamName,
+  teamRepositoryAllowed,
   workspaceMemberUsable,
   listWorkspaceMembers,
   listWorkspaceRepositories,
-  teamRepositoryAllowedSql,
   type WorkItemRecord,
 } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
@@ -28,19 +29,7 @@ export function teamRepositoryDenial(
   repository: { owner: string; repo: string },
 ): GitHubDenial | null {
   const name = `${repository.owner}/${repository.repo}`;
-  const allowed = db
-    .query<{ allowed: number }, string[]>(
-      `SELECT ${teamRepositoryAllowedSql("?", "?", "?")} AS allowed`,
-    )
-    .get(
-      scope.workspaceId,
-      scope.teamId,
-      name.toLowerCase(),
-      scope.workspaceId,
-      scope.teamId,
-      name.toLowerCase(),
-    );
-  if (allowed?.allowed === 1) return null;
+  if (teamRepositoryAllowed(db, scope.workspaceId, scope.teamId, name.toLowerCase())) return null;
   const team = issueTeamName(db, item);
   const linked = listWorkspaceRepositories(db, scope.workspaceId).some(
     (entry) => entry.teamId === scope.teamId,
@@ -67,15 +56,7 @@ export function workspaceAdministratorNames(db: Database, workspaceId: string): 
  * identifier when no stored payload names it. Never reads Linear.
  */
 export function issueTeamName(db: Database, item: WorkItemRecord): string {
-  const stored = item.sessionKey
-    ? db
-        .query<{ name: string }, [string]>(
-          `SELECT json_extract(payload,'$.agentSession.issue.team.name') AS name FROM inbox_event
-           WHERE session_id=? AND trim(coalesce(json_extract(payload,'$.agentSession.issue.team.name'),''))<>''
-           ORDER BY received_at DESC LIMIT 1`,
-        )
-        .get(item.sessionKey)?.name
-    : undefined;
+  const stored = item.sessionKey ? sessionIssueTeamName(db, item.sessionKey) : undefined;
   if (typeof stored === "string" && stored.trim() !== "") return stored.trim();
   const key = /^([A-Za-z][A-Za-z0-9_]*)-\d+$/.exec(item.linearIdentifier)?.[1];
   return key ?? "this team";

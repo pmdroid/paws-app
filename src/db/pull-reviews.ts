@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { settled, sqliteDb, type Q } from "./db";
 import { emitJobReady, enqueueJobOnceSteps } from "./jobs";
@@ -214,4 +214,28 @@ function mapRow(row: Row): PullReviewRecord {
     handledAt: row.handledAt,
     outcome: row.outcome as PullReviewOutcome | null,
   };
+}
+
+/** Items still in flight on this repository, newest first. */
+export function* openItemIdsForRepositorySteps(q: Q, owner: string, repo: string) {
+  const { workItem, workItemRepository } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: workItem.id })
+      .from(workItem)
+      .innerJoin(workItemRepository, eq(workItemRepository.itemId, workItem.id))
+      .where(
+        and(
+          sql`lower(${workItemRepository.owner}) = lower(${owner})`,
+          sql`lower(${workItemRepository.repo}) = lower(${repo})`,
+          notInArray(workItem.state, ["cancelled", "merged", "completed", "failed", "manual"]),
+        ),
+      )
+      .orderBy(desc(workItem.createdAt)),
+  );
+  return rows.map((row) => row.id);
+}
+
+export function openItemIdsForRepository(db: Database, owner: string, repo: string): string[] {
+  return settled(sqliteDb(db).run((q) => openItemIdsForRepositorySteps(q, owner, repo)));
 }

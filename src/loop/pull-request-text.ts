@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
+  latestMergeJobSummary,
   getItemPullRequest,
   getPullRequestText,
   getWorkItem,
@@ -13,7 +14,7 @@ import {
   updatePullRequestText,
   type GitHubBinding,
 } from "../github";
-import { JOB_KIND, withLeftForLater } from "../core";
+import { withLeftForLater } from "../core";
 
 const CLOSED_STATES = new Set(["merged", "completed", "cancelled"]);
 
@@ -90,14 +91,7 @@ function sameText(written: PullRequestText, issue: string, draft: PullRequestDra
 }
 
 function acceptedSummary(db: Database, itemId: string): string | undefined {
-  return (
-    db
-      .query<{ summary: string | null }, [string, string]>(
-        `SELECT json_extract(payload, '$.summary') AS summary FROM job
-         WHERE queue = ? AND json_extract(payload, '$.itemId') = ? ORDER BY id DESC LIMIT 1`,
-      )
-      .get(JOB_KIND.merge, itemId)?.summary ?? undefined
-  );
+  return latestMergeJobSummary(db, itemId) ?? undefined;
 }
 
 function recoveredText(

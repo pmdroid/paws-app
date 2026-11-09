@@ -27,7 +27,7 @@ import {
 } from "../core";
 import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 import { journal } from "./journal";
-import { jsonField } from "./json-text";
+import { jsonField, jsonText } from "./json-text";
 
 export const JOB_STATUSES = ["pending", "running", "done", "dead", "cancelled"] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
@@ -1035,4 +1035,92 @@ export function* cancelMemberVmJobsSteps(q: Q, input: MemberVmJobCancel) {
 
 export function cancelMemberVmJobs(db: Database, input: MemberVmJobCancel): void {
   run(db, (q) => cancelMemberVmJobsSteps(q, input));
+}
+
+/** Cancel the item's start and resume jobs other than `exceptJobId`, because its work was accepted. */
+export function* cancelAcceptedWorkJobsSteps(
+  q: Q,
+  itemId: string,
+  now: number,
+  exceptJobId?: number,
+) {
+  const { job } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({
+        status: "cancelled",
+        lastError: "accepted_work",
+        lockedBy: null,
+        lockedUntil: null,
+        finishedAt: now,
+      })
+      .where(
+        and(
+          inArray(job.status, ["pending", "running"]),
+          inArray(job.queue, [JOB_KIND.start, JOB_KIND.resume]),
+          ne(job.id, exceptJobId ?? -1),
+          eq(jobItemId(q), itemId),
+        ),
+      ),
+  );
+}
+
+export function cancelAcceptedWorkJobs(
+  db: Database,
+  itemId: string,
+  now: number,
+  exceptJobId?: number,
+): void {
+  run(db, (q) => cancelAcceptedWorkJobsSteps(q, itemId, now, exceptJobId));
+}
+
+/** The summary on the item's newest merge job. */
+export function* latestMergeJobSummarySteps(q: Q, itemId: string) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ summary: jsonField(q, job.payload, "summary") })
+      .from(job)
+      .where(and(eq(job.queue, JOB_KIND.merge), eq(jobItemId(q), itemId)))
+      .orderBy(desc(job.id))
+      .limit(1),
+  );
+  return row?.summary ?? null;
+}
+
+export function latestMergeJobSummary(db: Database, itemId: string): string | null {
+  return run(db, (q) => latestMergeJobSummarySteps(q, itemId));
+}
+
+export function* runningJobIdSteps(q: Q, queue: string, jobKey: string) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: job.id })
+      .from(job)
+      .where(and(eq(job.queue, queue), eq(job.jobKey, jobKey), eq(job.status, "running"))),
+  );
+  return row?.id ?? null;
+}
+
+export function runningJobId(db: Database, queue: string, jobKey: string): number | null {
+  return run(db, (q) => runningJobIdSteps(q, queue, jobKey));
+}
+
+/** Pending and running merge jobs, each with its payload as JSON text. */
+export function* openMergeJobsSteps(q: Q) {
+  const { job } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ id: job.id, activationId: job.activationId, payload: jsonText(q, job.payload) })
+      .from(job)
+      .where(and(eq(job.queue, JOB_KIND.merge), inArray(job.status, ["pending", "running"]))),
+  );
+}
+
+export function openMergeJobs(
+  db: Database,
+): { id: number; activationId: number; payload: string }[] {
+  return run(db, openMergeJobsSteps);
 }
