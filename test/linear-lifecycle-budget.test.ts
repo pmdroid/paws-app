@@ -556,6 +556,7 @@ test("Linear requests for a long Closeout with an agent question and a visual re
   expect(result.perCaller, result.operations).toEqual({
     context: 1,
     outbox: expect.any(Number),
+    "repository-hints": 1,
     "session-read": 1,
     "task-access": 7,
   });
@@ -596,6 +597,7 @@ test("Linear requests while CI is pending and main moves before the merge", asyn
   expect(result.perCaller, result.operations).toEqual({
     context: 1,
     outbox: 8,
+    "repository-hints": 1,
     "session-read": 1,
     "task-access": 7,
   });

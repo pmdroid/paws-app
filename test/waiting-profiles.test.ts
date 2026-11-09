@@ -15,7 +15,9 @@ import {
 import { runDir, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import { writeAgentSettings } from "../src/config";
 import { handleAgentSettingsRequest } from "../src/settings";
+import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
+import { answerQuestion, findOpenQuestion } from "../src/questions";
 
 const oldProfiles = {
   implementer: { agent: "claude", model: "old" },
@@ -56,7 +58,11 @@ function fixture() {
       agentExited: true,
     };
   };
+  const tracker = createFakeTracker();
+  const journal: string[] = [];
   const orchestrator = new Orchestrator({
+    tracker,
+    journal: (line) => journal.push(line),
     db,
     pawsRoot: root,
     jobs: new JobLoop(db, clock),
@@ -92,7 +98,7 @@ function fixture() {
         applyToWaiting: () => orchestrator.applyAgentSettingsToWaiting(),
       },
     );
-  return { db, root, orchestrator, seed, save, calls };
+  return { db, root, orchestrator, seed, save, calls, tracker, journal };
 }
 
 test("saving without the toggle leaves all snapshots byte-for-byte unchanged", async () => {
@@ -343,4 +349,206 @@ test("a retired account order in config.toml changes no waiting run and reaches 
     prompt: "Review",
   });
   expect(f.calls[0]).not.toHaveProperty("accounts");
+});
+
+test("Acme labels change only the next run and a failed Linear read retains its labels", async () => {
+  const f = fixture();
+  writeAgentSettings(join(f.root, "config.toml"), {
+    defaults: oldProfiles,
+    projects: [],
+    presets: {
+      Opus: { agent: "claude", model: "opus" },
+      Codex: { agent: "codex", model: "acme-codex" },
+    },
+  });
+  const failed = f.seed("running");
+  const item = () => getWorkItem(f.db, failed.item.id)!;
+  const internals = f.orchestrator as unknown as {
+    ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
+  };
+  const labels = (implementer: string) =>
+    f.tracker.repositoryHints.set(item().linearIssueId, {
+      mentions: [],
+      issueLabels: [],
+      parentLabels: [],
+      projectLabels: [],
+      profileLabels: { implementer },
+    });
+  const snapshot = (id: string) =>
+    JSON.parse(readFileSync(join(runDir(f.root, id), "agent-profile.json"), "utf8"));
+  f.db.run("UPDATE run SET status='lost' WHERE id=?", [failed.run.id]);
+  labels("Opus");
+  const opus = await internals.ensureRun(item());
+  expect(snapshot(opus.id).profiles.implementer.model).toBe("opus");
+  labels("Codex");
+  expect((await internals.ensureRun(item())).id).toBe(opus.id);
+  expect(snapshot(opus.id).profiles.implementer.model).toBe("opus");
+  f.db.run("UPDATE run SET status='lost' WHERE id=?", [opus.id]);
+  const codex = await internals.ensureRun(item());
+  expect(snapshot(codex.id).profiles.implementer.model).toBe("acme-codex");
+  f.tracker.issueRepositoryHints = async () => {
+    throw new Error("Linear offline");
+  };
+  f.db.run("UPDATE run SET status='lost' WHERE id=?", [codex.id]);
+  const fallback = await internals.ensureRun(item());
+  expect(snapshot(fallback.id).profileLabels).toEqual({ implementer: "Codex" });
+  expect(snapshot(fallback.id).profiles.implementer.model).toBe("acme-codex");
+  expect(f.journal.filter((line) => line.includes("readProfileLabels"))).toHaveLength(1);
+});
+
+const presets = {
+  Opus: { agent: "claude", model: "opus" },
+  Codex: { agent: "codex", model: "acme-codex" },
+} as const;
+
+type Gate = {
+  ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
+  checkProfileLabels(item: WorkItemRecord, runId: string): Promise<boolean>;
+  remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
+};
+
+/** A retrying Acme item whose failed run saved old profiles, with labels set in the Linear fake. */
+function labelled() {
+  const f = fixture();
+  writeAgentSettings(join(f.root, "config.toml"), {
+    defaults: oldProfiles,
+    projects: [],
+    presets,
+  });
+  const failed = f.seed("running");
+  f.db.run("UPDATE work_item SET session_key='acme-session' WHERE id=?", [failed.item.id]);
+  f.db.run("UPDATE run SET status='lost' WHERE id=?", [failed.run.id]);
+  const item = () => getWorkItem(f.db, failed.item.id)!;
+  const gate = f.orchestrator as unknown as Gate;
+  const label = (profileLabels: { implementer?: string; reviewer?: string }) =>
+    f.tracker.repositoryHints.set(item().linearIssueId, {
+      mentions: [],
+      issueLabels: [],
+      parentLabels: [],
+      projectLabels: [],
+      profileLabels,
+    });
+  const snapshot = (id: string) =>
+    JSON.parse(readFileSync(join(runDir(f.root, id), "agent-profile.json"), "utf8"));
+  const bodies = () => listOutbox(f.db).map((row) => (row.payload as { body?: string }).body ?? "");
+  const lose = (id: string) => f.db.run("UPDATE run SET status='lost' WHERE id=?", [id]);
+  return { ...f, item, gate, label, snapshot, bodies, lose };
+}
+
+test("an Implementer label starts the run with its preset and names the source once", async () => {
+  const f = labelled();
+  f.label({ implementer: "Opus" });
+  const run = await f.gate.ensureRun(f.item());
+  expect(f.snapshot(run.id).profiles.implementer).toEqual(presets.Opus);
+  expect(f.snapshot(run.id).profiles.labelProblems).toBeUndefined();
+  expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
+  expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
+  expect(f.bodies().filter((body) => body === "Implementer: Opus (label)")).toHaveLength(1);
+  await f.gate.remoteAgentForItem(f.item().id)({
+    role: "implementer",
+    runId: run.id,
+    itemId: f.item().id,
+    pawsRoot: f.root,
+    worktreePath: f.root,
+    prompt: "Implement acme",
+    profile: presets.Opus,
+  });
+  expect(f.calls.map((call) => call.profile)).toEqual([presets.Opus]);
+});
+
+test("a label that changes the agent is announced by the next run", async () => {
+  const f = labelled();
+  f.label({ implementer: "Opus" });
+  const opus = await f.gate.ensureRun(f.item());
+  f.label({ implementer: "Codex" });
+  f.lose(opus.id);
+  const codex = await f.gate.ensureRun(f.item());
+  expect(f.snapshot(codex.id).settingsSwitch).toMatchObject({ previousAgent: "claude" });
+  await f.gate.remoteAgentForItem(f.item().id)({
+    role: "implementer",
+    runId: codex.id,
+    itemId: f.item().id,
+    pawsRoot: f.root,
+    worktreePath: f.root,
+    prompt: "Implement acme",
+    profile: presets.Codex,
+  });
+  expect(f.bodies()).toContain("Switched to codex acme-codex from the Implementer label Codex.");
+});
+
+test("an unknown label asks, starts nothing, and Use the default holds for the item", async () => {
+  const f = labelled();
+  f.label({ implementer: "Acme unknown" });
+  const run = await f.gate.ensureRun(f.item());
+  expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(false);
+  const open = findOpenQuestion(f.db, "acme-session")!;
+  expect(open.body).toContain('Implementer label "Acme unknown": no preset has this name');
+  expect(open.body).toContain("Available presets: Opus, Codex.");
+  expect(open.options).toEqual(["Use the default", "I fixed the label"]);
+  expect(f.item().state).toBe("awaiting_input");
+  expect(f.db.query("SELECT status FROM run WHERE id=?").get(run.id)).toEqual({ status: "ended" });
+  answerQuestion(f.db, open.id, { answer: "Use the default", answeredBy: "acme-user" });
+  f.db.run("UPDATE work_item SET state='running' WHERE id=?", [f.item().id]);
+  expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
+  expect(f.snapshot(run.id).profiles.implementer).toEqual(oldProfiles.implementer);
+  f.lose(run.id);
+  const next = await f.gate.ensureRun(f.item());
+  expect(await f.gate.checkProfileLabels(f.item(), next.id)).toBe(true);
+  expect(f.snapshot(next.id).profiles.implementer).toEqual(oldProfiles.implementer);
+});
+
+test("I fixed the label reads the corrected label before the run goes on", async () => {
+  const f = labelled();
+  f.label({ implementer: "Acme unknown" });
+  const run = await f.gate.ensureRun(f.item());
+  await f.gate.checkProfileLabels(f.item(), run.id);
+  answerQuestion(f.db, findOpenQuestion(f.db, "acme-session")!.id, {
+    answer: "I fixed the label",
+    answeredBy: "acme-user",
+  });
+  f.label({ implementer: "Opus" });
+  f.db.run("UPDATE work_item SET state='running' WHERE id=?", [f.item().id]);
+  expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
+  expect(f.snapshot(run.id).profiles.implementer).toEqual(presets.Opus);
+  expect(f.bodies()).toContain("Implementer: Opus (label)");
+});
+
+test("a reviewer label equal to the implementer asks the same question", async () => {
+  const f = labelled();
+  f.label({ implementer: "Opus", reviewer: "Opus" });
+  const run = await f.gate.ensureRun(f.item());
+  expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(false);
+  const open = findOpenQuestion(f.db, "acme-session")!;
+  expect(open.body).toContain('Reviewer label "Opus"');
+  expect(open.options).toEqual(["Use the default", "I fixed the label"]);
+});
+
+test("without a Linear session an unusable label fails the item instead of hanging", async () => {
+  const f = labelled();
+  f.label({ implementer: "Acme unknown" });
+  const run = await f.gate.ensureRun(f.item());
+  f.db.run("UPDATE work_item SET session_key=NULL WHERE id=?", [f.item().id]);
+  expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(false);
+  expect(f.item().state).toBe("failed");
+});
+
+test("with no previous labels a failed Linear read uses none and journals once", async () => {
+  const f = labelled();
+  f.tracker.issueRepositoryHints = async () => {
+    throw new Error("Linear offline");
+  };
+  const run = await f.gate.ensureRun(f.item());
+  expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
+  expect(f.snapshot(run.id).profiles.implementer).toEqual(oldProfiles.implementer);
+  expect(f.journal.filter((line) => line.includes("readProfileLabels"))).toHaveLength(1);
+});
+
+test("without labels a new run saves the Settings profiles and asks nothing", async () => {
+  const f = labelled();
+  f.label({});
+  const run = await f.gate.ensureRun(f.item());
+  expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);
+  expect(f.snapshot(run.id).profiles).toEqual(oldProfiles);
+  expect(findOpenQuestion(f.db, "acme-session")).toBeNull();
+  expect(f.bodies().filter((body) => body.includes("(label)"))).toEqual([]);
 });
