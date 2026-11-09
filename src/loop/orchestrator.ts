@@ -1834,6 +1834,7 @@ export class Orchestrator {
     enqueueJobOnce(this.db, {
       queue: "closeout.stall",
       jobKey: "closeout.stall",
+      runAt: this.now() + 60_000,
       recurringEveryMs: 60_000,
       now: this.now(),
     });
