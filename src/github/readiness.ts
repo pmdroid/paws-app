@@ -44,7 +44,10 @@ const responseSchema = z.object({
   errors: z.array(z.unknown()).optional(),
   data: z.object({
     repository: z.object({
-      object: z.object({ oid: z.string(), statusCheckRollup: rollupSchema }),
+      object: z.object({
+        oid: z.string(),
+        statusCheckRollup: rollupSchema,
+      }),
       pullRequest: z.object({
         headRefOid: z.string(),
         state: z.enum(["OPEN", "CLOSED", "MERGED"]),
@@ -165,6 +168,8 @@ type ReadinessInput = {
   repo: string;
   prNumber: number;
   head: string;
+  /** Paws publication time for the exact requested head, in milliseconds. */
+  publishedAt?: (head: string) => number | null;
   sleep?: (ms: number) => Promise<void>;
   isCancelled?: () => boolean;
   onWait?: (message: string) => Promise<void>;
@@ -302,6 +307,8 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
       checks,
       latestPerName(baseChecks, (check) => check),
       required,
+      baseBranch,
+      input.publishedAt?.(input.head) ?? null,
     );
     if (ci.outcome === "ci_failed") return await withLogTails(input, token, ci, checks);
     if (ci.outcome !== "ready") return ci;
@@ -319,7 +326,10 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
         }
       : {
           outcome: "ready",
-          message: `CI passed and all review threads are resolved.${skippedNote(checks)}${optionalNote(checks, required)}`,
+          message:
+            checks.length === 0
+              ? ci.message
+              : `CI passed and all review threads are resolved.${skippedNote(checks)}${optionalNote(checks, required)}`,
           passed,
         };
   } catch (error) {
@@ -398,7 +408,13 @@ function startedLater(
   return false;
 }
 
-function judgeChecks(all: Check[], baseChecks: Check[], required: Set<string>): Readiness {
+function judgeChecks(
+  all: Check[],
+  baseChecks: Check[],
+  required: Set<string>,
+  baseBranch: string,
+  pushedAt: number | null,
+): Readiness {
   const checks = all.filter((check) => !optional(check, required, all));
   const failed = checks.filter((check) => FAILED.has(check.result ?? ""));
   if (failed.length > 0) {
@@ -417,6 +433,18 @@ function judgeChecks(all: Check[], baseChecks: Check[], required: Set<string>): 
     };
   }
   if (checks.length === 0 && required.size === 0) {
+    const pushed = pushedAt ?? Number.NaN;
+    if (
+      all.length === 0 &&
+      baseChecks.length === 0 &&
+      Number.isFinite(pushed) &&
+      Date.now() - pushed >= 5 * 60_000
+    ) {
+      return {
+        outcome: "ready",
+        message: `No CI on this repository: no checks on the candidate or on ${baseBranch}, and none required.`,
+      };
+    }
     return { outcome: "pending", message: "Waiting for CI on the candidate commit." };
   }
   const reported = new Set(all.map((check) => check.name));
