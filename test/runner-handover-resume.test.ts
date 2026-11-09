@@ -415,6 +415,7 @@ async function setup() {
     git,
     runners,
     backend,
+    results,
     principal,
     workspaceId: workspace.id,
     item,
@@ -1022,6 +1023,7 @@ test("the work turn after start_work waits for a slot on the session's runner, t
 test("replayed questions attach to the open answer without asking or cancelling again", async () => {
   const { db, runners } = context;
   const record = context.item();
+  context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   let asks = 0;
   const ask = async (request: { question: string }) => {
     asks++;
@@ -1052,7 +1054,14 @@ test("replayed questions attach to the open answer without asking or cancelling 
   db.run("UPDATE question SET status='answered',answer='Use commas.' WHERE run_id=?", [
     record.runId,
   ]);
-  expect(await context.next(runners.a)).toMatchObject({ type: "answer", answer: "Use commas." });
+  for (let i = 0; i < 1000; i++) {
+    if (context.results.answered(command.runId, command.generation, 1)) break;
+    await delay(1);
+  }
+  expect(context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
+  expect(
+    db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
+  ).toHaveLength(1);
   expect(await context.next(runners.a, 50)).toBeNull();
   context.submit(command, runners.a, { candidateSha: context.base });
   expect(await first.running).toMatchObject({ stopReason: "end_turn" });
@@ -1061,18 +1070,30 @@ test("replayed questions attach to the open answer without asking or cancelling 
 test("different text while a question is open still fails as overlapping questions", async () => {
   const { runners } = context;
   const record = context.item();
-  const turn = context.turn(record, [], async () => new Promise(() => {}));
+  context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
+  let release!: (answer: { answer: string }) => void;
+  const turn = context.turn(
+    record,
+    [],
+    async () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
   const command = (await context.next(runners.a)) as RunCommand;
   context.events(command, runners.a, [
     { type: "question", text: "Which delimiter?", options: [] },
     { type: "question", text: "Which encoding?", options: [] },
   ]);
+  expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
+  release({ answer: "Unused after cancellation" });
   expect(String(await turn.running)).toContain("overlapping questions");
 });
 
 test("a replay attaches to a question already stored by an earlier attachment", async () => {
   const { db, runners } = context;
   const record = context.item();
+  context.db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
   db.run(
     "INSERT INTO question(id,item_id,run_id,session_id,kind,body,status,created_at) VALUES(?,?,?,?,'agent',?,'open',?)",
     [workspaceId(), record.id, record.runId, record.id, "Which delimiter?", context.now],
@@ -1089,7 +1110,14 @@ test("a replay attaches to a question already stored by an earlier attachment", 
   db.run("UPDATE question SET status='answered',answer='Use commas.' WHERE run_id=?", [
     record.runId,
   ]);
-  expect(await context.next(runners.a)).toMatchObject({ type: "answer", answer: "Use commas." });
+  for (let i = 0; i < 1000; i++) {
+    if (context.results.answered(command.runId, command.generation, 1)) break;
+    await delay(1);
+  }
+  expect(context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
+  expect(
+    db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
+  ).toHaveLength(1);
   expect(await context.next(runners.a, 50)).toBeNull();
   context.submit(command, runners.a, { candidateSha: context.base });
   expect(await turn.running).toMatchObject({ stopReason: "end_turn" });
