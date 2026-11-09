@@ -260,10 +260,8 @@ export function createRunnerHelpers(options: {
           return json({ error: "Runner helper is fenced.", code: "fenced" }, 409);
         if (runnerRequestUnavailable(error))
           return json({ error: "Paws is busy. Retry the request." }, 503);
-        return withRejectedFields(
-          json({ error: "Runner helper request is denied or invalid." }, 403),
-          error,
-        );
+        const denied = json({ error: "Runner helper request is denied or invalid." }, 403);
+        return withRejectedFields(denied, error);
       }
     },
   };

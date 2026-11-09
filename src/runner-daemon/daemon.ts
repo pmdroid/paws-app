@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { createHash, type KeyObject } from "node:crypto";
 import { join } from "node:path";
 import { chmodSync, writeSync } from "node:fs";
@@ -174,12 +174,14 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   let state = readState(options.root);
   let closed = false;
   let observedAt = 0;
-  /** Set by each heartbeat reply; `undefined` inside is a control plane that reports no level. */
-  let controlPlane: { level: string | undefined } | undefined;
-  /** The result this control plane accepts. Waits for a heartbeat reply so no field is guessed. */
-  function acceptedResult<Result extends object>(result: Result): Result {
-    if (!controlPlane) throw new Error("Runner has no heartbeat reply from Paws yet.");
-    return resultForControlPlane(result, controlPlane.level);
+  /** The result Paws accepts now. The level is read per result: a redeploy or restart moves it. */
+  async function acceptedResult<Result extends object>(result: Result): Promise<Result> {
+    const { protocolLevel } = await api.heartbeat();
+    const accepted = resultForControlPlane(result, protocolLevel);
+    const dropped = Object.keys(result).filter((field) => !(field in accepted));
+    if (dropped.length)
+      journal(`runner.result.fields_dropped level=${protocolLevel} fields=${dropped.join(",")}`);
+    return accepted;
   }
   if (
     state &&
@@ -492,7 +494,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   }
   const retroPath = (id: string, action: string) =>
     `/v1/retro-commands/${encodeURIComponent(id)}/${action}`;
-  return {
+  const api = {
     status,
     capacity: () => applied,
     ceiling: () => ceiling,
@@ -629,7 +631,6 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         }
       }
       const response = RunnerHeartbeatSchema.parse(reply);
-      controlPlane = { level: response.protocolLevel };
       if (response.observedAt !== undefined) observedAt = Math.max(observedAt, response.observedAt);
       if (options.concurrency !== undefined && response.concurrency !== undefined)
         applied = Math.min(response.concurrency, ceiling);
@@ -853,8 +854,9 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     },
     async postResult(runId: string, generation: number, result: RunnerResult, grantToken: string) {
       identifier.parse(runId);
-      const body = RunnerResultDeliverySchema.parse({ generation, result: acceptedResult(result) });
+      const body = RunnerResultDeliverySchema.parse({ generation, result });
       RunnerGrantTokenSchema.parse(grantToken);
+      body.result = await acceptedResult(body.result);
       return RunnerEventReceiptSchema.parse(
         await authenticated(
           `/v1/runs/${encodeURIComponent(runId)}/result`,
@@ -1049,8 +1051,9 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return result;
     },
     async postHelperResult(result: RunnerHelperResult) {
-      const body = RunnerHelperResultSchema.parse(acceptedResult(result));
-      helperCommand(body.commandId, true);
+      const valid = RunnerHelperResultSchema.parse(result);
+      helperCommand(valid.commandId, true);
+      const body = await acceptedResult(valid);
       return RunnerEventReceiptSchema.parse(
         await authenticated(
           `/v1/helper-commands/${encodeURIComponent(body.commandId)}/result`,
@@ -1082,6 +1085,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       db.close();
     },
   };
+  return api;
 }
 
 export type RunnerDaemon = ReturnType<typeof openRunnerDaemon>;

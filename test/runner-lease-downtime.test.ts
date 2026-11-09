@@ -561,6 +561,8 @@ test("a runner that parses the level is told it on the heartbeat reply", async (
   const f = await fixture();
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.76' WHERE runner_id=?", [f.runnerId]);
   expect(f.work.heartbeat(f.runnerId).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
+  f.db.run("DELETE FROM runner_host_status WHERE runner_id=?", [f.runnerId]);
+  expect(f.work.heartbeat(f.runnerId).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
   f.close();
 });
 

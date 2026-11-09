@@ -43,6 +43,7 @@ async function withControlPlane(
     daemon: ReturnType<typeof openRunnerDaemon>;
     accepted: unknown[];
     logged: string[];
+    level: string | undefined;
   }) => Promise<void>,
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-control-plane-level-"));
@@ -92,7 +93,7 @@ async function withControlPlane(
     async fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === "/v1/heartbeat")
-        return Response.json({ leases: [], fenced: [], protocolLevel: level });
+        return Response.json({ leases: [], fenced: [], protocolLevel: plane.level });
       if (path === "/v1/helper-commands") {
         const signed = signRunnerCommand({
           keyId: "coordinator",
@@ -117,10 +118,11 @@ async function withControlPlane(
     runnerApiUrl: `https://localhost:${listener.port}`,
     serverCa: server.cert,
   });
+  const plane = { daemon, accepted, logged, level };
   try {
     await daemon.enroll("level-proof", "t".repeat(43));
     await daemon.pollHelperCommands();
-    await run({ daemon, accepted, logged });
+    await run(plane);
   } finally {
     daemon.close();
     await listener.stop();
@@ -132,7 +134,6 @@ async function withControlPlane(
 for (const level of [NOV_7_LEVEL, undefined])
   test(`a helper result completes on a control plane at level ${level}`, async () => {
     await withControlPlane(level, async ({ daemon, accepted }) => {
-      await daemon.heartbeat();
       expect(await daemon.postHelperResult(result)).toEqual({ duplicate: false });
       const { interrupted: _i, replies: _r, startWork: _s, ...known } = result;
       expect(accepted).toEqual([known]);
@@ -141,7 +142,6 @@ for (const level of [NOV_7_LEVEL, undefined])
 
 test("the listener's 403 line names the schema paths that failed", async () => {
   await withControlPlane(CONTROL_PLANE_PROTOCOL_LEVEL, async ({ daemon, logged }) => {
-    await daemon.heartbeat();
     const error = await daemon.postHelperResult(result).catch((caught) => caught);
     expect(error.status).toBe(403);
     const line = logged.find((entry) => entry.includes("/result answered 403"));
@@ -149,10 +149,12 @@ test("the listener's 403 line names the schema paths that failed", async () => {
   });
 }, 30_000);
 
-test("a result waits for a heartbeat reply instead of guessing the level", async () => {
-  await withControlPlane(NOV_7_LEVEL, async ({ daemon, accepted }) => {
-    await expect(daemon.postHelperResult(result)).rejects.toThrow("no heartbeat reply");
-    expect(accepted).toEqual([]);
+test("each result reads the level again, so a rolled-back control plane accepts it", async () => {
+  await withControlPlane(CONTROL_PLANE_PROTOCOL_LEVEL, async (plane) => {
+    await plane.daemon.heartbeat();
+    plane.level = NOV_7_LEVEL;
+    expect(await plane.daemon.postHelperResult(result)).toEqual({ duplicate: false });
+    expect(plane.accepted).toHaveLength(1);
   });
 }, 30_000);
 
@@ -160,5 +162,4 @@ test("`interrupted` is kept only for a level that knows it", () => {
   const body: Record<string, unknown> = { commandId: "command", interrupted: true };
   expect(resultForControlPlane(body, "0.1.75")).toEqual(body);
   expect(resultForControlPlane(body, "0.1.74")).toEqual({ commandId: "command" });
-  expect(resultForControlPlane(body, undefined)).toEqual({ commandId: "command" });
 });

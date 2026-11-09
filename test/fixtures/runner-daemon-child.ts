@@ -91,7 +91,6 @@ try {
     case "results":
     case "answers":
     case "fenced-result": {
-      await daemon.heartbeat();
       const grant = await daemon.issueRunGrant("run-one", {
         commandId: "command-one",
         generation: 1,

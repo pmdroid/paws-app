@@ -29,7 +29,7 @@ export async function startRunnerListener(options: {
   fetch(request: Request, peer: RunnerPeer): Promise<Response>;
   now?: () => number;
   log?: (line: string) => void;
-  /** Text for the response's log line; it also removes anything not meant for the runner. */
+  /** Extra text for the log line of a logged response. */
   takeLogDetail?: (response: Response) => string;
 }): Promise<RunnerListener> {
   const now = options.now ?? Date.now;

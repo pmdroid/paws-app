@@ -515,7 +515,6 @@ export async function probeRunnerTaskAuthority(
             ),
             status(403),
           );
-        await daemon.heartbeat();
         const result: RunnerResult = {
           executionId,
           commandId: command.id,
