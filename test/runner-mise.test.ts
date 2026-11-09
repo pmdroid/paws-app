@@ -287,12 +287,12 @@ test("concurrent tasks on one runner wait on the data dir lock", async () => {
 async function runPathTask(
   name: string,
   runtimes: Array<{ tool: string; version: string }>,
-  paths: { base?: string; workerExtra?: string } = {},
+  paths: { base?: string; workerExtra?: string; resumeSessionId?: string; workTurn?: boolean } = {},
 ) {
   const task = join(root, name);
   const workRoot = join(task, "work");
   const worktree = join(workRoot, executionId);
-  const outputDirectory = join(task, "output");
+  const outputDirectory = join(task, paths.resumeSessionId ? "resumed-output" : "output");
   const system = join(task, "system");
   for (const path of [worktree, outputDirectory, system])
     mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -316,7 +316,7 @@ async function runPathTask(
     "init",
   );
   git("update-ref", "refs/remotes/origin/main", "HEAD");
-  mkdirSync(join(worktree, ".agents"));
+  mkdirSync(join(worktree, ".agents"), { recursive: true });
   writeFileSync(
     join(worktree, ".agents", "closeout.yaml"),
     [
@@ -330,12 +330,50 @@ async function runPathTask(
       "",
     ].join("\n"),
   );
+  const bundle = join(task, "repository.bundle");
+  let workCommand: Extract<RunnerCommand, { type: "run" }> | undefined;
+  if (paths.workTurn) {
+    git("add", ".agents/closeout.yaml");
+    git(
+      "-c",
+      "user.email=t@example.test",
+      "-c",
+      "user.name=T",
+      "commit",
+      "--allow-empty",
+      "-qm",
+      "check",
+    );
+    git("bundle", "create", bundle, "--all");
+    const {
+      purpose: _purpose,
+      sessionId: _session,
+      sessionGeneration: _generation,
+      taskModeGeneration: _mode,
+      ...base
+    } = command(runtimes);
+    workCommand = {
+      ...base,
+      type: "run",
+      checkpoint: false,
+      repository: {
+        owner: "fixture",
+        repo: "repo",
+        remoteUrl: "https://github.com/fixture/repo.git",
+        baseSha: spawnSync("git", ["-C", worktree, "rev-parse", "HEAD"], {
+          encoding: "utf8",
+        }).stdout.trim(),
+      },
+      ...(paths.resumeSessionId ? { resumeSessionId: paths.resumeSessionId } : {}),
+    };
+  }
   const script = join(task, "script.json");
   const recorded = join(task, "agent.json");
   writeFileSync(
     script,
     JSON.stringify({
       model: "fixture-model",
+      loadSession: true,
       steps: [
         {
           type: "terminal",
@@ -360,7 +398,8 @@ async function runPathTask(
   process.env.PATH = [system, paths.workerExtra, inherited].filter(Boolean).join(":");
   try {
     const result = await executeRunnerCommand({
-      job: { executionId, command: command(runtimes) },
+      job: { executionId, command: workCommand ?? command(runtimes) },
+      ...(workCommand ? { repositoryBundle: bundle } : {}),
       outputDirectory,
       workRoot,
       home,
@@ -376,12 +415,21 @@ async function runPathTask(
         ],
         env: { PATH: agentPath },
       },
-      async answer() {
-        return { answer: "Yes" };
-      },
+      ...(workCommand
+        ? {}
+        : {
+            async answer() {
+              return { answer: "Yes" };
+            },
+          }),
     });
-    const read = (file: string) => readFileSync(join(worktree, file), "utf8").trim();
-    const trace = JSON.parse(readFileSync(recorded, "utf8")) as { closeouts?: string[] };
+    const read = (file: string) =>
+      readFileSync(join(paths.workTurn ? join(workRoot, "run") : worktree, file), "utf8").trim();
+    const trace = JSON.parse(readFileSync(recorded, "utf8")) as {
+      closeouts?: string[];
+      loaded?: { sessionId: string };
+    };
+    if (paths.resumeSessionId) expect(trace.loaded?.sessionId).toBe(paths.resumeSessionId);
     return {
       result,
       closeouts: trace.closeouts ?? [],
@@ -406,7 +454,7 @@ test("the agent and a Closeout check find the task's node before the system one"
   expect(run.agent.node).toBe(join(bin, "node"));
   expect(run.agent.path).toBe(`${bin}:${run.agentPath}:${AGENT_BIN_DIR}`);
   expect(run.closeout.node).toBe(join(bin, "node"));
-  expect(run.closeout.path).toBe(`${bin}:${withAgentBin(withoutRunnerBin(run.workerPath))}`);
+  expect(run.closeout.path).toBe(`${bin}:${withAgentBin(withoutRunnerBin(run.agentPath))}`);
   expect(log()).toContain("where node@22");
 }, 30_000);
 
@@ -417,7 +465,7 @@ test("with no runtimes, the agent's and a Closeout check's PATH gain only the ag
   expect(run.closeouts).toEqual(["which-node passed."]);
   expect(run.agent).toEqual({ path: `${run.agentPath}:${AGENT_BIN_DIR}`, node: run.system });
   expect(run.closeout).toEqual({
-    path: withAgentBin(withoutRunnerBin(run.workerPath)),
+    path: withAgentBin(withoutRunnerBin(run.agentPath)),
     node: run.system,
   });
   expect(log()).toEqual([]);
@@ -454,6 +502,27 @@ test("bun resolves for the agent and a Closeout check only when the job's runtim
   expect(withBun.result.run.stopReason).toBe("end_turn");
   expect(withBun.bun).toEqual({ agent: join(runtime, "bun"), closeout: join(runtime, "bun") });
 }, 60_000);
+
+// Question answers and start_work both launch work commands with resumeSessionId.
+// Change the worker environment between turns to catch accidental runtime inheritance.
+for (const reason of ["question answer", "start_work"]) {
+  test(`Closeout PATH matches a fresh turn after ${reason} resumes the session`, async () => {
+    const runtimes = [{ tool: "bun", version: "1.4.2" }];
+    const paths = { base: "/usr/bin:/bin", workTurn: true };
+    const fresh = await runPathTask(reason, runtimes, paths);
+    const resumed = await runPathTask(reason, runtimes, {
+      ...paths,
+      resumeSessionId: fresh.result.run.sessionId!,
+      workerExtra: "/accidental/node/bin",
+    });
+    expect(fresh.result.run.stopReason).toBe("end_turn");
+    expect(resumed.result.run.stopReason).toBe("end_turn");
+    expect(resumed.closeouts).toEqual(["which-node passed."]);
+    expect(resumed.closeout.path).toBe(fresh.closeout.path);
+    expect(resumed.closeout.path).toBe(resumed.agent.path);
+    expect(resumed.closeout.path).not.toContain("/accidental/node/bin");
+  }, 60_000);
+}
 
 test("withAgentBin puts the agent tools folder last, once", () => {
   expect(withAgentBin(`/runtime/bin:${AGENT_BIN_DIR}/:/usr/bin`)).toBe(

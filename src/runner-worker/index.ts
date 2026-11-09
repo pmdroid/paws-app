@@ -1183,7 +1183,9 @@ export async function executeRunnerCommand(
         GITHUB_READ_TOKENS_PER_TURN,
       );
     // The runner's agent tools (its `gh`) go last, after the runtime bin folders Closeout prepends.
-    const closeoutBasePath = withAgentBin(withoutRunnerBin(process.env.PATH));
+    // The worker may inherit unrelated runtimes; session resumes must use the same
+    // explicit base as a fresh agent turn.
+    const closeoutBasePath = withAgentBin(agentEnv.PATH);
     // Pinned bin dirs, not shims: nothing on PATH reads the repository's mise config.
     agentEnv.PATH = withAgentBin(prependRuntimePath(installed.binPaths, agentEnv.PATH));
     const prompt =
