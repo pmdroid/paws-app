@@ -40,8 +40,8 @@ function fixture() {
   });
   const work = (runId: string, runnerId: string, ended: number | null) =>
     db.run(
-      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,?,'ws-1',1,0,?,?,?)",
-      [runId, runnerId, `cmd-${runId}`, NOW + 60_000, ended],
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(?,?,'ws-1',1,0,?,?,?,?)",
+      [runId, runnerId, `cmd-${runId}`, NOW + 60_000, ended, ended],
     );
   const busy = new Map<string, string>();
   for (const runnerId of ["A", "B"]) {
@@ -91,7 +91,11 @@ function fixture() {
     db.query<{ runAt: number }, [number]>("SELECT run_at AS runAt FROM job WHERE id=?").get(jobId)!
       .runAt;
   const free = (runnerId: string, at: number) => {
-    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [at, busy.get(runnerId)!]);
+    db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
+      at,
+      at,
+      busy.get(runnerId)!,
+    ]);
     db.run("UPDATE run SET status='ended' WHERE id=?", [busy.get(runnerId)!]);
   };
   return { db, mergeItem, reverify, runAt, free };

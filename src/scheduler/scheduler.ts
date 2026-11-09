@@ -27,6 +27,10 @@ import {
   pendingRunnerWaits,
   releaseIdleSessionItem,
   runnerTaskSlots,
+  runnerOccupancy,
+  runnerSlotsHeldBetweenCommands,
+  unassignedRunnerReservations,
+  schedulerRunnerSlots,
   runPendingJobNow,
   saveItemScheduling,
   saveSchedulerAdmission,
@@ -273,11 +277,23 @@ function taskSlots(
 ): { total: number; busy: number; open: Map<string, number> } | null {
   const runners = runnerTaskSlots(db, now, now - RUNNER_SEEN_MS);
   if (!runners.length) return null;
+  const reservations = settled(unassignedRunnerReservations(sqliteDb(db), now, ""));
+  const occupancy = runners.map((runner) => {
+    const { capacity, occupied } = runnerOccupancy(db, runner.id, now);
+    return {
+      id: runner.id,
+      capacity,
+      used:
+        occupied +
+        runnerSlotsHeldBetweenCommands(db, runner.id, now) +
+        (reservations.get(runner.id) ?? 0),
+    };
+  });
   return {
-    total: runners.reduce((total, runner) => total + runner.capacity, 0),
-    busy: runners.reduce((busy, runner) => busy + Math.min(runner.used, runner.capacity), 0),
+    total: occupancy.reduce((total, runner) => total + runner.capacity, 0),
+    busy: occupancy.reduce((busy, runner) => busy + Math.min(runner.used, runner.capacity), 0),
     open: new Map(
-      runners.map((runner) => [
+      occupancy.map((runner) => [
         runner.id,
         runner.capacity - Math.min(runner.used, runner.capacity),
       ]),
@@ -576,20 +592,21 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     };
     const openRunner = (itemId: string): string | null | undefined => {
       const verdicts = verdictsFor(itemId);
-      if (!verdicts) return undefined;
+      if (!options.itemRunners) return undefined;
+      if (!verdicts) return null;
       const open = (id: string) => slots?.open.get(id) ?? 0;
-      const free = verdicts.runners.filter(
-        (runner) => runner.rejection === null && open(runner.id) > 0,
-      );
+      const free = verdicts.runners
+        .filter((runner) => runner.rejection === null && open(runner.id) > 0)
+        .sort((a, b) => open(b.id) - open(a.id));
       return free[0]?.id ?? null;
     };
+    const choices = new Map<string, string>();
     const takeSlot = (itemId: string): boolean => {
       const runnerId = openRunner(itemId);
       if (runnerId === undefined) return true;
       if (runnerId === null) return false;
-      for (const runner of verdictsFor(itemId)!.runners)
-        if (runner.rejection === null)
-          slots!.open.set(runner.id, (slots!.open.get(runner.id) ?? 0) - 1);
+      slots!.open.set(runnerId, slots!.open.get(runnerId)! - 1);
+      choices.set(itemId, runnerId);
       return true;
     };
     const pins = slots
@@ -635,8 +652,13 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         !item.placed &&
         (item.placing ||
           (item.state === "queued" && held.some((entry) => entry.itemId === item.id)))
-      )
-        takeSlot(item.id);
+      ) {
+        const assigned = schedulerRunnerSlots(db, now).find(
+          (row) => row.itemId === item.id,
+        )?.runnerId;
+        if (assigned && slots) slots.open.set(assigned, (slots.open.get(assigned) ?? 0) - 1);
+        else takeSlot(item.id);
+      }
     const running = new Map<string, number>();
     for (const item of items)
       if (
@@ -704,6 +726,7 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
         repositoryKey: next.repositoryKey,
         sessionId: next.sessionId,
         now,
+        ...(choices.has(item.id) ? { runnerId: choices.get(item.id)! } : {}),
       });
       held.push(next);
       occupants.push(item);
@@ -717,7 +740,8 @@ export function dispatch(db: Database, options: SchedulerOptions = {}): string[]
     );
     const noRunnerLine = (itemId: string): string | null => {
       if (openRunner(itemId) !== null) return null;
-      const verdicts = verdictsFor(itemId)!;
+      const verdicts = verdictsFor(itemId);
+      if (!verdicts) return "Waiting for placement scope to become available";
       if (!verdicts.runners.length)
         return `No runner can take ${verdicts.repository ?? "this item"}: no paired runners available to its owner`;
       return `No runner can take ${verdicts.repository ?? "this item"}: ${verdicts.runners

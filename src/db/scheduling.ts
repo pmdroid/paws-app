@@ -1,10 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { and, asc, eq, gt, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { JOB_KIND, delegationHasOpenWork, type WorkItemState } from "../core";
 import { settled, sqliteDb, type Q } from "./db";
 import { jsonItemId } from "./jobs";
-import { jsonText, jsonValue } from "./json-text";
+import { jsonField, jsonText, jsonValue } from "./json-text";
 import { ciWaitingSql, workHelperSql } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
 
@@ -141,6 +141,7 @@ export function* listSchedulerAdmissionsSteps(q: Q) {
         sessionId: schedulerAdmission.sessionId,
         status: job.status,
         lockedUntil: job.lockedUntil,
+        runnerId: jsonField(q, job.payload, "admissionRunnerId"),
       })
       .from(schedulerAdmission)
       .innerJoin(job, eq(job.id, schedulerAdmission.jobId)),
@@ -166,6 +167,7 @@ type SchedulerAdmission = {
   repositoryKey: string;
   sessionId: string | null;
   now: number;
+  runnerId?: string;
 };
 
 export function* saveSchedulerAdmissionSteps(q: Q, row: SchedulerAdmission, orIgnore = false) {
@@ -180,6 +182,27 @@ export function* saveSchedulerAdmissionSteps(q: Q, row: SchedulerAdmission, orIg
     createdAt: row.now,
   });
   yield* q.exec(orIgnore ? insert.onConflictDoNothing() : insert);
+  if (row.runnerId) {
+    const job = q.t.job;
+    const saved = yield* q.one(
+      q.orm
+        .select({ payload: jsonText(q, job.payload) })
+        .from(job)
+        .where(eq(job.id, row.jobId)),
+    );
+    if (saved)
+      yield* q.exec(
+        q.orm
+          .update(job)
+          .set({
+            payload: jsonValue(q, {
+              ...JSON.parse(saved.payload),
+              admissionRunnerId: row.runnerId,
+            }),
+          })
+          .where(eq(job.id, row.jobId)),
+      );
+  }
 }
 
 export function saveSchedulerAdmission(
@@ -330,4 +353,33 @@ export function* pendingRunnerWaitsSteps(q: Q, seenAfter: number) {
 
 export function pendingRunnerWaits(db: Database, seenAfter: number) {
   return settled(sqliteDb(db).run((q) => pendingRunnerWaitsSteps(q, seenAfter)));
+}
+
+export function* schedulerRunnerSlotsSteps(q: Q, now: number) {
+  const { job, schedulerAdmission: admission, workItem: item } = q.t;
+  const runnerId = jsonField(q, job.payload, "admissionRunnerId");
+  return yield* q.all(
+    q.orm
+      .select({ itemId: item.id, runnerId })
+      .from(admission)
+      .innerJoin(job, eq(job.id, admission.jobId))
+      .innerJoin(item, eq(item.id, admission.itemId))
+      .where(
+        and(
+          isNotNull(runnerId),
+          eq(item.cancelRequested, 0),
+          inArray(item.state, ["queued", "running", "recovering", "verifying"]),
+          or(
+            eq(job.status, "pending"),
+            and(eq(job.status, "running"), or(isNull(job.lockedUntil), gt(job.lockedUntil, now))),
+          ),
+          sql`(${item.state}='queued' OR NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=${item.currentRunId}))`,
+          sql`NOT EXISTS(SELECT 1 FROM runner_reservation v WHERE v.run_id=${item.currentRunId} AND v.expires_at>${now})`,
+        ),
+      ),
+  );
+}
+
+export function schedulerRunnerSlots(db: Database, now: number) {
+  return settled(sqliteDb(db).run((q) => schedulerRunnerSlotsSteps(q, now)));
 }

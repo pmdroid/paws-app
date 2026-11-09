@@ -85,6 +85,7 @@ forEachDialect((connect) => {
         sessionId: null,
         status: "running",
         lockedUntil: 500,
+        runnerId: null,
       },
     ]);
     await db.run((q) => dropSchedulerAdmissionSteps(q, "item"));

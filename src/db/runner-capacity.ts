@@ -23,6 +23,7 @@ import { JOB_KIND } from "../core";
 import { runnerCapacityWait } from "./items";
 import { emitJobReady } from "./jobs";
 import { jsonField, jsonText, jsonValue } from "./json-text";
+import { schedulerRunnerSlotsSteps } from "./scheduling";
 import { runnerLeaseCutoff } from "./runner-lease";
 import { auditWorkspaceAccessSteps } from "./workspace";
 
@@ -536,8 +537,12 @@ export function* pinnedSlotsReservedSteps(q: Q, runnerId: string, itemId: string
       .orderBy(asc(job.id)),
   );
   const own = rows.find((row) => row.itemId === itemId && row.runnerId === runnerId)?.slotOrder;
-  return new Set(
-    rows
+  const admitted = (yield* schedulerRunnerSlotsSteps(q, now)).filter(
+    (row) => row.itemId !== itemId && row.runnerId === runnerId,
+  );
+  return new Set([
+    ...admitted.map((row) => row.itemId),
+    ...rows
       .filter(
         (row) =>
           row.itemId !== itemId &&
@@ -545,7 +550,7 @@ export function* pinnedSlotsReservedSteps(q: Q, runnerId: string, itemId: string
           (own === undefined || row.slotOrder < own),
       )
       .map((row) => row.itemId),
-  ).size;
+  ]).size;
 }
 
 export function pinnedSlotsReserved(

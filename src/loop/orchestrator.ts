@@ -6938,7 +6938,8 @@ export class Orchestrator {
     let config: ReturnType<typeof loadConfigFile> | null = null;
     try {
       this.reconcileAgentSettings();
-      if (ownerHasRunner) config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+      if (ownerHasRunner || this.options.itemRunners)
+        config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
     } catch (caughtError15) {
       journalCaught(
         caughtError15,
@@ -6961,6 +6962,20 @@ export class Orchestrator {
       ...this.options.scheduling?.(),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
       onWaits: (waits) => this.noteWaits(waits),
+      ...(this.options.itemRunners
+        ? {
+            itemRunners: (itemId: string) => {
+              const item = getWorkItem(this.db, itemId);
+              return item && config
+                ? this.options.itemRunners!(
+                    itemId,
+                    this.implementerProfile(item, config),
+                    this.now(),
+                  )
+                : null;
+            },
+          }
+        : {}),
       ...(ownerHasRunner && config
         ? {
             ownerHasRunner: (itemId: string) => {
@@ -6970,20 +6985,6 @@ export class Orchestrator {
             },
             onRunnerSetup: (itemIds: readonly string[]) =>
               this.noteRunnerSetup(itemIds, (item) => this.implementerAgent(item, config)),
-            ...(this.options.itemRunners
-              ? {
-                  itemRunners: (itemId: string) => {
-                    const item = getWorkItem(this.db, itemId);
-                    return item
-                      ? this.options.itemRunners!(
-                          itemId,
-                          this.implementerProfile(item, config),
-                          this.now(),
-                        )
-                      : null;
-                  },
-                }
-              : {}),
             ...(this.options.onRunnerHostRefusals
               ? { onRunnerHostRefusals: this.options.onRunnerHostRefusals }
               : {}),

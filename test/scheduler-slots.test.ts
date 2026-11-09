@@ -77,7 +77,11 @@ test("work running without a runner placement leaves its slot free for the next 
   try {
     expect(workspaceDispatch(db, { now: NOW })).toEqual(["next-1", "next-2", "next-3"]);
     expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
-    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [NOW + 2, second]);
+    db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
+      NOW + 2,
+      NOW + 2,
+      second,
+    ]);
     db.run("UPDATE run SET status='ended' WHERE id=?", [second]);
     expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["next-4"]);
   } finally {

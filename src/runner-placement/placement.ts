@@ -26,6 +26,7 @@ import {
   immediate,
   runnerHasCapacity,
   pinnedSlotsReserved,
+  schedulerRunnerSlots,
   runnerHelperAvailability,
   runnerOccupancy,
   runnerSlotsHeldBetweenCommands,
@@ -302,6 +303,9 @@ export function createRunnerPlacement(options: {
       input.signal?.throwIfAborted();
       if (!input.profile) throw new Error("Runner agent profile is required");
       const current = scope(input);
+      const admissionRunner = input.itemId
+        ? schedulerRunnerSlots(db, now()).find((row) => row.itemId === input.itemId)?.runnerId
+        : null;
       const binding = authority(current);
       const at = now();
       // A task runs on the runners of the person who delegated it, then on the shared runners
@@ -363,9 +367,11 @@ export function createRunnerPlacement(options: {
         .filter((runner) => {
           const reason = !runner.eligible
             ? runner.reason
-            : pinnedOnline && runner.id !== pinnedRunnerId
-              ? "run pinned to another online runner"
-              : null;
+            : admissionRunner && runner.id !== admissionRunner
+              ? "slot reserved on another runner"
+              : pinnedOnline && runner.id !== pinnedRunnerId
+                ? "run pinned to another online runner"
+                : null;
           if (reason) input.onRejected?.(runner.id, reason);
           return reason === null;
         });

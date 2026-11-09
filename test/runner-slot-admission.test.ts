@@ -8,6 +8,9 @@ import {
   getJob,
   insertRun,
   listItemHolds,
+  schedulerRunnerSlots,
+  getWorkItem,
+  runnerHasCapacity,
   recordRunnerCapacity,
   recordRunnerRepositories,
   runnerSlotFree,
@@ -23,6 +26,8 @@ import {
 } from "../src/runner-placement";
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerHealth } from "../src/runner-health";
+import { dispatch } from "../src/scheduler";
+import { workspaceAdmission } from "./fake-workspace";
 import { tempDb } from "./helpers";
 
 import { workspaceWithRunners, REPOSITORY, NOW } from "./runner-slot-fixture";
@@ -199,7 +204,7 @@ test("a raised capacity and a resumed runner wake parked items; an unchanged rep
   expect(runAt()).toBe(NOW + 3);
 });
 
-test("unplaced flexible work cannot hide the slot placement may take from exclusive work", () => {
+test("an admission reserves only its chosen runner and placement honors that choice", async () => {
   const db = tempDb();
   const { pair, queue, pass } = workspaceWithRunners(db);
   pair("owner", 1, null);
@@ -220,8 +225,19 @@ test("unplaced flexible work cannot hide the slot placement may take from exclus
       (r) => r.id === other,
     )!.rejection,
   ).not.toBeNull();
-  expect(pass()).toEqual(["a-flexible"]);
+  expect(pass()).toEqual(["a-flexible", "b-exclusive"]);
   expect(pass()).toEqual([]);
+  expect(schedulerRunnerSlots(db, NOW).find((row) => row.itemId === "a-flexible")?.runnerId).toBe(
+    other,
+  );
+  const placement = createRunnerPlacement({ db, now: () => NOW });
+  const offered = await placement.candidates({
+    itemId: "a-flexible",
+    role: "implementer",
+    purpose: "work",
+    profile: { agent: "claude", model: null },
+  });
+  expect(offered.map((runner) => runner.id)).toEqual([other]);
 });
 
 test("an admin repository policy refusal is not a host-config warning", () => {
@@ -305,4 +321,60 @@ test("a successful background sign-in check wakes parked work", () => {
   expect(
     itemRunnerVerdicts(db, { itemId: "parked", agent: "claude", now: at })!.runners[0]!.rejection,
   ).toBeNull();
+});
+
+test("admission includes teardown occupancy that placement still considers full", () => {
+  const db = tempDb();
+  const { pair, queue, pass, workspace } = workspaceWithRunners(db);
+  const id = pair("agentbox", 1, [REPOSITORY]);
+  queue("old");
+  const run = insertRun(db, { itemId: "old", now: NOW, status: "ended" });
+  db.run("UPDATE work_item SET state='completed' WHERE id='old'");
+  db.run(
+    "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,?,?,1,0,'old',?,?)",
+    [run.id, id, workspace.id, NOW - 1, NOW - 1],
+  );
+  queue("next");
+  expect(runnerHasCapacity(db, id, NOW)).toBe(false);
+  expect(pass()).toEqual([]);
+  db.run("UPDATE runner_work SET teardown_confirmed_at=? WHERE run_id=?", [NOW, run.id]);
+  expect(runnerHasCapacity(db, id, NOW)).toBe(true);
+  expect(pass()).toEqual(["next"]);
+});
+
+test("an enabled but unavailable placement scope stays queued while disabled checks allow legacy dispatch", () => {
+  const db = tempDb();
+  const { pair, queue } = workspaceWithRunners(db);
+  pair("agentbox", 1, [REPOSITORY]);
+  queue("unknown");
+  const options = { now: NOW, admission: workspaceAdmission(db) };
+  expect(dispatch(db, { ...options, itemRunners: () => null })).toEqual([]);
+  expect(getWorkItem(db, "unknown")?.state).toBe("queued");
+  expect(listItemHolds(db)[0]?.blockers[0]).toContain("placement scope");
+  expect(dispatch(db, options)).toEqual(["unknown"]);
+});
+
+test("two flexible slow starts reserve different runner slots", async () => {
+  const db = tempDb();
+  const { pair, queue, pass } = workspaceWithRunners(db);
+  pair("one", 1, [REPOSITORY]);
+  pair("two", 1, [REPOSITORY]);
+  queue("a");
+  queue("b");
+  expect(pass()).toEqual(["a", "b"]);
+  const slots = schedulerRunnerSlots(db, NOW);
+  expect(new Set(slots.map((row) => row.runnerId)).size).toBe(2);
+  expect(pass()).toEqual([]);
+  const placement = createRunnerPlacement({ db, now: () => NOW });
+  for (const itemId of ["a", "b"]) {
+    const offered = await placement.candidates({
+      itemId,
+      role: "implementer",
+      purpose: "work",
+      profile: { agent: "claude", model: null },
+    });
+    expect(offered.map((runner) => runner.id)).toEqual([
+      slots.find((slot) => slot.itemId === itemId)!.runnerId!,
+    ]);
+  }
 });

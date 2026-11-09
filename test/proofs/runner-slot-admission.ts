@@ -1,4 +1,10 @@
-import { claimNextJob, getWorkItem, listItemHolds, recordRunnerRepositories } from "../../src/db";
+import {
+  claimNextJob,
+  getWorkItem,
+  listItemHolds,
+  recordRunnerRepositories,
+  schedulerRunnerSlots,
+} from "../../src/db";
 import { JOB_KIND } from "../../src/core";
 import { workspaceWithRunners, REPOSITORY, NOW } from "../runner-slot-fixture";
 import type { Proof } from "./harness";
@@ -24,9 +30,14 @@ export default {
       "no refused start can be claimed",
       claimNextJob(db, { now: NOW, queues: [JOB_KIND.start] }) === null,
     );
-    pair("agentbox", 2, [REPOSITORY]);
+    const agentbox = pair("agentbox", 2, [REPOSITORY]);
     const admitted = pass();
     proof.expect("only two items are admitted", admitted.length === 2, admitted);
+    proof.expect(
+      "each admitted item reserves only the runner that accepts it",
+      schedulerRunnerSlots(db, NOW).length === 2 &&
+        schedulerRunnerSlots(db, NOW).every((slot) => slot.runnerId === agentbox),
+    );
     const claims = Array.from({ length: 2 }, (_, i) =>
       claimNextJob(db, {
         workerId: `proof-${i}`,
@@ -53,5 +64,9 @@ export default {
     );
     recordRunnerRepositories(db, goldbox, [REPOSITORY], NOW + 1);
     proof.expect("newly allowed capacity admits the held item", pass().includes("c"));
+    proof.expect(
+      "newly eligible runner owns the third admission",
+      schedulerRunnerSlots(db, NOW).find((slot) => slot.itemId === "c")?.runnerId === goldbox,
+    );
   },
 } satisfies Proof;
