@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { itemDelegationIdSteps, settled, sqliteDb, type Q, type Steps } from "../db";
+import { itemDelegationIdSteps, sqliteDb, type Q, type Steps } from "../db";
 import {
   delegationReadinessSteps,
   itemReadinessSteps,
@@ -10,10 +10,10 @@ import {
 export type HeldReason = "missing" | "project" | "workspace" | ReadinessHold;
 export type Admission = { ok: true } | { ok: false; held: HeldReason };
 export type ItemAdmission = {
-  canDispatchDelegation: (delegationId: string) => boolean;
-  canStart: (itemId: string) => Admission;
-  canMerge: (itemId: string) => Admission;
-  /** The same checks as steps, for use inside a transaction. Without them the scheduler reads the sync checks. */
+  canDispatchDelegation: (delegationId: string) => Promise<boolean>;
+  canStart: (itemId: string) => Promise<Admission>;
+  canMerge: (itemId: string) => Promise<Admission>;
+  /** The same checks as steps, for use inside a transaction. Without them the scheduler settles the checks above. */
   steps?: {
     canDispatchDelegation: (q: Q, delegationId: string) => Steps<boolean>;
     canStart: (q: Q, itemId: string) => Steps<Admission>;
@@ -50,9 +50,9 @@ export function createAdmission(input: {
   }
   return {
     canDispatchDelegation: (delegationId) =>
-      settled(store.run((q) => canDispatchDelegation(q, delegationId))),
-    canStart: (itemId) => settled(store.run((q) => canStart(q, itemId))),
-    canMerge: (itemId) => settled(store.run((q) => decide(q, itemId, "merge"))),
+      store.run((q) => canDispatchDelegation(q, delegationId)),
+    canStart: (itemId) => store.run((q) => canStart(q, itemId)),
+    canMerge: (itemId) => store.run((q) => decide(q, itemId, "merge")),
     steps: { canDispatchDelegation, canStart },
   };
 }

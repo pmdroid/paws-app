@@ -114,9 +114,9 @@ test("a blocked hold without an open blocker is journaled as an inconsistency", 
   try {
     item(db, "PAS-841");
     const blocked: ItemAdmission = {
-      canDispatchDelegation: () => true,
-      canStart: () => ({ ok: false, held: "blocked" }),
-      canMerge: () => ({ ok: false, held: "blocked" }),
+      canDispatchDelegation: async () => true,
+      canStart: async () => ({ ok: false, held: "blocked" }),
+      canMerge: async () => ({ ok: false, held: "blocked" }),
     };
     const { lines, log } = journal();
     expect(await dispatch(db, { now: 1, log, admission: blocked })).toEqual([]);
