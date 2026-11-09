@@ -1,4 +1,4 @@
-import { isAgentServiceError } from "../src/core";
+import { isAgentServiceError, quotaSignal } from "../src/core";
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -306,4 +306,25 @@ test("worker reasons reject plain-sentence secrets and retain service retry clas
     expect(isAgentServiceError(`Run failed during agent: ${reason}`)).toBe(true);
     expect(reason).not.toContain("secret");
   }
+});
+
+test("a worker keeps an agent's usage limit and its reset time, and nothing else from the message", () => {
+  const reset = new Date(2030, 10, 11, 6, 35).getTime();
+  const reason = describeRunnerFailure(
+    new Error(
+      "Internal error: You've hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 11th, 2030 6:35 AM.",
+    ),
+    [],
+    true,
+  );
+  expect(reason).toBe(`usage limit reached; resets ${new Date(reset).toISOString()}.`);
+  const reported = `Run failed during agent: ${reason}`;
+  expect(isAgentServiceError(reported)).toBe(false);
+  expect(quotaSignal(reported, reset - 3_600_000)).toMatchObject({
+    state: "exhausted",
+    resetsAt: reset,
+  });
+  expect(
+    describeRunnerFailure(new Error("Internal error: API Error: 500 Internal"), [], true),
+  ).toBe("api_error: temporary provider failure.");
 });

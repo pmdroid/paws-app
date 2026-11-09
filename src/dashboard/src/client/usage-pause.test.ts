@@ -37,9 +37,9 @@ describe("run page while the agent waits for its usage limit", () => {
   test("shows Paused · usage limit, the reset time and the place for Resume now and Stop", () => {
     const html = runPage(pausedSnapshot());
     expect(html).toContain("Paused · usage limit");
-    expect(html).toContain("paused until 18:00");
+    expect(html).toContain("resumes at 2026-10-21 18:00 UTC");
     expect(html).toContain('<h2 id="usage-pause-heading">Paused</h2>');
-    expect(html).toContain("Claude reached its usage limit. Paws continues at 18:00 UTC.");
+    expect(html).toContain("Claude usage limit reached; resumes at 2026-10-21 18:00 UTC.");
     expect(html).toContain("At 18:00 Paws continues the item on runner agentbox.");
     expect(html.match(/id="execution-controls"/g)).toHaveLength(1);
     expect(html.indexOf('id="execution-controls"')).toBeGreaterThan(

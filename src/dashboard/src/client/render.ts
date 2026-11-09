@@ -926,7 +926,7 @@ function usagePauseSection(item: StatusItem, run: StatusRun, pause: StatusUsageP
   const at = utcClock(pause.resumeAt);
   return `<section class="usage-pause" aria-labelledby="usage-pause-heading">
     <div class="between"><h2 id="usage-pause-heading">Paused</h2>${executionControls(item, run)}</div>
-    <div class="closeout-result usage-pause-card"><span class="result-icon" aria-hidden="true">II</span><div class="min-w-0"><p><b>${esc(pause.agent)} reached its usage limit. Paws continues at ${esc(at)} UTC.</b></p><p>The work so far is kept: branch, worktree and the agent conversation. At ${esc(at)} Paws continues the item${run.runner ? ` on runner ${esc(run.runner)}` : ""}.</p></div></div>
+    <div class="closeout-result usage-pause-card"><span class="result-icon" aria-hidden="true">II</span><div class="min-w-0"><p><b>${esc(pause.agent)} usage limit reached; resumes at ${esc(pause.resumeAt.slice(0, 10))} ${esc(at)} UTC.</b></p><p>The work so far is kept: branch, worktree and the agent conversation. At ${esc(at)} Paws continues the item${run.runner ? ` on runner ${esc(run.runner)}` : ""}.</p></div></div>
   </section>`;
 }
 

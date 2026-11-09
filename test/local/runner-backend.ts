@@ -3091,7 +3091,7 @@ export async function probeRunnerBackend(
           ? ""
           : `${resume.slice(0, 10)} `;
       assert.deepEqual(lines, [
-        `Paused: Codex reached its usage limit. Paws continues at ${day}${resume.slice(11, 16)} UTC.`,
+        `Paused: Codex usage limit reached; resumes at ${day}${resume.slice(11, 16)} UTC.`,
       ]);
       now += 180_000;
       for (const hostId of hostIds) work.heartbeat(hostId);
