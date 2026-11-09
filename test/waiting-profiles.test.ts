@@ -143,10 +143,10 @@ test("only unfinished runs without live work leases change; queued items still r
   expect(existsSync(noSnapshot.file)).toBe(false);
   expect(getWorkItem(f.db, queued.id)!.currentRunId).toBeNull();
   const internals = f.orchestrator as unknown as {
-    ensureRun(item: WorkItemRecord): { id: string };
+    ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
     profileSnapshot(id: string): unknown;
   };
-  const next = internals.ensureRun(queued);
+  const next = await internals.ensureRun(queued);
   expect(internals.profileSnapshot(next.id)).toEqual(profiles);
 });
 
@@ -155,12 +155,12 @@ test("agent change announces once at session start, including after a new run", 
   const waiting = f.seed("awaiting_input");
   await f.save(true);
   const internal = f.orchestrator as unknown as {
-    ensureRun(item: WorkItemRecord): { id: string };
+    ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
     remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
   };
   f.db.run("UPDATE run SET status='ended' WHERE id=?", [waiting.run.id]);
   f.db.run("UPDATE work_item SET state='running' WHERE id=?", [waiting.item.id]);
-  const run = internal.ensureRun(getWorkItem(f.db, waiting.item.id)!);
+  const run = await internal.ensureRun(getWorkItem(f.db, waiting.item.id)!);
   const input: RunAgentOptions = {
     role: "implementer",
     runId: run.id,
@@ -181,16 +181,16 @@ test("agent change announces once at session start, including after a new run", 
   ]);
 });
 
-test("a retry resolves profiles from Settings, not the previous run's snapshot", () => {
+test("a retry resolves profiles from Settings, not the previous run's snapshot", async () => {
   const f = fixture();
   const failed = f.seed("running");
   writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
   f.db.run("UPDATE run SET status='lost' WHERE id=?", [failed.run.id]);
   const internals = f.orchestrator as unknown as {
-    ensureRun(item: WorkItemRecord): { id: string };
+    ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
     readProfileSnapshot(id: string): unknown;
   };
-  const next = internals.ensureRun(getWorkItem(f.db, failed.item.id)!);
+  const next = await internals.ensureRun(getWorkItem(f.db, failed.item.id)!);
   expect(next.id).not.toBe(failed.run.id);
   expect(getWorkItem(f.db, failed.item.id)!.currentRunId).toBe(next.id);
   expect(internals.readProfileSnapshot(next.id)).toEqual({ profiles });
@@ -205,19 +205,19 @@ test("a pending agent switch announcement carries to a retry's new run", async (
   const waiting = f.seed("awaiting_input");
   await f.save(true);
   const internals = f.orchestrator as unknown as {
-    ensureRun(item: WorkItemRecord): { id: string };
+    ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
     readProfileSnapshot(id: string): { profiles?: unknown; settingsSwitch?: unknown } | null;
   };
   const pending = internals.readProfileSnapshot(waiting.run.id)!.settingsSwitch;
   expect(pending).toMatchObject({ previousAgent: "claude" });
   f.db.run("UPDATE run SET status='lost' WHERE id=?", [waiting.run.id]);
   f.db.run("UPDATE work_item SET state='running' WHERE id=?", [waiting.item.id]);
-  const next = internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
+  const next = await internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
   expect(internals.readProfileSnapshot(next.id)).toEqual({ profiles, settingsSwitch: pending });
   // Settings moved back to the original agent: there is no switch left to announce.
   writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles, projects: [] });
   f.db.run("UPDATE run SET status='lost' WHERE id=?", [next.id]);
-  const back = internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
+  const back = await internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
   expect(internals.readProfileSnapshot(back.id)).toEqual({ profiles: oldProfiles });
 });
 
@@ -274,13 +274,15 @@ test.each([false, true])(
     writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles, projects: [] });
     const waiting = f.seed("paused");
     const internals = f.orchestrator as unknown as {
-      ensureRun(item: WorkItemRecord): { id: string };
+      ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
       remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
     };
-    if (observed) internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
+    if (observed) await internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
     writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
     f.db.run("UPDATE work_item SET state='running' WHERE id=?", [waiting.item.id]);
-    expect(internals.ensureRun(getWorkItem(f.db, waiting.item.id)!).id).toBe(waiting.run.id);
+    expect((await internals.ensureRun(getWorkItem(f.db, waiting.item.id)!)).id).toBe(
+      waiting.run.id,
+    );
     await internals.remoteAgentForItem(waiting.item.id)({
       role: "implementer",
       runId: waiting.run.id,
@@ -298,7 +300,7 @@ test.each([false, true])(
   },
 );
 
-test("automatic reconciliation waits for a live runner lease to end", () => {
+test("automatic reconciliation waits for a live runner lease to end", async () => {
   const f = fixture();
   const waiting = f.seed("running");
   writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
@@ -308,12 +310,12 @@ test("automatic reconciliation waits for a live runner lease to end", () => {
     [waiting.run.id, "runner", "workspace", 1, 0, "command", 2000],
   );
   const internals = f.orchestrator as unknown as {
-    ensureRun(item: WorkItemRecord): { id: string };
+    ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
   };
-  internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
+  await internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
   expect(JSON.parse(readFileSync(waiting.file, "utf8")).profiles).toEqual(oldProfiles);
   f.db.run("UPDATE runner_work SET ended_at=1000 WHERE run_id=?", [waiting.run.id]);
-  internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
+  await internals.ensureRun(getWorkItem(f.db, waiting.item.id)!);
   expect(JSON.parse(readFileSync(waiting.file, "utf8")).profiles).toEqual(profiles);
 });
 

@@ -1,3 +1,15 @@
+import { failWorkItemSteps, runnerWorkHasResultSteps, releaseRunCapacitySteps } from "../db";
+import {
+  applyWorkItemEventSteps,
+  cancelOpenJobsSteps,
+  loseActiveItemRunsSteps,
+  getRunSteps,
+  markRunSteps,
+  takeRunnerSetupResumeSteps,
+  insertRunSteps,
+  setCurrentRunSteps,
+  claimRunSteps,
+} from "../db";
 import { dashboardUrl } from "../dashboard-links";
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
@@ -277,7 +289,6 @@ import {
   listAgentCloseout,
   recordAgentCloseout,
   immediate,
-  claimRun,
   drainInstanceCommands,
   insertRun,
   listInFlightItems,
@@ -339,7 +350,6 @@ import {
   listRunnerSetupHolds,
   markRunnerSetupNotified,
   releaseRunnerSetupHold,
-  takeRunnerSetupResume,
   runnerAgentName,
   runnerCapacityWait,
   activeRunnerIds,
@@ -380,7 +390,6 @@ import {
   latestRunningAnswer,
   linearOutboxKeyed,
   listItemIds,
-  loseActiveItemRuns,
   moveDelegationSession,
   openRunnerRepositoryQuestions,
   openTaskDependents,
@@ -2011,7 +2020,7 @@ export class Orchestrator {
       }
       const item = itemId ? getWorkItem(this.db, itemId) : null;
       if (item)
-        this.fail(
+        await this.fail(
           item,
           "merge",
           withAcceptedBranch(`merge timed out waiting for GitHub: ${waiting.message}`, item),
@@ -2513,7 +2522,7 @@ export class Orchestrator {
           return;
         }
         if (retry > MAX_TRANSIENT_RETRIES) {
-          this.fail(
+          await this.fail(
             item,
             "run_error",
             `Stopped after ${MAX_TRANSIENT_RETRIES} retries. ${message}`,
@@ -2553,7 +2562,12 @@ export class Orchestrator {
         return;
       }
       if (job.attempts >= job.maxAttempts)
-        this.fail(item, "run_error", `Stopped after ${job.attempts} attempts. ${message}`, error);
+        await this.fail(
+          item,
+          "run_error",
+          `Stopped after ${job.attempts} attempts. ${message}`,
+          error,
+        );
       // A start is only claimed while its item is queued, so its retries continue as a resume.
       else if (job.queue === JOB_KIND.start && item.state === "running") {
         this.settleItemAwake(item.id);
@@ -2913,7 +2927,7 @@ export class Orchestrator {
         const message = error instanceof Error ? error.message : String(error);
         const accepted = item.state === "merge_queue" || item.checkpoint?.phase === "merge_queue";
         const text = `Stopped after ${job.attempts} attempts. ${message}`;
-        this.fail(item, reason, accepted ? withAcceptedBranch(text, item) : text, error);
+        await this.fail(item, reason, accepted ? withAcceptedBranch(text, item) : text, error);
       }
       throw error;
     }
@@ -3034,7 +3048,7 @@ export class Orchestrator {
       );
       return true;
     }
-    const run = this.ensureRun(item);
+    const run = await this.ensureRun(item);
     if (!handoff) {
       if (classification?.mode !== "clarify") throw new Error("Task clarification is missing");
       return this.requestTaskClarification(item, run.id, classification.question);
@@ -3135,7 +3149,7 @@ export class Orchestrator {
     mode: ResponseTaskMode,
     handoff?: string,
   ): Promise<void> {
-    const run = this.ensureRun(item);
+    const run = await this.ensureRun(item);
     item = getWorkItem(this.db, item.id)!;
     const profile = this.profileSnapshot(run.id).implementer;
     const live = this.beginLive(item.id, run.id);
@@ -3297,7 +3311,7 @@ export class Orchestrator {
         getWorkItem(this.db, item.id)?.state !== "awaiting_input"
       ) {
         if (isTransient(error)) throw error;
-        this.fail(
+        await this.fail(
           item,
           "answer_error",
           error instanceof Error ? error.message : String(error),
@@ -3359,7 +3373,7 @@ export class Orchestrator {
   private async runItem(item: WorkItemRecord, handoff?: string): Promise<void> {
     const repository = this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
-      this.fail(item, "no_repository", "No repository is selected for this item.");
+      await this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
     }
     if (this.stopped(item.id)) return;
@@ -3368,7 +3382,7 @@ export class Orchestrator {
     if (item.branchName !== branch) {
       setItemBranchName(this.db, item.id, branch);
     }
-    const run = this.ensureRun(item);
+    const run = await this.ensureRun(item);
     item = getWorkItem(this.db, item.id)!;
     const profiles = this.profileSnapshot(run.id);
     const live = this.beginLive(item.id, run.id);
@@ -3568,7 +3582,7 @@ export class Orchestrator {
       const finished = getWorkItem(this.db, item.id);
       if (finished === null || finished.state === "cancelled" || finished.cancelRequested) return;
       if (executed.run.authRequired) {
-        this.fail(finished, "auth", executed.run.errorMessage ?? "Claude login is missing.");
+        await this.fail(finished, "auth", executed.run.errorMessage ?? "Claude login is missing.");
         return;
       }
       // A run handed over to another runner keeps its question; the item waits for the answer.
@@ -3594,7 +3608,7 @@ export class Orchestrator {
       if (executed.run.stopReason === "error" && isAgentServiceError(executed.run.errorMessage))
         throw new AgentServiceError(executed.run.errorMessage!);
       if (executed.run.stopReason !== "end_turn") {
-        this.fail(
+        await this.fail(
           finished,
           executed.run.stopReason,
           executed.run.errorMessage ?? `Run stopped (${executed.run.stopReason}).`,
@@ -3685,7 +3699,7 @@ export class Orchestrator {
           deferred = true;
           capacityWaiting = capacityWaitIn(error) !== null;
           throw error;
-        } else this.fail(current, "run_error", message, error);
+        } else await this.fail(current, "run_error", message, error);
       }
 
       journalCaught(
@@ -4957,7 +4971,7 @@ export class Orchestrator {
         `reverify job ${job.id} stalled for item ${item.id}: ownership held for ${VERIFICATION_OWNER_WAIT_MS / 60_000} minutes`,
       );
       if (this.activitySession(current) === null) {
-        this.fail(
+        await this.fail(
           current,
           "no_tracker_session",
           "Cannot request verification help because this item has no tracker session.",
@@ -4980,7 +4994,7 @@ export class Orchestrator {
         )
           return;
         if (job.attempts < job.maxAttempts) throw error;
-        this.fail(
+        await this.fail(
           after,
           "closeout_help_failed",
           `Could not request verification help: ${error instanceof Error ? error.message : String(error)}`,
@@ -5047,7 +5061,7 @@ export class Orchestrator {
     if (item === null || !this.reverifyEligible(item)) return;
     const repository = this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
-      this.fail(item, "no_repository", "No repository is selected for this item.");
+      await this.fail(item, "no_repository", "No repository is selected for this item.");
       return;
     }
     const { repo: worktree, ref } = await this.legacyItemHead(item);
@@ -5081,7 +5095,7 @@ export class Orchestrator {
       if (isTransient(error)) throw error;
       journalCaught(error, "orchestrator.reverify.trim", itemId, undefined, this.options.journal);
       const message = error instanceof Error ? error.message : String(error);
-      this.fail(item, "reverify", message, error);
+      await this.fail(item, "reverify", message, error);
       return;
     }
     if (item.state !== "verifying" && item.state !== "merge_queue") return;
@@ -5702,7 +5716,7 @@ export class Orchestrator {
     const item = getWorkItem(this.db, readString(payload, "itemId") ?? "");
     if (!item) return;
     if (step.kind === "failed") {
-      this.fail(item, step.reason, step.message);
+      await this.fail(item, step.reason, step.message);
       return;
     }
     const repository = this.repositoryForItem(item);
@@ -6669,12 +6683,13 @@ export class Orchestrator {
     canAct: () => boolean = () => true,
     onCommitted?: () => void,
   ): Promise<boolean> {
-    const paused = immediate(this.db, () => {
-      const item = getWorkItem(this.db, itemId);
+    const now = () => this.now();
+    const paused = await this.store.transaction(function* (q) {
+      const item = yield* getWorkItemSteps(q, itemId);
       if (!canAct() || item?.state !== "running" || item.cancelRequested) return false;
-      applyWorkItemEvent(this.db, itemId, "pause");
-      cancelOpenJobs(this.db, { itemId, reason: "Paused by a workspace member", now: this.now() });
-      loseActiveItemRuns(this.db, itemId, this.now());
+      yield* applyWorkItemEventSteps(q, itemId, "pause");
+      yield* cancelOpenJobsSteps(q, { itemId, reason: "Paused by a workspace member", now: now() });
+      yield* loseActiveItemRunsSteps(q, itemId, now());
       onCommitted?.();
       return true;
     });
@@ -7049,21 +7064,24 @@ export class Orchestrator {
     }
   }
 
-  private ensureRun(item: WorkItemRecord): { id: string } {
+  private async ensureRun(item: WorkItemRecord): Promise<{ id: string }> {
     if (item.currentRunId !== null) {
-      const existing = getRun(this.db, item.currentRunId);
+      const existing = await this.store.run((q) => getRunSteps(q, item.currentRunId!));
       if (existing && (existing.status === "active" || existing.status === "ended")) {
         this.reconcileAgentSettings();
-        markRun(this.db, existing.id, "active", this.now());
-        this.claimRun(existing.id);
+        await this.store.run((q) => markRunSteps(q, existing.id, "active", this.now()));
+        await this.claimRun(existing.id);
         return existing;
       }
       // A runner-setup hold stopped this run before any work. The resume continues it, so the
       // task keeps one run.
-      if (existing?.status === "lost" && takeRunnerSetupResume(this.db, item.id, existing.id)) {
+      if (
+        existing?.status === "lost" &&
+        (await this.store.run((q) => takeRunnerSetupResumeSteps(q, item.id, existing.id)))
+      ) {
         this.reconcileAgentSettings();
-        markRun(this.db, existing.id, "active", this.now());
-        this.claimRun(existing.id);
+        await this.store.run((q) => markRunSteps(q, existing.id, "active", this.now()));
+        await this.claimRun(existing.id);
         return existing;
       }
     }
@@ -7072,15 +7090,17 @@ export class Orchestrator {
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
     const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
     const profiles = resolveAgentProfiles(config, repoName);
-    const run = insertRun(this.db, {
-      itemId: item.id,
-      now: this.now(),
-      status: "active",
-      kind: "implement",
-      agent: profiles.implementer.agent,
-      freshSession: true,
-      ownerInstance: this.options.instanceId ?? null,
-    });
+    const run = await this.store.run((q) =>
+      insertRunSteps(q, {
+        itemId: item.id,
+        now: this.now(),
+        status: "active",
+        kind: "implement",
+        agent: profiles.implementer.agent,
+        freshSession: true,
+        ownerInstance: this.options.instanceId ?? null,
+      }),
+    );
     if (item.currentRunId) {
       // Only an unannounced Settings switch carries over, while it still changes the agent.
       const pending = this.readProfileSnapshot(item.currentRunId)?.settingsSwitch;
@@ -7093,7 +7113,7 @@ export class Orchestrator {
         { mode: 0o600 },
       );
     }
-    setCurrentRun(this.db, item.id, run.id);
+    await this.store.run((q) => setCurrentRunSteps(q, item.id, run.id));
     return run;
   }
 
@@ -7108,9 +7128,14 @@ export class Orchestrator {
     });
   }
 
-  private fail(item: WorkItemRecord, reason: string, text: string, cause?: unknown): void {
+  private async fail(
+    item: WorkItemRecord,
+    reason: string,
+    text: string,
+    cause?: unknown,
+  ): Promise<void> {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
-    const current = getWorkItem(this.db, item.id) ?? item;
+    const current = (await this.store.run((q) => getWorkItemSteps(q, item.id))) ?? item;
     console.error(
       `${current.linearIdentifier} failed (${reason}): ${text}`,
       ...(cause === undefined ? [] : [cause]),
@@ -7121,9 +7146,15 @@ export class Orchestrator {
       current.state === "recovering" ||
       current.state === "merge_queue"
     ) {
-      const failed = failWorkItem(this.db, current, reason, text, this.now());
-      if (failed && current.currentRunId && runnerWorkHasResult(this.db, current.currentRunId))
-        releaseRunCapacity(this.db, current.currentRunId, this.now());
+      const failed = await this.store.transaction((q) =>
+        failWorkItemSteps(q, current, reason, text, this.now()),
+      );
+      if (
+        failed &&
+        current.currentRunId &&
+        (await this.store.run((q) => runnerWorkHasResultSteps(q, current.currentRunId!)))
+      )
+        await this.store.run((q) => releaseRunCapacitySteps(q, current.currentRunId!, this.now()));
     } else {
       this.post(current, "error", text, `fail:${current.id}:${current.version}:${reason}`);
     }
@@ -9560,7 +9591,7 @@ export class Orchestrator {
         candidates.splice(selectedIndex, 1);
       }
       if (candidates.length === 0) {
-        this.fail(item, "no_repository", "No configured GitHub repository is accessible.");
+        await this.fail(item, "no_repository", "No configured GitHub repository is accessible.");
         return false;
       }
       if (candidates.length === 1 && savedAnswer === null) {
@@ -9575,7 +9606,7 @@ export class Orchestrator {
         controller.signal.throwIfAborted();
         if (!current()) return false;
         if (!accessible) {
-          this.fail(item, "no_repository", "No configured GitHub repository is accessible.");
+          await this.fail(item, "no_repository", "No configured GitHub repository is accessible.");
           return false;
         }
         bindWorkItemRepository(this.db, item.id, candidates[0]!);
@@ -9775,8 +9806,9 @@ export class Orchestrator {
     return (this.options.clock ?? systemClock).now();
   }
 
-  private claimRun(runId: string): void {
-    if (this.options.instanceId !== undefined) claimRun(this.db, runId, this.options.instanceId);
+  private async claimRun(runId: string): Promise<void> {
+    const instanceId = this.options.instanceId;
+    if (instanceId !== undefined) await this.store.run((q) => claimRunSteps(q, runId, instanceId));
   }
 
   private async waitWithoutAwake(
