@@ -286,3 +286,13 @@ test("unrecognized adapter output cannot disclose arbitrary credentials", () => 
     "agent exited with code 1",
   );
 });
+
+test("commit attribution rejection retains a fixed diagnostic without commit details", () => {
+  expect(
+    describeRunnerFailure(
+      new Error("Commit attribution rejected: private repository details"),
+      [],
+      true,
+    ),
+  ).toBe("Commit attribution rejected.");
+});

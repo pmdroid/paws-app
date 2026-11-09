@@ -122,11 +122,13 @@ export function describeRunnerFailure(
     const exit = /\b(?:exit(?:ed)?(?: with)?(?: code)?|exit code)[: ]+(-?\d{1,3})(?!\d)/i.exec(
       error.message,
     );
-    cause = abort
-      ? `turn aborted: ${abort[1]!.toLowerCase()}`
-      : exit
-        ? `agent exited with code ${exit[1]}`
-        : describeRunnerFailure(error, secrets);
+    cause = /attribution rejected/.test(error.message)
+      ? "Commit attribution rejected."
+      : abort
+        ? `turn aborted: ${abort[1]!.toLowerCase()}`
+        : exit
+          ? `agent exited with code ${exit[1]}`
+          : describeRunnerFailure(error, secrets);
   } else if (error instanceof RunnerCliFailure) cause = error.message;
   else if (error instanceof RunnerTransportError) cause = transportCause(error);
   else if (error instanceof RunnerRequestError) cause = requestCause(error);
