@@ -161,10 +161,14 @@ export default {
       new Response(replay.stdout).text(),
       new Response(replay.stderr).text(),
     ]);
-    proof.expect("runner question replay waits and delivers one answer", exit === 0, {
-      stdout,
-      stderr,
-    });
+    proof.expect(
+      "runner question replay asks once and answers every journal sequence in order",
+      exit === 0,
+      {
+        stdout,
+        stderr,
+      },
+    );
 
     await proof.delegate();
     const asked = await proof.waitFor(

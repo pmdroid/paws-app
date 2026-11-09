@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { PawsShutdown } from "../src/core";
 import { candidateRef, mirrorPath } from "../src/acp";
 import { PawsShutdown } from "../src/core";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
@@ -416,6 +417,15 @@ async function setup() {
     runners,
     backend,
     results,
+    answers(command: RunCommand, after = 0) {
+      return results.answers({
+        runnerId: runners.a,
+        runId: command.runId,
+        generation: command.generation,
+        token: grant(command, runners.a),
+        after,
+      });
+    },
     principal,
     workspaceId: workspace.id,
     item,
@@ -1055,14 +1065,28 @@ test("replayed questions attach to the open answer without asking or cancelling 
     record.runId,
   ]);
   for (let i = 0; i < 1000; i++) {
-    if (context.results.answered(command.runId, command.generation, 1)) break;
+    if (context.results.answered(command.runId, command.generation, 3)) break;
     await delay(1);
   }
   expect(context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
   expect(
     db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
-  ).toHaveLength(1);
+  ).toHaveLength(3);
+  expect(context.answers(command).map(({ sequence, answer }) => ({ sequence, answer }))).toEqual(
+    [1, 2, 3].map((sequence) => ({ sequence, answer: "Use commas." })),
+  );
+  expect(context.answers(command, 3)).toEqual([]);
+  // A later answered request must not be held behind an unanswered duplicate.
+  context.events(command, runners.a, [{ type: "question", text: "Which encoding?", options: [] }]);
+  context.results.answer({
+    runId: command.runId,
+    generation: command.generation,
+    sequence: 4,
+    answer: "UTF-8",
+  });
+  expect(context.answers(command, 3)).toEqual([{ sequence: 4, answer: "UTF-8" }]);
   expect(await context.next(runners.a, 50)).toBeNull();
+  expect(asks).toBe(1);
   context.submit(command, runners.a, { candidateSha: context.base });
   expect(await first.running).toMatchObject({ stopReason: "end_turn" });
 });
@@ -1107,18 +1131,28 @@ test("a replay attaches to a question already stored by an earlier attachment", 
   context.events(command, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
   expect(await context.next(runners.a, 50)).toBeNull();
   expect(asks).toBe(0);
+  // The first sequence was consumed before Paws restarted; the runner replays at sequence 2.
+  turn.stop.abort(new PawsShutdown());
+  await turn.running;
+  const resumed = context.turn(record, [], "stale");
+  context.events(command, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  expect(await context.next(runners.a, 50)).toBeNull();
   db.run("UPDATE question SET status='answered',answer='Use commas.' WHERE run_id=?", [
     record.runId,
   ]);
   for (let i = 0; i < 1000; i++) {
-    if (context.results.answered(command.runId, command.generation, 1)) break;
+    if (context.results.answered(command.runId, command.generation, 2)) break;
     await delay(1);
   }
   expect(context.results.answered(command.runId, command.generation, 1)).toBe("Use commas.");
   expect(
     db.query("SELECT * FROM runner_question_answer WHERE run_id=?").all(record.runId),
-  ).toHaveLength(1);
+  ).toHaveLength(2);
   expect(await context.next(runners.a, 50)).toBeNull();
   context.submit(command, runners.a, { candidateSha: context.base });
-  expect(await turn.running).toMatchObject({ stopReason: "end_turn" });
+  expect(context.answers(command).map(({ sequence, answer }) => ({ sequence, answer }))).toEqual(
+    [1, 2].map((sequence) => ({ sequence, answer: "Use commas." })),
+  );
+  expect(context.answers(command, 2)).toEqual([]);
+  expect(await resumed.running).toMatchObject({ stopReason: "end_turn" });
 });

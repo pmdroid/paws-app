@@ -18,6 +18,7 @@ import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
+  unansweredRunnerQuestions,
   askedQuestionRow,
   questionRowById,
   workspaceMemberUsableSql,
@@ -1030,6 +1031,7 @@ export function createRemoteAgentRunner(options: {
         let command: WorkCommand | undefined;
         let question: Promise<void> | undefined;
         let questionText: string | undefined;
+        let questionAnswer: string | undefined;
         let questionError: unknown;
         let publishedEffects = false;
         let asked = false;
@@ -2273,10 +2275,20 @@ export function createRemoteAgentRunner(options: {
                   },
                   origin,
                 );
-              if (event.type === "question") {
+              if (
+                event.type === "question" &&
+                results.answered(assigned.runId, assigned.generation, row.sequence) === null
+              ) {
                 if (question) {
                   if (questionText !== event.text)
                     throw new Error("Remote runner sent overlapping questions");
+                  if (questionAnswer !== undefined)
+                    results.answer({
+                      runId: assigned.runId,
+                      generation: assigned.generation,
+                      sequence: row.sequence,
+                      answer: questionAnswer,
+                    });
                   cursor = row.sequence;
                   db.run(
                     "UPDATE runner_work SET consumed_sequence=? WHERE run_id=? AND generation=?",
@@ -2293,6 +2305,7 @@ export function createRemoteAgentRunner(options: {
                 await emit({ type: "ask_team", question: event.text, phase: "asked" });
                 const currentCommand = assigned;
                 questionText = event.text;
+                questionAnswer = undefined;
                 question = (async () => {
                   const answer = stored
                     ? await (async () => {
@@ -2315,12 +2328,21 @@ export function createRemoteAgentRunner(options: {
                         { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
                       );
                   signal.throwIfAborted();
-                  results.answer({
-                    runId: currentCommand.runId,
-                    generation: currentCommand.generation,
-                    sequence: row.sequence,
-                    answer: answer.answer,
-                  });
+                  questionAnswer = answer.answer;
+                  // Replays have distinct journal sequences. Answer every outstanding copy,
+                  // including copies consumed by an attachment before this one.
+                  for (const pending of unansweredRunnerQuestions(db, currentCommand, [
+                    "question",
+                  ])) {
+                    const replay = scrub(work.openEvent(pending));
+                    if (replay.type !== "question" || replay.text !== event.text) continue;
+                    results.answer({
+                      runId: currentCommand.runId,
+                      generation: currentCommand.generation,
+                      sequence: pending.sequence,
+                      answer: answer.answer,
+                    });
+                  }
                   await emit({
                     type: "ask_team",
                     question: event.text,
