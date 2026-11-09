@@ -563,6 +563,11 @@ export async function openRunnerHealthRuntime(options: {
     }
   }, 250);
   return {
+    holds: () =>
+      [...(active ? [active] : []), ...talks.values()].flatMap(({ id, command }) => [
+        id,
+        ...(command.type === "helper" && command.conversation ? [command.conversation.runId] : []),
+      ]),
     status: () => ({
       active: active ? { executionId: active.id, commandId: active.command.id } : null,
       conversations: [...talks.values()].map((entry) => ({

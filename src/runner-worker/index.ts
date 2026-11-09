@@ -85,6 +85,7 @@ import {
   createRunnerResultDirectory,
   markRunnerAccountSignedIn,
   openRunnerAccountHome,
+  openRunnerCheckoutToGroup,
   publishRunnerAccountHome,
   readRunnerJob,
   readRunnerJobInputs,
@@ -858,6 +859,7 @@ export async function executeRunnerCommand(
   let startWorkPlan: string | undefined;
   const workStart = new AbortController();
   let githubRead: GitHubReadConfig | undefined;
+  let checkout: string | undefined;
   const readRedactor = () =>
     command.type === "run" && command.githubRead
       ? (text: string) => redactGitHubTokens(text, githubRead?.tokens())
@@ -950,6 +952,7 @@ export async function executeRunnerCommand(
       command.type === "run" ? command.runId : (talk?.runId ?? job.executionId),
     );
     if (command.type === "run" && !resumed) removeLeftoverCheckout(worktree);
+    if (!task) checkout = worktree;
     if (task) {
       const directory = openSync(
         worktree,
@@ -2441,6 +2444,8 @@ export async function executeRunnerCommand(
     previewStart.abort();
     await (await preview)?.stop("run_ended");
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
+    if (checkout && options.owners && process.getuid?.() !== options.owners.runnerUid)
+      openRunnerCheckoutToGroup(checkout);
     closeSync(eventJournal);
   }
 }
