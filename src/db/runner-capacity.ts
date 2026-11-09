@@ -165,8 +165,13 @@ export function* runnerSlotsHeldBetweenCommandsSteps(
 
 function* runnerOccupancyCapacitySteps(q: Q, runnerId: string) {
   const { runnerCapacity } = q.t;
-  const row = yield* q.one(q.orm.select({capacity:runnerCapacity.capacity,desired:runnerCapacity.desired}).from(runnerCapacity).where(eq(runnerCapacity.runnerId,runnerId)));
-  return row ? Math.min(row.capacity,row.desired ?? 16) : 0;
+  const row = yield* q.one(
+    q.orm
+      .select({ capacity: runnerCapacity.capacity, desired: runnerCapacity.desired })
+      .from(runnerCapacity)
+      .where(eq(runnerCapacity.runnerId, runnerId)),
+  );
+  return row ? Math.min(row.capacity, row.desired ?? 16) : 0;
 }
 
 export function runnerSlotsHeldBetweenCommands(
@@ -366,7 +371,8 @@ export function recordRunnerCapacity(
       recordRunnerCapacitySteps(q, runnerId, capacity, ceiling, conversations),
     ),
   );
-  if (settled(sqliteDb(db).run((q) => runnerOccupancyCapacitySteps(q, runnerId))) > before) wakeRunnerSlotWaits(db, runnerId, now);
+  if (settled(sqliteDb(db).run((q) => runnerOccupancyCapacitySteps(q, runnerId))) > before)
+    wakeRunnerSlotWaits(db, runnerId, now);
   return result;
 }
 
