@@ -1,8 +1,9 @@
 import { join } from "node:path";
 import { type LaunchInput, type Proof } from "./harness";
 
-const QUESTION = "Count the empty shelves too?";
-const ANSWER = "Yes, count the empty shelves as 0.";
+const QUESTION =
+  'Cargo.toml needs cargo, which isn\'t installed on the runner. Add it to mise.toml at the repository root and answer to retry:\n\n[tools]\nrust = "stable"';
+const ANSWER = "Added rust to mise.toml; retry.";
 const COMMIT = "Count widgets per shelf, empty shelves as 0";
 
 const answered = (launch: LaunchInput) =>
@@ -17,6 +18,7 @@ export default {
     "src/loop/orchestrator.ts",
     "src/loop/question-effects.ts",
     "src/questions/**",
+    "src/runner-worker/**",
     "src/linear/**",
   ],
   summary:
