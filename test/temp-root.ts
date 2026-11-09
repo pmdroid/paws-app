@@ -1,8 +1,24 @@
-import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { constants } from "node:os";
 import { join } from "node:path";
 
 const STALE_WITHOUT_PID_MS = 6 * 60 * 60 * 1000;
+
+function pidNamespace(): string | undefined {
+  try {
+    return readlinkSync("/proc/self/ns/pid");
+  } catch {
+    return undefined;
+  }
+}
 
 function alive(pid: number): boolean {
   try {
@@ -14,6 +30,7 @@ function alive(pid: number): boolean {
 }
 
 export function sweepStaleRoots(parent: string, now = Date.now()): void {
+  const namespace = pidNamespace();
   let names: string[];
   try {
     names = readdirSync(parent).filter((name) => name.startsWith("pt-"));
@@ -26,10 +43,17 @@ export function sweepStaleRoots(parent: string, now = Date.now()): void {
       const stat = lstatSync(dir);
       if (!stat.isDirectory() || stat.uid !== process.getuid?.()) continue;
       let pid: number | undefined;
+      let recordedNamespace: string | undefined;
       try {
-        pid = Number.parseInt(readFileSync(join(dir, ".pid"), "utf8"), 10);
+        const [recordedPid, ns] = readFileSync(join(dir, ".pid"), "utf8").trim().split(/\s+/);
+        pid = Number.parseInt(recordedPid ?? "", 10);
+        recordedNamespace = ns;
       } catch {}
-      const stale = pid && pid > 0 ? !alive(pid) : now - stat.mtimeMs > STALE_WITHOUT_PID_MS;
+      // PIDs are comparable only within the same known namespace.
+      const stale =
+        pid && pid > 0 && namespace && recordedNamespace === namespace
+          ? !alive(pid)
+          : now - stat.mtimeMs > STALE_WITHOUT_PID_MS;
       if (stale) rmSync(dir, { recursive: true, force: true });
     } catch {}
   }
@@ -38,7 +62,8 @@ export function sweepStaleRoots(parent: string, now = Date.now()): void {
 const parent = process.env.TMPDIR || "/tmp";
 sweepStaleRoots(parent);
 const root = mkdtempSync(join(parent, "pt-"));
-writeFileSync(join(root, ".pid"), String(process.pid));
+const namespace = pidNamespace();
+writeFileSync(join(root, ".pid"), `${process.pid}${namespace ? ` ${namespace}` : ""}`);
 process.env.TMPDIR = root;
 const gitConfig = join(root, "gitconfig");
 writeFileSync(gitConfig, "[user]\n\tname = Paws Test\n\temail = test@paws.invalid\n");
