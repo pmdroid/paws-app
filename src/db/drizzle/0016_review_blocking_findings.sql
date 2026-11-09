@@ -1,4 +1,4 @@
-PRAGMA foreign_keys=OFF;--> statement-breakpoint
+CREATE TABLE `__keep_review_finding_item` AS SELECT `finding_id`, `item_id`, `head_sha`, `seen_at` FROM `review_finding_item`;--> statement-breakpoint
 CREATE TABLE `__new_review_finding` (
 	`id` integer PRIMARY KEY NOT NULL,
 	`dedupe_key` text NOT NULL,
@@ -33,7 +33,8 @@ CREATE TABLE `__new_review_finding` (
 INSERT INTO `__new_review_finding`("id", "dedupe_key", "repository", "path", "lines", "first_line", "severity", "review", "text", "bug_class", "why", "first_item_id", "first_head", "first_seen_at", "last_item_id", "last_head", "last_seen_at", "item_count", "status", "status_by", "status_at", "status_reason", "filed_issue") SELECT "id", "dedupe_key", "repository", "path", "lines", "first_line", "severity", "review", "text", "bug_class", "why", "first_item_id", "first_head", "first_seen_at", "last_item_id", "last_head", "last_seen_at", "item_count", "status", "status_by", "status_at", "status_reason", "filed_issue" FROM `review_finding`;--> statement-breakpoint
 DROP TABLE `review_finding`;--> statement-breakpoint
 ALTER TABLE `__new_review_finding` RENAME TO `review_finding`;--> statement-breakpoint
-PRAGMA foreign_keys=ON;--> statement-breakpoint
+INSERT INTO `review_finding_item`(`finding_id`, `item_id`, `head_sha`, `seen_at`) SELECT `finding_id`, `item_id`, `head_sha`, `seen_at` FROM `__keep_review_finding_item`;--> statement-breakpoint
+DROP TABLE `__keep_review_finding_item`;--> statement-breakpoint
 CREATE INDEX `review_finding_last_seen` ON `review_finding` (`status`,`last_seen_at` DESC);--> statement-breakpoint
 CREATE INDEX `review_finding_path` ON `review_finding` (`repository`,`review`,`path`);--> statement-breakpoint
 CREATE UNIQUE INDEX `review_finding_dedupe_key_unique` ON `review_finding` (`dedupe_key`);
