@@ -150,7 +150,6 @@ export default {
         QUESTION.includes('rust = "stable"'),
       QUESTION,
     );
-    // Relay the worker's actual question through the scripted local tracker fixture.
     // Exercise the remote event replay path with its real runner store and command harness.
     const replay = Bun.spawn(
       ["bun", "test", "test/runner-handover-resume.test.ts", "--test-name-pattern", "replay"],
@@ -170,6 +169,7 @@ export default {
       },
     );
 
+    // Relay the worker's actual question through the scripted local tracker fixture.
     await proof.delegate();
     const asked = await proof.waitFor(
       "the question is asked and the item waits for input",
