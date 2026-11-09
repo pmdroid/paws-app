@@ -6,6 +6,7 @@ import {
   saveCandidatePathsSteps,
   saveCandidateRiskSteps,
 } from "../db";
+import { recoverStalledCloseout } from "./closeout-stall";
 import { getItemPullRequestSteps, recordItemCandidateSteps } from "../db";
 import { parkLeasedJobSteps } from "../db";
 import {
@@ -6851,6 +6852,14 @@ export class Orchestrator {
 
   async reconcileExecution(): Promise<void> {
     await this.dispatch();
+  }
+
+  async recoverStalledCloseout(): Promise<void> {
+    await recoverStalledCloseout(this.db, {
+      now: this.now(),
+      cancel: (id) => this.joinChangedItems([id]),
+      journal: this.options.journal ?? journal,
+    });
   }
 
   async checkPolicyBlocks(): Promise<void> {
