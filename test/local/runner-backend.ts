@@ -630,12 +630,31 @@ export async function probeRunnerBackend(
       token: earlyToken.token,
       result: {
         ...result(earlyCommand),
-        stopReason: "error",
-        errorMessage: "The agent stopped early",
+        stopReason: "cancelled",
+        cancelled: true,
+        interrupted: true,
         candidateSha: head,
       },
     });
-    assert.equal((await early).stopReason, "error");
+    let resumed = await next();
+    if (resumed.type === "cancel") resumed = await next();
+    if (resumed.type !== "run") throw new Error("Expected one restarted implementation");
+    assert.equal(getWorkItem(db, stopped.id)?.state, "running");
+    assert.equal(getWorkItem(db, stopped.id)?.checkpoint?.wipCommit, head);
+    const resumedToken = work.issueGrant({
+      runnerId,
+      runId: resumed.runId,
+      commandId: resumed.id,
+      generation: resumed.generation,
+    });
+    results.submit({
+      runnerId,
+      runId: resumed.runId,
+      generation: resumed.generation,
+      token: resumedToken.token,
+      result: { ...result(resumed), stopReason: "cancelled", cancelled: true, interrupted: true },
+    });
+    assert.equal((await early).stopReason, "cancelled");
     assert.equal(getWorkItem(db, stopped.id)?.checkpoint?.wipCommit, head);
     assert.equal(await git(["-C", source, "rev-parse", "HEAD"]), head);
     assert.equal(fetched, fetchedBefore + 1);

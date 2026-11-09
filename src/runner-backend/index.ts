@@ -85,6 +85,7 @@ import {
   CLOSEOUT_FOCUS_RUNNER_VERSION,
   PULL_REQUEST_DRAFT_RUNNER_VERSION,
   QUESTION_ENDS_TURN_RUNNER_VERSION,
+  INTERRUPT_RECOVERY_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
   SUGGESTED_FINDINGS_RUNNER_VERSION,
   REVIEW_FINDINGS_RUNNER_VERSION,
@@ -887,6 +888,7 @@ export function createRemoteAgentRunner(options: {
     handOverItem,
     runInProgress: (runId: string) => readers.has(runId),
     forItem(itemId: string) {
+      let retriedInterruption = false;
       const attempt = async (
         input: RunAgentOptions,
         excluded: readonly string[],
@@ -2585,6 +2587,33 @@ export function createRemoteAgentRunner(options: {
               false,
               undefined,
               false,
+              true,
+            );
+          }
+          if (
+            assigned.type === "run" &&
+            complete.interrupted &&
+            complete.stopReason === "cancelled" &&
+            complete.agentExited &&
+            !complete.handedOver &&
+            !complete.handoverFailure &&
+            !complete.timedOut &&
+            !retriedInterruption &&
+            !signal.aborted &&
+            getWorkItem(db, itemId)?.state === "running"
+          ) {
+            retriedInterruption = true;
+            journal(
+              `item ${itemId} run ${assigned.runId} interrupt source=unsolicited_agent; restarting once from stop checkpoint (runner recovery since ${INTERRUPT_RECOVERY_RUNNER_VERSION.join(".")})`,
+            );
+            work.finish(assigned.runId, assigned.generation);
+            command = undefined;
+            throw new RetryableRunnerError(
+              selected.id,
+              "The agent was interrupted unexpectedly; continue from the saved work.",
+              transcript,
+              publishedEffects,
+              undefined,
               true,
             );
           }

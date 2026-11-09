@@ -1,6 +1,6 @@
 import { describeRunnerFailure } from "../runner-failure";
 import { RUNTIME_FILES } from "../runtimes";
-import { journalCaught, startPhaseClock } from "../journal";
+import { journal as writeJournal, journalCaught, startPhaseClock } from "../journal";
 import {
   createLivePreviewSystem,
   startLivePreview,
@@ -280,6 +280,7 @@ export async function runWithFollowUps(
       waiting.abort();
       return first?.result ?? turn;
     }
+    writeJournal(`item ${agent.itemId} run ${agent.runId} interrupt source=follow_up`);
     await lifecycle.interrupt();
     prompt = first.text;
   }
@@ -1731,6 +1732,9 @@ export async function executeRunnerCommand(
             await delay(50, undefined, { signal: watch });
           if (safePoint() && Date.now() < deadline) {
             // The same interrupt a follow-up uses: the agent stops, its session stays intact.
+            journal(
+              `item ${runCommand!.itemId} run ${runCommand!.runId} interrupt source=handover`,
+            );
             interrupt.abort(FOLLOW_UP_INTERRUPTION);
             return true;
           }
@@ -1927,6 +1931,9 @@ export async function executeRunnerCommand(
           if (!options.checkpoint) return;
           await options.checkpoint(1, watch);
           // The same interrupt a follow-up uses: the agent stops, its session stays intact.
+          journal(
+            `item ${runCommand!.itemId} run ${runCommand!.runId} interrupt source=stop_checkpoint`,
+          );
           halt.abort(FOLLOW_UP_INTERRUPTION);
           await turnDone;
           await checkpoint("stop");
@@ -2090,6 +2097,27 @@ export async function executeRunnerCommand(
         ),
       );
       run = { ...run, stopReason: "end_turn", cancelled: false, interrupted: false };
+    }
+    // An unsolicited ACP cancellation has no controller waiting to save its work.
+    // Publish through the same checkpoint path as a requested stop before returning it.
+    if (
+      runCommand &&
+      runCommand.checkpoint !== false &&
+      run.agentExited &&
+      !options.signal?.aborted &&
+      !halt.signal.aborted &&
+      !interrupted &&
+      !questionEnd.signal.aborted &&
+      !run.timedOut &&
+      (run.stopReason === "cancelled" ||
+        run.interrupted ||
+        (run.stopReason === "error" && /^Error\.?$/.test(run.errorMessage ?? "")))
+    ) {
+      journal(
+        `item ${runCommand.itemId} run ${runCommand!.runId} interrupt source=unsolicited_agent`,
+      );
+      await checkpoint("stop");
+      run = { ...run, stopReason: "cancelled", cancelled: true, interrupted: true };
     }
     let handoverReady = false;
     let handoverFailure: RunnerHandoverFailure | null = null;
