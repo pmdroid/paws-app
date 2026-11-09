@@ -168,8 +168,16 @@ name identifies a preset. The profile resolver accepts these names independently
 label preset, then repository override, then global default. Unknown names and
 reviewer labels matching the implementer's agent and model return label problems
 and retain the inherited profile for that role. Reviewer fallback is still omitted
-when it uses the resolved reviewer's agent. Reading these labels from Linear is
-follow-up work; adding labels alone does not yet change a run.
+when it uses the resolved reviewer's agent.
+
+Paws reads the labels from Linear each time it creates a new implement run, so
+a change takes effect on the next run and never moves a running turn. If Linear
+can't be read, the run keeps the previous run's labels, or none on a first run.
+A run doesn't start on a label problem: the item asks in Linear, naming the
+label, the reason and the available presets. **Use the default** runs that role
+with its default profile for this item only; **I fixed the label** reads the
+labels again. The agent session names a label's effect, for example
+`Implementer: Opus (label)`.
 
 The existing admin-protected `/api/settings/agents` endpoint reads and writes
 a `presets` object keyed by name alongside `defaults` and `projects`.
