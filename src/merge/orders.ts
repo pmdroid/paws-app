@@ -57,7 +57,7 @@ import type { MergeStep } from "./step";
 import { ciWaitVerification, githubQueueWatch, type MergeWait } from "./wait";
 
 export const REBASE_CONFLICT_INSTRUCTION =
-  "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. Rebase this branch onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
+  "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. First squash this branch to one commit: note its commit subjects and Co-authored-by trailers, run `git reset --soft $(git merge-base HEAD origin/main)`, and commit once with the pull request title as the subject, the original subjects in the body and every trailer kept. Then rebase it onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
 export const REBASE_CONFLICT_THOUGHT =
   "Main moved and the branch conflicts. Sent it back to the agent to rebase.";
 const CI_FIX_SOURCE = {

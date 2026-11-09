@@ -2,6 +2,8 @@ import { join } from "node:path";
 import { type Proof } from "./harness";
 
 const CONFLICT = "Main moved and #";
+const SQUASH = "git reset --soft $(git merge-base HEAD origin/main)";
+const rebasePrompts: string[] = [];
 
 const commit = (worktree: string, message: string) => [
   { type: "terminal" as const, command: "git", args: ["add", "widgets.txt"], cwd: worktree },
@@ -30,12 +32,13 @@ export default {
     "src/scheduler/waits.ts",
   ],
   summary:
-    "Main changes the file the pull request changes after the pull request response; the Linear session gets one merge-conflict thought and the rebase turn's plan shows Fix merge conflicts.",
+    "Main changes the file the pull request changes after the pull request response; the Linear session gets one merge-conflict thought, the rebase turn's plan shows Fix merge conflicts and its handoff asks for one squashed commit.",
   ciPending: true,
   agent: (input) => {
     if (input.purpose !== "implement") return [];
     // The rebase turn lasts long enough for its plan update to go out before Closeout runs.
-    if (input.prompt.includes("no longer rebases cleanly"))
+    if (input.prompt.includes("no longer rebases cleanly")) {
+      rebasePrompts.push(input.prompt);
       return [
         {
           type: "update",
@@ -46,6 +49,7 @@ export default {
           delayMs: 3_000,
         },
       ];
+    }
     return [
       { type: "fs_write", path: join(input.worktree, "widgets.txt"), content: "12\n" },
       ...commit(input.worktree, "Count widgets per shelf"),
@@ -83,5 +87,10 @@ export default {
       thoughts().map((entry) => entry.body),
     );
     proof.expect("the rebase turn's plan shows Fix merge conflicts", fixing());
+    proof.expect(
+      "the rebase turn is told to squash the branch to one commit first",
+      rebasePrompts.length === 1 && rebasePrompts[0]!.includes(SQUASH),
+      rebasePrompts.length,
+    );
   },
 } satisfies Proof;
