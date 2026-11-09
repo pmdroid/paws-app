@@ -5,6 +5,7 @@ import {
   getWorkItem,
   listJobs,
   listMergeQueues,
+  listOutbox,
   recordRebaseReturn,
   returnToMergeQueue,
 } from "../db";
@@ -120,6 +121,24 @@ describe("queued pull requests that conflict with main", () => {
     expect(getWorkItem(h.db, "ENG-3")?.state).toBe("merge_queue");
     expect(restarts(h).map((payload) => payload.itemId)).toEqual(["ENG-3"]);
     expect(h.bodies("thought")).toEqual([REBASE_CONFLICT_THOUGHT]);
+  });
+
+  test("a conflict return posts one merge-conflict thought per head", async () => {
+    const h = await start();
+    await threeQueued(h);
+    const main = await h.moveMain("ok.txt", "main moved\n");
+    expect(await h.sweep(main)).toEqual(["ENG-3"]);
+    expect(await h.sweep(main)).toEqual([]);
+
+    const notices = listOutbox(h.db, "ses-ENG-3").filter((row) =>
+      row.idempotencyKey.startsWith("merge-conflict:"),
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.idempotencyKey).toMatch(/^merge-conflict:0:[0-9a-f]{40}$/);
+    expect(notices[0]!.payload).toMatchObject({
+      kind: "thought",
+      body: "Main moved and #3 now conflicts with it. Rebasing onto main.",
+    });
   });
 
   test("the task sent back keeps its place for when Closeout accepts its rebased head", async () => {

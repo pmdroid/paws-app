@@ -281,6 +281,7 @@ export function sendBack(
     record: (jobId: number, attempt: number) => void;
     failedChecks?: readonly FailedCiCheck[];
     pullNumber?: number | null;
+    conflict?: { pullNumber: number; head: string };
   },
 ): boolean {
   return returnToAgent(db, {
@@ -292,6 +293,7 @@ export function sendBack(
     record: report.record,
     ...(report.failedChecks ? { failedChecks: report.failedChecks } : {}),
     ...(report.pullNumber !== undefined ? { pullNumber: report.pullNumber } : {}),
+    ...(report.conflict ? { conflict: { ...report.conflict, sessionId: caps.session(item) } } : {}),
     ...(caps.restart ? { restart: caps.restart } : {}),
     announce: (running, attempt, key) => {
       if (reason === "ci-failed") caps.voice.status(running, report.thought(attempt), key);
@@ -432,6 +434,7 @@ async function reviewWaitConflict(
       REBASE_CONFLICT_INSTRUCTION,
       {
         thought: () => REBASE_CONFLICT_THOUGHT,
+        conflict: { pullNumber: prNumber, head: read.head },
         record: (jobId) =>
           recordRebaseReturn(db, {
             itemId: item.id,
@@ -606,6 +609,7 @@ export async function mergeThroughGitHubQueue(
             {
               thought: () =>
                 `GitHub's merge queue removed the pull request for a conflict${why}. Sent it back to the agent to rebase.`,
+              conflict: { pullNumber: pull.number, head },
               record: (jobId) =>
                 recordRebaseReturn(db, {
                   itemId: item.id,

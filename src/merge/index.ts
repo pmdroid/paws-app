@@ -35,6 +35,7 @@ export { ciFixHandoff, ciFixQuestion, ciFixRoundLine, type FailedCiCheck } from 
 export { RETRY_MERGE, retriesMerge } from "./merge-denied";
 export {
   askMergeHelp,
+  postMergeConflict,
   ciFixes,
   latestUserTurn,
   rebaseBudgetFor,

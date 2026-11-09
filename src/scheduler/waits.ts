@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { ordinal, type RestartReason, type WorkItemState } from "../core";
 import {
   enqueueOutboxOnce,
@@ -8,6 +9,7 @@ import {
   lastItemEvent,
   lastPausedBy,
   linearSessionClosed,
+  pullRequestReadyQueued,
   type ItemHold,
 } from "../db";
 
@@ -127,8 +129,12 @@ export function itemWaits(
 
 /** `waiting for PAS-1 to merge (both change provider.ts)`, file names without their directories. */
 export function overlapLine(blocker: string, files: readonly string[], start?: true): string {
+  return `waiting for ${blocker} to ${start ? "start" : "merge"}${bothChange(files)}`;
+}
+
+function bothChange(files: readonly string[]): string {
   const names = [...new Set(files.map((path) => path.slice(path.lastIndexOf("/") + 1)))];
-  return `waiting for ${blocker} to ${start ? "start" : "merge"}${names.length ? ` (both change ${names.join(", ")})` : ""}`;
+  return names.length ? ` (both change ${names.join(", ")})` : "";
 }
 
 export function waitingLine(wait: ItemWait): string | null {
@@ -141,6 +147,41 @@ export function waitingLine(wait: ItemWait): string | null {
     } Paws checks blockers in Linear every minute while it waits.`;
   if (wait.kind === "runner") return `Still ${ordinal(wait.position)} in line for a runner.`;
   return null;
+}
+
+/**
+ * An item sent back to rebase and held behind another item that changes the same files says so
+ * once per blocker, after its pull request response. The key adds the item to the
+ * `merge-hold:<generation>:<blocker>` the activity gate lets through, because outbox keys are
+ * unique across sessions and two items can wait for one blocker. Not `terminal`: the session goes
+ * on. A blocker that has not started yet gets its line when it starts.
+ */
+export function postConflictHolds(db: Database, waits: readonly ItemWait[], now: number): void {
+  for (const wait of waits) {
+    if (wait.kind !== "overlap" || wait.start) continue;
+    if (restartReason(db, wait.itemId) !== "conflict") continue;
+    const generation = getLinearSessionGeneration(db, wait.sessionId);
+    if (
+      !pullRequestReadyQueued(db, wait.sessionId, generation) ||
+      linearSessionClosed(db, wait.sessionId, generation)
+    )
+      continue;
+    enqueueOutboxOnce(db, {
+      target: "linear",
+      op: "activity",
+      orderingKey: wait.sessionId,
+      idempotencyKey: `merge-hold:${generation}:${wait.blocker}:${wait.itemId}`,
+      delivery: "ordered",
+      payload: {
+        id: randomUUID(),
+        sessionId: wait.sessionId,
+        itemId: wait.itemId,
+        kind: "response",
+        body: `Waiting for ${wait.blocker} to merge first${bothChange(wait.files)}, then rebasing.`,
+      },
+      now,
+    });
+  }
 }
 
 export function postWaitKeepalives(db: Database, waits: readonly ItemWait[], now: number): void {

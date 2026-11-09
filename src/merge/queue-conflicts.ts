@@ -80,7 +80,7 @@ export async function returnQueuedConflicts(
     // The read awaited GitHub: the item may have reached the front, or its merge may have started.
     // Judge that again in the transaction that sends it back or asks.
     const owned = () => behindFront(db, sweep.repository).includes(item.id);
-    if (returnConflict(db, item, read.head, conflict, caps, owned)) {
+    if (returnConflict(db, item, pull.pullNumber, read.head, conflict, caps, owned)) {
       handled.push(item.id);
       continue;
     }
@@ -93,6 +93,7 @@ export async function returnQueuedConflicts(
 function returnConflict(
   db: Database,
   item: WorkItemRecord,
+  pullNumber: number,
   head: string,
   conflict: RebaseConflict,
   caps: QueueConflictCapabilities,
@@ -105,6 +106,7 @@ function returnConflict(
     handoff: REBASE_CONFLICT_INSTRUCTION,
     now: caps.now(),
     keepPlace: true,
+    conflict: { sessionId: caps.session(item), pullNumber, head },
     ...(caps.restart ? { restart: caps.restart } : {}),
     announce: (running, _, key) => caps.voice.thought(running, REBASE_CONFLICT_THOUGHT, key),
     record: (jobId) =>
