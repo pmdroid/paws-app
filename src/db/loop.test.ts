@@ -1,8 +1,7 @@
-import { createLagWatchdog } from "../host";
 import { cancelOpenJobs } from "./jobs";
 import { describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { FakeClock, systemClock } from "../core";
+import { FakeClock, systemClock, sampleHostOperations } from "../core";
 import {
   enqueueJob,
   JobLoop,
@@ -401,16 +400,16 @@ test("production run attributes a blocked claim to loop.tick", async () => {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  const lines: string[] = [];
-  const sample = createLagWatchdog({ clock, log: (line) => lines.push(line), recover: () => {} });
+  sampleHostOperations();
+  let operation = "idle";
   try {
     const loop = new JobLoop(wrapped, clock);
     loop.register("test", async () => {});
     await loop.run(controller.signal, async () => {
-      sample();
+      operation = sampleHostOperations();
       controller.abort();
     });
-    expect(lines).toEqual(["event loop stalled 10000 ms operation=loop.tick"]);
+    expect(operation).toBe("loop.tick");
   } finally {
     controller.abort();
     db.close();
