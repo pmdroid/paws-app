@@ -12,10 +12,10 @@ The loop lives in `src/loop` and is wired from `src/index.ts`. A real run is `do
 bun install
 bun run paws doctor  # prerequisites for a real Linear / GitHub / Closeout run
 bun run paws          # 127.0.0.1:8787, data in ~/.paws
-bun run check         # lint, fmt:check, typecheck, test, build:dashboard, links, raw-sql, knip
+bun run check         # lint, fmt:check, typecheck, test, build:dashboard, links, raw-sql, graphql, knip
 ```
 
-Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`), `links` (documentation links, orphaned docs and source paths), `raw-sql` (raw `bun:sqlite` calls not listed in `scripts/raw-sql-allowlist/`), `knip` (unused files, dependencies and duplicate exports). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests four files at a time (`bun test --parallel=4`) under `scripts/test-watchdog.ts`, which fails a shard after three minutes without progress and names the files still running; Closeout's `test` check runs only the tests the change affects (`scripts/affected-tests.ts`); CI always runs the full suite.
+Individual scripts: `lint` (oxlint), `fmt` / `fmt:check` (oxfmt), `typecheck` (`tsc --noEmit`), `test` (`bun test --parallel=4 --timeout=20000 --no-orphans`), `links` (documentation links, orphaned docs and source paths), `raw-sql` (raw `bun:sqlite` calls not listed in `scripts/raw-sql-allowlist/`), `graphql` (every GitHub and Linear GraphQL document in `src/github`, `src/linear` and `src/doctor/probe.ts` validated against GitHub's published schema from `@octokit/graphql-schema` and Linear's in `scripts/graphql-schemas/linear.graphql.gz`; refresh Linear's with `LINEAR_API_KEY=… bun scripts/refresh-linear-schema.ts`), `knip` (unused files, dependencies and duplicate exports). CI (`.github/workflows/ci.yml`) runs those on Bun 1.4.2, with tests four files at a time (`bun test --parallel=4`) under `scripts/test-watchdog.ts`, which fails a shard after three minutes without progress and names the files still running; Closeout's `test` check runs only the tests the change affects (`scripts/affected-tests.ts`); CI always runs the full suite.
 
 Tests must not call Linear, GitHub, ACP, or Closeout. Use the fakes exported from each module.
 
