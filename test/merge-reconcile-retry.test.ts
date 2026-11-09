@@ -104,7 +104,7 @@ async function delegate(failures: number) {
   const publication = createPublicationReadiness({
     db,
     reconciler,
-    canMerge: (itemId) => admission.canMerge(itemId).ok,
+    canMerge: async (itemId) => (await admission.canMerge(itemId)).ok,
   });
   const lines: string[] = [];
   let sequence = 0;
@@ -150,7 +150,7 @@ async function delegate(failures: number) {
       "SELECT id,delegation_id AS delegationId FROM work_item WHERE linear_identifier='ACME-1'",
     )
     .get()!;
-  admission.canDispatchDelegation(item.delegationId);
+  await admission.canDispatchDelegation(item.delegationId);
   const workspaceId = db
     .query<{ id: string }, [string]>(
       `SELECT w.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key

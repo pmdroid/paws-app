@@ -41,6 +41,7 @@ import {
   saveQueuePositionsSteps,
   sqliteDb,
   savePinnedSlotsSteps,
+  settled,
   type Db,
   type ItemHold,
   type PinnedSlot,
@@ -213,8 +214,8 @@ function canStart(q: Q, admission: ItemAdmission, itemId: string) {
 }
 
 // oxlint-disable-next-line require-yield
-function* syncRead<T>(result: T): Steps<T> {
-  return result;
+function* syncRead<T>(result: Promise<T>): Steps<T> {
+  return settled(result);
 }
 
 export function schedulerPaths(paths: readonly string[]): string[] {

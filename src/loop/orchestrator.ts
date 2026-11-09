@@ -5391,7 +5391,8 @@ export class Orchestrator {
     }
     if (item.state !== "merge_queue") return { kind: "obsolete" };
     immediate(this.db, () => {
-      if (!this.admission.canMerge(item.id).ok)
+      // A sync transaction: `steps` has no merge check to yield here.
+      if (!settled(this.admission.canMerge(item.id)).ok)
         throw new LinearReconciliationPendingError("Linear dependencies are still running");
       const sessionId = item.sessionKey;
       const session = sessionId ? getLinearSession(this.db, sessionId) : null;
@@ -5846,7 +5847,8 @@ export class Orchestrator {
       restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
       dependencyHold: (id) => {
         // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
-        const admitted = this.admission.canMerge(id);
+        // Stays sync: the merge queue calls this as a predicate inside listMergeQueuesSteps.
+        const admitted = settled(this.admission.canMerge(id));
         if (admitted.ok || admitted.held !== "blocked") return null;
         return openBlockers(this.db, id);
       },
@@ -6576,15 +6578,15 @@ export class Orchestrator {
     await this.flush();
   }
 
-  private assertReconciled(item: WorkItemRecord): void {
-    if (!this.admission.canDispatchDelegation(item.delegationId))
+  private async assertReconciled(item: WorkItemRecord): Promise<void> {
+    if (!(await this.admission.canDispatchDelegation(item.delegationId)))
       throw new LinearReconciliationPendingError(
         "Linear execution changes are still being reconciled",
       );
   }
 
   private async reconcileForMerge(item: WorkItemRecord, run: MergeRun): Promise<void> {
-    if (this.admission.canDispatchDelegation(item.delegationId)) return;
+    if (await this.admission.canDispatchDelegation(item.delegationId)) return;
     const signal = this.live.get(`operation:${item.id}`)?.controller.signal;
     if (signal && this.options.publicationReady) {
       this.options.journal?.(
@@ -6598,7 +6600,7 @@ export class Orchestrator {
       );
       signal.throwIfAborted();
     }
-    this.assertReconciled(item);
+    await this.assertReconciled(item);
   }
 
   private async assertPublicationReady(
@@ -6612,7 +6614,7 @@ export class Orchestrator {
     signal.throwIfAborted();
     if (ready === false)
       throw new LinearReconciliationPendingError("Linear publication freshness is pending");
-    this.assertReconciled(item);
+    await this.assertReconciled(item);
   }
 
   applyDelegationChanges(changes: ExecutionChanges): void {

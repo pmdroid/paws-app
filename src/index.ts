@@ -1752,7 +1752,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         publication = createPublicationReadiness({
           db,
           reconciler,
-          canMerge: (itemId) => admission.canMerge(itemId).ok,
+          canMerge: async (itemId) => (await admission.canMerge(itemId)).ok,
         });
         created.jobs.register("linear.redelegation", async (job) => {
           const lifecycle = linear?.issueLifecycle;

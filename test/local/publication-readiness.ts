@@ -35,7 +35,7 @@ import { createAdmission } from "../../src/scheduler";
 
 function mergeAdmission(db: Database) {
   const admission = createAdmission({ db });
-  return (itemId: string) => admission.canMerge(itemId).ok;
+  return async (itemId: string) => (await admission.canMerge(itemId)).ok;
 }
 
 export async function probePublicationReadiness(root: string) {
@@ -468,7 +468,7 @@ export async function probePublicationReadiness(root: string) {
       const guard = createPublicationReadiness({
         db: f.db,
         reconciler: f.reconciler,
-        canMerge: (itemId) => permitted && mergeAdmission(f.db)(itemId),
+        canMerge: async (itemId) => permitted && (await mergeAdmission(f.db)(itemId)),
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);

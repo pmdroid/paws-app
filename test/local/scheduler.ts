@@ -50,7 +50,7 @@ export async function probeScheduler(
   const observed = (name: string, value: unknown) => observe(name, true, value);
   const onlyStarts = (db: Database, only: string) => ({
     ...workspaceAdmission(db),
-    canStart: (itemId: string) =>
+    canStart: async (itemId: string) =>
       itemId === only ? ({ ok: true } as const) : ({ ok: false, held: "blocked" } as const),
   });
   const setup = (
