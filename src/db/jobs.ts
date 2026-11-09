@@ -404,6 +404,18 @@ export function getJob(db: Database, id: number): Job | null {
   return run(db, (q) => getJobSteps(q, id));
 }
 
+export function* jobStatusByKeySteps(q: Q, jobKey: string) {
+  const { job } = q.t;
+  const row = yield* q.one(
+    q.orm.select({ status: job.status }).from(job).where(eq(job.jobKey, jobKey)),
+  );
+  return row?.status ?? null;
+}
+
+export function jobStatusByKey(db: Database, jobKey: string): string | null {
+  return run(db, (q) => jobStatusByKeySteps(q, jobKey));
+}
+
 export function* listJobsSteps(q: Q) {
   const rows = yield* q.all(q.orm.select().from(q.t.job).orderBy(q.t.job.id));
   return rows.map((row) => mapJob(q, row));

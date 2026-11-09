@@ -1,5 +1,0 @@
-src/runner-transcripts/store.ts | const job = db .query<{ status: string }, [string]>("SELECT status FROM job WHERE job_key=?") | not yet converted to Drizzle
-src/runner-transcripts/store.ts | return db .query<Transcript, [string, number]>( | not yet converted to Drizzle
-src/runner-transcripts/store.ts | db.run( | not yet converted to Drizzle
-src/runner-transcripts/store.ts | db.run( | not yet converted to Drizzle
-src/runner-transcripts/store.ts | db.run("UPDATE runner_transcript SET uri=? WHERE run_id=? AND generation=?", [ | not yet converted to Drizzle
