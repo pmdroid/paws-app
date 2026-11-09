@@ -187,11 +187,11 @@ describe("a database from the legacy migrations", () => {
     expect(existsSync(path)).toBe(true);
   });
 
-  for (const [name, source] of [
+  for (const [optIn, source] of [
     ["without", {}],
     ["with", RESET],
   ] as const)
-    test(`leaves a missing or new database alone ${name} the opt-in`, () => {
+    test(`leaves a missing or new database alone ${optIn} the opt-in`, () => {
       const home = tempHome();
       const path = join(home, "paws.db");
       expect(setAsideLegacyDatabase(path, source, NOW)).toBe(null);
