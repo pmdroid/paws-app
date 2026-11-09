@@ -1,8 +1,12 @@
 import {
-  setMemberVmPool,
-  workspaceMember,
+  memberVmByIdSteps,
+  memberVmForMemberSteps,
+  setMemberVmPoolSteps,
+  sqliteDb,
+  workspaceMemberSteps,
   workspaceMemberUsable,
-  workspaceUserContact,
+  workspaceUserContactSteps,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
@@ -15,10 +19,8 @@ import {
 } from "../provisioning";
 import type { WorkspacePrincipal } from "../workspace";
 import {
-  findMemberVm,
-  getMemberVm,
   listDeletableMemberVms,
-  mayDeleteMemberVm,
+  mayDeleteMemberVmSteps,
   MEMBER_VM_DELETE_STEPS,
   MemberVmDeleteDenied,
   MemberVmMissing,
@@ -204,6 +206,8 @@ const MAX_BODY = 4096;
  */
 export function createMemberVmHttp(options: {
   db: Database;
+  /** The async `Db` over `db`. Defaults to `sqliteDb(db)`. */
+  store?: Db;
   available: () => boolean | Promise<boolean>;
   /** `[member_vm]` from config.toml. */
   size?: () => ExeDevVmSize;
@@ -211,7 +215,7 @@ export function createMemberVmHttp(options: {
   exeDev?: Pick<ExeDev, "listPools" | "adoptVm">;
   now?: () => number;
 }) {
-  const { db } = options;
+  const store = options.store ?? sqliteDb(options.db);
   const now = options.now ?? Date.now;
   return async function memberVmHttp(
     request: Request,
@@ -229,7 +233,9 @@ export function createMemberVmHttp(options: {
     if (!allowed.includes(method)) return json({ error: "Method not allowed." }, 405);
     const pools = options.exeDev;
     if (pools === undefined && path.startsWith("/api/runners/vm/pool")) return null;
-    const current = workspaceMember(db, principal.workspaceId, principal.userId);
+    const current = await store.run((q) =>
+      workspaceMemberSteps(q, principal.workspaceId, principal.userId),
+    );
     if (!workspaceMemberUsable(current))
       return json(
         {
@@ -267,14 +273,14 @@ export function createMemberVmHttp(options: {
         const body = await createBody(request);
         if (body === null)
           return json({ error: "Send an optional exe.dev pool name as JSON." }, 400);
-        startMemberVm(db, { ...member, ...body, now: at });
+        await startMemberVm(store, { ...member, ...body, now: at });
       } else if (pools !== undefined && path === "/api/runners/vm/pool") {
         const body = await poolBody(request);
         if (body === null)
           return json({ error: "Send the VM id and an exe.dev pool as JSON." }, 400);
-        const row = getMemberVm(db, body.id);
+        const row = await store.run((q) => memberVmByIdSteps(q, body.id));
         if (row === null || row.workspaceId !== member.workspaceId) throw new MemberVmMissing();
-        if (!mayDeleteMemberVm(db, row, member))
+        if (!(await store.run((q) => mayDeleteMemberVmSteps(q, row, member))))
           return json({ error: "Only the VM's owner or a workspace admin can move it." }, 403);
         if (row.deleteStep !== null) return json({ error: "This VM is being deleted." }, 409);
         try {
@@ -283,22 +289,26 @@ export function createMemberVmHttp(options: {
           journalCaught(error, "http.createMemberVmHttp.adoptVm", null);
           return exeDevError(error, `exe.dev did not move ${row.vmName}.`);
         }
-        setMemberVmPool(db, row.id, body.pool, now());
-      } else if (path === "/api/runners/vm/retry") retryMemberVm(db, { ...member, now: at });
+        await store.run((q) => setMemberVmPoolSteps(q, row.id, body.pool, now()));
+      } else if (path === "/api/runners/vm/retry")
+        await retryMemberVm(store, { ...member, now: at });
       else if (path === "/api/runners/vm/delete") {
         const body = await deleteBody(request);
         if (body === null)
           return json({ error: "Send the VM id and an optional force flag as JSON." }, 400);
-        startMemberVmDelete(db, { ...member, ...body, now: at });
+        await startMemberVmDelete(store, { ...member, ...body, now: at });
       }
-      const own = findMemberVm(db, member);
+      const own = await store.run((q) =>
+        memberVmForMemberSteps(q, member.workspaceId, member.userId),
+      );
       const size = readSize(options.size);
+      const vms: MemberVmView[] = [];
+      for (const row of await listDeletableMemberVms(store, member))
+        vms.push(memberVmView(row, at, await memberName(store, row.userId)));
       return json({
         available: true,
         vm: own === null ? null : memberVmView(own, at),
-        vms: listDeletableMemberVms(db, member).map((row) =>
-          memberVmView(row, at, memberName(db, row.userId)),
-        ),
+        vms,
         ...(size === null ? {} : { size }),
       } satisfies MemberVmResponse);
     } catch (error) {
@@ -327,8 +337,8 @@ function exeDevError(error: unknown, fallback: string): Response {
   return json({ error: error.message }, error.code === "unauthorized" ? 403 : 502);
 }
 
-function memberName(db: Database, userId: string): string | null {
-  return workspaceUserContact(db, userId)?.name ?? null;
+async function memberName(store: Db, userId: string): Promise<string | null> {
+  return (await store.run((q) => workspaceUserContactSteps(q, userId)))?.name ?? null;
 }
 
 /** Create VM's body: none, `{}` or `{ pool }`. */

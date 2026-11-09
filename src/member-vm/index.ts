@@ -11,7 +11,6 @@ export {
   findMemberVm,
   getMemberVm,
   listDeletableMemberVms,
-  mayDeleteMemberVm,
   MEMBER_VM_DELETE_QUEUE,
   MEMBER_VM_DELETE_STEPS,
   MEMBER_VM_QUEUE,

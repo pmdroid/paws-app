@@ -24,6 +24,12 @@ import {
   type Db,
   type MemberVm,
 } from "../src/db";
+import {
+  MEMBER_VM_DELETE_QUEUE,
+  MEMBER_VM_QUEUE,
+  startMemberVm,
+  startMemberVmDelete,
+} from "../src/member-vm";
 import { forEachDialect, seed, withoutForeignKeys, type DialectDb } from "./dialects";
 import { seedRunner } from "./runner-rows";
 
@@ -333,5 +339,39 @@ forEachDialect((connect) => {
       email: "ada@example.com",
     });
     expect(await db.run((q) => workspaceUserContactSteps(q, "u2"))).toBeNull();
+  });
+});
+
+forEachDialect((connect) => {
+  test("startMemberVm adds one VM and one job, and a delete request queues its job", async () => {
+    const db = await connected(connect);
+    await seed(
+      db,
+      (q) =>
+        q.orm
+          .insert(q.t.workspaceUser)
+          .values({ id: "owner", linearUserId: "lin-owner", name: "Ada", email: "ada@x" }),
+      (q) =>
+        q.orm.insert(q.t.workspaceMember).values({
+          workspaceId: "acme",
+          userId: "owner",
+          role: "member",
+          source: "linear",
+          active: 1,
+          checkedAt: 1,
+        }),
+    );
+    const member = { workspaceId: "acme", userId: "owner" };
+
+    const started = await startMemberVm(db, { ...member, now: 10 });
+    expect(started).toMatchObject({ vmName: "ada-paws", step: "create" });
+    expect((await startMemberVm(db, { ...member, now: 11 })).id).toBe(started.id);
+    expect(await db.run((q) => openMemberVmJobSteps(q, MEMBER_VM_QUEUE, started.id))).toBe(true);
+
+    const deleting = await startMemberVmDelete(db, { ...member, id: started.id, now: 12 });
+    expect(deleting.deleteStep).toBe("drain");
+    expect(await db.run((q) => openMemberVmJobSteps(q, MEMBER_VM_DELETE_QUEUE, started.id))).toBe(
+      true,
+    );
   });
 });

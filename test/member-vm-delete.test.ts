@@ -15,6 +15,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import {
   createMemberVmHttp,
@@ -189,7 +190,7 @@ async function fixture() {
     call(who, "/api/runners/vm/delete", force === undefined ? { id } : { id, force });
 
   const ready = async (): Promise<MemberVm> => {
-    startMemberVm(db, { ...member, now: clock.now() });
+    await startMemberVm(sqliteDb(db), { ...member, now: clock.now() });
     for (let index = 0; index < 500; index++) {
       const row = findMemberVm(db, member)!;
       if (row.failure !== null) throw new Error(row.failure);
@@ -533,7 +534,7 @@ describe("Delete VM", () => {
   test("deleting before exe.dev was asked to create stops provisioning and touches nothing", async () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");
-    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     expect(openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(1);
     await f.remove(f.member, row.id);
     expect(openJobs(f.db, MEMBER_VM_QUEUE)).toHaveLength(0);
@@ -557,7 +558,7 @@ describe("Delete VM", () => {
 
 test("an admin sees and deletes another member's VM that never got a runner", async () => {
   const f = await fixture();
-  const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+  const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
   f.exeDev.fail("createVm", "rate_limited");
   await f.settle();
   expect(getMemberVm(f.db, row.id)!.failure).toContain("rate_limited");
@@ -590,7 +591,7 @@ describe("Delete VM while a provisioning step is still running", () => {
   test("waits for an outstanding create and leaves a VM exe.dev refused as taken", async () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");
-    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     const held = gate();
     f.hold.create = held.promise;
     const creating = f.loop.tick();
@@ -613,7 +614,7 @@ describe("Delete VM while a provisioning step is still running", () => {
 
   test("waits for an outstanding create that succeeds, then destroys the VM", async () => {
     const f = await fixture();
-    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     const held = gate();
     f.hold.create = held.promise;
     const creating = f.loop.tick();
@@ -632,7 +633,7 @@ describe("Delete VM while a provisioning step is still running", () => {
 
   test("revokes a runner whose enrollment finishes after the delete was confirmed", async () => {
     const f = await fixture();
-    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     for (let index = 0; index < 100 && getMemberVm(f.db, row.id)!.step !== "enroll"; index++)
       if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
     expect(getMemberVm(f.db, row.id)!.step).toBe("enroll");
@@ -668,7 +669,7 @@ describe("Delete VM while a provisioning step is still running", () => {
 
   test("drains, blocks on and revokes a runner the VM enrolled that the row never recorded", async () => {
     const f = await fixture();
-    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     f.hold.enrollDies = true;
     for (let index = 0; index < 100 && getMemberVm(f.db, row.id)!.failure === null; index++)
       if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
@@ -713,7 +714,7 @@ describe("Delete VM while a provisioning step is still running", () => {
 
   test("a token the VM still holds cannot enroll a runner once the delete has run", async () => {
     const f = await fixture();
-    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     f.hold.enrollStalls = true;
     for (let index = 0; index < 100 && getMemberVm(f.db, row.id)!.failure === null; index++)
       if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
@@ -741,7 +742,7 @@ describe("Delete VM while a provisioning step is still running", () => {
 
   test("a VM made before tokens were recorded stops while an unrecorded runner of its name lives", async () => {
     const f = await fixture();
-    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     f.hold.enrollDies = true;
     for (let index = 0; index < 100 && getMemberVm(f.db, row.id)!.failure === null; index++)
       if ((await f.loop.tick()) === null) f.clock.advance(MEMBER_VM_POLL_MS);
@@ -790,7 +791,7 @@ describe("Delete VM while a provisioning step is still running", () => {
   test("a create cut off by a restart never removes a VM Paws cannot prove it made", async () => {
     const f = await fixture();
     f.exeDev.addVm("ada-lovelace-paws");
-    const row = startMemberVm(f.db, { ...f.member, now: f.clock.now() });
+    const row = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     f.db.run("UPDATE member_vm SET create_requested_at=? WHERE id=?", [f.clock.now(), row.id]);
     f.db.run("UPDATE job SET status='cancelled' WHERE queue=?", [MEMBER_VM_QUEUE]);
 

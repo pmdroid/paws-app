@@ -1021,6 +1021,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
     db,
+    store,
     available: createVmAvailable,
     size: memberVmSize,
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
@@ -1053,6 +1054,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const findingGrouping = linear?.findingIssues
     ? createFindingGrouping({
         db,
+        store,
         issues: linear.findingIssues,
         helper: createFindingGroupHelper({
           db,
