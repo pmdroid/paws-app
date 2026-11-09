@@ -81,7 +81,7 @@ import {
   type PolicyFilesLoad,
 } from "../acp";
 import {
-  clearInheritedSetgid,
+  shareRunnerWorkRoot,
   createRunnerResultDirectory,
   markRunnerAccountSignedIn,
   openRunnerAccountHome,
@@ -943,8 +943,7 @@ export async function executeRunnerCommand(
       };
     }
     if (!task) {
-      mkdirSync(options.workRoot, { recursive: true, mode: 0o700 });
-      clearInheritedSetgid(options.workRoot);
+      shareRunnerWorkRoot(options.workRoot, options.owners);
     }
     // A run checks out at one path on every runner so cwd-keyed agent sessions keep their key.
     const worktree = join(
