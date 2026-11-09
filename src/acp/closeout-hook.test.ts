@@ -1,6 +1,7 @@
 import { setJournalSink } from "../journal";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -552,8 +553,12 @@ test("the turn-end report waits for a check the agent stopped waiting for", asyn
   }
 });
 
-for (const exitCode of [0, 1]) {
-  test(`long agent check records exit ${exitCode} once after returning running`, async () => {
+for (const [exitCode, editWhileRunning] of [
+  [0, false],
+  [1, false],
+  [0, true],
+] as const) {
+  test(`long agent check records exit ${exitCode} once after returning running (edited: ${editWhileRunning})`, async () => {
     const root = temp();
     const repo = join(root, "repo");
     initRepo(repo);
@@ -582,13 +587,18 @@ for (const exitCode of [0, 1]) {
       expect(running).toMatchObject({ status: "running", check: "test" });
       expect(Number.isNaN(Date.parse(running.started_at))).toBe(false);
       expect(JSON.parse(await call("run_closeout", { id: "test" }))).toEqual(running);
+      if (editWhileRunning) {
+        for (let tries = 0; !existsSync(marker) && tries < 200; tries++) await Bun.sleep(5);
+        expect(existsSync(marker)).toBe(true);
+        writeFileSync(join(repo, "src.txt"), "edited during check");
+      }
       expect(JSON.parse(await call("get_closeout")).running).toEqual([running]);
       writeFileSync(release, "done");
       await bridge.closeoutReport();
       const report = JSON.parse(await call("get_closeout"));
       expect(report.running).toEqual([]);
       expect(report.required[0]).toMatchObject({
-        status: exitCode === 0 ? "passed" : "failed",
+        status: editWhileRunning ? "stale" : exitCode === 0 ? "passed" : "failed",
         failed_attempts: exitCode,
       });
       expect(readFileSync(marker, "utf8")).toBe("run");

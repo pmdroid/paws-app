@@ -837,7 +837,6 @@ async function runId(
   if (statusOf(memory.get(item.id), item.kind === "setup" ? 2 : max) === "exhausted") {
     return `Check ${id} is exhausted. Stop retrying and report the blocker.`;
   }
-  const digest = policy.digest;
   if (item.kind === "command" || item.kind === "setup") {
     const before = item.kind === "setup" ? required.indexOf(item) : required.length;
     for (const step of required.slice(0, before)) {
@@ -846,7 +845,7 @@ async function runId(
       if (statusOf(memory.get(step.id), 2) === "exhausted") {
         return `Check ${step.id} is exhausted. Stop retrying and report the blocker.`;
       }
-      const setup = await once(step.id, () => execute(workspace, step, memory, options, 2, digest));
+      const setup = await once(step.id, () => execute(workspace, step, memory, options, 2, policy));
       if (!setup.ok) return setup.text;
     }
   }
@@ -854,7 +853,7 @@ async function runId(
     const recent = halt.last.get(step.id);
     if (recent !== undefined && recent.at > since) return recent.result;
     const result = await once(step.id, () =>
-      execute(workspace, step, memory, options, max, digest, halt),
+      execute(workspace, step, memory, options, max, policy, halt),
     );
     halt.last.set(step.id, { at: ++halt.finished, result });
     return result;
@@ -879,7 +878,7 @@ async function runId(
     }
     return (await command(item)).text;
   }
-  const result = await once(item.id, () => execute(workspace, item, memory, options, 2, digest));
+  const result = await once(item.id, () => execute(workspace, item, memory, options, 2, policy));
   return result.text;
 }
 
@@ -889,7 +888,7 @@ async function execute(
   memory: Map<string, ItemMemory>,
   options: CloseoutSessionOptions,
   max: number | null,
-  policyDigest: string,
+  policy: TreePolicy,
   halt?: Halt,
 ): Promise<{ ok: boolean; text: string }> {
   const argv = item.exec ?? [];
@@ -901,6 +900,8 @@ async function execute(
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, text: message };
   }
+  const candidateBefore =
+    item.kind === "command" ? await candidateOf(workspace, policy) : undefined;
   const before = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   const base = await comparisonBase(workspace);
   const cleanBefore = await clean(workspace);
@@ -932,6 +933,12 @@ async function execute(
   );
   const after = await git(workspace, ["rev-parse", "HEAD"], commandEnv());
   const cleanAfter = await clean(workspace);
+  const candidateAfter = candidateBefore ? await candidateOf(workspace, policy) : undefined;
+  const candidateChanged =
+    candidateBefore !== undefined &&
+    (!candidateBefore.ok ||
+      !candidateAfter?.ok ||
+      candidateBefore.fingerprint !== candidateAfter.fingerprint);
   if (result.cancelled) {
     notify(options, {
       type: "finished",
@@ -983,16 +990,21 @@ async function execute(
       stderr: stderr.text,
       truncated: result.truncated || stdout.cut || stderr.cut,
       base: base ?? "",
-      policyDigest,
-      clean: cleanBefore && cleanAfter && state.result!.head !== "",
+      policyDigest: policy.digest,
+      clean: !candidateChanged && cleanBefore && cleanAfter && state.result!.head !== "",
     });
   };
   if (result.code === 0 && !result.timedOut) {
-    state.passed = true;
-    state.stale = false;
+    state.passed = !candidateChanged;
+    state.stale = candidateChanged;
     memory.set(item.id, state);
     finished("passed");
-    return { ok: true, text: `${item.id} passed.` };
+    return candidateChanged
+      ? {
+          ok: false,
+          text: `${item.id} is stale: workspace changed while it ran. Call get_closeout.`,
+        }
+      : { ok: true, text: `${item.id} passed.` };
   }
   state.failures += 1;
   state.passed = false;
