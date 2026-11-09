@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { workspaceLinearMember } from "./db";
+import { runnerNameAndOwner, workspaceLinearMember } from "./db";
 import { findMemberVm, memberVmView } from "./member-vm";
 import { eligibleRunners, type EligibleRunner } from "./runner-placement";
 import type { OnboardingAgent, OnboardingReadinessReader } from "./workspace";
@@ -16,12 +16,7 @@ const AGENTS = ["claude", "codex"] as const;
  * VM that finishes shows as ready on the next read.
  */
 export function createOnboardingReadiness(db: Database): OnboardingReadinessReader {
-  const runnerRow = (id: string) =>
-    db
-      .query<{ name: string; ownerName: string | null }, [string]>(
-        "SELECT r.name,u.name AS ownerName FROM runner r LEFT JOIN workspace_user u ON u.id=r.owner_user_id WHERE r.id=?",
-      )
-      .get(id);
+  const runnerRow = (id: string) => runnerNameAndOwner(db, id);
   const ownerName = (id: string) => runnerRow(id)?.ownerName ?? "Your project lead";
   return ({ workspaceId, userId, teamId, projectLeadIds, now }) => {
     const leadUserIds = [

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { accrueAwake, enqueueJobOnce, immediate, listInFlightItems } from "../db";
+import { accrueAwake, enqueueJobOnce, immediate, listInFlightItems, recordWake } from "../db";
 import { awakeCapReached, countsAwakeTime, JOB_KIND, sleep, type Clock } from "../core";
 import { WakeDetector, type WakeSample } from "./wake";
 
@@ -73,13 +73,13 @@ export class HostSupervisor {
   private handleWake(sample: WakeSample): void {
     const now = this.clock.now();
     immediate(this.db, () => {
-      const inserted = this.db
-        .query(
-          `INSERT INTO wake (from_wall, to_wall, slept_ms, created_at) VALUES (?, ?, ?, ?)
-           ON CONFLICT(from_wall) DO NOTHING`,
-        )
-        .run(sample.fromWall, sample.toWall, sample.gapMs, now);
-      if (inserted.changes === 0) return;
+      const inserted = recordWake(this.db, {
+        fromWall: sample.fromWall,
+        toWall: sample.toWall,
+        sleptMs: sample.gapMs,
+        now,
+      });
+      if (!inserted) return;
       enqueueJobOnce(this.db, {
         queue: JOB_KIND.catchup,
         jobKey: `catchup:${sample.fromWall}`,

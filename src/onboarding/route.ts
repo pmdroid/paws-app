@@ -10,6 +10,7 @@ import {
   saveBrowserInstallation,
   syncWorkspaceMember,
   workspaceForOrganization,
+  workspaceOrganizationIds,
 } from "../db";
 import {
   createLinearClient,
@@ -61,18 +62,14 @@ export function createBrowserOnboarding(options: {
   const secretsDir = join(home, "secrets");
   const configuredOrganization = options.expectedOrganizationId?.trim() || null;
   function installationOrganization(): string | null {
-    const workspaces = db
-      .query<{ id: string }, []>(
-        "SELECT linear_organization_id AS id FROM workspace ORDER BY id LIMIT 2",
-      )
-      .all();
+    const workspaces = workspaceOrganizationIds(db, 2);
     if (workspaces.length === 0) return configuredOrganization;
     if (
       workspaces.length !== 1 ||
-      (configuredOrganization !== null && configuredOrganization !== workspaces[0]!.id)
+      (configuredOrganization !== null && configuredOrganization !== workspaces[0])
     )
       return null;
-    return workspaces[0]!.id;
+    return workspaces[0]!;
   }
   let installing = false;
   return async (request: Request, peer: WorkspaceClient = {}): Promise<Response> => {
