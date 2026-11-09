@@ -1,18 +1,24 @@
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, type Checkpoint, type StartupDecision } from "../core";
 import {
-  applyWorkItemEvent,
-  failWorkItem,
-  getWorkItem,
-  saveCheckpoint,
-  markResumed,
+  applyWorkItemEventSteps,
+  failWorkItemSteps,
+  getWorkItemSteps,
+  saveCheckpointSteps,
+  markResumedSteps,
   type WorkItemRecord,
 } from "./items";
-import { cancelOpenJobs, enqueueJobOnce } from "./jobs";
-import { ensureRestartQuestion, holdRestart, restartQuestionStands } from "./restart-hold";
-import { getRun, markRun, releaseRunCapacity } from "./runs";
-import { pendingRestartHandoff } from "./restart";
-import { getTaskMode } from "./tasks";
+import { emitJobReady, cancelOpenJobsSteps, enqueueJobOnceSteps } from "./jobs";
+import {
+  ensureRestartQuestionSteps,
+  holdRestartSteps,
+  restartQuestionStandsSteps,
+} from "./restart-hold";
+import { getRunSteps, markRunSteps, releaseRunCapacitySteps } from "./runs";
+import { pendingRestartHandoffSteps } from "./restart";
+import { getTaskModeSteps } from "./tasks";
 
 /**
  * Apply one startup decision. Callers wrap a batch in one transaction
@@ -23,23 +29,50 @@ export function applyDecision(
   item: WorkItemRecord,
   decision: StartupDecision,
   now: number,
-  { runAt = now }: { runAt?: number } = {},
+  options: { runAt?: number } = {},
 ): void {
+  const armed = settled(
+    sqliteDb(db).transaction((q) => applyDecisionSteps(q, item, decision, now, options)),
+  );
+  if (armed) emitJobReady(db);
+}
+
+export async function applyDecisionAsync(
+  store: Db,
+  item: WorkItemRecord,
+  decision: StartupDecision,
+  now: number,
+  options: { runAt?: number } = {},
+): Promise<void> {
+  const armed = await store.transaction((q) => applyDecisionSteps(q, item, decision, now, options));
+  if (armed) emitJobReady(store);
+}
+
+export function* applyDecisionSteps(
+  q: Q,
+  item: WorkItemRecord,
+  decision: StartupDecision,
+  now: number,
+  { runAt = now }: { runAt?: number } = {},
+): Steps<boolean> {
   switch (decision.type) {
     case "none":
-      return;
+      return false;
     case "resume":
-      applyResume(db, item, decision.checkpoint, now, runAt, decision.reattach === true);
-      return;
+      return yield* applyResumeSteps(
+        q,
+        item,
+        decision.checkpoint,
+        now,
+        runAt,
+        decision.reattach === true,
+      );
     case "reverify":
-      applyReverify(db, item, now, decision.resumed === true);
-      return;
+      return yield* applyReverifySteps(q, item, now, decision.resumed === true);
     case "keep_place":
-      applyKeepPlace(db, item, decision.mergeCallInFlight, now);
-      return;
+      return yield* applyKeepPlaceSteps(q, item, decision.mergeCallInFlight, now);
     case "ask_restart":
-      applyAskRestart(db, item, now);
-      return;
+      return yield* applyAskRestartSteps(q, item, now);
     default: {
       const exhaustive: never = decision;
       throw new Error(`Unhandled decision ${JSON.stringify(exhaustive)}`);
@@ -47,31 +80,31 @@ export function applyDecision(
   }
 }
 
-function applyResume(
-  db: Database,
+function* applyResumeSteps(
+  q: Q,
   item: WorkItemRecord,
   checkpoint: Checkpoint | null,
   now: number,
   runAt: number,
   reattach: boolean,
-): void {
+): Steps<boolean> {
   if (!reattach && (item.state === "running" || item.state === "verifying")) {
-    applyWorkItemEvent(db, item.id, "lease_expired");
+    yield* applyWorkItemEventSteps(q, item.id, "lease_expired");
   }
-  if (!reattach) markResumed(db, item.id, now);
-  const current = getWorkItem(db, item.id) ?? item;
+  if (!reattach) yield* markResumedSteps(q, item.id, now);
+  const current = (yield* getWorkItemSteps(q, item.id)) ?? item;
   if (current.currentRunId !== null) {
-    const run = getRun(db, current.currentRunId);
-    if (run && run.status === "lost") markRun(db, run.id, "active", now);
+    const run = yield* getRunSteps(q, current.currentRunId);
+    if (run && run.status === "lost") yield* markRunSteps(q, run.id, "active", now);
   }
   const restartHandoff =
     !reattach &&
     item.acceptedHead === null &&
     checkpoint === null &&
-    getTaskMode(db, item.id) === "code"
+    (yield* getTaskModeSteps(q, item.id)) === "code"
       ? `Paws restarted before this task saved a checkpoint, and the earlier session is gone. Start again${item.branchName ? ` from the branch ${item.branchName}` : ""}: keep any work already on it and finish the issue.`
       : null;
-  enqueueJobOnce(db, {
+  return (yield* enqueueJobOnceSteps(q, {
     queue: JOB_KIND.resume,
     jobKey: `resume:${item.id}:${current.version}:${now}`,
     payload: {
@@ -81,48 +114,53 @@ function applyResume(
       checkpoint,
       ...(restartHandoff === null ? {} : { handoff: restartHandoff }),
       reason: "process_restart",
-      ...pendingRestartHandoff(db, item.id),
+      ...(yield* pendingRestartHandoffSteps(q, item.id)),
     },
     runAt,
     now,
-  });
+  })).inserted;
 }
 
 /** Already resumed once: ask in Linear. Any answer starts the task again through the answer resume. */
-function applyAskRestart(db: Database, item: WorkItemRecord, now: number): void {
+function* applyAskRestartSteps(q: Q, item: WorkItemRecord, now: number): Steps<boolean> {
   if (item.sessionKey === null) {
-    failWorkItem(
-      db,
+    yield* failWorkItemSteps(
+      q,
       item,
       "resume_already_attempted",
       "Stopped after a restart because this run was already resumed once.",
       now,
     );
-    return;
+    return false;
   }
   if (item.state === "running" || item.state === "verifying")
-    applyWorkItemEvent(db, item.id, "lease_expired");
-  const held = getWorkItem(db, item.id) ?? item;
-  holdRestart(db, held, now);
-  if (restartQuestionStands(db, held)) return;
-  cancelOpenJobs(db, { itemId: item.id, reason: "restart_question", now });
-  if (held.currentRunId) releaseRunCapacity(db, held.currentRunId, now);
-  ensureRestartQuestion(db, held, now);
+    yield* applyWorkItemEventSteps(q, item.id, "lease_expired");
+  const held = (yield* getWorkItemSteps(q, item.id)) ?? item;
+  yield* holdRestartSteps(q, held, now);
+  if (yield* restartQuestionStandsSteps(q, held)) return false;
+  yield* cancelOpenJobsSteps(q, { itemId: item.id, reason: "restart_question", now });
+  if (held.currentRunId) yield* releaseRunCapacitySteps(q, held.currentRunId, now);
+  return (yield* ensureRestartQuestionSteps(q, held, now)).armed;
 }
 
-function applyReverify(db: Database, item: WorkItemRecord, now: number, resumed: boolean): void {
-  cancelOpenJobs(db, {
+function* applyReverifySteps(
+  q: Q,
+  item: WorkItemRecord,
+  now: number,
+  resumed: boolean,
+): Steps<boolean> {
+  yield* cancelOpenJobsSteps(q, {
     itemId: item.id,
     reason: resumed ? "interrupted_verification" : "sleep_interrupted_merge",
     now,
   });
-  if (resumed) markResumed(db, item.id, now);
+  if (resumed) yield* markResumedSteps(q, item.id, now);
   if (item.checkpoint?.phase === "merge_queue") {
-    saveCheckpoint(db, item.id, { ...item.checkpoint, phase: "verifying" });
+    yield* saveCheckpointSteps(q, item.id, { ...item.checkpoint, phase: "verifying" });
   }
-  if (item.state === "merge_queue") applyWorkItemEvent(db, item.id, "lease_expired");
-  const refreshed = getWorkItem(db, item.id) ?? item;
-  enqueueJobOnce(db, {
+  if (item.state === "merge_queue") yield* applyWorkItemEventSteps(q, item.id, "lease_expired");
+  const refreshed = (yield* getWorkItemSteps(q, item.id)) ?? item;
+  return (yield* enqueueJobOnceSteps(q, {
     queue: JOB_KIND.reverify,
     jobKey: `reverify:startup:${item.id}:${now}`,
     payload: {
@@ -132,7 +170,7 @@ function applyReverify(db: Database, item: WorkItemRecord, now: number, resumed:
       failClosed: true,
     },
     now,
-  });
+  })).inserted;
 }
 
 /**
@@ -140,39 +178,56 @@ function applyReverify(db: Database, item: WorkItemRecord, now: number, resumed:
  * shutdown ended is queued again from its last payload. After a merge call that may have reached
  * GitHub, the job runs now and asks GitHub first: merged records the merge, anything else re-verifies.
  */
-function applyKeepPlace(
-  db: Database,
+function* applyKeepPlaceSteps(
+  q: Q,
   item: WorkItemRecord,
   mergeCallInFlight: boolean,
   now: number,
-): void {
-  const open = db
-    .query<{ id: number }, [string, string]>(
-      `SELECT id FROM job WHERE queue = ? AND status IN ('pending', 'running')
-       AND json_extract(payload, '$.itemId') = ?`,
-    )
-    .all(JOB_KIND.merge, item.id);
+): Steps<boolean> {
+  const { job } = q.t;
+  const matches = and(
+    eq(job.queue, JOB_KIND.merge),
+    q.dialect === "sqlite"
+      ? sql`json_extract(${job.payload}, '$.itemId') = ${item.id}`
+      : sql`${job.payload}->>'itemId' = ${item.id}`,
+  );
+  const open = yield* q.all(
+    q.orm
+      .select({ id: job.id })
+      .from(job)
+      .where(and(matches, inArray(job.status, ["pending", "running"]))),
+  );
   if (open.length > 0) {
     if (mergeCallInFlight)
       for (const { id } of open)
-        db.run(
-          `UPDATE job SET payload = json_set(payload, '$.mergeCallInFlight', json('true')),
-             run_at = MIN(run_at, ?) WHERE id = ?`,
-          [now, id],
+        yield* q.exec(
+          q.orm
+            .update(job)
+            .set({
+              payload:
+                q.dialect === "sqlite"
+                  ? sql`json_set(${job.payload}, '$.mergeCallInFlight', json('true'))`
+                  : sql`jsonb_set(${job.payload}, '{mergeCallInFlight}', 'true'::jsonb)`,
+              runAt:
+                q.dialect === "sqlite"
+                  ? sql`MIN(${job.runAt}, ${now})`
+                  : sql`LEAST(${job.runAt}, ${now})`,
+            })
+            .where(eq(job.id, id)),
         );
-    return;
+    return false;
   }
-  const last = db
-    .query<{ payload: string }, [string, string]>(
-      `SELECT payload FROM job WHERE queue = ? AND json_extract(payload, '$.itemId') = ?
-       ORDER BY id DESC LIMIT 1`,
-    )
-    .get(JOB_KIND.merge, item.id);
-  const payload = last === null ? { itemId: item.id } : (JSON.parse(last.payload) as object);
-  enqueueJobOnce(db, {
+  const last = yield* q.one(
+    q.orm.select({ payload: job.payload }).from(job).where(matches).orderBy(desc(job.id)).limit(1),
+  );
+  const payload =
+    last === undefined
+      ? { itemId: item.id }
+      : ((typeof last.payload === "string" ? JSON.parse(last.payload) : last.payload) as object);
+  return (yield* enqueueJobOnceSteps(q, {
     queue: JOB_KIND.merge,
     jobKey: `merge:startup:${item.id}:${now}`,
     payload: mergeCallInFlight ? { ...payload, mergeCallInFlight: true } : payload,
     now,
-  });
+  })).inserted;
 }
