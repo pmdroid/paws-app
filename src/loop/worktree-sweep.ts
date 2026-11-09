@@ -9,7 +9,7 @@ import {
   worktreePath,
 } from "../acp";
 import type { RepositoryBinding, WorkItemState } from "../core";
-import { listWorkItems, type WorkItemRecord } from "../db";
+import { latestRunUpdate, listWorkItems, type WorkItemRecord } from "../db";
 import { itemPathId } from "./sources";
 
 export const RETIRED_WORKTREE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -130,12 +130,13 @@ function lastTouched(db: Database, items: WorkItemRecord[], path: string): numbe
     );
     return null;
   }
-  const ran = db
-    .query<{ at: number | null }, string[]>(
-      `SELECT MAX(updated_at) AS at FROM run WHERE item_id IN (${items.map(() => "?").join(",")})`,
-    )
-    .get(...items.map((item) => item.id));
-  return Math.max(modified, ran?.at ?? 0);
+  return Math.max(
+    modified,
+    latestRunUpdate(
+      db,
+      items.map((item) => item.id),
+    ) ?? 0,
+  );
 }
 
 async function mergedHeads(

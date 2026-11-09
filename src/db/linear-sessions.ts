@@ -5,6 +5,8 @@ import {
   count,
   desc,
   eq,
+  exists,
+  gt,
   inArray,
   isNotNull,
   isNull,
@@ -15,7 +17,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { IN_FLIGHT_ITEM_STATES, JOB_KIND } from "../core";
+import { IN_FLIGHT_ITEM_STATES, JOB_KIND, parentIssueIdSql } from "../core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { mergeLaneSql } from "./jobs";
 import { orm } from "./orm";
@@ -880,4 +882,62 @@ export function* deleteCancelledLinearTurnSteps(q: Q, turn: LinearTurnKey) {
 
 export function deleteCancelledLinearTurn(db: Database, turn: LinearTurnKey): void {
   settled(sqliteDb(db).run((q) => deleteCancelledLinearTurnSteps(q, turn)));
+}
+
+/** Whether Stop was recorded for a generation of this session newer than `generation`. */
+export function* linearStoppedAfterSteps(q: Q, sessionId: string, generation: number) {
+  const { linearStopReceipt } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(linearStopReceipt)
+      .where(
+        and(
+          eq(linearStopReceipt.sessionId, sessionId),
+          gt(linearStopReceipt.generation, generation),
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+export function linearStoppedAfter(db: Database, sessionId: string, generation: number): boolean {
+  return settled(sqliteDb(db).run((q) => linearStoppedAfterSteps(q, sessionId, generation)));
+}
+
+/** The newest live session on this issue while a sub-issue delegated under it has open work. */
+export function* parentIssueSessionSteps(q: Q, issueId: string) {
+  const { linearSession } = q.t;
+  const w = alias(q.t.workItem, "w");
+  const row = yield* q.one(
+    q.orm
+      .select({ sessionId: linearSession.sessionId })
+      .from(linearSession)
+      .where(
+        and(
+          eq(linearSession.issueId, issueId),
+          isNull(linearSession.stoppedAt),
+          exists(
+            q.orm
+              .select({ one: sql`1` })
+              .from(w)
+              .where(
+                and(
+                  ne(w.linearIssueId, issueId),
+                  sql`${sql.raw(parentIssueIdSql("w", q.dialect))} = ${issueId}`,
+                  notInArray(w.state, ["completed", "merged", "cancelled"]),
+                ),
+              ),
+          ),
+        ),
+      )
+      .orderBy(desc(linearSession.createdAt))
+      .limit(1),
+  );
+  return row?.sessionId ?? null;
+}
+
+export function parentIssueSession(db: Database, issueId: string): string | null {
+  return settled(sqliteDb(db).run((q) => parentIssueSessionSteps(q, issueId)));
 }

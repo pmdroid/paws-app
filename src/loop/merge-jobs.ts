@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
 import {
+  githubDeliveryRecorded,
+  openMergeJobs,
   applyWorkItemEvent,
   jobVersionCurrent,
   reenqueueJob,
@@ -85,8 +87,7 @@ export function acceptGitHubDelivery(
 ): boolean {
   // Avoid provider callbacks for successful duplicates. The transactional insert remains
   // authoritative when another connection accepts this delivery after the read.
-  if (db.query("SELECT 1 FROM github_delivery WHERE delivery_id = ?").get(delivery.deliveryId))
-    return false;
+  if (githubDeliveryRecorded(db, delivery.deliveryId)) return false;
   const body: unknown = JSON.parse(delivery.payload);
   // Callbacks can resolve credentials and start an identity-cache refresh. Run them
   // before taking the write lock; only synchronous database effects belong below.
@@ -99,12 +100,7 @@ export function acceptGitHubDelivery(
     const moved = mainMove(delivery.event, body);
     if (moved) mainMoved(db, { ...moved, now });
     const facts = deliveryFacts(delivery.event, body);
-    const jobs = db
-      .query<{ id: number; activationId: number; payload: string }, [string]>(
-        "SELECT id, activation_id AS activationId, payload FROM job WHERE queue = ? AND status IN ('pending', 'running')",
-      )
-      .all(JOB_KIND.merge);
-    for (const job of jobs) {
+    for (const job of openMergeJobs(db)) {
       const payload = payloadRecord(JSON.parse(job.payload));
       if (!jobVersionCurrent(db, job)) continue;
       const item = typeof payload.itemId === "string" ? getWorkItem(db, payload.itemId) : null;

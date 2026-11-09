@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { asc, desc, lt } from "drizzle-orm";
+import { asc, desc, eq, lt } from "drizzle-orm";
 import { settled, sqliteDb, type Q } from "./db";
 import type { githubDelivery } from "./schema";
 
@@ -71,4 +71,19 @@ export function* listGitHubDeliveriesSteps(q: Q) {
 
 export function listGitHubDeliveries(db: Database): IntegrationEvent[] {
   return settled(sqliteDb(db).run(listGitHubDeliveriesSteps));
+}
+
+export function* githubDeliveryRecordedSteps(q: Q, deliveryId: string) {
+  const { githubDelivery } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ deliveryId: githubDelivery.deliveryId })
+      .from(githubDelivery)
+      .where(eq(githubDelivery.deliveryId, deliveryId)),
+  );
+  return row !== undefined;
+}
+
+export function githubDeliveryRecorded(db: Database, deliveryId: string): boolean {
+  return settled(sqliteDb(db).run((q) => githubDeliveryRecordedSteps(q, deliveryId)));
 }
