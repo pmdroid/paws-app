@@ -22,6 +22,7 @@ import {
   RUNNER_RESULT_BODY_LIMIT,
   RunnerResultSchema,
   runnerAccountEchoed,
+  withRejectedFields,
   type RunnerResult,
 } from "../runner-protocol";
 import { RunnerWorkFencedError, runnerFailureStatus, type RunnerWork } from "../runner-work";
@@ -229,7 +230,10 @@ export function createRunnerResults(options: {
         const status = runnerFailureStatus(error);
         if (status === 409) return json({ error: "Runner work is fenced.", code: "fenced" }, 409);
         if (status === 503) return json({ error: "Paws is busy. Retry the request." }, 503);
-        return json({ error: "Runner result request is denied or invalid." }, 403);
+        return withRejectedFields(
+          json({ error: "Runner result request is denied or invalid." }, 403),
+          error,
+        );
       }
     },
   };

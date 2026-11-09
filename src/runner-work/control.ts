@@ -76,6 +76,8 @@ import {
   RUNNER_LEASE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
   OPENCODE_RUNNER_VERSION,
+  CONTROL_PLANE_LEVEL_RUNNER_VERSION,
+  CONTROL_PLANE_PROTOCOL_LEVEL,
   WORK_ROOT_CLEANUP_RUNNER_VERSION,
   RunnerCommandSchema,
   runnerReleaseAtLeast,
@@ -731,6 +733,13 @@ export function createRunnerWork(options: {
           ...(concurrency === undefined ? {} : { concurrency }),
           ...(skills === undefined ? {} : { skills }),
           ...(targets === undefined ? {} : { agents: targets }),
+          // Runners parse this reply strictly, so an older one must not receive the level.
+          ...(runnerReleaseAtLeast(
+            host.runnerVersion ?? storedVersion,
+            CONTROL_PLANE_LEVEL_RUNNER_VERSION,
+          )
+            ? { protocolLevel: CONTROL_PLANE_PROTOCOL_LEVEL }
+            : {}),
         };
       });
     },

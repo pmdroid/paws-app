@@ -116,3 +116,4 @@ export const TURN_STALL_GRACE_RUNNER_VERSION: RunnerVersion = [0, 1, 75];
 export const INTERRUPT_RECOVERY_RUNNER_VERSION: RunnerVersion = [0, 1, 75];
 export const WORK_ROOT_CLEANUP_RUNNER_VERSION: RunnerVersion = [0, 1, 75];
 export const SQUASH_REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 76];
+export const CONTROL_PLANE_LEVEL_RUNNER_VERSION: RunnerVersion = [0, 1, 76];

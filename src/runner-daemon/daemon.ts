@@ -56,6 +56,7 @@ import {
   RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
+  resultForControlPlane,
 } from "../runner-protocol";
 import {
   RunnerTranscriptChunkSchema,
@@ -173,6 +174,13 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   let state = readState(options.root);
   let closed = false;
   let observedAt = 0;
+  /** Set by each heartbeat reply; `undefined` inside is a control plane that reports no level. */
+  let controlPlane: { level: string | undefined } | undefined;
+  /** The result this control plane accepts. Waits for a heartbeat reply so no field is guessed. */
+  function acceptedResult<Result extends object>(result: Result): Result {
+    if (!controlPlane) throw new Error("Runner has no heartbeat reply from Paws yet.");
+    return resultForControlPlane(result, controlPlane.level);
+  }
   if (
     state &&
     (state.controlPlaneUrl !== origins.controlPlaneUrl ||
@@ -621,6 +629,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         }
       }
       const response = RunnerHeartbeatSchema.parse(reply);
+      controlPlane = { level: response.protocolLevel };
       if (response.observedAt !== undefined) observedAt = Math.max(observedAt, response.observedAt);
       if (options.concurrency !== undefined && response.concurrency !== undefined)
         applied = Math.min(response.concurrency, ceiling);
@@ -844,7 +853,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     },
     async postResult(runId: string, generation: number, result: RunnerResult, grantToken: string) {
       identifier.parse(runId);
-      const body = RunnerResultDeliverySchema.parse({ generation, result });
+      const body = RunnerResultDeliverySchema.parse({ generation, result: acceptedResult(result) });
       RunnerGrantTokenSchema.parse(grantToken);
       return RunnerEventReceiptSchema.parse(
         await authenticated(
@@ -1040,7 +1049,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return result;
     },
     async postHelperResult(result: RunnerHelperResult) {
-      const body = RunnerHelperResultSchema.parse(result);
+      const body = RunnerHelperResultSchema.parse(acceptedResult(result));
       helperCommand(body.commandId, true);
       return RunnerEventReceiptSchema.parse(
         await authenticated(
