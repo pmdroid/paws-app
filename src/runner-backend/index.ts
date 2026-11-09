@@ -42,6 +42,7 @@ import {
   runnerSlotsHeldBetweenCommands,
   saveCheckpoint,
   runnerLeaseCutoff,
+  runnerEventsAfter,
   clearRunnerSessionMove,
   noteRunnerSessionMove,
   recordItemCandidate,
@@ -2590,9 +2591,28 @@ export function createRemoteAgentRunner(options: {
               true,
             );
           }
+          // A bundle on the worker is insufficient: its push can be refused. Require the
+          // final stop checkpoint delivered for this generation before consuming the retry.
+          const stopCheckpoint = complete.interrupted
+            ? runnerEventsAfter(db, {
+                runId: assigned.runId,
+                generation: assigned.generation,
+                after: 0,
+                types: ["checkpoint"],
+              })
+                .map((row) => work.openEvent(row))
+                .filter((event) => event.type === "checkpoint" && event.reason === "stop")
+                .at(-1)
+            : undefined;
+          const interruptionSaved =
+            stopCheckpoint?.type === "checkpoint" &&
+            stopCheckpoint.dropped === undefined &&
+            (!stopCheckpoint.sha ||
+              getWorkItem(db, itemId)?.checkpoint?.wipCommit === stopCheckpoint.sha);
           if (
             assigned.type === "run" &&
             complete.interrupted &&
+            interruptionSaved &&
             complete.stopReason === "cancelled" &&
             complete.agentExited &&
             !complete.handedOver &&

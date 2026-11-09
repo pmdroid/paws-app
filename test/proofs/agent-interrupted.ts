@@ -6,7 +6,8 @@ import type { Proof } from "./harness";
 
 export default {
   covers: ["src/runner-backend/**", "src/runner-worker/**", "src/runner-protocol/results.ts"],
-  summary: "An unsolicited interrupted runner turn preserves WIP and restarts only once.",
+  summary:
+    "An unsolicited interrupted runner turn restarts once only after its stop checkpoint is published.",
   agent: () => [],
   async run(proof) {
     const root = mkdtempSync(join(tmpdir(), "paws-interrupted-proof-"));

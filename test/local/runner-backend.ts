@@ -657,6 +657,14 @@ export async function probeRunnerBackend(
       commandId: resumed.id,
       generation: resumed.generation,
     });
+    work.event({
+      runnerId,
+      runId: resumed.runId,
+      generation: resumed.generation,
+      token: resumedToken.token,
+      sequence: 1,
+      event: { type: "checkpoint", reason: "stop" },
+    });
     results.submit({
       runnerId,
       runId: resumed.runId,
@@ -672,6 +680,40 @@ export async function probeRunnerBackend(
     observe("an unsolicited interruption saves WIP and restarts only once", true, {
       wipCommit: head,
     });
+    // A refused push still delivers the worker's interruption result, but cannot restart
+    // from the previously recorded checkpoint. Missing stop evidence fails closed too.
+    for (const publication of ["refused", "missing"] as const) {
+      const record = item();
+      const publicationRun = backend.forItem(record.id)(input(record));
+      const command = await next();
+      if (command.type !== "run") throw new Error("Expected implementation");
+      const previousWip = getWorkItem(db, record.id)?.checkpoint?.wipCommit;
+      const publicationGrant = work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      });
+      if (publication === "refused")
+        work.event({
+          runnerId,
+          runId: command.runId,
+          generation: command.generation,
+          token: publicationGrant.token,
+          sequence: 1,
+          event: { type: "checkpoint", reason: "stop", sha: head, dropped: "Git push refused" },
+        });
+      results.submit({
+        runnerId,
+        runId: command.runId,
+        generation: command.generation,
+        token: publicationGrant.token,
+        result: { ...result(command), stopReason: "cancelled", cancelled: true, interrupted: true },
+      });
+      assert.equal((await publicationRun).stopReason, "cancelled");
+      assert.equal(getWorkItem(db, record.id)?.checkpoint?.wipCommit, previousWip);
+    }
+    observe("refused or missing stop checkpoint publication prevents interruption retry", true, {});
     const stoppedWith = async (errorMessage: string, sessionId: string) => {
       const record = item();
       const run = backend.forItem(record.id)(input(record));
