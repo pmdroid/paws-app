@@ -24,7 +24,7 @@ import {
   type RunAgentResult,
 } from "../acp";
 import {
-  clearInheritedSetgid,
+  shareRunnerWorkRoot,
   ExecutionIdSchema,
   openRunnerAccountHome,
   type RunnerAccountOwners,
@@ -322,8 +322,7 @@ export async function executeRetroCommand(options: RetroWorkerOptions): Promise<
 
   const root = join(options.workRoot, executionId);
   const workspace = join(root, "workspace");
-  mkdirSync(options.workRoot, { recursive: true, mode: 0o700 });
-  clearInheritedSetgid(options.workRoot);
+  shareRunnerWorkRoot(options.workRoot, options.owners);
   rmSync(root, { recursive: true, force: true });
   mkdirSync(workspace, { recursive: true, mode: 0o700 });
   try {

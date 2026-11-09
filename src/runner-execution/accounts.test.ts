@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import {
   chmodSync,
+  chownSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -26,6 +27,7 @@ import {
   runnerAccountBindings,
   runnerAccountHome,
   shareRunnerAgentState,
+  shareRunnerWorkRoot,
 } from "./accounts";
 import { executionScope, executionTag, startTime } from "./processes";
 
@@ -352,4 +354,92 @@ test("a work root the runner made 0700 is shared with the agent group before paw
   const fresh = join(root, "fresh");
   prepareRunnerWorkRoot(fresh, owners);
   expect(statSync(fresh).isDirectory()).toBe(true);
+});
+
+function permitted(attempt: (probe: string) => void): boolean {
+  const probe = mkdtempSync(join(tmpdir(), "paws-work-root-probe-"));
+  try {
+    attempt(probe);
+    return true;
+  } catch (error) {
+    if (["EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    throw error;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+}
+
+const sharedGroup =
+  process.getgroups!().find((group) => group !== process.getgid!()) ?? process.getgid!();
+const anotherUser = 1;
+const unprivileged = 65534;
+const groupChangeAllowed = permitted((probe) => {
+  chownSync(probe, -1, sharedGroup);
+  chmodSync(probe, 0o770);
+});
+const anotherOwnerAllowed =
+  process.geteuid!() === 0 &&
+  permitted((probe) => {
+    chownSync(probe, anotherUser, anotherUser);
+    process.seteuid!(unprivileged);
+    process.seteuid!(0);
+  });
+
+test.skipIf(!groupChangeAllowed)(
+  "a work root the worker creates first is shared, and the runner can prepare it later",
+  () => {
+    const work = join(agentHome(), "work");
+    const owners = { runnerUid: process.getuid!(), agentGid: sharedGroup };
+    const umask = process.umask(0o077);
+    try {
+      shareRunnerWorkRoot(work, owners);
+    } finally {
+      process.umask(umask);
+    }
+    expect(statSync(work).mode & 0o7777).toBe(0o770);
+    expect(statSync(work).gid).toBe(sharedGroup);
+    mkdirSync(join(work, ".paws"));
+    chmodSync(join(work, ".paws"), 0o700);
+    prepareRunnerWorkRoot(work, owners);
+    expect(statSync(join(work, ".paws")).mode & 0o777).toBe(0o770);
+    expect(statSync(join(work, ".paws")).gid).toBe(sharedGroup);
+  },
+);
+
+function expectNamedWorkRootError(work: string, uid: number, mode: string, agentGid: number) {
+  const owners = { runnerUid: process.getuid!(), agentGid };
+  expect(() => prepareRunnerWorkRoot(work, owners)).toThrow(
+    new RegExp(
+      `${work}.*owner uid ${uid},.*mode ${mode}.*chown paws-runner:${agentGid} ${work}.*chmod 0770 ${work}`,
+    ),
+  );
+}
+
+test.skipIf(!anotherOwnerAllowed)(
+  "a 0700 work root owned by another user fails the run with its path, owner and mode",
+  () => {
+    const root = agentHome();
+    chmodSync(root, 0o755);
+    const work = join(root, "work");
+    mkdirSync(work);
+    chownSync(work, anotherUser, anotherUser);
+    chmodSync(work, 0o700);
+    process.seteuid!(unprivileged);
+    try {
+      expectNamedWorkRootError(work, anotherUser, "0700", process.getgid!());
+    } finally {
+      process.seteuid!(0);
+    }
+  },
+);
+
+test.skipIf(process.geteuid!() === 0)("a work root the runner cannot list is not skipped", () => {
+  const work = join(agentHome(), "work");
+  mkdirSync(work);
+  chmodSync(work, 0o000);
+  try {
+    expectNamedWorkRootError(work, process.getuid!(), "0000", process.getgid!());
+  } finally {
+    chmodSync(work, 0o700);
+  }
 });

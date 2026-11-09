@@ -46,6 +46,7 @@ export {
   runnerAccountBindings,
   runnerAccountHome,
   shareRunnerAgentState,
+  shareRunnerWorkRoot,
 } from "./accounts";
 export { clearInheritedSetgid, sharedDirectoryAllowed } from "./shared";
 export {
