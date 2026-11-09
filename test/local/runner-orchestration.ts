@@ -827,7 +827,10 @@ export async function probeRunnerOrchestration(
       await jobs.tick();
       if (runnerWait) await runnerWatch;
       if (runnerWait)
-        db.run("UPDATE runner_work SET ended_at=? WHERE ended_at IS NULL", [clock.now()]);
+        db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE ended_at IS NULL", [
+          clock.now(),
+          clock.now(),
+        ]);
       if (!initialLease && listWorkItems(db)[0]?.state === "queued") {
         verificationExclusions = [];
         orchestrator.reconcileExecution();
