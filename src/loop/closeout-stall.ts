@@ -45,7 +45,7 @@ export async function recoverStalledCloseout(
         .map((e) => e.at),
     );
     const facts = itemActivityFacts(db, item, input.now);
-    if (input.now - since < QUIET_MS || facts.liveRunner || facts.liveJob) continue;
+    if (input.now - since < QUIET_MS || facts.liveRunner) continue;
     // Fence the old job before joining it, preventing a competing finalizer recovery.
     cancelOpenJobs(db, { itemId: id, reason: "Closeout stalled", now: input.now });
     await input.cancel(id);
