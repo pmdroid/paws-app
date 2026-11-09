@@ -292,7 +292,7 @@ async function runPathTask(
   const task = join(root, name);
   const workRoot = join(task, "work");
   const worktree = join(workRoot, executionId);
-  const outputDirectory = join(task, "output");
+  const outputDirectory = join(task, paths.resumeSessionId ? "resumed-output" : "output");
   const system = join(task, "system");
   for (const path of [worktree, outputDirectory, system])
     mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -415,11 +415,16 @@ async function runPathTask(
         ],
         env: { PATH: agentPath },
       },
-      async answer() {
-        return { answer: "Yes" };
-      },
+      ...(workCommand
+        ? {}
+        : {
+            async answer() {
+              return { answer: "Yes" };
+            },
+          }),
     });
-    const read = (file: string) => readFileSync(join(worktree, file), "utf8").trim();
+    const read = (file: string) =>
+      readFileSync(join(paths.workTurn ? join(workRoot, "run") : worktree, file), "utf8").trim();
     const trace = JSON.parse(readFileSync(recorded, "utf8")) as {
       closeouts?: string[];
       loaded?: { sessionId: string };
