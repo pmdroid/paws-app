@@ -71,6 +71,13 @@
       "when": 1794201608327,
       "tag": "0009_lane_ci_failure_wait",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794250493739,
+      "tag": "0010_repository_merge_lock",
+      "breakpoints": true
     }
   ]
 }

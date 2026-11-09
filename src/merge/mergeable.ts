@@ -9,7 +9,6 @@ export type AcceptRow = {
   recheckDigest?: string | null;
 };
 
-/** What the merge lane read about head S while it held the repository lock. */
 export type MergeFacts = {
   /** S: the branch head the lane would merge. */
   head: string;

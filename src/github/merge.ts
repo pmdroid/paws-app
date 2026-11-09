@@ -63,7 +63,6 @@ export type SerialMergeInput = {
   overlap?: { packages: readonly string[]; anyFiles?: boolean };
 };
 
-/** What the merge lane reads about the branch head S under the repository lock. */
 export type PullFacts = {
   branch: string;
   /** S: the branch head Paws holds, which is the head the pull request should carry. */

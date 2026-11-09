@@ -208,6 +208,16 @@ export const mergeCall = pgTable("merge_call", {
   startedAt: bigint("started_at", { mode: "number" }).notNull(),
 });
 
+export const repositoryMergeLock = pgTable("repository_merge_lock", {
+  repository: text().primaryKey(),
+  holder: text().notNull(),
+  itemId: text("item_id").notNull(),
+  jobId: bigint("job_id", { mode: "number" }).notNull(),
+  instanceId: text("instance_id"),
+  acquiredAt: bigint("acquired_at", { mode: "number" }).notNull(),
+  expiresAt: bigint("expires_at", { mode: "number" }).notNull(),
+});
+
 export const rebaseReturn = pgTable(
   "rebase_return",
   {

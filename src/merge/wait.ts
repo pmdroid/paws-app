@@ -1,5 +1,6 @@
 export { wakeMergesBehind } from "../db";
 import { latestGitHubDeliverySteps, parkLeasedJobSteps, type Db, type Job } from "../db";
+import { SQUASH_LOCK_RETRY_MS } from "./repository-lock";
 
 export const MERGE_CI_POLL_MS = 10_000;
 export const MERGE_BACKSTOP_POLL_MS = 5 * 60_000;
@@ -28,6 +29,7 @@ export type MergeWaitReason =
   | "branch_update"
   | "dependencies"
   | "merge_outcome"
+  | "repository_lock"
   | "policy";
 export type MergeWait = {
   message: string;
@@ -63,6 +65,8 @@ export async function parkMerge(
     return park(store, job, now + delayMs, payload, now);
   }
   delete payload.mergeOutcomeRetries;
+  if (wait.reason === "repository_lock")
+    return park(store, job, now + SQUASH_LOCK_RETRY_MS, payload, now);
   if (wait.queued) {
     delete payload.ciWaitDeadline;
     if (wait.githubQueue !== undefined) payload.githubQueue = wait.githubQueue;

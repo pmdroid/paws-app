@@ -207,6 +207,8 @@ export async function mergeHarness(
     /** Held open while a squash is in flight; the squash goes on when it settles. */
     squashGate: null as Promise<void> | null,
     squashing: false,
+    lockSleeps: [] as number[],
+    lockSleep: async (_ms: number): Promise<void> => {},
     publication: new AbortController(),
     runnerRebase: null as
       | ((
@@ -595,6 +597,10 @@ export async function mergeHarness(
         return result.answer;
       },
       completed: () => completed.push(id),
+      sleep: (ms) => {
+        state.lockSleeps.push(ms);
+        return state.lockSleep(ms);
+      },
       ...(state.runnerRebase
         ? { runnerRebase: (_, heads, signal) => state.runnerRebase!(id, heads, signal) }
         : {}),

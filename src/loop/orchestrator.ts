@@ -5220,6 +5220,7 @@ export class Orchestrator {
       { itemId, payload, jobId },
       {
         ...this.orderCapabilities(itemId),
+        ...(this.options.instanceId ? { instanceId: this.options.instanceId } : {}),
         publish: (item) => this.publishForMerge(item, run),
         ...(this.options.runnerRebase ? { runnerRebase: this.options.runnerRebase } : {}),
         settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),
