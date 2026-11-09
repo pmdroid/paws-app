@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openRunnerRuntime } from "../src/runner-runtime";
@@ -9,7 +9,9 @@ import {
   type RunnerResult,
 } from "../src/runner-protocol";
 
-async function fixture(options: { alive?: boolean; cancel?: boolean } = {}) {
+async function fixture(
+  options: { alive?: boolean; cancel?: boolean; log?: string; phase?: string; exit?: string } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-failure-"));
   const now = Date.now();
   let clock = 0;
@@ -63,12 +65,18 @@ async function fixture(options: { alive?: boolean; cancel?: boolean } = {}) {
     onError: (error) => errors.push(error.message),
     broker: {
       async start(id) {
+        if (options.phase) {
+          mkdirSync(join(root, "results", id), { recursive: true, mode: 0o750 });
+          chmodSync(join(root, "results"), 0o770);
+          writeFileSync(join(root, "results", id, "phase.txt"), options.phase, { mode: 0o640 });
+        }
         starts.push(id);
         return { alreadyAdmitted: false };
       },
       async stop() {},
       alive: () => options.alive ?? true,
-      log: () => "worker output line\nTypeError: boom",
+      exitStatus: async () => options.exit,
+      log: () => options.log ?? "worker output line\nTypeError: boom",
     },
     daemon: {
       status: () => paired,
@@ -176,6 +184,36 @@ test("a cancel from Paws stops the worker without reporting a failure", async ()
     await Bun.sleep(100);
     expect(f.results).toHaveLength(0);
     expect(f.errors.join("\n")).toContain("cancelled by Paws");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a missing result reports the exit code and last worker phase", async () => {
+  const f = await fixture({
+    alive: false,
+    log: '{"event":"worker_phase","phase":"checkout"}\n{"event":"worker_phase","phase":"agent"}\nRunner worker exited with code 1\n',
+  });
+  try {
+    await f.runtime.tick();
+    await until(() => f.results.length > 0);
+    expect(f.results[0]!.errorMessage).toContain("worker exited with code 1 during phase agent");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("persisted phase and unit exit status survive verbose worker output", async () => {
+  const f = await fixture({
+    alive: false,
+    phase: "agent",
+    exit: "signal 9",
+    log: "verbose output\n".repeat(500),
+  });
+  try {
+    await f.runtime.tick();
+    await until(() => f.results.length > 0);
+    expect(f.results[0]!.errorMessage).toContain("worker exited with signal 9 during phase agent");
   } finally {
     await f.cleanup();
   }

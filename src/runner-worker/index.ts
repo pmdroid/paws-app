@@ -1,3 +1,4 @@
+import { describeRunnerFailure } from "../runner-failure";
 import { journalCaught, startPhaseClock } from "../journal";
 import {
   createLivePreviewSystem,
@@ -190,6 +191,8 @@ export interface RunnerWorkerOptions {
   resultsGid: number;
   owners?: RunnerAccountOwners;
   signal?: AbortSignal;
+  /** Agent execution adapter; defaults to the ACP runner. */
+  runAgent?: (options: RunAgentOptions) => Promise<RunAgentResult>;
   launch?: Pick<RunAgentOptions, "command" | "args" | "env">;
   answer?: (requestId: string, signal: AbortSignal) => Promise<{ answer: string }>;
   followUp?: (sequence: number, signal: AbortSignal) => Promise<string>;
@@ -768,6 +771,12 @@ export async function executeRunnerCommand(
         })
       : () => {};
   phase("worker");
+  let failurePhase = "checkout";
+  const enterPhase = (name: string) => {
+    failurePhase = name;
+    replaceOutputFile(options, "phase.txt", name);
+    console.warn(JSON.stringify({ event: "worker_phase", phase: name }));
+  };
   if (
     ![options.outputDirectory, options.workRoot, options.home].every(isAbsolute) ||
     (options.skills !== undefined && !isAbsolute(options.skills)) ||
@@ -870,10 +879,22 @@ export async function executeRunnerCommand(
     fsyncSync(eventJournal);
     journalSize += length;
   }
+  const workerFailure = (name: string, error: unknown) =>
+    `Run failed during ${name}: ${describeRunnerFailure(
+      new Error(
+        redactGitHubTokens(
+          error instanceof Error ? error.message : String(error),
+          githubRead?.tokens(),
+        ),
+      ),
+      githubRead?.tokens() ?? [],
+      true,
+    )}`;
   let skillsRoot: string | undefined;
   let preview: Promise<LivePreview | null> | undefined;
   const previewStart = new AbortController();
   try {
+    enterPhase("checkout");
     if (command.type === "login") {
       if (!options.answer || !options.signal) throw new Error("Login lifecycle is unavailable");
       await runProviderLogin({
@@ -1127,6 +1148,7 @@ export async function executeRunnerCommand(
       }
     }
     phase("checkout");
+    enterPhase("mise");
     const installed = await installCommandRuntimes(command, job.executionId, options, emit);
     phase("mise");
     const installFailure = installed.failure;
@@ -1622,7 +1644,7 @@ export async function executeRunnerCommand(
                 },
               });
             }
-          : runAgent;
+          : (options.runAgent ?? runAgent);
     const runCommand = command.type === "run" ? command : undefined;
     const stepTimeout = options.handoverStepTimeoutMs ?? HANDOVER_STEP_TIMEOUT_MS;
     /** A step after the interrupt, cut off after its own timeout rather than the deadline. */
@@ -1910,6 +1932,7 @@ export async function executeRunnerCommand(
         journalCaught(error, "runner-worker.livePreview.start", runCommand.itemId);
         return null;
       });
+    enterPhase("agent");
     let run: RunAgentResult =
       installFailure !== undefined
         ? {
@@ -1993,6 +2016,17 @@ export async function executeRunnerCommand(
     if (eventFailure) throw eventFailure;
     if (command.type === "review" && Buffer.byteLength(reviewText) > 524_288)
       throw new Error("Runner response exceeds size limit");
+    if (
+      run.stopReason === "error" &&
+      run.errorMessage &&
+      !installFailure &&
+      !(command.type === "review" && command.reviewCommand)
+    )
+      run.errorMessage = workerFailure(
+        installFailure ? "mise" : "agent",
+        new Error(run.errorMessage),
+      );
+    enterPhase("verify");
     const result: RunnerWorkerResult = { executionId: job.executionId, commandId: command.id, run };
     if (command.type === "helper") result.text = reviewText;
     if (sentReplies.length) result.replies = sentReplies;
@@ -2104,6 +2138,7 @@ export async function executeRunnerCommand(
         }
       } else result.reviewText = reviewText;
     };
+    enterPhase("push");
     if (repository && run.agentExited && clean) await recordCandidate();
     else if (repository && run.agentExited && wip) {
       await recordCandidate().catch((caughtError3) => {
@@ -2215,6 +2250,35 @@ export async function executeRunnerCommand(
       fsyncSync(directory);
     } finally {
       closeSync(directory);
+    }
+    return result;
+  } catch (error) {
+    if ((!repository && !task) || failurePhase === "checkout" || failurePhase === "mise")
+      throw error;
+    const result: RunnerWorkerResult = {
+      executionId: job.executionId,
+      commandId: command.id,
+      run: {
+        role: command.type === "review" ? "reviewer" : "implementer",
+        stopReason: "error",
+        errorMessage: workerFailure(failurePhase, error),
+        cancelled: false,
+        timedOut: false,
+        authRequired: false,
+        agentExited: true,
+      },
+    };
+    const staging = `.failure-${randomUUID()}.tmp`;
+    const fd = outputFile(options.outputDirectory, staging, options.resultsGid);
+    try {
+      writeFileSync(fd, JSON.stringify(result));
+      fsyncSync(fd);
+      renameSync(
+        join(options.outputDirectory, staging),
+        join(options.outputDirectory, "result.json"),
+      );
+    } finally {
+      closeSync(fd);
     }
     return result;
   } finally {
