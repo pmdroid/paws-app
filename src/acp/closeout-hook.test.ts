@@ -552,6 +552,78 @@ test("the turn-end report waits for a check the agent stopped waiting for", asyn
   }
 });
 
+for (const exitCode of [0, 1]) {
+  test(`long agent check records exit ${exitCode} once after returning running`, async () => {
+    const root = temp();
+    const repo = join(root, "repo");
+    initRepo(repo);
+    const marker = join(root, "calls");
+    const release = join(root, "release");
+    writeTestPolicy(repo, [
+      process.execPath,
+      "-e",
+      `require("fs").appendFileSync(${JSON.stringify(marker)}, "run"); const timer = setInterval(() => { if (require("fs").existsSync(${JSON.stringify(release)})) { clearInterval(timer); process.exit(${exitCode}); } }, 5)`,
+    ]);
+    spawnSync("git", ["add", "."], { cwd: repo });
+    spawnSync("git", ["commit", "-m", "policy"], { cwd: repo });
+    writeFileSync(join(repo, "src.txt"), "change");
+    const socketPath = join(root, "run", "ask-team.sock");
+    const bridge = await startAskTeamBridge({
+      socketPath,
+      closeoutWaitMs: 5,
+      context: { itemId: "ENG-1", runId: "long", role: "implementer", worktreePath: repo },
+      commandGuard: { hostAccess: true, worktree: repo, home: root, pawsRoot: root },
+      signal: new AbortController().signal,
+    });
+    const call = async (tool: string, args = {}) =>
+      JSON.parse(await callTool(socketPath, tool, args)).answer;
+    try {
+      const running = JSON.parse(await call("run_closeout", { id: "test" }));
+      expect(running).toMatchObject({ status: "running", check: "test" });
+      expect(Number.isNaN(Date.parse(running.started_at))).toBe(false);
+      expect(JSON.parse(await call("run_closeout", { id: "test" }))).toEqual(running);
+      expect(JSON.parse(await call("get_closeout")).running).toEqual([running]);
+      writeFileSync(release, "done");
+      await bridge.closeoutReport();
+      const report = JSON.parse(await call("get_closeout"));
+      expect(report.running).toEqual([]);
+      expect(report.required[0]).toMatchObject({
+        status: exitCode === 0 ? "passed" : "failed",
+        failed_attempts: exitCode,
+      });
+      expect(readFileSync(marker, "utf8")).toBe("run");
+    } finally {
+      writeFileSync(release, "done");
+      await bridge.close();
+    }
+  });
+}
+
+test("short agent check returns its result directly", async () => {
+  const root = temp();
+  const repo = join(root, "repo");
+  initRepo(repo);
+  writeTestPolicy(repo);
+  spawnSync("git", ["add", "."], { cwd: repo });
+  spawnSync("git", ["commit", "-m", "policy"], { cwd: repo });
+  writeFileSync(join(repo, "src.txt"), "change");
+  const socketPath = join(root, "run", "ask-team.sock");
+  const bridge = await startAskTeamBridge({
+    socketPath,
+    closeoutWaitMs: 5000,
+    context: { itemId: "ENG-1", runId: "short", role: "implementer", worktreePath: repo },
+    commandGuard: { hostAccess: true, worktree: repo, home: root, pawsRoot: root },
+    signal: new AbortController().signal,
+  });
+  try {
+    expect(JSON.parse(await callTool(socketPath, "run_closeout", { id: "test" })).answer).toBe(
+      "test passed.",
+    );
+  } finally {
+    await bridge.close();
+  }
+});
+
 function temp(): string {
   const root = mkdtempSync(join(tmpdir(), "paws-closeout-hook-"));
   roots.push(root);
