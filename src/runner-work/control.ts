@@ -1,3 +1,4 @@
+import { extendStalledRunnerWork } from "../db";
 import {
   acknowledgeRunnerCommand,
   assignRunnerWork,
@@ -793,3 +794,8 @@ export function createRunnerWork(options: {
   };
 }
 export type RunnerWork = ReturnType<typeof createRunnerWork>;
+
+// Use the same monotonic lease extension as heartbeat renewal.
+export function recoverRunnerWorkStall(db: Database, startedAt: number, lagMs: number): void {
+  extendStalledRunnerWork(db, startedAt, lagMs);
+}

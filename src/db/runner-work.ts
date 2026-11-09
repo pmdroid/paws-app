@@ -1027,3 +1027,33 @@ export function branchRunnerWork(
 ): { runId: string; endedAt: number | null }[] {
   return settled(sqliteDb(db).run((q) => branchRunnerWorkSteps(q, branchName)));
 }
+
+/** Compensate authority that was live at the last responsive control-plane sample. */
+export function extendStalledRunnerWork(db: Database, startedAt: number, lagMs: number): void {
+  settled(
+    sqliteDb(db).transaction(function* (q) {
+      const { runnerWork: w, runnerWorkGrant: g } = q.t;
+      const rows = yield* q.all(
+        q.orm
+          .select({ runId: w.runId, generation: w.generation, leaseUntil: w.leaseUntil })
+          .from(w)
+          .where(and(isNull(w.endedAt), gt(w.leaseUntil, runnerLeaseCutoff(startedAt)))),
+      );
+      for (const row of rows) {
+        yield* extendRunnerWorkLeaseSteps(q, row.runId, row.leaseUntil + lagMs);
+        yield* q.exec(
+          q.orm
+            .update(g)
+            .set({ expiresAt: sql`${g.expiresAt} + ${lagMs}` })
+            .where(
+              and(
+                eq(g.runId, row.runId),
+                eq(g.generation, row.generation),
+                gt(g.expiresAt, startedAt),
+              ),
+            ),
+        );
+      }
+    }),
+  );
+}

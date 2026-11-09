@@ -25,7 +25,11 @@ import {
   verifyRunnerCommand,
   type RunnerCommand,
 } from "../../src/runner-protocol";
-import { createRunnerWorkHttp, createRunnerWork } from "../../src/runner-work";
+import {
+  recoverRunnerWorkStall,
+  createRunnerWorkHttp,
+  createRunnerWork,
+} from "../../src/runner-work";
 import { createRunnerHelpers } from "../../src/runner-helpers";
 import { createRemoteAgentRunner } from "../../src/runner-backend";
 import { createRunnerHealth } from "../../src/runner-health";
@@ -256,6 +260,21 @@ export async function probeRunnerWork(
     assert.throws(() => work.issueGrant({ ...grantInput, runnerId: secondRunner }), /fenced/);
     assert.throws(() => work.issueGrant({ ...grantInput, commandId: "other" }), /changed/);
     const grant = work.issueGrant(grantInput);
+    const beforeStall = now;
+    now = grant.expiresAt + 1000;
+    const stallMs = now - beforeStall;
+    recoverRunnerWorkStall(db, beforeStall, stallMs);
+    const extended = db
+      .query<{ expires_at: number }, []>("SELECT expires_at FROM runner_work_grant")
+      .get()!;
+    assert.equal(extended.expires_at, grant.expiresAt + stallMs);
+    work.event({
+      ...grantInput,
+      token: grant.token,
+      sequence: 1,
+      event: { type: "progress", text: "Working" },
+    });
+    now = beforeStall;
     const stored = db
       .query<{ token_hash: string }, []>("SELECT token_hash FROM runner_work_grant")
       .get()!;
@@ -266,7 +285,7 @@ export async function probeRunnerWork(
       sequence: 1,
       event: { type: "progress" as const, text: "Working" },
     };
-    assert.equal(work.event(event).duplicate, false);
+    assert.equal(work.event(event).duplicate, true);
     assert.equal(work.event(event).duplicate, true);
     const http = createRunnerWorkHttp(work);
     const request = (route: string, body: unknown, token?: string) =>
