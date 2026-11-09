@@ -15,6 +15,7 @@ import {
 import { runDir, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import { writeAgentSettings } from "../src/config";
 import { handleAgentSettingsRequest } from "../src/settings";
+import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 
 const oldProfiles = {
@@ -56,7 +57,9 @@ function fixture() {
       agentExited: true,
     };
   };
+  const tracker = createFakeTracker();
   const orchestrator = new Orchestrator({
+    tracker,
     db,
     pawsRoot: root,
     jobs: new JobLoop(db, clock),
@@ -92,7 +95,7 @@ function fixture() {
         applyToWaiting: () => orchestrator.applyAgentSettingsToWaiting(),
       },
     );
-  return { db, root, orchestrator, seed, save, calls };
+  return { db, root, orchestrator, seed, save, calls, tracker };
 }
 
 test("saving without the toggle leaves all snapshots byte-for-byte unchanged", async () => {
@@ -343,4 +346,48 @@ test("a retired account order in config.toml changes no waiting run and reaches 
     prompt: "Review",
   });
   expect(f.calls[0]).not.toHaveProperty("accounts");
+});
+
+test("Acme labels change only the next run and a failed Linear read retains its labels", async () => {
+  const f = fixture();
+  writeAgentSettings(join(f.root, "config.toml"), {
+    defaults: oldProfiles,
+    projects: [],
+    presets: {
+      Opus: { agent: "claude", model: "opus" },
+      Codex: { agent: "codex", model: "acme-codex" },
+    },
+  });
+  const failed = f.seed("running");
+  const item = () => getWorkItem(f.db, failed.item.id)!;
+  const internals = f.orchestrator as unknown as {
+    ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
+  };
+  const labels = (implementer: string) =>
+    f.tracker.repositoryHints.set(item().linearIssueId, {
+      mentions: [],
+      issueLabels: [],
+      parentLabels: [],
+      projectLabels: [],
+      profileLabels: { implementer },
+    });
+  const snapshot = (id: string) =>
+    JSON.parse(readFileSync(join(runDir(f.root, id), "agent-profile.json"), "utf8"));
+  f.db.run("UPDATE run SET status='lost' WHERE id=?", [failed.run.id]);
+  labels("Opus");
+  const opus = await internals.ensureRun(item());
+  expect(snapshot(opus.id).profiles.implementer.model).toBe("opus");
+  labels("Codex");
+  expect((await internals.ensureRun(item())).id).toBe(opus.id);
+  expect(snapshot(opus.id).profiles.implementer.model).toBe("opus");
+  f.db.run("UPDATE run SET status='lost' WHERE id=?", [opus.id]);
+  const codex = await internals.ensureRun(item());
+  expect(snapshot(codex.id).profiles.implementer.model).toBe("acme-codex");
+  f.tracker.issueRepositoryHints = async () => {
+    throw new Error("Linear offline");
+  };
+  f.db.run("UPDATE run SET status='lost' WHERE id=?", [codex.id]);
+  const fallback = await internals.ensureRun(item());
+  expect(snapshot(fallback.id).profileLabels).toEqual({ implementer: "Codex" });
+  expect(snapshot(fallback.id).profiles.implementer.model).toBe("acme-codex");
 });

@@ -128,6 +128,7 @@ import {
   repositoryPackages,
   reviewApps,
   readQueueSettings,
+  readAgentSettings,
   resolveAgentProfiles,
   resolveBriefTemplate,
   resolveMergeSettings,
@@ -3065,6 +3066,7 @@ export class Orchestrator {
       return true;
     }
     const run = await this.ensureRun(item);
+    if (!(await this.checkProfileLabels(item, run.id))) return true;
     if (!handoff) {
       if (classification?.mode !== "clarify") throw new Error("Task clarification is missing");
       return this.requestTaskClarification(item, run.id, classification.question);
@@ -3166,6 +3168,7 @@ export class Orchestrator {
     handoff?: string,
   ): Promise<void> {
     const run = await this.ensureRun(item);
+    if (!(await this.checkProfileLabels(item, run.id))) return;
     item = getWorkItem(this.db, item.id)!;
     const profile = this.profileSnapshot(run.id).implementer;
     const live = this.beginLive(item.id, run.id);
@@ -3399,6 +3402,7 @@ export class Orchestrator {
       setItemBranchName(this.db, item.id, branch);
     }
     const run = await this.ensureRun(item);
+    if (!(await this.checkProfileLabels(item, run.id))) return;
     item = getWorkItem(this.db, item.id)!;
     const profiles = this.profileSnapshot(run.id);
     const live = this.beginLive(item.id, run.id);
@@ -6973,6 +6977,7 @@ export class Orchestrator {
     return resolveAgentProfiles(
       config,
       repository ? `${repository.owner}/${repository.repo}` : undefined,
+      item.currentRunId ? this.readProfileSnapshot(item.currentRunId)?.profileLabels : undefined,
     ).implementer.agent;
   }
 
@@ -7131,7 +7136,30 @@ export class Orchestrator {
     // A new run, including a retry, uses the profiles saved in Settings now (PAS-831).
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
     const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
-    const profiles = resolveAgentProfiles(config, repoName);
+    let profileLabels = item.currentRunId
+      ? this.readProfileSnapshot(item.currentRunId)?.profileLabels
+      : undefined;
+    if (this.tracker?.issueRepositoryHints) {
+      try {
+        profileLabels = (await this.tracker.issueRepositoryHints(item.linearIssueId)).profileLabels;
+      } catch (error) {
+        journalCaught(
+          error,
+          "orchestrator.profileLabels",
+          item.id,
+          "Using previous profile labels, or none for the first run",
+          this.options.journal,
+        );
+      }
+    }
+    const defaultRoles = item.currentRunId
+      ? this.readProfileSnapshot(item.currentRunId)?.defaultRoles
+      : undefined;
+    if (profileLabels) {
+      profileLabels = { ...profileLabels };
+      for (const role of defaultRoles ?? []) delete profileLabels[role];
+    }
+    const profiles = resolveAgentProfiles(config, repoName, profileLabels);
     const run = await this.store.run((q) =>
       insertRunSteps(q, {
         itemId: item.id,
@@ -7143,20 +7171,95 @@ export class Orchestrator {
         ownerInstance: this.options.instanceId ?? null,
       }),
     );
-    if (item.currentRunId) {
+    {
       // Only an unannounced Settings switch carries over, while it still changes the agent.
-      const pending = this.readProfileSnapshot(item.currentRunId)?.settingsSwitch;
+      const pending = item.currentRunId
+        ? this.readProfileSnapshot(item.currentRunId)?.settingsSwitch
+        : undefined;
       const settingsSwitch =
         pending && pending.previousAgent !== profiles.implementer.agent ? pending : undefined;
       mkdirSync(runDir(this.options.pawsRoot, run.id), { recursive: true, mode: 0o700 });
       writeFileSync(
         join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
-        JSON.stringify({ profiles, settingsSwitch }),
+        JSON.stringify({ profiles, profileLabels, defaultRoles, settingsSwitch }),
         { mode: 0o600 },
       );
     }
     await this.store.run((q) => setCurrentRunSteps(q, item.id, run.id));
     return run;
+  }
+
+  private async checkProfileLabels(item: WorkItemRecord, runId: string): Promise<boolean> {
+    const saved = this.readProfileSnapshot(runId);
+    if (!saved) return true;
+    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const repository = this.repositoryForItem(item);
+    const repo = repository ? `${repository.owner}/${repository.repo}` : undefined;
+    let profiles = resolveAgentProfiles(config, repo, saved.profileLabels);
+    const problems = profiles.labelProblems ?? [];
+    if (!problems.length) {
+      if (saved.profileLabels && Object.keys(saved.profileLabels).length)
+        this.post(
+          item,
+          "thought",
+          Object.entries(saved.profileLabels)
+            .map(
+              ([role, label]) =>
+                `${role === "implementer" ? "Implementer" : "Reviewer"}: ${label} (label)`,
+            )
+            .join("\n"),
+          `${runId}:profile-labels`,
+        );
+      return true;
+    }
+    const question = saved.profileQuestion ? getQuestion(this.db, saved.profileQuestion) : null;
+    if (question?.status === "answered") {
+      if (question.answer === "Use the default") {
+        saved.defaultRoles = problems.map((problem) => problem.role);
+        for (const role of saved.defaultRoles) delete saved.profileLabels?.[role];
+      } else {
+        // A correction is read before the waiting run can execute.
+        try {
+          saved.profileLabels = (
+            await this.tracker?.issueRepositoryHints?.(item.linearIssueId)
+          )?.profileLabels;
+        } catch (error) {
+          journalCaught(
+            error,
+            "orchestrator.profileLabels",
+            item.id,
+            "Keeping previous labels",
+            this.options.journal,
+          );
+        }
+      }
+      delete saved.profileQuestion;
+      profiles = resolveAgentProfiles(config, repo, saved.profileLabels);
+    }
+    saved.profiles = profiles;
+    const remaining = profiles.labelProblems ?? [];
+    if (remaining.length) {
+      const sessionId = this.activitySession(item);
+      if (!sessionId) return false;
+      const body =
+        remaining
+          .map(
+            (problem) =>
+              `${problem.role}: ${problem.label}: ${problem.reason === "unknown_preset" ? "unknown preset" : "reviewer must differ from implementer"}`,
+          )
+          .join("\n") +
+        `\nAvailable presets: ${Object.keys(readAgentSettings(config).presets ?? {}).join(", ") || "none"}.`;
+      saved.profileQuestion = ask(this.db, { itemId: item.id, runId, sessionId }, "agent", body, {
+        options: ["Use the default", "I fixed the label"],
+        now: this.now(),
+      }).question.id;
+    }
+    writeFileSync(
+      join(runDir(this.options.pawsRoot, runId), "agent-profile.json"),
+      JSON.stringify(saved),
+      { mode: 0o600 },
+    );
+    return remaining.length === 0;
   }
 
   private continueAfterRateLimit(item: WorkItemRecord, retryAfterMs: number): void {
@@ -9057,6 +9160,9 @@ export class Orchestrator {
 
   private readProfileSnapshot(runId: string): {
     profiles: AgentProfiles;
+    profileLabels?: { implementer?: string; reviewer?: string };
+    profileQuestion?: string;
+    defaultRoles?: ("implementer" | "reviewer")[];
     candidate?: AgentIdentity;
     settingsSwitch?: { id: string; previousAgent: AgentProfile["agent"] };
   } | null {
@@ -9095,7 +9201,7 @@ export class Orchestrator {
       const item = getWorkItem(this.db, run.itemId)!;
       const repository = this.repositoryForItem(item);
       const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
-      const profiles = resolveAgentProfiles(config, repoName);
+      const profiles = resolveAgentProfiles(config, repoName, saved.profileLabels);
       if (JSON.stringify(saved.profiles) === JSON.stringify(profiles)) continue;
       // Keep the original agent through repeated saves before the next turn.
       const previousAgent = saved.settingsSwitch?.previousAgent ?? saved.profiles.implementer.agent;

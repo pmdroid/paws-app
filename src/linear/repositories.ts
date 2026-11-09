@@ -15,6 +15,7 @@ export type RepositorySuggestionsInput = {
 export type RepositoryHints = {
   mentions: string[];
   issueLabels: string[];
+  profileLabels?: { implementer?: string; reviewer?: string };
   parentLabels: string[];
   projectLabels: string[];
 };
@@ -145,6 +146,14 @@ export function createLinearRepositoryMethods(client: LinearClient): LinearRepos
           [...text.matchAll(REPO_MENTION)].map((match) => match[1]!),
         ),
         issueLabels: repoLabels(issue["labels"]),
+        profileLabels: Object.fromEntries(
+          nodes(issue["labels"]).flatMap((label) => {
+            if (!isRecord(label) || typeof label["name"] !== "string" || !isRecord(label["parent"]))
+              return [];
+            const role = String(label["parent"]["name"]).toLowerCase();
+            return role === "implementer" || role === "reviewer" ? [[role, label["name"]]] : [];
+          }),
+        ),
         parentLabels: repoLabels(isRecord(issue["parent"]) ? issue["parent"]["labels"] : null),
         projectLabels: repoLabels(isRecord(issue["project"]) ? issue["project"]["labels"] : null),
       };
