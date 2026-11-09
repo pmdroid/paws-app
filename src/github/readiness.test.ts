@@ -61,8 +61,17 @@ async function readOnce(
   reply: (variables: Variables, poll: number) => GitHubResponse,
   required?: { protection?: string[]; rulesets?: string[] },
 ) {
-  const f = fixture(reply, required);
-  return waitForMergeReadiness({ ...f.input, releaseWhilePending: true });
+  let publishedAt: number | null = null;
+  const f = fixture((variables, poll) => {
+    const response = reply(variables, poll) as GitHubResponse & { publishedAt?: number | null };
+    publishedAt = response.publishedAt ?? null;
+    return response;
+  }, required);
+  return waitForMergeReadiness({
+    ...f.input,
+    publishedAt: () => publishedAt,
+    releaseWhilePending: true,
+  });
 }
 
 test("waits for both check runs and legacy statuses on the exact candidate", async () => {
@@ -353,12 +362,61 @@ test("a check that is still running keeps the merge waiting, even when nothing i
   expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: e2e." });
 });
 
-test("no checks and no required checks still waits for CI on the candidate commit", async () => {
-  const result = await readOnce(() => withChecks([], pathFilteredMain()));
+function noCi(pushedAt: string | null, baseChecks: FakeCheckContext[] = []) {
+  const response = withChecks([], baseChecks);
+  return { ...response, publishedAt: pushedAt === null ? null : Date.parse(pushedAt) };
+}
+
+test("no checks and none required is ready after five minutes without CI on main", async () => {
+  const result = await readOnce(() => noCi(new Date(Date.now() - 6 * 60_000).toISOString()));
+  expect(result).toEqual({
+    outcome: "ready",
+    message: "No CI on this repository: no checks on the candidate or on main, and none required.",
+    passed: [],
+  });
+});
+
+test("no checks and no required checks waits when pushed one minute ago", async () => {
+  const result = await readOnce(() => noCi(new Date(Date.now() - 60_000).toISOString()));
   expect(result).toEqual({
     outcome: "pending",
     message: "Waiting for CI on the candidate commit.",
   });
+});
+
+test("no candidate checks still waits when the base head has a check", async () => {
+  const result = await readOnce(() =>
+    noCi(new Date(Date.now() - 6 * 60_000).toISOString(), [run("acme / test", "SUCCESS")]),
+  );
+  expect(result).toEqual({
+    outcome: "pending",
+    message: "Waiting for CI on the candidate commit.",
+  });
+});
+
+test("no checks still waits for a required check", async () => {
+  const result = await readOnce(() => noCi(new Date(Date.now() - 6 * 60_000).toISOString()), {
+    protection: ["acme / test"],
+  });
+  expect(result).toEqual({ outcome: "pending", message: "Waiting for checks: acme / test." });
+});
+
+test("no CI stays pending when push time is missing, invalid or in the future", async () => {
+  for (const pushedAt of [null, "invalid", new Date(Date.now() + 60_000).toISOString()]) {
+    expect(await readOnce(() => noCi(pushedAt))).toEqual({
+      outcome: "pending",
+      message: "Waiting for CI on the candidate commit.",
+    });
+  }
+});
+
+test("no CI still waits for unresolved review threads", async () => {
+  const result = await readOnce(() => {
+    const response = noCi(new Date(Date.now() - 6 * 60_000).toISOString());
+    response.body.data.repository.pullRequest.reviewThreads.nodes = [{ isResolved: false }];
+    return response;
+  });
+  expect(result).toMatchObject({ outcome: "pending", unresolvedThreads: 1 });
 });
 
 test("a failing check fails CI with its name, even while others still run", async () => {

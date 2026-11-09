@@ -5521,6 +5521,13 @@ export class Orchestrator {
     if (getWorkItem(this.db, item.id)?.state === "awaiting_input") return { kind: "obsolete" };
     if (!published.published)
       return { kind: "failed", reason: "publish", message: published.reason };
+    if (newPublication)
+      recordItemCandidate(this.db, {
+        itemId: item.id,
+        sha: published.head,
+        branch: item.branchName,
+        recordedAt: this.now(),
+      });
     recordItemPullRequest(this.db, {
       itemId: item.id,
       pullNumber: published.pull.number,

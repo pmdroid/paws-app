@@ -3,6 +3,8 @@ import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { systemClock, WORK_ITEM_STATES } from "../../src/core";
 import {
+  getItemCandidate,
+  recordItemCandidate,
   JobLoop,
   OutboxDispatcher,
   listWorkItemEventRows,
@@ -95,6 +97,7 @@ function fixtureGitHub(input: {
   repository: string;
   origin: string;
   ciPending?: boolean;
+  noCi?: boolean;
 }): {
   client: GitHubClient;
   ci: { pending: boolean };
@@ -122,6 +125,9 @@ function fixtureGitHub(input: {
     if (path === "/graphql") {
       const { head } = (request.body as { variables: { head: string } }).variables;
       const body = fakeMergeReadiness(head);
+      if (input.noCi) {
+        body.data.repository.object.statusCheckRollup.contexts.nodes = [];
+      }
       if (ci.pending) {
         body.data.repository.object.statusCheckRollup.state = "PENDING";
         body.data.repository.object.statusCheckRollup.contexts.nodes[0]!.conclusion = null;
@@ -220,6 +226,7 @@ export type ProofContext = {
   /** Someone else pushes a commit to origin main. */
   pushToMain(path: string, content: string, message: string): Promise<void>;
   heldWork(): { activeRuns: number; reservations: number; runningJobs: number };
+  ageCandidate(): boolean;
   delegate(): Promise<void>;
   answerInLinear(answer: string): Promise<void>;
   stopInLinear(): Promise<void>;
@@ -232,6 +239,7 @@ export type Proof = {
   covers: string[];
   summary: string;
   ciPending?: boolean;
+  noCi?: boolean;
   /** `.agents/closeout.yaml` for this scenario, instead of the default. */
   policy?: string;
   agent(input: LaunchInput): FakeStep[];
@@ -278,6 +286,7 @@ export async function runProof(name: string, proof: Proof, dir: string) {
     repository: ACME.repository,
     origin: bare,
     ciPending: proof.ciPending,
+    noCi: proof.noCi,
   });
   const db = openDatabase(join(pawsRoot, "paws.db"));
   migrate(db);
@@ -362,6 +371,13 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       reservations: count("SELECT count(*) AS n FROM runner_reservation"),
       runningJobs: count("SELECT count(*) AS n FROM job WHERE status = 'running'"),
     }),
+    ageCandidate() {
+      const item = items()[0];
+      const candidate = item && getItemCandidate(db, item.id);
+      if (!candidate) return false;
+      recordItemCandidate(db, { ...candidate, recordedAt: Date.now() - 6 * 60_000 });
+      return true;
+    },
     async delegate() {
       act(`Delegate ${ACME.identifier} to Paws in Linear`);
       await event("created");

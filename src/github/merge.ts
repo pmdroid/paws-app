@@ -32,6 +32,7 @@ export type SerialMergeInput = {
    * so its S is its candidate ref in the bare mirror.
    */
   ref?: string;
+  publishedAt?: (head: string) => number | null;
   issue: string;
   branchKey?: string;
   owner: string;

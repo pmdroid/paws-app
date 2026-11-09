@@ -25,6 +25,7 @@ import {
   type TaskMergeSettings,
   type WorkItemRecord,
   recordItemCandidate,
+  getItemCandidate,
 } from "../db";
 import {
   adoptRunnerRebase,
@@ -246,6 +247,10 @@ export async function advanceMerge(
     if (caps.stopped()) return { kind: "obsolete" };
   }
   const lane: SerialMergeInput = {
+    publishedAt: (head) => {
+      const candidate = getItemCandidate(db, item.id);
+      return candidate?.sha === head ? candidate.recordedAt : null;
+    },
     worktree: published.worktree,
     ...(published.ref ? { ref: published.ref } : {}),
     issue: item.linearIdentifier,
@@ -286,7 +291,7 @@ export async function advanceMerge(
     },
     rebase: async (facts) => {
       const rebased = await rebaseOnRunner(item, caps, lane, facts, published.signal);
-      if (rebased.rebased && lane.ref)
+      if (rebased.rebased)
         recordItemCandidate(db, {
           itemId: item.id,
           sha: rebased.head,
