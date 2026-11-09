@@ -623,6 +623,16 @@ export async function probeRunnerBackend(
       commandId: earlyCommand.id,
       generation: earlyCommand.generation,
     });
+    // The worker publishes its stop checkpoint before reporting the interrupted turn.
+    await git(["-C", source, "reset", "--hard", head]);
+    work.event({
+      runnerId,
+      runId: earlyCommand.runId,
+      generation: earlyCommand.generation,
+      token: earlyToken.token,
+      sequence: 1,
+      event: { type: "checkpoint", reason: "stop", sha: head },
+    });
     results.submit({
       runnerId,
       runId: earlyCommand.runId,
@@ -633,7 +643,6 @@ export async function probeRunnerBackend(
         stopReason: "cancelled",
         cancelled: true,
         interrupted: true,
-        candidateSha: head,
       },
     });
     let resumed = await next();
@@ -641,6 +650,7 @@ export async function probeRunnerBackend(
     if (resumed.type !== "run") throw new Error("Expected one restarted implementation");
     assert.equal(getWorkItem(db, stopped.id)?.state, "running");
     assert.equal(getWorkItem(db, stopped.id)?.checkpoint?.wipCommit, head);
+    assert.equal(resumed.repository.baseSha, head);
     const resumedToken = work.issueGrant({
       runnerId,
       runId: resumed.runId,
@@ -657,9 +667,9 @@ export async function probeRunnerBackend(
     assert.equal((await early).stopReason, "cancelled");
     assert.equal(getWorkItem(db, stopped.id)?.checkpoint?.wipCommit, head);
     assert.equal(await git(["-C", source, "rev-parse", "HEAD"]), head);
-    assert.equal(fetched, fetchedBefore + 1);
+    assert.equal(fetched, fetchedBefore);
     fetched = fetchedBefore;
-    observe("an early-stopped remote run keeps its work for the next run of the item", true, {
+    observe("an unsolicited interruption saves WIP and restarts only once", true, {
       wipCommit: head,
     });
     const stoppedWith = async (errorMessage: string, sessionId: string) => {

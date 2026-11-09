@@ -346,3 +346,35 @@ test.skipIf(!linux)(
     expect(new Set(context.since(commit).map((event) => event.sha))).toEqual(new Set([commit]));
   },
 );
+
+test.skipIf(!linux)(
+  "an unsolicited agent interruption saves dirty work before reporting it",
+  async () => {
+    const context = await fixture();
+    const result = await context.execute({
+      checkpointIntervalMs: 3_600_000,
+      async runAgent(options) {
+        writeFileSync(join(options.worktreePath, "unfinished.txt"), "work in progress");
+        return {
+          role: "implementer",
+          stopReason: "error",
+          errorMessage: "Error.",
+          agentExited: true,
+          cancelled: false,
+          timedOut: false,
+          authRequired: false,
+        };
+      },
+    });
+    expect(result.run).toMatchObject({
+      stopReason: "cancelled",
+      cancelled: true,
+      interrupted: true,
+    });
+    expect(result.candidateSha).toBeUndefined();
+    const [saved] = context.checkpoints();
+    expect(saved).toMatchObject({ type: "checkpoint", reason: "stop" });
+    const clone = await context.published(saved!.sha!);
+    expect(readFileSync(join(clone, "unfinished.txt"), "utf8")).toBe("work in progress");
+  },
+);

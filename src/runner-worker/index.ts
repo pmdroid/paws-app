@@ -1634,17 +1634,21 @@ export async function executeRunnerCommand(
     const runner =
       command.type === "run"
         ? (input: RunAgentOptions) =>
-            runWithShellRecovery(input, {
-              notice: (text) => emit({ type: "progress", text, notice: true }),
-              log: (detection) =>
-                console.warn(
-                  JSON.stringify({
-                    event: "agent_shell_broken",
-                    executionId: job.executionId,
-                    ...detection,
-                  }),
-                ),
-            })
+            runWithShellRecovery(
+              input,
+              {
+                notice: (text) => emit({ type: "progress", text, notice: true }),
+                log: (detection) =>
+                  console.warn(
+                    JSON.stringify({
+                      event: "agent_shell_broken",
+                      executionId: job.executionId,
+                      ...detection,
+                    }),
+                  ),
+              },
+              options.runAgent,
+            )
         : command.type === "review" && command.reviewCommand
           ? async (input: RunAgentOptions): Promise<RunAgentResult> => {
               const { base, brief, earlier } = command.reviewCommand!;
@@ -1732,7 +1736,7 @@ export async function executeRunnerCommand(
             await delay(50, undefined, { signal: watch });
           if (safePoint() && Date.now() < deadline) {
             // The same interrupt a follow-up uses: the agent stops, its session stays intact.
-            journal(
+            writeJournal(
               `item ${runCommand!.itemId} run ${runCommand!.runId} interrupt source=handover`,
             );
             interrupt.abort(FOLLOW_UP_INTERRUPTION);
@@ -1931,7 +1935,7 @@ export async function executeRunnerCommand(
           if (!options.checkpoint) return;
           await options.checkpoint(1, watch);
           // The same interrupt a follow-up uses: the agent stops, its session stays intact.
-          journal(
+          writeJournal(
             `item ${runCommand!.itemId} run ${runCommand!.runId} interrupt source=stop_checkpoint`,
           );
           halt.abort(FOLLOW_UP_INTERRUPTION);
@@ -2113,7 +2117,7 @@ export async function executeRunnerCommand(
         run.interrupted ||
         (run.stopReason === "error" && /^Error\.?$/.test(run.errorMessage ?? "")))
     ) {
-      journal(
+      writeJournal(
         `item ${runCommand.itemId} run ${runCommand!.runId} interrupt source=unsolicited_agent`,
       );
       await checkpoint("stop");
