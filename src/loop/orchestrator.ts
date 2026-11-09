@@ -598,6 +598,7 @@ import {
   rebaseBudgetFor,
   returnQueuedConflicts,
   wakeMergesBehind,
+  postMergeConflict,
   type MergePublication,
   type MergeStep,
   type MergeWait,
@@ -4709,6 +4710,14 @@ export class Orchestrator {
         ...conflict,
         recordedAt: this.now(),
       });
+      const pull = getItemPullRequest(this.db, item.id);
+      if (pull !== null)
+        postMergeConflict(
+          this.db,
+          current,
+          { sessionId: this.activitySession(current), pullNumber: pull.pullNumber, head },
+          this.now(),
+        );
       return true;
     });
     if (sent)

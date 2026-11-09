@@ -1,5 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import {
+  enqueueOutboxOnce,
+  getLinearSessionGeneration,
   restart,
   latestHumanTurn,
   fixRounds,
@@ -48,6 +51,40 @@ export function ciFixes(db: Database, itemId: string): number {
   return fixRounds(db, itemId);
 }
 
+/** The pull request a conflict return is about, for the line in the item's Linear session. */
+export type MergeConflictNotice = { sessionId: string | null; pullNumber: number; head: string };
+
+/**
+ * Tell the Linear session that main moved and the pull request went back to rebase. The key carries
+ * the `merge-conflict:` prefix the activity gate lets through after the pull request response, and
+ * the head, so a head is announced once. A thought, so the session shows the agent working again.
+ */
+export function postMergeConflict(
+  db: Database,
+  item: WorkItemRecord,
+  notice: MergeConflictNotice,
+  now: number,
+): void {
+  if (notice.sessionId === null) return;
+  const generation = getLinearSessionGeneration(db, notice.sessionId);
+  enqueueOutboxOnce(db, {
+    target: "linear",
+    op: "activity",
+    orderingKey: notice.sessionId,
+    idempotencyKey: `merge-conflict:${generation}:${notice.head}`,
+    delivery: "critical",
+    payload: {
+      id: randomUUID(),
+      sessionId: notice.sessionId,
+      itemId: item.id,
+      issueId: item.linearIssueId,
+      kind: "thought",
+      body: `Main moved and #${notice.pullNumber} now conflicts with it. Rebasing onto main.`,
+    },
+    now,
+  });
+}
+
 export function returnToAgent(
   db: Database,
   input: {
@@ -65,6 +102,8 @@ export function returnToAgent(
     failedChecks?: readonly FailedCiCheck[];
     pullNumber?: number | null;
     restart?: MergeRestart;
+    /** Set on a return for a conflict with main: posts the one line in the Linear session. */
+    conflict?: MergeConflictNotice;
   },
 ): boolean {
   return immediate(db, () => {
@@ -84,6 +123,7 @@ export function returnToAgent(
       now: input.now,
     });
     if (jobId === null) return false;
+    if (input.conflict) postMergeConflict(db, current, input.conflict, input.now);
     // CI failed on a head Closeout accepted: a candidate escape of the independent review.
     if (input.reason === "ci-failed" && current.acceptedHead !== null)
       recordReviewEscape(db, {
