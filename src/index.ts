@@ -1871,6 +1871,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: POLICY_BLOCK_CHECK_MS,
         now: Date.now(),
       });
+      created.jobs.register("closeout.stall", () => attached.recoverStalledCloseout());
+      enqueueJobOnce(db, {
+        queue: "closeout.stall",
+        jobKey: "closeout.stall",
+        recurringEveryMs: 60_000,
+        now: Date.now(),
+      });
       created.jobs.register("worktree.sweep", (_job, context) =>
         attached.sweepWorktrees(context.signal),
       );

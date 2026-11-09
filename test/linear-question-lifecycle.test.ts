@@ -115,7 +115,7 @@ test.each([NOW - 1, NOW])(
     try {
       await orchestrator.onLinearEvent(prompt(at));
       expect(getQuestion(db, question.id)?.status).toBe("open");
-      expect(listJobs(db).filter((job) => job.queue !== "closeout.stall")).toHaveLength(0);
+      expect(listJobs(db)).toHaveLength(0);
     } finally {
       db.close();
     }
@@ -191,7 +191,7 @@ test("an activity ID alone does not establish a human respondent", async () => {
   try {
     await orchestrator.onLinearEvent(prompt(NOW + 1, "anonymous-activity", null));
     expect(getQuestion(db, question.id)?.status).toBe("open");
-    expect(listJobs(db).filter((job) => job.queue !== "closeout.stall")).toHaveLength(0);
+    expect(listJobs(db)).toHaveLength(0);
   } finally {
     db.close();
   }
@@ -202,7 +202,7 @@ test("a webhook without an activity creation time cannot answer from delivery ti
   try {
     await orchestrator.onLinearEvent({ ...prompt(), activityCreatedAtMs: null });
     expect(getQuestion(db, question.id)?.status).toBe("open");
-    expect(listJobs(db).filter((job) => job.queue !== "closeout.stall")).toHaveLength(0);
+    expect(listJobs(db)).toHaveLength(0);
   } finally {
     db.close();
   }
