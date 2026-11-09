@@ -8,7 +8,7 @@ import {
   restartedFromMergeQueue,
 } from "../db";
 import type { RunnerCodingAgent } from "../runner-protocol";
-import { quotaSignal } from "./quota";
+import { quotaSignal } from "../core";
 type SessionHolder = {
   runnerId: string;
   agent: string;
