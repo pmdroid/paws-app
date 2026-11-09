@@ -1992,6 +1992,25 @@ export async function executeRunnerCommand(
       });
     if (toolchainQuestion) {
       if (!options.answer) throw new Error("Runner question channel is unavailable");
+      // Restoring a checkpoint leaves its edits dirty over HEAD. Save them before the
+      // question can end this turn; a commit failure must not publish the older HEAD.
+      await bounded("commit", (signal) =>
+        commitCheckpoint(
+          worktree,
+          runCommand!.commitPolicy
+            ? commitPolicyMessage(QUESTION_COMMIT_MESSAGE, runCommand!.commitPolicy)
+            : QUESTION_COMMIT_MESSAGE,
+          signal,
+          undefined,
+          env,
+          inputFiles.map((file) => file.path),
+          runCommand!.commitPolicy
+            ? appBotCommitIdentity(runCommand!.commitPolicy.bot)
+            : runCommand!.checkpointBot
+              ? appBotCommitIdentity(runCommand!.checkpointBot)
+              : undefined,
+        ),
+      );
       const requestId = randomUUID();
       emit({ type: "question", requestId, question: toolchainQuestion, options: [] });
       await options.answer(requestId, options.signal ?? new AbortController().signal);
@@ -2212,7 +2231,8 @@ export async function executeRunnerCommand(
       } else result.reviewText = reviewText;
     };
     enterPhase("push");
-    if (repository && run.agentExited && clean) await recordCandidate();
+    if (repository && (run.agentExited || toolchainQuestion !== undefined) && clean)
+      await recordCandidate();
     else if (repository && run.agentExited && wip) {
       await recordCandidate().catch((caughtError3) => {
         journalCaught(

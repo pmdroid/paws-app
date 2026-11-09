@@ -16,8 +16,17 @@ import { git } from "../src/acp";
 import { publishRunnerJob, readRunnerJobInputs, type RunnerJob } from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
 
-for (const [manifest, installed, blocked, retry = false, existing = false, preserve = false] of [
+for (const [
+  manifest,
+  installed,
+  blocked,
+  retry = false,
+  existing = false,
+  preserve = false,
+  checkpoint = false,
+] of [
   ["Cargo.toml", false, true],
+  ["Cargo.toml", false, true, false, false, false, true],
   ["Cargo.toml", true, false],
   ["apps/acme/go.mod", false, true],
   ["a/b/go.mod", false, false],
@@ -26,7 +35,7 @@ for (const [manifest, installed, blocked, retry = false, existing = false, prese
   ["Cargo.toml", false, true, false, true],
   ["Cargo.toml", false, true, true, false, true],
 ] as const)
-  test(`toolchain preflight: ${manifest || "no manifests"}, installed=${installed}, retry=${retry}, existing=${existing}, preserve=${preserve}`, async () => {
+  test(`toolchain preflight: ${manifest || "no manifests"}, installed=${installed}, retry=${retry}, existing=${existing}, preserve=${preserve}, checkpoint=${checkpoint}`, async () => {
     const root = mkdtempSync(join(tmpdir(), "paws-start-phases-"));
 
     try {
@@ -57,6 +66,14 @@ for (const [manifest, installed, blocked, retry = false, existing = false, prese
       await git(["-C", source, "add", "."]);
       await git(["-C", source, "commit", "-m", "initial"], { env });
       const baseSha = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
+      let checkpointSha: string | undefined;
+      if (checkpoint) {
+        writeFileSync(join(source, "original.txt"), "restored acme work");
+        writeFileSync(join(source, "acme.txt"), "checkpoint only");
+        await git(["-C", source, "add", "."]);
+        await git(["-C", source, "commit", "-m", "Save acme checkpoint"], { env });
+        checkpointSha = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
+      }
       const repositoryBundle = join(root, "source.bundle");
       await git(["-C", source, "bundle", "create", repositoryBundle, "--all"]);
       chmodSync(repositoryBundle, 0o600);
@@ -79,6 +96,9 @@ for (const [manifest, installed, blocked, retry = false, existing = false, prese
             remoteUrl: "https://github.com/acme/repo.git",
             baseSha,
           },
+          ...(checkpointSha
+            ? { restoreCheckpoint: { sha: checkpointSha, branch: "paws/acme" } }
+            : {}),
           prompt: "Implement",
           checkpointBot: { appId: "99", login: "paws-test[bot]", id: 88 },
         },
@@ -135,6 +155,15 @@ for (const [manifest, installed, blocked, retry = false, existing = false, prese
       expect(result.run.stopReason).toBe("end_turn");
       expect(existsSync(join(root, "trace.json"))).toBe(!blocked);
       expect(Boolean(question)).toBe(blocked);
+      if (checkpoint) {
+        expect(result.candidateSha).not.toBe(baseSha);
+        const clone = join(root, "published");
+        await git(["clone", repositoryBundle, clone]);
+        await git(["-C", clone, "fetch", join(outputDirectory, "candidate.bundle"), "HEAD"]);
+        await git(["-C", clone, "checkout", "--detach", result.candidateSha!]);
+        expect(readFileSync(join(clone, "original.txt"), "utf8")).toBe("restored acme work");
+        expect(readFileSync(join(clone, "acme.txt"), "utf8")).toBe("checkpoint only");
+      }
       if (blocked) {
         expect(question).toContain(manifest);
         expect(question).toContain(

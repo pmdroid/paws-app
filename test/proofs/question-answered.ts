@@ -1,8 +1,20 @@
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { git } from "../../src/acp";
+import { executeRunnerCommand } from "../../src/runner-worker";
+import type { RunnerJob } from "../../src/runner-execution";
 import { join } from "node:path";
 import { type LaunchInput, type Proof } from "./harness";
 
-const QUESTION =
-  'Cargo.toml needs cargo, which isn\'t installed on the runner. Add these entries to the existing [tools] table in mise.toml at the repository root, or create that table if absent. Commit the configuration to main, then answer to retry (do not add a second [tools] header):\n\n[tools]\nrust = "stable"';
+let QUESTION = "";
 const ANSWER = "Added rust to mise.toml; retry.";
 const COMMIT = "Count widgets per shelf, empty shelves as 0";
 
@@ -48,6 +60,96 @@ export default {
             },
           ],
   async run(proof) {
+    const root = mkdtempSync(join(tmpdir(), "acme-toolchain-proof-"));
+    const source = join(root, "source");
+    const bin = join(root, "bin");
+    const home = join(root, "home");
+    for (const path of [source, bin, home]) mkdirSync(path);
+    await git(["init", "-b", "main", source]);
+    writeFileSync(join(source, "Cargo.toml"), '[package]\nname = "acme"\nversion = "0.1.0"\n');
+    await git(["-C", source, "add", "."]);
+    await git([
+      "-C",
+      source,
+      "-c",
+      "user.name=Acme",
+      "-c",
+      "user.email=acme@example.test",
+      "commit",
+      "-m",
+      "Seed acme manifest",
+    ]);
+    const baseSha = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
+    const bundle = join(root, "source.bundle");
+    const trace = join(root, "agent.json");
+    const script = join(root, "script.json");
+    writeFileSync(script, JSON.stringify({ model: "fixture-model", steps: [{ type: "end" }] }));
+    const job: RunnerJob = {
+      executionId: "01J00000000000000000000003",
+      command: {
+        type: "run",
+        id: "acme-command",
+        runnerId: "acme-runner",
+        workspaceId: "acme-workspace",
+        runId: "acme-run",
+        itemId: "acme-item",
+        generation: 1,
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        profile: { agent: "claude", model: "fixture-model" },
+        prompt: "Implement acme",
+        repository: {
+          owner: "acme",
+          repo: "widgets",
+          remoteUrl: "https://github.com/acme/widgets.git",
+          baseSha,
+        },
+        checkpointBot: { appId: "99", login: "paws-test[bot]", id: 88 },
+      },
+    };
+    const runWorker = async (retry: boolean) => {
+      rmSync(bundle, { force: true });
+      await git(["-C", source, "bundle", "create", bundle, "--all"]);
+      chmodSync(bundle, 0o600);
+      const output = join(root, retry ? "retry" : "first");
+      mkdirSync(output);
+      return executeRunnerCommand({
+        job,
+        repositoryBundle: bundle,
+        outputDirectory: output,
+        workRoot: join(root, "work"),
+        home,
+        resultsGid: process.getgid!(),
+        ...(retry ? { mise: { path: join(root, "mise") } } : {}),
+        launch: {
+          command: process.execPath,
+          args: [
+            new URL("../../src/acp/testing/fake-agent.ts", import.meta.url).pathname,
+            trace,
+            script,
+          ],
+          env: { PATH: bin },
+        },
+        async answer() {
+          if (retry) throw new Error("Configured retry asked again");
+          QUESTION = readFileSync(join(output, "events.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line))
+            .find((event) => event.type === "question").question;
+          return { answer: "Question saved; end turn" };
+        },
+      });
+    };
+    const blocked = await runWorker(false);
+    proof.expect(
+      "real worker detects missing cargo and never starts ACP",
+      blocked.run.stopReason === "end_turn" &&
+        !existsSync(trace) &&
+        QUESTION.includes('rust = "stable"'),
+      QUESTION,
+    );
+    // Relay the worker's actual question through the scripted local tracker fixture.
     await proof.delegate();
     const asked = await proof.waitFor(
       "the question is asked and the item waits for input",
@@ -71,6 +173,39 @@ export default {
       '[tools]\nrust = "stable"\n',
       "Declare the missing Rust toolchain",
     );
+    const config = '[tools]\nrust = "stable"\n';
+    writeFileSync(join(source, "mise.toml"), config);
+    await git(["-C", source, "add", "."]);
+    await git([
+      "-C",
+      source,
+      "-c",
+      "user.name=Acme",
+      "-c",
+      "user.email=acme@example.test",
+      "commit",
+      "-m",
+      "Declare rust",
+    ]);
+    if (job.command.type !== "run") throw new Error("Expected run");
+    job.command.repository.mainSha = (await git(["-C", source, "rev-parse", "HEAD"])).trim();
+    job.command.runtimes = [{ tool: "rust", version: "stable" }];
+    const runtime = join(root, "runtime");
+    mkdirSync(join(runtime, "bin"), { recursive: true });
+    writeFileSync(join(runtime, "bin", "cargo"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(
+      join(root, "mise"),
+      `#!/bin/sh\nif [ "$1" = where ]; then printf '%s' '${runtime}'; fi\n`,
+      { mode: 0o755 },
+    );
+    const retried = await runWorker(true);
+    proof.expect(
+      "real worker installs the declared tool and starts ACP on retry",
+      retried.run.stopReason === "end_turn" &&
+        existsSync(trace) &&
+        readFileSync(join(root, "work/acme-run/mise.toml"), "utf8") === config,
+    );
+    rmSync(root, { recursive: true, force: true });
     await proof.answerInLinear(ANSWER);
     const merged = await proof.waitFor(
       "the item is merged",
