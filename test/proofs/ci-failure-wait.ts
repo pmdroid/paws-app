@@ -2,7 +2,7 @@ import mainMoved from "./main-moved";
 import type { Proof } from "./harness";
 
 export default {
-  covers: ["src/merge/**", "src/github/readiness.ts", "src/db/pull-ci.ts"],
+  covers: ["src/merge/**", "src/github/readiness.ts", "src/db/pull-ci.ts", "src/loop/pull-ci.ts"],
   summary: "A failed check waits for the running check before one CI fix turn.",
   ciPending: true,
   agent: mainMoved.agent,

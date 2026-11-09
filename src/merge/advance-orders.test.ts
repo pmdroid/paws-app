@@ -849,3 +849,84 @@ test("acme head movement starts a fresh CI collection window", async () => {
   expect(await h.pass("ACME-1441")).toMatchObject({ kind: "wait", reason: "ci" });
   expect(resumes(h)).toEqual([]);
 });
+
+describe("CI collection across merge paths", () => {
+  const checks = (shard: string | null) => [
+    { name: "acme test", conclusion: "FAILURE", detailsUrl: "https://ci.example/test" },
+    { name: "acme shard", conclusion: shard, detailsUrl: "https://ci.example/shard" },
+  ];
+
+  test("acme GitHub queue waits then hands off both failures", async () => {
+    let head = async (): Promise<string> => "";
+    const queue = createFakeMergeQueue({ headOf: () => head() });
+    const h = await start({ settings: { order: "github-queue" }, queue });
+    await h.addItem("ACME-queue");
+    head = () => h.remoteHead("ACME-queue");
+    h.state.ci = () => checks(null);
+    expect(await h.pass("ACME-queue")).toMatchObject({
+      kind: "wait",
+      reason: "ci",
+      message: "CI failed: acme test; waiting for acme shard to finish (up to 20 min)",
+    });
+    expect(resumes(h)).toEqual([]);
+    expect(queue.enqueued).toEqual([]);
+    h.state.ci = () => checks("FAILURE");
+    expect(await h.pass("ACME-queue")).toEqual({ kind: "returned" });
+    expect(resumes(h)).toHaveLength(1);
+    expect(resumes(h)[0]!.handoff).toContain("acme shard");
+  });
+
+  test("acme final squash recheck starts the same collection window", async () => {
+    const h = await start();
+    await h.addItem("ACME-recheck");
+    let reads = 0;
+    h.state.ci = () =>
+      ++reads === 1
+        ? [{ name: "acme test", conclusion: "SUCCESS", detailsUrl: null }]
+        : checks(null);
+    expect(await h.pass("ACME-recheck")).toMatchObject({ kind: "wait", reason: "ci" });
+    expect(resumes(h)).toEqual([]);
+    expect(h.github.merged).toEqual([]);
+    h.clock.advance(20 * 60_000);
+    expect(await h.pass("ACME-recheck")).toEqual({ kind: "returned" });
+    expect(resumes(h)).toHaveLength(1);
+    expect(resumes(h)[0]!.handoff).toContain(
+      "acme shard (https://ci.example/shard): still running",
+    );
+  });
+
+  test("acme review hold does not enqueue partial CI feedback", async () => {
+    const h = await start({ settings: { order: "queue" } });
+    const item = await h.addItem("ACME-review");
+    h.state.reviews.set(item.pull, "REVIEW_REQUIRED");
+    h.state.ci = () => checks(null);
+    await h.pass("ACME-review");
+    expect(pendingPullCiFailures(h.db, "ACME-review")).toEqual([]);
+    h.clock.advance(19 * 60_000);
+    await h.pass("ACME-review");
+    expect(pendingPullCiFailures(h.db, "ACME-review")).toEqual([]);
+    h.state.ci = () => checks("FAILURE");
+    await h.pass("ACME-review");
+    const [failure] = pendingPullCiFailures(h.db, "ACME-review");
+    expect(failure!.failedChecks.map((check) => check.name)).toEqual(["acme test", "acme shard"]);
+    expect(resumes(h)).toEqual([]);
+  });
+});
+
+test("acme review CI at the cap retains unfinished checks for its feedback handoff", async () => {
+  const h = await start({ settings: { order: "queue" } });
+  const item = await h.addItem("ACME-review-cap");
+  h.state.reviews.set(item.pull, "REVIEW_REQUIRED");
+  h.state.ci = () => [
+    { name: "acme test", conclusion: "FAILURE", detailsUrl: null },
+    { name: "acme shard", conclusion: null, detailsUrl: null },
+  ];
+  await h.pass("ACME-review-cap");
+  h.clock.advance(20 * 60_000);
+  await h.pass("ACME-review-cap");
+  const [failure] = pendingPullCiFailures(h.db, "ACME-review-cap");
+  expect(
+    failure!.checks.filter((check) => check.waitingForCiFix).map((check) => check.name),
+  ).toEqual(["acme shard"]);
+  expect(failure!.failedChecks.map((check) => check.name)).toEqual(["acme test"]);
+});

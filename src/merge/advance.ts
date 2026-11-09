@@ -1,8 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
-  laneCiFailureTime,
-  resetOtherLaneCiFailures,
   applyWorkItemEvent,
   beginMergeCall,
   mergeStopRequested,
@@ -46,6 +44,7 @@ import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "./ci-fix";
 import { MERGE_DENIAL_LIMIT, RETRY_MERGE, mergeDeniedQuestion } from "./merge-denied";
 import type { MergeFacts, RiskApproval } from "./mergeable";
 import {
+  collectCiFailure,
   REBASE_CONFLICT_INSTRUCTION,
   REBASE_CONFLICT_THOUGHT,
   askHelp,
@@ -283,27 +282,9 @@ export async function advanceMerge(
   let mainPolicy: PolicyRead | undefined;
   let mergedPolicyError: MergeResultPolicyError | undefined;
   const turn = await laneTurn({
-    read: async () => {
-      const facts = await readPullFacts(lane);
-      if (facts.kind !== "facts") return facts;
-      resetOtherLaneCiFailures(db, item.id, facts.head);
-      const ci = facts.readiness;
-      if (ci.outcome === "ci_failed") {
-        const first = laneCiFailureTime(db, {
-          itemId: item.id,
-          head: facts.head,
-          pullNumber: pull.number,
-          itemVersion: item.version,
-          failedChecks: ci.failedChecks ?? [],
-          checks: ci.checks ?? [],
-          observedAt: caps.now(),
-        });
-        if (ci.waitingChecks?.length && caps.now() - first < 20 * 60_000)
-          facts.readiness = { ...ci, outcome: "pending" };
-      }
-      return facts;
-    },
+    read: () => readPullFacts(lane),
     facts: (facts) => {
+      facts.readiness = collectCiFailure(merge, pull.number, facts.head, facts.readiness);
       mainPolicy = caps.policyDigests(item, published.worktree);
       return mergeFacts(db, item.id, facts, mainPolicy, mergeSettings.mainMoved, {
         head: published.head,

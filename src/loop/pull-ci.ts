@@ -72,7 +72,10 @@ export async function pullCiHead(
 }
 
 export function pullCiHandoff(failure: PullCiFailureRecord): string {
-  return `${CI_REVIEW_WAIT_SOURCE}\n\n${ciFixHandoff(failure.failedChecks)}`;
+  return `${CI_REVIEW_WAIT_SOURCE}\n\n${ciFixHandoff(
+    failure.failedChecks,
+    failure.checks.filter((check) => check.waitingForCiFix),
+  )}`;
 }
 
 export function pullCiQuestion(db: Database, failure: PullCiFailureRecord, limit: number): string {
