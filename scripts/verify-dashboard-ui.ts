@@ -111,6 +111,49 @@ try {
       if (name.startsWith("evidence")) expect([name, loads]).toEqual([name, 1]);
       else expect([name, loads > 1]).toEqual([name, true]);
     }
+    await page.route("**/api/settings/agents", (route) =>
+      route.fulfill({
+        json: {
+          defaults: {
+            implementer: { agent: "claude", model: "opus" },
+            reviewer: { agent: "codex", model: "gpt-5.4" },
+          },
+          projects: [],
+          presets: {
+            Opus: { agent: "claude", model: "opus", effort: "high" },
+            Codex: { agent: "codex", model: "gpt-5.4", effort: "high" },
+          },
+        },
+      }),
+    );
+    await page.route("**/api/runners/models", (route) =>
+      route.fulfill({
+        json: {
+          catalogs: [
+            {
+              agent: "claude",
+              updatedAt: 1,
+              efforts: [{ id: "high", name: "High" }],
+              models: [{ id: "opus", name: "Opus", efforts: [{ id: "high", name: "High" }] }],
+            },
+            {
+              agent: "codex",
+              updatedAt: 1,
+              efforts: [{ id: "high", name: "High" }],
+              models: [{ id: "gpt-5.4", name: "GPT 5.4", efforts: [{ id: "high", name: "High" }] }],
+            },
+          ],
+        },
+      }),
+    );
+    await visit(page, width, "settings-agents", "/dashboard/settings/agents", "Agents");
+    await expect(page.locator("#preset-0-name")).toHaveValue("Opus");
+    await expect(page.locator("#preset-1-name")).toHaveValue("Codex");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    await page.unroute("**/api/settings/agents");
+    await page.unroute("**/api/runners/models");
     for (const [name, path, heading] of [
       ["runners", "/dashboard/runners", "Runners"],
       ["findings", "/dashboard/findings", "Findings"],

@@ -61,7 +61,10 @@ export async function settingsRequest<T>(
   return data as T;
 }
 
+type PresetRow = { name: string; profile: AgentProfile };
+
 type SettingsView = {
+  presetRows?: PresetRow[];
   data: AgentSettings | null;
   busy: string | null;
   error: string | null;
@@ -110,6 +113,21 @@ export function renderAgentSettings(view: SettingsView): string {
           : '<p class="sub">No project overrides.</p>'
       }
       <div class="settings-add"><label for="settings-repo">Repository</label><div class="row"><input id="settings-repo" name="repo" value="${esc(view.repoDraft ?? "")}" placeholder="owner/repository" autocapitalize="none" spellcheck="false"><button class="btn" type="button" data-settings="add">Add project</button></div></div></div></section>
+      <section class="settings-section"><div class="settings-label"><h2>Label presets</h2><p class="sub">Add a label to a Linear issue in the Implementer or Reviewer group with a preset's name to run that issue with it. A change applies from the issue's next run.</p></div><div class="col">
+      ${(
+        view.presetRows ??
+        Object.entries(view.data.presets ?? {}).map(([name, profile]) => ({ name, profile }))
+      )
+        .map((row, index) => {
+          const key = `preset-${index}`;
+          const error = presetError(view.error, row.name);
+          return `<section class="settings-project" data-preset-row="${index}"><div class="settings-field"><label for="${key}-name">Name</label><input id="${key}-name" name="${key}-name" value="${esc(row.name)}" autocapitalize="none" spellcheck="false" ${error ? `aria-invalid="true" aria-describedby="${key}-error"` : ""}></div>
+        ${profileFields(key, "implementer", row.profile, null, view.catalogs, "Profile")}
+        ${error ? `<p id="${key}-error" class="settings-message err" role="alert">${esc(error)}</p>` : ""}
+        <button class="btn" type="button" data-settings="remove-preset" data-index="${index}">Remove preset</button></section>`;
+        })
+        .join("")}
+      <button class="btn" type="button" data-settings="add-preset">Add preset</button></div></section>
       <div id="settings-problems" class="settings-message err" role="alert" ${problems.length ? "" : "hidden"}>${problems.map(esc).join("<br>")}</div>
       <label class="settings-inherit"><input type="checkbox" name="apply-to-waiting" ${view.applyToWaiting ? "checked" : ""} aria-describedby="apply-to-waiting-help">Also switch runs that are waiting</label>
       <p class="sub" id="apply-to-waiting-help">Waiting runs use these profiles at their next step. Agents working now finish with their current profiles.</p>
@@ -123,10 +141,11 @@ function profileFields(
   profile: AgentProfile,
   inherited: boolean | null,
   catalogs: AgentModelCatalog[] = [],
+  heading?: string,
 ): string {
   const key = `${scope}-${role}`;
   const disabled = inherited ? "disabled" : "";
-  const label = role === "implementer" ? "Implementer" : "Reviewer";
+  const label = heading ?? (role === "implementer" ? "Implementer" : "Reviewer");
   const catalog = catalogs.find((value) => value.agent === profile.agent);
   const selected = catalog?.models.find((model) => model.id === profile.model);
   const longContext =
@@ -158,6 +177,23 @@ function profileFields(
       .join("")}</select></div>
     <div class="settings-field"><label for="${key}-model">Model</label>${choices("model", profile.model, catalog?.models)}${longContext ? `<small class="sub" id="${key}-model-hint">1M context uses more of your Claude usage.</small>` : ""}${catalog ? "" : '<small class="sub">Sign in on a runner to load model choices.</small>'}</div>
     <div class="settings-field"><label for="${key}-effort">Effort</label>${choices("effort", profile.effort, efforts)}${catalog && efforts == null ? '<small class="sub" role="status">Loading effort choices…</small>' : ""}</div></div></div>`;
+}
+
+function presetError(error: string | null, name: string): string | null {
+  if (!error) return null;
+  if (error === `Duplicate preset: ${name}`) return error;
+  try {
+    const issues = JSON.parse(error) as { path?: unknown[] }[];
+    if (
+      Array.isArray(issues) &&
+      issues.some((issue) => issue.path?.[0] === "presets" && issue.path[1] === name)
+    )
+      return error;
+  } catch {
+    // Other settings errors stay in the form feedback.
+    return null;
+  }
+  return null;
 }
 
 function profilesOnly(settings: AgentSettings): Omit<AgentSettings, "queue" | "merge"> {
@@ -222,6 +258,11 @@ export function createAgentSettings(
           delete project[role];
         else project[role] = read(key, project[role] ?? view.data!.defaults[role]);
       }
+    });
+    view.presetRows?.forEach((row, index) => {
+      row.name =
+        form.querySelector<HTMLInputElement>(`[name="preset-${index}-name"]`)?.value ?? row.name;
+      row.profile = read(`preset-${index}-implementer`, row.profile);
     });
     view.applyToWaiting =
       form.querySelector<HTMLInputElement>('[name="apply-to-waiting"]')?.checked ?? false;
@@ -305,6 +346,10 @@ export function createAgentSettings(
       if (started !== generation) return;
       view.denied = false;
       view.data = data;
+      view.presetRows = Object.entries(data.presets ?? {}).map(([name, profile]) => ({
+        name,
+        profile,
+      }));
       view.saved = false;
       view.applyToWaiting = false;
       view.waitingRuns = undefined;
@@ -322,6 +367,16 @@ export function createAgentSettings(
       return;
     }
     draft();
+    if (action === "add-preset" && view.data) {
+      view.presetRows ??= [];
+      view.presetRows.push({ name: "", profile: { ...view.data.defaults.implementer } });
+      paint();
+      root?.querySelector<HTMLInputElement>(`#preset-${view.presetRows.length - 1}-name`)?.focus();
+    }
+    if (action === "remove-preset") {
+      view.presetRows?.splice(Number(button.dataset.index), 1);
+      paint();
+    }
     if (action === "add" && view.data) {
       const input = root?.querySelector<HTMLInputElement>("#settings-repo");
       const repo = input?.value.trim().toLowerCase() ?? "";
@@ -346,6 +401,17 @@ export function createAgentSettings(
       paint();
       return;
     }
+    const rows = view.presetRows ?? [];
+    const names = new Set<string>();
+    for (const row of rows) {
+      if (names.has(row.name)) {
+        view.error = `Duplicate preset: ${row.name}`;
+        paint();
+        return;
+      }
+      names.add(row.name);
+    }
+    view.data!.presets = Object.fromEntries(rows.map(({ name, profile }) => [name, profile]));
     const started = generation;
     void request("Saving agent settings…", async () => {
       const data = await settingsRequest<
@@ -359,6 +425,10 @@ export function createAgentSettings(
       if (started !== generation) return;
       const { waitingRuns, warnings, ...settings } = data;
       view.data = settings;
+      view.presetRows = Object.entries(settings.presets ?? {}).map(([name, profile]) => ({
+        name,
+        profile,
+      }));
       view.waitingRuns = waitingRuns;
       view.warnings = warnings;
       view.applyToWaiting = false;
@@ -381,14 +451,17 @@ export function createAgentSettings(
       const key = name.replace(/-(agent|model)$/, "");
       const [scope, role] = key.split("-") as [string, AgentRole];
       const profile =
-        scope === "defaults"
-          ? view.data?.defaults[role]
-          : view.data?.projects[Number(scope)]?.[role];
+        scope === "preset"
+          ? view.presetRows?.[Number(role)]?.profile
+          : scope === "defaults"
+            ? view.data?.defaults[role]
+            : view.data?.projects[Number(scope)]?.[role];
       if (profile) {
         delete profile.effort;
         if (name.endsWith("-agent")) profile.model = null;
       }
-      if (name.endsWith("-agent") && view.data) clearAccounts(view.data, scope, role);
+      if (scope !== "preset" && name.endsWith("-agent") && view.data)
+        clearAccounts(view.data, scope, role);
       const effort = root?.querySelector<HTMLSelectElement>(`[name="${key}-effort"]`);
       if (effort) effort.value = "";
     }
