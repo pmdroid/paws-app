@@ -50,5 +50,6 @@ jobs:
       - run: bun run build:dashboard
       - run: bun run links
       - run: bun run raw-sql
+      - run: bun run graphql
       - run: bun run knip
       - run: bun scripts/check-runner-versions.ts --since-latest-release
