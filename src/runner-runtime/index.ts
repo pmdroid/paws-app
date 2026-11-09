@@ -1714,10 +1714,10 @@ export async function openRunnerRuntime(options: {
             "phase.txt",
           ).toString("utf8");
           if (/^(checkout|mise|agent|verify|push)$/.test(value)) savedPhase = value;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        } catch (phaseError) {
+          if ((phaseError as NodeJS.ErrnoException).code !== "ENOENT") throw phaseError;
           journalCaught(
-            error,
+            phaseError,
             "runner-runtime.workerFinished.phase",
             entry.execution.command.itemId,
             "optional file may be absent",
