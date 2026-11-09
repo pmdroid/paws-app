@@ -6,7 +6,6 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { PawsShutdown } from "../src/core";
 import { candidateRef, mirrorPath } from "../src/acp";
-import { PawsShutdown } from "../src/core";
 import { createAgentSessions, createFakeAgentSessionObjects } from "../src/agent-sessions";
 import {
   beginImplementRun,
