@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   consumeWorkspaceBootstrap,
   putWorkspaceUser,
+  refreshRepositoryCatalog,
   syncWorkspaceMember,
   insertQueuedItem,
   recordLinearInstallation,
@@ -313,6 +314,14 @@ try {
       assert.equal((await call(browserPort, "/api/runners")).status, 401);
       const key = await createRunnerKey(join(root, "client"));
       const enrollPath = "/api/runners/enrollments";
+      await refreshRepositoryCatalog(paws.db, async () => [
+        {
+          owner: "fixture",
+          repo: "repository",
+          remoteUrl: "https://github.com/fixture/repository.git",
+          defaultBranch: "main",
+        },
+      ]);
       assert.equal(
         (
           await call(

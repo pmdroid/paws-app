@@ -102,14 +102,17 @@ export function createRunnerHttp(
             serverVersion: control.serverVersion(),
             agentVersions: control.agentVersions(),
           });
-        if (path === "/api/runners/enrollments" && request.method === "POST")
-          return json({
-            ...control.createEnrollment(
-              principal,
-              enrollmentRequest.parse(await readJson(request)),
-            ),
-            config: options.hostConfig?.() ?? null,
-          });
+        if (path === "/api/runners/enrollments" && request.method === "POST") {
+          const input = enrollmentRequest.parse(await readJson(request));
+          const config = options.hostConfig?.() ?? null;
+          // An empty list makes the runner refuse every run, so no token is issued for one.
+          if (config?.allowedRepositories.length === 0)
+            return json(
+              { error: "Connect GitHub and add a repository before adding a runner." },
+              409,
+            );
+          return json({ ...control.createEnrollment(principal, input), config });
+        }
         const match = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/status$/.exec(path);
         if (match && request.method === "POST") {
           control.setStatus(
