@@ -18,10 +18,12 @@ import {
 } from "../config";
 import { validate } from "../closeout-spec";
 import {
-  distinctWorkspaceRepositories,
-  latestGitHubDelivery,
-  linearWebhookWarning,
-  oldestWorkspaceName,
+  distinctWorkspaceRepositoriesSteps,
+  latestGitHubDeliverySteps,
+  linearWebhookWarningSteps,
+  oldestWorkspaceNameSteps,
+  sqliteDb,
+  type Db,
   type LinearWebhookWarning,
 } from "../db";
 import { createFetchGitHubClient, mintInstallationToken, signAppJwt } from "../github";
@@ -101,7 +103,7 @@ const LOGIN_TIMEOUT_MS = 2_500;
 
 export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
   const runtime = loadRuntime(env);
-  const repos = chosenRepositories(runtime);
+  const repos = await chosenRepositories(runtime);
   const repo = splitRepo(repos[0] ?? null);
   const agentProfiles = doctorAgentProfiles(runtime.file);
   const agents = new Set(
@@ -125,9 +127,13 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
     trackerKind: runtime.trackerKind,
     githubDoctor,
     webhooks: runtime.webhooks,
-    linearWebhook: readPawsDb(runtime.env.home, (db) => linearWebhookWarning(db, Date.now())),
-    githubDelivery: readPawsDb(runtime.env.home, latestGitHubDelivery),
-    workspace: readPawsDb(runtime.env.home, (db) => oldestWorkspaceName(db)),
+    linearWebhook: await readPawsDb(runtime.env.home, (store) =>
+      store.run((q) => linearWebhookWarningSteps(q, Date.now())),
+    ),
+    githubDelivery: await readPawsDb(runtime.env.home, (store) =>
+      store.run(latestGitHubDeliverySteps),
+    ),
+    workspace: await readPawsDb(runtime.env.home, (store) => store.run(oldestWorkspaceNameSteps)),
     publicUrl: runtime.publicUrl,
     repos,
     team: runtime.linearTeam,
@@ -145,7 +151,7 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
 
 function storedLinearToken(runtime: ReturnType<typeof loadRuntime>): string | null {
   const secretsDir = pawsPaths(runtime.env.home).secretsDir;
-  const stored = readPawsDb(runtime.env.home, (db) => readStoredToken(db, secretsDir));
+  const stored = readPawsDbSync(runtime.env.home, (db) => readStoredToken(db, secretsDir));
   if (stored) return stored.accessToken;
   try {
     const file: unknown = JSON.parse(readSecretFile(runtime.linearTokenFile, false) ?? "null");
@@ -157,7 +163,7 @@ function storedLinearToken(runtime: ReturnType<typeof loadRuntime>): string | nu
   }
 }
 
-function readPawsDb<T>(home: string, read: (db: Database) => T): T | null {
+function readPawsDbSync<T>(home: string, read: (db: Database) => T): T | null {
   const file = pawsPaths(home).db;
   if (!existsSync(file)) return null;
   try {
@@ -169,6 +175,22 @@ function readPawsDb<T>(home: string, read: (db: Database) => T): T | null {
     }
   } catch (caughtError1) {
     journalCaught(caughtError1, "probe.readPawsDb.read", null);
+    return null;
+  }
+}
+
+async function readPawsDb<T>(home: string, read: (store: Db) => Promise<T>): Promise<T | null> {
+  const file = pawsPaths(home).db;
+  if (!existsSync(file)) return null;
+  try {
+    const db = new Database(file, { readonly: true });
+    try {
+      return await read(sqliteDb(db));
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    journalCaught(error, "probe.readPawsDb.read", null);
     return null;
   }
 }
@@ -239,8 +261,11 @@ function closeoutPolicyFact(
 }
 
 /** Workspace repository choices from the Paws database, then `config.toml` repositories. */
-function chosenRepositories(runtime: RuntimeConfig): string[] {
-  const chosen = readPawsDb(runtime.env.home, (db) => distinctWorkspaceRepositories(db)) ?? [];
+async function chosenRepositories(runtime: RuntimeConfig): Promise<string[]> {
+  const chosen =
+    (await readPawsDb(runtime.env.home, (store) =>
+      store.run(distinctWorkspaceRepositoriesSteps),
+    )) ?? [];
   return [...new Set([...chosen, ...runtime.repos])];
 }
 

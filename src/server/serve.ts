@@ -595,6 +595,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     const configPath = secrets.agentSettings?.configPath;
     return (await handleFindingSettingsRequest(request, {
       db,
+      store: secrets.store ?? sqliteDb(db),
       csrfToken,
       workspaceId,
       groupingTime: (configPath && loadConfigFile(configPath).findingsGroupingTime) || "06:00",
@@ -728,6 +729,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       sessionIds,
     ).catch((error: unknown) => journalCaught(error, "serve.hydrateItemCloseoutEvidence", null));
   const status = await handleStatusRequest(request, {
+    ...(secrets.store ? { store: secrets.store } : {}),
     csrfToken,
     resourceCache: dashboardResources,
     ...(sessionIds === undefined ? {} : { sessionIds }),

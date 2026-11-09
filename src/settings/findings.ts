@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { findingGroupingEnabled, setFindingGrouping } from "../db";
+import { findingGroupingEnabledSteps, setFindingGroupingSteps, sqliteDb, type Db } from "../db";
 import { journalCaught } from "../journal";
 import { isWorkspaceAdmin } from "../workspace";
 import { isRecord, json, localRequest, readJson, sameToken } from "./handler";
@@ -8,6 +8,7 @@ export const FINDING_SETTINGS_PATH = "/api/settings/findings";
 
 export type FindingSettingsOptions = {
   db: Database;
+  store?: Db;
   csrfToken: string;
   workspaceId: string;
   groupingTime: string;
@@ -25,9 +26,10 @@ export async function handleFindingSettingsRequest(
     return json({ error: "Finding settings are only available on the local Paws origin" }, 403);
   if (options.role !== undefined && !isWorkspaceAdmin(options.role))
     return json({ error: "Only workspace admins can change finding settings." }, 403);
-  const listing = () =>
+  const store = options.store ?? sqliteDb(options.db);
+  const listing = async () =>
     json({
-      grouping: findingGroupingEnabled(options.db, options.workspaceId),
+      grouping: await store.run((q) => findingGroupingEnabledSteps(q, options.workspaceId)),
       groupingTime: options.groupingTime,
     });
   if (request.method === "GET") return listing();
@@ -43,7 +45,8 @@ export async function handleFindingSettingsRequest(
   }
   if (!isRecord(body) || typeof body.grouping !== "boolean")
     return json({ error: "Send grouping as true or false." }, 400);
-  setFindingGrouping(options.db, options.workspaceId, body.grouping);
+  const grouping = body.grouping;
+  await store.run((q) => setFindingGroupingSteps(q, options.workspaceId, grouping));
   options.audit(
     "settings.findings.grouping",
     `Turned daily finding grouping ${body.grouping ? "on" : "off"}`,

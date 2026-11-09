@@ -84,6 +84,7 @@ export interface StatusServerOptions {
   provider?: StatusProvider;
   /** Opened engine database. Ignored when `provider` is set. */
   db?: Database;
+  store?: import("../../../db").Db;
   /**
    * Directory from `bun run build:dashboard` (`index.html`, `assets/`).
    * Omit it to use `src/dashboard/dist` when that build exists. Pass `null` to skip files.
@@ -175,7 +176,7 @@ export async function handleStatusRequest(
       return text("Method not allowed", 405);
     return redirect(dashboardPath(`/evidence/${evidence[1]}${url.search}`));
   }
-  const transcript = handleAgentTranscriptRequest(request, options);
+  const transcript = await handleAgentTranscriptRequest(request, options);
   if (transcript !== null) return transcript;
   const artifact = await handleLinearArtifactRequest(
     request,
