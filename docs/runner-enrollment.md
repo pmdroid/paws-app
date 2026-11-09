@@ -90,7 +90,7 @@ sudo install -o root -g paws-runner -m 0640 /dev/stdin /etc/paws-runner/config.j
 JSON
 ```
 
-`controlPlaneUrl` is the dashboard's HTTPS origin. `runnerApiUrl` is the same control plane's runner listener. Each URL contains only the scheme, hostname and optional port. `allowedRepositories` lists the exact GitHub `owner/repository` names this host may execute.
+`controlPlaneUrl` is the dashboard's HTTPS origin. `runnerApiUrl` is the same control plane's runner listener. Each URL contains only the scheme, hostname and optional port. `allowedRepositories` lists the exact GitHub `owner/repository` names this host may execute. `runner enroll` refuses an empty list, because a runner with one refuses every run.
 
 Workspace admins also choose a runner's repositories on its runner page: All repositories, the default, or a list of the workspace's repositories. Paws keeps that choice; heartbeats never change it. A runner takes an item only when both its page setting and its host config allow the item's repository, matched case-insensitively. The runner page shows the host config's list when the host reports one.
 
@@ -223,7 +223,7 @@ A turn that continues on another account starts a fresh agent session. It keeps 
 ## Add the host
 
 1. Open your Paws dashboard at `https://paws.example.com:8787/dashboard/runners` and sign in. Any workspace member can add a host and owns the runner it adds.
-2. Select **Add a runner**, enter the name you want to see in Paws, and select **Create command**.
+2. Select **Add a runner**, enter the name you want to see in Paws, and select **Create command**. Until the workspace has a repository, Paws answers "Connect GitHub and add a repository before adding a runner." and creates no command.
 3. Copy the command and run it on the VM. It installs the runner, writes `/etc/paws-runner/config.json` for this Paws, stores a single-use enrollment token in a root-owned mode 0600 file, enrolls, and starts `paws-runner.service`.
 
 The token expires after ten minutes and works once. The runner appears under **Runners**, owned by you, as soon as the command prints `"paired":true`. Running the command again on an enrolled host changes nothing. If the token expires, create a new command.

@@ -166,6 +166,18 @@ export function loadConfig(path: string, runnerUid: number) {
 }
 
 /**
+ * Enrollment refuses an empty list, which pairs a runner that takes no work. The daemon still
+ * accepts one, so a host already enrolled keeps its behaviour.
+ */
+function refuseEmptyAllowList(path: string, runnerUid: number): void {
+  if (loadConfig(path, runnerUid).allowedRepositories?.length === 0)
+    throw new RunnerCliFailure(
+      "config",
+      `${path} has an empty allowedRepositories list, so this runner would refuse all work. Add at least one owner/repo to it.`,
+    );
+}
+
+/**
  * The enrollment token from a root-owned mode 0600 file, or null when the file is gone (a retried
  * bootstrap on a host that already enrolled). The token never travels through argv.
  */
@@ -295,6 +307,7 @@ export async function runRunnerCli(
         throw new RunnerCliFailure("usage", "Invalid enrollment command.");
       if (process.getuid?.() !== 0)
         throw new RunnerCliFailure("identity", "Enrollment must start as root.");
+      refuseEmptyAllowList(args[1], ids.runnerUid);
       const token = readTokenFile(args[5]);
       if (token !== null) secrets.push(token);
       dropToRunner(ids);
