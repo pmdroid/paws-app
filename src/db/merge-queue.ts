@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { aliasedTable, and, asc, desc, eq, inArray, lt, max, ne, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { emitJobReady } from "./jobs";
 import { jsonField } from "./json-text";
 
 /**
@@ -279,6 +280,29 @@ export function* wakeMergesBehindSteps(q: Q, now: number) {
 /** A holder departed or changed eligibility: parked followers check again now. */
 export function wakeMergesBehind(db: Database, now: number): void {
   settled(sqliteDb(db).run((q) => wakeMergesBehindSteps(q, now)));
+}
+
+export function* wakeItemMergeSteps(q: Q, itemId: string, now: number): Steps<boolean> {
+  const { job } = q.t;
+  const least = q.dialect === "sqlite" ? sql`MIN` : sql`LEAST`;
+  const woken = yield* q.all(
+    q.orm
+      .update(job)
+      .set({ runAt: sql`${least}(${job.runAt}, ${now})` })
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.merge),
+          eq(job.status, "pending"),
+          eq(jsonField(q, job.payload, "itemId"), itemId),
+        ),
+      )
+      .returning({ id: job.id }),
+  );
+  return woken.length > 0;
+}
+
+export function wakeItemMerge(db: Database, itemId: string, now: number): void {
+  if (settled(sqliteDb(db).run((q) => wakeItemMergeSteps(q, itemId, now)))) emitJobReady(db);
 }
 
 export function* mergeQueueReadyTimesSteps(q: Q) {

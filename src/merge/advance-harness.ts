@@ -169,6 +169,7 @@ export async function mergeHarness(
     mergeResultPolicy: (_worktree: string, _heads: { base: string; head: string }) =>
       undefined as MergeResultPolicyError | undefined,
     ciFixAttempts: 3,
+    conversing: (_itemId: string): boolean => false,
     feedbackWait: DEFAULT_PULL_FEEDBACK_WAIT as PullFeedbackWait,
     ciReads: [] as string[],
     ciReruns: [] as string[],
@@ -499,6 +500,7 @@ export async function mergeHarness(
       },
       readPull: (_, prNumber) => readPull(prNumber),
       mergeLane: (current) => state.lanes.get(current.id) ?? "",
+      conversing: (itemId) => state.conversing(itemId),
       dependencyHold: (itemId) => {
         const open = (state.blockedBy.get(itemId) ?? []).filter(
           (blocker) => getConfirmedRemoteMerge(db, blocker) === null,

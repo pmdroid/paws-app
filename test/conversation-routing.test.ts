@@ -9,7 +9,9 @@ import {
   saveSchedulerAdmission,
   beginImplementRun,
   consumeWorkspaceBootstrap,
+  enqueueOutboxOnce,
   enterMergeQueue,
+  getJob,
   getLinearComment,
   getLinearSession,
   getWorkItem,
@@ -26,12 +28,14 @@ import {
   recordRunnerHostStatus,
   runnerTaskSlots,
 } from "../src/db";
-import type { AcceptedLinearEvent } from "../src/linear";
+import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import {
   CONVERSATION_TIMEOUT_REPLY,
   Orchestrator,
   START_WORK_RESPONSE,
+  conversationHolds,
   deliverLinearComments,
+  deliverLinearOutbox,
   linearCommentBrief,
   type LinearCommentPolicy,
 } from "../src/loop";
@@ -458,6 +462,119 @@ test("start_work in a conversation restarts the item with the plan and posts it,
   // Waiting in line holds neither a conversation nor a work slot: only acme-busy holds one.
   expect(f.conversations()).toEqual([]);
   expect(f.taskSlots()[0]).toMatchObject({ used: 1, capacity: 1 });
+});
+
+const CONVERSATION_HOLD = {
+  kind: "wait",
+  reason: "review",
+  message:
+    "Waiting for the conversation in the Linear session to finish before this pull request merges.",
+};
+
+function claimMerge(f: ReturnType<typeof setup>, itemId: string) {
+  enqueueJob(f.db, { queue: JOB_KIND.merge, payload: { itemId }, now: f.clock.now() });
+  return claimNextJob(f.db, { now: f.clock.now(), queues: [JOB_KIND.merge] })!;
+}
+
+function parkMergeJob(f: ReturnType<typeof setup>, jobId: number, runAt: number) {
+  f.db.run("UPDATE job SET status='pending', locked_until=NULL, run_at=? WHERE id=?", [
+    runAt,
+    jobId,
+  ]);
+}
+
+test("a reply that arrives while a merge job runs is not stranded, and the merge waits for the conversation", async () => {
+  const f = setup();
+  const acme = f.item("acme-1");
+  const merge = claimMerge(f, "acme-1");
+
+  await f.reply(acme.session, "Is the retry covered by a test?");
+  expect(await f.deliver("acme-1")).toBe("wait");
+  expect(f.conversations()).toEqual([]);
+  expect(listPendingLinearTurns(f.db, acme.session)).toHaveLength(1);
+  expect(await f.orchestrator["merge"]({ itemId: "acme-1" }, merge.id)).toMatchObject(
+    CONVERSATION_HOLD,
+  );
+
+  parkMergeJob(f, merge.id, f.clock.now() + 600_000);
+  expect(await f.deliver("acme-1")).toBe("wait");
+  const [started] = f.conversations();
+  expect(started!.command.prompt).toContain("Is the retry covered by a test?");
+  expect(listPendingLinearTurns(f.db, acme.session)).toEqual([]);
+  expect(await f.orchestrator["merge"]({ itemId: "acme-1" }, merge.id)).toMatchObject(
+    CONVERSATION_HOLD,
+  );
+
+  f.answer(started!.id, { text: "Yes: checkout.test.ts covers it." });
+  expect(await f.deliver("acme-1")).toBe("done");
+  expect(f.responses(acme.session)).toEqual(["Yes: checkout.test.ts covers it."]);
+  expect(getJob(f.db, merge.id)!.runAt).toBe(f.clock.now());
+  expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
+  const talk = createConversationTurns({ db: f.db, helpers: f.helpers, now: () => f.clock.now() });
+  expect(conversationHolds(talk, "acme-1")).toBe(false);
+});
+
+test("a conversation helper that expires without a result stops holding the merge", async () => {
+  const f = setup();
+  f.item("acme-1");
+  await f.say("acme-1", "c-1", "Walk me through the whole payment flow.");
+  expect(await f.deliver("acme-1")).toBe("wait");
+  const talk = createConversationTurns({ db: f.db, helpers: f.helpers, now: () => f.clock.now() });
+  expect(conversationHolds(talk, "acme-1")).toBe(true);
+  f.clock.advance(RUNNER_CONVERSATION_MS);
+  expect(conversationHolds(talk, "acme-1")).toBe(false);
+});
+
+test("start_work while the merge waits for the conversation restarts the item instead of refusing", async () => {
+  const f = setup();
+  const acme = f.item("acme-1");
+  const merge = claimMerge(f, "acme-1");
+  parkMergeJob(f, merge.id, f.clock.now() + 600_000);
+  await f.reply(acme.session, "Please add a test for the card retry.");
+  expect(await f.deliver("acme-1")).toBe("wait");
+  const [started] = f.conversations();
+  expect(await f.orchestrator["merge"]({ itemId: "acme-1" }, merge.id)).toMatchObject(
+    CONVERSATION_HOLD,
+  );
+
+  const plan = "Add a test that checkout retries a card once on a gateway timeout.";
+  f.answer(started!.id, { text: "", replies: ["I will add that test."], startWork: plan });
+  expect(await f.deliver("acme-1")).toBe("done");
+  expect(f.responses(acme.session)).toEqual([
+    "I will add that test.",
+    `${START_WORK_RESPONSE}${plan}`,
+  ]);
+  expect(f.resumes()).toHaveLength(1);
+  expect(f.resumes()[0]!.payload).toMatchObject({ itemId: "acme-1", reason: "follow_up" });
+  expect(getWorkItem(f.db, "acme-1")!.state).toBe("queued");
+});
+
+test("conversation replies after the pull request response are delivered to the session", async () => {
+  const f = setup();
+  const acme = f.item("acme-1");
+  enqueueOutboxOnce(f.db, {
+    target: "linear",
+    op: "activity",
+    orderingKey: acme.session,
+    idempotencyKey: "pull-request-ready:acme-1:0",
+    delivery: "ordered",
+    payload: { id: crypto.randomUUID(), sessionId: acme.session, kind: "response", body: "#7" },
+    now: f.clock.now(),
+  });
+  await f.reply(acme.session, "Why does checkout retry the card twice?");
+  expect(await f.deliver("acme-1")).toBe("wait");
+  f.answer(f.conversations()[0]!.id, {
+    text: "Done.",
+    replies: ["The gateway retries once on a network timeout; Paws does not retry."],
+  });
+  expect(await f.deliver("acme-1")).toBe("done");
+
+  const tracker = createFakeTracker();
+  for (const row of listOutbox(f.db, acme.session))
+    await deliverLinearOutbox(row, tracker, async () => {}, undefined, f.db);
+  const posted = tracker.progress.map((update) => update.body);
+  expect(posted).toContain("#7");
+  expect(posted).toContain("The gateway retries once on a network timeout; Paws does not retry.");
 });
 
 test("start_work after the item moved on posts that the work did not start", async () => {

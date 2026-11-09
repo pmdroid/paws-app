@@ -345,7 +345,7 @@ export async function advanceMerge(
   // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
   // A turn that already rebased goes on to re-verify the pushed head.
   if ((turn.kind === "stopped" || turn.kind === "blocked") && !caps.stopped()) {
-    const late = reviewHold(db, item.id, caps.now(), caps.feedbackWait());
+    const late = reviewHold(db, item.id, caps.now(), caps.feedbackWait(), caps.conversing);
     if (late) return late;
   }
   const rerun = await rerunCancelledCi(store, item, caps, turn, pull.number);

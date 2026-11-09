@@ -556,6 +556,7 @@ import {
   authorizeLinearComment,
   canConverse,
   commitLinearCommentRoute,
+  conversationHolds,
   deliverLinearComments,
   routeLinearComment,
   linearCommentBrief,
@@ -5214,12 +5215,14 @@ export class Orchestrator {
     const policyDigests = (item: WorkItemRecord, worktree: string) => {
       return this.candidatePolicy(item, worktree);
     };
+    const talk = (await this.options.conversations?.()) ?? null;
     return advanceMerge(
       this.db,
       this.store,
       { itemId, payload, jobId },
       {
         ...this.orderCapabilities(itemId),
+        conversing: (id) => talk !== null && conversationHolds(talk, id),
         publish: (item) => this.publishForMerge(item, run),
         ...(this.options.runnerRebase ? { runnerRebase: this.options.runnerRebase } : {}),
         settings: (item, signal) => this.mergeSettingsFor(item, signal, mergePolicy),

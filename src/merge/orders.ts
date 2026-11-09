@@ -14,6 +14,7 @@ import {
   getWorkItemSteps,
   immediate,
   joinMergeQueueSteps,
+  listPendingLinearTurns,
   leaveMergeQueueSteps,
   markMergeQueueNotifiedSteps,
   mergeQueuePosition,
@@ -66,6 +67,9 @@ const CI_FIX_SOURCE = {
     "GitHub's merge queue removed the pull request because a check failed on the combined commit it tested with the pull requests ahead of it. Main may have changed since this branch was made.",
 };
 
+const CONVERSATION_HOLD_MESSAGE =
+  "Waiting for the conversation in the Linear session to finish before this pull request merges.";
+
 /**
  * A changes-requested review or a pull request comment that has not reached the agent yet holds
  * the merge. Checked before the merge work and again, synchronously, right before the squash or
@@ -77,12 +81,15 @@ export function reviewHold(
   itemId: string,
   now: number,
   wait: PullFeedbackWait,
+  conversing?: (itemId: string) => boolean,
 ): MergeStep | null {
-  if (!feedbackPending(db, itemId)) return null;
+  if (!feedbackPending(db, itemId, conversing)) return null;
   if (!pullFeedbackPending(db, itemId))
     return {
       kind: "wait",
-      message: "A comment on the Linear issue goes to the agent before this pull request merges.",
+      message: conversationPending(db, itemId, conversing)
+        ? CONVERSATION_HOLD_MESSAGE
+        : "A comment on the Linear issue goes to the agent before this pull request merges.",
       queued: true,
       reason: "review",
     };
@@ -103,12 +110,12 @@ export async function feedbackHold(
   payload: unknown,
 ): Promise<MergeStep | null> {
   const { db, store, item, caps } = merge;
-  if (!feedbackPending(db, item.id)) return null;
+  if (!feedbackPending(db, item.id, caps.conversing)) return null;
   const pull = await store.run((q) => getItemPullRequestSteps(q, item.id));
   const head = ciWaitVerification(payload)?.head ?? item.checkpoint?.wipCommit;
   if (pull !== null && head) await observeHeldCi(merge, { number: pull.pullNumber, head });
   if (caps.stopped()) return { kind: "obsolete" };
-  return reviewHold(db, item.id, caps.now(), caps.feedbackWait());
+  return reviewHold(db, item.id, caps.now(), caps.feedbackWait(), caps.conversing);
 }
 
 /** All merge paths use the same durable first-failure window, including fresh squash reads. */
@@ -208,12 +215,32 @@ export function mergeHeld({ db, item, caps }: MergeContext): boolean {
     caps.stopped() ||
     mergeStopRequested(db, item.id) ||
     !artifactPublicationReady(db, item.id) ||
-    feedbackPending(db, item.id)
+    feedbackPending(db, item.id, caps.conversing)
   );
 }
 
-function feedbackPending(db: Database, itemId: string): boolean {
-  return pullFeedbackPending(db, itemId) || pendingLinearComments(db, itemId).length > 0;
+function feedbackPending(
+  db: Database,
+  itemId: string,
+  conversing?: (itemId: string) => boolean,
+): boolean {
+  return (
+    pullFeedbackPending(db, itemId) ||
+    pendingLinearComments(db, itemId).length > 0 ||
+    conversationPending(db, itemId, conversing)
+  );
+}
+
+function conversationPending(
+  db: Database,
+  itemId: string,
+  conversing?: (itemId: string) => boolean,
+): boolean {
+  const session = getWorkItem(db, itemId)?.sessionKey ?? null;
+  return (
+    (session !== null && listPendingLinearTurns(db, session).length > 0) ||
+    conversing?.(itemId) === true
+  );
 }
 
 function pullFeedbackPending(db: Database, itemId: string): boolean {
@@ -252,6 +279,7 @@ export type OrderCapabilities = {
    * repository-wide lane.
    */
   mergeLane(item: WorkItemRecord): string;
+  conversing?(itemId: string): boolean;
   restart?: MergeRestart;
   voice: MergeVoice;
 };
@@ -515,7 +543,7 @@ export async function mergeThroughGitHubQueue(
   // The review job may take the pull request out of GitHub's queue meanwhile; that removal is
   // the review's, not a person's or a failed check's.
   if (result.outcome !== "merged") {
-    const held = reviewHold(db, item.id, caps.now(), caps.feedbackWait());
+    const held = reviewHold(db, item.id, caps.now(), caps.feedbackWait(), caps.conversing);
     if (held) return held;
   }
   switch (result.outcome) {

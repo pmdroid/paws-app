@@ -25,6 +25,7 @@ import {
   pendingPullComments,
   queueLinearComment,
   settleLinearComments,
+  wakeItemMerge,
   type LinearCommentAuthority,
   type LinearCommentRecord,
   type PullFeedbackWait,
@@ -298,13 +299,19 @@ export async function deliverLinearComments(
   const item = getWorkItem(db, itemId);
   const talk = (await caps.conversations?.()) ?? null;
   if (talk !== null) {
-    if (await postConversationReplies(db, itemId, talk, caps)) await caps.flush();
+    if (await postConversationReplies(db, itemId, talk, caps)) {
+      await caps.flush();
+      if (talk.open(itemId).length === 0) wakeItemMerge(db, itemId, caps.now());
+    }
     if (talk.open(itemId).length > 0) return "wait";
   }
   const all = pendingLinearComments(db, itemId);
-  const idle = talk !== null && item !== null && canConverse(item) && !caps.busy(item);
-  const turns = idle ? listPendingLinearTurns(db, item.sessionKey!) : [];
-  if (all.length === 0 && turns.length === 0) return "done";
+  const conversable = talk !== null && item !== null && canConverse(item);
+  const idle = conversable && !caps.busy(item);
+  const waiting = conversable ? listPendingLinearTurns(db, item.sessionKey!) : [];
+  const turns = idle ? waiting : [];
+  if (all.length === 0 && waiting.length === 0) return "done";
+  if (all.length === 0 && turns.length === 0) return "wait";
   if (item === null || isTerminalWorkItemState(item.state) || item.cancelRequested) {
     settleLinearComments(
       db,
@@ -415,6 +422,10 @@ export async function deliverLinearComments(
   });
   if (step === "restarted") await caps.flush();
   return step;
+}
+
+export function conversationHolds(talk: LinearConversations, itemId: string): boolean {
+  return talk.open(itemId).some((turn) => !turn.expired);
 }
 
 export function canConverse(item: WorkItemRecord): boolean {
