@@ -5,7 +5,7 @@ import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 export type ReviewFindingSeverity = "P0" | "P1" | "P2" | "P3";
 /** In code the change did not touch, or reported only because it is below the review's `failOn`. */
-export type ReviewFindingWhy = "pre-existing" | "below failOn";
+export type ReviewFindingWhy = "pre-existing" | "below failOn" | "meets failOn";
 
 /** One non-blocking finding of a review at an accepted head. */
 export type ReviewFindingReport = {
