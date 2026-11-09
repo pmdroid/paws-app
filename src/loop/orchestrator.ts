@@ -6,6 +6,7 @@ import {
   saveCandidatePathsSteps,
   saveCandidateRiskSteps,
 } from "../db";
+import { recoverStalledCloseout } from "./closeout-stall";
 import { getItemPullRequestSteps, recordItemCandidateSteps } from "../db";
 import { parkLeasedJobSteps } from "../db";
 import {
@@ -1823,6 +1824,19 @@ export class Orchestrator {
           ),
         ),
     };
+    jobs.register("closeout.stall", async () => {
+      await recoverStalledCloseout(this.db, {
+        now: this.now(),
+        cancel: (id) => this.joinChangedItems([id]),
+        journal: this.options.journal ?? journal,
+      });
+    });
+    enqueueJobOnce(this.db, {
+      queue: "closeout.stall",
+      jobKey: "closeout.stall",
+      recurringEveryMs: 60_000,
+      now: this.now(),
+    });
     jobs.register("item.ask", async (job, context) => {
       if (!context.isCurrent()) return;
       const id = readString(job.payload, "itemId");
