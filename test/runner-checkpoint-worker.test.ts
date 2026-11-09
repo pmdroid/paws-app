@@ -86,7 +86,10 @@ async function fixture() {
     events()
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { type: string; reason?: string; sha?: string })
+      .map(
+        (line) =>
+          JSON.parse(line) as { type: string; reason?: string; sha?: string; dropped?: string },
+      )
       .filter((event) => event.type === "checkpoint");
   /**
    * The checkpoints from the first one of `sha` on. An interval can fire between the write and
@@ -431,7 +434,9 @@ for (const failure of ["snapshot", "bundle preparation"] as const) {
           };
         },
       });
-      expect(context.checkpoints()).toEqual([{ type: "checkpoint", reason: "stop" }]);
+      expect(context.checkpoints()).toEqual([
+        { type: "checkpoint", reason: "stop", dropped: expect.any(String) },
+      ]);
       expect(result.run).toMatchObject({
         stopReason: "error",
         cancelled: false,

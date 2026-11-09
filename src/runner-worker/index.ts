@@ -1913,7 +1913,9 @@ export async function executeRunnerCommand(
         return true;
       } catch (error) {
         journalCaught(error, "runner-worker.executeRunnerCommand.checkpoint", run.itemId);
-        if (reason === "stop") emit({ type: "checkpoint", reason });
+        // No sha alone means nothing new to save; a failed save has to say so.
+        if (reason === "stop")
+          emit({ type: "checkpoint", reason, dropped: "The runner could not save the worktree." });
         return false;
       }
     };

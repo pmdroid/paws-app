@@ -614,6 +614,12 @@ export async function probeRunnerBackend(
     await git(["-C", source, "reset", "--hard", base]);
     const fetchedBefore = fetched;
     const stopped = item();
+    const runnerAt = (version: string) =>
+      db.run(
+        "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
+        [runnerId, version, Date.now()],
+      );
+    runnerAt("0.1.75");
     const early = backend.forItem(stopped.id)(input(stopped));
     const earlyCommand = await next();
     if (earlyCommand.type !== "run") throw new Error("Expected an implementation run");
@@ -681,8 +687,10 @@ export async function probeRunnerBackend(
       wipCommit: head,
     });
     // A refused push still delivers the worker's interruption result, but cannot restart
-    // from the previously recorded checkpoint. Missing stop evidence fails closed too.
-    for (const publication of ["refused", "missing"] as const) {
+    // from the previously recorded checkpoint. A failed save, missing stop evidence and a
+    // runner too old to tell a failed save from nothing to save fail closed too.
+    for (const publication of ["refused", "failed", "missing", "older"] as const) {
+      if (publication === "older") runnerAt("0.1.74");
       const record = item();
       const publicationRun = backend.forItem(record.id)(input(record));
       const command = await next();
@@ -703,6 +711,19 @@ export async function probeRunnerBackend(
           sequence: 1,
           event: { type: "checkpoint", reason: "stop", sha: head, dropped: "Git push refused" },
         });
+      if (publication === "failed" || publication === "older")
+        work.event({
+          runnerId,
+          runId: command.runId,
+          generation: command.generation,
+          token: publicationGrant.token,
+          sequence: 1,
+          event: {
+            type: "checkpoint",
+            reason: "stop",
+            ...(publication === "failed" ? { dropped: "The runner could not save" } : {}),
+          },
+        });
       results.submit({
         runnerId,
         runId: command.runId,
@@ -713,7 +734,12 @@ export async function probeRunnerBackend(
       assert.equal((await publicationRun).stopReason, "cancelled");
       assert.equal(getWorkItem(db, record.id)?.checkpoint?.wipCommit, previousWip);
     }
-    observe("refused or missing stop checkpoint publication prevents interruption retry", true, {});
+    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
+    observe(
+      "a refused, failed or missing stop checkpoint, or an older runner, prevents interruption retry",
+      true,
+      {},
+    );
     const stoppedWith = async (errorMessage: string, sessionId: string) => {
       const record = item();
       const run = backend.forItem(record.id)(input(record));

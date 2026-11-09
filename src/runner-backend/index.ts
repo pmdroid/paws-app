@@ -889,12 +889,12 @@ export function createRemoteAgentRunner(options: {
     handOverItem,
     runInProgress: (runId: string) => readers.has(runId),
     forItem(itemId: string) {
-      let retriedInterruption = false;
       const attempt = async (
         input: RunAgentOptions,
         excluded: readonly string[],
         limit: UsageLimit | undefined,
         move: HandoverMove,
+        interruption: { retried: boolean },
       ): Promise<RunAgentResult> => {
         const clock = startPhaseClock({ ids: { item: itemId, run: input.runId }, now });
         input.signal?.throwIfAborted();
@@ -2604,7 +2604,10 @@ export function createRemoteAgentRunner(options: {
                 .filter((event) => event.type === "checkpoint" && event.reason === "stop")
                 .at(-1)
             : undefined;
+          // From this release a stop with no sha means nothing new to save; before it, a failed
+          // save looked the same.
           const interruptionSaved =
+            versionAtLeast(hostVersion(selected.id), INTERRUPT_RECOVERY_RUNNER_VERSION) &&
             stopCheckpoint?.type === "checkpoint" &&
             stopCheckpoint.dropped === undefined &&
             (!stopCheckpoint.sha ||
@@ -2618,13 +2621,13 @@ export function createRemoteAgentRunner(options: {
             !complete.handedOver &&
             !complete.handoverFailure &&
             !complete.timedOut &&
-            !retriedInterruption &&
+            !interruption.retried &&
             !signal.aborted &&
             getWorkItem(db, itemId)?.state === "running"
           ) {
-            retriedInterruption = true;
+            interruption.retried = true;
             journal(
-              `item ${itemId} run ${assigned.runId} interrupt source=unsolicited_agent; restarting once from stop checkpoint (runner recovery since ${INTERRUPT_RECOVERY_RUNNER_VERSION.join(".")})`,
+              `item ${itemId} run ${assigned.runId} interrupt source=unsolicited_agent; restarting once from stop checkpoint`,
             );
             work.finish(assigned.runId, assigned.generation);
             command = undefined;
@@ -2783,8 +2786,9 @@ export function createRemoteAgentRunner(options: {
         if (runId) readers.add(runId);
         try {
           const move: HandoverMove = {};
+          const interruption = { retried: false };
           const moving: FailoverAttempt = (next, excluded, limit) =>
-            attempt(next, excluded, limit, move);
+            attempt(next, excluded, limit, move, interruption);
           const callId = failoverCallId(input);
           const ledger: FailoverLedger | undefined = runId
             ? {
