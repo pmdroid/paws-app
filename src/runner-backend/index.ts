@@ -1,4 +1,3 @@
-import { findAskedQuestion, getQuestion } from "../questions";
 import { journal, journalCaught, startPhaseClock } from "../journal";
 import { randomUUID } from "node:crypto";
 import {
@@ -19,6 +18,8 @@ import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
+  askedQuestionRow,
+  questionRowById,
   workspaceMemberUsableSql,
   getTaskMode,
   closeFallbackAttempts,
@@ -2283,7 +2284,7 @@ export function createRemoteAgentRunner(options: {
                   );
                   continue;
                 }
-                const stored = findAskedQuestion(db, selected.runId, "agent");
+                const stored = askedQuestionRow(db, selected.runId, "agent");
                 if (stored && stored.body !== event.text)
                   throw new Error("Remote runner sent overlapping questions");
                 if (!input.askTeam) throw new Error("Remote question channel is unavailable");
@@ -2297,8 +2298,12 @@ export function createRemoteAgentRunner(options: {
                     ? await (async () => {
                         for (;;) {
                           signal.throwIfAborted();
-                          const current = getQuestion(db, stored.id);
-                          if (!current || current.status === "cancelled")
+                          const current = questionRowById(db, stored.id);
+                          if (
+                            !current ||
+                            current.status === "cancelled" ||
+                            current.cancelledAt !== null
+                          )
                             throw new Error("Remote runner question was cancelled");
                           if (current.status === "answered" && current.answer !== null)
                             return { answer: current.answer };
