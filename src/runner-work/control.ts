@@ -76,6 +76,8 @@ import {
   RUNNER_LEASE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
   OPENCODE_RUNNER_VERSION,
+  CONTROL_PLANE_LEVEL_RUNNER_VERSION,
+  CONTROL_PLANE_PROTOCOL_LEVEL,
   WORK_ROOT_CLEANUP_RUNNER_VERSION,
   RunnerCommandSchema,
   runnerReleaseAtLeast,
@@ -629,6 +631,7 @@ export function createRunnerWork(options: {
       return immediate(db, () => {
         runner(runnerId);
         const storedVersion = runnerHostVersion(db, runnerId);
+        const version = host.runnerVersion ?? storedVersion;
         const aliveAt = lastInstanceHeartbeat(db);
         const offlineCredit =
           aliveAt !== null &&
@@ -731,6 +734,10 @@ export function createRunnerWork(options: {
           ...(concurrency === undefined ? {} : { concurrency }),
           ...(skills === undefined ? {} : { skills }),
           ...(targets === undefined ? {} : { agents: targets }),
+          // Older runners parse this reply strictly, so only a known older release goes without.
+          ...(!version || runnerReleaseAtLeast(version, CONTROL_PLANE_LEVEL_RUNNER_VERSION)
+            ? { protocolLevel: CONTROL_PLANE_PROTOCOL_LEVEL }
+            : {}),
         };
       });
     },

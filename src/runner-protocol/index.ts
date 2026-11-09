@@ -187,7 +187,14 @@ export {
   INTERRUPT_RECOVERY_RUNNER_VERSION,
   CONVERSATION_RUNNER_VERSION,
   TOOLCHAIN_PREFLIGHT_RUNNER_VERSION,
+  CONTROL_PLANE_LEVEL_RUNNER_VERSION,
 } from "./versions";
+export {
+  CONTROL_PLANE_PROTOCOL_LEVEL,
+  resultForControlPlane,
+  takeRejectedFields,
+  withRejectedFields,
+} from "./control-plane-level";
 export {
   POLICY_KEY_RUNNER_VERSIONS,
   policyKeysAbove,

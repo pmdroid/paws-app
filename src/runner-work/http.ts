@@ -9,6 +9,7 @@ import {
   RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
+  withRejectedFields,
   withoutJournalTime,
 } from "../runner-protocol";
 import { RunnerEventSchema, type RunnerWork } from "./control";
@@ -129,7 +130,8 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
       const status = runnerFailureStatus(error);
       if (status === 409) return json({ error: "Runner work is fenced.", code: "fenced" }, 409);
       if (status === 503) return json({ error: "Paws is busy. Retry the request." }, 503);
-      return json({ error: "Runner work request is denied or invalid." }, 403);
+      const denied = json({ error: "Runner work request is denied or invalid." }, 403);
+      return withRejectedFields(denied, error);
     }
   };
 }

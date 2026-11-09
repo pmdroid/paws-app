@@ -1,4 +1,4 @@
-import { journalCaught } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { createHash, type KeyObject } from "node:crypto";
 import { join } from "node:path";
 import { chmodSync, writeSync } from "node:fs";
@@ -56,6 +56,7 @@ import {
   RunnerInstalledRuntimesSchema,
   RunnerInstalledSkillsSchema,
   RunnerSkillSchema,
+  resultForControlPlane,
 } from "../runner-protocol";
 import {
   RunnerTranscriptChunkSchema,
@@ -173,6 +174,15 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   let state = readState(options.root);
   let closed = false;
   let observedAt = 0;
+  /** The result Paws accepts now. The level is read per result: a redeploy or restart moves it. */
+  async function acceptedResult<Result extends object>(result: Result): Promise<Result> {
+    const { protocolLevel } = await api.heartbeat();
+    const accepted = resultForControlPlane(result, protocolLevel);
+    const dropped = Object.keys(result).filter((field) => !(field in accepted));
+    if (dropped.length)
+      journal(`runner.result.fields_dropped level=${protocolLevel} fields=${dropped.join(",")}`);
+    return accepted;
+  }
   if (
     state &&
     (state.controlPlaneUrl !== origins.controlPlaneUrl ||
@@ -484,7 +494,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   }
   const retroPath = (id: string, action: string) =>
     `/v1/retro-commands/${encodeURIComponent(id)}/${action}`;
-  return {
+  const api = {
     status,
     capacity: () => applied,
     ceiling: () => ceiling,
@@ -846,6 +856,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       identifier.parse(runId);
       const body = RunnerResultDeliverySchema.parse({ generation, result });
       RunnerGrantTokenSchema.parse(grantToken);
+      body.result = await acceptedResult(body.result);
       return RunnerEventReceiptSchema.parse(
         await authenticated(
           `/v1/runs/${encodeURIComponent(runId)}/result`,
@@ -1040,8 +1051,9 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       return result;
     },
     async postHelperResult(result: RunnerHelperResult) {
-      const body = RunnerHelperResultSchema.parse(result);
-      helperCommand(body.commandId, true);
+      const valid = RunnerHelperResultSchema.parse(result);
+      helperCommand(valid.commandId, true);
+      const body = await acceptedResult(valid);
       return RunnerEventReceiptSchema.parse(
         await authenticated(
           `/v1/helper-commands/${encodeURIComponent(body.commandId)}/result`,
@@ -1073,6 +1085,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       db.close();
     },
   };
+  return api;
 }
 
 export type RunnerDaemon = ReturnType<typeof openRunnerDaemon>;

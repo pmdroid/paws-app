@@ -16,7 +16,11 @@ import {
 } from "../runner-identity";
 import { createRunnerResults } from "../runner-results";
 import { createRunnerHelpers } from "../runner-helpers";
-import { signRunnerRetroCommand, type RunnerRetroCommand } from "../runner-protocol";
+import {
+  signRunnerRetroCommand,
+  takeRejectedFields,
+  type RunnerRetroCommand,
+} from "../runner-protocol";
 import { createRunnerLogin } from "../runner-login";
 import { createRunnerHealth } from "../runner-health";
 import type { WorkspacePrincipal } from "../workspace";
@@ -210,6 +214,7 @@ export async function openRunnerCoordinator(options: {
     hostname: options.hostname,
     port: options.port,
     now: options.now,
+    takeLogDetail: takeRejectedFields,
     authorize(peer) {
       try {
         control.authenticate(peer);
