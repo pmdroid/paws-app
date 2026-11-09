@@ -51,7 +51,7 @@ export async function startMemberVm(
   input: MemberRef & { now?: number; pool?: string | null },
 ): Promise<MemberVm> {
   const now = input.now ?? Date.now();
-  const { vm, enqueued } = await store.transaction(function* (q) {
+  const { vm, enqueued: jobAdded } = await store.transaction(function* (q) {
     const existing = yield* currentSteps(q, input, now);
     if (existing?.deleteStep != null) return { vm: existing, enqueued: false };
     if (existing) {
@@ -83,7 +83,7 @@ export async function startMemberVm(
     const enqueued = yield* ensureJobSteps(q, id, now);
     return { vm: (yield* memberVmByIdSteps(q, id))!, enqueued };
   });
-  if (enqueued) emitJobReady(store);
+  if (jobAdded) emitJobReady(store);
   return vm;
 }
 
@@ -92,7 +92,7 @@ export async function retryMemberVm(
   input: MemberRef & { now?: number },
 ): Promise<MemberVm> {
   const now = input.now ?? Date.now();
-  const { vm, enqueued } = await store.transaction(function* (q) {
+  const { vm, enqueued: jobAdded } = await store.transaction(function* (q) {
     const existing = yield* currentSteps(q, input, now);
     if (!existing) throw new Error("This member has no VM to retry.");
     if (existing.deleteStep !== null) throw new Error("This VM is being deleted.");
@@ -102,7 +102,7 @@ export async function retryMemberVm(
     const enqueued = yield* ensureJobSteps(q, existing.id, now);
     return { vm: (yield* memberVmByIdSteps(q, existing.id))!, enqueued };
   });
-  if (enqueued) emitJobReady(store);
+  if (jobAdded) emitJobReady(store);
   return vm;
 }
 
@@ -142,7 +142,7 @@ export async function startMemberVmDelete(
 ): Promise<MemberVm> {
   const now = input.now ?? Date.now();
   const force = input.force === true ? 1 : 0;
-  const { vm, enqueued } = await store.transaction(function* (q) {
+  const { vm, enqueued: jobAdded } = await store.transaction(function* (q) {
     const row = yield* memberVmByIdSteps(q, input.id);
     if (row === null || row.workspaceId !== input.workspaceId) throw new MemberVmMissing();
     if (!(yield* mayDeleteMemberVmSteps(q, row, input))) throw new MemberVmDeleteDenied();
@@ -160,7 +160,7 @@ export async function startMemberVmDelete(
     const enqueued = yield* ensureDeleteJobSteps(q, row.id, now);
     return { vm: (yield* memberVmByIdSteps(q, row.id))!, enqueued };
   });
-  if (enqueued) emitJobReady(store);
+  if (jobAdded) emitJobReady(store);
   return vm;
 }
 
