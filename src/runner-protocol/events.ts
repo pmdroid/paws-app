@@ -120,7 +120,7 @@ export const RunnerEventSchema = z.discriminatedUnion("type", [
   /**
    * A WIP commit of the running worktree, published to the item's branch: before a stop Paws
    * asked for (`stop`), or on the runner's own interval (`interval`). A stop with no `sha` found
-   * nothing new to save. `dropped` is set by the runner when it could not publish the commit.
+   * nothing new to save. `dropped` is set by the runner when it could not save or publish the commit.
    */
   z.strictObject({
     type: z.literal("checkpoint"),

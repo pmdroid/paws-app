@@ -42,6 +42,7 @@ import {
   runnerSlotsHeldBetweenCommands,
   saveCheckpoint,
   runnerLeaseCutoff,
+  runnerEventsAfter,
   clearRunnerSessionMove,
   noteRunnerSessionMove,
   recordItemCandidate,
@@ -85,6 +86,7 @@ import {
   CLOSEOUT_FOCUS_RUNNER_VERSION,
   PULL_REQUEST_DRAFT_RUNNER_VERSION,
   QUESTION_ENDS_TURN_RUNNER_VERSION,
+  INTERRUPT_RECOVERY_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
   SUGGESTED_FINDINGS_RUNNER_VERSION,
   REVIEW_FINDINGS_RUNNER_VERSION,
@@ -892,6 +894,7 @@ export function createRemoteAgentRunner(options: {
         excluded: readonly string[],
         limit: UsageLimit | undefined,
         move: HandoverMove,
+        interruption: { retried: boolean },
       ): Promise<RunAgentResult> => {
         const clock = startPhaseClock({ ids: { item: itemId, run: input.runId }, now });
         input.signal?.throwIfAborted();
@@ -2588,6 +2591,56 @@ export function createRemoteAgentRunner(options: {
               true,
             );
           }
+          // A bundle on the worker is insufficient: its push can be refused. Require the
+          // final stop checkpoint delivered for this generation before consuming the retry.
+          const stopCheckpoint = complete.interrupted
+            ? runnerEventsAfter(db, {
+                runId: assigned.runId,
+                generation: assigned.generation,
+                after: 0,
+                types: ["checkpoint"],
+              })
+                .map((row) => work.openEvent(row))
+                .filter((event) => event.type === "checkpoint" && event.reason === "stop")
+                .at(-1)
+            : undefined;
+          // From this release a stop with no sha means the worktree equals the base, so restarting
+          // from the base loses nothing; a failed or unprovable save sets `dropped`. Before it, a
+          // failed save looked the same.
+          const interruptionSaved =
+            versionAtLeast(hostVersion(selected.id), INTERRUPT_RECOVERY_RUNNER_VERSION) &&
+            stopCheckpoint?.type === "checkpoint" &&
+            stopCheckpoint.dropped === undefined &&
+            (!stopCheckpoint.sha ||
+              getWorkItem(db, itemId)?.checkpoint?.wipCommit === stopCheckpoint.sha);
+          if (
+            assigned.type === "run" &&
+            complete.interrupted &&
+            interruptionSaved &&
+            complete.stopReason === "cancelled" &&
+            complete.agentExited &&
+            !complete.handedOver &&
+            !complete.handoverFailure &&
+            !complete.timedOut &&
+            !interruption.retried &&
+            !signal.aborted &&
+            getWorkItem(db, itemId)?.state === "running"
+          ) {
+            interruption.retried = true;
+            journal(
+              `item ${itemId} run ${assigned.runId} interrupt source=unsolicited_agent; restarting once from stop checkpoint`,
+            );
+            work.finish(assigned.runId, assigned.generation);
+            command = undefined;
+            throw new RetryableRunnerError(
+              selected.id,
+              "The agent was interrupted unexpectedly; continue from the saved work.",
+              transcript,
+              publishedEffects,
+              undefined,
+              true,
+            );
+          }
           if (complete.handedOver && assigned.type === "run")
             noteRunnerSessionMove(db, {
               runId: assigned.runId,
@@ -2734,8 +2787,9 @@ export function createRemoteAgentRunner(options: {
         if (runId) readers.add(runId);
         try {
           const move: HandoverMove = {};
+          const interruption = { retried: false };
           const moving: FailoverAttempt = (next, excluded, limit) =>
-            attempt(next, excluded, limit, move);
+            attempt(next, excluded, limit, move, interruption);
           const callId = failoverCallId(input);
           const ledger: FailoverLedger | undefined = runId
             ? {
