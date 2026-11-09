@@ -111,3 +111,41 @@ export function sessionRepositoriesAllowed(
     sqliteDb(db).run((q) => sessionRepositoriesAllowedSteps(q, sessionIds, repositories)),
   );
 }
+
+/** Whether the session belongs to the workspace and its team may use the repository. */
+export function* workspaceSessionRepositoryAllowedSteps(
+  q: Q,
+  workspaceId: string,
+  sessionId: string,
+  repository: string,
+) {
+  const { linearSession: s, workspace: w } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ one: sql`1` })
+      .from(w)
+      .innerJoin(s, eq(s.organizationId, w.linearOrganizationId))
+      .where(
+        and(
+          eq(w.id, workspaceId),
+          eq(s.sessionId, sessionId),
+          sessionRepositoryAllowed(sql`lower(${repository})`),
+        ),
+      )
+      .limit(1),
+  );
+  return row !== undefined;
+}
+
+export function workspaceSessionRepositoryAllowed(
+  db: Database,
+  workspaceId: string,
+  sessionId: string,
+  repository: string,
+): boolean {
+  return settled(
+    sqliteDb(db).run((q) =>
+      workspaceSessionRepositoryAllowedSteps(q, workspaceId, sessionId, repository),
+    ),
+  );
+}

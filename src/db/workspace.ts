@@ -457,6 +457,32 @@ export function listWorkspaceAudit(db: Database, workspaceId: string, before: nu
   return settled(sqliteDb(db).run((q) => listWorkspaceAuditSteps(q, workspaceId, before)));
 }
 
+export function* workspaceInLinearOrganizationSteps(
+  q: Q,
+  workspaceId: string,
+  organizationId: string | null,
+) {
+  if (organizationId === null) return false;
+  const { workspace: w } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: w.id })
+      .from(w)
+      .where(and(eq(w.id, workspaceId), eq(w.linearOrganizationId, organizationId))),
+  );
+  return row !== undefined;
+}
+
+export function workspaceInLinearOrganization(
+  db: Database,
+  workspaceId: string,
+  organizationId: string | null,
+): boolean {
+  return settled(
+    sqliteDb(db).run((q) => workspaceInLinearOrganizationSteps(q, workspaceId, organizationId)),
+  );
+}
+
 /** Linear membership and the administrator's access decision are independent. */
 export function workspaceMemberUsable<
   T extends { active: boolean | number; revokedAt: number | null },
