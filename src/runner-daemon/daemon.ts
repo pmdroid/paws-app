@@ -327,12 +327,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     unchangedIdentity(identity);
     q.update(pendingCommand).set({ acknowledged: 2 }).where(eq(pendingCommand.id, id)).run();
   }
-  function helperCommand(id: string) {
+  function helperCommand(id: string, renewing = false) {
     paired();
     identifier.parse(id);
     const row = storedCommand(id);
     const command = row ? RunnerCommandSchema.parse(JSON.parse(row.payload)) : null;
-    if (command?.type !== "helper" || command.expiresAt <= now())
+    if (command?.type !== "helper" || (!renewing && command.expiresAt <= now()))
       throw new Error("Runner helper command is unavailable or expired.");
     return command;
   }
@@ -1029,19 +1029,19 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         .parse(await retroTerminal(command.id, "released", { reason: "teardown" }));
     },
     async helperLease(id: string) {
-      const command = helperCommand(id);
+      helperCommand(id, true);
       const result = z
         .strictObject({ expiresAt: z.number().int().nonnegative() })
         .parse(
           await authenticated(`/v1/helper-commands/${encodeURIComponent(id)}/lease`, "POST", {}),
         );
-      if (result.expiresAt !== command.expiresAt || result.expiresAt <= now())
+      if (result.expiresAt <= now())
         throw new Error("Runner helper lease differs from the admitted command.");
       return result;
     },
     async postHelperResult(result: RunnerHelperResult) {
       const body = RunnerHelperResultSchema.parse(result);
-      helperCommand(body.commandId);
+      helperCommand(body.commandId, true);
       return RunnerEventReceiptSchema.parse(
         await authenticated(
           `/v1/helper-commands/${encodeURIComponent(body.commandId)}/result`,

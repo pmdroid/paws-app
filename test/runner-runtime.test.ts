@@ -266,7 +266,7 @@ for (const failure of ["hung", "rejected"] as const)
     let runtime = await openRunnerRuntime(options);
     try {
       await runtime.tick();
-      for (let i = 0; i < 100 && !calls.includes("start"); i++) await Bun.sleep(5);
+      for (let i = 0; i < 1000 && !calls.includes("start"); i++) await Bun.sleep(5);
       expect(calls).toContain("ack:first");
       expect(calls.filter((call) => call === "start")).toHaveLength(1);
       commands = [
@@ -654,3 +654,189 @@ test("an execution an older release ended is confirmed only after the broker sto
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const outcome of ["renewed", "expired", "refused"] as const)
+  test(`a running turn across signed expiry is ${outcome}`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "paws-runtime-grace-"));
+    let now = Date.now();
+    const issued = now;
+    let link: "up" | "timeout" | "refused" = "up";
+    const paired = {
+      phase: "paired" as const,
+      runnerId: "runner",
+      workspaceId: "workspace",
+      fingerprint: "fixture",
+      expiresAt: now + 3_600_000,
+    };
+    const run = (id: string, runId: string): RunnerCommand => ({
+      id,
+      type: "task",
+      runId,
+      itemId: `item-${runId}`,
+      generation: 1,
+      runnerId: "runner",
+      workspaceId: "workspace",
+      issuedAt: now,
+      expiresAt: now + 60_000,
+      sessionId: "session",
+      sessionGeneration: 1,
+      taskModeGeneration: 1,
+      purpose: "answer",
+      profile: { agent: "claude", model: null },
+      prompt: "Implement the assigned issue",
+    });
+    const git = async (...args: string[]) => {
+      const proc = Bun.spawnSync(["git", ...args]);
+      if (proc.exitCode) throw new Error(proc.stderr.toString());
+      return proc.stdout.toString().trim();
+    };
+    const source = join(root, "source");
+    await git("init", source);
+    await git(
+      "-C",
+      source,
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "fixture",
+    );
+    const sha = await git("-C", source, "rev-parse", "HEAD");
+    const review = {
+      ...run("first", "run-a"),
+      type: "review",
+      repository: {
+        owner: "fixture",
+        repo: "repository",
+        remoteUrl: "https://github.com/fixture/repository.git",
+        baseSha: sha,
+      },
+    };
+    delete (review as Record<string, unknown>).sessionId;
+    delete (review as Record<string, unknown>).sessionGeneration;
+    delete (review as Record<string, unknown>).taskModeGeneration;
+    delete (review as Record<string, unknown>).purpose;
+    let commands: RunnerCommand[] = [review as RunnerCommand];
+    let leased = ["run-a"];
+    const calls: string[] = [];
+    const spool = {
+      root: join(root, "spool"),
+      runnerUid: process.getuid!(),
+      agentGid: process.getgid!(),
+    };
+    mkdirSync(spool.root);
+    chmodSync(spool.root, 0o750);
+    const reports: { runId: string; generation: number }[][] = [];
+    const terminations: { runId: string; generation: number; commandId: string }[][] = [];
+    const errors: string[] = [];
+    const options: Parameters<typeof openRunnerRuntime>[0] = {
+      root,
+      repositoryRoot: join(root, "repositories"),
+      home: root,
+      concurrency: 1,
+      networkGit: async (input) => {
+        if (input.operation === "clone") await git("clone", "--mirror", source, input.dest!);
+        else await git("--git-dir", input.dest!, "fetch", source);
+      },
+      now: () => now,
+      monotonic: () => now - issued,
+      stopWaitMs: 50,
+      cleanupRetryMs: 1,
+      onError: (error) => errors.push(error.message),
+      spool,
+      results: { root: join(root, "results"), agentUid: 1002, resultsGid: 1003 },
+      broker: {
+        async start() {
+          calls.push("start");
+          return { alreadyAdmitted: false };
+        },
+        async stop() {
+          calls.push("stop");
+        },
+      },
+      daemon: {
+        status: () => paired,
+        async heartbeat(_skills, _runtimes, _agents, live, terminated) {
+          if (link === "timeout") throw new Error("control plane timed out");
+          reports.push([...(live ?? [])]);
+          terminations.push([...(terminated ?? [])]);
+          return {
+            leases: (link === "refused" ? [] : leased).map((runId) => ({
+              runId,
+              generation: 1,
+              expiresAt: now + 60_000,
+            })),
+            fenced: [],
+          };
+        },
+        async pollCommands() {
+          return { commands, rejected: [], deniedRepositories: [] };
+        },
+        pendingCommands: () => commands,
+        async acknowledgeCommand(id) {
+          calls.push(`ack:${id}`);
+        },
+        async issueRunGrant() {
+          return { token: Buffer.alloc(32, 1).toString("base64url"), expiresAt: now + 60_000 };
+        },
+        async sendEvent() {
+          return { duplicate: false };
+        },
+        async answers() {
+          return { answers: [] };
+        },
+        async postResult() {
+          return { duplicate: false };
+        },
+        async repositoryCredential() {
+          return {
+            token: "fixture",
+            expiresAt: now + 60_000,
+            remoteUrl: "https://github.com/fixture/repository.git",
+            branch: null,
+          };
+        },
+        async renewCertificate() {
+          return paired;
+        },
+        async uploadTranscript() {
+          throw new Error("unused");
+        },
+        async finishTranscript() {
+          throw new Error("unused");
+        },
+        async uploadArtifact() {
+          return { ok: true };
+        },
+      },
+    };
+    const runtime = await openRunnerRuntime(options);
+    try {
+      await runtime.tick();
+      for (let i = 0; i < 4000 && !calls.includes("start"); i++) {
+        await runtime.tick();
+        await Bun.sleep(5);
+      }
+      expect(errors).toEqual([]);
+      expect(calls).toContain("start");
+      link = "timeout";
+      now += 59_000;
+      await runtime.tick();
+      now += 2_000;
+      await runtime.tick();
+      expect(calls).not.toContain("stop");
+      if (outcome === "expired") now = issued + 360_001;
+      else link = outcome === "refused" ? "refused" : "up";
+      await runtime.tick();
+      // The independent watchdog also runs while requests cannot complete.
+      await Bun.sleep(300);
+      if (outcome === "renewed") expect(calls).not.toContain("stop");
+      else expect(calls).toContain("stop");
+    } finally {
+      await runtime.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);

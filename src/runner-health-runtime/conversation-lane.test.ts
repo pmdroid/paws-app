@@ -34,7 +34,9 @@ test.skipIf(process.getuid!() === 0)(
     const root = mkdtempSync(join(tmpdir(), "paws-conversation-lane-"));
     mkdirSync(join(root, "spool"), { mode: 0o750 });
     chmodSync(join(root, "spool"), 0o750);
-    const now = Date.now();
+    let now = Date.now();
+    let timeout = false;
+    let renewed = false;
     const classify = helper(now, "classify", "session-0");
     const talks = ["session-1", "session-2", "session-3"].map((id) =>
       helper(now, "conversation", id),
@@ -62,8 +64,13 @@ test.skipIf(process.getuid!() === 0)(
           return { commands: pending, rejected: [], deniedRepositories: [] };
         },
         async helperLease(id) {
+          if (timeout) throw new Error("Control plane request timed out");
           if (fenced.has(id)) throw new RunnerRequestError(409);
-          return { expiresAt: pending.find((command) => command.id === id)!.expiresAt };
+          return {
+            expiresAt: renewed
+              ? now + 60_000
+              : pending.find((command) => command.id === id)!.expiresAt,
+          };
         },
         async acknowledgeCommand() {},
         async postHelperResult() {
@@ -103,11 +110,24 @@ test.skipIf(process.getuid!() === 0)(
       expect(running()).toEqual({ slot: classify.id, lane: [talks[0]!.id, talks[1]!.id] });
       expect(started).toHaveLength(3);
 
+      timeout = true;
+      await runtime.tick();
+      now = talks[0]!.expiresAt + 1;
+      await runtime.tick();
+      expect(runtime.status().conversations.map((entry) => entry.commandId)).toContain(
+        talks[0]!.id,
+      );
+      timeout = false;
+      renewed = true;
+      await runtime.tick();
+      expect(runtime.status().conversations.map((entry) => entry.commandId)).toContain(
+        talks[0]!.id,
+      );
       fenced.add(talks[0]!.id);
       await runtime.tick();
       await runtime.tick();
-      expect(running()).toEqual({ slot: classify.id, lane: [talks[1]!.id, talks[2]!.id] });
-      expect(started).toHaveLength(4);
+      expect(running().lane).toEqual([talks[1]!.id]);
+      expect(started).toHaveLength(3);
     } finally {
       await runtime.stop();
       rmSync(root, { recursive: true, force: true });
