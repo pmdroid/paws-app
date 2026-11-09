@@ -1,3 +1,11 @@
+import { getItemPullRequestSteps, recordItemCandidateSteps } from "../db";
+import { parkLeasedJobSteps } from "../db";
+import {
+  saveCheckpointSteps,
+  recordReviewRoundsSteps,
+  jobVersionCurrentSteps,
+  refreshVerificationJobVersionSteps,
+} from "../db";
 import { failWorkItemSteps, runnerWorkHasResultSteps, releaseRunCapacitySteps } from "../db";
 import {
   applyWorkItemEventSteps,
@@ -33,7 +41,6 @@ import {
   saveHumanRetryWindow,
   fixRounds,
   jobVersionCurrent,
-  recordReviewRounds,
   restartLimit,
   runnerHoldsRunWork,
   runnerWorkHasResult,
@@ -1917,7 +1924,7 @@ export class Orchestrator {
         !item ||
         !this.reverifyEligible(item) ||
         !context.isCurrent() ||
-        !this.reverifyJobCurrent(job, item) ||
+        !(await this.reverifyJobCurrent(job, item)) ||
         (await this.waitingForConversation(job, context))
       )
         return;
@@ -3739,13 +3746,15 @@ export class Orchestrator {
     candidate: CandidateIdentity,
     fromTurn: readonly TurnPass[],
   ): Promise<void> {
-    const current = getWorkItem(this.db, item.id);
+    const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
     if (current === null || current.state !== "running") return;
     if (await this.visualReviewOutdated(current, worktree, base, head)) return;
-    applyWorkItemEvent(this.db, item.id, "turn_ended");
-    const verifying = getWorkItem(this.db, item.id);
+    await this.store.transaction((q) => applyWorkItemEventSteps(q, item.id, "turn_ended"));
+    const verifying = await this.store.run((q) => getWorkItemSteps(q, item.id));
     if (verifying === null) return;
-    saveCheckpoint(this.db, item.id, { phase: "verifying", baseSha: base, wipCommit: head });
+    await this.store.run((q) =>
+      saveCheckpointSteps(q, item.id, { phase: "verifying", baseSha: base, wipCommit: head }),
+    );
     await this.evaluateHead(verifying, worktree, base, head, candidate, { fromTurn });
   }
 
@@ -3831,7 +3840,7 @@ export class Orchestrator {
     const fromCi = ci?.kind === "check" ? ci.fromCi : [];
     let decide = options.decide ?? false;
     for (let pass = 0; ; pass++) {
-      const before = getWorkItem(this.db, item.id) ?? item;
+      const before = (await this.store.run((q) => getWorkItemSteps(q, item.id))) ?? item;
       const result = await this.verifyCandidate(
         item,
         worktree,
@@ -3845,11 +3854,13 @@ export class Orchestrator {
       );
       // A finished verdict may decide an aborted but still-owned run (PAS-771).
       assertOwned();
-      const owner = this.options.remoteExecution ? getWorkItem(this.db, item.id)! : before;
+      const owner = this.options.remoteExecution
+        ? (await this.store.run((q) => getWorkItemSteps(q, item.id)))!
+        : before;
       const verdict = { ...result, owner: { version: owner.version, runId: owner.currentRunId } };
       await this.recordReviewRounds(item, verdict.owner.runId);
-      if (this.closeoutStopped(item.id) !== null) return;
-      const after = getWorkItem(this.db, item.id);
+      if ((await this.closeoutStopped(item.id)) !== null) return;
+      const after = await this.store.run((q) => getWorkItemSteps(q, item.id));
       if (after === null) return;
       if (verdict.decision === "accepted" && !verdict.exhausted) {
         const acceptedHead = (
@@ -4383,12 +4394,14 @@ export class Orchestrator {
               : ["-C", worktree, "update-ref", ref, head, at],
           );
           if (ref !== "HEAD")
-            recordItemCandidate(this.db, {
-              itemId: item.id,
-              sha: head,
-              branch: item.branchName,
-              recordedAt: this.now(),
-            });
+            await this.store.run((q) =>
+              recordItemCandidateSteps(q, {
+                itemId: item.id,
+                sha: head,
+                branch: item.branchName,
+                recordedAt: this.now(),
+              }),
+            );
           reason = "the checks run changed the commit";
         } else if (result.cancelled) reason = "the run was cancelled";
         else if (result.stopReason !== "end_turn" || result.errorMessage)
@@ -4568,7 +4581,7 @@ export class Orchestrator {
 
   /** Ask a person about a preparation that kept failing before the agent started. */
   private async askPreparationHelp(item: WorkItemRecord, summary: string): Promise<void> {
-    const current = getWorkItem(this.db, item.id);
+    const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
     if (!current) return;
     this.post(current, "thought", summary, `${current.currentRunId ?? current.id}:preparation`);
     await this.askCloseoutHelp(current, undefined, summary);
@@ -4585,8 +4598,12 @@ export class Orchestrator {
   ): Promise<CiRecheck | null> {
     // Closeout accepted an earlier head and its pull request is open: the item is in the merge
     // queue, back from a CI or conflict fix, or re-verified there. A first run has no accepted head.
-    const pull = getItemPullRequest(this.db, item.id);
-    if (pull === null || getWorkItem(this.db, item.id)?.acceptedHead == null) return null;
+    const pull = await this.store.run((q) => getItemPullRequestSteps(q, item.id));
+    if (
+      pull === null ||
+      (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.acceptedHead == null
+    )
+      return null;
     const repository = this.repositoryForItem(item);
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github) return null;
@@ -4754,7 +4771,7 @@ export class Orchestrator {
     result: GateResult | undefined,
     summary: string,
   ): Promise<void> {
-    if (this.closeoutStopped(item.id) !== null) return;
+    if ((await this.closeoutStopped(item.id)) !== null) return;
     this.assertJobCurrent(item.id);
     const current = getWorkItem(this.db, item.id);
     if (!current) return;
@@ -4876,7 +4893,8 @@ export class Orchestrator {
     await this.pullCloseoutEvidence(item);
     try {
       const { rounds } = await readReviewRounds(itemPathId(item), [], this.options.pawsRoot);
-      if (rounds.length > 0) recordReviewRounds(this.db, runId, rounds.length);
+      if (rounds.length > 0)
+        await this.store.run((q) => recordReviewRoundsSteps(q, runId, rounds.length));
     } catch (caught) {
       journalCaught(
         caught,
@@ -4948,10 +4966,10 @@ export class Orchestrator {
     const backendBusy =
       item.currentRunId !== null &&
       (await this.options.remoteExecution?.runInProgress?.(item.currentRunId));
-    const current = getWorkItem(this.db, item.id);
+    const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
     if (
       !context.isCurrent() ||
-      !jobVersionCurrent(this.db, job) ||
+      !(await this.store.run((q) => jobVersionCurrentSteps(q, job))) ||
       !current ||
       current.version !== item.version ||
       !this.reverifyEligible(current)
@@ -4985,10 +5003,10 @@ export class Orchestrator {
           `Closeout: blocked\nVerification has waited ${VERIFICATION_OWNER_WAIT_MS / 60_000} minutes for the runner. Check the runner and retry once it is ready.`,
         );
       } catch (error) {
-        const after = getWorkItem(this.db, item.id);
+        const after = await this.store.run((q) => getWorkItemSteps(q, item.id));
         if (
           !context.isCurrent() ||
-          !jobVersionCurrent(this.db, job) ||
+          !(await this.store.run((q) => jobVersionCurrentSteps(q, job))) ||
           !after ||
           !this.reverifyEligible(after)
         )
@@ -5005,29 +5023,31 @@ export class Orchestrator {
     }
     if (payload.verificationWaitSince === undefined)
       this.options.journal?.(`reverify job ${job.id} waiting for ownership of item ${item.id}`);
-    parkLeasedJob(this.db, job, {
-      runAt: this.now() + VERIFICATION_OWNER_POLL_MS,
-      payload: {
-        ...payload,
-        verificationWaitSince: since,
-        verificationWaitRunId: current.currentRunId,
-      },
-      attempts: job.attempts - 1,
-      now: this.now(),
-    });
+    await this.store.run((q) =>
+      parkLeasedJobSteps(q, job, {
+        runAt: this.now() + VERIFICATION_OWNER_POLL_MS,
+        payload: {
+          ...payload,
+          verificationWaitSince: since,
+          verificationWaitRunId: current.currentRunId,
+        },
+        attempts: job.attempts - 1,
+        now: this.now(),
+      }),
+    );
   }
 
   private reverifyEligible(item: WorkItemRecord): boolean {
     return !item.cancelRequested && (item.state === "verifying" || item.state === "merge_queue");
   }
 
-  private reverifyJobCurrent(job: Job, item: WorkItemRecord): boolean {
-    if (jobVersionCurrent(this.db, job)) return true;
+  private async reverifyJobCurrent(job: Job, item: WorkItemRecord): Promise<boolean> {
+    if (await this.store.run((q) => jobVersionCurrentSteps(q, job))) return true;
     const runId = readString(job.payload, "verificationWaitRunId");
     return (
       runId !== null &&
       runId === item.currentRunId &&
-      refreshVerificationJobVersion(this.db, job, runId, this.now())
+      (await this.store.run((q) => refreshVerificationJobVersionSteps(q, job, runId, this.now())))
     );
   }
 
@@ -5057,7 +5077,7 @@ export class Orchestrator {
   private async reverify(payload: unknown, jobId: number, onOwned: () => void): Promise<void> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
-    const item = getWorkItem(this.db, itemId);
+    const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
     if (item === null || !this.reverifyEligible(item)) return;
     const repository = this.repositoryForItem(item);
     if (repository === null || repository === undefined) {
@@ -8084,8 +8104,8 @@ export class Orchestrator {
    * leaves the item in `verifying` would otherwise leave nobody to accept, restart or ask
    * (PAS-771). A drop that keeps the item in `verifying` is noted for {@link settleVerifying}.
    */
-  private closeoutStopped(itemId: string): string | null {
-    const current = getWorkItem(this.db, itemId);
+  private async closeoutStopped(itemId: string): Promise<string | null> {
+    const current = await this.store.run((q) => getWorkItemSteps(q, itemId));
     if (current === null || current.state === "cancelled") return "the task was cancelled";
     if (!["running", "verifying", "merge_queue"].includes(current.state))
       return `the task is already ${current.state}`;
