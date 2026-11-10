@@ -130,12 +130,12 @@ async function observeGaps(db: Database, clock: FakeClock, gapMs: number): Promi
   const jobs = orchestrate(db, clock);
   const since = clock.now();
   try {
-    host.tick();
+    await host.tick();
     for (let gap = 0; gap < 3; gap += 1) {
       clock.sleep(gapMs);
-      host.tick();
+      await host.tick();
       clock.advance(250);
-      host.tick();
+      await host.tick();
       await jobs.tick([JOB_KIND.catchup]);
     }
   } finally {
