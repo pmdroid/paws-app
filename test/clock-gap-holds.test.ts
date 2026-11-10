@@ -16,6 +16,7 @@ import {
   recoverOnStartup,
   requeueOrphanedWork,
   saveCheckpoint,
+  sqliteDb,
 } from "../src/db";
 import { HostSupervisor, WakeDetector } from "../src/host";
 import { ask, attachOrchestrator, questionEffects } from "../src/loop";
@@ -45,7 +46,7 @@ function seed(db: Database, now: number): void {
   });
 }
 
-function hold(db: Database, now: number, kind: Hold, merging: boolean): void {
+async function hold(db: Database, now: number, kind: Hold, merging: boolean): Promise<void> {
   seed(db, now);
   const { run } = beginImplementRun(db, "item", now, RUNNING);
   if (kind === "paused") applyWorkItemEvent(db, "item", "pause", { now });
@@ -57,7 +58,7 @@ function hold(db: Database, now: number, kind: Hold, merging: boolean): void {
     if (merging) {
       applyWorkItemEvent(db, "item", "turn_ended", { now });
       applyWorkItemEvent(db, "item", "closeout_accepted", { now });
-      markCloseoutAccepted(db, "item", "wip");
+      await markCloseoutAccepted(sqliteDb(db), "item", "wip");
       ask(db, { itemId: "item", runId: null, sessionId: "session" }, "ci-help", "CI failed.", {
         now,
       });
@@ -68,7 +69,7 @@ function hold(db: Database, now: number, kind: Hold, merging: boolean): void {
     }
   }
   if (merging) {
-    markCloseoutAccepted(db, "item", "wip");
+    await markCloseoutAccepted(sqliteDb(db), "item", "wip");
     saveCheckpoint(db, "item", MERGING);
   }
   expect(getWorkItem(db, "item")?.state).toBe(kind);
@@ -156,7 +157,7 @@ describe("clock gaps preserve human holds", () => {
           const db = tempDb();
           try {
             const clock = new FakeClock(1_000_000);
-            hold(db, clock.now(), kind, merging);
+            await hold(db, clock.now(), kind, merging);
             const before = snapshot(db);
 
             await observeGaps(db, clock, gapMs);
@@ -181,7 +182,7 @@ describe("clock gaps preserve human holds", () => {
       const db = tempDb();
       try {
         const clock = new FakeClock(1_000_000);
-        hold(db, clock.now(), "awaiting_input", merging);
+        await hold(db, clock.now(), "awaiting_input", merging);
         await observeGaps(db, clock, TWO_HOURS + 1);
         expect(executions(db)).toEqual([]);
 
@@ -214,7 +215,7 @@ describe("clock gaps preserve human holds", () => {
     const db = tempDb();
     try {
       const clock = new FakeClock(1_000_000);
-      hold(db, clock.now(), "awaiting_input", true);
+      await hold(db, clock.now(), "awaiting_input", true);
       await observeGaps(db, clock, TWO_HOURS);
       db.run("UPDATE question SET cancelled_at=? WHERE item_id='item'", [clock.now()]);
       const before = snapshot(db);

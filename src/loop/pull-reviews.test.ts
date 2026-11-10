@@ -228,7 +228,7 @@ describe("changes-requested reviews", () => {
 
   test("a review fix on an accepted head is one candidate review escape, even redelivered", async () => {
     const { db, caps, deliver } = setup();
-    markCloseoutAccepted(db, "eng-1", "h");
+    await markCloseoutAccepted(sqliteDb(db), "eng-1", "h");
     deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
     deliver({ id: 501, state: "changes_requested", body: "The ranking is reversed." });
     expect(await handlePullReview(db, 501, caps)).toBe("restarted");

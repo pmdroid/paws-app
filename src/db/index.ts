@@ -190,3 +190,4 @@ export * from "./runner-results";
 export * from "./runner-helpers";
 export * from "./runner-backend-reads";
 export * from "./runner-health-reads";
+export * from "./member-vm-delete";

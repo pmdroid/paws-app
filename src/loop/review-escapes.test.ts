@@ -52,7 +52,7 @@ async function accepted() {
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
   beginImplementRun(db, "eng-1", 1);
   enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: base, wipCommit: head });
-  markCloseoutAccepted(db, "eng-1", head);
+  await markCloseoutAccepted(sqliteDb(db), "eng-1", head);
 
   const ciFailed = (checks: FailedCiCheck[]) =>
     returnToAgent(db, {

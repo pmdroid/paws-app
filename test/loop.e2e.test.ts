@@ -277,7 +277,7 @@ test.each([false, true, "cap"] as const)(
       if (stop === "cap") {
         const item = listWorkItems(db)[0]!;
         configureWorkItem(db, item.id, { limits: { fixes: 1_000 } });
-        expect(accrueAwake(db, item.id, 1_000, Date.now(), 0)).toMatchObject({
+        expect(await accrueAwake(sqliteDb(db), item.id, 1_000, Date.now(), 0)).toMatchObject({
           asked: true,
           stopAgent: true,
         });

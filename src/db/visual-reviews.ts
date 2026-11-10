@@ -3,10 +3,7 @@ import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
 import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 import { jsonText } from "./json-text";
-import {
-  getLinearConversationSource,
-  getLinearConversationSourceSteps,
-} from "./linear-session-url";
+import { getLinearConversationSourceSteps } from "./linear-session-url";
 
 export type VisualReviewRecord = {
   questionId: string;
@@ -100,24 +97,6 @@ export async function linearConversationUrlAsync(
       if (url.origin === "https://linear.app" && !url.username && !url.password) return url.href;
     } catch (caughtError1) {
       journalCaught(caughtError1, "visual-reviews.linearConversationUrlAsync", null);
-    }
-  }
-  return `https://linear.app/issue/${encodeURIComponent(identifier)}`;
-}
-
-export async function linearConversationUrl(
-  db: Database,
-  sessionId: string | null,
-  identifier: string,
-): Promise<string> {
-  const source =
-    sessionId === null ? null : await getLinearConversationSource(sqliteDb(db), sessionId);
-  if (source !== null) {
-    try {
-      const url = new URL(source);
-      if (url.origin === "https://linear.app" && !url.username && !url.password) return url.href;
-    } catch (caughtError1) {
-      journalCaught(caughtError1, "visual-reviews.linearConversationUrl", null);
     }
   }
   return `https://linear.app/issue/${encodeURIComponent(identifier)}`;
