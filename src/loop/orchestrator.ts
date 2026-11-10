@@ -9621,9 +9621,7 @@ export class Orchestrator {
   > {
     const repository = this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
-    // A runner-backed code item has no worktree; origin/main is read in the bare mirror.
-    const mirror =
-      !!this.options.remoteExecution && !isResponseTaskMode(getTaskMode(this.db, item.id));
+    const mirror = !!this.options.remoteExecution;
     const repo = mirror ? this.itemHead(item).repo : input.worktreePath;
     const runtimes = {
       runtimes: () => this.runtimeList(item, repo, mirror ? "mirror" : "checkout"),
