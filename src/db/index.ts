@@ -189,3 +189,4 @@ export * from "./work-item-fields";
 export * from "./runner-results";
 export * from "./runner-helpers";
 export * from "./runner-backend-reads";
+export * from "./runner-eligibility";
