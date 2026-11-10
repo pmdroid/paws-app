@@ -285,6 +285,27 @@ async function partialCandidate(run: Run, candidate: string): Promise<boolean> {
   );
 }
 
+async function promisorRemote(
+  run: Run,
+  destination: string,
+): Promise<{ url: string; filter: string } | undefined> {
+  const config = async (...query: string[]) => {
+    try {
+      return (await run(["config", ...query], destination)).stdout.trim();
+    } catch (error) {
+      if (!(error instanceof GitCommandError)) throw error;
+      return "";
+    }
+  };
+  if ((await config("--bool", "--get", "remote.origin.promisor")) !== "true") return undefined;
+  const [url] = (await config("--get-all", "remote.origin.url")).split("\n");
+  if (!url) return undefined;
+  return {
+    url,
+    filter: (await config("--get", "remote.origin.partialclonefilter")) || "blob:none",
+  };
+}
+
 async function stagePersistent(
   run: Run,
   candidate: string,
@@ -452,7 +473,24 @@ async function publish(
       const refspec = args.at(-1);
       const ref = refspec?.split(":")[1];
       if (!ref) throw new Error("publication fetch needs an explicit destination ref");
-      await run(["fetch", "--prune", repository, `+${ref}:${ref}`], options.cwd);
+      const promisor = await promisorRemote(run, options.cwd);
+      if (!promisor) await run(["fetch", "--prune", repository, `+${ref}:${ref}`], options.cwd);
+      else {
+        await run(["--git-dir", repository, "config", "uploadpack.allowFilter", "true"]);
+        await run(
+          [
+            "-c",
+            `url.${repository}.insteadOf=${promisor.url}`,
+            "fetch",
+            `--filter=${promisor.filter}`,
+            "--upload-pack=git-upload-pack",
+            "--prune",
+            "origin",
+            `+${ref}:${ref}`,
+          ],
+          options.cwd,
+        );
+      }
     }
     if (persistent && command === "push")
       await run([

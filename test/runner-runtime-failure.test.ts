@@ -10,7 +10,14 @@ import {
 } from "../src/runner-protocol";
 
 async function fixture(
-  options: { alive?: boolean; cancel?: boolean; log?: string; phase?: string; exit?: string } = {},
+  options: {
+    alive?: boolean;
+    cancel?: boolean;
+    log?: string;
+    phase?: string;
+    exit?: string;
+    gitError?: string;
+  } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-runtime-failure-"));
   const now = Date.now();
@@ -22,22 +29,25 @@ async function fixture(
   };
   mkdirSync(spool.root);
   chmodSync(spool.root, 0o750);
-  const command: Extract<RunnerCommand, { type: "task" }> = {
+  const shared = {
     id: "command",
-    type: "task",
     runnerId: "runner",
     workspaceId: "workspace",
     runId: "run",
     itemId: "item",
     generation: 1,
+    issuedAt: now,
+    expiresAt: now + 600_000,
+    profile: { agent: "claude" as const, model: null },
+    prompt: "signed prompt",
+  };
+  const command: Extract<RunnerCommand, { type: "task" }> = {
+    ...shared,
+    type: "task",
     sessionId: "session",
     sessionGeneration: 1,
     taskModeGeneration: 1,
     purpose: "answer",
-    issuedAt: now,
-    expiresAt: now + 600_000,
-    profile: { agent: "claude", model: null },
-    prompt: "signed prompt",
   };
   const paired = {
     phase: "paired" as const,
@@ -46,10 +56,19 @@ async function fixture(
     fingerprint: "fixture",
     expiresAt: now + 3_600_000,
   };
-  const commands: RunnerCommand[] = [command];
+  const repository = {
+    owner: "acme",
+    repo: "widgets",
+    remoteUrl: "https://github.com/acme/widgets.git",
+    baseSha: "a".repeat(40),
+  };
+  const commands: RunnerCommand[] = [
+    options.gitError ? { ...shared, type: "run", repository } : command,
+  ];
   const results: RunnerResult[] = [];
   const errors: string[] = [];
   const starts: string[] = [];
+  let gitCalls = 0;
   const runtime = await openRunnerRuntime({
     root,
     spool,
@@ -63,6 +82,14 @@ async function fixture(
     now: () => now,
     monotonic: () => clock,
     onError: (error) => errors.push(error.message),
+    ...(options.gitError
+      ? {
+          async networkGit() {
+            gitCalls++;
+            throw new Error(options.gitError);
+          },
+        }
+      : {}),
     broker: {
       async start(id) {
         if (options.phase) {
@@ -102,7 +129,13 @@ async function fixture(
         return { duplicate: false };
       },
       async repositoryCredential() {
-        throw new Error("Repository-free task");
+        if (!options.gitError) throw new Error("Repository-free task");
+        return {
+          token: "token",
+          expiresAt: now + 60_000,
+          remoteUrl: repository.remoteUrl,
+          branch: null,
+        };
       },
       async renewCertificate() {
         return paired;
@@ -119,12 +152,14 @@ async function fixture(
     },
   });
   await runtime.tick();
-  for (let i = 0; i < 200 && !starts.length; i++) await Bun.sleep(1);
+  const launched = () => starts.length > 0 || gitCalls > 0;
+  for (let i = 0; i < 200 && !launched(); i++) await Bun.sleep(1);
   return {
     runtime,
     results,
     errors,
     commands,
+    gitCalls: () => gitCalls,
     advance: (ms: number) => {
       clock += ms;
     },
@@ -149,6 +184,41 @@ test("a worker that exits without a result reports a failure with its log tail",
     expect(f.results[0]!.errorMessage).toContain("worker exited without a result");
     expect(f.results[0]!.errorMessage).toContain("TypeError: boom");
     expect(f.errors.join("\n")).toContain("worker exited without a result");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("a launch that fails on a git error reports a run failure within one tick", async () => {
+  const gitError = [
+    "From /tmp/paws-publication-x/repo",
+    " - [deleted] (none) -> test/timeout-fix",
+    "fatal: could not fetch 914306a from promisor remote",
+  ].join("\n");
+  const f = await fixture({ gitError });
+  try {
+    await until(() => f.results.length > 0);
+    expect(f.results).toHaveLength(1);
+    expect(f.results[0]!.stopReason).toBe("error");
+    expect(f.results[0]!.errorMessage).toContain("could not fetch 914306a from promisor remote");
+    expect(f.gitCalls()).toBe(1);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test.each([
+  ["a lost connection", "fatal: unable to access: Could not resolve host: github.com"],
+  ["a failed request outside git", "fetch failed"],
+])("a launch that hits %s keeps retrying", async (_name, gitError) => {
+  const f = await fixture({ gitError });
+  try {
+    await until(() => f.gitCalls() > 0);
+    await Bun.sleep(20);
+    await f.runtime.tick();
+    await until(() => f.gitCalls() > 1);
+    expect(f.gitCalls()).toBeGreaterThan(1);
+    expect(f.results).toHaveLength(0);
   } finally {
     await f.cleanup();
   }

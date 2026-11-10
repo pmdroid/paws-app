@@ -22,6 +22,14 @@ const PUSH_OUTAGE =
 const PUSH_REFUSAL_REASON =
   /protected branch|\bGH0\d\d\b|refusing to allow an? (?:GitHub App|OAuth App|Personal Access Token)|\bworkflows?\b.*\bpermission\b|pre-receive hook declined|push declined|Repository not found/i;
 
+const FETCH_REF_LINE = /^From |^\s.* -> /;
+
+export function isPermanentGitFailure(output: string): boolean {
+  const lines = output.split("\n").filter((line) => !FETCH_REF_LINE.test(line));
+  const reportedByGit = lines.some((line) => /^(?:fatal|error): /.test(line));
+  return reportedByGit && !isTransientGitError(lines.join("\n"));
+}
+
 export function isPushOutage(stderr: string): boolean {
   return PUSH_OUTAGE.test(stderr) && !PUSH_REFUSAL_REASON.test(stderr);
 }
