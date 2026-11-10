@@ -74,7 +74,7 @@ async function replicas() {
   const enrollment = { name: "acme-box", csr: (await createRunnerKey(join(root, "box"))).csr };
   const { runnerId } = await control.enroll({
     ...enrollment,
-    token: control.createEnrollment(owner, enrollment).token,
+    token: (await control.createEnrollment(owner, enrollment)).token,
   });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [runnerId]);

@@ -88,7 +88,10 @@ async function setup() {
     teamIds: [],
   };
   const runnerId = (
-    await control.enroll({ ...pending, token: control.createEnrollment(principal, pending).token })
+    await control.enroll({
+      ...pending,
+      token: (await control.createEnrollment(principal, pending)).token,
+    })
   ).runnerId;
   db.run("UPDATE runner SET status='active',owner_user_id=? WHERE id=?", [userId, runnerId]);
   const release = (version: string) =>

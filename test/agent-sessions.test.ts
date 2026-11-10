@@ -93,7 +93,7 @@ async function fixture(root: string) {
     const pending = { name, csr: client.csr };
     const { runnerId } = await control.enroll({
       ...pending,
-      token: control.createEnrollment(principal, pending).token,
+      token: (await control.createEnrollment(principal, pending)).token,
     });
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     return runnerId;

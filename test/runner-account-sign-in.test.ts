@@ -74,7 +74,7 @@ async function fixture(runnerVersion = "0.1.61") {
     return (
       await control.enroll({
         ...pending,
-        token: control.createEnrollment(principal, pending).token,
+        token: (await control.createEnrollment(principal, pending)).token,
       })
     ).runnerId;
   };

@@ -1,12 +1,13 @@
 import {
   workspaceMemberUsable,
-  auditWorkspaceAccess,
-  clearRunnerSessionMove,
-  immediate,
-  noteRunnerSessionMove,
-  requestRunnerSessionMove,
-  runnerSessionMove,
-  workspaceMember,
+  auditWorkspaceAccessSteps,
+  clearRunnerSessionMoveSteps,
+  noteRunnerSessionMoveSteps,
+  requestRunnerSessionMoveSteps,
+  runnerSessionMoveSteps,
+  sqliteDb,
+  workspaceMemberSteps,
+  type Q,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
@@ -49,6 +50,7 @@ export function createRunnerSessionMoves(options: {
   signal?: AbortSignal;
 }) {
   const { db } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   /** Settles once the runner answered; the route does not wait for it. */
   const pending = new Set<Promise<void>>();
@@ -69,18 +71,36 @@ export function createRunnerSessionMoves(options: {
         : outcome.status === "failed"
           ? `The runner stopped the agent but could not ${FAILED_STEP[outcome.reason]}, so it keeps running here.`
           : STAYED[outcome.status];
-    immediate(db, () => {
-      if (runnerSessionMove(db, runId, runnerId)?.status !== "moving") return;
-      if (reason === null) clearRunnerSessionMove(db, runId, runnerId);
-      else noteRunnerSessionMove(db, { runId, runnerId, status: "stayed", reason, now: now() });
+    await store.transaction(function* (q) {
+      if ((yield* runnerSessionMoveSteps(q, runId, runnerId))?.status !== "moving") return;
+      if (reason === null) yield* clearRunnerSessionMoveSteps(q, runId, runnerId);
+      else
+        yield* noteRunnerSessionMoveSteps(q, {
+          runId,
+          runnerId,
+          status: "stayed",
+          reason,
+          now: now(),
+        });
     });
   }
   /** Records the move of `runId` unless it already moves; null when it does. */
-  function request(runId: string, runnerId: string, principal: WorkspacePrincipal, at: number) {
-    const status = runnerSessionMove(db, runId, runnerId)?.status;
+  function* requestSteps(
+    q: Q,
+    runId: string,
+    runnerId: string,
+    principal: WorkspacePrincipal,
+    at: number,
+  ) {
+    const status = (yield* runnerSessionMoveSteps(q, runId, runnerId))?.status;
     if (status === "moving" || status === "waiting") return null;
-    requestRunnerSessionMove(db, { runId, runnerId, userId: principal.userId, now: at });
-    auditWorkspaceAccess(db, {
+    yield* requestRunnerSessionMoveSteps(q, {
+      runId,
+      runnerId,
+      userId: principal.userId,
+      now: at,
+    });
+    yield* auditWorkspaceAccessSteps(q, {
       workspaceId: principal.workspaceId,
       userId: principal.userId,
       action: "runner.session.move",
@@ -99,10 +119,10 @@ export function createRunnerSessionMoves(options: {
     pending.add(settling);
   }
   /** The admin check every move route shares; a refusal is audited. */
-  function admin(principal: WorkspacePrincipal, subject: string, at: number): boolean {
-    const member = workspaceMember(db, principal.workspaceId, principal.userId);
+  function* adminSteps(q: Q, principal: WorkspacePrincipal, subject: string, at: number) {
+    const member = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);
     if (workspaceMemberUsable(member) && isWorkspaceAdmin(member.role)) return true;
-    auditWorkspaceAccess(db, {
+    yield* auditWorkspaceAccessSteps(q, {
       workspaceId: principal.workspaceId,
       userId: principal.userId,
       action: "access.denied",
@@ -126,10 +146,11 @@ export function createRunnerSessionMoves(options: {
       .all(runnerId, workspaceId, at, runId ?? null, runId ?? null);
   }
   /** `POST /api/runners/:runnerId/sessions/move`: Move running work off a draining runner. */
-  function moveAll(runnerId: string, principal: WorkspacePrincipal): Response {
+  async function moveAll(runnerId: string, principal: WorkspacePrincipal): Promise<Response> {
     const at = now();
-    const decision = immediate(db, () => {
-      if (!admin(principal, `runner_drain_move:${runnerId}`, at)) return "denied" as const;
+    const decision = await store.transaction(function* (q) {
+      if (!(yield* adminSteps(q, principal, `runner_drain_move:${runnerId}`, at)))
+        return "denied" as const;
       const runner = db
         .query<{ status: string }, [string, string]>(
           "SELECT status FROM runner WHERE id=? AND workspace_id=?",
@@ -137,9 +158,11 @@ export function createRunnerSessionMoves(options: {
         .get(runnerId, principal.workspaceId);
       if (runner?.status !== "draining") return "not_draining" as const;
       // One move per session, as Move to another runner asks it.
-      return liveSessions(runnerId, principal.workspaceId, at).filter(
-        (session) => request(session.runId, runnerId, principal, at) !== null,
-      );
+      const moving = [];
+      for (const session of liveSessions(runnerId, principal.workspaceId, at))
+        if ((yield* requestSteps(q, session.runId, runnerId, principal, at)) !== null)
+          moving.push(session);
+      return moving;
     });
     if (decision === "denied")
       return json({ error: "Only workspace admins can move running work." }, 403);
@@ -158,11 +181,13 @@ export function createRunnerSessionMoves(options: {
       if (all) return moveAll(all[1]!, principal);
       const [, runnerId, runId] = match as unknown as [string, string, string];
       const at = now();
-      const decision = immediate(db, () => {
-        if (!admin(principal, `runner_session_move:${runId}`, at)) return "denied" as const;
+      const decision = await store.transaction(function* (q) {
+        if (!(yield* adminSteps(q, principal, `runner_session_move:${runId}`, at)))
+          return "denied" as const;
         const [session] = liveSessions(runnerId, principal.workspaceId, at, runId);
         if (!session) return "gone" as const;
-        if (request(runId, runnerId, principal, at) === null) return "moving" as const;
+        if ((yield* requestSteps(q, runId, runnerId, principal, at)) === null)
+          return "moving" as const;
         return session;
       });
       if (decision === "denied")

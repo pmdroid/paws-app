@@ -114,7 +114,9 @@ if (process.argv[2] === "job") {
     runnerApiUrl: `https://localhost:${coordinator.port}`,
     serverCa: tls.cert,
     allowedRepositories: ["local/fixture"],
-    enrollmentToken: coordinator.control.createEnrollment(principal, { name: "CLI fixture" }).token,
+    enrollmentToken: (
+      await coordinator.control.createEnrollment(principal, { name: "CLI fixture" })
+    ).token,
   };
   writeFileSync(join(root, "ready.json"), JSON.stringify(config));
   let stopping = false;

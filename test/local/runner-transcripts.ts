@@ -71,7 +71,7 @@ export async function probeRunnerTranscripts(
   };
   const { runnerId } = await control.enroll({
     ...pending,
-    token: control.createEnrollment(principal, pending).token,
+    token: (await control.createEnrollment(principal, pending)).token,
   });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const keys = generateKeyPairSync("ed25519");
@@ -377,7 +377,7 @@ export async function probeRunnerTranscripts(
     );
     const deniedWrite = assert.rejects(pendingWrite);
     await writing;
-    control.setStatus(principal, runnerId, "revoked");
+    await control.setStatus(principal, runnerId, "revoked");
     release();
     await deniedWrite;
     assert.equal(interrupted.read(run.id, 3)!.sizeBytes, 0);

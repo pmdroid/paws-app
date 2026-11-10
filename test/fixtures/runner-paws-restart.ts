@@ -224,9 +224,17 @@ const control = createRunnerControl({
 const enrollment = { name: "fixture", csr: (await createRunnerKey(join(root, "client"))).csr };
 const { runnerId } = await control.enroll({
   ...enrollment,
-  token: control.createEnrollment(
-    { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: Date.now(), teamIds: [] },
-    enrollment,
+  token: (
+    await control.createEnrollment(
+      {
+        workspaceId: workspace.id,
+        userId,
+        role: "admin",
+        authenticatedAt: Date.now(),
+        teamIds: [],
+      },
+      enrollment,
+    )
   ).token,
 });
 paws.db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);

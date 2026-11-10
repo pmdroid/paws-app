@@ -78,9 +78,11 @@ async function fixture() {
   const enrollment = { name: "fixture", csr: (await createRunnerKey(join(root, "client"))).csr };
   const { runnerId } = await control.enroll({
     ...enrollment,
-    token: control.createEnrollment(
-      { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: now, teamIds: [] },
-      enrollment,
+    token: (
+      await control.createEnrollment(
+        { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: now, teamIds: [] },
+        enrollment,
+      )
     ).token,
   });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);

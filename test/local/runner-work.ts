@@ -87,9 +87,9 @@ export async function probeRunnerWork(
     const pending = { name, csr: client.csr };
     const { runnerId } = await control.enroll({
       ...pending,
-      token: control.createEnrollment(principal, pending).token,
+      token: (await control.createEnrollment(principal, pending)).token,
     });
-    control.setStatus(principal, runnerId, "active");
+    await control.setStatus(principal, runnerId, "active");
     return runnerId;
   }
   const firstRunner = await paired("First VM");
@@ -182,7 +182,7 @@ export async function probeRunnerWork(
       now,
     );
     assert.equal(
-      control.list(principal, []).find((runner) => runner.id === firstRunner)?.hasRunWork,
+      (await control.list(principal, [])).find((runner) => runner.id === firstRunner)?.hasRunWork,
       false,
     );
     const assigned = work.assign({
@@ -200,7 +200,7 @@ export async function probeRunnerWork(
       ],
     });
     assert.equal(
-      control.list(principal, []).find((runner) => runner.id === firstRunner)?.hasRunWork,
+      (await control.list(principal, [])).find((runner) => runner.id === firstRunner)?.hasRunWork,
       true,
     );
     assert.equal(assigned.leaseUntil, now + 60_000);
@@ -512,7 +512,7 @@ export async function probeRunnerWork(
     confirmStopped(secondRunner, secondCommand);
     work.assign(third);
     const thirdGrant = work.issueGrant({ ...current, commandId: third.id, generation: 3 });
-    control.setStatus(principal, secondRunner, "revoked");
+    await control.setStatus(principal, secondRunner, "revoked");
     assert.throws(
       () =>
         work.event({
@@ -737,12 +737,12 @@ export async function probeRunnerWork(
       confirmStopped(firstRunner, waiting);
       work.assign(afterCancel);
       await work.finish(waiting.runId, 2);
-      control.setStatus(principal, firstRunner, "paused");
+      await control.setStatus(principal, firstRunner, "paused");
       assert.throws(
         () => work.assign({ ...afterCancel, id: workspaceId(), generation: 3 }),
         /not accepting/,
       );
-      control.setStatus(principal, firstRunner, "active");
+      await control.setStatus(principal, firstRunner, "active");
       const helper = helpers.dispatch(helperInput);
       const review = { ...afterCancel, type: "review" as const, id: workspaceId(), generation: 3 };
       assert.throws(() => work.assign(review), /occupied/);

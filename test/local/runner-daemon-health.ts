@@ -98,11 +98,13 @@ export async function probeRunnerDaemonHealth(
   };
   let daemon = openRunnerDaemon(daemonOptions);
   try {
-    const enrollment = coordinator.control.createEnrollment(principal, { name: "Health runner" });
+    const enrollment = await coordinator.control.createEnrollment(principal, {
+      name: "Health runner",
+    });
 
     const paired = await daemon.enroll("Health runner", enrollment.token);
     if (paired.phase !== "paired") throw new Error("Runner enrollment failed");
-    coordinator.control.setStatus(principal, paired.runnerId, "active");
+    await coordinator.control.setStatus(principal, paired.runnerId, "active");
     assert.equal(paired.phase, "paired");
     if (paired.phase !== "paired") throw new Error("Missing runner identity");
     const command = coordinator.health.request(principal, paired.runnerId, {
@@ -199,7 +201,7 @@ export async function probeRunnerDaemonHealth(
     daemon = openRunnerDaemon(daemonOptions);
     assert.deepEqual(await daemon.postHealth(result), { duplicate: true });
     assert.deepEqual(coordinator.health.read(paired.runnerId, login.commandId), loginResult);
-    coordinator.control.setStatus(principal, paired.runnerId, "revoked");
+    await coordinator.control.setStatus(principal, paired.runnerId, "revoked");
     await assert.rejects(daemon.postHealth(result));
     assert.equal(errors.length, 0);
     observe(

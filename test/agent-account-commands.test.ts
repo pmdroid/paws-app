@@ -68,7 +68,7 @@ async function fixture() {
   const pending = { name: "goldbox", csr: client.csr };
   const { runnerId } = await control.enroll({
     ...pending,
-    token: control.createEnrollment(principal, pending).token,
+    token: (await control.createEnrollment(principal, pending)).token,
   });
   const work = createRunnerWork({
     db,
