@@ -41,7 +41,7 @@ export async function readOpenPullHead(
 export async function hasOpenPullOnPrefix(input: HeadRead & { prefix: string }): Promise<boolean> {
   input.signal?.throwIfAborted();
   const token = await acquireOperationToken(input, "pr");
-  const repository = `${input.owner}/${input.repo}`;
+  const repository = `${input.owner}/${input.repo}`.toLowerCase();
   for (let page = 1; page <= 10; page++) {
     const listed = await input.client.request({
       method: "GET",
@@ -59,15 +59,15 @@ export async function hasOpenPullOnPrefix(input: HeadRead & { prefix: string }):
       pulls.some(
         ({ state, head }) =>
           state === "open" &&
-          head?.repo?.full_name === repository &&
-          typeof head.ref === "string" &&
+          String(head?.repo?.full_name).toLowerCase() === repository &&
+          typeof head?.ref === "string" &&
           head.ref.startsWith(input.prefix),
       )
     )
       return true;
     if (pulls.length < 100) return false;
   }
-  return false;
+  throw new Error(`${repository} has more open pull requests than Paws reads`);
 }
 
 /**

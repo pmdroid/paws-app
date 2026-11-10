@@ -221,7 +221,7 @@ async function startedMode(f: ReturnType<typeof setup>) {
 }
 
 test("an open pull request on the issue's Paws branch saves code without classifying", async () => {
-  const f = setup(solo, () => ({ status: 200, body: [pull("open", "paws/eng-1-01m70th")] }));
+  const f = setup(solo, () => ({ status: 200, body: [pull("open", "paws/eng-1-x", "Acme/App")] }));
   try {
     expect(await startedMode(f)).toBe("code");
     expect(f.launches.some((launch) => launch.startsWith("classify"))).toBe(false);
