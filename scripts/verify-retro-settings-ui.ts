@@ -55,7 +55,7 @@ const CATALOGS: AgentModelCatalog[] = [
 ];
 
 const w = world();
-seedDaily(w.db);
+await seedDaily(w.db);
 saveRetroSettingsRevision(w.db, {
   ...proposedRetroSettings([A, B]),
   workspaceId: "ws",

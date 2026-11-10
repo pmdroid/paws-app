@@ -270,7 +270,7 @@ function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, root: st
   return { a: byItem["p1"]!, b: byItem["p2"]! };
 }
 
-export function seedDaily(db: ReturnType<typeof openDatabase>) {
+export async function seedDaily(db: ReturnType<typeof openDatabase>) {
   recordReviewFindings(db, {
     itemId: "item-a",
     repository: A,
@@ -309,7 +309,7 @@ export function seedDaily(db: ReturnType<typeof openDatabase>) {
       run,
     ],
   );
-  ingestDailyFindings(db, "ws", { now: END });
+  await ingestDailyFindings(db, "ws", { now: END });
   return { groupId, findings };
 }
 
