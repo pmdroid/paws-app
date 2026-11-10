@@ -2,32 +2,39 @@ import { ask, restart } from "./operations";
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
-  outboxKeyExists,
-  setQuestionHandoffVersion,
-  applyLinearTurns,
-  applyWorkItemEvent,
-  approveCloseoutBypassChecks,
-  auditWorkspaceAccess,
+  outboxKeyExistsSteps,
+  setQuestionHandoffVersionSteps,
+  applyLinearTurnsSteps,
+  applyWorkItemEventSteps,
+  approveCloseoutBypassChecksSteps,
+  auditWorkspaceAccessSteps,
   closeLinkAsk,
+  closeLinkAskSteps,
   delegatedLinearUserId,
+  emitJobReady,
   enqueueJobOnce,
-  enqueueOutboxOnce,
-  failWorkItem,
-  getLinkAsk,
+  enqueueJobOnceSteps,
+  enqueueOutboxOnceSteps,
+  failWorkItemSteps,
+  getLinkAskSteps,
   getWorkItem,
+  getWorkItemSteps,
   immediate,
-  listCloseoutBypassChecks,
-  listCloseoutRecoveries,
+  listCloseoutBypassChecksSteps,
+  listCloseoutRecoveriesSteps,
   LINK_ASK_DECISIONS,
   LINK_ASK_NOTE_REQUIRED,
   openLinkAsks,
-  recordLinkAskDecision,
-  saveCheckpoint,
+  recordLinkAskDecisionSteps,
+  saveCheckpointSteps,
+  sqliteDb,
   type LinkAsk,
   type LinkAskDecision,
   type LinkAskKind,
   type VisualReviewMark,
   type LinkAskRounds,
+  type Q,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import {
@@ -148,15 +155,19 @@ export function askWithLink(
 }
 
 /** Posts the one reminder while the ask is still open. Returns whether it posted. */
-export function remindLinkAsk(db: Database, questionId: string, now: number): boolean {
-  return immediate(db, () => {
+export async function remindLinkAsk(
+  db: Database,
+  questionId: string,
+  now: number,
+): Promise<boolean> {
+  return await sqliteDb(db).transaction(function* (q) {
     const question = getQuestion(db, questionId);
-    const linkAsk = getLinkAsk(db, questionId);
+    const linkAsk = yield* getLinkAskSteps(q, questionId);
     if (question?.status !== "open" || linkAsk === null || linkAsk.closedAt !== null) return false;
-    const item = getWorkItem(db, question.itemId);
+    const item = yield* getWorkItemSteps(q, question.itemId);
     if (item === null || item.cancelRequested || ENDED.has(item.state)) return false;
-    if (outboxKeyExists(db, `link-ask-reminder:${questionId}`)) return false;
-    enqueueOutboxOnce(db, {
+    if (yield* outboxKeyExistsSteps(q, `link-ask-reminder:${questionId}`)) return false;
+    yield* enqueueOutboxOnceSteps(q, {
       target: "linear",
       op: "elicitation",
       orderingKey: question.sessionId,
@@ -175,11 +186,17 @@ export function remindLinkAsk(db: Database, questionId: string, now: number): bo
 }
 
 /**
- * What an `approve` does for one kind, inside the decision's transaction.
- * Returns false to fall back to handing the decision to the agent.
+ * What an `approve` did: `applied` false falls back to handing the decision to
+ * the agent; `jobReady` wakes the job queue once the decision commits.
  */
+export type LinkAskEffectResult = { applied: boolean; jobReady: boolean };
+
+/** What an `approve` does for one kind, inside the decision's transaction. */
 export type LinkAskEffects = Partial<
-  Record<LinkAskKind, (linkAsk: LinkAsk, item: WorkItemRecord, now: number) => boolean>
+  Record<
+    LinkAskKind,
+    (q: Q, linkAsk: LinkAsk, item: WorkItemRecord, now: number) => Steps<LinkAskEffectResult>
+  >
 >;
 
 /** One failed check a person bypasses on the item page, with their reason. */
@@ -197,7 +214,7 @@ export const RULE_REPLY_NOTE =
  * ask, posts what was decided, and hands the item on. `stop` is Stop on the
  * Risk card: the item stops and its pull request stays open.
  */
-export function decideLinkAsk(
+export async function decideLinkAsk(
   db: Database,
   input: {
     questionId: string;
@@ -212,29 +229,36 @@ export function decideLinkAsk(
     now: number;
   },
   effects: LinkAskEffects = {},
-): "answered" | "forbidden" | "rejected" {
-  return immediate(db, () => {
+): Promise<"answered" | "forbidden" | "rejected"> {
+  const store = sqliteDb(db);
+  let jobReady = false;
+  const outcome = await store.transaction(function* (q): Steps<
+    "answered" | "forbidden" | "rejected"
+  > {
     const { now } = input;
-    const linkAsk = getLinkAsk(db, input.questionId);
+    const linkAsk = yield* getLinkAskSteps(q, input.questionId);
     const question = getQuestion(db, input.questionId);
     if (linkAsk === null || linkAsk.closedAt !== null || question?.status !== "open")
       return "rejected";
-    const item = getWorkItem(db, linkAsk.itemId);
+    const item = yield* getWorkItemSteps(q, linkAsk.itemId);
     if (item === null || item.cancelRequested || ENDED.has(item.state)) return "rejected";
     if (!canAnswer({ kind: "link", allowedIds: linkAsk.answerers }, { id: input.answeredBy }))
       return "forbidden";
     if (!LINK_ASK_DECISIONS[linkAsk.kind].includes(input.decision)) return "rejected";
     if (LINK_ASK_NOTE_REQUIRED.has(input.decision) && !input.note) return "rejected";
     if (input.decision === "stop" && linkAsk.kind === "risk")
-      return stopRiskAsk(db, linkAsk, item, input);
+      return yield* stopRiskAskSteps(q, db, linkAsk, item, input);
     const bypassing = linkAsk.kind === "bypass" && input.decision === "approve";
     // Approving a rule break needs a reason; it covers every rule the ask holds.
     const approvingRule = linkAsk.kind === "rule" && input.decision === "approve";
     if (approvingRule && !input.note?.trim()) return "rejected";
     const bypasses = bypassing
-      ? validBypasses(db, linkAsk, input.bypasses ?? [])
+      ? yield* validBypassesSteps(q, linkAsk, input.bypasses ?? [])
       : approvingRule
-        ? heldRules(db, linkAsk).map((checkId) => ({ checkId, reason: input.note!.trim() }))
+        ? (yield* heldRulesSteps(q, linkAsk)).map((checkId) => ({
+            checkId,
+            reason: input.note!.trim(),
+          }))
         : null;
     if ((bypassing || approvingRule) && !bypasses?.length) return "rejected";
     // The reasons are the note of a bypass: Audit history, the session note and the handoff carry them.
@@ -251,7 +275,7 @@ export function decideLinkAsk(
       now,
     });
     if (answered === null) return "rejected";
-    recordLinkAskDecision(db, linkAsk.questionId, {
+    yield* recordLinkAskDecisionSteps(q, linkAsk.questionId, {
       decision: input.decision,
       note,
       decidedBy: input.answeredBy,
@@ -259,15 +283,15 @@ export function decideLinkAsk(
     });
     if (
       bypasses &&
-      !approveCloseoutBypassChecks(db, linkAsk.questionId, {
+      !(yield* approveCloseoutBypassChecksSteps(q, linkAsk.questionId, {
         checks: bypasses,
         approvedBy: input.answeredBy,
         approvedByName: input.actor.name,
         now,
-      })
+      }))
     )
       throw new Error("Closeout bypass checks changed while deciding");
-    auditWorkspaceAccess(db, {
+    yield* auditWorkspaceAccessSteps(q, {
       workspaceId: input.actor.workspaceId,
       userId: input.actor.userId,
       action: `decision.${linkAsk.kind}.${input.decision}`,
@@ -311,41 +335,48 @@ export function decideLinkAsk(
       })
     )
       return "answered";
-    const current = getWorkItem(db, item.id)!;
+    const current = (yield* getWorkItemSteps(q, item.id))!;
     // The approval binds to the ask's head; it never goes to the agent.
     if (input.decision === "approve" && linkAsk.kind === "risk") {
       approveRisk(db, linkAsk, current, now);
       return "answered";
     }
-    if (input.decision === "approve" && effects[linkAsk.kind]?.(linkAsk, current, now))
-      return "answered";
+    const effect = input.decision === "approve" ? effects[linkAsk.kind] : undefined;
+    if (effect) {
+      const result = yield* effect(q, linkAsk, current, now);
+      jobReady = result.jobReady;
+      if (result.applied) return "answered";
+    }
     if (input.decision === "stop") {
-      stopAfterRounds(db, current, linkAsk, input.actor.name, now);
+      yield* stopAfterRoundsSteps(q, current, linkAsk, input.actor.name, now);
       return "answered";
     }
-    handBack(
+    yield* handBackSteps(
+      q,
       db,
       current,
       question,
-      linkAskHandoff(linkAsk, { ...input, note, ...ruleFindings(db, linkAsk) }),
+      linkAskHandoff(linkAsk, { ...input, note, ...(yield* ruleFindingsSteps(q, linkAsk)) }),
       now,
       linkAsk.kind === "risk" ? "review" : "answer",
     );
     return "answered";
   });
+  if (jobReady) emitJobReady(store);
+  return outcome;
 }
 
 /** The rules a `rule` ask holds that nobody approved yet. */
-function heldRules(db: Database, linkAsk: LinkAsk): string[] {
-  return listCloseoutBypassChecks(db, linkAsk.questionId)
+function* heldRulesSteps(q: Q, linkAsk: LinkAsk): Steps<string[]> {
+  return (yield* listCloseoutBypassChecksSteps(q, linkAsk.questionId))
     .filter((check) => check.approvedAt === null)
     .map((check) => check.checkId);
 }
 
 /** On a `rule` ask, the findings a send back or a reply in Linear hands the agent. */
-function ruleFindings(db: Database, linkAsk: LinkAsk): { findings?: string } {
+function* ruleFindingsSteps(q: Q, linkAsk: LinkAsk): Steps<{ findings?: string }> {
   if (linkAsk.kind !== "rule") return {};
-  const findings = listCloseoutBypassChecks(db, linkAsk.questionId)
+  const findings = (yield* listCloseoutBypassChecksSteps(q, linkAsk.questionId))
     .map((check) => check.message.trim())
     .filter(Boolean)
     .join("\n\n");
@@ -356,7 +387,8 @@ function ruleFindings(db: Database, linkAsk: LinkAsk): { findings?: string } {
  * Stop on the Risk card, inside the decision's transaction: answers and closes the ask, writes
  * the Audit history row and stops the item with its pull request left open.
  */
-function stopRiskAsk(
+function* stopRiskAskSteps(
+  q: Q,
   db: Database,
   linkAsk: LinkAsk,
   item: WorkItemRecord,
@@ -367,7 +399,7 @@ function stopRiskAsk(
     actor: { workspaceId: string; userId: string; name: string };
     now: number;
   },
-): "answered" | "rejected" {
+): Steps<"answered" | "rejected"> {
   const { now } = input;
   const answered = answerQuestion(db, linkAsk.questionId, {
     answer: input.note ? `stop: ${input.note}` : "stop",
@@ -376,13 +408,13 @@ function stopRiskAsk(
     now,
   });
   if (answered === null) return "rejected";
-  closeLinkAsk(db, linkAsk.questionId, {
+  yield* closeLinkAskSteps(q, linkAsk.questionId, {
     reason: "cancelled",
     ...(input.note ? { note: input.note } : {}),
     by: input.answeredBy,
     now,
   });
-  auditWorkspaceAccess(db, {
+  yield* auditWorkspaceAccessSteps(q, {
     workspaceId: input.actor.workspaceId,
     userId: input.actor.userId,
     action: "decision.risk.stop",
@@ -394,7 +426,7 @@ function stopRiskAsk(
     now,
   });
   removeLinkAskUrl(db, linkAsk.questionId, now);
-  if (!stopForRisk(db, linkAsk, getWorkItem(db, item.id)!, input.actor.name, now))
+  if (!stopForRisk(db, linkAsk, (yield* getWorkItemSteps(q, item.id))!, input.actor.name, now))
     throw new Error("The item changed before Stop committed");
   return "answered";
 }
@@ -403,13 +435,13 @@ function stopRiskAsk(
  * The checks a bypass may waive: at least one, each offered by this ask and
  * not decided yet, each once, each with a reason. Null otherwise.
  */
-function validBypasses(
-  db: Database,
+function* validBypassesSteps(
+  q: Q,
   linkAsk: LinkAsk,
   bypasses: readonly LinkAskBypass[],
-): LinkAskBypass[] | null {
+): Steps<LinkAskBypass[] | null> {
   const offered = new Set(
-    listCloseoutBypassChecks(db, linkAsk.questionId)
+    (yield* listCloseoutBypassChecksSteps(q, linkAsk.questionId))
       .filter((check) => check.approvedAt === null)
       .map((check) => check.checkId),
   );
@@ -432,30 +464,31 @@ function validBypasses(
  * again, and the bypass rows (bound to that head and policy digest) waive the
  * checks, as `recoveryOptions` reads them.
  */
-export function reverifyBypassed(
-  db: Database,
+export function* reverifyBypassedSteps(
+  q: Q,
   linkAsk: LinkAsk,
   item: WorkItemRecord,
   now: number,
-): boolean {
-  const recovery = listCloseoutRecoveries(db, item.id).find(
+): Steps<LinkAskEffectResult> {
+  const recovery = (yield* listCloseoutRecoveriesSteps(q, item.id)).find(
     (entry) => entry.questionId === linkAsk.questionId,
   );
-  if (recovery === undefined || item.state !== "awaiting_input") return false;
-  setQuestionHandoffVersion(db, linkAsk.questionId, 0);
-  applyWorkItemEvent(db, item.id, "reverify_requested", { now });
-  saveCheckpoint(db, item.id, {
+  if (recovery === undefined || item.state !== "awaiting_input")
+    return { applied: false, jobReady: false };
+  yield* setQuestionHandoffVersionSteps(q, linkAsk.questionId, 0);
+  yield* applyWorkItemEventSteps(q, item.id, "reverify_requested", { now });
+  yield* saveCheckpointSteps(q, item.id, {
     phase: "verifying",
     baseSha: recovery.base,
     wipCommit: recovery.head,
   });
-  enqueueJobOnce(db, {
+  const { inserted } = yield* enqueueJobOnceSteps(q, {
     queue: JOB_KIND.reverify,
     jobKey: `closeout-bypass:${linkAsk.questionId}`,
     payload: { itemId: item.id },
     now,
   });
-  return true;
+  return { applied: true, jobReady: inserted };
 }
 
 /**
@@ -465,16 +498,16 @@ export function reverifyBypassed(
  * visual review or a risk approval the reply is the change request, as
  * Request changes on the page.
  */
-export function guideLinkAsk(
+export async function guideLinkAsk(
   db: Database,
   input: { questionId: string; eventKey: string; body: string; answeredBy: string; now: number },
-): boolean {
-  return immediate(db, () => {
+): Promise<boolean> {
+  return await sqliteDb(db).transaction(function* (q) {
     const { now } = input;
-    const linkAsk = getLinkAsk(db, input.questionId);
+    const linkAsk = yield* getLinkAskSteps(q, input.questionId);
     const question = getQuestion(db, input.questionId);
     if (linkAsk === null || linkAsk.closedAt !== null || question?.status !== "open") return false;
-    const item = getWorkItem(db, linkAsk.itemId);
+    const item = yield* getWorkItemSteps(q, linkAsk.itemId);
     if (item === null || item.cancelRequested || ENDED.has(item.state)) return false;
     // On a rounds ask the reply is Rethink the approach, with the reply as the note.
     const rethink = linkAsk.kind === "rounds";
@@ -486,14 +519,14 @@ export function guideLinkAsk(
     });
     if (answered === null) return false;
     if (rethink)
-      recordLinkAskDecision(db, linkAsk.questionId, {
+      yield* recordLinkAskDecisionSteps(q, linkAsk.questionId, {
         decision: "rethink",
         note: input.body,
         decidedBy: input.answeredBy,
         now,
       });
     else
-      closeLinkAsk(db, linkAsk.questionId, {
+      yield* closeLinkAskSteps(q, linkAsk.questionId, {
         reason: "guidance",
         note: input.body,
         by: input.answeredBy,
@@ -501,7 +534,7 @@ export function guideLinkAsk(
       });
     removeLinkAskUrl(db, linkAsk.questionId, now);
     if (item.sessionKey === question.sessionId)
-      applyLinearTurns(db, question.sessionId, [input.eventKey], item.id);
+      yield* applyLinearTurnsSteps(q, question.sessionId, [input.eventKey], item.id);
     if (linkAsk.kind === "risk") {
       postRiskActivity(db, {
         sessionId: question.sessionId,
@@ -511,9 +544,10 @@ export function guideLinkAsk(
         key: `reply:${linkAsk.questionId}`,
         now,
       });
-      handBack(
+      yield* handBackSteps(
+        q,
         db,
-        getWorkItem(db, item.id)!,
+        (yield* getWorkItemSteps(q, item.id))!,
         question,
         riskReplyHandoff(linkAsk, input.body),
         now,
@@ -547,14 +581,15 @@ export function guideLinkAsk(
       now,
     );
     if (changes) return true;
-    handBack(
+    yield* handBackSteps(
+      q,
       db,
-      getWorkItem(db, item.id)!,
+      (yield* getWorkItemSteps(q, item.id))!,
       question,
       linkAskHandoff(linkAsk, {
         decision: "guidance",
         note: input.body,
-        ...ruleFindings(db, linkAsk),
+        ...(yield* ruleFindingsSteps(q, linkAsk)),
       }),
       now,
     );
@@ -601,18 +636,20 @@ export function closeLinkAsksOnHead(
 }
 
 /** Stop on a rounds ask: the item fails as asked, and the branch keeps the work. */
-function stopAfterRounds(
-  db: Database,
+function* stopAfterRoundsSteps(
+  q: Q,
   item: WorkItemRecord,
   linkAsk: LinkAsk,
   by: string,
   now: number,
-): void {
+): Steps<void> {
   const resumed =
-    item.state === "awaiting_input" ? applyWorkItemEvent(db, item.id, "answer_received") : item;
+    item.state === "awaiting_input"
+      ? yield* applyWorkItemEventSteps(q, item.id, "answer_received")
+      : item;
   const rounds = linkAsk.rounds?.rounds.length ?? 0;
-  failWorkItem(
-    db,
+  yield* failWorkItemSteps(
+    q,
     resumed,
     "closeout:review_rounds",
     `Stopped after ${rounds} failed review ${rounds === 1 ? "round" : "rounds"}, as ${by} asked in Paws. The work is on branch \`${resumed.branchName || worktreeBranch(resumed)}\`.`,
@@ -620,7 +657,8 @@ function stopAfterRounds(
   );
 }
 
-function handBack(
+function* handBackSteps(
+  q: Q,
   db: Database,
   item: WorkItemRecord,
   question: StoredQuestion,
@@ -628,12 +666,17 @@ function handBack(
   now: number,
   /** A risk change request restarts the item as a changes-requested review does. */
   reason: "answer" | "review" = "answer",
-): void {
+): Steps<void> {
   const jobId = restart(db, item, {
     reason,
     body,
     jobKey: `resume:link-ask:${question.id}`,
     now,
   });
-  if (jobId !== null) setQuestionHandoffVersion(db, question.id, getWorkItem(db, item.id)!.version);
+  if (jobId !== null)
+    yield* setQuestionHandoffVersionSteps(
+      q,
+      question.id,
+      (yield* getWorkItemSteps(q, item.id))!.version,
+    );
 }

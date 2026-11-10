@@ -545,7 +545,7 @@ import {
   guideLinkAsk,
   linkAskAvailable,
   remindLinkAsk,
-  reverifyBypassed,
+  reverifyBypassedSteps,
   type LinkAskEffects,
 } from "./link-ask";
 import {
@@ -1910,7 +1910,7 @@ export class Orchestrator {
     jobs.register(JOB_KIND.linkAskReminder, async (job, context) => {
       const questionId = readString(job.payload, "questionId");
       if (!context.isCurrent() || questionId === null) return;
-      if (remindLinkAsk(this.db, questionId, this.now())) await this.flush();
+      if (await remindLinkAsk(this.db, questionId, this.now())) await this.flush();
     });
     jobs.register(JOB_KIND.reaskQuestion, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
@@ -4982,7 +4982,7 @@ export class Orchestrator {
     const unreadable = policyFailed ? this.unreadableMainPolicy(item) : null;
     const brokenMain =
       repositoryName && policyFailed
-        ? policyOutageNote(
+        ? await policyOutageNote(
             this.db,
             repositoryName,
             item.id,
@@ -6513,7 +6513,7 @@ export class Orchestrator {
         await this.flush();
         return "rejected";
       }
-      const guided = guideLinkAsk(this.db, {
+      const guided = await guideLinkAsk(this.db, {
         questionId: open.id,
         eventKey: event.dedupeKey,
         body: answer,
@@ -8956,12 +8956,12 @@ export class Orchestrator {
   ): Promise<"answered" | "forbidden" | "rejected"> {
     const itemId = getQuestion(this.db, input.questionId)?.itemId;
     if (itemId && getWorkItem(this.db, itemId)?.state === "paused") return "rejected";
-    const outcome = decideLinkAsk(
+    const outcome = await decideLinkAsk(
       this.db,
       { ...input, now: this.now() },
       {
-        bypass: (linkAsk, item, now) => reverifyBypassed(this.db, linkAsk, item, now),
-        rule: (linkAsk, item, now) => reverifyBypassed(this.db, linkAsk, item, now),
+        bypass: reverifyBypassedSteps,
+        rule: reverifyBypassedSteps,
         ...effects,
       },
     );
