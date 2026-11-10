@@ -40,7 +40,6 @@ import {
 import { journalCaught } from "../journal";
 import { listInboxItemsSteps, type ImprovementAccess, type InboxItem } from "./inbox";
 import {
-  findInboxItem,
   findInboxItemSteps,
   improvementDestinations,
   type ImprovementReviewer,
@@ -230,16 +229,15 @@ function* followWorkSteps(q: Q, item: InboxItem, now: number): Steps<void> {
 }
 
 function* settleSteps(
-  db: Database,
   q: Q,
   access: ImprovementAccess,
   improvementId: string,
   now: number,
 ): Steps<InboxItem | null> {
-  const found = findInboxItem(db, access, improvementId);
+  const found = yield* findInboxItemSteps(q, access, improvementId);
   if (!found) return null;
   yield* followWorkSteps(q, found, now);
-  const item = findInboxItem(db, access, improvementId);
+  const item = yield* findInboxItemSteps(q, access, improvementId);
   if (!item?.improvement.issue) return item;
   const view = yield* followThroughSteps(q, item, now);
   if (view.attention === "closed") return item;
@@ -289,7 +287,7 @@ function* settleSteps(
     });
     yield* bumpImprovementVersionSteps(q, improvementId);
   }
-  return findInboxItem(db, access, improvementId);
+  return yield* findInboxItemSteps(q, access, improvementId);
 }
 
 type Facts = {
@@ -759,11 +757,11 @@ export async function delegateImprovement(
   const store = sqliteDb(db);
   const settledAt = input.now();
   const first = await store.transaction((q) =>
-    settleSteps(db, q, input.reviewer, input.improvementId, settledAt),
+    settleSteps(q, input.reviewer, input.improvementId, settledAt),
   );
   if (!first) return NOT_FOUND;
   function* freshSteps(q: Q, access: ImprovementAccess) {
-    const item = findInboxItem(db, access, input.improvementId);
+    const item = yield* findInboxItemSteps(q, access, input.improvementId);
     return item ? yield* followThroughSteps(q, item, input.now()) : undefined;
   }
   function* answerSteps(
@@ -840,9 +838,7 @@ export async function delegateImprovement(
     const current = input.reauthorize ? input.reauthorize() : input.reviewer;
     const item =
       current &&
-      (yield* q.transaction((tx) =>
-        settleSteps(db, tx, current, input.improvementId, input.now()),
-      ));
+      (yield* q.transaction((tx) => settleSteps(tx, current, input.improvementId, input.now())));
     if (!current || !item) return NOT_FOUND;
     const latest = yield* followThroughSteps(q, item, input.now());
     if (!improvementDestinations(db, current, item.improvement.repository).includes(freshTeam))
@@ -975,7 +971,7 @@ export function recordVerification(
   const { request } = input;
   return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
     const item = yield* q.transaction((tx) =>
-      settleSteps(db, tx, input.access, input.improvementId, input.now),
+      settleSteps(tx, input.access, input.improvementId, input.now),
     );
     if (!item) return NOT_FOUND;
     const view = yield* followThroughSteps(q, item, input.now);
@@ -1059,7 +1055,7 @@ export function recordVerification(
       status: "recorded",
       item: yield* followThroughSteps(
         q,
-        findInboxItem(db, input.access, item.improvement.id)!,
+        (yield* findInboxItemSteps(q, input.access, item.improvement.id))!,
         input.now,
       ),
     };
@@ -1078,7 +1074,7 @@ export function recordCriterion(
 ): Promise<FollowThroughOutcome> {
   return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
     const item = yield* q.transaction((tx) =>
-      settleSteps(db, tx, input.access, input.improvementId, input.now),
+      settleSteps(tx, input.access, input.improvementId, input.now),
     );
     if (!item) return NOT_FOUND;
     const view = yield* followThroughSteps(q, item, input.now);
@@ -1108,7 +1104,7 @@ export function recordCriterion(
       status: "recorded",
       item: yield* followThroughSteps(
         q,
-        findInboxItem(db, input.access, item.improvement.id)!,
+        (yield* findInboxItemSteps(q, input.access, item.improvement.id))!,
         input.now,
       ),
     };
@@ -1128,7 +1124,7 @@ export function recoverImprovement(
 ): Promise<FollowThroughOutcome> {
   return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
     const item = yield* q.transaction((tx) =>
-      settleSteps(db, tx, input.access, input.improvementId, input.now),
+      settleSteps(tx, input.access, input.improvementId, input.now),
     );
     if (!item) return NOT_FOUND;
     const view = yield* followThroughSteps(q, item, input.now);
@@ -1189,7 +1185,7 @@ export function recoverImprovement(
       status: "recorded",
       item: yield* followThroughSteps(
         q,
-        findInboxItem(db, input.access, item.improvement.id)!,
+        (yield* findInboxItemSteps(q, input.access, item.improvement.id))!,
         input.now,
       ),
     };
@@ -1202,7 +1198,7 @@ export async function reconcileImprovement(
   workspaceId: string,
   now: number,
 ): Promise<void> {
-  await sqliteDb(db).transaction((q) => settleSteps(db, q, { workspaceId }, improvementId, now));
+  await sqliteDb(db).transaction((q) => settleSteps(q, { workspaceId }, improvementId, now));
 }
 
 export async function syncImprovementOutcomes(options: {
