@@ -577,8 +577,11 @@ type RunnerEnrollmentRequest = {
   now: number;
 };
 
-export function createRunnerEnrollment(db: Database, input: RunnerEnrollmentRequest): void {
-  settled(sqliteDb(db).transaction((q) => createRunnerEnrollmentSteps(q, input)));
+export async function createRunnerEnrollment(
+  store: Db,
+  input: RunnerEnrollmentRequest,
+): Promise<void> {
+  await store.transaction((q) => createRunnerEnrollmentSteps(q, input));
 }
 
 export function* createRunnerEnrollmentSteps(q: Q, input: RunnerEnrollmentRequest) {
@@ -624,12 +627,12 @@ type RunnerEnrollment = {
 /**
  * The unused, unexpired enrollment for `tokenHash` whose member is still active, or null.
  */
-export function findRunnerEnrollment(
-  db: Database,
+export async function findRunnerEnrollment(
+  store: Db,
   tokenHash: string,
   now: number,
-): RunnerEnrollment | null {
-  return settled(sqliteDb(db).run((q) => findRunnerEnrollmentSteps(q, tokenHash, now)));
+): Promise<RunnerEnrollment | null> {
+  return store.run((q) => findRunnerEnrollmentSteps(q, tokenHash, now));
 }
 
 export function* findRunnerEnrollmentSteps(
@@ -715,8 +718,8 @@ export function* enrollRunnerSteps(q: Q, input: RunnerEnrollInput): Steps<Runner
   return enrollment;
 }
 
-export function isCurrentRunnerCertificate(db: Database, fingerprint: string): boolean {
-  return settled(sqliteDb(db).run((q) => isCurrentRunnerCertificateSteps(q, fingerprint)));
+export async function isCurrentRunnerCertificate(store: Db, fingerprint: string): Promise<boolean> {
+  return store.run((q) => isCurrentRunnerCertificateSteps(q, fingerprint));
 }
 
 /** The latest certificate is the last one written; Postgres has no rowid, so the newest by validity. */
@@ -753,11 +756,11 @@ type RunnerCertificateRenewal = {
   now: number;
 };
 
-export function renewRunnerCertificate(
-  db: Database,
+export async function renewRunnerCertificate(
+  store: Db,
   input: RunnerCertificateRenewal,
-): RunnerRecord {
-  return settled(sqliteDb(db).transaction((q) => renewRunnerCertificateSteps(q, input)));
+): Promise<RunnerRecord> {
+  return store.transaction((q) => renewRunnerCertificateSteps(q, input));
 }
 
 export function* renewRunnerCertificateSteps(
@@ -867,8 +870,8 @@ export function* updateRunnerStatusSteps(q: Q, input: RunnerStatusUpdate): Steps
   return revoked ? certificates.map((row) => row.fingerprint) : [];
 }
 
-export function runRunnerName(db: Database, runId: string): string | null {
-  return settled(sqliteDb(db).run((q) => runRunnerNameSteps(q, runId)));
+export async function runRunnerName(store: Db, runId: string): Promise<string | null> {
+  return store.run((q) => runRunnerNameSteps(q, runId));
 }
 
 export function* runRunnerNameSteps(q: Q, runId: string) {
@@ -916,8 +919,8 @@ export function* runRunnerAvailabilitySteps(q: Q, runId: string): Steps<RunnerAv
   return { ...availability, revoked: revokedAt !== null };
 }
 
-export function storedRunnerName(db: Database, id: string): string | null {
-  return settled(sqliteDb(db).run((q) => storedRunnerNameSteps(q, id)));
+export async function storedRunnerName(store: Db, id: string): Promise<string | null> {
+  return store.run((q) => storedRunnerNameSteps(q, id));
 }
 
 export function* storedRunnerNameSteps(q: Q, id: string) {
@@ -928,8 +931,8 @@ export function* storedRunnerNameSteps(q: Q, id: string) {
   return row?.name ?? null;
 }
 
-export function runnerHostVersion(db: Database, runnerId: string): string | null {
-  return settled(sqliteDb(db).run((q) => runnerHostVersionSteps(q, runnerId)));
+export async function runnerHostVersion(store: Db, runnerId: string): Promise<string | null> {
+  return store.run((q) => runnerHostVersionSteps(q, runnerId));
 }
 
 export function* runnerHostVersionSteps(q: Q, runnerId: string) {
@@ -984,11 +987,11 @@ export function* runnerStandingSteps(q: Q, runnerId: string) {
   return row ?? null;
 }
 
-export function runnerOwner(
-  db: Database,
+export async function runnerOwner(
+  store: Db,
   runnerId: string,
-): { workspaceId: string; userId: string } | null {
-  return settled(sqliteDb(db).run((q) => runnerOwnerSteps(q, runnerId)));
+): Promise<{ workspaceId: string; userId: string } | null> {
+  return store.run((q) => runnerOwnerSteps(q, runnerId));
 }
 
 export function* runnerOwnerSteps(q: Q, runnerId: string) {
@@ -1050,11 +1053,11 @@ export function* setRunnerSharingSteps(q: Q, runnerId: string, sharing: boolean)
   );
 }
 
-export function recentRunners(
-  db: Database,
+export async function recentRunners(
+  store: Db,
   seenAfter: number,
-): { id: string; workspaceId: string }[] {
-  return settled(sqliteDb(db).run((q) => recentRunnersSteps(q, seenAfter)));
+): Promise<{ id: string; workspaceId: string }[]> {
+  return store.run((q) => recentRunnersSteps(q, seenAfter));
 }
 
 export function* recentRunnersSteps(q: Q, seenAfter: number) {
@@ -1481,8 +1484,8 @@ export function* activeRunnerOwnersSteps(q: Q, workspaceId: string): Steps<strin
   return rows.map((row) => row.userId);
 }
 
-export function activeRunnerOwners(db: Database, workspaceId: string): string[] {
-  return settled(sqliteDb(db).run((q) => activeRunnerOwnersSteps(q, workspaceId)));
+export async function activeRunnerOwners(store: Db, workspaceId: string): Promise<string[]> {
+  return store.run((q) => activeRunnerOwnersSteps(q, workspaceId));
 }
 
 type AvailableRunnerIdentity = {
@@ -1520,11 +1523,11 @@ export function* availableRunnerIdentitySteps(
   return row ?? null;
 }
 
-export function availableRunnerIdentity(
-  db: Database,
+export async function availableRunnerIdentity(
+  store: Db,
   runnerId: string,
-): AvailableRunnerIdentity | null {
-  return settled(sqliteDb(db).run((q) => availableRunnerIdentitySteps(q, runnerId)));
+): Promise<AvailableRunnerIdentity | null> {
+  return store.run((q) => availableRunnerIdentitySteps(q, runnerId));
 }
 
 export function* noteRunnerSeenSteps(q: Q, runnerId: string, at: number): Steps<void> {
@@ -1532,8 +1535,8 @@ export function* noteRunnerSeenSteps(q: Q, runnerId: string, at: number): Steps<
   yield* q.exec(q.orm.update(r).set({ lastSeenAt: at }).where(eq(r.id, runnerId)));
 }
 
-export function noteRunnerSeen(db: Database, runnerId: string, at: number): void {
-  settled(sqliteDb(db).run((q) => noteRunnerSeenSteps(q, runnerId, at)));
+export async function noteRunnerSeen(store: Db, runnerId: string, at: number): Promise<void> {
+  await store.run((q) => noteRunnerSeenSteps(q, runnerId, at));
 }
 
 export function* noteRunnerLiveReportSteps(q: Q, runnerId: string, at: number): Steps<void> {
@@ -1541,8 +1544,8 @@ export function* noteRunnerLiveReportSteps(q: Q, runnerId: string, at: number): 
   yield* q.exec(q.orm.update(r).set({ liveReportedAt: at }).where(eq(r.id, runnerId)));
 }
 
-export function noteRunnerLiveReport(db: Database, runnerId: string, at: number): void {
-  settled(sqliteDb(db).run((q) => noteRunnerLiveReportSteps(q, runnerId, at)));
+export async function noteRunnerLiveReport(store: Db, runnerId: string, at: number): Promise<void> {
+  await store.run((q) => noteRunnerLiveReportSteps(q, runnerId, at));
 }
 
 /** Keeps the moment termination reports began; later reports leave it. */
@@ -1556,8 +1559,12 @@ export function* noteRunnerTerminationsSteps(q: Q, runnerId: string, at: number)
   );
 }
 
-export function noteRunnerTerminations(db: Database, runnerId: string, at: number): void {
-  settled(sqliteDb(db).run((q) => noteRunnerTerminationsSteps(q, runnerId, at)));
+export async function noteRunnerTerminations(
+  store: Db,
+  runnerId: string,
+  at: number,
+): Promise<void> {
+  await store.run((q) => noteRunnerTerminationsSteps(q, runnerId, at));
 }
 
 export function* runnerNameAndOwnerSteps(q: Q, id: string) {
@@ -1572,11 +1579,11 @@ export function* runnerNameAndOwnerSteps(q: Q, id: string) {
   return row ?? null;
 }
 
-export function runnerNameAndOwner(
-  db: Database,
+export async function runnerNameAndOwner(
+  store: Db,
   id: string,
-): { name: string; ownerName: string | null } | null {
-  return settled(sqliteDb(db).run((q) => runnerNameAndOwnerSteps(q, id)));
+): Promise<{ name: string; ownerName: string | null } | null> {
+  return store.run((q) => runnerNameAndOwnerSteps(q, id));
 }
 
 export function* runnerAgentReadinessSteps(q: Q, agent: string) {
@@ -1597,11 +1604,11 @@ export function* runnerAgentReadinessSteps(q: Q, agent: string) {
   return rows.map((row) => ({ name: row.name, ready: row.ready === 1 }));
 }
 
-export function runnerAgentReadiness(
-  db: Database,
+export async function runnerAgentReadiness(
+  store: Db,
   agent: string,
-): { name: string; ready: boolean }[] {
-  return settled(sqliteDb(db).run((q) => runnerAgentReadinessSteps(q, agent)));
+): Promise<{ name: string; ready: boolean }[]> {
+  return store.run((q) => runnerAgentReadinessSteps(q, agent));
 }
 
 export function* enabledRunnerIdsSteps(q: Q) {

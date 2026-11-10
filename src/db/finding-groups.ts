@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { workspaceMemberUsableWhere } from "./workspace";
 import { jsonValue, parsedJson } from "./json-text";
 
@@ -206,8 +206,11 @@ export function* findingGroupSourcesSteps(q: Q, workspaceId: string): Steps<Find
   );
 }
 
-export function findingGroupSources(db: Database, workspaceId: string): FindingGroupSource[] {
-  return settled(sqliteDb(db).run((q) => findingGroupSourcesSteps(q, workspaceId)));
+export async function findingGroupSources(
+  store: Db,
+  workspaceId: string,
+): Promise<FindingGroupSource[]> {
+  return store.run((q) => findingGroupSourcesSteps(q, workspaceId));
 }
 
 export function* findingGroupingAdminsSteps(
@@ -278,12 +281,12 @@ export function* setFindingGroupingSteps(q: Q, workspaceId: string, on: boolean)
     yield* q.exec(q.orm.insert(findingGroupingOff).values({ workspaceId }).onConflictDoNothing());
 }
 
-export function setFindingGrouping(db: Database, workspaceId: string, on: boolean): void {
-  settled(sqliteDb(db).run((q) => setFindingGroupingSteps(q, workspaceId, on)));
-}
-
-function sync<T>(db: Database, body: (q: Q) => Steps<T>): T {
-  return settled(sqliteDb(db).run(body));
+export async function setFindingGrouping(
+  store: Db,
+  workspaceId: string,
+  on: boolean,
+): Promise<void> {
+  await store.run((q) => setFindingGroupingSteps(q, workspaceId, on));
 }
 
 export type FindingGroupRunCursor = {
@@ -314,11 +317,11 @@ export function* lastCompletedFindingGroupRunSteps(
   return row ?? null;
 }
 
-export function lastCompletedFindingGroupRun(
-  db: Database,
+export async function lastCompletedFindingGroupRun(
+  store: Db,
   workspaceId: string,
-): FindingGroupRunCursor | null {
-  return sync(db, (q) => lastCompletedFindingGroupRunSteps(q, workspaceId));
+): Promise<FindingGroupRunCursor | null> {
+  return store.run((q) => lastCompletedFindingGroupRunSteps(q, workspaceId));
 }
 
 export function* findingGroupRunExistsForDaySteps(
@@ -336,12 +339,12 @@ export function* findingGroupRunExistsForDaySteps(
   return row !== undefined;
 }
 
-export function findingGroupRunExistsForDay(
-  db: Database,
+export async function findingGroupRunExistsForDay(
+  store: Db,
   workspaceId: string,
   day: string,
-): boolean {
-  return sync(db, (q) => findingGroupRunExistsForDaySteps(q, workspaceId, day));
+): Promise<boolean> {
+  return store.run((q) => findingGroupRunExistsForDaySteps(q, workspaceId, day));
 }
 
 export type NewFindingGroupRun = Q["t"]["findingGroupRun"]["$inferInsert"];
@@ -350,8 +353,8 @@ export function* insertFindingGroupRunSteps(q: Q, row: NewFindingGroupRun): Step
   yield* q.exec(q.orm.insert(q.t.findingGroupRun).values(row));
 }
 
-export function insertFindingGroupRun(db: Database, row: NewFindingGroupRun): void {
-  sync(db, (q) => insertFindingGroupRunSteps(q, row));
+export async function insertFindingGroupRun(store: Db, row: NewFindingGroupRun): Promise<void> {
+  await store.run((q) => insertFindingGroupRunSteps(q, row));
 }
 
 export function* setFindingGroupRunFingerprintSteps(
@@ -363,12 +366,12 @@ export function* setFindingGroupRunFingerprintSteps(
   yield* q.exec(q.orm.update(run).set({ fingerprint }).where(eq(run.id, runId)));
 }
 
-export function setFindingGroupRunFingerprint(
-  db: Database,
+export async function setFindingGroupRunFingerprint(
+  store: Db,
   runId: string,
   fingerprint: string,
-): void {
-  sync(db, (q) => setFindingGroupRunFingerprintSteps(q, runId, fingerprint));
+): Promise<void> {
+  await store.run((q) => setFindingGroupRunFingerprintSteps(q, runId, fingerprint));
 }
 
 export function* findingGroupRunIsRunningSteps(q: Q, runId: string): Steps<boolean> {
@@ -382,8 +385,8 @@ export function* findingGroupRunIsRunningSteps(q: Q, runId: string): Steps<boole
   return row !== undefined;
 }
 
-export function findingGroupRunIsRunning(db: Database, runId: string): boolean {
-  return sync(db, (q) => findingGroupRunIsRunningSteps(q, runId));
+export async function findingGroupRunIsRunning(store: Db, runId: string): Promise<boolean> {
+  return store.run((q) => findingGroupRunIsRunningSteps(q, runId));
 }
 
 function untouchedGroups(q: Q, workspaceId: string) {
@@ -419,21 +422,21 @@ export function* dropProcessedFindingGroupMembersSteps(
   );
 }
 
-export function dropProcessedFindingGroupMembers(
-  db: Database,
+export async function dropProcessedFindingGroupMembers(
+  store: Db,
   workspaceId: string,
   processed: readonly number[],
   current: readonly number[],
-): void {
-  sync(db, (q) => dropProcessedFindingGroupMembersSteps(q, workspaceId, processed, current));
+): Promise<void> {
+  await store.run((q) => dropProcessedFindingGroupMembersSteps(q, workspaceId, processed, current));
 }
 
 export function* deleteUntouchedFindingGroupsSteps(q: Q, workspaceId: string): Steps<void> {
   yield* q.exec(q.orm.delete(q.t.findingGroup).where(untouchedGroups(q, workspaceId)));
 }
 
-export function deleteUntouchedFindingGroups(db: Database, workspaceId: string): void {
-  sync(db, (q) => deleteUntouchedFindingGroupsSteps(q, workspaceId));
+export async function deleteUntouchedFindingGroups(store: Db, workspaceId: string): Promise<void> {
+  await store.run((q) => deleteUntouchedFindingGroupsSteps(q, workspaceId));
 }
 
 /** The finding IDs that open groups hold, flattened across the groups. */
@@ -448,8 +451,8 @@ export function* heldFindingGroupMembersSteps(q: Q, workspaceId: string): Steps<
   return rows.flatMap((row) => parsedJson<number[]>(q, row.ids));
 }
 
-export function heldFindingGroupMembers(db: Database, workspaceId: string): number[] {
-  return sync(db, (q) => heldFindingGroupMembersSteps(q, workspaceId));
+export async function heldFindingGroupMembers(store: Db, workspaceId: string): Promise<number[]> {
+  return store.run((q) => heldFindingGroupMembersSteps(q, workspaceId));
 }
 
 export type NewFindingGroup = {
@@ -472,8 +475,8 @@ export function* insertFindingGroupSteps(q: Q, row: NewFindingGroup): Steps<void
   );
 }
 
-export function insertFindingGroup(db: Database, row: NewFindingGroup): void {
-  sync(db, (q) => insertFindingGroupSteps(q, row));
+export async function insertFindingGroup(store: Db, row: NewFindingGroup): Promise<void> {
+  await store.run((q) => insertFindingGroupSteps(q, row));
 }
 
 type FindingGroupRunResult = {
@@ -501,12 +504,12 @@ export function* completeFindingGroupRunSteps(
   return rows.length === 1;
 }
 
-export function completeFindingGroupRun(
-  db: Database,
+export async function completeFindingGroupRun(
+  store: Db,
   runId: string,
   result: FindingGroupRunResult,
-): boolean {
-  return sync(db, (q) => completeFindingGroupRunSteps(q, runId, result));
+): Promise<boolean> {
+  return store.run((q) => completeFindingGroupRunSteps(q, runId, result));
 }
 
 export function* failFindingGroupRunSteps(
@@ -524,13 +527,13 @@ export function* failFindingGroupRunSteps(
   );
 }
 
-export function failFindingGroupRun(
-  db: Database,
+export async function failFindingGroupRun(
+  store: Db,
   runId: string,
   finishedAt: number,
   error: string,
-): void {
-  sync(db, (q) => failFindingGroupRunSteps(q, runId, finishedAt, error));
+): Promise<void> {
+  await store.run((q) => failFindingGroupRunSteps(q, runId, finishedAt, error));
 }
 
 type GroupAction = NonNullable<FindingGroup["action"]>;

@@ -5,13 +5,14 @@
     "src/dashboard/src/client/main.ts",
     "src/db/migrations/*.ts",
     "scripts/*.ts",
+    "scripts/codemods/*.ts",
     "test/**/*.test.ts",
     "test/local/*.ts",
     "test/proofs/*.ts",
     ".agents/probes/*.ts"
   ],
   "project": ["src/**/*.{ts,tsx}", "scripts/**/*.ts", "test/**/*.ts"],
-  "ignore": ["test/fixtures/**"],
+  "ignore": ["test/fixtures/**", "scripts/codemods/fixtures/**"],
   "ignoreDependencies": [
     "@agentclientprotocol/claude-agent-acp",
     "@agentclientprotocol/codex-acp",

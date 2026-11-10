@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNotNull, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { HookEvent } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 /** Agents that load skills from their home directory. Every one of them supports skills today. */
@@ -60,8 +60,8 @@ export function* listSkillsSteps(q: Q): Steps<SkillPin[]> {
 }
 
 /** Every skill, removed ones included so runners can uninstall them. */
-export function listSkills(db: Database): SkillPin[] {
-  return settled(sqliteDb(db).run(listSkillsSteps));
+export async function listSkills(store: Db): Promise<SkillPin[]> {
+  return store.run((q) => listSkillsSteps(q));
 }
 
 export function* getSkillSteps(q: Q, name: string) {
@@ -69,8 +69,8 @@ export function* getSkillSteps(q: Q, name: string) {
   return pin ?? null;
 }
 
-export function getSkill(db: Database, name: string): SkillPin | null {
-  return settled(sqliteDb(db).run((q) => getSkillSteps(q, name)));
+export async function getSkill(store: Db, name: string): Promise<SkillPin | null> {
+  return store.run((q) => getSkillSteps(q, name));
 }
 
 export function* saveSkillSteps(q: Q, skill: Omit<SkillPin, "createdAt" | "removedAt">) {
@@ -124,13 +124,13 @@ export function* setSkillAgentsSteps(
   );
 }
 
-export function setSkillAgents(
-  db: Database,
+export async function setSkillAgents(
+  store: Db,
   name: string,
   agents: readonly SkillAgent[],
   now: number,
-): void {
-  settled(sqliteDb(db).run((q) => setSkillAgentsSteps(q, name, agents, now)));
+): Promise<void> {
+  await store.run((q) => setSkillAgentsSteps(q, name, agents, now));
 }
 
 export function* markSkillRemovedSteps(q: Q, name: string, now: number) {
@@ -288,12 +288,12 @@ export function* runnerSkillStatesSteps(
     });
 }
 
-export function runnerSkillStates(
-  db: Database,
+export async function runnerSkillStates(
+  store: Db,
   runnerId: string,
   pins?: readonly SkillPin[],
-): RunnerSkillView[] {
-  return settled(sqliteDb(db).run((q) => runnerSkillStatesSteps(q, runnerId, pins)));
+): Promise<RunnerSkillView[]> {
+  return store.run((q) => runnerSkillStatesSteps(q, runnerId, pins));
 }
 
 export type SkillRollout = {
@@ -405,8 +405,8 @@ export function* recordRunAgentSetupSteps(q: Q, input: AgentSetupInput) {
   );
 }
 
-export function recordRunAgentSetup(db: Database, input: AgentSetupInput): void {
-  settled(sqliteDb(db).run((q) => recordRunAgentSetupSteps(q, input)));
+export async function recordRunAgentSetup(store: Db, input: AgentSetupInput): Promise<void> {
+  await store.run((q) => recordRunAgentSetupSteps(q, input));
 }
 
 export function* runAgentSetupSteps(q: Q, runId: string): Steps<RunAgentSetup | null> {

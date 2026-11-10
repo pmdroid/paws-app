@@ -21,6 +21,7 @@ import {
   recordRunnerSkills,
   saveHook,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { tarModes, withTarModes } from "../src/runner-protocol";
 import { handleSkillSettingsRequest, type SkillSettingsOptions } from "../src/settings";
@@ -515,7 +516,7 @@ describe("skill sources", () => {
     expect(addSkill(registry(resolver), { kind: "npm", package: "impeccable" })).rejects.toThrow(
       "does not match its npm checksum",
     );
-    expect(getSkill(db, "impeccable")).toBeNull();
+    expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
   });
 
   test("a git URL with a ref and subfolder resolves to the commit", async () => {
@@ -667,7 +668,7 @@ describe("skill sources", () => {
       url: "https://example.test/skills.git",
     });
     expect(refused).rejects.toThrow("1000 files");
-    expect(getSkill(db, "impeccable")).toBeNull();
+    expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
   });
 
   test("a source without SKILL.md is refused", async () => {
@@ -676,7 +677,7 @@ describe("skill sources", () => {
     expect(addSkill(registry(resolver), { kind: "npm", package: "impeccable" })).rejects.toThrow(
       "no SKILL.md",
     );
-    expect(getSkill(db, "impeccable")).toBeNull();
+    expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
     expect(existsSync(join(root, "skills", "impeccable"))).toBe(false);
   });
 
@@ -691,7 +692,7 @@ describe("skill sources", () => {
     });
     expect(refused).rejects.toThrow("bundle limit");
     expect(refused).rejects.toMatchObject({ status: 413 });
-    expect(getSkill(db, "impeccable")).toBeNull();
+    expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
   });
 });
 
@@ -705,13 +706,13 @@ describe("skill pins", () => {
 
     // Nothing moves on its own: a newer release only lands through Update.
     releases["2.5.0"] = await tarball({ "SKILL.md": `${SKILL}\nNew rules.` });
-    expect(getSkill(db, "impeccable")!.version).toBe("2.4.0");
+    expect((await getSkill(sqliteDb(db), "impeccable"))!.version).toBe("2.4.0");
     const { before, after } = await updateSkill(registry(resolver, { now: 2 }), "impeccable");
 
     expect(before.version).toBe("2.4.0");
     expect(after).toMatchObject({ version: "2.5.0", createdAt: 1, updatedAt: 2 });
     expect(after.sha256).not.toBe(first.sha256);
-    expect(getSkill(db, "impeccable")).toEqual(after);
+    expect(await getSkill(sqliteDb(db), "impeccable")).toEqual(after);
     expect(existsSync(join(root, "skills", "impeccable", "2.5.0", SKILL_BUNDLE_FILE))).toBe(true);
     expect(existsSync(join(root, "skills", "impeccable", "2.4.0"))).toBe(false);
 
@@ -755,9 +756,9 @@ describe("skill pins", () => {
     recordRunnerSkills(db, "runner-2", installed, 2);
     await removeSkill({ db, now: 5 }, "fake");
     recordRunnerSkills(db, "runner-1", [], 6);
-    expect(getSkill(db, "fake")?.removedAt).toBe(5);
+    expect((await getSkill(sqliteDb(db), "fake"))?.removedAt).toBe(5);
     recordRunnerSkills(db, "runner-2", [], 7);
-    expect(getSkill(db, "fake")).toBeNull();
+    expect(await getSkill(sqliteDb(db), "fake")).toBeNull();
   });
 });
 
@@ -888,7 +889,7 @@ describe("skill settings API", () => {
       ),
     );
     expect(listing.error).toBeUndefined();
-    expect(getSkill(db, "fake")!.source).toEqual({
+    expect((await getSkill(sqliteDb(db), "fake"))!.source).toEqual({
       kind: "git",
       url: "https://github.com/pbakaus/impeccable",
       ref: "main",
@@ -939,7 +940,7 @@ describe("skill settings API", () => {
         hooks: [],
       },
     ]);
-    expect(getSkill(db, "lint")).toBeNull();
+    expect(await getSkill(sqliteDb(db), "lint")).toBeNull();
 
     const added = await read(
       await handleSkillSettingsRequest(
@@ -948,7 +949,7 @@ describe("skill settings API", () => {
       ),
     );
     expect(added.notice).toBe(`Added lint ${"2".repeat(7)}, review ${"2".repeat(7)}.`);
-    expect(getSkill(db, "review")!.source).toEqual({
+    expect((await getSkill(sqliteDb(db), "review"))!.source).toEqual({
       kind: "git",
       url: "https://github.com/pbakaus/impeccable",
       subfolder: "skills/review",
@@ -1051,7 +1052,7 @@ describe("skill settings API", () => {
     expect((await read(full)).error).toBe(
       "Paws runs at most 20 hooks. Remove some, or add fewer of this skill's hooks.",
     );
-    expect(getSkill(db, "impeccable")).toBeNull();
+    expect(await getSkill(sqliteDb(db), "impeccable")).toBeNull();
     expect(listHooks(db)).toHaveLength(18);
     expect(audit).toEqual([]);
   });
@@ -1093,7 +1094,7 @@ describe("skill settings API", () => {
     });
     const listing = await read(await handleSkillSettingsRequest(request, options()));
     expect(listing.error).toBeUndefined();
-    const skill = getSkill(db, "polish")!;
+    const skill = (await getSkill(sqliteDb(db), "polish"))!;
     expect(skill).toMatchObject({
       source: { kind: "upload", folder: "polish" },
       agents: ["codex"],

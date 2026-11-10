@@ -10,6 +10,7 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
   JobLoop,
+  sqliteDb,
 } from "../src/db";
 import {
   createFindingGrouping,
@@ -1074,7 +1075,7 @@ test("legacy position cursors start a fresh ID-based pass", async () => {
 test("a workspace with grouping off spends no turn and cannot run now", async () => {
   const f = seed();
   try {
-    setFindingGrouping(f.db, "ws", false);
+    await setFindingGrouping(sqliteDb(f.db), "ws", false);
     await f.grouping.run("ws", new AbortController().signal);
     expect(f.helper.calls).toHaveLength(0);
     expect(f.issues.reads).toHaveLength(0);
@@ -1085,7 +1086,7 @@ test("a workspace with grouping off spends no turn and cannot run now", async ()
       { db: f.db, principal: { workspaceId: "ws", userId: "ada" } },
     );
     expect(await listing!.json()).toMatchObject({ canRun: false, enabled: false });
-    setFindingGrouping(f.db, "ws", true);
+    await setFindingGrouping(sqliteDb(f.db), "ws", true);
     await f.grouping.run("ws", new AbortController().signal);
     expect(f.helper.calls).toHaveLength(1);
   } finally {
