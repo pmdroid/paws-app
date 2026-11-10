@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   agentCatalogMarkup,
+  agentUsageMarkup,
   compareVersions,
   hostEnrollmentCommand,
   listedRunners,
@@ -27,6 +28,10 @@ import { esc } from "./format";
 import { parseRoute, routeHref } from "./route";
 
 const now = 1_000_000_000;
+const clock = (at: number) =>
+  new Date(at).toLocaleString([], { hour: "numeric", minute: "2-digit" });
+const day = (at: number) =>
+  new Date(at).toLocaleString([], { weekday: "short", month: "short", day: "numeric" });
 const runner: Runner = {
   id: "01JRUNNER0000000000000000A",
   name: "build-box",
@@ -869,7 +874,7 @@ describe("simpler runner card", () => {
     );
     const [claude, codex] = agentRows(html);
     expect(agentRows(html)).toHaveLength(2);
-    expect(claude!.html).toContain("5-hour 62% · weekly 3%");
+    expect(claude!.html).toContain(`5-hour 62% · resets ${clock(now + 3_600_000)} · weekly 3%<`);
     expect(claude!.html).toContain(">Sign in again</button>");
     expect(claude!.html).not.toContain(">Sign in</button>");
     expect(codex!.html).toContain('<span class="tag bad">Signed out</span>');
@@ -924,6 +929,28 @@ describe("simpler runner card", () => {
     expect(off).not.toMatch(/data-extra-agent="claude"[^>]* checked/);
   });
 
+  test("each window shows when it resets, and a window without a reset time shows only its percentage", () => {
+    const html = agentUsageMarkup(
+      {
+        agent: "claude",
+        status: "signed_in",
+        checkedAt: now,
+        limits: [
+          { window: "5-hour", usedPercent: 62, resetsAt: now + 3_600_000 },
+          { window: "weekly", usedPercent: 3, resetsAt: now + 6 * 86_400_000 },
+          { window: "monthly", usedPercent: 10, resetsAt: null },
+          { window: "daily", usedPercent: 90, resetsAt: now - 1 },
+        ],
+      },
+      now,
+    );
+    expect(html).toContain(
+      `5-hour 62% · resets ${clock(now + 3_600_000)} · weekly 3% · resets ${day(now + 6 * 86_400_000)} · monthly 10%</span>`,
+    );
+    expect(html).not.toContain("daily");
+    expect(html).not.toContain("Usage limit");
+  });
+
   test("stored usage says how old it is and drops windows that have reset since", () => {
     const html = runnerDetailMarkup(
       {
@@ -945,7 +972,7 @@ describe("simpler runner card", () => {
     );
     expect(html).toContain('<span class="muted">As of 12 min ago</span>');
     expect(html).not.toContain("5-hour");
-    expect(html).toContain("Weekly 30%");
+    expect(html).toContain(`Weekly 30% · resets ${day(now + 86_400_000)}<`);
     const reset = runnerDetailMarkup(
       {
         ...runner,
