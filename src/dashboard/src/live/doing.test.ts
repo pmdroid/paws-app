@@ -9,6 +9,7 @@ import {
   openDatabase,
   saveItemHolds,
   startUsagePause,
+  sqliteDb,
 } from "../../../db";
 import { JOB_KIND } from "../../../core";
 import type { StatusItem } from "../contract";
@@ -185,7 +186,7 @@ describe("what an item does now", () => {
     work(db, running(db, "one"), "agentbox", true, now);
     work(db, running(db, "two"), "agentbox", true, now);
     work(db, running(db, "pinned"), "agentbox", false, now);
-    saveItemHolds(db, [{ itemId: "pinned", reason: "slot", blockers: [] }]);
+    await saveItemHolds(sqliteDb(db), [{ itemId: "pinned", reason: "slot", blockers: [] }]);
     const shown = await item(db, "pinned", now);
     expect(shown.state).toBe("running");
     expect(shown.doing).toMatchObject({ kind: "slot", runners: ["agentbox"] });

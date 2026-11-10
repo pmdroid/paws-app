@@ -17,13 +17,14 @@ import {
   restart,
   requeueOrphanedWork,
   reenqueueJob,
+  sqliteDb,
 } from "./index";
 
 const checkpoint = { phase: "running" as const, baseSha: "base", wipCommit: "s" };
 
 for (const reason of ["findings", "review", "ci"] as const) {
   for (const recovery of ["transient", "startup", "orphan"] as const) {
-    test(`${reason} input survives ${recovery} recovery`, () => {
+    test(`${reason} input survives ${recovery} recovery`, async () => {
       const db = openDatabase(":memory:");
       migrate(db);
       insertQueuedItem(db, { id: "item" });
@@ -54,14 +55,14 @@ for (const reason of ["findings", "review", "ci"] as const) {
       }
       const job = listJobs(db).at(-1)!;
       expect(job.payload).toMatchObject({ handoff: body, limit: 4 });
-      expect(pendingRestartHandoff(db, "item").handoff).toBe(body);
+      expect((await pendingRestartHandoff(sqliteDb(db), "item")).handoff).toBe(body);
       if (reason === "findings") expect(getWorkItem(db, "item")?.acceptedHead).toBeNull();
       db.close();
     });
   }
 }
 
-test("completed input is not resurrected by recovery", () => {
+test("completed input is not resurrected by recovery", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item" });
@@ -75,11 +76,11 @@ test("completed input is not resurrected by recovery", () => {
   applyWorkItemEvent(db, "item", "turn_ended");
   recoverOnStartup(db, 10);
   expect(listJobs(db).at(-1)!.payload).not.toHaveProperty("handoff");
-  expect(pendingRestartHandoff(db, "item")).toEqual({});
+  expect(await pendingRestartHandoff(sqliteDb(db), "item")).toEqual({});
   db.close();
 });
 
-test("pending input follows activation order when an older job row is reused", () => {
+test("pending input follows activation order when an older job row is reused", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item" });
@@ -101,9 +102,9 @@ test("pending input follows activation order when an older job row is reused", (
     payload: { itemId: "item", handoff: "new CI failure" },
     now: 3,
   });
-  expect(pendingRestartHandoff(db, "item")).toEqual({ handoff: "new CI failure" });
+  expect(await pendingRestartHandoff(sqliteDb(db), "item")).toEqual({ handoff: "new CI failure" });
   db.run("UPDATE job SET status='done' WHERE id=?", [first]);
-  expect(pendingRestartHandoff(db, "item")).toEqual({});
+  expect(await pendingRestartHandoff(sqliteDb(db), "item")).toEqual({});
   db.close();
 });
 
@@ -125,12 +126,12 @@ function acceptedFollowUp() {
   return { db, body, jobId };
 }
 
-test("a follow-up whose turn a clean stop aborted is carried into the recovery resume", () => {
+test("a follow-up whose turn a clean stop aborted is carried into the recovery resume", async () => {
   const { db, body, jobId } = acceptedFollowUp();
   db.run("UPDATE job SET status='done', finished_at=6 WHERE id=?", [jobId]);
   recoverOnStartup(db, 10);
   expect(listJobs(db).at(-1)!.payload).toMatchObject({ handoff: body });
-  expect(pendingRestartHandoff(db, "item").handoff).toBe(body);
+  expect((await pendingRestartHandoff(sqliteDb(db), "item")).handoff).toBe(body);
   db.close();
 });
 
@@ -142,12 +143,12 @@ test("a follow-up whose turn a crash cut off is carried into the recovery resume
   db.close();
 });
 
-test("a follow-up whose turn finished is not repeated after a restart", () => {
+test("a follow-up whose turn finished is not repeated after a restart", async () => {
   const { db, jobId } = acceptedFollowUp();
   db.run("UPDATE job SET status='done', finished_at=6 WHERE id=?", [jobId]);
   applyWorkItemEvent(db, "item", "turn_ended");
   applyWorkItemEvent(db, "item", "closeout_accepted");
   recoverOnStartup(db, 10);
-  expect(pendingRestartHandoff(db, "item")).toEqual({});
+  expect(await pendingRestartHandoff(sqliteDb(db), "item")).toEqual({});
   db.close();
 });

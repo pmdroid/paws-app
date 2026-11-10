@@ -39,6 +39,7 @@ import {
   syncClock,
   takeOverItem,
   TransitionRejectedError,
+  sqliteDb,
 } from "./index";
 
 function harness() {
@@ -534,7 +535,7 @@ describe("restart recovery", () => {
     expect(getWorkItem(db, item.id)?.state).toBe("queued");
   });
 
-  test("a new process resumes a running item once and does not post a duplicate activity", () => {
+  test("a new process resumes a running item once and does not post a duplicate activity", async () => {
     const dir = mkdtempSync(join(tmpdir(), "paws-runtime-"));
     const path = join(dir, "paws.db");
     const clock = new FakeClock(0);
@@ -544,7 +545,7 @@ describe("restart recovery", () => {
     migrate(first);
     insertQueuedItem(first, { id: "eng-1", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(first, "eng-1", clock.now(), checkpoint);
-    saveRunResult(first, run.id, "Implemented and checked locally.", clock.now());
+    await saveRunResult(sqliteDb(first), run.id, "Implemented and checked locally.", clock.now());
     first.run("VACUUM INTO ?", [path]);
     first.close();
 

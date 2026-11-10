@@ -21,6 +21,7 @@ import {
   requeueOrphanedWork,
   restartHold,
   saveCheckpoint,
+  sqliteDb,
 } from "../src/db";
 import { attachOrchestrator, questionEffects } from "../src/loop";
 import { answer, findOpenQuestion } from "../src/questions";
@@ -185,7 +186,7 @@ describe("restart hold", () => {
   test("a resume job that reaches a held item does not run it", async () => {
     const db = fixture();
     recoverOnStartup(db, 100);
-    const runs = listRuns(db, "item").length;
+    const runs = (await listRuns(sqliteDb(db), "item")).length;
     enqueueJob(db, {
       queue: JOB_KIND.resume,
       jobKey: "stray",
@@ -197,7 +198,7 @@ describe("restart hold", () => {
       "recovered",
     );
     expect(restartHold(db, getWorkItem(db, "item")!)).not.toBeNull();
-    expect(listRuns(db, "item")).toHaveLength(runs);
+    expect(await listRuns(sqliteDb(db), "item")).toHaveLength(runs);
     db.close();
   });
 

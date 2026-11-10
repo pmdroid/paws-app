@@ -34,9 +34,9 @@ export async function probeExecutionRuntime(input: {
   observe(name: string, observed: unknown): void;
 }) {
   const { db, observe } = input;
-  const until = async (condition: () => boolean) => {
+  const until = async (condition: () => boolean | Promise<boolean>) => {
     const deadline = performance.now() + 6000;
-    while (!condition()) {
+    while (!(await condition())) {
       assert(performance.now() < deadline, "Production execution observation timed out");
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
@@ -237,7 +237,9 @@ export async function probeExecutionRuntime(input: {
   assert.equal((await post(issueEvent(), "runtime-unsigned", false)).status, 401);
   assert.equal(generation(), 0);
   assert.equal((await post(issueEvent(), "runtime-initial")).status, 200);
-  await until(() => generation() > 0 && !hasPendingDelegationChanges(db, target.delegationId));
+  await until(
+    async () => generation() > 0 && !(await hasPendingDelegationChanges(db, target.delegationId)),
+  );
   assert.equal(spec()!.revision, 1);
   const first = { ...spec()! };
   observe(
@@ -250,7 +252,9 @@ export async function probeExecutionRuntime(input: {
   changed = true;
   try {
     assert.equal((await post(issueEvent(), "runtime-criteria-edit")).status, 200);
-    await until(() => fetching && hasPendingDelegationChanges(db, target.delegationId));
+    await until(
+      async () => fetching && (await hasPendingDelegationChanges(db, target.delegationId)),
+    );
     const before = timers().find((row) => row.queue === "scheduler.tick")!.fires;
     db.run("UPDATE job SET run_at=? WHERE queue='scheduler.tick' AND status='pending'", [
       Date.now(),
@@ -269,7 +273,8 @@ export async function probeExecutionRuntime(input: {
     release.resolve();
   }
   await until(
-    () => spec()?.revision === 2 && !hasPendingDelegationChanges(db, target.delegationId),
+    async () =>
+      spec()?.revision === 2 && !(await hasPendingDelegationChanges(db, target.delegationId)),
   );
   assert.notEqual(spec()!.hash, first.hash);
   assert.equal(getWorkItem(db, itemId)!.currentRunId, oldRun);
@@ -300,10 +305,10 @@ export async function probeExecutionRuntime(input: {
   const beforeGeneration = generation();
   input.advance(SWEEP_FULL_REFRESH_MS + 1);
   await until(
-    () =>
+    async () =>
       timers().find((row) => row.queue === "linear.epics.reconcile")!.fires > beforeSweep &&
       generation() > beforeGeneration &&
-      !hasPendingDelegationChanges(db, target.delegationId),
+      !(await hasPendingDelegationChanges(db, target.delegationId)),
   );
   assert.equal(spec()!.revision, 2);
   assert.deepEqual(readyItems(db, itemTarget).readyItemIds, []);

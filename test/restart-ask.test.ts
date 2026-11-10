@@ -25,6 +25,7 @@ import {
   listWorkItemEventRows,
   recoverOnStartup,
   saveCheckpoint,
+  sqliteDb,
 } from "../src/db";
 import { acceptCloseout, ask, attachOrchestrator, questionEffects, restart } from "../src/loop";
 import { itemReadiness } from "../src/intake";
@@ -105,7 +106,7 @@ describe("restart and ask", () => {
         currentRunId: item.currentRunId,
       });
       expect(queued.version).toBeGreaterThan(item.version);
-      expect(listRuns(db, item.id)).toHaveLength(1);
+      expect(await listRuns(sqliteDb(db), item.id)).toHaveLength(1);
       expect(getRun(db, item.currentRunId!)?.status).toBe("ended");
       expect(getJob(db, prior)?.status).toBe("cancelled");
       expect(db.query("SELECT 1 FROM merge_queue_entry WHERE item_id=?").get(item.id)).toBeNull();

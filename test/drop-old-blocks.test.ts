@@ -14,6 +14,7 @@ import {
   recordLinearInstallation,
   saveRunResult,
   setCurrentRun,
+  sqliteDb,
 } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue, readyItems } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -88,7 +89,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       agent: "codex",
       freshSession: true,
     });
-    saveRunResult(db, run.id, "Published the schema.", clock.now());
+    await saveRunResult(sqliteDb(db), run.id, "Published the schema.", clock.now());
     setCurrentRun(db, "hold-0", run.id);
     expect(await orchestrator.dependencyHandoff("hold-1")).toBe(
       "Completed dependencies:\nhold-0: Published the schema.",

@@ -39,6 +39,7 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeGitHub,
@@ -1082,7 +1083,7 @@ test.each(["claude", "codex", "grok"])(
     await orchestrator.onLinearEvent(linearEvent("prompted", null, "stop"));
     await running;
     expect(stateOf(db, "ENG-9")).toBe("paused");
-    expect(listRuns(db).some((run) => run.status === "active")).toBe(false);
+    expect((await listRuns(sqliteDb(db))).some((run) => run.status === "active")).toBe(false);
     // A stop from Linear leaves the issue's status to people.
     expect(tracker.statuses.filter((update) => update.stateType === "canceled")).toEqual([]);
     expect(tracker.progress.at(-1)).toMatchObject({
@@ -1090,7 +1091,7 @@ test.each(["claude", "codex", "grok"])(
       body: "Paused. Reply here or re-delegate to continue.",
     });
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
-    const agents = listRuns(db).map((run) => run.agent);
+    const agents = (await listRuns(sqliteDb(db))).map((run) => run.agent);
     db.close();
     await layout.cleanup();
     expect(agents).toEqual([implementer]);

@@ -28,6 +28,7 @@ import {
   runnerOccupancy,
   bindWorkItemRepository,
   type Job,
+  sqliteDb,
 } from "../src/db";
 import { acceptGitHubDelivery, worktreeBranch } from "../src/loop";
 import { mergeAcceptedWork } from "../src/loop/accepted-work";
@@ -79,7 +80,7 @@ describe("combined recovery scenarios", () => {
 
       w.crash();
       w.start();
-      expect(pendingRestartHandoff(w.db, id)).toEqual({ handoff: "first failure" });
+      expect(await pendingRestartHandoff(sqliteDb(w.db), id)).toEqual({ handoff: "first failure" });
       const resume = liveExecution(w, id).find((job) => job.status === "pending")!;
       expect(resume.payload).toMatchObject({ reason: "process_restart", handoff: "first failure" });
 
@@ -108,7 +109,9 @@ describe("combined recovery scenarios", () => {
       w.start();
       w.settle();
       expect(getJob(w.db, first)?.status).toBe("pending");
-      expect(pendingRestartHandoff(w.db, id)).toEqual({ handoff: "second failure" });
+      expect(await pendingRestartHandoff(sqliteDb(w.db), id)).toEqual({
+        handoff: "second failure",
+      });
       expect(unexpectedViolations(w.db, w.now)).toEqual([]);
     } finally {
       w.close();

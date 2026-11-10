@@ -47,7 +47,7 @@ test("a reconcile that keeps failing holds the item in the merge queue without m
   try {
     await run.until(() => run.failedReads() >= 3);
     expect(stateOf(run.db, "ACME-1"), run.detail()).toBe("merge_queue");
-    expect(hasPendingDelegationChanges(run.db, run.delegationId), run.detail()).toBe(true);
+    expect(await hasPendingDelegationChanges(run.db, run.delegationId), run.detail()).toBe(true);
     expect(
       listJobs(run.db).some((job) => job.queue === JOB_KIND.merge && job.status === "pending"),
       run.detail(),

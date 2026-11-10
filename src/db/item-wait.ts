@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, ne, notInArray, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 export function* itemWaitSinceSteps(q: Q, itemId: string, version: number, now: number) {
   const { itemWait } = q.t;
@@ -23,8 +22,13 @@ export function* itemWaitSinceSteps(q: Q, itemId: string, version: number, now: 
   return row!.since;
 }
 
-export function itemWaitSince(db: Database, itemId: string, version: number, now: number): number {
-  return settled(sqliteDb(db).run((q) => itemWaitSinceSteps(q, itemId, version, now)));
+export async function itemWaitSince(
+  store: Db,
+  itemId: string,
+  version: number,
+  now: number,
+): Promise<number> {
+  return store.run((q) => itemWaitSinceSteps(q, itemId, version, now));
 }
 
 export function* keepItemWaitsSteps(q: Q, itemIds: readonly string[]) {
@@ -37,6 +41,6 @@ export function* keepItemWaitsSteps(q: Q, itemIds: readonly string[]) {
   );
 }
 
-export function keepItemWaits(db: Database, itemIds: readonly string[]): void {
-  settled(sqliteDb(db).run((q) => keepItemWaitsSteps(q, itemIds)));
+export async function keepItemWaits(store: Db, itemIds: readonly string[]): Promise<void> {
+  await store.run((q) => keepItemWaitsSteps(q, itemIds));
 }

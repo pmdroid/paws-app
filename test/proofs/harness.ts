@@ -12,6 +12,7 @@ import {
   listWorkItemsByStates,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../../src/db";
 import { createFakeTracker, type AcceptedLinearEvent, type FakeTracker } from "../../src/linear";
 import {
@@ -240,12 +241,16 @@ export type ProofContext = {
   storedReviewFindings(): number;
   closeoutReports(): string[];
   heldWork(): { activeRuns: number; reservations: number; runningJobs: number };
-  ageCandidate(): boolean;
+  ageCandidate(): Promise<boolean>;
   delegate(): Promise<void>;
   answerInLinear(answer: string): Promise<void>;
   stopInLinear(): Promise<void>;
   cancelInLinear(): Promise<void>;
-  waitFor(what: string, done: () => boolean, timeoutMs?: number): Promise<boolean>;
+  waitFor(
+    what: string,
+    done: () => boolean | Promise<boolean>,
+    timeoutMs?: number,
+  ): Promise<boolean>;
   expect(name: string, passed: boolean, observed?: unknown): void;
 };
 
@@ -402,11 +407,14 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       reservations: count("SELECT count(*) AS n FROM runner_reservation"),
       runningJobs: count("SELECT count(*) AS n FROM job WHERE status = 'running'"),
     }),
-    ageCandidate() {
+    async ageCandidate() {
       const item = items()[0];
-      const candidate = item && getItemCandidate(db, item.id);
+      const candidate = item && (await getItemCandidate(sqliteDb(db), item.id));
       if (!candidate) return false;
-      recordItemCandidate(db, { ...candidate, recordedAt: Date.now() - 6 * 60_000 });
+      await recordItemCandidate(sqliteDb(db), {
+        ...candidate,
+        recordedAt: Date.now() - 6 * 60_000,
+      });
       return true;
     },
     async delegate() {
@@ -447,14 +455,14 @@ export async function runProof(name: string, proof: Proof, dir: string) {
       act(`Wait until ${what}`);
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
-        if (done()) return true;
+        if (await done()) return true;
         // The process's recurring scheduler tick, without its 30 second wait.
         await orchestrator.reconcileExecution();
         await jobs.tick();
         await outbox.tick();
         await Bun.sleep(20);
       }
-      return done();
+      return await done();
     },
     expect(assertion, passed, observed = null) {
       assertions.push({ name: assertion, passed, observed });

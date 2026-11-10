@@ -31,6 +31,7 @@ import {
   putWorkspaceUser,
   recordItemCandidate,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -115,7 +116,7 @@ function instance(input: {
       input.bare,
       `${sha}:refs/heads/${item.branchName}`,
     );
-    recordItemCandidate(db, {
+    await recordItemCandidate(sqliteDb(db), {
       itemId: item.id,
       sha,
       branch: item.branchName,
@@ -190,7 +191,7 @@ test("instance B verifies and merges the candidate instance A imported, from the
 
     const item = listWorkItems(b.db)[0]!;
     expect(getWorkItem(b.db, item.id)?.state).toBe("awaiting_input");
-    const recorded = getItemCandidate(b.db, item.id)!;
+    const recorded = (await getItemCandidate(sqliteDb(b.db), item.id))!;
     expect(recorded.branch).toBe(item.branchName);
     expect(checksRuns).toEqual([`a:${recorded.sha}`]);
 

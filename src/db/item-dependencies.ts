@@ -20,7 +20,7 @@ import {
   type TaskMode,
   type WorkItemState,
 } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import type { TaskBlock } from "./task-blocks";
 
 export type DependencyItem = {
@@ -82,8 +82,8 @@ export function* itemSpecificationPresentSteps(q: Q, itemId: string) {
   return row?.present ?? null;
 }
 
-export function itemSpecificationPresent(db: Database, itemId: string): number | null {
-  return settled(sqliteDb(db).run((q) => itemSpecificationPresentSteps(q, itemId)));
+export async function itemSpecificationPresent(store: Db, itemId: string): Promise<number | null> {
+  return store.run((q) => itemSpecificationPresentSteps(q, itemId));
 }
 
 export function* itemSpecificationRevisionSteps(q: Q, itemId: string) {
@@ -192,8 +192,11 @@ export function* listPresentDelegationItemsSteps(q: Q, delegationId: string) {
   }));
 }
 
-export function listPresentDelegationItems(db: Database, delegationId: string): DependencyItem[] {
-  return settled(sqliteDb(db).run((q) => listPresentDelegationItemsSteps(q, delegationId)));
+export async function listPresentDelegationItems(
+  store: Db,
+  delegationId: string,
+): Promise<DependencyItem[]> {
+  return store.run((q) => listPresentDelegationItemsSteps(q, delegationId));
 }
 
 export function* readDependencySnapshotSteps(q: Q, itemId: string) {
@@ -220,8 +223,11 @@ export function* readDependencySnapshotSteps(q: Q, itemId: string) {
   } satisfies DependencySnapshot;
 }
 
-export function readDependencySnapshot(db: Database, itemId: string): DependencySnapshot | null {
-  return settled(sqliteDb(db).run((q) => readDependencySnapshotSteps(q, itemId)));
+export async function readDependencySnapshot(
+  store: Db,
+  itemId: string,
+): Promise<DependencySnapshot | null> {
+  return store.run((q) => readDependencySnapshotSteps(q, itemId));
 }
 
 export function* dependencySnapshotGenerationSteps(q: Q, itemId: string) {
@@ -235,8 +241,11 @@ export function* dependencySnapshotGenerationSteps(q: Q, itemId: string) {
   return row?.generation;
 }
 
-export function dependencySnapshotGeneration(db: Database, itemId: string): number | undefined {
-  return settled(sqliteDb(db).run((q) => dependencySnapshotGenerationSteps(q, itemId)));
+export async function dependencySnapshotGeneration(
+  store: Db,
+  itemId: string,
+): Promise<number | undefined> {
+  return store.run((q) => dependencySnapshotGenerationSteps(q, itemId));
 }
 
 export function* delegationHasItemWithoutSnapshotSteps(q: Q, delegationId: string) {
@@ -258,8 +267,11 @@ export function* delegationHasItemWithoutSnapshotSteps(q: Q, delegationId: strin
   return row !== undefined;
 }
 
-export function delegationHasItemWithoutSnapshot(db: Database, delegationId: string): boolean {
-  return settled(sqliteDb(db).run((q) => delegationHasItemWithoutSnapshotSteps(q, delegationId)));
+export async function delegationHasItemWithoutSnapshot(
+  store: Db,
+  delegationId: string,
+): Promise<boolean> {
+  return store.run((q) => delegationHasItemWithoutSnapshotSteps(q, delegationId));
 }
 
 export function* delegationHasReconciliationWorkSteps(q: Q, delegationId: string) {
@@ -280,8 +292,11 @@ export function* delegationHasReconciliationWorkSteps(q: Q, delegationId: string
   return row !== undefined;
 }
 
-export function delegationHasReconciliationWork(db: Database, delegationId: string): boolean {
-  return settled(sqliteDb(db).run((q) => delegationHasReconciliationWorkSteps(q, delegationId)));
+export async function delegationHasReconciliationWork(
+  store: Db,
+  delegationId: string,
+): Promise<boolean> {
+  return store.run((q) => delegationHasReconciliationWorkSteps(q, delegationId));
 }
 
 export function* listBlocksOfSteps(q: Q, blockedLinearIssueIds: string[]) {
@@ -298,8 +313,11 @@ export function* listBlocksOfSteps(q: Q, blockedLinearIssueIds: string[]) {
   );
 }
 
-export function listBlocksOf(db: Database, blockedLinearIssueIds: string[]): TaskBlock[] {
-  return settled(sqliteDb(db).run((q) => listBlocksOfSteps(q, blockedLinearIssueIds)));
+export async function listBlocksOf(
+  store: Db,
+  blockedLinearIssueIds: string[],
+): Promise<TaskBlock[]> {
+  return store.run((q) => listBlocksOfSteps(q, blockedLinearIssueIds));
 }
 
 export function* latestIssueIdentifierSteps(q: Q, linearIssueId: string) {
@@ -356,8 +374,11 @@ export function* saveDependencySnapshotSteps(q: Q, snapshot: NewDependencySnapsh
   );
 }
 
-export function saveDependencySnapshot(db: Database, snapshot: NewDependencySnapshot): void {
-  settled(sqliteDb(db).run((q) => saveDependencySnapshotSteps(q, snapshot)));
+export async function saveDependencySnapshot(
+  store: Db,
+  snapshot: NewDependencySnapshot,
+): Promise<void> {
+  await store.run((q) => saveDependencySnapshotSteps(q, snapshot));
 }
 
 export function* listManagedBlockerItemsSteps(
@@ -398,11 +419,11 @@ export function* listManagedBlockerItemsSteps(
   }));
 }
 
-export function listManagedBlockerItems(
-  db: Database,
+export async function listManagedBlockerItems(
+  store: Db,
   input: { workspaceId: string; issueId: string; itemId: string },
-): ManagedBlockerItem[] {
-  return settled(sqliteDb(db).run((q) => listManagedBlockerItemsSteps(q, input)));
+): Promise<ManagedBlockerItem[]> {
+  return store.run((q) => listManagedBlockerItemsSteps(q, input));
 }
 
 export function* listDelegationExternalEvidenceSteps(
@@ -427,14 +448,12 @@ export function* listDelegationExternalEvidenceSteps(
   return rows.map((row) => jsonText(q, row.evidence));
 }
 
-export function listDelegationExternalEvidence(
-  db: Database,
+export async function listDelegationExternalEvidence(
+  store: Db,
   workspaceId: string,
   delegationId: string,
-): string[] {
-  return settled(
-    sqliteDb(db).run((q) => listDelegationExternalEvidenceSteps(q, workspaceId, delegationId)),
-  );
+): Promise<string[]> {
+  return store.run((q) => listDelegationExternalEvidenceSteps(q, workspaceId, delegationId));
 }
 
 export function* missingSnapshotTargetsSteps(q: Q) {

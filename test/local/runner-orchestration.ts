@@ -36,6 +36,7 @@ import {
   bindLinearSessionTask,
   saveCheckpoint,
   type WorkItemRecord,
+  sqliteDb,
 } from "../../src/db";
 import { createFakeTracker, LinearRateLimitError } from "../../src/linear";
 import { findOpenQuestion } from "../../src/questions";
@@ -1090,7 +1091,7 @@ export async function probeRunnerOrchestration(
           assert.equal(laterDispatches, 0);
           assert.equal(listJobs(db).find((job) => job.id === reverifyId)?.status, "done");
           assert.equal(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify).length, 0);
-          assert.equal(listRuns(db, item.id).length, 1);
+          assert.equal((await listRuns(sqliteDb(db), item.id)).length, 1);
           if (mergeDependencyYield) {
             assert.equal(getLinearSession(db, "session")?.activeItemId, item.id);
             observe(
@@ -1143,7 +1144,10 @@ export async function probeRunnerOrchestration(
             originalProfile,
           );
           assert.equal(witnessCalls, 0);
-          assert.equal(listRuns(db, item.id).length, scenario === "crashed-review" ? 3 : 2);
+          assert.equal(
+            (await listRuns(sqliteDb(db), item.id)).length,
+            scenario === "crashed-review" ? 3 : 2,
+          );
           assert.equal(listJobs(db).find((job) => job.id === reverifyId)?.status, "done");
           observe(
             "orphaned active lifetime is closed and reverified after startup recovery: " + scenario,
@@ -1192,7 +1196,10 @@ export async function probeRunnerOrchestration(
               },
             );
           }
-          assert.equal(listRuns(db, item.id).length, scenario === "reassigned" ? 3 : 2);
+          assert.equal(
+            (await listRuns(sqliteDb(db), item.id)).length,
+            scenario === "reassigned" ? 3 : 2,
+          );
           observe(
             `later remote reverify preserves candidate and owns only its lifetime: ${scenario}`,
             true,

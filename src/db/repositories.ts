@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { orm } from "./orm";
 import { question, workItemRepository, workItemRepositoryQuestion } from "./schema";
 import { immediate } from "./tx";
@@ -192,29 +192,15 @@ export function* rememberWorkItemRepositoryChoiceSteps(
   return true;
 }
 
-export function rememberWorkItemRepositoryChoice(
-  db: Database,
+export async function rememberWorkItemRepositoryChoice(
+  store: Db,
   itemId: string,
   questionId: string,
   repository: RepositoryBinding,
-): boolean {
-  return immediate(db, () => {
-    const answer = getWorkItemRepositoryAnswer(db, itemId);
-    if (answer === null || answer.questionId !== questionId) return false;
-    if (!answer.candidates.some((candidate) => sameRepository(candidate, repository)))
-      throw new Error("The chosen repository was not offered for this question");
-    orm(db)
-      .update(workItemRepositoryQuestion)
-      .set({ chosenRepository: JSON.stringify(repository) })
-      .where(
-        and(
-          eq(workItemRepositoryQuestion.itemId, itemId),
-          eq(workItemRepositoryQuestion.questionId, questionId),
-        ),
-      )
-      .run();
-    return true;
-  });
+): Promise<boolean> {
+  return store.transaction((q) =>
+    rememberWorkItemRepositoryChoiceSteps(q, itemId, questionId, repository),
+  );
 }
 
 export function* getWorkItemRepositoryChoiceSteps(
@@ -281,10 +267,10 @@ export function* isWorkItemRepositoryQuestionSteps(
   return row !== undefined;
 }
 
-export function isWorkItemRepositoryQuestion(
-  db: Database,
+export async function isWorkItemRepositoryQuestion(
+  store: Db,
   itemId: string,
   questionId: string,
-): boolean {
-  return settled(sqliteDb(db).run((q) => isWorkItemRepositoryQuestionSteps(q, itemId, questionId)));
+): Promise<boolean> {
+  return store.run((q) => isWorkItemRepositoryQuestionSteps(q, itemId, questionId));
 }

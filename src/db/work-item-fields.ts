@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, isNull, lte, ne, notExists, notInArray, sql } from "drizzle-orm";
 import { delegationIssueIdSql, parentTaskKeySql } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { hasTableSteps } from "./linear-session-url";
 
 function run<T>(db: Database, steps: (q: Q) => Steps<T>): T {
@@ -39,8 +39,12 @@ export function* setItemBranchNameSteps(q: Q, itemId: string, branchName: string
   yield* q.exec(q.orm.update(workItem).set({ branchName }).where(eq(workItem.id, itemId)));
 }
 
-export function setItemBranchName(db: Database, itemId: string, branchName: string): void {
-  run(db, (q) => setItemBranchNameSteps(q, itemId, branchName));
+export async function setItemBranchName(
+  store: Db,
+  itemId: string,
+  branchName: string,
+): Promise<void> {
+  await store.run((q) => setItemBranchNameSteps(q, itemId, branchName));
 }
 
 export function* clearItemRecoverySteps(q: Q, itemId: string) {
@@ -105,8 +109,12 @@ export function* issueOpenInOtherSessionSteps(q: Q, issueId: string, sessionId: 
   return row !== undefined;
 }
 
-export function issueOpenInOtherSession(db: Database, issueId: string, sessionId: string): boolean {
-  return run(db, (q) => issueOpenInOtherSessionSteps(q, issueId, sessionId));
+export async function issueOpenInOtherSession(
+  store: Db,
+  issueId: string,
+  sessionId: string,
+): Promise<boolean> {
+  return store.run((q) => issueOpenInOtherSessionSteps(q, issueId, sessionId));
 }
 
 export function* itemContinuedSteps(q: Q, previousItemId: string) {
@@ -123,8 +131,8 @@ export function* itemContinuedSteps(q: Q, previousItemId: string) {
   return row !== undefined;
 }
 
-export function itemContinued(db: Database, previousItemId: string): boolean {
-  return run(db, (q) => itemContinuedSteps(q, previousItemId));
+export async function itemContinued(store: Db, previousItemId: string): Promise<boolean> {
+  return store.run((q) => itemContinuedSteps(q, previousItemId));
 }
 
 export function* listItemIdsSteps(q: Q, includeArchived: boolean) {
@@ -179,8 +187,8 @@ export function* itemDelegationIssueIdSteps(q: Q, itemId: string) {
   return row?.issueId ?? null;
 }
 
-export function itemDelegationIssueId(db: Database, itemId: string): string | null {
-  return run(db, (q) => itemDelegationIssueIdSteps(q, itemId));
+export async function itemDelegationIssueId(store: Db, itemId: string): Promise<string | null> {
+  return store.run((q) => itemDelegationIssueIdSteps(q, itemId));
 }
 
 export function* recentRepositoryNamesSteps(q: Q, limit: number) {
@@ -198,8 +206,8 @@ export function* recentRepositoryNamesSteps(q: Q, limit: number) {
   return rows.map((row) => row.name);
 }
 
-export function recentRepositoryNames(db: Database, limit: number): string[] {
-  return run(db, (q) => recentRepositoryNamesSteps(q, limit));
+export async function recentRepositoryNames(store: Db, limit: number): Promise<string[]> {
+  return store.run((q) => recentRepositoryNamesSteps(q, limit));
 }
 
 export function* latestRestartEventSteps(q: Q, itemId: string) {
@@ -236,8 +244,11 @@ export function* delegationParentTaskKeySteps(q: Q, delegationId: string) {
   return row?.taskKey ?? null;
 }
 
-export function delegationParentTaskKey(db: Database, delegationId: string): string | null {
-  return run(db, (q) => delegationParentTaskKeySteps(q, delegationId));
+export async function delegationParentTaskKey(
+  store: Db,
+  delegationId: string,
+): Promise<string | null> {
+  return store.run((q) => delegationParentTaskKeySteps(q, delegationId));
 }
 
 /** Whether an item other than `itemId` that has not ended is on this branch. */
@@ -259,8 +270,12 @@ export function* branchHeldByOtherItemSteps(q: Q, branchName: string, itemId: st
   return row !== undefined;
 }
 
-export function branchHeldByOtherItem(db: Database, branchName: string, itemId: string): boolean {
-  return run(db, (q) => branchHeldByOtherItemSteps(q, branchName, itemId));
+export async function branchHeldByOtherItem(
+  store: Db,
+  branchName: string,
+  itemId: string,
+): Promise<boolean> {
+  return store.run((q) => branchHeldByOtherItemSteps(q, branchName, itemId));
 }
 
 /** Every item delegated from this Linear issue, newest first. */
@@ -275,11 +290,11 @@ export function* itemsForLinearIssueSteps(q: Q, issueId: string) {
   );
 }
 
-export function itemsForLinearIssue(
-  db: Database,
+export async function itemsForLinearIssue(
+  store: Db,
   issueId: string,
-): { id: string; state: string; createdAt: number }[] {
-  return run(db, (q) => itemsForLinearIssueSteps(q, issueId));
+): Promise<{ id: string; state: string; createdAt: number }[]> {
+  return store.run((q) => itemsForLinearIssueSteps(q, issueId));
 }
 
 /** The issue's items created by `createdBy`, oldest first, with each one's Linear organization. */
@@ -301,16 +316,18 @@ export function* issueItemsCreatedBySteps(q: Q, issueId: string, createdBy: numb
   );
 }
 
-export function issueItemsCreatedBy(
-  db: Database,
+export async function issueItemsCreatedBy(
+  store: Db,
   issueId: string,
   createdBy: number,
-): {
-  id: string;
-  identifier: string;
-  state: string;
-  sessionKey: string | null;
-  organizationId: string | null;
-}[] {
-  return run(db, (q) => issueItemsCreatedBySteps(q, issueId, createdBy));
+): Promise<
+  {
+    id: string;
+    identifier: string;
+    state: string;
+    sessionKey: string | null;
+    organizationId: string | null;
+  }[]
+> {
+  return store.run((q) => issueItemsCreatedBySteps(q, issueId, createdBy));
 }

@@ -13,6 +13,7 @@ import {
   insertQueuedItem,
   openDatabase,
   saveTaskMode,
+  sqliteDb,
 } from "../src/db";
 import { JOB_KIND } from "../src/core";
 import { startPaws } from "../src/index";
@@ -39,8 +40,8 @@ describe("shutdown WIP", () => {
       branchName: "paws/eng-21",
       now: Date.now(),
     });
-    saveRunCommitPolicy(
-      paws.db,
+    await saveRunCommitPolicy(
+      sqliteDb(paws.db),
       beginImplementRun(paws.db, "ENG-21", Date.now(), {
         phase: "running",
         wipCommit: "wip",
@@ -193,8 +194,8 @@ describe("shutdown WIP", () => {
       expect(existsSync(evidence)).toBe(false);
       expect(existsSync(`${evidence}.descendant`)).toBe(false);
       insertQueuedItem(paws.db, { id: "ENG-21", branchName: "paws/eng-21" });
-      saveRunCommitPolicy(
-        paws.db,
+      await saveRunCommitPolicy(
+        sqliteDb(paws.db),
         beginImplementRun(paws.db, "ENG-21", Date.now(), { phase: "running", turn: 1 }).run.id,
         APP_POLICY,
       );
@@ -239,8 +240,8 @@ describe("shutdown WIP", () => {
         branchName: "paws/eng-21",
         now: Date.now(),
       });
-      saveRunCommitPolicy(
-        db,
+      await saveRunCommitPolicy(
+        sqliteDb(db),
         beginImplementRun(db, "ENG-21", Date.now(), { phase: "running", turn: 1 }).run.id,
         APP_POLICY,
       );

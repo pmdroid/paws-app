@@ -15,6 +15,7 @@ import {
   openDatabase,
   registerInstance,
   runOwner,
+  sqliteDb,
 } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -98,7 +99,7 @@ test("a run the orchestrator starts records the instance that started it", async
     db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
     await jobs.tick();
     expect(dispatched).toBe(1);
-    const runs = listRuns(db);
+    const runs = await listRuns(sqliteDb(db));
     expect(runs).toHaveLength(1);
     expect(runOwner(db, runs[0]!.id)).toBe(instance.id);
   } finally {

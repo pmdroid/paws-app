@@ -10,6 +10,7 @@ import {
   migrate,
   openDatabase,
   recordItemCandidate,
+  sqliteDb,
 } from "../src/db";
 import type { Database } from "bun:sqlite";
 import { writeStoredToken, type StoredLinearToken } from "../src/linear";
@@ -174,7 +175,7 @@ export function cloneRunner(
       git(["--git-dir", mirror, "fetch", "-q", tree, `+HEAD:${ref}`]);
       const item = db && getWorkItem(db, getRun(db, options.runId)?.itemId ?? "");
       if (item)
-        recordItemCandidate(db, {
+        await recordItemCandidate(sqliteDb(db), {
           itemId: item.id,
           sha: git(["--git-dir", mirror, "rev-parse", ref]),
           branch: item.branchName,

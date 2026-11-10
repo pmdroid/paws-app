@@ -4,6 +4,7 @@ import {
   listItemHolds,
   recordRunnerRepositories,
   schedulerRunnerSlots,
+  sqliteDb,
 } from "../../src/db";
 import { createRunnerPlacement, itemRunnerVerdicts } from "../../src/runner-placement";
 import { JOB_KIND } from "../../src/core";
@@ -61,7 +62,7 @@ export default {
     );
     proof.expect(
       "the wait reason names the rejected host",
-      listItemHolds(db)
+      (await listItemHolds(sqliteDb(db)))
         .find((hold) => hold.itemId === "c")
         ?.blockers[0]?.includes("goldbox: repository not allowed in the runner's host config") ===
         true,

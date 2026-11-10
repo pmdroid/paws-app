@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, inArray, like, or } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { runnerCapacityWait } from "./items";
 import { jsonField, parsedJson } from "./json-text";
 import { runnerLeaseCutoff } from "./runner-lease";
@@ -93,12 +92,12 @@ export function* itemActivityFactsSteps(
   } satisfies ItemActivityFacts;
 }
 
-export function itemActivityFacts(
-  db: Database,
+export async function itemActivityFacts(
+  store: Db,
   item: { id: string; currentRunId: string | null },
   now: number,
-): ItemActivityFacts {
-  return settled(sqliteDb(db).run((q) => itemActivityFactsSteps(q, item, now)));
+): Promise<ItemActivityFacts> {
+  return store.run((q) => itemActivityFactsSteps(q, item, now));
 }
 
 function* runnerNamesSteps(q: Q, ids: readonly string[]) {

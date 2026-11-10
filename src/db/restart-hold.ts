@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import type { WorkItemRecord } from "./items";
 import { emitJobReady, reenqueueJobSteps } from "./jobs";
 import type { restartHold as restartHoldTable } from "./schema";
@@ -48,8 +48,8 @@ export function* holdRestartSteps(q: Q, item: WorkItemRecord, now: number): Step
   );
 }
 
-export function holdRestart(db: Database, item: WorkItemRecord, now: number): void {
-  settled(sqliteDb(db).run((q) => holdRestartSteps(q, item, now)));
+export async function holdRestart(store: Db, item: WorkItemRecord, now: number): Promise<void> {
+  await store.run((q) => holdRestartSteps(q, item, now));
 }
 
 export function* restartQuestionStandsSteps(q: Q, item: WorkItemRecord): Steps<boolean> {
@@ -75,8 +75,8 @@ export function* restartQuestionStandsSteps(q: Q, item: WorkItemRecord): Steps<b
   return row !== undefined;
 }
 
-export function restartQuestionStands(db: Database, item: WorkItemRecord): boolean {
-  return settled(sqliteDb(db).run((q) => restartQuestionStandsSteps(q, item)));
+export async function restartQuestionStands(store: Db, item: WorkItemRecord): Promise<boolean> {
+  return store.run((q) => restartQuestionStandsSteps(q, item));
 }
 
 function payloadText(q: Q, key: "itemId" | "reason") {

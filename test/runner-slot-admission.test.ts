@@ -19,6 +19,7 @@ import {
   slotWaitRunners,
   updateRunnerStatus,
   type RunnerHostRefusal,
+  sqliteDb,
 } from "../src/db";
 import {
   createRunnerHostRefusals,
@@ -54,7 +55,7 @@ test("a held item's reason names each runner and placement's rejection", async (
   const admitted = await pass();
   const heldId = ["a", "b"].find((id) => !admitted.includes(id))!;
 
-  const hold = listItemHolds(db).find((entry) => entry.itemId === heldId);
+  const hold = (await listItemHolds(sqliteDb(db))).find((entry) => entry.itemId === heldId);
   expect(hold).toMatchObject({ itemId: heldId, reason: "slot" });
   expect(hold?.blockers[0]).toStartWith(`No runner can take ${REPOSITORY}: `);
   expect(hold?.blockers[0]).toContain(
@@ -70,7 +71,9 @@ test("every in-scope runner refusing the repository leaves the item queued", asy
   queue("a");
 
   expect(await pass()).toEqual([]);
-  expect(listItemHolds(db)[0]?.blockers[0]).toContain("goldbox: repository not allowed");
+  expect((await listItemHolds(sqliteDb(db)))[0]?.blockers[0]).toContain(
+    "goldbox: repository not allowed",
+  );
 });
 
 test("a runner refusing every item is reported once per runner and journaled every 10 minutes", async () => {
@@ -292,7 +295,7 @@ test("offline runners never give admission an unlimited slot budget", async () =
   db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [NOW - 60_000, id]);
   queue("a");
   expect(await pass()).toEqual([]);
-  expect(listItemHolds(db)[0]?.blockers[0]).toContain("offline-box: offline");
+  expect((await listItemHolds(sqliteDb(db)))[0]?.blockers[0]).toContain("offline-box: offline");
 });
 
 test("a successful background sign-in check wakes parked work", async () => {
@@ -360,7 +363,7 @@ test("an enabled but unavailable placement scope stays queued while disabled che
   const options = { now: NOW, admission: workspaceAdmission(db) };
   expect(await dispatch(db, { ...options, itemRunners: () => null })).toEqual([]);
   expect(getWorkItem(db, "unknown")?.state).toBe("queued");
-  expect(listItemHolds(db)[0]?.blockers[0]).toContain("placement scope");
+  expect((await listItemHolds(sqliteDb(db)))[0]?.blockers[0]).toContain("placement scope");
   expect(await dispatch(db, options)).toEqual(["unknown"]);
 });
 

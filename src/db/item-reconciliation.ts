@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
@@ -18,7 +17,7 @@ import {
   parentIssueIdSql,
   parentTaskKeySql,
 } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText, jsonValue } from "./json-text";
 
 export type ReconciliationRequest = { itemId: string; token: string };
@@ -52,10 +51,6 @@ export type ReconciliationTarget = { itemId: string; workspaceId: string };
 
 export type RelationItem = ReconciliationTarget & { issueId: string; delegationId: string };
 
-function run<T>(db: Database, body: (q: Q) => Steps<T>): T {
-  return settled(sqliteDb(db).run(body));
-}
-
 export function* listItemReconciliationRequestsSteps(
   q: Q,
   delegationId: string,
@@ -71,11 +66,11 @@ export function* listItemReconciliationRequestsSteps(
   );
 }
 
-export function listItemReconciliationRequests(
-  db: Database,
+export async function listItemReconciliationRequests(
+  store: Db,
   delegationId: string,
-): ReconciliationRequest[] {
-  return run(db, (q) => listItemReconciliationRequestsSteps(q, delegationId));
+): Promise<ReconciliationRequest[]> {
+  return store.run((q) => listItemReconciliationRequestsSteps(q, delegationId));
 }
 
 export function* readReconciliationIdentitySteps(
@@ -118,12 +113,12 @@ export function* readReconciliationIdentitySteps(
   return (row as ReconciliationIdentity | undefined) ?? null;
 }
 
-export function readReconciliationIdentity(
-  db: Database,
+export async function readReconciliationIdentity(
+  store: Db,
   itemId: string,
   workspaceId: string,
-): ReconciliationIdentity | null {
-  return run(db, (q) => readReconciliationIdentitySteps(q, itemId, workspaceId));
+): Promise<ReconciliationIdentity | null> {
+  return store.run((q) => readReconciliationIdentitySteps(q, itemId, workspaceId));
 }
 
 export function* listReconciliationItemsSteps(
@@ -149,8 +144,11 @@ export function* listReconciliationItemsSteps(
   return rows as ReconciliationItem[];
 }
 
-export function listReconciliationItems(db: Database, delegationId: string): ReconciliationItem[] {
-  return run(db, (q) => listReconciliationItemsSteps(q, delegationId));
+export async function listReconciliationItems(
+  store: Db,
+  delegationId: string,
+): Promise<ReconciliationItem[]> {
+  return store.run((q) => listReconciliationItemsSteps(q, delegationId));
 }
 
 export function* delegationReconciliationChangesSteps(q: Q, delegationId: string): Steps<number> {
@@ -161,8 +159,11 @@ export function* delegationReconciliationChangesSteps(q: Q, delegationId: string
   return row?.changes ?? 0;
 }
 
-export function delegationReconciliationChanges(db: Database, delegationId: string): number {
-  return run(db, (q) => delegationReconciliationChangesSteps(q, delegationId));
+export async function delegationReconciliationChanges(
+  store: Db,
+  delegationId: string,
+): Promise<number> {
+  return store.run((q) => delegationReconciliationChangesSteps(q, delegationId));
 }
 
 export function* markItemSpecificationAbsentSteps(q: Q, itemId: string, hash: string): Steps<void> {
@@ -175,8 +176,12 @@ export function* markItemSpecificationAbsentSteps(q: Q, itemId: string, hash: st
   );
 }
 
-export function markItemSpecificationAbsent(db: Database, itemId: string, hash: string): void {
-  run(db, (q) => markItemSpecificationAbsentSteps(q, itemId, hash));
+export async function markItemSpecificationAbsent(
+  store: Db,
+  itemId: string,
+  hash: string,
+): Promise<void> {
+  await store.run((q) => markItemSpecificationAbsentSteps(q, itemId, hash));
 }
 
 export function* saveItemSpecificationSteps(q: Q, itemId: string, hash: string): Steps<void> {
@@ -196,8 +201,12 @@ export function* saveItemSpecificationSteps(q: Q, itemId: string, hash: string):
   );
 }
 
-export function saveItemSpecification(db: Database, itemId: string, hash: string): void {
-  run(db, (q) => saveItemSpecificationSteps(q, itemId, hash));
+export async function saveItemSpecification(
+  store: Db,
+  itemId: string,
+  hash: string,
+): Promise<void> {
+  await store.run((q) => saveItemSpecificationSteps(q, itemId, hash));
 }
 
 type ReconciledItemFields = {
@@ -221,12 +230,12 @@ export function* updateReconciledWorkItemSteps(
   );
 }
 
-export function updateReconciledWorkItem(
-  db: Database,
+export async function updateReconciledWorkItem(
+  store: Db,
   itemId: string,
   fields: ReconciledItemFields,
-): void {
-  run(db, (q) => updateReconciledWorkItemSteps(q, itemId, fields));
+): Promise<void> {
+  await store.run((q) => updateReconciledWorkItemSteps(q, itemId, fields));
 }
 
 export function* clearDelegationDependencyScopesSteps(q: Q, delegationId: string): Steps<void> {
@@ -247,8 +256,11 @@ export function* clearDelegationDependencyScopesSteps(q: Q, delegationId: string
   );
 }
 
-export function clearDelegationDependencyScopes(db: Database, delegationId: string): void {
-  run(db, (q) => clearDelegationDependencyScopesSteps(q, delegationId));
+export async function clearDelegationDependencyScopes(
+  store: Db,
+  delegationId: string,
+): Promise<void> {
+  await store.run((q) => clearDelegationDependencyScopesSteps(q, delegationId));
 }
 
 export function* saveItemReconciliationEffectSteps(
@@ -264,8 +276,11 @@ export function* saveItemReconciliationEffectSteps(
   );
 }
 
-export function saveItemReconciliationEffect(db: Database, effect: ReconciliationEffect): void {
-  run(db, (q) => saveItemReconciliationEffectSteps(q, effect));
+export async function saveItemReconciliationEffect(
+  store: Db,
+  effect: ReconciliationEffect,
+): Promise<void> {
+  await store.run((q) => saveItemReconciliationEffectSteps(q, effect));
 }
 
 export function* listItemReconciliationEffectsSteps(
@@ -282,11 +297,11 @@ export function* listItemReconciliationEffectsSteps(
   );
 }
 
-export function listItemReconciliationEffects(
-  db: Database,
+export async function listItemReconciliationEffects(
+  store: Db,
   delegationId: string,
-): ReconciliationEffect[] {
-  return run(db, (q) => listItemReconciliationEffectsSteps(q, delegationId));
+): Promise<ReconciliationEffect[]> {
+  return store.run((q) => listItemReconciliationEffectsSteps(q, delegationId));
 }
 
 export function* delegationHasOpenItemSteps(q: Q, delegationId: string): Steps<boolean> {
@@ -306,8 +321,8 @@ export function* delegationHasOpenItemSteps(q: Q, delegationId: string): Steps<b
   return row !== undefined;
 }
 
-export function delegationHasOpenItem(db: Database, delegationId: string): boolean {
-  return run(db, (q) => delegationHasOpenItemSteps(q, delegationId));
+export async function delegationHasOpenItem(store: Db, delegationId: string): Promise<boolean> {
+  return store.run((q) => delegationHasOpenItemSteps(q, delegationId));
 }
 
 export function* recordDelegationReconciledSteps(
@@ -331,13 +346,15 @@ export function* recordDelegationReconciledSteps(
   );
 }
 
-export function recordDelegationReconciled(
-  db: Database,
+export async function recordDelegationReconciled(
+  store: Db,
   delegationId: string,
   reconciledChanges: number,
   reconciledAt: number,
-): void {
-  run(db, (q) => recordDelegationReconciledSteps(q, delegationId, reconciledChanges, reconciledAt));
+): Promise<void> {
+  await store.run((q) =>
+    recordDelegationReconciledSteps(q, delegationId, reconciledChanges, reconciledAt),
+  );
 }
 
 export function* deleteItemReconciliationRequestSteps(
@@ -354,13 +371,13 @@ export function* deleteItemReconciliationRequestSteps(
   );
 }
 
-export function deleteItemReconciliationRequest(
-  db: Database,
+export async function deleteItemReconciliationRequest(
+  store: Db,
   itemId: string,
   workspaceId: string,
   token: string,
-): void {
-  run(db, (q) => deleteItemReconciliationRequestSteps(q, itemId, workspaceId, token));
+): Promise<void> {
+  await store.run((q) => deleteItemReconciliationRequestSteps(q, itemId, workspaceId, token));
 }
 
 export function* deleteItemReconciliationEffectSteps(
@@ -375,8 +392,11 @@ export function* deleteItemReconciliationEffectSteps(
   );
 }
 
-export function deleteItemReconciliationEffect(db: Database, effect: ReconciliationEffect): void {
-  run(db, (q) => deleteItemReconciliationEffectSteps(q, effect));
+export async function deleteItemReconciliationEffect(
+  store: Db,
+  effect: ReconciliationEffect,
+): Promise<void> {
+  await store.run((q) => deleteItemReconciliationEffectSteps(q, effect));
 }
 
 /** False when the item already has a request from another workspace. */
@@ -401,13 +421,13 @@ export function* requestItemReconciliationSteps(
   return accepted.length > 0;
 }
 
-export function requestItemReconciliation(
-  db: Database,
+export async function requestItemReconciliation(
+  store: Db,
   itemId: string,
   workspaceId: string,
   token: string,
-): boolean {
-  return run(db, (q) => requestItemReconciliationSteps(q, itemId, workspaceId, token));
+): Promise<boolean> {
+  return store.run((q) => requestItemReconciliationSteps(q, itemId, workspaceId, token));
 }
 
 type ChangedIssue = {
@@ -453,11 +473,11 @@ export function* listReconciliationTargetsSteps(
   );
 }
 
-export function listReconciliationTargets(
-  db: Database,
+export async function listReconciliationTargets(
+  store: Db,
   issue?: ChangedIssue,
-): ReconciliationTarget[] {
-  return run(db, (q) => listReconciliationTargetsSteps(q, issue));
+): Promise<ReconciliationTarget[]> {
+  return store.run((q) => listReconciliationTargetsSteps(q, issue));
 }
 
 export function* countDelegationReconciliationChangeSteps(q: Q, itemId: string): Steps<void> {
@@ -477,8 +497,11 @@ export function* countDelegationReconciliationChangeSteps(q: Q, itemId: string):
   );
 }
 
-export function countDelegationReconciliationChange(db: Database, itemId: string): void {
-  run(db, (q) => countDelegationReconciliationChangeSteps(q, itemId));
+export async function countDelegationReconciliationChange(
+  store: Db,
+  itemId: string,
+): Promise<void> {
+  await store.run((q) => countDelegationReconciliationChangeSteps(q, itemId));
 }
 
 /** A delegation is due when it was never reconciled, changed since, or last ran by `cutoff`. */
@@ -503,8 +526,12 @@ export function* itemReconciliationDueSteps(q: Q, itemId: string, cutoff: number
   return row !== undefined;
 }
 
-export function itemReconciliationDue(db: Database, itemId: string, cutoff: number): boolean {
-  return run(db, (q) => itemReconciliationDueSteps(q, itemId, cutoff));
+export async function itemReconciliationDue(
+  store: Db,
+  itemId: string,
+  cutoff: number,
+): Promise<boolean> {
+  return store.run((q) => itemReconciliationDueSteps(q, itemId, cutoff));
 }
 
 type RelationItemFilter = { blockedOnly: boolean; itemId?: string };
@@ -550,6 +577,9 @@ export function* listRelationItemsSteps(q: Q, filter: RelationItemFilter): Steps
   );
 }
 
-export function listRelationItems(db: Database, filter: RelationItemFilter): RelationItem[] {
-  return run(db, (q) => listRelationItemsSteps(q, filter));
+export async function listRelationItems(
+  store: Db,
+  filter: RelationItemFilter,
+): Promise<RelationItem[]> {
+  return store.run((q) => listRelationItemsSteps(q, filter));
 }
