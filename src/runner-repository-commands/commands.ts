@@ -154,7 +154,7 @@ export async function enqueueRepositoryCommand(
     waiter(db, command.id);
     setTimeout(
       () =>
-        void store.run((q) => expireRepositoryCommandSteps(q, command.id)).then(
+        void store.run((later) => expireRepositoryCommandSteps(later, command.id)).then(
           (state) => {
             if (state !== "done") settle(db, command.id, { outcome: "expired" });
           },
