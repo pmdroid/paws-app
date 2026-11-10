@@ -5,17 +5,20 @@ import { JOB_KIND, riskLine } from "../core";
 import {
   applyLinearCommand,
   applyWorkItemEvent,
-  deleteRiskFix,
+  deleteRiskFixSteps,
   enqueueJobOnce,
   enqueueOutboxOnce,
-  getCandidateRisk,
-  getRiskFix,
-  getWorkItem,
+  getCandidateRiskSteps,
+  getRiskFixSteps,
+  getWorkItemSteps,
   listLinkAsks,
-  openLinkAsks,
+  listLinkAsksSteps,
+  openLinkAsksSteps,
   saveCheckpoint,
-  saveRiskFix,
+  saveRiskFixSteps,
+  sqliteDb,
   type CandidateRisk,
+  type Db,
   type LinkAsk,
   type RiskFix,
   type WorkItemRecord,
@@ -80,6 +83,7 @@ export async function riskApprovalFor(
   },
 ): Promise<RiskApproval> {
   if (!riskGateOn(input.publicUrl)) return "not_required";
+  const store = sqliteDb(db);
   const humanApproved = (head: string, kind: "exact" | "same_patch" | "fix") => {
     try {
       input.onHumanApproval?.(head, kind);
@@ -93,9 +97,11 @@ export async function riskApprovalFor(
       );
     }
   };
-  const risk = getCandidateRisk(db, input.itemId, input.head);
+  const risk = await store.run((q) => getCandidateRiskSteps(q, input.itemId, input.head));
   if (risk?.tier === "normal") return "not_required";
-  const approvals = riskApprovals(db, input.itemId);
+  const approvals = (await store.run((q) => listLinkAsksSteps(q, input.itemId))).filter(
+    isRiskApproval,
+  );
   const exact = approvals.find((ask) => ask.headCommit === input.head);
   if (exact) {
     humanApproved(exact.headCommit, "exact");
@@ -123,7 +129,7 @@ export async function riskApprovalFor(
     }
   const latest = approvals.at(-1);
   if (latest === undefined || input.fixRisk === undefined) return "missing";
-  const fix = await fixSinceApproval(db, {
+  const fix = await fixSinceApproval(store, {
     itemId: input.itemId,
     head: input.head,
     approved: latest,
@@ -144,7 +150,7 @@ export async function riskApprovalFor(
  * stored comparison is never trusted. A fix Paws cannot read drops any earlier record of S.
  */
 async function fixSinceApproval(
-  db: Database,
+  store: Db,
   input: {
     itemId: string;
     head: string;
@@ -156,7 +162,7 @@ async function fixSinceApproval(
 ): Promise<RiskFix | null> {
   const fix = await input.fixRisk(input.approved.headCommit, input.base);
   if (fix === null) {
-    deleteRiskFix(db, input.itemId, input.head);
+    await store.run((q) => deleteRiskFixSteps(q, input.itemId, input.head));
     return null;
   }
   const row: RiskFix = {
@@ -168,7 +174,7 @@ async function fixSinceApproval(
     paths: [...fix.paths].sort(),
     recordedAt: input.now,
   };
-  saveRiskFix(db, row);
+  await store.run((q) => saveRiskFixSteps(q, row));
   return row;
 }
 
@@ -179,14 +185,17 @@ function listedPaths(paths: string[]): string {
 
 /** Risk link asks a signed-in person approved on the item page, oldest first. */
 export function riskApprovals(db: Database, itemId: string): LinkAsk[] {
-  return listLinkAsks(db, itemId).filter(
-    (ask) => ask.kind === "risk" && ask.decision === "approve" && ask.decidedBy !== null,
-  );
+  return listLinkAsks(db, itemId).filter(isRiskApproval);
+}
+
+function isRiskApproval(ask: LinkAsk): boolean {
+  return ask.kind === "risk" && ask.decision === "approve" && ask.decidedBy !== null;
 }
 
 /** The open risk ask of the item, if any. */
-export function openRiskAsk(db: Database, itemId: string): LinkAsk | null {
-  return openLinkAsks(db, itemId).find((ask) => ask.kind === "risk") ?? null;
+async function openRiskAsk(store: Db, itemId: string): Promise<LinkAsk | null> {
+  const asks = await store.run((q) => openLinkAsksSteps(q, itemId));
+  return asks.find((ask) => ask.kind === "risk") ?? null;
 }
 
 /**
@@ -207,24 +216,24 @@ export function riskAskDetail(risk: CandidateRisk | null, fix: RiskFix | null = 
  * approve it on the item page: one elicitation with a Markdown body and no options, the link on
  * the session while it is open, and one reminder after 24 hours. Asks bound to other heads close.
  */
-export function askRiskApproval(
+export async function askRiskApproval(
   db: Database,
   input: { item: WorkItemRecord; head: string; publicUrl: string | null; now: number },
-): "asked" | "unavailable" {
-  const item = getWorkItem(db, input.item.id);
+): Promise<"asked" | "unavailable"> {
+  const store = sqliteDb(db);
+  const item = await store.run((q) => getWorkItemSteps(q, input.item.id));
   if (item === null || item.cancelRequested || item.state !== "merge_queue") return "unavailable";
   if (!riskGateOn(input.publicUrl) || item.sessionKey === null) return "unavailable";
   closeLinkAsksOnHead(db, item.id, input.head, input.now);
-  if (openRiskAsk(db, item.id) !== null) return "asked";
+  if ((await openRiskAsk(store, item.id)) !== null) return "asked";
+  const risk = await store.run((q) => getCandidateRiskSteps(q, item.id, input.head));
+  const fix = await store.run((q) => getRiskFixSteps(q, item.id, input.head));
   askWithLink(db, {
     item,
     runId: item.currentRunId,
     kind: "risk",
     head: input.head,
-    detail: riskAskDetail(
-      getCandidateRisk(db, item.id, input.head),
-      getRiskFix(db, item.id, input.head),
-    ),
+    detail: riskAskDetail(risk, fix),
     publicUrl: input.publicUrl,
     now: input.now,
   });

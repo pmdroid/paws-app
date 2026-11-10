@@ -14,7 +14,7 @@ import {
   type StoredQuestion,
 } from "../questions";
 
-export { halt, type RestartHandoff } from "../db";
+export { halt, restartSteps, type RestartHandoff } from "../db";
 
 /**
  * Open or queue one question and record why this item needs a person.
