@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
 import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { jsonValue } from "./json-text";
 import { orm } from "./orm";
 import { question, workItemRepository, workItemRepositoryQuestion } from "./schema";
 import { immediate } from "./tx";
@@ -98,24 +99,37 @@ export function* bindWorkItemRepositorySteps(
   return saved;
 }
 
+export function* saveWorkItemRepositoryQuestionSteps(
+  q: Q,
+  itemId: string,
+  questionId: string,
+  candidates: readonly RepositoryBinding[],
+) {
+  const { workItemRepositoryQuestion: w } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(w)
+      .values({ itemId, questionId, candidates: jsonValue(q, candidates) })
+      .onConflictDoUpdate({
+        target: w.itemId,
+        set: {
+          questionId: sql`excluded.question_id`,
+          candidates: sql`excluded.candidates`,
+          chosenRepository: null,
+        },
+      }),
+  );
+}
+
 export function saveWorkItemRepositoryQuestion(
   db: Database,
   itemId: string,
   questionId: string,
   candidates: readonly RepositoryBinding[],
 ): void {
-  orm(db)
-    .insert(workItemRepositoryQuestion)
-    .values({ itemId, questionId, candidates: JSON.stringify(candidates) })
-    .onConflictDoUpdate({
-      target: workItemRepositoryQuestion.itemId,
-      set: {
-        questionId: sql`excluded.question_id`,
-        candidates: sql`excluded.candidates`,
-        chosenRepository: null,
-      },
-    })
-    .run();
+  settled(
+    sqliteDb(db).run((q) => saveWorkItemRepositoryQuestionSteps(q, itemId, questionId, candidates)),
+  );
 }
 
 export function getWorkItemRepositoryAnswer(
