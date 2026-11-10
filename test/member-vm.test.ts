@@ -454,7 +454,7 @@ describe("member VM", () => {
     const ready = await drive(f, loop, settled);
     expect(ready.step).toBe("ready");
 
-    f.control.setStatus(f.admin, ready.runnerId!, "revoked");
+    await f.control.setStatus(f.admin, ready.runnerId!, "revoked");
     expect(findMemberVm(f.db, f.member)!.runnerId).toBeNull();
 
     const stale = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
@@ -484,7 +484,7 @@ describe("member VM", () => {
     const health = await drive(f, loop, (row) => row.step === "health");
     heartbeat(f.db, health.runnerId!, f.clock.now());
     await drive(f, loop, settled);
-    f.control.setStatus(f.admin, health.runnerId!, "revoked");
+    await f.control.setStatus(f.admin, health.runnerId!, "revoked");
     f.bootstrap.resetIdentity = async () => {};
     await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     const failed = await drive(f, loop, settled);

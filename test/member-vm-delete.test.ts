@@ -684,7 +684,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(getRunner(f.db, orphan.id)!.status).toBe("paused");
     const itemId = f.task(orphan.id, "PAS-902");
 
-    const manual = f.control.createEnrollment(f.principal(f.member.userId, "member"), {
+    const manual = await f.control.createEnrollment(f.principal(f.member.userId, "member"), {
       name: "ada-lovelace-paws",
     });
     const laptop = await f.control.enroll({
@@ -762,7 +762,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     expect(getRunner(f.db, orphan.id)!.status).toBe("paused");
     expect(f.exeDev.vms.has("ada-lovelace-paws")).toBe(true);
 
-    f.control.setStatus(f.admin, orphan.id, "revoked");
+    await f.control.setStatus(f.admin, orphan.id, "revoked");
     await f.remove(f.member, row.id);
     await f.settle();
     expect(getMemberVm(f.db, row.id)).toBeNull();
@@ -774,7 +774,7 @@ describe("Delete VM while a provisioning step is still running", () => {
     const vm = await f.ready();
     f.db.run("DELETE FROM member_vm_enrollment WHERE member_vm_id=?", [vm.id]);
     f.db.run("UPDATE member_vm SET enrollments_tracked=0 WHERE id=?", [vm.id]);
-    f.control.createEnrollment(f.principal(f.member.userId, "member"), { name: vm.vmName });
+    await f.control.createEnrollment(f.principal(f.member.userId, "member"), { name: vm.vmName });
 
     await f.remove(f.member, vm.id);
     await f.settle();

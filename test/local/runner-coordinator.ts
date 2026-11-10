@@ -146,7 +146,9 @@ export async function probeRunnerCoordinator(
   let keepAlive: Agent | undefined;
   try {
     const client = await createRunnerKey(join(root, "client"));
-    const enrollment = coordinator.control.createEnrollment(principal, { name: "Fixture VM" });
+    const enrollment = await coordinator.control.createEnrollment(principal, {
+      name: "Fixture VM",
+    });
     const identity = await exchange<{
       certificate: string;
       runnerId: string;
@@ -157,7 +159,7 @@ export async function probeRunnerCoordinator(
       name: enrollment.name,
       csr: client.csr,
     });
-    coordinator.control.setStatus(principal, identity.runnerId, "active");
+    await coordinator.control.setStatus(principal, identity.runnerId, "active");
     assert.deepEqual(identity.signingKeys, initialized);
     assert(!JSON.stringify(identity).includes("PRIVATE KEY"));
     const peer = { cert: identity.certificate, key: readFileSync(client.keyPath, "utf8") };

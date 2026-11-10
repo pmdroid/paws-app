@@ -87,7 +87,7 @@ export async function probeRunnerHealth(
   const enrollment = { name: "Health proof", csr: client.csr };
   const identity = await control.enroll({
     ...enrollment,
-    token: control.createEnrollment(principal, enrollment).token,
+    token: (await control.createEnrollment(principal, enrollment)).token,
   });
   const { runnerId } = identity;
 
@@ -193,9 +193,9 @@ export async function probeRunnerHealth(
     listener = await startRunnerListener({
       tls: { ...server, ca: authority.certificate },
       now: () => now,
-      authorize(peer) {
+      async authorize(peer) {
         try {
-          control.authenticate(peer);
+          await control.authenticate(peer);
           return true;
         } catch {
           return false;
@@ -203,7 +203,7 @@ export async function probeRunnerHealth(
       },
       async fetch(input, peer) {
         return (
-          (await health.fetch(input, control.authenticate(peer).id)) ??
+          (await health.fetch(input, (await control.authenticate(peer)).id)) ??
           new Response(null, { status: 404 })
         );
       },
@@ -396,7 +396,7 @@ export async function probeRunnerHealth(
     assert.throws(() => health.read(runnerId, pending.commandId));
     assert.equal((await send(result)).status, 403);
     const fresh = health.request(principal, runnerId, requestInput);
-    control.setStatus(principal, runnerId, "revoked");
+    await control.setStatus(principal, runnerId, "revoked");
     assert.throws(() => health.submit(runnerId, { ...result, commandId: fresh.commandId }));
     assert.throws(() => health.read(runnerId, fresh.commandId));
     await assert.rejects(() => send({ ...result, commandId: fresh.commandId }));

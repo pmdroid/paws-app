@@ -135,15 +135,17 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     };
     const { runnerId } = await control.enroll({
       ...enrollment,
-      token: control.createEnrollment(
-        {
-          workspaceId: workspace.id,
-          userId: ownerId,
-          role: "admin",
-          authenticatedAt: now,
-          teamIds: [],
-        },
-        enrollment,
+      token: (
+        await control.createEnrollment(
+          {
+            workspaceId: workspace.id,
+            userId: ownerId,
+            role: "admin",
+            authenticatedAt: now,
+            teamIds: [],
+          },
+          enrollment,
+        )
       ).token,
     });
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);

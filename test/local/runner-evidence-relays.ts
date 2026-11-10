@@ -129,9 +129,9 @@ export async function probeRunnerEvidenceRelays(
   const peers = new Set<string>();
   const listener = await startRunnerListener({
     tls: { ...tls, ca: openRunnerAuthority(issuer).certificate },
-    authorize(peer) {
+    async authorize(peer) {
       try {
-        coordinator.control.authenticate(peer);
+        await coordinator.control.authenticate(peer);
         return true;
       } catch {
         return false;
@@ -140,7 +140,7 @@ export async function probeRunnerEvidenceRelays(
     async fetch(request, peer) {
       requests++;
       peers.add(peer.fingerprint);
-      const runnerId = coordinator.control.authenticate(peer).id;
+      const runnerId = (await coordinator.control.authenticate(peer)).id;
       const response =
         (await artifacts.fetch(request, runnerId)) ??
         (await transcriptHttp(request, runnerId)) ??
@@ -170,7 +170,7 @@ export async function probeRunnerEvidenceRelays(
   const statusError = (status: number) => (error: unknown) =>
     error instanceof RunnerRequestError && error.status === status;
   try {
-    const enrollmentGrant = coordinator.control.createEnrollment(principal, {
+    const enrollmentGrant = await coordinator.control.createEnrollment(principal, {
       name: "Evidence relay",
     });
     const enrolled = await daemon.enroll("Evidence relay", enrollmentGrant.token);

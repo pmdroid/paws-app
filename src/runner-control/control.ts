@@ -2,28 +2,28 @@ import { eq } from "drizzle-orm";
 import {
   workspaceMemberUsableSql,
   workspaceMemberUsable,
-  agentCatalogSummary,
-  auditWorkspaceAccess,
-  createRunnerEnrollment,
+  agentCatalogSummarySteps,
+  auditWorkspaceAccessSteps,
+  createRunnerEnrollmentSteps,
+  emitJobReady,
   enrollRunnerSteps,
   findRunnerEnrollmentSteps,
-  getRun,
-  getRunner,
-  getWorkItem,
-  immediate,
-  listRunnerOverview,
+  getRunSteps,
+  getRunnerSteps,
+  getWorkItemSteps,
+  listRunnerOverviewSteps,
   renewRunnerCertificateSteps,
-  requestAllRunnerAgentUpdates,
-  requestRunnerAgentUpdate,
+  requestAllRunnerAgentUpdatesSteps,
+  requestRunnerAgentUpdateSteps,
   isCurrentRunnerCertificateSteps,
   runnerForCertificateSteps,
   sqliteDb,
   type Db,
-  runnerForCertificate,
-  setRunnerAdminRepositories,
-  setRunnerConcurrency,
-  updateRunnerStatus,
-  workspaceMember,
+  type Q,
+  setRunnerAdminRepositoriesSteps,
+  setRunnerConcurrencySteps,
+  updateRunnerStatusSteps,
+  workspaceMemberSteps,
   type RunnerRecord,
 } from "../db";
 import {
@@ -55,18 +55,18 @@ export function createRunnerControl(options: {
   const now = options.now ?? Date.now;
   const serverVersion =
     options.serverVersion === undefined ? installedVersion() : options.serverVersion;
-  function admin(principal: WorkspacePrincipal) {
-    const member = workspaceMember(db, principal.workspaceId, principal.userId);
+  function* adminSteps(q: Q, principal: WorkspacePrincipal) {
+    const member = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);
     if (!workspaceMemberUsable(member) || !isWorkspaceAdmin(member.role))
       throw new Error("Workspace administrator access is required.");
   }
-  function enrollingMember(workspace: string, userId: string) {
-    const member = workspaceMember(db, workspace, userId);
+  function* enrollingMemberSteps(q: Q, workspace: string, userId: string) {
+    const member = yield* workspaceMemberSteps(q, workspace, userId);
     if (!workspaceMemberUsable(member))
       throw new Error("Active workspace membership is required to own a runner.");
   }
-  function authorized(peer: RunnerPeer, at = now()): RunnerRecord {
-    const runner = runnerForCertificate(db, peer.fingerprint, at);
+  async function authorized(peer: RunnerPeer, at = now()): Promise<RunnerRecord> {
+    const runner = await store.run((q) => runnerForCertificateSteps(q, peer.fingerprint, at));
     if (!runner) throw new Error("Runner identity is revoked or expired.");
     return runner;
   }
@@ -75,15 +75,15 @@ export function createRunnerControl(options: {
      * Mint a single-use enrollment token for ten minutes. Any active member may mint one, and owns the runner it produces. The token is returned once; only
      * its hash is stored.
      */
-    createEnrollment(principal: WorkspacePrincipal, input: { name: string }) {
+    async createEnrollment(principal: WorkspacePrincipal, input: { name: string }) {
       const name = runnerName(input.name);
       const at = now();
       const id = workspaceId(at);
       const token = workspaceSecret();
       const expiresAt = at + 10 * 60_000;
-      immediate(db, () => {
-        enrollingMember(principal.workspaceId, principal.userId);
-        createRunnerEnrollment(db, {
+      await store.transaction(function* (q) {
+        yield* enrollingMemberSteps(q, principal.workspaceId, principal.userId);
+        yield* createRunnerEnrollmentSteps(q, {
           id,
           tokenHash: workspaceTokenHash(token),
           workspaceId: principal.workspaceId,
@@ -92,7 +92,7 @@ export function createRunnerControl(options: {
           expiresAt,
           now: at,
         });
-        auditWorkspaceAccess(db, {
+        yield* auditWorkspaceAccessSteps(q, {
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           action: "runner.enrollment_created",
@@ -155,39 +155,56 @@ export function createRunnerControl(options: {
           .get(peer.fingerprint) !== null
       );
     },
-    list(principal: WorkspacePrincipal, sessionIds: readonly string[]) {
-      if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
+    async list(principal: WorkspacePrincipal, sessionIds: readonly string[]) {
+      if (
+        !workspaceMemberUsable(
+          await store.run((q) => workspaceMemberSteps(q, principal.workspaceId, principal.userId)),
+        )
+      )
         throw new Error("Workspace membership is required.");
       const scope = new Set(sessionIds);
-      const visible = (runId: string) => {
-        const run = getRun(db, runId);
-        const sessionKey = run ? getWorkItem(db, run.itemId)?.sessionKey : null;
+      const visible = async (runId: string) => {
+        const run = await store.run((q) => getRunSteps(q, runId));
+        const sessionKey = run
+          ? (await store.run((q) => getWorkItemSteps(q, run.itemId)))?.sessionKey
+          : null;
         return typeof sessionKey === "string" && scope.has(sessionKey);
       };
-      return listRunnerOverview(db, principal.workspaceId, now()).map((runner) => ({
-        ...runner,
-        running: runner.running.filter((session) => visible(session.runId)),
-      }));
+      const runners = await store.run((q) =>
+        listRunnerOverviewSteps(q, principal.workspaceId, now()),
+      );
+      const listed = [];
+      for (const runner of runners) {
+        const running = [];
+        for (const session of runner.running)
+          if (await visible(session.runId)) running.push(session);
+        listed.push({ ...runner, running });
+      }
+      return listed;
     },
     serverVersion() {
       return serverVersion;
     },
     /** The coding agent versions Paws offers, and the ones it refused. */
     agentVersions() {
-      return agentCatalogSummary(db);
+      return store.run(agentCatalogSummarySteps);
     },
-    setStatus(principal: WorkspacePrincipal, runnerId: string, status: RunnerRecord["status"]) {
-      const fingerprints = immediate(db, () => {
+    async setStatus(
+      principal: WorkspacePrincipal,
+      runnerId: string,
+      status: RunnerRecord["status"],
+    ) {
+      const fingerprints = await store.transaction(function* (q) {
         const at = now();
-        const runner = getRunner(db, runnerId);
+        const runner = yield* getRunnerSteps(q, runnerId);
         if (
           runner?.workspaceId === principal.workspaceId &&
           runner.ownerUserId === principal.userId &&
           (status === "active" || status === "paused")
         )
-          enrollingMember(principal.workspaceId, principal.userId);
-        else admin(principal);
-        return updateRunnerStatus(db, {
+          yield* enrollingMemberSteps(q, principal.workspaceId, principal.userId);
+        else yield* adminSteps(q, principal);
+        return yield* updateRunnerStatusSteps(q, {
           runnerId,
           workspaceId: principal.workspaceId,
           userId: principal.userId,
@@ -195,14 +212,20 @@ export function createRunnerControl(options: {
           now: at,
         });
       });
+      if (status === "active") emitJobReady(store);
       for (const fingerprint of fingerprints) options.disconnect(fingerprint);
     },
     /** Send `version` of `agent` to the runner. Only an eligible catalog version is accepted. */
-    updateAgent(principal: WorkspacePrincipal, runnerId: string, agent: string, version: string) {
-      immediate(db, () => {
-        admin(principal);
+    async updateAgent(
+      principal: WorkspacePrincipal,
+      runnerId: string,
+      agent: string,
+      version: string,
+    ) {
+      await store.transaction(function* (q) {
+        yield* adminSteps(q, principal);
         const at = now();
-        requestRunnerAgentUpdate(db, {
+        yield* requestRunnerAgentUpdateSteps(q, {
           runnerId,
           agent,
           version,
@@ -216,10 +239,10 @@ export function createRunnerControl(options: {
     },
     /** Send each runner the newest eligible version of every agent it is behind on. */
     updateAllAgents(principal: WorkspacePrincipal) {
-      return immediate(db, () => {
-        admin(principal);
+      return store.transaction(function* (q) {
+        yield* adminSteps(q, principal);
         const at = now();
-        return requestAllRunnerAgentUpdates(db, {
+        return yield* requestAllRunnerAgentUpdatesSteps(q, {
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           now: at,
@@ -228,10 +251,10 @@ export function createRunnerControl(options: {
         });
       });
     },
-    setConcurrency(principal: WorkspacePrincipal, runnerId: string, concurrency: number) {
-      immediate(db, () => {
-        admin(principal);
-        setRunnerConcurrency(db, {
+    async setConcurrency(principal: WorkspacePrincipal, runnerId: string, concurrency: number) {
+      await store.transaction(function* (q) {
+        yield* adminSteps(q, principal);
+        yield* setRunnerConcurrencySteps(q, {
           runnerId,
           workspaceId: principal.workspaceId,
           userId: principal.userId,
@@ -240,14 +263,14 @@ export function createRunnerControl(options: {
         });
       });
     },
-    setRepositories(
+    async setRepositories(
       principal: WorkspacePrincipal,
       runnerId: string,
       repositories: readonly string[] | null,
     ) {
-      immediate(db, () => {
-        admin(principal);
-        setRunnerAdminRepositories(db, {
+      const enqueued = await store.transaction(function* (q) {
+        yield* adminSteps(q, principal);
+        return yield* setRunnerAdminRepositoriesSteps(q, {
           runnerId,
           workspaceId: principal.workspaceId,
           userId: principal.userId,
@@ -255,6 +278,7 @@ export function createRunnerControl(options: {
           now: now(),
         });
       });
+      if (enqueued) emitJobReady(store);
     },
     async renew(peer: RunnerPeer, csr: string) {
       if (!(await store.run((q) => runnerForCertificateSteps(q, peer.fingerprint, now()))))

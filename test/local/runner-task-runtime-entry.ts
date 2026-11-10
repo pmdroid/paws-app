@@ -192,11 +192,11 @@ if (mode === "agent") {
     commands: [],
   };
   const daemon = openRunnerDaemon(daemonOptions(configuration));
-  const pending = service.control.createEnrollment(principal, { name: "Task runtime" });
+  const pending = await service.control.createEnrollment(principal, { name: "Task runtime" });
 
   const paired = await daemon.enroll("Task runtime", pending.token);
   if (paired.phase !== "paired") throw new Error("Runner enrollment failed");
-  service.control.setStatus(principal, paired.runnerId, "active");
+  await service.control.setStatus(principal, paired.runnerId, "active");
   assert(paired.phase === "paired");
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
     workspace.id,

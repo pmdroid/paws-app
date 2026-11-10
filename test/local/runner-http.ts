@@ -129,7 +129,7 @@ export async function probeRunnerHttp(
   try {
     const send = (path: string, body?: unknown, headers?: Record<string, string>) =>
       exchange(browser.port!, path, tls.cert, { body, headers });
-    const enrollment = control.createEnrollment(principal, { name: "Linux VM" });
+    const enrollment = await control.createEnrollment(principal, { name: "Linux VM" });
     const enrollmentInput = { token: enrollment.token, name: enrollment.name, csr: client.csr };
     const malformed = await send("/api/runner-enrollments", {
       ...enrollmentInput,
@@ -162,9 +162,9 @@ export async function probeRunnerHttp(
     observe("HTTPS enrollment returns an identity once with no-store", true, { runnerId });
     listener = await startRunnerListener({
       tls: { ...tls, ca: authority.certificate },
-      authorize(peer) {
+      async authorize(peer) {
         try {
-          control.authenticate(peer);
+          await control.authenticate(peer);
           return true;
         } catch {
           return false;

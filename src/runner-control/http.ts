@@ -92,7 +92,7 @@ export function createRunnerHttp(
       try {
         if (path === "/api/runners" && request.method === "GET")
           return json({
-            runners: control.list(principal, sessionIds).map((runner) => ({
+            runners: (await control.list(principal, sessionIds)).map((runner) => ({
               ...runner,
               ...(options.agents ? { agents: options.agents(principal, runner.id) } : {}),
               ...(options.hostWarnings?.(runner.id).length
@@ -100,7 +100,7 @@ export function createRunnerHttp(
                 : {}),
             })),
             serverVersion: control.serverVersion(),
-            agentVersions: control.agentVersions(),
+            agentVersions: await control.agentVersions(),
           });
         if (path === "/api/runners/enrollments" && request.method === "POST") {
           const input = enrollmentRequest.parse(await readJson(request));
@@ -111,11 +111,11 @@ export function createRunnerHttp(
               { error: "Connect GitHub and add a repository before adding a runner." },
               409,
             );
-          return json({ ...control.createEnrollment(principal, input), config });
+          return json({ ...(await control.createEnrollment(principal, input)), config });
         }
         const match = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/status$/.exec(path);
         if (match && request.method === "POST") {
-          control.setStatus(
+          await control.setStatus(
             principal,
             match[1]!,
             runnerStatus.parse(await readJson(request)).status,
@@ -124,7 +124,7 @@ export function createRunnerHttp(
         }
         const concurrency = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/concurrency$/.exec(path);
         if (concurrency && request.method === "POST") {
-          control.setConcurrency(
+          await control.setConcurrency(
             principal,
             concurrency[1]!,
             runnerConcurrency.parse(await readJson(request)).concurrency,
@@ -136,16 +136,16 @@ export function createRunnerHttp(
           const parsed = runnerRepositories.safeParse(await readJson(request));
           if (!parsed.success)
             return json({ error: "Repositories must be owner/repo names, at most 256." }, 400);
-          control.setRepositories(principal, repositories[1]!, parsed.data.repositories);
+          await control.setRepositories(principal, repositories[1]!, parsed.data.repositories);
           return json({ ok: true });
         }
         if (path === "/api/runners/coding-agents/update-all" && request.method === "POST")
-          return json({ requested: control.updateAllAgents(principal) });
+          return json({ requested: await control.updateAllAgents(principal) });
         const agent = agentPath.exec(path);
         if (agent && request.method === "POST") {
           const [, runnerId, name] = agent;
           const { version } = agentUpdate.parse(await readJson(request));
-          control.updateAgent(principal, runnerId!, name!, version);
+          await control.updateAgent(principal, runnerId!, name!, version);
           return json({ ok: true, version });
         }
         return null;

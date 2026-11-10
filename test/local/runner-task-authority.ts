@@ -158,7 +158,7 @@ export async function probeRunnerTaskAuthority(
     error instanceof RunnerRequestError && error.status === code;
   const hash = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
   try {
-    const enrollmentGrant = coordinator.control.createEnrollment(
+    const enrollmentGrant = await coordinator.control.createEnrollment(
       { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: now, teamIds: [] },
       { name: "Response task proof" },
     );
