@@ -460,6 +460,7 @@ import {
   readReviewThreads,
   readPullCi,
   commentOnPullRequest,
+  reactToComment,
   replyToReviewComment,
   resolveReviewThread,
   mergedPullHeads,
@@ -601,6 +602,7 @@ import {
   type LinearConversations,
 } from "./linear-comments";
 import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
+import { deliverGitHubOutbox, fixRoundNoticeSteps } from "./fix-round-notice";
 import { suggestedFindingsSection } from "./pull-comments";
 import {
   acceptedSuggestions,
@@ -2004,6 +2006,7 @@ export class Orchestrator {
       if (await this.waitingForConversation(job, context)) return;
       if (await this.waitingForRunnerSlot(job)) return;
       if (await this.mergeInsteadOfTurn(job, context)) return;
+      await this.announceFixRound(job);
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
@@ -2222,17 +2225,51 @@ export class Orchestrator {
         );
     });
     this.options.outbox.setHandler((message, context) =>
-      linearCaller(
-        "outbox",
-        () => this.forItem(message.payload, () => this.deliverLinearMessage(message, context)),
-        message.op === "elicitation" ||
-          message.delivery === "critical" ||
-          message.delivery === "stop" ||
-          message.delivery === "terminal"
-          ? "critical"
-          : "normal",
-      ),
+      message.target === "github"
+        ? this.deliverGitHubMessage(message)
+        : linearCaller(
+            "outbox",
+            () => this.forItem(message.payload, () => this.deliverLinearMessage(message, context)),
+            message.op === "elicitation" ||
+              message.delivery === "critical" ||
+              message.delivery === "stop" ||
+              message.delivery === "terminal"
+              ? "critical"
+              : "normal",
+          ),
     );
+  }
+
+  private async announceFixRound(job: Job): Promise<void> {
+    await this.store
+      .transaction((q) => fixRoundNoticeSteps(q, job, this.now()))
+      .catch((error: unknown) =>
+        journalCaught(
+          error,
+          "orchestrator.announceFixRound",
+          null,
+          undefined,
+          this.options.journal,
+        ),
+      );
+  }
+
+  private async deliverGitHubMessage(message: OutboxRow): Promise<void> {
+    const itemId = readString(message.payload, "itemId");
+    const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
+    const repository = item ? this.repositoryForItem(item) : null;
+    const github = repository ? this.githubForRepository(repository) : null;
+    if (!repository || !github) throw new Error("No GitHub binding for the item's repository");
+    const access = {
+      client: github.client,
+      owner: repository.owner,
+      repo: repository.repo,
+      ...this.gitHubCredentials(github),
+    };
+    await deliverGitHubOutbox(message, {
+      commentOnPullRequest: (prNumber, body) => commentOnPullRequest({ ...access, prNumber, body }),
+      reactToComment: (commentId, on) => reactToComment({ ...access, commentId, on }),
+    });
   }
 
   /** GitHub and Linear for a review or comments on the item's pull request. */
