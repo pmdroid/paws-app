@@ -99,27 +99,22 @@ import {
   enqueueJobOnce,
   getLinearSession,
   getWorkItem,
-  workItemForSession,
   getItemRunCommitPolicy,
   workspaceLinearMember,
-  getWorkspace,
   workspaceForOrganization,
-  applyLinearUserChange,
   listWorkspaceMembers,
   listRepositoryCandidates,
   getLinearSessionInstallation,
   isLinearAppRevoked,
   journal,
-  getLinearSessionAccess,
   delegatedLinearUserId,
-  getPullRequestDraft,
   getWorkItemRepository,
   getWorkItemRepositoryChoice,
   getWorkItemRepositoryAnswer,
   getTaskMode,
   taskRequiresRepository,
   listWorkItems,
-  listReviewEscapes,
+  listReviewEscapesSteps,
   clearUsagePauses,
   countLinearRequest,
   linearBudgetStore,
@@ -149,7 +144,6 @@ import {
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
   takeOverGoneRuns,
-  listSkills,
   listRepositoryCatalog,
   refreshRepositoryCatalog,
   startLoops,
@@ -157,15 +151,30 @@ import {
   type JobLoop,
   type WorkItemRecord,
   runnerHasCapacity,
-  applyLinearIssueProject,
   workspaceMember,
   sqliteDb,
   enabledRunnerIds,
   latestCloseoutProgressMarker,
   listWorkspaceIds,
   missingSnapshotTargets,
-  openDelegationWorkspaceId,
   workspaceUserLinearId,
+  applyLinearIssueProjectSteps,
+  applyLinearUserChangeSteps,
+  commandInstance,
+  delegatedLinearUserIdSteps,
+  enqueueJobOnceAsync,
+  getLinearSessionAccessSteps,
+  getLinearSessionInstallationSteps,
+  getLinearSessionSteps,
+  getPullRequestDraftSteps,
+  getWorkItemRepositorySteps,
+  getWorkspaceSteps,
+  listSkillsSteps,
+  openDelegationWorkspaceIdSteps,
+  submitCommandAsync,
+  workItemForSessionSteps,
+  workspaceForOrganizationSteps,
+  workspaceLinearMemberSteps,
   type Db,
 } from "./db";
 import { doctorChecks, formatDoctor, realProbe } from "./doctor";
@@ -560,7 +569,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   periodic.push({
     queue: "skills.updates.check",
     everyMs: SKILL_UPDATE_INTERVAL,
-    run: () => skillUpdates.check(listSkills(db)),
+    run: async () => skillUpdates.check(await store.run(listSkillsSteps)),
   });
   const webhooks = runtime.webhooks;
   const inbox = createInboxStore(db);
@@ -570,13 +579,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     const accepted = await orchestrator.onLinearEvent(event);
     const known = event.sessionId ? orchestrator.takeIntakeReads(event.sessionId) : undefined;
     if (accepted !== false && reconciler && event.sessionId) {
-      const session = getLinearSession(db, event.sessionId);
-      const linked = workItemForSession(db, event.sessionId);
+      const sessionId = event.sessionId;
+      const session = await store.run((q) => getLinearSessionSteps(q, sessionId));
+      const linked = await store.run((q) => workItemForSessionSteps(q, sessionId));
       if (linked && session?.organizationId && session.stoppedAt === null) {
-        const workspaceId = openDelegationWorkspaceId(
-          db,
-          session.organizationId,
-          linked.delegationId,
+        const organizationId = session.organizationId;
+        const workspaceId = await store.run((q) =>
+          openDelegationWorkspaceIdSteps(q, organizationId, linked.delegationId),
         );
         if (workspaceId)
           await reconciler.reconcile({
@@ -628,14 +637,21 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       members?.invalidate(event);
       const userChange = parseLinearUserChange(event);
       if (userChange) {
-        if (applyLinearUserChange(db, { ...userChange, now: Date.now() }))
+        if (
+          await store.transaction((q) =>
+            applyLinearUserChangeSteps(q, { ...userChange, now: Date.now() }),
+          )
+        )
           invalidateAuthorization();
         return false;
       }
       const issueEvent = acceptedIssueChange(event);
       if (issueEvent) invalidateAuthorization({ issueId: issueEvent.issueId });
       const projectChange = parseLinearIssueProjectChange(event);
-      if (projectChange) applyLinearIssueProject(db, projectChange.issueId, projectChange.project);
+      if (projectChange)
+        await store.run((q) =>
+          applyLinearIssueProjectSteps(q, projectChange.issueId, projectChange.project),
+        );
       const undelegation = parseLinearUndelegation(event, runtime.linearViewerId);
       if (undelegation)
         await stopUndelegatedIssue(db, undelegation, {
@@ -684,7 +700,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             linearCaller("notifications", async () => {
               if (notification.action === "issueAssignedToYou") {
                 inbox.setCursor(`delegated:${notification.issueId}`, notification.createdAtMs);
-                enqueueJobOnce(db, {
+                await enqueueJobOnceAsync(store, {
                   queue: "linear.redelegation",
                   jobKey: `linear.redelegation:${notification.issueId}:${notification.createdAtMs}`,
                   payload: {
@@ -726,7 +742,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           await workspace.refresh();
         return false;
       }
-      if (event.sessionId !== null && getLinearSessionAccess(db, event.sessionId) === "revoked")
+      const sessionId = event.sessionId;
+      if (
+        sessionId !== null &&
+        (await store.run((q) => getLinearSessionAccessSteps(q, sessionId))) === "revoked"
+      )
         return false;
       if (linearTaskAccess === null) throw new Error("Linear is not connected.");
       return linearTaskAccess.accept(event, request);
@@ -827,8 +847,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   }
   const commitPolicyForItem = async (
     item: WorkItemRecord,
-    selected = getWorkItemRepository(db, item.id),
+    chosen?: RepositoryBinding | null,
   ): Promise<GitCommitPolicy> => {
+    const selected =
+      chosen === undefined
+        ? await store.run((q) => getWorkItemRepositorySteps(q, item.id))
+        : chosen;
     if (!selected) throw new Error("Attribution repository is missing");
     const bot = await authProvider(runtime, selected, "read", resolveApp)?.botIdentity?.();
     if (!bot) throw new Error("Attribution App bot authority is unavailable");
@@ -1376,7 +1400,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       owner: `paws:${process.pid}:${crypto.randomUUID()}`,
       signal: abort.signal,
       linearFor: async (workspaceId) =>
-        getWorkspace(db, workspaceId)?.organizationId === (await access).organizationId
+        (await store.run((q) => getWorkspaceSteps(q, workspaceId)))?.organizationId ===
+        (await access).organizationId
           ? improvementDelivery
           : null,
       sourceUrl: (improvementId) =>
@@ -1389,7 +1414,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       db,
       signal: abort.signal,
       linearFor: async (workspaceId) =>
-        getWorkspace(db, workspaceId)?.organizationId === (await access).organizationId
+        (await store.run((q) => getWorkspaceSteps(q, workspaceId)))?.organizationId ===
+        (await access).organizationId
           ? improvementDelivery
           : null,
     });
@@ -1424,12 +1450,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
         stopTask: async (itemId) => {
           if (orchestrator === null) throw new Error("Paws is still starting. Retry the delete.");
-          submitCommand(db, orchestrator.bus, {
-            type: "stop",
-            source: "dashboard",
-            itemId,
-            requestedAt: Date.now(),
-          });
+          await submitCommandAsync(
+            store,
+            orchestrator.bus,
+            { type: "stop", source: "dashboard", itemId, requestedAt: Date.now() },
+            commandInstance(db),
+          );
           await Promise.race([
             orchestrator.interruptItem(itemId).catch((caughtError7) => {
               journalCaught(caughtError7, "index.stopTask.interruptItem", itemId);
@@ -1490,14 +1516,15 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               ) => {
                 const now = Date.now();
                 const target = itemRepositoryRunner(db, { itemId: item.id, now });
-                const repository = getWorkItemRepository(db, item.id);
+                const repository = await store.run((q) => getWorkItemRepositorySteps(q, item.id));
                 if (!target || !repository)
                   return { outcome: "failed" as const, reason: "no eligible runner" };
                 const name = `${repository.owner}/${repository.repo}`;
                 const bot = await repositoryAccess?.checkpointBot?.(name);
                 if (!bot) return { outcome: "failed" as const, reason: "no GitHub App bot" };
                 const title = rebaseCommitTitle(
-                  getPullRequestDraft(db, item.id)?.title ?? item.title,
+                  (await store.run((q) => getPullRequestDraftSteps(q, item.id)))?.title ??
+                    item.title,
                 );
                 return rebaseOnRunner(
                   db,
@@ -1610,24 +1637,30 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             if (linearTaskAccess && !(await authorizeLinearTask(linearTaskAccess, item, signal)))
               return deny(false);
             if (!workspace) return true;
-            const session = item.sessionKey
-              ? getLinearSessionInstallation(db, item.sessionKey)
+            const sessionKey = item.sessionKey;
+            const session = sessionKey
+              ? await store.run((q) => getLinearSessionInstallationSteps(q, sessionKey))
               : null;
-            const currentWorkspace = session?.organizationId
-              ? workspaceForOrganization(db, session.organizationId)
+            const organizationId = session?.organizationId;
+            const currentWorkspace = organizationId
+              ? await store.run((q) => workspaceForOrganizationSteps(q, organizationId))
               : null;
-            const actorId = delegatedLinearUserId(db, item.id);
+            const actorId = await store.run((q) => delegatedLinearUserIdSteps(q, item.id));
             if (!currentWorkspace || !actorId || !session?.teamId || !members) return deny(false);
-            const member = workspaceLinearMember(db, currentWorkspace.id, actorId);
+            const member = await store.run((q) =>
+              workspaceLinearMemberSteps(q, currentWorkspace.id, actorId),
+            );
             const identity = await members
               .member(currentWorkspace.organizationId, actorId, signal)
               .catch((error: unknown) => {
                 members?.forget();
                 throw error;
               });
-            const latest = workspaceLinearMember(db, currentWorkspace.id, actorId);
-            const currentSession = item.sessionKey
-              ? getLinearSessionInstallation(db, item.sessionKey)
+            const latest = await store.run((q) =>
+              workspaceLinearMemberSteps(q, currentWorkspace.id, actorId),
+            );
+            const currentSession = sessionKey
+              ? await store.run((q) => getLinearSessionInstallationSteps(q, sessionKey))
               : null;
             if (
               currentSession === null ||
@@ -2471,7 +2504,7 @@ export async function dbCheckMain(
 }
 
 /** `paws review-score [--since YYYY-MM-DD] [--escapes path]`: the independent reviewer's escapes. */
-function reviewScoreMain(args: string[]): number {
+async function reviewScoreMain(args: string[]): Promise<number> {
   let since = 0;
   let escapesFile = REVIEW_ESCAPES_FILE;
   for (let index = 0; index < args.length; index += 2) {
@@ -2490,7 +2523,8 @@ function reviewScoreMain(args: string[]): number {
   const db = openDatabase(paths.db);
   try {
     migrate(db);
-    const score = scoreReview(listReviewEscapes(db, since), readReviewEscapesFile(escapesFile));
+    const escapes = await sqliteDb(db).run((q) => listReviewEscapesSteps(q, since));
+    const score = scoreReview(escapes, readReviewEscapesFile(escapesFile));
     console.log(formatReviewScore(score));
     return 0;
   } finally {
@@ -2627,7 +2661,7 @@ if (import.meta.main) {
   if (command === "install" && argv[1] === "secrets")
     process.exit(await runInstallCli(argv.slice(1), process.env));
   if (command === "install") process.exit(await installHostMain(argv.slice(1)));
-  if (command === "review-score") process.exit(reviewScoreMain(argv.slice(1)));
+  if (command === "review-score") process.exit(await reviewScoreMain(argv.slice(1)));
   if (command === "login" && argv[1] === "slack") {
     try {
       if (argv.length !== 2) throw new Error("usage: paws login slack");
