@@ -225,8 +225,10 @@ describe("retro dispatch, composed with a fake runner", () => {
     expect(retro.state).toBe("published");
     expect((retro.result as { items: unknown[] }).items).toHaveLength(1);
     expect(listRetroItems(reopened, "r1")).toHaveLength(1);
-    expect(listRetroAttempts(reopened, "r1").map((entry) => entry.outcome)).toEqual(["succeeded"]);
-    expect(retroWatermarks(reopened, "ws")).toEqual([
+    expect(
+      (await listRetroAttempts(sqliteDb(reopened), "r1")).map((entry) => entry.outcome),
+    ).toEqual(["succeeded"]);
+    expect(await retroWatermarks(sqliteDb(reopened), "ws")).toEqual([
       { repository: FIXTURE_REPO, cursor: FIXTURE_END, retroId: "r1", updatedAt: clock.now },
     ]);
     expect(dispatcher.generation("r1")).toMatchObject({
@@ -308,7 +310,12 @@ describe("placement", () => {
     };
     const digest = read("digest");
     const manifest = read("manifest");
-    closeRetro(db, { retroId: "r1", state: "abandoned", error: "replaced", now: clock.now });
+    await closeRetro(sqliteDb(db), {
+      retroId: "r1",
+      state: "abandoned",
+      error: "replaced",
+      now: clock.now,
+    });
     db.run("DELETE FROM retro_collection_lock WHERE retro_id = 'r1'");
     createRetro(db, {
       id: "r2",
@@ -474,7 +481,7 @@ describe("recovery", () => {
 
     await runner.submit(dispatcher, second!, runner.result(second!, VALID_OUTPUT));
     expect(getRetro(db, "r1")!.state).toBe("published");
-    expect(listRetroAttempts(db, "r1").map((entry) => entry.outcome)).toEqual([
+    expect((await listRetroAttempts(sqliteDb(db), "r1")).map((entry) => entry.outcome)).toEqual([
       "failed",
       "succeeded",
     ]);
@@ -555,7 +562,7 @@ describe("recovery", () => {
     clock.now = dispatch!.expiresAt;
     runner.seen(db);
     await dispatcher.tick();
-    expect(getRetroDispatch(db, dispatch!.commandId)).toMatchObject({
+    expect(await getRetroDispatch(sqliteDb(db), dispatch!.commandId)).toMatchObject({
       releaseReason: "not_started",
     });
     expect(await retroSlotsHeld(sqliteDb(db), "R1")).toBe(0);

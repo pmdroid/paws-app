@@ -467,7 +467,7 @@ export function createRetroScheduler(options: {
     });
   }
 
-  function collect(retro: Retro) {
+  async function collect(retro: Retro) {
     try {
       const collected = collectRetroDigest(db, {
         retroId: retro.id,
@@ -488,13 +488,13 @@ export function createRetroScheduler(options: {
       journalCaught(error, "retros.schedule.collect", null);
       if (getRetro(db, retro.id)?.state !== "collecting") return;
       const reason = `Evidence collection failed: ${error instanceof Error ? error.message : String(error)}`;
-      closeRetro(db, {
+      await closeRetro(sqliteDb(db), {
         retroId: retro.id,
         state: "abandoned",
         error: reason.slice(0, 2000),
         now: now(),
       });
-      recordRetroGeneration(db, {
+      await recordRetroGeneration(sqliteDb(db), {
         retroId: retro.id,
         diagnostic: "failed",
         detail: reason.slice(0, 2000),
@@ -505,7 +505,7 @@ export function createRetroScheduler(options: {
 
   async function advance(workspaceId: string) {
     for (const id of await store.run((q) => collectingRetroIdsSteps(q, workspaceId)))
-      collect((await store.run((q) => getRetroSteps(q, id)))!);
+      await collect((await store.run((q) => getRetroSteps(q, id)))!);
     const plan = await store.run((q) => schedulePlanSteps(q, workspaceId, now()));
     if (!plan.saved) return;
     const state = (nextDueAt: number | null, blockedReason: string | null) =>
@@ -520,7 +520,7 @@ export function createRetroScheduler(options: {
       requestedBy: null,
     });
     if (claimed.ok || claimed.reason === "stale") {
-      if (claimed.ok && claimed.created) collect(claimed.retro);
+      if (claimed.ok && claimed.created) await collect(claimed.retro);
       const after = await store.run((q) => schedulePlanSteps(q, workspaceId, now()));
       return state(after.saved ? ((after.due ?? after.next)?.at ?? null) : null, null);
     }
@@ -645,7 +645,7 @@ export function createRetroScheduler(options: {
         occurrence: describe(now(), timeZone, "exact"),
         requestedBy: userId,
       });
-      if (claimed.ok && claimed.retro.state === "collecting") collect(claimed.retro);
+      if (claimed.ok && claimed.retro.state === "collecting") await collect(claimed.retro);
       if (!claimed.ok) return claimed;
       const retro = (await store.run((q) => getRetroSteps(q, claimed.retro.id)))!;
       return { ...claimed, retro };

@@ -226,7 +226,7 @@ describe("retro generation", () => {
         now: 20,
       }),
     ).toBe(true);
-    expect(retroWatermarks(db, "ws")).toEqual([]);
+    expect(await retroWatermarks(sqliteDb(db), "ws")).toEqual([]);
     expect(getRetro(db, "r1")!.result).toBeNull();
 
     expect(startRetroAttempt(db, { retroId: "r1", owner: "b", now: 30, leaseMs: 100 })).toEqual({
@@ -235,16 +235,15 @@ describe("retro generation", () => {
     const retro = getRetro(db, "r1")!;
     expect(retro.prompt).toBe("Review {{digest}}");
     expect(retro.settingsRevision).toBe(1);
-    expect(listRetroAttempts(db, "r1").map((attempt) => attempt.outcome)).toEqual([
-      "failed",
-      "running",
-    ]);
+    expect((await listRetroAttempts(sqliteDb(db), "r1")).map((attempt) => attempt.outcome)).toEqual(
+      ["failed", "running"],
+    );
     expect(
       startRetroAttempt(db, { retroId: "r1", owner: "c", now: 40, leaseMs: 100, maxAttempts: 2 }),
     ).toBeNull();
   });
 
-  test("publication stores the result and advances the watermark together", () => {
+  test("publication stores the result and advances the watermark together", async () => {
     const { db, root } = harness();
     frozen(db, root, { id: "r1", start: 0, end: 7 * DAY, cursor: 40 });
     startRetroAttempt(db, { retroId: "r1", owner: "a", now: 10, leaseMs: 100 });
@@ -263,14 +262,14 @@ describe("retro generation", () => {
       { ...item, retroId: "r1", position: 0, improvementId: published.items[0]!.improvementId },
     ]);
     expect(getImprovement(db, published.items[0]!.improvementId)!.reviewState).toBe("needs_review");
-    expect(retroWatermarks(db, "ws")).toEqual([
+    expect(await retroWatermarks(sqliteDb(db), "ws")).toEqual([
       { repository: REPO, cursor: 40, retroId: "r1", updatedAt: 50 },
     ]);
     expect(() => db.run("UPDATE retro SET result = '{}' WHERE id = 'r1'")).toThrow(/immutable/);
     expect(() => db.run("UPDATE retro_item SET title = 'x'")).toThrow(/immutable/);
   });
 
-  test("a result citing unknown evidence publishes nothing", () => {
+  test("a result citing unknown evidence publishes nothing", async () => {
     const { db, root } = harness();
     frozen(db, root, { id: "r1", start: 0, end: DAY, cursor: 9 });
     startRetroAttempt(db, { retroId: "r1", owner: "a", now: 10, leaseMs: 100 });
@@ -284,7 +283,7 @@ describe("retro generation", () => {
         now: 20,
       }),
     ).toEqual({ ok: false, reason: "unknown_evidence" });
-    expect(retroWatermarks(db, "ws")).toEqual([]);
+    expect(await retroWatermarks(sqliteDb(db), "ws")).toEqual([]);
     expect(listRetroItems(db, "r1")).toEqual([]);
   });
 
@@ -303,10 +302,10 @@ describe("retro generation", () => {
       publishRetro(db, { retroId: "r1", attempt: 1, owner: "a", result: {}, items: [], now: 20 }),
     ).toEqual({ ok: false, reason: "coverage_gap" });
     expect(getRetro(db, "r1")!.state).toBe("generating");
-    expect(retroWatermarks(db, "ws")).toEqual([]);
+    expect(await retroWatermarks(sqliteDb(db), "ws")).toEqual([]);
   });
 
-  test("an expired owner cannot publish after another attempt takes over", () => {
+  test("an expired owner cannot publish after another attempt takes over", async () => {
     const { db, root } = harness();
     frozen(db, root, { id: "r1", start: 0, end: DAY, cursor: 9 });
     startRetroAttempt(db, { retroId: "r1", owner: "a", now: 10, leaseMs: 100 });
@@ -316,7 +315,7 @@ describe("retro generation", () => {
     });
     const late = { retroId: "r1", attempt: 1, owner: "a", result: {}, items: [], now: 120 };
     expect(publishRetro(db, late)).toEqual({ ok: false, reason: "not_owner" });
-    expect(listRetroAttempts(db, "r1")[0]!.outcome).toBe("expired");
+    expect((await listRetroAttempts(sqliteDb(db), "r1"))[0]!.outcome).toBe("expired");
     expect(publishRetro(db, { ...late, attempt: 2, owner: "b" }).ok).toBe(true);
   });
 });
@@ -356,7 +355,7 @@ describe("retro collection", () => {
     });
   });
 
-  test("a watermark that moved underneath a retro blocks its publication", () => {
+  test("a watermark that moved underneath a retro blocks its publication", async () => {
     const { db, root } = harness();
     frozen(db, root, { id: "r1", start: 0, end: DAY, cursor: 9 });
     db.run(
@@ -368,7 +367,7 @@ describe("retro collection", () => {
       publishRetro(db, { retroId: "r1", attempt: 1, owner: "a", result: {}, items: [], now: 20 }),
     ).toEqual({ ok: false, reason: "watermark_moved" });
     expect(getRetro(db, "r1")!.state).toBe("generating");
-    expect(retroWatermarks(db, "ws")[0]!.cursor).toBe(3);
+    expect((await retroWatermarks(sqliteDb(db), "ws"))[0]!.cursor).toBe(3);
   });
 
   test("a newly selected repository starts from its own history", () => {
@@ -410,9 +409,14 @@ describe("retro collection", () => {
       detail: "Runner receipts before day 1 expired.",
       now: 5,
     });
-    expect(closeRetro(db, { retroId: "r1", state: "coverage_failed", error: "gap", now: 6 })).toBe(
-      true,
-    );
+    expect(
+      await closeRetro(sqliteDb(db), {
+        retroId: "r1",
+        state: "coverage_failed",
+        error: "gap",
+        now: 6,
+      }),
+    ).toBe(true);
     expect(listRetroCoverageGaps(db, "r1")).toEqual([
       {
         repository: REPO,
@@ -421,7 +425,7 @@ describe("retro collection", () => {
         recordedAt: 5,
       },
     ]);
-    expect(retroWatermarks(db, "ws")).toEqual([]);
+    expect(await retroWatermarks(sqliteDb(db), "ws")).toEqual([]);
     expect(db.query("SELECT count(*) AS n FROM retro_collection_lock").get()).toEqual({ n: 0 });
     expect((await retroRepositories(sqliteDb(db), "r1"))[0]!.endCursor).toBe(9);
   });
@@ -464,7 +468,7 @@ describe("retro artifacts", () => {
 });
 
 describe("restart persistence", () => {
-  test("retros, items, watermarks and schedule metadata survive a reopen", () => {
+  test("retros, items, watermarks and schedule metadata survive a reopen", async () => {
     const path = join(temp(), "paws.db");
     const first = harness(path);
     frozen(first.db, first.root, { id: "r1", start: 0, end: DAY, cursor: 9 });
@@ -477,14 +481,14 @@ describe("restart persistence", () => {
       items: [item],
       now: 20,
     });
-    recordRetroScheduleRun(first.db, {
+    await recordRetroScheduleRun(sqliteDb(first.db), {
       workspaceId: "ws",
       occurrenceAt: DAY,
       retroId: "r1",
       nextDueAt: 8 * DAY,
       now: 20,
     });
-    recordRetroScheduleRun(first.db, {
+    await recordRetroScheduleRun(sqliteDb(first.db), {
       workspaceId: "ws",
       occurrenceAt: 0,
       retroId: "r1",
@@ -497,8 +501,8 @@ describe("restart persistence", () => {
     migrate(db);
     expect(getRetro(db, "r1")!.result).toEqual({ ok: 1 });
     expect(listRetroItems(db, "r1").map((row) => row.itemId)).toEqual(["git-recovery"]);
-    expect(retroWatermarks(db, "ws")[0]!.cursor).toBe(9);
-    expect(retroScheduleRuntime(db, "ws")).toEqual({
+    expect((await retroWatermarks(sqliteDb(db), "ws"))[0]!.cursor).toBe(9);
+    expect(await retroScheduleRuntime(sqliteDb(db), "ws")).toEqual({
       workspaceId: "ws",
       lastOccurrenceAt: DAY,
       lastRetroId: "r1",

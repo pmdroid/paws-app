@@ -161,7 +161,7 @@ describe("weekly schedule", () => {
     clock.now = MONDAY - 1;
     await scheduler.tick();
     expect(await listRetros(sqliteDb(db), "ws")).toHaveLength(0);
-    expect(retroScheduleRuntime(db, "ws")?.nextDueAt).toBe(MONDAY);
+    expect((await retroScheduleRuntime(sqliteDb(db), "ws"))?.nextDueAt).toBe(MONDAY);
 
     clock.now = MONDAY + 3 * WEEK + HOUR;
     const other = openDatabase(path);
@@ -177,7 +177,7 @@ describe("weekly schedule", () => {
       scheduledFor: MONDAY + 3 * WEEK,
       state: "queued",
     });
-    expect(retroScheduleRuntime(db, "ws")).toMatchObject({
+    expect(await retroScheduleRuntime(sqliteDb(db), "ws")).toMatchObject({
       lastOccurrenceAt: MONDAY + 3 * WEEK,
       nextDueAt: MONDAY + 4 * WEEK,
       blockedReason: null,
@@ -208,11 +208,13 @@ describe("weekly schedule", () => {
     const scheduler = open();
     clock.now = MONDAY + HOUR;
     await scheduler.tick();
-    const before = retroScheduleRuntime(db, "ws");
+    const before = await retroScheduleRuntime(sqliteDb(db), "ws");
     clock.now = MONDAY - 2 * WEEK;
     await scheduler.tick();
     expect(await listRetros(sqliteDb(db), "ws")).toHaveLength(1);
-    expect(retroScheduleRuntime(db, "ws")?.lastOccurrenceAt).toBe(before!.lastOccurrenceAt);
+    expect((await retroScheduleRuntime(sqliteDb(db), "ws"))?.lastOccurrenceAt).toBe(
+      before!.lastOccurrenceAt,
+    );
   });
 
   test("an empty period publishes without an agent and moves the watermark for the next window", async () => {
@@ -224,7 +226,7 @@ describe("weekly schedule", () => {
     const status = await scheduler.status("ws");
     expect(status.state).toBe("empty");
     expect(status.lastSuccess).toMatchObject({ cutoff: MONDAY, empty: true });
-    expect(retroWatermarks(db, "ws")[0]!.cursor).toBe(MONDAY);
+    expect((await retroWatermarks(sqliteDb(db), "ws"))[0]!.cursor).toBe(MONDAY);
     expect(db.query("SELECT count(*) AS n FROM retro_dispatch").get()).toEqual({ n: 0 });
 
     clock.now = MONDAY + WEEK + 60_000;
@@ -246,7 +248,7 @@ describe("weekly schedule", () => {
     expect(getRetro(db, running.id)!.state).toBe("queued");
     const paused = await scheduler.status("ws");
     expect(paused.nextRun).toBeNull();
-    expect(retroScheduleRuntime(db, "ws")?.nextDueAt).toBeNull();
+    expect((await retroScheduleRuntime(sqliteDb(db), "ws"))?.nextDueAt).toBeNull();
 
     const resumedAt = Date.UTC(2026, 11, 1, 10);
     save(db, resumedAt);
@@ -286,7 +288,7 @@ describe("manual runs share the scheduled window", () => {
     expect(manual).toMatchObject({ ok: true, created: true });
     await first.open().tick();
     expect(await listRetros(sqliteDb(first.db), "ws")).toHaveLength(1);
-    expect(retroScheduleRuntime(first.db, "ws")?.lastOccurrenceAt).toBe(MONDAY);
+    expect((await retroScheduleRuntime(sqliteDb(first.db), "ws"))?.lastOccurrenceAt).toBe(MONDAY);
 
     const second = world();
     second.clock.now = MONDAY + HOUR;
@@ -351,7 +353,7 @@ describe("failure keeps its window", () => {
     await scheduler.tick();
     const failed = (await listRetros(sqliteDb(db), "ws"))[0]!;
     await fail(db, failed.id, clock.now);
-    expect(retroWatermarks(db, "ws")).toEqual([]);
+    expect(await retroWatermarks(sqliteDb(db), "ws")).toEqual([]);
     const status = await scheduler.status("ws");
     expect(status.state).toBe("failed");
     expect(status.retry).toBeNull();

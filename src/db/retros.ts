@@ -211,11 +211,11 @@ export function* getRetroSettingsRevisionSteps(q: Q, workspaceId: string, revisi
   return row === undefined ? null : settingsFromRow(q, row);
 }
 
-export function latestRetroSettingsRevision(
-  db: Database,
+export async function latestRetroSettingsRevision(
+  store: Db,
   workspaceId: string,
-): RetroSettingsRevision | null {
-  return settled(sqliteDb(db).run((q) => latestRetroSettingsRevisionSteps(q, workspaceId)));
+): Promise<RetroSettingsRevision | null> {
+  return store.run((q) => latestRetroSettingsRevisionSteps(q, workspaceId));
 }
 
 export function* latestRetroSettingsRevisionSteps(q: Q, workspaceId: string) {
@@ -358,11 +358,11 @@ export function* retroRepositoriesSteps(q: Q, retroId: string) {
   );
 }
 
-export function retroWatermarks(
-  db: Database,
+export async function retroWatermarks(
+  store: Db,
   workspaceId: string,
-): { repository: string; cursor: number; retroId: string; updatedAt: number }[] {
-  return settled(sqliteDb(db).run((q) => retroWatermarksSteps(q, workspaceId)));
+): Promise<{ repository: string; cursor: number; retroId: string; updatedAt: number }[]> {
+  return store.run((q) => retroWatermarksSteps(q, workspaceId));
 }
 
 export function* retroWatermarksSteps(q: Q, workspaceId: string) {
@@ -812,8 +812,8 @@ export function* failRetroAttemptSteps(q: Q, input: AttemptFailure) {
   return true;
 }
 
-export function listRetroAttempts(db: Database, retroId: string): RetroAttempt[] {
-  return settled(sqliteDb(db).run((q) => listRetroAttemptsSteps(q, retroId)));
+export async function listRetroAttempts(store: Db, retroId: string): Promise<RetroAttempt[]> {
+  return store.run((q) => listRetroAttemptsSteps(q, retroId));
 }
 
 export function* listRetroAttemptsSteps(q: Q, retroId: string) {
@@ -986,8 +986,8 @@ type Close = {
   now: number;
 };
 
-export function closeRetro(db: Database, input: Close): boolean {
-  return settled(sqliteDb(db).transaction((q) => closeRetroSteps(q, input)));
+export async function closeRetro(store: Db, input: Close): Promise<boolean> {
+  return store.transaction((q) => closeRetroSteps(q, input));
 }
 
 export function* closeRetroSteps(q: Q, input: Close) {
@@ -1052,8 +1052,8 @@ type ScheduleRun = {
   now: number;
 };
 
-export function recordRetroScheduleRun(db: Database, input: ScheduleRun): void {
-  settled(sqliteDb(db).run((q) => recordRetroScheduleRunSteps(q, input)));
+export async function recordRetroScheduleRun(store: Db, input: ScheduleRun): Promise<void> {
+  await store.run((q) => recordRetroScheduleRunSteps(q, input));
 }
 
 export function* recordRetroScheduleRunSteps(q: Q, input: ScheduleRun) {
@@ -1081,11 +1081,11 @@ export function* recordRetroScheduleRunSteps(q: Q, input: ScheduleRun) {
   );
 }
 
-export function retroScheduleRuntime(
-  db: Database,
+export async function retroScheduleRuntime(
+  store: Db,
   workspaceId: string,
-): RetroScheduleRuntime | null {
-  return settled(sqliteDb(db).run((q) => retroScheduleRuntimeSteps(q, workspaceId)));
+): Promise<RetroScheduleRuntime | null> {
+  return store.run((q) => retroScheduleRuntimeSteps(q, workspaceId));
 }
 
 export function* retroScheduleRuntimeSteps(q: Q, workspaceId: string) {
@@ -1103,8 +1103,8 @@ type ScheduleState = {
   now: number;
 };
 
-export function recordRetroScheduleState(db: Database, input: ScheduleState): void {
-  settled(sqliteDb(db).run((q) => recordRetroScheduleStateSteps(q, input)));
+export async function recordRetroScheduleState(store: Db, input: ScheduleState): Promise<void> {
+  await store.run((q) => recordRetroScheduleStateSteps(q, input));
 }
 
 export function* recordRetroScheduleStateSteps(q: Q, input: ScheduleState) {
@@ -1137,11 +1137,11 @@ export function* recordRetroScheduleStateSteps(q: Q, input: ScheduleState) {
 }
 
 /** Every settings revision of a workspace, newest first. */
-export function listRetroSettingsRevisions(
-  db: Database,
+export async function listRetroSettingsRevisions(
+  store: Db,
   workspaceId: string,
-): RetroSettingsRevision[] {
-  return settled(sqliteDb(db).run((q) => listRetroSettingsRevisionsSteps(q, workspaceId)));
+): Promise<RetroSettingsRevision[]> {
+  return store.run((q) => listRetroSettingsRevisionsSteps(q, workspaceId));
 }
 
 export function* listRetroSettingsRevisionsSteps(q: Q, workspaceId: string) {
@@ -1157,8 +1157,8 @@ export function* listRetroSettingsRevisionsSteps(q: Q, workspaceId: string) {
 }
 
 /** Workspaces that saved retro settings, in id order. */
-export function retroSettingsWorkspaces(db: Database): string[] {
-  return settled(sqliteDb(db).run((q) => retroSettingsWorkspacesSteps(q)));
+export async function retroSettingsWorkspaces(store: Db): Promise<string[]> {
+  return store.run((q) => retroSettingsWorkspacesSteps(q));
 }
 
 export function* retroSettingsWorkspacesSteps(q: Q) {
@@ -1173,15 +1173,13 @@ export function* retroSettingsWorkspacesSteps(q: Q) {
 }
 
 /** The id of the workspace's retro over exactly this window. */
-export function retroIdForWindow(
-  db: Database,
+export async function retroIdForWindow(
+  store: Db,
   workspaceId: string,
   windowStart: number,
   windowEnd: number,
-): string | null {
-  return settled(
-    sqliteDb(db).run((q) => retroIdForWindowSteps(q, workspaceId, windowStart, windowEnd)),
-  );
+): Promise<string | null> {
+  return store.run((q) => retroIdForWindowSteps(q, workspaceId, windowStart, windowEnd));
 }
 
 export function* retroIdForWindowSteps(
@@ -1207,12 +1205,12 @@ export function* retroIdForWindowSteps(
 }
 
 /** The workspace's most recently created retro, limited to `states` when given. */
-export function latestRetro(
-  db: Database,
+export async function latestRetro(
+  store: Db,
   workspaceId: string,
   states?: readonly RetroState[],
-): Retro | null {
-  return settled(sqliteDb(db).run((q) => latestRetroSteps(q, workspaceId, states)));
+): Promise<Retro | null> {
+  return store.run((q) => latestRetroSteps(q, workspaceId, states));
 }
 
 export function* latestRetroSteps(q: Q, workspaceId: string, states?: readonly RetroState[]) {
@@ -1234,8 +1232,8 @@ export function* latestRetroSteps(q: Q, workspaceId: string, states?: readonly R
 }
 
 /** The published retro with the latest window end. */
-export function latestPublishedRetro(db: Database, workspaceId: string): Retro | null {
-  return settled(sqliteDb(db).run((q) => latestPublishedRetroSteps(q, workspaceId)));
+export async function latestPublishedRetro(store: Db, workspaceId: string): Promise<Retro | null> {
+  return store.run((q) => latestPublishedRetroSteps(q, workspaceId));
 }
 
 export function* latestPublishedRetroSteps(q: Q, workspaceId: string) {
@@ -1252,8 +1250,8 @@ export function* latestPublishedRetroSteps(q: Q, workspaceId: string) {
 }
 
 /** Ids of the workspace's retros still collecting evidence, oldest first. */
-export function collectingRetroIds(db: Database, workspaceId: string): string[] {
-  return settled(sqliteDb(db).run((q) => collectingRetroIdsSteps(q, workspaceId)));
+export async function collectingRetroIds(store: Db, workspaceId: string): Promise<string[]> {
+  return store.run((q) => collectingRetroIdsSteps(q, workspaceId));
 }
 
 export function* collectingRetroIdsSteps(q: Q, workspaceId: string) {
@@ -1271,8 +1269,8 @@ export function* collectingRetroIdsSteps(q: Q, workspaceId: string) {
 type OccurrenceRow = typeof pgSchema.retroOccurrence.$inferSelect;
 
 /** Record the occurrence a new retro covers; an occurrence already recorded stays. */
-export function recordRetroOccurrence(db: Database, occurrence: OccurrenceRow): void {
-  settled(sqliteDb(db).run((q) => recordRetroOccurrenceSteps(q, occurrence)));
+export async function recordRetroOccurrence(store: Db, occurrence: OccurrenceRow): Promise<void> {
+  await store.run((q) => recordRetroOccurrenceSteps(q, occurrence));
 }
 
 export function* recordRetroOccurrenceSteps(q: Q, occurrence: OccurrenceRow) {
@@ -1291,8 +1289,11 @@ export type RetroOccurrenceRecord = {
   requestedBy: string | null;
 };
 
-export function retroOccurrence(db: Database, retroId: string): RetroOccurrenceRecord | null {
-  return settled(sqliteDb(db).run((q) => retroOccurrenceSteps(q, retroId)));
+export async function retroOccurrence(
+  store: Db,
+  retroId: string,
+): Promise<RetroOccurrenceRecord | null> {
+  return store.run((q) => retroOccurrenceSteps(q, retroId));
 }
 
 export function* retroOccurrenceSteps(q: Q, retroId: string) {
