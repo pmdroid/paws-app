@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { asc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { getLinearIssueContextSteps } from "./linear-issue-context";
 
 export function* saveLinearSessionContextSteps(
@@ -23,13 +23,13 @@ export function* saveLinearSessionContextSteps(
   );
 }
 
-export function saveLinearSessionContext(
-  db: Database,
+export async function saveLinearSessionContext(
+  store: Db,
   sessionId: string,
   context: string,
   richness = 1,
-): void {
-  settled(sqliteDb(db).run((q) => saveLinearSessionContextSteps(q, sessionId, context, richness)));
+): Promise<void> {
+  await store.run((q) => saveLinearSessionContextSteps(q, sessionId, context, richness));
 }
 
 function* sessionContextSteps(q: Q, sessionId: string) {
@@ -60,8 +60,11 @@ export function* hasLinearSessionSnapshotContextSteps(q: Q, sessionId: string) {
   return row !== undefined && row.snapshotContext !== null;
 }
 
-export function hasLinearSessionSnapshotContext(db: Database, sessionId: string): boolean {
-  return settled(sqliteDb(db).run((q) => hasLinearSessionSnapshotContextSteps(q, sessionId)));
+export async function hasLinearSessionSnapshotContext(
+  store: Db,
+  sessionId: string,
+): Promise<boolean> {
+  return store.run((q) => hasLinearSessionSnapshotContextSteps(q, sessionId));
 }
 
 export function* saveLinearSessionSnapshotContextSteps(q: Q, sessionId: string, context: string) {
@@ -79,12 +82,12 @@ export function* saveLinearSessionSnapshotContextSteps(q: Q, sessionId: string, 
   );
 }
 
-export function saveLinearSessionSnapshotContext(
-  db: Database,
+export async function saveLinearSessionSnapshotContext(
+  store: Db,
   sessionId: string,
   context: string,
-): void {
-  settled(sqliteDb(db).run((q) => saveLinearSessionSnapshotContextSteps(q, sessionId, context)));
+): Promise<void> {
+  await store.run((q) => saveLinearSessionSnapshotContextSteps(q, sessionId, context));
 }
 
 type LinearActivitySnapshotInput = {
@@ -104,8 +107,11 @@ export function* saveLinearActivitySnapshotSteps(q: Q, input: LinearActivitySnap
   );
 }
 
-export function saveLinearActivitySnapshot(db: Database, input: LinearActivitySnapshotInput): void {
-  settled(sqliteDb(db).run((q) => saveLinearActivitySnapshotSteps(q, input)));
+export async function saveLinearActivitySnapshot(
+  store: Db,
+  input: LinearActivitySnapshotInput,
+): Promise<void> {
+  await store.run((q) => saveLinearActivitySnapshotSteps(q, input));
 }
 
 export function* listLinearActivitySnapshotsSteps(q: Q, sessionId: string) {

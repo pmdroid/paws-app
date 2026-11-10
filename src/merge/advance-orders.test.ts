@@ -20,6 +20,7 @@ import {
   recordCiRerun,
   recordRebaseReturn,
   saveWorkItemLinearProject,
+  sqliteDb,
 } from "../db";
 import { createFakeMergeQueue } from "../github";
 import { findOpenQuestion } from "../questions";
@@ -308,7 +309,7 @@ describe("advanceMerge in the repository merge queue", () => {
     };
     for (const [id, [lane, name]] of Object.entries(lanes)) {
       h.state.lanes.set(id, lane);
-      saveWorkItemLinearProject(h.db, id, { id: lane, name });
+      await saveWorkItemLinearProject(sqliteDb(h.db), id, { id: lane, name });
     }
     h.state.ci = pendingCi;
     for (const id of ids) {

@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commitCheckpoint, git, reconstructAcpPrompt } from "../src/acp";
-import { listLinearInputs } from "../src/db";
+import { listLinearInputs, sqliteDb } from "../src/db";
 import { createLinearFileTransfer } from "../src/linear";
 import { createLinearInputLoader, inputSources } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
@@ -55,7 +55,7 @@ test("current and historical private assets share stable cache identity across s
   expect(await readFile(result.inputFiles[0]!.path)).toEqual(Buffer.from(bytes));
   expect(result.prompt).not.toContain("uploads.linear.app");
   expect(result.prompt).not.toContain("signature");
-  expect(listLinearInputs(env.db, "session", "turn-1")).toHaveLength(1);
+  expect(await listLinearInputs(sqliteDb(env.db), "session", "turn-1")).toHaveLength(1);
   const replay = await env.loader()({
     ...env.request,
     turnId: "turn-2",
@@ -63,10 +63,12 @@ test("current and historical private assets share stable cache identity across s
   });
   expect(env.requests).toHaveLength(1);
   expect(replay.inputFiles[0]?.path).not.toBe(result.inputFiles[0]?.path);
-  expect(listLinearInputs(env.db, "session", "turn-2")[0]?.assetId).toBe(
-    listLinearInputs(env.db, "session", "turn-1")[0]?.assetId,
+  expect((await listLinearInputs(sqliteDb(env.db), "session", "turn-2"))[0]?.assetId).toBe(
+    (await listLinearInputs(sqliteDb(env.db), "session", "turn-1"))[0]?.assetId,
   );
-  expect(JSON.stringify(listLinearInputs(env.db, "session", "turn-2"))).not.toContain("signature");
+  expect(
+    JSON.stringify(await listLinearInputs(sqliteDb(env.db), "session", "turn-2")),
+  ).not.toContain("signature");
   for (const filename of await readdir(env.cacheDir))
     expect((await stat(join(env.cacheDir, filename))).mode & 0o777).toBe(0o600);
   env.db.close();

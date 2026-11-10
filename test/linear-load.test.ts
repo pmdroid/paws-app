@@ -14,6 +14,7 @@ import {
   listWorkItems,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeTracker,
@@ -176,9 +177,9 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
       await orchestrator.onLinearEvent(event(index, "created"));
     await step();
     const queued = count("queued");
-    const before = { requests, perTask: linearRequestsByItem(db) };
+    const before = { requests, perTask: await linearRequestsByItem(sqliteDb(db)) };
     for (let waited = 0; waited < HOUR_MS; waited += WAIT_STEP_MS) await step(WAIT_STEP_MS);
-    const after = linearRequestsByItem(db);
+    const after = await linearRequestsByItem(sqliteDb(db));
     const waiting = {
       queued: count("queued"),
       requests: requests - before.requests,
@@ -191,7 +192,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
     for (let index = 0; index < QUESTIONS; index++)
       await orchestrator.onLinearEvent(event(index, "prompted", "A table."));
     await settle(() => count("completed") === TASKS);
-    const perTask = [...linearRequestsByItem(db).values()];
+    const perTask = [...(await linearRequestsByItem(sqliteDb(db))).values()];
     expect({
       queued,
       waiting,

@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import type { linearInput } from "./schema";
 
 export type LinearInputRecord = typeof linearInput.$inferSelect;
@@ -9,8 +8,8 @@ export function* recordLinearInputSteps(q: Q, input: LinearInputRecord) {
   yield* q.exec(q.orm.insert(q.t.linearInput).values(input).onConflictDoNothing());
 }
 
-export function recordLinearInput(db: Database, input: LinearInputRecord): void {
-  settled(sqliteDb(db).run((q) => recordLinearInputSteps(q, input)));
+export async function recordLinearInput(store: Db, input: LinearInputRecord): Promise<void> {
+  await store.run((q) => recordLinearInputSteps(q, input));
 }
 
 export function* listLinearInputsSteps(q: Q, sessionId: string, turnId: string) {
@@ -24,10 +23,10 @@ export function* listLinearInputsSteps(q: Q, sessionId: string, turnId: string) 
   );
 }
 
-export function listLinearInputs(
-  db: Database,
+export async function listLinearInputs(
+  store: Db,
   sessionId: string,
   turnId: string,
-): LinearInputRecord[] {
-  return settled(sqliteDb(db).run((q) => listLinearInputsSteps(q, sessionId, turnId)));
+): Promise<LinearInputRecord[]> {
+  return store.run((q) => listLinearInputsSteps(q, sessionId, turnId));
 }

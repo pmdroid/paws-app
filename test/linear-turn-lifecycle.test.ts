@@ -18,6 +18,7 @@ import {
   migrate,
   openDatabase,
   recordLinearTurn,
+  sqliteDb,
 } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
 
@@ -33,7 +34,7 @@ function turn(db: ReturnType<typeof tempDb>, key: string, at = 1, sessionId = "s
   });
 }
 
-test("a turn announcement and activity UUID survive restart without advancing twice", () => {
+test("a turn announcement and activity UUID survive restart without advancing twice", async () => {
   const path = join(tempHome(), "turns.db");
   let db = openDatabase(path);
   migrate(db);
@@ -50,19 +51,23 @@ test("a turn announcement and activity UUID survive restart without advancing tw
     expect(announceLinearTurn(db, "session", "first", 3)).toBe(false);
     expect(getLinearSession(db, "session")?.generation).toBe(1);
     expect(listOutbox(db)).toEqual([original]);
-    expect(getLinearTurnGeneration(db, "session", "duplicate-key", "activity:first")).toBe(1);
-    expect(getLinearTurnGeneration(db, "other", "first", "activity:first")).toBeNull();
+    expect(
+      await getLinearTurnGeneration(sqliteDb(db), "session", "duplicate-key", "activity:first"),
+    ).toBe(1);
+    expect(
+      await getLinearTurnGeneration(sqliteDb(db), "other", "first", "activity:first"),
+    ).toBeNull();
     turn(db, "second", 4);
     expect(announceLinearTurn(db, "session", "second", 5)).toBe(true);
-    expect(getLinearTurnGeneration(db, "session", "first", null)).toBe(1);
-    expect(getLinearTurnGeneration(db, "session", "second", null)).toBe(2);
+    expect(await getLinearTurnGeneration(sqliteDb(db), "session", "first", null)).toBe(1);
+    expect(await getLinearTurnGeneration(sqliteDb(db), "session", "second", null)).toBe(2);
     expect(listOutbox(db)[0]?.status).toBe("dropped");
   } finally {
     db.close();
   }
 });
 
-test("Stop rejects delayed prior turns and a later turn starts a new generation", () => {
+test("Stop rejects delayed prior turns and a later turn starts a new generation", async () => {
   const db = tempDb();
   try {
     turn(db, "first", 1);
@@ -75,14 +80,14 @@ test("Stop rejects delayed prior turns and a later turn starts a new generation"
     turn(db, "later", 4);
     expect(announceLinearTurn(db, "session", "later", 5)).toBe(true);
     expect(getLinearSession(db, "session")?.stoppedAt).toBeNull();
-    expect(getLinearTurnGeneration(db, "session", "later", null)).toBe(3);
+    expect(await getLinearTurnGeneration(sqliteDb(db), "session", "later", null)).toBe(3);
     expect(listPendingLinearTurns(db, "session").map((entry) => entry.eventKey)).toEqual(["later"]);
   } finally {
     db.close();
   }
 });
 
-test("discarding rejected replies is session-scoped, idempotent and preserves applied history", () => {
+test("discarding rejected replies is session-scoped, idempotent and preserves applied history", async () => {
   const db = tempDb();
   try {
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
@@ -90,9 +95,9 @@ test("discarding rejected replies is session-scoped, idempotent and preserves ap
     bindLinearSessionTask(db, "session", item.delegationId);
     activateLinearItem(db, "session", item.id);
     applyLinearTurns(db, "session", ["applied"], item.id);
-    discardLinearTurns(db, "other", ["pending"]);
-    discardLinearTurns(db, "session", ["applied", "rejected"]);
-    discardLinearTurns(db, "session", ["rejected"]);
+    await discardLinearTurns(sqliteDb(db), "other", ["pending"]);
+    await discardLinearTurns(sqliteDb(db), "session", ["applied", "rejected"]);
+    await discardLinearTurns(sqliteDb(db), "session", ["rejected"]);
     expect(listPendingLinearTurns(db, "session").map((entry) => entry.eventKey)).toEqual([
       "pending",
     ]);

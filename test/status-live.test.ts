@@ -15,6 +15,7 @@ import {
   putWorkspaceUser,
   saveTaskBlocks,
   saveWorkItemLinearProject,
+  sqliteDb,
 } from "../src/db";
 import { elicitationBody, openQuestion } from "../src/questions";
 import {
@@ -61,7 +62,10 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       email: "ada@example.test",
     });
     db.run("UPDATE work_item SET owner_user_id = ? WHERE id = ?", [userId, waiting.id]);
-    saveWorkItemLinearProject(db, waiting.id, { id: "linear-exports", name: "Exports" });
+    await saveWorkItemLinearProject(sqliteDb(db), waiting.id, {
+      id: "linear-exports",
+      name: "Exports",
+    });
     saveTaskBlocks(
       db,
       [merging.linearIssueId],

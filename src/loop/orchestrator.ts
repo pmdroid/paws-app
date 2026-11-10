@@ -26,7 +26,7 @@ import {
   enqueueJobOnceAsync,
   enqueueOutboxOnceSteps,
   ensureLinearSessionSteps,
-  gatherLinearCommentsAsync,
+  gatherLinearComments,
   getConversationSteps,
   getItemBranchStateSteps,
   getItemCandidateSteps,
@@ -8608,7 +8608,7 @@ export class Orchestrator {
       return false;
     const talk = await this.options.conversations?.();
     if (!talk || (await talk.lane(item.id)) === "closed") return false;
-    await gatherLinearCommentsAsync(
+    await gatherLinearComments(
       this.store,
       item.id,
       this.now(),

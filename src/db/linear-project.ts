@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { eq, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 
 /** The Linear project an issue belongs to. A null name means the read did not include it. */
 export type WorkItemLinearProject = { id: string; name: string | null };
@@ -38,12 +38,12 @@ export function* saveWorkItemLinearProjectSteps(
 }
 
 /** Records the item's Linear project from the issue snapshot Paws already read. */
-export function saveWorkItemLinearProject(
-  db: Database,
+export async function saveWorkItemLinearProject(
+  store: Db,
   itemId: string,
   project: WorkItemLinearProject | null,
-): void {
-  settled(sqliteDb(db).run((q) => saveWorkItemLinearProjectSteps(q, itemId, project)));
+): Promise<void> {
+  await store.run((q) => saveWorkItemLinearProjectSteps(q, itemId, project));
 }
 
 export function* applyLinearIssueProjectSteps(
@@ -63,10 +63,10 @@ export function* applyLinearIssueProjectSteps(
 }
 
 /** Moves every item for a Linear issue to the project an issue webhook reported. */
-export function applyLinearIssueProject(
-  db: Database,
+export async function applyLinearIssueProject(
+  store: Db,
   linearIssueId: string,
   project: WorkItemLinearProject | null,
-): number {
-  return settled(sqliteDb(db).run((q) => applyLinearIssueProjectSteps(q, linearIssueId, project)));
+): Promise<number> {
+  return store.run((q) => applyLinearIssueProjectSteps(q, linearIssueId, project));
 }

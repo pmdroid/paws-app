@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 
 export type TaskLinearReadKind = "project_overview" | "repository_hints" | "repository_suggestions";
 
@@ -25,14 +25,14 @@ export function* keepTaskLinearReadSteps(
   );
 }
 
-export function keepTaskLinearRead(
-  db: Database,
+export async function keepTaskLinearRead(
+  store: Db,
   itemId: string,
   kind: TaskLinearReadKind,
   value: unknown,
   now: number,
-): void {
-  settled(sqliteDb(db).run((q) => keepTaskLinearReadSteps(q, itemId, kind, value, now)));
+): Promise<void> {
+  await store.run((q) => keepTaskLinearReadSteps(q, itemId, kind, value, now));
 }
 
 export function* getTaskLinearReadSteps(q: Q, itemId: string, kind: TaskLinearReadKind) {
@@ -62,8 +62,11 @@ export function* linearActivitiesListedAtSteps(q: Q, sessionId: string) {
   return row?.generation ?? null;
 }
 
-export function linearActivitiesListedAt(db: Database, sessionId: string): number | null {
-  return settled(sqliteDb(db).run((q) => linearActivitiesListedAtSteps(q, sessionId)));
+export async function linearActivitiesListedAt(
+  store: Db,
+  sessionId: string,
+): Promise<number | null> {
+  return store.run((q) => linearActivitiesListedAtSteps(q, sessionId));
 }
 
 export function* markLinearActivitiesListedSteps(q: Q, sessionId: string, generation: number) {
@@ -76,10 +79,10 @@ export function* markLinearActivitiesListedSteps(q: Q, sessionId: string, genera
   );
 }
 
-export function markLinearActivitiesListed(
-  db: Database,
+export async function markLinearActivitiesListed(
+  store: Db,
   sessionId: string,
   generation: number,
-): void {
-  settled(sqliteDb(db).run((q) => markLinearActivitiesListedSteps(q, sessionId, generation)));
+): Promise<void> {
+  await store.run((q) => markLinearActivitiesListedSteps(q, sessionId, generation));
 }

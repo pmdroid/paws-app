@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, isNotNull, notInArray } from "drizzle-orm";
 import { TERMINAL_WORK_ITEM_STATES } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 export const LINEAR_WEBHOOK_SILENCE_MS = 60 * 60_000;
 
@@ -39,8 +38,11 @@ export function* linearWebhookWarningSteps(q: Q, nowMs: number) {
     : ({ reason: "silent", lastVerifiedMs, missedMs } satisfies LinearWebhookWarning);
 }
 
-export function linearWebhookWarning(db: Database, nowMs: number): LinearWebhookWarning | null {
-  return settled(sqliteDb(db).run((q) => linearWebhookWarningSteps(q, nowMs)));
+export async function linearWebhookWarning(
+  store: Db,
+  nowMs: number,
+): Promise<LinearWebhookWarning | null> {
+  return store.run((q) => linearWebhookWarningSteps(q, nowMs));
 }
 
 export function describeLinearWebhookWarning(warning: LinearWebhookWarning): string {
