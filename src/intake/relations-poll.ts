@@ -35,9 +35,9 @@ export function createRelationsPolls(input: {
     return changed;
   }
 
-  function intervalMs(): number {
+  async function intervalMs(): Promise<number> {
     return relationsPollIntervalMs({
-      blocked: input.reconciler.blockedItemIds().length > 0,
+      blocked: (await input.reconciler.blockedItemIds()).length > 0,
       lowBudget: input.lowBudget(),
     });
   }
@@ -58,7 +58,7 @@ export function createRelationsPolls(input: {
     intervalMs,
     all: (signal?: AbortSignal) => poll("all", signal),
     blocked: async (signal?: AbortSignal) =>
-      intervalMs() === BLOCKED_RELATIONS_POLL_MS ? poll("blocked", signal) : [],
+      (await intervalMs()) === BLOCKED_RELATIONS_POLL_MS ? poll("blocked", signal) : [],
     checkNow,
   };
 }
@@ -67,7 +67,7 @@ export function createBlockerCheckRoute(input: {
   db: Database;
   store?: Db;
   polls: Pick<ReturnType<typeof createRelationsPolls>, "checkNow">;
-  blockedItemIds: () => string[];
+  blockedItemIds: () => Promise<string[]>;
   signal?: AbortSignal;
 }) {
   const store = input.store ?? sqliteDb(input.db);
@@ -89,7 +89,7 @@ export function createBlockerCheckRoute(input: {
     if (typeof itemId !== "string" || !itemId)
       return Response.json({ error: "Send an itemId as bounded JSON." }, { status: 400 });
     const candidates = [];
-    for (const id of input.blockedItemIds())
+    for (const id of await input.blockedItemIds())
       candidates.push(await store.run((q) => getWorkItemSteps(q, id)));
     const item = candidates.find(
       (candidate) =>
