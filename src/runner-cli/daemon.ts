@@ -2,7 +2,7 @@ import { journalCaught, journalRejection } from "../journal";
 import { lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import type { RunnerDaemon } from "../runner-daemon";
+import { isIdentityRejected, type RunnerDaemon } from "../runner-daemon";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
 import { openRunnerRetroRuntime } from "../runner-retro-runtime";
 import {
@@ -27,8 +27,11 @@ export async function runPairedDaemon(
     agentUser: RunnerAgentUser;
   },
   signal: AbortSignal,
-  report: (error: Error) => void,
+  reportFailure: (error: Error) => void,
 ): Promise<void> {
+  const report = (error: Error) => {
+    if (!isIdentityRejected(error)) reportFailure(error);
+  };
   signal.throwIfAborted();
   if (daemon.status().phase !== "paired") throw new Error("Runner must be paired");
   const root = "/var/lib/paws-runner";
@@ -109,6 +112,11 @@ export async function runPairedDaemon(
     });
     let sweepAt = 0;
     while (!signal.aborted) {
+      if (daemon.identityReplaced()) throw new Error("Runner identity was replaced.");
+      if (daemon.identityRetryIn() > 0) {
+        await delay(1000, undefined, { signal });
+        continue;
+      }
       try {
         if (Date.now() >= sweepAt) {
           sweepAt = Date.now() + RUNNER_WORK_SWEEP_EVERY_MS;
@@ -120,7 +128,7 @@ export async function runPairedDaemon(
         if (!signal.aborted) await health.tick();
         if (!signal.aborted) await retro.tick();
       } catch (error) {
-        journalCaught(error, "daemon.runPairedDaemon.tick", null);
+        if (!isIdentityRejected(error)) journalCaught(error, "daemon.runPairedDaemon.tick", null);
         if (!signal.aborted)
           report(error instanceof Error ? error : new Error("Runner operation failed"));
       }

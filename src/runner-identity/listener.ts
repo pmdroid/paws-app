@@ -13,6 +13,9 @@ export type RunnerListener = {
   stop(): Promise<void>;
 };
 
+export const RUNNER_IDENTITY_REJECTED = "Runner identity is revoked or expired.";
+export const RUNNER_REVOKED_FENCED = "Runner is revoked; its work is fenced.";
+
 /** The peer is not, or no longer, an authorized runner. Only this is answered with 403. */
 class RunnerAuthorizationError extends Error {
   override readonly name = "RunnerAuthorizationError";
@@ -161,8 +164,11 @@ export async function startRunnerListener(options: {
         journalCaught(caughtError4, "listener.handle.cancelBody", null);
       });
       if (response.headersSent || response.destroyed) response.destroy();
-      else if (caughtError3 instanceof RunnerRevokedError) fence(response);
-      else reject(response, caughtError3 instanceof RunnerAuthorizationError ? 403 : 503);
+      else if (caughtError3 instanceof RunnerRevokedError)
+        refuse(response, { error: RUNNER_REVOKED_FENCED, code: "fenced" });
+      else if (caughtError3 instanceof RunnerAuthorizationError)
+        refuse(response, { error: RUNNER_IDENTITY_REJECTED });
+      else reject(response, 503);
     } finally {
       const elapsed = now() - started;
       if (response.statusCode >= 500 || response.statusCode === 403 || elapsed >= 5_000)
@@ -247,16 +253,13 @@ function authorizedPeer(socket: TLSSocket, now: number): RunnerPeer {
   }
 }
 
-function fence(response: Http2ServerResponse): void {
+function refuse(response: Http2ServerResponse, body: { error: string; code?: string }): void {
   response.writeHead(403, {
     "cache-control": "no-store",
     connection: "close",
     "content-type": "application/json",
   });
-  response.end(
-    JSON.stringify({ error: "Runner is revoked; its work is fenced.", code: "fenced" }),
-    () => response.destroy(),
-  );
+  response.end(JSON.stringify(body), () => response.destroy());
 }
 
 function reject(response: Http2ServerResponse, status: number): void {
