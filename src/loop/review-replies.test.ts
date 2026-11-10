@@ -106,7 +106,7 @@ function setup() {
   let clock = 1_000;
   const caps: PullReviewCapabilities = {
     now: () => clock,
-    busy: () => false,
+    busy: async () => false,
     threads: (_, prNumber) =>
       readReviewThreads({ client, owner: "acme", repo: "one", prNumber, tokenProvider }),
     pullHead: async () => null,

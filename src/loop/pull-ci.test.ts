@@ -122,7 +122,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
   let clock = 1_000_000;
   const feedback: PullReviewCapabilities = {
     now: () => clock,
-    busy: () => false,
+    busy: async () => false,
     threads: (_, prNumber) =>
       readReviewThreads({ client, owner: "acme", repo: "one", prNumber, tokenProvider }),
     leaveMergeQueue: (_, prNumber) =>

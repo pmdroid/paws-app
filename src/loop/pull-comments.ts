@@ -295,7 +295,7 @@ export async function handlePullComments(
       return "dropped";
     }
   }
-  if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
+  if (item.state !== "merge_queue" || (await caps.busy(item))) return "wait";
   if (open.length > 0 && (await holdForReviewChecks(item, pullNumber, open[0]!.receivedAt, caps)))
     return "wait";
   const threads = open.length > 0 ? await caps.threads(item, pullNumber) : [];

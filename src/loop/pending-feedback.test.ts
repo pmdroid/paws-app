@@ -67,7 +67,7 @@ function setup(state: "running" | "verifying" | "merge_queue") {
   let conflict: { head: string; base: string } | null = null;
   const caps: PullReviewCapabilities & FeedbackCapabilities = {
     now: () => clock,
-    busy: () => busy,
+    busy: async () => busy,
     threads: async () => [],
     pullHead: async () => null,
     pullConflict: async () => conflict,
