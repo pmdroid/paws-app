@@ -1421,7 +1421,7 @@ export async function openRunnerRuntime(options: {
         (!(error instanceof GitHubFailure) ||
           entry.abort.signal.aborted ||
           closing.signal.aborted ||
-          isGitOutage(error.message));
+          isGitOutage(error.message.replace(`${GITHUB_UNAVAILABLE}: `, "")));
       if (!retrying)
         void interrupt(
           entry,

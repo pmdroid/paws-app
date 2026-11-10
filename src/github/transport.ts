@@ -22,13 +22,13 @@ const PUSH_OUTAGE =
 const PUSH_REFUSAL_REASON =
   /protected branch|\bGH0\d\d\b|refusing to allow an? (?:GitHub App|OAuth App|Personal Access Token)|\bworkflows?\b.*\bpermission\b|pre-receive hook declined|push declined|Repository not found/i;
 
-/**
- * Whether a failed git operation can succeed later. Only git's own diagnostics count: the rest of
- * its output lists ref names, and a branch called `timeout-fix` is not an outage.
- */
+const FETCH_REF_LINE = /^From |^\s.* -> /;
+
 export function isGitOutage(output: string): boolean {
-  const diagnostics = output.split("\n").filter((line) => /\b(?:fatal|error):/.test(line));
-  return isTransientGitError(diagnostics.length ? diagnostics.join("\n") : output);
+  const lines = output.split("\n").filter((line) => !FETCH_REF_LINE.test(line));
+  return (
+    !lines.some((line) => /^(?:fatal|error): /.test(line)) || isTransientGitError(lines.join("\n"))
+  );
 }
 
 export function isPushOutage(stderr: string): boolean {

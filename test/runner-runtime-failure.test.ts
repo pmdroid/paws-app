@@ -207,10 +207,11 @@ test("a launch that fails on a git error reports a run failure within one tick",
   }
 });
 
-test("a launch that loses its connection to GitHub keeps retrying", async () => {
-  const f = await fixture({
-    gitError: "fatal: unable to access: Could not resolve host: github.com",
-  });
+test.each([
+  ["a lost connection", "fatal: unable to access: Could not resolve host: github.com"],
+  ["a failed request outside git", "fetch failed"],
+])("a launch that hits %s keeps retrying", async (_name, gitError) => {
+  const f = await fixture({ gitError });
   try {
     await until(() => f.gitCalls() > 0);
     await Bun.sleep(20);
