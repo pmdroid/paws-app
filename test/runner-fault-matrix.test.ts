@@ -30,9 +30,15 @@ import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
 import { createRunnerPlacement } from "../src/runner-placement";
-import { RUNNER_LEASE_GRACE_MS, type RunnerCommand } from "../src/runner-protocol";
+import {
+  HIDDEN_CHECKPOINT_RUNNER_VERSION,
+  RUNNER_LEASE_GRACE_MS,
+  type RunnerCommand,
+} from "../src/runner-protocol";
 import { createRunnerResults } from "../src/runner-results";
 import { createRunnerWork, RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
+import { CHECKPOINT_COMMIT_MESSAGE } from "../src/runner-worker";
+import { restoredCheckpointNote } from "../src/runner-backend";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { migratedDatabase } from "./helpers";
 
@@ -48,7 +54,8 @@ type Fault =
   | "restarted"
   | "silent-live"
   | "silent-unconfirmed"
-  | "silent-hung";
+  | "silent-hung"
+  | "silent-hung-checkpoint";
 
 const RUN_LOST = "The runner lost this run after it restarted; continuing from the branch.";
 const SILENT_RUN_MS = 300;
@@ -154,6 +161,17 @@ test("a silent run that the runner still confirms is stopped as hung after the h
   expect(result.runs, result.detail).toEqual(["implement:ended"]);
 }, 60_000);
 
+test("a hung run recovers onto its last interval checkpoint, and the prompt says so", async () => {
+  const result = await runRemoteFault("silent-hung-checkpoint");
+  expect(result.state, result.detail).toBe("merge_queue");
+  expect(result.hungStopped, result.detail).toBe(true);
+  expect(result.checkpointSha, result.detail).toMatch(/^[a-f0-9]{40}$/);
+  expect(result.recovered?.restore, result.detail).toBe(result.checkpointSha!);
+  expect(result.recovered?.prompt, result.detail).toContain(
+    restoredCheckpointNote(result.checkpointSha!),
+  );
+}, 60_000);
+
 test("a runner that is unreachable for longer than its lease keeps its run and reaches Closeout", async () => {
   const result = await runRemoteFault("outage");
   expect(result.state, result.detail).toBe("merge_queue");
@@ -249,6 +267,13 @@ async function runRemoteFault(fault: Fault) {
     GIT_AUTHOR_EMAIL: "fixture@example.invalid",
     GIT_COMMITTER_NAME: "Fixture",
     GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+    ...(fault === "silent-hung-checkpoint"
+      ? {
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: `url.${origin}.insteadOf`,
+          GIT_CONFIG_VALUE_0: GITHUB_URL,
+        }
+      : {}),
   };
   async function git(args: string[]) {
     const child = Bun.spawn(["/usr/bin/git", ...args], { env, stdout: "pipe", stderr: "pipe" });
@@ -350,9 +375,12 @@ async function runRemoteFault(fault: Fault) {
     heldSlots: null as number | null,
     lostBeforeLease: null as boolean | null,
     hungStopped: null as boolean | null,
+    checkpointSha: null as string | null,
+    recovered: null as { restore: string | undefined; prompt: string } | null,
   };
   // The work this fake runner names in its heartbeat, for faults where the runner reports it.
-  const reporting = fault === "restarted" || fault === "silent-live" || fault === "silent-hung";
+  const hung = fault === "silent-hung" || fault === "silent-hung-checkpoint";
+  const reporting = fault === "restarted" || fault === "silent-live" || hung;
   const live = new Map<
     string,
     { command: Extract<RunnerCommand, { type: "run" }>; at: number; hung?: boolean }
@@ -384,7 +412,7 @@ async function runRemoteFault(fault: Fault) {
     placement: createRunnerPlacement({ db }),
     pollIntervalMs: 5,
     ...(fault.startsWith("silent") ? { silentRunMs: SILENT_RUN_MS } : {}),
-    ...(fault === "silent-hung" ? { hungRunMs: HUNG_RUN_MS } : {}),
+    ...(hung ? { hungRunMs: HUNG_RUN_MS } : {}),
     async fetchCandidate(candidate) {
       await git(["-C", candidate.mirror, "fetch", origin, candidate.candidateSha]);
       await git(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);
@@ -477,6 +505,12 @@ async function runRemoteFault(fault: Fault) {
   });
 
   if (fault === "unpaired") db.run("UPDATE runner SET status='paused' WHERE id=?", [runnerId]);
+  if (fault === "silent-hung-checkpoint")
+    db.run("INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?)", [
+      runnerId,
+      HIDDEN_CHECKPOINT_RUNNER_VERSION.join("."),
+      Date.now(),
+    ]);
   function recover() {
     if (!runner.faulty) return;
     const paused = db.query<{ runId: string }, []>("SELECT run_id AS runId FROM usage_pause").get();
@@ -539,6 +573,31 @@ async function runRemoteFault(fault: Fault) {
                 "Internal error: API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment.",
             }
           : { ...receipt(command), candidateSha, closeoutReport: passedReport(candidateSha) },
+    });
+  }
+  async function checkpointThenHang(command: Extract<RunnerCommand, { type: "run" }>) {
+    const branch = db
+      .query<{ branch: string }, [string]>("SELECT branch_name AS branch FROM work_item WHERE id=?")
+      .get(command.itemId)!.branch;
+    await git(["-C", source, "checkout", "-q", "--detach", command.repository.baseSha]);
+    writeFileSync(join(source, "saved.txt"), "saved before the agent hung\n");
+    await git(["-C", source, "add", "saved.txt"]);
+    await git(["-C", source, "commit", "-qm", CHECKPOINT_COMMIT_MESSAGE]);
+    const sha = await git(["-C", source, "rev-parse", "HEAD"]);
+    await git(["-C", source, "push", "-q", origin, `${sha}:refs/paws/checkpoints/${branch}`]);
+    runner.checkpointSha = sha;
+    work.event({
+      runnerId,
+      runId: command.runId,
+      generation: command.generation,
+      sequence: 1,
+      token: work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      }).token,
+      event: { type: "checkpoint", reason: "interval", sha },
     });
   }
   const loop = (async () => {
@@ -658,13 +717,14 @@ async function runRemoteFault(fault: Fault) {
           live.set(command.id, { command, at: Date.now() });
           continue;
         }
-        if (fault === "silent-hung" && runner.faulty) {
+        if (hung && runner.faulty) {
           // The runner stays alive and names the command, but its agent never sends anything.
           runner.faultedAttempts++;
           runner.faulty = false;
           // Paws starts its silence clock when it issues the command, which a busy machine can
           // leave well before this loop picks it up, so the hung bound is measured from then.
           live.set(command.id, { command, at: command.issuedAt, hung: true });
+          if (fault === "silent-hung-checkpoint") await checkpointThenHang(command);
           continue;
         }
         if (fault === "silent-unconfirmed" && runner.faulty) {
@@ -684,6 +744,8 @@ async function runRemoteFault(fault: Fault) {
           unreachable = { command, since: Date.now() };
           continue;
         }
+        if (fault === "silent-hung-checkpoint" && runner.checkpointSha)
+          runner.recovered = { restore: command.restoreCheckpoint?.sha, prompt: command.prompt };
         deliver(command);
       }
       await Bun.sleep(5);
@@ -755,6 +817,8 @@ async function runRemoteFault(fault: Fault) {
       heldSlots: runner.heldSlots,
       lostBeforeLease: runner.lostBeforeLease,
       hungStopped: runner.hungStopped,
+      checkpointSha: runner.checkpointSha,
+      recovered: runner.recovered,
       detail: JSON.stringify({
         state: getWorkItem(db, item.id)?.state,
         runs: listRuns(db).map((run) => `${run.kind}:${run.status}`),
