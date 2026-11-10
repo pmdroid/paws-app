@@ -27,7 +27,12 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
-      - run: bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --shard=${{ matrix.shard }}/4 --timings=test-timings.json
+      - run: bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --shard=${{ matrix.shard }}/4 --timings=timings-${{ matrix.shard }}.json --timings=test-timings.json --update-timings
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timings-${{ matrix.shard }}
+          path: timings-${{ matrix.shard }}.json
 
   check:
     name: lint, format, types, test, dashboard build
