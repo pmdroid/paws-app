@@ -54,7 +54,7 @@ export {
   migrations,
 } from "./migration-files";
 export type { Migration } from "./migration";
-export { openDatabase } from "./open";
+export { incrementalVacuum, openDatabase, truncateWal, withSecureDelete } from "./open";
 export {
   connectPostgres,
   openPglite,
@@ -193,6 +193,8 @@ export * from "./github-integration-holds";
 export * from "./inbox-rows";
 export * from "./linear-poll-reads";
 export * from "./runner-backend-reads";
+export * from "./agent-session-rows";
+export * from "./runner-control-reads";
 export * from "./runner-eligibility";
 export * from "./visual-review-rows";
 export * from "./github-oauth";
