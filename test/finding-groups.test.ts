@@ -753,7 +753,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
         },
       ],
     });
-    const rows = workspaceGroupingSources(f.db, "ws", "client");
+    const rows = await workspaceGroupingSources(f.db, "ws", "client");
     expect(rows.some((row) => row.teamId === "team-x")).toBe(true);
     expect(rows.some((row) => row.teamId === "team-y")).toBe(true);
   } finally {
@@ -791,8 +791,8 @@ test("grouping authority is an admin who owns a runner, not an earlier admin wit
     f.db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','ada','Runner','active',1,1)",
     );
-    expect(groupingAuthorityUser(f.db, "ws")).toBe("ada");
-    expect(workspaceGroupingSources(f.db, "ws", "client").length).toBeGreaterThan(0);
+    expect(await groupingAuthorityUser(f.db, "ws")).toBe("ada");
+    expect((await workspaceGroupingSources(f.db, "ws", "client")).length).toBeGreaterThan(0);
   } finally {
     f.db.close();
   }

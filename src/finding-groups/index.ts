@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import {
-  activeRunnerOwners,
+  activeRunnerOwnersSteps,
   completeFindingGroupRunSteps,
   deleteUntouchedFindingGroupsSteps,
   dropProcessedFindingGroupMembersSteps,
@@ -17,12 +17,12 @@ import {
   lastCompletedFindingGroupRunSteps,
   recoverFindingGroupRuns,
   recoverFindingGroupRunsSteps,
-  reviewFindingsByIds,
-  findingGroupSources,
+  reviewFindingsByIdsSteps,
+  findingGroupSourcesSteps,
   setFindingGroupRunFingerprintSteps,
   sqliteDb,
-  workspaceSessionIds,
-  findingGroupingAdmins,
+  workspaceSessionIdsSteps,
+  findingGroupingAdminsSteps,
   findingGroupingEnabledSteps,
   type Db,
   type JobLoop,
@@ -205,7 +205,7 @@ export function createFindingGrouping(options: {
   store?: Db;
   issues: FindingIssueAdapter;
   helper: GroupingHelper;
-  sources: (workspaceId: string) => GroupingInput[];
+  sources: (workspaceId: string) => GroupingInput[] | Promise<GroupingInput[]>;
   now?: () => number;
 }) {
   const { db } = options;
@@ -221,7 +221,7 @@ export function createFindingGrouping(options: {
       await store.run((q) => recoverFindingGroupRunsSteps(q, at));
       const day = new Date(at).toISOString().slice(0, 10);
       // Persist the daily claim before any external read or helper dispatch, including failures.
-      const findings = options.sources(workspaceId);
+      const findings = await options.sources(workspaceId);
       // Version the persisted cursor semantics: legacy fingerprints used list offsets.
       const fingerprint =
         "id:" +
@@ -320,10 +320,7 @@ export function createFindingGrouping(options: {
         }
         // Read the source snapshot before acquiring the SQLite writer lock.
         const current = new Set(
-          options
-            .sources(workspaceId)
-            .filter((f) => f.status === "open")
-            .map((f) => f.id),
+          (await options.sources(workspaceId)).filter((f) => f.status === "open").map((f) => f.id),
         );
         await store.transaction(function* (q) {
           if (!(yield* findingGroupRunIsRunningSteps(q, runId)))
@@ -376,19 +373,21 @@ export function createFindingGrouping(options: {
   };
 }
 
-export function scopedGroupingSources(
+export async function scopedGroupingSources(
   db: Database,
   workspaceId: string,
   sessions: readonly string[],
-): GroupingInput[] {
+): Promise<GroupingInput[]> {
+  const store = sqliteDb(db);
   const allowed = new Set(sessions);
   const sources = new Map(
-    findingGroupSources(db, workspaceId)
+    (await store.run((q) => findingGroupSourcesSteps(q, workspaceId)))
       .filter((s) => allowed.has(s.sessionId))
       .reverse()
       .map((s) => [s.id, s]),
   );
-  return reviewFindingsByIds(db, [...sources.keys()]).flatMap((f) => {
+  const findings = await store.run((q) => reviewFindingsByIdsSteps(q, [...sources.keys()]));
+  return findings.flatMap((f) => {
     const source = sources.get(f.id);
     return source ? [{ ...f, teamId: source.teamId, sessionId: source.sessionId }] : [];
   });
@@ -438,20 +437,26 @@ export function createFakeGroupingHelper(text: string) {
   return { run, calls };
 }
 
-export function groupingAuthorityUser(db: Database, workspaceId: string): string | null {
-  const admins = findingGroupingAdmins(db, workspaceId);
+export async function groupingAuthorityUser(
+  db: Database,
+  workspaceId: string,
+): Promise<string | null> {
+  const store = sqliteDb(db);
+  const admins = await store.run((q) => findingGroupingAdminsSteps(q, workspaceId));
   if (!admins.length) return null;
-  const owners = new Set(activeRunnerOwners(db, workspaceId));
+  const owners = new Set(await store.run((q) => activeRunnerOwnersSteps(q, workspaceId)));
   return admins.find((admin) => owners.has(admin.userId))?.userId ?? admins[0]!.userId;
 }
 
-export function workspaceGroupingSources(
+export async function workspaceGroupingSources(
   db: Database,
   workspaceId: string,
   clientId: string,
-): GroupingInput[] {
-  const userId = groupingAuthorityUser(db, workspaceId);
-  return userId
-    ? scopedGroupingSources(db, workspaceId, workspaceSessionIds(db, workspaceId, userId, clientId))
-    : [];
+): Promise<GroupingInput[]> {
+  const userId = await groupingAuthorityUser(db, workspaceId);
+  if (!userId) return [];
+  const sessions = await sqliteDb(db).run((q) =>
+    workspaceSessionIdsSteps(q, workspaceId, userId, clientId),
+  );
+  return scopedGroupingSources(db, workspaceId, sessions);
 }
