@@ -34,6 +34,7 @@ import {
   workspaceLinearMember,
   workspaceMember,
   type JobLoop,
+  sqliteDb,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
@@ -197,7 +198,7 @@ export function createParentDelegations(input: {
    */
   async function summarize(parent: Parent, signal: AbortSignal) {
     const key = `parent-summary:${parent.delegationId}`;
-    if (outboxKeyExists(db, key)) return;
+    if (await outboxKeyExists(sqliteDb(db), key)) return;
     const subs = subIssues(parent.delegationId);
     const own = new Map(subs.map((sub) => [sub.issueId, sub]));
     const outside = new Map<string, SummaryIssue | null>();

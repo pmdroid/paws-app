@@ -7,6 +7,7 @@ import {
   openDatabase,
   OutboxDispatcher,
   stopOutboxSession,
+  sqliteDb,
 } from "../src/db";
 import { createLinearClient, createLinearTracker } from "../src/linear";
 import { deliverLinearOutbox } from "../src/loop";
@@ -61,7 +62,7 @@ test("Stop aborts active Linear HTTP delivery before its final acknowledgement s
   try {
     await dispatcher.tick();
     await active;
-    const generation = stopOutboxSession(db, "linear", "session");
+    const generation = await stopOutboxSession(sqliteDb(db), "linear", "session");
     const ack = enqueueOutbox(db, {
       target: "linear",
       op: "activity",

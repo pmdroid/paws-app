@@ -18,6 +18,7 @@ import {
   openDatabase,
   OutboxDispatcher,
   stopOutboxSession,
+  sqliteDb,
 } from "../src/db";
 import { createLinearFileTransfer } from "../src/linear";
 import { createLinearArtifactPublisher, createLinearArtifactReader } from "../src/loop";
@@ -204,7 +205,7 @@ test("failed uploads remain incomplete and never publish a link", async () => {
 test("Stop fences a captured artifact callback from posting a late success", async () => {
   const env = setup();
   const publisher = env.publisher();
-  stopOutboxSession(env.db, "linear", "session", 1);
+  await stopOutboxSession(sqliteDb(env.db), "linear", "session", 1);
   await publisher.publish(artifact, context);
   expect(listOutbox(env.db, "session")[0]?.status).toBe("dropped");
   env.db.close();
@@ -259,7 +260,9 @@ test("a pending artifact link survives final response and is delivered first", a
   });
   const pending = listOutbox(env.db, "session");
   expect(pending[0]?.status).toBe("pending");
-  expect(claimOutboxHeads(env.db, { now: Date.now() })[0]?.id).toBe(pending[0]?.id);
+  expect((await claimOutboxHeads(sqliteDb(env.db), { now: Date.now() }))[0]?.id).toBe(
+    pending[0]?.id,
+  );
   env.db.close();
 });
 
@@ -294,10 +297,12 @@ test.each([false, true])(
         payload: { sessionId: "session", stateType: "completed" },
       });
       expect(listOutbox(env.db, "session")[0]?.status).toBe("dead");
-      const response = claimOutboxHeads(env.db)[0]!;
+      const response = (await claimOutboxHeads(sqliteDb(env.db)))[0]!;
       expect(response.idempotencyKey).toBe("final");
-      expect(completeOutbox(env.db, response)).toBe(true);
-      expect(claimOutboxHeads(env.db)[0]?.idempotencyKey).toBe("completed-status");
+      expect(await completeOutbox(sqliteDb(env.db), response)).toBe(true);
+      expect((await claimOutboxHeads(sqliteDb(env.db)))[0]?.idempotencyKey).toBe(
+        "completed-status",
+      );
     } finally {
       env.db.close();
     }

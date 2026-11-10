@@ -16,6 +16,7 @@ import {
   OutboxDispatcher,
   stopOutboxSession,
   type NewOutbox,
+  sqliteDb,
 } from "./index";
 
 function setup(path = ":memory:") {
@@ -128,7 +129,7 @@ describe("critical Linear delivery", () => {
     dispatcher.setHandler(() => {});
     expect(await dispatcher.tick()).toHaveLength(0);
     expect(getOutbox(db, failed)?.status).toBe("dead");
-    advanceOutboxSession(db, "linear", "A");
+    await advanceOutboxSession(sqliteDb(db), "linear", "A");
     expect(getOutbox(db, failed)?.error).toContain("accepted newer session generation");
     expect(getOutbox(db, failed)?.payload).toEqual({ kind: "response", body: "Previous result" });
     expect(getOutbox(db, later)?.status).toBe("dropped");
@@ -239,7 +240,7 @@ describe("ephemeral progress coalescing", () => {
     const first = enqueue("first", {
       payload: { kind: "thought", body: "Starting", ephemeral: true },
     });
-    const claimed = claimOutboxHeads(db, { now: 5000 });
+    const claimed = await claimOutboxHeads(sqliteDb(db), { now: 5000 });
     expect(claimed[0]?.id).toBe(first);
     const later = enqueue("later", {
       payload: { kind: "action", body: "Testing", ephemeral: true },
@@ -294,8 +295,8 @@ describe("persisted Stop fences", () => {
       payload: { linearIssueId: "done", stateType: "completed" },
     });
     enqueue("question", { op: "elicitation" });
-    const generation = stopOutboxSession(db, "linear", "A", clock.now());
-    expect(stopOutboxSession(db, "linear", "A", clock.now() + 1)).toBe(generation);
+    const generation = await stopOutboxSession(sqliteDb(db), "linear", "A", clock.now());
+    expect(await stopOutboxSession(sqliteDb(db), "linear", "A", clock.now() + 1)).toBe(generation);
     for (let attempt = 0; attempt < 2; attempt += 1)
       enqueueOutboxOnce(db, {
         target: "linear",
@@ -326,7 +327,7 @@ describe("persisted Stop fences", () => {
     const directory = mkdtempSync(join(tmpdir(), "paws-delivery-"));
     const path = join(directory, "paws.db");
     const first = setup(path);
-    const generation = stopOutboxSession(first.db, "linear", "A");
+    const generation = await stopOutboxSession(sqliteDb(first.db), "linear", "A");
     first.enqueue("stop", {
       delivery: "stop",
       generation,
@@ -343,7 +344,7 @@ describe("persisted Stop fences", () => {
       await flush(second.dispatcher);
       expect(getOutbox(second.db, late)?.status).toBe("dropped");
       expect(calls).toEqual(["stop"]);
-      const next = advanceOutboxSession(second.db, "linear", "A");
+      const next = await advanceOutboxSession(sqliteDb(second.db), "linear", "A");
       const old = second.enqueue("old-callback", { generation });
       const current = second.enqueue("current", { generation: next });
       await flush(second.dispatcher);

@@ -24,6 +24,7 @@ import {
   recordQuestionReask,
   retryDeadDelivery,
   setJournalSink,
+  sqliteDb,
 } from "./index";
 
 let lines: string[] = [];
@@ -97,7 +98,7 @@ describe("dead outbox rows and jobs", () => {
     ]);
   });
 
-  test("a dead job writes one journal line whatever its queue", () => {
+  test("a dead job writes one journal line whatever its queue", async () => {
     const { db } = harness();
     enqueueJob(db, {
       queue: JOB_KIND.catchup,
@@ -106,7 +107,7 @@ describe("dead outbox rows and jobs", () => {
       now: 0,
     });
     const job = claimNextJob(db, { workerId: "w", now: 1_000, queues: [JOB_KIND.catchup] });
-    failJob(db, job!, new Error("gone"), { now: 1_000 });
+    await failJob(sqliteDb(db), job!, new Error("gone"), { now: 1_000 });
     expect(lines.filter((line) => line.startsWith("job "))).toEqual([
       `job 1 ${JOB_KIND.catchup} dead item=item-a attempts=1/1 error=gone`,
     ]);
@@ -281,7 +282,7 @@ describe("dead outbox rows and jobs", () => {
     await deliverAll(dispatcher, clock);
     enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item-q" }, maxAttempts: 1 });
     const job = claimNextJob(db, { workerId: "w", queues: [JOB_KIND.resume] });
-    failJob(db, job!, new Error("runner lost"));
+    await failJob(sqliteDb(db), job!, new Error("runner lost"));
     expect(listDeadDeliveries(db, "item-q").map((dead) => [dead.kind, dead.name])).toEqual([
       ["outbox", "linear.elicitation"],
       ["job", JOB_KIND.resume],
@@ -301,12 +302,12 @@ describe("dead outbox rows and jobs", () => {
     expect(lines).toContain("outbox 1 retried item=item-q");
   });
 
-  test("a dead job from an earlier item version is listed but never retried", () => {
+  test("a dead job from an earlier item version is listed but never retried", async () => {
     const { db } = harness();
     waiting(db, "item-q", "ses-q");
     enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "item-q" }, maxAttempts: 1 });
     const job = claimNextJob(db, { workerId: "w", queues: [JOB_KIND.resume] });
-    failJob(db, job!, new Error("runner lost"));
+    await failJob(sqliteDb(db), job!, new Error("runner lost"));
     // A restart, answer or stop moved the item on; the job's payload is now obsolete.
     db.run("UPDATE work_item SET version = version + 1 WHERE id = 'item-q'");
 

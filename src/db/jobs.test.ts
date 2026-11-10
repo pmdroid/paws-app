@@ -27,6 +27,7 @@ import {
   openDatabase,
   parkLeasedJob,
   retryLeasedJob,
+  sqliteDb,
 } from "./index";
 
 function queue(clock = new FakeClock(1_000), leaseMs = 5_000) {
@@ -116,7 +117,7 @@ describe("job queue", () => {
     expect(claim(db, clock, ["tick"])?.queue).toBe("tick");
   });
 
-  test("actionable due work matches what a claim can take", () => {
+  test("actionable due work matches what a claim can take", async () => {
     const { db, clock } = queue();
     const due = enqueueJob(db, { queue: "tick", runAt: clock.now() - 1_000, now: clock.now() });
     enqueueJob(db, { queue: "tick", runAt: clock.now() + 5_000, now: clock.now() });
@@ -126,9 +127,12 @@ describe("job queue", () => {
       runAt: clock.now() - 60_000,
       now: clock.now(),
     });
-    expect(actionableDue(db, clock.now())).toEqual({ count: 1, oldestRunAt: clock.now() - 1_000 });
+    expect(await actionableDue(sqliteDb(db), clock.now())).toEqual({
+      count: 1,
+      oldestRunAt: clock.now() - 1_000,
+    });
     expect(claim(db, clock, ["tick"])?.id).toBe(due);
-    expect(actionableDue(db, clock.now())).toEqual({ count: 0, oldestRunAt: null });
+    expect(await actionableDue(sqliteDb(db), clock.now())).toEqual({ count: 0, oldestRunAt: null });
   });
 
   test("an unregistered queue does not block a job this process can run", () => {
@@ -163,13 +167,15 @@ describe("job queue", () => {
     expect(second !== null && getJob(db, second.id)?.status).toBe("done");
   });
 
-  test("retries with backoff and then fails the job", () => {
+  test("retries with backoff and then fails the job", async () => {
     const { db, clock } = queue();
     const created = enqueueJob(db, { queue: "work", maxAttempts: 2, now: clock.now() });
     const first = claim(db, clock, ["work"]);
     expect(first).not.toBeNull();
     const retried =
-      first === null ? null : failJob(db, first, new Error("nope"), { now: clock.now() });
+      first === null
+        ? null
+        : await failJob(sqliteDb(db), first, new Error("nope"), { now: clock.now() });
     expect(retried?.status).toBe("pending");
     expect(retried?.runAt).toBe(clock.now() + 1_000);
     expect(claim(db, clock, ["work"])).toBeNull();
@@ -177,7 +183,9 @@ describe("job queue", () => {
     const second = claim(db, clock, ["work"]);
     expect(second?.attempts).toBe(2);
     expect(
-      second !== null && failJob(db, second, new Error("still nope"), { now: clock.now() })?.status,
+      second !== null &&
+        (await failJob(sqliteDb(db), second, new Error("still nope"), { now: clock.now() }))
+          ?.status,
     ).toBe("dead");
     expect(
       listJobs(db)
@@ -205,7 +213,7 @@ describe("job queue", () => {
     expect(first !== null && getJob(db, first.id)?.fireCount).toBe(2);
   });
 
-  test("a recurring row that exhausts its attempts still arms the next fire", () => {
+  test("a recurring row that exhausts its attempts still arms the next fire", async () => {
     const { db, clock } = queue();
     const created = enqueueJob(db, {
       queue: "poll",
@@ -215,7 +223,9 @@ describe("job queue", () => {
     });
     const claimed = claim(db, clock, ["poll"]);
     const next =
-      claimed === null ? null : failJob(db, claimed, new Error("blip"), { now: clock.now() });
+      claimed === null
+        ? null
+        : await failJob(sqliteDb(db), claimed, new Error("blip"), { now: clock.now() });
     expect(next?.status).toBe("pending");
     expect(next?.attempts).toBe(0);
     expect(next?.fireCount).toBe(0);
@@ -225,12 +235,15 @@ describe("job queue", () => {
     expect(next?.id).toBe(created);
   });
 
-  test("a retry waits out the error's retryAfterMs when it is longer than the backoff", () => {
+  test("a retry waits out the error's retryAfterMs when it is longer than the backoff", async () => {
     const { db, clock } = queue();
     enqueueJob(db, { queue: "work", now: clock.now() });
     const claimed = claim(db, clock, ["work"]);
     const rateLimited = Object.assign(new Error("rate limited"), { retryAfterMs: 90_000 });
-    const next = claimed === null ? null : failJob(db, claimed, rateLimited, { now: clock.now() });
+    const next =
+      claimed === null
+        ? null
+        : await failJob(sqliteDb(db), claimed, rateLimited, { now: clock.now() });
     expect(next?.status).toBe("pending");
     expect(next?.runAt).toBe(clock.now() + 90_000);
   });
@@ -473,7 +486,7 @@ describe("job queue", () => {
 
 for (const operation of ["complete", "fail", "extend"] as const) {
   for (const scenario of ["reclaimed", "recurring-failure", "cancelled"] as const) {
-    test(`stale ${operation} cannot change a ${scenario} claim with a reused worker identity`, () => {
+    test(`stale ${operation} cannot change a ${scenario} claim with a reused worker identity`, async () => {
       const { db, clock } = queue();
       const id = enqueueJob(db, {
         queue: "work",
@@ -484,7 +497,7 @@ for (const operation of ["complete", "fail", "extend"] as const) {
       if (scenario === "reclaimed") clock.advance(5_000);
       if (scenario === "recurring-failure") {
         expect(
-          failJob(db, first, new Error("first fire failed"), { now: clock.now() }),
+          await failJob(sqliteDb(db), first, new Error("first fire failed"), { now: clock.now() }),
         ).not.toBeNull();
         clock.advance(1);
       }
@@ -502,7 +515,7 @@ for (const operation of ["complete", "fail", "extend"] as const) {
         operation === "complete"
           ? completeJob(db, first, clock.now())
           : operation === "fail"
-            ? failJob(db, first, new Error("stale failure"), { now: clock.now() })
+            ? await failJob(sqliteDb(db), first, new Error("stale failure"), { now: clock.now() })
             : extendJobLease(db, first, clock.now(), 60_000);
       expect(changed).toBe(operation === "fail" ? null : false);
       expect(getJob(db, id)).toEqual(before);
@@ -512,7 +525,7 @@ for (const operation of ["complete", "fail", "extend"] as const) {
 }
 
 for (const operation of ["complete", "fail", "extend"] as const) {
-  test(`a late ${operation} still applies when nobody reclaimed the expired claim`, () => {
+  test(`a late ${operation} still applies when nobody reclaimed the expired claim`, async () => {
     const { db, clock } = queue();
     const id = enqueueJob(db, { queue: "work", now: clock.now() });
     const first = claim(db, clock, ["work"])!;
@@ -521,7 +534,7 @@ for (const operation of ["complete", "fail", "extend"] as const) {
       operation === "complete"
         ? completeJob(db, first, clock.now())
         : operation === "fail"
-          ? failJob(db, first, new Error("late failure"), { now: clock.now() })
+          ? await failJob(sqliteDb(db), first, new Error("late failure"), { now: clock.now() })
           : extendJobLease(db, first, clock.now(), 60_000);
     expect(changed).toBeTruthy();
     expect(getJob(db, id)?.status).toBe(
@@ -532,12 +545,12 @@ for (const operation of ["complete", "fail", "extend"] as const) {
 }
 
 describe("leased job writes", () => {
-  test("parking a leased job keeps the earlier run_at, sets the payload, and frees the lease", () => {
+  test("parking a leased job keeps the earlier run_at, sets the payload, and frees the lease", async () => {
     const { db, clock, leaseMs } = queue();
     const id = enqueueJob(db, { queue: "x", payload: { a: 1 }, now: clock.now() });
     const job = claimNextJob(db, { now: clock.now(), leaseMs })!;
     expect(
-      parkLeasedJob(db, job, {
+      await parkLeasedJob(sqliteDb(db), job, {
         runAt: clock.now() + 10_000,
         payload: { a: 2 },
         attempts: -1,
@@ -553,17 +566,22 @@ describe("leased job writes", () => {
     });
   });
 
-  test("a park or retry after the lease expired or moved on is lost", () => {
+  test("a park or retry after the lease expired or moved on is lost", async () => {
     const { db, clock, leaseMs } = queue();
     enqueueJob(db, { queue: "x", now: clock.now() });
     const job = claimNextJob(db, { now: clock.now(), leaseMs })!;
     clock.advance(leaseMs + 1);
     expect(
-      parkLeasedJob(db, job, { runAt: clock.now(), payload: {}, attempts: 0, now: clock.now() }),
+      await parkLeasedJob(sqliteDb(db), job, {
+        runAt: clock.now(),
+        payload: {},
+        attempts: 0,
+        now: clock.now(),
+      }),
     ).toBe(false);
     const again = claimNextJob(db, { now: clock.now(), leaseMs })!;
-    expect(retryLeasedJob(db, job, clock.now() + 1_000, "boom")).toBe(false);
-    expect(retryLeasedJob(db, again, clock.now() + 1_000, "boom")).toBe(true);
+    expect(await retryLeasedJob(sqliteDb(db), job, clock.now() + 1_000, "boom")).toBe(false);
+    expect(await retryLeasedJob(sqliteDb(db), again, clock.now() + 1_000, "boom")).toBe(true);
     expect(getJob(db, again.id)).toMatchObject({ status: "pending", lastError: "boom" });
   });
 });

@@ -9,6 +9,7 @@ import {
   migrate,
   openDatabase,
   stopOutboxSession,
+  sqliteDb,
 } from "../src/db";
 import { FakeClock } from "../src/core";
 import { createLinearClient, createLinearTracker, type LinearClient } from "../src/linear";
@@ -202,7 +203,7 @@ test("Stop during an empty reconciliation fences the subsequent mutation before 
     clock.advance(2_000);
     await outbox.tick();
     await reading.promise;
-    stopOutboxSession(db, "linear", "session", clock.now());
+    await stopOutboxSession(sqliteDb(db), "linear", "session", clock.now());
     pending.resolve({ agentActivities: { nodes: [], pageInfo: { hasNextPage: false } } });
     await outbox.idle();
     expect(api.created).toHaveLength(1);
@@ -266,7 +267,7 @@ test.each(["credentials", "reconciliation"])(
       );
       await outbox.tick();
       await started.promise;
-      advanceOutboxSession(db, "linear", "session");
+      await advanceOutboxSession(sqliteDb(db), "linear", "session");
       release.resolve();
       await outbox.idle();
       expect(queries.some((query) => query.includes("mutation"))).toBe(false);

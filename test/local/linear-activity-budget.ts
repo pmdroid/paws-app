@@ -15,6 +15,7 @@ import {
   migrate,
   openDatabase,
   setCurrentRun,
+  sqliteDb,
 } from "../../src/db";
 import { createLinearClient, createLinearLedger, createLinearTracker } from "../../src/linear";
 import { createAcpActivityReporter, deliverLinearOutbox } from "../../src/loop";
@@ -257,13 +258,21 @@ export async function probeLinearActivityBudget(
     for (let n = 0; n < 80; n++) activity(`parallel-${n}`, "thought", reserve.id);
     const second = openDatabase(path);
     try {
-      const first = claimOutboxHeads(db, { now: clock.now(), limit: 59, workerId: "one" });
-      const rest = claimOutboxHeads(second, { now: clock.now(), limit: 80, workerId: "two" });
+      const first = await claimOutboxHeads(sqliteDb(db), {
+        now: clock.now(),
+        limit: 59,
+        workerId: "one",
+      });
+      const rest = await claimOutboxHeads(sqliteDb(second), {
+        now: clock.now(),
+        limit: 80,
+        workerId: "two",
+      });
       assert.equal(first.length, 59);
       assert.equal(rest.length, 21);
-      for (const row of first) completeOutbox(db, row, clock.now());
-      for (const row of rest) completeOutbox(second, row, clock.now());
-      assert.equal(claimOutboxHeads(db, { now: clock.now() }).length, 0);
+      for (const row of first) await completeOutbox(sqliteDb(db), row, clock.now());
+      for (const row of rest) await completeOutbox(sqliteDb(second), row, clock.now());
+      assert.equal((await claimOutboxHeads(sqliteDb(db), { now: clock.now() })).length, 0);
       observe(
         "Two SQLite connections claim all eighty independent sessions without duplicate delivery",
         true,

@@ -53,19 +53,19 @@ export async function waitForMergeTurn(
   return parked ? "parked" : "lost";
 }
 
-export function waitForRunnerSlot(
+export async function waitForRunnerSlot(
   db: Database,
   job: Job,
   now: number,
   delayMs: number,
   capacityWait: RunnerCapacityWaitState,
-): "parked" | "lost" {
-  return parkLeasedJob(db, job, {
+): Promise<"parked" | "lost"> {
+  return (await parkLeasedJob(sqliteDb(db), job, {
     runAt: now + delayMs,
     payload: { ...payloadRecord(job.payload), capacityWait },
     attempts: job.attempts - 1,
     now,
-  })
+  }))
     ? "parked"
     : "lost";
 }

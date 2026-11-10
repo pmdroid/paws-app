@@ -239,11 +239,11 @@ export function* actionableDueSteps(q: Q, now: number) {
 }
 
 /** Due work the loop could claim right now. A start without a reservation is not included. */
-export function actionableDue(
-  db: Database,
+export async function actionableDue(
+  store: Db,
   now: number,
-): { count: number; oldestRunAt: number | null } {
-  return run(db, (q) => actionableDueSteps(q, now));
+): Promise<{ count: number; oldestRunAt: number | null }> {
+  return store.run((q) => actionableDueSteps(q, now));
 }
 
 export function* enqueueJobSteps(q: Q, input: NewJob) {
@@ -448,11 +448,11 @@ export function* nextClaimableRunAtSteps(
  * Earliest `run_at` among rows a claim could take, or null when none exist.
  * This does not claim. The job loop sleeps until this time.
  */
-export function nextClaimableRunAt(
-  db: Database,
+export async function nextClaimableRunAt(
+  store: Db,
   options: { now?: number; queues?: readonly string[] } = {},
-): number | null {
-  return run(db, (q) => nextClaimableRunAtSteps(q, options));
+): Promise<number | null> {
+  return store.run((q) => nextClaimableRunAtSteps(q, options));
 }
 
 /**
@@ -574,13 +574,13 @@ export function* failJobSteps(
   return yield* getJobSteps(q, job.id);
 }
 
-export function failJob(
-  db: Database,
+export async function failJob(
+  store: Db,
   job: Job,
   error: unknown,
   options: { now?: number; baseMs?: number; capMs?: number } = {},
-): Job | null {
-  return run(db, (q) => failJobSteps(q, job, error, options));
+): Promise<Job | null> {
+  return store.run((q) => failJobSteps(q, job, error, options));
 }
 
 export function* isJobCurrentSteps(q: Q, job: Job) {
@@ -702,12 +702,12 @@ export function* parkLeasedJobSteps(
   );
 }
 
-export function parkLeasedJob(
-  db: Database,
+export async function parkLeasedJob(
+  store: Db,
   job: Job,
   input: { runAt: number; payload: unknown; attempts: number; now: number },
-): boolean {
-  return run(db, (q) => parkLeasedJobSteps(q, job, input));
+): Promise<boolean> {
+  return store.run((q) => parkLeasedJobSteps(q, job, input));
 }
 
 export function* retryLeasedJobSteps(q: Q, job: Job, runAt: number, error: string) {
@@ -723,16 +723,21 @@ export function* retryLeasedJobSteps(q: Q, job: Job, runAt: number, error: strin
   );
 }
 
-export function retryLeasedJob(db: Database, job: Job, runAt: number, error: string): boolean {
-  return run(db, (q) => retryLeasedJobSteps(q, job, runAt, error));
+export async function retryLeasedJob(
+  store: Db,
+  job: Job,
+  runAt: number,
+  error: string,
+): Promise<boolean> {
+  return store.run((q) => retryLeasedJobSteps(q, job, runAt, error));
 }
 
 export function* noteJobErrorSteps(q: Q, id: number, message: string) {
   yield* q.exec(q.orm.update(q.t.job).set({ lastError: message }).where(eq(q.t.job.id, id)));
 }
 
-export function noteJobError(db: Database, id: number, message: string): void {
-  run(db, (q) => noteJobErrorSteps(q, id, message));
+export async function noteJobError(store: Db, id: number, message: string): Promise<void> {
+  await store.run((q) => noteJobErrorSteps(q, id, message));
 }
 
 type CancelOpenJobsInput = {
@@ -889,13 +894,13 @@ export function* latestItemJobIdSteps(
   return row?.id ?? null;
 }
 
-export function latestItemJobId(
-  db: Database,
+export async function latestItemJobId(
+  store: Db,
   itemId: string,
   queues: readonly string[],
   statuses: readonly string[],
-): number | null {
-  return run(db, (q) => latestItemJobIdSteps(q, itemId, queues, statuses));
+): Promise<number | null> {
+  return store.run((q) => latestItemJobIdSteps(q, itemId, queues, statuses));
 }
 
 export function* itemJobRunningSteps(q: Q, queue: string, itemId: string) {
@@ -924,13 +929,13 @@ export function* cancelPendingItemJobsSteps(q: Q, queue: string, itemId: string,
   );
 }
 
-export function cancelPendingItemJobs(
-  db: Database,
+export async function cancelPendingItemJobs(
+  store: Db,
   queue: string,
   itemId: string,
   now: number,
-): void {
-  run(db, (q) => cancelPendingItemJobsSteps(q, queue, itemId, now));
+): Promise<void> {
+  await store.run((q) => cancelPendingItemJobsSteps(q, queue, itemId, now));
 }
 
 export function* cancelAdmittedJobSteps(q: Q, id: number, now: number) {
@@ -948,8 +953,8 @@ export function* cancelAdmittedJobSteps(q: Q, id: number, now: number) {
   );
 }
 
-export function cancelAdmittedJob(db: Database, id: number, now: number): void {
-  run(db, (q) => cancelAdmittedJobSteps(q, id, now));
+export async function cancelAdmittedJob(store: Db, id: number, now: number): Promise<void> {
+  await store.run((q) => cancelAdmittedJobSteps(q, id, now));
 }
 
 export function* runPendingJobNowSteps(q: Q, id: number, now: number) {
@@ -985,13 +990,13 @@ export function* leasedJobsForItemSteps(q: Q, queue: string, itemId: string, now
   return rows as { id: number; attempts: number; worker: string }[];
 }
 
-export function leasedJobsForItem(
-  db: Database,
+export async function leasedJobsForItem(
+  store: Db,
   queue: string,
   itemId: string,
   now: number,
-): { id: number; attempts: number; worker: string }[] {
-  return run(db, (q) => leasedJobsForItemSteps(q, queue, itemId, now));
+): Promise<{ id: number; attempts: number; worker: string }[]> {
+  return store.run((q) => leasedJobsForItemSteps(q, queue, itemId, now));
 }
 
 export function* openMemberVmJobSteps(q: Q, queue: string, memberVmId: string) {
@@ -1012,8 +1017,12 @@ export function* openMemberVmJobSteps(q: Q, queue: string, memberVmId: string) {
   return row !== undefined;
 }
 
-export function openMemberVmJob(db: Database, queue: string, memberVmId: string): boolean {
-  return run(db, (q) => openMemberVmJobSteps(q, queue, memberVmId));
+export async function openMemberVmJob(
+  store: Db,
+  queue: string,
+  memberVmId: string,
+): Promise<boolean> {
+  return store.run((q) => openMemberVmJobSteps(q, queue, memberVmId));
 }
 
 type MemberVmJobCancel = {
@@ -1045,8 +1054,8 @@ export function* cancelMemberVmJobsSteps(q: Q, input: MemberVmJobCancel) {
   );
 }
 
-export function cancelMemberVmJobs(db: Database, input: MemberVmJobCancel): void {
-  run(db, (q) => cancelMemberVmJobsSteps(q, input));
+export async function cancelMemberVmJobs(store: Db, input: MemberVmJobCancel): Promise<void> {
+  await store.run((q) => cancelMemberVmJobsSteps(q, input));
 }
 
 /** Cancel the item's start and resume jobs other than `exceptJobId`, because its work was accepted. */
@@ -1116,8 +1125,12 @@ export function* runningJobIdSteps(q: Q, queue: string, jobKey: string) {
   return row?.id ?? null;
 }
 
-export function runningJobId(db: Database, queue: string, jobKey: string): number | null {
-  return run(db, (q) => runningJobIdSteps(q, queue, jobKey));
+export async function runningJobId(
+  store: Db,
+  queue: string,
+  jobKey: string,
+): Promise<number | null> {
+  return store.run((q) => runningJobIdSteps(q, queue, jobKey));
 }
 
 /** Pending and running merge jobs, each with its payload as JSON text. */

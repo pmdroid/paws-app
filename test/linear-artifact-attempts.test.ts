@@ -16,6 +16,7 @@ import {
   listArtifacts,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, createLinearFileTransfer } from "../src/linear";
 import { createLinearArtifactPublisher, deliverLinearOutbox } from "../src/loop";
@@ -293,12 +294,12 @@ test("a requested card retries ahead of the terminal reply and is fenced by Stop
     expect((await dispatcher.tick())[0]!.op).toBe("linear.attachment");
     await dispatcher.idle();
     f.reopen();
-    expect(claimOutboxHeads(f.db, { now: now + 1 })).toHaveLength(0);
+    expect(await claimOutboxHeads(sqliteDb(f.db), { now: now + 1 })).toHaveLength(0);
     expect(listOutbox(f.db, "session").find((row) => row.idempotencyKey === "final")?.status).toBe(
       "pending",
     );
-    stopOutboxSession(f.db, "linear", "session", now + 2);
-    expect(claimOutboxHeads(f.db, { now: now + 2000 })).toHaveLength(0);
+    await stopOutboxSession(sqliteDb(f.db), "linear", "session", now + 2);
+    expect(await claimOutboxHeads(sqliteDb(f.db), { now: now + 2000 })).toHaveLength(0);
     expect(listOutbox(f.db, "session").every((row) => row.status === "dropped")).toBe(true);
   } finally {
     f.db.close();
@@ -334,7 +335,7 @@ test("exhausted attachment and image delivery preserve a claimable final respons
         .slice(0, 2)
         .map((row) => row.status),
     ).toEqual(["dead", "dead"]);
-    expect(claimOutboxHeads(f.db)[0]?.idempotencyKey).toBe("final");
+    expect((await claimOutboxHeads(sqliteDb(f.db)))[0]?.idempotencyKey).toBe("final");
   } finally {
     f.db.close();
   }

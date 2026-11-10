@@ -2073,7 +2073,7 @@ export class Orchestrator {
           await clearWait();
           const waitingId = readString(job.payload, "itemId");
           if (waitingId) this.settleItemAwake(waitingId);
-          waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
+          await waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
         }
       });
     });
@@ -2620,13 +2620,13 @@ export class Orchestrator {
         // and the item keeps this run (PAS-898).
         this.settleItemAwake(item.id);
         if (
-          waitForRunnerSlot(
+          (await waitForRunnerSlot(
             this.db,
             job,
             this.now(),
             this.runnerWaitMs(wait, job.queue === JOB_KIND.resume),
             wait,
-          ) === "lost"
+          )) === "lost"
         )
           throw error;
         capacityParked = true;
@@ -3014,7 +3014,7 @@ export class Orchestrator {
     const next = { ...waited, attempt: waited.attempt + 1 };
     job = (await beforePark?.()) ?? job;
     const delayMs = this.runnerWaitMs(next, job.queue === JOB_KIND.resume);
-    waitForRunnerSlot(this.db, job, this.now(), delayMs, next);
+    await waitForRunnerSlot(this.db, job, this.now(), delayMs, next);
     return true;
   }
 
