@@ -1,4 +1,6 @@
 import type { Database } from "bun:sqlite";
+import { and, asc, eq, isNull } from "drizzle-orm";
+import type { Q, Steps } from "./db";
 
 /**
  * A failed Closeout check a bypass link ask offers, as Closeout judged it on
@@ -74,7 +76,65 @@ export function listCloseoutBypassChecks(db: Database, questionId: string): Clos
     }));
 }
 
+export function* listCloseoutBypassChecksSteps(
+  q: Q,
+  questionId: string,
+): Steps<CloseoutBypassCheck[]> {
+  const { closeoutBypassCheck: check } = q.t;
+  const rows = yield* q.all(
+    q.orm.select().from(check).where(eq(check.questionId, questionId)).orderBy(asc(check.ordinal)),
+  );
+  return rows.map((row) => ({
+    questionId: row.questionId,
+    checkId: row.checkId,
+    kind: row.kind,
+    state: row.state,
+    attempt: row.attempt,
+    message: row.message,
+    reason: row.reason,
+    approvedBy: row.approvedBy,
+    approvedByName: row.approvedByName,
+    approvedAt: row.approvedAt,
+  }));
+}
+
 /** Records who bypassed which offered check and why. Returns false when a check was not offered or already decided. */
+export function* approveCloseoutBypassChecksSteps(
+  q: Q,
+  questionId: string,
+  input: {
+    checks: readonly { checkId: string; reason: string }[];
+    approvedBy: string;
+    approvedByName: string;
+    now: number;
+  },
+): Steps<boolean> {
+  const { closeoutBypassCheck: table } = q.t;
+  for (const check of input.checks) {
+    const updated = yield* q.all(
+      q.orm
+        .update(table)
+        .set({
+          reason: check.reason,
+          approvedBy: input.approvedBy,
+          approvedByName: input.approvedByName,
+          approvedAt: input.now,
+        })
+        .where(
+          and(
+            eq(table.questionId, questionId),
+            eq(table.checkId, check.checkId),
+            isNull(table.approvedAt),
+          ),
+        )
+        .returning({ checkId: table.checkId }),
+    );
+    if (updated.length === 0) return false;
+  }
+  return true;
+}
+
+/** The synchronous `approveCloseoutBypassChecksSteps`, for callers that are not async yet. */
 export function approveCloseoutBypassChecks(
   db: Database,
   questionId: string,
