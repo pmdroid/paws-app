@@ -136,11 +136,11 @@ function member(
   return { workspaceId, userId, role, authenticatedAt: 1, teamIds: [] };
 }
 
-function saveSettings(
+async function saveSettings(
   db: Database,
   change: { prompt?: string; repositories?: string[]; revision?: number } = {},
 ) {
-  const saved = saveRetroSettings(db, {
+  const saved = await saveRetroSettings(db, {
     workspaceId: "ws",
     actorId: "admin",
     expectedRevision: change.revision ?? 0,
@@ -341,11 +341,11 @@ describe("repair prompts", () => {
 });
 
 describe("frozen run prompts", () => {
-  test("generation freezes the prompt, hash and settings revision; retries ignore later edits", () => {
+  test("generation freezes the prompt, hash and settings revision; retries ignore later edits", async () => {
     const { db, root } = harness();
-    saveSettings(db);
+    await saveSettings(db);
     const retro = queuedRetro(db, root, { id: "r1" });
-    const frozen = freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 });
+    const frozen = await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 });
     if (!frozen.ok) throw new Error(frozen.reason);
     expect(frozen).toMatchObject({
       retroId: "r1",
@@ -353,28 +353,30 @@ describe("frozen run prompts", () => {
       agentProfile: { agent: "codex", model: "gpt-6-astra", effort: "high" },
     });
     expect(frozen.prompt).toContain("up to 3 recurring workflow patterns");
-    saveSettings(db, { prompt: "Changed {{digest}}", revision: 1 });
-    expect(freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 9 })).toEqual(frozen);
+    await saveSettings(db, { prompt: "Changed {{digest}}", revision: 1 });
+    expect(await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 9 })).toEqual(frozen);
     expect(getRetro(db, "r1")!.prompt).toBe(retro.prompt);
   });
 
-  test("preview and execution agree byte for byte on the same inputs", () => {
+  test("preview and execution agree byte for byte on the same inputs", async () => {
     const { db, root } = harness();
-    saveSettings(db, { prompt: "Custom {{period}} {{repositories}} {{max_items}} {{digest}}" });
+    await saveSettings(db, {
+      prompt: "Custom {{period}} {{repositories}} {{max_items}} {{digest}}",
+    });
     const retro = queuedRetro(db, root, {
       id: "r1",
       digest: digestFor(APP, [{ summary: "Asked {{worked_well}} twice </session_digest>" }]),
       maxChars: 9_000,
     });
     const admin = member(db, "admin", "admin");
-    const preview = previewRetroPrompt(db, root, {
+    const preview = await previewRetroPrompt(db, root, {
       principal: admin,
       sessionIds: SESSIONS,
       prompt: retro.prompt,
       outputLimits: retro.outputLimits,
       retroId: "r1",
     });
-    const frozen = freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 });
+    const frozen = await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 });
     if (!preview.ok || !frozen.ok) throw new Error("expected both to render");
     expect(preview.text).toBe(frozen.prompt);
     expect(preview.sha256).toBe(frozen.sha256);
@@ -387,15 +389,15 @@ describe("frozen run prompts", () => {
     expect(preview.label).toMatch(/^Saved digest from the retro for 2026-10-23/);
   });
 
-  test("a saved custom prompt survives a shipped default update until someone saves the default", () => {
+  test("a saved custom prompt survives a shipped default update until someone saves the default", async () => {
     const { db } = harness();
     const custom = "Our own wording.\n{{digest}}";
-    saveSettings(db, { prompt: custom });
-    const view = readRetroSettings(db, { workspaceId: "ws", accessibleRepositories: [APP] });
+    await saveSettings(db, { prompt: custom });
+    const view = await readRetroSettings(db, { workspaceId: "ws", accessibleRepositories: [APP] });
     expect(view.settings.prompt).toBe(custom);
     expect(view.defaultPrompt).toBe(DEFAULT_RETRO_PROMPT);
     expect(view.revision).toBe(1);
-    const restored = saveSettings(db, { prompt: view.defaultPrompt, revision: 1 });
+    const restored = await saveSettings(db, { prompt: view.defaultPrompt, revision: 1 });
     expect(restored).toMatchObject({ revision: 2, settings: { prompt: DEFAULT_RETRO_PROMPT } });
   });
 });
@@ -407,18 +409,18 @@ describe("authorized preview", () => {
     sessionIds: SESSIONS,
   };
 
-  test("only an active admin previews, and an invalid draft is explained", () => {
+  test("only an active admin previews, and an invalid draft is explained", async () => {
     const { db, root } = harness();
     for (const principal of [
       member(db, "reader", "member"),
       member(db, "gone", "admin", { active: false }),
     ])
-      expect(previewRetroPrompt(db, root, { principal, ...draft })).toMatchObject({
+      expect(await previewRetroPrompt(db, root, { principal, ...draft })).toMatchObject({
         ok: false,
         reason: "forbidden",
       });
     expect(
-      previewRetroPrompt(db, root, {
+      await previewRetroPrompt(db, root, {
         principal: member(db, "admin", "admin"),
         sessionIds: SESSIONS,
         prompt: "{{digest}} {{owner}}",
@@ -427,9 +429,9 @@ describe("authorized preview", () => {
     ).toEqual({ ok: false, reason: "invalid", message: "Unknown variable: owner." });
   });
 
-  test("without a readable saved digest the preview uses the labeled synthetic sample", () => {
+  test("without a readable saved digest the preview uses the labeled synthetic sample", async () => {
     const { db, root } = harness();
-    const preview = previewRetroPrompt(db, root, {
+    const preview = await previewRetroPrompt(db, root, {
       principal: member(db, "admin", "admin"),
       ...draft,
     });
@@ -441,20 +443,24 @@ describe("authorized preview", () => {
     expect(preview.text).not.toContain(APP);
   });
 
-  test("a digest covering a repository the caller cannot read is never shown or hinted at", () => {
+  test("a digest covering a repository the caller cannot read is never shown or hinted at", async () => {
     const { db, root } = harness();
-    saveSettings(db, { repositories: [APP, LANDING] });
+    await saveSettings(db, { repositories: [APP, LANDING] });
     queuedRetro(db, root, { id: "r1", digest: digestFor(LANDING) });
     db.run("DELETE FROM workspace_repository WHERE repository = ?", [LANDING]);
     const admin = member(db, "admin", "admin");
-    const latest = previewRetroPrompt(db, root, { principal: admin, ...draft });
-    const named = previewRetroPrompt(db, root, {
+    const latest = await previewRetroPrompt(db, root, { principal: admin, ...draft });
+    const named = await previewRetroPrompt(db, root, {
       principal: admin,
       ...draft,
       sessionIds: SESSIONS,
       retroId: "r1",
     });
-    const missing = previewRetroPrompt(db, root, { principal: admin, ...draft, retroId: "nope" });
+    const missing = await previewRetroPrompt(db, root, {
+      principal: admin,
+      ...draft,
+      retroId: "nope",
+    });
     expect(named).toEqual(latest);
     expect(missing).toEqual(latest);
     if (!latest.ok) throw new Error(latest.message);
@@ -471,11 +477,11 @@ describe("authorized preview", () => {
     });
   });
 
-  test("another workspace's retro reads as missing", () => {
+  test("another workspace's retro reads as missing", async () => {
     const { db, root } = harness();
-    saveSettings(db);
+    await saveSettings(db);
     queuedRetro(db, root, { id: "r1" });
-    expect(freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 }).ok).toBe(true);
+    expect((await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 })).ok).toBe(true);
     const outsider = member(db, "outsider", "admin", { workspaceId: "other" });
     expect(
       readRetroRenderedPrompt(db, root, {
@@ -487,7 +493,7 @@ describe("authorized preview", () => {
       ok: false,
       reason: "not_found",
     });
-    const preview = previewRetroPrompt(db, root, {
+    const preview = await previewRetroPrompt(db, root, {
       principal: outsider,
       ...draft,
       sessionIds: SESSIONS,
@@ -503,11 +509,11 @@ describe("authorized preview", () => {
     });
   });
 
-  test("evidence from a session the caller cannot read hides the saved digest and prompt", () => {
+  test("evidence from a session the caller cannot read hides the saved digest and prompt", async () => {
     const { db, root } = harness();
-    saveSettings(db);
+    await saveSettings(db);
     queuedRetro(db, root, { id: "r1" });
-    expect(freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 }).ok).toBe(true);
+    expect((await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 })).ok).toBe(true);
     const reader = member(db, "reader", "admin");
     for (const sessionIds of [["session-PAS-1"], []]) {
       expect(
@@ -516,7 +522,11 @@ describe("authorized preview", () => {
         ok: false,
         reason: "not_found",
       });
-      const preview = previewRetroPrompt(db, root, { principal: reader, ...draft, sessionIds });
+      const preview = await previewRetroPrompt(db, root, {
+        principal: reader,
+        ...draft,
+        sessionIds,
+      });
       if (!preview.ok) throw new Error(preview.message);
       expect(preview.source).toEqual({ kind: "sample" });
       expect(preview.text).not.toContain("PAS-2");
@@ -527,9 +537,9 @@ describe("authorized preview", () => {
     ).toEqual({ ok: false, reason: "not_found" });
   });
 
-  test("preview runs nothing: no artifact, state or watermark changes", () => {
+  test("preview runs nothing: no artifact, state or watermark changes", async () => {
     const { db, root } = harness();
-    saveSettings(db);
+    await saveSettings(db);
     queuedRetro(db, root, { id: "r1" });
     const before = {
       retro: getRetro(db, "r1"),
@@ -537,7 +547,7 @@ describe("authorized preview", () => {
       files: readdirSync(root).sort(),
       artifacts: db.query("SELECT * FROM retro_artifact ORDER BY kind").all(),
     };
-    const preview = previewRetroPrompt(db, root, {
+    const preview = await previewRetroPrompt(db, root, {
       principal: member(db, "admin", "admin"),
       ...draft,
     });

@@ -161,20 +161,20 @@ function collectAndQueue(
 }
 
 describe("saving retro settings", () => {
-  test("before a save the proposed defaults show at revision 0", () => {
+  test("before a save the proposed defaults show at revision 0", async () => {
     const { db } = harness();
-    const view = readRetroSettings(db, { workspaceId: "ws", accessibleRepositories: [APP] });
+    const view = await readRetroSettings(db, { workspaceId: "ws", accessibleRepositories: [APP] });
     expect(view).toMatchObject({ revision: 0, saved: false, defaultPrompt: DEFAULT_RETRO_PROMPT });
     expect(view.settings.executionLimits).toEqual({ activeMinutes: 15, retries: 1 });
     expect(view.settings.outputLimits).toEqual({ maxItems: 5, workedWell: 3 });
     expect(view.settings.repositories).toEqual([APP]);
   });
 
-  test("each save is one revision across every field", () => {
+  test("each save is one revision across every field", async () => {
     const { db } = harness();
-    const first = save(db, { expectedRevision: 0, draft: draft() });
+    const first = await save(db, { expectedRevision: 0, draft: draft() });
     expect(first.ok && first.view.revision).toBe(1);
-    const second = save(db, {
+    const second = await save(db, {
       expectedRevision: 1,
       draft: draft({
         prompt: `Be brief.\n\n${DEFAULT_RETRO_PROMPT}`,
@@ -191,7 +191,7 @@ describe("saving retro settings", () => {
       now: 2,
     });
     expect(second.ok).toBe(true);
-    const view = readRetroSettings(db, {
+    const view = await readRetroSettings(db, {
       workspaceId: "ws",
       accessibleRepositories: [APP, LANDING],
     });
@@ -205,24 +205,24 @@ describe("saving retro settings", () => {
     expect(view.settings.prompt.startsWith("Be brief.")).toBe(true);
   });
 
-  test("a stale expected revision keeps the draft and returns the saved revision", () => {
+  test("a stale expected revision keeps the draft and returns the saved revision", async () => {
     const { db } = harness();
-    save(db, { expectedRevision: 0, draft: draft() });
-    save(db, {
+    await save(db, { expectedRevision: 0, draft: draft() });
+    await save(db, {
       expectedRevision: 1,
       draft: draft({ outputLimits: { maxItems: 2, workedWell: 0 } }),
     });
     const mine = draft({ outputLimits: { maxItems: 4, workedWell: 2 } });
-    const result = save(db, { expectedRevision: 1, draft: mine });
+    const result = await save(db, { expectedRevision: 1, draft: mine });
     expect(result).toMatchObject({ ok: false, reason: "conflict", draft: mine });
     if (result.ok || result.reason !== "conflict") throw new Error("expected a conflict");
     expect(result.current.revision).toBe(2);
     expect(result.current.settings.outputLimits).toEqual({ maxItems: 2, workedWell: 0 });
   });
 
-  test("out-of-range values, a broken prompt and a bad time zone are rejected", () => {
+  test("out-of-range values, a broken prompt and a bad time zone are rejected", async () => {
     const { db } = harness();
-    const result = save(db, {
+    const result = await save(db, {
       expectedRevision: 0,
       draft: draft({
         prompt: "No digest {{nope}}",
@@ -241,51 +241,51 @@ describe("saving retro settings", () => {
       "schedule.time",
       "schedule.timeZone",
     ]);
-    expect(readRetroSettings(db, { workspaceId: "ws", accessibleRepositories: [] }).saved).toBe(
-      false,
-    );
+    expect(
+      (await readRetroSettings(db, { workspaceId: "ws", accessibleRepositories: [] })).saved,
+    ).toBe(false);
   });
 
-  test("an inaccessible repository is rejected", () => {
+  test("an inaccessible repository is rejected", async () => {
     const { db } = harness();
-    const result = save(db, {
+    const result = await save(db, {
       expectedRevision: 0,
       draft: draft({ repositories: [APP, "someone/private"] }),
     });
     expect(result).toMatchObject({ ok: false, reason: "inaccessible_repository" });
   });
 
-  test("an unsupported model or effort is not an unavailable catalog", () => {
+  test("an unsupported model or effort is not an unavailable catalog", async () => {
     const { db } = harness();
     expect(
-      save(db, {
+      await save(db, {
         expectedRevision: 0,
         draft: draft({ agentProfile: { agent: "codex", model: "gpt-5", effort: null } }),
       }),
     ).toMatchObject({ ok: false, reason: "unsupported" });
     expect(
-      save(db, {
+      await save(db, {
         expectedRevision: 0,
         draft: draft({ agentProfile: { agent: "codex", model: "gpt-6-astra", effort: "max" } }),
       }),
     ).toMatchObject({ ok: false, reason: "unsupported" });
     expect(
-      save(db, {
+      await save(db, {
         expectedRevision: 0,
         draft: draft({ agentProfile: { agent: "grok", model: "grok-5", effort: null } }),
       }),
     ).toMatchObject({ ok: false, reason: "catalog_unavailable" });
     expect(
-      save(db, {
+      await save(db, {
         expectedRevision: 0,
         draft: draft({ agentProfile: { agent: "codex", model: "gpt-6-mini", effort: "low" } }),
       }),
     ).toMatchObject({ ok: false, reason: "catalog_unavailable" });
   });
 
-  test("the agent default saves without a catalog", () => {
+  test("the agent default saves without a catalog", async () => {
     const { db } = harness();
-    const result = save(db, {
+    const result = await save(db, {
       expectedRevision: 0,
       draft: draft({ agentProfile: { agent: "grok", model: null, effort: null } }),
       catalogs: null,
@@ -300,10 +300,10 @@ describe("saving retro settings", () => {
     ).toBe(true);
   });
 
-  test("changing the agent resets choices the new agent does not offer", () => {
+  test("changing the agent resets choices the new agent does not offer", async () => {
     const { db } = harness();
-    save(db, { expectedRevision: 0, draft: draft() });
-    const result = save(db, {
+    await save(db, { expectedRevision: 0, draft: draft() });
+    const result = await save(db, {
       expectedRevision: 1,
       draft: draft({ agentProfile: { agent: "claude", model: "gpt-6-astra", effort: "high" } }),
     });
@@ -334,16 +334,16 @@ describe("frozen retro runs", () => {
     ).toMatchObject({ ok: false, reason: "catalog_unavailable" });
   });
 
-  test("a queued run and its retries keep their values after a new save", () => {
+  test("a queued run and its retries keep their values after a new save", async () => {
     const { db, root } = harness();
-    save(db, {
+    await save(db, {
       expectedRevision: 0,
       draft: draft({ agentProfile: { agent: "codex", model: null, effort: null } }),
     });
     const frozen = freeze(db, { id: "r1", start: 0 });
     if (!frozen.ok) throw new Error(frozen.message);
     collectAndQueue(db, root, "r1", { [APP]: 5 });
-    save(db, {
+    await save(db, {
       expectedRevision: 1,
       draft: draft({
         prompt: `Changed.\n${DEFAULT_RETRO_PROMPT}`,
@@ -358,7 +358,7 @@ describe("frozen retro runs", () => {
       rendered.push(text);
       return text;
     };
-    const prompt = freezeRetroPrompt(db, root, { retroId: "r1", render, now: 3 });
+    const prompt = await freezeRetroPrompt(db, root, { retroId: "r1", render, now: 3 });
     if (!prompt.ok) throw new Error(prompt.reason);
     expect(prompt.prompt).toContain("digest r1");
     expect(prompt.prompt).not.toContain("Changed.");
@@ -376,7 +376,7 @@ describe("frozen retro runs", () => {
     expect(
       startRetroAttempt(db, { retroId: "r1", owner: "runner-b", now: 6, leaseMs: 1000, ...limits }),
     ).toEqual({ attempt: 2 });
-    const retry = freezeRetroPrompt(db, root, { retroId: "r1", render, now: 7 });
+    const retry = await freezeRetroPrompt(db, root, { retroId: "r1", render, now: 7 });
     expect(retry).toEqual(prompt);
     expect(rendered).toHaveLength(1);
 
@@ -389,9 +389,9 @@ describe("frozen retro runs", () => {
     });
   });
 
-  test("a run leaves out a repository whose access was revoked and a save cannot add it back", () => {
+  test("a run leaves out a repository whose access was revoked and a save cannot add it back", async () => {
     const { db } = harness();
-    save(db, { expectedRevision: 0, draft: draft({ repositories: [APP, LANDING] }) });
+    await save(db, { expectedRevision: 0, draft: draft({ repositories: [APP, LANDING] }) });
     const frozen = freeze(db, { id: "r1", start: 0, accessible: [APP] });
     expect(frozen.ok && frozen.retro.repositories).toEqual([APP]);
     expect(retroRunRepositories([APP], [APP, LANDING])).toEqual([APP]);
@@ -409,7 +409,7 @@ describe("frozen retro runs", () => {
 });
 
 describe("repository selection", () => {
-  test("a newly enabled repository starts with its retained history", () => {
+  test("a newly enabled repository starts with its retained history", async () => {
     const { db, root } = harness();
     const publish = (retroId: string, owner: string) => {
       const attempt = startRetroAttempt(db, { retroId, owner, now: 1, leaseMs: 1000 })!;
@@ -417,13 +417,13 @@ describe("repository selection", () => {
         publishRetro(db, { retroId, ...attempt, owner, result: {}, items: [], now: 2 }).ok,
       ).toBe(true);
     };
-    save(db, { expectedRevision: 0, draft: draft({ repositories: [APP] }) });
+    await save(db, { expectedRevision: 0, draft: draft({ repositories: [APP] }) });
     const first = freeze(db, { id: "r1", start: 0 });
     if (!first.ok) throw new Error(first.message);
     collectAndQueue(db, root, "r1", { [APP]: 10 });
     publish("r1", "a");
 
-    save(db, { expectedRevision: 1, draft: draft({ repositories: [LANDING] }) });
+    await save(db, { expectedRevision: 1, draft: draft({ repositories: [LANDING] }) });
     expect(freeze(db, { id: "r2", start: 7 * DAY }).ok).toBe(true);
     expect(beginRetroCollection(db, { retroId: "r2", now: 3 }).ok).toBe(true);
     expect(retroRepositories(db, "r2")).toEqual([
@@ -431,15 +431,15 @@ describe("repository selection", () => {
     ]);
   });
 
-  test("re-enabling a repository continues from its last reported cursor", () => {
+  test("re-enabling a repository continues from its last reported cursor", async () => {
     const { db, root } = harness();
-    save(db, { expectedRevision: 0, draft: draft({ repositories: [APP] }) });
+    await save(db, { expectedRevision: 0, draft: draft({ repositories: [APP] }) });
     freeze(db, { id: "r1", start: 0 });
     collectAndQueue(db, root, "r1", { [APP]: 10 });
     const attempt = startRetroAttempt(db, { retroId: "r1", owner: "a", now: 1, leaseMs: 1000 })!;
     publishRetro(db, { retroId: "r1", ...attempt, owner: "a", result: {}, items: [], now: 2 });
-    save(db, { expectedRevision: 1, draft: draft({ repositories: [LANDING] }) });
-    save(db, { expectedRevision: 2, draft: draft({ repositories: [APP] }) });
+    await save(db, { expectedRevision: 1, draft: draft({ repositories: [LANDING] }) });
+    await save(db, { expectedRevision: 2, draft: draft({ repositories: [APP] }) });
     freeze(db, { id: "r2", start: 21 * DAY });
     expect(beginRetroCollection(db, { retroId: "r2", now: 3 }).ok).toBe(true);
     expect(retroRepositories(db, "r2")).toEqual([

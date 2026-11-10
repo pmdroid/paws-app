@@ -96,9 +96,9 @@ export async function probeStandaloneAttribution(root: string) {
   bindLinearSessionTask(db, "session", item.delegationId, { actorId: "steerer" });
   const { run } = beginImplementRun(db, item.id, now);
   const bot = { appId: "99", id: 88, login: "paws-test[bot]" };
-  const policyForItem = (): GitCommitPolicy => ({
+  const policyForItem = async (): Promise<GitCommitPolicy> => ({
     bot,
-    credit: delegatorCommitCredit(db, item.id),
+    credit: await delegatorCommitCredit(db, item.id),
   });
   const requests: string[] = [];
   const realFetch = globalThis.fetch;
@@ -120,7 +120,7 @@ export async function probeStandaloneAttribution(root: string) {
     () => now,
   );
   try {
-    const policy = policyForItem();
+    const policy = await policyForItem();
     assert.deepEqual(policy, { bot, credit: null });
     assert.equal(policyCoauthors(policy).length, 0);
     assert.equal(
@@ -133,7 +133,7 @@ export async function probeStandaloneAttribution(root: string) {
       "an unlinked delegator gets a bot-only policy and the App gate starts work without waiting",
     );
     consent();
-    assert.deepEqual(policyCoauthors(policyForItem()), [
+    assert.deepEqual(policyCoauthors(await policyForItem()), [
       {
         id: 8,
         login: "steerer",
@@ -142,11 +142,11 @@ export async function probeStandaloneAttribution(root: string) {
       },
     ]);
     assert.equal(
-      commitPolicyMessage("work", policyForItem()),
+      commitPolicyMessage("work", await policyForItem()),
       "work\n\nCo-authored-by: Task Steerer <8+steerer@users.noreply.github.com>\n",
     );
     revokeGitHubAttribution(db, binding, now);
-    assert.equal(policyForItem().credit, null);
+    assert.equal((await policyForItem()).credit, null);
     assert.equal(
       await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal),
       true,

@@ -3,29 +3,39 @@ import { journalCaught, journalRejection } from "../journal";
 import { randomBytes } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
-  advanceLinearSessionGeneration,
-  auditWorkspaceAccess,
-  enqueueJobOnce,
-  enqueueOutboxOnce,
-  ensureLinearSession,
+  advanceLinearSessionGenerationSteps,
+  auditWorkspaceAccessSteps,
+  emitJobReady,
+  enqueueJobOnceAsync,
+  enqueueJobOnceSteps,
+  enqueueOutboxOnceSteps,
+  ensureLinearSessionSteps,
   getLinearSession,
   getLinearSessionAccess,
-  getLinearSessionInstallation,
-  immediate,
-  insertWorkspaceAssignment,
+  getLinearSessionAccessSteps,
+  getLinearSessionInstallationSteps,
+  getLinearSessionSteps,
+  insertWorkspaceAssignmentSteps,
   invalidateWorkspaceAssignment,
+  invalidateWorkspaceAssignmentSteps,
   latestWorkspaceAssignment,
-  linkWorkspaceAssignment,
+  latestWorkspaceAssignmentSteps,
+  linkWorkspaceAssignmentSteps,
   listWorkspaceRepositories,
-  moveWorkspaceAssignment,
-  pendingWorkspaceAssignmentTokens,
-  recordLinearTurn,
-  workspaceAssignmentByToken,
-  workspaceAssignmentTokenForLink,
-  workspaceForOrganization,
+  listWorkspaceRepositoriesSteps,
+  moveWorkspaceAssignmentSteps,
+  pendingWorkspaceAssignmentTokensSteps,
+  recordLinearTurnSteps,
+  sqliteDb,
+  syncWorkspaceMemberSteps,
+  workspaceAssignmentByTokenSteps,
+  workspaceAssignmentTokenForLinkSteps,
+  workspaceForOrganizationSteps,
   workspaceLinearMember,
-  syncWorkspaceMember,
+  workspaceLinearMemberSteps,
   type JobLoop,
+  type Q,
+  type Steps,
   type WorkspaceAssignmentHold,
 } from "../db";
 import {
@@ -191,32 +201,37 @@ export function createWorkspaceAssignments(options: {
   now?: () => number;
 }) {
   const { db } = options;
+  const store = sqliteDb(db);
   const origin = new URL(options.origin);
   if (origin.protocol !== "https:" || origin.username || origin.password)
     throw new Error("Assignment sign-in requires verified HTTPS.");
   const now = options.now ?? Date.now;
   const continuations = new WeakSet<AcceptedLinearEvent>();
-  const holds = (sessionId: string) => latestWorkspaceAssignment(db, sessionId);
-  const byToken = (tokenHash: string) => workspaceAssignmentByToken(db, tokenHash);
+  const holdsSteps = (q: Q, sessionId: string) => latestWorkspaceAssignmentSteps(q, sessionId);
+  const holds = (sessionId: string) => store.run((q) => holdsSteps(q, sessionId));
+  const byTokenSteps = (q: Q, tokenHash: string) => workspaceAssignmentByTokenSteps(q, tokenHash);
   /** The hold for this token, only while it is the session's latest generation. */
-  const currentHold = (tokenHash: string) => {
-    const hold = byToken(tokenHash);
-    return hold && holds(hold.sessionId)?.tokenHash === tokenHash ? hold : null;
-  };
-  const expired = (hold: Hold) => (hold.linkExpiresAt ?? hold.expiresAt) <= now();
-  function invalidate(hold: Hold) {
-    invalidateWorkspaceAssignment(db, hold.tokenHash);
+  function* currentHoldSteps(q: Q, tokenHash: string) {
+    const hold = yield* byTokenSteps(q, tokenHash);
+    return hold && (yield* holdsSteps(q, hold.sessionId))?.tokenHash === tokenHash ? hold : null;
   }
+  const expired = (hold: Hold) => (hold.linkExpiresAt ?? hold.expiresAt) <= now();
+  const invalidateSteps = (q: Q, hold: Hold) =>
+    invalidateWorkspaceAssignmentSteps(q, hold.tokenHash);
+  const invalidate = (hold: Hold) => store.run((q) => invalidateSteps(q, hold));
   /**
    * Ends a pending hold that outlived its link: one final response that completes the Linear
    * session, a stopped session, and a hold that can no longer start. Runs inside a write
    * transaction.
    */
-  function expire(hold: Hold) {
-    invalidate(hold);
+  function* expireSteps(q: Q, hold: Hold) {
+    yield* invalidateSteps(q, hold);
     const at = now();
-    const generation = advanceLinearSessionGeneration(db, hold.sessionId, { stop: true, now: at });
-    enqueueOutboxOnce(db, {
+    const generation = yield* advanceLinearSessionGenerationSteps(q, hold.sessionId, {
+      stop: true,
+      now: at,
+    });
+    yield* enqueueOutboxOnceSteps(q, {
       target: "linear",
       op: "activity",
       orderingKey: hold.sessionId,
@@ -239,23 +254,28 @@ export function createWorkspaceAssignments(options: {
   ): Promise<Verified | Refusal> {
     if (!event.sessionId || !event.issueId || !options.tracker.getSession)
       return refused("Paws could not match this session to an issue.");
-    const generation = getLinearSession(db, event.sessionId)?.generation ?? 0;
+    const sessionId = event.sessionId;
+    const installationOf = () => store.run((q) => getLinearSessionInstallationSteps(q, sessionId));
+    const generation =
+      (await store.run((q) => getLinearSessionSteps(q, sessionId)))?.generation ?? 0;
     if (!(await options.accept(event, signal)))
-      return getLinearSessionInstallation(db, event.sessionId)
+      return (await installationOf())
         ? refused("Paws cannot access this session or its team in Linear.")
         : UNRECORDED;
-    const installation = getLinearSessionInstallation(db, event.sessionId);
+    const installation = await installationOf();
     if (!installation) return UNRECORDED;
     if (installation.oauthClientId !== options.clientId || !installation.teamId)
       return refused(ELSEWHERE);
-    const workspace = workspaceForOrganization(db, installation.organizationId);
+    const workspace = await store.run((q) =>
+      workspaceForOrganizationSteps(q, installation.organizationId),
+    );
     if (!workspace) return refused("This Linear workspace is not connected to Paws.");
-    const session = await options.tracker.getSession(event.sessionId, { signal });
+    const session = await options.tracker.getSession(sessionId, { signal });
     const issue = await options.lifecycle.inspect(event.issueId, { signal });
     const spec = await options.tracker.loadEpic(event.issueId);
     signal.throwIfAborted();
     if (
-      session.id !== event.sessionId ||
+      session.id !== sessionId ||
       session.issue?.id !== event.issueId ||
       issue.id !== event.issueId ||
       spec.linearIssueId !== event.issueId
@@ -272,18 +292,19 @@ export function createWorkspaceAssignments(options: {
       return refused("This issue is completed or canceled.");
     if (issue.delegateId !== null && issue.delegateId !== installation.appUserId)
       return refused("This issue is delegated to another agent.");
-    ensureLinearSession(db, { sessionId: event.sessionId, creatorId: session.creatorId });
-    const latest = getLinearSession(db, event.sessionId)!;
+    const creatorId = session.creatorId;
+    await store.transaction((q) => ensureLinearSessionSteps(q, { sessionId, creatorId }));
+    const latest = (await store.run((q) => getLinearSessionSteps(q, sessionId)))!;
     if (
       latest.generation !== generation ||
       latest.stoppedAt !== null ||
-      getLinearSessionAccess(db, event.sessionId) !== "allowed"
+      (await store.run((q) => getLinearSessionAccessSteps(q, sessionId))) !== "allowed"
     )
       return refused(STOPPED);
-    const repositories = listWorkspaceRepositories(db, workspace.id);
+    const repositories = await store.run((q) => listWorkspaceRepositoriesSteps(q, workspace.id));
     return {
       workspaceId: workspace.id,
-      actorId: session.creatorId,
+      actorId: creatorId,
       generation,
       teamId: installation.teamId,
       teamName: issue.teamName ?? null,
@@ -297,20 +318,22 @@ export function createWorkspaceAssignments(options: {
       }),
     };
   }
-  function current(hold: Hold) {
-    const session = getLinearSession(db, hold.sessionId);
+  function* currentSteps(q: Q, hold: Hold) {
+    const session = yield* getLinearSessionSteps(q, hold.sessionId);
     return (
       session?.generation === hold.generation &&
       session.stoppedAt === null &&
-      getLinearSessionAccess(db, hold.sessionId) === "allowed" &&
+      (yield* getLinearSessionAccessSteps(q, hold.sessionId)) === "allowed" &&
       session.creatorId === hold.actorId
     );
   }
-  function postSignIn(
+  const current = (hold: Hold) => store.run((q) => currentSteps(q, hold));
+  function* postSignInSteps(
+    q: Q,
     hold: Pick<Hold, "sessionId" | "generation" | "actorId" | "fingerprint">,
     link: string,
   ) {
-    enqueueOutboxOnce(db, {
+    yield* enqueueOutboxOnceSteps(q, {
       target: "linear",
       op: "elicitation",
       orderingKey: hold.sessionId,
@@ -330,64 +353,73 @@ export function createWorkspaceAssignments(options: {
     });
   }
   /** Stores the hold and its one sign-in action. A session generation never gets a second one. */
-  function issueAction(
+  function* issueActionSteps(
+    q: Q,
     hold: Omit<Hold, "tokenHash" | "linkId" | "linkExpiresAt" | "expiresAt" | "status">,
   ) {
     const link = onboardingLinkId();
     const expiresAt = now() + ONBOARDING_HOLD_MS;
-    const inserted = insertWorkspaceAssignment(db, {
+    const inserted = yield* insertWorkspaceAssignmentSteps(q, {
       ...hold,
       tokenHash: workspaceTokenHash(link),
       expiresAt,
       linkId: link,
       linkExpiresAt: expiresAt,
     });
-    if (inserted) postSignIn(hold, link);
+    if (inserted) yield* postSignInSteps(q, hold, link);
   }
   /**
    * Lets a pending hold continue once its creator has a member row that may delegate here,
    * however that row was made: the link, a dashboard sign-in, or a membership sync. Runs inside
-   * a write transaction and reads only the database.
+   * a write transaction and reads only the database. `queued` says whether it added the job, so
+   * the caller wakes the job loop after the commit.
    */
-  function release(hold: Hold): boolean {
-    if (hold.status !== "pending" || expired(hold) || !current(hold)) return false;
-    if (holds(hold.sessionId)?.tokenHash !== hold.tokenHash) return false;
-    const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
+  function* releaseSteps(q: Q, hold: Hold) {
+    const held = { released: false, queued: false };
+    if (hold.status !== "pending" || expired(hold) || !(yield* currentSteps(q, hold))) return held;
+    if ((yield* holdsSteps(q, hold.sessionId))?.tokenHash !== hold.tokenHash) return held;
+    const member = yield* workspaceLinearMemberSteps(q, hold.workspaceId, hold.actorId);
     const expected = JSON.parse(hold.fingerprint) as { installation: { teamId: string } };
     if (
       !canAct({ id: hold.actorId, member, teamId: expected.installation.teamId }, "delegate")
         .allowed
     )
-      return false;
-    moveWorkspaceAssignment(db, hold.tokenHash, {
+      return held;
+    yield* moveWorkspaceAssignmentSteps(q, hold.tokenHash, {
       from: "pending",
       to: "ready",
       completedAt: now(),
     });
-    enqueueJobOnce(db, {
+    const job = yield* enqueueJobOnceSteps(q, {
       queue: QUEUE,
       jobKey: `assignment:${hold.tokenHash}`,
       payload: { sessionId: hold.sessionId, tokenHash: hold.tokenHash },
       now: now(),
     });
-    return true;
+    return { released: true, queued: job.inserted };
   }
   /** Holds written before link ids existed get one link and one new-form sign-in action. */
-  function upgrade() {
-    for (const tokenHash of pendingWorkspaceAssignmentTokens(db, { linked: false }))
-      immediate(db, () => {
-        const hold = byToken(tokenHash);
+  async function upgrade() {
+    const tokens = await store.run((q) =>
+      pendingWorkspaceAssignmentTokensSteps(q, { linked: false }),
+    );
+    for (const tokenHash of tokens)
+      await store.transaction(function* (q) {
+        const hold = yield* byTokenSteps(q, tokenHash);
         if (!hold || hold.status !== "pending" || hold.linkId !== null) return;
-        if (holds(hold.sessionId)?.tokenHash !== tokenHash || !current(hold))
-          return invalidate(hold);
+        if (
+          (yield* holdsSteps(q, hold.sessionId))?.tokenHash !== tokenHash ||
+          !(yield* currentSteps(q, hold))
+        )
+          return yield* invalidateSteps(q, hold);
         const link = onboardingLinkId();
         const expiresAt = now() + ONBOARDING_HOLD_MS;
-        linkWorkspaceAssignment(db, tokenHash, {
+        yield* linkWorkspaceAssignmentSteps(q, tokenHash, {
           linkId: link,
           expiresAt,
           tokenHash: workspaceTokenHash(link),
         });
-        postSignIn(hold, link);
+        yield* postSignInSteps(q, hold, link);
       });
   }
   async function ineligible(
@@ -400,24 +432,27 @@ export function createWorkspaceAssignments(options: {
     signal.throwIfAborted();
     if (identity.organizationId !== verified.organizationId || identity.userId !== verified.actorId)
       return refused("Linear returned a different person for this session.");
-    const linked = workspaceLinearMember(db, verified.workspaceId, verified.actorId);
+    const member = () =>
+      store.run((q) => workspaceLinearMemberSteps(q, verified.workspaceId, verified.actorId));
+    const linked = await member();
     if (linked)
-      syncWorkspaceMember(db, {
-        workspaceId: verified.workspaceId,
-        userId: linked.userId,
-        active: identity.active && !identity.guest,
-        role: "member",
-        teamIds: identity.teamIds,
-        now: before,
-      });
+      await store.transaction((q) =>
+        syncWorkspaceMemberSteps(q, {
+          workspaceId: verified.workspaceId,
+          userId: linked.userId,
+          active: identity.active && !identity.guest,
+          role: "member",
+          teamIds: identity.teamIds,
+          now: before,
+        }),
+      );
     // A guest's delegation is ignored; the one line is the session's answer.
     if (identity.guest) return { ...refused(LINEAR_GUEST_REFUSAL), response: true };
-    const member = workspaceLinearMember(db, verified.workspaceId, verified.actorId);
     const eligibility = canAct(
       {
         id: verified.actorId,
         identity,
-        member,
+        member: await member(),
         teamId: verified.teamId,
       },
       "delegate",
@@ -444,17 +479,23 @@ export function createWorkspaceAssignments(options: {
       repositories: unknown;
     };
     if (!event.issueId) return refused("Paws could not match this session to an issue.");
-    if (!current(hold)) return refused(STOPPED);
-    const installation = getLinearSessionInstallation(db, hold.sessionId);
+    if (!(await current(hold))) return refused(STOPPED);
+    const installation = await store.run((q) =>
+      getLinearSessionInstallationSteps(q, hold.sessionId),
+    );
     if (!installation) return UNRECORDED;
     if (installation.oauthClientId !== options.clientId) return refused(ELSEWHERE);
-    if (workspaceForOrganization(db, installation.organizationId)?.id !== hold.workspaceId)
+    const workspace = await store.run((q) =>
+      workspaceForOrganizationSteps(q, installation.organizationId),
+    );
+    if (workspace?.id !== hold.workspaceId)
       return refused("This Linear workspace is not connected to Paws.");
     if (
       JSON.stringify({ ...installation, observedAtMs: undefined }) !==
         JSON.stringify(stored.installation) ||
-      JSON.stringify(listWorkspaceRepositories(db, hold.workspaceId)) !==
-        JSON.stringify(stored.repositories)
+      JSON.stringify(
+        await store.run((q) => listWorkspaceRepositoriesSteps(q, hold.workspaceId)),
+      ) !== JSON.stringify(stored.repositories)
     )
       return refused(ASSIGNMENT_CHANGED);
     const issue = await options.lifecycle.inspect(event.issueId, { signal });
@@ -476,19 +517,19 @@ export function createWorkspaceAssignments(options: {
       options.resumeMemberships ?? options.memberships,
     );
     if (refusal) return refusal;
-    return current(hold) ? verified : refused(STOPPED);
+    return (await current(hold)) ? verified : refused(STOPPED);
   }
   /**
    * Ends a hold that may not resume and tells the session why, once. A stopped or replaced
    * session hears nothing: its generation moved on.
    */
-  function refuseHold(hold: Hold, reason: string, response = false) {
-    immediate(db, () => {
-      const latest = holds(hold.sessionId);
+  async function refuseHold(hold: Hold, reason: string, response = false) {
+    await store.transaction(function* (q) {
+      const latest = yield* holdsSteps(q, hold.sessionId);
       if (latest?.tokenHash !== hold.tokenHash || latest.status === "invalid") return;
-      invalidate(hold);
-      if (!current(hold)) return;
-      enqueueOutboxOnce(db, {
+      yield* invalidateSteps(q, hold);
+      if (!(yield* currentSteps(q, hold))) return;
+      yield* enqueueOutboxOnceSteps(q, {
         target: "linear",
         op: "activity",
         orderingKey: hold.sessionId,
@@ -509,7 +550,7 @@ export function createWorkspaceAssignments(options: {
    * Linear turn, so the resumed request delivers it. It posts nothing to Linear.
    * Replies from anyone else are refused and recorded nowhere.
    */
-  function keepCreatorReply(event: AcceptedLinearEvent, hold: Hold) {
+  async function keepCreatorReply(event: AcceptedLinearEvent, hold: Hold) {
     if (
       event.action !== "prompted" ||
       !event.sessionId ||
@@ -517,10 +558,10 @@ export function createWorkspaceAssignments(options: {
       !event.actorId ||
       event.actorId !== hold.actorId ||
       hold.status === "invalid" ||
-      !current(hold)
+      !(await current(hold))
     )
       return;
-    recordLinearTurn(db, {
+    const turn = {
       eventKey: event.dedupeKey,
       activityId: event.activityId,
       sessionId: event.sessionId,
@@ -529,13 +570,24 @@ export function createWorkspaceAssignments(options: {
       payload: event.payload,
       createdAtMs: event.activityCreatedAtMs ?? event.updatedAtMs,
       now: now(),
-    });
+    };
+    await store.transaction((q) => recordLinearTurnSteps(q, turn));
+  }
+  /** `current` for `authorizeIntake`, which stays synchronous for its orchestrator callers. */
+  function currentNow(hold: Hold) {
+    const session = getLinearSession(db, hold.sessionId);
+    return (
+      session?.generation === hold.generation &&
+      session.stoppedAt === null &&
+      getLinearSessionAccess(db, hold.sessionId) === "allowed" &&
+      session.creatorId === hold.actorId
+    );
   }
   return {
     authorizeIntake(sessionId: string, spec: EpicSnapshot): boolean {
-      const hold = holds(sessionId);
+      const hold = latestWorkspaceAssignment(db, sessionId);
       if (!hold) return true;
-      if (hold.status !== "accepted" || !current(hold)) return hold.status === "continued";
+      if (hold.status !== "accepted" || !currentNow(hold)) return hold.status === "continued";
       const expected = JSON.parse(hold.fingerprint) as {
         spec: EpicSnapshot;
         repositories: unknown;
@@ -547,37 +599,41 @@ export function createWorkspaceAssignments(options: {
         JSON.stringify(listWorkspaceRepositories(db, hold.workspaceId)) !==
           JSON.stringify(expected.repositories)
       ) {
-        invalidate(hold);
+        invalidateWorkspaceAssignment(db, hold.tokenHash);
         return false;
       }
       return true;
     },
     async authorize(event: AcceptedLinearEvent): Promise<IntakeDecision> {
       if (!event.sessionId) return refused("Paws could not match this event to a session.");
-      let hold = holds(event.sessionId);
-      if (hold && !current(hold)) {
-        invalidate(hold);
-        if (getLinearSession(db, event.sessionId)?.generation !== hold.generation) hold = null;
+      const sessionId = event.sessionId;
+      const session = () => store.run((q) => getLinearSessionSteps(q, sessionId));
+      const access = () => store.run((q) => getLinearSessionAccessSteps(q, sessionId));
+      let hold = await holds(sessionId);
+      if (hold && !(await current(hold))) {
+        await invalidate(hold);
+        if ((await session())?.generation !== hold.generation) hold = null;
       }
       if (event.signal === "stop") {
-        if (hold) invalidate(hold);
+        if (hold) await invalidate(hold);
         return ACCEPTED;
       }
       if (event.action !== "created") {
         if (!hold || hold.status === "continued") return ACCEPTED;
-        keepCreatorReply(event, hold);
+        await keepCreatorReply(event, hold);
         return refused(SIGN_IN);
       }
       if (hold) {
-        if (!continuations.has(event) || hold.status !== "accepted" || !current(hold))
+        if (!continuations.has(event) || hold.status !== "accepted" || !(await current(hold)))
           return hold.status === "invalid" ? refused(ENDED) : HELD;
         // The job that runs this continuation just re-checked the issue and the membership
         // against the stored snapshot, so this reads only the database.
         const { teamId } = holdIssue(hold);
-        const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
-        const eligibility = canAct({ id: hold.actorId, member, teamId }, "delegate");
+        const { workspaceId, actorId } = hold;
+        const member = await store.run((q) => workspaceLinearMemberSteps(q, workspaceId, actorId));
+        const eligibility = canAct({ id: actorId, member, teamId }, "delegate");
         if (!eligibility.allowed) return refused(eligibility.reason, eligibility.response);
-        return current(hold) && holds(hold.sessionId)?.status === "accepted"
+        return (await current(hold)) && (await holds(sessionId))?.status === "accepted"
           ? ACCEPTED
           : refused(STOPPED);
       }
@@ -598,59 +654,61 @@ export function createWorkspaceAssignments(options: {
         ),
       );
       if (refusal) return refusal;
-      const currentSession = getLinearSession(db, event.sessionId);
+      const currentSession = await session();
       if (
         currentSession?.generation !== verified.generation ||
         currentSession.stoppedAt !== null ||
-        getLinearSessionAccess(db, event.sessionId) !== "allowed"
+        (await access()) !== "allowed"
       )
         return refused(STOPPED);
-      if (workspaceLinearMember(db, verified.workspaceId, verified.actorId) !== null)
+      const { workspaceId, actorId } = verified;
+      if ((await store.run((q) => workspaceLinearMemberSteps(q, workspaceId, actorId))) !== null)
         return ACCEPTED;
-      return immediate(db, () => {
-        if (holds(event.sessionId!)?.generation === verified.generation) return HELD;
-        const session = getLinearSession(db, event.sessionId!)!;
+      return store.transaction(function* (q): Steps<IntakeDecision> {
+        if ((yield* holdsSteps(q, sessionId))?.generation === verified.generation) return HELD;
+        const latest = (yield* getLinearSessionSteps(q, sessionId))!;
         if (
-          session.generation !== verified.generation ||
-          session.stoppedAt !== null ||
-          getLinearSessionAccess(db, event.sessionId!) !== "allowed"
+          latest.generation !== verified.generation ||
+          latest.stoppedAt !== null ||
+          (yield* getLinearSessionAccessSteps(q, sessionId)) !== "allowed"
         )
           return refused(STOPPED);
-        issueAction({
-          sessionId: event.sessionId!,
+        yield* issueActionSteps(q, {
+          sessionId,
           generation: verified.generation,
-          workspaceId: verified.workspaceId,
-          actorId: verified.actorId,
+          workspaceId,
+          actorId,
           fingerprint: verified.fingerprint,
           event: JSON.stringify(event),
         });
         return HELD;
       });
     },
-    recheck(event: AcceptedLinearEvent): boolean {
+    async recheck(event: AcceptedLinearEvent): Promise<boolean> {
       if (!event.sessionId || event.action !== "created" || event.signal === "stop") return true;
+      const sessionId = event.sessionId;
       return (
-        getLinearSession(db, event.sessionId)?.stoppedAt === null &&
-        getLinearSessionAccess(db, event.sessionId) === "allowed"
+        (await store.run((q) => getLinearSessionSteps(q, sessionId)))?.stoppedAt === null &&
+        (await store.run((q) => getLinearSessionAccessSteps(q, sessionId))) === "allowed"
       );
     },
     /** The issue a hold waits on, for counting its Linear requests. Grants nothing. */
-    issueIdentifier(hash: string): string | null {
-      const hold = byToken(hash);
+    async issueIdentifier(hash: string): Promise<string | null> {
+      const hold = await store.run((q) => byTokenSteps(q, hash));
       return hold ? holdIdentifier(hold) : null;
     },
     /** Resolves an /onboard/<link id> address. The id alone grants nothing. */
-    open(link: string): AssignmentLink | null {
+    async open(link: string): Promise<AssignmentLink | null> {
       if (!LINK_ID.test(link)) return null;
-      const tokenHash = workspaceAssignmentTokenForLink(db, link);
-      const hold = tokenHash ? currentHold(tokenHash) : null;
+      const tokenHash = await store.run((q) => workspaceAssignmentTokenForLinkSteps(q, link));
+      const hold = tokenHash ? await store.run((q) => currentHoldSteps(q, tokenHash)) : null;
       if (!hold) return null;
       if (hold.status === "pending")
-        return !expired(hold) && current(hold)
+        return !expired(hold) && (await current(hold))
           ? { state: "pending", link, hash: hold.tokenHash }
           : null;
       // A stopped or replaced session ends its onboarding page too.
-      if (hold.status === "invalid" || !current(hold)) return null;
+      if (hold.status === "invalid" || !(await current(hold))) return null;
       return {
         state: "done",
         hash: hold.tokenHash,
@@ -667,62 +725,93 @@ export function createWorkspaceAssignments(options: {
      * link it is and changes nothing. A creator who signs in again after the hold moved on is sent
      * back to their onboarding page. Throws when the hold can no longer continue.
      */
-    complete(hash: string, workspaceId: string, linearUserId: string): AssignmentCompletion {
-      return immediate(db, (): AssignmentCompletion => {
-        const hold = currentHold(hash);
+    async complete(
+      hash: string,
+      workspaceId: string,
+      linearUserId: string,
+    ): Promise<AssignmentCompletion> {
+      const { completion, queued } = await store.transaction(function* (q): Steps<{
+        completion: AssignmentCompletion;
+        queued: boolean;
+      }> {
+        const hold = yield* currentHoldSteps(q, hash);
         if (
           !hold ||
           hold.workspaceId !== workspaceId ||
           hold.status === "invalid" ||
-          !current(hold) ||
+          !(yield* currentSteps(q, hold)) ||
           (hold.status === "pending" && expired(hold))
         )
           throw new Error("Assignment sign-in is unavailable.");
         if (hold.actorId !== linearUserId)
-          return { outcome: "other-user", creatorName: creatorName(hold) };
-        if (hold.status === "pending" && !release(hold))
-          throw new Error("Assignment membership is unavailable.");
-        return { outcome: "resumed", identifier: holdIdentifier(hold), linkId: hold.linkId };
+          return {
+            completion: { outcome: "other-user", creatorName: creatorName(hold) },
+            queued: false,
+          };
+        const release =
+          hold.status === "pending"
+            ? yield* releaseSteps(q, hold)
+            : { released: true, queued: false };
+        if (!release.released) throw new Error("Assignment membership is unavailable.");
+        return {
+          completion: { outcome: "resumed", identifier: holdIdentifier(hold), linkId: hold.linkId },
+          queued: release.queued,
+        };
       });
+      if (queued) emitJobReady(store);
+      return completion;
     },
     /** A dashboard sign-in releases the signer's own pending holds without a new action. */
-    releaseFor(workspaceId: string, linearUserId: string): void {
-      for (const tokenHash of pendingWorkspaceAssignmentTokens(db, {
-        workspaceId,
-        actorId: linearUserId,
-      }))
-        immediate(db, () => {
-          const hold = byToken(tokenHash);
-          if (hold) release(hold);
+    async releaseFor(workspaceId: string, linearUserId: string): Promise<void> {
+      const tokens = await store.run((q) =>
+        pendingWorkspaceAssignmentTokensSteps(q, { workspaceId, actorId: linearUserId }),
+      );
+      for (const tokenHash of tokens) {
+        const queued = await store.transaction(function* (q) {
+          const hold = yield* byTokenSteps(q, tokenHash);
+          return hold ? (yield* releaseSteps(q, hold)).queued : false;
         });
+        if (queued) emitJobReady(store);
+      }
     },
-    register(jobs: JobLoop) {
-      enqueueJobOnce(db, {
-        queue: `${QUEUE}.expire`,
-        jobKey: `${QUEUE}.expire`,
-        recurringEveryMs: 60_000,
-        now: now(),
-      });
-      upgrade();
+    /**
+     * Registers the sweep and the resume job, then arms the sweep and links old holds. Handlers
+     * are registered before it returns, because the job loop starts right after; the returned
+     * promise settles when the startup writes are done.
+     */
+    register(jobs: JobLoop): Promise<void> {
       // Waiting writes nothing to Linear. This sweep ends holds whose session moved on, lets a
       // hold continue once its creator has a member row (for example after signing in from the
       // dashboard instead of the link), and gives a hold past ONBOARDING_HOLD_MS its one final
       // response.
-      jobs.register(`${QUEUE}.expire`, () => {
-        upgrade();
-        for (const tokenHash of pendingWorkspaceAssignmentTokens(db, { linked: true }))
-          immediate(db, () => {
-            const hold = byToken(tokenHash);
-            if (!hold || hold.status !== "pending") return;
-            if (holds(hold.sessionId)?.tokenHash !== tokenHash || !current(hold))
-              return invalidate(hold);
-            if (expired(hold)) return expire(hold);
-            release(hold);
+      jobs.register(`${QUEUE}.expire`, async () => {
+        await upgrade();
+        const tokens = await store.run((q) =>
+          pendingWorkspaceAssignmentTokensSteps(q, { linked: true }),
+        );
+        for (const tokenHash of tokens) {
+          const queued = await store.transaction(function* (q) {
+            const hold = yield* byTokenSteps(q, tokenHash);
+            if (!hold || hold.status !== "pending") return false;
+            if (
+              (yield* holdsSteps(q, hold.sessionId))?.tokenHash !== tokenHash ||
+              !(yield* currentSteps(q, hold))
+            ) {
+              yield* invalidateSteps(q, hold);
+              return false;
+            }
+            if (expired(hold)) {
+              yield* expireSteps(q, hold);
+              return false;
+            }
+            return (yield* releaseSteps(q, hold)).queued;
           });
+          if (queued) emitJobReady(store);
+        }
       });
       jobs.register(QUEUE, async (job, context) => {
         const payload = job.payload as { sessionId: string; tokenHash: string };
-        const hold = holds(payload.sessionId);
+        const hold = await holds(payload.sessionId);
         if (
           !hold ||
           hold.tokenHash !== payload.tokenHash ||
@@ -743,23 +832,29 @@ export function createWorkspaceAssignments(options: {
             if (verified.outcome === "retry") throw new Error(verified.reason);
             return refuseHold(hold, verified.reason, verified.response);
           }
-          const accepted = immediate(db, () => {
+          const accepted = await store.transaction(function* (q) {
             if (!context.isCurrent()) throw new Error("Assignment job claim is no longer current.");
-            if (!current(hold) || holds(hold.sessionId)?.status === "invalid") {
-              invalidate(hold);
+            if (
+              !(yield* currentSteps(q, hold)) ||
+              (yield* holdsSteps(q, hold.sessionId))?.status === "invalid"
+            ) {
+              yield* invalidateSteps(q, hold);
               return false;
             }
-            const member = workspaceLinearMember(db, hold.workspaceId, hold.actorId);
+            const member = yield* workspaceLinearMemberSteps(q, hold.workspaceId, hold.actorId);
             if (
               member === null ||
               !canAct({ id: hold.actorId, member, teamId: verified.teamId }, "delegate").allowed
             ) {
-              invalidate(hold);
+              yield* invalidateSteps(q, hold);
               return false;
             }
             if (hold.status === "ready") {
-              moveWorkspaceAssignment(db, hold.tokenHash, { from: "ready", to: "accepted" });
-              auditWorkspaceAccess(db, {
+              yield* moveWorkspaceAssignmentSteps(q, hold.tokenHash, {
+                from: "ready",
+                to: "accepted",
+              });
+              yield* auditWorkspaceAccessSteps(q, {
                 workspaceId: hold.workspaceId,
                 userId: member.userId,
                 action: "assignment.resumed",
@@ -774,18 +869,32 @@ export function createWorkspaceAssignments(options: {
           try {
             const result = await options.continue(event);
             if (result === false) throw new Error("Assignment continuation is still held.");
-            moveWorkspaceAssignment(db, hold.tokenHash, { from: "accepted", to: "continued" });
+            await store.run((q) =>
+              moveWorkspaceAssignmentSteps(q, hold.tokenHash, {
+                from: "accepted",
+                to: "continued",
+              }),
+            );
           } catch (error) {
             // A refusal is final for this hold: say why once instead of retrying the job.
             if (!(error instanceof LinearIntakeRefusedError)) throw error;
             journalCaught(error, "assignments.register.continue", null);
-            if (error.quiet) invalidate(hold);
-            else refuseHold(hold, error.message, error.response);
+            if (error.quiet) await invalidate(hold);
+            else await refuseHold(hold, error.message, error.response);
           } finally {
             continuations.delete(event);
           }
         });
       });
+      return (async () => {
+        await enqueueJobOnceAsync(store, {
+          queue: `${QUEUE}.expire`,
+          jobKey: `${QUEUE}.expire`,
+          recurringEveryMs: 60_000,
+          now: now(),
+        });
+        await upgrade();
+      })();
     },
   };
 }

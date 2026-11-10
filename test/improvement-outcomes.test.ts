@@ -312,7 +312,7 @@ describe("daily findings", () => {
   test("a finding that disappears does not verify; a recurrence after verification is stale", async () => {
     const linear = createFakeImprovementLinear();
     const w = world({ linear });
-    const { findings } = seedDaily(w.db);
+    const { findings } = await seedDaily(w.db);
     const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
     const id: string = daily.id;
     const decided = await w.api(

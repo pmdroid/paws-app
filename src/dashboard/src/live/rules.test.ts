@@ -217,17 +217,17 @@ describe("rule results in the issue resources", () => {
     expect(verdict.attempts?.at(-1)?.checks[0]?.approval?.state).toBe("waiting");
   });
 
-  test("a rule's probe output loads like a check's log", () => {
+  test("a rule's probe output loads like a check's log", async () => {
     const { db, home } = seed();
     const provider = createLiveStatusProvider(db, { pawsHome: home });
     expect(
-      provider.checkLog({ itemId: "ENG-7", attempt: 1, checkId: "api-contract", run: null }),
+      await provider.checkLog({ itemId: "ENG-7", attempt: 1, checkId: "api-contract", run: null }),
     ).toEqual({ stdout: "", stderr: "" });
   });
 
-  test("without the evidence record the probe hash is null", () => {
+  test("without the evidence record the probe hash is null", async () => {
     const { db } = seed();
-    const detail = createLiveStatusProvider(db, { env: {} }).issue("ENG-7");
+    const detail = await createLiveStatusProvider(db, { env: {} }).issue("ENG-7");
     expect(detail?.verdicts[0]?.checks[0]?.probeSha256).toBeNull();
   });
 });

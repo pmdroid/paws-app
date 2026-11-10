@@ -219,13 +219,13 @@ test.skipIf(!nonRootLinux)(
     const root = mkdtempSync(join(tmpdir(), "paws-retro-runner-"));
     roots.push(root);
     const control = { dispatcher: w.open(w.db) };
-    control.dispatcher.tick();
+    await control.dispatcher.tick();
     expect(control.dispatcher.generation("r1")).toMatchObject({ state: "waiting_for_runner" });
 
     addRunner(w.db, { id: "R1" });
     const seen = () => w.db.run("UPDATE runner SET last_seen_at=? WHERE id='R1'", [w.clock.now]);
     seen();
-    control.dispatcher.tick();
+    await control.dispatcher.tick();
     expect(control.dispatcher.generation("r1")).toMatchObject({
       state: "generating",
       diagnostic: "dispatched",
@@ -284,7 +284,7 @@ test.skipIf(!nonRootLinux)(
     addRunner(w.db, { id: "R1" });
     w.db.run("UPDATE runner SET last_seen_at=? WHERE id='R1'", [w.clock.now]);
     const control = { dispatcher: w.open(w.db) };
-    control.dispatcher.tick();
+    await control.dispatcher.tick();
     const host = runnerHost(root, { crash: true });
     const { daemon, calls } = runnerDaemon(control, w.clock);
     const runtime = await openRunnerRetroRuntime({
@@ -319,7 +319,7 @@ test.skipIf(!nonRootLinux)(
     addRunner(w.db, { id: "R1" });
     w.db.run("UPDATE runner SET last_seen_at=? WHERE id='R1'", [w.clock.now]);
     const control = { dispatcher: w.open(w.db) };
-    control.dispatcher.tick();
+    await control.dispatcher.tick();
     const host = runnerHost(root, { failStart: true, stopFailures: 1 });
     const { daemon, calls } = runnerDaemon(control, w.clock);
     const errors: string[] = [];

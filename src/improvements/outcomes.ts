@@ -1,36 +1,48 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
-  annotateImprovementCriterion,
-  claimImprovementDelegation,
-  closeoutStepResult,
-  bindImprovementWork,
+  annotateImprovementCriterionSteps,
+  bindImprovementWorkSteps,
   boundImprovementWork,
-  bumpImprovementVersion,
-  expiredImprovementDelegations,
-  followThroughCandidates,
-  getImprovement,
-  immediate,
+  boundImprovementWorkSteps,
+  bumpImprovementVersionSteps,
+  claimImprovementDelegationSteps,
+  closeoutStepResultSteps,
+  expiredImprovementDelegationsSteps,
+  followThroughCandidatesSteps,
+  getImprovementSteps,
   improvementDelegation,
+  improvementDelegationSteps,
   improvementIssueSync,
-  improvementWorkBinding,
+  improvementIssueSyncSteps,
+  improvementWorkBindingSteps,
   listImprovementActions,
+  listImprovementActionsSteps,
   listImprovementCriteria,
+  listImprovementCriteriaSteps,
   listImprovementDeliveries,
+  listImprovementDeliveriesSteps,
   listImprovementOutcomes,
-  markImprovementChecked,
-  newestIssueWork,
+  listImprovementOutcomesSteps,
+  markImprovementCheckedSteps,
+  newestIssueWorkSteps,
   otherDelegationForIssue,
-  recordImprovementAction,
-  recordImprovementIssueSync,
-  recordImprovementOutcome,
-  returnImprovementToReview,
-  settleImprovementDelegation,
+  otherDelegationForIssueSteps,
+  recordImprovementActionSteps,
+  recordImprovementIssueSyncSteps,
+  recordImprovementOutcomeSteps,
+  returnImprovementToReviewSteps,
+  settleImprovementDelegationSteps,
+  sqliteDb,
+  type ImprovementAction,
   type ImprovementDelegation,
+  type ImprovementDelivery,
   type ImprovementImplementationState,
   type ImprovementIssueSync,
   type ImprovementVerificationState,
   type IssueWork,
+  type Q,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
 import { listInboxItems, type ImprovementAccess, type InboxItem } from "./inbox";
@@ -149,10 +161,6 @@ function implementationOf(work: IssueWork | null, sync: ImprovementIssueSync | n
   return { state: "unknown" as const, source: "none" as const, at: null };
 }
 
-function criterionOf(db: Database, item: InboxItem): string | null {
-  return listImprovementCriteria(db, item.improvement.id).at(-1)?.criterion ?? item.criterion;
-}
-
 function issueOpen(sync: ImprovementIssueSync | null): boolean {
   return (
     sync?.status === "available" &&
@@ -172,19 +180,26 @@ function names(criterion: string, term: string): boolean {
   return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`).test(criterion.toLowerCase());
 }
 
-function followWork(db: Database, item: InboxItem, now: number): void {
+const recordAction = (q: Q, input: Parameters<typeof recordImprovementActionSteps>[1]) =>
+  q.transaction((tx) => recordImprovementActionSteps(tx, input));
+const recordOutcome = (q: Q, input: Parameters<typeof recordImprovementOutcomeSteps>[1]) =>
+  q.transaction((tx) => recordImprovementOutcomeSteps(tx, input));
+const returnToReview = (q: Q, input: Parameters<typeof returnImprovementToReviewSteps>[1]) =>
+  q.transaction((tx) => returnImprovementToReviewSteps(tx, input));
+
+function* followWorkSteps(q: Q, item: InboxItem, now: number): Steps<void> {
   const { improvement } = item;
   const issue = improvement.issue;
   if (!issue) return;
-  if (acknowledged(listImprovementActions(db, improvement.id))) return;
-  const binding = improvementWorkBinding(db, improvement.id);
-  const current = boundImprovementWork(db, {
+  if (acknowledged(yield* listImprovementActionsSteps(q, improvement.id))) return;
+  const binding = yield* improvementWorkBindingSteps(q, improvement.id);
+  const current = yield* boundImprovementWorkSteps(q, {
     id: improvement.id,
     issueId: issue.id,
     repository: improvement.repository,
   });
   if (current && !TERMINAL_WORK.has(current.state)) return;
-  const next = newestIssueWork(db, {
+  const next = yield* newestIssueWorkSteps(q, {
     issueId: issue.id,
     repository: improvement.repository,
     createdSince: current?.createdAt ?? 0,
@@ -192,9 +207,9 @@ function followWork(db: Database, item: InboxItem, now: number): void {
     ...(current ? { exceptItemId: current.itemId } : {}),
   });
   if (!next) return;
-  const latest = getImprovement(db, improvement.id);
+  const latest = yield* getImprovementSteps(q, improvement.id);
   if (!latest) return;
-  const version = recordImprovementAction(db, {
+  const version = yield* recordAction(q, {
     improvementId: improvement.id,
     expectedVersion: latest.version,
     action: "follow_work",
@@ -205,85 +220,122 @@ function followWork(db: Database, item: InboxItem, now: number): void {
   });
   if (version === null) return;
   if (
-    !bindImprovementWork(db, {
+    !(yield* bindImprovementWorkSteps(q, {
       improvementId: improvement.id,
       issueId: issue.id,
       itemId: next.itemId,
       expectedItemId: binding?.itemId ?? null,
       now,
-    })
+    }))
   )
     throw new Error("improvement work binding changed during follow-through");
 }
 
-function settle(db: Database, access: ImprovementAccess, improvementId: string, now: number) {
-  return immediate(db, () => {
-    const found = findInboxItem(db, access, improvementId);
-    if (!found) return null;
-    followWork(db, found, now);
-    const item = findInboxItem(db, access, improvementId);
-    if (!item?.improvement.issue) return item;
-    const view = followThrough(db, item, now);
-    if (view.attention === "closed") return item;
-    const { improvement } = item;
-    const implementation = view.implementation;
-    if (
-      implementation.source !== "none" &&
-      implementation.state !== improvement.implementationState
-    )
-      recordImprovementOutcome(db, {
-        improvementId,
-        track: "implementation",
-        state: implementation.state,
-        evidence: view.work
-          ? [
-              `work:${view.work.itemId}:${view.work.state}`,
-              ...(view.work.pull ? [`pull:${view.work.pull.number}`] : []),
-            ]
-          : [`linear:${view.issue?.sync?.stateType ?? "unknown"}`],
-        ...(view.work?.merge?.sha ? { revision: view.work.merge.sha } : {}),
-        actor: "paws",
-        now,
-      });
-    if (improvement.verificationState === "unknown" && DONE.includes(implementation.state)) {
-      recordImprovementOutcome(db, {
-        improvementId,
-        track: "verification",
-        state: "due",
-        evidence: [`implementation:${implementation.state}`],
-        actor: "paws",
-        now,
-      });
-      bumpImprovementVersion(db, improvementId);
-    }
-    if (improvement.verificationState === "verified" && view.verification.stale) {
-      recordImprovementOutcome(db, {
-        improvementId,
-        track: "verification",
-        state: "contradicted",
-        evidence:
-          view.verification.stale === "recurred"
-            ? item.members
-                .filter(
-                  (m) => m.status === "open" && m.lastSeenAt > (improvement.verificationAt ?? 0),
-                )
-                .map((m) => `review_finding:${m.key}`)
-            : [`implementation:${implementation.state}`],
-        actor: "paws",
-        now,
-      });
-      bumpImprovementVersion(db, improvementId);
-    }
-    return findInboxItem(db, access, improvementId);
-  });
+function* settleSteps(
+  db: Database,
+  q: Q,
+  access: ImprovementAccess,
+  improvementId: string,
+  now: number,
+): Steps<InboxItem | null> {
+  const found = findInboxItem(db, access, improvementId);
+  if (!found) return null;
+  yield* followWorkSteps(q, found, now);
+  const item = findInboxItem(db, access, improvementId);
+  if (!item?.improvement.issue) return item;
+  const view = yield* followThroughSteps(q, item, now);
+  if (view.attention === "closed") return item;
+  const { improvement } = item;
+  const implementation = view.implementation;
+  if (implementation.source !== "none" && implementation.state !== improvement.implementationState)
+    yield* recordOutcome(q, {
+      improvementId,
+      track: "implementation",
+      state: implementation.state,
+      evidence: view.work
+        ? [
+            `work:${view.work.itemId}:${view.work.state}`,
+            ...(view.work.pull ? [`pull:${view.work.pull.number}`] : []),
+          ]
+        : [`linear:${view.issue?.sync?.stateType ?? "unknown"}`],
+      ...(view.work?.merge?.sha ? { revision: view.work.merge.sha } : {}),
+      actor: "paws",
+      now,
+    });
+  if (improvement.verificationState === "unknown" && DONE.includes(implementation.state)) {
+    yield* recordOutcome(q, {
+      improvementId,
+      track: "verification",
+      state: "due",
+      evidence: [`implementation:${implementation.state}`],
+      actor: "paws",
+      now,
+    });
+    yield* bumpImprovementVersionSteps(q, improvementId);
+  }
+  if (improvement.verificationState === "verified" && view.verification.stale) {
+    yield* recordOutcome(q, {
+      improvementId,
+      track: "verification",
+      state: "contradicted",
+      evidence:
+        view.verification.stale === "recurred"
+          ? item.members
+              .filter(
+                (m) => m.status === "open" && m.lastSeenAt > (improvement.verificationAt ?? 0),
+              )
+              .map((m) => `review_finding:${m.key}`)
+          : [`implementation:${implementation.state}`],
+      actor: "paws",
+      now,
+    });
+    yield* bumpImprovementVersionSteps(q, improvementId);
+  }
+  return findInboxItem(db, access, improvementId);
 }
 
-export function followThrough(db: Database, item: InboxItem, now: number): FollowThrough {
+type Facts = {
+  deliveries: ImprovementDelivery[];
+  sync: ImprovementIssueSync | null;
+  work: IssueWork | null;
+  delegation: ImprovementDelegation | null;
+  actions: ImprovementAction[];
+  shared: boolean;
+  allDeliveries: ImprovementDelivery[];
+  criterion: string | null;
+};
+
+function* factsSteps(q: Q, item: InboxItem, now: number): Steps<Facts> {
   const { improvement } = item;
-  const deliveries = listImprovementDeliveries(db, improvement.id).filter(
-    (d) => d.operation !== "evidence_comment",
-  );
   const issue = improvement.issue;
+  const deliveries = yield* listImprovementDeliveriesSteps(q, improvement.id);
+  const sync = issue ? yield* improvementIssueSyncSteps(q, improvement.id) : null;
+  const work = issue
+    ? yield* boundImprovementWorkSteps(q, {
+        id: improvement.id,
+        issueId: issue.id,
+        repository: improvement.repository,
+      })
+    : null;
+  const delegation = issue ? yield* improvementDelegationSteps(q, improvement.id) : null;
+  const actions = yield* listImprovementActionsSteps(q, improvement.id);
+  const shared =
+    issue !== null &&
+    (yield* otherDelegationForIssueSteps(q, {
+      improvementId: improvement.id,
+      issueId: issue.id,
+      now,
+    })) !== null;
+  const allDeliveries = yield* listImprovementDeliveriesSteps(q, improvement.id);
+  const criteria = yield* listImprovementCriteriaSteps(q, improvement.id);
+  const criterion = criteria.at(-1)?.criterion ?? item.criterion;
+  return { deliveries, sync, work, delegation, actions, shared, allDeliveries, criterion };
+}
+
+function factsOf(db: Database, item: InboxItem, now: number): Facts {
+  const { improvement } = item;
+  const issue = improvement.issue;
+  const deliveries = listImprovementDeliveries(db, improvement.id);
   const sync = issue ? improvementIssueSync(db, improvement.id) : null;
   const work = issue
     ? boundImprovementWork(db, {
@@ -293,6 +345,28 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
       })
     : null;
   const delegation = issue ? improvementDelegation(db, improvement.id) : null;
+  const actions = listImprovementActions(db, improvement.id);
+  const shared =
+    issue !== null &&
+    otherDelegationForIssue(db, { improvementId: improvement.id, issueId: issue.id, now }) !== null;
+  const allDeliveries = listImprovementDeliveries(db, improvement.id);
+  const criterion = listImprovementCriteria(db, improvement.id).at(-1)?.criterion ?? item.criterion;
+  return { deliveries, sync, work, delegation, actions, shared, allDeliveries, criterion };
+}
+
+function* followThroughSteps(q: Q, item: InboxItem, now: number): Steps<FollowThrough> {
+  return viewOf(item, yield* factsSteps(q, item, now), now);
+}
+
+export function followThrough(db: Database, item: InboxItem, now: number): FollowThrough {
+  return viewOf(item, factsOf(db, item, now), now);
+}
+
+function viewOf(item: InboxItem, facts: Facts, now: number): FollowThrough {
+  const { improvement } = item;
+  const { sync, work, delegation, actions } = facts;
+  const deliveries = facts.deliveries.filter((d) => d.operation !== "evidence_comment");
+  const issue = improvement.issue;
   const implementation = issue
     ? implementationOf(work, sync)
     : { state: "unknown" as const, source: "none" as const, at: null };
@@ -300,7 +374,6 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
   const recurred =
     improvement.verificationState === "verified" &&
     item.members.some((m) => m.status === "open" && m.lastSeenAt > verifiedAt);
-  const actions = listImprovementActions(db, improvement.id);
   const verifiedIssueState = actions.findLast((a) => a.action === "verify")?.detail["issueState"];
   const issueReopened =
     typeof verifiedIssueState === "string" &&
@@ -331,9 +404,7 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
   const closed = acknowledged(actions);
   const delegating =
     delegation !== null && delegation.state !== "failed" && delegation.issueId === issue?.id;
-  const sharedDelegation =
-    issue !== null &&
-    otherDelegationForIssue(db, { improvementId: improvement.id, issueId: issue.id, now }) !== null;
+  const sharedDelegation = facts.shared;
   const ownedElsewhere =
     work !== null || sync?.delegated === true || delegating || sharedDelegation;
   const delegateReason = !issue
@@ -366,9 +437,7 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
   else if (implementation.state === "in_progress" || ownedElsewhere) attention = "working";
   else attention = "ready_to_delegate";
 
-  const settled = listImprovementDeliveries(db, improvement.id).every(
-    (d) => d.state === "succeeded" || d.state === "failed",
-  );
+  const settled = facts.allDeliveries.every((d) => d.state === "succeeded" || d.state === "failed");
   const recovery: RecoveryChoice[] = [];
   if (issue) {
     if (["canceled", "unavailable", "blocked"].includes(attention)) recovery.push("acknowledge");
@@ -416,7 +485,7 @@ export function followThrough(db: Database, item: InboxItem, now: number): Follo
     verification: {
       state: stale ? "contradicted" : improvement.verificationState,
       at: improvement.verificationAt,
-      criterion: criterionOf(db, item),
+      criterion: facts.criterion,
       stale,
     },
     recovery,
@@ -455,21 +524,21 @@ const ATTENTION_KIND: Partial<
   awaiting_verification: "verification",
 };
 
-function transitionOf(
-  db: Database,
+function* transitionOfSteps(
+  q: Q,
   view: FollowThrough,
   item: InboxItem,
-): { key: string; at: number } {
+): Steps<{ key: string; at: number }> {
   if (view.attention === "needs_review")
     return { key: `review:${view.id}:${view.version}`, at: item.improvement.createdAt };
   if (view.attention === "filing_failed") {
-    const failed = listImprovementDeliveries(db, view.id).find(
+    const failed = (yield* listImprovementDeliveriesSteps(q, view.id)).find(
       (d) => d.state === "failed" || d.state === "unknown",
     )!;
     return { key: `delivery:${failed.id}:${failed.attempts}`, at: failed.updatedAt };
   }
-  const outcome = listImprovementOutcomes(db, view.id).at(-1);
-  const action = listImprovementActions(db, view.id).at(-1);
+  const outcome = (yield* listImprovementOutcomesSteps(q, view.id)).at(-1);
+  const action = (yield* listImprovementActionsSteps(q, view.id)).at(-1);
   const latest = [
     outcome && { key: `outcome:${outcome.id}`, at: outcome.recordedAt },
     action && { key: `action:${action.id}`, at: action.at },
@@ -492,9 +561,14 @@ const median = (values: number[]) => {
     : Math.round((sorted[middle - 1]! + sorted[middle]!) / 2);
 };
 
-export function improvementAttention(db: Database, access: ImprovementAccess, now: number) {
+export async function improvementAttention(db: Database, access: ImprovementAccess, now: number) {
   const items = listInboxItems(db, access);
-  const views = items.map((item) => ({ item, view: followThrough(db, item, now) }));
+  return sqliteDb(db).run((q) => attentionSteps(q, items, now));
+}
+
+function* attentionSteps(q: Q, items: InboxItem[], now: number) {
+  const views: { item: InboxItem; view: FollowThrough }[] = [];
+  for (const item of items) views.push({ item, view: yield* followThroughSteps(q, item, now) });
   const byState: Partial<Record<AttentionState, number>> = {};
   for (const { view } of views) byState[view.attention] = (byState[view.attention] ?? 0) + 1;
   const batches = new Map<
@@ -504,7 +578,7 @@ export function improvementAttention(db: Database, access: ImprovementAccess, no
   for (const { item, view } of views) {
     const kind = ATTENTION_KIND[view.attention];
     if (!kind) continue;
-    const transition = transitionOf(db, view, item);
+    const transition = yield* transitionOfSteps(q, view, item);
     const batch = batches.get(kind) ?? { improvementIds: [], transitions: [], latestAt: 0 };
     batch.improvementIds.push(view.id);
     batch.transitions.push(transition.key);
@@ -525,15 +599,15 @@ export function improvementAttention(db: Database, access: ImprovementAccess, no
   const issues = new Map<string, number>();
   for (const { view } of views)
     if (view.issue) issues.set(view.issue.id, (issues.get(view.issue.id) ?? 0) + 1);
-  const implemented = views.flatMap(({ item, view }) => {
-    const first = listImprovementOutcomes(db, view.id).find(
+  const implemented: { view: FollowThrough; at: number; from: number }[] = [];
+  for (const { item, view } of views) {
+    const first = (yield* listImprovementOutcomesSteps(q, view.id)).find(
       (o) =>
         o.track === "implementation" && DONE.includes(o.state as ImprovementImplementationState),
     );
-    return first && item.improvement.reviewedAt !== null
-      ? [{ view, at: first.recordedAt, from: item.improvement.reviewedAt }]
-      : [];
-  });
+    if (first && item.improvement.reviewedAt !== null)
+      implemented.push({ view, at: first.recordedAt, from: item.improvement.reviewedAt });
+  }
   return {
     counts: {
       newReview: count("needs_review"),
@@ -629,10 +703,10 @@ function refuse(
   return { status, reason, message: MESSAGES[reason], ...(item ? { item } : {}) };
 }
 
-function issueTeam(db: Database, item: InboxItem): string | null {
-  const sync = improvementIssueSync(db, item.improvement.id);
+function* issueTeamSteps(q: Q, item: InboxItem): Steps<string | null> {
+  const sync = yield* improvementIssueSyncSteps(q, item.improvement.id);
   if (sync?.teamId) return sync.teamId;
-  for (const delivery of listImprovementDeliveries(db, item.improvement.id)) {
+  for (const delivery of yield* listImprovementDeliveriesSteps(q, item.improvement.id)) {
     const linked = delivery.content?.["issue"] as { teamId?: unknown } | undefined;
     if (typeof linked?.teamId === "string") return linked.teamId;
     if (delivery.operation === "create_issue" && delivery.targetTeamId)
@@ -641,16 +715,16 @@ function issueTeam(db: Database, item: InboxItem): string | null {
   return null;
 }
 
-function syncFrom(
-  db: Database,
+function* syncFromSteps(
+  q: Q,
   improvementId: string,
   issueId: string,
   observedAt: number,
   result: Awaited<ReturnType<IssueReader["findIssue"]>>,
-) {
+): Steps<void> {
   if (!result.ok) {
     if (result.failure === "unauthorized" || result.failure === "unavailable")
-      recordImprovementIssueSync(db, {
+      yield* recordImprovementIssueSyncSteps(q, {
         improvementId,
         issueId,
         status: result.failure,
@@ -659,11 +733,16 @@ function syncFrom(
     return;
   }
   if (result.value === null) {
-    recordImprovementIssueSync(db, { improvementId, issueId, status: "missing", observedAt });
+    yield* recordImprovementIssueSyncSteps(q, {
+      improvementId,
+      issueId,
+      status: "missing",
+      observedAt,
+    });
     return;
   }
   const issue = result.value;
-  recordImprovementIssueSync(db, {
+  yield* recordImprovementIssueSyncSteps(q, {
     improvementId,
     issueId,
     status: "available",
@@ -689,20 +768,31 @@ export async function delegateImprovement(
     now: () => number;
   },
 ): Promise<FollowThroughOutcome> {
-  const first = settle(db, input.reviewer, input.improvementId, input.now());
+  const store = sqliteDb(db);
+  const settledAt = input.now();
+  const first = await store.transaction((q) =>
+    settleSteps(db, q, input.reviewer, input.improvementId, settledAt),
+  );
   if (!first) return NOT_FOUND;
-  const fresh = (access: ImprovementAccess) => {
+  function* freshSteps(q: Q, access: ImprovementAccess) {
     const item = findInboxItem(db, access, input.improvementId);
-    return item ? followThrough(db, item, input.now()) : undefined;
-  };
-  const answer = (
+    return item ? yield* followThroughSteps(q, item, input.now()) : undefined;
+  }
+  function* answerSteps(
+    q: Q,
     status: "existing" | "delegated",
     access: ImprovementAccess,
-  ): FollowThroughOutcome => {
-    const item = fresh(access);
+  ): Steps<FollowThroughOutcome> {
+    const item = yield* freshSteps(q, access);
     return item ? { status, item } : NOT_FOUND;
-  };
-  const view = followThrough(db, first, input.now());
+  }
+  const fresh = (access: ImprovementAccess) => store.run((q) => freshSteps(q, access));
+  const answer = (status: "existing" | "delegated", access: ImprovementAccess) =>
+    store.run((q) => answerSteps(q, status, access));
+  const existing = (item: InboxItem, actor: string, now: number) =>
+    store.transaction((q) => claimAndSettleExistingSteps(q, item, actor, now));
+  const viewedAt = input.now();
+  const view = await store.run((q) => followThroughSteps(q, first, viewedAt));
   const issue = first.improvement.issue;
   if (first.improvement.reviewState !== "accepted" || !issue)
     return refuse("conflict", "not_linked", view);
@@ -715,19 +805,22 @@ export async function delegateImprovement(
       status: view.delegation.state === "requested" ? "in_progress" : "unchanged",
       item: view,
     };
-  const shared = otherDelegationForIssue(db, {
-    improvementId: first.improvement.id,
-    issueId: issue.id,
-    now: input.now(),
-  });
+  const sharedAt = input.now();
+  const shared = await store.run((q) =>
+    otherDelegationForIssueSteps(q, {
+      improvementId: first.improvement.id,
+      issueId: issue.id,
+      now: sharedAt,
+    }),
+  );
   if ((!input.again && view.work) || shared) {
-    claimAndSettleExisting(db, first, input.reviewer.userId, input.now());
+    await existing(first, input.reviewer.userId, input.now());
     return answer("existing", input.reviewer);
   }
   if (first.improvement.version !== input.expectedVersion) return refuse("conflict", "stale", view);
   if (input.again && !view.recovery.includes("redelegate"))
     return refuse("conflict", "recovery_unavailable", view);
-  const team = issueTeam(db, first);
+  const team = await store.run((q) => issueTeamSteps(q, first));
   if (
     team === null ||
     !improvementDestinations(db, input.reviewer, first.improvement.repository).includes(team)
@@ -738,47 +831,57 @@ export async function delegateImprovement(
 
   const observedAt = input.now();
   const read = await input.linear.findIssue(issue.id);
-  syncFrom(db, first.improvement.id, issue.id, observedAt, read);
-  if (!read.ok) return refuse("unavailable", "linear_unavailable", fresh(input.reviewer));
-  if (read.value === null) return refuse("conflict", "issue_missing", fresh(input.reviewer));
+  await store.run((q) => syncFromSteps(q, first.improvement.id, issue.id, observedAt, read));
+  if (!read.ok) return refuse("unavailable", "linear_unavailable", await fresh(input.reviewer));
+  if (read.value === null) return refuse("conflict", "issue_missing", await fresh(input.reviewer));
   if (read.value.state === "closed")
-    return refuse("conflict", "issue_closed", fresh(input.reviewer));
+    return refuse("conflict", "issue_closed", await fresh(input.reviewer));
   const freshTeam = read.value.teamId;
   if (
     !improvementDestinations(db, input.reviewer, first.improvement.repository).includes(freshTeam)
   )
-    return refuse("forbidden", "destination", fresh(input.reviewer));
+    return refuse("forbidden", "destination", await fresh(input.reviewer));
   if (!input.again && read.value.delegated) {
-    claimAndSettleExisting(db, first, input.reviewer.userId, input.now());
+    await existing(first, input.reviewer.userId, input.now());
     return answer("existing", input.reviewer);
   }
 
-  const claim = immediate(db, (): FollowThroughOutcome | { attempts: number } => {
+  const claim = await store.transaction(function* (q): Steps<
+    FollowThroughOutcome | { attempts: number }
+  > {
     const current = input.reauthorize ? input.reauthorize() : input.reviewer;
-    const item = current && settle(db, current, input.improvementId, input.now());
+    const item =
+      current &&
+      (yield* q.transaction((tx) =>
+        settleSteps(db, tx, current, input.improvementId, input.now()),
+      ));
     if (!current || !item) return NOT_FOUND;
-    const latest = followThrough(db, item, input.now());
+    const latest = yield* followThroughSteps(q, item, input.now());
     if (!improvementDestinations(db, current, item.improvement.repository).includes(freshTeam))
       return refuse("forbidden", "destination", latest);
     if (!input.again && latest.work) {
-      claimAndSettleExisting(db, item, current.userId, input.now());
-      return answer("existing", current);
+      yield* q.transaction((tx) =>
+        claimAndSettleExistingSteps(tx, item, current.userId, input.now()),
+      );
+      return yield* answerSteps(q, "existing", current);
     }
     if (item.improvement.version !== input.expectedVersion) {
       if (latest.delegation?.state === "requested") return { status: "in_progress", item: latest };
       return refuse("conflict", "stale", latest);
     }
     if (
-      otherDelegationForIssue(db, {
+      yield* otherDelegationForIssueSteps(q, {
         improvementId: item.improvement.id,
         issueId: issue.id,
         now: input.now(),
       })
     ) {
-      claimAndSettleExisting(db, item, current.userId, input.now());
-      return answer("existing", current);
+      yield* q.transaction((tx) =>
+        claimAndSettleExistingSteps(tx, item, current.userId, input.now()),
+      );
+      return yield* answerSteps(q, "existing", current);
     }
-    const claimed = claimImprovementDelegation(db, {
+    const claimed = yield* claimImprovementDelegationSteps(q, {
       improvementId: item.improvement.id,
       issueId: issue.id,
       actor: current.userId,
@@ -787,7 +890,7 @@ export async function delegateImprovement(
       ...(input.again ? { again: true } : {}),
     });
     if (!claimed) return { status: "in_progress", item: latest };
-    recordImprovementAction(db, {
+    yield* recordAction(q, {
       improvementId: item.improvement.id,
       expectedVersion: input.expectedVersion,
       action: input.again ? "redelegate" : "delegate",
@@ -809,44 +912,53 @@ export async function delegateImprovement(
       input.dashboardUrl,
       input.signal,
     );
-    settleImprovementDelegation(db, {
-      improvementId: first.improvement.id,
-      attempts: claim.attempts,
-      state: "started",
-      sessionId: session.id,
-      now: input.now(),
-    });
-    return answer("delegated", input.reviewer);
+    const now = input.now();
+    await store.run((q) =>
+      settleImprovementDelegationSteps(q, {
+        improvementId: first.improvement.id,
+        attempts: claim.attempts,
+        state: "started",
+        sessionId: session.id,
+        now,
+      }),
+    );
+    return await answer("delegated", input.reviewer);
   } catch (error) {
     journalCaught(error, "improvements.delegateImprovement", null);
-    settleImprovementDelegation(db, {
-      improvementId: first.improvement.id,
-      attempts: claim.attempts,
-      state: "failed",
-      error: MESSAGES.delegation_failed,
-      now: input.now(),
-    });
-    return refuse("failed", "delegation_failed", fresh(input.reviewer));
+    const now = input.now();
+    await store.run((q) =>
+      settleImprovementDelegationSteps(q, {
+        improvementId: first.improvement.id,
+        attempts: claim.attempts,
+        state: "failed",
+        error: MESSAGES.delegation_failed,
+        now,
+      }),
+    );
+    return refuse("failed", "delegation_failed", await fresh(input.reviewer));
   }
 }
 
-function claimAndSettleExisting(db: Database, item: InboxItem, actor: string, now: number) {
-  immediate(db, () => {
-    const claimed = claimImprovementDelegation(db, {
-      improvementId: item.improvement.id,
-      issueId: item.improvement.issue!.id,
-      actor,
-      now,
-      leaseMs: IMPROVEMENT_OUTCOME_LIMITS.delegationLeaseMs,
-    });
-    if (claimed)
-      settleImprovementDelegation(db, {
-        improvementId: item.improvement.id,
-        attempts: claimed.attempts,
-        state: "existing",
-        now,
-      });
+function* claimAndSettleExistingSteps(
+  q: Q,
+  item: InboxItem,
+  actor: string,
+  now: number,
+): Steps<void> {
+  const claimed = yield* claimImprovementDelegationSteps(q, {
+    improvementId: item.improvement.id,
+    issueId: item.improvement.issue!.id,
+    actor,
+    now,
+    leaseMs: IMPROVEMENT_OUTCOME_LIMITS.delegationLeaseMs,
   });
+  if (claimed)
+    yield* settleImprovementDelegationSteps(q, {
+      improvementId: item.improvement.id,
+      attempts: claimed.attempts,
+      state: "existing",
+      now,
+    });
 }
 
 export type VerificationRequest = {
@@ -871,12 +983,14 @@ export function recordVerification(
     request: VerificationRequest;
     now: number;
   },
-): FollowThroughOutcome {
+): Promise<FollowThroughOutcome> {
   const { request } = input;
-  return immediate(db, (): FollowThroughOutcome => {
-    const item = settle(db, input.access, input.improvementId, input.now);
+  return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
+    const item = yield* q.transaction((tx) =>
+      settleSteps(db, tx, input.access, input.improvementId, input.now),
+    );
     if (!item) return NOT_FOUND;
-    const view = followThrough(db, item, input.now);
+    const view = yield* followThroughSteps(q, item, input.now);
     if (item.improvement.reviewState !== "accepted" || !view.issue)
       return refuse("conflict", "not_linked", view);
     if (item.improvement.version !== input.expectedVersion)
@@ -891,7 +1005,11 @@ export function recordVerification(
     let revision = request.revision?.toLowerCase();
     const evidence = [`check:${request.check}`, `result:${request.result}`];
     if (request.evidence.kind === "closeout_step") {
-      const step = closeoutStepResult(db, request.evidence.progressId, request.evidence.stepId);
+      const step = yield* closeoutStepResultSteps(
+        q,
+        request.evidence.progressId,
+        request.evidence.stepId,
+      );
       if (!step || step.itemId !== view.work?.itemId)
         return refuse("invalid", "evidence_not_found", view);
       if (verified && (step.state !== "passed" || step.kind !== "command"))
@@ -919,7 +1037,8 @@ export function recordVerification(
     }
     if (verified && revision === undefined && !request.deployment)
       return refuse("invalid", "revision_required", view);
-    const version = recordImprovementAction(db, {
+    const issueState = view.issue.sync?.stateType ?? null;
+    const version = yield* recordAction(q, {
       improvementId: item.improvement.id,
       expectedVersion: input.expectedVersion,
       action: verified ? "verify" : "contradict",
@@ -932,13 +1051,13 @@ export function recordVerification(
         evidence,
         revision: revision ?? null,
         deployment: request.deployment ?? null,
-        issueState: view.issue.sync?.stateType ?? null,
+        issueState,
       },
       actor: input.access.userId,
       now: input.now,
     });
     if (version === null) return refuse("conflict", "stale", view);
-    recordImprovementOutcome(db, {
+    yield* recordOutcome(q, {
       improvementId: item.improvement.id,
       track: "verification",
       state: request.outcome,
@@ -950,7 +1069,11 @@ export function recordVerification(
     });
     return {
       status: "recorded",
-      item: followThrough(db, findInboxItem(db, input.access, item.improvement.id)!, input.now),
+      item: yield* followThroughSteps(
+        q,
+        findInboxItem(db, input.access, item.improvement.id)!,
+        input.now,
+      ),
     };
   });
 }
@@ -964,18 +1087,20 @@ export function recordCriterion(
     criterion: string;
     now: number;
   },
-): FollowThroughOutcome {
-  return immediate(db, (): FollowThroughOutcome => {
-    const item = settle(db, input.access, input.improvementId, input.now);
+): Promise<FollowThroughOutcome> {
+  return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
+    const item = yield* q.transaction((tx) =>
+      settleSteps(db, tx, input.access, input.improvementId, input.now),
+    );
     if (!item) return NOT_FOUND;
-    const view = followThrough(db, item, input.now);
+    const view = yield* followThroughSteps(q, item, input.now);
     if (item.improvement.reviewState !== "accepted" || item.improvement.reviewedProposal === null)
       return refuse("conflict", "not_linked", view);
     if (item.improvement.version !== input.expectedVersion)
       return refuse("conflict", "stale", view);
     if (item.improvement.verificationState === "verified")
       return refuse("conflict", "verified", view);
-    recordImprovementAction(db, {
+    yield* recordAction(q, {
       improvementId: item.improvement.id,
       expectedVersion: input.expectedVersion,
       action: "criterion",
@@ -984,7 +1109,7 @@ export function recordCriterion(
       actor: input.access.userId,
       now: input.now,
     });
-    annotateImprovementCriterion(db, {
+    yield* annotateImprovementCriterionSteps(q, {
       improvementId: item.improvement.id,
       proposalVersion: item.improvement.reviewedProposal,
       criterion: input.criterion,
@@ -993,7 +1118,11 @@ export function recordCriterion(
     });
     return {
       status: "recorded",
-      item: followThrough(db, findInboxItem(db, input.access, item.improvement.id)!, input.now),
+      item: yield* followThroughSteps(
+        q,
+        findInboxItem(db, input.access, item.improvement.id)!,
+        input.now,
+      ),
     };
   });
 }
@@ -1008,19 +1137,28 @@ export function recoverImprovement(
     reason: string;
     now: number;
   },
-): FollowThroughOutcome {
-  return immediate(db, (): FollowThroughOutcome => {
-    const item = settle(db, input.access, input.improvementId, input.now);
+): Promise<FollowThroughOutcome> {
+  return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
+    const item = yield* q.transaction((tx) =>
+      settleSteps(db, tx, input.access, input.improvementId, input.now),
+    );
     if (!item) return NOT_FOUND;
-    const view = followThrough(db, item, input.now);
+    const view = yield* followThroughSteps(q, item, input.now);
     if (item.improvement.version !== input.expectedVersion)
       return refuse("conflict", "stale", view);
     if (!view.recovery.includes(input.choice))
       return refuse("conflict", "recovery_unavailable", view);
-    const created = listImprovementDeliveries(db, item.improvement.id).find(
-      (d) => d.operation === "create_issue" && d.remoteId !== null,
-    );
-    const version = recordImprovementAction(db, {
+    const deliveries = yield* listImprovementDeliveriesSteps(q, item.improvement.id);
+    const created = deliveries.find((d) => d.operation === "create_issue" && d.remoteId !== null);
+    const prior = (yield* listImprovementDeliveriesSteps(q, item.improvement.id)).map((d) => ({
+      id: d.id,
+      operation: d.operation,
+      state: d.state,
+      targetIssueId: d.targetIssueId,
+      remoteId: d.remoteId,
+      remoteIdentifier: d.remoteIdentifier,
+    }));
+    const version = yield* recordAction(q, {
       improvementId: item.improvement.id,
       expectedVersion: input.expectedVersion,
       action: input.choice,
@@ -1031,14 +1169,7 @@ export function recoverImprovement(
         delegation: view.delegation,
         implementation: view.implementation,
         verification: view.verification,
-        deliveries: listImprovementDeliveries(db, item.improvement.id).map((d) => ({
-          id: d.id,
-          operation: d.operation,
-          state: d.state,
-          targetIssueId: d.targetIssueId,
-          remoteId: d.remoteId,
-          remoteIdentifier: d.remoteIdentifier,
-        })),
+        deliveries: prior,
       },
       detail: {
         reason: input.reason,
@@ -1051,7 +1182,7 @@ export function recoverImprovement(
     });
     if (version === null) return refuse("conflict", "stale", view);
     if (input.choice === "acknowledge")
-      recordImprovementOutcome(db, {
+      yield* recordOutcome(q, {
         improvementId: item.improvement.id,
         track: "implementation",
         state: "canceled",
@@ -1060,7 +1191,7 @@ export function recoverImprovement(
         now: input.now,
       });
     else
-      returnImprovementToReview(db, {
+      yield* returnToReview(q, {
         improvementId: item.improvement.id,
         version,
         actor: input.access.userId,
@@ -1068,18 +1199,22 @@ export function recoverImprovement(
       });
     return {
       status: "recorded",
-      item: followThrough(db, findInboxItem(db, input.access, item.improvement.id)!, input.now),
+      item: yield* followThroughSteps(
+        q,
+        findInboxItem(db, input.access, item.improvement.id)!,
+        input.now,
+      ),
     };
   });
 }
 
-export function reconcileImprovement(
+export async function reconcileImprovement(
   db: Database,
   improvementId: string,
   workspaceId: string,
   now: number,
-): void {
-  settle(db, { workspaceId }, improvementId, now);
+): Promise<void> {
+  await sqliteDb(db).transaction((q) => settleSteps(db, q, { workspaceId }, improvementId, now));
 }
 
 export async function syncImprovementOutcomes(options: {
@@ -1089,51 +1224,58 @@ export async function syncImprovementOutcomes(options: {
   limit?: number;
 }): Promise<void> {
   const { db } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
-  for (const delegation of expiredImprovementDelegations(db, now())) {
-    const improvement = getImprovement(db, delegation.improvementId);
-    const work =
-      improvement &&
-      newestIssueWork(db, {
-        issueId: delegation.issueId,
-        repository: improvement.repository,
-        createdSince: delegation.updatedAt,
-        linkedAt: 0,
-      });
-    settleImprovementDelegation(db, {
-      improvementId: delegation.improvementId,
-      attempts: delegation.attempts,
-      state: work ? "existing" : "failed",
-      ...(work
-        ? {}
-        : { error: "Paws did not hear back from Linear. Check the issue, then delegate again." }),
-      now: now(),
-    });
-  }
-  for (const candidate of followThroughCandidates(
-    db,
-    options.limit ?? IMPROVEMENT_OUTCOME_LIMITS.syncBatch,
+  const expiredAt = now();
+  for (const delegation of await store.run((q) =>
+    expiredImprovementDelegationsSteps(q, expiredAt),
   )) {
-    markImprovementChecked(db, candidate.id, now());
-    const linear = await options.linearFor(candidate.workspaceId);
-    if (!linear)
-      recordImprovementIssueSync(db, {
-        improvementId: candidate.id,
-        issueId: candidate.issueId,
-        status: "unavailable",
-        observedAt: now(),
-      });
-    else {
-      const observedAt = now();
-      syncFrom(
-        db,
-        candidate.id,
-        candidate.issueId,
-        observedAt,
-        await linear.findIssue(candidate.issueId),
+    const work = await store.run(function* (q) {
+      const improvement = yield* getImprovementSteps(q, delegation.improvementId);
+      return (
+        improvement &&
+        (yield* newestIssueWorkSteps(q, {
+          issueId: delegation.issueId,
+          repository: improvement.repository,
+          createdSince: delegation.updatedAt,
+          linkedAt: 0,
+        }))
       );
+    });
+    const settledAt = now();
+    await store.run((q) =>
+      settleImprovementDelegationSteps(q, {
+        improvementId: delegation.improvementId,
+        attempts: delegation.attempts,
+        state: work ? "existing" : "failed",
+        ...(work
+          ? {}
+          : { error: "Paws did not hear back from Linear. Check the issue, then delegate again." }),
+        now: settledAt,
+      }),
+    );
+  }
+  const limit = options.limit ?? IMPROVEMENT_OUTCOME_LIMITS.syncBatch;
+  for (const candidate of await store.run((q) => followThroughCandidatesSteps(q, limit))) {
+    const checkedAt = now();
+    await store.run((q) => markImprovementCheckedSteps(q, candidate.id, checkedAt));
+    const linear = await options.linearFor(candidate.workspaceId);
+    if (!linear) {
+      const observedAt = now();
+      await store.run((q) =>
+        recordImprovementIssueSyncSteps(q, {
+          improvementId: candidate.id,
+          issueId: candidate.issueId,
+          status: "unavailable",
+          observedAt,
+        }),
+      );
+    } else {
+      const observedAt = now();
+      const read = await linear.findIssue(candidate.issueId);
+      await store.run((q) => syncFromSteps(q, candidate.id, candidate.issueId, observedAt, read));
     }
-    reconcileImprovement(db, candidate.id, candidate.workspaceId, now());
+    await reconcileImprovement(db, candidate.id, candidate.workspaceId, now());
   }
 }
 

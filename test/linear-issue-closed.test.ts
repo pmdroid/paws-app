@@ -93,12 +93,11 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
   const f = await fixture();
   applyWorkItemEvent(f.db, f.item.id, "start_timed_out");
   const status = createLiveStatusProvider(f.db);
-  const needsPerson = () =>
-    status
-      .issues()
-      .issues.filter((item) => item.state === "needs_human")
+  const needsPerson = async () =>
+    (await status.issues()).issues
+      .filter((item) => item.state === "needs_human")
       .map((item) => item.title);
-  expect(needsPerson()).toEqual(["Task"]);
+  expect(await needsPerson()).toEqual(["Task"]);
 
   storeLinearToken(f.home, {
     accessToken: "fake-access",
@@ -161,7 +160,7 @@ test("a failed task whose issue moves to Done leaves Needs a person and complete
   await handled.promise;
 
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
-  expect(needsPerson()).toEqual([]);
+  expect(await needsPerson()).toEqual([]);
   expect(notified).toEqual([f.item.id]);
   expect(interrupted).toEqual(["session"]);
   expect(f.journal.some((line) => line.includes("ENG-1 cancelled") && line.includes("Done"))).toBe(

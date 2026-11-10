@@ -1,16 +1,17 @@
 import type { Database } from "bun:sqlite";
 import {
-  findingGroupingEnabled,
-  lastFindingGroupRun,
+  findingGroupingEnabledSteps,
+  lastFindingGroupRunSteps,
   listFindingGroups,
   listImprovementProposals,
   listImprovements,
-  listRetroCoverageGaps,
+  listRetroCoverageGapsSteps,
   listRetroEvidence,
-  listRetros,
-  retroScheduleRuntime,
+  listRetrosSteps,
+  retroScheduleRuntimeSteps,
   reviewFindingIssueClaims,
   reviewFindingItems,
+  sqliteDb,
   type FindingGroupRun,
   type Improvement,
   type ImprovementProposal,
@@ -277,24 +278,27 @@ export type ImprovementSourceStatus = {
 export function improvementSourceStatus(
   db: Database,
   workspaceId: string,
-): ImprovementSourceStatus {
-  const retro = listRetros(db, workspaceId)[0] ?? null;
-  return {
-    daily: {
-      enabled: findingGroupingEnabled(db, workspaceId),
-      lastRun: lastFindingGroupRun(db, workspaceId),
-    },
-    weekly: {
-      lastRetro: retro && {
-        id: retro.id,
-        state: retro.state,
-        windowStart: retro.windowStart,
-        windowEnd: retro.windowEnd,
-        publishedAt: retro.publishedAt,
-        error: retro.error,
-        coverageGaps: listRetroCoverageGaps(db, retro.id).length,
+): Promise<ImprovementSourceStatus> {
+  return sqliteDb(db).run(function* (q) {
+    const retro = (yield* listRetrosSteps(q, workspaceId))[0] ?? null;
+    const enabled = yield* findingGroupingEnabledSteps(q, workspaceId);
+    const lastRun = yield* lastFindingGroupRunSteps(q, workspaceId);
+    const coverageGaps = retro && (yield* listRetroCoverageGapsSteps(q, retro.id)).length;
+    const runtime = yield* retroScheduleRuntimeSteps(q, workspaceId);
+    return {
+      daily: { enabled, lastRun },
+      weekly: {
+        lastRetro: retro && {
+          id: retro.id,
+          state: retro.state,
+          windowStart: retro.windowStart,
+          windowEnd: retro.windowEnd,
+          publishedAt: retro.publishedAt,
+          error: retro.error,
+          coverageGaps: coverageGaps!,
+        },
+        nextDueAt: runtime?.nextDueAt ?? null,
       },
-      nextDueAt: retroScheduleRuntime(db, workspaceId)?.nextDueAt ?? null,
-    },
-  };
+    };
+  });
 }

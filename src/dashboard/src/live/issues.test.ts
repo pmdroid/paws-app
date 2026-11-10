@@ -39,14 +39,14 @@ function provider(db: Database, sessionIds?: readonly string[]) {
 }
 
 describe("issue resources", () => {
-  test("the list keeps every open issue and the 50 latest finished in a day; older issues open directly", () => {
+  test("the list keeps every open issue and the 50 latest finished in a day; older issues open directly", async () => {
     const db = database();
     insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: NOW - 7 * STATUS_RECENT_MS });
     finish(db, "ENG-OLD", NOW - STATUS_RECENT_MS - 60_000);
     for (let index = 0; index < STATUS_RECENT_LIMIT + 5; index += 1)
       finish(db, `ENG-${100 + index}`, NOW - 120_000 - index * 1_000);
     const live = provider(db);
-    const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(live.issues())));
+    const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(await live.issues())));
     if (!parsed.ok) throw new Error(parsed.error);
     const ids = parsed.response.issues.map((issue) => issue.id);
     expect(ids).toContain("ENG-OPEN");
@@ -54,10 +54,10 @@ describe("issue resources", () => {
     expect(ids).toContain("ENG-100");
     expect(ids).not.toContain(`ENG-${100 + STATUS_RECENT_LIMIT + 4}`);
     expect(ids).not.toContain("ENG-OLD");
-    expect(live.issue("ENG-OLD")?.issue).toMatchObject({ id: "ENG-OLD", state: "stopped" });
+    expect((await live.issue("ENG-OLD"))?.issue).toMatchObject({ id: "ENG-OLD", state: "stopped" });
   });
 
-  test("the list carries the snapshot's issue rows, runs and summaries and nothing else", () => {
+  test("the list carries the snapshot's issue rows, runs and summaries and nothing else", async () => {
     const db = database();
     insertQueuedItem(db, { id: "ENG-1", title: "Running", sessionKey: "s1", now: NOW - 9_000 });
     beginImplementRun(db, "ENG-1", NOW - 8_000);
@@ -70,7 +70,7 @@ describe("issue resources", () => {
     });
     finish(db, "ENG-3", NOW - 5_000);
     const live = provider(db);
-    const list = live.issues();
+    const list = await live.issues();
     expect(Object.keys(list).sort()).toEqual([
       "agentCloseout",
       "generatedAt",
@@ -84,7 +84,7 @@ describe("issue resources", () => {
     expect(list.issues.find((issue) => issue.id === "ENG-1")?.doing).toBeDefined();
   });
 
-  test("the detail names the current session and keeps the earlier one with when it ended", () => {
+  test("the detail names the current session and keeps the earlier one with when it ended", async () => {
     const db = database();
     const identify = (id: string) =>
       db.run(
@@ -101,7 +101,9 @@ describe("issue resources", () => {
     insertQueuedItem(db, { id: "NEW", title: "Keep runs", sessionKey: "current", now: NOW - 1 });
     identify("NEW");
     const live = provider(db);
-    const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(live.issue("PAS-367"))));
+    const parsed = parseIssueDetailResponse(
+      JSON.parse(JSON.stringify(await live.issue("PAS-367"))),
+    );
     if (!parsed.ok) throw new Error(parsed.error);
     const detail = parsed.response;
     expect(detail.issue.session?.id).toBe("current");
