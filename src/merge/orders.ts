@@ -59,7 +59,7 @@ import type { MergeStep } from "./step";
 import { ciWaitVerification, githubQueueWatch, type MergeWait } from "./wait";
 
 export const REBASE_CONFLICT_INSTRUCTION =
-  "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. Rebase this branch onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
+  "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. First squash this branch to one commit: note its commit subjects and Co-authored-by trailers, run `git reset --soft $(git merge-base HEAD origin/main)`, and commit once with the pull request title as the subject, the original subjects in the body and every trailer kept. Then rebase it onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
 export const REBASE_CONFLICT_THOUGHT =
   "Main moved and the branch conflicts. Sent it back to the agent to rebase.";
 const CI_FIX_SOURCE = {
@@ -311,6 +311,7 @@ export function sendBack(
     record: (jobId: number, attempt: number) => void;
     failedChecks?: readonly FailedCiCheck[];
     pullNumber?: number | null;
+    conflict?: { pullNumber: number; head: string };
   },
 ): boolean {
   return returnToAgent(db, {
@@ -322,6 +323,7 @@ export function sendBack(
     record: report.record,
     ...(report.failedChecks ? { failedChecks: report.failedChecks } : {}),
     ...(report.pullNumber !== undefined ? { pullNumber: report.pullNumber } : {}),
+    ...(report.conflict ? { conflict: { ...report.conflict, sessionId: caps.session(item) } } : {}),
     ...(caps.restart ? { restart: caps.restart } : {}),
     announce: (running, attempt, key) => {
       if (reason === "ci-failed") caps.voice.status(running, report.thought(attempt), key);
@@ -462,6 +464,7 @@ async function reviewWaitConflict(
       REBASE_CONFLICT_INSTRUCTION,
       {
         thought: () => REBASE_CONFLICT_THOUGHT,
+        conflict: { pullNumber: prNumber, head: read.head },
         record: (jobId) =>
           recordRebaseReturn(db, {
             itemId: item.id,
@@ -637,6 +640,7 @@ export async function mergeThroughGitHubQueue(
             {
               thought: () =>
                 `GitHub's merge queue removed the pull request for a conflict${why}. Sent it back to the agent to rebase.`,
+              conflict: { pullNumber: pull.number, head },
               record: (jobId) =>
                 recordRebaseReturn(db, {
                   itemId: item.id,

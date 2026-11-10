@@ -1,7 +1,8 @@
 import { cancelOpenJobs } from "./jobs";
 import { describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { FakeClock, systemClock, sampleHostOperations } from "../core";
+import { FakeClock, systemClock } from "../core";
+import { sampleHostOperations } from "../host-operation";
 import {
   enqueueJob,
   JobLoop,

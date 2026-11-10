@@ -145,7 +145,7 @@ export type MergeCapabilities = OrderCapabilities & {
     item: WorkItemRecord,
   ): Promise<Omit<ConfirmedRemoteMerge, "itemId" | "confirmedAt"> | null | "unknown">;
   rerunCi?(item: WorkItemRecord, pullNumber: number, reason: string): Promise<string>;
-  completed(): void;
+  completed(): unknown;
   instanceId?: string;
   sleep?(ms: number): Promise<void>;
 };
@@ -495,6 +495,7 @@ async function laneAttempt(
       REBASE_CONFLICT_INSTRUCTION,
       {
         thought: () => REBASE_CONFLICT_THOUGHT,
+        conflict: { pullNumber: pull.number, head: result?.head ?? published.head },
         record: (jobId) =>
           recordRebaseReturn(db, {
             itemId: item.id,
@@ -763,7 +764,7 @@ async function completeMerged(
   const completed = await store.transaction((q) =>
     completeMergedItemSteps(q, { itemId: item.id, now: caps.now() }),
   );
-  if (completed) caps.completed();
+  if (completed) await caps.completed();
 }
 
 function squashLockWait(repository: { owner: string; repo: string }): MergeStep {

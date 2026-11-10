@@ -923,7 +923,7 @@ test("Request changes while the commands still run restarts the item for review"
     gate.next = pendingHuman("");
     // The runner settles the stopped work, and the scheduler places the restarted item.
     releaseRunCapacity(f.db, getWorkItem(f.db, item.id)!.currentRunId!, Date.now());
-    f.orchestrator.reconcileExecution();
+    await f.orchestrator.reconcileExecution();
     await f.driveUntil(() => f.prompts.length === 2);
     expect(f.prompts[1]).toContain("Make the hint under Model shorter");
   } finally {

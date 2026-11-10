@@ -35,7 +35,9 @@ test("one scheduler tick requeues an orphan and admits its resume in the same pa
     const ticks: string[][] = [];
     registerScheduler(
       jobs,
-      () => void ticks.push(workspaceDispatch(db, { now: clock.now() })),
+      async () => {
+        ticks.push(await workspaceDispatch(db, { now: clock.now() }));
+      },
       clock.now(),
     );
 

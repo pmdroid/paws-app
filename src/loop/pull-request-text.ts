@@ -1,10 +1,10 @@
-import type { Database } from "bun:sqlite";
 import {
-  latestMergeJobSummary,
-  getItemPullRequest,
-  getPullRequestText,
-  getWorkItem,
-  savePullRequestText,
+  latestMergeJobSummarySteps,
+  getItemPullRequestSteps,
+  getPullRequestTextSteps,
+  getWorkItemSteps,
+  savePullRequestTextSteps,
+  type Db,
   type PullRequestDraft,
   type PullRequestText,
 } from "../db";
@@ -19,7 +19,7 @@ import { withLeftForLater } from "../core";
 const CLOSED_STATES = new Set(["merged", "completed", "cancelled"]);
 
 export async function applyPullRequestDraft(input: {
-  db: Database;
+  store: Db;
   itemId: string;
   issue: string;
   draft: PullRequestDraft;
@@ -32,8 +32,11 @@ export async function applyPullRequestDraft(input: {
   stopped: () => boolean;
   signal?: AbortSignal;
 }): Promise<"updated" | "unchanged" | "no_pull" | "failed" | "stopped"> {
-  const pull = getItemPullRequest(input.db, input.itemId);
-  const state = getWorkItem(input.db, input.itemId)?.state;
+  const { store } = input;
+  const [pull, state] = await store.run(function* (q) {
+    const row = yield* getItemPullRequestSteps(q, input.itemId);
+    return [row, (yield* getWorkItemSteps(q, input.itemId))?.state] as const;
+  });
   if (!pull || !input.repository || !input.github || !state || CLOSED_STATES.has(state))
     return "no_pull";
   const { tokenProvider, ...app } = input.github;
@@ -47,7 +50,7 @@ export async function applyPullRequestDraft(input: {
   const title = input.draft.title;
   try {
     if (input.stopped()) return "stopped";
-    let written = getPullRequestText(input.db, input.itemId);
+    let written = await store.run((q) => getPullRequestTextSteps(q, input.itemId));
     if (written && sameText(written, input.issue, input.draft)) return "unchanged";
     const live = await readPullRequestText(target);
     if (input.stopped()) return "stopped";
@@ -57,15 +60,17 @@ export async function applyPullRequestDraft(input: {
         input.previous
           ? withLeftForLater(input.previous.body, input.previous.remaining ?? [])
           : undefined,
-        acceptedSummary(input.db, input.itemId),
+        await acceptedSummary(store, input.itemId),
       ]);
-      savePullRequestText(input.db, input.itemId, written, input.now);
+      const recovered = written;
+      await store.run((q) => savePullRequestTextSteps(q, input.itemId, recovered, input.now));
       if (sameText(written, input.issue, input.draft)) return "unchanged";
     }
     const body = textBody(written, input.issue, input.draft);
     await updatePullRequestText({ ...target, title, body });
     if (input.stopped()) return "stopped";
-    savePullRequestText(input.db, input.itemId, { ...written, title, body }, input.now);
+    const saved = { ...written, title, body };
+    await store.run((q) => savePullRequestTextSteps(q, input.itemId, saved, input.now));
     return "updated";
   } catch (error) {
     if (input.signal?.aborted || input.stopped()) return "stopped";
@@ -90,8 +95,8 @@ function sameText(written: PullRequestText, issue: string, draft: PullRequestDra
   return draft.title === written.title && textBody(written, issue, draft) === written.body;
 }
 
-function acceptedSummary(db: Database, itemId: string): string | undefined {
-  return latestMergeJobSummary(db, itemId) ?? undefined;
+async function acceptedSummary(store: Db, itemId: string): Promise<string | undefined> {
+  return (await store.run((q) => latestMergeJobSummarySteps(q, itemId))) ?? undefined;
 }
 
 function recoveredText(

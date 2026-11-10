@@ -87,7 +87,7 @@ export async function tickWithRestarts(
       )
       .get();
     if (!next) break;
-    orchestrator.reconcileExecution();
+    await orchestrator.reconcileExecution();
     await jobs.tick(["run.resume"]);
     if (first?.queue === "github.merge") await jobs.tick(["github.merge"]);
   }

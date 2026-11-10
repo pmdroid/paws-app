@@ -1,10 +1,11 @@
 import type { Database } from "bun:sqlite";
 import {
-  markReviewReplyPosted,
+  markReviewReplyPostedSteps,
   recordReviewReplies,
   reportReviewReplies,
-  unpostedReviewReplies,
+  unpostedReviewRepliesSteps,
   unreportedReviewReplies,
+  type Db,
   type NewReviewReply,
   type PullCommentRecord,
   type PullReviewRecord,
@@ -200,23 +201,26 @@ export type ReviewReplyGitHub = {
  * Process every row before reporting errors. Return the number of replies posted.
  */
 export async function postReviewReplies(
-  db: Database,
+  store: Db,
   input: { itemId: string; pullNumber: number; head: string; now: () => number },
   github: ReviewReplyGitHub,
 ): Promise<number> {
   let posted = 0;
   const errors: unknown[] = [];
-  for (const reply of unpostedReviewReplies(db, input.itemId, input.pullNumber)) {
+  const replies = await store.run((q) =>
+    unpostedReviewRepliesSteps(q, input.itemId, input.pullNumber),
+  );
+  for (const reply of replies) {
     try {
       const body = replyBody(reply, input.head);
       if (reply.target === "thread" && reply.commentId !== null)
         await github.replyToReviewComment(input.pullNumber, reply.commentId, body);
       else await github.commentOnPullRequest(input.pullNumber, quoted(reply, body));
-      markReviewReplyPosted(db, reply.id, input.now(), false);
+      await store.run((q) => markReviewReplyPostedSteps(q, reply.id, input.now(), false));
       posted += 1;
       if (reply.target === "thread" && reply.threadId !== null && reply.outcome === "fixed") {
         await github.resolveReviewThread(reply.threadId);
-        markReviewReplyPosted(db, reply.id, input.now(), true);
+        await store.run((q) => markReviewReplyPostedSteps(q, reply.id, input.now(), true));
       }
     } catch (error) {
       errors.push(error);

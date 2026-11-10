@@ -1,22 +1,27 @@
 import {
-  beginMemberVmDelete,
-  cancelMemberVmJobs,
-  enqueueJob,
-  immediate,
-  insertMemberVm,
+  beginMemberVmDeleteSteps,
+  cancelMemberVmJobsSteps,
+  emitJobReady,
+  enqueueJobSteps,
+  insertMemberVmSteps,
   memberVmById,
+  memberVmByIdSteps,
   memberVmForMember,
-  memberVmNameTaken,
-  openMemberVmJob,
-  releaseRevokedMemberVmRunner,
-  retryMemberVmDelete,
-  retryMemberVmStep,
-  returnMemberVmToEnroll,
-  workspaceMember,
+  memberVmForMemberSteps,
+  memberVmNameTakenSteps,
+  openMemberVmJobSteps,
+  releaseRevokedMemberVmRunnerSteps,
+  retryMemberVmDeleteSteps,
+  retryMemberVmStepSteps,
+  returnMemberVmToEnrollSteps,
+  workspaceMemberSteps,
   workspaceMemberUsable,
-  workspaceMemberVms,
-  workspaceUserContact,
+  workspaceMemberVmsSteps,
+  workspaceUserContactSteps,
+  type Db,
   type MemberVm,
+  type Q,
+  type Steps,
 } from "../db";
 import { isWorkspaceAdmin, workspaceId as mintId } from "../workspace";
 import type { Database } from "bun:sqlite";
@@ -41,54 +46,64 @@ export function findMemberVm(db: Database, member: MemberRef): MemberVm | null {
 }
 
 /** `pool` applies to a new VM only; an existing one keeps where it is. */
-export function startMemberVm(
-  db: Database,
+export async function startMemberVm(
+  store: Db,
   input: MemberRef & { now?: number; pool?: string | null },
-): MemberVm {
+): Promise<MemberVm> {
   const now = input.now ?? Date.now();
-  return immediate(db, () => {
-    const existing = current(db, input, now);
-    if (existing?.deleteStep != null) return existing;
+  const { vm, enqueued: jobAdded } = await store.transaction(function* (q) {
+    const existing = yield* currentSteps(q, input, now);
+    if (existing?.deleteStep != null) return { vm: existing, enqueued: false };
     if (existing) {
       if (
         existing.failure === null &&
         existing.runnerId === null &&
         (existing.step === "health" || existing.step === "ready")
       ) {
-        returnMemberVmToEnroll(db, existing.id, now);
-        ensureJob(db, existing.id, now);
-        return getMemberVm(db, existing.id)!;
+        yield* returnMemberVmToEnrollSteps(q, existing.id, now);
+        const enqueued = yield* ensureJobSteps(q, existing.id, now);
+        return { vm: (yield* memberVmByIdSteps(q, existing.id))!, enqueued };
       }
-      if (existing.failure === null && existing.step !== "ready") ensureJob(db, existing.id, now);
-      return existing;
+      const enqueued =
+        existing.failure === null && existing.step !== "ready"
+          ? yield* ensureJobSteps(q, existing.id, now)
+          : false;
+      return { vm: existing, enqueued };
     }
-    requireOwner(db, input);
+    yield* requireOwnerSteps(q, input);
     const id = mintId(now);
-    insertMemberVm(db, {
+    yield* insertMemberVmSteps(q, {
       id,
       workspaceId: input.workspaceId,
       userId: input.userId,
-      vmName: freeVmName(db, input),
+      vmName: yield* freeVmNameSteps(q, input),
       pool: input.pool ?? null,
       now,
     });
-    ensureJob(db, id, now);
-    return getMemberVm(db, id)!;
+    const enqueued = yield* ensureJobSteps(q, id, now);
+    return { vm: (yield* memberVmByIdSteps(q, id))!, enqueued };
   });
+  if (jobAdded) emitJobReady(store);
+  return vm;
 }
 
-export function retryMemberVm(db: Database, input: MemberRef & { now?: number }): MemberVm {
+export async function retryMemberVm(
+  store: Db,
+  input: MemberRef & { now?: number },
+): Promise<MemberVm> {
   const now = input.now ?? Date.now();
-  return immediate(db, () => {
-    const existing = current(db, input, now);
+  const { vm, enqueued: jobAdded } = await store.transaction(function* (q) {
+    const existing = yield* currentSteps(q, input, now);
     if (!existing) throw new Error("This member has no VM to retry.");
     if (existing.deleteStep !== null) throw new Error("This VM is being deleted.");
-    if (existing.failure === null) return existing;
-    requireOwner(db, input);
-    retryMemberVmStep(db, existing.id, now);
-    ensureJob(db, existing.id, now);
-    return getMemberVm(db, existing.id)!;
+    if (existing.failure === null) return { vm: existing, enqueued: false };
+    yield* requireOwnerSteps(q, input);
+    yield* retryMemberVmStepSteps(q, existing.id, now);
+    const enqueued = yield* ensureJobSteps(q, existing.id, now);
+    return { vm: (yield* memberVmByIdSteps(q, existing.id))!, enqueued };
   });
+  if (jobAdded) emitJobReady(store);
+  return vm;
 }
 
 export class MemberVmDeleteDenied extends Error {
@@ -105,72 +120,81 @@ export class MemberVmMissing extends Error {
   }
 }
 
-export function mayDeleteMemberVm(db: Database, row: MemberVm, requester: MemberRef): boolean {
+export function* mayDeleteMemberVmSteps(q: Q, row: MemberVm, requester: MemberRef): Steps<boolean> {
   if (row.workspaceId !== requester.workspaceId) return false;
-  const member = memberAccess(db, requester);
+  const member = yield* memberAccessSteps(q, requester);
   if (!workspaceMemberUsable(member)) return false;
   return row.userId === requester.userId || isWorkspaceAdmin(member.role);
 }
 
-export function listDeletableMemberVms(db: Database, requester: MemberRef): MemberVm[] {
-  return workspaceMemberVms(db, requester.workspaceId).filter((row) =>
-    mayDeleteMemberVm(db, row, requester),
-  );
+export function listDeletableMemberVms(store: Db, requester: MemberRef): Promise<MemberVm[]> {
+  return store.run(function* (q) {
+    const deletable: MemberVm[] = [];
+    for (const row of yield* workspaceMemberVmsSteps(q, requester.workspaceId))
+      if (yield* mayDeleteMemberVmSteps(q, row, requester)) deletable.push(row);
+    return deletable;
+  });
 }
 
-export function startMemberVmDelete(
-  db: Database,
+export async function startMemberVmDelete(
+  store: Db,
   input: MemberRef & { id: string; force?: boolean; now?: number },
-): MemberVm {
+): Promise<MemberVm> {
   const now = input.now ?? Date.now();
   const force = input.force === true ? 1 : 0;
-  return immediate(db, () => {
-    const row = getMemberVm(db, input.id);
+  const { vm, enqueued: jobAdded } = await store.transaction(function* (q) {
+    const row = yield* memberVmByIdSteps(q, input.id);
     if (row === null || row.workspaceId !== input.workspaceId) throw new MemberVmMissing();
-    if (!mayDeleteMemberVm(db, row, input)) throw new MemberVmDeleteDenied();
+    if (!(yield* mayDeleteMemberVmSteps(q, row, input))) throw new MemberVmDeleteDenied();
     if (row.deleteStep === null) {
-      beginMemberVmDelete(db, { id: row.id, requestedBy: input.userId, force, now });
-      cancelMemberVmJobs(db, {
+      yield* beginMemberVmDeleteSteps(q, { id: row.id, requestedBy: input.userId, force, now });
+      yield* cancelMemberVmJobsSteps(q, {
         queue: MEMBER_VM_QUEUE,
         memberVmId: row.id,
         statuses: ["pending"],
         now,
       });
     } else if (row.deleteFailure !== null || force > row.deleteForce) {
-      retryMemberVmDelete(db, row.id, force, now);
+      yield* retryMemberVmDeleteSteps(q, row.id, force, now);
     }
-    ensureDeleteJob(db, row.id, now);
-    return getMemberVm(db, row.id)!;
+    const enqueued = yield* ensureDeleteJobSteps(q, row.id, now);
+    return { vm: (yield* memberVmByIdSteps(q, row.id))!, enqueued };
   });
+  if (jobAdded) emitJobReady(store);
+  return vm;
 }
 
-function ensureDeleteJob(db: Database, id: string, now: number): void {
-  if (openMemberVmJob(db, MEMBER_VM_DELETE_QUEUE, id)) return;
-  enqueueJob(db, { queue: MEMBER_VM_DELETE_QUEUE, payload: { memberVmId: id }, now });
+/** True when it added a job; the caller wakes the job loop after the transaction commits. */
+function* ensureDeleteJobSteps(q: Q, id: string, now: number): Steps<boolean> {
+  if (yield* openMemberVmJobSteps(q, MEMBER_VM_DELETE_QUEUE, id)) return false;
+  yield* enqueueJobSteps(q, { queue: MEMBER_VM_DELETE_QUEUE, payload: { memberVmId: id }, now });
+  return true;
 }
 
-function current(db: Database, member: MemberRef, now: number): MemberVm | null {
-  releaseRevokedMemberVmRunner(db, member.workspaceId, member.userId, now);
-  return findMemberVm(db, member);
+function* currentSteps(q: Q, member: MemberRef, now: number): Steps<MemberVm | null> {
+  yield* releaseRevokedMemberVmRunnerSteps(q, member.workspaceId, member.userId, now);
+  return yield* memberVmForMemberSteps(q, member.workspaceId, member.userId);
 }
 
-function ensureJob(db: Database, id: string, now: number): void {
-  if (openMemberVmJob(db, MEMBER_VM_QUEUE, id)) return;
-  enqueueJob(db, { queue: MEMBER_VM_QUEUE, payload: { memberVmId: id }, now });
+/** True when it added a job; the caller wakes the job loop after the transaction commits. */
+function* ensureJobSteps(q: Q, id: string, now: number): Steps<boolean> {
+  if (yield* openMemberVmJobSteps(q, MEMBER_VM_QUEUE, id)) return false;
+  yield* enqueueJobSteps(q, { queue: MEMBER_VM_QUEUE, payload: { memberVmId: id }, now });
+  return true;
 }
 
-function memberAccess(db: Database, member: MemberRef) {
-  return workspaceMember(db, member.workspaceId, member.userId);
+function memberAccessSteps(q: Q, member: MemberRef) {
+  return workspaceMemberSteps(q, member.workspaceId, member.userId);
 }
 
-function requireOwner(db: Database, member: MemberRef): void {
-  if (!workspaceMemberUsable(memberAccess(db, member)))
+function* requireOwnerSteps(q: Q, member: MemberRef): Steps<void> {
+  if (!workspaceMemberUsable(yield* memberAccessSteps(q, member)))
     throw new Error("Active workspace membership is required to own a runner.");
 }
 
 /** The first name Paws has not used, after `after` when exe.dev refused that one. */
-export function freeVmName(db: Database, member: MemberRef, after?: string): string {
-  const user = workspaceUserContact(db, member.userId);
+export function* freeVmNameSteps(q: Q, member: MemberRef, after?: string): Steps<string> {
+  const user = yield* workspaceUserContactSteps(q, member.userId);
   const base =
     slug(user?.name ?? "") || slug(user?.email.split("@")[0] ?? "") || slug(member.userId);
   const names = Array.from({ length: 999 }, (_, index) => {
@@ -178,7 +202,8 @@ export function freeVmName(db: Database, member: MemberRef, after?: string): str
     return `${(base || "member").slice(0, 63 - suffix.length).replace(/-+$/, "")}${suffix}`;
   });
   for (const name of names.slice(after === undefined ? 0 : names.indexOf(after) + 1))
-    if (name !== after && isExeDevVmName(name) && !memberVmNameTaken(db, name)) return name;
+    if (name !== after && isExeDevVmName(name) && !(yield* memberVmNameTakenSteps(q, name)))
+      return name;
   throw new Error("No free VM name for this member.");
 }
 

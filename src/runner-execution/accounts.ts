@@ -4,6 +4,7 @@ import {
   chmodSync,
   closeSync,
   constants,
+  existsSync,
   fchmodSync,
   fchownSync,
   fstatSync,
@@ -15,6 +16,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  rmdirSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
@@ -421,35 +423,57 @@ export function shareRunnerAgentState(home: string, owners: RunnerAccountOwners)
 }
 
 /**
+ * Creates the work root, or takes it as it is, the one way both its users need it: mode 0770 in
+ * the agent group. The worker can get here before paws-runner does, and what it leaves has to be
+ * something paws-runner can list. Only the owner can change the root, so a root owned by the other
+ * user is left alone.
+ */
+export function shareRunnerWorkRoot(
+  workRoot: string,
+  owners: RunnerAccountOwners = processOwners(),
+): void {
+  try {
+    mkdirSync(workRoot, { recursive: true, mode: 0o770 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    journalCaught(error, "accounts.shareRunnerWorkRoot.mkdirSync", null, "path may already exist");
+  }
+  const root = lstatSync(workRoot);
+  if (root.isSymbolicLink() || !root.isDirectory())
+    throw new RunnerAccountHomeError("Runner work root is not a directory");
+  if (root.uid === process.getuid?.()) clearInheritedSetgid(workRoot);
+  shareRunnerPaths([workRoot], owners, { depth: 0 });
+}
+
+function shareAndListRunnerWorkRoot(workRoot: string, owners: RunnerAccountOwners): string[] {
+  try {
+    shareRunnerWorkRoot(workRoot, owners);
+    return readdirSync(workRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EACCES" || !existsSync(workRoot)) throw error;
+    const { uid, gid, mode } = lstatSync(workRoot);
+    const octal = (mode & 0o7777).toString(8).padStart(4, "0");
+    throw new RunnerAccountHomeError(
+      `Runner work root ${workRoot} can't be read: it has owner uid ${uid}, group gid ${gid} and mode ${octal}. ` +
+        `To fix it, run as root: chown paws-runner:${owners.agentGid} ${workRoot} && chmod 0770 ${workRoot}`,
+    );
+  }
+}
+
+/**
  * Gives the agent group the access paws-runner has to the work root it may have created while
  * agents ran as paws-runner: the root itself and its runner-wide `.paws` state. A leftover
  * checkout of a run that starts over is removed, as the worker would remove it. A resumed
- * execution keeps the user it started as, so its checkout is left as it is.
+ * execution keeps the user it started as, so its checkout is left as it is. A root paws-runner
+ * can't list fails the run, because going on would leave its `.paws` state unshared.
  */
 export function prepareRunnerWorkRoot(
   workRoot: string,
   owners: RunnerAccountOwners,
   checkout?: { name: string },
 ): void {
-  try {
-    mkdirSync(workRoot, { mode: 0o770 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    journalCaught(
-      error,
-      "accounts.prepareRunnerWorkRoot.mkdirSync",
-      null,
-      "path may already exist",
-    );
-  }
-  const root = lstatSync(workRoot);
-  if (root.isSymbolicLink() || !root.isDirectory())
-    throw new RunnerAccountHomeError("Runner work root is not a directory");
-  // The worker clears an inherited setgid bit itself, but only the owner may, and that is us.
-  if (root.uid === process.getuid?.()) clearInheritedSetgid(workRoot);
-  shareRunnerPaths([workRoot], owners, { depth: 0 });
   shareRunnerPaths(
-    readdirSync(workRoot)
+    shareAndListRunnerWorkRoot(workRoot, owners)
       .filter((name) => name.startsWith(".paws") && !name.startsWith(".paws-skills-"))
       .map((name) => join(workRoot, name)),
     owners,
@@ -468,11 +492,27 @@ export function prepareRunnerWorkRoot(
 }
 
 function removeRunnerTree(path: string): void {
+  for (const _ of removeRunnerTreeSteps(path));
+}
+
+export function* removeRunnerTreeSteps(path: string): Generator<void, void> {
   const info = lstatSync(path);
-  if (!info.isDirectory()) return unlinkSync(path);
-  chmodSync(path, 0o700);
-  for (const name of readdirSync(path)) removeRunnerTree(join(path, name));
-  rmSync(path, { recursive: true });
+  if (!info.isDirectory()) {
+    unlinkSync(path);
+    yield;
+    return;
+  }
+  if (info.uid === process.getuid?.()) chmodSync(path, 0o700);
+  let names: string[];
+  try {
+    names = readdirSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EACCES") throw error;
+    names = [];
+  }
+  for (const name of names) yield* removeRunnerTreeSteps(join(path, name));
+  rmdirSync(path);
+  yield;
 }
 
 function shareRunnerPaths(

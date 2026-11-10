@@ -65,7 +65,7 @@ export function workspaceAdmission(db: Database, options: AdmissionOptions = {})
 export function workspaceDispatch(
   db: Database,
   options: Omit<Parameters<typeof dispatch>[1], "admission">,
-): string[] {
+): Promise<string[]> {
   return dispatch(db, { ...options, admission: workspaceAdmission(db) });
 }
 

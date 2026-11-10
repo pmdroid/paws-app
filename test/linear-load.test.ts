@@ -257,7 +257,7 @@ function seedRunner(db: Database, now: number) {
       }
     },
     free() {
-      db.run("UPDATE runner_work SET ended_at=1");
+      db.run("UPDATE runner_work SET ended_at=1,teardown_confirmed_at=1");
       db.run("UPDATE run SET status='ended' WHERE item_id LIKE 'other-%'");
       db.run("UPDATE work_item SET state='cancelled' WHERE id LIKE 'other-%'");
     },

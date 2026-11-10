@@ -7,6 +7,7 @@ import {
   insertQueuedItem,
   listJobs,
   recordPullComment,
+  sqliteDb,
 } from "../src/db";
 import {
   openFindingsSection,
@@ -37,11 +38,18 @@ function resumeJobs(db: ReturnType<typeof tempDb>, itemId: string) {
   );
 }
 
-test("own_turn starts exactly one suggestion restart from merge_queue, and none for a second head", () => {
+function startTurn(
+  db: ReturnType<typeof tempDb>,
+  input: Parameters<typeof startSuggestionTurn>[1],
+) {
+  return startSuggestionTurn(sqliteDb(db), input);
+}
+
+test("own_turn starts exactly one suggestion restart from merge_queue, and none for a second head", async () => {
   const db = mergeQueueItem("acme-1");
   try {
     expect(
-      startSuggestionTurn(db, { itemId: "acme-1", head: "a".repeat(40), suggestions: 1, now: 5 }),
+      await startTurn(db, { itemId: "acme-1", head: "a".repeat(40), suggestions: 1, now: 5 }),
     ).toBe("started");
     expect(getWorkItem(db, "acme-1")?.state).toBe("queued");
     expect(resumeJobs(db, "acme-1").map((job) => job.jobKey)).toEqual([
@@ -49,7 +57,7 @@ test("own_turn starts exactly one suggestion restart from merge_queue, and none 
     ]);
     db.run("UPDATE work_item SET state = 'merge_queue' WHERE id = 'acme-1'");
     expect(
-      startSuggestionTurn(db, { itemId: "acme-1", head: "b".repeat(40), suggestions: 2, now: 9 }),
+      await startTurn(db, { itemId: "acme-1", head: "b".repeat(40), suggestions: 2, now: 9 }),
     ).toBe("none");
     expect(getSuggestionTurn(db, "acme-1")).toMatchObject({
       outcome: "started",
@@ -60,11 +68,11 @@ test("own_turn starts exactly one suggestion restart from merge_queue, and none 
   }
 });
 
-test("own_turn starts nothing without suggestions or when another restart is already coming", () => {
+test("own_turn starts nothing without suggestions or when another restart is already coming", async () => {
   const db = mergeQueueItem("acme-2");
   try {
     expect(
-      startSuggestionTurn(db, { itemId: "acme-2", head: "a".repeat(40), suggestions: 0, now: 5 }),
+      await startTurn(db, { itemId: "acme-2", head: "a".repeat(40), suggestions: 0, now: 5 }),
     ).toBe("none");
     expect(getSuggestionTurn(db, "acme-2")).toBeNull();
     recordPullComment(db, {
@@ -80,7 +88,7 @@ test("own_turn starts nothing without suggestions or when another restart is alr
       receivedAt: 4,
     });
     expect(
-      startSuggestionTurn(db, { itemId: "acme-2", head: "a".repeat(40), suggestions: 1, now: 5 }),
+      await startTurn(db, { itemId: "acme-2", head: "a".repeat(40), suggestions: 1, now: 5 }),
     ).toBe("skipped");
     expect(getWorkItem(db, "acme-2")?.state).toBe("merge_queue");
     expect(resumeJobs(db, "acme-2")).toEqual([]);
@@ -89,11 +97,11 @@ test("own_turn starts nothing without suggestions or when another restart is alr
   }
 });
 
-test("own_turn skips the suggestion restart under 45 minutes of awake budget and records why", () => {
+test("own_turn skips the suggestion restart under 45 minutes of awake budget and records why", async () => {
   const db = mergeQueueItem("acme-3", 2 * HOUR - 44 * 60_000);
   try {
     expect(
-      startSuggestionTurn(db, { itemId: "acme-3", head: "a".repeat(40), suggestions: 1, now: 5 }),
+      await startTurn(db, { itemId: "acme-3", head: "a".repeat(40), suggestions: 1, now: 5 }),
     ).toBe("skipped");
     expect(getWorkItem(db, "acme-3")?.state).toBe("merge_queue");
     expect(getSuggestionTurn(db, "acme-3")).toMatchObject({
@@ -175,9 +183,9 @@ const META: OpenFinding = {
   explanation: "Rewrites the path.",
 };
 
-function handedItem(id: string) {
+async function handedItem(id: string) {
   const db = mergeQueueItem(id);
-  handSuggestions(db, id, [GRANT, META], 5);
+  await handSuggestions(sqliteDb(db), id, [GRANT, META], 5);
   const idAt = (location: string) =>
     suggestedFindings(db, id).find((record) => record.location === location)!.findingId;
   const grant = idAt(GRANT.location);
@@ -185,11 +193,11 @@ function handedItem(id: string) {
   return { db, grant, meta };
 }
 
-test("a fixed claim stays listed, pending verification, when the next review omits it", () => {
-  const { db, grant, meta } = handedItem("acme-4");
+test("a fixed claim stays listed, pending verification, when the next review omits it", async () => {
+  const { db, grant, meta } = await handedItem("acme-4");
   try {
-    recordAgentFindingDecisions(
-      db,
+    await recordAgentFindingDecisions(
+      sqliteDb(db),
       "acme-4",
       `Finding decisions\n${grant} declined: needs a schema change\n${meta} fixed: kept the location`,
       "c".repeat(40),
@@ -220,15 +228,21 @@ test("a fixed claim stays listed, pending verification, when the next review omi
   }
 });
 
-test("a fixed claim without a commit Paws confirmed, or in prose only, records nothing", () => {
-  const { db, grant, meta } = handedItem("acme-5");
+test("a fixed claim without a commit Paws confirmed, or in prose only, records nothing", async () => {
+  const { db, grant, meta } = await handedItem("acme-5");
   try {
     expect(
-      recordAgentFindingDecisions(db, "acme-5", `${grant} fixed: kept the resource`, null, 9),
+      await recordAgentFindingDecisions(
+        sqliteDb(db),
+        "acme-5",
+        `${grant} fixed: kept the resource`,
+        null,
+        9,
+      ),
     ).toBe(0);
     expect(
-      recordAgentFindingDecisions(
-        db,
+      await recordAgentFindingDecisions(
+        sqliteDb(db),
         "acme-5",
         `I fixed ${meta} and ${grant}, both are fine now.`,
         "c".repeat(40),
@@ -252,11 +266,11 @@ test("quoted or unsectioned decision lines record nothing", () => {
   ).toBe(0);
 });
 
-test("a decision belongs to its finding id, not to another finding at the same location", () => {
-  const { db, grant } = handedItem("acme-6");
+test("a decision belongs to its finding id, not to another finding at the same location", async () => {
+  const { db, grant } = await handedItem("acme-6");
   try {
-    recordAgentFindingDecisions(
-      db,
+    await recordAgentFindingDecisions(
+      sqliteDb(db),
       "acme-6",
       `Finding decisions\n${grant} declined: needs a schema change`,
       null,
@@ -275,11 +289,11 @@ test("a decision belongs to its finding id, not to another finding at the same l
   }
 });
 
-test("a declined finding keeps its line and reason when the next review omits it", () => {
-  const { db, grant } = handedItem("acme-7");
+test("a declined finding keeps its line and reason when the next review omits it", async () => {
+  const { db, grant } = await handedItem("acme-7");
   try {
-    recordAgentFindingDecisions(
-      db,
+    await recordAgentFindingDecisions(
+      sqliteDb(db),
       "acme-7",
       `Finding decisions\n${grant} declined: needs a schema change`,
       null,

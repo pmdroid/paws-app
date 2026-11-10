@@ -614,7 +614,14 @@ export async function probeRunnerBackend(
     await git(["-C", source, "reset", "--hard", base]);
     const fetchedBefore = fetched;
     const stopped = item();
-    const early = backend.forItem(stopped.id)(input(stopped));
+    const runnerAt = (version: string) =>
+      db.run(
+        "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
+        [runnerId, version, Date.now()],
+      );
+    runnerAt("0.1.75");
+    const stoppedAgent = backend.forItem(stopped.id);
+    const early = stoppedAgent(input(stopped));
     const earlyCommand = await next();
     if (earlyCommand.type !== "run") throw new Error("Expected an implementation run");
     const earlyToken = work.issueGrant({
@@ -623,6 +630,16 @@ export async function probeRunnerBackend(
       commandId: earlyCommand.id,
       generation: earlyCommand.generation,
     });
+    // The worker publishes its stop checkpoint before reporting the interrupted turn.
+    await git(["-C", source, "reset", "--hard", head]);
+    work.event({
+      runnerId,
+      runId: earlyCommand.runId,
+      generation: earlyCommand.generation,
+      token: earlyToken.token,
+      sequence: 1,
+      event: { type: "checkpoint", reason: "stop", sha: head },
+    });
     results.submit({
       runnerId,
       runId: earlyCommand.runId,
@@ -630,19 +647,125 @@ export async function probeRunnerBackend(
       token: earlyToken.token,
       result: {
         ...result(earlyCommand),
-        stopReason: "error",
-        errorMessage: "The agent stopped early",
-        candidateSha: head,
+        stopReason: "cancelled",
+        cancelled: true,
+        interrupted: true,
       },
     });
-    assert.equal((await early).stopReason, "error");
+    let resumed = await next();
+    if (resumed.type === "cancel") resumed = await next();
+    if (resumed.type !== "run") throw new Error("Expected one restarted implementation");
+    assert.equal(getWorkItem(db, stopped.id)?.state, "running");
+    assert.equal(getWorkItem(db, stopped.id)?.checkpoint?.wipCommit, head);
+    assert.equal(resumed.repository.baseSha, head);
+    const resumedToken = work.issueGrant({
+      runnerId,
+      runId: resumed.runId,
+      commandId: resumed.id,
+      generation: resumed.generation,
+    });
+    work.event({
+      runnerId,
+      runId: resumed.runId,
+      generation: resumed.generation,
+      token: resumedToken.token,
+      sequence: 1,
+      event: { type: "checkpoint", reason: "stop" },
+    });
+    results.submit({
+      runnerId,
+      runId: resumed.runId,
+      generation: resumed.generation,
+      token: resumedToken.token,
+      result: { ...result(resumed), stopReason: "cancelled", cancelled: true, interrupted: true },
+    });
+    assert.equal((await early).stopReason, "cancelled");
     assert.equal(getWorkItem(db, stopped.id)?.checkpoint?.wipCommit, head);
     assert.equal(await git(["-C", source, "rev-parse", "HEAD"]), head);
-    assert.equal(fetched, fetchedBefore + 1);
+    assert.equal(fetched, fetchedBefore);
     fetched = fetchedBefore;
-    observe("an early-stopped remote run keeps its work for the next run of the item", true, {
+    // The limit is per agent turn: the next turn, even through the same closure, gets its own.
+    const interrupt = (command: Extract<Awaited<ReturnType<typeof next>>, { type: "run" }>) => {
+      const token = work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      }).token;
+      const sent = { runnerId, runId: command.runId, generation: command.generation, token };
+      work.event({ ...sent, sequence: 1, event: { type: "checkpoint", reason: "stop" } });
+      results.submit({
+        ...sent,
+        result: { ...result(command), stopReason: "cancelled", cancelled: true, interrupted: true },
+      });
+    };
+    const runCommand = async () => {
+      let command = await next();
+      if (command.type === "cancel") command = await next();
+      if (command.type !== "run") throw new Error("Expected a run command");
+      return command;
+    };
+    const laterTurn = stoppedAgent(input(stopped));
+    interrupt(await runCommand());
+    interrupt(await runCommand());
+    assert.equal((await laterTurn).stopReason, "cancelled");
+    observe("an unsolicited interruption saves WIP and restarts only once", true, {
       wipCommit: head,
     });
+    // A refused push still delivers the worker's interruption result, but cannot restart
+    // from the previously recorded checkpoint. A failed save, missing stop evidence and a
+    // runner too old to tell a failed save from nothing to save fail closed too.
+    for (const publication of ["refused", "failed", "missing", "older"] as const) {
+      if (publication === "older") runnerAt("0.1.74");
+      const record = item();
+      const publicationRun = backend.forItem(record.id)(input(record));
+      const command = await next();
+      if (command.type !== "run") throw new Error("Expected implementation");
+      const previousWip = getWorkItem(db, record.id)?.checkpoint?.wipCommit;
+      const publicationGrant = work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      });
+      if (publication === "refused")
+        work.event({
+          runnerId,
+          runId: command.runId,
+          generation: command.generation,
+          token: publicationGrant.token,
+          sequence: 1,
+          event: { type: "checkpoint", reason: "stop", sha: head, dropped: "Git push refused" },
+        });
+      if (publication === "failed" || publication === "older")
+        work.event({
+          runnerId,
+          runId: command.runId,
+          generation: command.generation,
+          token: publicationGrant.token,
+          sequence: 1,
+          event: {
+            type: "checkpoint",
+            reason: "stop",
+            ...(publication === "failed" ? { dropped: "The runner could not save" } : {}),
+          },
+        });
+      results.submit({
+        runnerId,
+        runId: command.runId,
+        generation: command.generation,
+        token: publicationGrant.token,
+        result: { ...result(command), stopReason: "cancelled", cancelled: true, interrupted: true },
+      });
+      assert.equal((await publicationRun).stopReason, "cancelled");
+      assert.equal(getWorkItem(db, record.id)?.checkpoint?.wipCommit, previousWip);
+    }
+    db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
+    observe(
+      "a refused, failed or missing stop checkpoint, or an older runner, prevents interruption retry",
+      true,
+      {},
+    );
     const stoppedWith = async (errorMessage: string, sessionId: string) => {
       const record = item();
       const run = backend.forItem(record.id)(input(record));

@@ -72,42 +72,46 @@ function fixture() {
   return { db, second, stuck };
 }
 
-test("work running without a runner placement leaves its slot free for the next task", () => {
+test("work running without a runner placement leaves its slot free for the next task", async () => {
   const { db, second } = fixture();
   try {
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["next-1", "next-2", "next-3"]);
-    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
-    db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [NOW + 2, second]);
-    db.run("UPDATE run SET status='ended' WHERE id=?", [second]);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["next-4"]);
-  } finally {
-    db.close();
-  }
-});
-
-test("a task between its run and Closeout keeps its runner slot until the run ends", () => {
-  const { db, second } = fixture();
-  try {
-    expect(workspaceDispatch(db, { now: NOW })).toHaveLength(3);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["next-1", "next-2", "next-3"]);
+    expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
     db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
       NOW + 2,
       NOW + 2,
       second,
     ]);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
-    expect(runnerSlotFree(db, ["goldbox"], NOW + 2)).toBe(false);
     db.run("UPDATE run SET status='ended' WHERE id=?", [second]);
-    expect(runnerSlotFree(db, ["goldbox"], NOW + 3)).toBe(true);
-    expect(workspaceDispatch(db, { now: NOW + 3 })).toEqual(["next-4"]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["next-4"]);
   } finally {
     db.close();
   }
 });
 
-test("a task waiting for CI between its run and Closeout frees its runner slot", () => {
+test("a task between its run and Closeout keeps its runner slot until the run ends", async () => {
   const { db, second } = fixture();
   try {
-    expect(workspaceDispatch(db, { now: NOW })).toHaveLength(3);
+    expect(await workspaceDispatch(db, { now: NOW })).toHaveLength(3);
+    db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
+      NOW + 2,
+      NOW + 2,
+      second,
+    ]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
+    expect(runnerSlotFree(db, ["goldbox"], NOW + 2)).toBe(false);
+    db.run("UPDATE run SET status='ended' WHERE id=?", [second]);
+    expect(runnerSlotFree(db, ["goldbox"], NOW + 3)).toBe(true);
+    expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual(["next-4"]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a task waiting for CI between its run and Closeout frees its runner slot", async () => {
+  const { db, second } = fixture();
+  try {
+    expect(await workspaceDispatch(db, { now: NOW })).toHaveLength(3);
     db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
       NOW + 2,
       NOW + 2,
@@ -124,7 +128,7 @@ test("a task waiting for CI between its run and Closeout frees its runner slot",
       [NOW + 60_000, recheck],
     );
     expect(runnerSlotFree(db, ["goldbox"], NOW + 2)).toBe(true);
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual(["next-4"]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["next-4"]);
     db.run("UPDATE job SET payload=json_remove(payload,'$.awakeWait') WHERE id=?", [recheck]);
     expect(runnerSlotFree(db, ["goldbox"], NOW + 3)).toBe(false);
   } finally {
@@ -132,23 +136,23 @@ test("a task waiting for CI between its run and Closeout frees its runner slot",
   }
 });
 
-test("a placement in progress holds a slot until its run reaches a runner", () => {
+test("a placement in progress holds a slot until its run reaches a runner", async () => {
   const { db, stuck } = fixture();
   try {
     db.run("UPDATE job SET status='running',locked_by='worker',locked_until=? WHERE id=?", [
       NOW + 60_000,
       stuck[0]!,
     ]);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["next-1", "next-2"]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["next-1", "next-2"]);
   } finally {
     db.close();
   }
 });
 
-test("the queue line reports the slots the scheduler counts as busy", () => {
+test("the queue line reports the slots the scheduler counts as busy", async () => {
   const { db } = fixture();
   try {
-    const admitted = workspaceDispatch(db, { now: NOW });
+    const admitted = await workspaceDispatch(db, { now: NOW });
     const position = settled(getQueuePosition(sqliteDb(db), "next-4"));
     expect(position).toMatchObject({ busySlots: 2 + admitted.length, totalSlots: 5 });
     expect(queueLine(position!)).toBe("Queued, 1st in line. 5 of 5 runner slots are busy.");
@@ -157,7 +161,7 @@ test("the queue line reports the slots the scheduler counts as busy", () => {
   }
 });
 
-test("twelve items ready at once on ten slots start ten and leave two queued", () => {
+test("twelve items ready at once on ten slots start ten and leave two queued", async () => {
   const db = tempDb();
   try {
     const userId = putWorkspaceUser(db, {
@@ -187,10 +191,10 @@ test("twelve items ready at once on ten slots start ten and leave two queued", (
     }
     const ids = Array.from({ length: 12 }, (_, index) => `burst-${index + 10}`);
     ids.forEach((id, index) => insertQueuedItem(db, { id, now: index + 1 }));
-    const admitted = workspaceDispatch(db, { now: NOW });
+    const admitted = await workspaceDispatch(db, { now: NOW });
     expect(admitted).toEqual(ids.slice(0, 10));
     // A second pass before anything is placed finds no slot either.
-    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
     const states = db.query<{ state: string }, []>("SELECT state FROM work_item").all();
     expect(states.every(({ state }) => state === "queued")).toBe(true);
   } finally {

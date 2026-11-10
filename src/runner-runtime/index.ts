@@ -239,6 +239,7 @@ export async function openRunnerRuntime(options: {
   skills?: RunnerSkillInstaller;
   /** Reports the coding agent versions and forwards the ones Paws asks for to the installer. */
   agents?: RunnerAgents;
+  onFinishedRuns?: (runIds: readonly string[]) => void;
   networkGit?: Parameters<typeof createRunnerRepositories>[0]["networkGit"];
   now?: () => number;
   monotonic?: () => number;
@@ -1165,6 +1166,7 @@ export async function openRunnerRuntime(options: {
         );
         if (closed) return;
         for (const entry of response.terminated ?? []) journal.terminationReported(entry);
+        if (response.finishedRuns) options.onFinishedRuns?.(response.finishedRuns);
         if (response.agents && options.agents)
           try {
             options.agents.apply(response.agents);
@@ -2138,6 +2140,9 @@ export async function openRunnerRuntime(options: {
       .then(sweep)
       .catch(journalRejection("runner-runtime.recover.sweep", report, null));
   else await sweep();
+  const unconfirmed = new Set(
+    historical.flatMap((execution) => [execution.id, execution.command.runId]),
+  );
   const reconciling = (async () => {
     for (const execution of historical) {
       if (closed) return;
@@ -2148,6 +2153,8 @@ export async function openRunnerRuntime(options: {
         return;
       }
       journal.confirmTermination(execution.command);
+      unconfirmed.delete(execution.id);
+      unconfirmed.delete(execution.command.runId);
     }
   })();
   const heartbeat = setInterval(() => {
@@ -2175,6 +2182,10 @@ export async function openRunnerRuntime(options: {
     }
   }, 250);
   return {
+    holds: () => [
+      ...unconfirmed,
+      ...[...active.values()].flatMap(({ execution }) => [execution.id, execution.command.runId]),
+    ],
     status: () => {
       const entry = active.values().next().value;
       return {

@@ -23,6 +23,7 @@ import {
   runnerCheckpointPending,
   runnerCommandAcknowledgedBy,
   runnerCommandEnvelope,
+  runnerFinishedRuns,
   runnerHostVersion,
   runnerResultForCommand,
   runnerWorkAssignment,
@@ -38,6 +39,8 @@ import {
   recordRunnerAccountCapability,
   recordRunAgentSetup,
   recordRunnerCapacity,
+  runnerStanding,
+  wakeRunnerSlotWaits,
   recordRunnerAgents,
   recordRunnerRepositories,
   recordRunnerRuntimes,
@@ -73,6 +76,9 @@ import {
   RUNNER_LEASE_MS,
   RUNNER_OFFLINE_BUDGET_MS,
   OPENCODE_RUNNER_VERSION,
+  CONTROL_PLANE_LEVEL_RUNNER_VERSION,
+  CONTROL_PLANE_PROTOCOL_LEVEL,
+  WORK_ROOT_CLEANUP_RUNNER_VERSION,
   RunnerCommandSchema,
   runnerReleaseAtLeast,
   RunnerEventSchema,
@@ -625,14 +631,23 @@ export function createRunnerWork(options: {
       return immediate(db, () => {
         runner(runnerId);
         const storedVersion = runnerHostVersion(db, runnerId);
+        const version = host.runnerVersion ?? storedVersion;
         const aliveAt = lastInstanceHeartbeat(db);
         const offlineCredit =
           aliveAt !== null &&
           runnerReleaseAtLeast(host.runnerVersion ?? storedVersion, OFFLINE_LEASE_RUNNER_VERSION)
             ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt }
             : undefined;
-        const concurrency = recordRunnerCapacity(db, runnerId, capacity, ceiling, conversations);
         const at = now();
+        const reconnected = (runnerStanding(db, runnerId)?.lastSeenAt ?? 0) <= at - 60_000;
+        const concurrency = recordRunnerCapacity(
+          db,
+          runnerId,
+          capacity,
+          ceiling,
+          conversations,
+          at,
+        );
         noteRunnerSeen(db, runnerId, at);
         if (Object.values(host).some((value) => value !== undefined))
           recordRunnerHostStatus(db, runnerId, host, at);
@@ -642,6 +657,7 @@ export function createRunnerWork(options: {
         if (agents) recordRunnerAgents(db, runnerId, agents, at);
         if (repositories !== undefined) recordRunnerRepositories(db, runnerId, repositories, at);
         recordRunnerAccountCapability(db, runnerId, accounts, at);
+        if (reconnected) wakeRunnerSlotWaits(db, runnerId, at);
         const targets: RunnerAgentTarget[] | undefined =
           agents &&
           runnerAgentTargets(db, runnerId).flatMap((target) => {
@@ -702,15 +718,26 @@ export function createRunnerWork(options: {
           for (const { runId, generation } of reported)
             confirmRunnerWork(db, { runId, generation, at, runnerId });
         }
+        const finishedRuns = runnerReleaseAtLeast(
+          host.runnerVersion ?? storedVersion,
+          WORK_ROOT_CLEANUP_RUNNER_VERSION,
+        )
+          ? runnerFinishedRuns(db, runnerId)
+          : [];
         return {
           leases,
           fenced,
+          ...(finishedRuns.length ? { finishedRuns } : {}),
           ...(liveAfter === undefined ? {} : { observedAt: at }),
           ...(terminated === undefined ? {} : { terminated: [...terminated] }),
           ...(offlineCredit === undefined ? {} : offlineCredit),
           ...(concurrency === undefined ? {} : { concurrency }),
           ...(skills === undefined ? {} : { skills }),
           ...(targets === undefined ? {} : { agents: targets }),
+          // Older runners parse this reply strictly, so only a known older release goes without.
+          ...(!version || runnerReleaseAtLeast(version, CONTROL_PLANE_LEVEL_RUNNER_VERSION)
+            ? { protocolLevel: CONTROL_PLANE_PROTOCOL_LEVEL }
+            : {}),
         };
       });
     },

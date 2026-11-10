@@ -4,6 +4,7 @@ import {
   accountSlotsInUse,
   bindingAccountHealth,
   runnerHasCapacity,
+  RUNNER_FULL,
   type AccountHealth,
 } from "../db";
 import type { RunnerHelperResult, RunnerResult } from "../runner-protocol";
@@ -167,7 +168,7 @@ export const BINDING_REASON_TEXT: Record<BindingUnavailableReason, string> = {
   disabled: "agent account disabled",
   offline: "runner offline",
   paused: "runner paused",
-  busy: "no free capacity",
+  busy: RUNNER_FULL,
   "auth-required": "agent account sign-in needs repair",
   exhausted: "agent account quota cooldown",
   "provider-restricted": "agent provider restricted",

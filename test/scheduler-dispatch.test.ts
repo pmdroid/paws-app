@@ -9,7 +9,7 @@ function sameDelegation(db: ReturnType<typeof tempDb>, ids: readonly string[]): 
   for (const id of ids) db.run("UPDATE work_item SET delegation_id='shared' WHERE id=?", [id]);
 }
 
-test("dispatch asks readiness itself instead of trusting a handed-in ready list", () => {
+test("dispatch asks readiness itself instead of trusting a handed-in ready list", async () => {
   const db = tempDb();
   try {
     insertQueuedItem(db, { id: "blocker", now: 1 });
@@ -18,25 +18,25 @@ test("dispatch asks readiness itself instead of trusting a handed-in ready list"
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('lin-item-blocker','lin-item-blocked')",
     );
-    expect(workspaceDispatch(db, { now: 1000 })).toEqual(["blocker"]);
+    expect(await workspaceDispatch(db, { now: 1000 })).toEqual(["blocker"]);
     confirmFakeMerge(db, "blocker");
     db.run("UPDATE work_item SET state='merged' WHERE id='blocker'");
-    expect(workspaceDispatch(db, { now: 1001 })).toEqual(["blocked"]);
+    expect(await workspaceDispatch(db, { now: 1001 })).toEqual(["blocked"]);
   } finally {
     db.close();
   }
 });
 
-test("dispatch admits ready Items while another one is in flight", () => {
+test("dispatch admits ready Items while another one is in flight", async () => {
   const db = tempDb();
   try {
     insertQueuedItem(db, { id: "first", now: 1 });
-    expect(workspaceDispatch(db, { now: 1000 })).toEqual(["first"]);
+    expect(await workspaceDispatch(db, { now: 1000 })).toEqual(["first"]);
     db.run("UPDATE work_item SET state='running' WHERE id='first'");
     db.run("UPDATE job SET status='done' WHERE json_extract(payload,'$.itemId')='first'");
     insertQueuedItem(db, { id: "second", now: 2 });
     insertQueuedItem(db, { id: "third", now: 3 });
-    expect(workspaceDispatch(db, { now: 1001 })).toEqual(["second", "third"]);
+    expect(await workspaceDispatch(db, { now: 1001 })).toEqual(["second", "third"]);
   } finally {
     db.close();
   }
@@ -54,7 +54,7 @@ test("dispatch runs only after the transition's transaction has committed", () =
   }
 });
 
-test("dispatch yields an idle merge session to a ready sibling", () => {
+test("dispatch yields an idle merge session to a ready sibling", async () => {
   const db = tempDb();
   try {
     insertQueuedItem(db, { id: "merging", now: 1, sessionKey: "session" });
@@ -63,7 +63,7 @@ test("dispatch yields an idle merge session to a ready sibling", () => {
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='merging'");
     ensureLinearSession(db, { sessionId: "session", issueId: "lin-item-merging", now: 1 });
     db.run("UPDATE linear_session SET active_item_id='merging' WHERE session_id='session'");
-    workspaceDispatch(db, { now: 1000 });
+    await workspaceDispatch(db, { now: 1000 });
     expect(
       db
         .query<{ active: string | null }, []>(
@@ -76,7 +76,7 @@ test("dispatch yields an idle merge session to a ready sibling", () => {
   }
 });
 
-test("dispatch reports the ready items it left waiting", () => {
+test("dispatch reports the ready items it left waiting", async () => {
   const db = tempDb();
   try {
     insertQueuedItem(db, { id: "first", now: 1 });
@@ -87,7 +87,7 @@ test("dispatch reports the ready items it left waiting", () => {
       ownerCap: 1,
       onWaiting: (ids) => waiting.push(...ids),
     };
-    expect(workspaceDispatch(db, options)).toEqual(["first"]);
+    expect(await workspaceDispatch(db, options)).toEqual(["first"]);
     expect(waiting).toEqual(["second"]);
   } finally {
     db.close();

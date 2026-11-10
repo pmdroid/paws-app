@@ -89,7 +89,7 @@ describe("restart and ask", () => {
 
   test.each(["findings", "ci", "review", "conflict", "follow_up", "answer"] as const)(
     "%s restarts preserve the run and session and dispatch their original handoff",
-    (reason) => {
+    async (reason) => {
       const { db, item } = fixture();
       const prior = enqueueJob(db, {
         queue: JOB_KIND.reverify,
@@ -112,7 +112,7 @@ describe("restart and ask", () => {
       const event = listWorkItemEventRows(db, item.id).at(-1)!;
       expect(event).toMatchObject({ kind: "restart", reason, version: queued.version });
       expect(event.payloadDigest).toMatch(/^[a-f0-9]{64}$/);
-      expect(workspaceDispatch(db, { now: 3 })).toEqual([item.id]);
+      expect(await workspaceDispatch(db, { now: 3 })).toEqual([item.id]);
       expect(claimNextJob(db, { now: 3 })?.id).toBe(jobId!);
       expect(getJob(db, jobId!)?.payload).toMatchObject({
         handoff: "Keep the branch and fix this.",

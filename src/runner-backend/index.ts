@@ -18,6 +18,10 @@ import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
+  unansweredRunnerQuestions,
+  setRunnerWorkConsumedSequence,
+  askedQuestionRow,
+  questionRowById,
   workspaceMemberUsableSql,
   getTaskMode,
   closeFallbackAttempts,
@@ -26,18 +30,17 @@ import {
   legacyAgentBindingId,
   getWorkItem,
   immediate,
-  inMergeQueue,
   listHooks,
   startAgentWait,
   endAgentWait,
   pinnedSlotsReserved,
   releasePinnedSlot,
-  restartedFromMergeQueue,
   recordFallbackAttempt,
   runnerHasCapacity,
   runnerSlotsHeldBetweenCommands,
   saveCheckpoint,
   runnerLeaseCutoff,
+  runnerEventsAfter,
   clearRunnerSessionMove,
   noteRunnerSessionMove,
   recordItemCandidate,
@@ -81,6 +84,7 @@ import {
   CLOSEOUT_FOCUS_RUNNER_VERSION,
   PULL_REQUEST_DRAFT_RUNNER_VERSION,
   QUESTION_ENDS_TURN_RUNNER_VERSION,
+  INTERRUPT_RECOVERY_RUNNER_VERSION,
   CI_RERUN_RUNNER_VERSION,
   SUGGESTED_FINDINGS_RUNNER_VERSION,
   REVIEW_FINDINGS_RUNNER_VERSION,
@@ -94,7 +98,6 @@ import {
   redactGitHubTokens,
   SESSION_RESUME_RUNNER_VERSION,
   HIDDEN_CHECKPOINT_RUNNER_VERSION,
-  type RunnerCodingAgent,
   type RunnerCommand,
   type RunnerResult,
   type RunnerVersion,
@@ -144,8 +147,9 @@ import {
   type WorkspaceHook,
 } from "../core";
 import {
+  sessionHolder,
+  runRunner,
   PlacementRaceError,
-  quotaSignal,
   RUNNER_ONLINE_MS,
   SESSION_GRACE_MS,
   type PlacementAccount,
@@ -177,15 +181,6 @@ const RUN_HUNG_THOUGHT = (minutes: number) =>
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
 const NO_FREE_CAPACITY = ": no free capacity";
 const ACCOUNT_CONCURRENCY_LIMIT = ": account at its concurrency limit";
-type SessionHolder = {
-  runnerId: string;
-  agent: string;
-  sessionId: string;
-  bindingId: string;
-  runId: string;
-  model: string | null;
-  account?: { accountId: string; bindingId: string };
-};
 
 function earlierSession(
   db: Database,
@@ -200,61 +195,6 @@ function earlierSession(
     (bindingId === undefined || holder.bindingId === bindingId)
     ? holder.sessionId
     : undefined;
-}
-
-/** The runner and agent that hold the item's last resumable agent session. */
-function sessionHolder(db: Database, itemId: string): SessionHolder | undefined {
-  const rows = db
-    .query<{ envelope: string; payload: string; receivedAt: number }, [string]>(
-      `SELECT c.envelope, rr.payload, rr.received_at AS receivedAt FROM runner_result rr
-       JOIN runner_command c ON c.id=rr.command_id
-       JOIN run ON run.id=rr.run_id
-       WHERE run.item_id=? AND c.kind='run'
-       ORDER BY rr.received_at DESC, rr.generation DESC`,
-    )
-    .all(itemId);
-  for (const row of rows) {
-    const command = JSON.parse(
-      Buffer.from((JSON.parse(row.envelope) as { payload: string }).payload, "base64url").toString(
-        "utf8",
-      ),
-    ) as {
-      runnerId?: string;
-      runId?: string;
-      checkpoint?: boolean;
-      profile?: { agent?: string; model?: string | null };
-      account?: { accountId: string; bindingId: string };
-    };
-    if (command.checkpoint === false) continue;
-    const result = JSON.parse(row.payload) as {
-      stopReason?: string;
-      sessionId?: string;
-      errorMessage?: string;
-    };
-    // An errored session may hold the prompt that failed; a usage-limit stop does not.
-    const resumable =
-      result.stopReason !== "error" ||
-      (result.errorMessage !== undefined &&
-        quotaSignal(result.errorMessage, row.receivedAt)?.state === "exhausted");
-    return command.runnerId &&
-      command.runId &&
-      command.profile?.agent &&
-      resumable &&
-      result.sessionId
-      ? {
-          runnerId: command.runnerId,
-          agent: command.profile.agent,
-          sessionId: result.sessionId,
-          bindingId:
-            command.account?.bindingId ??
-            legacyAgentBindingId(command.runnerId, command.profile.agent as RunnerCodingAgent),
-          runId: command.runId,
-          model: command.profile.model ?? null,
-          ...(command.account ? { account: command.account } : {}),
-        }
-      : undefined;
-  }
-  return undefined;
 }
 
 function reviewContext(
@@ -300,44 +240,6 @@ function failedBinding(
   result: { authRequired?: boolean },
 ): string | undefined {
   return account?.named && result.authRequired ? account.bindingId : undefined;
-}
-
-/**
- * Where a command for the run goes. A turn that continues the agent session is pinned to the
- * run's runner. Merge-queue work that continues no session, such as a re-verify's checks and
- * review, is not pinned: it prefers the run's runner and takes any eligible one. So when such
- * work last ran on another runner, the merge-queue item's next turn is pinned to the runner
- * holding its session. A run that moved because its runner went away keeps its new runner.
- */
-function runRunner(
-  db: Database,
-  input: { itemId: string; runId: string; continuesSession: boolean; sessionRunnerId?: string },
-): { pinnedRunnerId?: string; preferRunnerId?: string } {
-  const row = db
-    .query<{ runnerId: string; kind: string | null; envelope: string | null }, [string]>(
-      `SELECT w.runner_id AS runnerId, c.kind, c.envelope FROM runner_work w
-       LEFT JOIN runner_command c ON c.id=w.command_id WHERE w.run_id=?`,
-    )
-    .get(input.runId);
-  if (!row) return {};
-  const merging = inMergeQueue(db, input.itemId);
-  if (!input.continuesSession && merging) return { preferRunnerId: row.runnerId };
-  const backToSession =
-    input.continuesSession &&
-    input.sessionRunnerId !== undefined &&
-    (merging || restartedFromMergeQueue(db, input.itemId)) &&
-    (row.kind === "review" ||
-      (row.kind === "run" &&
-        row.envelope !== null &&
-        (
-          JSON.parse(
-            Buffer.from(
-              (JSON.parse(row.envelope) as { payload: string }).payload,
-              "base64url",
-            ).toString("utf8"),
-          ) as { checkpoint?: boolean }
-        ).checkpoint === false));
-  return { pinnedRunnerId: backToSession ? input.sessionRunnerId : row.runnerId };
 }
 
 function snapshotCommit(workspace: string, repository: { owner: string; repo: string }) {
@@ -888,6 +790,7 @@ export function createRemoteAgentRunner(options: {
         excluded: readonly string[],
         limit: UsageLimit | undefined,
         move: HandoverMove,
+        interruption: { retried: boolean },
       ): Promise<RunAgentResult> => {
         const clock = startPhaseClock({ ids: { item: itemId, run: input.runId }, now });
         input.signal?.throwIfAborted();
@@ -1027,6 +930,8 @@ export function createRemoteAgentRunner(options: {
         const signal = controller.signal;
         let command: WorkCommand | undefined;
         let question: Promise<void> | undefined;
+        let questionText: string | undefined;
+        let questionAnswer: string | undefined;
         let questionError: unknown;
         let publishedEffects = false;
         let asked = false;
@@ -2270,25 +2175,75 @@ export function createRemoteAgentRunner(options: {
                   },
                   origin,
                 );
-              if (event.type === "question") {
-                if (question) throw new Error("Remote runner sent overlapping questions");
+              if (
+                event.type === "question" &&
+                results.answered(assigned.runId, assigned.generation, row.sequence) === null
+              ) {
+                if (question) {
+                  if (questionText !== event.text)
+                    throw new Error("Remote runner sent overlapping questions");
+                  if (questionAnswer !== undefined)
+                    results.answer({
+                      runId: assigned.runId,
+                      generation: assigned.generation,
+                      sequence: row.sequence,
+                      answer: questionAnswer,
+                    });
+                  cursor = row.sequence;
+                  setRunnerWorkConsumedSequence(db, assigned.runId, assigned.generation, cursor);
+                  continue;
+                }
+                const stored = askedQuestionRow(db, selected.runId, "agent");
+                if (stored && stored.body !== event.text)
+                  throw new Error("Remote runner sent overlapping questions");
                 if (!input.askTeam) throw new Error("Remote question channel is unavailable");
                 publishedEffects = true;
                 asked = true;
                 await emit({ type: "ask_team", question: event.text, phase: "asked" });
                 const currentCommand = assigned;
+                questionText = event.text;
+                questionAnswer = undefined;
                 question = (async () => {
-                  const answer = await input.askTeam!.ask(
-                    { question: event.text, options: event.options, context: event.context },
-                    { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
-                  );
+                  const answer = stored
+                    ? await (async () => {
+                        for (;;) {
+                          signal.throwIfAborted();
+                          if (
+                            !ownsAskedQuestion(db, stored.itemId, selected.runId, stored.sessionId)
+                          )
+                            throw new Error("Question owner is stale");
+                          const current = questionRowById(db, stored.id);
+                          if (
+                            !current ||
+                            current.status === "cancelled" ||
+                            current.cancelledAt !== null
+                          )
+                            throw new Error("Remote runner question was cancelled");
+                          if (current.status === "answered" && current.answer !== null)
+                            return { answer: current.answer };
+                          await delay(interval, undefined, { signal });
+                        }
+                      })()
+                    : await input.askTeam!.ask(
+                        { question: event.text, options: event.options, context: event.context },
+                        { itemId: input.itemId, runId: selected.runId, role: input.role, signal },
+                      );
                   signal.throwIfAborted();
-                  results.answer({
-                    runId: currentCommand.runId,
-                    generation: currentCommand.generation,
-                    sequence: row.sequence,
-                    answer: answer.answer,
-                  });
+                  questionAnswer = answer.answer;
+                  // Replays have distinct journal sequences. Answer every outstanding copy,
+                  // including copies consumed by an attachment before this one.
+                  for (const pending of unansweredRunnerQuestions(db, currentCommand, [
+                    "question",
+                  ])) {
+                    const replay = scrub(work.openEvent(pending));
+                    if (replay.type !== "question" || replay.text !== event.text) continue;
+                    results.answer({
+                      runId: currentCommand.runId,
+                      generation: currentCommand.generation,
+                      sequence: pending.sequence,
+                      answer: answer.answer,
+                    });
+                  }
                   await emit({
                     type: "ask_team",
                     question: event.text,
@@ -2532,6 +2487,56 @@ export function createRemoteAgentRunner(options: {
               true,
             );
           }
+          // A bundle on the worker is insufficient: its push can be refused. Require the
+          // final stop checkpoint delivered for this generation before consuming the retry.
+          const stopCheckpoint = complete.interrupted
+            ? runnerEventsAfter(db, {
+                runId: assigned.runId,
+                generation: assigned.generation,
+                after: 0,
+                types: ["checkpoint"],
+              })
+                .map((row) => work.openEvent(row))
+                .filter((event) => event.type === "checkpoint" && event.reason === "stop")
+                .at(-1)
+            : undefined;
+          // From this release a stop with no sha means the worktree equals the base, so restarting
+          // from the base loses nothing; a failed or unprovable save sets `dropped`. Before it, a
+          // failed save looked the same.
+          const interruptionSaved =
+            versionAtLeast(hostVersion(selected.id), INTERRUPT_RECOVERY_RUNNER_VERSION) &&
+            stopCheckpoint?.type === "checkpoint" &&
+            stopCheckpoint.dropped === undefined &&
+            (!stopCheckpoint.sha ||
+              getWorkItem(db, itemId)?.checkpoint?.wipCommit === stopCheckpoint.sha);
+          if (
+            assigned.type === "run" &&
+            complete.interrupted &&
+            interruptionSaved &&
+            complete.stopReason === "cancelled" &&
+            complete.agentExited &&
+            !complete.handedOver &&
+            !complete.handoverFailure &&
+            !complete.timedOut &&
+            !interruption.retried &&
+            !signal.aborted &&
+            getWorkItem(db, itemId)?.state === "running"
+          ) {
+            interruption.retried = true;
+            journal(
+              `item ${itemId} run ${assigned.runId} interrupt source=unsolicited_agent; restarting once from stop checkpoint`,
+            );
+            work.finish(assigned.runId, assigned.generation);
+            command = undefined;
+            throw new RetryableRunnerError(
+              selected.id,
+              "The agent was interrupted unexpectedly; continue from the saved work.",
+              transcript,
+              publishedEffects,
+              undefined,
+              true,
+            );
+          }
           if (complete.handedOver && assigned.type === "run")
             noteRunnerSessionMove(db, {
               runId: assigned.runId,
@@ -2678,8 +2683,9 @@ export function createRemoteAgentRunner(options: {
         if (runId) readers.add(runId);
         try {
           const move: HandoverMove = {};
+          const interruption = { retried: false };
           const moving: FailoverAttempt = (next, excluded, limit) =>
-            attempt(next, excluded, limit, move);
+            attempt(next, excluded, limit, move, interruption);
           const callId = failoverCallId(input);
           const ledger: FailoverLedger | undefined = runId
             ? {
@@ -2740,6 +2746,25 @@ const HANDOVER_FAILURE_STEP = {
 
 /** A run's handover within one failover call: the runner it left, and whether Linear heard why it waits. */
 type HandoverMove = { from?: string; repository?: string; waiting?: boolean };
+
+/**
+ * The owner checks of `ask()` for a question this run already opened. The item version is left
+ * out because opening the question bumped it.
+ */
+function ownsAskedQuestion(
+  db: Database,
+  itemId: string,
+  runId: string,
+  sessionId: string,
+): boolean {
+  const item = getWorkItem(db, itemId);
+  return (
+    item !== null &&
+    !item.cancelRequested &&
+    item.sessionKey === sessionId &&
+    item.currentRunId === runId
+  );
+}
 
 /**
  * Whether the run still waits on a question it asked. A question asked outside the question

@@ -931,6 +931,33 @@ export function confirmRunnerWorkTeardown(db: Database, input: TeardownConfirmat
   settled(sqliteDb(db).run((q) => confirmRunnerWorkTeardownSteps(q, input)));
 }
 
+const OVER_FOR_GOOD = ["merged", "completed", "cancelled", "failed"];
+
+export function* runnerFinishedRunsSteps(q: Q, runnerId: string, limit = 64) {
+  const { run, runnerWork, workItem } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ runId: runnerWork.runId })
+      .from(runnerWork)
+      .innerJoin(run, eq(run.id, runnerWork.runId))
+      .innerJoin(workItem, eq(workItem.id, run.itemId))
+      .where(
+        and(
+          eq(runnerWork.runnerId, runnerId),
+          isNotNull(runnerWork.teardownConfirmedAt),
+          inArray(workItem.state, OVER_FOR_GOOD),
+        ),
+      )
+      .orderBy(desc(runnerWork.teardownConfirmedAt))
+      .limit(limit),
+  );
+  return rows.map((row) => row.runId);
+}
+
+export function runnerFinishedRuns(db: Database, runnerId: string): string[] {
+  return settled(sqliteDb(db).run((q) => runnerFinishedRunsSteps(q, runnerId)));
+}
+
 export function* setRunnerWorkLastSequenceSteps(q: Q, runId: string, sequence: number) {
   const { runnerWork: w } = q.t;
   yield* q.exec(q.orm.update(w).set({ lastSequence: sequence }).where(eq(w.runId, runId)));
@@ -1079,6 +1106,71 @@ export function extendStalledRunnerWork(db: Database, startedAt: number, lagMs: 
             ),
         );
       }
+    }),
+  );
+}
+
+export function* setRunnerWorkConsumedSequenceSteps(
+  q: Q,
+  runId: string,
+  generation: number,
+  sequence: number,
+) {
+  const w = q.t.runnerWork;
+  yield* q.exec(
+    q.orm
+      .update(w)
+      .set({ consumedSequence: sequence })
+      .where(and(eq(w.runId, runId), eq(w.generation, generation))),
+  );
+}
+
+export function setRunnerWorkConsumedSequence(
+  db: Database,
+  runId: string,
+  generation: number,
+  sequence: number,
+): void {
+  settled(
+    sqliteDb(db).run((q) => setRunnerWorkConsumedSequenceSteps(q, runId, generation, sequence)),
+  );
+}
+
+export function itemSessionResults(db: Database, itemId: string) {
+  return settled(
+    sqliteDb(db).run(function* (q: Q) {
+      const { runnerResult: result, runnerCommand: command, run } = q.t;
+      return yield* q.all(
+        q.orm
+          .select({
+            envelope: jsonText(q, command.envelope),
+            payload: jsonText(q, result.payload),
+            receivedAt: result.receivedAt,
+          })
+          .from(result)
+          .innerJoin(command, eq(command.id, result.commandId))
+          .innerJoin(run, eq(run.id, result.runId))
+          .where(and(eq(run.itemId, itemId), eq(command.kind, "run")))
+          .orderBy(desc(result.receivedAt), desc(result.generation)),
+      );
+    }),
+  );
+}
+export function runPlacementCommand(db: Database, runId: string) {
+  return settled(
+    sqliteDb(db).run(function* (q: Q) {
+      const { runnerWork: work, runnerCommand: command } = q.t;
+      return yield* q.one(
+        q.orm
+          .select({
+            runnerId: work.runnerId,
+            kind: command.kind,
+            envelope: jsonText(q, command.envelope),
+          })
+          .from(work)
+          .leftJoin(command, eq(command.id, work.commandId))
+          .where(eq(work.runId, runId)),
+      );
     }),
   );
 }

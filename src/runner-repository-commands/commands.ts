@@ -22,6 +22,7 @@ import {
   REPOSITORY_COMMAND_RUNNER_VERSION,
   RunnerCommandSchema,
   RunnerRepositoryCommandResultSchema,
+  SQUASH_REBASE_RUNNER_VERSION,
   runnerReleaseAtLeast,
   type RunnerRepositoryCommand,
   type RunnerRepositoryCommandResult,
@@ -99,6 +100,16 @@ function itemMatches(db: Database, command: RunnerRepositoryCommand) {
   );
 }
 
+export function rebaseCommitTitle(title: string): string | undefined {
+  return (
+    title
+      .replace(/[\0\r\n]+/g, " ")
+      .slice(0, 256)
+      .replace(/[\ud800-\udbff]$/, "")
+      .trim() || undefined
+  );
+}
+
 export function enqueueRepositoryCommand(db: Database, input: RepositoryCommandInput): string {
   const { now, ...fields } = input;
   const at = now ?? Date.now();
@@ -115,11 +126,14 @@ export function enqueueRepositoryCommand(db: Database, input: RepositoryCommandI
       );
     if (!itemMatches(db, command))
       throw new RepositoryCommandDeniedError("Repository command does not match its work item.");
+    const { title: _title, ...untitled } = command;
     insertRepositoryCommand(db, {
       id: command.id,
       runnerId: command.runnerId,
       itemId: command.itemId,
-      payload: JSON.stringify(command),
+      payload: JSON.stringify(
+        runnerReleaseAtLeast(version, SQUASH_REBASE_RUNNER_VERSION) ? command : untitled,
+      ),
       expiresAt: command.expiresAt,
       createdAt: at,
     });

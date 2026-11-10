@@ -29,6 +29,8 @@ export async function startRunnerListener(options: {
   fetch(request: Request, peer: RunnerPeer): Promise<Response>;
   now?: () => number;
   log?: (line: string) => void;
+  /** Extra text for the log line of a logged response. */
+  takeLogDetail?: (response: Response) => string;
 }): Promise<RunnerListener> {
   const now = options.now ?? Date.now;
   const log = options.log ?? console.warn;
@@ -95,6 +97,7 @@ export async function startRunnerListener(options: {
     const started = now();
     const abort = new AbortController();
     let cancelBody: (() => Promise<void>) | null = null;
+    let logDetail = "";
     response.once("close", () => {
       if (!response.writableEnded) {
         abort.abort();
@@ -137,6 +140,7 @@ export async function startRunnerListener(options: {
       if (reader) cancelBody = () => reader.cancel();
       abort.signal.throwIfAborted();
       await authorize(request.socket as TLSSocket);
+      logDetail = options.takeLogDetail?.(result) ?? "";
       response.writeHead(result.status, Object.fromEntries(result.headers));
       if (reader) {
         while (true) {
@@ -163,7 +167,7 @@ export async function startRunnerListener(options: {
       const elapsed = now() - started;
       if (response.statusCode >= 500 || response.statusCode === 403 || elapsed >= 5_000)
         log(
-          `Runner request ${request.method} ${request.url.split("?", 1)[0]} answered ${response.statusCode} in ${elapsed} ms`,
+          `Runner request ${request.method} ${request.url.split("?", 1)[0]} answered ${response.statusCode} in ${elapsed} ms${logDetail}`,
         );
     }
   }

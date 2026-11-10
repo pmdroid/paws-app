@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { FakeClock, trackHostOperation, measureHostOperation } from "../core";
+import { FakeClock } from "../core";
+import { trackHostOperation, measureHostOperation } from "../host-operation";
 import { createLagWatchdog } from "./lag";
 
 test("a ten second stall journals once with the operation and recovers once", () => {

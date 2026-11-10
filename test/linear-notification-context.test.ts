@@ -7,6 +7,7 @@ import {
   migrate,
   openDatabase,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { refreshLinearNotificationContext } from "../src/loop";
@@ -48,9 +49,12 @@ test("child notifications refresh only their installation sessions and retain co
     notificationId: "notice",
     createdAtMs: 10,
   };
-  await refreshLinearNotificationContext(db, tracker, { ...notification, organizationId: "other" });
+  await refreshLinearNotificationContext(sqliteDb(db), tracker, {
+    ...notification,
+    organizationId: "other",
+  });
   expect(getLinearSessionContext(db, "session")).toBe("");
-  await refreshLinearNotificationContext(db, tracker, notification);
+  await refreshLinearNotificationContext(sqliteDb(db), tracker, notification);
   expect(getLinearSessionContext(db, "session")).toContain("Child clarification");
   expect(getLinearSessionContext(db, "session")).toContain("thumbsup");
   tracker.issueContexts.set("child", {
@@ -59,12 +63,15 @@ test("child notifications refresh only their installation sessions and retain co
     issue: {},
     comments: [{ body: "Stale event" }],
   });
-  await refreshLinearNotificationContext(db, tracker, { ...notification, createdAtMs: 9 });
+  await refreshLinearNotificationContext(sqliteDb(db), tracker, {
+    ...notification,
+    createdAtMs: 9,
+  });
   expect(getLinearSessionContext(db, "session")).not.toContain("Stale event");
   const original = getLinearSessionContext(db, "session");
   const pending = Promise.withResolvers<ReturnType<typeof tracker.issueContexts.get>>();
   tracker.getIssueContext = async () => (await pending.promise)!;
-  const refresh = refreshLinearNotificationContext(db, tracker, {
+  const refresh = refreshLinearNotificationContext(sqliteDb(db), tracker, {
     ...notification,
     createdAtMs: 11,
   });

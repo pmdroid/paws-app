@@ -67,7 +67,7 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
             digest = hashlib.file_digest(completed, "sha256").hexdigest()
         assert first.with_suffix(".deb.sha256").read_text() == f"{digest}  {first.name}\n"
         install(first)
-        assert run(["/opt/paws-runner/bin/bun", "--version"]).strip() == "1.4.2"
+        assert run(["/opt/paws-runner/bin/bun", "--version"]).strip() == "1.4.4"
         runner_bin = pathlib.Path("/opt/paws-runner/bin/paws-runner")
         assert runner_bin.is_symlink() and os.readlink(runner_bin) == "../current/bin/paws-runner" and runner_bin.read_bytes() == source.installer.release.RUNNER_LAUNCHER
         assert "ExecStart=/opt/paws-runner/bin/paws-runner runner daemon --config /etc/paws-runner/config.json\n" in pathlib.Path("/etc/systemd/system/paws-runner.service").read_text()
@@ -145,7 +145,9 @@ elif args[0] not in ("list-units","daemon-reload","enable","disable"): sys.exit(
             observations.append({"name": "an upgrade removes the docker group membership Paws recorded adding", "passed": True})
         finally:
             pathlib.Path("/etc/group").write_text(original_groups)
-        install(first, False)
+        refused = run(["/bin/sh", "-c", f"/usr/bin/dpkg --force-depends --install {first} 2>&1 || true"])
+        assert "Release version must advance the installed version" in refused, refused
+        assert run(["/usr/bin/dpkg-query", "--show", "--showformat", "${Status} ${Version}", "paws-runner"]) == "install ok installed 0.1.2"
         assert pathlib.Path("/opt/paws-runner/current").resolve().name == "0.1.2"
         assert set(json.loads(services.read_text())) == set(active)
         observations.append({"name": "dpkg downgrade fails before stopping the installed release", "passed": True})

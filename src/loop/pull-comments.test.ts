@@ -149,7 +149,7 @@ function setup(threads = THREADS) {
     session: (item) => item.sessionKey,
     flush: async () => {},
     reviewChecks: (_item, _pull, since) =>
-      readReviewChecks(db, {
+      readReviewChecks(sqliteDb(db), {
         owner: "acme",
         repo: "one",
         head: "h",

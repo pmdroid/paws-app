@@ -945,7 +945,7 @@ export async function probeRunnerDaemon(
   }
 }
 
-async function serverIdentity(root: string): Promise<{ key: string; cert: string }> {
+export async function serverIdentity(root: string): Promise<{ key: string; cert: string }> {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const process = Bun.spawn(
     [

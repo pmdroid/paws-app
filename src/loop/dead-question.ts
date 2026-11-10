@@ -1,12 +1,12 @@
 import type { Database } from "bun:sqlite";
 import {
-  dropDeadElicitations,
-  getWorkItem,
-  immediate,
+  dropDeadElicitationsSteps,
+  getWorkItemSteps,
   journal,
-  questionHasLinkedRecords,
-  recordQuestionReask,
-  redeliverQuestion,
+  questionHasLinkedRecordsSteps,
+  recordQuestionReaskSteps,
+  redeliverQuestionSteps,
+  sqliteDb,
 } from "../db";
 import { cancelQuestion, getQuestion } from "../questions";
 import { ask } from "./operations";
@@ -24,13 +24,13 @@ import { ask } from "./operations";
  * counts against the same allowance. Returns the question id now waiting for an answer,
  * or null when the item or the question has moved on.
  */
-export function reaskDeadQuestion(
+export async function reaskDeadQuestion(
   db: Database,
   input: { itemId: string; questionId: string; jobId: number; now: number },
-): string | null {
-  return immediate(db, () => {
+): Promise<string | null> {
+  return await sqliteDb(db).transaction(function* (q) {
     const { itemId, questionId, jobId, now } = input;
-    const item = getWorkItem(db, itemId);
+    const item = yield* getWorkItemSteps(q, itemId);
     const question = getQuestion(db, questionId);
     if (
       item === null ||
@@ -44,9 +44,9 @@ export function reaskDeadQuestion(
       question.cancelledAt !== null
     )
       return null;
-    if (questionHasLinkedRecords(db, question.id)) {
-      if (redeliverQuestion(db, question.id, now) === null) return null;
-      recordQuestionReask(db, jobId, question.id);
+    if (yield* questionHasLinkedRecordsSteps(q, question.id)) {
+      if ((yield* redeliverQuestionSteps(q, question.id, now)) === null) return null;
+      yield* recordQuestionReaskSteps(q, jobId, question.id);
       return question.id;
     }
     cancelQuestion(db, question.id, now);
@@ -67,8 +67,8 @@ export function reaskDeadQuestion(
         now,
       },
     );
-    dropDeadElicitations(db, question.id, `Re-asked as question ${asked.question.id}.`);
-    recordQuestionReask(db, jobId, asked.question.id);
+    yield* dropDeadElicitationsSteps(q, question.id, `Re-asked as question ${asked.question.id}.`);
+    yield* recordQuestionReaskSteps(q, jobId, asked.question.id);
     journal(`item ${item.id} question ${question.id} re-asked as ${asked.question.id}`);
     return asked.question.id;
   });

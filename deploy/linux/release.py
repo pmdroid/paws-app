@@ -13,7 +13,7 @@ import tempfile
 import urllib.request
 
 
-BUN_VERSION = "1.4.2"
+BUN_VERSION = "1.4.4"
 MISE_VERSION = "2026.10.18"
 MISE_SHA256 = {
     "linux-x64": "e97c38973336aa2ff350fea50f47b412b266fe263b102b7200ff1e9b118c6942",

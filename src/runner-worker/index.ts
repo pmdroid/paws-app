@@ -1,6 +1,6 @@
 import { describeRunnerFailure } from "../runner-failure";
 import { RUNTIME_FILES } from "../runtimes";
-import { journalCaught, startPhaseClock } from "../journal";
+import { journal as writeJournal, journalCaught, startPhaseClock } from "../journal";
 import {
   createLivePreviewSystem,
   startLivePreview,
@@ -81,10 +81,11 @@ import {
   type PolicyFilesLoad,
 } from "../acp";
 import {
-  clearInheritedSetgid,
+  shareRunnerWorkRoot,
   createRunnerResultDirectory,
   markRunnerAccountSignedIn,
   openRunnerAccountHome,
+  openRunnerCheckoutToGroup,
   publishRunnerAccountHome,
   readRunnerJob,
   readRunnerJobInputs,
@@ -280,6 +281,7 @@ export async function runWithFollowUps(
       waiting.abort();
       return first?.result ?? turn;
     }
+    writeJournal(`item ${agent.itemId} run ${agent.runId} interrupt source=follow_up`);
     await lifecycle.interrupt();
     prompt = first.text;
   }
@@ -857,6 +859,7 @@ export async function executeRunnerCommand(
   let startWorkPlan: string | undefined;
   const workStart = new AbortController();
   let githubRead: GitHubReadConfig | undefined;
+  let checkout: string | undefined;
   const readRedactor = () =>
     command.type === "run" && command.githubRead
       ? (text: string) => redactGitHubTokens(text, githubRead?.tokens())
@@ -940,8 +943,7 @@ export async function executeRunnerCommand(
       };
     }
     if (!task) {
-      mkdirSync(options.workRoot, { recursive: true, mode: 0o700 });
-      clearInheritedSetgid(options.workRoot);
+      shareRunnerWorkRoot(options.workRoot, options.owners);
     }
     // A run checks out at one path on every runner so cwd-keyed agent sessions keep their key.
     const worktree = join(
@@ -949,6 +951,7 @@ export async function executeRunnerCommand(
       command.type === "run" ? command.runId : (talk?.runId ?? job.executionId),
     );
     if (command.type === "run" && !resumed) removeLeftoverCheckout(worktree);
+    if (!task) checkout = worktree;
     if (task) {
       const directory = openSync(
         worktree,
@@ -1633,17 +1636,21 @@ export async function executeRunnerCommand(
     const runner =
       command.type === "run"
         ? (input: RunAgentOptions) =>
-            runWithShellRecovery(input, {
-              notice: (text) => emit({ type: "progress", text, notice: true }),
-              log: (detection) =>
-                console.warn(
-                  JSON.stringify({
-                    event: "agent_shell_broken",
-                    executionId: job.executionId,
-                    ...detection,
-                  }),
-                ),
-            })
+            runWithShellRecovery(
+              input,
+              {
+                notice: (text) => emit({ type: "progress", text, notice: true }),
+                log: (detection) =>
+                  console.warn(
+                    JSON.stringify({
+                      event: "agent_shell_broken",
+                      executionId: job.executionId,
+                      ...detection,
+                    }),
+                  ),
+              },
+              options.runAgent,
+            )
         : command.type === "review" && command.reviewCommand
           ? async (input: RunAgentOptions): Promise<RunAgentResult> => {
               const { base, brief, earlier } = command.reviewCommand!;
@@ -1731,6 +1738,9 @@ export async function executeRunnerCommand(
             await delay(50, undefined, { signal: watch });
           if (safePoint() && Date.now() < deadline) {
             // The same interrupt a follow-up uses: the agent stops, its session stays intact.
+            writeJournal(
+              `item ${runCommand!.itemId} run ${runCommand!.runId} interrupt source=handover`,
+            );
             interrupt.abort(FOLLOW_UP_INTERRUPTION);
             return true;
           }
@@ -1825,7 +1835,7 @@ export async function executeRunnerCommand(
       }
       return sha !== undefined && published.has(sha);
     };
-    let checkpointing = Promise.resolve();
+    let checkpointing: Promise<boolean> = Promise.resolve(true);
     const checkpointWorktree = async (reason: "stop" | "interval") => {
       const run = runCommand!;
       try {
@@ -1848,12 +1858,25 @@ export async function executeRunnerCommand(
         const key = `${saved.head}:${saved.tree}`;
         // Only an interval skips what this turn already emitted: its push may have failed, so a
         // stop always publishes the worktree as it is.
-        if (reason === "interval" && key === checkpointed && wasPublished(checkpointedSha)) return;
+        if (reason === "interval" && key === checkpointed && wasPublished(checkpointedSha))
+          return true;
         if (saved.sha === run.repository.baseSha) {
           // The base is already the item's checkpoint, unless this turn saved work since.
           if (checkpointed === undefined) {
-            if (reason === "stop") emit({ type: "checkpoint", reason });
-            return;
+            if (reason === "stop") {
+              // The snapshot skips what the index marks unchanged, so "nothing new" is unproven.
+              const tracked = await invokeGit(["-C", worktree, "ls-files", "-v", "-z"]);
+              const hidden = tracked
+                .split("\0")
+                .some(
+                  (entry) =>
+                    /^[a-z] /.test(entry) ||
+                    (entry.startsWith("S ") && existsSync(join(worktree, entry.slice(2)))),
+                );
+              if (hidden) throw new Error("The index hides files that may hold unsaved work");
+              emit({ type: "checkpoint", reason });
+            }
+            return true;
           }
           // A worktree back at the base replaces the earlier checkpoint with a WIP commit of it,
           // so a restart does not bring back what the agent discarded.
@@ -1901,9 +1924,13 @@ export async function executeRunnerCommand(
         checkpointed = key;
         checkpointedSha = saved.sha;
         emit({ type: "checkpoint", reason, sha: saved.sha });
+        return true;
       } catch (error) {
         journalCaught(error, "runner-worker.executeRunnerCommand.checkpoint", run.itemId);
-        if (reason === "stop") emit({ type: "checkpoint", reason });
+        // No sha alone means nothing new to save; a failed save has to say so.
+        if (reason === "stop")
+          emit({ type: "checkpoint", reason, dropped: "The runner could not save the worktree." });
+        return false;
       }
     };
     const checkpoint = (reason: "stop" | "interval") =>
@@ -1927,6 +1954,9 @@ export async function executeRunnerCommand(
           if (!options.checkpoint) return;
           await options.checkpoint(1, watch);
           // The same interrupt a follow-up uses: the agent stops, its session stays intact.
+          writeJournal(
+            `item ${runCommand!.itemId} run ${runCommand!.runId} interrupt source=stop_checkpoint`,
+          );
           halt.abort(FOLLOW_UP_INTERRUPTION);
           await turnDone;
           await checkpoint("stop");
@@ -2090,6 +2120,36 @@ export async function executeRunnerCommand(
         ),
       );
       run = { ...run, stopReason: "end_turn", cancelled: false, interrupted: false };
+    }
+    // An unsolicited ACP cancellation has no controller waiting to save its work.
+    // Publish through the same checkpoint path as a requested stop before returning it.
+    if (
+      runCommand &&
+      runCommand.checkpoint !== false &&
+      run.agentExited &&
+      !options.signal?.aborted &&
+      !halt.signal.aborted &&
+      !interrupted &&
+      !questionEnd.signal.aborted &&
+      !run.timedOut &&
+      (run.stopReason === "cancelled" ||
+        run.interrupted ||
+        (run.stopReason === "error" && /^Error\.?$/.test(run.errorMessage ?? "")))
+    ) {
+      writeJournal(
+        `item ${runCommand.itemId} run ${runCommand!.runId} interrupt source=unsolicited_agent`,
+      );
+      const saved = await checkpoint("stop");
+      run = saved
+        ? { ...run, stopReason: "cancelled", cancelled: true, interrupted: true }
+        : {
+            ...run,
+            stopReason: "error",
+            cancelled: false,
+            interrupted: false,
+            errorMessage:
+              "The interrupted turn could not save its stop checkpoint; automatic restart is unsafe.",
+          };
     }
     let handoverReady = false;
     let handoverFailure: RunnerHandoverFailure | null = null;
@@ -2383,6 +2443,8 @@ export async function executeRunnerCommand(
     previewStart.abort();
     await (await preview)?.stop("run_ended");
     if (skillsRoot) rmSync(skillsRoot, { recursive: true, force: true });
+    if (checkout && options.owners && process.getuid?.() !== options.owners.runnerUid)
+      openRunnerCheckoutToGroup(checkout);
     closeSync(eventJournal);
   }
 }

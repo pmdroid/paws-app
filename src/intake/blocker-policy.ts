@@ -1,5 +1,10 @@
 import { isBlockerSatisfied } from "../core";
-import { listDelegationExternalEvidence, listManagedBlockerItems } from "../db";
+import {
+  listDelegationExternalEvidence,
+  listManagedBlockerItemsSteps,
+  type Q,
+  type Steps,
+} from "../db";
 import type { Database } from "bun:sqlite";
 
 type Target = { workspaceId: string; itemId: string };
@@ -12,12 +17,12 @@ export type MergeEvidence = {
   mergeSha: string | null;
 };
 
-export function managedBlockerSatisfied(
-  db: Database,
+export function* managedBlockerSatisfiedSteps(
+  q: Q,
   target: Target,
   issue: string,
-): boolean | null {
-  const items = listManagedBlockerItems(db, { ...target, issueId: issue });
+): Steps<boolean | null> {
+  const items = yield* listManagedBlockerItemsSteps(q, { ...target, issueId: issue });
   if (items.every((item) => item.state === "cancelled")) return null;
   const active = items.filter((item) => item.state !== "cancelled" && !item.cancelRequested);
   const item = (active.length > 0 ? active : items).at(-1)!;

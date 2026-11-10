@@ -292,7 +292,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
       projectId: "project",
     }),
   });
-  dispatch(db, { now: Date.now() });
+  await dispatch(db, { now: Date.now() });
 
   const controller = new AbortController();
   const loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
@@ -374,7 +374,7 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
     const outboxBefore = listOutbox(db).length;
     const waiting: string[] = [];
     for (const offset of [60_000, 2 * 60 * 60_000, DAY_MS, DAY_MS + 60_000]) {
-      const admitted = dispatch(db, {
+      const admitted = await dispatch(db, {
         now: Date.now() + offset,
         onWaiting: (ids) => waiting.push(...ids),
       });

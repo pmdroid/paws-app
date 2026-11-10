@@ -111,3 +111,9 @@ export const CONVERSATION_RUNNER_VERSION: RunnerVersion = [0, 1, 74];
 
 /** First runner release that bridges a control-plane stall past the signed turn expiry. */
 export const TURN_STALL_GRACE_RUNNER_VERSION: RunnerVersion = [0, 1, 75];
+
+/** First runner that checkpoints unsolicited agent interruptions before reporting them. */
+export const INTERRUPT_RECOVERY_RUNNER_VERSION: RunnerVersion = [0, 1, 75];
+export const WORK_ROOT_CLEANUP_RUNNER_VERSION: RunnerVersion = [0, 1, 75];
+export const SQUASH_REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 76];
+export const CONTROL_PLANE_LEVEL_RUNNER_VERSION: RunnerVersion = [0, 1, 76];

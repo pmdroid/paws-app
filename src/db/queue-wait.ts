@@ -1,5 +1,5 @@
 import { and, asc, eq, ne, sql } from "drizzle-orm";
-import type { Db, Q } from "./db";
+import type { Db, Q, Steps } from "./db";
 
 export function queueWaitSince(
   db: Db,
@@ -57,6 +57,16 @@ export function saveQueuePositions(
   now: number,
   ownerCaps: ReadonlyMap<string, number> = new Map(),
 ): Promise<void> {
+  return db.transaction((q) => saveQueuePositionsSteps(q, waiting, slots, now, ownerCaps));
+}
+
+export function* saveQueuePositionsSteps(
+  q: Q,
+  waiting: readonly string[],
+  slots: { busy: number; total: number } | null,
+  now: number,
+  ownerCaps: ReadonlyMap<string, number> = new Map(),
+): Steps<void> {
   const rows =
     slots === null
       ? []
@@ -68,10 +78,8 @@ export function saveQueuePositions(
           ownerCap: ownerCaps.get(itemId) ?? null,
           updatedAt: now,
         }));
-  return db.transaction(function* (q) {
-    yield* q.exec(q.orm.delete(q.t.queuePosition));
-    if (rows.length > 0) yield* q.exec(q.orm.insert(q.t.queuePosition).values(rows));
-  });
+  yield* q.exec(q.orm.delete(q.t.queuePosition));
+  if (rows.length > 0) yield* q.exec(q.orm.insert(q.t.queuePosition).values(rows));
 }
 
 function* listSteps(q: Q) {

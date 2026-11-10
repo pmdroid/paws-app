@@ -146,7 +146,13 @@ test("repository hints read [repo=] mentions and repo group labels on the issue,
         issue: {
           description: "Ship it in [repo=acme/api] please. Not [repo=bad name].",
           labels: {
-            nodes: [label("acme/web", "Repo"), label("bug", null), label("acme/x", "area")],
+            nodes: [
+              label("acme/web", "Repo"),
+              label("bug", null),
+              label("acme/x", "area"),
+              label("Opus", "IMPLEMENTER"),
+              label("Codex", "Reviewer"),
+            ],
           },
           parent: { labels: { nodes: [label("acme/parent", "repo")] } },
           project: { labels: { nodes: [label("acme/docs", "repo"), label("not a repo", "repo")] } },
@@ -164,6 +170,7 @@ test("repository hints read [repo=] mentions and repo group labels on the issue,
   expect(await tracker.issueRepositoryHints!("issue-id")).toEqual({
     mentions: ["acme/api", "acme/earlier", "acme/later"],
     issueLabels: ["acme/web"],
+    profileLabels: { implementer: "Opus", reviewer: "Codex" },
     parentLabels: ["acme/parent"],
     projectLabels: ["acme/docs"],
   });
@@ -187,6 +194,7 @@ test("repository hints are empty when the issue has no parent, project or labels
   expect(await createLinearTracker(client).issueRepositoryHints!("issue-id")).toEqual({
     mentions: [],
     issueLabels: [],
+    profileLabels: {},
     parentLabels: [],
     projectLabels: [],
   });

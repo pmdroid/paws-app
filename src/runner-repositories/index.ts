@@ -136,19 +136,13 @@ export function createRunnerRepositories(options: {
     input.signal?.throwIfAborted();
     return { code, stdout, stderr };
   }
-  /**
-   * Replays the first-parent commits of `head` not reachable from `excluded` onto `onto`, keeping
-   * each commit's author, committer and message. A merge commit applies its change against its
-   * first parent. Returns the new head, or throws {@link CandidateRebaseConflict}.
-   */
-  async function replay(
+  async function firstParentCommits(
     mirror: string,
     head: string,
     excluded: string[],
-    onto: string,
     signal?: AbortSignal,
-  ): Promise<string> {
-    const commits = (
+  ): Promise<string[]> {
+    return (
       await invoke(
         ["--git-dir", mirror, "rev-list", "--reverse", "--first-parent", head, ...excluded],
         signal,
@@ -157,60 +151,137 @@ export function createRunnerRepositories(options: {
       .trim()
       .split("\n")
       .filter(Boolean);
-    let current = onto;
-    for (const commit of commits) {
-      const merged = await spawnGit(
-        [
-          "--git-dir",
-          mirror,
-          "merge-tree",
-          "--write-tree",
-          "--name-only",
-          "--no-messages",
-          `--merge-base=${commit}^`,
-          current,
-          commit,
-        ],
-        { signal },
-      );
-      const [tree, ...files] = merged.stdout.split("\n").filter(Boolean);
-      if (merged.code === 1) throw new CandidateRebaseConflict(files);
-      if (merged.code !== 0 || !tree || !/^[a-f0-9]{40}$/.test(tree))
-        throw new Error(`Runner candidate rebase failed: ${merged.stderr.trim()}`);
-      // A change the branch already has leaves nothing to commit, as `git rebase` drops it.
-      if (tree === (await invoke(["--git-dir", mirror, "rev-parse", `${current}^{tree}`])).trim())
-        continue;
-      const raw = await invoke(["--git-dir", mirror, "cat-file", "commit", commit], signal);
-      const split = raw.indexOf("\n\n");
-      const headers = (split === -1 ? raw : raw.slice(0, split)).split("\n");
-      const person = (role: "author" | "committer") => {
-        const line = headers.find((header) => header.startsWith(`${role} `));
-        const match = line && /^\S+ (.*) <([^>]*)> (\d+ [+-]\d{4})$/.exec(line);
-        if (!match) throw new Error(`Runner candidate commit ${commit} has no ${role}`);
-        return { name: match[1]!, email: match[2]!, date: match[3]! };
-      };
-      const author = person("author");
-      const committer = person("committer");
-      const created = await spawnGit(
-        ["--git-dir", mirror, "commit-tree", tree, "-p", current, "-F", "-"],
-        {
-          stdin: split === -1 ? "" : raw.slice(split + 2),
-          env: {
-            GIT_AUTHOR_NAME: author.name,
-            GIT_AUTHOR_EMAIL: author.email,
-            GIT_AUTHOR_DATE: author.date,
-            GIT_COMMITTER_NAME: committer.name,
-            GIT_COMMITTER_EMAIL: committer.email,
-            GIT_COMMITTER_DATE: committer.date,
-          },
-          signal,
+  }
+  async function readCommit(mirror: string, commit: string, signal?: AbortSignal) {
+    const raw = await invoke(["--git-dir", mirror, "cat-file", "commit", commit], signal);
+    const split = raw.indexOf("\n\n");
+    const headers = (split === -1 ? raw : raw.slice(0, split)).split("\n");
+    const person = (role: "author" | "committer") => {
+      const line = headers.find((header) => header.startsWith(`${role} `));
+      const match = line && /^\S+ (.*) <([^>]*)> (\d+ [+-]\d{4})$/.exec(line);
+      if (!match) throw new Error(`Runner candidate commit ${commit} has no ${role}`);
+      return { name: match[1]!, email: match[2]!, date: match[3]! };
+    };
+    return {
+      author: person("author"),
+      committer: person("committer"),
+      message: split === -1 ? "" : raw.slice(split + 2),
+    };
+  }
+  async function mergedTree(
+    mirror: string,
+    base: string,
+    onto: string,
+    head: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const merged = await spawnGit(
+      [
+        "--git-dir",
+        mirror,
+        "merge-tree",
+        "--write-tree",
+        "--name-only",
+        "--no-messages",
+        "-z",
+        `--merge-base=${base}`,
+        onto,
+        head,
+      ],
+      { signal },
+    );
+    const [tree, ...files] = merged.stdout.split("\0").filter(Boolean);
+    if (merged.code === 1) throw new CandidateRebaseConflict(files);
+    if (merged.code !== 0 || !tree || !/^[a-f0-9]{40}$/.test(tree))
+      throw new Error(`Runner candidate rebase failed: ${merged.stderr.trim()}`);
+    return tree;
+  }
+  async function sameTree(mirror: string, tree: string, commit: string) {
+    return tree === (await invoke(["--git-dir", mirror, "rev-parse", `${commit}^{tree}`])).trim();
+  }
+  async function writeCommit(
+    mirror: string,
+    commit: {
+      tree: string;
+      parent: string;
+      message: string;
+      author: { name: string; email: string; date: string };
+      committer: { name: string; email: string; date?: string };
+    },
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const { author, committer } = commit;
+    const created = await spawnGit(
+      ["--git-dir", mirror, "commit-tree", commit.tree, "-p", commit.parent, "-F", "-"],
+      {
+        stdin: commit.message,
+        env: {
+          GIT_AUTHOR_NAME: author.name,
+          GIT_AUTHOR_EMAIL: author.email,
+          GIT_AUTHOR_DATE: author.date,
+          GIT_COMMITTER_NAME: committer.name,
+          GIT_COMMITTER_EMAIL: committer.email,
+          ...(committer.date ? { GIT_COMMITTER_DATE: committer.date } : {}),
         },
-      );
-      current = created.stdout.trim();
-      if (created.code !== 0 || !/^[a-f0-9]{40}$/.test(current))
-        throw new Error(`Runner candidate rebase failed: ${created.stderr.trim()}`);
-    }
-    return current;
+        signal,
+      },
+    );
+    const sha = created.stdout.trim();
+    if (created.code !== 0 || !/^[a-f0-9]{40}$/.test(sha))
+      throw new Error(`Runner candidate rebase failed: ${created.stderr.trim()}`);
+    return sha;
+  }
+  async function squash(
+    mirror: string,
+    commits: string[],
+    range: { base: string; onto: string; head: string; title?: string },
+    committer: { name: string; email: string } | undefined,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const tree = await mergedTree(mirror, range.base, range.onto, range.head, signal);
+    if (await sameTree(mirror, tree, range.onto)) return range.onto;
+    const originals = await Promise.all(commits.map((sha) => readCommit(mirror, sha, signal)));
+    const subjects = originals.map((commit) => commit.message.split("\n", 1)[0]!.trim());
+    const trailers = new Set(originals.flatMap((commit) => commitCoauthorTrailers(commit.message)));
+    return writeCommit(
+      mirror,
+      {
+        tree,
+        parent: range.onto,
+        message: `${[
+          range.title ?? subjects[0]!,
+          subjects.join("\n"),
+          [...trailers].map((trailer) => `Co-authored-by: ${trailer}`).join("\n"),
+        ]
+          .filter(Boolean)
+          .join("\n\n")}\n`,
+        author: originals[0]!.author,
+        committer: committer ?? originals.at(-1)!.committer,
+      },
+      signal,
+    );
+  }
+  async function replay(
+    mirror: string,
+    head: string,
+    excluded: string[],
+    onto: string,
+    title: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const commits = await firstParentCommits(mirror, head, excluded, signal);
+    const [commit] = commits;
+    if (!commit) return onto;
+    const base = `${commit}^`;
+    if (commits.length > 1)
+      return squash(mirror, commits, { base, onto, head, title }, undefined, signal);
+    const tree = await mergedTree(mirror, base, onto, commit, signal);
+    if (await sameTree(mirror, tree, onto)) return onto;
+    return writeCommit(
+      mirror,
+      { tree, parent: onto, ...(await readCommit(mirror, commit, signal)) },
+      signal,
+    );
   }
   async function sync(mirror: string, remoteUrl: string, token: string, signal?: AbortSignal) {
     let exists = false;
@@ -717,7 +788,14 @@ export function createRunnerRepositories(options: {
                   ))
                 )
                   throw rejection;
-                const replayed = await replay(mirror, sha, [...excluded, `^${tip}`], tip, signal);
+                const replayed = await replay(
+                  mirror,
+                  sha,
+                  [...excluded, `^${tip}`],
+                  tip,
+                  command.pullRequestDraft?.title,
+                  signal,
+                );
                 if (replayed === tip) return tip;
                 await invoke(["--git-dir", mirror, "update-ref", ref, replayed]);
                 try {
@@ -791,40 +869,93 @@ export function createRunnerRepositories(options: {
           const { GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL } = commitIdentityEnv(
             appBotCommitIdentity(command.bot),
           );
-          const rebased = await spawnGit(
-            [
-              "-C",
-              worktree,
-              "-c",
-              "rerere.enabled=false",
-              "-c",
-              "commit.gpgSign=false",
-              "rebase",
-              "--no-autostash",
-              command.main,
-            ],
-            {
-              env: {
-                GIT_COMMITTER_NAME: GIT_COMMITTER_NAME!,
-                GIT_COMMITTER_EMAIL: GIT_COMMITTER_EMAIL!,
-              },
-              signal,
-            },
+          const commits = await firstParentCommits(
+            mirror,
+            command.head,
+            [`^${command.main}`],
+            signal,
           );
-          if (rebased.code !== 0) {
-            const unmerged = await spawnGit(
-              ["-C", worktree, "diff", "--name-only", "--diff-filter=U", "-z"],
-              { signal },
-            );
-            await spawnGit(["-C", worktree, "rebase", "--abort"]);
-            const files = unmerged.stdout.split("\0").filter((file) => file && file.length <= 1024);
-            if (files.length) return { outcome: "conflict", files: files.slice(0, 1000) };
-            return {
-              outcome: "failed",
-              reason: `Rebase failed: ${rebased.stderr.trim() || `git exited ${rebased.code}`}`,
-            };
+          const upToDate =
+            (
+              await spawnGit(
+                ["--git-dir", mirror, "merge-base", "--is-ancestor", command.main, command.head],
+                { signal },
+              )
+            ).code === 0;
+          let squashed: string | null = null;
+          if (commits.length > 1 && !upToDate) {
+            try {
+              const base = (
+                await invoke(
+                  ["--git-dir", mirror, "merge-base", command.main, command.head],
+                  signal,
+                )
+              ).trim();
+              squashed = await squash(
+                mirror,
+                commits,
+                {
+                  base,
+                  onto: command.main,
+                  head: command.head,
+                  ...(command.title ? { title: command.title } : {}),
+                },
+                { name: GIT_COMMITTER_NAME!, email: GIT_COMMITTER_EMAIL! },
+                signal,
+              );
+            } catch (error) {
+              if (error instanceof CandidateRebaseConflict)
+                return {
+                  outcome: "conflict",
+                  files: error.files.filter((file) => file.length <= 1024).slice(0, 1000),
+                };
+              signal?.throwIfAborted();
+              journalCaught(error, "runner-repositories.rebase.squash", null);
+              return {
+                outcome: "failed",
+                reason: `Rebase failed: ${error instanceof Error ? error.message : String(error)}`,
+              };
+            }
           }
-          const head = (await invoke(["-C", worktree, "rev-parse", "HEAD"], signal)).trim();
+          if (squashed === null) {
+            const rebased = await spawnGit(
+              [
+                "-C",
+                worktree,
+                "-c",
+                "rerere.enabled=false",
+                "-c",
+                "commit.gpgSign=false",
+                "rebase",
+                "--no-autostash",
+                command.main,
+              ],
+              {
+                env: {
+                  GIT_COMMITTER_NAME: GIT_COMMITTER_NAME!,
+                  GIT_COMMITTER_EMAIL: GIT_COMMITTER_EMAIL!,
+                },
+                signal,
+              },
+            );
+            if (rebased.code !== 0) {
+              const unmerged = await spawnGit(
+                ["-C", worktree, "diff", "--name-only", "--diff-filter=U", "-z"],
+                { signal },
+              );
+              await spawnGit(["-C", worktree, "rebase", "--abort"]);
+              const files = unmerged.stdout
+                .split("\0")
+                .filter((file) => file && file.length <= 1024);
+              if (files.length) return { outcome: "conflict", files: files.slice(0, 1000) };
+              return {
+                outcome: "failed",
+                reason: `Rebase failed: ${rebased.stderr.trim() || `git exited ${rebased.code}`}`,
+              };
+            }
+          }
+          const head =
+            squashed ?? (await invoke(["-C", worktree, "rev-parse", "HEAD"], signal)).trim();
           await invoke(["-C", worktree, "merge-base", "--is-ancestor", command.main, head], signal);
           const ref = `refs/heads/paws-candidate-${randomUUID()}`;
           await invoke(["--git-dir", mirror, "update-ref", ref, head]);

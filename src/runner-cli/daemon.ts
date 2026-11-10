@@ -5,8 +5,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { RunnerDaemon } from "../runner-daemon";
 import { openRunnerHealthRuntime } from "../runner-health-runtime";
 import { openRunnerRetroRuntime } from "../runner-retro-runtime";
-import { createRunnerSkillInstaller, type RunnerAgentUser } from "../runner-execution";
+import {
+  RUNNER_WORK_SWEEP_EVERY_MS,
+  createRunnerSkillInstaller,
+  createRunnerWorkCleaner,
+  type RunnerAgentUser,
+  type RunnerWorkCleaner,
+} from "../runner-execution";
 import { openRunnerAgents, openRunnerRuntime } from "../runner-runtime";
+
+export const RUNNER_WORK_ROOT = "/var/lib/paws-agent/work";
 
 export async function runPairedDaemon(
   daemon: RunnerDaemon,
@@ -49,8 +57,15 @@ export async function runPairedDaemon(
     download: (skill) => daemon.downloadSkill(skill),
     onError: report,
   });
+  let cleaner: RunnerWorkCleaner | undefined;
+  const release = (runIds: readonly string[]) => {
+    void cleaner
+      ?.released(runIds)
+      .catch(journalRejection("runner-cli/daemon.runPairedDaemon.released", report, null));
+  };
   const runtime = await openRunnerRuntime({
     ...shared,
+    onFinishedRuns: release,
     root: join(root, "runtime"),
     repositoryRoot: join(root, "repositories"),
     home: root,
@@ -81,8 +96,26 @@ export async function runPairedDaemon(
     retro = await openRunnerRetroRuntime({ ...shared, root: join(root, "retro") });
     signal.throwIfAborted();
     signal.addEventListener("abort", interrupt, { once: true });
+    const [healthNow, retroNow] = [health, retro];
+    cleaner = createRunnerWorkCleaner({
+      workRoot: RUNNER_WORK_ROOT,
+      signal,
+      holds: () =>
+        new Set([
+          ...runtime.holds(),
+          ...healthNow.holds(),
+          ...retroNow.status().active.map((entry) => entry.executionId),
+        ]),
+    });
+    let sweepAt = 0;
     while (!signal.aborted) {
       try {
+        if (Date.now() >= sweepAt) {
+          sweepAt = Date.now() + RUNNER_WORK_SWEEP_EVERY_MS;
+          void cleaner
+            .sweep()
+            .catch(journalRejection("runner-cli/daemon.runPairedDaemon.sweep", report, null));
+        }
         if (!signal.aborted) await runtime.tick();
         if (!signal.aborted) await health.tick();
         if (!signal.aborted) await retro.tick();

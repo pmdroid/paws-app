@@ -1,32 +1,34 @@
-import type { Database } from "bun:sqlite";
 import {
-  getLinearSession,
-  getLinearSessionAccess,
-  getLinearSessionGeneration,
-  getLinearSessionInstallation,
-  immediate,
-  linearSessionsForIssueContext,
-  saveLinearIssueContext,
+  getLinearSessionAccessSteps,
+  getLinearSessionGenerationSteps,
+  getLinearSessionInstallationSteps,
+  getLinearSessionSteps,
+  linearSessionsForIssueContextSteps,
+  saveLinearIssueContextSteps,
+  type Db,
 } from "../db";
 import type { LinearAdministration, TrackerAdapter } from "../linear";
 
 export async function refreshLinearNotificationContext(
-  db: Database,
+  store: Db,
   tracker: TrackerAdapter | null,
   notification: Extract<LinearAdministration, { kind: "notification" }>,
 ): Promise<void> {
-  const sessions = linearSessionsForIssueContext(db, notification.issueId)
-    .filter((id) => {
-      const scope = getLinearSessionInstallation(db, id);
-      return (
+  const sessions = await store.run(function* (q) {
+    const current: { id: string; generation: number }[] = [];
+    for (const id of yield* linearSessionsForIssueContextSteps(q, notification.issueId)) {
+      const scope = yield* getLinearSessionInstallationSteps(q, id);
+      if (
         scope?.organizationId === notification.organizationId &&
         scope.oauthClientId === notification.oauthClientId &&
         scope.appUserId === notification.appUserId &&
-        getLinearSessionAccess(db, id) === "allowed" &&
-        getLinearSession(db, id)?.stoppedAt === null
-      );
-    })
-    .map((id) => ({ id, generation: getLinearSessionGeneration(db, id) }));
+        (yield* getLinearSessionAccessSteps(q, id)) === "allowed" &&
+        (yield* getLinearSessionSteps(q, id))?.stoppedAt === null
+      )
+        current.push({ id, generation: yield* getLinearSessionGenerationSteps(q, id) });
+    }
+    return current;
+  });
   if (sessions.length === 0) return;
   if (!tracker?.getIssueContext) throw new Error("Linear issue context reads are unavailable.");
   const signal = AbortSignal.timeout(10_000);
@@ -34,14 +36,14 @@ export async function refreshLinearNotificationContext(
   signal.throwIfAborted();
   if (context.id !== notification.issueId || context.teamId !== notification.teamId)
     throw new Error("The Linear notification context belongs to another issue or team.");
-  immediate(db, () => {
+  await store.transaction(function* (q) {
     for (const session of sessions) {
       if (
-        getLinearSessionGeneration(db, session.id) !== session.generation ||
-        getLinearSessionAccess(db, session.id) !== "allowed"
+        (yield* getLinearSessionGenerationSteps(q, session.id)) !== session.generation ||
+        (yield* getLinearSessionAccessSteps(q, session.id)) !== "allowed"
       )
         continue;
-      saveLinearIssueContext(db, {
+      yield* saveLinearIssueContextSteps(q, {
         sessionId: session.id,
         issueId: context.id,
         observedAt: notification.createdAtMs,

@@ -3,25 +3,28 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import {
   activeRunnerOwners,
-  completeFindingGroupRun,
-  deleteUntouchedFindingGroups,
-  dropProcessedFindingGroupMembers,
+  completeFindingGroupRunSteps,
+  deleteUntouchedFindingGroupsSteps,
+  dropProcessedFindingGroupMembersSteps,
   enqueueJobOnce,
-  failFindingGroupRun,
-  findingGroupRunExistsForDay,
-  findingGroupRunIsRunning,
-  heldFindingGroupMembers,
-  immediate,
-  insertFindingGroup,
-  insertFindingGroupRun,
-  lastCompletedFindingGroupRun,
+  enqueueJobOnceAsync,
+  failFindingGroupRunSteps,
+  findingGroupRunExistsForDaySteps,
+  findingGroupRunIsRunningSteps,
+  heldFindingGroupMembersSteps,
+  insertFindingGroupRunSteps,
+  insertFindingGroupSteps,
+  lastCompletedFindingGroupRunSteps,
+  recoverFindingGroupRuns,
+  recoverFindingGroupRunsSteps,
   reviewFindingsByIds,
   findingGroupSources,
-  setFindingGroupRunFingerprint,
+  setFindingGroupRunFingerprintSteps,
+  sqliteDb,
   workspaceSessionIds,
   findingGroupingAdmins,
-  findingGroupingEnabled,
-  recoverFindingGroupRuns,
+  findingGroupingEnabledSteps,
+  type Db,
   type JobLoop,
   type ReviewFindingRecord,
 } from "../db";
@@ -198,21 +201,24 @@ export function validateGroups(
 
 export function createFindingGrouping(options: {
   db: Database;
+  /** The async `Db` over `db`. Defaults to `sqliteDb(db)`. */
+  store?: Db;
   issues: FindingIssueAdapter;
   helper: GroupingHelper;
   sources: (workspaceId: string) => GroupingInput[];
   now?: () => number;
 }) {
   const { db } = options;
+  const store = options.store ?? sqliteDb(db);
   const now = options.now ?? Date.now;
   // A previous process cannot still own a helper after the maximum command lifetime.
   recoverFindingGroupRuns(db, now());
   return {
     async run(workspaceId: string, signal: AbortSignal): Promise<void> {
-      if (!findingGroupingEnabled(db, workspaceId)) return;
+      if (!(await store.run((q) => findingGroupingEnabledSteps(q, workspaceId)))) return;
       signal = AbortSignal.any([signal, AbortSignal.timeout(600_000)]);
       const at = now();
-      recoverFindingGroupRuns(db, at);
+      await store.run((q) => recoverFindingGroupRunsSteps(q, at));
       const day = new Date(at).toISOString().slice(0, 10);
       // Persist the daily claim before any external read or helper dispatch, including failures.
       const findings = options.sources(workspaceId);
@@ -243,11 +249,11 @@ export function createFindingGrouping(options: {
           )
           .digest("hex");
       const runId = randomUUID();
-      const last = lastCompletedFindingGroupRun(db, workspaceId);
-      const claimed = immediate(db, () => {
-        if (findingGroupRunExistsForDay(db, workspaceId, day)) return false;
+      const last = await store.run((q) => lastCompletedFindingGroupRunSteps(q, workspaceId));
+      const claimed = await store.transaction(function* (q) {
+        if (yield* findingGroupRunExistsForDaySteps(q, workspaceId, day)) return false;
         if (last?.fingerprint === fingerprint) {
-          insertFindingGroupRun(db, {
+          yield* insertFindingGroupRunSteps(q, {
             id: runId,
             workspaceId,
             day,
@@ -263,7 +269,7 @@ export function createFindingGrouping(options: {
           });
           return false;
         }
-        insertFindingGroupRun(db, {
+        yield* insertFindingGroupRunSteps(q, {
           id: runId,
           workspaceId,
           day,
@@ -298,7 +304,9 @@ export function createFindingGrouping(options: {
           const issues = batch.issues;
           // A partial snapshot must be revisited even if no finding changes tomorrow.
           if (!batch.cycleComplete)
-            setFindingGroupRunFingerprint(db, runId, `${fingerprint}:partial`);
+            await store.run((q) =>
+              setFindingGroupRunFingerprintSteps(q, runId, `${fingerprint}:partial`),
+            );
           signal.throwIfAborted();
           const result = await options.helper({
             workspaceId,
@@ -317,19 +325,19 @@ export function createFindingGrouping(options: {
             .filter((f) => f.status === "open")
             .map((f) => f.id),
         );
-        immediate(db, () => {
-          if (!findingGroupRunIsRunning(db, runId))
+        await store.transaction(function* (q) {
+          if (!(yield* findingGroupRunIsRunningSteps(q, runId)))
             throw new Error("Finding grouping run no longer owns this result.");
           // Preserve the unprocessed members of earlier groups during a partial snapshot.
           if (selectedIds !== null)
-            dropProcessedFindingGroupMembers(db, workspaceId, selectedIds, [...current]);
-          else deleteUntouchedFindingGroups(db, workspaceId);
-          const held = new Set(heldFindingGroupMembers(db, workspaceId));
+            yield* dropProcessedFindingGroupMembersSteps(q, workspaceId, selectedIds, [...current]);
+          else yield* deleteUntouchedFindingGroupsSteps(q, workspaceId);
+          const held = new Set(yield* heldFindingGroupMembersSteps(q, workspaceId));
           let count = 0;
           for (const group of groups) {
             const ids = group.memberIds.filter((id) => current.has(id) && !held.has(id));
             if (!ids.length) continue;
-            insertFindingGroup(db, {
+            yield* insertFindingGroupSteps(q, {
               id: randomUUID(),
               workspaceId,
               repository: group.repository,
@@ -344,7 +352,7 @@ export function createFindingGrouping(options: {
             });
             count++;
           }
-          const completed = completeFindingGroupRun(db, runId, {
+          const completed = yield* completeFindingGroupRunSteps(q, runId, {
             finishedAt: now(),
             tokens,
             groupCount: count,
@@ -354,11 +362,13 @@ export function createFindingGrouping(options: {
           if (!completed) throw new Error("Finding grouping run no longer owns this result.");
         });
       } catch (error) {
-        failFindingGroupRun(
-          db,
-          runId,
-          now(),
-          error instanceof Error ? error.message : "Grouping failed",
+        await store.run((q) =>
+          failFindingGroupRunSteps(
+            q,
+            runId,
+            now(),
+            error instanceof Error ? error.message : "Grouping failed",
+          ),
         );
         throw error;
       }
@@ -398,13 +408,13 @@ export function registerFindingGrouping(
     const { workspaceId } = job.payload as { workspaceId: string };
     await options.run(workspaceId, context.signal);
   });
-  jobs.register("findings.group.tick", () => {
+  jobs.register("findings.group.tick", async () => {
     const at = now();
-    recoverFindingGroupRuns(jobs.db, at);
+    await jobs.store.run((q) => recoverFindingGroupRunsSteps(q, at));
     const iso = new Date(at).toISOString();
     if (iso.slice(11, 16) < options.groupingTime) return;
     for (const workspaceId of options.workspaces())
-      enqueueJobOnce(jobs.db, {
+      await enqueueJobOnceAsync(jobs.store, {
         queue: "findings.group",
         jobKey: `findings.group:${workspaceId}:${iso.slice(0, 10)}`,
         payload: { workspaceId },

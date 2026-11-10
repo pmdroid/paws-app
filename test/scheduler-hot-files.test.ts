@@ -44,75 +44,75 @@ function setState(db: Database, id: string, state: string): void {
   db.run("UPDATE job SET status='done' WHERE json_extract(payload,'$.itemId')=?", [id]);
 }
 
-test("two items that change a hot file do not run together; the second starts after the first merges", () => {
+test("two items that change a hot file do not run together; the second starts after the first merges", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
     item(db, "first", [PROVIDER, "src/a.ts"]);
     item(db, "second", [PROVIDER, "src/b.ts"], 2);
     const log: string[] = [];
-    expect(workspaceDispatch(db, { now: NOW, log: (line: string) => log.push(line) })).toEqual([
-      "first",
-    ]);
+    expect(
+      await workspaceDispatch(db, { now: NOW, log: (line: string) => log.push(line) }),
+    ).toEqual(["first"]);
     expect(listItemHolds(db)).toEqual([
       { itemId: "second", reason: "overlap", blockers: ["first"], files: [PROVIDER] },
     ]);
     expect(log).toContain("item second held: waiting for first to merge (both change provider.ts)");
 
     setState(db, "first", "running");
-    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
     setState(db, "first", "merge_queue");
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
     expect(listItemHolds(db).map((hold) => hold.reason)).toEqual(["overlap"]);
 
     setState(db, "first", "merged");
-    expect(workspaceDispatch(db, { now: NOW + 3 })).toEqual(["second"]);
+    expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual(["second"]);
     expect(listItemHolds(db)).toEqual([]);
   } finally {
     db.close();
   }
 });
 
-test("items that change different files run in parallel", () => {
+test("items that change different files run in parallel", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
     item(db, "first", [PROVIDER]);
     item(db, "second", ["src/b.ts"], 2);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["first", "second"]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["first", "second"]);
     expect(listItemHolds(db)).toEqual([]);
   } finally {
     db.close();
   }
 });
 
-test("a shared file that is not hot holds nothing", () => {
+test("a shared file that is not hot holds nothing", async () => {
   const db = tempDb();
   try {
     conflicted(db, ["src/other.ts"]);
     item(db, "first", [PROVIDER]);
     item(db, "second", [PROVIDER], 2);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["first", "second"]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["first", "second"]);
   } finally {
     db.close();
   }
 });
 
-test("an item with no candidate yet is not held", () => {
+test("an item with no candidate yet is not held", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
     item(db, "first", [PROVIDER]);
     setState(db, "first", "running");
     item(db, "second", null, 2);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["second"]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["second"]);
     expect(listItemHolds(db)).toEqual([]);
   } finally {
     db.close();
   }
 });
 
-test("a held item is not counted in the runner line", () => {
+test("a held item is not counted in the runner line", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
@@ -121,7 +121,7 @@ test("a held item is not counted in the runner line", () => {
     item(db, "second", [PROVIDER], 2);
     const waiting: string[] = [];
     expect(
-      workspaceDispatch(db, {
+      await workspaceDispatch(db, {
         now: NOW,
         onWaiting: (ids: readonly string[]) => waiting.push(...ids),
       }),
@@ -139,7 +139,7 @@ function blocks(db: Database, blocker: string, blocked: string): void {
   ]);
 }
 
-test("a merge-queue item that depends on the queued item does not hold it", () => {
+test("a merge-queue item that depends on the queued item does not hold it", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
@@ -147,14 +147,14 @@ test("a merge-queue item that depends on the queued item does not hold it", () =
     setState(db, "dependent", "merge_queue");
     item(db, "prerequisite", [PROVIDER], 2);
     blocks(db, "prerequisite", "dependent");
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["prerequisite"]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["prerequisite"]);
     expect(listItemHolds(db)).toEqual([]);
   } finally {
     db.close();
   }
 });
 
-test("an item that depends on the queued item through another issue does not hold it", () => {
+test("an item that depends on the queued item through another issue does not hold it", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
@@ -165,13 +165,13 @@ test("an item that depends on the queued item through another issue does not hol
     item(db, "prerequisite", [PROVIDER], 2);
     blocks(db, "prerequisite", "middle");
     blocks(db, "middle", "dependent");
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["prerequisite"]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["prerequisite"]);
   } finally {
     db.close();
   }
 });
 
-test("an item the queued item depends on still holds it", () => {
+test("an item the queued item depends on still holds it", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
@@ -179,7 +179,7 @@ test("an item the queued item depends on still holds it", () => {
     setState(db, "prerequisite", "merge_queue");
     item(db, "dependent", [PROVIDER], 2);
     blocks(db, "dependent", "unrelated");
-    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     expect(listItemHolds(db).map((hold) => [hold.itemId, hold.reason])).toEqual([
       ["dependent", "overlap"],
     ]);
@@ -197,7 +197,7 @@ function place(db: Database, id: string, readyAt: number): void {
   ]);
 }
 
-test("a merge-queue item behind the returned front does not hold it", () => {
+test("a merge-queue item behind the returned front does not hold it", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
@@ -206,14 +206,14 @@ test("a merge-queue item behind the returned front does not hold it", () => {
     place(db, "follower", 20);
     item(db, "front", [PROVIDER], 2);
     place(db, "front", 10);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["front"]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["front"]);
     expect(listItemHolds(db)).toEqual([]);
   } finally {
     db.close();
   }
 });
 
-test("a running item does not hold a returned item that keeps its merge-queue place", () => {
+test("a running item does not hold a returned item that keeps its merge-queue place", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
@@ -221,13 +221,13 @@ test("a running item does not hold a returned item that keeps its merge-queue pl
     setState(db, "running", "running");
     item(db, "front", [PROVIDER], 2);
     place(db, "front", 10);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual(["front"]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual(["front"]);
   } finally {
     db.close();
   }
 });
 
-test("a merge-queue item ahead of a returned item still holds it", () => {
+test("a merge-queue item ahead of a returned item still holds it", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
@@ -236,7 +236,7 @@ test("a merge-queue item ahead of a returned item still holds it", () => {
     place(db, "ahead", 10);
     item(db, "returned", [PROVIDER], 2);
     place(db, "returned", 20);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     expect(listItemHolds(db)).toEqual([
       { itemId: "returned", reason: "overlap", blockers: ["ahead"], files: [PROVIDER] },
     ]);
@@ -335,17 +335,17 @@ test("a later candidate does not change the files of an earlier conflict", () =>
   }
 });
 
-test("held items that change the same hot file start oldest first", () => {
+test("held items that change the same hot file start oldest first", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
     item(db, "holder", [PROVIDER]);
     setState(db, "holder", "running");
     item(db, "a", [PROVIDER], 3);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     item(db, "b", [PROVIDER], 1);
     item(db, "c", [PROVIDER], 4);
-    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
     expect(listOverlapHoldAges(db)).toEqual(
       new Map([
         ["a", NOW],
@@ -356,9 +356,9 @@ test("held items that change the same hot file start oldest first", () => {
 
     setState(db, "holder", "merged");
     const log: string[] = [];
-    expect(workspaceDispatch(db, { now: NOW + 2, log: (line: string) => log.push(line) })).toEqual([
-      "a",
-    ]);
+    expect(
+      await workspaceDispatch(db, { now: NOW + 2, log: (line: string) => log.push(line) }),
+    ).toEqual(["a"]);
     expect(listItemHolds(db)).toEqual([
       { itemId: "b", reason: "overlap", blockers: ["a"], files: [PROVIDER] },
       { itemId: "c", reason: "overlap", blockers: ["a"], files: [PROVIDER] },
@@ -366,7 +366,7 @@ test("held items that change the same hot file start oldest first", () => {
     expect(log).toContain("item b held: waiting for a to start (both change provider.ts)");
 
     setState(db, "a", "running");
-    expect(workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
     expect(listItemHolds(db).map((hold) => [hold.itemId, hold.blockers])).toEqual([
       ["b", ["a"]],
       ["c", ["a"]],
@@ -376,59 +376,59 @@ test("held items that change the same hot file start oldest first", () => {
   }
 });
 
-test("an item keeps its hold age across a restart from failed and a conflict restart", () => {
+test("an item keeps its hold age across a restart from failed and a conflict restart", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
     item(db, "holder", [PROVIDER]);
     setState(db, "holder", "running");
     item(db, "a", [PROVIDER], 3);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     setState(db, "holder", "merged");
-    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual(["a"]);
+    expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual(["a"]);
     setState(db, "a", "running");
-    expect(workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
     expect(listItemHolds(db)).toEqual([]);
     expect(listOverlapHoldAges(db).get("a")).toBe(NOW);
 
     setState(db, "a", "failed");
-    expect(workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
     item(db, "second", [PROVIDER]);
     setState(db, "second", "running");
     setState(db, "a", "queued");
     item(db, "c", [PROVIDER], 1);
-    expect(workspaceDispatch(db, { now: NOW + 4 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 4 })).toEqual([]);
     expect(listOverlapHoldAges(db).get("a")).toBe(NOW);
     setState(db, "second", "merged");
-    expect(workspaceDispatch(db, { now: NOW + 5 })).toEqual(["a"]);
+    expect(await workspaceDispatch(db, { now: NOW + 5 })).toEqual(["a"]);
 
     setState(db, "a", "merge_queue");
-    expect(workspaceDispatch(db, { now: NOW + 6 })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW + 6 })).toEqual([]);
     setState(db, "a", "queued");
-    expect(workspaceDispatch(db, { now: NOW + 7 })).toEqual(["a"]);
+    expect(await workspaceDispatch(db, { now: NOW + 7 })).toEqual(["a"]);
     expect(listItemHolds(db)).toEqual([
       { itemId: "c", reason: "overlap", blockers: ["a"], files: [PROVIDER] },
     ]);
     expect(listOverlapHoldAges(db).get("a")).toBe(NOW);
 
     setState(db, "a", "merged");
-    expect(workspaceDispatch(db, { now: NOW + 8 })).toEqual(["c"]);
+    expect(await workspaceDispatch(db, { now: NOW + 8 })).toEqual(["c"]);
     expect(listOverlapHoldAges(db).has("a")).toBe(false);
   } finally {
     db.close();
   }
 });
 
-test("an item without a candidate is never held, even behind an older held item", () => {
+test("an item without a candidate is never held, even behind an older held item", async () => {
   const db = tempDb();
   try {
     conflicted(db, [PROVIDER]);
     item(db, "holder", [PROVIDER]);
     setState(db, "holder", "running");
     item(db, "a", [PROVIDER], 3);
-    expect(workspaceDispatch(db, { now: NOW })).toEqual([]);
+    expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     item(db, "unknown", null, 4);
-    expect(workspaceDispatch(db, { now: NOW + 1 })).toEqual(["unknown"]);
+    expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual(["unknown"]);
     expect(listItemHolds(db).map((hold) => hold.itemId)).toEqual(["a"]);
     expect(listOverlapHoldAges(db).has("unknown")).toBe(false);
   } finally {

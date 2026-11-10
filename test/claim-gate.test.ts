@@ -21,11 +21,11 @@ import { migratedDatabase, tempDb, tempHome } from "./helpers";
 
 const repository = { owner: "owner", repo: "repo", remoteUrl: "https://example.invalid/repo.git" };
 
-function disagreements(run: () => void): string[] {
+async function disagreements(run: () => unknown): Promise<string[]> {
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   try {
-    run();
+    await run();
   } finally {
     restore();
   }
@@ -52,13 +52,13 @@ function itemOf(job: Job | null): string | null {
   return (job?.payload as { itemId?: string } | undefined)?.itemId ?? null;
 }
 
-test("an unreserved start stays pending without a legacy claim decision", () => {
+test("an unreserved start stays pending without a legacy claim decision", async () => {
   const db = tempDb();
   try {
     queued(db, "solo");
     const id = enqueueJob(db, { queue: JOB_KIND.start, payload: { itemId: "solo" }, now: 0 });
     let claimed: Job | null = null;
-    const lines = disagreements(() => {
+    const lines = await disagreements(() => {
       claimed = claimNextJob(db, { now: 1000 });
     });
     assert.equal(claimed, null);
@@ -69,20 +69,20 @@ test("an unreserved start stays pending without a legacy claim decision", () => 
   }
 });
 
-test("a reserved start is claimed without the legacy gate", () => {
+test("a reserved start is claimed without the legacy gate", async () => {
   const db = tempDb();
   try {
     queued(db, "legacy");
     applyWorkItemEvent(db, "legacy", "dispatched");
     insertRun(db, { itemId: "legacy", now: 0, status: "active" });
     queued(db, "next", 1);
-    assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["next"]);
+    assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["next"]);
     const start = db
       .query<{ id: number }, []>(
         "SELECT job_id AS id FROM scheduler_admission WHERE item_id='next'",
       )
       .get()!.id;
-    const lines = disagreements(() => {
+    const lines = await disagreements(() => {
       assert.equal(claimNextJob(db, { now: 1000 })?.id, start);
     });
     assert.deepEqual(lines, []);
@@ -91,18 +91,18 @@ test("a reserved start is claimed without the legacy gate", () => {
   }
 });
 
-test("a queued Reservation survives a restart and both rules claim its start", () => {
+test("a queued Reservation survives a restart and both rules claim its start", async () => {
   const path = join(tempHome(), "paws.db");
   const db = migratedDatabase(path);
   queued(db, "a");
   queued(db, "b", 1);
-  assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["a", "b"]);
+  assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["a", "b"]);
   db.close();
   const reopened = openDatabase(path);
   try {
     let claimed: (string | null)[] = [];
-    const lines = disagreements(() => {
-      assert.deepEqual(workspaceDispatch(reopened, { now: 2000 }), []);
+    const lines = await disagreements(async () => {
+      assert.deepEqual(await workspaceDispatch(reopened, { now: 2000 }), []);
       claimed = [claimNextJob(reopened, { now: 2000 }), claimNextJob(reopened, { now: 2000 })].map(
         itemOf,
       );
@@ -114,7 +114,7 @@ test("a queued Reservation survives a restart and both rules claim its start", (
   }
 });
 
-test("work in flight without a Reservation after a restart is reconstructed before its claim", () => {
+test("work in flight without a Reservation after a restart is reconstructed before its claim", async () => {
   const path = join(tempHome(), "paws.db");
   const db = migratedDatabase(path);
   inFlight(db, "a", "turn_ended");
@@ -123,8 +123,8 @@ test("work in flight without a Reservation after a restart is reconstructed befo
   const reopened = openDatabase(path);
   try {
     let claimed: (string | null)[] = [];
-    const lines = disagreements(() => {
-      workspaceDispatch(reopened, { now: 1000 });
+    const lines = await disagreements(async () => {
+      await workspaceDispatch(reopened, { now: 1000 });
       claimed = [claimNextJob(reopened, { now: 1000 }), claimNextJob(reopened, { now: 1000 })].map(
         itemOf,
       );
@@ -140,14 +140,14 @@ test("work in flight without a Reservation after a restart is reconstructed befo
   }
 });
 
-test("resume and reverify claim against their Reservation and never twice for one item", () => {
+test("resume and reverify claim against their Reservation and never twice for one item", async () => {
   const db = tempDb();
   try {
     inFlight(db, "verify", "turn_ended");
     inFlight(db, "recover", "lease_expired");
     let claimed: (string | null)[] = [];
-    const lines = disagreements(() => {
-      workspaceDispatch(db, { now: 1000 });
+    const lines = await disagreements(async () => {
+      await workspaceDispatch(db, { now: 1000 });
       claimed = [claimNextJob(db, { now: 1000 }), claimNextJob(db, { now: 1000 })].map(itemOf);
       enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "recover" }, now: 1000 });
       assert.equal(claimNextJob(db, { now: 1000 }), null);
@@ -159,14 +159,14 @@ test("resume and reverify claim against their Reservation and never twice for on
   }
 });
 
-test("a Project pause between dispatch and claim retracts the stale Reservation", () => {
+test("a Project pause between dispatch and claim retracts the stale Reservation", async () => {
   const db = tempDb();
   try {
     queued(db, "paused");
-    const lines = disagreements(() => {
-      assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["paused"]);
+    const lines = await disagreements(async () => {
+      assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["paused"]);
       const paused = workspaceAdmission(db, { authority: () => false });
-      assert.deepEqual(dispatch(db, { now: 1001, admission: paused }), []);
+      assert.deepEqual(await dispatch(db, { now: 1001, admission: paused }), []);
       assert.equal(claimNextJob(db, { now: 1001 }), null);
     });
     assert.equal(db.query("SELECT 1 FROM scheduler_admission").get(), null);
@@ -177,7 +177,7 @@ test("a Project pause between dispatch and claim retracts the stale Reservation"
   }
 });
 
-test("an access change between dispatch and claim retracts only that Item's Reservation", () => {
+test("an access change between dispatch and claim retracts only that Item's Reservation", async () => {
   const db = tempDb();
   try {
     queued(db, "revoked");
@@ -186,10 +186,10 @@ test("an access change between dispatch and claim retracts only that Item's Rese
       .query<{ id: string }, []>("SELECT delegation_id AS id FROM work_item WHERE id='revoked'")
       .get()!.id;
     let claimed: (string | null)[] = [];
-    const lines = disagreements(() => {
-      assert.deepEqual(workspaceDispatch(db, { now: 1000 }), ["revoked", "kept"]);
+    const lines = await disagreements(async () => {
+      assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["revoked", "kept"]);
       const access = workspaceAdmission(db, { authority: (id) => id !== revoked });
-      assert.deepEqual(dispatch(db, { now: 1001, admission: access }), []);
+      assert.deepEqual(await dispatch(db, { now: 1001, admission: access }), []);
       claimed = [claimNextJob(db, { now: 1001 }), claimNextJob(db, { now: 1001 })].map(itemOf);
     });
     assert.deepEqual(claimed, ["kept", null]);

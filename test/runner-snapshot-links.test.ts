@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import {
   chmodSync,
+  chownSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -15,6 +17,7 @@ import {
   publishRunnerJob,
   runnerTaskRepositoryPath,
   type RunnerJob,
+  type RunnerSpool,
 } from "../src/runner-execution";
 
 function fixture() {
@@ -26,7 +29,11 @@ function fixture() {
   const spoolRoot = join(root, "spool");
   mkdirSync(spoolRoot, { mode: 0o750 });
   chmodSync(spoolRoot, 0o750);
-  const spool = { root: spoolRoot, runnerUid: process.getuid!(), agentGid: process.getgid!() };
+  const spool: RunnerSpool = {
+    root: spoolRoot,
+    runnerUid: process.getuid!(),
+    agentGid: process.getgid!(),
+  };
   const job: RunnerJob = {
     executionId: "01K00000000000000000000000",
     command: {
@@ -113,6 +120,116 @@ test.skipIf(!supported)("a link to an ancestor inside the snapshot cannot recurs
     symlinkSync(".", join(f.source, "nested", "cycle"));
     expect(() => f.publish()).toThrow("directory cycle");
     expect(() => runnerTaskRepositoryPath(f.spool, f.job.executionId)).toThrow();
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+function owner() {
+  return `${process.getuid!()}:${process.getgid!()}`;
+}
+
+test.skipIf(!supported)("a snapshot extracted under the runner's umask publishes", () => {
+  const f = fixture();
+  try {
+    chmodSync(f.source, 0o770);
+    chmodSync(join(f.source, "nested"), 0o770);
+    chmodSync(join(f.source, "nested", "schema.yaml"), 0o660);
+    f.publish();
+    const stored = runnerTaskRepositoryPath(f.spool, f.job.executionId);
+    expect(statSync(join(stored, "nested")).mode & 0o7777).toBe(0o750);
+    expect(statSync(join(stored, "nested", "schema.yaml")).mode & 0o7777).toBe(0o640);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+function setIdBitRefused(mode: number): boolean {
+  if (!supported || (mode & 0o6000) === 0) return false;
+  const probe = mkdtempSync(join(tmpdir(), "paws-snapshot-mode-"));
+  try {
+    chmodSync(probe, mode);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EPERM") return true;
+    throw error;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+}
+
+for (const mode of [0o777, 0o2750, 0o4750, 0o1750]) {
+  test.skipIf(!supported || setIdBitRefused(mode))(
+    `a source directory with mode ${mode.toString(8)} is rejected`,
+    () => {
+      const f = fixture();
+      try {
+        chmodSync(join(f.source, "nested"), mode);
+        expect(() => f.publish()).toThrow(
+          `Unsafe task repository directory: nested (${owner()} ${mode.toString(8)})`,
+        );
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    },
+  );
+}
+
+test.skipIf(!supported)("the repository root is named as . in the error", () => {
+  const f = fixture();
+  try {
+    chmodSync(f.source, 0o777);
+    expect(() => f.publish()).toThrow(`Unsafe task repository directory: . (${owner()} 777)`);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(!supported)("group write needs the runner's own group", () => {
+  const f = fixture();
+  try {
+    f.spool.runnerGid = process.getgid!() + 1;
+    chmodSync(join(f.source, "nested"), 0o770);
+    expect(() => f.publish()).toThrow(`Unsafe task repository directory: nested (${owner()} 770)`);
+    chmodSync(join(f.source, "nested"), 0o750);
+    chmodSync(join(f.source, "nested", "schema.yaml"), 0o660);
+    expect(() => f.publish()).toThrow("Unsafe task repository file");
+    chmodSync(join(f.source, "nested", "schema.yaml"), 0o640);
+    f.publish();
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(!supported)("a stored snapshot directory must be exactly 0750", () => {
+  const f = fixture();
+  try {
+    f.publish();
+    const stored = runnerTaskRepositoryPath(f.spool, f.job.executionId);
+    for (const mode of [0o770, 0o700, 0o755]) {
+      chmodSync(join(stored, "nested"), mode);
+      expect(() => runnerTaskRepositoryPath(f.spool, f.job.executionId)).toThrow(
+        `Unsafe task repository directory: nested (${owner()} ${mode.toString(8)})`,
+      );
+    }
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+const otherGroup = supported
+  ? process.getgroups!().find((group) => group !== process.getgid!())
+  : undefined;
+
+test.skipIf(otherGroup === undefined)("a stored snapshot directory needs the agent group", () => {
+  const f = fixture();
+  try {
+    f.publish();
+    const stored = runnerTaskRepositoryPath(f.spool, f.job.executionId);
+    chownSync(join(stored, "nested"), process.getuid!(), otherGroup!);
+    expect(() => runnerTaskRepositoryPath(f.spool, f.job.executionId)).toThrow(
+      `Unsafe task repository directory: nested (${process.getuid!()}:${otherGroup} 750)`,
+    );
   } finally {
     rmSync(f.root, { recursive: true, force: true });
   }

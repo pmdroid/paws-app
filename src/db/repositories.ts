@@ -6,18 +6,23 @@ import { orm } from "./orm";
 import { question, workItemRepository, workItemRepositoryQuestion } from "./schema";
 import { immediate } from "./tx";
 
-export function getWorkItemRepository(db: Database, itemId: string): RepositoryBinding | null {
-  return (
-    orm(db)
+export function* getWorkItemRepositorySteps(q: Q, itemId: string): Steps<RepositoryBinding | null> {
+  const { workItemRepository: repositories } = q.t;
+  const row = yield* q.one(
+    q.orm
       .select({
-        owner: workItemRepository.owner,
-        repo: workItemRepository.repo,
-        remoteUrl: workItemRepository.remoteUrl,
+        owner: repositories.owner,
+        repo: repositories.repo,
+        remoteUrl: repositories.remoteUrl,
       })
-      .from(workItemRepository)
-      .where(eq(workItemRepository.itemId, itemId))
-      .get() ?? null
+      .from(repositories)
+      .where(eq(repositories.itemId, itemId)),
   );
+  return row ?? null;
+}
+
+export function getWorkItemRepository(db: Database, itemId: string): RepositoryBinding | null {
+  return settled(sqliteDb(db).run((q) => getWorkItemRepositorySteps(q, itemId)));
 }
 
 export function bindWorkItemRepository(

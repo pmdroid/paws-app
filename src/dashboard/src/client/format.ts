@@ -260,6 +260,7 @@ export function heldLine(item: WaitingItem): string | null {
     const names = [...new Set((held.files ?? []).map((path) => path.split("/").pop()!))];
     return `Held: waiting for ${held.blockers[0]} to merge${names.length ? ` (both change ${names.join(", ")})` : ""}`;
   }
+  if (held.reason === "slot" && held.blockers[0]) return `Waiting: ${held.blockers[0]}`;
   if (held.reason === "cap" && item.queue?.ownerCap)
     return `Waiting: ${capLine(item, item.queue.ownerCap)}`;
   return `Waiting: ${HELD_LINES[held.reason]}`;

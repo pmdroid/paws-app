@@ -48,6 +48,7 @@ export function createRunnerHttp(
   options: {
     /** Per-agent sign-in status added to each runner in the list. */
     agents?: (principal: WorkspacePrincipal, runnerId: string) => readonly unknown[];
+    hostWarnings?: (runnerId: string) => readonly string[];
     /** What a new host's config needs: this Paws's endpoints and the repositories it may run. */
     hostConfig?: () => RunnerHostConfig | null;
   } = {},
@@ -91,24 +92,27 @@ export function createRunnerHttp(
       try {
         if (path === "/api/runners" && request.method === "GET")
           return json({
-            runners: control
-              .list(principal, sessionIds)
-              .map((runner) =>
-                options.agents
-                  ? { ...runner, agents: options.agents(principal, runner.id) }
-                  : runner,
-              ),
+            runners: control.list(principal, sessionIds).map((runner) => ({
+              ...runner,
+              ...(options.agents ? { agents: options.agents(principal, runner.id) } : {}),
+              ...(options.hostWarnings?.(runner.id).length
+                ? { hostWarnings: options.hostWarnings(runner.id) }
+                : {}),
+            })),
             serverVersion: control.serverVersion(),
             agentVersions: control.agentVersions(),
           });
-        if (path === "/api/runners/enrollments" && request.method === "POST")
-          return json({
-            ...control.createEnrollment(
-              principal,
-              enrollmentRequest.parse(await readJson(request)),
-            ),
-            config: options.hostConfig?.() ?? null,
-          });
+        if (path === "/api/runners/enrollments" && request.method === "POST") {
+          const input = enrollmentRequest.parse(await readJson(request));
+          const config = options.hostConfig?.() ?? null;
+          // An empty list makes the runner refuse every run, so no token is issued for one.
+          if (config?.allowedRepositories.length === 0)
+            return json(
+              { error: "Connect GitHub and add a repository before adding a runner." },
+              409,
+            );
+          return json({ ...control.createEnrollment(principal, input), config });
+        }
         const match = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/status$/.exec(path);
         if (match && request.method === "POST") {
           control.setStatus(

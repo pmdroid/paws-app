@@ -1,15 +1,16 @@
-import type { Database } from "bun:sqlite";
 import type { CloseoutFocus } from "../closeout";
-import { getCloseoutProgress, latestCloseoutIdentity } from "../db";
+import { getCloseoutProgressSteps, latestCloseoutIdentitySteps, type Db } from "../db";
 
-export function closeoutFocus(
-  db: Database,
+export async function closeoutFocus(
+  store: Db,
   itemId: string,
   reason: string | undefined,
-): CloseoutFocus | undefined {
+): Promise<CloseoutFocus | undefined> {
   if (reason !== "findings" && reason !== "review") return undefined;
-  const latest = latestCloseoutIdentity(db, itemId);
-  const run = latest && getCloseoutProgress(db, itemId, latest.head);
+  const run = await store.run(function* (q) {
+    const latest = yield* latestCloseoutIdentitySteps(q, itemId);
+    return latest && (yield* getCloseoutProgressSteps(q, itemId, latest.head));
+  });
   if (!run) return undefined;
   const passed = run.steps
     .filter((step) => step.kind !== "review" && step.state === "passed")

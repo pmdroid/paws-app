@@ -6,6 +6,7 @@ import {
   saveCandidatePathsSteps,
   saveCandidateRiskSteps,
 } from "../db";
+import { recoverStalledCloseout } from "./closeout-stall";
 import { getItemPullRequestSteps, recordItemCandidateSteps } from "../db";
 import { parkLeasedJobSteps } from "../db";
 import {
@@ -29,6 +30,7 @@ import {
 import { dashboardUrl } from "../dashboard-links";
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
+import type { ItemRunnerVerdicts, RunnerHostRefusal } from "../db";
 import {
   AFTER_PULL_REQUEST_RESPONSE,
   canReportProgress as canReportSessionProgress,
@@ -49,6 +51,8 @@ import {
   saveHumanRetryWindow,
   fixRounds,
   jobVersionCurrent,
+  recordReviewFindings,
+  failedCloseoutReviews,
   restartLimit,
   runnerHoldsRunWork,
   runnerWorkHasResult,
@@ -129,10 +133,12 @@ import {
   repositoryPackages,
   reviewApps,
   readQueueSettings,
+  readAgentSettings,
   resolveAgentProfiles,
   resolveBriefTemplate,
   resolveMergeSettings,
   suggestedFindingsMode,
+  type AgentLabelProblem,
   type AgentProfile,
   type AgentProfiles,
   type CheckoutExclusions,
@@ -156,6 +162,7 @@ import {
   bypassable,
   readReviewRounds,
   reviewFindingText,
+  bugClass,
   snapshotRetryBaseline,
   storedReviewFindings,
   loggedSessionCloseout,
@@ -398,11 +405,15 @@ import {
   itemOwnerUserId,
   itemParentTaskKey,
   itemSpecificationRevision,
-  landedTaskBlockers,
+  landedTaskBlockersSteps,
   latestRestartEvent,
   latestRunningAnswer,
   linearOutboxKeyed,
   listItemIds,
+  listItemIdsSteps,
+  getWorkItemRepositorySteps,
+  type Q,
+  type Steps,
   moveDelegationSession,
   openRunnerRepositoryQuestions,
   openTaskDependents,
@@ -599,6 +610,7 @@ import {
   rebaseBudgetFor,
   returnQueuedConflicts,
   wakeMergesBehind,
+  postMergeConflict,
   type MergePublication,
   type MergeStep,
   type MergeWait,
@@ -807,6 +819,12 @@ export type OrchestratorOptions = {
    * item out of the slot line and its start timeout. Null when it cannot tell. SQLite only.
    */
   ownerHasRunner?: (itemId: string, agent: string, now: number) => boolean | null;
+  itemRunners?: (
+    itemId: string,
+    profile: { agent: string; model?: string | null },
+    now: number,
+  ) => ItemRunnerVerdicts | null;
+  onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
   /**
    * Why the item's owner has no runner they may use for this agent, for the runner-setup hold
    * and its thought. Null when a runner is usable or only offline. SQLite only.
@@ -923,6 +941,7 @@ export class Orchestrator {
     { journal: (line) => (this.options.journal ?? journal)(line) },
   );
   private shuttingDown = false;
+  private readonly admissionLabelReads = new Set<string>();
   private readonly activitySeqs = new Map<string, number>();
   private waitFaces = new Map<string, string>();
   private readonly activityRequests = new Map<number, AbortSignal>();
@@ -1106,7 +1125,7 @@ export class Orchestrator {
         if (event.action === "prompted" && event.sessionId) {
           const delegationId =
             workItemForSession(this.db, event.sessionId)?.delegationId ?? questionDelegationId;
-          if (delegationId) this.reconcileExecution();
+          if (delegationId) await this.reconcileExecution();
         }
       });
     this.sessionEvents.set(key, done);
@@ -1437,7 +1456,7 @@ export class Orchestrator {
           );
         }
       }
-      this.dispatch();
+      await this.dispatch();
     }
     await this.flush();
   }
@@ -1905,7 +1924,7 @@ export class Orchestrator {
     jobs.register(JOB_KIND.visualReviewReminder, async (job, context) => {
       const questionId = readString(job.payload, "questionId");
       if (!context.isCurrent() || questionId === null) return;
-      if (remindVisualReview(this.db, questionId, this.now())) await this.flush();
+      if (await remindVisualReview(this.db, questionId, this.now())) await this.flush();
     });
     jobs.register(JOB_KIND.linkAskReminder, async (job, context) => {
       const questionId = readString(job.payload, "questionId");
@@ -1916,17 +1935,20 @@ export class Orchestrator {
       const itemId = readString(job.payload, "itemId");
       const questionId = readString(job.payload, "questionId");
       if (!context.isCurrent() || itemId === null || questionId === null) return;
-      if (reaskDeadQuestion(this.db, { itemId, questionId, jobId: job.id, now: this.now() }))
+      if (await reaskDeadQuestion(this.db, { itemId, questionId, jobId: job.id, now: this.now() }))
         await this.flush();
     });
-    jobs.register(JOB_KIND.runnerSetupCheck, (job) => {
+    jobs.register(JOB_KIND.runnerSetupCheck, async (job) => {
       const owner = readString(job.payload, "ownerUserId");
-      if (owner !== null) this.checkRunnerSetup(owner);
+      if (owner !== null) await this.checkRunnerSetup(owner);
     });
     jobs.register(JOB_KIND.runnerRepositoryCheck, async (job) => {
       const runnerId = readString(job.payload, "runnerId");
       if (runnerId !== null)
-        this.checkRunnerRepositories(runnerId, readString(job.payload, "answeredBy") ?? "paws");
+        await this.checkRunnerRepositories(
+          runnerId,
+          readString(job.payload, "answeredBy") ?? "paws",
+        );
       await this.flush();
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
@@ -2270,7 +2292,7 @@ export class Orchestrator {
             this.options.journal,
           );
         }
-        return readReviewChecks(this.db, {
+        return readReviewChecks(this.store, {
           owner: repository.owner,
           repo: repository.repo,
           head: pull.head,
@@ -2715,7 +2737,7 @@ export class Orchestrator {
    * they may use. A resume ends the hold, posts one thought and lets the scheduler start the
    * item, which places it by its normal checks. Reads SQLite only, never Linear.
    */
-  private checkRunnerSetup(ownerUserId: string): void {
+  private async checkRunnerSetup(ownerUserId: string): Promise<void> {
     const eligibleRunner = this.options.eligibleRunner;
     if (!eligibleRunner) return;
     const holds = listRunnerSetupHolds(this.db, ownerUserId);
@@ -2754,7 +2776,7 @@ export class Orchestrator {
           return true;
         }) || resumed;
     }
-    if (resumed) this.dispatch();
+    if (resumed) await this.dispatch();
   }
 
   private askRunnerRepository(item: WorkItemRecord, refused: RunnerRepositoryRefused): boolean {
@@ -2803,7 +2825,7 @@ export class Orchestrator {
     return true;
   }
 
-  private checkRunnerRepositories(runnerId: string, answeredBy: string): void {
+  private async checkRunnerRepositories(runnerId: string, answeredBy: string): Promise<void> {
     const allowedOn = this.options.repositoryAllowedOn;
     if (!allowedOn) return;
     const now = this.now();
@@ -2828,7 +2850,7 @@ export class Orchestrator {
         );
         answered = outcome.status === "answered" || answered;
       }
-    if (answered) this.dispatch();
+    if (answered) await this.dispatch();
   }
 
   private runnerSetupLine(need: RunnerSetupNeed): string {
@@ -3072,7 +3094,7 @@ export class Orchestrator {
       });
     if (taskKey && classification?.mode === "code" && classification.redirect) {
       await this.intakeLinearTask(this.delegationIssueId(item)!, item.sessionKey, taskKey);
-      this.dispatch();
+      await this.dispatch();
       return false;
     }
     // Code stays code, and a plan stays a plan through its edits and questions.
@@ -3096,6 +3118,7 @@ export class Orchestrator {
       return true;
     }
     const run = await this.ensureRun(item);
+    if (!(await this.checkProfileLabels(item, run.id))) return false;
     if (!handoff) {
       if (classification?.mode !== "clarify") throw new Error("Task clarification is missing");
       return this.requestTaskClarification(item, run.id, classification.question);
@@ -3145,7 +3168,7 @@ export class Orchestrator {
             context: [this.workContext(item), handoff].join("\n\n"),
           });
           await this.intakeLinearTask(issueId, item.sessionKey, taskKey);
-          this.dispatch();
+          await this.dispatch();
           return false;
         }
       }
@@ -3197,6 +3220,7 @@ export class Orchestrator {
     handoff?: string,
   ): Promise<void> {
     const run = await this.ensureRun(item);
+    if (!(await this.checkProfileLabels(item, run.id))) return;
     item = getWorkItem(this.db, item.id)!;
     const profile = this.profileSnapshot(run.id).implementer;
     const live = this.beginLive(item.id, run.id);
@@ -3349,7 +3373,7 @@ export class Orchestrator {
           finish,
         );
       } else completeAnswerTask(this.db, item.id, activity.resultBody(), this.now(), finish);
-      this.dispatch();
+      await this.dispatch();
     } catch (error) {
       if (
         !this.askedRuns.has(run.id) &&
@@ -3430,6 +3454,7 @@ export class Orchestrator {
       setItemBranchName(this.db, item.id, branch);
     }
     const run = await this.ensureRun(item);
+    if (!(await this.checkProfileLabels(item, run.id))) return;
     item = getWorkItem(this.db, item.id)!;
     const profiles = this.profileSnapshot(run.id);
     const live = this.beginLive(item.id, run.id);
@@ -3536,7 +3561,7 @@ export class Orchestrator {
       const turnHandoff = [handoff, ...heldReplies, comments?.text, suggestions]
         .filter((part) => part)
         .join("\n\n");
-      const focus = closeoutFocus(this.db, item.id, returned?.reason);
+      const focus = await closeoutFocus(this.store, item.id, returned?.reason);
       const draft = this.savedDraft(item.id);
       const prompt = implementPrompt({
         identifier: item.linearIdentifier,
@@ -3676,8 +3701,8 @@ export class Orchestrator {
       this.saveCandidate(run.id, executed.run.identity);
       const at = this.itemHead(finished);
       const head = (await git(["-C", at.repo, "rev-parse", at.ref])).trim();
-      recordAgentFindingDecisions(
-        this.db,
+      await recordAgentFindingDecisions(
+        this.store,
         item.id,
         activity.resultBody(),
         await this.fixCommit(at.repo, item.id, head),
@@ -3709,7 +3734,7 @@ export class Orchestrator {
           pullRequestDraftKey(this.savedDraft(item.id)),
         );
       else closeActiveRun(this.db, run.id, this.now());
-      const suggestionJob = suggestionTurnRunning(this.db, item.id);
+      const suggestionJob = await suggestionTurnRunning(this.store, item.id);
       if (
         suggestionJob !== null &&
         head === getWorkItem(this.db, item.id)?.acceptedHead &&
@@ -3919,7 +3944,7 @@ export class Orchestrator {
           ...(options.reverifyJobId !== undefined ? { reverifyJobId: options.reverifyJobId } : {}),
         });
         if (mergeJob !== null)
-          await settleReviewEscapes(this.db, {
+          await settleReviewEscapes(this.store, {
             itemId: item.id,
             fixHead: acceptedHead,
             base,
@@ -3988,7 +4013,7 @@ export class Orchestrator {
       "-z",
       `${base}...${head}`,
     ]);
-    await recordAcceptedFindings(this.db, {
+    await recordAcceptedFindings(this.store, {
       itemId: item.id,
       head,
       pawsRoot: this.options.pawsRoot,
@@ -4738,6 +4763,14 @@ export class Orchestrator {
         ...conflict,
         recordedAt: this.now(),
       });
+      const pull = getItemPullRequest(this.db, item.id);
+      if (pull !== null)
+        postMergeConflict(
+          this.db,
+          current,
+          { sessionId: this.activitySession(current), pullNumber: pull.pullNumber, head },
+          this.now(),
+        );
       return true;
     });
     if (sent)
@@ -4829,6 +4862,36 @@ export class Orchestrator {
     const rounds = fixRounds(this.db, item.id);
     const limit = this.fixRoundLimit(item);
     if (failed && !exhausted && !setupFailed && rounds < limit) {
+      const reviews = result?.reviewFindings ?? [];
+      const repository = this.repositoryForItem(item);
+      const judgedReviews = failedCloseoutReviews(this.db, item.id)?.reviews ?? [];
+      if (repository && reviews.length > 0)
+        recordReviewFindings(this.db, {
+          itemId: item.id,
+          repository: `${repository.owner}/${repository.repo}`,
+          head: result!.head,
+          seenAt: this.now(),
+          findings: reviews.flatMap((review) =>
+            review.findings
+              .filter((finding) => {
+                const failOn = judgedReviews.find((entry) => entry.id === review.itemId)?.failOn;
+                return (
+                  !review.preExisting?.includes(finding) &&
+                  failOn != null &&
+                  finding.severity <= failOn
+                );
+              })
+              .map((finding) => ({
+                review: review.itemId,
+                severity: finding.severity,
+                location: finding.location,
+                text: finding.explanation,
+                bugClass: bugClass(finding.explanation),
+                why: "meets failOn" as const,
+              })),
+          ),
+          reviewed: [],
+        });
       const reads = await this.readPendingFeedback(current);
       this.assertJobCurrent(item.id);
       immediate(this.db, () => {
@@ -4985,7 +5048,7 @@ export class Orchestrator {
     );
     const findings = reviewFindingText(await this.failedReviewFindings(item));
     this.assertJobCurrent(item.id);
-    const question = askReviewRounds(this.db, {
+    const question = await askReviewRounds(this.db, {
       item,
       help,
       findings,
@@ -5310,7 +5373,7 @@ export class Orchestrator {
           });
         },
         askRiskApproval: async (item, published) => {
-          const asked = askRiskApproval(this.db, {
+          const asked = await askRiskApproval(this.db, {
             item,
             head: published.head,
             publicUrl: this.options.publicUrl ?? null,
@@ -5407,7 +5470,8 @@ export class Orchestrator {
     }
     if (item.state !== "merge_queue") return { kind: "obsolete" };
     immediate(this.db, () => {
-      if (!this.admission.canMerge(item.id).ok)
+      // A sync transaction: `steps` has no merge check to yield here.
+      if (!settled(this.admission.canMerge(item.id)).ok)
         throw new LinearReconciliationPendingError("Linear dependencies are still running");
       const sessionId = item.sessionKey;
       const session = sessionId ? getLinearSession(this.db, sessionId) : null;
@@ -5488,7 +5552,7 @@ export class Orchestrator {
     const publicUrl = this.options.evidence?.publicUrl ?? this.options.publicUrl ?? null;
     const open: OpenItems = {
       findings: await openFindings(
-        this.db,
+        this.store,
         item,
         run.publicationCandidate?.sha ?? null,
         this.options.pawsRoot,
@@ -5549,8 +5613,8 @@ export class Orchestrator {
     const evidence = [
       summary,
       riskLine(risk),
-      visualReviewPullRequestNote(
-        this.db,
+      await visualReviewPullRequestNote(
+        this.store,
         item,
         this.options.evidence?.publicUrl ?? null,
         this.now(),
@@ -5654,12 +5718,12 @@ export class Orchestrator {
     await this.flush(live.controller.signal);
     if (
       this.suggestedFindingsMode(repositoryName) === "own_turn" &&
-      startSuggestionTurn(this.db, {
+      (await startSuggestionTurn(this.store, {
         itemId: item.id,
         head: published.head,
         suggestions: undecidedSuggestions(open.findings).length,
         now: this.now(),
-      }) === "started"
+      })) === "started"
     )
       return { kind: "returned" };
     run.signal = live.controller.signal;
@@ -5830,7 +5894,7 @@ export class Orchestrator {
       );
       return undefined;
     });
-    this.dispatch();
+    await this.dispatch();
     await this.flush();
   }
 
@@ -5864,7 +5928,8 @@ export class Orchestrator {
       restart: (item, handoff) => this.restartWithStoredFeedback(item, handoff),
       dependencyHold: (id) => {
         // Only unmet dependencies; a pending reconciliation keeps its own retry in mergeAttempt.
-        const admitted = this.admission.canMerge(id);
+        // Stays sync: the merge queue calls this as a predicate inside listMergeQueuesSteps.
+        const admitted = settled(this.admission.canMerge(id));
         if (admitted.ok || admitted.held !== "blocked") return null;
         return openBlockers(this.db, id);
       },
@@ -6021,7 +6086,7 @@ export class Orchestrator {
     if (this.suggestedFindingsMode(`${repository.owner}/${repository.repo}`) === "off") return "";
     await this.pullCloseoutEvidence(item);
     const findings = undecidedSuggestions(
-      await acceptedSuggestions(this.db, item, this.options.pawsRoot).catch((error: unknown) => {
+      await acceptedSuggestions(this.store, item, this.options.pawsRoot).catch((error: unknown) => {
         journalCaught(
           error,
           "orchestrator.suggestionBrief",
@@ -6032,7 +6097,7 @@ export class Orchestrator {
         return [];
       }),
     );
-    handSuggestions(this.db, item.id, findings, this.now());
+    await handSuggestions(this.store, item.id, findings, this.now());
     if (findings.length === 0) return "";
     return suggestedFindingsSection(
       findings.map((finding) => ({ ...finding, id: findingId(finding) })),
@@ -6118,11 +6183,11 @@ export class Orchestrator {
         }
         if (
           request.pushRejected?.conflicts &&
-          restartForPushConflict(this.db, item.id, {
+          (await restartForPushConflict(this.db, item.id, {
             branch: request.pushRejected.branch,
             files: request.pushRejected.conflicts,
             now: this.now(),
-          })
+          }))
         ) {
           this.askedRuns.add(runId);
           await this.flush();
@@ -6458,7 +6523,7 @@ export class Orchestrator {
       });
       if (guided) {
         this.abortItem(open.itemId);
-        this.dispatch();
+        await this.dispatch();
       }
       await this.flush();
       return guided ? "answered" : "rejected";
@@ -6614,15 +6679,15 @@ export class Orchestrator {
     await this.flush();
   }
 
-  private assertReconciled(item: WorkItemRecord): void {
-    if (!this.admission.canDispatchDelegation(item.delegationId))
+  private async assertReconciled(item: WorkItemRecord): Promise<void> {
+    if (!(await this.admission.canDispatchDelegation(item.delegationId)))
       throw new LinearReconciliationPendingError(
         "Linear execution changes are still being reconciled",
       );
   }
 
   private async reconcileForMerge(item: WorkItemRecord, run: MergeRun): Promise<void> {
-    if (this.admission.canDispatchDelegation(item.delegationId)) return;
+    if (await this.admission.canDispatchDelegation(item.delegationId)) return;
     const signal = this.live.get(`operation:${item.id}`)?.controller.signal;
     if (signal && this.options.publicationReady) {
       this.options.journal?.(
@@ -6636,7 +6701,7 @@ export class Orchestrator {
       );
       signal.throwIfAborted();
     }
-    this.assertReconciled(item);
+    await this.assertReconciled(item);
   }
 
   private async assertPublicationReady(
@@ -6650,7 +6715,7 @@ export class Orchestrator {
     signal.throwIfAborted();
     if (ready === false)
       throw new LinearReconciliationPendingError("Linear publication freshness is pending");
-    this.assertReconciled(item);
+    await this.assertReconciled(item);
   }
 
   applyDelegationChanges(changes: ExecutionChanges): void {
@@ -6822,7 +6887,7 @@ export class Orchestrator {
       onCommitted?.();
       return true;
     });
-    if (resumed) this.reconcileExecution();
+    if (resumed) await this.reconcileExecution();
     return resumed;
   }
 
@@ -6885,8 +6950,16 @@ export class Orchestrator {
     this.githubAuth?.invalidate(scope);
   }
 
-  reconcileExecution(): void {
-    this.dispatch();
+  async reconcileExecution(): Promise<void> {
+    await this.dispatch();
+  }
+
+  async recoverStalledCloseout(): Promise<void> {
+    await recoverStalledCloseout(this.db, {
+      now: this.now(),
+      cancel: (id) => this.joinChangedItems([id]),
+      journal: this.options.journal ?? journal,
+    });
   }
 
   async checkPolicyBlocks(): Promise<void> {
@@ -6907,7 +6980,7 @@ export class Orchestrator {
 
   async sweepWorktrees(signal: AbortSignal): Promise<void> {
     await sweepCheckpointRefs({
-      db: this.db,
+      store: this.store,
       signal,
       remove: (repository, ref) => {
         const github = this.githubForRepository(repository);
@@ -6929,7 +7002,7 @@ export class Orchestrator {
       this.jobContexts.has(itemId) ||
       [...this.live.values()].some((live) => live.itemId === itemId);
     return sweepWorktrees({
-      db: this.db,
+      store: this.store,
       pawsRoot: this.options.pawsRoot,
       now: this.now(),
       signal,
@@ -6967,10 +7040,16 @@ export class Orchestrator {
   }
 
   dependencyHandoff(itemId: string): string | undefined {
-    const item = getWorkItem(this.db, itemId);
+    return settled(this.store.run((q) => this.dependencyHandoffSteps(q, itemId)));
+  }
+
+  private *dependencyHandoffSteps(q: Q, itemId: string): Steps<string | undefined> {
+    const item = yield* getWorkItemSteps(q, itemId);
     if (!item) return undefined;
-    const blockers = landedTaskBlockers(this.db, item.delegationId, item.linearIssueId);
-    const active = new Set(this.delegationItems(item.delegationId).map((entry) => entry.id));
+    const blockers = yield* landedTaskBlockersSteps(q, item.delegationId, item.linearIssueId);
+    const active = new Set<string>();
+    for (const id of yield* listItemIdsSteps(q, false))
+      if ((yield* getWorkItemSteps(q, id))?.delegationId === item.delegationId) active.add(id);
     const results = blockers
       .filter((blocker) => active.has(blocker.id))
       .map((blocker) => {
@@ -6986,12 +7065,13 @@ export class Orchestrator {
     return [resume, dependencies].filter(Boolean).join("\n\n") || undefined;
   }
 
-  private dispatch(): void {
+  private async dispatch(): Promise<void> {
     const ownerHasRunner = this.options.ownerHasRunner;
     let config: ReturnType<typeof loadConfigFile> | null = null;
     try {
       this.reconcileAgentSettings();
-      if (ownerHasRunner) config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+      if (ownerHasRunner || this.options.itemRunners)
+        config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
     } catch (caughtError15) {
       journalCaught(
         caughtError15,
@@ -7002,38 +7082,162 @@ export class Orchestrator {
       );
       config = null;
     }
-    dispatch(this.db, {
+    await dispatch(this.db, {
+      store: this.store,
       now: this.now(),
       admission: this.admission,
       ...(this.options.journal ? { log: this.options.journal } : {}),
-      handoffForItem: (itemId) => this.dependencyHandoff(itemId),
-      sessionFor: (itemId) => {
-        const item = getWorkItem(this.db, itemId);
-        return item && this.activitySession(item);
-      },
+      handoffForItem: (q, itemId) => this.dependencyHandoffSteps(q, itemId),
+      sessionFor: (q, itemId) => this.itemSessionSteps(q, itemId),
       ...this.options.scheduling?.(),
       onWaiting: (itemIds) => this.noteQueued(itemIds),
       onWaits: (waits) => this.noteWaits(waits),
+      ...(this.options.itemRunners
+        ? {
+            itemRunners: (itemId: string) => {
+              const item = getWorkItem(this.db, itemId);
+              return item && config
+                ? this.options.itemRunners!(
+                    itemId,
+                    this.implementerProfile(item, config),
+                    this.now(),
+                  )
+                : null;
+            },
+          }
+        : {}),
       ...(ownerHasRunner && config
         ? {
-            ownerHasRunner: (itemId: string) => {
-              const item = getWorkItem(this.db, itemId);
-              if (!item) return null;
-              return ownerHasRunner(itemId, this.implementerAgent(item, config), this.now());
-            },
+            ownerHasRunner: (q: Q, itemId: string) =>
+              this.ownerHasRunnerSteps(q, itemId, ownerHasRunner, config),
             onRunnerSetup: (itemIds: readonly string[]) =>
-              this.noteRunnerSetup(itemIds, (item) => this.implementerAgent(item, config)),
+              this.noteRunnerSetup(
+                itemIds.filter((id) => !this.awaitsAdmissionLabels(id, config)),
+                (item) => this.implementerAgent(item, config),
+              ),
+            ...(this.options.onRunnerHostRefusals
+              ? { onRunnerHostRefusals: this.options.onRunnerHostRefusals }
+              : {}),
           }
         : {}),
     });
   }
 
   private implementerAgent(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
+    return implementerAgentFor(config, this.repositoryForItem(item), this.knownProfileLabels(item));
+  }
+
+  private implementerProfile(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
     const repository = this.repositoryForItem(item);
     return resolveAgentProfiles(
       config,
       repository ? `${repository.owner}/${repository.repo}` : undefined,
-    ).implementer.agent;
+      this.knownProfileLabels(item),
+    ).implementer;
+  }
+
+  private *itemSessionSteps(q: Q, itemId: string): Steps<string | null> {
+    const item = yield* getWorkItemSteps(q, itemId);
+    return item ? this.activitySession(item) : null;
+  }
+
+  private *ownerHasRunnerSteps(
+    q: Q,
+    itemId: string,
+    ownerHasRunner: NonNullable<OrchestratorOptions["ownerHasRunner"]>,
+    config: ReturnType<typeof loadConfigFile>,
+  ): Steps<boolean | null> {
+    const item = yield* getWorkItemSteps(q, itemId);
+    if (!item) return null;
+    const repository = yield* getWorkItemRepositorySteps(q, item.id);
+    return ownerHasRunner(
+      itemId,
+      implementerAgentFor(config, repository, this.knownProfileLabels(item)),
+      this.now(),
+    );
+  }
+
+  /** The labels read for this queue entry, or else the ones the last run used. */
+  private knownProfileLabels(item: WorkItemRecord): ProfileLabels | undefined {
+    return (
+      this.keptAdmissionLabels(item)?.labels ??
+      (item.currentRunId ? this.readProfileSnapshot(item.currentRunId)?.profileLabels : undefined)
+    );
+  }
+
+  private admissionLabelsFile(itemId: string): string {
+    return join(runDir(this.options.pawsRoot, itemId), "admission-labels.json");
+  }
+
+  private keptAdmissionLabels(item: WorkItemRecord): { labels?: ProfileLabels } | null {
+    const file = this.admissionLabelsFile(item.id);
+    if (!existsSync(file)) return null;
+    try {
+      const kept = JSON.parse(readFileSync(file, "utf8")) as {
+        version: number;
+        labels?: ProfileLabels;
+      };
+      return kept.version === item.version ? kept : null;
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.keptAdmissionLabels",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Admission is synchronous and picks the agent before a run exists. An item about to be held
+   * for a runner may carry a label that names an agent its owner can use, so its labels are read
+   * once per queue entry, and the scheduler looks again. Returns whether that read is under way.
+   * Without presets a label can't change the agent, and nothing is read.
+   */
+  private awaitsAdmissionLabels(
+    itemId: string,
+    config: ReturnType<typeof loadConfigFile>,
+  ): boolean {
+    if (this.admissionLabelReads.has(itemId)) return true;
+    const item = getWorkItem(this.db, itemId);
+    if (
+      !item ||
+      !this.tracker?.issueRepositoryHints ||
+      Object.keys(readAgentSettings(config).presets ?? {}).length === 0 ||
+      this.keptAdmissionLabels(item)
+    )
+      return false;
+    this.admissionLabelReads.add(itemId);
+    void this.readAdmissionLabels(item);
+    return true;
+  }
+
+  private async readAdmissionLabels(item: WorkItemRecord): Promise<void> {
+    try {
+      const previous = item.currentRunId ? this.readProfileSnapshot(item.currentRunId) : null;
+      const labels = await this.forItem({ itemId: item.id }, () =>
+        this.readProfileLabels(item, previous?.profileLabels, previous?.defaultRoles),
+      );
+      mkdirSync(runDir(this.options.pawsRoot, item.id), { recursive: true, mode: 0o700 });
+      writeFileSync(
+        this.admissionLabelsFile(item.id),
+        JSON.stringify({ version: item.version, labels }),
+        { mode: 0o600 },
+      );
+      this.admissionLabelReads.delete(item.id);
+      if (!this.shuttingDown) await this.dispatch();
+    } catch (error) {
+      this.admissionLabelReads.delete(item.id);
+      journalCaught(
+        error,
+        "orchestrator.readAdmissionLabels",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+    }
   }
 
   /**
@@ -7118,7 +7322,9 @@ export class Orchestrator {
       } else if (wait.kind === "runner")
         progress.wait(
           "Wait for a runner",
-          `${name}: ${ordinal(wait.position)} in line for a runner`,
+          wait.noRunner
+            ? `${name}: ${wait.noRunner}`
+            : `${name}: ${ordinal(wait.position)} in line for a runner`,
         );
       else if (wait.kind === "paused")
         progress.status(`${name}: paused by ${wait.by ?? "a workspace member"}`);
@@ -7191,7 +7397,10 @@ export class Orchestrator {
     // A new run, including a retry, uses the profiles saved in Settings now (PAS-831).
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
     const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
-    const profiles = resolveAgentProfiles(config, repoName);
+    const previous = item.currentRunId ? this.readProfileSnapshot(item.currentRunId) : null;
+    const defaultRoles = previous?.defaultRoles;
+    const profileLabels = await this.readProfileLabels(item, previous?.profileLabels, defaultRoles);
+    const profiles = withoutLabelProblems(resolveAgentProfiles(config, repoName, profileLabels));
     const run = await this.store.run((q) =>
       insertRunSteps(q, {
         itemId: item.id,
@@ -7203,20 +7412,125 @@ export class Orchestrator {
         ownerInstance: this.options.instanceId ?? null,
       }),
     );
-    if (item.currentRunId) {
-      // Only an unannounced Settings switch carries over, while it still changes the agent.
-      const pending = this.readProfileSnapshot(item.currentRunId)?.settingsSwitch;
-      const settingsSwitch =
-        pending && pending.previousAgent !== profiles.implementer.agent ? pending : undefined;
-      mkdirSync(runDir(this.options.pawsRoot, run.id), { recursive: true, mode: 0o700 });
-      writeFileSync(
-        join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
-        JSON.stringify({ profiles, settingsSwitch }),
-        { mode: 0o600 },
-      );
-    }
+    // Only an unannounced switch carries over, while it still changes the agent. A changed
+    // Implementer label that changes the agent is announced the same way.
+    const pending = previous?.settingsSwitch;
+    const settingsSwitch =
+      pending && pending.previousAgent !== profiles.implementer.agent
+        ? pending
+        : previous &&
+            previous.profileLabels?.implementer !== profileLabels?.implementer &&
+            previous.profiles.implementer.agent !== profiles.implementer.agent
+          ? { id: randomUUID(), previousAgent: previous.profiles.implementer.agent }
+          : undefined;
+    mkdirSync(runDir(this.options.pawsRoot, run.id), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(runDir(this.options.pawsRoot, run.id), "agent-profile.json"),
+      JSON.stringify({ profiles, profileLabels, defaultRoles, settingsSwitch }),
+      { mode: 0o600 },
+    );
     await this.store.run((q) => setCurrentRunSteps(q, item.id, run.id));
     return run;
+  }
+
+  /** The issue's Implementer and Reviewer labels now, or `fallback` when Linear can't say. */
+  private async readProfileLabels(
+    item: WorkItemRecord,
+    fallback: ProfileLabels | undefined,
+    defaultRoles: readonly ProfileRole[] = [],
+  ): Promise<ProfileLabels | undefined> {
+    let labels = fallback;
+    const tracker = this.tracker;
+    if (tracker?.issueRepositoryHints) {
+      try {
+        const hints = await linearCaller("repository-hints", () =>
+          tracker.issueRepositoryHints!(item.linearIssueId, {
+            signal: this.signalForItem(item.id),
+          }),
+        );
+        labels = hints.profileLabels;
+      } catch (error) {
+        journalCaught(
+          error,
+          "orchestrator.readProfileLabels",
+          item.id,
+          "Linear is unavailable; using the previous run's labels, or none",
+          this.options.journal,
+        );
+      }
+      this.assertJobCurrent(item.id);
+    }
+    if (labels === undefined) return undefined;
+    const kept = { ...labels };
+    for (const role of defaultRoles) delete kept[role];
+    return kept;
+  }
+
+  /**
+   * A run never starts on a guessed profile: an unusable label asks a person first. Returns
+   * whether the run may go on. "Use the default" drops that role's label for this item.
+   */
+  private async checkProfileLabels(item: WorkItemRecord, runId: string): Promise<boolean> {
+    const saved = this.readProfileSnapshot(runId);
+    if (!saved) return true;
+    const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
+    const repository = this.repositoryForItem(item);
+    const repo = repository ? `${repository.owner}/${repository.repo}` : undefined;
+    let resolved = resolveAgentProfiles(config, repo, saved.profileLabels);
+    let answered = false;
+    const question = saved.profileQuestion ? getQuestion(this.db, saved.profileQuestion) : null;
+    if (resolved.labelProblems?.length && question?.status === "answered") {
+      answered = true;
+      if (question.answer === USE_THE_DEFAULT) {
+        const roles = resolved.labelProblems.map((problem) => problem.role);
+        saved.defaultRoles = [...new Set([...(saved.defaultRoles ?? []), ...roles])];
+        for (const role of roles) delete saved.profileLabels?.[role];
+      } else {
+        saved.profileLabels = await this.readProfileLabels(
+          item,
+          saved.profileLabels,
+          saved.defaultRoles,
+        );
+      }
+      delete saved.profileQuestion;
+      resolved = resolveAgentProfiles(config, repo, saved.profileLabels);
+    }
+    const problems = resolved.labelProblems ?? [];
+    if (answered || problems.length > 0) saved.profiles = withoutLabelProblems(resolved);
+    const snapshot = join(runDir(this.options.pawsRoot, runId), "agent-profile.json");
+    if (problems.length > 0) {
+      const body = profileLabelQuestion(
+        problems,
+        Object.keys(readAgentSettings(config).presets ?? {}),
+      );
+      const sessionId = this.activitySession(item);
+      if (sessionId === null) {
+        await this.fail(item, "profile_labels", body);
+        return false;
+      }
+      this.assertJobCurrent(item.id);
+      saved.profileQuestion = immediate(this.db, () => {
+        const { question: asked } = ask(
+          this.db,
+          { itemId: item.id, runId, sessionId },
+          "agent",
+          body,
+          { options: [USE_THE_DEFAULT, "I fixed the label"], now: this.now() },
+        );
+        closeActiveRun(this.db, runId, this.now());
+        return asked.id;
+      });
+      writeFileSync(snapshot, JSON.stringify(saved), { mode: 0o600 });
+      await this.flush();
+      return false;
+    }
+    if (answered) writeFileSync(snapshot, JSON.stringify(saved), { mode: 0o600 });
+    const sources = Object.entries(saved.profileLabels ?? {}).map(
+      ([role, label]) => `${role === "implementer" ? "Implementer" : "Reviewer"}: ${label} (label)`,
+    );
+    if (sources.length > 0)
+      this.post(item, "thought", sources.join("\n"), `${runId}:profile-labels`);
+    return true;
   }
 
   private continueAfterRateLimit(item: WorkItemRecord, retryAfterMs: number): void {
@@ -7260,7 +7574,7 @@ export class Orchestrator {
     } else {
       this.post(current, "error", text, `fail:${current.id}:${current.version}:${reason}`);
     }
-    this.dispatch();
+    await this.dispatch();
   }
 
   private planHook(
@@ -7300,7 +7614,7 @@ export class Orchestrator {
         const repository = this.repositoryForItem(item);
         const signal = this.signalForItem(item.id);
         await applyPullRequestDraft({
-          db: this.db,
+          store: this.store,
           itemId: item.id,
           issue: item.linearIdentifier,
           draft: description,
@@ -7601,7 +7915,7 @@ export class Orchestrator {
     try {
       this.conversations.set(
         itemId,
-        await durableConversation(this.db, itemId, this.remoteAgentForItem(itemId)),
+        await durableConversation(this.store, itemId, this.remoteAgentForItem(itemId)),
       );
       this.assertJobCurrent(itemId);
       await operation();
@@ -7748,7 +8062,7 @@ export class Orchestrator {
       });
       return true;
     });
-    if (resumed) this.reconcileExecution();
+    if (resumed) await this.reconcileExecution();
     await this.flush();
     return resumed;
   }
@@ -7788,7 +8102,7 @@ export class Orchestrator {
     ) {
       let conversation: string | undefined;
       if (item) {
-        await durableConversation(this.db, item.id);
+        await durableConversation(this.store, item.id);
         conversation = getConversation(this.db, item.id).entries;
         turns = listPendingLinearTurns(this.db, sessionId);
         if (!turns.length) return;
@@ -8743,7 +9057,7 @@ export class Orchestrator {
     );
     if (outcome === "answered" && itemId && getWorkItem(this.db, itemId)?.state === "queued") {
       this.abortItem(itemId);
-      this.dispatch();
+      await this.dispatch();
     }
     await this.flush();
     return outcome;
@@ -8805,7 +9119,7 @@ export class Orchestrator {
           },
           now: this.now(),
         });
-        this.reconcileExecution();
+        await this.reconcileExecution();
         await this.flush();
         return true;
       });
@@ -8900,7 +9214,7 @@ export class Orchestrator {
     // Changes requested while the other checks ran restart the item: stop that evaluation.
     if (outcome === "answered" && getWorkItem(this.db, open.itemId)?.state === "queued") {
       this.abortItem(open.itemId);
-      this.dispatch();
+      await this.dispatch();
     }
     await this.flush();
     return outcome;
@@ -9022,11 +9336,11 @@ export class Orchestrator {
     const sourceItemId = classification?.mode !== "clarify" ? classification?.sourceItemId : null;
     const stored = getConversation(this.db, item.id);
     if (sourceItemId && stored.entries === "[]" && !stored.transcript) {
-      await durableConversation(this.db, sourceItemId);
+      await durableConversation(this.store, sourceItemId);
       saveConversation(this.db, item.id, getConversation(this.db, sourceItemId).entries, null);
     }
     const backend = this.remoteAgentForItem(item.id) ?? runAgent;
-    const runner = await durableConversation(this.db, item.id, async (input) => {
+    const runner = await durableConversation(this.store, item.id, async (input) => {
       const policy =
         getTaskMode(this.db, item.id) === "code" &&
         input.role === "implementer" &&
@@ -9130,7 +9444,7 @@ export class Orchestrator {
       ...this.gitHubCredentials(github),
     };
     await postReviewReplies(
-      this.db,
+      this.store,
       { itemId: item.id, pullNumber, head, now: () => this.now() },
       {
         replyToReviewComment: (prNumber, commentId, body) =>
@@ -9206,6 +9520,9 @@ export class Orchestrator {
 
   private readProfileSnapshot(runId: string): {
     profiles: AgentProfiles;
+    profileLabels?: ProfileLabels;
+    profileQuestion?: string;
+    defaultRoles?: ProfileRole[];
     candidate?: AgentIdentity;
     settingsSwitch?: { id: string; previousAgent: AgentProfile["agent"] };
   } | null {
@@ -9244,7 +9561,9 @@ export class Orchestrator {
       const item = getWorkItem(this.db, run.itemId)!;
       const repository = this.repositoryForItem(item);
       const repoName = repository ? `${repository.owner}/${repository.repo}` : undefined;
-      const profiles = resolveAgentProfiles(config, repoName);
+      const profiles = withoutLabelProblems(
+        resolveAgentProfiles(config, repoName, saved.profileLabels),
+      );
       if (JSON.stringify(saved.profiles) === JSON.stringify(profiles)) continue;
       // Keep the original agent through repeated saves before the next turn.
       const previousAgent = saved.settingsSwitch?.previousAgent ?? saved.profiles.implementer.agent;
@@ -9274,7 +9593,7 @@ export class Orchestrator {
     const posted = this.post(
       item,
       "thought",
-      `Switched to ${profile.agent} ${model ?? profile.model ?? "agent default"} as set in Settings.`,
+      `Switched to ${profile.agent} ${model ?? profile.model ?? "agent default"} ${saved.profileLabels?.implementer ? `from the Implementer label ${saved.profileLabels.implementer}` : "as set in Settings"}.`,
       `settings-agent-switch:${saved.settingsSwitch.id}`,
     );
     if (posted === undefined) return;
@@ -9451,9 +9770,7 @@ export class Orchestrator {
   > {
     const repository = this.repositoryForItem(item);
     if (input.prepareOnly || !repository) return {};
-    // A runner-backed code item has no worktree; origin/main is read in the bare mirror.
-    const mirror =
-      !!this.options.remoteExecution && !isResponseTaskMode(getTaskMode(this.db, item.id));
+    const mirror = !!this.options.remoteExecution;
     const repo = mirror ? this.itemHead(item).repo : input.worktreePath;
     const runtimes = {
       runtimes: () => this.runtimeList(item, repo, mirror ? "mirror" : "checkout"),
@@ -9462,7 +9779,7 @@ export class Orchestrator {
     const { home, policyRoot } = this.closeoutHome(item);
     const pull = getItemPullRequest(this.db, item.id);
     const github = pull ? this.githubForRepository(repository) : null;
-    const suggested = input.readOnly ? [] : waitingSuggestions(this.db, item.id);
+    const suggested = input.readOnly ? [] : await waitingSuggestions(this.store, item.id);
     const failed = input.readOnly ? [] : reviewFindingGroups(await this.failedReviewFindings(item));
     return {
       ...runtimes,
@@ -9495,7 +9812,7 @@ export class Orchestrator {
         const load = trustedPolicyFiles(repo, home, policyRoot);
         // The runner parses the policy with its own release: say which keys it would leave out.
         if (load.ok && !load.absent)
-          checkPolicyRunners(this.db, {
+          await checkPolicyRunners(this.store, {
             repository: `${repository.owner}/${repository.repo}`,
             digest: load.digest,
             files: load.files,
@@ -9511,7 +9828,7 @@ export class Orchestrator {
   private async failedReviewFindings(item: WorkItemRecord): Promise<ReviewFindings[]> {
     try {
       await this.pullCloseoutEvidence(item);
-      return await failedReviewFindings(this.db, item.id, this.options.pawsRoot);
+      return await failedReviewFindings(this.store, item.id, this.options.pawsRoot);
     } catch (caught) {
       journalCaught(caught, "orchestrator.failedReviewFindings", item.id);
       return [];
@@ -10058,6 +10375,18 @@ export function attachOrchestrator(options: OrchestratorOptions): Orchestrator {
   return new Orchestrator(options);
 }
 
+function implementerAgentFor(
+  config: ReturnType<typeof loadConfigFile>,
+  repository: RepositoryBinding | null,
+  labels: ProfileLabels | undefined,
+): string {
+  return resolveAgentProfiles(
+    config,
+    repository ? `${repository.owner}/${repository.repo}` : undefined,
+    labels,
+  ).implementer.agent;
+}
+
 function closeActiveRun(
   db: Database,
   runId: string,
@@ -10171,6 +10500,39 @@ function listsChecks(report: string): boolean {
 }
 
 /** The issue labels kept with the task's merge settings when it started. */
+type ProfileRole = "implementer" | "reviewer";
+type ProfileLabels = Partial<Record<ProfileRole, string>>;
+
+const USE_THE_DEFAULT = "Use the default";
+
+/** Label problems decide whether a run starts; they are not part of its saved profiles. */
+function withoutLabelProblems(
+  resolved: AgentProfiles & { labelProblems?: unknown },
+): AgentProfiles {
+  const { labelProblems: _problems, ...profiles } = resolved;
+  return profiles;
+}
+
+function profileLabelQuestion(
+  problems: readonly AgentLabelProblem[],
+  presets: readonly string[],
+): string {
+  const lines = problems.map((problem) => {
+    const role = problem.role === "implementer" ? "Implementer" : "Reviewer";
+    const reason =
+      problem.reason === "unknown_preset"
+        ? "no preset has this name"
+        : "it would review with the same agent and model that implement";
+    return `- ${role} label "${problem.label}": ${reason}.`;
+  });
+  return [
+    "The agent profile labels on this issue can't be used, so the run hasn't started:",
+    ...lines,
+    `Available presets: ${presets.length > 0 ? presets.join(", ") : "none"}.`,
+    "Use the default profile for this item, or fix the label in Linear and say so.",
+  ].join("\n");
+}
+
 function issueLabels(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((label) => typeof label === "string") : [];
 }

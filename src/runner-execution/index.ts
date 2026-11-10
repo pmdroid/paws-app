@@ -46,5 +46,12 @@ export {
   runnerAccountBindings,
   runnerAccountHome,
   shareRunnerAgentState,
+  shareRunnerWorkRoot,
 } from "./accounts";
 export { clearInheritedSetgid, sharedDirectoryAllowed } from "./shared";
+export {
+  RUNNER_WORK_SWEEP_EVERY_MS,
+  createRunnerWorkCleaner,
+  openRunnerCheckoutToGroup,
+  type RunnerWorkCleaner,
+} from "./work-root";

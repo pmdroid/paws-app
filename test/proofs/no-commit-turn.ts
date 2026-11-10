@@ -7,6 +7,7 @@ export default {
     "src/loop/orchestrator.ts",
     "src/loop/turn-passes.ts",
     "src/runner-worker/**",
+    "src/runner-backend/**",
   ],
   summary: "An agent turn that changes no file and makes no commit does not fail the item.",
   agent: () => [

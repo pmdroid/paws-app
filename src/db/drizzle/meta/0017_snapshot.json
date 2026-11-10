@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "1ae9bfc1-b7b5-4207-b90b-b325b58d805a",
+  "id": "f8be7370-4e28-44bf-a5cd-99f312d7e3fe",
   "prevId": "b2581e15-95d3-463b-91ba-bcddfefb7d1f",
   "tables": {
     "agent_account": {
@@ -4494,6 +4494,11 @@
         }
       },
       "indexes": {
+        "review_finding_dedupe_key_unique": {
+          "name": "review_finding_dedupe_key_unique",
+          "columns": ["dedupe_key"],
+          "isUnique": true
+        },
         "review_finding_last_seen": {
           "name": "review_finding_last_seen",
           "columns": ["status", "last_seen_at DESC"],
@@ -4503,11 +4508,6 @@
           "name": "review_finding_path",
           "columns": ["repository", "review", "path"],
           "isUnique": false
-        },
-        "review_finding_dedupe_key_unique": {
-          "name": "review_finding_dedupe_key_unique",
-          "columns": ["dedupe_key"],
-          "isUnique": true
         }
       },
       "foreignKeys": {
@@ -4539,7 +4539,7 @@
         },
         "review_finding_check_2": {
           "name": "review_finding_check_2",
-          "value": "why IN ('pre-existing', 'below failOn')"
+          "value": "why IN ('pre-existing', 'below failOn', 'meets failOn')"
         },
         "review_finding_check_3": {
           "name": "review_finding_check_3",
@@ -6593,65 +6593,6 @@
         },
         "refreshed_at": {
           "name": "refreshed_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "repository_merge_lock": {
-      "name": "repository_merge_lock",
-      "columns": {
-        "repository": {
-          "name": "repository",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "holder": {
-          "name": "holder",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "item_id": {
-          "name": "item_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "job_id": {
-          "name": "job_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "instance_id": {
-          "name": "instance_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "acquired_at": {
-          "name": "acquired_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,

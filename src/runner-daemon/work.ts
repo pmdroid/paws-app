@@ -17,6 +17,7 @@ const assignment = z.strictObject({ runId: identifier, generation });
 
 export const RunnerHeartbeatSchema = z.strictObject({
   terminated: z.array(RunnerTerminationSchema).max(64).optional(),
+  finishedRuns: z.array(identifier).max(64).optional(),
   observedAt: timestamp.optional(),
   leases: z.array(z.strictObject({ ...assignment.shape, expiresAt: timestamp })),
   fenced: z.array(assignment),
@@ -32,6 +33,8 @@ export const RunnerHeartbeatSchema = z.strictObject({
    */
   offlineBudgetMs: z.number().int().positive().max(RUNNER_OFFLINE_BUDGET_MS).optional(),
   aliveAt: timestamp.optional(),
+  /** The control plane's level, sent only to `CONTROL_PLANE_LEVEL_RUNNER_VERSION` or newer. */
+  protocolLevel: z.string().max(32).optional(),
 });
 export const RunnerGrantRequestSchema = z.strictObject({ commandId: identifier, generation });
 export const RunnerGrantTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);

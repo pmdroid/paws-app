@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,8 +23,7 @@ test("a crashed worker resumes its session in the same workspace", async () => {
     const home = join(root, "home");
     const workRoot = join(root, "work");
     const outputDirectory = join(root, "output");
-    for (const path of [source, home, workRoot, outputDirectory])
-      mkdirSync(path, { recursive: true });
+    for (const path of [source, home, outputDirectory]) mkdirSync(path, { recursive: true });
     const env = {
       ...process.env,
       GIT_AUTHOR_NAME: "Test",
@@ -116,6 +116,7 @@ test("a crashed worker resumes its session in the same workspace", async () => {
       },
       false,
     );
+    expect(statSync(workRoot).mode & 0o7777).toBe(0o770);
     crash();
 
     const loaded = await execute("loaded", { loadSession: true, steps: [{ type: "end" }] }, true);

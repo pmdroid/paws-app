@@ -114,8 +114,8 @@ test("a delegator with no runner they may use is not queued behind busy slots an
   const paws = orchestrator(db, clock);
   try {
     const users = workspace(db);
-    paws.reconcileExecution();
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
+    await paws.reconcileExecution();
     expect(startJobs(db, "busy")).toBe(1);
     expect(bodies(db, "thought").filter((body) => body.startsWith("Queued"))).toEqual([]);
     expect(bodies(db, "thought").filter((body) => body.includes("runner you can use"))).toEqual([
@@ -125,7 +125,7 @@ test("a delegator with no runner they may use is not queued behind busy slots an
     // Well past the start timeout, with the other runner still online and busy.
     clock.advance(2 * DAY);
     db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     expect(getWorkItem(db, "mine")?.state).toBe("queued");
     expect(bodies(db, "error")).toEqual([]);
     expect(
@@ -135,7 +135,7 @@ test("a delegator with no runner they may use is not queued behind busy slots an
 
     // Once the delegator pairs a runner with a free slot, the scheduler starts the item.
     addRunner(db, "own", users.me!, clock.now());
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     expect(startJobs(db, "mine")).toBe(1);
   } finally {
     await paws.shutdown();
@@ -152,7 +152,7 @@ test("a delegator whose only runner is busy still gets the queue notice with the
     // The delegator's runner is the only active one, and the other item takes its slot.
     db.run("UPDATE runner SET status='paused' WHERE id='theirs'");
     addRunner(db, "own", users.me!, START);
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     expect(startJobs(db, "busy")).toBe(1);
     expect(startJobs(db, "mine")).toBe(0);
     expect(bodies(db, "thought")).toContain(

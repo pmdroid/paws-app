@@ -24,7 +24,7 @@ import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
 const turns = (db: ReturnType<typeof tempDb>) =>
   db.query<{ state: string }, []>("SELECT state FROM linear_turn ORDER BY rowid").all();
 
-function fixture(launch?: AgentLaunch) {
+async function fixture(launch?: AgentLaunch) {
   const db = tempDb();
   const home = tempHome();
   const clock = new FakeClock(1_000);
@@ -52,7 +52,7 @@ function fixture(launch?: AgentLaunch) {
       { owner: "acme", repo: "app", remoteUrl: "https://github.example/acme/app.git" },
     ],
   });
-  workspaceDispatch(db, { now: clock.now() });
+  await workspaceDispatch(db, { now: clock.now() });
   return { db, home, clock, item, jobs, outbox, host, tracker, orchestrator };
 }
 
@@ -98,7 +98,7 @@ function prompt(userId: string, id: string, body = "I signed in") {
 }
 
 test("a missing installation holds the item before Git and a reply cannot release it", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.jobs.tick();
     const question = findOpenQuestion(f.db, "session")!;
@@ -128,7 +128,7 @@ test("a missing installation holds the item before Git and a reply cannot releas
 });
 
 test("the item resumes once by itself when the installation returns", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.jobs.tick();
     const question = findOpenQuestion(f.db, "session")!;
@@ -148,7 +148,7 @@ test("the item resumes once by itself when the installation returns", async () =
 });
 
 test("Stop prevents a returning installation from resuming the item", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.jobs.tick();
     const question = findOpenQuestion(f.db, "session")!;
@@ -177,7 +177,7 @@ test.each(["pending", "rejected"] as const)(
       wrapper,
       `import {writeFileSync} from "node:fs";writeFileSync(${JSON.stringify(pidFile)},String(process.pid));await import(${JSON.stringify(resolvePath(import.meta.dir, "../src/acp/testing/fake-agent.ts"))});`,
     );
-    const f = fixture(() => ({
+    const f = await fixture(() => ({
       command: process.execPath,
       args: [wrapper, trace, script],
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },

@@ -10,7 +10,7 @@ export type PublicationCandidate = { sha: string; baseSha: string };
 export function createPublicationReadiness(input: {
   db: Database;
   reconciler: Pick<ReturnType<typeof createItemReconciler>, "reconcile">;
-  canMerge: (itemId: string) => boolean;
+  canMerge: (itemId: string) => Promise<boolean>;
   now?: () => number;
 }) {
   const { db, reconciler } = input;
@@ -60,7 +60,7 @@ export function createPublicationReadiness(input: {
     if (
       saved?.binding === key &&
       (saved.phase === phase || saved.phase === "merge") &&
-      input.canMerge(itemId)
+      (await input.canMerge(itemId))
     )
       return true;
     ready.delete(itemId);
@@ -77,7 +77,7 @@ export function createPublicationReadiness(input: {
     }
     signal?.throwIfAborted();
     const after = current(itemId, candidate);
-    if (!after || after.binding !== before.binding || !input.canMerge(itemId)) return false;
+    if (!after || after.binding !== before.binding || !(await input.canMerge(itemId))) return false;
     ready.set(itemId, { binding: JSON.stringify([after.binding, after.generation]), phase });
     return true;
   }

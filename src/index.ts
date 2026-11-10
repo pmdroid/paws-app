@@ -112,6 +112,7 @@ import {
   journal,
   getLinearSessionAccess,
   delegatedLinearUserId,
+  getPullRequestDraft,
   getWorkItemRepository,
   getWorkItemRepositoryChoice,
   getWorkItemRepositoryAnswer,
@@ -275,6 +276,8 @@ import {
   createRunnerPlacementBrowser,
   itemOwnerEligibleRunner,
   itemOwnerHasEligibleRunner,
+  itemRunnerVerdicts,
+  createRunnerHostRefusals,
   itemOwnerRunnerSetupNeed,
   itemRepositoryAllowedOn,
   itemRepositoryRefusals,
@@ -322,7 +325,7 @@ import {
 } from "./runner-coordinator";
 import { createRunnerSessionMoves } from "./runner-control";
 import { cacheRepositoryCredentials } from "./runner-repository-access";
-import { rebaseOnRunner } from "./runner-repository-commands";
+import { rebaseCommitTitle, rebaseOnRunner } from "./runner-repository-commands";
 import {
   encryptRunnerEvents,
   loadRunnerEventKey,
@@ -582,7 +585,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
             signal: abort.signal,
             known: event.action === "created" ? known : undefined,
           });
-        orchestrator.reconcileExecution();
+        await orchestrator.reconcileExecution();
       }
     }
     return accepted;
@@ -661,7 +664,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       }
       if (issueEvent && reconciler) {
         const targets = await reconciler.issueChanged(issueEvent);
-        if (targets.length > 0) orchestrator?.reconcileExecution();
+        if (targets.length > 0) await orchestrator?.reconcileExecution();
         return false;
       }
       if (
@@ -700,8 +703,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 });
               invalidateAuthorization({ issueId: notification.issueId });
               await linearTaskAccess.reconcile(notification.issueId);
-              orchestrator?.reconcileExecution();
-              await refreshLinearNotificationContext(db, linear?.tracker ?? null, notification);
+              await orchestrator?.reconcileExecution();
+              await refreshLinearNotificationContext(store, linear?.tracker ?? null, notification);
             }),
           notify: (command) => {
             if (orchestrator === null) throw new Error("The loop is not attached.");
@@ -898,11 +901,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     artifactRoot: join(paths.home, "retros"),
     catalogs: retroCatalog,
   });
+  const runnerHostRefusals = createRunnerHostRefusals();
   const runnerReady =
     runnerConfig === null
       ? Promise.resolve(undefined)
       : openRunnerCoordinator({
           db,
+          hostWarnings: runnerHostRefusals.lines,
           discoverModels: false,
           checkSignIn: false,
           root: runnerConfig.root,
@@ -1021,6 +1026,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
     db,
+    store,
     available: createVmAvailable,
     size: memberVmSize,
     exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
@@ -1053,6 +1059,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const findingGrouping = linear?.findingIssues
     ? createFindingGrouping({
         db,
+        store,
         issues: linear.findingIssues,
         helper: createFindingGroupHelper({
           db,
@@ -1460,6 +1467,12 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               },
               ownerHasRunner: (itemId: string, agent: string, now: number) =>
                 itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
+              itemRunners: (
+                itemId: string,
+                profile: { agent: string; model?: string | null },
+                now: number,
+              ) => itemRunnerVerdicts(db, { itemId, ...profile, now }),
+              onRunnerHostRefusals: runnerHostRefusals.report,
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
                 itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
               eligibleRunner: (itemId: string, agent: string, now: number) =>
@@ -1481,6 +1494,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 const name = `${repository.owner}/${repository.repo}`;
                 const bot = await repositoryAccess?.checkpointBot?.(name);
                 if (!bot) return { outcome: "failed" as const, reason: "no GitHub App bot" };
+                const title = rebaseCommitTitle(
+                  getPullRequestDraft(db, item.id)?.title ?? item.title,
+                );
                 return rebaseOnRunner(
                   db,
                   {
@@ -1496,6 +1512,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                     head: heads.head,
                     main: heads.main,
                     bot,
+                    ...(title ? { title } : {}),
                     now,
                   },
                   signal,
@@ -1750,7 +1767,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         publication = createPublicationReadiness({
           db,
           reconciler,
-          canMerge: (itemId) => admission.canMerge(itemId).ok,
+          canMerge: async (itemId) => (await admission.canMerge(itemId)).ok,
         });
         created.jobs.register("linear.redelegation", async (job) => {
           const lifecycle = linear?.issueLifecycle;
@@ -1780,11 +1797,11 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
               reconciler?.reconcile({ ...target, signal: abort.signal }),
             ),
           );
-          attached.reconcileExecution();
+          await attached.reconcileExecution();
         });
         created.jobs.register("linear.epics.reconcile", async () => {
           await linearCaller("epics-sweep", () => reconciler?.sweep({ signal: abort.signal }));
-          attached.reconcileExecution();
+          await attached.reconcileExecution();
         });
         enqueueJobOnce(db, {
           queue: "linear.epics.reconcile",
@@ -1869,6 +1886,13 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: POLICY_BLOCK_CHECK_MS,
         now: Date.now(),
       });
+      created.jobs.register("closeout.stall", () => attached.recoverStalledCloseout());
+      enqueueJobOnce(db, {
+        queue: "closeout.stall",
+        jobKey: "closeout.stall",
+        recurringEveryMs: 60_000,
+        now: Date.now(),
+      });
       created.jobs.register("worktree.sweep", (_job, context) =>
         attached.sweepWorktrees(context.signal),
       );
@@ -1915,7 +1939,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       // Enqueued once by a migration; it fills the Findings page from the review evidence of runs
       // Closeout accepted before the page stored findings.
       created.jobs.register(REVIEW_FINDINGS_BACKFILL_JOB, () =>
-        backfillReviewFindings({ db, pawsRoot: paths.home }).then(({ runs, recorded, gone }) =>
+        backfillReviewFindings({ store, pawsRoot: paths.home }).then(({ runs, recorded, gone }) =>
           journal(
             `review findings backfilled: ${runs} accepted runs, ${recorded} findings, ${gone} gone`,
           ),

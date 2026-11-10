@@ -11,7 +11,14 @@ import {
   git,
   worktreePath,
 } from "../acp";
-import { insertQueuedItem, insertRun, migrate, openDatabase, type WorkItemRecord } from "../db";
+import {
+  insertQueuedItem,
+  insertRun,
+  migrate,
+  openDatabase,
+  type WorkItemRecord,
+  sqliteDb,
+} from "../db";
 import { RETIRED_WORKTREE_MS, sweepWorktrees, type WorktreeSweep } from "./worktree-sweep";
 
 const roots: string[] = [];
@@ -255,7 +262,7 @@ async function setup() {
     },
     sweep(overrides: Partial<WorktreeSweep> = {}): WorktreeSweep {
       return {
-        db,
+        store: sqliteDb(db),
         pawsRoot,
         now,
         signal: new AbortController().signal,

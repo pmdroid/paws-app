@@ -226,7 +226,7 @@ downloads = []
 def install(bun, checkout, workspace):
     installs.append(str(checkout))
     return modules
-with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.2\\n")), mock.patch.object(packager, "install_production", side_effect=install), mock.patch.object(release, "download_mise", return_value=b"\\x7fELFmise"), mock.patch.object(release, "download_gh", side_effect=lambda name: downloads.append(name) or b"\\x7fELFgh"):
+with mock.patch.object(packager.subprocess, "run", return_value=SimpleNamespace(stdout=b"1.4.4\\n")), mock.patch.object(packager, "install_production", side_effect=install), mock.patch.object(release, "download_mise", return_value=b"\\x7fELFmise"), mock.patch.object(release, "download_gh", side_effect=lambda name: downloads.append(name) or b"\\x7fELFgh"):
     packager.pack(argparse.Namespace(source=source, bun=root / "bun", version="1.2.3", platform={"x86_64": "linux-x64", "aarch64": "linux-arm64"}[platform.machine()], output=root / "package", mise=None, gh=None))
 archive = tarfile.open(root / "package" / "artifact.tar")
 members = sorted(archive.getnames())

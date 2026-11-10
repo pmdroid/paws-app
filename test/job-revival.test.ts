@@ -79,7 +79,7 @@ test("a cancelled resume handler stays fenced while its revived row runs a new h
   ).toBe(id);
   expect(jobVersionCurrent(db, old)).toBe(false);
   clock.advance(2);
-  workspaceDispatch(db, { now: clock.now() });
+  await workspaceDispatch(db, { now: clock.now() });
   await loop.tick([JOB_KIND.resume]);
   release();
   await oldTick;

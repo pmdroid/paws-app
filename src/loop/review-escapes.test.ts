@@ -11,6 +11,7 @@ import {
   markCloseoutAccepted,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../db";
 import { returnToAgent, type FailedCiCheck } from "../merge";
 import {
@@ -73,7 +74,7 @@ async function accepted() {
     return run(root, "rev-parse", "HEAD");
   };
   const settle = (fixHead: string) =>
-    settleReviewEscapes(db, {
+    settleReviewEscapes(sqliteDb(db), {
       itemId: "eng-1",
       fixHead,
       base,

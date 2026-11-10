@@ -116,18 +116,18 @@ function activities(db: Database) {
   return listOutbox(db).filter((message) => message.op === "activity");
 }
 
-function observe(db: Database, host: HostSupervisor, now: number): void {
+async function observe(db: Database, host: HostSupervisor, now: number): Promise<void> {
   host.tick();
   host.tick();
-  expect(dispatch(db, { now })).toEqual([]);
-  dispatch(db, { now });
+  expect(await dispatch(db, { now })).toEqual([]);
+  await dispatch(db, { now });
 }
 
 describe("a clock gap during a parked wait", () => {
   for (const wait of WAITS)
     for (const withCheckpoint of [true, false])
       for (const [gapName, gapMs] of GAPS)
-        test(`a ${wait} ${withCheckpoint ? "with" : "without"} a checkpoint keeps one owner across a gap ${gapName}`, () => {
+        test(`a ${wait} ${withCheckpoint ? "with" : "without"} a checkpoint keeps one owner across a gap ${gapName}`, async () => {
           const clock = new FakeClock(1_000_000);
           const { db, host } = boot(clock);
           try {
@@ -136,7 +136,7 @@ describe("a clock gap during a parked wait", () => {
             const before = snapshot(db);
 
             clock.sleep(gapMs);
-            observe(db, host, clock.now());
+            await observe(db, host, clock.now());
 
             expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([{ slept_ms: gapMs }]);
             expect(snapshot(db)).toEqual(before);
@@ -146,13 +146,13 @@ describe("a clock gap during a parked wait", () => {
             if (due > clock.now()) {
               expect(claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] })).toBeNull();
               clock.advance(due - clock.now());
-              observe(db, host, clock.now());
+              await observe(db, host, clock.now());
             }
             const claimed = claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] });
             expect(claimed?.id).toBe(owner);
             expect(jobVersionCurrent(db, claimed!)).toBe(true);
             expect(claimNextJob(db, { now: clock.now(), queues: [...EXECUTION] })).toBeNull();
-            expect(dispatch(db, { now: clock.now() })).toEqual([]);
+            expect(await dispatch(db, { now: clock.now() })).toEqual([]);
             expect(executions(db).map((job) => job.id)).toEqual([owner]);
             expect(completeJob(db, claimed!, clock.now())).toBe(true);
           } finally {
@@ -163,7 +163,7 @@ describe("a clock gap during a parked wait", () => {
 
   for (const wait of WAITS)
     for (const withCheckpoint of [true, false])
-      test(`a process restart after a gap above two hours leaves a ${wait} ${withCheckpoint ? "with" : "without"} a checkpoint to its job`, () => {
+      test(`a process restart after a gap above two hours leaves a ${wait} ${withCheckpoint ? "with" : "without"} a checkpoint to its job`, async () => {
         const clock = new FakeClock(1_000_000);
         const { db, host } = boot(clock);
         try {
@@ -177,7 +177,7 @@ describe("a clock gap during a parked wait", () => {
           clock.advance(1_000);
           expect(recoverOnStartup(db, clock.now())).toEqual([]);
           const next = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
-          observe(db, next, clock.now());
+          await observe(db, next, clock.now());
           next.stop();
 
           expect(db.query("SELECT 1 FROM wake").all()).toEqual([]);
@@ -190,7 +190,7 @@ describe("a clock gap during a parked wait", () => {
       });
 
   for (const wait of WAITS)
-    test(`a wall-clock correction forward and back leaves a ${wait} to its job`, () => {
+    test(`a wall-clock correction forward and back leaves a ${wait} to its job`, async () => {
       const wall = { now: 1_000_000, mono: 1_000_000 };
       const clock: Clock = { now: () => wall.now, mono: () => wall.mono };
       const { db, host } = boot(clock);
@@ -201,12 +201,12 @@ describe("a clock gap during a parked wait", () => {
 
         wall.now += 3 * 60 * 60_000 + 1_000;
         wall.mono += 1_000;
-        observe(db, host, wall.now);
+        await observe(db, host, wall.now);
         expect(snapshot(db)).toEqual(before);
 
         wall.now -= 3 * 60 * 60_000;
         wall.mono += 1_000;
-        observe(db, host, wall.now);
+        await observe(db, host, wall.now);
         expect(snapshot(db)).toEqual(before);
         expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([
           { slept_ms: 3 * 60 * 60_000 },
@@ -262,13 +262,13 @@ describe("ownership a clock gap does not invent", () => {
       }
     });
 
-    test(`a ${how} transient retry does not keep the orphan sweep from picking the work up`, () => {
+    test(`a ${how} transient retry does not keep the orphan sweep from picking the work up`, async () => {
       const { clock, db, host, owner } = abandoned(how);
       try {
         enqueueJob(db, { queue: JOB_KIND.command, payload: { itemId: "eng-9" }, now: 0 });
         db.run("UPDATE job SET status='done', finished_at=0 WHERE queue=?", [JOB_KIND.command]);
-        expect(dispatch(db, { now: clock.now() })).toEqual([]);
-        dispatch(db, { now: clock.now() });
+        expect(await dispatch(db, { now: clock.now() })).toEqual([]);
+        await dispatch(db, { now: clock.now() });
         const resumes = executions(db).filter((job) => job.id !== owner);
         expect(resumes).toMatchObject([
           { queue: JOB_KIND.resume, payload: { reason: "orphaned" } },
@@ -299,7 +299,7 @@ describe("ownership a clock gap does not invent", () => {
 });
 
 describe("repeated clock gaps with holds and parked waits side by side", () => {
-  test("holds stay held and waits keep one owner, budget and question across three gaps", () => {
+  test("holds stay held and waits keep one owner, budget and question across three gaps", async () => {
     const clock = new FakeClock(1_000_000);
     const { db, host } = boot(clock);
     try {
@@ -335,7 +335,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
 
       for (const gapMs of [5 * 60_000, TWO_HOURS, TWO_HOURS + 1]) {
         clock.sleep(gapMs);
-        observe(db, host, clock.now());
+        await observe(db, host, clock.now());
         clock.advance(250);
         host.tick();
       }

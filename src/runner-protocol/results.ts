@@ -20,6 +20,7 @@ export const RunnerResultSchema = z.strictObject({
   ]),
   timedOut: z.boolean(),
   cancelled: z.boolean(),
+  interrupted: z.boolean().optional(),
   authRequired: z.boolean(),
   agentExited: z.boolean(),
   sessionId: z.string().max(512).optional(),

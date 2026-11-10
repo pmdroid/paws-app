@@ -11,7 +11,7 @@ import type { Database } from "bun:sqlite";
 import * as acp from "../src/acp";
 import { GROK_AGENT_ARGS, worktreePath } from "../src/acp";
 import type { FakeResult, FakeScript } from "../src/acp/testing/script";
-import type { Finding } from "../src/closeout";
+import { createCloseoutGate, type Finding } from "../src/closeout";
 import { JOB_KIND, systemClock } from "../src/core";
 import {
   JobLoop,
@@ -1870,6 +1870,7 @@ for (const review of invalidReviews) {
       jobs,
       outbox,
       pawsRoot: layout.pawsRoot,
+      closeoutGate: (options) => createCloseoutGate({ ...options, reviewRetryDelaysMs: [0, 0, 0] }),
       home: layout.home,
       tracker,
       repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
@@ -2411,7 +2412,7 @@ for (const movedHead of [false, true]) {
 }
 
 const REBASE_INSTRUCTION =
-  "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. Rebase this branch onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
+  "The pull request no longer rebases cleanly onto main. Paws already fetched main into origin/main in your checkout. First squash this branch to one commit: note its commit subjects and Co-authored-by trailers, run `git reset --soft $(git merge-base HEAD origin/main)`, and commit once with the pull request title as the subject, the original subjects in the body and every trailer kept. Then rebase it onto origin/main without fetching again and without a merge commit, resolve every conflict so the change still does what the issue asks, and run the checks again.";
 
 test("Linear's Fix merge conflicts request on a conflicting pull request is a rebase-conflict return", async () => {
   const result = await runRebaseConflict("linear");

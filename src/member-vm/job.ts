@@ -1,14 +1,14 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
-  advanceMemberVmStep,
-  failMemberVmStep,
-  immediate,
-  parkLeasedJob,
-  recordMemberVmEnrollment,
-  restoreMemberVmCreateRequest,
-  runnerIdentity,
-  updateMemberVmStep,
+  advanceMemberVmStepSteps,
+  failMemberVmStepSteps,
+  memberVmByIdSteps,
+  parkLeasedJobSteps,
+  recordMemberVmEnrollmentSteps,
+  restoreMemberVmCreateRequestSteps,
+  runnerIdentitySteps,
+  updateMemberVmStepSteps,
+  type Db,
   type Job,
   type JobContext,
   type JobLoop,
@@ -22,7 +22,7 @@ import {
   type ProvisioningErrorCode,
 } from "../provisioning";
 import { workspaceTokenHash } from "../workspace";
-import { freeVmName, getMemberVm, MEMBER_VM_QUEUE, type MemberRef, type MemberVm } from "./store";
+import { freeVmNameSteps, MEMBER_VM_QUEUE, type MemberRef, type MemberVm } from "./store";
 
 export type MintEnrollment = (
   member: MemberRef,
@@ -67,24 +67,24 @@ const REJECTED: ReadonlySet<ProvisioningErrorCode> = new Set([
 type Outcome = { next: "advance" | "poll" | "done" };
 
 export function registerMemberVmJob(jobs: JobLoop, options: MemberVmJobOptions): void {
-  const handler = createMemberVmHandler(jobs.db, options);
+  const handler = createMemberVmHandler(jobs.store, options);
   jobs.register(MEMBER_VM_QUEUE, handler);
 }
 
-export function createMemberVmHandler(db: Database, options: MemberVmJobOptions) {
+export function createMemberVmHandler(store: Db, options: MemberVmJobOptions) {
   const now = options.now ?? Date.now;
   const pollMs = options.pollMs ?? MEMBER_VM_POLL_MS;
 
   return async (job: Job, context: JobContext): Promise<void> => {
     const id = memberVmId(job.payload);
-    const row = id === null ? null : getMemberVm(db, id);
+    const row = id === null ? null : await store.run((q) => memberVmByIdSteps(q, id));
     if (row === null || row.failure !== null || row.step === "ready" || row.deleteStep !== null)
       return;
     const minted: string[] = [];
     let outcome: Outcome;
     try {
       const provisioning = "provision" in options ? await options.provision() : options;
-      outcome = await runStep(db, row, provisioning, now, (token) => minted.push(token));
+      outcome = await runStep(store, row, provisioning, now, (token) => minted.push(token));
     } catch (error) {
       if (error instanceof StepMoved || !context.isCurrent()) return;
       const secrets = await Promise.resolve()
@@ -97,23 +97,27 @@ export function createMemberVmHandler(db: Database, options: MemberVmJobOptions)
       const text = redact(errorText(error), [...minted, ...secrets]);
       journalCaught(text, "member-vm.provision");
       const at = now();
-      failMemberVmStep(db, { id: row.id, step: row.step, failure: text, now: at });
+      await store.run((q) =>
+        failMemberVmStepSteps(q, { id: row.id, step: row.step, failure: text, now: at }),
+      );
       return;
     }
     if (outcome.next === "done" || !context.isCurrent()) return;
-    if (getMemberVm(db, row.id)?.deleteStep != null) return;
+    if ((await store.run((q) => memberVmByIdSteps(q, row.id)))?.deleteStep != null) return;
     const at = now();
-    parkLeasedJob(db, job, {
-      runAt: outcome.next === "advance" ? at : at + pollMs,
-      payload: job.payload,
-      attempts: job.attempts - 1,
-      now: at,
-    });
+    await store.run((q) =>
+      parkLeasedJobSteps(q, job, {
+        runAt: outcome.next === "advance" ? at : at + pollMs,
+        payload: job.payload,
+        attempts: job.attempts - 1,
+        now: at,
+      }),
+    );
   };
 }
 
 async function runStep(
-  db: Database,
+  store: Db,
   row: MemberVm,
   options: MemberVmProvisioning,
   now: () => number,
@@ -122,21 +126,23 @@ async function runStep(
   const { exeDev, bootstrap } = options;
   const vm = row.vmName;
   const member = { workspaceId: row.workspaceId, userId: row.userId };
-  const mint = () => {
+  const mint = async () => {
     const enrollment = options.mintEnrollment(member, { name: vm });
     minted(enrollment.token);
-    recordMemberVmEnrollment(db, {
-      tokenHash: workspaceTokenHash(enrollment.token),
-      memberVmId: row.id,
-      now: now(),
-    });
+    await store.run((q) =>
+      recordMemberVmEnrollmentSteps(q, {
+        tokenHash: workspaceTokenHash(enrollment.token),
+        memberVmId: row.id,
+        now: now(),
+      }),
+    );
     return enrollment;
   };
 
   switch (row.step) {
     case "create": {
       const asked = row.createRequestedAt;
-      update(db, row, { createRequestedAt: asked ?? now() }, now());
+      await update(store, row, { createRequestedAt: asked ?? now() }, now());
       try {
         await exeDev.createVm(
           vm,
@@ -149,11 +155,13 @@ async function runStep(
         // under it for us, so the row takes the next name and asks again.
         if (asked === null && isProvisioningError(error) && error.code === "name_unavailable") {
           journalCaught(error, "member-vm.createVm", null, "trying the next VM name");
-          update(db, row, { vmName: freeVmName(db, member, vm), createRequestedAt: null }, now());
+          const vmName = await store.run((q) => freeVmNameSteps(q, member, vm));
+          await update(store, row, { vmName, createRequestedAt: null }, now());
           return { next: "advance" };
         }
         if (!ours) {
-          if (rejected(error)) restoreMemberVmCreateRequest(db, row.id, asked);
+          if (rejected(error))
+            await store.run((q) => restoreMemberVmCreateRequestSteps(q, row.id, asked));
           if (isProvisioningError(error) && error.code === "conflict")
             throw new Error(
               `exe.dev already has a VM named ${vm} that Paws did not create (conflict).`,
@@ -162,16 +170,16 @@ async function runStep(
           throw error;
         }
       }
-      advance(db, row, "install", now());
+      await advance(store, row, "install", now());
       return { next: "advance" };
     }
 
     case "install": {
       if (row.installStartedAt === null) {
-        const enrollment = mint();
+        const enrollment = await mint();
         const started = await bootstrap.startInstall(vm, enrollment.token);
-        update(
-          db,
+        await update(
+          store,
           row,
           {
             installStartedAt: now(),
@@ -180,14 +188,14 @@ async function runStep(
           now(),
         );
         if (started === "succeeded") {
-          advance(db, row, "enroll", now());
+          await advance(store, row, "enroll", now());
           return { next: "advance" };
         }
         return { next: "poll" };
       }
       const status = await bootstrap.installStatus(vm);
       if (status === "succeeded") {
-        advance(db, row, "enroll", now());
+        await advance(store, row, "enroll", now());
         return { next: "advance" };
       }
       if (status === "failed") throw new Error(`${vm}: the runner install failed.`);
@@ -203,14 +211,14 @@ async function runStep(
       let tokenExpiresAt = row.tokenExpiresAt;
       for (let attempt = 0; ; attempt++) {
         if (tokenExpiresAt === null || tokenExpiresAt - TOKEN_MARGIN_MS <= now()) {
-          const enrollment = mint();
+          const enrollment = await mint();
           await bootstrap.stageToken(vm, enrollment.token);
-          update(db, row, { tokenExpiresAt: enrollment.expiresAt }, now());
+          await update(store, row, { tokenExpiresAt: enrollment.expiresAt }, now());
         }
-        update(db, row, { tokenExpiresAt: null }, now());
+        await update(store, row, { tokenExpiresAt: null }, now());
         tokenExpiresAt = null;
         const enrolled = await bootstrap.enroll(vm);
-        const runner = runnerIdentity(db, enrolled.runnerId);
+        const runner = await store.run((q) => runnerIdentitySteps(q, enrolled.runnerId));
         if (
           runner === null ||
           enrolled.workspaceId !== row.workspaceId ||
@@ -224,19 +232,21 @@ async function runStep(
           await bootstrap.resetIdentity(vm);
           continue;
         }
-        update(db, row, { runnerId: enrolled.runnerId }, now());
+        await update(store, row, { runnerId: enrolled.runnerId }, now());
         await bootstrap.startRunner(vm);
-        advance(db, row, "health", now());
+        await advance(store, row, "health", now());
         return { next: "advance" };
       }
     }
 
     case "health": {
-      const runner = row.runnerId === null ? null : runnerIdentity(db, row.runnerId);
+      const runnerId = row.runnerId;
+      const runner =
+        runnerId === null ? null : await store.run((q) => runnerIdentitySteps(q, runnerId));
       if (runner === null || runner.status === "revoked")
         throw new Error(`${vm}: the runner was removed before its first heartbeat.`);
       if (runner.lastSeenAt !== null) {
-        advance(db, row, "ready", now());
+        await advance(store, row, "ready", now());
         return { next: "done" };
       }
       if (now() - row.stepStartedAt >= MEMBER_VM_HEALTH_TIMEOUT_MS)
@@ -249,21 +259,33 @@ async function runStep(
   }
 }
 
-function update(db: Database, row: MemberVm, fields: MemberVmStepFields, at: number): void {
+async function update(
+  store: Db,
+  row: MemberVm,
+  fields: MemberVmStepFields,
+  at: number,
+): Promise<void> {
   if (Object.keys(fields).length === 0) return;
-  if (updateMemberVmStep(db, { id: row.id, step: row.step, fields, now: at }) !== 1)
-    throw new StepMoved();
+  const changed = await store.run((q) =>
+    updateMemberVmStepSteps(q, { id: row.id, step: row.step, fields, now: at }),
+  );
+  if (changed !== 1) throw new StepMoved();
 }
 
-function advance(
-  db: Database,
+async function advance(
+  store: Db,
   row: MemberVm,
   step: Exclude<MemberVm["step"], "create">,
   at: number,
-): void {
-  immediate(db, () => {
-    if (advanceMemberVmStep(db, { id: row.id, from: row.step, to: step, now: at }) !== 1)
-      throw new StepMoved();
+): Promise<void> {
+  await store.transaction(function* (q) {
+    const changed = yield* advanceMemberVmStepSteps(q, {
+      id: row.id,
+      from: row.step,
+      to: step,
+      now: at,
+    });
+    if (changed !== 1) throw new StepMoved();
   });
 }
 

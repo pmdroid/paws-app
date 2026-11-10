@@ -11,7 +11,7 @@ Changes that need action on upgrade are in the [changelog](../CHANGELOG.md).
 
 `bun run paws install` sets up a control plane as a systemd user service. It asks for the checkout path (`~/.local/share/paws/app`), `PAWS_HOME` (`~/.paws`), `PAWS_HOST`, `PAWS_PORT`, `PAWS_PUBLIC_DASHBOARD`, `PAWS_PUBLIC_URL`, `PAWS_RUNNER_HOST`, `PAWS_RUNNER_PORT`, the Linear team and the GitHub repositories. It writes `PAWS_HOME/https.env` (mode 0600), the `[linear] team` and `[github] repo`/`repos` keys of `config.toml`, `~/.config/systemd/user/paws.service` and its `paws.service.d/working-directory.conf` drop-in, then runs `systemctl --user daemon-reload`. It does not start the service.
 
-Run it again to change a value: each prompt shows the current value as its default, and other env lines and `config.toml` keys stay as they are. Type `-` to clear an optional value. It needs bun 1.4.2 on `PATH` (`mise use -g bun@1.4.2`).
+Run it again to change a value: each prompt shows the current value as its default, and other env lines and `config.toml` keys stay as they are. Type `-` to clear an optional value. It needs bun 1.4.4 on `PATH` (`mise use -g bun@1.4.4`).
 
 `bun run paws install secrets` asks for the GitHub App, the Linear OAuth client, the Linear and GitHub webhook secrets, the exe.dev token, the Tailscale auth key, Slack and, when `[agents.grok] allow_api_key` is set, `XAI_API_KEY`. Input is hidden. Each value is written envelope-encrypted to `PAWS_HOME/secrets`, except `XAI_API_KEY`, which goes into the env file `paws install` wrote. A webhook secret can be generated and is then shown once on the terminal. On a re-run each prompt says `set` or `not set`, and Enter keeps the value. It ends with the matching `paws doctor` checks.
 
@@ -174,8 +174,19 @@ name identifies a preset. The profile resolver accepts these names independently
 label preset, then repository override, then global default. Unknown names and
 reviewer labels matching the implementer's agent and model return label problems
 and retain the inherited profile for that role. Reviewer fallback is still omitted
-when it uses the resolved reviewer's agent. Reading these labels from Linear is
-follow-up work; adding labels alone does not yet change a run.
+when it uses the resolved reviewer's agent.
+
+Paws reads the labels from Linear each time it creates a new implement run, so
+a change takes effect on the next run and never moves a running turn. If Linear
+can't be read, the run keeps the previous run's labels, or none on a first run.
+A run doesn't start on a label problem: the item asks in Linear, naming the
+label, the reason and the available presets. **Use the default** runs that role
+with its default profile for this item only; **I fixed the label** reads the
+labels again. The agent session names a label's effect, for example
+`Implementer: Opus (label)`.
+
+An item about to wait for a runner has its labels read first when presets exist,
+so it waits for, or starts on, a runner with the labelled agent.
 
 The existing admin-protected `/api/settings/agents` endpoint reads and writes
 a `presets` object keyed by name alongside `defaults` and `projects`.

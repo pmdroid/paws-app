@@ -78,7 +78,7 @@ A queued item waiting only on Linear blockers shows when Paws last read its rela
 
 ## Extra usage
 
-`POST /api/runners/<id>/agents/<agent>/extra-usage` with `{"extraUsage": true}` keeps Paws sending that agent work on that runner after a usage window is spent; the provider bills the extra usage. The runner's owner and workspace admins may change it, others get 403, and an agent never signed in on the runner answers 403. `GET /api/runners/<id>/policy` returns `extraUsage` per agent, and `GET /api/runners` reports a spent window with the switch on as status `extra_usage` instead of `usage_limit`. Placement uses such a runner only when no runner the item may use with quota left was free, and the runner history says so.
+`POST /api/runners/<id>/agents/<agent>/extra-usage` with `{"extraUsage": true}` keeps Paws sending that agent work on that runner after a usage window is spent; the provider bills the extra usage. The runner's owner and workspace admins may change it, others get 403, and an agent never signed in on the runner answers 403. `GET /api/runners/<id>/policy` returns `extraUsage` per agent, and `GET /api/runners` reports a spent window with the switch on as status `extra_usage` instead of `usage_limit`. It also carries `hostWarnings` on a runner that refused every waiting item for a host-config reason, one sentence per repository. Placement uses such a runner only when no runner the item may use with quota left was free, and the runner history says so.
 
 ## Agent sign-in
 

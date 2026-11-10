@@ -15,6 +15,7 @@ import {
   rmSync,
   writeFileSync,
   writeSync,
+  type Stats,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -24,6 +25,8 @@ export interface RunnerSpool {
   root: string;
   runnerUid: number;
   agentGid: number;
+  /** The group whose write access a fresh snapshot source may carry. Defaults to the process's. */
+  runnerGid?: number;
 }
 
 function openDirectory(path: string): number {
@@ -144,6 +147,14 @@ function openBundleSource(path: string, spool: RunnerSpool, limit = 536_870_912)
   return source;
 }
 
+/**
+ * Whether a fresh snapshot source's mode is safe to copy. The packaged runner runs with
+ * `UMask=0007`, so what it extracts is group-writable; only its own group may hold that write.
+ */
+function freshSourceModeSafe(info: Stats, runnerGid: number): boolean {
+  return (info.mode & 0o7002) === 0 && ((info.mode & 0o020) === 0 || info.gid === runnerGid);
+}
+
 function snapshotTree(
   directory: number,
   spool: RunnerSpool,
@@ -153,6 +164,7 @@ function snapshotTree(
   const hash = createHash("sha256");
   const repositoryRoot = realpathSync(`/proc/self/fd/${directory}`);
   const ancestors = new Set<string>();
+  const runnerGid = spool.runnerGid ?? process.getgid?.() ?? -1;
   let total = 0;
   function openSource(fd: number, name: string): number {
     const flags = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
@@ -193,9 +205,11 @@ function snapshotTree(
       info.uid !== spool.runnerUid ||
       (stored
         ? info.gid !== spool.agentGid || (info.mode & 0o7777) !== 0o750
-        : (info.mode & 0o7022) !== 0)
+        : !freshSourceModeSafe(info, runnerGid))
     )
-      throw new Error("Unsafe task repository directory");
+      throw new Error(
+        `Unsafe task repository directory: ${prefix.slice(0, -1) || "."} (${info.uid}:${info.gid} ${(info.mode & 0o7777).toString(8)})`,
+      );
     const identity = `${info.dev}:${info.ino}`;
     if (ancestors.has(identity)) throw new Error("Task repository contains a directory cycle");
     ancestors.add(identity);
@@ -226,7 +240,7 @@ function snapshotTree(
             stat.uid !== spool.runnerUid ||
             (stored
               ? stat.gid !== spool.agentGid || (stat.mode & 0o7777) !== 0o640
-              : (stat.mode & 0o7022) !== 0)
+              : !freshSourceModeSafe(stat, runnerGid))
           )
             throw new Error("Unsafe task repository file");
           total += stat.size;

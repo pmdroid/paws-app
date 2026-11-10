@@ -481,7 +481,7 @@ test.each([
   ["findings", "Fix Closeout findings (2 of 5)", 5],
   ["ci", "Fix CI", 3],
   ["review", "Fix review findings", 3],
-  ["conflict", "Resolve merge conflict", 3],
+  ["conflict", "Fix merge conflicts", 3],
 ])("%s restarts append one durable reason-named step", (reason, content, limit) => {
   const db = tempDb();
   try {
@@ -506,6 +506,24 @@ test.each([
     ]);
     expect(plan.plan?.[0]?.status).toBe("completed");
     expect(plan.plan?.[1]?.status).toBe("completed");
+  } finally {
+    db.close();
+  }
+});
+
+test("a restart's plan step goes out with the turn, not after the metadata interval", () => {
+  const db = tempDb();
+  try {
+    createLinearSessionProgress(db, "session", "ENG-1").phase("merging");
+    markPr(db);
+    db.run("UPDATE outbox SET status='sent', sent_at=? WHERE op LIKE 'linear.session.%'", [
+      Date.now(),
+    ]);
+    createLinearSessionProgress(db, "session", "ENG-1").restart("conflict", 1, 10);
+    expect(listOutbox(db).findLast((row) => row.op === "linear.session.plan")).toMatchObject({
+      status: "pending",
+      notBefore: 0,
+    });
   } finally {
     db.close();
   }

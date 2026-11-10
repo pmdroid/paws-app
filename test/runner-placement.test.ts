@@ -893,3 +893,31 @@ test("new runs, runs on their online pin and reviews rank as before a session re
     rmSync(placed.root, { recursive: true, force: true });
   }
 });
+
+test("fresh admission previews share the session grace period with execution", async () => {
+  const placed = await placeItem();
+  try {
+    const run = insertRun(placed.db, { itemId: "item", now: placed.now(), status: "active" });
+    placed.db.run(
+      "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,'second',?,1,0,'busy',?,0)",
+      [run.id, placed.workspaceId, placed.now() + 60 * 60_000],
+    );
+    const preview = () =>
+      createRunnerPlacement({ db: placed.db, now: placed.now }).preview!({
+        itemId: "item",
+        profile: { agent: "codex", model: "implementation-model" },
+        role: "implementer",
+        purpose: "work",
+        session: { runnerId: "second" },
+      }).map((row) => row.id);
+    for (let waited = 0; waited < SESSION_GRACE_MS; waited += 30_000) {
+      expect(preview()).toEqual(["second"]);
+      placed.tick(30_000);
+    }
+    expect(preview()).toEqual(["own", "second"]);
+    expect(await placed.ids({ session: { runnerId: "second" } })).toEqual(["own", "second"]);
+  } finally {
+    placed.db.close();
+    rmSync(placed.root, { recursive: true, force: true });
+  }
+});

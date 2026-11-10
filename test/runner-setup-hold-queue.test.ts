@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { join } from "node:path";
 import { FakeClock, JOB_KIND } from "../src/core";
 import {
   JobLoop,
@@ -14,6 +15,8 @@ import {
   recordLinearInstallation,
   syncWorkspaceMember,
 } from "../src/db";
+import { writeAgentSettings } from "../src/config";
+import { createFakeTracker, type FakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import {
   itemOwnerEligibleRunner,
@@ -89,7 +92,12 @@ function addRunner(db: Database, id: string, ownerId: string, seenAt: number, re
 }
 
 /** The orchestrator as `src/index.ts` wires it when work runs on runners. */
-function orchestrator(db: Database, clock: FakeClock, jobs = new JobLoop(db, clock)) {
+function orchestrator(
+  db: Database,
+  clock: FakeClock,
+  jobs = new JobLoop(db, clock),
+  extra: { tracker?: FakeTracker; pawsRoot?: string } = {},
+) {
   return new Orchestrator({
     db,
     admission: workspaceAdmission(db),
@@ -102,6 +110,7 @@ function orchestrator(db: Database, clock: FakeClock, jobs = new JobLoop(db, clo
     ownerHasRunner: (itemId, agent, now) => itemOwnerHasEligibleRunner(db, { itemId, agent, now }),
     runnerSetupNeed: (itemId, agent, now) => itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
     eligibleRunner: (itemId, agent, now) => itemOwnerEligibleRunner(db, { itemId, agent, now }),
+    ...extra,
   });
 }
 
@@ -127,8 +136,8 @@ test("a delegator without a runner, beside another member's free runner, is held
   const paws = orchestrator(db, clock, jobs);
   try {
     const users = workspace(db);
-    paws.reconcileExecution();
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
+    await paws.reconcileExecution();
     expect(getRunnerSetupHold(db, "mine")).toMatchObject({
       reason: "no-runner",
       ownerUserId: users.me,
@@ -144,7 +153,7 @@ test("a delegator without a runner, beside another member's free runner, is held
     for (const step of [60_000, 60 * 60_000, DAY]) {
       clock.advance(step);
       db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
-      paws.reconcileExecution();
+      await paws.reconcileExecution();
     }
     expect(getWorkItem(db, "mine")?.state).toBe("queued");
     expect(listOutbox(db).length).toBe(outbox);
@@ -153,7 +162,7 @@ test("a delegator without a runner, beside another member's free runner, is held
     // The scheduler tick alone never ends the hold. The delegator's own runner queues a check,
     // and that job ends the hold and lets the scheduler start the item.
     addRunner(db, "own", users.me!, clock.now(), 1);
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     expect(itemJobs(db, "mine")).toBe(0);
     while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
     expect(getRunnerSetupHold(db, "mine")).toBeNull();
@@ -171,7 +180,7 @@ test("a delegator whose own runner needs its agent signed in hears the runner an
   try {
     const users = workspace(db);
     addRunner(db, "member-vm", users.me!, START, 0);
-    paws.reconcileExecution();
+    await paws.reconcileExecution();
     expect(getRunnerSetupHold(db, "mine")).toMatchObject({
       reason: "agent-not-signed-in",
       runnerId: "member-vm",
@@ -212,7 +221,7 @@ async function held(prepare: (db: Database, users: Record<string, string>, now: 
   const jobs = new JobLoop(db, clock);
   const paws = orchestrator(db, clock, jobs);
   const users = workspace(db);
-  paws.reconcileExecution();
+  await paws.reconcileExecution();
   expect(getRunnerSetupHold(db, "mine")).not.toBeNull();
   prepare(db, users, clock.now());
   while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
@@ -384,5 +393,107 @@ test("two triggers at once resume the item once", async () => {
     expect(itemJobs(db, "mine")).toBe(1);
   } finally {
     await fixture.close();
+  }
+});
+
+/** Acme's default implementer is Claude; the Codex preset is reachable only through its label. */
+function labelled(db: Database, clock: FakeClock, jobs: JobLoop, presets = true) {
+  const pawsRoot = tempHome();
+  writeAgentSettings(join(pawsRoot, "config.toml"), {
+    defaults: {
+      implementer: { agent: "claude", model: "acme-claude" },
+      reviewer: { agent: "codex", model: "acme-review" },
+    },
+    projects: [],
+    ...(presets ? { presets: { Codex: { agent: "codex", model: "acme-codex" } } } : {}),
+  });
+  const tracker = createFakeTracker();
+  const counted = { reads: 0 };
+  const read = tracker.issueRepositoryHints!.bind(tracker);
+  tracker.issueRepositoryHints = async (issueId, options) => {
+    counted.reads += 1;
+    return read(issueId, options);
+  };
+  const paws = orchestrator(db, clock, jobs, { tracker, pawsRoot });
+  const label = (implementer: string) =>
+    tracker.repositoryHints.set(getWorkItem(db, "mine")!.linearIssueId, {
+      mentions: [],
+      issueLabels: [],
+      parentLabels: [],
+      projectLabels: [],
+      profileLabels: { implementer },
+    });
+  return { paws, label, counted };
+}
+
+const onlyCodex = (db: Database, runner: string) =>
+  db.run("UPDATE runner_agent_policy SET ready=(agent='codex') WHERE runner_id=?", [runner]);
+
+test("an Acme issue labelled Codex starts on its owner's Codex-only runner", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(START);
+  const jobs = new JobLoop(db, clock);
+  const { paws, label, counted } = labelled(db, clock, jobs);
+  try {
+    const users = workspace(db);
+    addRunner(db, "own", users.me!, START, 1);
+    onlyCodex(db, "own");
+    label("Codex");
+    await paws.reconcileExecution();
+    expect(getRunnerSetupHold(db, "mine")).toBeNull();
+    await Bun.sleep(0);
+    expect(counted.reads).toBe(1);
+    expect(getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(itemJobs(db, "mine")).toBe(1);
+  } finally {
+    await paws.shutdown();
+    db.close();
+  }
+});
+
+test("a labelled Acme issue is held for its labelled agent and resumes when that agent signs in", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(START);
+  const jobs = new JobLoop(db, clock);
+  const { paws, label, counted } = labelled(db, clock, jobs);
+  try {
+    const users = workspace(db);
+    addRunner(db, "own", users.me!, START, 0);
+    label("Codex");
+    await paws.reconcileExecution();
+    await Bun.sleep(0);
+    expect(getRunnerSetupHold(db, "mine")).toMatchObject({ reason: "agent-not-signed-in" });
+    expect(thoughts(db)).toHaveLength(1);
+    expect(thoughts(db)[0]).toContain("Codex");
+    await paws.reconcileExecution();
+    await Bun.sleep(0);
+    expect(counted.reads).toBe(1);
+    onlyCodex(db, "own");
+    clock.advance(60_000);
+    db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
+    await paws.reconcileExecution();
+    while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
+    expect(getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(itemJobs(db, "mine")).toBe(1);
+  } finally {
+    await paws.shutdown();
+    db.close();
+  }
+});
+
+test("without presets a label can't change the agent, so a hold costs no Linear read", async () => {
+  const db = tempDb();
+  const clock = new FakeClock(START);
+  const jobs = new JobLoop(db, clock);
+  const { paws, counted } = labelled(db, clock, jobs, false);
+  try {
+    workspace(db);
+    await paws.reconcileExecution();
+    await Bun.sleep(0);
+    expect(counted.reads).toBe(0);
+    expect(getRunnerSetupHold(db, "mine")).toMatchObject({ reason: "no-runner" });
+  } finally {
+    await paws.shutdown();
+    db.close();
   }
 });

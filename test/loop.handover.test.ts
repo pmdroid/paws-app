@@ -166,7 +166,7 @@ async function handOver(options: {
     while (Date.now() < deadline && !started()) {
       const job = await tickWithRestarts(jobs, orchestrator, db);
       // The follow-up after a failed handover waits for admission like any resumed turn.
-      orchestrator.reconcileExecution();
+      await orchestrator.reconcileExecution();
       await jobs.tick(["run.resume"]);
       if (job === null) {
         await outbox.tick();

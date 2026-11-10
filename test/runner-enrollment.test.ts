@@ -24,7 +24,7 @@ async function run(
 }
 
 test("a member's enrollment token lets a host enroll itself once, owned by that member", async () => {
-  await run("paws-runner-enrollment-", probeRunnerEnrollment, 5);
+  await run("paws-runner-enrollment-", probeRunnerEnrollment, 6);
 }, 30_000);
 
 test("the daemon enrolls in one round trip and a retried enroll changes nothing", async () => {

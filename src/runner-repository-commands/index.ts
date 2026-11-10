@@ -3,6 +3,7 @@ export {
   deliverRepositoryCommands,
   enqueueRepositoryCommand,
   issueRepositoryCommandGrant,
+  rebaseCommitTitle,
   rebaseOnRunner,
   recordRepositoryCommandResult,
   REPOSITORY_COMMAND_GRANT_MS,
