@@ -38,7 +38,7 @@ const ROUNDS: LinkAskRounds = {
   handoff: "- review independent-review P1 at src/auth/session.ts:42: unchecked null",
 };
 
-function asked(findings?: string) {
+async function asked(findings?: string) {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "PAS-759", sessionKey: "ses_1", title: "Rounds" });
@@ -58,7 +58,7 @@ function asked(findings?: string) {
     "Lea",
     "lea@example.com",
   ]);
-  const question = askReviewRounds(db, {
+  const question = (await askReviewRounds(db, {
     item: getWorkItem(db, item.id)!,
     help: {
       itemId: item.id,
@@ -74,13 +74,13 @@ function asked(findings?: string) {
     ...(findings ? { findings } : {}),
     publicUrl: "https://paws.example",
     now: NOW,
-  })!;
+  }))!;
   return { db, itemId: item.id, question };
 }
 
 const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea" };
 
-function handoff(db: ReturnType<typeof asked>["db"]): string {
+function handoff(db: Awaited<ReturnType<typeof asked>>["db"]): string {
   const resume = listJobs(db).find((job) => job.queue === JOB_KIND.resume)!;
   return (resume.payload as { handoff: string }).handoff;
 }
@@ -91,8 +91,8 @@ test("the limit comes from the exhausted review check", () => {
   expect(reviewRoundLimit(undefined)).toBeNull();
 });
 
-test("one elicitation without options names the recurring bug class and links to the item", () => {
-  const { db, itemId, question } = asked();
+test("one elicitation without options names the recurring bug class and links to the item", async () => {
+  const { db, itemId, question } = await asked();
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect(getLinkAsk(db, question.id)).toMatchObject({ kind: "rounds", rounds: ROUNDS });
   const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
@@ -122,10 +122,10 @@ test("one elicitation without options names the recurring bug class and links to
   expect(recoveryOptions(db, itemId).retryBaseline).toEqual([]);
 });
 
-test("the question lists the open findings' text without changing the dashboard detail", () => {
+test("the question lists the open findings' text without changing the dashboard detail", async () => {
   const findings =
     "- review independent-review P1 at src/auth/session.ts:42: unchecked null: the session is read before the check. (session.ts:42)";
-  const { db, question } = asked(findings);
+  const { db, question } = await asked(findings);
   const body = (listOutbox(db).find((row) => row.op === "elicitation")!.payload as { body: string })
     .body;
   expect(body).toContain(findings);
@@ -133,8 +133,8 @@ test("the question lists the open findings' text without changing the dashboard 
   expect(getLinkAsk(db, question.id)?.detail).not.toContain(findings);
 });
 
-test("Rethink the approach restarts the item with the findings, the note and a new round budget", () => {
-  const { db, itemId, question } = asked();
+test("Rethink the approach restarts the item with the findings, the note and a new round budget", async () => {
+  const { db, itemId, question } = await asked();
   expect(
     decideLinkAsk(db, {
       questionId: question.id,
@@ -165,8 +165,8 @@ test("Rethink the approach restarts the item with the findings, the note and a n
   ).toEqual([{ action: "decision.rounds.rethink" }]);
 });
 
-test("Rethink the approach needs no note", () => {
-  const { db, itemId, question } = asked();
+test("Rethink the approach needs no note", async () => {
+  const { db, itemId, question } = await asked();
   expect(
     decideLinkAsk(db, {
       questionId: question.id,
@@ -181,8 +181,8 @@ test("Rethink the approach needs no note", () => {
   expect(handoff(db)).not.toContain("Note from the person");
 });
 
-test("Keep going restarts the item with four more rounds", () => {
-  const { db, itemId, question } = asked();
+test("Keep going restarts the item with four more rounds", async () => {
+  const { db, itemId, question } = await asked();
   expect(
     decideLinkAsk(db, {
       questionId: question.id,
@@ -202,8 +202,8 @@ test("Keep going restarts the item with four more rounds", () => {
   ]);
 });
 
-test("Stop ends the item as asked and sends nothing back to the agent", () => {
-  const { db, itemId, question } = asked();
+test("Stop ends the item as asked and sends nothing back to the agent", async () => {
+  const { db, itemId, question } = await asked();
   expect(
     decideLinkAsk(db, {
       questionId: question.id,
@@ -224,8 +224,8 @@ test("Stop ends the item as asked and sends nothing back to the agent", () => {
   );
 });
 
-test("a decision of another kind does not fit a rounds ask", () => {
-  const { db, itemId, question } = asked();
+test("a decision of another kind does not fit a rounds ask", async () => {
+  const { db, itemId, question } = await asked();
   for (const decision of ["approve", "changes", "answer"] as const)
     expect(
       decideLinkAsk(db, {
@@ -240,8 +240,8 @@ test("a decision of another kind does not fit a rounds ask", () => {
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
 });
 
-test("someone who did not delegate and does not lead the project cannot stop the item", () => {
-  const { db, itemId, question } = asked();
+test("someone who did not delegate and does not lead the project cannot stop the item", async () => {
+  const { db, itemId, question } = await asked();
   expect(
     decideLinkAsk(db, {
       questionId: question.id,
@@ -255,8 +255,8 @@ test("someone who did not delegate and does not lead the project cannot stop the
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
 });
 
-test("a reply in Linear is Rethink the approach with the reply as the note", () => {
-  const { db, itemId, question } = asked();
+test("a reply in Linear is Rethink the approach with the reply as the note", async () => {
+  const { db, itemId, question } = await asked();
   expect(
     guideLinkAsk(db, {
       questionId: question.id,

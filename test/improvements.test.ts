@@ -106,32 +106,38 @@ const owner = (db: Database, f: ReviewFindingRecord) =>
   improvementBySource(db, "ws", { kind: "daily_finding", key: dailyFindingKey(f) })?.id;
 
 describe("daily finding sources", () => {
-  test("a regrouped finding keeps its improvement when the group UUID changes", () => {
+  test("a regrouped finding keeps its improvement when the group UUID changes", async () => {
     const { db, f } = seed();
     group(db, [f[0]!, f[1]!]);
-    const first = ingestDailyFindings(db, "ws", { now: 1 });
+    const first = await ingestDailyFindings(db, "ws", { now: 1 });
     expect(first.created).toBe(3);
     const id = owner(db, f[0]!);
     expect(owner(db, f[1]!)).toBe(id);
-    expect(ingestDailyFindings(db, "ws", { now: 2 })).toMatchObject({ created: 0, changed: 0 });
+    expect(await ingestDailyFindings(db, "ws", { now: 2 })).toMatchObject({
+      created: 0,
+      changed: 0,
+    });
     regroup(db);
     group(db, [f[0]!, f[1]!], { title: "Renamed fix" });
-    expect(ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({ created: 0, changed: 1 });
+    expect(await ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({
+      created: 0,
+      changed: 1,
+    });
     expect(owner(db, f[0]!)).toBe(id);
     expect(listImprovementProposals(db, id!).at(-1)!.title).toBe("Renamed fix");
     expect(listImprovements(db, "ws")).toHaveLength(3);
   });
 
-  test("partial and overlapping groups never put one finding in two improvements", () => {
+  test("partial and overlapping groups never put one finding in two improvements", async () => {
     const { db, f } = seed();
     group(db, [f[0]!, f[1]!]);
-    ingestDailyFindings(db, "ws", { now: 1 });
+    await ingestDailyFindings(db, "ws", { now: 1 });
     const id = owner(db, f[0]!);
     regroup(db);
     group(db, [f[1]!, f[2]!]);
     group(db, [f[0]!]);
     group(db, [f[2]!, f[3]!]);
-    const result = ingestDailyFindings(db, "ws", { now: 2 });
+    const result = await ingestDailyFindings(db, "ws", { now: 2 });
     expect(result.split).toBeGreaterThan(0);
     expect(owner(db, f[0]!)).toBe(id);
     expect(owner(db, f[1]!)).toBe(id);
@@ -139,13 +145,16 @@ describe("daily finding sources", () => {
       improvementFindings(db, i.id).map((m) => m.id),
     );
     expect(sources.sort()).toEqual(f.map((x) => x.id).sort());
-    expect(ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({ created: 0, changed: 0 });
+    expect(await ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({
+      created: 0,
+      changed: 0,
+    });
   });
 
-  test("an accepted proposal keeps its text and new findings get their own improvement", () => {
+  test("an accepted proposal keeps its text and new findings get their own improvement", async () => {
     const { db, f } = seed();
     group(db, [f[0]!]);
-    ingestDailyFindings(db, "ws", { now: 1 });
+    await ingestDailyFindings(db, "ws", { now: 1 });
     const id = owner(db, f[0]!)!;
     const accepted = decideImprovement(db, {
       improvementId: id,
@@ -157,7 +166,7 @@ describe("daily finding sources", () => {
     expect(accepted.ok).toBe(true);
     regroup(db);
     group(db, [f[0]!, f[3]!], { title: "Rewritten" });
-    ingestDailyFindings(db, "ws", { now: 3 });
+    await ingestDailyFindings(db, "ws", { now: 3 });
     expect(listImprovementProposals(db, id).map((p) => p.title)).toEqual(["Shared fix"]);
     const other = owner(db, f[3]!)!;
     expect(other).not.toBe(id);
@@ -167,7 +176,7 @@ describe("daily finding sources", () => {
     expect(listImprovementProposals(db, other).at(-1)!.problem).not.toContain(f[0]!.text);
   });
 
-  test("backfill maps filed and dismissed records without decisions, deliveries or verification", () => {
+  test("backfill maps filed and dismissed records without decisions, deliveries or verification", async () => {
     const { db, f } = seed();
     const filed = group(db, [f[0]!, f[1]!], { status: "filed", issue: "PAS-20" });
     for (const x of [f[0]!, f[1]!])
@@ -179,19 +188,19 @@ describe("daily finding sources", () => {
       by: "Ada",
       now: 5,
     });
-    expect(ingestDailyFindings(db, "ws", { now: 6, limit: 1 })).toMatchObject({
+    expect(await ingestDailyFindings(db, "ws", { now: 6, limit: 1 })).toMatchObject({
       units: 1,
       remaining: 2,
     });
-    expect(ingestDailyFindings(db, "ws", { now: 7, limit: 1 })).toMatchObject({
+    expect(await ingestDailyFindings(db, "ws", { now: 7, limit: 1 })).toMatchObject({
       created: 1,
       remaining: 1,
     });
-    expect(ingestDailyFindings(db, "ws", { now: 8, limit: 1 })).toMatchObject({
+    expect(await ingestDailyFindings(db, "ws", { now: 8, limit: 1 })).toMatchObject({
       created: 1,
       remaining: 0,
     });
-    expect(ingestDailyFindings(db, "ws", { now: 9, limit: 1 })).toMatchObject({
+    expect(await ingestDailyFindings(db, "ws", { now: 9, limit: 1 })).toMatchObject({
       created: 0,
       changed: 0,
       remaining: 0,
@@ -218,42 +227,45 @@ describe("daily finding sources", () => {
     expect(inboxCounts(items)).toMatchObject({ total: 3, daily: 3, linked: 1, needsReview: 1 });
   });
 
-  test("a regroup into subsets keeps every owned finding in the proposal", () => {
+  test("a regroup into subsets keeps every owned finding in the proposal", async () => {
     const { db, f } = seed();
     group(db, [f[0]!, f[1]!]);
-    ingestDailyFindings(db, "ws", { now: 1 });
+    await ingestDailyFindings(db, "ws", { now: 1 });
     const id = owner(db, f[0]!)!;
     regroup(db);
     group(db, [f[0]!], { title: "Only A" });
     group(db, [f[1]!], { title: "Only B" });
-    ingestDailyFindings(db, "ws", { now: 2 });
+    await ingestDailyFindings(db, "ws", { now: 2 });
     expect(listImprovementProposals(db, id).at(-1)!.evidence).toEqual([
       `review_finding:${f[0]!.key}`,
       `review_finding:${f[1]!.key}`,
     ]);
-    expect(ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({ created: 0, changed: 0 });
+    expect(await ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({
+      created: 0,
+      changed: 0,
+    });
   });
 
-  test("restoring an earlier grouping records it again and reports one change", () => {
+  test("restoring an earlier grouping records it again and reports one change", async () => {
     const { db, f } = seed();
     group(db, [f[0]!, f[1]!]);
-    ingestDailyFindings(db, "ws", { now: 1 });
+    await ingestDailyFindings(db, "ws", { now: 1 });
     const id = owner(db, f[0]!)!;
     regroup(db);
     group(db, [f[1]!], { title: "Only B" });
-    expect(ingestDailyFindings(db, "ws", { now: 2 })).toMatchObject({ changed: 1 });
+    expect(await ingestDailyFindings(db, "ws", { now: 2 })).toMatchObject({ changed: 1 });
     expect(listImprovementProposals(db, id).at(-1)!.title).toBe("Only B");
     regroup(db);
     group(db, [f[0]!, f[1]!]);
-    expect(ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({ changed: 1 });
+    expect(await ingestDailyFindings(db, "ws", { now: 3 })).toMatchObject({ changed: 1 });
     expect(listImprovementProposals(db, id).at(-1)!.title).toBe("Shared fix");
-    expect(ingestDailyFindings(db, "ws", { now: 4 })).toMatchObject({ changed: 0 });
+    expect(await ingestDailyFindings(db, "ws", { now: 4 })).toMatchObject({ changed: 0 });
   });
 
-  test("a legacy decision on some members keeps the rest in review", () => {
+  test("a legacy decision on some members keeps the rest in review", async () => {
     const { db, f } = seed();
     group(db, [f[0]!, f[1]!]);
-    ingestDailyFindings(db, "ws", { now: 1 });
+    await ingestDailyFindings(db, "ws", { now: 1 });
     const id = owner(db, f[0]!)!;
     const item = () =>
       listInboxItems(db, { workspaceId: "ws" }).find((i) => i.improvement.id === id)!;
@@ -273,10 +285,10 @@ describe("daily finding sources", () => {
     expect(item()).toMatchObject({ lifecycle: "linked", undecided: [] });
   });
 
-  test("a claimed legacy action stays pending", () => {
+  test("a claimed legacy action stays pending", async () => {
     const { db, f } = seed();
     group(db, [f[0]!]);
-    ingestDailyFindings(db, "ws", { now: 1 });
+    await ingestDailyFindings(db, "ws", { now: 1 });
     const id = owner(db, f[0]!)!;
     db.run("UPDATE finding_group SET action='file'");
     const [item] = listInboxItems(db, { workspaceId: "ws" }).filter((i) => i.improvement.id === id);
@@ -286,10 +298,10 @@ describe("daily finding sources", () => {
     ]);
   });
 
-  test("permission loss hides items before counts", () => {
+  test("permission loss hides items before counts", async () => {
     const { db, f } = seed();
     group(db, [f[0]!, f[1]!]);
-    ingestDailyFindings(db, "ws", { now: 1 });
+    await ingestDailyFindings(db, "ws", { now: 1 });
     expect(listInboxItems(db, { workspaceId: "ws", sessionIds: ["session"] })).toHaveLength(3);
     expect(listInboxItems(db, { workspaceId: "ws", sessionIds: ["other"] })).toEqual([]);
     expect(listInboxItems(db, { workspaceId: "ws", repositories: ["acme/other"] })).toEqual([]);
@@ -298,11 +310,11 @@ describe("daily finding sources", () => {
 });
 
 describe("daily findings and retros share one inbox", () => {
-  test("both sources reuse one known issue and keep separate evidence", () => {
+  test("both sources reuse one known issue and keep separate evidence", async () => {
     const { db, f } = seed();
     group(db, [f[0]!], { status: "filed", issue: "PAS-20" });
     markReviewFindingFiled(db, { key: f[0]!.key, issue: "PAS-20", by: "Ada", now: 5 });
-    ingestDailyFindings(db, "ws", { now: 6 });
+    await ingestDailyFindings(db, "ws", { now: 6 });
     const { revision } = saveRetroSettingsRevision(db, {
       workspaceId: "ws",
       prompt: "Review {{digest}}",
@@ -377,7 +389,7 @@ describe("daily findings and retros share one inbox", () => {
     expect(getImprovement(db, retroItem.improvement.id)!.issue!.id).toBe("issue-20");
     expect(listInboxItems(db, { workspaceId: "ws", repositories: ["acme/other"] })).toEqual([]);
     expect(inboxCounts(items)).toMatchObject({ daily: 4, weekly: 1, missingCriterion: 3 });
-    expect(improvementSourceStatus(db, "ws")).toEqual({
+    expect(await improvementSourceStatus(db, "ws")).toEqual({
       daily: { enabled: true, lastRun: expect.objectContaining({ status: "completed" }) },
       weekly: {
         lastRetro: {

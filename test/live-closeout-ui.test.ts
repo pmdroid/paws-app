@@ -154,35 +154,35 @@ function acceptVerdict(db: Database, id: string, head: string, body: string, now
  * `checkLog`, as the issue page shows a check once its row has loaded the log. Neither
  * `/api/issues` nor the detail carries check output.
  */
-function snapshotOf(db: Database, now: number, env: NodeJS.ProcessEnv = {}): Status {
+async function snapshotOf(db: Database, now: number, env: NodeJS.ProcessEnv = {}): Promise<Status> {
   const provider = createLiveStatusProvider(db, { now: () => new Date(now), env });
-  const list = provider.issues();
-  const withLog = (itemId: string, attempt: number) => (check: StatusCheck) => ({
-    ...check,
-    ...provider.checkLog({ itemId, attempt, checkId: check.id, run: null }),
-  });
+  const list = await provider.issues();
+  const withLogs = async (itemId: string, attempt: number, checks: readonly StatusCheck[]) => {
+    const logged: StatusCheck[] = [];
+    for (const check of checks)
+      logged.push({
+        ...check,
+        ...(await provider.checkLog({ itemId, attempt, checkId: check.id, run: null })),
+      });
+    return logged;
+  };
   const details = new Map<string, IssueDetailResponse>();
   for (const item of list.issues) {
-    const detail = provider.issue(item.id);
+    const detail = await provider.issue(item.id);
     if (detail === null) continue;
-    details.set(item.id, {
-      ...detail,
-      verdicts: detail.verdicts.map((verdict) => {
-        const attempts = attemptsOf(verdict);
-        return {
-          ...verdict,
-          checks: verdict.checks.map(withLog(verdict.itemId, attempts.at(-1)!.number)),
-          ...(verdict.attempts
-            ? {
-                attempts: verdict.attempts.map((attempt) => ({
-                  ...attempt,
-                  checks: attempt.checks.map(withLog(verdict.itemId, attempt.number)),
-                })),
-              }
-            : {}),
-        };
-      }),
-    });
+    const verdicts: StatusVerdict[] = [];
+    for (const verdict of detail.verdicts) {
+      const attempts = attemptsOf(verdict);
+      const checks = await withLogs(verdict.itemId, attempts.at(-1)!.number, verdict.checks);
+      const logged: NonNullable<StatusVerdict["attempts"]> = [];
+      for (const attempt of verdict.attempts ?? [])
+        logged.push({
+          ...attempt,
+          checks: await withLogs(verdict.itemId, attempt.number, attempt.checks),
+        });
+      verdicts.push({ ...verdict, checks, ...(verdict.attempts ? { attempts: logged } : {}) });
+    }
+    details.set(item.id, { ...detail, verdicts });
   }
   return { items: list.issues, runs: list.runs, details };
 }
@@ -213,17 +213,19 @@ function paint(snapshot: Status, id: string, checkId: string): string {
 }
 
 describe("live closeout ui", () => {
-  test("a paused task retains its status when its prior session is lost", () => {
+  test("a paused task retains its status when its prior session is lost", async () => {
     const db = database();
     const id = "ENG-302";
     insertQueuedItem(db, { id });
     const { run } = beginImplementRun(db, id, 1);
     applyWorkItemEvent(db, id, "pause");
     markRun(db, run.id, "lost", 2);
-    expect(snapshotOf(db, 3).runs.find((entry) => entry.itemId === id)?.state).toBe("paused");
+    expect((await snapshotOf(db, 3)).runs.find((entry) => entry.itemId === id)?.state).toBe(
+      "paused",
+    );
   });
 
-  test("a cap during verification shows the stopped run and its reason", () => {
+  test("a cap during verification shows the stopped run and its reason", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const id = "ENG-302";
@@ -235,7 +237,7 @@ describe("live closeout ui", () => {
     claimNextJob(db, { now, leaseMs: 60_000, queues: ["run.reverify"] });
     accrueAwake(db, id, 0, now);
     accrueAwake(db, id, 1_000, now + 1_000);
-    const run = snapshotOf(db, now + 1_000).runs.find((entry) => entry.itemId === id);
+    const run = (await snapshotOf(db, now + 1_000)).runs.find((entry) => entry.itemId === id);
     expect(run?.state).toBe("stopped");
     expect(run?.summary).toBe(
       "Closeout reached its 1 min limit. Counted: implementation 0 min, Closeout under 1 min.",
@@ -243,7 +245,7 @@ describe("live closeout ui", () => {
     expect(run?.activity.at(-1)?.kind).toBe("err");
   });
 
-  test("shows streamed checks before closeout finishes", () => {
+  test("shows streamed checks before closeout finishes", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const id = "ENG-74";
@@ -285,7 +287,7 @@ describe("live closeout ui", () => {
       now + 2,
     );
 
-    const snapshot = snapshotOf(db, now + 3);
+    const snapshot = await snapshotOf(db, now + 3);
     const verdict = verdictOf(snapshot, id);
     expect(verdict.decision).toBe("running");
     expect(verdict.sealed).toBe(false);
@@ -307,7 +309,7 @@ describe("live closeout ui", () => {
     expect(html).toContain('aria-expanded="true"');
   });
 
-  test("keeps a merge-queue recheck running until the new decision is stored", () => {
+  test("keeps a merge-queue recheck running until the new decision is stored", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const id = "ENG-75";
@@ -342,20 +344,20 @@ describe("live closeout ui", () => {
     upsertCloseoutStep(db, id, current, step("recheck", "pending"), now + 5);
     upsertCloseoutStep(db, id, current, step("recheck", "running"), now + 6);
 
-    const running = verdictOf(snapshotOf(db, now + 7), id);
+    const running = verdictOf(await snapshotOf(db, now + 7), id);
     expect(running.decision).toBe("running");
     expect(running.summary).toBe("Closeout is running.");
     expect(running.summary).not.toContain("Closeout: accepted");
     expect(running.headSha).toBe(newHead);
     expect(running.policyDigest).toBe(policy("b"));
     expect(running.checks.map((check) => check.id)).toEqual(["recheck"]);
-    const runningHtml = paint(snapshotOf(db, now + 7), id, "recheck");
+    const runningHtml = paint(await snapshotOf(db, now + 7), id, "recheck");
     expect(runningHtml).toContain("Closeout is verifying the work");
     expect(runningHtml).not.toContain("Closeout accepted. Waiting to merge.");
 
     upsertCloseoutStep(db, id, current, step("recheck", "failed", { exitCode: 1 }), now + 8);
     finishCloseoutProgress(db, id, current, "rejected", now + 9);
-    const finished = verdictOf(snapshotOf(db, now + 10), id);
+    const finished = verdictOf(await snapshotOf(db, now + 10), id);
     expect(finished.decision).toBe("rejected");
     expect(finished.summary).toBe("Closeout rejected.");
     expect(finished.headSha).toBe(newHead);
@@ -364,7 +366,7 @@ describe("live closeout ui", () => {
     ]);
   });
 
-  test("lists every Closeout attempt of an item, oldest first, and renders the latest", () => {
+  test("lists every Closeout attempt of an item, oldest first, and renders the latest", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const id = "ENG-77";
@@ -401,7 +403,7 @@ describe("live closeout ui", () => {
     upsertCloseoutStep(db, id, second, step("unit", "passed", { exitCode: 0 }), now + 7);
     finishCloseoutProgress(db, id, second, "accepted", now + 8);
 
-    const snapshot = snapshotOf(db, now + 9);
+    const snapshot = await snapshotOf(db, now + 9);
     const verdict = verdictOf(snapshot, id);
     expect(verdict.attempts?.map((entry) => [entry.number, entry.decision, entry.headSha])).toEqual(
       [
@@ -428,7 +430,7 @@ describe("live closeout ui", () => {
     expect(earlier).toContain(">Full log</a> has the complete output.");
   });
 
-  test("does not attach an older accepted verdict to another candidate or policy", () => {
+  test("does not attach an older accepted verdict to another candidate or policy", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const id = "ENG-76";
@@ -457,7 +459,7 @@ describe("live closeout ui", () => {
       now + 13,
     );
 
-    const verdict = verdictOf(snapshotOf(db, now + 14), id);
+    const verdict = verdictOf(await snapshotOf(db, now + 14), id);
     expect(verdict.decision).toBe("running");
     expect(verdict.headSha).toBe(newHead);
     expect(verdict.policyDigest).toBe(policy("b"));
@@ -467,7 +469,7 @@ describe("live closeout ui", () => {
 
     upsertCloseoutStep(db, id, fresh, step("fresh-check", "failed", { exitCode: 1 }), now + 60);
     finishCloseoutProgress(db, id, fresh, "rejected", now + 61);
-    const settled = verdictOf(snapshotOf(db, now + 62), id);
+    const settled = verdictOf(await snapshotOf(db, now + 62), id);
     expect(settled.decision).toBe("rejected");
     expect(settled.headSha).toBe(newHead);
     expect(settled.policyDigest).toBe(policy("b"));
@@ -670,13 +672,13 @@ describe("live closeout ui", () => {
     expect(cappedBody).not.toContain(secret);
     expect(cappedBody).toContain("[redacted]");
 
-    const live = verdictOf(snapshotOf(db, now + 3, env), id);
+    const live = verdictOf(await snapshotOf(db, now + 3, env), id);
     const streamed = live.checks.find((check) => check.id === "typecheck")?.stdout ?? "";
     expect(streamed).toContain("[redacted]");
     expect(streamed).not.toContain(secret);
   });
 
-  test("reopens a persisted database without replaying closeout", () => {
+  test("reopens a persisted database without replaying closeout", async () => {
     const dir = tempDir();
     const file = join(dir, "status.db");
     const now = 1_700_000_000_000;
@@ -699,19 +701,19 @@ describe("live closeout ui", () => {
       now + 2,
     );
     finishCloseoutProgress(first, id, current, "accepted", now + 3);
-    const before = verdictOf(snapshotOf(first, now + 4), id);
+    const before = verdictOf(await snapshotOf(first, now + 4), id);
     first.close();
     open.pop();
 
     const again = database(file);
-    const after = verdictOf(snapshotOf(again, now + 5), id);
+    const after = verdictOf(await snapshotOf(again, now + 5), id);
     expect(after.decision).toBe("accepted");
     expect(after.headSha).toBe(before.headSha);
     expect(after.checks.map((check) => [check.id, check.state, check.stdout])).toEqual(
       before.checks.map((check) => [check.id, check.state, check.stdout]),
     );
     expect(after.checks[0]?.stdout).toBe("kept line\nsecond line");
-    const html = paint(snapshotOf(again, now + 5), id, "typecheck");
+    const html = paint(await snapshotOf(again, now + 5), id, "typecheck");
     expect(html).toContain("kept line");
     expect(html).toContain("second line");
     expect(html).not.toContain("<script>");

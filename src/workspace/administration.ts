@@ -2,15 +2,16 @@ import { isWorkspaceAdmin } from "./eligibility";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
-  auditWorkspaceAccess,
+  auditWorkspaceAccessSteps,
   changeWorkspaceRole,
   changeWorkspaceRevocation,
-  getWorkspace,
-  listWorkspaceMemberSummaries,
-  listWorkspaceAudit,
-  listWorkspaceRepositories,
-  replaceWorkspaceRepositories,
-  workspaceMember,
+  getWorkspaceSteps,
+  listWorkspaceMemberSummariesSteps,
+  listWorkspaceAuditSteps,
+  listWorkspaceRepositoriesSteps,
+  replaceWorkspaceRepositoriesSteps,
+  sqliteDb,
+  workspaceMemberSteps,
   type WorkspaceRole,
   type WorkspaceSession,
 } from "../db";
@@ -39,14 +40,17 @@ export async function handleWorkspaceAdministration(
   )
     return null;
   const principal = options.principal;
-  const deny = (message: string) => {
-    auditWorkspaceAccess(options.db, {
-      workspaceId: principal.workspaceId,
+  const store = sqliteDb(options.db);
+  const workspaceId = principal.workspaceId;
+  const deny = async (message: string) => {
+    const audit = {
+      workspaceId,
       userId: principal.userId,
       action: "access.denied",
       subject: path,
       now: options.now,
-    });
+    };
+    await store.run((q) => auditWorkspaceAccessSteps(q, audit));
     return Response.json(
       { error: message },
       { status: 403, headers: { "cache-control": "no-store" } },
@@ -64,15 +68,15 @@ export async function handleWorkspaceAdministration(
       before < 1
     )
       return Response.json({ error: "Invalid audit cursor." }, { status: 400 });
-    return Response.json(listWorkspaceAudit(options.db, principal.workspaceId, before), {
+    return Response.json(await store.run((q) => listWorkspaceAuditSteps(q, workspaceId, before)), {
       headers: { "cache-control": "no-store" },
     });
   }
   if (request.method === "GET")
     return Response.json(
       path.endsWith("/members")
-        ? { members: listWorkspaceMemberSummaries(options.db, principal.workspaceId) }
-        : { repositories: listWorkspaceRepositories(options.db, principal.workspaceId) },
+        ? { members: await store.run((q) => listWorkspaceMemberSummariesSteps(q, workspaceId)) }
+        : { repositories: await store.run((q) => listWorkspaceRepositoriesSteps(q, workspaceId)) },
       { headers: { "cache-control": "no-store" } },
     );
   if (request.method !== "PUT")
@@ -110,8 +114,9 @@ export async function handleWorkspaceAdministration(
             ? "Choose a workspace member and set revoked to true or false."
             : "Choose a workspace member and role.",
         );
-      const member = workspaceMember(options.db, principal.workspaceId, body["userId"]);
-      const workspace = getWorkspace(options.db, principal.workspaceId);
+      const userId = body["userId"];
+      const member = await store.run((q) => workspaceMemberSteps(q, workspaceId, userId));
+      const workspace = await store.run((q) => getWorkspaceSteps(q, workspaceId));
       if (member === null || workspace === null) throw new Error("Choose a workspace member.");
       if (typeof body["revoked"] === "boolean") {
         const stopped = changeWorkspaceRevocation(options.db, {
@@ -180,14 +185,15 @@ export async function handleWorkspaceAdministration(
           teamId: entry["teamId"],
         });
       }
-      const current = getWorkspace(options.db, principal.workspaceId);
+      const current = await store.run((q) => getWorkspaceSteps(q, workspaceId));
       if (current === null) throw new Error("Workspace no longer exists.");
-      replaceWorkspaceRepositories(options.db, {
-        workspaceId: principal.workspaceId,
+      const replacement = {
+        workspaceId,
         actorId: principal.userId,
         repositories,
         now: options.now,
-      });
+      };
+      await store.transaction((q) => replaceWorkspaceRepositoriesSteps(q, replacement));
     }
     return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   } catch (error) {

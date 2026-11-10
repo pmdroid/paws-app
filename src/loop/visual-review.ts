@@ -14,16 +14,24 @@ import {
   closeLinkAsk,
   enqueueJobOnce,
   enqueueOutboxOnce,
+  enqueueOutboxOnceSteps,
   getEvidence,
+  getEvidenceSteps,
   getLinkAsk,
+  getLinkAskSteps,
   getWorkItem,
-  linearConversationUrl,
+  getWorkItemSteps,
+  linearConversationUrlAsync,
   latestEvidence,
   listEvidence,
+  listEvidenceSteps,
   listVisualReviewMarks,
-  listVisualReviews,
+  listVisualReviewsSteps,
   saveCheckpoint,
   saveVisualReviewMarks,
+  sqliteDb,
+  type Db,
+  type StoredEvidence,
   type VisualReviewMark,
 } from "../db";
 import { reviewMarkPath } from "./input-files";
@@ -108,12 +116,15 @@ export async function planVisualReviewCarry(
   storage: EvidenceStorage | undefined,
 ): Promise<VisualReviewCarryPlan> {
   const plan: VisualReviewCarryPlan = { carried: [], approved: new Map() };
-  const approved = humanApprovedScreens(db, itemId, checkId).flatMap((origin) => {
-    const row = getEvidence(db, origin.fromEvidenceId);
-    return row ? [{ ...origin, row }] : [];
-  });
+  const store = sqliteDb(db);
+  const approved: (ReturnType<typeof humanApprovedScreens>[number] & { row: StoredEvidence })[] =
+    [];
+  for (const origin of humanApprovedScreens(db, itemId, checkId)) {
+    const row = await store.run((q) => getEvidenceSteps(q, origin.fromEvidenceId));
+    if (row) approved.push({ ...origin, row });
+  }
   for (const id of evidenceIds) {
-    const row = getEvidence(db, id);
+    const row = await store.run((q) => getEvidenceSteps(q, id));
     if (row === null) continue;
     const before = approved.findLast(
       (entry) => entry.row.displayName === row.displayName && entry.row.checkId === row.checkId,
@@ -299,26 +310,33 @@ export const VISUAL_REVIEW_NEEDS_LINK =
   "Visual review needs a dashboard link a person can open, so the screens can be approved where they are in view. Set PAWS_PUBLIC_URL to an https address; a reply in Linear cannot approve screens.";
 
 /** Posts the one reminder while the review is still open and the task still waits on it. */
-export function remindVisualReview(db: Database, questionId: string, now: number): boolean {
+export async function remindVisualReview(
+  db: Database,
+  questionId: string,
+  now: number,
+): Promise<boolean> {
+  const store = sqliteDb(db);
   const question = getQuestion(db, questionId);
   if (question === null || question.status !== "open" || !getVisualReview(db, questionId))
     return false;
-  const item = getWorkItem(db, question.itemId);
+  const item = await store.run((q) => getWorkItemSteps(q, question.itemId));
   if (item === null || item.state !== "awaiting_input" || item.cancelRequested) return false;
-  enqueueOutboxOnce(db, {
-    target: "linear",
-    op: "elicitation",
-    orderingKey: question.sessionId,
-    idempotencyKey: `visual-review-reminder:${questionId}`,
-    payload: {
-      id: randomUUID(),
-      sessionId: question.sessionId,
-      questionId,
-      body: VISUAL_REVIEW_REMINDER,
-      options: [],
-    },
-    now,
-  });
+  await store.transaction((q) =>
+    enqueueOutboxOnceSteps(q, {
+      target: "linear",
+      op: "elicitation",
+      orderingKey: question.sessionId,
+      idempotencyKey: `visual-review-reminder:${questionId}`,
+      payload: {
+        id: randomUUID(),
+        sessionId: question.sessionId,
+        questionId,
+        body: VISUAL_REVIEW_REMINDER,
+        options: [],
+      },
+      now,
+    }),
+  );
   return true;
 }
 
@@ -526,16 +544,25 @@ export function visualReviewApprovals(
   }));
 }
 
-export function visualReviewPullRequestNote(
-  db: Database,
+export async function visualReviewPullRequestNote(
+  store: Db,
   item: WorkItemRecord,
   publicUrl: string | null,
   now: number = Date.now(),
-): string {
-  const accepted = listVisualReviews(db, item.id).filter((review) => review.outcome === "accepted");
+): Promise<string> {
+  const accepted = (await store.run((q) => listVisualReviewsSteps(q, item.id))).filter(
+    (review) => review.outcome === "accepted",
+  );
   if (accepted.length === 0) return "";
-  const evidence = listEvidence(db, item.id);
-  const question = linearConversationUrl(db, item.sessionKey, item.linearIdentifier);
+  const evidence = await store.run((q) => listEvidenceSteps(q, item.id));
+  const question = await linearConversationUrlAsync(store, item.sessionKey, item.linearIdentifier);
+  const linkAsked = new Set<string>();
+  for (const review of accepted)
+    if (
+      !carriedInFull(review) &&
+      (await store.run((q) => getLinkAskSteps(q, review.questionId))) !== null
+    )
+      linkAsked.add(review.questionId);
   const base = publicUrl?.replace(/\/+$/, "");
   const names = new Map(evidence.map((row) => [row.id, row.displayName]));
   return accepted
@@ -554,7 +581,7 @@ export function visualReviewPullRequestNote(
         ...(full
           ? []
           : [
-              getLinkAsk(db, review.questionId) === null
+              !linkAsked.has(review.questionId)
                 ? `Visual review accepted by ${review.answeredBy ?? "a reviewer"} in [Linear](<${question}>).`
                 : `Visual review accepted by ${review.answeredBy ?? "a reviewer"} in Paws for ${shortCommit(review.headCommit ?? "")}.`,
             ]),

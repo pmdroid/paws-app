@@ -1,5 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { eq, sql } from "drizzle-orm";
+import type { Q } from "./db";
+import { jsonValue } from "./json-text";
 import { orm } from "./orm";
 import { closeoutRecovery, question } from "./schema";
 
@@ -16,6 +18,19 @@ export type CloseoutRecovery = {
   answer: string | null;
   answeredBy: string | null;
 };
+
+export function* saveCloseoutRecoverySteps(
+  q: Q,
+  input: Omit<CloseoutRecovery, "answer" | "answeredBy">,
+) {
+  yield* q.exec(
+    q.orm.insert(q.t.closeoutRecovery).values({
+      ...input,
+      failedChecks: jsonValue(q, input.failedChecks),
+      retryBaseline: jsonValue(q, input.retryBaseline),
+    }),
+  );
+}
 
 export function saveCloseoutRecovery(
   db: Database,

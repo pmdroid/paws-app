@@ -442,6 +442,7 @@ import {
   mergedPullHeads,
   readPullMerge,
   branchContains,
+  hasOpenPullOnPrefix,
   readOpenPullHead,
   readBranchWork,
   UPSTREAM_MAIN_REF,
@@ -1126,10 +1127,10 @@ export class Orchestrator {
     const wait = policy.wait?.() ?? this.feedbackWait();
     for (const received of receivedLinearComments(this.db)) {
       if (received.issueId !== comment.issueId) continue;
-      const route = routeLinearComment(this.db, received, policy);
+      const route = await routeLinearComment(this.db, received, policy);
       const authorized =
         route.kind === "queue" ? await authorizeLinearComment(route, policy) : true;
-      commitLinearCommentRoute(this.db, received.commentId, route, {
+      await commitLinearCommentRoute(this.db, received.commentId, route, {
         now: this.now(),
         wait,
         authorized,
@@ -1904,7 +1905,7 @@ export class Orchestrator {
     jobs.register(JOB_KIND.visualReviewReminder, async (job, context) => {
       const questionId = readString(job.payload, "questionId");
       if (!context.isCurrent() || questionId === null) return;
-      if (remindVisualReview(this.db, questionId, this.now())) await this.flush();
+      if (await remindVisualReview(this.db, questionId, this.now())) await this.flush();
     });
     jobs.register(JOB_KIND.linkAskReminder, async (job, context) => {
       const questionId = readString(job.payload, "questionId");
@@ -1915,7 +1916,7 @@ export class Orchestrator {
       const itemId = readString(job.payload, "itemId");
       const questionId = readString(job.payload, "questionId");
       if (!context.isCurrent() || itemId === null || questionId === null) return;
-      if (reaskDeadQuestion(this.db, { itemId, questionId, jobId: job.id, now: this.now() }))
+      if (await reaskDeadQuestion(this.db, { itemId, questionId, jobId: job.id, now: this.now() }))
         await this.flush();
     });
     jobs.register(JOB_KIND.runnerSetupCheck, async (job) => {
@@ -3032,6 +3033,57 @@ export class Orchestrator {
     return this.options.remoteExecution.agentForSession(sessionId, purpose);
   }
 
+  private async repositoryBeforeSelection(item: WorkItemRecord): Promise<RepositoryBinding | null> {
+    const bound = this.repositoryForItem(item);
+    if (bound) return bound;
+    const candidates = listRepositoryCandidates(
+      this.db,
+      item.sessionKey,
+      this.options.repositories ?? [],
+    );
+    if (candidates.length === 1) return candidates[0]!;
+    if (candidates.length === 0 || !this.tracker?.issueRepositoryHints) return null;
+    const kept = getTaskLinearRead(this.db, item.id, "repository_hints") as
+      | RepositoryHints
+      | undefined;
+    const hints =
+      kept ??
+      (await linearCaller("repository-hints", () =>
+        this.tracker!.issueRepositoryHints!(item.linearIssueId, {
+          signal: this.authRecoveryController.signal,
+        }),
+      ));
+    if (kept === undefined)
+      keepTaskLinearRead(this.db, item.id, "repository_hints", hints, this.now());
+    const hinted = hintedRepository(candidates, hints);
+    return hinted && "bind" in hinted ? hinted.bind : null;
+  }
+
+  private async hasOpenPawsPull(item: WorkItemRecord): Promise<boolean> {
+    try {
+      const repository = await this.repositoryBeforeSelection(item);
+      const github = repository ? this.githubForRepository(repository) : null;
+      if (!repository || !github) return false;
+      return await hasOpenPullOnPrefix({
+        client: github.client,
+        owner: repository.owner,
+        repo: repository.repo,
+        prefix: `paws/${item.linearIdentifier.toLowerCase()}-`,
+        ...this.gitHubCredentials(github),
+        signal: AbortSignal.any([this.authRecoveryController.signal, AbortSignal.timeout(10_000)]),
+      });
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.hasOpenPawsPull",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return false;
+    }
+  }
+
   private async resolveTaskMode(item: WorkItemRecord, handoff?: string): Promise<boolean> {
     if (getConversation(this.db, item.id).blocked)
       throw new Error("ACP process cleanup could not be verified");
@@ -3041,7 +3093,13 @@ export class Orchestrator {
     let classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
     const sessionKey = item.sessionKey;
     const delegatedIssueId = this.delegationIssueId(item);
-    if (!saved && !classification && taskKey && sessionKey && delegatedIssueId)
+    if (!saved && !classification && taskKey && sessionKey && delegatedIssueId) {
+      if (await this.hasOpenPawsPull(item)) {
+        if (this.stopped(item.id) || getLinearSessionGeneration(this.db, sessionKey) !== generation)
+          return false;
+        saveTaskMode(this.db, item.id, "code", generation, false);
+        return true;
+      }
       classification = await this.taskPlanner.plan({
         taskKey,
         sessionId: sessionKey,
@@ -3061,6 +3119,7 @@ export class Orchestrator {
             signal,
           ),
       });
+    }
     if (taskKey && classification?.mode === "code" && classification.redirect) {
       await this.intakeLinearTask(this.delegationIssueId(item)!, item.sessionKey, taskKey);
       await this.dispatch();
@@ -3667,8 +3726,8 @@ export class Orchestrator {
       this.saveCandidate(run.id, executed.run.identity);
       const at = this.itemHead(finished);
       const head = (await git(["-C", at.repo, "rev-parse", at.ref])).trim();
-      recordAgentFindingDecisions(
-        this.db,
+      await recordAgentFindingDecisions(
+        this.store,
         item.id,
         activity.resultBody(),
         await this.fixCommit(at.repo, item.id, head),
@@ -3700,7 +3759,7 @@ export class Orchestrator {
           pullRequestDraftKey(this.savedDraft(item.id)),
         );
       else closeActiveRun(this.db, run.id, this.now());
-      const suggestionJob = suggestionTurnRunning(this.db, item.id);
+      const suggestionJob = await suggestionTurnRunning(this.store, item.id);
       if (
         suggestionJob !== null &&
         head === getWorkItem(this.db, item.id)?.acceptedHead &&
@@ -5013,7 +5072,7 @@ export class Orchestrator {
     );
     const findings = reviewFindingText(await this.failedReviewFindings(item));
     this.assertJobCurrent(item.id);
-    const question = askReviewRounds(this.db, {
+    const question = await askReviewRounds(this.db, {
       item,
       help,
       findings,
@@ -5335,7 +5394,7 @@ export class Orchestrator {
           });
         },
         askRiskApproval: async (item, published) => {
-          const asked = askRiskApproval(this.db, {
+          const asked = await askRiskApproval(this.db, {
             item,
             head: published.head,
             publicUrl: this.options.publicUrl ?? null,
@@ -5575,8 +5634,8 @@ export class Orchestrator {
     const evidence = [
       summary,
       riskLine(risk),
-      visualReviewPullRequestNote(
-        this.db,
+      await visualReviewPullRequestNote(
+        this.store,
         item,
         this.options.evidence?.publicUrl ?? null,
         this.now(),
@@ -5680,12 +5739,12 @@ export class Orchestrator {
     await this.flush(live.controller.signal);
     if (
       this.suggestedFindingsMode(repositoryName) === "own_turn" &&
-      startSuggestionTurn(this.db, {
+      (await startSuggestionTurn(this.store, {
         itemId: item.id,
         head: published.head,
         suggestions: undecidedSuggestions(open.findings).length,
         now: this.now(),
-      }) === "started"
+      })) === "started"
     )
       return { kind: "returned" };
     run.signal = live.controller.signal;
@@ -6037,7 +6096,7 @@ export class Orchestrator {
         return [];
       }),
     );
-    handSuggestions(this.db, item.id, findings, this.now());
+    await handSuggestions(this.store, item.id, findings, this.now());
     if (findings.length === 0) return "";
     return suggestedFindingsSection(
       findings.map((finding) => ({ ...finding, id: findingId(finding) })),
@@ -6123,11 +6182,11 @@ export class Orchestrator {
         }
         if (
           request.pushRejected?.conflicts &&
-          restartForPushConflict(this.db, item.id, {
+          (await restartForPushConflict(this.db, item.id, {
             branch: request.pushRejected.branch,
             files: request.pushRejected.conflicts,
             now: this.now(),
-          })
+          }))
         ) {
           this.askedRuns.add(runId);
           await this.flush();
@@ -9630,7 +9689,7 @@ export class Orchestrator {
     const { home, policyRoot } = this.closeoutHome(item);
     const pull = getItemPullRequest(this.db, item.id);
     const github = pull ? this.githubForRepository(repository) : null;
-    const suggested = input.readOnly ? [] : waitingSuggestions(this.db, item.id);
+    const suggested = input.readOnly ? [] : await waitingSuggestions(this.store, item.id);
     const failed = input.readOnly ? [] : reviewFindingGroups(await this.failedReviewFindings(item));
     return {
       ...runtimes,

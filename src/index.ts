@@ -834,7 +834,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     if (!bot) throw new Error("Attribution App bot authority is unavailable");
     const policy = options?.commitPolicyForItem
       ? await options.commitPolicyForItem(item)
-      : { bot, credit: delegatorCommitCredit(db, item.id) };
+      : { bot, credit: await delegatorCommitCredit(db, item.id) };
     if (
       bot.appId !== policy.bot.appId ||
       bot.id !== policy.bot.id ||
@@ -1411,7 +1411,9 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         recurringEveryMs: RUN_TAKEOVER_MS,
         now: Date.now(),
       });
-      assignments?.register(created.jobs);
+      void assignments
+        ?.register(created.jobs)
+        .catch((error: unknown) => journalCaught(error, "index.startPaws.assignments", null));
       parents?.register(created.jobs);
       registerMemberVmJob(created.jobs, {
         provision: memberVmProvisioning,
@@ -1562,8 +1564,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
         },
         recheckLinearEvent: async (event) =>
           workspace
-            ? (await workspace.access).recheckLinearEvent(event) &&
-              (parents?.recheckEvent(event) ?? assignments?.recheck(event) ?? true)
+            ? (await (await workspace.access).recheckLinearEvent(event)) &&
+              (parents?.recheckEvent(event) ?? (await assignments?.recheck(event)) ?? true)
             : true,
         scheduling: () => {
           enqueueMissingSnapshots();
@@ -1956,7 +1958,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       });
       created.jobs.register(RETRO_DISPATCH_JOB, async () => {
         await runnerReady;
-        retroDispatcher?.tick();
+        await retroDispatcher?.tick();
       });
       enqueueJobOnce(db, {
         queue: RETRO_DISPATCH_JOB,

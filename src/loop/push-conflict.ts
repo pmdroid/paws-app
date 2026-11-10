@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { getWorkItem, immediate, recordRebaseReturn } from "../db";
+import { emitJobReady, getWorkItemSteps, recordRebaseReturnSteps, sqliteDb } from "../db";
 import { rebaseBudgetFor } from "../merge";
-import { ask, restart } from "./operations";
+import { ask, restartSteps } from "./operations";
 
 /** What the agent hears when its candidate no longer rebases onto the branch on GitHub. */
 export function pushConflictHandoff(branch: string, files: readonly string[]): string {
@@ -14,13 +14,15 @@ export function pushConflictHandoff(branch: string, files: readonly string[]): s
  * (PAS-886): the item goes back to the agent with a "conflict" restart naming the files, and no
  * question opens until the shared rebase budget is spent. Returns false for stale owners.
  */
-export function restartForPushConflict(
+export async function restartForPushConflict(
   db: Database,
   itemId: string,
   input: { branch: string; files: readonly string[]; now: number },
-): boolean {
-  return immediate(db, () => {
-    const item = getWorkItem(db, itemId);
+): Promise<boolean> {
+  const store = sqliteDb(db);
+  let armed = false;
+  const handled = await store.transaction(function* (q) {
+    const item = yield* getWorkItemSteps(q, itemId);
     if (!item || item.cancelRequested || item.state !== "running") return false;
     const conflict = { base: null, files: input.files, reason: "push" as const };
     const budget = rebaseBudgetFor(db, itemId, conflict, input.now);
@@ -35,13 +37,22 @@ export function restartForPushConflict(
       );
       return true;
     }
-    const jobId = restart(db, item, {
+    const job = yield* restartSteps(q, item, {
       reason: "conflict",
       body: pushConflictHandoff(input.branch, input.files),
       now: input.now,
     });
-    if (jobId === null) return false;
-    recordRebaseReturn(db, { itemId, jobId, candidate: null, ...conflict, recordedAt: input.now });
+    if (job === null) return false;
+    armed = job.armed;
+    yield* recordRebaseReturnSteps(q, {
+      itemId,
+      jobId: job.id,
+      candidate: null,
+      ...conflict,
+      recordedAt: input.now,
+    });
     return true;
   });
+  if (armed) emitJobReady(store);
+  return handled;
 }

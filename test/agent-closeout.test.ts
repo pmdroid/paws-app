@@ -117,7 +117,7 @@ if (!text.includes("fixed")) {
   ]);
 
   const provider = createLiveStatusProvider(db, { now: () => new Date(clock) });
-  const list = parseIssueListResponse(JSON.parse(JSON.stringify(provider.issues())));
+  const list = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
   if (!list.ok) throw new Error(list.error);
   expect(list.response.agentCloseout.find((entry) => entry.runId === run.id)).toEqual({
     itemId: "ENG-7",
@@ -127,7 +127,7 @@ if (!text.includes("fixed")) {
     blocked: null,
     updatedAt: expect.any(String),
   });
-  const body = JSON.stringify(provider.issue("ENG-7"));
+  const body = JSON.stringify(await provider.issue("ENG-7"));
   expect(body).not.toContain(TOKEN);
   const detail = parseIssueDetailResponse(JSON.parse(body));
   if (!detail.ok) throw new Error(detail.error);
@@ -153,12 +153,12 @@ if (!text.includes("fixed")) {
   expect(failed).toMatchObject({ state: "failed", attempt: 1, exitCode: 1 });
   expect(failed.stdout ?? null).toBeNull();
   expect(failed.stderr ?? null).toBeNull();
-  const log = provider.checkLog({
+  const log = (await provider.checkLog({
     itemId: "ENG-7",
     attempt: first!.number,
     checkId: "test",
     run: run.id,
-  })!;
+  }))!;
   expect(log.stderr).toContain("expected fixed, received broken");
   expect(log.stdout).toContain("checking main.ts");
   expect(log.stdout).not.toContain(TOKEN);
@@ -168,7 +168,7 @@ if (!text.includes("fixed")) {
   ]);
 }, 30_000);
 
-test("a running check reports how long it has run and a later stale report sends it back to pending", () => {
+test("a running check reports how long it has run and a later stale report sends it back to pending", async () => {
   const db = tempDb();
   insertQueuedItem(db, { id: "ENG-8", title: "Stale", now: 1 });
   const { run } = beginImplementRun(db, "ENG-8", 2);
@@ -182,9 +182,9 @@ test("a running check reports how long it has run and a later stale report sends
     maxAttempts: null,
   };
   recordAgentCloseout(db, run.id, "ENG-8", { type: "started", ...attempt }, 10_000);
-  const running = createLiveStatusProvider(db, { now: () => new Date(25_000) })
-    .issue("ENG-8")!
-    .agentCloseout.find((entry) => entry.runId === run.id)!;
+  const running = (await createLiveStatusProvider(db, {
+    now: () => new Date(25_000),
+  }).issue("ENG-8"))!.agentCloseout.find((entry) => entry.runId === run.id)!;
   expect(running.attempts.at(-1)!.checks[0]).toMatchObject({
     state: "running",
     elapsedMs: 15_000,
@@ -228,16 +228,16 @@ test("a running check reports how long it has run and a later stale report sends
     },
     27_000,
   );
-  const stale = createLiveStatusProvider(db)
-    .issue("ENG-8")!
-    .agentCloseout.find((entry) => entry.runId === run.id)!;
+  const stale = (await createLiveStatusProvider(db).issue("ENG-8"))!.agentCloseout.find(
+    (entry) => entry.runId === run.id,
+  )!;
   expect(stale.attempts.at(-1)!.checks[0]!.state).toBe("pending");
   const stored = listAgentCloseout(db, [run.id])[1]!.progress;
   expect(stored.type === "finished" && stored.truncated).toBe(true);
   expect(stored.type === "finished" && Buffer.byteLength(stored.stdout)).toBe(64 * 1024);
 });
 
-test("a check still running when its run ended stops at the run's end and points to the task's newer run", () => {
+test("a check still running when its run ended stops at the run's end and points to the task's newer run", async () => {
   const db = tempDb();
   insertQueuedItem(db, { id: "ENG-10", title: "Restart", now: 1 });
   const { run } = beginImplementRun(db, "ENG-10", 2);
@@ -277,7 +277,7 @@ test("a check still running when its run ended stops at the run's end and points
   const parsed = parseIssueDetailResponse(
     JSON.parse(
       JSON.stringify(
-        createLiveStatusProvider(db, { now: () => new Date(3_600_000) }).issue("ENG-10"),
+        await createLiveStatusProvider(db, { now: () => new Date(3_600_000) }).issue("ENG-10"),
       ),
     ),
   );
@@ -300,7 +300,7 @@ test("a check still running when its run ended stops at the run's end and points
   });
 });
 
-test("an evidence check takes its state from the report and lets the round finish", () => {
+test("an evidence check takes its state from the report and lets the round finish", async () => {
   const db = tempDb();
   insertQueuedItem(db, { id: "ENG-9", title: "Proof", now: 1 });
   const { run } = beginImplementRun(db, "ENG-9", 2);
@@ -355,24 +355,24 @@ test("an evidence check takes its state from the report and lets the round finis
     },
     12_000,
   );
-  const attemptOf = () => {
+  const attemptOf = async () => {
     const parsed = parseIssueDetailResponse(
-      JSON.parse(JSON.stringify(createLiveStatusProvider(db).issue("ENG-9"))),
+      JSON.parse(JSON.stringify(await createLiveStatusProvider(db).issue("ENG-9"))),
     );
     if (!parsed.ok) throw new Error(parsed.error);
     return parsed.response.agentCloseout.find((entry) => entry.runId === run.id)!.attempts.at(-1)!;
   };
-  expect(attemptOf().checks.find((check) => check.id === "visual-proof")).toMatchObject({
+  expect((await attemptOf()).checks.find((check) => check.id === "visual-proof")).toMatchObject({
     kind: "evidence",
     state: "pending",
   });
-  expect(attemptOf().decision).toBe("running");
+  expect((await attemptOf()).decision).toBe("running");
   report("passed", "passed", 13_000);
-  expect(attemptOf().checks.find((check) => check.id === "visual-proof")).toMatchObject({
+  expect((await attemptOf()).checks.find((check) => check.id === "visual-proof")).toMatchObject({
     kind: "evidence",
     state: "passed",
   });
-  expect(attemptOf().decision).toBe("accepted");
+  expect((await attemptOf()).decision).toBe("accepted");
 });
 
 function git(cwd: string, args: string[]): string {

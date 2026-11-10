@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Database } from "bun:sqlite";
-import { auditWorkspaceAccess, workspaceMember, workspaceMemberUsable } from "../db";
+import { auditWorkspaceAccessSteps, sqliteDb, workspaceMember, workspaceMemberUsable } from "../db";
 import { journalCaught } from "../journal";
 import type { WorkspacePrincipal } from "../workspace";
 import {
@@ -141,15 +141,20 @@ export function createImprovementsHttp(options: {
   now?: () => number;
 }) {
   const { db } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
-  const audit = (principal: WorkspacePrincipal, action: string, subject: string) =>
-    auditWorkspaceAccess(db, {
-      workspaceId: principal.workspaceId,
-      userId: principal.userId,
-      action,
-      subject,
-      now: now(),
-    });
+  const audit = (principal: WorkspacePrincipal, action: string, subject: string) => {
+    const at = now();
+    return store.run((q) =>
+      auditWorkspaceAccessSteps(q, {
+        workspaceId: principal.workspaceId,
+        userId: principal.userId,
+        action,
+        subject,
+        now: at,
+      }),
+    );
+  };
 
   async function readBody(request: Request): Promise<unknown> {
     if (Number(request.headers.get("content-length") ?? 0) > BODY_LIMIT)
@@ -191,7 +196,7 @@ export function createImprovementsHttp(options: {
     };
     const reviewer = reviewerFor();
     if (!reviewer) {
-      audit(principal, "access.denied", path);
+      await audit(principal, "access.denied", path);
       return json({ error: "Workspace access is unavailable." }, 403);
     }
 
@@ -199,11 +204,11 @@ export function createImprovementsHttp(options: {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
       const query = listSchema.safeParse(Object.fromEntries(url.searchParams));
       if (!query.success) return json({ error: "Check the list filters." }, 400);
-      return json(listImprovementPage(db, reviewer, query.data));
+      return json(await listImprovementPage(db, reviewer, query.data));
     }
     if (path === ATTENTION) {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
-      return json(improvementAttention(db, reviewer, now()));
+      return json(await improvementAttention(db, reviewer, now()));
     }
     const followed = FOLLOW_THROUGH.exec(path);
     if (followed) {
@@ -228,15 +233,15 @@ export function createImprovementsHttp(options: {
       }
       const actor = reviewerFor();
       if (!actor) {
-        audit(principal, "access.denied", path);
+        await audit(principal, "access.denied", path);
         return json({ error: "Workspace access is unavailable." }, 403);
       }
       const improvementId = follow.match![1]!;
       const action = follow.action;
-      const respond = (outcome: Awaited<ReturnType<typeof delegateImprovement>>) => {
-        if (outcome.status === "forbidden") audit(principal, "access.denied", path);
+      const respond = async (outcome: Awaited<ReturnType<typeof delegateImprovement>>) => {
+        if (outcome.status === "forbidden") await audit(principal, "access.denied", path);
         else if (["delegated", "recorded"].includes(outcome.status))
-          audit(principal, `improvement.${action}`, improvementId);
+          await audit(principal, `improvement.${action}`, improvementId);
         return json(outcome, OUTCOME_STATUS[outcome.status]);
       };
       const delegate = (expectedVersion: number, again: boolean) =>
@@ -269,7 +274,7 @@ export function createImprovementsHttp(options: {
           );
         const { expectedVersion, evidence, revision, deployment, ...stated } = parsed.data;
         return respond(
-          recordVerification(db, {
+          await recordVerification(db, {
             access: actor,
             improvementId,
             expectedVersion,
@@ -290,7 +295,7 @@ export function createImprovementsHttp(options: {
         const parsed = criterionSchema.safeParse(body);
         if (!parsed.success) return json({ error: "Send expectedVersion and the criterion." }, 400);
         return respond(
-          recordCriterion(db, {
+          await recordCriterion(db, {
             access: actor,
             improvementId,
             expectedVersion: parsed.data.expectedVersion,
@@ -305,7 +310,7 @@ export function createImprovementsHttp(options: {
       if (parsed.data.choice === "redelegate")
         return respond(await delegate(parsed.data.expectedVersion, true));
       return respond(
-        recoverImprovement(db, {
+        await recoverImprovement(db, {
           access: actor,
           improvementId,
           expectedVersion: parsed.data.expectedVersion,
@@ -318,7 +323,7 @@ export function createImprovementsHttp(options: {
     const item = ITEM.exec(path);
     if (item) {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
-      const detail = improvementDetail(db, reviewer, item[1]!);
+      const detail = await improvementDetail(db, reviewer, item[1]!);
       return detail
         ? json(detail)
         : json({ error: "This improvement is not in your inbox.", reason: "not_found" }, 404);
@@ -331,23 +336,24 @@ export function createImprovementsHttp(options: {
       return json({ error: "Not found.", reason: "not_found" }, 404);
     if (request.method !== "POST") return json({ error: "Use POST." }, 405);
     if (retry) {
-      const outcome = retryInboxDelivery(db, {
+      const outcome = await retryInboxDelivery(db, {
         access: reviewer,
         improvementId: retry[1]!,
         deliveryId: retry[2]!,
         now: now(),
       });
-      if (outcome.status === "requeued") audit(principal, "improvement.delivery.retry", retry[2]!);
+      if (outcome.status === "requeued")
+        await audit(principal, "improvement.delivery.retry", retry[2]!);
       return json(outcome, OUTCOME_STATUS[outcome.status]);
     }
     if (cancel) {
-      const outcome = cancelInboxEvidenceComment(db, {
+      const outcome = await cancelInboxEvidenceComment(db, {
         access: reviewer,
         improvementId: cancel[1]!,
         deliveryId: cancel[2]!,
       });
       if (outcome.status === "cancelled")
-        audit(principal, "improvement.delivery.cancel", cancel[2]!);
+        await audit(principal, "improvement.delivery.cancel", cancel[2]!);
       return json(outcome, OUTCOME_STATUS[outcome.status]);
     }
     let body: unknown;
@@ -361,7 +367,7 @@ export function createImprovementsHttp(options: {
     if (destination) {
       const team = z.strictObject({ teamId: text(200) }).safeParse(body);
       if (!team.success) return json({ error: "Send the Linear teamId to file to." }, 400);
-      const outcome = repairInboxDestination(db, {
+      const outcome = await repairInboxDestination(db, {
         reviewer,
         improvementId: destination[1]!,
         deliveryId: destination[2]!,
@@ -369,8 +375,8 @@ export function createImprovementsHttp(options: {
         now: now(),
       });
       if (outcome.status === "requeued")
-        audit(principal, "improvement.delivery.destination", destination[2]!);
-      if (outcome.status === "forbidden") audit(principal, "access.denied", path);
+        await audit(principal, "improvement.delivery.destination", destination[2]!);
+      if (outcome.status === "forbidden") await audit(principal, "access.denied", path);
       return json(outcome, OUTCOME_STATUS[outcome.status]);
     }
     const parsed = decisionSchema.safeParse(body);
@@ -393,8 +399,8 @@ export function createImprovementsHttp(options: {
       now,
     });
     if (outcome.status === "decided")
-      audit(principal, `improvement.${parsed.data.decision.kind}`, decision![1]!);
-    if (outcome.status === "forbidden") audit(principal, "access.denied", path);
+      await audit(principal, `improvement.${parsed.data.decision.kind}`, decision![1]!);
+    if (outcome.status === "forbidden") await audit(principal, "access.denied", path);
     return json(outcome, OUTCOME_STATUS[outcome.status]);
   };
 }

@@ -1,25 +1,28 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
-  claimableImprovementDeliveries,
-  claimImprovementDelivery,
-  getImprovement,
-  immediate,
-  improvementDeliveryWorkspaces,
-  listImprovementDeliveries,
-  listRetroEvidence,
-  listRetroItems,
-  listWorkspaceRepositories,
-  markReviewFindingFiled,
-  reserveImprovementDeliveryRemote,
-  settleImprovementDelivery,
-  workspaceMember,
+  claimableImprovementDeliveriesSteps,
+  claimImprovementDeliverySteps,
+  getImprovementSteps,
+  improvementDeliveryWorkspacesSteps,
+  listImprovementDeliveriesSteps,
+  listRetroEvidenceSteps,
+  listRetroItemsSteps,
+  listWorkspaceRepositoriesSteps,
+  markReviewFindingFiledSteps,
+  reserveImprovementDeliveryRemoteSteps,
+  settleImprovementDeliverySteps,
+  sqliteDb,
+  workspaceMemberSteps,
+  type Db,
   type Improvement,
   type ImprovementDelivery,
   type ImprovementDeliveryBlock,
+  type Q,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
-import { improvementFindings } from "./daily";
+import { improvementFindingsSteps } from "./daily";
 
 export type DeliveryFailure = {
   ok: false;
@@ -114,10 +117,10 @@ function codeSpan(text: string): string {
   return `${fence}${pad}${line}${pad}${fence}`;
 }
 
-function evidenceLines(db: Database, improvement: Improvement, content: FrozenContent): string[] {
+function* evidenceLines(q: Q, improvement: Improvement, content: FrozenContent): Steps<string[]> {
   if (content.sourceKind === "daily_finding") {
     const frozen = new Set(content.evidence);
-    const findings = improvementFindings(db, improvement.id).filter((f) =>
+    const findings = (yield* improvementFindingsSteps(q, improvement.id)).filter((f) =>
       frozen.has(`review_finding:${f.key}`),
     );
     return [
@@ -134,7 +137,9 @@ function evidenceLines(db: Database, improvement: Improvement, content: FrozenCo
     if (!byRetro.has(retroId))
       byRetro.set(
         retroId,
-        new Map(listRetroEvidence(db, retroId).map((e) => [e.evidenceId, e.sourceRef])),
+        new Map(
+          (yield* listRetroEvidenceSteps(q, retroId)).map((e) => [e.evidenceId, e.sourceRef]),
+        ),
       );
     const source = byRetro.get(retroId)!.get(evidenceId) ?? evidenceId;
     counts.set(source, (counts.get(source) ?? 0) + 1);
@@ -145,10 +150,10 @@ function evidenceLines(db: Database, improvement: Improvement, content: FrozenCo
   ];
 }
 
-function area(db: Database, improvement: Improvement, content: FrozenContent): string | null {
+function* area(q: Q, improvement: Improvement, content: FrozenContent): Steps<string | null> {
   if (content.sourceKind !== "retro_item") return null;
   for (const key of content.sourceKeys) {
-    const item = listRetroItems(db, key.split("/")[0] ?? "").find(
+    const item = (yield* listRetroItemsSteps(q, key.split("/")[0] ?? "")).find(
       (entry) => entry.improvementId === improvement.id,
     );
     if (item) return item.area;
@@ -156,16 +161,18 @@ function area(db: Database, improvement: Improvement, content: FrozenContent): s
   return null;
 }
 
-export function improvementIssueBody(
-  db: Database,
+function* improvementIssueBody(
+  q: Q,
   improvement: Improvement,
   content: FrozenContent,
   sourceUrl: string,
-): string {
-  const where = area(db, improvement, content);
+): Steps<string> {
+  const where = yield* area(q, improvement, content);
   const accepted = improvement.reviewedBy
-    ? (workspaceMember(db, improvement.workspaceId, improvement.reviewedBy)?.name ?? null)
+    ? ((yield* workspaceMemberSteps(q, improvement.workspaceId, improvement.reviewedBy))?.name ??
+      null)
     : null;
+  const evidence = yield* evidenceLines(q, improvement, content);
   return [
     `**Repository:** ${codeSpan(content.repository)}${where ? ` · **Area:** ${codeSpan(where)}` : ""}`,
     `**Source:** ${content.sourceKind === "retro_item" ? "Weekly retro" : "Daily review findings"} · **Action step:** ${STEP[content.actionStep] ?? content.actionStep}`,
@@ -176,52 +183,54 @@ export function improvementIssueBody(
     "## Verification criterion",
     content.verificationCriterion ?? "Not recorded.",
     "## Evidence",
-    evidenceLines(db, improvement, content).join("\n"),
+    evidence.join("\n"),
     `[Open the improvement in Paws](${sourceUrl}) · proposal version ${content.proposalVersion}`,
     `Filed by Paws from an improvement${accepted ? ` accepted by ${accepted}` : " accepted in Paws"}. Paws has not delegated this issue.`,
     `Paws reference: ${codeSpan(improvementIssueMarker(improvement))}`,
   ].join("\n\n");
 }
 
-export function improvementEvidenceComment(
-  db: Database,
+function* improvementEvidenceComment(
+  q: Q,
   improvement: Improvement,
   content: FrozenContent,
   sourceUrl: string,
-): string {
+): Steps<string> {
+  const evidence = yield* evidenceLines(q, improvement, content);
   return [
     `New evidence for this issue from a Paws ${content.sourceKind === "retro_item" ? "weekly retro" : "daily review"} (${codeSpan(content.repository)}).`,
     `**${content.title}**`,
     content.problem,
     `**Verification criterion:** ${content.verificationCriterion ?? "Not recorded."}`,
-    evidenceLines(db, improvement, content).join("\n"),
+    evidence.join("\n"),
     `[Open the improvement in Paws](${sourceUrl}). Linking does not mean this issue covers the new scope.`,
   ].join("\n\n");
 }
 
 type Context = {
-  db: Database;
+  store: Db;
   owner: string;
   now: () => number;
   sourceUrl: (improvementId: string) => string;
   limits: typeof IMPROVEMENT_DELIVERY_LIMITS;
 };
 
-function mapped(db: Database, improvement: Improvement, teamId: string | null): boolean {
-  return (
-    teamId !== null &&
-    listWorkspaceRepositories(db, improvement.workspaceId).some(
-      (entry) =>
-        entry.teamId === teamId &&
-        entry.repository.toLowerCase() === improvement.repository.toLowerCase(),
-    )
+async function mapped(store: Db, improvement: Improvement, teamId: string | null) {
+  if (teamId === null) return false;
+  const repositories = await store.run((q) =>
+    listWorkspaceRepositoriesSteps(q, improvement.workspaceId),
+  );
+  return repositories.some(
+    (entry) =>
+      entry.teamId === teamId &&
+      entry.repository.toLowerCase() === improvement.repository.toLowerCase(),
   );
 }
 
-function markSourcesFiled(db: Database, improvement: Improvement, identifier: string, now: number) {
-  for (const finding of improvementFindings(db, improvement.id))
+function* markSourcesFiledSteps(q: Q, improvement: Improvement, identifier: string, now: number) {
+  for (const finding of yield* improvementFindingsSteps(q, improvement.id))
     if (finding.status === "open")
-      markReviewFindingFiled(db, {
+      yield* markReviewFindingFiledSteps(q, {
         key: finding.key,
         issue: identifier,
         by: improvement.reviewedBy,
@@ -234,52 +243,60 @@ async function deliverOne(
   linear: ImprovementDeliveryLinear | null,
   delivery: ImprovementDelivery,
 ): Promise<void> {
-  const { db } = ctx;
+  const { store } = ctx;
   if (delivery.operation === "evidence_comment") {
-    const link = listImprovementDeliveries(db, delivery.improvementId).find(
-      (d) => d.operation === "link_issue",
-    );
+    const link = (
+      await store.run((q) => listImprovementDeliveriesSteps(q, delivery.improvementId))
+    ).find((d) => d.operation === "link_issue");
     if (link?.state !== "succeeded") return;
   }
-  const claimed = claimImprovementDelivery(db, {
-    deliveryId: delivery.id,
-    owner: ctx.owner,
-    now: ctx.now(),
-    leaseMs: ctx.limits.leaseMs,
-  });
+  const claimedAt = ctx.now();
+  const claimed = await store.transaction((q) =>
+    claimImprovementDeliverySteps(q, {
+      deliveryId: delivery.id,
+      owner: ctx.owner,
+      now: claimedAt,
+      leaseMs: ctx.limits.leaseMs,
+    }),
+  );
   if (!claimed) return;
   const attempt = claimed.attempts;
-  const improvement = getImprovement(db, claimed.improvementId)!;
+  const improvement = (await store.run((q) => getImprovementSteps(q, claimed.improvementId)))!;
   const content = (claimed.content ?? {}) as FrozenContent;
   const base = { deliveryId: claimed.id, attempt, owner: ctx.owner };
   let uncertain = claimed.remoteId !== null;
 
-  const succeed = (remote: { id: string; identifier?: string; url?: string | null }) => {
+  const succeed = async (remote: { id: string; identifier?: string; url?: string | null }) => {
     const now = ctx.now();
-    immediate(db, () => {
-      const settled = settleImprovementDelivery(db, {
-        ...base,
-        outcome: "succeeded",
-        remote: {
-          id: remote.id,
-          ...(remote.identifier ? { identifier: remote.identifier } : {}),
-          ...(remote.url ? { url: remote.url } : {}),
-        },
-        now,
-      });
+    await store.transaction(function* (q) {
+      const settled = yield* q.transaction((tx) =>
+        settleImprovementDeliverySteps(tx, {
+          ...base,
+          outcome: "succeeded",
+          remote: {
+            id: remote.id,
+            ...(remote.identifier ? { identifier: remote.identifier } : {}),
+            ...(remote.url ? { url: remote.url } : {}),
+          },
+          now,
+        }),
+      );
       if (settled && remote.identifier && claimed.operation !== "evidence_comment")
-        markSourcesFiled(db, improvement, remote.identifier, now);
+        yield* markSourcesFiledSteps(q, improvement, remote.identifier, now);
     });
   };
-  const block = (blocked: ImprovementDeliveryBlock, error: string) =>
-    settleImprovementDelivery(db, {
+  const settle = (settlement: Parameters<typeof settleImprovementDeliverySteps>[1]) =>
+    store.transaction((q) => settleImprovementDeliverySteps(q, settlement));
+  const block = async (blocked: ImprovementDeliveryBlock, error: string) => {
+    await settle({
       ...base,
       outcome: uncertain ? "unknown" : "failed",
       blocked,
       error,
       now: ctx.now(),
     });
-  const fail = (result: DeliveryFailure) => {
+  };
+  const fail = async (result: DeliveryFailure) => {
     const outcome = uncertain || result.failure === "unknown" ? "unknown" : "failed";
     const now = ctx.now();
     const tries = attempt - claimed.retryBase;
@@ -290,7 +307,7 @@ async function deliverOne(
     );
     const blocked: ImprovementDeliveryBlock | undefined =
       result.failure === "unauthorized" ? "unauthorized" : exhausted ? "attempts" : undefined;
-    settleImprovementDelivery(db, {
+    await settle({
       ...base,
       outcome,
       error: result.message.slice(0, 500),
@@ -301,54 +318,61 @@ async function deliverOne(
   };
 
   if (improvement.reviewState !== "accepted")
-    return void block("conflict", "The improvement is no longer accepted.");
+    return block("conflict", "The improvement is no longer accepted.");
   if (!linear)
-    return void block("workspace", "Linear is not connected for this improvement's workspace.");
+    return block("workspace", "Linear is not connected for this improvement's workspace.");
 
   if (claimed.operation === "create_issue") {
     const id = improvementIssueUuid(improvement.workspaceId, improvement.id);
     if (claimed.remoteId !== null && claimed.remoteId !== id)
-      return void block("conflict", "The reserved Linear id does not match this improvement.");
-    const authorized = mapped(db, improvement, claimed.targetTeamId);
+      return block("conflict", "The reserved Linear id does not match this improvement.");
+    const authorized = await mapped(store, improvement, claimed.targetTeamId);
     if (!uncertain && !authorized)
-      return void block(
+      return block(
         "destination",
         "The chosen Linear team is no longer mapped to this repository. Choose another team or restore the mapping.",
       );
     const found = await linear.findIssue(id);
-    if (!found.ok) return void fail(found);
+    if (!found.ok) return fail(found);
     if (found.value) {
       if (found.value.teamId !== claimed.targetTeamId)
-        return void block(
+        return block(
           "conflict",
           "Linear holds this improvement's issue id in a different team. Paws did not link it.",
         );
       if (!found.value.description?.includes(improvementIssueMarker(improvement)))
-        return void block(
+        return block(
           "conflict",
           "Linear holds this improvement's issue id on an issue Paws cannot match to this improvement. Paws did not link it.",
         );
-      return void succeed(found.value);
+      return succeed(found.value);
     }
     if (!authorized)
-      return void block(
+      return block(
         "destination",
         "The chosen Linear team is no longer mapped to this repository. Paws keeps checking the same issue id.",
       );
-    if (!reserveImprovementDeliveryRemote(db, { ...base, remoteId: id })) return;
+    if (
+      !(await store.run((q) => reserveImprovementDeliveryRemoteSteps(q, { ...base, remoteId: id })))
+    )
+      return;
     uncertain = true;
+    const sourceUrl = ctx.sourceUrl(improvement.id);
+    const description = await store.run((q) =>
+      improvementIssueBody(q, improvement, content, sourceUrl),
+    );
     const created = await linear.createIssue({
       id,
       teamId: claimed.targetTeamId!,
       title: content.title,
-      description: improvementIssueBody(db, improvement, content, ctx.sourceUrl(improvement.id)),
+      description,
       label: IMPROVEMENT_ISSUE_LABELS[content.sourceKind] ?? IMPROVEMENT_ISSUE_LABELS.retro_item,
     });
     if (!created.ok) {
       if (created.failure !== "unknown" && claimed.remoteId === null) uncertain = false;
-      return void fail(created);
+      return fail(created);
     }
-    return void succeed(created.value);
+    return succeed(created.value);
   }
 
   const target = claimed.targetIssueId!;
@@ -359,7 +383,9 @@ async function deliverOne(
     claimed.operation === "link_issue"
       ? "Reopen the improvement to choose again."
       : "Cancel the evidence comment; the link stays.";
-  const linkRefusal = (issue: DeliveryIssue | null): (() => void) | null => {
+  const linkRefusal = async (
+    issue: DeliveryIssue | null,
+  ): Promise<(() => Promise<void>) | null> => {
     if (!issue)
       return () =>
         block("unavailable", `The linked issue no longer exists or Paws cannot read it. ${remedy}`);
@@ -372,7 +398,7 @@ async function deliverOne(
           "destination",
           `The linked issue moved to another team after it was accepted. ${remedy}`,
         );
-    if (!mapped(db, improvement, issue.teamId))
+    if (!(await mapped(store, improvement, issue.teamId)))
       return () =>
         block(
           "destination",
@@ -385,37 +411,42 @@ async function deliverOne(
   };
   if (claimed.operation === "link_issue") {
     const found = await linear.findIssue(target);
-    if (!found.ok) return void fail(found);
-    const refused = linkRefusal(found.value);
-    if (refused) return void refused();
-    return void succeed(found.value!);
+    if (!found.ok) return fail(found);
+    const refused = await linkRefusal(found.value);
+    if (refused) return refused();
+    return succeed(found.value!);
   }
 
   const commentId = improvementCommentUuid(improvement.workspaceId, improvement.id);
   const existing = await linear.findComment(commentId);
-  if (!existing.ok) return void fail(existing);
+  if (!existing.ok) return fail(existing);
   if (existing.value) {
     if (existing.value.issueId !== target)
-      return void block("conflict", "Linear holds this evidence comment id on another issue.");
-    return void succeed({ id: commentId });
+      return block("conflict", "Linear holds this evidence comment id on another issue.");
+    return succeed({ id: commentId });
   }
   const issue = await linear.findIssue(target);
-  if (!issue.ok) return void fail(issue);
-  const refused = linkRefusal(issue.value);
-  if (refused) return void refused();
-  if (!reserveImprovementDeliveryRemote(db, { ...base, remoteId: commentId })) return;
+  if (!issue.ok) return fail(issue);
+  const refused = await linkRefusal(issue.value);
+  if (refused) return refused();
+  if (
+    !(await store.run((q) =>
+      reserveImprovementDeliveryRemoteSteps(q, { ...base, remoteId: commentId }),
+    ))
+  )
+    return;
   const wasUncertain = uncertain;
   uncertain = true;
-  const posted = await linear.createComment({
-    id: commentId,
-    issueId: target,
-    body: improvementEvidenceComment(db, improvement, content, ctx.sourceUrl(improvement.id)),
-  });
+  const sourceUrl = ctx.sourceUrl(improvement.id);
+  const body = await store.run((q) =>
+    improvementEvidenceComment(q, improvement, content, sourceUrl),
+  );
+  const posted = await linear.createComment({ id: commentId, issueId: target, body });
   if (!posted.ok) {
     if (posted.failure !== "unknown" && !wasUncertain) uncertain = false;
-    return void fail(posted);
+    return fail(posted);
   }
-  succeed({ id: commentId });
+  await succeed({ id: commentId });
 }
 
 export type ImprovementDeliveryOptions = {
@@ -429,15 +460,22 @@ export type ImprovementDeliveryOptions = {
 
 export async function deliverImprovements(options: ImprovementDeliveryOptions): Promise<void> {
   const ctx: Context = {
-    db: options.db,
+    store: sqliteDb(options.db),
     owner: options.owner,
     now: options.now ?? Date.now,
     sourceUrl: options.sourceUrl,
     limits: { ...IMPROVEMENT_DELIVERY_LIMITS, ...options.limits },
   };
-  for (const workspaceId of improvementDeliveryWorkspaces(ctx.db, ctx.now())) {
+  const { store } = ctx;
+  const startedAt = ctx.now();
+  for (const workspaceId of await store.run((q) =>
+    improvementDeliveryWorkspacesSteps(q, startedAt),
+  )) {
     const linear = await options.linearFor(workspaceId);
-    const pending = claimableImprovementDeliveries(ctx.db, workspaceId, ctx.now());
+    const now = ctx.now();
+    const pending = await store.run((q) =>
+      claimableImprovementDeliveriesSteps(q, workspaceId, now),
+    );
     for (const operation of ["create_issue", "link_issue", "evidence_comment"] as const)
       for (const delivery of pending.filter((d) => d.operation === operation))
         await deliverOne(ctx, linear, delivery).catch((error: unknown) => {

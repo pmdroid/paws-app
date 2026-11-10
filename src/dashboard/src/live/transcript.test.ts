@@ -82,7 +82,7 @@ test("full transcript reads unfinished ACP output, tools and classification whil
   });
   const env = { API_KEY: "fixture-secret-value" };
   const read = () => [...fullAgentTranscript(home, run.id, new Date(0).toISOString(), env)];
-  const first = provider.issues();
+  const first = await provider.issues();
   expect("transcript" in first.runs[0]!).toBe(false);
   expect(read().map((x) => x.text)).toEqual([
     "Preparing a screenshot task",
@@ -94,7 +94,7 @@ test("full transcript reads unfinished ACP output, tools and classification whil
   const html = render({
     route: { view: "issues", id: itemId },
     phase: "ready",
-    issue: provider.issue(itemId),
+    issue: await provider.issue(itemId),
     error: null,
     engineUrl: null,
     closeout: openedView(),
@@ -107,7 +107,7 @@ test("full transcript reads unfinished ACP output, tools and classification whil
   appendFileSync(file, "}\n" + JSON.stringify(message("Screenshot captured")) + "\n");
   expect(read().at(-1)?.text).toContain("Screenshot captured");
   expect(
-    createLiveStatusProvider(db, { pawsHome: home, sessionIds: ["other"] }).issues().runs,
+    (await createLiveStatusProvider(db, { pawsHome: home, sessionIds: ["other"] }).issues()).runs,
   ).toEqual([]);
   db.close();
 });

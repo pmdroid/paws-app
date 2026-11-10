@@ -14,16 +14,19 @@ import {
   linearSessionGeneration,
   beginArtifactAttempt,
   requestArtifactAttachment,
-  artifactAttachmentRequested,
+  artifactAttachmentRequestedSteps,
   completeArtifactAttempt,
   enqueueOutboxOnce,
-  getArtifact,
-  getEvidence,
+  enqueueOutboxOnceSteps,
+  getArtifactSteps,
+  getEvidenceSteps,
   immediate,
   latestEvidence,
   listEvidence,
-  markArtifact,
-  saveArtifact,
+  listEvidenceSteps,
+  markArtifactSteps,
+  saveArtifactSteps,
+  sqliteDb,
 } from "../db";
 import type { StoredEvidence, WorkItemRecord } from "../db";
 import type { LinearFileTransfer, PreparedLinearUpload } from "../linear";
@@ -32,13 +35,14 @@ import { pawsIssueUrl } from "./open-findings";
 import { rejectedEvidenceIds } from "../questions";
 
 export function createLinearArtifactReader(options: { db: Database; secretsDir: string }) {
+  const store = sqliteDb(options.db);
   return async (
     id: string,
     signal?: AbortSignal,
   ): Promise<{ bytes: Uint8Array; mimeType: string; displayName: string } | null> => {
     signal?.throwIfAborted();
     if (!/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i.test(id)) return null;
-    const artifact = getArtifact(options.db, id);
+    const artifact = await store.run((q) => getArtifactSteps(q, id));
     if (artifact === null) return null;
     const directory = join(options.secretsDir, "linear-artifacts");
     for (const path of [options.secretsDir, directory]) {
@@ -194,6 +198,7 @@ export function createEvidenceArtifactPublisher(options: {
   now?: () => number;
 }): PublishArtifactHook {
   const now = options.now ?? Date.now;
+  const store = sqliteDb(options.db);
   const generation = sessionGeneration(options.db, options.sessionId);
   const inflight = new Map<string, Promise<PublishedArtifact>>();
   return {
@@ -221,7 +226,7 @@ export function createEvidenceArtifactPublisher(options: {
       const pending = (async (): Promise<PublishedArtifact> => {
         context.signal.throwIfAborted();
         const stored =
-          listEvidence(options.db, options.itemId).find(
+          (await store.run((q) => listEvidenceSteps(q, options.itemId))).find(
             (row) =>
               row.runId === context.runId &&
               row.checkId === evidence.checkId &&
@@ -240,21 +245,23 @@ export function createEvidenceArtifactPublisher(options: {
             source: artifact.bytes,
           }));
         const url = `${options.publicUrl.replace(/\/+$/, "")}/evidence/${encodeURIComponent(stored.id)}`;
-        const row = getEvidence(options.db, stored.id);
+        const row = await store.run((q) => getEvidenceSteps(q, stored.id));
         const kind = row?.mediaType.startsWith("video/") ? "video" : "image";
         const inline = row !== null && row.sizeBytes <= EVIDENCE_INLINE_LIMITS[kind];
         if (inline && options.uploads && (options.reviewed?.(evidence.checkId) ?? false))
-          enqueueOutboxOnce(options.db, {
-            target: "linear",
-            op: "linear.evidence",
-            delivery: "ordered",
-            priority: 0,
-            orderingKey: options.sessionId,
-            idempotencyKey: `evidence:${options.sessionId}:${generation}:${stored.id}`,
-            generation,
-            now: now(),
-            payload: { evidenceId: stored.id, checkId: evidence.checkId, link: url },
-          });
+          await store.transaction((q) =>
+            enqueueOutboxOnceSteps(q, {
+              target: "linear",
+              op: "linear.evidence",
+              delivery: "ordered",
+              priority: 0,
+              orderingKey: options.sessionId,
+              idempotencyKey: `evidence:${options.sessionId}:${generation}:${stored.id}`,
+              generation,
+              now: now(),
+              payload: { evidenceId: stored.id, checkId: evidence.checkId, link: url },
+            }),
+          );
         return { url, displayName: artifact.displayName };
       })().finally(() => inflight.delete(key));
       inflight.set(key, pending);
@@ -277,6 +284,7 @@ export function createLinearArtifactPublisher(options: {
   now?: () => number;
 }): PublishArtifactHook {
   const now = options.now ?? Date.now;
+  const store = sqliteDb(options.db);
   const generation = sessionGeneration(options.db, options.sessionId);
   const inflight = new Map<string, Promise<PublishedArtifact>>();
   return {
@@ -335,22 +343,24 @@ export function createLinearArtifactPublisher(options: {
     await guardDirectory(options.secretsDir);
     const directory = join(options.secretsDir, "linear-artifacts");
     await guardDirectory(directory);
-    const row = saveArtifact(
-      options.db,
-      {
-        id: randomUUID(),
-        identityHash,
-        itemId: options.itemId,
-        runId,
-        path: artifact.path,
-        displayName: artifact.displayName,
-        mimeType: artifact.mimeType,
-        sizeBytes: artifact.sizeBytes,
-        sha256: artifact.sha256,
-        state: "pending",
-        assetUrl: null,
-      },
-      now(),
+    const row = await store.run((q) =>
+      saveArtifactSteps(
+        q,
+        {
+          id: randomUUID(),
+          identityHash,
+          itemId: options.itemId,
+          runId,
+          path: artifact.path,
+          displayName: artifact.displayName,
+          mimeType: artifact.mimeType,
+          sizeBytes: artifact.sizeBytes,
+          sha256: artifact.sha256,
+          state: "pending",
+          assetUrl: null,
+        },
+        now(),
+      ),
     );
     const snapshotPath = join(directory, `${row.id}.bytes`);
     try {
@@ -445,18 +455,19 @@ export function createLinearArtifactPublisher(options: {
           throw new Error("Artifact upload returned an invalid asset URL");
         }
       } catch (error) {
-        markArtifact(options.db, row.id, null);
+        await store.run((q) => markArtifactSteps(q, row.id, null));
         throw error;
       }
     }
     signal.throwIfAborted();
     const label = row.displayName.replace(/[\\[\]]/g, "\\$&");
     const body = `${row.mimeType.startsWith("image/") ? "!" : ""}[${label}](<${assetUrl}>)`;
-    immediate(options.db, () => {
-      markArtifact(options.db, row.id, assetUrl);
-      if (artifactAttachmentRequested(options.db, options.itemId, identityHash)) {
+    const uploaded = assetUrl;
+    await store.transaction(function* (q) {
+      yield* markArtifactSteps(q, row.id, uploaded);
+      if (yield* artifactAttachmentRequestedSteps(q, options.itemId, identityHash)) {
         if (!options.issueId) throw new Error("Issue attachment is unavailable");
-        enqueueOutboxOnce(options.db, {
+        yield* enqueueOutboxOnceSteps(q, {
           target: "linear",
           op: "linear.attachment",
           delivery: "ordered",
@@ -470,11 +481,11 @@ export function createLinearArtifactPublisher(options: {
             itemId: options.itemId,
             issueId: options.issueId,
             title: row.displayName,
-            url: assetUrl,
+            url: uploaded,
           },
         });
       }
-      enqueueOutboxOnce(options.db, {
+      yield* enqueueOutboxOnceSteps(q, {
         target: "linear",
         op: "activity",
         delivery: "ordered",

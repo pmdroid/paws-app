@@ -1,17 +1,24 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
-  findingGroupSources,
-  getImprovement,
-  improvementBySource,
-  listFindingGroups,
+  findingGroupSourcesSteps,
+  getImprovementSteps,
+  improvementBySourceSteps,
+  listFindingGroupsSteps,
   listImprovementProposals,
-  recordImprovementProposal,
+  listImprovementProposalsSteps,
+  recordImprovementProposalSteps,
   reviewFindingsByIds,
+  reviewFindingsByIdsSteps,
+  sqliteDb,
+  type Db,
   type FindingGroup,
   type Improvement,
+  type ImprovementProposal,
   type ImprovementProposalInput,
+  type Q,
   type ReviewFindingRecord,
+  type Steps,
 } from "../db";
 
 export function dailyFindingKey(
@@ -67,16 +74,30 @@ export type LegacyAction = {
   at: number | null;
 };
 
-export function improvementFindings(db: Database, improvementId: string): ReviewFindingRecord[] {
+function findingKeys(proposals: readonly ImprovementProposal[]) {
   const keys = new Set(
-    listImprovementProposals(db, improvementId)
-      .filter((p) => p.source.kind === "daily_finding")
-      .map((p) => p.source.key),
+    proposals.filter((p) => p.source.kind === "daily_finding").map((p) => p.source.key),
   );
-  const ids = [...keys].map((key) => Number(/#(\d+):/.exec(key)?.[1] ?? 0));
-  return reviewFindingsByIds(db, ids)
+  return { keys, ids: [...keys].map((key) => Number(/#(\d+):/.exec(key)?.[1] ?? 0)) };
+}
+
+function ownFindings(keys: ReadonlySet<string>, findings: ReviewFindingRecord[]) {
+  return findings
     .filter((finding) => keys.has(dailyFindingKey(finding)))
     .sort((a, b) => a.id - b.id);
+}
+
+export function improvementFindings(db: Database, improvementId: string): ReviewFindingRecord[] {
+  const { keys, ids } = findingKeys(listImprovementProposals(db, improvementId));
+  return ownFindings(keys, reviewFindingsByIds(db, ids));
+}
+
+export function* improvementFindingsSteps(
+  q: Q,
+  improvementId: string,
+): Steps<ReviewFindingRecord[]> {
+  const { keys, ids } = findingKeys(yield* listImprovementProposalsSteps(q, improvementId));
+  return ownFindings(keys, yield* reviewFindingsByIdsSteps(q, ids));
 }
 
 export function legacyActions(
@@ -127,15 +148,21 @@ export type DailyIngestResult = {
 
 type Unit = { group: FindingGroup | null; members: ReviewFindingRecord[]; acted: boolean };
 
-export function ingestDailyFindings(
+export async function ingestDailyFindings(
   db: Database,
   workspaceId: string,
   options: { now: number; limit?: number },
-): DailyIngestResult {
+): Promise<DailyIngestResult> {
+  const store = sqliteDb(db);
   const limit = options.limit ?? 500;
-  const inWorkspace = new Set(findingGroupSources(db, workspaceId).map((s) => s.id));
-  const findings = new Map(reviewFindingsByIds(db, [...inWorkspace]).map((f) => [f.id, f]));
-  const groups = listFindingGroups(db, workspaceId);
+  const { findings, groups } = await store.run(function* (q) {
+    const inWorkspace = new Set((yield* findingGroupSourcesSteps(q, workspaceId)).map((s) => s.id));
+    const records = yield* reviewFindingsByIdsSteps(q, [...inWorkspace]);
+    return {
+      findings: new Map(records.map((f) => [f.id, f])),
+      groups: yield* listFindingGroupsSteps(q, workspaceId),
+    };
+  });
   const units: Unit[] = [];
   const grouped = new Set<number>();
   for (const group of groups) {
@@ -168,69 +195,88 @@ export function ingestDailyFindings(
   };
   const used = new Set<string>();
   let written = 0;
-  units.forEach((unit, index) => {
-    if (result.remaining) return;
+  for (const [index, unit] of units.entries()) {
     if (written >= limit) {
       result.remaining = units.length - index;
-      return;
+      break;
     }
     result.units++;
-    if (ingestUnit(db, workspaceId, unit, groups, used, options.now, result)) written++;
-  });
+    if (await ingestUnit(store, workspaceId, unit, groups, used, options.now, result)) written++;
+  }
   return result;
 }
 
-function ingestUnit(
-  db: Database,
+async function ingestUnit(
+  store: Db,
   workspaceId: string,
   unit: Unit,
   groups: readonly FindingGroup[],
   used: Set<string>,
   now: number,
   result: DailyIngestResult,
-): boolean {
-  const owners = unit.members.map((f) => improvementBySource(db, workspaceId, source(f)));
-  const open = (i: Improvement) =>
-    i.reviewState === "needs_review" &&
-    !used.has(i.id) &&
-    (unit.acted || legacyActions(improvementFindings(db, i.id), groups).length === 0);
-  const existing = owners.find((i): i is Improvement => i !== null && open(i)) ?? null;
+): Promise<boolean> {
+  const { owners, existing, owned } = await store.run(function* (q) {
+    const found: (Improvement | null)[] = [];
+    for (const f of unit.members)
+      found.push(yield* improvementBySourceSteps(q, workspaceId, source(f)));
+    let open: Improvement | null = null;
+    for (const i of found)
+      if (
+        i !== null &&
+        i.reviewState === "needs_review" &&
+        !used.has(i.id) &&
+        (unit.acted || legacyActions(yield* improvementFindingsSteps(q, i.id), groups).length === 0)
+      ) {
+        open = i;
+        break;
+      }
+    return {
+      owners: found,
+      existing: open,
+      owned: open ? yield* improvementFindingsSteps(q, open.id) : [],
+    };
+  });
   if (owners.some((i) => i !== null && i.id !== existing?.id)) result.split++;
   const unmapped = unit.members.filter((_, index) => owners[index] === null);
   if (!existing && !unmapped.length) return false;
-  const owned = existing ? improvementFindings(db, existing.id) : [];
   const members = [...new Map([...owned, ...unmapped].map((f) => [f.id, f])).values()].sort(
     (a, b) => a.id - b.id,
   );
   const proposal = dailyProposal(unit.group, members);
   let target = existing;
   let wrote = false;
-  unit.members.forEach((f, index) => {
-    if (owners[index] !== null) return;
-    const recorded = recordImprovementProposal(db, {
-      workspaceId,
-      repository: f.repository,
-      source: source(f),
-      proposal,
-      ...(target ? { attachTo: target.id } : {}),
-      now,
-    });
+  for (const [index, f] of unit.members.entries()) {
+    if (owners[index] !== null) continue;
+    const attachTo = target?.id;
+    const recorded = await store.transaction((q) =>
+      recordImprovementProposalSteps(q, {
+        workspaceId,
+        repository: f.repository,
+        source: source(f),
+        proposal,
+        ...(attachTo ? { attachTo } : {}),
+        now,
+      }),
+    );
     if (recorded.created) result.created++;
     else result.attached++;
     wrote = true;
-    target ??= getImprovement(db, recorded.improvementId);
-  });
+    target ??= await store.run((q) => getImprovementSteps(q, recorded.improvementId));
+  }
   if (!target) return wrote;
   used.add(target.id);
-  const latest = listImprovementProposals(db, target.id).at(-1);
+  const { id, repository } = target;
+  const latest = (await store.run((q) => listImprovementProposalsSteps(q, id))).at(-1);
   if (latest && sameProposal(latest, proposal)) return wrote;
-  const recorded = recordImprovementProposal(db, {
-    workspaceId,
-    repository: target.repository,
-    source: latest!.source,
-    proposal,
-    now,
-  });
+  const recorded = await store.transaction((q) =>
+    recordImprovementProposalSteps(q, {
+      workspaceId,
+      repository,
+      source: latest!.source,
+      proposal,
+      now,
+    }),
+  );
   if (!recorded.changed) return wrote;
   result.changed++;
   return true;

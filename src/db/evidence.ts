@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import type { Q } from "./db";
 import { orm } from "./orm";
 import {
   closeoutEvidenceObject,
@@ -36,6 +37,22 @@ export type StoredEvidence = {
 export function saveEvidence(db: Database, row: StoredEvidence): void {
   const { assetUrl: _, ...values } = row;
   orm(db).insert(evidence).values(values).run();
+}
+
+export function* getEvidenceSteps(q: Q, id: string) {
+  const row = yield* q.one(q.orm.select().from(q.t.evidence).where(eq(q.t.evidence.id, id)));
+  return (row ?? null) as StoredEvidence | null;
+}
+
+export function* listEvidenceSteps(q: Q, itemId: string) {
+  const rows = yield* q.all(
+    q.orm
+      .select()
+      .from(q.t.evidence)
+      .where(eq(q.t.evidence.itemId, itemId))
+      .orderBy(q.t.evidence.createdAt, q.t.evidence.id),
+  );
+  return rows as StoredEvidence[];
 }
 
 export function getEvidence(db: Database, id: string): StoredEvidence | null {

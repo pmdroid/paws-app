@@ -3,13 +3,17 @@ import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
   getRetro,
-  listRetros,
+  getRetroSteps,
+  listRetrosSteps,
   listWorkspaceRepositoryNames,
   readRetroArtifact,
-  retroArtifact,
+  readRetroArtifactSteps,
+  retroArtifactSteps,
+  sqliteDb,
   workspaceMember,
+  workspaceMemberSteps,
   workItemSessionKeys,
-  writeRetroArtifact,
+  writeRetroArtifactSteps,
   type Retro,
 } from "../db";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
@@ -206,7 +210,7 @@ function renderForRetro(
   });
 }
 
-export function freezeRetroPrompt(
+export async function freezeRetroPrompt(
   db: Database,
   root: string,
   input: {
@@ -214,21 +218,29 @@ export function freezeRetroPrompt(
     render: (template: string, digest: Uint8Array, retro: Retro) => string;
     now: number;
   },
-): { ok: true; prompt: string; sha256: string } | { ok: false; reason: string } {
-  const retro = getRetro(db, input.retroId);
+): Promise<{ ok: true; prompt: string; sha256: string } | { ok: false; reason: string }> {
+  const store = sqliteDb(db);
+  const retro = await store.run((q) => getRetroSteps(q, input.retroId));
   if (retro === null || retro.digestSha256 === null)
     return { ok: false, reason: "The retro digest is not frozen yet." };
-  if (retroArtifact(db, retro.id, "prompt") === null) {
-    const digest = readRetroArtifact(db, root, retro.id, "digest");
+  if ((await store.run((q) => retroArtifactSteps(q, retro.id, "prompt"))) === null) {
+    const digest = await store.run((q) => readRetroArtifactSteps(q, root, retro.id, "digest"));
     if (!digest.ok || digest.artifact.sha256 !== retro.digestSha256)
       return {
         ok: false,
         reason: `The frozen digest is unreadable: ${digest.ok ? "hash_mismatch" : digest.reason}.`,
       };
     const bytes = new TextEncoder().encode(input.render(retro.prompt, digest.bytes, retro));
-    writeRetroArtifact(db, root, { retroId: retro.id, kind: "prompt", bytes, now: input.now });
+    await store.run((q) =>
+      writeRetroArtifactSteps(q, root, {
+        retroId: retro.id,
+        kind: "prompt",
+        bytes,
+        now: input.now,
+      }),
+    );
   }
-  const stored = readRetroArtifact(db, root, retro.id, "prompt");
+  const stored = await store.run((q) => readRetroArtifactSteps(q, root, retro.id, "prompt"));
   if (!stored.ok)
     return { ok: false, reason: `The frozen prompt is unreadable: ${stored.reason}.` };
   return {
@@ -248,16 +260,16 @@ export type FrozenRetroPrompt =
     }
   | { ok: false; reason: string };
 
-export function freezeRenderedRetroPrompt(
+export async function freezeRenderedRetroPrompt(
   db: Database,
   root: string,
   input: { retroId: string; now: number },
-): FrozenRetroPrompt {
-  const retro = getRetro(db, input.retroId);
+): Promise<FrozenRetroPrompt> {
+  const retro = await sqliteDb(db).run((q) => getRetroSteps(q, input.retroId));
   if (retro === null) return { ok: false, reason: "The retro does not exist." };
-  let frozen: ReturnType<typeof freezeRetroPrompt>;
+  let frozen: Awaited<ReturnType<typeof freezeRetroPrompt>>;
   try {
-    frozen = freezeRetroPrompt(db, root, {
+    frozen = await freezeRetroPrompt(db, root, {
       retroId: retro.id,
       now: input.now,
       render: (template, _digest, run) => {
@@ -469,7 +481,7 @@ export type RetroPromptPreview =
     }
   | { ok: false; reason: "forbidden" | "invalid"; message: string };
 
-export function previewRetroPrompt(
+export async function previewRetroPrompt(
   db: Database,
   root: string,
   input: {
@@ -479,9 +491,13 @@ export function previewRetroPrompt(
     outputLimits: Record<string, unknown>;
     retroId?: string;
   },
-): RetroPromptPreview {
+): Promise<RetroPromptPreview> {
   const { principal } = input;
-  if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
+  const store = sqliteDb(db);
+  const member = await store.run((q) =>
+    workspaceMemberSteps(q, principal.workspaceId, principal.userId),
+  );
+  if (!workspaceMemberUsable(member))
     return { ok: false, reason: "forbidden", message: "Workspace access is unavailable." };
   if (!isWorkspaceAdmin(principal.role))
     return {
@@ -493,8 +509,10 @@ export function previewRetroPrompt(
   if (problem) return { ok: false, reason: "invalid", message: problem };
   const candidates =
     input.retroId === undefined
-      ? listRetros(db, principal.workspaceId)
-      : [getRetro(db, input.retroId)].filter((retro): retro is Retro => retro !== null);
+      ? await store.run((q) => listRetrosSteps(q, principal.workspaceId))
+      : [await store.run((q) => getRetroSteps(q, input.retroId!))].filter(
+          (retro): retro is Retro => retro !== null,
+        );
   for (const candidate of candidates) {
     const readable = readableEvidence(db, root, principal, input.sessionIds, candidate);
     if (readable === null) continue;

@@ -515,7 +515,7 @@ describe("improvement decisions", () => {
 describe("daily findings share legacy claims", () => {
   test("new daily acceptance needs a criterion stored as an annotation", async () => {
     const w = world();
-    seedDaily(w.db);
+    await seedDaily(w.db);
     const list = await w.api("ada", "/api/improvements?source=daily");
     const [daily] = list.body.items;
     expect(daily).toMatchObject({ sourceKind: "daily_finding", criterion: null });
@@ -546,7 +546,7 @@ describe("daily findings share legacy claims", () => {
 
   test("legacy File after inbox Create is refused, and inbox Create after a legacy claim conflicts", async () => {
     const w = world();
-    const { groupId } = seedDaily(w.db);
+    const { groupId } = await seedDaily(w.db);
     const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
     const done = await w.api(
       "ada",
@@ -579,7 +579,7 @@ describe("daily findings share legacy claims", () => {
     expect(files).toEqual([]);
 
     const other = world();
-    const seeded = seedDaily(other.db);
+    const seeded = await seedDaily(other.db);
     other.db.run("UPDATE finding_group SET action='file' WHERE id=?", [seeded.groupId]);
     const [claimed] = (await other.api("ada", "/api/improvements?source=daily")).body.items;
     expect(claimed.lifecycle).toBe("pending");
@@ -598,7 +598,7 @@ describe("daily findings share legacy claims", () => {
 describe("legacy dismissal after an inbox accept", () => {
   test("neither a group nor a single finding can be dismissed once the inbox accepted it", async () => {
     const w = world();
-    const { groupId, findings } = seedDaily(w.db);
+    const { groupId, findings } = await seedDaily(w.db);
     const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
     const done = await w.api(
       "ada",
@@ -711,7 +711,7 @@ describe("individual finding issues share the inbox claim", () => {
 
   test("an inbox accept blocks filing the same finding individually", async () => {
     const w = world();
-    seedDaily(w.db);
+    await seedDaily(w.db);
     expect((await acceptDaily(w)).body.status).toBe("decided");
     const { post, filed } = route(w);
     const refused = await post();
@@ -721,7 +721,7 @@ describe("individual finding issues share the inbox claim", () => {
 
   test("an individual filing, finished or in flight, blocks the inbox accept", async () => {
     const w = world();
-    seedDaily(w.db);
+    await seedDaily(w.db);
     let release = () => {};
     const gate = new Promise<void>((resolve) => (release = resolve));
     const { post, filed } = route(w, () => gate);
@@ -743,7 +743,7 @@ describe("individual finding issues share the inbox claim", () => {
 
   test("an individual filing after a dismissed group still blocks the inbox Create", async () => {
     const w = world();
-    const { groupId } = seedDaily(w.db);
+    const { groupId } = await seedDaily(w.db);
     const dismissed = await handleFindingGroupsRequest(
       new Request("http://paws.test/api/finding-groups", {
         method: "POST",

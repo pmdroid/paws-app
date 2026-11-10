@@ -161,21 +161,19 @@ test("queue lines use ordinals and singular slots", () => {
   ]);
 });
 
-test("the status API shows a queued item's place in line until it starts", () => {
+test("the status API shows a queued item's place in line until it starts", async () => {
   const db = tempDb();
   try {
     insertQueuedItem(db, { id: "ahead", now: 0 });
     insertQueuedItem(db, { id: "waiting", now: 1 });
     settled(saveQueuePositions(sqliteDb(db), ["ahead", "waiting"], { busy: 4, total: 4 }, 2));
-    const queueOf = (id: string) =>
-      createLiveStatusProvider(db)
-        .issues()
-        .issues.find((item) => item.id === id)?.queue;
-    expect(queueOf("waiting")).toEqual({ position: 2, busySlots: 4, totalSlots: 4 });
+    const queueOf = async (id: string) =>
+      (await createLiveStatusProvider(db).issues()).issues.find((item) => item.id === id)?.queue;
+    expect(await queueOf("waiting")).toEqual({ position: 2, busySlots: 4, totalSlots: 4 });
     applyWorkItemEvent(db, "ahead", "dispatched");
     settled(saveQueuePositions(sqliteDb(db), ["waiting"], { busy: 4, total: 4 }, 3));
-    expect(queueOf("ahead")).toBeUndefined();
-    expect(queueOf("waiting")).toEqual({ position: 1, busySlots: 4, totalSlots: 4 });
+    expect(await queueOf("ahead")).toBeUndefined();
+    expect(await queueOf("waiting")).toEqual({ position: 1, busySlots: 4, totalSlots: 4 });
     settled(
       saveQueuePositions(
         sqliteDb(db),
@@ -185,7 +183,12 @@ test("the status API shows a queued item's place in line until it starts", () =>
         new Map([["waiting", 3]]),
       ),
     );
-    expect(queueOf("waiting")).toEqual({ position: 1, busySlots: 4, totalSlots: 4, ownerCap: 3 });
+    expect(await queueOf("waiting")).toEqual({
+      position: 1,
+      busySlots: 4,
+      totalSlots: 4,
+      ownerCap: 3,
+    });
   } finally {
     db.close();
   }

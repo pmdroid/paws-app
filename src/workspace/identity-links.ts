@@ -1,11 +1,12 @@
 import {
   workspaceMemberUsable,
-  auditWorkspaceAccess,
-  listWorkspaceMembers,
-  saveWorkspaceIdentityLink,
-  workspaceIdentityCandidates,
-  workspaceIdentityLinks,
-  workspaceMember,
+  auditWorkspaceAccessSteps,
+  listWorkspaceMembersSteps,
+  saveWorkspaceIdentityLinkSteps,
+  sqliteDb,
+  workspaceIdentityCandidatesSteps,
+  workspaceIdentityLinksSteps,
+  workspaceMemberSteps,
   type WorkspaceSession,
 } from "../db";
 import { isWorkspaceAdmin } from "./eligibility";
@@ -21,10 +22,15 @@ export function createWorkspaceIdentityLinks(options: {
   now?: () => number;
 }) {
   const now = options.now ?? Date.now;
+  const store = sqliteDb(options.db);
+  const candidates = (workspaceId: string) =>
+    store.run((q) => workspaceIdentityCandidatesSteps(q, workspaceId));
+  const memberOf = (workspaceId: string, userId: string) =>
+    store.run((q) => workspaceMemberSteps(q, workspaceId, userId));
+  const saveLink = (input: Parameters<typeof saveWorkspaceIdentityLinkSteps>[1]) =>
+    store.transaction((q) => saveWorkspaceIdentityLinkSteps(q, input));
   async function syncUser(workspaceId: string, userId: string) {
-    const candidate = workspaceIdentityCandidates(options.db, workspaceId).find(
-      (entry) => entry.userId === userId,
-    );
+    const candidate = (await candidates(workspaceId)).find((entry) => entry.userId === userId);
     if (candidate === undefined || options.slack == null) return;
     const checkedAt = now();
     let externalId: string | null = null;
@@ -35,7 +41,7 @@ export function createWorkspaceIdentityLinks(options: {
     } catch (caughtError1) {
       journalCaught(caughtError1, "identity-links.syncUser.lookup", null);
     }
-    if (!workspaceMemberUsable(workspaceMember(options.db, workspaceId, userId))) return;
+    if (!workspaceMemberUsable(await memberOf(workspaceId, userId))) return;
     const input = {
       workspaceId,
       userId,
@@ -45,16 +51,16 @@ export function createWorkspaceIdentityLinks(options: {
       checkedAt,
     };
     try {
-      saveWorkspaceIdentityLink(options.db, { ...input, externalId, status });
+      await saveLink({ ...input, externalId, status });
     } catch (caughtError2) {
       journalCaught(caughtError2, "identity-links.syncUser.saveWorkspaceIdentityLink", null);
-      saveWorkspaceIdentityLink(options.db, { ...input, externalId: null, status: "error" });
+      await saveLink({ ...input, externalId: null, status: "error" });
     }
   }
   return {
     syncUser,
     async syncWorkspace(workspaceId: string) {
-      for (const candidate of workspaceIdentityCandidates(options.db, workspaceId))
+      for (const candidate of await candidates(workspaceId))
         await syncUser(workspaceId, candidate.userId);
     },
     async handle(
@@ -68,22 +74,23 @@ export function createWorkspaceIdentityLinks(options: {
     ): Promise<Response | null> {
       if (new URL(request.url).pathname !== "/api/workspaces/identity-links") return null;
       const principal = context.principal;
-      function deny(message: string) {
-        auditWorkspaceAccess(options.db, {
+      async function deny(message: string) {
+        const audit = {
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           action: "access.denied",
           subject: "/api/workspaces/identity-links",
           now: context.now,
-        });
+        };
+        await store.run((q) => auditWorkspaceAccessSteps(q, audit));
         return reply({ error: message }, 403);
       }
       if (!isWorkspaceAdmin(principal.role)) return deny("Workspace administration is required.");
       if (request.method === "GET")
         return reply({
           slackTeamId: options.slack?.teamId ?? null,
-          links: workspaceIdentityLinks(options.db, principal.workspaceId),
-          members: listWorkspaceMembers(options.db, principal.workspaceId),
+          links: await store.run((q) => workspaceIdentityLinksSteps(q, principal.workspaceId)),
+          members: await store.run((q) => listWorkspaceMembersSteps(q, principal.workspaceId)),
         });
       if (request.method !== "PUT") return reply({ error: "Method not allowed" }, 405);
       if (
@@ -93,7 +100,7 @@ export function createWorkspaceIdentityLinks(options: {
         return deny("CSRF token required.");
       try {
         const body = await readWorkspaceJson(request);
-        const actor = workspaceMember(options.db, principal.workspaceId, principal.userId);
+        const actor = await memberOf(principal.workspaceId, principal.userId);
         if (!workspaceMemberUsable(actor) || !isWorkspaceAdmin(actor.role))
           return deny("Workspace administration is required.");
         if (
@@ -117,7 +124,7 @@ export function createWorkspaceIdentityLinks(options: {
             : !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(externalId))
         )
           throw new Error("Enter a valid account identity.");
-        saveWorkspaceIdentityLink(options.db, {
+        await saveLink({
           workspaceId: principal.workspaceId,
           actorId: principal.userId,
           userId: body.userId,
@@ -131,7 +138,7 @@ export function createWorkspaceIdentityLinks(options: {
         return reply({ ok: true });
       } catch (error) {
         journalCaught(error, "identity-links.handle.readWorkspaceJson", null);
-        const actor = workspaceMember(options.db, principal.workspaceId, principal.userId);
+        const actor = await memberOf(principal.workspaceId, principal.userId);
         if (!workspaceMemberUsable(actor) || !isWorkspaceAdmin(actor.role))
           return deny("Workspace administration is required.");
         return reply(

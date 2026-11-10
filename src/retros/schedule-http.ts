@@ -70,7 +70,7 @@ export function createRetroScheduleHttp(options: {
     if (!Number.isInteger(body.expectedRevision) || (body.expectedRevision as number) < 0)
       return json({ error: "Send expectedRevision, the revision this change started from." }, 400);
     const accessibleRepositories = listWorkspaceRepositoryNames(db, principal.workspaceId);
-    const current = readRetroSettings(db, {
+    const current = await readRetroSettings(db, {
       workspaceId: principal.workspaceId,
       accessibleRepositories,
     });
@@ -90,7 +90,7 @@ export function createRetroScheduleHttp(options: {
       journalCaught(error, "retros.schedule.catalog", null);
       catalogs = null;
     }
-    const result = saveRetroSettings(db, {
+    const result = await saveRetroSettings(db, {
       workspaceId: principal.workspaceId,
       actorId: principal.userId,
       expectedRevision: body.expectedRevision as number,

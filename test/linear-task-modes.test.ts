@@ -106,7 +106,7 @@ test.each(["code", "answer", "artifact", "plan"] as const)(
   },
 );
 
-test("answer mode and full prepared response survive reopen as a terminal completion", () => {
+test("answer mode and full prepared response survive reopen as a terminal completion", async () => {
   const file = join(tempHome(), "paws.db");
   const db = openDatabase(file);
   migrate(db);
@@ -121,7 +121,7 @@ test("answer mode and full prepared response survive reopen as a terminal comple
     expect(getTaskMode(restored, item.id)).toBe("answer");
     expect(getWorkItem(restored, item.id)?.state).toBe("completed");
     expect(isTerminalWorkItemState(getWorkItem(restored, item.id)!.state)).toBe(true);
-    const dashboard = createLiveStatusProvider(restored).issues();
+    const dashboard = await createLiveStatusProvider(restored).issues();
     expect(dashboard.issues[0]?.state).toBe("completed");
     expect(dashboard.runs[0]?.state).toBe("done");
     expect(listOutbox(restored, "session")[0]?.payload).toEqual({

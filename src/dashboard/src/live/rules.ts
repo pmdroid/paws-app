@@ -4,7 +4,8 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   listCloseoutBypassChecks,
-  listLinkAsks,
+  listLinkAsksSteps,
+  sqliteDb,
   type CloseoutProgressRecord,
   type CloseoutStepRecord,
 } from "../../../db";
@@ -46,16 +47,16 @@ export function skippedRules(row: CloseoutProgressRecord): string[] {
  * The item detail's rule rows with the probe hash from each result's evidence record, and the
  * bypass a person made or is asked to make for each failed rule on that head.
  */
-export function withRuleDetail(
+export async function withRuleDetail(
   db: Database,
   itemId: string,
   verdict: StatusVerdict,
   progress: readonly CloseoutProgressRecord[],
   evidenceRoot: string | null,
-): StatusVerdict {
+): Promise<StatusVerdict> {
   const all = [verdict.checks, ...(verdict.attempts ?? []).map((attempt) => attempt.checks)];
   if (!all.some((checks) => checks.some((check) => check.kind === "rule"))) return verdict;
-  const decisions = ruleDecisions(db, itemId);
+  const decisions = await ruleDecisions(db, itemId);
   const mine = progress.filter((row) => row.itemId === itemId);
   const enrich = (
     checks: readonly StatusCheck[],
@@ -100,9 +101,9 @@ type RuleDecision = { checkId: string; head: string; approval: StatusRuleApprova
  * Each check a bypass ask of the item offered: bypassed with who and why, or waiting while the
  * ask is open. The latest ask for a check and head wins.
  */
-function ruleDecisions(db: Database, itemId: string): RuleDecision[] {
+async function ruleDecisions(db: Database, itemId: string): Promise<RuleDecision[]> {
   const decisions: RuleDecision[] = [];
-  for (const ask of listLinkAsks(db, itemId).reverse()) {
+  for (const ask of (await sqliteDb(db).run((q) => listLinkAsksSteps(q, itemId))).reverse()) {
     if (ask.kind !== "bypass") continue;
     for (const check of listCloseoutBypassChecks(db, ask.questionId)) {
       if (

@@ -162,12 +162,14 @@ describe("live status provider", () => {
     ["link", false],
     ["visual-review", false],
     ["github-auth", false],
-  ] as const)("an open %s question is answerable in Paws: %p", (kind, answerable) => {
+  ] as const)("an open %s question is answerable in Paws: %p", async (kind, answerable) => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     seedQuestion(db, item.id, "session");
     db.run("UPDATE question SET kind = ? WHERE id = 'question'", [kind]);
-    expect(createLiveStatusProvider(db).questions().questions[0]?.answerable).toBe(answerable);
+    expect((await createLiveStatusProvider(db).questions()).questions[0]?.answerable).toBe(
+      answerable,
+    );
   });
 
   test.each([
@@ -176,7 +178,7 @@ describe("live status provider", () => {
     "https://private:secret@linear.app/question",
     "https://uploads.linear.app/question?signature=secret",
     "https://linear.app:444/question",
-  ])("question handoff falls back safely from an unsafe source %s", (url) => {
+  ])("question handoff falls back safely from an unsafe source %s", async (url) => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     seedQuestion(db, item.id, "session");
@@ -184,12 +186,12 @@ describe("live status provider", () => {
       "INSERT INTO inbox_event (dedupe_key, source, action, session_id, updated_at_ms, payload, received_at) VALUES ('event', 'webhook', 'created', 'session', 1, ?, 1)",
       [JSON.stringify({ agentSession: { url } })],
     );
-    expect(createLiveStatusProvider(db).questions().questions[0]?.links).toEqual([
+    expect((await createLiveStatusProvider(db).questions()).questions[0]?.links).toEqual([
       { label: "Answer in Linear", href: "https://linear.app/issue/ENG-1" },
     ]);
   });
 
-  test("a Linear question without session metadata uses its readable issue key", () => {
+  test("a Linear question without session metadata uses its readable issue key", async () => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-123", sessionKey: "session" });
     db.run("UPDATE work_item SET linear_issue_id = ? WHERE id = ?", [
@@ -197,12 +199,12 @@ describe("live status provider", () => {
       item.id,
     ]);
     seedQuestion(db, item.id, "session");
-    expect(createLiveStatusProvider(db).questions().questions[0]?.links).toEqual([
+    expect((await createLiveStatusProvider(db).questions()).questions[0]?.links).toEqual([
       { label: "Answer in Linear", href: "https://linear.app/issue/ENG-123" },
     ]);
   });
 
-  test("visual review rounds carry the reviewer's name, feedback and the screenshots' commit", () => {
+  test("visual review rounds carry the reviewer's name, feedback and the screenshots' commit", async () => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
     const { run } = beginImplementRun(db, item.id, 1_000);
@@ -236,7 +238,7 @@ describe("live status provider", () => {
               ('q-3', ?, 'visual-proof', '["shot-2"]', 4000, 'review', NULL, NULL, NULL, NULL)`,
       [item.id, item.id, item.id],
     );
-    const list = createLiveStatusProvider(db).issues();
+    const list = await createLiveStatusProvider(db).issues();
     expect(list.issues[0]?.visualReviews).toEqual([
       {
         questionId: "q-1",
@@ -266,7 +268,7 @@ describe("live status provider", () => {
     expect(parseIssueListResponse(JSON.parse(JSON.stringify(list))).ok).toBe(true);
   });
 
-  test("a carried-over review names the approval and approver each screen came from", () => {
+  test("a carried-over review names the approval and approver each screen came from", async () => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
     const { run } = beginImplementRun(db, item.id, 1_000);
@@ -306,7 +308,7 @@ describe("live status provider", () => {
               ('carry_1', ?, 'visual-proof', '["shot-2"]', 5000, 'accepted', 'lin-ada', 5000, ?)`,
       [item.id, item.id, JSON.stringify(carried)],
     );
-    const list = createLiveStatusProvider(db).issues();
+    const list = await createLiveStatusProvider(db).issues();
     const reviews = list.issues[0]?.visualReviews;
     expect(reviews?.map((review) => [review.questionId, review.round, review.state])).toEqual([
       ["q-1", 1, "stale"],
@@ -416,14 +418,14 @@ describe("live status provider", () => {
     expect(parsed.response.issues).toEqual([]);
     expect(parsed.response.runs).toEqual([]);
     expect(parsed.response.verdicts).toEqual([]);
-    expect(createLiveStatusProvider(db).questions().questions).toEqual([]);
-    expect(createLiveStatusProvider(db).mergeQueue().entries).toEqual([]);
+    expect((await createLiveStatusProvider(db).questions()).questions).toEqual([]);
+    expect((await createLiveStatusProvider(db).mergeQueue()).entries).toEqual([]);
     expect(statusIntegrity(listRecords(parsed.response))).toEqual([]);
     expect(JSON.stringify(body)).not.toContain("Audit log export");
     expect(JSON.stringify(body)).not.toContain("acme");
   });
 
-  test("reads items, runs, an open question, Closeout, and the merge queue", () => {
+  test("reads items, runs, an open question, Closeout, and the merge queue", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const base = "a".repeat(40);
@@ -507,7 +509,7 @@ describe("live status provider", () => {
     });
 
     const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
-    const list = provider.issues();
+    const list = await provider.issues();
     const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(list)));
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -527,7 +529,7 @@ describe("live status provider", () => {
     expect(parked?.state).toBe("awaiting_input");
     expect(parked?.agent).toBe("Cursor");
     expect(parked?.activity.some((line) => line.text === "Need a product decision.")).toBe(true);
-    expect(provider.questions().questions).toEqual([
+    expect((await provider.questions()).questions).toEqual([
       expect.objectContaining({
         id: "q-archived",
         itemId: "ENG-2",
@@ -546,13 +548,13 @@ describe("live status provider", () => {
     const verdict = parsed.response.verdicts.find((entry) => entry.itemId === "ENG-3");
     expect(verdict?.decision).toBe("accepted");
     expect(verdict?.headSha).toBe(head);
-    expect(provider.issue("ENG-3")?.verdicts[0]?.baseSha).toBe(base);
+    expect((await provider.issue("ENG-3"))?.verdicts[0]?.baseSha).toBe(base);
     expect(verdict?.checks.map((check) => [check.id, check.kind, check.state])).toEqual([
       ["typecheck", "command", "passed"],
       ["adversarial-review", "review", "passed"],
     ]);
     // The merge job has not run yet, so the task holds no place in its repository's queue.
-    expect(provider.mergeQueue().entries).toEqual([
+    expect((await provider.mergeQueue()).entries).toEqual([
       expect.objectContaining({
         position: null,
         itemId: "ENG-3",
@@ -569,7 +571,7 @@ describe("live status provider", () => {
     expect(JSON.stringify(list)).not.toContain("Audit log export");
   });
 
-  test("a waiting task without a question row shows its question:<id> elicitation", () => {
+  test("a waiting task without a question row shows its question:<id> elicitation", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", now });
@@ -583,7 +585,7 @@ describe("live status provider", () => {
       payload: { sessionId: "ses_1", body: "Closeout needs your help." },
       now,
     });
-    expect(createLiveStatusProvider(db).questions().questions).toEqual([
+    expect((await createLiveStatusProvider(db).questions()).questions).toEqual([
       expect.objectContaining({
         id: "q-help",
         itemId: "ENG-2",
@@ -592,7 +594,7 @@ describe("live status provider", () => {
     ]);
   });
 
-  test("a bypass link ask carries its failed checks and the policy it binds to", () => {
+  test("a bypass link ask carries its failed checks and the policy it binds to", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "7f65200aa1b2c3d4";
@@ -628,7 +630,9 @@ describe("live status provider", () => {
     saveCloseoutBypassChecks(db, "q-bypass", [
       { id: "test", kind: "command", state: "exhausted", attempt: 3, message: "exited 1" },
     ]);
-    expect(createLiveStatusProvider(db).issue("ENG-3")?.questions[0]?.linkAsk?.bypass).toEqual({
+    expect(
+      (await createLiveStatusProvider(db).issue("ENG-3"))?.questions[0]?.linkAsk?.bypass,
+    ).toEqual({
       policyDigest: "sha256:0eadf4c",
       passed: [],
       checks: [
@@ -637,7 +641,7 @@ describe("live status provider", () => {
     });
   });
 
-  test("a risk link ask carries the head's high-risk paths for the Risk card", () => {
+  test("a risk link ask carries the head's high-risk paths for the Risk card", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "7f65200aa1b2c3d4";
@@ -667,7 +671,7 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts"],
       classifiedAt: now,
     });
-    const detail = createLiveStatusProvider(db).issue("ENG-6")!;
+    const detail = (await createLiveStatusProvider(db).issue("ENG-6"))!;
     expect(detail.questions[0]?.linkAsk?.risk).toEqual({
       paths: ["src/auth/session.ts"],
       summary: "",
@@ -682,7 +686,7 @@ describe("live status provider", () => {
     });
   });
 
-  test("a risk ask after an approval lists only the fix's high-risk paths", () => {
+  test("a risk ask after an approval lists only the fix's high-risk paths", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "9c1d2e3ff0a1b2c3";
@@ -721,7 +725,7 @@ describe("live status provider", () => {
       paths: ["src/auth/session.ts"],
       recordedAt: now,
     });
-    const detail = createLiveStatusProvider(db).issue("ENG-6")!;
+    const detail = (await createLiveStatusProvider(db).issue("ENG-6"))!;
     const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     expect(parsed.ok && parsed.response.questions[0]?.linkAsk?.risk).toEqual({
       paths: ["src/auth/session.ts"],
@@ -732,7 +736,7 @@ describe("live status provider", () => {
     expect(detail.issue.riskCarryOver).toBeUndefined();
   });
 
-  test("an item whose latest head kept the approval carries it, with the approved head", () => {
+  test("an item whose latest head kept the approval carries it, with the approved head", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const item = insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now });
@@ -763,15 +767,15 @@ describe("live status provider", () => {
         "The approval of 4b317d5 carried over: none of the files the fix changed since then is a high-risk path (`test/x.test.ts`).",
     };
     const parsed = parseIssueListResponse(
-      JSON.parse(JSON.stringify(createLiveStatusProvider(db).issues())),
+      JSON.parse(JSON.stringify(await createLiveStatusProvider(db).issues())),
     );
     expect(parsed.ok && parsed.response.issues[0]?.riskCarryOver).toEqual(carried);
     // A newer head has not been compared yet, so the old carry-over no longer shows.
     risk("aaaa111122", now + 1);
-    expect(createLiveStatusProvider(db).issues().issues[0]?.riskCarryOver).toBeUndefined();
+    expect((await createLiveStatusProvider(db).issues()).issues[0]?.riskCarryOver).toBeUndefined();
   });
 
-  test("the merge queue lists each repository's tasks in order, with what each waits for", () => {
+  test("the merge queue lists each repository's tasks in order, with what each waits for", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
@@ -843,12 +847,12 @@ describe("live status provider", () => {
     });
 
     const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
-    const resource = parseMergeQueueResponse(provider.mergeQueue());
+    const resource = parseMergeQueueResponse(await provider.mergeQueue());
     if (!resource.ok) throw new Error(resource.error);
     const queue = resource.response;
     expect(
       statusIntegrity({
-        ...listRecords(provider.issues()),
+        ...listRecords(await provider.issues()),
         mergeQueue: queue.entries,
         mergeHistory: queue.history,
       }),
@@ -878,7 +882,7 @@ describe("live status provider", () => {
     ]);
   });
 
-  test("a re-checking task keeps its place in the merge queue, and the ready one behind it moves", () => {
+  test("a re-checking task keeps its place in the merge queue, and the ready one behind it moves", async () => {
     const db = database();
     const head = "c".repeat(40);
     for (const [index, id] of ["ENG-21", "ENG-22", "ENG-23"].entries()) {
@@ -890,7 +894,7 @@ describe("live status provider", () => {
     applyWorkItemEvent(db, "ENG-21", "reverify_requested");
 
     const provider = createLiveStatusProvider(db);
-    const parsed = parseMergeQueueResponse(provider.mergeQueue());
+    const parsed = parseMergeQueueResponse(await provider.mergeQueue());
     if (!parsed.ok) throw new Error(parsed.error);
     expect(
       parsed.response.entries.map((entry) => [
@@ -904,13 +908,15 @@ describe("live status provider", () => {
       [2, "ENG-22", "ci", null],
       [3, "ENG-23", "ahead", "Starts when ENG-22 merges"],
     ]);
-    const items = new Map(provider.issues().issues.map((item) => [item.id, item.mergeQueue]));
+    const items = new Map(
+      (await provider.issues()).issues.map((item) => [item.id, item.mergeQueue]),
+    );
     expect(items.get("ENG-21")).toMatchObject({ position: 1, ahead: null, rechecking: true });
     expect(items.get("ENG-22")).toMatchObject({ position: 2, ahead: null });
     expect(items.get("ENG-23")).toMatchObject({ position: 3, ahead: "ENG-22" });
   });
 
-  test("an item whose last job failed on a full disk names the disk on the issue and the merge queue", () => {
+  test("an item whose last job failed on a full disk names the disk on the issue and the merge queue", async () => {
     const db = database();
     const head = "d".repeat(40);
     const item = insertQueuedItem(db, { id: "ENG-31", title: "Disk", sessionKey: "ses_d", now: 1 });
@@ -925,18 +931,18 @@ describe("live status provider", () => {
     ]);
 
     const provider = createLiveStatusProvider(db);
-    const detail = parseIssueDetailResponse(provider.issue("ENG-31"));
+    const detail = parseIssueDetailResponse(await provider.issue("ENG-31"));
     if (!detail.ok) throw new Error(detail.error);
     expect(detail.response.issue.hostDiskFull).toBe(reason);
-    const queue = parseMergeQueueResponse(provider.mergeQueue());
+    const queue = parseMergeQueueResponse(await provider.mergeQueue());
     if (!queue.ok) throw new Error(queue.error);
     expect(queue.response.entries[0]?.detail).toBe(reason);
 
     db.run("UPDATE job SET last_error='push failed: permission denied' WHERE id=?", [job]);
-    expect(provider.issue("ENG-31")?.issue.hostDiskFull).toBeUndefined();
+    expect((await provider.issue("ENG-31"))?.issue.hostDiskFull).toBeUndefined();
   });
 
-  test("an item backing off after a full disk keeps the notice until its retry runs", () => {
+  test("an item backing off after a full disk keeps the notice until its retry runs", async () => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-32", title: "Disk", sessionKey: "ses_e", now: 1 });
     const failed = enqueueJob(db, { queue: "run.resume", payload: { itemId: item.id }, now: 10 });
@@ -949,12 +955,12 @@ describe("live status provider", () => {
       now: 20,
     });
     const provider = createLiveStatusProvider(db);
-    expect(provider.issue("ENG-32")?.issue.hostDiskFull).toBe(reason);
+    expect((await provider.issue("ENG-32"))?.issue.hostDiskFull).toBe(reason);
     db.run("UPDATE job SET status='done' WHERE id=?", [retry]);
-    expect(provider.issue("ENG-32")?.issue.hostDiskFull).toBeUndefined();
+    expect((await provider.issue("ENG-32"))?.issue.hostDiskFull).toBeUndefined();
   });
 
-  test("the merge queue names each task's bound repository without a configured repo", () => {
+  test("the merge queue names each task's bound repository without a configured repo", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
@@ -981,7 +987,7 @@ describe("live status provider", () => {
     });
 
     const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
-    const parsed = parseMergeQueueResponse(provider.mergeQueue());
+    const parsed = parseMergeQueueResponse(await provider.mergeQueue());
     if (!parsed.ok) throw new Error(parsed.error);
     expect(parsed.response.entries.map((entry) => [entry.itemId, entry.repository])).toEqual([
       ["ENG-21", "pmdroid/paws-app"],
@@ -998,7 +1004,7 @@ describe("live status provider", () => {
     expect(html).not.toContain("Repository not known");
   });
 
-  test("Closeout checks leave out policy items that did not apply to the change", () => {
+  test("Closeout checks leave out policy items that did not apply to the change", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
@@ -1043,13 +1049,13 @@ describe("live status provider", () => {
     upsertCloseoutStep(db, item.id, identity, step("test", "passed", 0), now);
     upsertCloseoutStep(db, item.id, identity, step("typecheck", "skipped", 1), now);
     finishCloseoutProgress(db, item.id, identity, "accepted", now);
-    const list = createLiveStatusProvider(db, { now: () => new Date(now) }).issues();
+    const list = await createLiveStatusProvider(db, { now: () => new Date(now) }).issues();
     expect(list.verdicts[0]?.checks.map((check) => [check.id, check.state])).toEqual([
       ["test", "passed"],
     ]);
   });
 
-  test("the list carries open items and finished items of the last 24 hours, at most 50", () => {
+  test("the list carries open items and finished items of the last 24 hours, at most 50", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const finish = (id: string, at: number) => {
@@ -1061,19 +1067,19 @@ describe("live status provider", () => {
     finish("ENG-OLD", now - STATUS_RECENT_MS - 60_000);
     finish("ENG-RECENT", now - 60_000);
     const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
-    const ids = provider.issues().issues.map((item) => item.id);
+    const ids = (await provider.issues()).issues.map((item) => item.id);
     expect(ids).toContain("ENG-OPEN");
     expect(ids).toContain("ENG-RECENT");
     expect(ids).not.toContain("ENG-OLD");
     // An item that left the list still has its own page.
-    const old = provider.issue("ENG-OLD");
+    const old = await provider.issue("ENG-OLD");
     expect(old && [old.issue, ...old.earlierSessions].map((item) => [item.id, item.state])).toEqual(
       [["ENG-OLD", "stopped"]],
     );
 
     for (let index = 0; index < STATUS_RECENT_LIMIT + 5; index += 1)
       finish(`ENG-${100 + index}`, now - 120_000 - index * 1_000);
-    const capped = provider.issues().issues;
+    const capped = (await provider.issues()).issues;
     const finished = capped.filter((item) => item.state !== "queued").map((item) => item.id);
     expect(finished).toHaveLength(STATUS_RECENT_LIMIT);
     // The most recently finished stay; the oldest of the window fall off.
@@ -1081,12 +1087,12 @@ describe("live status provider", () => {
     expect(finished).toContain("ENG-100");
     expect(finished).not.toContain(`ENG-${100 + STATUS_RECENT_LIMIT + 4}`);
     expect(capped.map((item) => item.id)).toContain("ENG-OPEN");
-    const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(provider.issues())));
+    const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
     if (!parsed.ok) throw new Error(parsed.error);
     expect(statusIntegrity(listRecords(parsed.response))).toEqual([]);
   });
 
-  test("the item detail reads each review round's findings from the stored review evidence", () => {
+  test("the item detail reads each review round's findings from the stored review evidence", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
@@ -1206,8 +1212,8 @@ describe("live status provider", () => {
     });
     const provider = createLiveStatusProvider(db, { now: () => new Date(now + 5000), pawsHome });
     // Findings are only in the item detail, never in the list.
-    expect(JSON.stringify(provider.issues())).not.toContain("token leaks");
-    const [review] = provider.issue("ENG-11")!.verdicts[0]!.reviews!;
+    expect(JSON.stringify(await provider.issues())).not.toContain("token leaks");
+    const [review] = (await provider.issue("ENG-11"))!.verdicts[0]!.reviews!;
     expect(review!.id).toBe("independent-review");
     const mark = (finding: {
       location: string;
@@ -1292,17 +1298,17 @@ describe("live status provider", () => {
       sessionIds: ["ses_8"],
     });
     // The list carries one summary per item: no attempts, output or findings.
-    const list = JSON.stringify(provider.issues());
+    const list = JSON.stringify(await provider.issues());
     expect(list).not.toContain("secret log");
     expect(list).not.toContain("test failed");
-    expect(Object.keys(provider.issues().verdicts[0]!)).toEqual([
+    expect(Object.keys((await provider.issues()).verdicts[0]!)).toEqual([
       "itemId",
       "runId",
       "decision",
       "headSha",
       "checks",
     ]);
-    const detail = provider.issue("ENG-8")!;
+    const detail = (await provider.issue("ENG-8"))!;
     expect([detail.issue, ...detail.earlierSessions].map((entry) => entry.id)).toEqual(["ENG-8"]);
     expect(detail.blocks).toEqual(["ENG-9"]);
     const attempts = detail.verdicts[0]!.attempts!;
@@ -1311,8 +1317,8 @@ describe("live status provider", () => {
       ["accepted", null],
     ]);
     expect(JSON.stringify(detail)).not.toContain("secret log");
-    expect(provider.issue("ENG-10")).toBeNull();
-    expect(createLiveStatusProvider(db).issue("ENG-10")?.issue.id).toBe("ENG-10");
+    expect(await provider.issue("ENG-10")).toBeNull();
+    expect((await createLiveStatusProvider(db).issue("ENG-10"))?.issue.id).toBe("ENG-10");
 
     const get = (id: string) =>
       handleStatusRequest(new Request(`http://127.0.0.1/api/issues/${id}`), {
@@ -1327,7 +1333,7 @@ describe("live status provider", () => {
     expect((await get("ENG-404"))?.status).toBe(404);
   });
 
-  test("the item detail's risk block has the tier, each path's list and the security review", () => {
+  test("the item detail's risk block has the tier, each path's list and the security review", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
@@ -1335,7 +1341,7 @@ describe("live status provider", () => {
     const item = insertQueuedItem(db, { id: "ENG-11", title: "Risk", sessionKey: "ses_11", now });
     const docs = insertQueuedItem(db, { id: "ENG-12", sessionKey: "ses_11", now });
     const provider = createLiveStatusProvider(db, { now: () => new Date(now + 5000) });
-    expect(provider.issue("ENG-11")?.risk).toBeNull();
+    expect((await provider.issue("ENG-11"))?.risk).toBeNull();
     const identity = (taskId: string) => ({
       taskId,
       base,
@@ -1393,7 +1399,9 @@ describe("live status provider", () => {
       matches: [],
       classifiedAt: now,
     });
-    const high = parseIssueDetailResponse(JSON.parse(JSON.stringify(provider.issue("ENG-11"))));
+    const high = parseIssueDetailResponse(
+      JSON.parse(JSON.stringify(await provider.issue("ENG-11"))),
+    );
     if (!high.ok) throw new Error(high.error);
     expect(high.response.risk).toEqual({
       tier: "high",
@@ -1407,7 +1415,7 @@ describe("live status provider", () => {
       securityReview: { state: "passed", detail: null, head },
       automaticApproval: "Manual approval required",
     });
-    expect(provider.issue("ENG-12")?.risk).toMatchObject({
+    expect((await provider.issue("ENG-12"))?.risk).toMatchObject({
       tier: "normal",
       paths: [],
       securityReview: { state: "skipped", detail: "no changed path matches", head },
@@ -1475,16 +1483,16 @@ describe("live status provider", () => {
       checkId,
       run: null,
     });
-    expect(provider.checkLog(request("ENG-11", "unit"))).toEqual({
+    expect(await provider.checkLog(request("ENG-11", "unit"))).toEqual({
       stdout: "ENG-11 out",
       stderr: "unit failed",
     });
     // `lint` is a check of ENG-12, not of ENG-11.
-    expect(provider.checkLog(request("ENG-11", "lint"))).toBeNull();
-    expect(provider.checkLog(request("ENG-11", "unit", 2))).toBeNull();
-    expect(provider.checkLog({ ...request("ENG-11", "unit"), run: "other-run" })).toBeNull();
+    expect(await provider.checkLog(request("ENG-11", "lint"))).toBeNull();
+    expect(await provider.checkLog(request("ENG-11", "unit", 2))).toBeNull();
+    expect(await provider.checkLog({ ...request("ENG-11", "unit"), run: "other-run" })).toBeNull();
     // Outside the reader's sessions, as if the issue did not exist.
-    expect(provider.checkLog(request("ENG-13", "unit"))).toBeNull();
+    expect(await provider.checkLog(request("ENG-13", "unit"))).toBeNull();
 
     const get = (path: string) =>
       handleStatusRequest(new Request(`http://127.0.0.1/api/issues/${path}/log`), {
@@ -1507,7 +1515,7 @@ describe("live status provider", () => {
     expect(await hidden.text()).not.toContain("hidden failure");
   });
 
-  test("a review keeps its measured duration and tokens when a later evaluation reads it again", () => {
+  test("a review keeps its measured duration and tokens when a later evaluation reads it again", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const item = insertQueuedItem(db, { id: "ENG-7", title: "Review", sessionKey: "ses_7", now });
@@ -1555,20 +1563,24 @@ describe("live status provider", () => {
     review("passed", now + 200_000, { durationMs: 180_000, tokens: 52_000 });
     review("passed", now + 900_000);
     finishCloseoutProgress(db, item.id, identity, "accepted", now + 900_000);
-    const check = createLiveStatusProvider(db, {
-      now: () => new Date(now + 900_000),
-    }).issue("ENG-7")?.verdicts[0]?.checks[0];
+    const check = (
+      await createLiveStatusProvider(db, {
+        now: () => new Date(now + 900_000),
+      }).issue("ENG-7")
+    )?.verdicts[0]?.checks[0];
     expect(check?.elapsedMs).toBe(180_000);
     expect(check?.tokens).toBe(52_000);
     review("running", now + 950_000);
-    const rerun = createLiveStatusProvider(db, {
-      now: () => new Date(now + 960_000),
-    }).issue("ENG-7")?.verdicts[0]?.checks[0];
+    const rerun = (
+      await createLiveStatusProvider(db, {
+        now: () => new Date(now + 960_000),
+      }).issue("ENG-7")
+    )?.verdicts[0]?.checks[0];
     expect(rerun?.elapsedMs).toBe(10_000);
     expect(rerun?.tokens ?? null).toBeNull();
   });
 
-  test("a re-check of a rebased head starts a new round of Closeout attempts", () => {
+  test("a re-check of a rebased head starts a new round of Closeout attempts", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const base = "d".repeat(40);
@@ -1629,7 +1641,9 @@ describe("live status provider", () => {
       startedAt: now + 2,
     });
     attempt("c".repeat(40), now + 3, "passed");
-    const detail = createLiveStatusProvider(db, { now: () => new Date(now + 4) }).issue("ENG-6");
+    const detail = await createLiveStatusProvider(db, { now: () => new Date(now + 4) }).issue(
+      "ENG-6",
+    );
     const attempts = detail?.verdicts.find((verdict) => verdict.itemId === "ENG-6")?.attempts;
     expect(attempts?.map((entry) => [entry.number, entry.round, entry.headSha?.[0]])).toEqual([
       [1, 1, "a"],
@@ -1640,7 +1654,7 @@ describe("live status provider", () => {
     expect(parsed.ok).toBe(true);
   });
 
-  test("CI rounds carry every check on the head and the failing checks' log tails", () => {
+  test("CI rounds carry every check on the head and the failing checks' log tails", async () => {
     const db = database();
     const now = 1_700_000_000_000;
     const item = insertQueuedItem(db, { id: "ENG-7", title: "CI", sessionKey: "ses_7", now });
@@ -1686,7 +1700,9 @@ describe("live status provider", () => {
       ],
       recordedAt: now + 2,
     });
-    const detail = createLiveStatusProvider(db, { now: () => new Date(now + 3) }).issue("ENG-7");
+    const detail = await createLiveStatusProvider(db, { now: () => new Date(now + 3) }).issue(
+      "ENG-7",
+    );
     const parsed = parseIssueDetailResponse(JSON.parse(JSON.stringify(detail)));
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -1711,7 +1727,7 @@ describe("live status provider", () => {
       logTail: "1 fail\ntoken [redacted]",
     });
     expect(rounds[1]?.checks.map((entry) => entry.state)).toEqual(["passed", "failed", "skipped"]);
-    expect(createLiveStatusProvider(db, { sessionIds: ["other"] }).issue("ENG-7")).toBeNull();
+    expect(await createLiveStatusProvider(db, { sessionIds: ["other"] }).issue("ENG-7")).toBeNull();
   });
 
   test.each([
@@ -1723,7 +1739,7 @@ describe("live status provider", () => {
     ["cancelled", "code", null, true],
   ] as const)(
     "blocker %s in %s mode with merge SHA %s is named: %s",
-    (state, mode, mergeSha, named) => {
+    async (state, mode, mergeSha, named) => {
       const db = database();
       const blocker = insertQueuedItem(db, { id: "PAS-709", now: 10 });
       const blocked = insertQueuedItem(db, { id: "PAS-710", now: 20 });
@@ -1749,14 +1765,14 @@ describe("live status provider", () => {
           },
         ],
       );
-      const list = createLiveStatusProvider(db).issues();
+      const list = await createLiveStatusProvider(db).issues();
       const item = list.issues.find((entry) => entry.id === "PAS-710")!;
       expect(item.blockers).toEqual(named ? ["PAS-709"] : []);
       expect(waitReason(item)).toBe(named ? "Blocked by PAS-709" : "Waiting for a free runner");
     },
   );
 
-  test("task blocks use the latest item on a Linear issue and skip issues with no item", () => {
+  test("task blocks use the latest item on a Linear issue and skip issues with no item", async () => {
     const db = database();
     const older = insertQueuedItem(db, { id: "older", title: "Old", now: 10 });
     const newer = insertQueuedItem(db, { id: "newer", title: "New", now: 20 });
@@ -1783,7 +1799,7 @@ describe("live status provider", () => {
         },
       ],
     );
-    const list = createLiveStatusProvider(db, { now: () => new Date(30) }).issues();
+    const list = await createLiveStatusProvider(db, { now: () => new Date(30) }).issues();
     expect(list.issues.find((item) => item.id === "ENG-BLOCK")?.blockers).toEqual(["ENG-NEW"]);
     expect(list.issues.some((item) => item.id === "ENG-OLD")).toBe(true);
     expect(statusIntegrity(listRecords(list))).toEqual([]);
@@ -1872,20 +1888,20 @@ describe("live status provider", () => {
       resetAt: new Date(3_600_000).toISOString(),
       holdUntil: new Date(300_000).toISOString(),
     });
-    const scoped = createLiveStatusProvider(db, { sessionIds: ["s2"] }).overview();
+    const scoped = await createLiveStatusProvider(db, { sessionIds: ["s2"] }).overview();
     expect(scoped.intake.map((entry) => entry.issue)).toEqual(["issue-b"]);
     expect(scoped.linearBudget).toBeNull();
   });
 
-  test("the Intake section carries the warning when Linear may have disabled the webhook", () => {
+  test("the Intake section carries the warning when Linear may have disabled the webhook", async () => {
     const db = database();
-    const overview = (atMs: number) =>
-      createLiveStatusProvider(db, { now: () => new Date(atMs) }).overview();
-    expect(overview(10_000).linearWebhook).toBeNull();
+    const overview = async (atMs: number) =>
+      await createLiveStatusProvider(db, { now: () => new Date(atMs) }).overview();
+    expect((await overview(10_000)).linearWebhook).toBeNull();
     db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook', 1000)");
-    expect(overview(10_000).linearWebhook).toBeNull();
+    expect((await overview(10_000)).linearWebhook).toBeNull();
     db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook-missed', 5000)");
-    expect(overview(10_000).linearWebhook).toEqual({
+    expect((await overview(10_000)).linearWebhook).toEqual({
       warning:
         "Linear may have disabled the Paws webhook: the catch-up poll found events no webhook delivered.",
       fix: LINEAR_WEBHOOK_FIX,

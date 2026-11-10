@@ -214,12 +214,12 @@ describe("weekly schedule", () => {
     expect(retroScheduleRuntime(db, "ws")?.lastOccurrenceAt).toBe(before!.lastOccurrenceAt);
   });
 
-  test("an empty period publishes without an agent and moves the watermark for the next window", () => {
+  test("an empty period publishes without an agent and moves the watermark for the next window", async () => {
     const { db, clock, open, dispatcher } = world({ activity: false });
     const scheduler = open();
     clock.now = MONDAY + 60_000;
     scheduler.tick();
-    dispatcher().tick();
+    await dispatcher().tick();
     const status = scheduler.status("ws");
     expect(status.state).toBe("empty");
     expect(status.lastSuccess).toMatchObject({ cutoff: MONDAY, empty: true });
@@ -296,7 +296,7 @@ describe("manual runs share the scheduled window", () => {
     expect(again).toMatchObject({ ok: true, created: false, retro: { id: scheduled.id } });
   });
 
-  test("a scheduled occurrence waits while a manual retro is open, then covers only what came after", () => {
+  test("a scheduled occurrence waits while a manual retro is open, then covers only what came after", async () => {
     const { db, clock, open, dispatcher } = world({ activity: false });
     const scheduler = open();
     clock.now = MONDAY - HOUR;
@@ -307,7 +307,7 @@ describe("manual runs share the scheduled window", () => {
     expect(listRetros(db, "ws")).toHaveLength(1);
     expect(scheduler.status("ws").state).toBe("waiting");
 
-    dispatcher().tick();
+    await dispatcher().tick();
     scheduler.tick();
     const retros = listRetros(db, "ws");
     expect(retros).toHaveLength(2);

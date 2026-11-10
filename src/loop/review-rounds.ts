@@ -1,9 +1,9 @@
 import type { Database } from "bun:sqlite";
 import {
-  getWorkItem,
-  immediate,
-  saveCheckpoint,
-  saveCloseoutRecovery,
+  getWorkItemSteps,
+  saveCheckpointSteps,
+  saveCloseoutRecoverySteps,
+  sqliteDb,
   type LinkAskRounds,
   type WorkItemRecord,
 } from "../db";
@@ -22,7 +22,7 @@ export function reviewRoundLimit(detail: string | null | undefined): number | nu
  * page whether to rethink the approach, keep going, or stop. The recovery row
  * keeps the retry baseline, so Rethink and Keep going start a new round budget.
  */
-export function askReviewRounds(
+export async function askReviewRounds(
   db: Database,
   input: {
     item: WorkItemRecord;
@@ -32,9 +32,9 @@ export function askReviewRounds(
     publicUrl: string | null;
     now: number;
   },
-): StoredQuestion | null {
-  return immediate(db, () => {
-    const item = getWorkItem(db, input.item.id);
+): Promise<StoredQuestion | null> {
+  return await sqliteDb(db).transaction(function* (q) {
+    const item = yield* getWorkItemSteps(q, input.item.id);
     if (item === null || item.state === "cancelled") return null;
     const { question } = askWithLink(db, {
       item,
@@ -47,8 +47,8 @@ export function askReviewRounds(
       publicUrl: input.publicUrl,
       now: input.now,
     });
-    saveCloseoutRecovery(db, { ...input.help, questionId: question.id });
-    saveCheckpoint(db, item.id, {
+    yield* saveCloseoutRecoverySteps(q, { ...input.help, questionId: question.id });
+    yield* saveCheckpointSteps(q, item.id, {
       phase: "awaiting_input",
       baseSha: input.help.base,
       wipCommit: input.help.head,

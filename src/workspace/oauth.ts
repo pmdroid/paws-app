@@ -1,6 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { consumeWorkspaceOAuthRequest, saveWorkspaceOAuthRequest } from "../db";
+import { consumeWorkspaceOAuthRequestSteps, saveWorkspaceOAuthRequestSteps, sqliteDb } from "../db";
 import { cookieValue, workspaceSecret, workspaceTokenHash } from "./session";
 
 const LOGIN_COOKIE = "__Host-paws-login";
@@ -16,7 +16,7 @@ export type LinearBrowserIdentity = {
   guest: boolean;
 };
 
-export function beginWorkspaceOAuth(
+export async function beginWorkspaceOAuth(
   db: Database,
   options: {
     clientId: string;
@@ -25,19 +25,18 @@ export function beginWorkspaceOAuth(
     bootstrap: string | null;
     assignmentHash?: string | null;
   },
-): Response {
+): Promise<Response> {
   const state = workspaceSecret();
   const browser = workspaceSecret();
   const verifier = pkceVerifier(browser, state);
-  if (
-    !saveWorkspaceOAuthRequest(db, {
-      stateHash: workspaceTokenHash(state),
-      browserHash: workspaceTokenHash(browser),
-      bootstrapHash: options.bootstrap === null ? null : workspaceTokenHash(options.bootstrap),
-      expiresAt: options.now + 10 * 60_000,
-      assignmentHash: options.assignmentHash,
-    })
-  )
+  const row = {
+    stateHash: workspaceTokenHash(state),
+    browserHash: workspaceTokenHash(browser),
+    bootstrapHash: options.bootstrap === null ? null : workspaceTokenHash(options.bootstrap),
+    expiresAt: options.now + 10 * 60_000,
+    assignmentHash: options.assignmentHash,
+  };
+  if (!(await sqliteDb(db).transaction((q) => saveWorkspaceOAuthRequestSteps(q, row))))
     return Response.json(
       { error: "Too many sign-in attempts. Try again later." },
       { status: 429, headers: { "cache-control": "no-store", "retry-after": "60" } },
@@ -83,11 +82,10 @@ export async function completeWorkspaceOAuth(
     !/^[A-Za-z0-9_-]{43}$/.test(browser)
   )
     throw new Error("The Linear sign-in request is invalid or expired.");
-  const pending = consumeWorkspaceOAuthRequest(
-    db,
-    workspaceTokenHash(state),
-    workspaceTokenHash(browser),
-    options.now,
+  const stateHash = workspaceTokenHash(state);
+  const browserHash = workspaceTokenHash(browser);
+  const pending = await sqliteDb(db).run((q) =>
+    consumeWorkspaceOAuthRequestSteps(q, stateHash, browserHash, options.now),
   );
   if (pending === null) throw new Error("The Linear sign-in request is invalid or expired.");
   const code = url.searchParams.get("code");

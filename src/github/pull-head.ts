@@ -38,6 +38,38 @@ export async function readOpenPullHead(
   return typeof body.head.sha === "string" ? body.head.sha : null;
 }
 
+export async function hasOpenPullOnPrefix(input: HeadRead & { prefix: string }): Promise<boolean> {
+  input.signal?.throwIfAborted();
+  const token = await acquireOperationToken(input, "pr");
+  const repository = `${input.owner}/${input.repo}`.toLowerCase();
+  for (let page = 1; page <= 10; page++) {
+    const listed = await input.client.request({
+      method: "GET",
+      path: repoApiPath(input.owner, input.repo, `/pulls?state=open&per_page=100&page=${page}`),
+      token,
+      signal: input.signal,
+    });
+    if (listed.status !== 200 || !Array.isArray(listed.body))
+      throw new Error(`Could not list the open pull requests of ${repository}`);
+    const pulls = listed.body as {
+      state?: unknown;
+      head?: { ref?: unknown; repo?: { full_name?: unknown } | null };
+    }[];
+    if (
+      pulls.some(
+        ({ state, head }) =>
+          state === "open" &&
+          String(head?.repo?.full_name).toLowerCase() === repository &&
+          typeof head?.ref === "string" &&
+          head.ref.startsWith(input.prefix),
+      )
+    )
+      return true;
+    if (pulls.length < 100) return false;
+  }
+  throw new Error(`${repository} has more open pull requests than Paws reads`);
+}
+
 /**
  * The tip of `branch` on GitHub and whether it is `sha` or descends from it. A missing branch or
  * commit reads as `{ head: null, contains: false }`.

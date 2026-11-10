@@ -1411,7 +1411,7 @@ test("an onboarding without a GitHub link resumes and starts with no commit cred
     expect(formFields(html)).toEqual({ action: `${path}/github`, csrf: expect.any(String) });
     // The optional step never counts as remaining work.
     expect(html).toContain("2 more steps before Paws starts");
-    expect(delegatorCommitCredit(f.db, itemId)).toBeNull();
+    expect(await delegatorCommitCredit(f.db, itemId)).toBeNull();
     expect(f.githubCalls).toEqual([]);
   } finally {
     await f.close();
@@ -1452,7 +1452,7 @@ test("linking GitHub from the onboarding page returns to it and credits that run
     expect(linked).toContain("Commits will credit @morgan-gh.");
     expect(linked).toMatch(/<h2>GitHub credit<\/h2>.*<span class="label">Linked<\/span>/);
     expect(formFields(linked)).toBeNull();
-    expect(delegatorCommitCredit(f.db, itemId)).toEqual({
+    expect(await delegatorCommitCredit(f.db, itemId)).toEqual({
       id: 4242,
       login: "morgan-gh",
       name: "Morgan",

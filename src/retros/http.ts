@@ -66,7 +66,7 @@ export function createRetroSettingsHttp(options: {
     const view = () =>
       readRetroSettings(db, { workspaceId: principal.workspaceId, accessibleRepositories });
     if (request.method === "GET")
-      return json({ ...view(), canEdit: isWorkspaceAdmin(principal.role) });
+      return json({ ...(await view()), canEdit: isWorkspaceAdmin(principal.role) });
     if (request.method !== "PUT") return json({ error: "Use GET or PUT." }, 405);
     if (!isWorkspaceAdmin(principal.role)) {
       audit(principal, "access.denied", RETRO_SETTINGS_PATH);
@@ -92,7 +92,7 @@ export function createRetroSettingsHttp(options: {
       journalCaught(error, "retros.settings.catalog", null);
       catalogs = null;
     }
-    const result = saveRetroSettings(db, {
+    const result = await saveRetroSettings(db, {
       workspaceId: principal.workspaceId,
       actorId: principal.userId,
       expectedRevision: record.expectedRevision as number,

@@ -166,9 +166,9 @@ function classify(db: ReturnType<typeof openDatabase>, head: string, base: strin
   });
 }
 
-function asked(head = heads.s) {
+async function asked(head = heads.s) {
   const fixture = held(head);
-  const outcome = askRiskApproval(fixture.db, {
+  const outcome = await askRiskApproval(fixture.db, {
     item: getWorkItem(fixture.db, fixture.itemId)!,
     head,
     publicUrl: PUBLIC_URL,
@@ -217,8 +217,8 @@ function approvalWithFixes(
 }
 
 /** A person approved S on the Risk card. */
-function riskApproved() {
-  const fixture = asked();
+async function riskApproved() {
+  const fixture = await asked();
   decideLinkAsk(fixture.db, {
     questionId: fixture.question.id,
     decision: "approve",
@@ -261,7 +261,7 @@ function resumes(db: ReturnType<typeof openDatabase>) {
 }
 
 test("a high-risk head is asked with a link: Markdown, no options, the link on the session", async () => {
-  const { db, itemId, question } = asked();
+  const { db, itemId, question } = await asked();
   expect(await approval(db, heads.s)).toBe("missing");
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect(question.kind).toBe("link");
@@ -309,7 +309,7 @@ test("a normal-tier head, or a Paws without an https link, needs no approval", a
   expect(await local(null)).toBe("not_required");
   expect(await local("http://127.0.0.1:8787")).toBe("not_required");
   expect(
-    askRiskApproval(db, {
+    await askRiskApproval(db, {
       item: getWorkItem(db, "ENG-106")!,
       head: heads.s,
       publicUrl: null,
@@ -321,7 +321,7 @@ test("a normal-tier head, or a Paws without an https link, needs no approval", a
 });
 
 test("Approve on the Risk card binds to S and sends the item back to the merge queue", async () => {
-  const { db, itemId, question } = asked();
+  const { db, itemId, question } = await asked();
   const outcome = decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
@@ -361,7 +361,7 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
 });
 
 test("Request changes on the Risk card restarts the item with the note", async () => {
-  const { db, itemId, question } = asked();
+  const { db, itemId, question } = await asked();
   decideLinkAsk(db, {
     questionId: question.id,
     decision: "changes",
@@ -383,7 +383,7 @@ test("Request changes on the Risk card restarts the item with the note", async (
 });
 
 test("a Linear reply requests changes and never approves, even when it says approve", async () => {
-  const { db, itemId, question } = asked();
+  const { db, itemId, question } = await asked();
   expect(
     guideLinkAsk(db, {
       questionId: question.id,
@@ -405,8 +405,8 @@ test("a Linear reply requests changes and never approves, even when it says appr
   ]);
 });
 
-test("Stop stops the item and leaves the pull request open", () => {
-  const { db, itemId, question } = asked();
+test("Stop stops the item and leaves the pull request open", async () => {
+  const { db, itemId, question } = await asked();
   const outcome = decideLinkAsk(db, {
     questionId: question.id,
     decision: "stop",
@@ -429,7 +429,7 @@ test("Stop stops the item and leaves the pull request open", () => {
 });
 
 test("someone who is neither the delegator nor the lead cannot answer", async () => {
-  const { db, itemId, question } = asked();
+  const { db, itemId, question } = await asked();
   for (const decision of ["approve", "changes", "stop"] as const)
     expect(
       decideLinkAsk(db, {
@@ -446,8 +446,8 @@ test("someone who is neither the delegator nor the lead cannot answer", async ()
   expect(getLinkAsk(db, question.id)?.closedAt).toBeNull();
 });
 
-test("Stop only fits a risk approval", () => {
-  const { db, question } = asked();
+test("Stop only fits a risk approval", async () => {
+  const { db, question } = await asked();
   db.run("UPDATE link_ask SET kind = 'screenshots' WHERE question_id = ?", [question.id]);
   expect(
     decideLinkAsk(db, {
@@ -462,7 +462,7 @@ test("Stop only fits a risk approval", () => {
 });
 
 test("a new head after the approval needs a new approval; a rebase onto main keeps it", async () => {
-  const { db, question } = asked();
+  const { db, question } = await asked();
   decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
@@ -480,7 +480,7 @@ test("a new head after the approval needs a new approval; a rebase onto main kee
 });
 
 test("the ask, its link and the decision reach Linear after the pull request response", async () => {
-  const { db, question } = asked();
+  const { db, question } = await asked();
   const tracker = createFakeTracker();
   const delivered = new Set<number>();
   const deliver = async () => {
@@ -523,7 +523,7 @@ test("the ask, its link and the decision reach Linear after the pull request res
 });
 
 test("a CI fix that only changes a test keeps the approval and merges without a new ask", async () => {
-  const { db, itemId } = riskApproved();
+  const { db, itemId } = await riskApproved();
   fixAccepted(db, heads.ciFix, heads.base);
   const kept = await approvalWithFixes(db, heads.ciFix);
   expect(kept).toBe("approved");
@@ -555,11 +555,11 @@ test("a CI fix that only changes a test keeps the approval and merges without a 
 });
 
 test("a fix that changes a high-risk path asks again and lists only that change", async () => {
-  const { db, itemId } = riskApproved();
+  const { db, itemId } = await riskApproved();
   fixAccepted(db, heads.authFix, heads.base);
   expect(await approvalWithFixes(db, heads.authFix)).toBe("missing");
   expect(
-    askRiskApproval(db, {
+    await askRiskApproval(db, {
       item: getWorkItem(db, itemId)!,
       head: heads.authFix,
       publicUrl: PUBLIC_URL,
@@ -581,7 +581,7 @@ test("a fix that changes a high-risk path asks again and lists only that change"
 });
 
 test("a CI fix on a rebased head counts only the fix's own files, not main's", async () => {
-  const { db, itemId } = riskApproved();
+  const { db, itemId } = await riskApproved();
   fixAccepted(db, heads.rebasedCiFix, heads.newMain);
   expect(await approvalWithFixes(db, heads.rebasedCiFix)).toBe("approved");
   expect(getRiskFix(db, itemId, heads.rebasedCiFix)?.changed).toEqual(["test/x.test.ts"]);
@@ -592,10 +592,10 @@ test("a CI fix on a rebased head counts only the fix's own files, not main's", a
 });
 
 test("without an approval, or when the fix cannot be read, a fix asks", async () => {
-  const { db } = asked();
+  const { db } = await asked();
   fixAccepted(db, heads.ciFix, heads.base);
   expect(await approvalWithFixes(db, heads.ciFix)).toBe("missing");
-  const fixture = riskApproved();
+  const fixture = await riskApproved();
   fixAccepted(fixture.db, heads.ciFix, heads.base);
   expect(
     await riskApprovalFor(fixture.db, {
@@ -609,7 +609,7 @@ test("without an approval, or when the fix cannot be read, a fix asks", async ()
 });
 
 test("a carried-over approval is checked again against the high-risk paths in force now", async () => {
-  const { db, itemId } = riskApproved();
+  const { db, itemId } = await riskApproved();
   fixAccepted(db, heads.ciFix, heads.base);
   expect(await approvalWithFixes(db, heads.ciFix)).toBe("approved");
   // Settings now lists the tests too: the same fix no longer keeps the approval.
@@ -630,7 +630,7 @@ test("a carried-over approval is checked again against the high-risk paths in fo
 });
 
 test("a rebase that changed the patch asks again, even when the change is only a test", async () => {
-  const { db, itemId } = asked(heads.both);
+  const { db, itemId } = await asked(heads.both);
   const question = findOpenQuestion(db, "ses_1")!;
   decideLinkAsk(db, {
     questionId: question.id,
@@ -749,7 +749,7 @@ async function automaticMerge(f: ReturnType<typeof cleanRiskFixture>) {
   });
   if (!verdict.ok && verdict.block === "risk_approval") {
     expect(
-      askRiskApproval(f.db, {
+      await askRiskApproval(f.db, {
         item: getWorkItem(f.db, f.itemId)!,
         head: heads.s,
         publicUrl: PUBLIC_URL,
@@ -1104,7 +1104,7 @@ for (const enabled of [undefined, false]) {
     const f = cleanRiskFixture();
     expect(await f.read({ autoApproveHighRisk: enabled })).toBe("missing");
     expect(
-      askRiskApproval(f.db, {
+      await askRiskApproval(f.db, {
         item: getWorkItem(f.db, f.itemId)!,
         head: heads.s,
         publicUrl: PUBLIC_URL,
