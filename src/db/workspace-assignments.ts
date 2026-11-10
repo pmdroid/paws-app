@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
 export type WorkspaceAssignmentStatus = "pending" | "ready" | "accepted" | "continued" | "invalid";
@@ -77,11 +77,11 @@ export function* workspaceAssignmentByTokenSteps(
   return row ?? null;
 }
 
-export function workspaceAssignmentByToken(
-  db: Database,
+export async function workspaceAssignmentByToken(
+  store: Db,
   tokenHash: string,
-): WorkspaceAssignmentHold | null {
-  return sync(db, (q) => workspaceAssignmentByTokenSteps(q, tokenHash));
+): Promise<WorkspaceAssignmentHold | null> {
+  return store.run((q) => workspaceAssignmentByTokenSteps(q, tokenHash));
 }
 
 export function* workspaceAssignmentTokenForLinkSteps(q: Q, linkId: string): Steps<string | null> {
@@ -92,8 +92,11 @@ export function* workspaceAssignmentTokenForLinkSteps(q: Q, linkId: string): Ste
   return row?.tokenHash ?? null;
 }
 
-export function workspaceAssignmentTokenForLink(db: Database, linkId: string): string | null {
-  return sync(db, (q) => workspaceAssignmentTokenForLinkSteps(q, linkId));
+export async function workspaceAssignmentTokenForLink(
+  store: Db,
+  linkId: string,
+): Promise<string | null> {
+  return store.run((q) => workspaceAssignmentTokenForLinkSteps(q, linkId));
 }
 
 type PendingAssignments = { linked: boolean } | { workspaceId: string; actorId: string };
@@ -119,11 +122,11 @@ export function* pendingWorkspaceAssignmentTokensSteps(
   return rows.map((row) => row.tokenHash);
 }
 
-export function pendingWorkspaceAssignmentTokens(
-  db: Database,
+export async function pendingWorkspaceAssignmentTokens(
+  store: Db,
   scope: PendingAssignments,
-): string[] {
-  return sync(db, (q) => pendingWorkspaceAssignmentTokensSteps(q, scope));
+): Promise<string[]> {
+  return store.run((q) => pendingWorkspaceAssignmentTokensSteps(q, scope));
 }
 
 type NewWorkspaceAssignment = Omit<WorkspaceAssignmentHold, "status" | "linkId"> & {
@@ -143,8 +146,11 @@ export function* insertWorkspaceAssignmentSteps(q: Q, row: NewWorkspaceAssignmen
   return inserted.length === 1;
 }
 
-export function insertWorkspaceAssignment(db: Database, row: NewWorkspaceAssignment): boolean {
-  return sync(db, (q) => insertWorkspaceAssignmentSteps(q, row));
+export async function insertWorkspaceAssignment(
+  store: Db,
+  row: NewWorkspaceAssignment,
+): Promise<boolean> {
+  return store.run((q) => insertWorkspaceAssignmentSteps(q, row));
 }
 
 /** Ends a hold that has not yet continued. */
@@ -184,12 +190,12 @@ export function* moveWorkspaceAssignmentSteps(
   );
 }
 
-export function moveWorkspaceAssignment(
-  db: Database,
+export async function moveWorkspaceAssignment(
+  store: Db,
   tokenHash: string,
   move: AssignmentMove,
-): void {
-  sync(db, (q) => moveWorkspaceAssignmentSteps(q, tokenHash, move));
+): Promise<void> {
+  await store.run((q) => moveWorkspaceAssignmentSteps(q, tokenHash, move));
 }
 
 /** Gives a pending hold written before link ids existed its link and new token hash. */
@@ -212,10 +218,10 @@ export function* linkWorkspaceAssignmentSteps(
   );
 }
 
-export function linkWorkspaceAssignment(
-  db: Database,
+export async function linkWorkspaceAssignment(
+  store: Db,
   tokenHash: string,
   link: { linkId: string; expiresAt: number; tokenHash: string },
-): void {
-  sync(db, (q) => linkWorkspaceAssignmentSteps(q, tokenHash, link));
+): Promise<void> {
+  await store.run((q) => linkWorkspaceAssignmentSteps(q, tokenHash, link));
 }

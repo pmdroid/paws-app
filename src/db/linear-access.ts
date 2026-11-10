@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, inArray, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { ensureLinearSessionSteps } from "./linear-sessions";
 
 export type LinearInstallationScope = {
@@ -24,16 +24,22 @@ export function* hasLinearNotificationSteps(q: Q, input: LinearNotification): St
   return row !== undefined;
 }
 
-export function hasLinearNotification(db: Database, input: LinearNotification): boolean {
-  return settled(sqliteDb(db).run((q) => hasLinearNotificationSteps(q, input)));
+export async function hasLinearNotification(
+  store: Db,
+  input: LinearNotification,
+): Promise<boolean> {
+  return store.run((q) => hasLinearNotificationSteps(q, input));
 }
 
 export function* recordLinearNotificationSteps(q: Q, input: LinearNotification): Steps<boolean> {
   return yield* recordEventSteps(q, notificationKey(input), input.createdAtMs);
 }
 
-export function recordLinearNotification(db: Database, input: LinearNotification): boolean {
-  return settled(sqliteDb(db).run((q) => recordLinearNotificationSteps(q, input)));
+export async function recordLinearNotification(
+  store: Db,
+  input: LinearNotification,
+): Promise<boolean> {
+  return store.run((q) => recordLinearNotificationSteps(q, input));
 }
 
 function notificationKey(input: LinearNotification): string {
@@ -64,8 +70,8 @@ export function* dropLinearSessionDeliveriesSteps(q: Q, sessionId: string): Step
   );
 }
 
-export function dropLinearSessionDeliveries(db: Database, sessionId: string): void {
-  settled(sqliteDb(db).run((q) => dropLinearSessionDeliveriesSteps(q, sessionId)));
+export async function dropLinearSessionDeliveries(store: Db, sessionId: string): Promise<void> {
+  await store.run((q) => dropLinearSessionDeliveriesSteps(q, sessionId));
 }
 
 type LinearInstallationObservation = LinearInstallationScope & {
@@ -284,11 +290,11 @@ export function* listLinearInstallationSessionsSteps(
   );
 }
 
-export function listLinearInstallationSessions(
-  db: Database,
+export async function listLinearInstallationSessions(
+  store: Db,
   scope: LinearInstallationSessionsScope,
-): string[] {
-  return settled(sqliteDb(db).run((q) => listLinearInstallationSessionsSteps(q, scope)));
+): Promise<string[]> {
+  return store.run((q) => listLinearInstallationSessionsSteps(q, scope));
 }
 
 type LinearInstallationPermissions = { canAccessAllPublicTeams: boolean; observedAtMs: number };
@@ -315,11 +321,11 @@ export function* getLinearInstallationPermissionsSteps(
     : null;
 }
 
-export function getLinearInstallationPermissions(
-  db: Database,
+export async function getLinearInstallationPermissions(
+  store: Db,
   scope: LinearInstallationScope,
-): LinearInstallationPermissions | null {
-  return settled(sqliteDb(db).run((q) => getLinearInstallationPermissionsSteps(q, scope)));
+): Promise<LinearInstallationPermissions | null> {
+  return store.run((q) => getLinearInstallationPermissionsSteps(q, scope));
 }
 
 type LinearSessionInstallation = LinearInstallationScope & {

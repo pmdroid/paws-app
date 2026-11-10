@@ -16,6 +16,7 @@ import {
   openDatabase,
   OutboxDispatcher,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import { createLinearReconnect } from "../src/onboarding";
@@ -376,7 +377,7 @@ test("notification dedupe follows successful reconciliation and serializes overl
     "Retry reconciliation",
   );
   expect(
-    hasLinearNotification(f.db, {
+    await hasLinearNotification(sqliteDb(f.db), {
       ...scope,
       notificationId: "notification",
       createdAtMs: Date.now(),

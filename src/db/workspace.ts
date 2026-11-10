@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, exists, gt, isNull, lt, notInArray, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { endRevokedRunnerAuthoritySteps } from "./runner-lease";
 import type { workspaceSession } from "./schema-pg";
 
@@ -107,11 +107,11 @@ export function* workspaceUserContactSteps(q: Q, userId: string) {
   return row ?? null;
 }
 
-export function workspaceUserContact(
-  db: Database,
+export async function workspaceUserContact(
+  store: Db,
   userId: string,
-): { name: string; email: string } | null {
-  return settled(sqliteDb(db).run((q) => workspaceUserContactSteps(q, userId)));
+): Promise<{ name: string; email: string } | null> {
+  return store.run((q) => workspaceUserContactSteps(q, userId));
 }
 
 export function* workspaceMemberSteps(q: Q, workspaceId: string, userId: string) {
@@ -286,8 +286,8 @@ export function* applyLinearUserChangeSteps(q: Q, input: LinearUserChange) {
   return true;
 }
 
-export function applyLinearUserChange(db: Database, input: LinearUserChange): boolean {
-  return settled(sqliteDb(db).transaction((q) => applyLinearUserChangeSteps(q, input)));
+export async function applyLinearUserChange(store: Db, input: LinearUserChange): Promise<boolean> {
+  return store.transaction((q) => applyLinearUserChangeSteps(q, input));
 }
 
 type WorkspaceBootstrapInput = { tokenHash: string; organizationId: string; expiresAt: number };
@@ -453,8 +453,8 @@ export function* listWorkspaceAuditSteps(q: Q, workspaceId: string, before: numb
   return { entries, nextBefore: rows.length > 50 ? entries.at(-1)!.id : null };
 }
 
-export function listWorkspaceAudit(db: Database, workspaceId: string, before: number) {
-  return settled(sqliteDb(db).run((q) => listWorkspaceAuditSteps(q, workspaceId, before)));
+export async function listWorkspaceAudit(store: Db, workspaceId: string, before: number) {
+  return store.run((q) => listWorkspaceAuditSteps(q, workspaceId, before));
 }
 
 export function* workspaceInLinearOrganizationSteps(
@@ -473,14 +473,12 @@ export function* workspaceInLinearOrganizationSteps(
   return row !== undefined;
 }
 
-export function workspaceInLinearOrganization(
-  db: Database,
+export async function workspaceInLinearOrganization(
+  store: Db,
   workspaceId: string,
   organizationId: string | null,
-): boolean {
-  return settled(
-    sqliteDb(db).run((q) => workspaceInLinearOrganizationSteps(q, workspaceId, organizationId)),
-  );
+): Promise<boolean> {
+  return store.run((q) => workspaceInLinearOrganizationSteps(q, workspaceId, organizationId));
 }
 
 /** Linear membership and the administrator's access decision are independent. */
@@ -525,8 +523,8 @@ export function* lastPausedBySteps(q: Q, itemId: string) {
   return row?.name ?? null;
 }
 
-export function lastPausedBy(db: Database, itemId: string): string | null {
-  return settled(sqliteDb(db).run((q) => lastPausedBySteps(q, itemId)));
+export async function lastPausedBy(store: Db, itemId: string): Promise<string | null> {
+  return store.run((q) => lastPausedBySteps(q, itemId));
 }
 
 export function* firstWorkspaceIdSteps(q: Q) {
@@ -535,8 +533,8 @@ export function* firstWorkspaceIdSteps(q: Q) {
   return row?.id ?? null;
 }
 
-export function firstWorkspaceId(db: Database): string | null {
-  return settled(sqliteDb(db).run((q) => firstWorkspaceIdSteps(q)));
+export async function firstWorkspaceId(store: Db): Promise<string | null> {
+  return store.run((q) => firstWorkspaceIdSteps(q));
 }
 
 export function* oldestWorkspaceNameSteps(q: Q) {
@@ -547,8 +545,8 @@ export function* oldestWorkspaceNameSteps(q: Q) {
   return row?.name ?? null;
 }
 
-export function oldestWorkspaceName(db: Database): string | null {
-  return settled(sqliteDb(db).run((q) => oldestWorkspaceNameSteps(q)));
+export async function oldestWorkspaceName(store: Db): Promise<string | null> {
+  return store.run((q) => oldestWorkspaceNameSteps(q));
 }
 
 export function* workspaceOrganizationIdsSteps(q: Q, limit: number) {
@@ -559,8 +557,8 @@ export function* workspaceOrganizationIdsSteps(q: Q, limit: number) {
   return rows.map((row) => row.id);
 }
 
-export function workspaceOrganizationIds(db: Database, limit: number): string[] {
-  return settled(sqliteDb(db).run((q) => workspaceOrganizationIdsSteps(q, limit)));
+export async function workspaceOrganizationIds(store: Db, limit: number): Promise<string[]> {
+  return store.run((q) => workspaceOrganizationIdsSteps(q, limit));
 }
 
 export function* listWorkspaceIdsSteps(q: Q) {
@@ -596,14 +594,12 @@ export function* openDelegationWorkspaceIdSteps(
   return row?.id ?? null;
 }
 
-export function openDelegationWorkspaceId(
-  db: Database,
+export async function openDelegationWorkspaceId(
+  store: Db,
   organizationId: string,
   delegationId: string,
-): string | null {
-  return settled(
-    sqliteDb(db).run((q) => openDelegationWorkspaceIdSteps(q, organizationId, delegationId)),
-  );
+): Promise<string | null> {
+  return store.run((q) => openDelegationWorkspaceIdSteps(q, organizationId, delegationId));
 }
 
 export function* workspaceUserLinearIdSteps(q: Q, userId: string) {

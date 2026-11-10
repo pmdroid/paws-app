@@ -11,6 +11,7 @@ import {
   saveWorkspaceIdentityLink,
   syncWorkspaceMember,
   workspaceIdentityLinks,
+  sqliteDb,
 } from "../../src/db";
 import { createSlackIdentityReads } from "../../src/slack";
 import {
@@ -353,7 +354,7 @@ export async function probeWorkspaceIdentityLinks(
     const latest = workspaceIdentityLinks(db, workspace.id).find(
       (link) => link.userId === ids[9] && link.provider === "github",
     )!;
-    saveWorkspaceIdentityLink(db, {
+    await saveWorkspaceIdentityLink(sqliteDb(db), {
       ...latest,
       workspaceId: workspace.id,
       actorId: ids[1]!,

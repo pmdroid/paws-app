@@ -12,6 +12,7 @@ import {
   openDatabase,
   recordLinearInstallation,
   revokeLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
 
@@ -184,7 +185,7 @@ test("reopening SQLite preserves removal, revocation and processed event identit
   ).toEqual([]);
 });
 
-test("a public-team permission drop with empty team lists remains visible after restart", () => {
+test("a public-team permission drop with empty team lists remains visible after restart", async () => {
   const path = join(tempHome(), "public-access.db");
   let db = openDatabase(path);
   migrate(db);
@@ -200,13 +201,17 @@ test("a public-team permission drop with empty team lists remains visible after 
   db = openDatabase(path);
   databases.push(db);
   migrate(db);
-  expect(getLinearInstallationPermissions(db, scope)).toEqual({
+  expect(await getLinearInstallationPermissions(sqliteDb(db), scope)).toEqual({
     canAccessAllPublicTeams: false,
     observedAtMs: 30,
   });
   teams(db, "old-public-on", 25, [], []);
-  expect(getLinearInstallationPermissions(db, scope)?.canAccessAllPublicTeams).toBe(false);
+  expect(
+    (await getLinearInstallationPermissions(sqliteDb(db), scope))?.canAccessAllPublicTeams,
+  ).toBe(false);
   expect(teams(db, "public-off", 30, [], [], { canAccessAllPublicTeams: false })).toEqual([]);
   session(db, "new-scope", { teamId: "new", observedAtMs: 31 });
-  expect(getLinearInstallationPermissions(db, scope)?.canAccessAllPublicTeams).toBe(false);
+  expect(
+    (await getLinearInstallationPermissions(sqliteDb(db), scope))?.canAccessAllPublicTeams,
+  ).toBe(false);
 });

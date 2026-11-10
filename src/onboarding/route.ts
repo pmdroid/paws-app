@@ -11,6 +11,7 @@ import {
   syncWorkspaceMember,
   workspaceForOrganization,
   workspaceOrganizationIds,
+  sqliteDb,
 } from "../db";
 import {
   createLinearClient,
@@ -61,8 +62,8 @@ export function createBrowserOnboarding(options: {
   const fetchImpl = options.fetch ?? fetch;
   const secretsDir = join(home, "secrets");
   const configuredOrganization = options.expectedOrganizationId?.trim() || null;
-  function installationOrganization(): string | null {
-    const workspaces = workspaceOrganizationIds(db, 2);
+  async function installationOrganization(): Promise<string | null> {
+    const workspaces = await workspaceOrganizationIds(sqliteDb(db), 2);
     if (workspaces.length === 0) return configuredOrganization;
     if (
       workspaces.length !== 1 ||
@@ -108,7 +109,7 @@ export function createBrowserOnboarding(options: {
             },
           },
         );
-      if (installationOrganization() === null)
+      if ((await installationOrganization()) === null)
         return Response.json(
           { error: "Configure LINEAR_ORGANIZATION_ID to match this Paws workspace on the server." },
           { status: 503, headers: { "cache-control": "no-store" } },
@@ -129,7 +130,7 @@ export function createBrowserOnboarding(options: {
           fetch: fetchImpl,
         });
         if (!identity.admin || !identity.active || identity.guest) return retry("admin-required");
-        if (installationOrganization() !== identity.organizationId)
+        if ((await installationOrganization()) !== identity.organizationId)
           return retry("workspace-mismatch");
         const state = workspaceSecret();
         const browser = workspaceSecret();
@@ -189,7 +190,7 @@ export function createBrowserOnboarding(options: {
         reconnect: LinearReconnectSnapshot | null;
       };
       if (!!reconnect !== !!options.reconnect) return retry("failed");
-      if (installationOrganization() !== identity.organizationId)
+      if ((await installationOrganization()) !== identity.organizationId)
         return retry("workspace-mismatch");
       const signal = AbortSignal.any([request.signal, AbortSignal.timeout(15_000)]);
       const token = await exchangeLinearCode({
@@ -213,7 +214,7 @@ export function createBrowserOnboarding(options: {
       const organization = await memberships.installation(signal);
       if (
         organization.id !== identity.organizationId ||
-        installationOrganization() !== organization.id
+        (await installationOrganization()) !== organization.id
       )
         return retry("workspace-mismatch");
       const member = await memberships.member(organization.id, identity.userId, signal);
@@ -227,7 +228,8 @@ export function createBrowserOnboarding(options: {
         return retry("admin-required");
       await options.prepare?.();
       signal.throwIfAborted();
-      if (installationOrganization() !== organization.id) return retry("workspace-mismatch");
+      if ((await installationOrganization()) !== organization.id)
+        return retry("workspace-mismatch");
       writeSecretFile(
         join(home, "secrets", "linear-client.json"),
         JSON.stringify({ clientId: options.clientId, clientSecret: options.clientSecret }),
