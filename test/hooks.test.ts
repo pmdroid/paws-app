@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { getSkill, listHooks, migrate, openDatabase, saveSkill } from "../src/db";
+import { getSkill, listHooks, migrate, openDatabase, saveSkill, sqliteDb } from "../src/db";
 import { RunnerCommandSchema, RunnerEventSchema, tarModes } from "../src/runner-protocol";
 import { handleHookSettingsRequest, type HookSettingsOptions } from "../src/settings";
 import { fakeSkillResolver, SKILL_BUNDLE_FILE } from "../src/skills";
@@ -220,7 +220,7 @@ describe("hook settings", () => {
       ),
     );
     expect(uploaded.status).toBe(200);
-    const skill = getSkill(db, "check-home.sh")!;
+    const skill = (await getSkill(sqliteDb(db), "check-home.sh"))!;
     expect(skill).toMatchObject({
       source: { kind: "upload", folder: "check $HOME.sh" },
       agents: ["claude"],
