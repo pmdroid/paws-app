@@ -199,7 +199,7 @@ export function createImprovementsHttp(options: {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
       const query = listSchema.safeParse(Object.fromEntries(url.searchParams));
       if (!query.success) return json({ error: "Check the list filters." }, 400);
-      return json(listImprovementPage(db, reviewer, query.data));
+      return json(await listImprovementPage(db, reviewer, query.data));
     }
     if (path === ATTENTION) {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
@@ -318,7 +318,7 @@ export function createImprovementsHttp(options: {
     const item = ITEM.exec(path);
     if (item) {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
-      const detail = improvementDetail(db, reviewer, item[1]!);
+      const detail = await improvementDetail(db, reviewer, item[1]!);
       return detail
         ? json(detail)
         : json({ error: "This improvement is not in your inbox.", reason: "not_found" }, 404);
@@ -331,7 +331,7 @@ export function createImprovementsHttp(options: {
       return json({ error: "Not found.", reason: "not_found" }, 404);
     if (request.method !== "POST") return json({ error: "Use POST." }, 405);
     if (retry) {
-      const outcome = retryInboxDelivery(db, {
+      const outcome = await retryInboxDelivery(db, {
         access: reviewer,
         improvementId: retry[1]!,
         deliveryId: retry[2]!,
@@ -341,7 +341,7 @@ export function createImprovementsHttp(options: {
       return json(outcome, OUTCOME_STATUS[outcome.status]);
     }
     if (cancel) {
-      const outcome = cancelInboxEvidenceComment(db, {
+      const outcome = await cancelInboxEvidenceComment(db, {
         access: reviewer,
         improvementId: cancel[1]!,
         deliveryId: cancel[2]!,
@@ -361,7 +361,7 @@ export function createImprovementsHttp(options: {
     if (destination) {
       const team = z.strictObject({ teamId: text(200) }).safeParse(body);
       if (!team.success) return json({ error: "Send the Linear teamId to file to." }, 400);
-      const outcome = repairInboxDestination(db, {
+      const outcome = await repairInboxDestination(db, {
         reviewer,
         improvementId: destination[1]!,
         deliveryId: destination[2]!,

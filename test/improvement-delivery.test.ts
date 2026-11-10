@@ -187,8 +187,8 @@ const view = (w: World, id: string) =>
 const delivery = (w: World, improvementId: string, operation = "create_issue") =>
   listImprovementDeliveries(w.db, improvementId).find((d) => d.operation === operation)!;
 
-const recovery = (w: World, improvementId: string, operation: string) =>
-  view(w, improvementId).deliveries.find((d) => d.operation === operation)!.recovery;
+const recovery = async (w: World, improvementId: string, operation: string) =>
+  (await view(w, improvementId)).deliveries.find((d) => d.operation === operation)!.recovery;
 
 const reopen = (w: World, improvementId: string) =>
   decideImprovement(w.db, {
@@ -328,7 +328,7 @@ describe("improvement delivery", () => {
     expect(lost.state).toBe("unknown");
     expect(lost.remoteId).toBe(improvementIssueUuid("ws", id));
     expect(getImprovement(w.db, id)!.reviewState).toBe("accepted");
-    expect(view(w, id).deliveries[0]).toMatchObject({ status: "unknown", recovery: null });
+    expect((await view(w, id)).deliveries[0]).toMatchObject({ status: "unknown", recovery: null });
     await w.run();
     expect(delivery(w, id).state).toBe("unknown");
     w.advance(10 * MINUTE);
@@ -435,7 +435,7 @@ describe("improvement delivery", () => {
     await w.run();
     expect(delivery(w, id)).toMatchObject({ state: "failed", blocked: "destination" });
     expect(w.linear.calls).toHaveLength(0);
-    expect(view(w, id).deliveries[0]).toMatchObject({
+    expect((await view(w, id)).deliveries[0]).toMatchObject({
       status: "retryable",
       blocked: "destination",
       recovery: "choose_destination",
@@ -581,7 +581,7 @@ describe("improvement delivery", () => {
     });
     expect(w.linear.comments.size).toBe(0);
     expect(getImprovement(w.db, id)!.issue).toBeNull();
-    expect(recovery(w, id, "link_issue")).toBe("reopen");
+    expect(await recovery(w, id, "link_issue")).toBe("reopen");
 
     expect(reopen(w, id).ok).toBe(true);
     expect(getImprovement(w.db, id)).toMatchObject({ reviewState: "needs_review", intent: null });
@@ -614,7 +614,7 @@ describe("improvement delivery", () => {
       state: "failed",
       blocked: "destination",
     });
-    expect(recovery(w, id, "link_issue")).toBe("reopen");
+    expect(await recovery(w, id, "link_issue")).toBe("reopen");
     expect(reopen(w, id).ok).toBe(true);
     expect(getImprovement(w.db, id)!.reviewState).toBe("needs_review");
   });
@@ -675,9 +675,9 @@ describe("improvement delivery", () => {
     expect(w.linear.comments.size).toBe(0);
     expect(w.linear.calls.some((c) => c.method === "createComment")).toBe(false);
 
-    expect(recovery(w, pending, "link_issue")).toBe("reopen");
+    expect(await recovery(w, pending, "link_issue")).toBe("reopen");
     expect(reopen(w, pending).ok).toBe(true);
-    expect(recovery(w, withComment, "evidence_comment")).toBe("cancel_comment");
+    expect(await recovery(w, withComment, "evidence_comment")).toBe("cancel_comment");
     expect(reopen(w, withComment)).toMatchObject({ ok: false, reason: "accepted" });
     const comment = delivery(w, withComment, "evidence_comment");
     expect(cancelImprovementEvidenceComment(w.db, comment.id)).toMatchObject({
