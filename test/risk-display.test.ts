@@ -23,7 +23,7 @@ afterEach(() => {
   for (const close of cleanup.splice(0).reverse()) close();
 });
 const scenarios = ["clean", "P2", "missing security", "rules change", "off", "unreadable"] as const;
-function fixture(
+async function fixture(
   scenario: (typeof scenarios)[number] = "clean",
   publicUrl: string | null = "https://paws.example",
 ) {
@@ -76,7 +76,7 @@ function fixture(
     policyDigest: "policy",
     policyPaths: ["rules.ts"],
   };
-  reader.remember(item.id, "head", context);
+  await reader.remember(item.id, "head", context);
   for (const id of ["security-review", "independent-review"]) {
     if (id === "security-review" && scenario === "missing security") continue;
     upsertCloseoutStep(
@@ -125,7 +125,7 @@ function fixture(
 
 for (const scenario of scenarios) {
   test(`item page reads stored automatic-risk evidence for ${scenario}`, async () => {
-    const { item, provider } = fixture(scenario);
+    const { item, provider } = await fixture(scenario);
     const expected = {
       clean: "Passes automatically: both reviews clean",
       P2: "Manual approval required: security review has a P2 finding",
@@ -141,17 +141,17 @@ for (const scenario of scenarios) {
 }
 
 test("an in-flight old settings snapshot cannot restore automatic approval after it is disabled", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.settings.autoApproveHighRisk = false;
   f.reader.refreshSettings();
-  f.reader.remember(f.item.id, "head", f.context);
+  await f.reader.remember(f.item.id, "head", f.context);
   expect((await f.provider.issue(f.item.id))?.risk?.automaticApproval).toBe(
     "Manual approval required: automatic approval is off",
   );
 });
 
 test("unrelated settings writes retain the reason and status reads do not reload config or write rows", async () => {
-  const f = fixture("P2");
+  const f = await fixture("P2");
   f.reader.refreshSettings();
   const reads = f.settingsReads();
   const changes = f.db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n;
@@ -159,27 +159,27 @@ test("unrelated settings writes retain the reason and status reads do not reload
     expect((await f.provider.issue(f.item.id))?.risk?.automaticApproval).toContain(
       "security review has a P2 finding",
     );
-    f.reader.remember(f.item.id, "head", f.context);
+    await f.reader.remember(f.item.id, "head", f.context);
   }
   expect(f.settingsReads()).toBe(reads);
   expect(f.db.query<{ n: number }, []>("SELECT total_changes() AS n").get()!.n).toBe(changes);
 });
 
-test("changed risk settings invalidate older policy evidence", () => {
-  const f = fixture();
+test("changed risk settings invalidate older policy evidence", async () => {
+  const f = await fixture();
   f.settings.repositories = { "acme/repo": { packages: [], highRiskPaths: ["new/**"] } };
   f.reader.refreshSettings();
-  f.reader.remember(f.item.id, "head", f.context);
+  await f.reader.remember(f.item.id, "head", f.context);
   expect(f.reader.read(f.item.id)?.detail).toContain("policy evidence is unavailable");
 });
 
 test("failed display persistence cannot reject the merge gate", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.db.run("DELETE FROM risk_auto_context");
   f.db.run(
     "CREATE TRIGGER fail_display_insert BEFORE INSERT ON risk_auto_context BEGIN SELECT RAISE(FAIL, 'display write failed'); END",
   );
-  expect(() => f.reader.remember(f.item.id, "head", f.context)).not.toThrow();
+  await expect(f.reader.remember(f.item.id, "head", f.context)).resolves.toBeUndefined();
   expect(f.lines.some((line) => line.includes("display write failed"))).toBe(true);
   expect(
     await riskApprovalFor(f.db, {
@@ -194,7 +194,7 @@ test("failed display persistence cannot reject the merge gate", async () => {
 });
 
 test("a corrupt classified-risk row does not fail the item page", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.db.run("PRAGMA ignore_check_constraints=ON");
   f.db.run("UPDATE candidate_risk SET paths = '{' WHERE item_id = ?", [f.item.id]);
   const detail = (await f.provider.issue(f.item.id))!;
@@ -203,9 +203,9 @@ test("a corrupt classified-risk row does not fail the item page", async () => {
 });
 
 test("display follows the lane's rebased head even while the checkpoint still names the old head", async () => {
-  const f = fixture();
+  const f = await fixture();
   saveCheckpoint(f.db, f.item.id, { phase: "merge_queue", wipCommit: "head", baseSha: "base" });
-  f.reader.remember(f.item.id, "rebased-head", f.context);
+  await f.reader.remember(f.item.id, "rebased-head", f.context);
   const detail = (await f.provider.issue(f.item.id))!;
   expect(detail.risk?.head).toBe("rebased-head");
   expect(detail.risk?.automaticApproval).toBe("Manual approval required");
@@ -215,7 +215,7 @@ test("display follows the lane's rebased head even while the checkpoint still na
 });
 
 test("the disabled risk gate does not claim manual approval is required", async () => {
-  const f = fixture("off", null);
+  const f = await fixture("off", null);
   expect((await f.provider.issue(f.item.id))?.risk?.automaticApproval).toBe(
     "Risk gate is off: approval is not required",
   );
@@ -229,7 +229,7 @@ test("the disabled risk gate does not claim manual approval is required", async 
   ).toBe("not_required");
 });
 
-function approve(f: ReturnType<typeof fixture>, head: string) {
+function approve(f: Awaited<ReturnType<typeof fixture>>, head: string) {
   f.db.run(
     "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'risk-session', 'link', 'Risk', 'open', 1)",
     [f.item.id],
@@ -254,7 +254,7 @@ function approve(f: ReturnType<typeof fixture>, head: string) {
 }
 
 test("a human approval overrides the automatic-approval explanation", async () => {
-  const f = fixture("off");
+  const f = await fixture("off");
   approve(f, "head");
   expect((await f.provider.issue(f.item.id))?.risk?.automaticApproval).toBe(
     "Approved: a person approved this commit",
@@ -262,7 +262,7 @@ test("a human approval overrides the automatic-approval explanation", async () =
 });
 
 test("a human approval carried over by the lane is displayed as approved", async () => {
-  const f = fixture("off");
+  const f = await fixture("off");
   approve(f, "earlier-head");
   let approvedHead: string | undefined;
   let approvalKind: "exact" | "same_patch" | "fix" | undefined;
@@ -277,7 +277,7 @@ test("a human approval carried over by the lane is displayed as approved", async
     samePatch: async () => true,
   });
   expect(result).toBe("approved");
-  f.reader.remember(f.item.id, "head", { ...f.context, approvedHead, approvalKind });
+  await f.reader.remember(f.item.id, "head", { ...f.context, approvedHead, approvalKind });
   expect((await f.provider.issue(f.item.id))?.risk?.automaticApproval).toBe(
     "Approved: an earlier human approval carries over",
   );
@@ -289,8 +289,8 @@ test("a human approval carried over by the lane is displayed as approved", async
   );
 });
 
-test("custom review findings name the actual review", () => {
-  const f = fixture();
+test("custom review findings name the actual review", async () => {
+  const f = await fixture();
   recordReviewFindings(f.db, {
     itemId: f.item.id,
     repository: "acme/repo",
@@ -314,7 +314,7 @@ test("custom review findings name the actual review", () => {
 });
 
 test("hand edits to config are observed outside the status read path", async () => {
-  const f = fixture();
+  const f = await fixture();
   const home = tempHome();
   cleanup.push(() => rmSync(home, { recursive: true, force: true }));
   const path = join(home, "config.toml");
@@ -330,7 +330,7 @@ test("hand edits to config are observed outside the status read path", async () 
     },
   });
   cleanup.push(() => reader.close());
-  reader.remember(f.item.id, "head", { ...f.context, ...reader.inputs() });
+  await reader.remember(f.item.id, "head", { ...f.context, ...reader.inputs() });
   expect(reader.read(f.item.id)?.detail).toContain("Passes automatically");
   writeFileSync(path, "[merge]\nauto_approve_high_risk = false\n");
   await waitFor(
@@ -342,12 +342,12 @@ test("hand edits to config are observed outside the status read path", async () 
 });
 
 test("policy file edits invalidate display evidence, including across a reader restart", async () => {
-  const f = fixture();
+  const f = await fixture();
   const home = tempHome();
   cleanup.push(() => rmSync(home, { recursive: true, force: true }));
   const path = join(home, "rules.ts");
   writeFileSync(path, "old rules");
-  f.reader.remember(f.item.id, "head", {
+  await f.reader.remember(f.item.id, "head", {
     ...f.context,
     policyFiles: f.reader.observeFiles([path]),
   });
@@ -373,12 +373,12 @@ test("filesystem events invalidate policy evidence while stat polling is delayed
     Reflect.apply(watchFile, fs, [args[0], { persistent: false, interval: 60_000 }, args.at(-1)]),
   );
   try {
-    const f = fixture();
+    const f = await fixture();
     const home = tempHome();
     cleanup.push(() => rmSync(home, { recursive: true, force: true }));
     const path = join(home, "rules.ts");
     writeFileSync(path, "old rules");
-    f.reader.remember(f.item.id, "head", {
+    await f.reader.remember(f.item.id, "head", {
       ...f.context,
       policyFiles: f.reader.observeFiles([path]),
     });
@@ -399,7 +399,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 test("a failing human-approval display observer cannot reject an approved head", async () => {
-  const f = fixture("off");
+  const f = await fixture("off");
   approve(f, "head");
   expect(
     await riskApprovalFor(f.db, {

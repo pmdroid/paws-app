@@ -13,14 +13,18 @@ import type {
 } from "../linear";
 import type { OutboxRow, OutboxDeliveryContext } from "../db";
 import {
-  askedQuestionOpen,
-  enqueueOutboxOnce,
-  getEvidence,
-  getPlanProposal,
-  prepareLinearActivity,
-  recordPlanFiled,
-  setEvidenceAssetUrl,
-  listOutbox,
+  askedQuestionOpenSteps,
+  enqueueOutboxOnceSteps,
+  getEvidenceSteps,
+  getPlanProposalSteps,
+  prepareLinearActivitySteps,
+  recordPlanFiledSteps,
+  setEvidenceAssetUrlSteps,
+  listOutboxSteps,
+  sqliteDb,
+  type Db,
+  type Q,
+  type Steps,
 } from "../db";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
@@ -52,10 +56,15 @@ export async function deliverLinearOutbox(
   db?: Database,
   uploads?: EvidenceUploads,
 ): Promise<void> {
+  const store = db && sqliteDb(db);
   context?.signal.throwIfAborted();
   if (context && !context.isCurrent())
     throw new Error("Linear delivery superseded by a session fence.");
-  if (db && tracker.supportsActivityReconciliation) message = prepareLinearActivity(db, message);
+  if (store && tracker.supportsActivityReconciliation) {
+    const unprepared = message;
+    message = await store.run((q) => prepareLinearActivitySteps(q, unprepared));
+  }
+  const orderingKey = message.orderingKey;
   const payload = isRecord(message.payload) ? message.payload : {};
   const options = {
     ...(context ? { signal: context.signal, isCurrent: context.isCurrent } : {}),
@@ -70,8 +79,9 @@ export async function deliverLinearOutbox(
     if (!id || !issueId || !title || !url)
       throw new Error("Issue attachment is missing required fields");
     const evidenceId = readString(payload, "evidenceId");
-    if (evidenceId && !db) throw new Error("Evidence attachment needs the database");
-    const evidence = evidenceId && db ? getEvidence(db, evidenceId) : null;
+    if (evidenceId && !store) throw new Error("Evidence attachment needs the database");
+    const evidence =
+      evidenceId && store ? await store.run((q) => getEvidenceSteps(q, evidenceId)) : null;
     const subtitle = readString(payload, "subtitle");
     await tracker.createIssueAttachment(
       {
@@ -84,8 +94,8 @@ export async function deliverLinearOutbox(
       },
       options,
     );
-    if (db && evidence) {
-      for (const row of listOutbox(db, message.orderingKey ?? undefined)) {
+    if (store && evidence) {
+      for (const row of await store.run((q) => listOutboxSteps(q, orderingKey ?? undefined))) {
         const old = row.payload as Record<string, unknown>;
         if (
           row.op === "linear.attachment" &&
@@ -111,8 +121,8 @@ export async function deliverLinearOutbox(
     return tracker.addRepositoryLabel({ issueId, repository }, options);
   }
   if (message.op === "linear.sub_issues") {
-    if (!db) throw new Error("Sub-issue filing needs the database");
-    return fileSubIssues(message, payload, tracker, db, options);
+    if (!store) throw new Error("Sub-issue filing needs the database");
+    return fileSubIssues(message, payload, tracker, store, options);
   }
   if (message.op === "linear.remaining_issues") {
     if (!tracker.createSubIssues) throw new Error("Linear sub-issue creation is unavailable");
@@ -126,7 +136,7 @@ export async function deliverLinearOutbox(
     if (
       db &&
       !terminal &&
-      !canReportProgress(db, message.orderingKey ?? "", message.generation ?? 0, message.id)
+      !canReportProgress(db, orderingKey ?? "", message.generation ?? 0, message.id)
     )
       return;
     return postActivity(message, payload, tracker, options);
@@ -141,11 +151,14 @@ export async function deliverLinearOutbox(
   if (message.op === "elicitation") {
     if (
       db &&
-      !canReportProgress(db, message.orderingKey ?? "", message.generation ?? 0, message.id) &&
-      !askedQuestionOpen(db, message.orderingKey ?? "", readString(payload, "questionId") ?? "")
+      store &&
+      !canReportProgress(db, orderingKey ?? "", message.generation ?? 0, message.id) &&
+      !(await store.run((q) =>
+        askedQuestionOpenSteps(q, orderingKey ?? "", readString(payload, "questionId") ?? ""),
+      ))
     )
       return;
-    return postElicitation(payload, tracker, options, db);
+    return postElicitation(payload, tracker, options, store);
   }
   if (message.op === "status") {
     return postStatus(payload, tracker, options);
@@ -165,13 +178,13 @@ async function fileSubIssues(
   message: OutboxRow,
   payload: Record<string, unknown>,
   tracker: TrackerAdapter,
-  db: Database,
+  store: Db,
   options?: TrackerRequestOptions,
 ): Promise<void> {
   if (!tracker.createSubIssues) throw new Error("Linear sub-issue creation is unavailable");
   const questionId = readString(payload, "questionId");
   const sessionId = readString(payload, "sessionId") ?? message.orderingKey;
-  const proposal = questionId ? getPlanProposal(db, questionId) : null;
+  const proposal = questionId ? await store.run((q) => getPlanProposalSteps(q, questionId)) : null;
   if (!questionId || !sessionId || !proposal)
     throw new Error("Sub-issue filing is missing its approved proposal");
   const filed =
@@ -185,21 +198,25 @@ async function fileSubIssues(
       },
       options,
     ));
-  const recorded = recordPlanFiled(db, questionId, filed, Date.now());
-  enqueueOutboxOnce(db, {
-    target: "linear",
-    op: "activity",
-    orderingKey: sessionId,
-    idempotencyKey: `plan-filed:${questionId}`,
-    payload: {
-      sessionId,
-      kind: "response",
-      body: planFiledResponse(
-        readString(payload, "identifier") ?? "the issue",
-        recorded.filed ?? filed,
-      ),
-    },
-  });
+  const recorded = await store.transaction((q) =>
+    recordPlanFiledSteps(q, questionId, filed, Date.now()),
+  );
+  await store.transaction((q) =>
+    enqueueOutboxOnceSteps(q, {
+      target: "linear",
+      op: "activity",
+      orderingKey: sessionId,
+      idempotencyKey: `plan-filed:${questionId}`,
+      payload: {
+        sessionId,
+        kind: "response",
+        body: planFiledResponse(
+          readString(payload, "identifier") ?? "the issue",
+          recorded.filed ?? filed,
+        ),
+      },
+    }),
+  );
 }
 
 function remainingIssuesRequest(message: OutboxRow, payload: Record<string, unknown>) {
@@ -273,7 +290,8 @@ async function uploadEvidence(
 ): Promise<void> {
   const evidenceId = readString(payload, "evidenceId");
   if (!evidenceId) throw new Error("Evidence upload is missing its evidence id");
-  const evidence = getEvidence(db, evidenceId);
+  const store = sqliteDb(db);
+  const evidence = await store.run((q) => getEvidenceSteps(q, evidenceId));
   if (evidence === null) throw new Error("Evidence upload has no evidence row");
   if (evidence.assetUrl) return;
   try {
@@ -290,7 +308,7 @@ async function uploadEvidence(
       bytes,
       ...(options.signal ? { signal: options.signal } : {}),
     });
-    setEvidenceAssetUrl(db, evidence.id, uploaded.assetUrl);
+    await store.run((q) => setEvidenceAssetUrlSteps(q, evidence.id, uploaded.assetUrl));
   } catch (error) {
     options.signal?.throwIfAborted();
     if (message.attempts < message.maxAttempts) throw error;
@@ -302,12 +320,12 @@ async function postElicitation(
   payload: Record<string, unknown>,
   tracker: TrackerAdapter,
   requestOptions?: TrackerRequestOptions,
-  db?: Database,
+  store?: Db,
 ): Promise<void> {
   const sessionId = readString(payload, "sessionId");
   const body =
-    payload["evidence"] !== undefined && db
-      ? reviewBody(payload["evidence"], payload["carried"], db)
+    payload["evidence"] !== undefined && store
+      ? await store.run((q) => reviewBodySteps(q, payload["evidence"], payload["carried"]))
       : readString(payload, "body");
   if (sessionId === null || body === null)
     throw new Error("elicitation is missing session or body");
@@ -332,13 +350,13 @@ async function postElicitation(
  * A visual review runs after the session's `linear.evidence` rows, so the files it shows have
  * their Linear uploads by now. A file without one is shown as its Paws link.
  */
-function reviewBody(value: unknown, carried: unknown, db: Database): string {
+function* reviewBodySteps(q: Q, value: unknown, carried: unknown): Steps<string> {
   if (!Array.isArray(value)) throw new Error("visual review evidence must be an array");
-  const file = (entry: unknown) => {
+  const file = function* (entry: unknown) {
     const id = isRecord(entry) ? readString(entry, "id") : null;
     const link = isRecord(entry) ? readString(entry, "link") : null;
     if (id === null || link === null) throw new Error("visual review evidence needs id and link");
-    const row = getEvidence(db, id);
+    const row = yield* getEvidenceSteps(q, id);
     if (row === null) throw new Error("Visual review has no evidence row");
     return {
       displayName: row.displayName,
@@ -346,16 +364,21 @@ function reviewBody(value: unknown, carried: unknown, db: Database): string {
       ...(row.assetUrl ? { assetUrl: row.assetUrl } : {}),
     };
   };
-  return visualReviewBody(
-    value.map((entry) => {
-      const approved = isRecord(entry) ? entry["approved"] : undefined;
-      return { ...file(entry), ...(approved === undefined ? {} : { approved: file(approved) }) };
-    }),
-    (Array.isArray(carried) ? carried : []).flatMap((id) => {
-      const row = typeof id === "string" ? getEvidence(db, id) : null;
-      return row ? [row.displayName] : [];
-    }),
-  );
+  const files = [];
+  for (const entry of value) {
+    const shown = yield* file(entry);
+    const approved = isRecord(entry) ? entry["approved"] : undefined;
+    files.push({
+      ...shown,
+      ...(approved === undefined ? {} : { approved: yield* file(approved) }),
+    });
+  }
+  const names: string[] = [];
+  for (const id of Array.isArray(carried) ? carried : []) {
+    const row = typeof id === "string" ? yield* getEvidenceSteps(q, id) : null;
+    if (row) names.push(row.displayName);
+  }
+  return visualReviewBody(files, names);
 }
 
 async function postSession(

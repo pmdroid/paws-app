@@ -1399,7 +1399,7 @@ export class Orchestrator {
       event.sessionId === null
         ? null
         : await this.store.transaction((q) => recordLinearSessionEventSteps(q, event, this.now()));
-    const taskKey = session ? sessionTaskKey(this.db, session) : null;
+    const taskKey = session ? await sessionTaskKey(this.store, session) : null;
     if (session?.stoppedAt !== null && session?.stoppedAt !== undefined) return;
     if (session && !startFresh && (await this.resumeRedelegatedItem(event.issueId, session)))
       return;
@@ -3730,7 +3730,7 @@ export class Orchestrator {
         throw new Error("A requested artifact has not been uploaded successfully");
       saveRunResult(this.db, run.id, activity.resultBody(), this.now());
       // A fix turn for pull request comments reports a reply for each one it was handed.
-      recordAgentReviewReplies(this.db, item.id, activity.resultBody(), this.now());
+      await recordAgentReviewReplies(this.store, item.id, activity.resultBody(), this.now());
       if (!executed.run.identity)
         throw new Error("Implementer did not report a concrete session model");
       this.saveCandidate(run.id, executed.run.identity);
@@ -4244,7 +4244,7 @@ export class Orchestrator {
         return undefined;
       return saved.report;
     };
-    const recovery = recoveryOptions(this.db, item.id);
+    const recovery = await recoveryOptions(this.db, item.id);
     let rulesFirst = !recovery.bypasses.some((bypass) => bypass.head === head);
     let stoppedOnRule: string | undefined;
     const runnerChecks = new Map<string, Promise<void>>();
@@ -5064,7 +5064,7 @@ export class Orchestrator {
     try {
       rounds = await readReviewRounds(
         itemPathId(item),
-        recoveryOptions(this.db, item.id).retryBaseline,
+        (await recoveryOptions(this.db, item.id)).retryBaseline,
         this.options.pawsRoot,
       );
     } catch (caught) {
@@ -5317,12 +5317,12 @@ export class Orchestrator {
     }
   }
 
-  private retryPolicyBlocks(item: WorkItemRecord, main: string): void {
+  private async retryPolicyBlocks(item: WorkItemRecord, main: string): Promise<void> {
     const repository = this.repositoryForItem(item);
     if (!repository) return;
     const name = `${repository.owner}/${repository.repo}`;
     if (listOpenPolicyBlocks(this.db, name).length === 0) return;
-    retryPolicyBlocks(this.db, {
+    await retryPolicyBlocks(this.db, {
       repository: name,
       main,
       policy: this.candidatePolicy(item, this.itemHead(item).repo),
@@ -5422,8 +5422,8 @@ export class Orchestrator {
               samePatch(published.worktree, approved, published.head, base),
             fixRisk: (approved, base) => this.fixRisk(item, published, approved, base),
             now: this.now(),
-          }).then((approval) => {
-            this.riskDisplayReader.remember(item.id, published.head, {
+          }).then(async (approval) => {
+            await this.riskDisplayReader.remember(item.id, published.head, {
               ...context,
               ...(approvedHead ? { approvedHead, approvalKind } : {}),
             });
@@ -5745,7 +5745,7 @@ export class Orchestrator {
       now: this.now(),
     });
     if (risk?.tier === "high")
-      this.riskDisplayReader.remember(
+      await this.riskDisplayReader.remember(
         item.id,
         published.head,
         this.riskDisplayInputs(item, worktree),
@@ -6999,7 +6999,7 @@ export class Orchestrator {
   }
 
   async checkPolicyBlocks(): Promise<void> {
-    for (const { itemId } of policyBlockedRepositories(this.db)) {
+    for (const { itemId } of await policyBlockedRepositories(this.store)) {
       const item = getWorkItem(this.db, itemId);
       if (!item) continue;
       await this.fetchUpstreamMain(item).catch((caughtError) =>
@@ -8312,7 +8312,7 @@ export class Orchestrator {
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
     });
-    this.retryPolicyBlocks(item, main);
+    await this.retryPolicyBlocks(item, main);
     return main;
   }
 

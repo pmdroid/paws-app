@@ -13,10 +13,12 @@ import { createHash } from "node:crypto";
 import type { MergeSettings } from "../config";
 import {
   getCandidateRisk,
+  getCandidateRiskSteps,
   latestCandidateRisk,
   getRiskAutoContext,
-  saveRiskAutoContext,
+  saveRiskAutoContextSteps,
   listRiskAutoContexts,
+  sqliteDb,
   type RiskAutoContext,
 } from "../db";
 import { journalCaught } from "../journal";
@@ -199,18 +201,19 @@ export class RiskDisplayReader {
   }
 
   /** Display persistence must never stop publication or a gate read. */
-  remember(itemId: string, head: string, context: RiskAutoContext): void {
+  async remember(itemId: string, head: string, context: RiskAutoContext): Promise<void> {
     this.heads.set(itemId, head);
     try {
-      const risk = getCandidateRisk(this.options.db, itemId, head);
+      const store = sqliteDb(this.options.db);
+      const risk = await store.run((q) => getCandidateRiskSteps(q, itemId, head));
       if (risk?.tier === "normal") {
         this.policyWatches.get(itemId)?.close();
         this.policyWatches.delete(itemId);
-        saveRiskAutoContext(this.options.db, itemId, head, null);
+        await store.transaction((q) => saveRiskAutoContextSteps(q, itemId, head, null));
         return;
       }
       this.watchPolicy(itemId, head, context);
-      saveRiskAutoContext(this.options.db, itemId, head, context);
+      await store.transaction((q) => saveRiskAutoContextSteps(q, itemId, head, context));
     } catch (error) {
       this.caught(error, "remember", itemId);
     }

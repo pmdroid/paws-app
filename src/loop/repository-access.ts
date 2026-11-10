@@ -1,9 +1,11 @@
 import {
   sessionIssueTeamName,
-  teamRepositoryAllowed,
+  sqliteDb,
+  teamRepositoryAllowedSteps,
   workspaceMemberUsable,
-  listWorkspaceMembers,
-  listWorkspaceRepositories,
+  listWorkspaceMembersSteps,
+  listWorkspaceRepositoriesSteps,
+  type Db,
   type WorkItemRecord,
 } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
@@ -22,21 +24,27 @@ export type TeamScope = { workspaceId: string; teamId: string };
  * linked repositories uses only those, and a team without links uses any catalog repository.
  * Returns null when allowed, otherwise the reason. Reads the database only.
  */
-export function teamRepositoryDenial(
+export async function teamRepositoryDenial(
   db: Database,
   item: WorkItemRecord,
   scope: TeamScope,
   repository: { owner: string; repo: string },
-): GitHubDenial | null {
+): Promise<GitHubDenial | null> {
+  const store = sqliteDb(db);
   const name = `${repository.owner}/${repository.repo}`;
-  if (teamRepositoryAllowed(db, scope.workspaceId, scope.teamId, name.toLowerCase())) return null;
+  if (
+    await store.run((q) =>
+      teamRepositoryAllowedSteps(q, scope.workspaceId, scope.teamId, name.toLowerCase()),
+    )
+  )
+    return null;
   const team = issueTeamName(db, item);
-  const linked = listWorkspaceRepositories(db, scope.workspaceId).some(
-    (entry) => entry.teamId === scope.teamId,
-  );
+  const linked = (
+    await store.run((q) => listWorkspaceRepositoriesSteps(q, scope.workspaceId))
+  ).some((entry) => entry.teamId === scope.teamId);
   return linked
     ? unmappedRepositoryDenial(name, team)
-    : noRepositoryDenial(team, workspaceAdministratorNames(db, scope.workspaceId));
+    : noRepositoryDenial(team, await workspaceAdministratorNames(store, scope.workspaceId));
 }
 
 /** The delegator is not in the issue's team in Paws. */
@@ -45,8 +53,11 @@ export function teamMemberDenial(db: Database, item: WorkItemRecord): GitHubDeni
 }
 
 /** Names of the workspace's active admins, from the database. */
-export function workspaceAdministratorNames(db: Database, workspaceId: string): string[] {
-  return listWorkspaceMembers(db, workspaceId)
+export async function workspaceAdministratorNames(
+  store: Db,
+  workspaceId: string,
+): Promise<string[]> {
+  return (await store.run((q) => listWorkspaceMembersSteps(q, workspaceId)))
     .filter((member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role))
     .map((member) => member.name);
 }

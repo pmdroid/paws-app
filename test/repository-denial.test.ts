@@ -89,9 +89,15 @@ test("a mapped team may use only its linked repositories, and is told which one 
   const { db, item } = await seed();
   try {
     const current = item();
-    expect(teamRepositoryDenial(db, current, MAPPED, { owner: "acme", repo: "linked" })).toBeNull();
-    expect(teamRepositoryDenial(db, current, MAPPED, { owner: "ACME", repo: "Linked" })).toBeNull();
-    expect(teamRepositoryDenial(db, current, MAPPED, { owner: "acme", repo: "catalog" })).toEqual({
+    expect(
+      await teamRepositoryDenial(db, current, MAPPED, { owner: "acme", repo: "linked" }),
+    ).toBeNull();
+    expect(
+      await teamRepositoryDenial(db, current, MAPPED, { owner: "ACME", repo: "Linked" }),
+    ).toBeNull();
+    expect(
+      await teamRepositoryDenial(db, current, MAPPED, { owner: "acme", repo: "catalog" }),
+    ).toEqual({
       denied: true,
       reason: "acme/catalog isn't mapped to Pascal in Paws.",
     });
@@ -105,9 +111,9 @@ test("an unmapped team may use any catalog repository, as placement does", async
   try {
     const current = item();
     for (const repo of ["catalog", "linked"])
-      expect(teamRepositoryDenial(db, current, UNMAPPED, { owner: "acme", repo })).toBeNull();
+      expect(await teamRepositoryDenial(db, current, UNMAPPED, { owner: "acme", repo })).toBeNull();
     expect(
-      teamRepositoryDenial(db, current, UNMAPPED, { owner: "acme", repo: "elsewhere" }),
+      await teamRepositoryDenial(db, current, UNMAPPED, { owner: "acme", repo: "elsewhere" }),
     ).toEqual({ denied: true, reason: NO_REPOSITORY });
   } finally {
     db.close();
@@ -119,7 +125,8 @@ test("a workspace without active admins names the role instead of a person", asy
   try {
     db.run("UPDATE workspace_member SET active=0 WHERE role='admin'");
     expect(
-      teamRepositoryDenial(db, item(), UNMAPPED, { owner: "acme", repo: "elsewhere" })?.reason,
+      (await teamRepositoryDenial(db, item(), UNMAPPED, { owner: "acme", repo: "elsewhere" }))
+        ?.reason,
     ).toBe(
       "Pascal has no repository in Paws yet. Ask a Paws admin to map one in Integrations, then delegate again.",
     );
@@ -145,14 +152,14 @@ test("the team name comes from the stored webhook, else the issue key, never fro
 for (const [name, decide, response] of [
   [
     "an unmapped team's repository outside the catalog",
-    (db: ReturnType<typeof tempDb>, item: WorkItemRecord) =>
-      teamRepositoryDenial(db, item, UNMAPPED, { owner: "acme", repo: "elsewhere" })!,
+    async (db: ReturnType<typeof tempDb>, item: WorkItemRecord) =>
+      (await teamRepositoryDenial(db, item, UNMAPPED, { owner: "acme", repo: "elsewhere" }))!,
     NO_REPOSITORY,
   ],
   [
     "a repository outside the team's links",
-    (db: ReturnType<typeof tempDb>, item: WorkItemRecord) =>
-      teamRepositoryDenial(db, item, MAPPED, { owner: "acme", repo: "catalog" })!,
+    async (db: ReturnType<typeof tempDb>, item: WorkItemRecord) =>
+      (await teamRepositoryDenial(db, item, MAPPED, { owner: "acme", repo: "catalog" }))!,
     "acme/catalog isn't mapped to Pascal in Paws.",
   ],
   [
@@ -165,7 +172,7 @@ for (const [name, decide, response] of [
     const { db, item } = await seed();
     const current = item();
     const integration = new FakeGitHubIntegration();
-    integration.permitted = decide(db, current);
+    integration.permitted = await decide(db, current);
     const check = new GitHubInstallationCheck(db, integration, () => 1000);
     try {
       expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);

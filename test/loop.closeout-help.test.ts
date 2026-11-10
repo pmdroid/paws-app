@@ -74,7 +74,7 @@ test("a Closeout guidance answer resumes the agent with the Closeout summary", (
   ]);
 });
 
-test("a /paws bypass reply is guidance: it restarts the agent and bypasses nothing", () => {
+test("a /paws bypass reply is guidance: it restarts the agent and bypasses nothing", async () => {
   const { db, asker, question } = closeoutHelp();
   const body = "/paws bypass test -- Known fixture failure";
   answer(db, reply(body), questionEffects(db, { now: NOW + 100 }));
@@ -91,7 +91,7 @@ test("a /paws bypass reply is guidance: it restarts the agent and bypasses nothi
       },
     },
   ]);
-  expect(recoveryOptions(db, asker.itemId)).toEqual({
+  expect(await recoveryOptions(db, asker.itemId)).toEqual({
     retryBaseline: ["test:1"],
     bypasses: [],
   });
@@ -219,7 +219,7 @@ for (const body of ["Retry Closeout", "  RETRY "])
       answer: "Retry Closeout",
       answeredBy: "pascal",
     });
-    expect(recoveryOptions(db, asker.itemId).retryBaseline).toEqual([]);
+    expect((await recoveryOptions(db, asker.itemId)).retryBaseline).toEqual([]);
   });
 
 test("a longer reply to that question is guidance and restarts the agent with it", async () => {

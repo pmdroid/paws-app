@@ -3,12 +3,15 @@ import type { StoredReviewFinding } from "../closeout";
 import {
   fixRounds,
   getItemPullRequest,
+  getItemPullRequestSteps,
   getPullReview,
   pendingChangeRequests,
-  pendingPullCiFailures,
+  pendingPullCiFailuresSteps,
   pendingPullComments,
+  pendingPullCommentsSteps,
   recordReviewEscape,
   settlePullComments,
+  sqliteDb,
   type NewReviewReply,
   type RestartHandoff,
   type PullCiFailureRecord,
@@ -57,10 +60,17 @@ export async function readPendingFeedback(
   item: WorkItemRecord,
   caps: FeedbackCapabilities,
 ): Promise<FeedbackReads | null> {
+  const store = sqliteDb(db);
   const started = caps.now();
-  const open = pendingPullComments(db, item.id);
-  if (open.length === 0 && pendingPullCiFailures(db, item.id).length === 0) return null;
-  const pullNumber = getItemPullRequest(db, item.id)?.pullNumber ?? open.at(-1)?.pullNumber;
+  const open = await store.run((q) => pendingPullCommentsSteps(q, item.id));
+  if (
+    open.length === 0 &&
+    (await store.run((q) => pendingPullCiFailuresSteps(q, item.id))).length === 0
+  )
+    return null;
+  const pullNumber =
+    (await store.run((q) => getItemPullRequestSteps(q, item.id)))?.pullNumber ??
+    open.at(-1)?.pullNumber;
   if (pullNumber === undefined) return null;
   const threads =
     open.length > 0 ? await caps.threads(item, pullNumber).catch((): ReviewThread[] => []) : [];

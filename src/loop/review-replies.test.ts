@@ -360,7 +360,7 @@ describe("Paws replies to every handed-off comment", () => {
       "R2 not changed: The tenant is already part of the key prefix.",
       "R3 not changed: The cache is bypassed for a fresh read.",
     ].join("\n");
-    expect(recordAgentReviewReplies(db, "eng-1", final, 2_000)).toBe(3);
+    expect(await recordAgentReviewReplies(sqliteDb(db), "eng-1", final, 2_000)).toBe(3);
 
     const head = "abcdef1234567890";
     expect(
@@ -417,7 +417,12 @@ describe("Paws replies to every handed-off comment", () => {
       })),
       1_000,
     );
-    recordAgentReviewReplies(db, "eng-1", "R1 answered: A fresh read is required.", 2_000);
+    await recordAgentReviewReplies(
+      sqliteDb(db),
+      "eng-1",
+      "R1 answered: A fresh read is required.",
+      2_000,
+    );
     await postReviewReplies(
       sqliteDb(db),
       {
@@ -471,8 +476,8 @@ describe("Paws replies to every handed-off comment", () => {
       ],
       1_000,
     );
-    recordAgentReviewReplies(
-      db,
+    await recordAgentReviewReplies(
+      sqliteDb(db),
       "eng-1",
       "R1 fixed: Sort descending.\nR2 fixed: Include the tenant.\nR3 not changed: A fresh read is required.",
       2_000,

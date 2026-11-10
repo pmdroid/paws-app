@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
-import { listEvidence, type StoredEvidence } from "../db";
+import { listEvidenceSteps, sqliteDb, type StoredEvidence } from "../db";
 import type { StoredEvidenceFiles } from "../github";
 import { journalCaught } from "../journal";
 import { rejectedEvidenceIds } from "../questions";
@@ -15,10 +15,13 @@ const EXTENSIONS: Record<string, string> = {
   "image/webp": "webp",
 };
 
-export function pullRequestScreenshotRows(db: Database, itemId: string): StoredEvidence[] {
+export async function pullRequestScreenshotRows(
+  db: Database,
+  itemId: string,
+): Promise<StoredEvidence[]> {
   const rejected = rejectedEvidenceIds(db, itemId);
   const latest = new Map<string, StoredEvidence>();
-  for (const row of listEvidence(db, itemId))
+  for (const row of await sqliteDb(db).run((q) => listEvidenceSteps(q, itemId)))
     latest.set(JSON.stringify([row.checkId, row.displayName]), row);
   return [...latest.values()]
     .filter(
@@ -39,7 +42,7 @@ export async function pullRequestScreenshots(input: {
   store: (files: { bytes: Uint8Array; extension: string }[]) => Promise<StoredEvidenceFiles>;
   journal?: (line: string) => void;
 }): Promise<string> {
-  const rows = pullRequestScreenshotRows(input.db, input.itemId);
+  const rows = await pullRequestScreenshotRows(input.db, input.itemId);
   if (rows.length === 0 || input.storage === undefined) return "";
   const storage = input.storage;
   try {

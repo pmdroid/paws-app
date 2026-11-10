@@ -3,9 +3,11 @@ import {
   fixRounds,
   getItemPullRequest,
   pendingPullCiFailures,
+  pendingPullCiFailuresSteps,
   recordCiRound,
   recordReviewEscape,
   settlePullCiFailures,
+  sqliteDb,
   type PullCiFailureRecord,
   type WorkItemRecord,
 } from "../db";
@@ -67,7 +69,8 @@ export async function pullCiHead(
   pullNumber: number,
   read: (item: WorkItemRecord, pullNumber: number) => Promise<string | null>,
 ): Promise<string | null | "unreadable"> {
-  if (pendingPullCiFailures(db, item.id).length === 0) return null;
+  if ((await sqliteDb(db).run((q) => pendingPullCiFailuresSteps(q, item.id))).length === 0)
+    return null;
   return (await read(item, pullNumber)) ?? "unreadable";
 }
 

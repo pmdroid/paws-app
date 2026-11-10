@@ -149,7 +149,7 @@ test("bypassing from the page writes the rows and verifies the same head again",
     approvedAt: NOW + 100,
   });
   expect(listCloseoutBypassChecks(db, question.id)[1]?.approvedAt).toBeNull();
-  const { bypasses } = recoveryOptions(db, itemId);
+  const { bypasses } = await recoveryOptions(db, itemId);
   expect(bypasses).toEqual([
     {
       questionId: question.id,
@@ -207,7 +207,7 @@ test("a bypass needs offered checks, each once, each with a reason", async () =>
     ).toBe("rejected");
   expect(getQuestion(db, question.id)?.status).toBe("open");
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-  expect(recoveryOptions(db, itemId).bypasses).toEqual([]);
+  expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
 });
 
 test("someone who did not delegate and does not lead the project cannot bypass", async () => {
@@ -229,7 +229,7 @@ test("someone who did not delegate and does not lead the project cannot bypass",
   ).toBe("forbidden");
   expect(getQuestion(db, question.id)?.status).toBe("open");
   expect(listCloseoutBypassChecks(db, question.id).every((check) => !check.approvedBy)).toBe(true);
-  expect(recoveryOptions(db, itemId).bypasses).toEqual([]);
+  expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
 });
 
 test("a /paws bypass reply in Linear is guidance and gets the link back once", async () => {
@@ -246,7 +246,7 @@ test("a /paws bypass reply in Linear is guidance and gets the link back once", a
   expect(getLinkAsk(db, question.id)).toMatchObject({ decision: null, closedReason: "guidance" });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
-  expect(recoveryOptions(db, itemId)).toEqual({ retryBaseline: ["test:1"], bypasses: [] });
+  expect(await recoveryOptions(db, itemId)).toEqual({ retryBaseline: ["test:1"], bypasses: [] });
   const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-guidance:"));
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     `${BYPASS_REPLY_NOTE} ${LINK}`,
@@ -274,7 +274,7 @@ test("guidance from the page restarts the agent and authorizes a new round", asy
   expect((resume.payload as { handoff: string }).handoff).toContain(
     "Record the smoke run instead.",
   );
-  expect(recoveryOptions(db, itemId)).toEqual({ retryBaseline: ["test:1"], bypasses: [] });
+  expect(await recoveryOptions(db, itemId)).toEqual({ retryBaseline: ["test:1"], bypasses: [] });
 });
 
 test("without a public link, Closeout help is a Linear question that cannot bypass", async () => {
