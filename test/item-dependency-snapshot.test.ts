@@ -109,7 +109,7 @@ test("a delegation is snapshot-ready only when every active item has a snapshot"
   }
 });
 
-test("merged blocker evidence keeps the newest check", () => {
+test("merged blocker evidence keeps the newest check", async () => {
   const db = tempDb();
   try {
     const first = insertQueuedItem(db, { id: "first", now: 1 });
@@ -128,10 +128,12 @@ test("merged blocker evidence keeps the newest check", () => {
     snap("first", 5, { out: { satisfied: false, reason: "old", checkedAt: 1 } });
     snap("second", 1, { out: { satisfied: true, reason: "new", checkedAt: 9 } });
     expect(
-      readExternalBlockerEvidence(db, {
-        workspaceId: "workspace",
-        delegationId: first.delegationId,
-      }).out?.reason,
+      (
+        await readExternalBlockerEvidence(db, {
+          workspaceId: "workspace",
+          delegationId: first.delegationId,
+        })
+      ).out?.reason,
     ).toBe("new");
   } finally {
     db.close();

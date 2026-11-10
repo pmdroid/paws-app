@@ -108,7 +108,7 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
 test("the fast relations poll unblocks an item whose blocker was removed in Linear", async () => {
   await using fixture = await blockedFixture();
   expect(listTaskBlockers(fixture.db, "acme-child")).toEqual(["acme-b"]);
-  expect(fixture.polls.intervalMs()).toBe(BLOCKED_RELATIONS_POLL_MS);
+  expect(await fixture.polls.intervalMs()).toBe(BLOCKED_RELATIONS_POLL_MS);
   fixture.tracker.deps.set("acme-child", []);
   fixture.advance(BLOCKED_RELATIONS_POLL_MS);
   expect(await fixture.polls.blocked()).toHaveLength(1);
@@ -121,7 +121,7 @@ test("the fast relations poll unblocks an item whose blocker was removed in Line
 test("with nothing blocked the relations poll keeps five minutes and reads nothing fast", async () => {
   await using fixture = await blockedFixture({ blocked: false });
   expect(relationsPollIntervalMs({ blocked: false, lowBudget: false })).toBe(RELATIONS_POLL_MS);
-  expect(fixture.polls.intervalMs()).toBe(RELATIONS_POLL_MS);
+  expect(await fixture.polls.intervalMs()).toBe(RELATIONS_POLL_MS);
   expect(await fixture.polls.blocked()).toEqual([]);
   expect(fixture.tracker.blockerReads).toEqual([]);
   expect(fixture.executionReconciles()).toBe(0);
@@ -130,7 +130,7 @@ test("with nothing blocked the relations poll keeps five minutes and reads nothi
 test("a low Linear budget keeps the relations poll at five minutes with blocked items", async () => {
   await using fixture = await blockedFixture({ lowBudget: true });
   expect(relationsPollIntervalMs({ blocked: true, lowBudget: true })).toBe(RELATIONS_POLL_MS);
-  expect(fixture.polls.intervalMs()).toBe(RELATIONS_POLL_MS);
+  expect(await fixture.polls.intervalMs()).toBe(RELATIONS_POLL_MS);
   fixture.tracker.deps.set("acme-child", []);
   expect(await fixture.polls.blocked()).toEqual([]);
   expect(fixture.tracker.blockerReads).toEqual([]);
