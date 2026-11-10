@@ -59,8 +59,8 @@ function seeded() {
   return { db, run, later, hidden };
 }
 
-function galleryFor(db: ReturnType<typeof seeded>["db"]): EvidenceListResponse {
-  const raw = createLiveStatusProvider(db, {
+async function galleryFor(db: ReturnType<typeof seeded>["db"]): Promise<EvidenceListResponse> {
+  const raw = await createLiveStatusProvider(db, {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
   }).evidence();
@@ -70,19 +70,19 @@ function galleryFor(db: ReturnType<typeof seeded>["db"]): EvidenceListResponse {
 }
 
 /** A run's issue page, rendered from that issue's detail as the dashboard loads it. */
-function runPage(db: ReturnType<typeof seeded>["db"], runId: string): string {
+async function runPage(db: ReturnType<typeof seeded>["db"], runId: string): Promise<string> {
   const provider = createLiveStatusProvider(db, {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
   });
-  const itemId = provider
-    .issues()
-    .runs.find((run) => run.id === runId || run.attempts?.includes(runId))!.itemId;
-  return page({ view: "issues", id: itemId }, provider.issue(itemId));
+  const itemId = (await provider.issues()).runs.find(
+    (run) => run.id === runId || run.attempts?.includes(runId),
+  )!.itemId;
+  return page({ view: "issues", id: itemId }, await provider.issue(itemId));
 }
 
-function evidencePage(db: ReturnType<typeof seeded>["db"], id: string): string {
-  const response = createLiveStatusProvider(db, {
+async function evidencePage(db: ReturnType<typeof seeded>["db"], id: string): Promise<string> {
+  const response = await createLiveStatusProvider(db, {
     sessionIds: ["visible"],
     now: () => new Date(1_700_000_010_000),
   }).evidenceMetadata(id);
@@ -114,9 +114,9 @@ function page(
 }
 
 describe("live evidence", () => {
-  test("the gallery lists only the evidence of items the reader can see", () => {
+  test("the gallery lists only the evidence of items the reader can see", async () => {
     const { db, run, later } = seeded();
-    const gallery = galleryFor(db);
+    const gallery = await galleryFor(db);
     expect(gallery.evidence.map((entry) => [entry.id, entry.kind, entry.runId])).toEqual([
       [VIDEO, "video", run.id],
       [IMAGE, "image", run.id],
@@ -128,21 +128,23 @@ describe("live evidence", () => {
     expect(JSON.stringify(gallery)).not.toContain("secret-file.png");
   });
 
-  test("the run page has an Evidence slot only when the run has evidence", () => {
+  test("the run page has an Evidence slot only when the run has evidence", async () => {
     const { db, run, later } = seeded();
-    const gallery = galleryFor(db);
-    expect(runPage(db, run.id)).toContain(`<div id="evidence-gallery" data-run="${run.id}"></div>`);
+    const gallery = await galleryFor(db);
+    expect(await runPage(db, run.id)).toContain(
+      `<div id="evidence-gallery" data-run="${run.id}"></div>`,
+    );
     expect(filterEvidence(gallery.evidence, "video").map((entry) => entry.id)).toEqual([VIDEO]);
-    expect(runPage(db, later.id)).toContain("evidence-gallery");
+    expect(await runPage(db, later.id)).toContain("evidence-gallery");
     insertQueuedItem(db, { id: "bare-item", title: "No evidence", sessionKey: "visible", now: 3 });
     const bare = insertRun(db, { itemId: "bare-item", now: 40, agent: "claude" });
-    expect(runPage(db, bare.id)).not.toContain("evidence-gallery");
+    expect(await runPage(db, bare.id)).not.toContain("evidence-gallery");
   });
 
-  test("the evidence page shows the file details and the rest of the run", () => {
+  test("the evidence page shows the file details and the rest of the run", async () => {
     const { db } = seeded();
-    const html = evidencePage(db, VIDEO);
-    const item = galleryFor(db).evidence[0]!.itemId;
+    const html = await evidencePage(db, VIDEO);
+    const item = (await galleryFor(db)).evidence[0]!.itemId;
     for (const text of [
       item,
 
@@ -164,14 +166,14 @@ describe("live evidence", () => {
     ])
       expect(html).toContain(text);
     expect(html).toContain(OTHER_RUN);
-    const image = evidencePage(db, IMAGE);
+    const image = await evidencePage(db, IMAGE);
     expect(image).toContain("1280×720");
   });
 
-  test("evidence the reader cannot see shows the no-access state and nothing about it", () => {
+  test("evidence the reader cannot see shows the no-access state and nothing about it", async () => {
     const { db } = seeded();
     for (const id of [HIDDEN, "01JAZZZZZZZZZZZZZZZZZZZZZZ"]) {
-      const html = evidencePage(db, id);
+      const html = await evidencePage(db, id);
       expect(html).toContain("You don't have access to this evidence");
       for (const leak of ["secret", "Secret project", "secret-file.png", "evidence-player"])
         expect(html).not.toContain(leak);
@@ -202,9 +204,9 @@ describe("live evidence", () => {
     ).toBeNull();
   });
 
-  test("the contract rejects malformed evidence", () => {
+  test("the contract rejects malformed evidence", async () => {
     const { db } = seeded();
-    const raw = JSON.parse(JSON.stringify(galleryFor(db)));
+    const raw = JSON.parse(JSON.stringify(await galleryFor(db)));
     raw.evidence[0].kind = "audio";
     expect(parseEvidenceListResponse(raw).ok).toBe(false);
     raw.evidence[0].kind = "video";

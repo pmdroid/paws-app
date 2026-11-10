@@ -37,10 +37,9 @@ async function delegated(snapshot: EpicSnapshot) {
   const tracker = createFakeTracker([snapshot]);
   const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue", now: 1000 });
   if (!intake.ok) throw new Error("intake failed");
-  const projectOf = () =>
-    createLiveStatusProvider(db)
-      .issues()
-      .issues.find((item) => item.id === "PAS-608")?.project;
+  const projectOf = async () =>
+    (await createLiveStatusProvider(db).issues()).issues.find((item) => item.id === "PAS-608")
+      ?.project;
   return { db, tracker, intake, projectOf };
 }
 
@@ -61,13 +60,13 @@ function projectWebhook(data: Record<string, unknown>) {
 
 test("an item delegated from a Linear project shows that project", async () => {
   const { db, projectOf } = await delegated(issue({ id: "runtimes", name: "Runner runtimes" }));
-  expect(projectOf()).toEqual({ id: "runtimes", name: "Runner runtimes" });
+  expect(await projectOf()).toEqual({ id: "runtimes", name: "Runner runtimes" });
   db.close();
 });
 
 test("an item with no Linear project shows none", async () => {
   const { db, projectOf } = await delegated(issue(null));
-  expect(projectOf()).toBeNull();
+  expect(await projectOf()).toBeNull();
   db.close();
 });
 
@@ -82,12 +81,12 @@ test("an issue webhook that moves the issue to another project updates it", asyn
     project: { id: "linear", name: "Linear projects" },
   });
   applyLinearIssueProject(db, moved!.issueId, moved!.project);
-  expect(projectOf()).toEqual({ id: "linear", name: "Linear projects" });
+  expect(await projectOf()).toEqual({ id: "linear", name: "Linear projects" });
 
   const removed = parseLinearIssueProjectChange(projectWebhook({ projectId: null }));
   expect(removed?.project).toBeNull();
   applyLinearIssueProject(db, removed!.issueId, removed!.project);
-  expect(projectOf()).toBeNull();
+  expect(await projectOf()).toBeNull();
   db.close();
 });
 
@@ -132,7 +131,7 @@ test("a reconcile after the issue moved in Linear stores the new project", async
   epic.projectId = "linear";
   epic.projectName = "Linear projects";
   await reconciler.reconcile({ itemId: intake.items[0]!.id, workspaceId: "workspace" });
-  expect(projectOf()).toEqual({ id: "linear", name: "Linear projects" });
+  expect(await projectOf()).toEqual({ id: "linear", name: "Linear projects" });
   await reconciler.close();
   db.close();
 });
