@@ -38,7 +38,9 @@ test("a busy helper lane leaves the start attempts alone and a failing helper sp
       subIssues: [],
     },
   ]);
-  let outcome: Error = new RunnerSlotsBusyError("Queued: the runner's helper lane is busy.");
+  let outcome: Error = new RunnerSlotsBusyError(
+    "Queued: the runner's helper lane is busy. Paws retries when it frees.",
+  );
   let intake = true;
   const helperCalls: string[] = [];
   const failing = (purpose: string) => async (_options: Parameters<typeof runAgent>[0]) => {

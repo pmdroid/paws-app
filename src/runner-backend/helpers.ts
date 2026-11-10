@@ -8,6 +8,7 @@ import type { PlacementAccount, PlacementCandidate, RunnerPlacement } from "../r
 import { RunnerSlotsBusyError, systemClock, UserFacingError } from "../core";
 import {
   earliestRunnerCooldownSteps,
+  getRunnerSteps,
   linearSessionClientIdSteps,
   recentRunnersSteps,
   runnerHelperAvailability,
@@ -42,8 +43,14 @@ const HELPER_LANE_BUSY = "Queued: the runner's helper lane is busy. Paws retries
 /** A placement rejection that only says the runner is full: a wait, not a cause. */
 const AT_CAPACITY = /(no free capacity|account at its concurrency limit)$/;
 
-function noRunnerMessage(agent: string, causes: ReadonlySet<string>): string {
-  const named = causes.size ? `: ${[...causes].join("; ")}.` : ".";
+/** Rejections of runners the requester may not use at all. */
+const NOT_THIS_TASKS = new Set(["not-yours", "not-shared", "no-project-lead"]);
+
+/** Each runner's reasons, by runner name, so a failure says why every runner refused. */
+function noRunnerMessage(agent: string, reasons: ReadonlyMap<string, ReadonlySet<string>>): string {
+  const named = reasons.size
+    ? `: ${[...reasons].map(([runner, why]) => `${runner}: ${[...why].join(", ")}`).join("; ")}.`
+    : ".";
   return `No paired runner can run ${agent} for this issue right now${named} Check runner availability and usage limits, then retry.`;
 }
 
@@ -104,7 +111,9 @@ export function createRemoteSessionAgentRunner(options: {
         let placed: PlacementAccount | undefined;
         const cooling: string[] = [];
         const checks: { runnerId: string; until: number }[] = [];
-        const causes = new Set<string>();
+        const reasons = new Map<string, Set<string>>();
+        const note = (runnerId: string, reason: string) =>
+          reasons.set(runnerId, (reasons.get(runnerId) ?? new Set()).add(reason));
         const held = new Set<string>();
         let slotBusy = false;
         const request = {
@@ -119,7 +128,7 @@ export function createRemoteSessionAgentRunner(options: {
         while (!command) {
           cooling.length = 0;
           checks.length = 0;
-          causes.clear();
+          reasons.clear();
           slotBusy = false;
           held.clear();
           const open =
@@ -141,6 +150,9 @@ export function createRemoteSessionAgentRunner(options: {
               ? await options.placement.candidates({
                   ...request,
                   onRejected: (runnerId, reason, until) => {
+                    // Other people's runners are not this task's to name.
+                    if (NOT_THIS_TASKS.has(reason)) return;
+                    note(runnerId, reason.replaceAll("-", " "));
                     if (AT_CAPACITY.test(reason)) {
                       slotBusy = true;
                       if (
@@ -154,7 +166,6 @@ export function createRemoteSessionAgentRunner(options: {
                         held.add(runnerId);
                       return;
                     }
-                    causes.add(reason.replaceAll("-", " "));
                     if (reason === "agent quota cooldown") cooling.push(runnerId);
                     if (until !== undefined && until > now()) checks.push({ runnerId, until });
                   },
@@ -173,7 +184,7 @@ export function createRemoteSessionAgentRunner(options: {
                   FINDING_GROUPS_RUNNER_VERSION,
                 )
               ) {
-                causes.add("runner version too old");
+                note(runner.id, "runner version too old");
                 continue;
               }
               const owner = await store.run((q) => runnerOwnerSteps(q, runner.id));
@@ -228,12 +239,20 @@ export function createRemoteSessionAgentRunner(options: {
               if (busy) slotBusy = true;
               if (busy?.heldRunnerId) held.add(busy.heldRunnerId);
               else journalCaught(caughtError1, "helpers.forSession.immediate", null);
+              // A dispatch that fails for any other reason is a cause the message must name.
+              note(
+                runner.id,
+                busy
+                  ? "helper lane busy"
+                  : caughtError1 instanceof Error
+                    ? caughtError1.message
+                    : String(caughtError1),
+              );
             }
           }
           if (command) break;
           if (purpose !== "finding_groups") for (const runnerId of held) noteHeld(runnerId);
-          if (slotBusy && now() >= waitUntil)
-            throw new RunnerSlotsBusyError(held.size > 0 ? HELPER_LANE_BUSY : undefined);
+          if (slotBusy && now() >= waitUntil) throw new RunnerSlotsBusyError(HELPER_LANE_BUSY);
           if (!slotBusy) {
             const runnerCooldown = await earliestCooldown(cooling, profile.agent);
             const cooldown = [...(runnerCooldown ? [runnerCooldown] : []), ...checks].sort(
@@ -248,7 +267,12 @@ export function createRemoteSessionAgentRunner(options: {
                 async () =>
                   (await options.placement!.candidates(request)).map((runner) => runner.id),
               );
-            throw new UserFacingError(noRunnerMessage(profile.agent, causes));
+            const named = new Map<string, Set<string>>();
+            for (const [runnerId, why] of reasons) {
+              const name = (await store.run((q) => getRunnerSteps(q, runnerId)))?.name ?? runnerId;
+              named.set(name, new Set([...(named.get(name) ?? []), ...why]));
+            }
+            throw new UserFacingError(noRunnerMessage(profile.agent, named));
           }
           await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
         }

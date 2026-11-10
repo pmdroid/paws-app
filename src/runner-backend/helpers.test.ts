@@ -16,6 +16,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  recordRunnerCapacity,
 } from "../db";
 import { RunnerSlotsBusyError, UserFacingError } from "../core";
 import { DEFAULT_RUN_TIMEOUT_MS, recoverAcpConversation, type RunAgentOptions } from "../acp";
@@ -28,7 +29,7 @@ import {
   USAGE_LIMIT_RESUME_SLACK_MS,
   UsageLimitPause,
 } from "./failover";
-import { quotaSignal, type RunnerPlacement } from "../runner-placement";
+import { createRunnerPlacement, quotaSignal, type RunnerPlacement } from "../runner-placement";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => {
@@ -1058,4 +1059,111 @@ test("a sign-in goes first: no new helper goes out while one waits", () => {
   expect(dispatch).toThrow(/busy/);
   f.db.run("UPDATE runner_login SET state='cancelled' WHERE id='sign-in'");
   expect(dispatch().command.purpose).toBe("classify");
+});
+
+const HELPER_LANE_BUSY = "Queued: the runner's helper lane is busy. Paws retries when it frees.";
+
+/** The answer task's own placement over two runners: agentbox and goldbox, two slots each. */
+function answerTask() {
+  const f = fixture((db, now) => {
+    db.run("UPDATE linear_session SET issue_id='issue',creator_id='owner'");
+    db.run(
+      "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'goldbox',workspace_id,owner_user_id,'goldbox','active',created_at,last_seen_at FROM runner WHERE id='runner'",
+    );
+    db.run("UPDATE runner SET name='agentbox' WHERE id='runner'");
+    for (const runnerId of ["runner", "goldbox"]) recordRunnerCapacity(db, runnerId, 2, 2, 2);
+    return createRunnerPlacement({ db, now });
+  });
+  const fill = (runnerId: string) => {
+    for (const id of [`${runnerId}-1`, `${runnerId}-2`]) {
+      insertQueuedItem(f.db, { id, now: Date.now(), sessionKey: `${id}-session` });
+      const { run } = beginImplementRun(f.db, id, Date.now());
+      f.db.run(
+        "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) SELECT ?,id,workspace_id,1,0,?,? FROM runner WHERE id=?",
+        [run.id, id, Date.now() + 3_600_000, runnerId],
+      );
+    }
+  };
+  return { ...f, fill, input: { ...f.input, profile: { agent: "claude" as const, model: null } } };
+}
+
+test("an answer task's helper goes to the idle runner while the other runner is full", async () => {
+  const f = answerTask();
+  f.fill("goldbox");
+  expect(f.db.query("SELECT 1 FROM runner_helper WHERE ended_at IS NULL").get()).toBeNull();
+  const pending = f.backend.forSession("session", "classify")(f.input);
+  expect((await f.dispatched()).runnerId).toBe("runner");
+  await f.reply();
+  expect((await pending).stopReason).toBe("end_turn");
+});
+
+test("capacity-only rejections wait in the helper lane instead of failing", async () => {
+  const f = answerTask();
+  f.fill("runner");
+  f.fill("goldbox");
+  const pending = f.backend
+    .forSession(
+      "session",
+      "classify",
+    )(f.input)
+    .catch((error: unknown) => error);
+  await Bun.sleep(20);
+  f.db.run("UPDATE runner SET last_seen_at=last_seen_at+60000");
+  f.advance(60_000);
+  const error = await pending;
+  expect(error).toBeInstanceOf(RunnerSlotsBusyError);
+  expect((error as Error).message).toBe(HELPER_LANE_BUSY);
+  expect(f.db.query("SELECT 1 FROM runner_helper").get()).toBeNull();
+});
+
+test("a helper no runner can take names each runner's reason", async () => {
+  const f = fixture((db) => ({
+    async candidates(input) {
+      db.run(
+        "INSERT OR IGNORE INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'goldbox',workspace_id,owner_user_id,'goldbox','active',created_at,last_seen_at FROM runner WHERE id='runner'",
+      );
+      input.onRejected?.("runner", "agent-not-signed-in");
+      input.onRejected?.("goldbox", "agent quota cooldown");
+      input.onRejected?.("goldbox", "auth-expired");
+      return [];
+    },
+    started() {
+      throw new Error("Must not dispatch");
+    },
+    finished() {
+      return { retryable: false };
+    },
+  }));
+  const error = await f.backend
+    .forSession(
+      "session",
+      "classify",
+    )(f.input)
+    .catch((caught: unknown) => caught);
+  expect(error).toBeInstanceOf(UserFacingError);
+  expect((error as Error).message).toBe(
+    "No paired runner can run codex for this issue right now: Fixture: agent not signed in; goldbox: agent quota cooldown, auth expired. Check runner availability and usage limits, then retry.",
+  );
+});
+
+test("a dispatch the runner refuses is named in the failure", async () => {
+  const f = fixture((db) => ({
+    async candidates() {
+      return [
+        {
+          id: "runner",
+          workspaceId: db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id,
+        },
+      ];
+    },
+    started() {
+      throw new Error("Runner selection authority changed before assignment");
+    },
+    finished() {
+      return { retryable: false };
+    },
+  }));
+  await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
+    "right now: Fixture: Runner selection authority changed before assignment.",
+  );
 });
