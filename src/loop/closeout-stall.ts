@@ -1,17 +1,18 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, journalCaught } from "../core";
 import {
-  cancelOpenJobs,
-  enqueueJobOnce,
-  getWorkItem,
-  immediate,
-  itemActivityFacts,
-  listAgentCloseout,
-  listCloseoutProgress,
-  listItemIds,
-  listJobs,
-  listLastWorkItemEventTimes,
-  saveCloseoutRecovery,
+  cancelOpenJobsSteps,
+  emitJobReady,
+  enqueueJobOnceSteps,
+  getWorkItemSteps,
+  itemActivityFactsSteps,
+  listAgentCloseoutSteps,
+  listCloseoutProgressSteps,
+  listItemIdsSteps,
+  listJobsSteps,
+  listLastWorkItemEventTimesSteps,
+  saveCloseoutRecoverySteps,
+  sqliteDb,
   type WorkItemRecord,
 } from "../db";
 import { RETRY_CLOSEOUT } from "./closeout-recovery";
@@ -31,37 +32,49 @@ export async function recoverStalledCloseout(
     journal: (line: string) => void;
   },
 ): Promise<void> {
-  const items = listItemIds(db, false)
-    .map((id) => getWorkItem(db, id))
-    .filter((item) => item?.state === "verifying" && !item.cancelRequested && item.sessionKey);
+  const store = sqliteDb(db);
+  const items = await store.run(function* (q) {
+    const stalled: WorkItemRecord[] = [];
+    for (const id of yield* listItemIdsSteps(q, false)) {
+      const item = yield* getWorkItemSteps(q, id);
+      if (item?.state === "verifying" && !item.cancelRequested && item.sessionKey)
+        stalled.push(item);
+    }
+    return stalled;
+  });
   if (items.length === 0) return;
-  const times = listLastWorkItemEventTimes(db);
-  const progress = listCloseoutProgress(db);
-  const jobs = listJobs(db);
-  for (const item of items as WorkItemRecord[]) {
+  const times = await store.run(listLastWorkItemEventTimesSteps);
+  const progress = await store.run(listCloseoutProgressSteps);
+  const jobs = await store.run(listJobsSteps);
+  for (const item of items) {
     const id = item.id;
     const head = item.checkpoint?.wipCommit ?? "";
     const records = progress.filter((p) => p.itemId === id);
     const key = `closeout-stall:${id}:${head}`;
     const retry = jobs.find((job) => job.jobKey === key);
+    const agentCloseout = await store.run((q) =>
+      listAgentCloseoutSteps(q, item.currentRunId ? [item.currentRunId] : []),
+    );
     const since = Math.max(
       times.get(id) ?? 0,
       retry?.createdAt ?? 0,
       ...records.map((p) => p.updatedAt),
-      ...listAgentCloseout(db, item.currentRunId ? [item.currentRunId] : []).map((e) => e.at),
+      ...agentCloseout.map((e) => e.at),
     );
-    const facts = itemActivityFacts(db, item, input.now);
+    const facts = await store.run((q) => itemActivityFactsSteps(q, item, input.now));
     if (input.now - since < QUIET_MS || facts.liveRunner || facts.usagePause) continue;
     // A failed cancel must not stop the sweep: the job would go dead and strand the other items.
     try {
       // Fence the old job before joining it, preventing a competing finalizer recovery.
-      cancelOpenJobs(db, { itemId: id, reason: "Closeout stalled", now: input.now });
+      await store.run((q) =>
+        cancelOpenJobsSteps(q, { itemId: id, reason: "Closeout stalled", now: input.now }),
+      );
       await input.cancel(id);
-      immediate(db, () => {
-        const current = getWorkItem(db, id);
-        if (current?.state !== "verifying" || current.version !== item.version) return;
+      const enqueued = await store.transaction(function* (q) {
+        const current = yield* getWorkItemSteps(q, id);
+        if (current?.state !== "verifying" || current.version !== item.version) return false;
         if (!retry) {
-          enqueueJobOnce(db, {
+          const { inserted } = yield* enqueueJobOnceSteps(q, {
             queue: JOB_KIND.reverify,
             jobKey: key,
             payload: { itemId: id },
@@ -70,7 +83,7 @@ export async function recoverStalledCloseout(
           input.journal(
             `closeout stalled for ${Math.floor((input.now - since) / 60_000)} min, re-running once`,
           );
-          return;
+          return inserted;
         }
         const { question } = ask(
           db,
@@ -84,7 +97,7 @@ export async function recoverStalledCloseout(
           },
         );
         const last = records.filter((p) => p.head === head).at(-1);
-        saveCloseoutRecovery(db, {
+        yield* saveCloseoutRecoverySteps(q, {
           questionId: question.id,
           itemId: id,
           taskId: last?.taskId ?? id,
@@ -95,7 +108,9 @@ export async function recoverStalledCloseout(
           retryBaseline: [],
           summary: "Closeout stalled twice on the same head.",
         });
+        return false;
       });
+      if (enqueued) emitJobReady(store);
     } catch (error) {
       journalCaught(error, "closeout-stall.recover", id, undefined, input.journal);
     }

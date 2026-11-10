@@ -1,20 +1,28 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
-  advanceLinearSessionGeneration,
-  ensureLinearSession,
+  advanceLinearSessionGenerationAsync,
+  ensureLinearSessionSteps,
   getLinearSession,
   getLinearSessionAccess,
+  getLinearSessionAccessSteps,
   getLinearSessionGeneration,
-  getLinearSessionInstallation,
+  getLinearSessionGenerationSteps,
+  getLinearSessionInstallationSteps,
+  getLinearSessionSteps,
   getLinearTaskDelegation,
+  getLinearTaskDelegationSteps,
   getLinearTeamAccess,
-  delegatedLinearUserId,
+  getLinearTeamAccessSteps,
+  delegatedLinearUserIdSteps,
   getWorkItem,
-  workItemForSession,
-  listWorkItems,
-  recordLinearInstallation,
+  getWorkItemSteps,
+  workItemForSessionSteps,
+  listWorkItemsSteps,
+  recordLinearInstallationSteps,
   requireLinearTaskDelegation,
+  sqliteDb,
+  type Db,
   type WorkItemRecord,
 } from "../db";
 import { isTerminalWorkItemState, sleep } from "../core";
@@ -48,6 +56,7 @@ export class LinearTaskAccess {
   private readonly teams = new Set<string>();
   private readonly issues = new Map<string, LinearIssueOwnership>();
   private invalidations = 0;
+  private readonly store: Db;
 
   constructor(
     private readonly db: Database,
@@ -60,7 +69,25 @@ export class LinearTaskAccess {
       interruptSession?: (sessionId: string) => Promise<void>;
       now?: () => number;
     },
-  ) {}
+  ) {
+    this.store = sqliteDb(db);
+  }
+
+  private session(sessionId: string) {
+    return this.store.run((q) => getLinearSessionSteps(q, sessionId));
+  }
+
+  private sessionAccess(sessionId: string) {
+    return this.store.run((q) => getLinearSessionAccessSteps(q, sessionId));
+  }
+
+  private sessionGeneration(sessionId: string) {
+    return this.store.run((q) => getLinearSessionGenerationSteps(q, sessionId));
+  }
+
+  private teamStatus(input: LinearSessionInstallation & { teamId: string }) {
+    return this.store.run((q) => getLinearTeamAccessSteps(q, input));
+  }
 
   async assertOpenIssue(event: AcceptedLinearEvent): Promise<void> {
     if (
@@ -80,10 +107,11 @@ export class LinearTaskAccess {
   }
 
   async accept(event: AcceptedLinearEvent, options?: TrackerRequestOptions): Promise<boolean> {
-    if (event.sessionId === null || !["created", "prompted"].includes(event.action)) return false;
-    const generation = getLinearSessionGeneration(this.db, event.sessionId);
-    if (getLinearSessionAccess(this.db, event.sessionId) === "revoked") return false;
-    if (event.action === "created" && getLinearSession(this.db, event.sessionId)?.stoppedAt != null)
+    const { sessionId } = event;
+    if (sessionId === null || !["created", "prompted"].includes(event.action)) return false;
+    const generation = await this.sessionGeneration(sessionId);
+    if ((await this.sessionAccess(sessionId)) === "revoked") return false;
+    if (event.action === "created" && (await this.session(sessionId))?.stoppedAt != null)
       return false;
     const installation = parseLinearSessionInstallation(event);
     if (event.source === "webhook" && installation === null) return false;
@@ -93,12 +121,14 @@ export class LinearTaskAccess {
         (this.options.appUserId !== null && installation.appUserId !== this.options.appUserId)
       )
         return false;
-      recordLinearInstallation(this.db, { ...installation, observedAtMs: event.updatedAtMs });
+      await this.store.transaction((q) =>
+        recordLinearInstallationSteps(q, { ...installation, observedAtMs: event.updatedAtMs }),
+      );
     }
     if (event.signal === "stop")
       return (
-        getLinearSessionInstallation(this.db, event.sessionId) !== null &&
-        getLinearSessionAccess(this.db, event.sessionId) !== "revoked"
+        (await this.store.run((q) => getLinearSessionInstallationSteps(q, sessionId))) !== null &&
+        (await this.sessionAccess(sessionId)) !== "revoked"
       );
     if (this.options.access === null) throw new Error("Linear is not connected.");
     const request = { ...options, signal: options?.signal ?? AbortSignal.timeout(10_000) };
@@ -106,21 +136,20 @@ export class LinearTaskAccess {
     const access =
       installation?.teamId && event.issueId
         ? { ...installation, issueId: event.issueId, teamId: installation.teamId }
-        : await this.options.access.session(event.sessionId, request);
+        : await this.options.access.session(sessionId, request);
     request.signal.throwIfAborted();
-    this.record(access);
-    ensureLinearSession(this.db, {
-      sessionId: event.sessionId,
-      creatorId: linearSessionCreatorId(event),
-    });
-    if (getLinearSessionGeneration(this.db, event.sessionId) !== generation) return false;
-    if (event.action === "created" && getLinearSession(this.db, event.sessionId)?.stoppedAt != null)
+    await this.record(access);
+    await this.store.transaction((q) =>
+      ensureLinearSessionSteps(q, { sessionId, creatorId: linearSessionCreatorId(event) }),
+    );
+    if ((await this.sessionGeneration(sessionId)) !== generation) return false;
+    if (event.action === "created" && (await this.session(sessionId))?.stoppedAt != null)
       return false;
     if (access.issueId !== event.issueId)
       throw new Error("Linear session issue ownership changed.");
     if (installation?.teamId) this.teams.add(access.teamId);
     if (!(await this.teamAccess(access, generation, request))) return false;
-    return this.allowed(event.sessionId);
+    return this.allowed(sessionId);
   }
 
   invalidate(scope: { sessionId?: string; issueId?: string } = {}): void {
@@ -139,8 +168,8 @@ export class LinearTaskAccess {
   async reconcile(issueId: string): Promise<void> {
     this.invalidate({ issueId });
     await this.reconcileItems(
-      (item, sessionId) =>
-        item.linearIssueId === issueId || getLinearSession(this.db, sessionId)?.issueId === issueId,
+      async (item, sessionId) =>
+        item.linearIssueId === issueId || (await this.session(sessionId))?.issueId === issueId,
     );
   }
 
@@ -148,21 +177,21 @@ export class LinearTaskAccess {
     const affected = new Set(sessionIds);
     for (const sessionId of affected) this.invalidate({ sessionId });
     const active = new Set(
-      listWorkItems(this.db)
+      (await this.store.run(listWorkItemsSteps))
         .filter((item) => !["cancelled", "completed", "merged", "failed"].includes(item.state))
         .flatMap((item) => (item.sessionKey === null ? [] : [item.sessionKey])),
     );
-    await this.reconcileItems((_item, sessionId) => affected.has(sessionId));
+    await this.reconcileItems(async (_item, sessionId) => affected.has(sessionId));
     for (const sessionId of affected) {
       if (active.has(sessionId)) continue;
-      const session = getLinearSession(this.db, sessionId);
+      const session = await this.session(sessionId);
       if (session === null || session.stoppedAt !== null) continue;
       if (this.options.access === null) throw new Error("Linear is not connected.");
       const access = await this.options.access.session(sessionId, {
         signal: AbortSignal.timeout(10_000),
       });
-      if (getLinearSessionGeneration(this.db, sessionId) !== session.generation) continue;
-      this.record(access);
+      if ((await this.sessionGeneration(sessionId)) !== session.generation) continue;
+      await this.record(access);
       await this.teamAccess(access, session.generation);
     }
   }
@@ -176,12 +205,11 @@ export class LinearTaskAccess {
     const request = { ...options, signal: options?.signal ?? AbortSignal.timeout(10_000) };
     request.signal.throwIfAborted();
     const allowed =
-      getLinearTeamAccess(this.db, access) !== "removed" &&
-      (await this.team(access.teamId, request));
+      (await this.teamStatus(access)) !== "removed" && (await this.team(access.teamId, request));
     request.signal.throwIfAborted();
-    if (getLinearSessionGeneration(this.db, access.sessionId) !== generation) return false;
+    if ((await this.sessionGeneration(access.sessionId)) !== generation) return false;
     if (allowed) return this.allowed(access.sessionId);
-    advanceLinearSessionGeneration(this.db, access.sessionId, {
+    await advanceLinearSessionGenerationAsync(this.store, access.sessionId, {
       stop: true,
       now: (this.options.now ?? Date.now)(),
     });
@@ -191,18 +219,18 @@ export class LinearTaskAccess {
   }
 
   private async reconcileItems(
-    accept: (item: WorkItemRecord, sessionId: string) => boolean,
+    accept: (item: WorkItemRecord, sessionId: string) => Promise<boolean>,
   ): Promise<void> {
-    for (const item of listWorkItems(this.db)) {
+    for (const item of await this.store.run(listWorkItemsSteps)) {
       if (["cancelled", "completed", "merged", "failed"].includes(item.state)) continue;
       const sessionId = item.sessionKey;
-      if (sessionId === null || !accept(item, sessionId)) continue;
+      if (sessionId === null || !(await accept(item, sessionId))) continue;
       try {
         await this.assert(item, AbortSignal.timeout(10_000), { fresh: true });
       } catch (error) {
         if (
           error instanceof LinearAccessRemovedError ||
-          getWorkItem(this.db, item.id)?.state === "cancelled"
+          (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.state === "cancelled"
         ) {
           journalCaught(
             error,
@@ -244,20 +272,21 @@ export class LinearTaskAccess {
   ): Promise<void> {
     if (this.options.access === null || this.options.lifecycle === null)
       throw new Error("Linear is not connected.");
-    const generation = getLinearSessionGeneration(this.db, sessionId);
-    const current = () => {
+    const generation = await this.sessionGeneration(sessionId);
+    const current = async () => {
       signal.throwIfAborted();
       if (
         !options.isCurrent() ||
-        getLinearSessionGeneration(this.db, sessionId) !== generation ||
-        getLinearSessionAccess(this.db, sessionId) !== "allowed"
+        (await this.sessionGeneration(sessionId)) !== generation ||
+        (await this.sessionAccess(sessionId)) !== "allowed"
       )
         throw new LinearAccessRemovedError("Linear delivery access was stopped or superseded.");
     };
-    current();
+    await current();
     if (options.stop) return;
-    const itemId = options.itemId ?? workItemForSession(this.db, sessionId)?.id;
-    const item = itemId ? getWorkItem(this.db, itemId) : null;
+    const itemId =
+      options.itemId ?? (await this.store.run((q) => workItemForSessionSteps(q, sessionId)))?.id;
+    const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
     if (item && item.sessionKey !== sessionId)
       throw new Error("Linear delivery belongs to another session.");
     const verdict = item ? this.verdicts.get(verdictKey(item, sessionId, generation)) : undefined;
@@ -268,11 +297,11 @@ export class LinearTaskAccess {
       verdict.issues.every((issue) => this.permits(item, verdict.access, issue, true))
     )
       return;
-    const stored = options.fresh ? null : this.stored(sessionId);
+    const stored = options.fresh ? null : await this.stored(sessionId);
     const access = stored ?? (await this.options.access.session(sessionId, { signal }));
-    current();
-    if (stored === null) this.record(access);
-    current();
+    await current();
+    if (stored === null) await this.record(access);
+    await current();
     const issueIds = [access.issueId];
     if (options.issueId) issueIds.push(options.issueId);
     if (item) issueIds.push(item.linearIssueId);
@@ -281,24 +310,26 @@ export class LinearTaskAccess {
         issueId,
         { signal },
         options.fresh,
-        item ? undefined : (getLinearSession(this.db, sessionId)?.creatorId ?? null),
+        item ? undefined : ((await this.session(sessionId))?.creatorId ?? null),
       );
-      current();
+      await current();
       if (
         issue.id !== issueId ||
-        getLinearTeamAccess(this.db, { ...access, teamId: issue.teamId }) === "removed" ||
+        (await this.teamStatus({ ...access, teamId: issue.teamId })) === "removed" ||
         !(await this.team(issue.teamId, { signal }, options.fresh))
       )
         throw new LinearAccessRemovedError("Linear delivery team access was removed.");
-      current();
-      const required = item ? getLinearTaskDelegation(this.db, item.id, issue.id) : null;
+      await current();
+      const required = item
+        ? await this.store.run((q) => getLinearTaskDelegationSteps(q, item.id, issue.id))
+        : null;
       if (
         (issue.delegateId !== null && issue.delegateId !== access.appUserId) ||
         (required !== null && issue.delegateId !== required.appUserId)
       )
         throw new LinearAccessRemovedError("Linear delivery delegation access was removed.");
     }
-    current();
+    await current();
   }
 
   private async check(
@@ -312,7 +343,7 @@ export class LinearTaskAccess {
       throw new Error("Linear is not connected.");
     const sessionId = item.sessionKey;
     if (sessionId === null) throw new Error("Linear task has no verified session.");
-    const generation = getLinearSessionGeneration(this.db, sessionId);
+    const generation = await this.sessionGeneration(sessionId);
     const current = (allowUnknown = false) => {
       signal.throwIfAborted();
       const stored = getWorkItem(this.db, item.id);
@@ -346,7 +377,7 @@ export class LinearTaskAccess {
     const eligible: string[] = [];
     for (const issue of [...verdict.issues].reverse()) {
       current();
-      const actorId = delegatedLinearUserId(this.db, item.id);
+      const actorId = await this.store.run((q) => delegatedLinearUserIdSteps(q, item.id));
       const result = await this.options.lifecycle.startCodeIssue(
         { issueId: issue.id, appUserId: access.appUserId, actorId },
         {
@@ -389,10 +420,10 @@ export class LinearTaskAccess {
   ): Promise<AccessVerdict> {
     if (this.options.access === null || this.options.lifecycle === null)
       throw new Error("Linear is not connected.");
-    const stored = fresh ? null : this.stored(sessionId);
+    const stored = fresh ? null : await this.stored(sessionId);
     const access = stored ?? (await this.options.access.session(sessionId, { signal }));
     current(true);
-    if (stored === null) this.record(access);
+    if (stored === null) await this.record(access);
     current();
     const issues: LinearIssueOwnership[] = [];
     for (const issueId of new Set([access.issueId, item.linearIssueId])) {
@@ -448,9 +479,11 @@ export class LinearTaskAccess {
     );
   }
 
-  private stored(sessionId: string): LinearSessionInstallation | null {
-    const installation = getLinearSessionInstallation(this.db, sessionId);
-    const issueId = getLinearSession(this.db, sessionId)?.issueId;
+  private async stored(sessionId: string): Promise<LinearSessionInstallation | null> {
+    const installation = await this.store.run((q) =>
+      getLinearSessionInstallationSteps(q, sessionId),
+    );
+    const issueId = (await this.session(sessionId))?.issueId;
     if (!installation?.teamId || !issueId) return null;
     return {
       organizationId: installation.organizationId,
@@ -498,17 +531,21 @@ export class LinearTaskAccess {
     return false;
   }
 
-  private record(access: LinearSessionInstallation): void {
+  private async record(access: LinearSessionInstallation): Promise<void> {
     if (
       access.oauthClientId !== this.options.oauthClientId ||
       (this.options.appUserId !== null && access.appUserId !== this.options.appUserId)
     )
       throw new Error("The Linear credential belongs to another installation.");
-    ensureLinearSession(this.db, { sessionId: access.sessionId, issueId: access.issueId });
-    recordLinearInstallation(this.db, {
-      ...access,
-      observedAtMs: (this.options.now ?? Date.now)(),
-    });
+    await this.store.transaction((q) =>
+      ensureLinearSessionSteps(q, { sessionId: access.sessionId, issueId: access.issueId }),
+    );
+    await this.store.transaction((q) =>
+      recordLinearInstallationSteps(q, {
+        ...access,
+        observedAtMs: (this.options.now ?? Date.now)(),
+      }),
+    );
   }
 }
 

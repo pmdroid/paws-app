@@ -53,12 +53,12 @@ function waitingItem(kind: "agent" | "visual-review" = "agent") {
 }
 
 describe("a question whose elicitation died twice", () => {
-  test("is asked again through ask() with a fresh delivery", () => {
+  test("is asked again through ask() with a fresh delivery", async () => {
     const { db, question, job } = waitingItem();
     expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
     expect(listDeadDeliveries(db, "item-q")).toHaveLength(1);
 
-    const again = reaskDeadQuestion(db, {
+    const again = await reaskDeadQuestion(db, {
       itemId: "item-q",
       questionId: question.id,
       jobId: job,
@@ -84,10 +84,10 @@ describe("a question whose elicitation died twice", () => {
     expect(getJob(db, job)?.payload).toMatchObject({ questionId: question.id, reaskedAs: again });
   });
 
-  test("a visual review keeps its question and review, and is delivered again", () => {
+  test("a visual review keeps its question and review, and is delivered again", async () => {
     const { db, question, job } = waitingItem("visual-review");
 
-    const again = reaskDeadQuestion(db, {
+    const again = await reaskDeadQuestion(db, {
       itemId: "item-q",
       questionId: question.id,
       jobId: job,
@@ -107,11 +107,11 @@ describe("a question whose elicitation died twice", () => {
     expect(getJob(db, job)?.payload).toMatchObject({ reaskedAs: question.id });
   });
 
-  test("changes nothing once the item stopped waiting or the question was answered", () => {
+  test("changes nothing once the item stopped waiting or the question was answered", async () => {
     const moved = waitingItem();
     moved.db.run("UPDATE work_item SET state = 'running' WHERE id = 'item-q'");
     expect(
-      reaskDeadQuestion(moved.db, {
+      await reaskDeadQuestion(moved.db, {
         itemId: "item-q",
         questionId: moved.question.id,
         jobId: moved.job,
@@ -123,7 +123,7 @@ describe("a question whose elicitation died twice", () => {
     const answered = waitingItem();
     answered.db.run("UPDATE question SET status = 'answered' WHERE id = ?", [answered.question.id]);
     expect(
-      reaskDeadQuestion(answered.db, {
+      await reaskDeadQuestion(answered.db, {
         itemId: "item-q",
         questionId: answered.question.id,
         jobId: answered.job,
