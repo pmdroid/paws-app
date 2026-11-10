@@ -1,7 +1,8 @@
 import { isBlockerSatisfied } from "../core";
 import {
-  listDelegationExternalEvidence,
+  listDelegationExternalEvidenceSteps,
   listManagedBlockerItemsSteps,
+  sqliteDb,
   type Q,
   type Steps,
 } from "../db";
@@ -36,11 +37,13 @@ export type BlockerEvidence = {
   merge?: MergeEvidence;
 };
 
-export function readExternalBlockerEvidence(
+export async function readExternalBlockerEvidence(
   db: Database,
   target: { workspaceId: string; delegationId: string },
-): Record<string, BlockerEvidence> {
-  const saved = listDelegationExternalEvidence(db, target.workspaceId, target.delegationId);
+): Promise<Record<string, BlockerEvidence>> {
+  const saved = await sqliteDb(db).run((q) =>
+    listDelegationExternalEvidenceSteps(q, target.workspaceId, target.delegationId),
+  );
   const evidence: Record<string, BlockerEvidence> = {};
   for (const json of saved)
     for (const [id, entry] of Object.entries(JSON.parse(json) as Record<string, BlockerEvidence>))

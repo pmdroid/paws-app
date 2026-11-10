@@ -6,17 +6,20 @@ import {
   type WorkItemState,
 } from "../core";
 import {
-  applyWorkItemEvent,
-  emptyFailedAttempts,
-  insertItemContinuation,
-  insertIntakeItem,
-  listDelegationItems,
-  readActiveParentDelegation,
-  readDelegatedIntake,
-  readUnlandedAttempt,
-  saveTaskBlocks,
-  saveWorkItemLinearProject,
+  applyWorkItemEventSteps,
+  emptyFailedAttemptsSteps,
+  insertItemContinuationSteps,
+  insertIntakeItemSteps,
+  listDelegationItemsSteps,
+  readActiveParentDelegationSteps,
+  readDelegatedIntakeSteps,
+  readUnlandedAttemptSteps,
+  saveTaskBlocksSteps,
+  saveWorkItemLinearProjectSteps,
+  sqliteDb,
   stopSessionParentDelegation,
+  type Q,
+  type Steps,
   type WorkItemLinearProject,
 } from "../db";
 import type { DependencyEdge } from "../linear";
@@ -48,10 +51,18 @@ export function findAcceptedIntake(
   db: Database,
   linearIssueId: string,
   taskKey: string,
-): { delegation: StoredDelegation; items: StoredWorkItem[] } | null {
-  const delegated = readDelegatedIntake(db, linearIssueId, taskKey);
+): Promise<{ delegation: StoredDelegation; items: StoredWorkItem[] } | null> {
+  return sqliteDb(db).run((q) => findAcceptedIntakeSteps(q, linearIssueId, taskKey));
+}
+
+export function* findAcceptedIntakeSteps(
+  q: Q,
+  linearIssueId: string,
+  taskKey: string,
+): Steps<{ delegation: StoredDelegation; items: StoredWorkItem[] } | null> {
+  const delegated = yield* readDelegatedIntakeSteps(q, linearIssueId, taskKey);
   if (delegated) {
-    const items = listWorkItems(db, delegated.delegationId);
+    const items = yield* listDelegationItemsSteps(q, delegated.delegationId);
     return {
       delegation: {
         id: delegated.delegationId,
@@ -64,7 +75,7 @@ export function findAcceptedIntake(
       items,
     };
   }
-  const adopted = readAdoptedParent(db, linearIssueId);
+  const adopted = yield* readAdoptedParentSteps(q, linearIssueId);
   return adopted === null ? null : { delegation: adopted, items: [] };
 }
 
@@ -74,8 +85,11 @@ export function stopAdoptedParent(db: Database, sessionId: string, now: number):
 }
 
 /** The active delegation of a parent issue whose sub-issues each run in their own session. */
-export function readAdoptedParent(db: Database, linearIssueId: string): StoredDelegation | null {
-  const row = readActiveParentDelegation(db, linearIssueId);
+export function* readAdoptedParentSteps(
+  q: Q,
+  linearIssueId: string,
+): Steps<StoredDelegation | null> {
+  const row = yield* readActiveParentDelegationSteps(q, linearIssueId);
   return row === null
     ? null
     : {
@@ -88,12 +102,12 @@ export function readAdoptedParent(db: Database, linearIssueId: string): StoredDe
       };
 }
 
-export function listWorkItems(db: Database, delegationId: string): StoredWorkItem[] {
-  return listDelegationItems(db, delegationId);
+export function listWorkItems(db: Database, delegationId: string): Promise<StoredWorkItem[]> {
+  return sqliteDb(db).run((q) => listDelegationItemsSteps(q, delegationId));
 }
 
-export function insertRunningQueue(
-  db: Database,
+export function* insertRunningQueueSteps(
+  q: Q,
   input: {
     taskKey?: string;
     linearIssueId: string;
@@ -109,7 +123,7 @@ export function insertRunningQueue(
     /** Issues whose earlier item's branch and pull request the new item takes over. */
     continuations?: ReadonlyMap<string, EarlierAttempt>;
   },
-): { delegation: StoredDelegation; items: StoredWorkItem[] } {
+): Steps<{ delegation: StoredDelegation; items: StoredWorkItem[] }> {
   const delegationId = ulid(input.now);
   const items = input.ordered.map((node, position) => ({
     id: ulid(input.now + position + 1),
@@ -124,9 +138,9 @@ export function insertRunningQueue(
     version: 0,
   }));
   const blockedIssues = new Set(items.map((item) => item.linearIssueId));
-  const write = db.transaction(() => {
+  yield* q.transaction(function* (tx) {
     for (const item of items) {
-      insertIntakeItem(db, {
+      yield* insertIntakeItemSteps(tx, {
         id: item.id,
         delegationId: item.delegationId,
         linearIssueId: item.linearIssueId,
@@ -140,17 +154,17 @@ export function insertRunningQueue(
         sessionKey: input.sessionKey ?? null,
       });
       const continued = input.continuations?.get(item.linearIssueId);
-      if (continued) insertItemContinuation(db, item.id, continued.itemId, continued.branchName);
+      if (continued)
+        yield* insertItemContinuationSteps(tx, item.id, continued.itemId, continued.branchName);
       const project = input.projects?.get(item.linearIssueId);
-      if (project) saveWorkItemLinearProject(db, item.id, project);
+      if (project) yield* saveWorkItemLinearProjectSteps(tx, item.id, project);
     }
-    saveTaskBlocks(
-      db,
+    yield* saveTaskBlocksSteps(
+      tx,
       items.map((item) => item.linearIssueId),
       input.edges.filter((edge) => blockedIssues.has(edge.blockedLinearIssueId)),
     );
   });
-  write.immediate();
   return {
     delegation: {
       id: delegationId,
@@ -177,8 +191,11 @@ export type EarlierAttempt = {
  * The latest earlier item of the issue that ran and did not land: its branch may hold work a
  * new delegation continues. Merged and completed items leave nothing to continue.
  */
-export function readEarlierAttempt(db: Database, linearIssueId: string): EarlierAttempt | null {
-  const row = readUnlandedAttempt(db, linearIssueId);
+export function* readEarlierAttemptSteps(
+  q: Q,
+  linearIssueId: string,
+): Steps<EarlierAttempt | null> {
+  const row = yield* readUnlandedAttemptSteps(q, linearIssueId);
   return row === null
     ? null
     : {
@@ -199,7 +216,11 @@ function delegationState(items: readonly StoredWorkItem[]): DelegationState {
   return "done";
 }
 
-export function retireEmptyFailedAttempt(db: Database, issueId: string, sessionId: string): void {
-  for (const id of emptyFailedAttempts(db, issueId, sessionId))
-    applyWorkItemEvent(db, id, "cancel");
+export function* retireEmptyFailedAttemptSteps(
+  q: Q,
+  issueId: string,
+  sessionId: string,
+): Steps<void> {
+  for (const id of yield* emptyFailedAttemptsSteps(q, issueId, sessionId))
+    yield* applyWorkItemEventSteps(q, id, "cancel");
 }

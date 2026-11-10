@@ -8,34 +8,36 @@ import type {
   LinearSubIssue,
   TrackerAdapter,
 } from "../linear";
-import { readyItems, syncItemDependencies } from "./dependencies";
+import { readyItemsSteps, syncItemDependencies } from "./dependencies";
 import { ulid } from "./ulid";
 import { snapshotProject } from "./project";
 import {
-  clearDelegationDependencyScopes,
-  countDelegationReconciliationChange,
-  delegationHasOpenItem,
-  delegationReconciliationChanges,
-  deleteItemReconciliationEffect,
-  deleteItemReconciliationRequest,
-  insertIntakeItem,
-  itemReconciliationDue,
-  listItemReconciliationEffects,
-  listItemReconciliationRequests,
-  listPresentDelegationItems,
-  listReconciliationItems,
-  listReconciliationTargets,
-  listRelationItems,
-  listTaskBlockers,
-  markItemSpecificationAbsent,
-  readReconciliationIdentity,
-  recordBlockerChecks,
-  recordDelegationReconciled,
-  requestItemReconciliation,
-  saveItemReconciliationEffect,
-  saveItemSpecification,
-  saveWorkItemLinearProject,
-  updateReconciledWorkItem,
+  clearDelegationDependencyScopesSteps,
+  countDelegationReconciliationChangeSteps,
+  delegationHasOpenItemSteps,
+  delegationReconciliationChangesSteps,
+  deleteItemReconciliationEffectSteps,
+  deleteItemReconciliationRequestSteps,
+  insertIntakeItemSteps,
+  itemReconciliationDueSteps,
+  listItemReconciliationEffectsSteps,
+  listItemReconciliationRequestsSteps,
+  listPresentDelegationItemsSteps,
+  listReconciliationItemsSteps,
+  listReconciliationTargetsSteps,
+  listRelationItemsSteps,
+  listTaskBlockersSteps,
+  markItemSpecificationAbsentSteps,
+  readReconciliationIdentitySteps,
+  recordBlockerChecksSteps,
+  recordDelegationReconciledSteps,
+  requestItemReconciliationSteps,
+  saveItemReconciliationEffectSteps,
+  saveItemSpecificationSteps,
+  saveWorkItemLinearProjectSteps,
+  updateReconciledWorkItemSteps,
+  sqliteDb,
+  type Q,
 } from "../db";
 
 export const SWEEP_FULL_REFRESH_MS = 6 * 60 * 60_000;
@@ -70,11 +72,11 @@ export class UnreadBlockersError extends Error {
 type Target = { itemId: string; workspaceId: string; signal?: AbortSignal; known?: IntakeReads };
 type IssueChange = { issueId: string; organizationId: string; parentIssueId?: string | null };
 
-function authority(db: Database, target: Target) {
-  const row = readReconciliationIdentity(db, target.itemId, target.workspaceId);
+function* authoritySteps(q: Q, target: Target) {
+  const row = yield* readReconciliationIdentitySteps(q, target.itemId, target.workspaceId);
   if (!row) throw new Error("Item reconciliation authority changed");
   const { delegationId, ...identity } = row;
-  const items = listReconciliationItems(db, delegationId);
+  const items = yield* listReconciliationItemsSteps(q, delegationId);
   const active = items.filter((item) => item.present !== 0);
   if (new Set(active.map((item) => item.issueId)).size !== active.length)
     throw new Error("Item reconciliation item identities are ambiguous");
@@ -109,7 +111,7 @@ export function createItemReconciler(input: {
   ) => Promise<EpicSnapshot>;
   now?: () => number;
 }) {
-  const { db } = input;
+  const store = sqliteDb(input.db);
   const flights = new Map<string, { dirty: boolean; promise: Promise<void> }>();
   let sweepFlight: Promise<void> | null = null;
   const relationsFlights = new Map<string, Promise<Target[]>>();
@@ -120,10 +122,14 @@ export function createItemReconciler(input: {
   async function refresh(target: Target, requestToken: string) {
     target.signal?.throwIfAborted();
     const { tracker, lifecycle } = target.known ? knownReads(target.known) : input;
-    const initial = authority(db, target);
-    const captured = listItemReconciliationRequests(db, initial.delegationId);
+    const initial = await store.run((q) => authoritySteps(q, target));
+    const captured = await store.run((q) =>
+      listItemReconciliationRequestsSteps(q, initial.delegationId),
+    );
     const startedAt = now();
-    const seenChanges = delegationReconciliationChanges(db, initial.delegationId);
+    const seenChanges = await store.run((q) =>
+      delegationReconciliationChangesSteps(q, initial.delegationId),
+    );
     const loaded = await tracker.loadEpic(initial.identity.issueId);
     const snapshot = input.scopeSnapshot
       ? await input.scopeSnapshot(initial.identity.sessionId, loaded, target.signal)
@@ -146,134 +152,148 @@ export function createItemReconciler(input: {
       statuses.set(id, owned.stateType);
     }
     target.signal?.throwIfAborted();
-    const publication = db
-      .transaction(() => {
-        if (authority(db, target).token !== initial.token)
-          throw new Error("Item reconciliation authority changed");
-        const currentRequests = listItemReconciliationRequests(db, initial.delegationId);
-        if (
-          JSON.stringify(currentRequests) !== JSON.stringify(captured) ||
-          !currentRequests.some((row) => row.itemId === target.itemId && row.token === requestToken)
-        )
-          return null;
-        const change: ItemChanges = {
-          delegationId: initial.delegationId,
-          workspaceId: target.workspaceId,
-          sessionId: initial.identity.sessionId,
-          addedItemIds: [],
-          removedItemIds: [],
-          specChangedItemIds: [],
-          canceledItemIds: [],
-          parentCanceled: statuses.get(snapshot.linearIssueId) === "canceled",
-          issues: [],
+    const publication = await store.transaction(function* (q) {
+      if ((yield* authoritySteps(q, target)).token !== initial.token)
+        throw new Error("Item reconciliation authority changed");
+      const currentRequests = yield* listItemReconciliationRequestsSteps(q, initial.delegationId);
+      if (
+        JSON.stringify(currentRequests) !== JSON.stringify(captured) ||
+        !currentRequests.some((row) => row.itemId === target.itemId && row.token === requestToken)
+      )
+        return null;
+      const change: ItemChanges = {
+        delegationId: initial.delegationId,
+        workspaceId: target.workspaceId,
+        sessionId: initial.identity.sessionId,
+        addedItemIds: [],
+        removedItemIds: [],
+        specChangedItemIds: [],
+        canceledItemIds: [],
+        parentCanceled: statuses.get(snapshot.linearIssueId) === "canceled",
+        issues: [],
+      };
+      const desired = new Set(issues.map((issue) => issue.linearIssueId));
+      for (const item of initial.items) {
+        if (!desired.has(item.issueId) && item.present !== 0) change.removedItemIds.push(item.id);
+        if (!desired.has(item.issueId))
+          yield* markItemSpecificationAbsentSteps(
+            q,
+            item.id,
+            item.hash ?? specHash(JSON.parse(item.brief ?? "null")),
+          );
+      }
+      const byIssue = new Map(
+        initial.items.filter((item) => item.present !== 0).map((item) => [item.issueId, item]),
+      );
+      for (const [position, issue] of issues.entries()) {
+        const workBrief: WorkBrief = {
+          issue: brief(issue),
+          epic: issue.linearIssueId === snapshot.linearIssueId ? null : brief(snapshot),
         };
-        const desired = new Set(issues.map((issue) => issue.linearIssueId));
-        for (const item of initial.items) {
-          if (!desired.has(item.issueId) && item.present !== 0) change.removedItemIds.push(item.id);
-          if (!desired.has(item.issueId))
-            markItemSpecificationAbsent(
-              db,
-              item.id,
-              item.hash ?? specHash(JSON.parse(item.brief ?? "null")),
-            );
+        const hash = specHash(workBrief);
+        const existing = byIssue.get(issue.linearIssueId);
+        const id = existing?.id ?? ulid(now() + position);
+        if (!existing) {
+          const previousOccurrences = initial.items.filter(
+            (item) => item.issueId === issue.linearIssueId,
+          ).length;
+          const reappearance = previousOccurrences ? `:reappearance:${previousOccurrences}` : "";
+          yield* insertIntakeItemSteps(q, {
+            id,
+            delegationId: initial.delegationId,
+            linearIssueId: issue.linearIssueId,
+            linearIdentifier: issue.identifier,
+            title: issue.title,
+            branchName: `paws/${issue.identifier.toLowerCase()}${previousOccurrences ? `-r${previousOccurrences}` : ""}`,
+            position,
+            createdAt: now(),
+            brief: JSON.stringify(workBrief),
+            taskKey: `${initial.identity.taskKey ?? `initial:${snapshot.linearIssueId}`}:item:${issue.linearIssueId}${reappearance}`,
+            sessionKey: initial.identity.sessionId,
+          });
+          change.addedItemIds.push(id);
+        } else {
+          const previous = existing.hash ?? specHash(JSON.parse(existing.brief ?? "null"));
+          if (previous !== hash) change.specChangedItemIds.push(id);
+          yield* updateReconciledWorkItemSteps(q, id, {
+            brief: JSON.stringify(workBrief),
+            title: issue.title,
+            linearIdentifier: issue.identifier,
+            position,
+          });
         }
-        const byIssue = new Map(
-          initial.items.filter((item) => item.present !== 0).map((item) => [item.issueId, item]),
-        );
-        for (const [position, issue] of issues.entries()) {
-          const workBrief: WorkBrief = {
-            issue: brief(issue),
-            epic: issue.linearIssueId === snapshot.linearIssueId ? null : brief(snapshot),
-          };
-          const hash = specHash(workBrief);
-          const existing = byIssue.get(issue.linearIssueId);
-          const id = existing?.id ?? ulid(now() + position);
-          if (!existing) {
-            const previousOccurrences = initial.items.filter(
-              (item) => item.issueId === issue.linearIssueId,
-            ).length;
-            const reappearance = previousOccurrences ? `:reappearance:${previousOccurrences}` : "";
-            insertIntakeItem(db, {
-              id,
-              delegationId: initial.delegationId,
-              linearIssueId: issue.linearIssueId,
-              linearIdentifier: issue.identifier,
-              title: issue.title,
-              branchName: `paws/${issue.identifier.toLowerCase()}${previousOccurrences ? `-r${previousOccurrences}` : ""}`,
-              position,
-              createdAt: now(),
-              brief: JSON.stringify(workBrief),
-              taskKey: `${initial.identity.taskKey ?? `initial:${snapshot.linearIssueId}`}:item:${issue.linearIssueId}${reappearance}`,
-              sessionKey: initial.identity.sessionId,
-            });
-            change.addedItemIds.push(id);
-          } else {
-            const previous = existing.hash ?? specHash(JSON.parse(existing.brief ?? "null"));
-            if (previous !== hash) change.specChangedItemIds.push(id);
-            updateReconciledWorkItem(db, id, {
-              brief: JSON.stringify(workBrief),
-              title: issue.title,
-              linearIdentifier: issue.identifier,
-              position,
-            });
-          }
-          saveItemSpecification(db, id, hash);
-          const project = snapshotProject(issue);
-          if (project !== undefined) saveWorkItemLinearProject(db, id, project);
-          change.issues.push({ itemId: id, issue });
-          if (change.parentCanceled || statuses.get(issue.linearIssueId) === "canceled")
-            change.canceledItemIds.push(id);
-        }
-        if (
-          change.addedItemIds.length ||
-          change.removedItemIds.length ||
-          change.specChangedItemIds.length
-        )
-          clearDelegationDependencyScopes(db, initial.delegationId);
-        for (const [kind, ids] of [
-          ["spec", change.specChangedItemIds],
-          ["removed", change.removedItemIds],
-          ["canceled", change.canceledItemIds],
-        ] as const)
-          for (const id of ids)
-            saveItemReconciliationEffect(db, { itemId: id, kind, token: crypto.randomUUID() });
-        input.onChanges({ ...change });
-        const effects = listItemReconciliationEffects(db, initial.delegationId);
-        change.specChangedItemIds = effects
-          .filter((effect) => effect.kind === "spec")
-          .map((effect) => effect.itemId);
-        change.removedItemIds = effects
-          .filter((effect) => effect.kind === "removed")
-          .map((effect) => effect.itemId);
-        change.canceledItemIds = effects
-          .filter((effect) => effect.kind === "canceled")
-          .map((effect) => effect.itemId);
-        return { change, effects };
-      })
-      .immediate();
+        yield* saveItemSpecificationSteps(q, id, hash);
+        const project = snapshotProject(issue);
+        if (project !== undefined) yield* saveWorkItemLinearProjectSteps(q, id, project);
+        change.issues.push({ itemId: id, issue });
+        if (change.parentCanceled || statuses.get(issue.linearIssueId) === "canceled")
+          change.canceledItemIds.push(id);
+      }
+      if (
+        change.addedItemIds.length ||
+        change.removedItemIds.length ||
+        change.specChangedItemIds.length
+      )
+        yield* clearDelegationDependencyScopesSteps(q, initial.delegationId);
+      for (const [kind, ids] of [
+        ["spec", change.specChangedItemIds],
+        ["removed", change.removedItemIds],
+        ["canceled", change.canceledItemIds],
+      ] as const)
+        for (const id of ids)
+          yield* saveItemReconciliationEffectSteps(q, {
+            itemId: id,
+            kind,
+            token: crypto.randomUUID(),
+          });
+      input.onChanges({ ...change });
+      const effects = yield* listItemReconciliationEffectsSteps(q, initial.delegationId);
+      change.specChangedItemIds = effects
+        .filter((effect) => effect.kind === "spec")
+        .map((effect) => effect.itemId);
+      change.removedItemIds = effects
+        .filter((effect) => effect.kind === "removed")
+        .map((effect) => effect.itemId);
+      change.canceledItemIds = effects
+        .filter((effect) => effect.kind === "canceled")
+        .map((effect) => effect.itemId);
+      return { change, effects };
+    });
     if (publication === null) return;
     const changes = publication.change;
     await input.afterChanges?.(changes);
     target.signal?.throwIfAborted();
-    if (!changes.parentCanceled && delegationHasOpenItem(db, initial.delegationId)) {
-      const itemIds = listPresentDelegationItems(db, initial.delegationId).map((item) => item.id);
-      for (const itemId of itemIds)
-        await syncItemDependencies(db, {
+    if (
+      !changes.parentCanceled &&
+      (await store.run((q) => delegationHasOpenItemSteps(q, initial.delegationId)))
+    ) {
+      const items = await store.run((q) =>
+        listPresentDelegationItemsSteps(q, initial.delegationId),
+      );
+      for (const { id: itemId } of items)
+        await syncItemDependencies(input.db, {
           itemId,
           workspaceId: target.workspaceId,
-          expectedGeneration: readyItems(db, { itemId, workspaceId: target.workspaceId })
-            .generation,
+          expectedGeneration: (
+            await store.run((q) => readyItemsSteps(q, { itemId, workspaceId: target.workspaceId }))
+          ).generation,
           tracker,
           lifecycle,
           signal: target.signal,
         });
     }
-    db.transaction(() => {
-      recordDelegationReconciled(db, initial.delegationId, seenChanges, startedAt);
+    await store.transaction(function* (q) {
+      yield* recordDelegationReconciledSteps(q, initial.delegationId, seenChanges, startedAt);
       for (const request of captured)
-        deleteItemReconciliationRequest(db, request.itemId, target.workspaceId, request.token);
-      for (const effect of publication.effects) deleteItemReconciliationEffect(db, effect);
-    }).immediate();
+        yield* deleteItemReconciliationRequestSteps(
+          q,
+          request.itemId,
+          target.workspaceId,
+          request.token,
+        );
+      for (const effect of publication.effects)
+        yield* deleteItemReconciliationEffectSteps(q, effect);
+    });
   }
 
   function knownReads(known: IntakeReads) {
@@ -323,27 +343,25 @@ export function createItemReconciler(input: {
     });
   }
 
-  function reconcile(target: Target): Promise<void> {
-    if (shutdown.signal.aborted) return Promise.reject(shutdown.signal.reason);
-    if (target.signal?.aborted) return Promise.reject(target.signal.reason);
+  async function reconcile(target: Target): Promise<void> {
+    if (shutdown.signal.aborted) throw shutdown.signal.reason;
+    if (target.signal?.aborted) throw target.signal.reason;
     let delegationId: string;
     try {
-      delegationId = db
-        .transaction(() => {
-          const current = authority(db, target);
-          const accepted = requestItemReconciliation(
-            db,
-            target.itemId,
-            target.workspaceId,
-            crypto.randomUUID(),
-          );
-          if (!accepted) throw new Error("Item reconciliation workspace changed");
-          return current.delegationId;
-        })
-        .immediate();
+      delegationId = await store.transaction(function* (q) {
+        const current = yield* authoritySteps(q, target);
+        const accepted = yield* requestItemReconciliationSteps(
+          q,
+          target.itemId,
+          target.workspaceId,
+          crypto.randomUUID(),
+        );
+        if (!accepted) throw new Error("Item reconciliation workspace changed");
+        return current.delegationId;
+      });
     } catch (error) {
       journalCaught(error, "reconciliation.reconcile.immediate", target.itemId);
-      return Promise.reject(error);
+      throw error;
     }
     const key = JSON.stringify([target.workspaceId, delegationId]);
     const existing = flights.get(key);
@@ -353,11 +371,15 @@ export function createItemReconciler(input: {
     }
     const flight = { dirty: false, promise: Promise.resolve() };
     flight.promise = (async () => {
+      let served = false;
       try {
         do {
           flight.dirty = false;
-          const pending = listItemReconciliationRequests(db, delegationId);
+          const pending = await store.run((q) =>
+            listItemReconciliationRequestsSteps(q, delegationId),
+          );
           const request = pending.find((row) => row.itemId === target.itemId) ?? pending[0];
+          if (!request && served) break;
           if (!request) throw new Error("Item reconciliation request changed");
           const known = request.itemId === target.itemId ? target.known : undefined;
           target = { ...target, known: undefined };
@@ -370,6 +392,7 @@ export function createItemReconciler(input: {
             },
             request.token,
           );
+          served = true;
         } while (flight.dirty);
       } finally {
         flights.delete(key);
@@ -379,24 +402,27 @@ export function createItemReconciler(input: {
     return waitForFlight(flight.promise, target.signal);
   }
 
-  function activeTargets(issue?: IssueChange): Target[] {
-    return listReconciliationTargets(db, issue);
+  function activeTargets(issue?: IssueChange): Promise<Target[]> {
+    return store.run((q) => listReconciliationTargetsSteps(q, issue));
   }
 
   async function issueChanged(issue: IssueChange) {
     shutdown.signal.throwIfAborted();
     if (!issue.issueId || !issue.organizationId)
       throw new Error("Missing Linear issue event identity");
-    const targets = activeTargets(issue);
-    db.transaction(() => {
-      for (const target of targets) countDelegationReconciliationChange(db, target.itemId);
-    }).immediate();
+    const targets = await activeTargets(issue);
+    await store.transaction(function* (q) {
+      for (const target of targets)
+        yield* countDelegationReconciliationChangeSteps(q, target.itemId);
+    });
     await Promise.all(targets.map(reconcile));
     return targets;
   }
 
-  function due(target: Target, time: number): boolean {
-    return itemReconciliationDue(db, target.itemId, time - SWEEP_FULL_REFRESH_MS);
+  function due(target: Target, time: number): Promise<boolean> {
+    return store.run((q) =>
+      itemReconciliationDueSteps(q, target.itemId, time - SWEEP_FULL_REFRESH_MS),
+    );
   }
 
   function sweep(options: { now?: number; signal?: AbortSignal } = {}): Promise<void> {
@@ -405,10 +431,11 @@ export function createItemReconciler(input: {
     const time = options.now ?? now();
     sweepFlight = (async () => {
       try {
+        const targets: Target[] = [];
+        for (const target of await activeTargets())
+          if (await due(target, time)) targets.push(target);
         await Promise.all(
-          activeTargets()
-            .filter((target) => due(target, time))
-            .map((target) => reconcile({ ...target, signal: options.signal })),
+          targets.map((target) => reconcile({ ...target, signal: options.signal })),
         );
       } finally {
         sweepFlight = null;
@@ -418,10 +445,12 @@ export function createItemReconciler(input: {
   }
 
   function relationItems(scope: RelationsScope) {
-    return listRelationItems(db, {
-      blockedOnly: scope !== "all",
-      itemId: typeof scope === "object" ? scope.itemId : undefined,
-    });
+    return store.run((q) =>
+      listRelationItemsSteps(q, {
+        blockedOnly: scope !== "all",
+        itemId: typeof scope === "object" ? scope.itemId : undefined,
+      }),
+    );
   }
 
   async function readBlockers(items: readonly { itemId: string; issueId: string }[]) {
@@ -455,8 +484,8 @@ export function createItemReconciler(input: {
     return read;
   }
 
-  function blockedItemIds(): string[] {
-    return relationItems("blocked").map((item) => item.itemId);
+  async function blockedItemIds(): Promise<string[]> {
+    return (await relationItems("blocked")).map((item) => item.itemId);
   }
 
   /**
@@ -474,17 +503,19 @@ export function createItemReconciler(input: {
     if (running) return running;
     const flight = (async () => {
       try {
-        const items = relationItems(scope);
+        const items = await relationItems(scope);
         options.signal?.throwIfAborted();
         shutdown.signal.throwIfAborted();
         const checkedAt = now();
         const read = await readBlockers(items);
         options.signal?.throwIfAborted();
         shutdown.signal.throwIfAborted();
-        recordBlockerChecks(
-          db,
-          items.filter((item) => read.has(item.issueId)).map((item) => item.itemId),
-          checkedAt,
+        await store.transaction((q) =>
+          recordBlockerChecksSteps(
+            q,
+            items.filter((item) => read.has(item.issueId)).map((item) => item.itemId),
+            checkedAt,
+          ),
         );
         if (typeof scope === "object" && items.some((item) => !read.has(item.issueId)))
           throw new UnreadBlockersError();
@@ -492,15 +523,15 @@ export function createItemReconciler(input: {
         for (const item of items) {
           const blockers = read.get(item.issueId);
           if (!blockers || changed.has(item.delegationId)) continue;
-          const saved = new Set(listTaskBlockers(db, item.issueId));
+          const saved = new Set(await store.run((q) => listTaskBlockersSteps(q, item.issueId)));
           const found = new Set(blockers);
           if (found.size !== saved.size || [...found].some((id) => !saved.has(id)))
             changed.set(item.delegationId, { itemId: item.itemId, workspaceId: item.workspaceId });
         }
-        db.transaction(() => {
+        await store.transaction(function* (q) {
           for (const target of changed.values())
-            countDelegationReconciliationChange(db, target.itemId);
-        }).immediate();
+            yield* countDelegationReconciliationChangeSteps(q, target.itemId);
+        });
         await Promise.all(
           [...changed.values()].map((target) => reconcile({ ...target, signal: options.signal })),
         );

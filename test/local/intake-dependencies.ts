@@ -222,7 +222,8 @@ export async function probeDependencySnapshots(
     db.run("PRAGMA busy_timeout=0");
     const beforeBusy = readyItems(db, target).generation;
     try {
-      await assert.rejects(refresh, /locked/);
+      // The store's BEGIN IMMEDIATE wraps SQLITE_BUSY in a DrizzleError; the lock is its cause.
+      await assert.rejects(refresh, (error: Error) => /locked/.test(String(error.cause)));
       assert.equal(readyItems(db, target).generation, beforeBusy);
     } finally {
       owner.run("ROLLBACK");
