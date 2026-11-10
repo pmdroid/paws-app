@@ -1,24 +1,28 @@
 import type { Database } from "bun:sqlite";
 import {
-  cancelImprovementEvidenceComment,
-  decideImprovement,
-  immediate,
-  improvementWithdrawable,
-  listImprovementCriteria,
-  listImprovementActions,
-  listImprovementDecisions,
-  listImprovementDeliveries,
-  listImprovementProposals,
-  listRetroEvidence,
+  cancelImprovementEvidenceCommentSteps,
+  decideImprovementSteps,
+  improvementWithdrawableSteps,
+  listImprovementActionsSteps,
+  listImprovementCriteriaSteps,
+  listImprovementDecisionsSteps,
+  listImprovementDeliveriesSteps,
+  listImprovementProposalsSteps,
+  listRetroEvidenceSteps,
   listWorkspaceRepositories,
+  listWorkspaceRepositoriesSteps,
   listWorkspaceRepositoryNames,
-  repairImprovementDestination,
-  requeueImprovementDelivery,
+  repairImprovementDestinationSteps,
+  requeueImprovementDeliverySteps,
+  sqliteDb,
   workspaceMember,
   workspaceMemberUsable,
   type ImprovementDelivery,
   type ImprovementProposal,
   type ImprovementReview,
+  type Q,
+  type RetroEvidence,
+  type Steps,
 } from "../db";
 import { inboxCounts, listInboxItems, type ImprovementAccess, type InboxItem } from "./inbox";
 
@@ -124,8 +128,11 @@ const deliveryStatus = (state: ImprovementDelivery["state"]): DeliveryView["stat
         ? "succeeded"
         : "pending";
 
-function effectiveCriterion(db: Database, item: InboxItem): string | null {
-  return listImprovementCriteria(db, item.improvement.id).at(-1)?.criterion ?? item.criterion;
+function* effectiveCriterionSteps(q: Q, item: InboxItem): Steps<string | null> {
+  return (
+    (yield* listImprovementCriteriaSteps(q, item.improvement.id)).at(-1)?.criterion ??
+    item.criterion
+  );
 }
 
 const STRANDED: readonly (ImprovementDelivery["blocked"] & string)[] = [
@@ -162,10 +169,15 @@ function deliveryRecovery(
   return null;
 }
 
-export function improvementView(db: Database, item: InboxItem): ImprovementView {
+export function improvementView(db: Database, item: InboxItem): Promise<ImprovementView> {
+  return sqliteDb(db).run((q) => improvementViewSteps(q, item));
+}
+
+function* improvementViewSteps(q: Q, item: InboxItem): Steps<ImprovementView> {
   const { improvement, proposal } = item;
   const { improvementId: _id, contentSha256: _sha, ...shown } = proposal;
-  const deliveries = listImprovementDeliveries(db, improvement.id);
+  const deliveries = yield* listImprovementDeliveriesSteps(q, improvement.id);
+  const criterion = yield* effectiveCriterionSteps(q, item);
   return {
     id: improvement.id,
     version: improvement.version,
@@ -174,7 +186,7 @@ export function improvementView(db: Database, item: InboxItem): ImprovementView 
     lifecycle: item.lifecycle,
     reviewState: improvement.reviewState,
     proposal: shown,
-    criterion: effectiveCriterion(db, item),
+    criterion,
     decision: {
       proposalVersion: improvement.reviewedProposal,
       intent: improvement.intent,
@@ -229,7 +241,12 @@ export type InboxFilter = {
   limit?: number;
 };
 
-export function listImprovementPage(db: Database, access: ImprovementAccess, filter: InboxFilter) {
+export async function listImprovementPage(
+  db: Database,
+  access: ImprovementAccess,
+  filter: InboxFilter,
+) {
+  const store = sqliteDb(db);
   const all = listInboxItems(db, access);
   const kind =
     filter.source === undefined
@@ -250,8 +267,10 @@ export function listImprovementPage(db: Database, access: ImprovementAccess, fil
     IMPROVEMENT_REVIEW_LIMITS.maxPageSize,
   );
   const page = matching.slice(offset, offset + limit);
+  const items: ImprovementView[] = [];
+  for (const item of page) items.push(await store.run((q) => improvementViewSteps(q, item)));
   return {
-    items: page.map((item) => improvementView(db, item)),
+    items,
     matching: matching.length,
     counts: inboxCounts(all),
     repositories: [...new Set(all.map((item) => item.improvement.repository))].sort(),
@@ -277,7 +296,28 @@ export function improvementDestinations(
   reviewer: ImprovementReviewer,
   repository: string,
 ): string[] {
-  const teams = listWorkspaceRepositories(db, reviewer.workspaceId)
+  return destinationTeams(
+    listWorkspaceRepositories(db, reviewer.workspaceId),
+    reviewer,
+    repository,
+  );
+}
+
+function* improvementDestinationsSteps(
+  q: Q,
+  reviewer: ImprovementReviewer,
+  repository: string,
+): Steps<string[]> {
+  const entries = yield* listWorkspaceRepositoriesSteps(q, reviewer.workspaceId);
+  return destinationTeams(entries, reviewer, repository);
+}
+
+function destinationTeams(
+  entries: readonly { repository: string; teamId: string }[],
+  reviewer: ImprovementReviewer,
+  repository: string,
+): string[] {
+  const teams = entries
     .filter((entry) => entry.repository.toLowerCase() === repository.toLowerCase())
     .map((entry) => entry.teamId);
   return [
@@ -287,7 +327,7 @@ export function improvementDestinations(
   ];
 }
 
-function evidenceOf(db: Database, access: ImprovementAccess, item: InboxItem) {
+function* evidenceOfSteps(q: Q, access: ImprovementAccess, item: InboxItem) {
   if (item.sourceKind === "daily_finding")
     return item.members.map((member) => ({
       kind: "review_finding" as const,
@@ -297,28 +337,31 @@ function evidenceOf(db: Database, access: ImprovementAccess, item: InboxItem) {
       status: member.status,
       lastSeenAt: member.lastSeenAt,
     }));
-  const byRetro = new Map<string, Map<string, ReturnType<typeof listRetroEvidence>[number]>>();
-  return item.proposal.evidence.flatMap((ref) => {
+  const byRetro = new Map<string, Map<string, RetroEvidence>>();
+  const evidence = [];
+  for (const ref of item.proposal.evidence) {
     const [, retroId = "", evidenceId = ""] = ref.split(":");
     if (!byRetro.has(retroId))
-      byRetro.set(retroId, new Map(listRetroEvidence(db, retroId).map((e) => [e.evidenceId, e])));
-    const entry = byRetro.get(retroId)!.get(evidenceId);
-    if (!entry || access.retroEvidence?.(retroId)?.has(evidenceId) === false) return [];
-    return [
-      {
-        kind: "retro_evidence" as const,
-        ref,
+      byRetro.set(
         retroId,
-        repository: entry.repository,
-        sourceKind: entry.sourceKind,
-        occurredAt: entry.occurredAt,
-        excerpt: entry.excerpt,
-      },
-    ];
-  });
+        new Map((yield* listRetroEvidenceSteps(q, retroId)).map((e) => [e.evidenceId, e])),
+      );
+    const entry = byRetro.get(retroId)!.get(evidenceId);
+    if (!entry || access.retroEvidence?.(retroId)?.has(evidenceId) === false) continue;
+    evidence.push({
+      kind: "retro_evidence" as const,
+      ref,
+      retroId,
+      repository: entry.repository,
+      sourceKind: entry.sourceKind,
+      occurredAt: entry.occurredAt,
+      excerpt: entry.excerpt,
+    });
+  }
+  return evidence;
 }
 
-export function improvementDetail(
+export async function improvementDetail(
   db: Database,
   reviewer: ImprovementReviewer,
   improvementId: string,
@@ -341,25 +384,34 @@ export function improvementDetail(
     entry.improvements.push(other.improvement.id);
     known.set(key, entry);
   }
-  const evidence = evidenceOf(db, reviewer, item);
-  const visibleRefs = new Set(
-    item.sourceKind === "daily_finding"
-      ? item.members.map((member) => `review_finding:${member.key}`)
-      : evidence.map((entry) => entry.ref),
-  );
-  return {
-    item: improvementView(db, item),
-    proposals: listImprovementProposals(db, improvementId)
-      .filter((proposal) => proposal.evidence.every((ref) => visibleRefs.has(ref)))
-      .map(({ improvementId: _id, contentSha256: _sha, ...proposal }) => proposal),
-    decisions: listImprovementDecisions(db, improvementId).map(
-      ({ improvementId: _id, ...decision }) => decision,
-    ),
-    criteria: listImprovementCriteria(db, improvementId),
-    evidence,
-    destinations: improvementDestinations(db, reviewer, item.improvement.repository),
-    candidates: [...known.values()].slice(0, IMPROVEMENT_REVIEW_LIMITS.candidates),
-  };
+  return sqliteDb(db).run(function* (q) {
+    const evidence = yield* evidenceOfSteps(q, reviewer, item);
+    const visibleRefs = new Set(
+      item.sourceKind === "daily_finding"
+        ? item.members.map((member) => `review_finding:${member.key}`)
+        : evidence.map((entry) => entry.ref),
+    );
+    const view = yield* improvementViewSteps(q, item);
+    const proposals = yield* listImprovementProposalsSteps(q, improvementId);
+    const decisions = yield* listImprovementDecisionsSteps(q, improvementId);
+    const criteria = yield* listImprovementCriteriaSteps(q, improvementId);
+    const destinations = yield* improvementDestinationsSteps(
+      q,
+      reviewer,
+      item.improvement.repository,
+    );
+    return {
+      item: view,
+      proposals: proposals
+        .filter((proposal) => proposal.evidence.every((ref) => visibleRefs.has(ref)))
+        .map(({ improvementId: _id, contentSha256: _sha, ...proposal }) => proposal),
+      decisions: decisions.map(({ improvementId: _id, ...decision }) => decision),
+      criteria,
+      evidence,
+      destinations,
+      candidates: [...known.values()].slice(0, IMPROVEMENT_REVIEW_LIMITS.candidates),
+    };
+  });
 }
 
 export type ImprovementDecisionOutcome =
@@ -373,7 +425,11 @@ export type ImprovementDecisionOutcome =
       issue?: LinkableIssue;
     };
 
-function sameDecision(db: Database, item: InboxItem, request: ImprovementDecisionRequest) {
+function* sameDecisionSteps(
+  q: Q,
+  item: InboxItem,
+  request: ImprovementDecisionRequest,
+): Steps<boolean> {
   const current = item.improvement;
   if (request.kind === "reopen") return current.reviewState === "needs_review";
   if (request.kind === "reject")
@@ -381,7 +437,7 @@ function sameDecision(db: Database, item: InboxItem, request: ImprovementDecisio
   if (current.reviewState !== "accepted" || current.reviewedProposal !== request.proposalVersion)
     return false;
   const intent = request.intent;
-  const deliveries = listImprovementDeliveries(db, current.id);
+  const deliveries = yield* listImprovementDeliveriesSteps(q, current.id);
   const frozen = deliveries.find(
     (d) => d.operation === (intent.kind === "create" ? "create_issue" : "link_issue"),
   );
@@ -420,38 +476,42 @@ const CONFLICT_MESSAGE = {
     "Paws already created a Linear issue for this improvement before it returned to review. Link an existing issue instead of creating a replacement.",
 } as const;
 
-function recoveredCreatedIssue(db: Database, improvementId: string): boolean {
-  return listImprovementActions(db, improvementId).some(
+function* recoveredCreatedIssueSteps(q: Q, improvementId: string): Steps<boolean> {
+  return (yield* listImprovementActionsSteps(q, improvementId)).some(
     (action) => action.action === "return_to_review" && action.detail["createdIssue"] !== undefined,
   );
 }
 
-function destinationRefusal(
-  db: Database,
+function* destinationRefusalSteps(
+  q: Q,
   reviewer: ImprovementReviewer,
   item: InboxItem,
   teamId: string,
-): ImprovementDecisionOutcome | null {
-  if (improvementDestinations(db, reviewer, item.improvement.repository).includes(teamId))
+): Steps<ImprovementDecisionOutcome | null> {
+  if (
+    (yield* improvementDestinationsSteps(q, reviewer, item.improvement.repository)).includes(teamId)
+  )
     return null;
   return {
     status: "forbidden",
     reason: "destination",
     message: "Choose a Linear team mapped to this repository that you belong to.",
-    item: improvementView(db, item),
+    item: yield* improvementViewSteps(q, item),
   };
 }
 
-function linkRefusal(
-  db: Database,
+function* linkRefusalSteps(
+  q: Q,
   reviewer: ImprovementReviewer,
   item: InboxItem,
   linked: LinkableIssue | null,
   allowClosed: boolean,
-): ImprovementDecisionOutcome | null {
+): Steps<ImprovementDecisionOutcome | null> {
   const readableTeams =
     reviewer.role === "admin"
-      ? listWorkspaceRepositories(db, reviewer.workspaceId).map((entry) => entry.teamId)
+      ? (yield* listWorkspaceRepositoriesSteps(q, reviewer.workspaceId)).map(
+          (entry) => entry.teamId,
+        )
       : reviewer.teamIds;
   if (linked === null || !readableTeams.includes(linked.teamId))
     return {
@@ -459,13 +519,17 @@ function linkRefusal(
       reason: "issue_not_found",
       message: "That Linear issue does not exist or Paws cannot read it.",
     };
-  if (!improvementDestinations(db, reviewer, item.improvement.repository).includes(linked.teamId))
+  if (
+    !(yield* improvementDestinationsSteps(q, reviewer, item.improvement.repository)).includes(
+      linked.teamId,
+    )
+  )
     return {
       status: "conflict",
       reason: "team_mismatch",
       message:
         "That issue belongs to a team outside this repository's mapping. Choose another issue or create one.",
-      item: improvementView(db, item),
+      item: yield* improvementViewSteps(q, item),
     };
   if (linked.state === "closed" && !allowClosed)
     return {
@@ -473,7 +537,7 @@ function linkRefusal(
       reason: "issue_closed",
       message:
         "That issue is closed. Linking does not reopen it. Confirm the link to a closed issue, or create a new one.",
-      item: improvementView(db, item),
+      item: yield* improvementViewSteps(q, item),
       issue: linked,
     } as ImprovementDecisionOutcome;
   return null;
@@ -492,6 +556,7 @@ export async function decideInboxItem(
     now: () => number;
   },
 ): Promise<ImprovementDecisionOutcome> {
+  const store = sqliteDb(db);
   const { reviewer, request } = input;
   const notFound = {
     status: "not_found",
@@ -500,80 +565,89 @@ export async function decideInboxItem(
   } as const;
   const first = findInboxItem(db, reviewer, input.improvementId);
   if (!first) return notFound;
-  if (sameDecision(db, first, request))
-    return { status: "unchanged", item: improvementView(db, first) };
-  const conflict = (item: InboxItem, reason: keyof typeof CONFLICT_MESSAGE) =>
-    ({
+  function* conflict(q: Q, item: InboxItem, reason: keyof typeof CONFLICT_MESSAGE) {
+    return {
       status: "conflict",
       reason,
       message: CONFLICT_MESSAGE[reason],
-      item: improvementView(db, item),
-    }) as const;
-  if (first.improvement.version !== input.expectedVersion) return conflict(first, "stale");
-  if (
-    first.improvement.reviewState === "accepted" &&
-    !(request.kind === "reopen" && improvementWithdrawable(db, first.improvement.id))
-  )
-    return conflict(first, "accepted");
-
-  let linked: LinkableIssue | null = null;
-  if (request.kind === "accept") {
+      item: yield* improvementViewSteps(q, item),
+    } as const;
+  }
+  const checked = await store.run(function* (q): Steps<ImprovementDecisionOutcome | null> {
+    if (yield* sameDecisionSteps(q, first, request))
+      return { status: "unchanged", item: yield* improvementViewSteps(q, first) };
+    if (first.improvement.version !== input.expectedVersion)
+      return yield* conflict(q, first, "stale");
+    if (
+      first.improvement.reviewState === "accepted" &&
+      !(request.kind === "reopen" && (yield* improvementWithdrawableSteps(q, first.improvement.id)))
+    )
+      return yield* conflict(q, first, "accepted");
+    if (request.kind !== "accept") return null;
     if (request.proposalVersion !== first.proposal.version)
-      return conflict(first, "proposal_changed");
+      return yield* conflict(q, first, "proposal_changed");
     const criterion = request.verificationCriterion?.trim();
-    if (!criterion && !effectiveCriterion(db, first))
+    if (!criterion && !(yield* effectiveCriterionSteps(q, first)))
       return {
         status: "invalid",
         reason: "criterion_required",
         message: "Add a verification criterion: how will we know this improvement worked?",
-        item: improvementView(db, first),
+        item: yield* improvementViewSteps(q, first),
       };
     const intent = request.intent;
-    if (intent.kind === "create") {
-      if (first.issue) return conflict(first, "known_issue");
-      if (recoveredCreatedIssue(db, first.improvement.id))
-        return conflict(first, "recovered_issue");
-      const refused = destinationRefusal(db, reviewer, first, intent.teamId);
-      if (refused) return refused;
-    } else {
-      if (!input.lookup)
-        return {
-          status: "unavailable",
-          reason: "linear_unavailable",
-          message: "Linear is unavailable. Your decision was not saved; try again.",
-        };
-      try {
-        linked = await input.lookup(intent.issue, input.signal);
-      } catch {
-        return {
-          status: "unavailable",
-          reason: "linear_unavailable",
-          message: "Linear is unavailable. Your decision was not saved; try again.",
-        };
-      }
-      const refused = linkRefusal(db, reviewer, first, linked, intent.allowClosed === true);
-      if (refused) return refused;
+    if (intent.kind !== "create") return null;
+    if (first.issue) return yield* conflict(q, first, "known_issue");
+    if (yield* recoveredCreatedIssueSteps(q, first.improvement.id))
+      return yield* conflict(q, first, "recovered_issue");
+    return yield* destinationRefusalSteps(q, reviewer, first, intent.teamId);
+  });
+  if (checked) return checked;
+
+  let linked: LinkableIssue | null = null;
+  if (request.kind === "accept" && request.intent.kind === "link") {
+    const intent = request.intent;
+    if (!input.lookup)
+      return {
+        status: "unavailable",
+        reason: "linear_unavailable",
+        message: "Linear is unavailable. Your decision was not saved; try again.",
+      };
+    try {
+      linked = await input.lookup(intent.issue, input.signal);
+    } catch {
+      return {
+        status: "unavailable",
+        reason: "linear_unavailable",
+        message: "Linear is unavailable. Your decision was not saved; try again.",
+      };
     }
+    const found = linked;
+    const refused = await store.run((q) =>
+      linkRefusalSteps(q, reviewer, first, found, intent.allowClosed === true),
+    );
+    if (refused) return refused;
   }
 
-  return immediate(db, (): ImprovementDecisionOutcome => {
+  return store.transaction(function* (q): Steps<ImprovementDecisionOutcome> {
     const current = input.reauthorize ? input.reauthorize() : reviewer;
     if (!current) return notFound;
     const item = findInboxItem(db, current, input.improvementId);
     if (!item) return notFound;
-    if (sameDecision(db, item, request))
-      return { status: "unchanged", item: improvementView(db, item) };
-    if (item.improvement.version !== input.expectedVersion) return conflict(item, "stale");
+    if (yield* sameDecisionSteps(q, item, request))
+      return { status: "unchanged", item: yield* improvementViewSteps(q, item) };
+    if (item.improvement.version !== input.expectedVersion)
+      return yield* conflict(q, item, "stale");
     if (request.kind === "accept") {
       const refused =
         request.intent.kind === "create"
-          ? destinationRefusal(db, current, item, request.intent.teamId)
-          : linkRefusal(db, current, item, linked, request.intent.allowClosed === true);
+          ? yield* destinationRefusalSteps(q, current, item, request.intent.teamId)
+          : yield* linkRefusalSteps(q, current, item, linked, request.intent.allowClosed === true);
       if (refused) return refused;
     }
-    if (item.legacy.some((action) => action.kind !== "dismissed")) return conflict(item, "legacy");
+    if (item.legacy.some((action) => action.kind !== "dismissed"))
+      return yield* conflict(q, item, "legacy");
     if (request.kind === "accept" && item.proposal.version !== request.proposalVersion)
-      return conflict(item, "proposal_changed");
+      return yield* conflict(q, item, "proposal_changed");
     let review: ImprovementReview;
     let content: Record<string, unknown> | undefined;
     let criterion: string | undefined;
@@ -589,7 +663,7 @@ export async function decideInboxItem(
         problem: proposal.problem,
         proposedChange: proposal.proposedChange,
         actionStep: proposal.actionStep,
-        verificationCriterion: criterion ?? effectiveCriterion(db, item),
+        verificationCriterion: criterion ?? (yield* effectiveCriterionSteps(q, item)),
         evidence: proposal.evidence,
         ...(linked
           ? {
@@ -620,7 +694,7 @@ export async function decideInboxItem(
         request.kind === "reject"
           ? { kind: "reject", reason: request.reason.trim() }
           : { kind: "reopen" };
-    const result = decideImprovement(db, {
+    const decision = {
       improvementId: item.improvement.id,
       expectedVersion: input.expectedVersion,
       review,
@@ -628,17 +702,21 @@ export async function decideInboxItem(
       now: input.now(),
       ...(content ? { content } : {}),
       ...(criterion ? { criterion } : {}),
-    });
+    };
+    const result = yield* q.transaction((tx) => decideImprovementSteps(tx, decision));
     if (result.ok)
       return {
         status: "decided",
-        item: improvementView(db, findInboxItem(db, current, item.improvement.id) ?? item),
+        item: yield* improvementViewSteps(
+          q,
+          findInboxItem(db, current, item.improvement.id) ?? item,
+        ),
       };
     if (result.reason === "unchanged")
-      return { status: "unchanged", item: improvementView(db, item) };
-    if (result.reason === "unknown_proposal") return conflict(item, "proposal_changed");
+      return { status: "unchanged", item: yield* improvementViewSteps(q, item) };
+    if (result.reason === "unknown_proposal") return yield* conflict(q, item, "proposal_changed");
     if (result.reason === "not_found") return notFound;
-    return conflict(item, result.reason);
+    return yield* conflict(q, item, result.reason);
   });
 }
 
@@ -649,11 +727,13 @@ export type DeliveryRetryOutcome =
 export function retryInboxDelivery(
   db: Database,
   input: { access: ImprovementAccess; improvementId: string; deliveryId: string; now: number },
-): DeliveryRetryOutcome {
-  return immediate(db, (): DeliveryRetryOutcome => {
+): Promise<DeliveryRetryOutcome> {
+  return sqliteDb(db).transaction(function* (q): Steps<DeliveryRetryOutcome> {
     const item = findInboxItem(db, input.access, input.improvementId);
     const delivery = item
-      ? listImprovementDeliveries(db, item.improvement.id).find((d) => d.id === input.deliveryId)
+      ? (yield* listImprovementDeliveriesSteps(q, item.improvement.id)).find(
+          (d) => d.id === input.deliveryId,
+        )
       : undefined;
     if (!item || !delivery)
       return {
@@ -662,20 +742,21 @@ export function retryInboxDelivery(
         message: "This delivery is not in your inbox. Refresh the item.",
       };
     if (delivery.state === "succeeded")
-      return { status: "succeeded", item: improvementView(db, item) };
+      return { status: "succeeded", item: yield* improvementViewSteps(q, item) };
     if (delivery.state === "unknown" && delivery.blocked === null)
       return {
         status: "conflict",
         reason: "reconciling",
         message:
           "Paws does not know whether this write reached Linear. It checks the same operation before trying again.",
-        item: improvementView(db, item),
+        item: yield* improvementViewSteps(q, item),
       };
     const requeued =
-      requeueImprovementDelivery(db, { deliveryId: delivery.id, now: input.now }) !== null;
+      (yield* requeueImprovementDeliverySteps(q, { deliveryId: delivery.id, now: input.now })) !==
+      null;
     return {
       status: requeued ? "requeued" : "in_progress",
-      item: improvementView(db, item),
+      item: yield* improvementViewSteps(q, item),
     };
   });
 }
@@ -689,11 +770,15 @@ export function repairInboxDestination(
     teamId: string;
     now: number;
   },
-): DeliveryRetryOutcome | ImprovementDecisionOutcome {
-  return immediate(db, (): DeliveryRetryOutcome | ImprovementDecisionOutcome => {
+): Promise<DeliveryRetryOutcome | ImprovementDecisionOutcome> {
+  return sqliteDb(db).transaction(function* (q): Steps<
+    DeliveryRetryOutcome | ImprovementDecisionOutcome
+  > {
     const item = findInboxItem(db, input.reviewer, input.improvementId);
     const delivery = item
-      ? listImprovementDeliveries(db, item.improvement.id).find((d) => d.id === input.deliveryId)
+      ? (yield* listImprovementDeliveriesSteps(q, item.improvement.id)).find(
+          (d) => d.id === input.deliveryId,
+        )
       : undefined;
     if (!item || !delivery)
       return {
@@ -701,10 +786,10 @@ export function repairInboxDestination(
         reason: "not_found",
         message: "This delivery is not in your inbox. Refresh the item.",
       };
-    const refused = destinationRefusal(db, input.reviewer, item, input.teamId);
+    const refused = yield* destinationRefusalSteps(q, input.reviewer, item, input.teamId);
     if (refused) return refused;
     if (
-      deliveryRecovery(delivery, listImprovementDeliveries(db, item.improvement.id)) !==
+      deliveryRecovery(delivery, yield* listImprovementDeliveriesSteps(q, item.improvement.id)) !==
       "choose_destination"
     )
       return {
@@ -712,24 +797,21 @@ export function repairInboxDestination(
         reason: "destination_frozen",
         message:
           "Paws may already have sent this issue to Linear, so its team cannot change. Retry to reconcile it.",
-        item: improvementView(db, item),
+        item: yield* improvementViewSteps(q, item),
       };
-    repairImprovementDestination(db, {
-      deliveryId: delivery.id,
-      teamId: input.teamId,
-      now: input.now,
-    });
-    return { status: "requeued", item: improvementView(db, item) };
+    const repair = { deliveryId: delivery.id, teamId: input.teamId, now: input.now };
+    yield* q.transaction((tx) => repairImprovementDestinationSteps(tx, repair));
+    return { status: "requeued", item: yield* improvementViewSteps(q, item) };
   });
 }
 
 export function cancelInboxEvidenceComment(
   db: Database,
   input: { access: ImprovementAccess; improvementId: string; deliveryId: string },
-): DeliveryRetryOutcome {
-  return immediate(db, (): DeliveryRetryOutcome => {
+): Promise<DeliveryRetryOutcome> {
+  return sqliteDb(db).transaction(function* (q): Steps<DeliveryRetryOutcome> {
     const item = findInboxItem(db, input.access, input.improvementId);
-    const deliveries = item ? listImprovementDeliveries(db, item.improvement.id) : [];
+    const deliveries = item ? yield* listImprovementDeliveriesSteps(q, item.improvement.id) : [];
     const delivery = deliveries.find((d) => d.id === input.deliveryId);
     if (!item || !delivery)
       return {
@@ -739,17 +821,21 @@ export function cancelInboxEvidenceComment(
       };
     if (
       deliveryRecovery(delivery, deliveries) !== "cancel_comment" ||
-      cancelImprovementEvidenceComment(db, delivery.id) === null
+      (yield* q.transaction((tx) => cancelImprovementEvidenceCommentSteps(tx, delivery.id))) ===
+        null
     )
       return {
         status: "conflict",
         reason: "cancel_comment",
         message: CONFLICT_MESSAGE.cancel_comment,
-        item: improvementView(db, item),
+        item: yield* improvementViewSteps(q, item),
       };
     return {
       status: "cancelled",
-      item: improvementView(db, findInboxItem(db, input.access, item.improvement.id) ?? item),
+      item: yield* improvementViewSteps(
+        q,
+        findInboxItem(db, input.access, item.improvement.id) ?? item,
+      ),
     };
   });
 }
