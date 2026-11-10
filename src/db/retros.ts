@@ -246,8 +246,8 @@ function retroFromRow(q: Q, row: RetroRow): Retro {
   };
 }
 
-export function getRetro(db: Database, id: string): Retro | null {
-  return settled(sqliteDb(db).run((q) => getRetroSteps(q, id)));
+export async function getRetro(store: Db, id: string): Promise<Retro | null> {
+  return store.run((q) => getRetroSteps(q, id));
 }
 
 export function* getRetroSteps(q: Q, id: string) {

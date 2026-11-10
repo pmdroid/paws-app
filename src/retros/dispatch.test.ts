@@ -38,8 +38,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function world(options: { activity?: boolean; retries?: number } = {}) {
-  const created = fixtureWorld(options);
+async function world(options: { activity?: boolean; retries?: number } = {}) {
+  const created = await fixtureWorld(options);
   roots.push(created.root);
   return created;
 }
@@ -145,7 +145,7 @@ function occupyWithHelper(db: Database, runnerId: string, until: number) {
 
 describe("retro dispatch, composed with a fake runner", () => {
   test("waits for capacity, dispatches once, survives a restart and publishes one report despite a duplicate", async () => {
-    const { db, path, clock, open, digestSha256 } = world();
+    const { db, path, clock, open, digestSha256 } = await world();
     addRunner(db, { id: "R1" });
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
@@ -171,7 +171,7 @@ describe("retro dispatch, composed with a fake runner", () => {
     await dispatcher.tick();
     const [dispatch] = await listRetroDispatches(sqliteDb(db), "r1");
     expect(dispatch).toMatchObject({ runnerId: "R1", attempt: 1, fetchedAt: null });
-    expect(getRetro(db, "r1")).toMatchObject({ state: "generating", attempt: 1 });
+    expect(await getRetro(sqliteDb(db), "r1")).toMatchObject({ state: "generating", attempt: 1 });
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "generating",
       diagnostic: "dispatched",
@@ -201,7 +201,10 @@ describe("retro dispatch, composed with a fake runner", () => {
     await dispatcher.tick();
     await dispatcher.tick();
     expect(await listRetroDispatches(sqliteDb(reopened), "r1")).toHaveLength(1);
-    expect(getRetro(reopened, "r1")).toMatchObject({ state: "generating", attempt: 1 });
+    expect(await getRetro(sqliteDb(reopened), "r1")).toMatchObject({
+      state: "generating",
+      attempt: 1,
+    });
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "generating",
       diagnostic: "active",
@@ -221,7 +224,7 @@ describe("retro dispatch, composed with a fake runner", () => {
     expect((await runner.submit(dispatcher, command!, other)).status).toBe(409);
     await dispatcher.tick();
 
-    const retro = getRetro(reopened, "r1")!;
+    const retro = (await getRetro(sqliteDb(reopened), "r1"))!;
     expect(retro.state).toBe("published");
     expect((retro.result as { items: unknown[] }).items).toHaveLength(1);
     expect(listRetroItems(reopened, "r1")).toHaveLength(1);
@@ -244,7 +247,7 @@ describe("retro dispatch, composed with a fake runner", () => {
 
 describe("placement", () => {
   test("only an online admin runner with retro support and the agent signed in receives it", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "OLD", version: "0.1.62" });
     addRunner(db, { id: "MEMBER", owner: "member" });
     addRunner(db, { id: "SIGNED_OUT", ready: false });
@@ -263,7 +266,7 @@ describe("placement", () => {
   });
 
   test("a quota cooldown on the selected agent is a wait that spends no attempt", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     db.run("UPDATE runner_agent_policy SET quota_state='exhausted', cooldown_until=?", [
@@ -284,7 +287,7 @@ describe("placement", () => {
   });
 
   test("a dispatched retro holds a shared slot that implementation work also counts", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1", capacity: 2 });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     await open(db).tick();
@@ -292,17 +295,17 @@ describe("placement", () => {
   });
 
   test("an empty window publishes an empty report without a runner", async () => {
-    const { db, open } = world({ activity: false });
+    const { db, open } = await world({ activity: false });
     const dispatcher = open(db);
     await dispatcher.tick();
-    expect(getRetro(db, "r1")!.state).toBe("published");
+    expect((await getRetro(sqliteDb(db), "r1"))!.state).toBe("published");
     expect(await listRetroDispatches(sqliteDb(db), "r1")).toEqual([]);
     expect(dispatcher.generation("r1")!.state).toBe("ready");
   });
 
   test("a digest over the runner limit abandons the retro and names its size and the limit", async () => {
-    const { db, root, clock, open } = world();
-    const first = getRetro(db, "r1")!;
+    const { db, root, clock, open } = await world();
+    const first = (await getRetro(sqliteDb(db), "r1"))!;
     const read = (kind: "digest" | "manifest") => {
       const stored = readRetroArtifact(db, root, "r1", kind);
       if (!stored.ok) throw new Error(stored.reason);
@@ -342,7 +345,7 @@ describe("placement", () => {
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     await open(db).tick();
-    expect(getRetro(db, "r2")).toMatchObject({
+    expect(await getRetro(sqliteDb(db), "r2")).toMatchObject({
       state: "abandoned",
       error:
         "The frozen digest is 8.3 MiB (8,718,484 bytes); runners accept at most 8.0 MiB (8,388,608 bytes).",
@@ -353,7 +356,7 @@ describe("placement", () => {
 
 describe("recovery", () => {
   test("a turn past its limit is an unknown outcome: the slot stays and no second turn starts", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1", capacity: 2 });
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
@@ -386,11 +389,11 @@ describe("recovery", () => {
       diagnostic: "retry_backoff",
       attemptsUsed: 1,
     });
-    expect(getRetro(db, "r1")!.error).toContain("without a result");
+    expect((await getRetro(sqliteDb(db), "r1"))!.error).toContain("without a result");
   });
 
   test("invalid output keeps the digest and retries the same snapshot with backoff until spent", async () => {
-    const { db, clock, open, digestSha256 } = world({ retries: 1 });
+    const { db, clock, open, digestSha256 } = await world({ retries: 1 });
     addRunner(db, { id: "R1" });
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
@@ -408,7 +411,9 @@ describe("recovery", () => {
       maxAttempts: 2,
     });
     expect(failed.retry!.at).toBe(clock.now + retroRetryDelayMs(1));
-    expect(getRetro(db, "r1")!.error).toContain(`against digest ${digestSha256.slice(0, 12)}`);
+    expect((await getRetro(sqliteDb(db), "r1"))!.error).toContain(
+      `against digest ${digestSha256.slice(0, 12)}`,
+    );
 
     await dispatcher.tick();
     expect(await listRetroDispatches(sqliteDb(db), "r1")).toHaveLength(1);
@@ -440,7 +445,7 @@ describe("recovery", () => {
   });
 
   test("an invalid result's retry is a repair turn that gets the exact problems", async () => {
-    const { db, clock, open } = world({ retries: 1 });
+    const { db, clock, open } = await world({ retries: 1 });
     addRunner(db, { id: "R1" });
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
@@ -459,7 +464,7 @@ describe("recovery", () => {
       workedWell: [],
     });
     await runner.submit(dispatcher, first!, runner.result(first!, invalid));
-    expect(getRetro(db, "r1")!.error).toContain(
+    expect((await getRetro(sqliteDb(db), "r1"))!.error).toContain(
       "patterns[0].existingIssues[0] unknown_issue; patterns[0].explanation forged_count",
     );
 
@@ -480,7 +485,7 @@ describe("recovery", () => {
     expect(prompt).toContain(`Previous output:\n${invalid}\n</previous_result_problems>\n`);
 
     await runner.submit(dispatcher, second!, runner.result(second!, VALID_OUTPUT));
-    expect(getRetro(db, "r1")!.state).toBe("published");
+    expect((await getRetro(sqliteDb(db), "r1"))!.state).toBe("published");
     expect((await listRetroAttempts(sqliteDb(db), "r1")).map((entry) => entry.outcome)).toEqual([
       "failed",
       "succeeded",
@@ -488,7 +493,7 @@ describe("recovery", () => {
   });
 
   test("an invalid result with no retry left fails the retro as before", async () => {
-    const { db, clock, open } = world({ retries: 0 });
+    const { db, clock, open } = await world({ retries: 0 });
     addRunner(db, { id: "R1" });
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
@@ -508,7 +513,9 @@ describe("recovery", () => {
       attemptsUsed: 1,
       maxAttempts: 1,
     });
-    expect(getRetro(db, "r1")!.error).toContain("patterns[0].existingIssues[0] unknown_issue");
+    expect((await getRetro(sqliteDb(db), "r1"))!.error).toContain(
+      "patterns[0].existingIssues[0] unknown_issue",
+    );
     clock.now += 86_400_000;
     runner.seen(db);
     await dispatcher.tick();
@@ -516,7 +523,7 @@ describe("recovery", () => {
   });
 
   test("an unfetched command is re-signed under the same id; a lost fetch costs no attempt", async () => {
-    const { db, clock, open } = world({ retries: 0 });
+    const { db, clock, open } = await world({ retries: 0 });
     addRunner(db, { id: "R1" });
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
@@ -552,7 +559,7 @@ describe("recovery", () => {
   });
 
   test("an online runner that never fetches does not hold its slot after the command expires", async () => {
-    const { db, clock, open } = world({ retries: 0 });
+    const { db, clock, open } = await world({ retries: 0 });
     addRunner(db, { id: "R1" });
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
@@ -589,7 +596,7 @@ describe("recovery", () => {
   });
 
   test("revoking a runner mid-turn keeps the slot and attempt fenced; no retry starts", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1" });
     addRunner(db, { id: "R2" });
     const runner = fakeRunner("R1", clock);
@@ -619,7 +626,7 @@ describe("recovery", () => {
   });
 
   test("an unfetched command on a revoked runner was never started and is released", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const dispatcher = open(db);
@@ -633,7 +640,7 @@ describe("recovery", () => {
   });
 
   test("losing workspace authority stops delivery but lets the runner report teardown", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1" });
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
@@ -659,13 +666,13 @@ describe("recovery", () => {
       (await runner.submit(dispatcher, command!, runner.result(command!, VALID_OUTPUT))).status,
     ).toBe(200);
     expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
-    expect(getRetro(db, "r1")).toMatchObject({ state: "failed" });
-    expect(getRetro(db, "r1")!.error).toContain("lost workspace authority");
+    expect(await getRetro(sqliteDb(db), "r1")).toMatchObject({ state: "failed" });
+    expect((await getRetro(sqliteDb(db), "r1"))!.error).toContain("lost workspace authority");
     expect(listRetroItems(db, "r1")).toEqual([]);
   });
 
   test("an unfetched command is released when the owner loses workspace authority", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const dispatcher = open(db);
@@ -679,7 +686,7 @@ describe("recovery", () => {
   });
 
   test("replaying settlement after publication keeps the ready report and its accounting", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1" });
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
@@ -701,7 +708,7 @@ describe("recovery", () => {
 
 describe("agent account admission", () => {
   test("a disabled default account dispatches nothing", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const accountId = legacyAgentAccountId("ws", "codex");
@@ -718,7 +725,7 @@ describe("agent account admission", () => {
   });
 
   test("a persisted provider or model hold blocks dispatch while the runner has no cooldown", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const binding = await ensureLegacyAgentBinding(sqliteDb(db), "R1", "codex", clock.now);
@@ -770,7 +777,7 @@ describe("agent account admission", () => {
   });
 
   test("an open retro reservation fences quota revalidation for further attempts", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1", capacity: 4 });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const accountId = legacyAgentAccountId("ws", "codex");
@@ -791,7 +798,7 @@ describe("agent account admission", () => {
       windowStart: FIXTURE_START - 7 * 86_400_000,
       windowEnd: FIXTURE_START,
       origin: "manual",
-      settingsRevision: getRetro(db, "r1")!.settingsRevision,
+      settingsRevision: (await getRetro(sqliteDb(db), "r1"))!.settingsRevision,
       now: clock.now,
     });
     db.run(
@@ -822,7 +829,7 @@ describe("agent account admission", () => {
   });
 
   test("the account concurrency limit counts retro turns and holds further work", async () => {
-    const { db, clock, open } = world();
+    const { db, clock, open } = await world();
     addRunner(db, { id: "R1", capacity: 4 });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const accountId = legacyAgentAccountId("ws", "codex");
@@ -834,7 +841,7 @@ describe("agent account admission", () => {
       windowStart: FIXTURE_START - 7 * 86_400_000,
       windowEnd: FIXTURE_START,
       origin: "manual",
-      settingsRevision: getRetro(db, "r1")!.settingsRevision,
+      settingsRevision: (await getRetro(sqliteDb(db), "r1"))!.settingsRevision,
       now: clock.now,
     });
     db.run(

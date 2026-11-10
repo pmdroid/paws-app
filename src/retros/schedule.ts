@@ -469,7 +469,7 @@ export function createRetroScheduler(options: {
 
   async function collect(retro: Retro) {
     try {
-      const collected = collectRetroDigest(db, {
+      const collected = await collectRetroDigest(db, {
         retroId: retro.id,
         artifactRoot,
         now: retro.createdAt,
@@ -486,7 +486,7 @@ export function createRetroScheduler(options: {
         );
     } catch (error) {
       journalCaught(error, "retros.schedule.collect", null);
-      if (getRetro(db, retro.id)?.state !== "collecting") return;
+      if ((await getRetro(sqliteDb(db), retro.id))?.state !== "collecting") return;
       const reason = `Evidence collection failed: ${error instanceof Error ? error.message : String(error)}`;
       await closeRetro(sqliteDb(db), {
         retroId: retro.id,

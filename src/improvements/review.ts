@@ -11,11 +11,12 @@ import {
   listRetroEvidenceSteps,
   listWorkspaceRepositories,
   listWorkspaceRepositoriesSteps,
-  listWorkspaceRepositoryNames,
+  listWorkspaceRepositoryNamesSteps,
   repairImprovementDestinationSteps,
   requeueImprovementDeliverySteps,
+  settled,
   sqliteDb,
-  workspaceMember,
+  workspaceMemberSteps,
   workspaceMemberUsable,
   type ImprovementDelivery,
   type ImprovementProposal,
@@ -278,17 +279,25 @@ export async function listImprovementPage(
   };
 }
 
-export function memberRepositories(db: Database, workspaceId: string, userId: string): string[] {
-  const member = workspaceMember(db, workspaceId, userId);
+export function* memberRepositoriesSteps(
+  q: Q,
+  workspaceId: string,
+  userId: string,
+): Steps<string[]> {
+  const member = yield* workspaceMemberSteps(q, workspaceId, userId);
   if (!workspaceMemberUsable(member)) return [];
-  if (member.role === "admin") return listWorkspaceRepositoryNames(db, workspaceId);
+  if (member.role === "admin") return yield* listWorkspaceRepositoryNamesSteps(q, workspaceId);
   return [
     ...new Set(
-      listWorkspaceRepositories(db, workspaceId)
+      (yield* listWorkspaceRepositoriesSteps(q, workspaceId))
         .filter((entry) => member.teamIds.includes(entry.teamId))
         .map((entry) => entry.repository),
     ),
   ];
+}
+
+export function memberRepositories(db: Database, workspaceId: string, userId: string): string[] {
+  return settled(sqliteDb(db).run((q) => memberRepositoriesSteps(q, workspaceId, userId)));
 }
 
 export function improvementDestinations(

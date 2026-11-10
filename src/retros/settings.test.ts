@@ -364,7 +364,7 @@ describe("frozen retro runs", () => {
     expect(prompt.prompt).toContain("digest r1");
     expect(prompt.prompt).not.toContain("Changed.");
 
-    const limits = retroAttemptLimits(getRetro(db, "r1")!.executionLimits);
+    const limits = retroAttemptLimits((await getRetro(sqliteDb(db), "r1"))!.executionLimits);
     expect(limits).toEqual({ maxAttempts: 2, activeExecutionMs: 15 * 60_000 });
     const attempt = startRetroAttempt(db, {
       retroId: "r1",

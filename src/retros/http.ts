@@ -463,7 +463,7 @@ export function createRetroReviewHttp(options: {
         return download(stored.bytes, "application/json", `retro-${retroId}-digest.json`);
       }
       if (file === "prompt") {
-        const prompt = readRetroRenderedPrompt(db, root, {
+        const prompt = await readRetroRenderedPrompt(db, root, {
           principal,
           sessionIds,
           retroId: retroId!,

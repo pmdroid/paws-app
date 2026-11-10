@@ -25,6 +25,7 @@ export {
   improvementView,
   listImprovementPage,
   memberRepositories,
+  memberRepositoriesSteps,
   retryInboxDelivery,
   type ImprovementDecisionRequest,
   type ImprovementReviewer,
