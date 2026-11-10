@@ -226,7 +226,9 @@ A turn that continues on another account starts a fresh agent session. It keeps 
 2. Select **Add a runner**, enter the name you want to see in Paws, and select **Create command**. Until the workspace has a repository, Paws answers "Connect GitHub and add a repository before adding a runner." and creates no command.
 3. Copy the command and run it on the VM. It installs the runner, writes `/etc/paws-runner/config.json` for this Paws, stores a single-use enrollment token in a root-owned mode 0600 file, enrolls, and starts `paws-runner.service`.
 
-The token expires after ten minutes and works once. The runner appears under **Runners**, owned by you, as soon as the command prints `"paired":true`. Running the command again on an enrolled host changes nothing. If the token expires, create a new command.
+The token expires after ten minutes and works once. The runner appears under **Runners**, owned by you, as soon as the command prints `"paired":true`. Running the command again on an enrolled host that Paws still accepts changes nothing and leaves the token unused. If the token expires, create a new command.
+
+When Paws no longer knows a runner, because its database was reset or the runner was revoked, every request from that runner gets 403 "Runner identity is revoked or expired" or "Runner is revoked; its work is fenced". The runner logs `This runner's identity is no longer known to <controlPlaneUrl>. Add it again from Runners and run the command there.` once, and tries again once a minute. To pair it again, add it from **Runners** and run the new command on the host. `runner enroll` asks Paws about the current identity before it uses the token. If Paws refuses it, the command moves `/var/lib/paws-runner/identity` to `identity.replaced-<time>`, drops the commands stored for the old identity, enrolls with the token and keeps `/etc/paws-runner/config.json`. A runner service that is still running exits when the new identity appears, and systemd restarts it. If Paws can't be reached, the identity stays and the token is unused.
 
 To enroll by hand, write the token to a root-owned mode 0600 file and run:
 

@@ -6,6 +6,7 @@ export {
   type RunnerDaemonOptions,
 } from "./daemon";
 export { RunnerRequestError, RunnerTransportError, transportFailure } from "./transport";
+export { isIdentityRejected } from "./transport";
 export { createRunnerHostSampler, type RunnerHostSamplerOptions } from "./host";
 export type {
   RunnerHeartbeat,

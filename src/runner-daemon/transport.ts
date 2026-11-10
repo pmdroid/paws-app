@@ -1,5 +1,6 @@
 import { journalCaught } from "../journal";
 import { request } from "node:https";
+import { RUNNER_IDENTITY_REJECTED, RUNNER_REVOKED_FENCED } from "../runner-identity";
 
 export class RunnerRequestError extends Error {
   constructor(
@@ -17,6 +18,14 @@ export class RunnerRequestError extends Error {
     );
     this.name = "RunnerRequestError";
   }
+}
+
+export function isIdentityRejected(error: unknown): error is RunnerRequestError {
+  return (
+    error instanceof RunnerRequestError &&
+    error.status === 403 &&
+    (error.reason === RUNNER_IDENTITY_REJECTED || error.reason === RUNNER_REVOKED_FENCED)
+  );
 }
 
 /**
