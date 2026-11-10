@@ -1101,12 +1101,16 @@ export function runnerMetricsMarkup(metrics: Runner["metrics"], now: number): st
   return `<section class="runner-host" aria-label="Runner metrics"${stale ? ' data-stale=""' : ""}><dl class="runner-gauges${stale ? " stale" : ""}">${gauges.map(gaugeMarkup).join("")}</dl></section>`;
 }
 
-function resetLabel(at: number, now: number): string {
+function resetTime(at: number, now: number): string {
   const options: Intl.DateTimeFormatOptions =
     at - now < 24 * 60 * 60_000
       ? { hour: "numeric", minute: "2-digit" }
       : { weekday: "short", month: "short", day: "numeric" };
-  return `Resets ${new Date(at).toLocaleString([], options)}`;
+  return new Date(at).toLocaleString([], options);
+}
+
+function resetLabel(at: number, now: number): string {
+  return `Resets ${resetTime(at, now)}`;
 }
 
 const SIGNED_IN = new Set<AgentSignIn["status"]>(["signed_in", "usage_limit", "extra_usage"]);
@@ -1123,7 +1127,10 @@ export function agentUsageMarkup(entry: AgentSignIn, now: number): string {
         ? "Usage limit"
         : "";
   const windows = limits
-    .map((limit) => `${limit.window} ${Math.round(limit.usedPercent)}%`)
+    .map(
+      (limit) =>
+        `${limit.window} ${Math.round(limit.usedPercent)}%${limit.resetsAt ? ` · resets ${resetTime(limit.resetsAt, now)}` : ""}`,
+    )
     .join(" · ");
   return [
     spent ? `<span class="tag warn">${spent}</span>` : "",

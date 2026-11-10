@@ -111,7 +111,7 @@ try {
       const table = page.getByRole("table", { name: `Agents on ${runner.name}` });
       await expect(table).toBeVisible();
       await expect(table.locator('tr[data-agent="claude"]')).toContainText(
-        "5-hour 62% · weekly 3%",
+        /5-hour 62% · resets \d{1,2}:\d{2}\s?[AP]M · weekly 3% · resets \w{3}, \w{3} \d{1,2}/,
       );
       await expect(table.locator('tr[data-agent="grok"]')).toContainText("Running on extra usage");
       await expect(
