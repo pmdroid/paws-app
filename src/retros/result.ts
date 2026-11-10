@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
-  failRetroAttempt,
-  getRetro,
-  publishRetro,
-  readRetroArtifact,
+  failRetroAttemptSteps,
+  getRetroSteps,
+  publishRetroSteps,
+  readRetroArtifactSteps,
+  sqliteDb,
   type ImprovementActionStep,
+  type Q,
   type RetroItemInput,
   type RetroPublication,
+  type Steps,
 } from "../db";
 import type { RetroDigest, RetroDigestRecord } from "./digest";
 import { retroAttemptLimits } from "./settings";
@@ -850,18 +853,46 @@ export type RetroSettlement =
     }
   | Extract<RetroPublication, { ok: false }>;
 
-export function settleRetroAttempt(
+type AttemptSettlement = {
+  retroId: string;
+  attempt: number;
+  owner: string;
+  output: string | null;
+  now: number;
+};
+
+/** What a settlement still has to write, after its reads. Null when the retro is gone. */
+type SettlementWrite = ((tx: Q) => Steps<RetroSettlement>) | null;
+
+/** Reads outside a transaction, then writes in its own, as the sync wrappers did. */
+export async function settleRetroAttempt(
   db: Database,
   root: string,
-  input: { retroId: string; attempt: number; owner: string; output: string | null; now: number },
-): RetroSettlement {
-  const retro = getRetro(db, input.retroId);
-  if (retro === null || retro.digestSha256 === null) return { ok: false, reason: "not_found" };
-  const stored = readRetroArtifact(db, root, retro.id, "digest");
-  if (!stored.ok || stored.artifact.sha256 !== retro.digestSha256) {
-    failRetroAttempt(db, { ...input, error: "digest_unreadable", now: input.now });
-    return { ok: false, reason: "digest_unreadable" };
-  }
+  input: AttemptSettlement,
+): Promise<RetroSettlement> {
+  const store = sqliteDb(db);
+  const write = await store.run((q) => settlementSteps(q, root, input));
+  return write === null ? { ok: false, reason: "not_found" } : store.transaction(write);
+}
+
+export function* settleRetroAttemptSteps(
+  q: Q,
+  root: string,
+  input: AttemptSettlement,
+): Steps<RetroSettlement> {
+  const write = yield* settlementSteps(q, root, input);
+  return write === null ? { ok: false, reason: "not_found" } : yield* q.transaction(write);
+}
+
+function* settlementSteps(q: Q, root: string, input: AttemptSettlement): Steps<SettlementWrite> {
+  const retro = yield* getRetroSteps(q, input.retroId);
+  if (retro === null || retro.digestSha256 === null) return null;
+  const stored = yield* readRetroArtifactSteps(q, root, retro.id, "digest");
+  if (!stored.ok || stored.artifact.sha256 !== retro.digestSha256)
+    return function* (tx) {
+      yield* failRetroAttemptSteps(tx, { ...input, error: "digest_unreadable", now: input.now });
+      return { ok: false, reason: "digest_unreadable" };
+    };
   const digest = JSON.parse(new TextDecoder().decode(stored.bytes)) as RetroDigest;
   let validated: RetroResultValidation;
   if (!retroNeedsGeneration(digest))
@@ -882,29 +913,36 @@ export function settleRetroAttempt(
       limits: retroOutputLimits(retro.outputLimits),
     });
   if (!validated.ok) {
-    const recorded = failRetroAttempt(db, {
+    const diagnostic = validated.diagnostic;
+    return function* (tx) {
+      const recorded = yield* failRetroAttemptSteps(tx, {
+        retroId: retro.id,
+        attempt: input.attempt,
+        owner: input.owner,
+        error: retroDiagnosticError(diagnostic),
+        now: input.now,
+      });
+      return {
+        ok: false,
+        reason: "invalid_result",
+        diagnostic,
+        recorded,
+        retryable:
+          recorded && input.attempt < retroAttemptLimits(retro.executionLimits).maxAttempts,
+      };
+    };
+  }
+  const report = validated.report;
+  return function* (tx) {
+    const publication = yield* publishRetroSteps(tx, {
       retroId: retro.id,
       attempt: input.attempt,
       owner: input.owner,
-      error: retroDiagnosticError(validated.diagnostic),
+      result: report,
+      items: retroReportItems(report),
       now: input.now,
     });
-    return {
-      ok: false,
-      reason: "invalid_result",
-      diagnostic: validated.diagnostic,
-      recorded,
-      retryable: recorded && input.attempt < retroAttemptLimits(retro.executionLimits).maxAttempts,
-    };
-  }
-  const publication = publishRetro(db, {
-    retroId: retro.id,
-    attempt: input.attempt,
-    owner: input.owner,
-    result: validated.report,
-    items: retroReportItems(validated.report),
-    now: input.now,
-  });
-  if (!publication.ok) return publication;
-  return { ok: true, report: validated.report, publication };
+    if (!publication.ok) return publication;
+    return { ok: true, report, publication };
+  };
 }

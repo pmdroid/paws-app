@@ -22,12 +22,12 @@ export async function handleDecisions(
   const actor = { ...options.principal, clientId: options.clientId };
   if (request.method === "GET")
     return json({
-      decisions: listDecisions(
+      decisions: await listDecisions(
         options.db,
         actor,
         new URL(request.url).searchParams.get("search")?.slice(0, 1000),
       ),
-      answers: decisionAnswers(options.db, actor),
+      answers: await decisionAnswers(options.db, actor),
     });
   if (request.method !== "POST") return json({ error: "Use GET or POST." }, 405);
   if (
@@ -64,7 +64,7 @@ export async function handleDecisions(
       current.principal.userId !== actor.userId
     )
       return json({ error: "Sign in again before saving a decision." }, 401);
-    const id = changeDecision(options.db, actor, value, options.now());
+    const id = await changeDecision(options.db, actor, value, options.now());
     return json({ id });
   } catch (error) {
     journalCaught(error, "decisions.handleDecisions.readWorkspaceJson", null);

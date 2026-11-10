@@ -68,7 +68,7 @@ export async function probeDecisionMemory(root: string) {
       ((await (await call(undefined, "outside")).json()) as { decisions: unknown[] }).decisions,
       [],
     );
-    assert.equal(listDecisions(f.db, actor, "pagination")[0]?.id, id);
+    assert.equal((await listDecisions(f.db, actor, "pagination"))[0]?.id, id);
     const pending = openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
@@ -89,7 +89,7 @@ export async function probeDecisionMemory(root: string) {
     assert.throws(() =>
       confirmDecision(f.db, pending.id, options[0]!.value, "outside", Date.now()),
     );
-    changeDecision(
+    await changeDecision(
       f.db,
       actor,
       {
@@ -159,9 +159,9 @@ export async function probeDecisionMemory(root: string) {
         })
         .immediate(),
     );
-    assert.equal(listDecisions(f.db, actor)[0]?.accepted, 0);
+    assert.equal((await listDecisions(f.db, actor))[0]?.accepted, 0);
     const second = openDatabase(join(root, "controls.sqlite"));
-    assert.equal(listDecisions(second, actor)[0]?.shown, 2);
+    assert.equal((await listDecisions(second, actor))[0]?.shown, 2);
     second.close();
     const event = {
       deliveryId: "delivery",
@@ -181,22 +181,22 @@ export async function probeDecisionMemory(root: string) {
     await f.orchestrator.onLinearEvent(event);
     await f.orchestrator.onLinearEvent(event);
     assert.equal(getQuestion(f.db, next.id)?.answer, "Use cursor pagination.");
-    assert.equal(listDecisions(f.db, actor)[0]?.accepted, 1);
+    assert.equal((await listDecisions(f.db, actor))[0]?.accepted, 1);
     assert.equal(f.db.query("SELECT * FROM job WHERE queue='run.resume'").all().length, 1);
     observations.push(
       "Persisted choices survive reopening SQLite and one human confirmation schedules exactly one resume",
     );
-    changeDecision(f.db, actor, { id, revision: 2, retire: true }, Date.now());
+    await changeDecision(f.db, actor, { id, revision: 2, retire: true }, Date.now());
     const retired = openQuestion(f.db, {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "pagination",
     });
     assert.equal(suggestDecisions(f.db, retired.id, retired.body).length, 0);
-    assert.equal(listDecisions(f.db, actor)[0]?.retiredAt !== null, true);
+    assert.equal((await listDecisions(f.db, actor))[0]?.retiredAt !== null, true);
     observations.push("Retired decisions remain auditable and are excluded from suggestions");
     f.db.run("DELETE FROM workspace_repository WHERE workspace_id='workspace'");
-    assert.deepEqual(listDecisions(f.db, actor), []);
+    assert.deepEqual(await listDecisions(f.db, actor), []);
     writeFileSync(join(root, "observations.json"), JSON.stringify(observations, null, 2));
     return observations;
   } finally {

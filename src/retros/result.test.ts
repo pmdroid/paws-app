@@ -391,10 +391,10 @@ describe("settling an attempt", () => {
       now: FIXTURE_END + 9,
     });
 
-  test("empty input publishes a valid empty report without model output", () => {
+  test("empty input publishes a valid empty report without model output", async () => {
     const { db, root, digest: empty, sha } = world(false);
     expect(retroNeedsGeneration(empty)).toBe(false);
-    const settled = settle(db, root, start(db, FIXTURE_END + 1)!.attempt, null);
+    const settled = await settle(db, root, start(db, FIXTURE_END + 1)!.attempt, null);
     if (!settled.ok) throw new Error(settled.reason);
     expect(settled.report.generation).toBe("empty_input");
     expect(settled.report.digestSha256).toBe(sha);
@@ -402,9 +402,9 @@ describe("settling an attempt", () => {
     expect(listRetroItems(db, "r1")).toEqual([]);
   });
 
-  test("invalid output records a diagnostic and retries against the same digest", () => {
+  test("invalid output records a diagnostic and retries against the same digest", async () => {
     const { db, root, sha } = world(true);
-    const failed = settle(db, root, start(db, FIXTURE_END + 1)!.attempt, "not json");
+    const failed = await settle(db, root, start(db, FIXTURE_END + 1)!.attempt, "not json");
     expect(failed).toMatchObject({
       ok: false,
       reason: "invalid_result",
@@ -417,7 +417,7 @@ describe("settling an attempt", () => {
     expect(getRetro(db, "r1")!.state).toBe("failed");
     const second = start(db, FIXTURE_END + 2)!;
     expect(second.attempt).toBe(2);
-    expect(settle(db, root, second.attempt, null)).toMatchObject({
+    expect(await settle(db, root, second.attempt, null)).toMatchObject({
       ok: false,
       reason: "invalid_result",
       retryable: false,
@@ -426,10 +426,10 @@ describe("settling an attempt", () => {
     expect(start(db, FIXTURE_END + 3)).toBeNull();
   });
 
-  test("a valid result publishes items keyed to the frozen evidence", () => {
+  test("a valid result publishes items keyed to the frozen evidence", async () => {
     const { db, root } = world(true);
     const output = JSON.stringify(one());
-    const settled = settle(db, root, start(db, FIXTURE_END + 1)!.attempt, output);
+    const settled = await settle(db, root, start(db, FIXTURE_END + 1)!.attempt, output);
     if (!settled.ok) throw new Error(settled.reason);
     const [stored] = listRetroItems(db, "r1");
     expect(stored).toMatchObject({

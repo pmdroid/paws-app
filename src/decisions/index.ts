@@ -1,28 +1,29 @@
 import {
   acceptDecisionSuggestion,
-  answeredDecisionQuestion,
-  auditWorkspaceAccess,
-  correctDecisionMemory,
+  answeredDecisionQuestionSteps,
+  auditWorkspaceAccessSteps,
+  correctDecisionMemorySteps,
   decisionRow,
+  decisionRowSteps,
   decisionScope as scope,
   decisionScopeSteps,
   getLinearSessionAccessSteps,
-  insertDecisionMemory,
+  insertDecisionMemorySteps,
   itemPathHintsSteps,
-  listDecisionRows,
+  listDecisionRowsSteps,
   openDecisionSuggestion,
   recordDecisionSuggestionSteps,
-  replaceDecisionSearch,
-  retireDecisionMemory,
-  searchDecisionRows,
+  replaceDecisionSearchSteps,
+  retireDecisionMemorySteps,
   searchDecisionRowsSteps,
   settled,
   sqliteDb,
-  unsavedDecisionAnswers,
+  unsavedDecisionAnswersSteps,
   workspaceLinearMember,
-  workspaceMember,
+  workspaceMemberSteps,
   workspaceMemberUsable,
   workspaceSessionIds,
+  workspaceSessionIdsSteps,
   type DecisionRow as Row,
   type DecisionScope as Scope,
   type Q,
@@ -56,6 +57,16 @@ function accessible(db: Database, actor: Actor, source: Scope | null): source is
     )
   );
 }
+function* accessibleSteps(q: Q, actor: Actor, source: Scope | null) {
+  return (
+    source !== null &&
+    source.workspaceId === actor.workspaceId &&
+    source.clientId === actor.clientId &&
+    (yield* workspaceSessionIdsSteps(q, actor.workspaceId, actor.userId, actor.clientId)).includes(
+      source.sessionId,
+    )
+  );
+}
 function mapped(row: Row, source: Scope): Decision {
   return {
     id: row.id,
@@ -76,27 +87,39 @@ function terms(text: string): string | null {
   const words = [...new Set(text.toLowerCase().match(/[\p{L}\p{N}_]{3,}/gu) ?? [])].slice(0, 24);
   return words.length ? words.map((word) => `"${word}"`).join(" OR ") : null;
 }
-export function listDecisions(db: Database, actor: Actor, search = ""): Decision[] {
+export async function listDecisions(db: Database, actor: Actor, search = ""): Promise<Decision[]> {
   const query = terms(search);
-  const rows = search.trim()
-    ? query
-      ? searchDecisionRows(db, { workspaceId: actor.workspaceId, query, limit: 200 })
-      : []
-    : listDecisionRows(db, actor.workspaceId);
-  return rows.flatMap((row) => {
-    const source = scope(db, row.questionId);
-    return accessible(db, actor, source) ? [mapped(row, source)] : [];
+  return sqliteDb(db).run(function* (q) {
+    const rows = search.trim()
+      ? query
+        ? yield* searchDecisionRowsSteps(q, { workspaceId: actor.workspaceId, query, limit: 200 })
+        : []
+      : yield* listDecisionRowsSteps(q, actor.workspaceId);
+    const decisions: Decision[] = [];
+    for (const row of rows) {
+      const source = yield* decisionScopeSteps(q, row.questionId);
+      if (yield* accessibleSteps(q, actor, source)) decisions.push(mapped(row, source!));
+    }
+    return decisions;
   });
 }
-export function decisionAnswers(db: Database, actor: Actor) {
-  const sessions = workspaceSessionIds(db, actor.workspaceId, actor.userId, actor.clientId);
-  return unsavedDecisionAnswers(db)
-    .flatMap((row) => {
-      if (!sessions.includes(row.sessionId)) return [];
-      const source = scope(db, row.id);
-      return accessible(db, actor, source) ? [{ ...row, repository: source.repository }] : [];
-    })
-    .slice(0, 100);
+export async function decisionAnswers(db: Database, actor: Actor) {
+  return sqliteDb(db).run(function* (q) {
+    const sessions = yield* workspaceSessionIdsSteps(
+      q,
+      actor.workspaceId,
+      actor.userId,
+      actor.clientId,
+    );
+    const answers = [];
+    for (const row of yield* unsavedDecisionAnswersSteps(q)) {
+      if (!sessions.includes(row.sessionId)) continue;
+      const source = yield* decisionScopeSteps(q, row.id);
+      if (yield* accessibleSteps(q, actor, source))
+        answers.push({ ...row, repository: source!.repository });
+    }
+    return answers.slice(0, 100);
+  });
 }
 function settings(input: { statement?: unknown; scopeGlobs?: unknown; tags?: unknown }) {
   if (
@@ -126,7 +149,7 @@ function settings(input: { statement?: unknown; scopeGlobs?: unknown; tags?: unk
     tags: JSON.stringify(input.tags),
   };
 }
-export function changeDecision(
+export async function changeDecision(
   db: Database,
   actor: Actor,
   input: {
@@ -139,55 +162,61 @@ export function changeDecision(
     tags?: unknown;
   },
   now: number,
-) {
-  return db
-    .transaction(() => {
-      const member = workspaceMember(db, actor.workspaceId, actor.userId);
-      if (!workspaceMemberUsable(member))
-        throw new Error("Current workspace membership is required.");
-      const previous = input.id ? decisionRow(db, input.id) : null;
-      const questionId = previous?.questionId ?? input.questionId ?? "";
-      if ((input.id && !previous) || !accessible(db, actor, scope(db, questionId)))
-        throw new Error("This answer is not accessible.");
-      if (
-        previous &&
-        (previous.workspaceId !== actor.workspaceId ||
-          previous.revision !== input.revision ||
-          previous.retiredAt !== null)
-      )
-        throw new Error("This decision changed. Refresh before editing.");
-      const question = answeredDecisionQuestion(db, questionId);
-      if (
-        !question?.answer ||
-        !question.answeredBy ||
-        ["unknown", "linear"].includes(question.answeredBy)
-      )
-        throw new Error("Save a confirmed human answer.");
-      const id = previous?.id ?? randomUUID();
-      if (input.retire) {
-        if (!previous) throw new Error("Choose an existing decision.");
-        retireDecisionMemory(db, { id, userId: actor.userId, now });
-      } else {
-        const value = settings(input);
-        const change = { ...value, id, userId: actor.userId, now };
-        if (previous) correctDecisionMemory(db, change);
-        else insertDecisionMemory(db, { ...change, workspaceId: actor.workspaceId, questionId });
-        replaceDecisionSearch(db, { id, statement: value.statement, tags: value.tags });
-      }
-      auditWorkspaceAccess(db, {
-        workspaceId: actor.workspaceId,
-        userId: actor.userId,
-        action: input.retire
-          ? "decision.retired"
-          : previous
-            ? "decision.corrected"
-            : "decision.saved",
-        subject: id,
-        now,
-      });
-      return id;
-    })
-    .immediate();
+): Promise<string> {
+  return sqliteDb(db).transaction(function* (q) {
+    const member = yield* workspaceMemberSteps(q, actor.workspaceId, actor.userId);
+    if (!workspaceMemberUsable(member))
+      throw new Error("Current workspace membership is required.");
+    const previous = input.id ? yield* decisionRowSteps(q, input.id) : null;
+    const questionId = previous?.questionId ?? input.questionId ?? "";
+    if (
+      (input.id && !previous) ||
+      !(yield* accessibleSteps(q, actor, yield* decisionScopeSteps(q, questionId)))
+    )
+      throw new Error("This answer is not accessible.");
+    if (
+      previous &&
+      (previous.workspaceId !== actor.workspaceId ||
+        previous.revision !== input.revision ||
+        previous.retiredAt !== null)
+    )
+      throw new Error("This decision changed. Refresh before editing.");
+    const question = yield* answeredDecisionQuestionSteps(q, questionId);
+    if (
+      !question?.answer ||
+      !question.answeredBy ||
+      ["unknown", "linear"].includes(question.answeredBy)
+    )
+      throw new Error("Save a confirmed human answer.");
+    const id = previous?.id ?? randomUUID();
+    if (input.retire) {
+      if (!previous) throw new Error("Choose an existing decision.");
+      yield* retireDecisionMemorySteps(q, { id, userId: actor.userId, now });
+    } else {
+      const value = settings(input);
+      const change = { ...value, id, userId: actor.userId, now };
+      if (previous) yield* correctDecisionMemorySteps(q, change);
+      else
+        yield* insertDecisionMemorySteps(q, {
+          ...change,
+          workspaceId: actor.workspaceId,
+          questionId,
+        });
+      yield* replaceDecisionSearchSteps(q, { id, statement: value.statement, tags: value.tags });
+    }
+    yield* auditWorkspaceAccessSteps(q, {
+      workspaceId: actor.workspaceId,
+      userId: actor.userId,
+      action: input.retire
+        ? "decision.retired"
+        : previous
+          ? "decision.corrected"
+          : "decision.saved",
+      subject: id,
+      now,
+    });
+    return id;
+  });
 }
 export function suggestDecisions(db: Database, questionId: string, text: string) {
   return settled(sqliteDb(db).run((q) => suggestDecisionsSteps(q, questionId, text)));

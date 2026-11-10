@@ -1,5 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { auditWorkspaceAccess, workspaceMember, workspaceMemberUsable } from "../db";
+import {
+  auditWorkspaceAccessSteps,
+  sqliteDb,
+  workspaceMemberSteps,
+  workspaceMemberUsable,
+} from "../db";
 import { journalCaught } from "../journal";
 import type { WorkspacePrincipal } from "../workspace";
 import { retroReaderAccess } from "./access";
@@ -18,15 +23,18 @@ export function createRetroPreviewHttp(options: {
   now?: () => number;
 }) {
   const { db, artifactRoot: root } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const denied = (principal: WorkspacePrincipal, subject: string) =>
-    auditWorkspaceAccess(db, {
-      workspaceId: principal.workspaceId,
-      userId: principal.userId,
-      action: "access.denied",
-      subject,
-      now: now(),
-    });
+    store.run((q) =>
+      auditWorkspaceAccessSteps(q, {
+        workspaceId: principal.workspaceId,
+        userId: principal.userId,
+        action: "access.denied",
+        subject,
+        now: now(),
+      }),
+    );
 
   async function preview(
     request: Request,
@@ -62,20 +70,24 @@ export function createRetroPreviewHttp(options: {
         label: result.label,
         source: result.source,
       });
-    if (result.reason === "forbidden") denied(principal, RETRO_PREVIEW_PATH);
+    if (result.reason === "forbidden") await denied(principal, RETRO_PREVIEW_PATH);
     return json(
       { error: result.message, reason: result.reason },
       result.reason === "forbidden" ? 403 : 400,
     );
   }
 
-  function frozen(principal: WorkspacePrincipal, sessionIds: readonly string[], retroId: string) {
+  async function frozen(
+    principal: WorkspacePrincipal,
+    sessionIds: readonly string[],
+    retroId: string,
+  ) {
     const path = `/api/retros/reports/${retroId}/settings`;
     const access = retroReaderAccess(db, root, principal, sessionIds, retroId);
     if (!access)
       return json({ error: "This retro is not available to you.", reason: "not_found" }, 404);
     if (!access.full) {
-      denied(principal, path);
+      await denied(principal, path);
       return json(
         {
           error: "The frozen prompt needs access to every repository this retro includes.",
@@ -108,8 +120,11 @@ export function createRetroPreviewHttp(options: {
     const path = new URL(request.url).pathname;
     const report = FROZEN.exec(path);
     if (path !== RETRO_PREVIEW_PATH && !report) return null;
-    if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId))) {
-      denied(principal, path);
+    const member = await store.run((q) =>
+      workspaceMemberSteps(q, principal.workspaceId, principal.userId),
+    );
+    if (!workspaceMemberUsable(member)) {
+      await denied(principal, path);
       return json({ error: "Workspace access is unavailable." }, 403);
     }
     if (!report) return preview(request, principal, sessionIds);

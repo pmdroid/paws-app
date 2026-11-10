@@ -36,11 +36,10 @@ test("only agent and clarification answers are offered as decisions", async () =
       });
     }
     const actor = { workspaceId: "workspace", userId: "member", clientId: "client" };
-    expect(
-      decisionAnswers(f.db, actor)
-        .map((row) => row.body)
-        .toSorted(),
-    ).toEqual(["Which pagination format?", "clarification question"]);
+    expect((await decisionAnswers(f.db, actor)).map((row) => row.body).toSorted()).toEqual([
+      "Which pagination format?",
+      "clarification question",
+    ]);
   } finally {
     await f.close();
     rmSync(root, { recursive: true, force: true });
@@ -53,7 +52,7 @@ test("two concurrent confirmations accept one suggestion once, with every read i
   const children: Bun.Subprocess<"pipe", "pipe", "pipe">[] = [];
   try {
     const actor = { workspaceId: "workspace", userId: "member", clientId: "client" };
-    changeDecision(
+    await changeDecision(
       f.db,
       actor,
       {
@@ -124,7 +123,7 @@ test("two concurrent confirmations accept one suggestion once, with every read i
     }
     expect((await Promise.all(children.map((child) => child.exited))).sort()).toEqual([0, 2]);
     for (const reader of outputs) reader.releaseLock();
-    expect(listDecisions(f.db, actor)[0]?.accepted).toBe(1);
+    expect((await listDecisions(f.db, actor))[0]?.accepted).toBe(1);
     expect(() => confirmDecision(f.db, pending.id, suggestion.value, "member", 300)).toThrow();
     const accepted = f.db
       .query<{ accepted_at: number }, []>(

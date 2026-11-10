@@ -1,11 +1,12 @@
 import {
   workspaceMemberUsable,
-  auditWorkspaceAccess,
-  getLinkAsk,
-  getWorkItem,
+  auditWorkspaceAccessSteps,
+  getLinkAskSteps,
+  getWorkItemSteps,
   LINK_ASK_DECISIONS,
   LINK_ASK_NOTE_REQUIRED,
-  workspaceMember,
+  sqliteDb,
+  workspaceMemberSteps,
   type LinkAskDecision,
 } from "../db";
 import type { Database } from "bun:sqlite";
@@ -55,6 +56,7 @@ export async function handleLinkAskAnswer(
 ): Promise<Response | null> {
   if (new URL(request.url).pathname !== LINK_ASK_ANSWER_PATH) return null;
   const { db, principal, sessionIds } = options;
+  const store = sqliteDb(db);
   if (principal === undefined || sessionIds === undefined)
     return Response.json({ error: "Sign in to Paws." }, { status: 401 });
   if (request.method !== "POST")
@@ -75,8 +77,9 @@ export async function handleLinkAskAnswer(
   )
     return Response.json({ error: "Send a question, a decision and a note." }, { status: 400 });
   const decision = body.decision as LinkAskDecision;
-  const ask = getLinkAsk(db, body.questionId);
-  const item = ask ? getWorkItem(db, ask.itemId) : null;
+  const questionId = body.questionId;
+  const ask = await store.run((q) => getLinkAskSteps(q, questionId));
+  const item = ask ? await store.run((q) => getWorkItemSteps(q, ask.itemId)) : null;
   if (
     !ask ||
     ask.closedAt !== null ||
@@ -104,15 +107,20 @@ export async function handleLinkAskAnswer(
   // A rule break is approved with a reason, which is recorded with the approver.
   if (ask.kind === "rule" && note.trim() === "")
     return Response.json({ error: "Write why the rule may break." }, { status: 400 });
-  const member = workspaceMember(db, principal.workspaceId, principal.userId);
-  const refuse = () => {
-    auditWorkspaceAccess(db, {
-      workspaceId: principal.workspaceId,
-      userId: principal.userId,
-      action: "decision.refused",
-      subject: `${item.linearIdentifier ?? item.id} ${ask.headCommit.slice(0, 7)} ${ask.kind}`,
-      now: (options.now ?? Date.now)(),
-    });
+  const member = await store.run((q) =>
+    workspaceMemberSteps(q, principal.workspaceId, principal.userId),
+  );
+  const subject = `${item.linearIdentifier ?? item.id} ${ask.headCommit.slice(0, 7)} ${ask.kind}`;
+  const refuse = async () => {
+    await store.run((q) =>
+      auditWorkspaceAccessSteps(q, {
+        workspaceId: principal.workspaceId,
+        userId: principal.userId,
+        action: "decision.refused",
+        subject,
+        now: (options.now ?? Date.now)(),
+      }),
+    );
     return Response.json({ error: LINK_ASK_ANSWERERS }, { status: 403 });
   };
   if (!workspaceMemberUsable(member) || !member.linearUserId) return refuse();

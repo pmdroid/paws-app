@@ -1,9 +1,10 @@
 import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
-  auditWorkspaceAccess,
-  listWorkspaceRepositoryNames,
-  workspaceMember,
+  auditWorkspaceAccessSteps,
+  listWorkspaceRepositoryNamesSteps,
+  sqliteDb,
+  workspaceMemberSteps,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { AgentModelCatalog } from "../runner-models";
@@ -36,15 +37,18 @@ export function createRetroScheduleHttp(options: {
   now?: () => number;
 }) {
   const { db, scheduler } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const audit = (principal: WorkspacePrincipal, action: string, subject: string) =>
-    auditWorkspaceAccess(db, {
-      workspaceId: principal.workspaceId,
-      userId: principal.userId,
-      action,
-      subject,
-      now: now(),
-    });
+    store.run((q) =>
+      auditWorkspaceAccessSteps(q, {
+        workspaceId: principal.workspaceId,
+        userId: principal.userId,
+        action,
+        subject,
+        now: now(),
+      }),
+    );
   const view = (principal: WorkspacePrincipal) => ({
     ...scheduler.status(principal.workspaceId),
     canEdit: isWorkspaceAdmin(principal.role),
@@ -53,7 +57,7 @@ export function createRetroScheduleHttp(options: {
 
   async function saveSchedule(request: Request, principal: WorkspacePrincipal) {
     if (!isWorkspaceAdmin(principal.role)) {
-      audit(principal, "access.denied", RETRO_SCHEDULE_PATH);
+      await audit(principal, "access.denied", RETRO_SCHEDULE_PATH);
       return json({ error: "Only workspace admins can change the retro schedule." }, 403);
     }
     let body: Record<string, unknown>;
@@ -69,7 +73,9 @@ export function createRetroScheduleHttp(options: {
     }
     if (!Number.isInteger(body.expectedRevision) || (body.expectedRevision as number) < 0)
       return json({ error: "Send expectedRevision, the revision this change started from." }, 400);
-    const accessibleRepositories = listWorkspaceRepositoryNames(db, principal.workspaceId);
+    const accessibleRepositories = await store.run((q) =>
+      listWorkspaceRepositoryNamesSteps(q, principal.workspaceId),
+    );
     const current = await readRetroSettings(db, {
       workspaceId: principal.workspaceId,
       accessibleRepositories,
@@ -101,7 +107,7 @@ export function createRetroScheduleHttp(options: {
       keepSavedProfile: true,
     });
     if (result.ok) {
-      audit(principal, "settings.retros.schedule.saved", `revision ${result.view.revision}`);
+      await audit(principal, "settings.retros.schedule.saved", `revision ${result.view.revision}`);
       return json(view(principal));
     }
     if (result.reason === "conflict")
@@ -124,16 +130,16 @@ export function createRetroScheduleHttp(options: {
     );
   }
 
-  function run(principal: WorkspacePrincipal) {
+  async function run(principal: WorkspacePrincipal) {
     const requested = scheduler.request(principal.workspaceId, principal.userId);
     if (!requested.ok) {
-      audit(principal, "retros.run.refused", requested.reason);
+      await audit(principal, "retros.run.refused", requested.reason);
       return json(
         { error: requested.message, reason: requested.reason, status: view(principal) },
         REQUEST_STATUS[requested.reason],
       );
     }
-    audit(
+    await audit(
       principal,
       requested.created ? "retros.run.requested" : "retros.run.joined",
       requested.retro.id,
@@ -147,7 +153,10 @@ export function createRetroScheduleHttp(options: {
   return async (request: Request, principal: WorkspacePrincipal): Promise<Response | null> => {
     const path = new URL(request.url).pathname;
     if (path !== RETRO_SCHEDULE_PATH && path !== RETRO_RUNS_PATH) return null;
-    if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
+    const member = await store.run((q) =>
+      workspaceMemberSteps(q, principal.workspaceId, principal.userId),
+    );
+    if (!workspaceMemberUsable(member))
       return json({ error: "Workspace access is unavailable." }, 403);
     if (path === RETRO_RUNS_PATH) {
       if (request.method !== "POST") return json({ error: "Use POST." }, 405);
