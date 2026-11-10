@@ -19,6 +19,7 @@ import {
   recordItemPullRequest,
   recordPullComment,
   type LinearCommentRecord,
+  sqliteDb,
 } from "../db";
 import {
   createInboxStore,
@@ -207,7 +208,8 @@ function setup(options: { members?: string[]; agents?: string[] } = {}) {
     deliverWithLoop: () =>
       deliverLinearComments(db, "eng-1", orchestrator["linearCommentCapabilities"](policy)),
     deliver: () => deliverLinearComments(db, "eng-1", caps),
-    comment: async (id: string) => getLinearComment(db, id) as LinearCommentRecord,
+    comment: async (id: string) =>
+      (await getLinearComment(sqliteDb(db), id)) as LinearCommentRecord,
     commentJobs: () => listJobs(db).filter((job) => job.queue === JOB_KIND.linearComments),
     resumeJobs: () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume),
     onLeave: (record: (pullNumber: number) => void) => {
@@ -292,7 +294,7 @@ describe("receiving ordinary Linear comments", () => {
       expect(await f.receive(polled({ id: "c-1", body: "Rename the flag to `strict`." }))).toBe(
         true,
       );
-      expect((await f.comment("c-1"))).toMatchObject({
+      expect(await f.comment("c-1")).toMatchObject({
         state: "queued",
         itemId: "eng-1",
         sessionId: SESSION,
@@ -330,7 +332,7 @@ describe("receiving ordinary Linear comments", () => {
       expect(handoff).toContain("New comments on the Linear issue eng-1.");
       expect(handoff).toContain("Use the v2 endpoint.");
       expect(handoff).toContain(LINEAR_COMMENT_INSTRUCTION);
-      expect((await f.comment("c-1"))).toMatchObject({ state: "delivered", via: "brief" });
+      expect(await f.comment("c-1")).toMatchObject({ state: "delivered", via: "brief" });
       expect(latestHumanTurn(f.db, "eng-1")).toBe(before);
       expect(fixRounds(f.db, "eng-1")).toBe(0);
       expect(turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps)).toBeNull();
@@ -367,7 +369,7 @@ describe("receiving ordinary Linear comments", () => {
       expect(handoff).toContain("Use blue.");
       expect(handoff).not.toContain("Use red.");
       expect(handoff).not.toContain("Drop this.");
-      expect((await f.comment("c-2"))).toMatchObject({ state: "removed" });
+      expect(await f.comment("c-2")).toMatchObject({ state: "removed" });
     } finally {
       await f.close();
     }
@@ -385,7 +387,7 @@ describe("receiving ordinary Linear comments", () => {
         ),
       );
       settleLinearCommentBrief(f.db, item, offered, { now: T0 + 10_000 });
-      expect((await f.comment("c-1"))).toMatchObject({ state: "queued", body: "New text." });
+      expect(await f.comment("c-1")).toMatchObject({ state: "queued", body: "New text." });
       expect(linearCommentBrief(f.db, item, f.caps)?.text).toContain("New text.");
     } finally {
       await f.close();
@@ -420,7 +422,7 @@ describe("receiving ordinary Linear comments", () => {
       const retried = getWorkItem(f.db, "eng-1")!;
       expect(linearCommentBrief(f.db, retried, f.caps)?.text).toBe(offered!.text);
       settleLinearCommentBrief(f.db, retried, offered!, { now: T0 });
-      expect((await f.comment("c-1"))).toMatchObject({
+      expect(await f.comment("c-1")).toMatchObject({
         state: "delivered",
         via: "brief",
         itemVersion: retried.version,
@@ -466,7 +468,7 @@ describe("who may comment", () => {
         botActor: { id: "bot-1", type: "oauthClient", name: "Cyrus", userDisplayName: "Pascal" },
       });
       await f.receive(fromWebhook(raw));
-      expect((await f.comment("c-1"))).toMatchObject({
+      expect(await f.comment("c-1")).toMatchObject({
         state: "queued",
         authority: "agent",
         authorId: AGENT,
@@ -494,7 +496,7 @@ describe("who may comment", () => {
           }),
         ),
       );
-      expect((await f.comment("c-1"))).toMatchObject({ state: "rejected", reason: "on_behalf_of" });
+      expect(await f.comment("c-1")).toMatchObject({ state: "rejected", reason: "on_behalf_of" });
       expect(f.commentJobs()).toHaveLength(0);
     } finally {
       await f.close();
@@ -532,9 +534,9 @@ describe("who may comment", () => {
           }),
         ),
       );
-      expect((await f.comment("own"))).toMatchObject({ state: "ignored", reason: "own" });
-      expect((await f.comment("gh"))).toMatchObject({ state: "ignored", reason: "bot" });
-      expect((await f.comment("claim"))).toMatchObject({ state: "ignored", reason: "bot" });
+      expect(await f.comment("own")).toMatchObject({ state: "ignored", reason: "own" });
+      expect(await f.comment("gh")).toMatchObject({ state: "ignored", reason: "bot" });
+      expect(await f.comment("claim")).toMatchObject({ state: "ignored", reason: "bot" });
       expect(f.authorized).toEqual([]);
       expect(f.commentJobs()).toHaveLength(0);
       expect(f.thoughts()).toEqual([]);
@@ -558,7 +560,7 @@ describe("who may comment", () => {
       await f.receive(
         fromWebhook(webhookComment({ id: "reply", body: "Use tabs.", parentId: "root" })),
       );
-      expect((await f.comment("reply"))).toMatchObject({ state: "ignored", reason: "agent_session" });
+      expect(await f.comment("reply")).toMatchObject({ state: "ignored", reason: "agent_session" });
     } finally {
       await f.close();
     }
@@ -568,18 +570,18 @@ describe("who may comment", () => {
     const f = setup();
     try {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Hi", userId: MALLORY })));
-      expect((await f.comment("c-1"))).toMatchObject({ state: "rejected", reason: "not_member" });
+      expect(await f.comment("c-1")).toMatchObject({ state: "rejected", reason: "not_member" });
       await f.receive(
         fromWebhook(webhookComment({ id: "c-2", body: "Hi", organizationId: "org-other" })),
       );
-      expect((await f.comment("c-2"))).toMatchObject({ state: "rejected", reason: "workspace" });
+      expect(await f.comment("c-2")).toMatchObject({ state: "rejected", reason: "workspace" });
       await f.receive(fromWebhook(webhookComment({ id: "c-3", body: "Hi", teamId: "team-other" })));
-      expect((await f.comment("c-3"))).toMatchObject({ state: "rejected", reason: "team" });
+      expect(await f.comment("c-3")).toMatchObject({ state: "rejected", reason: "team" });
       await f.receive(fromWebhook(webhookComment({ id: "c-4", body: "Do it differently." })));
       expect((await f.comment("c-4")).state).toBe("queued");
       f.members.delete(PASCAL);
       expect(await f.deliver()).toBe("done");
-      expect((await f.comment("c-4"))).toMatchObject({ state: "rejected", reason: "not_member" });
+      expect(await f.comment("c-4")).toMatchObject({ state: "rejected", reason: "not_member" });
     } finally {
       await f.close();
     }
@@ -603,7 +605,7 @@ describe("routing to the right work", () => {
           webhookComment({ id: "c-1", body: "Everyone: use v2.", issueId: "parent-issue" }),
         ),
       );
-      expect((await f.comment("c-1"))).toMatchObject({ state: "rejected", reason: "parent_issue" });
+      expect(await f.comment("c-1")).toMatchObject({ state: "rejected", reason: "parent_issue" });
       expect(f.commentJobs()).toHaveLength(0);
       expect(
         listOutbox(f.db, "ses-parent").map((row) => (row.payload as { body: string }).body),
@@ -621,7 +623,10 @@ describe("routing to the right work", () => {
       await f.receive(
         polled({ id: "old", body: "From last month.", createdAtMs: T0 - 86_400_000 }),
       );
-      expect((await f.comment("old"))).toMatchObject({ state: "ignored", reason: "before_delegation" });
+      expect(await f.comment("old")).toMatchObject({
+        state: "ignored",
+        reason: "before_delegation",
+      });
     } finally {
       await f.close();
     }
@@ -634,7 +639,7 @@ describe("routing to the right work", () => {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "First." })));
       acceptLinearStop(f.db, SESSION, "stop-1", T0 + 2_000);
       expect(await f.deliver()).toBe("done");
-      expect((await f.comment("c-1"))).toMatchObject({ state: "ignored", reason: "session_stopped" });
+      expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "session_stopped" });
       expect(f.resumeJobs()).toHaveLength(0);
     } finally {
       await f.close();
@@ -648,7 +653,7 @@ describe("routing to the right work", () => {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "First." })));
       f.db.run("UPDATE work_item SET session_key = 'ses-new' WHERE id = 'eng-1'");
       expect(await f.deliver()).toBe("done");
-      expect((await f.comment("c-1"))).toMatchObject({ state: "ignored", reason: "superseded" });
+      expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "superseded" });
     } finally {
       await f.close();
     }
@@ -667,7 +672,11 @@ describe("edits, deletions and restarts", () => {
         ),
       );
       await f.receive(polled({ id: "c-1", body: "Use red.", updatedAtMs: T0 + 1_000 }));
-      expect((await f.comment("c-1"))).toMatchObject({ body: "Use blue.", edited: true, state: "queued" });
+      expect(await f.comment("c-1")).toMatchObject({
+        body: "Use blue.",
+        edited: true,
+        state: "queued",
+      });
       await f.deliver();
       const handoff = f.resumedBrief();
       expect(handoff).toContain("Use blue.");
@@ -682,7 +691,7 @@ describe("edits, deletions and restarts", () => {
           }),
         ),
       );
-      expect((await f.comment("c-1"))).toMatchObject({ body: "Use blue.", state: "delivered" });
+      expect(await f.comment("c-1")).toMatchObject({ body: "Use blue.", state: "delivered" });
     } finally {
       await f.close();
     }
@@ -699,7 +708,7 @@ describe("edits, deletions and restarts", () => {
         ),
       );
       await f.receive(polled({ id: "c-1", body: "Oops.", updatedAtMs: T0 + 4_000 }));
-      expect((await f.comment("c-1"))).toMatchObject({ state: "removed", reason: "deleted" });
+      expect(await f.comment("c-1")).toMatchObject({ state: "removed", reason: "deleted" });
       expect(await f.deliver()).toBe("done");
       expect(f.resumeJobs()).toHaveLength(0);
     } finally {
@@ -766,7 +775,7 @@ describe("holds, questions and gates", () => {
       try {
         f.db.run("UPDATE work_item SET state = ? WHERE id = 'eng-1'", [ended]);
         await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Reopen this." })));
-        expect((await f.comment("c-1"))).toMatchObject({ state: "ignored", reason: "ended" });
+        expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "ended" });
         expect(getWorkItem(f.db, "eng-1")!.state).toBe(ended);
         expect(f.commentJobs()).toHaveLength(0);
       } finally {
@@ -786,7 +795,7 @@ describe("holds, questions and gates", () => {
       f.db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = 'eng-1'");
       f.setBusy(false);
       expect(await f.deliver()).toBe("done");
-      expect((await f.comment("c-1"))).toMatchObject({ state: "ignored", reason: "ended" });
+      expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "ended" });
     } finally {
       await f.close();
     }
@@ -971,7 +980,7 @@ describe("review findings", () => {
       expect(f.commentJobs().filter((job) => job.status === "pending")).toHaveLength(1);
       const brief = turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps);
       expect(brief).toContain("3".repeat(3_900));
-      expect((await f.comment("big-3"))).toMatchObject({ state: "delivered", via: "brief" });
+      expect(await f.comment("big-3")).toMatchObject({ state: "delivered", via: "brief" });
     } finally {
       await f.close();
     }
@@ -990,7 +999,7 @@ describe("review findings", () => {
       f.members.delete(PASCAL);
       f.setCheckerReady(true);
       expect(await f.deliver()).toBe("done");
-      expect((await f.comment("c-1"))).toMatchObject({ state: "rejected", reason: "not_member" });
+      expect(await f.comment("c-1")).toMatchObject({ state: "rejected", reason: "not_member" });
     } finally {
       await f.close();
     }
@@ -1095,7 +1104,7 @@ describe("review findings", () => {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Too late?" })));
       f.setQueueResult("closed");
       expect(await f.deliver()).toBe("done");
-      expect((await f.comment("c-1"))).toMatchObject({ state: "ignored", reason: "pull_closed" });
+      expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "pull_closed" });
       expect(f.resumeJobs()).toHaveLength(0);
       expect(f.thoughts().at(-1)).toBe(
         "Pull request #7 was closed without merging, so Paws did not pass the comment on eng-1 to the agent.",

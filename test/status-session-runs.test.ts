@@ -10,6 +10,7 @@ import {
   openDatabase,
   recordLinearTurn,
   setCurrentRun,
+  sqliteDb,
 } from "../src/db";
 import { handleStatusRequest } from "../src/dashboard";
 import { render } from "../src/dashboard/src/client/render";
@@ -142,7 +143,7 @@ test("a reply in the Linear session shows in the run's timeline with its author,
         payload: { sessionId: "ses_8", kind: "thought", body },
         now: at,
       });
-    recordLinearTurn(db, {
+    await recordLinearTurn(sqliteDb(db), {
       eventKey: "reply-1",
       activityId: null,
       sessionId: "ses_8",

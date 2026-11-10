@@ -140,7 +140,7 @@ test.each(["workflow states", "credential acquisition"])(
       f.enqueue("status");
       await f.outbox.tick();
       await started.promise;
-      advanceLinearSessionGeneration(f.db, "session", { stop: true, now: 10 });
+      await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: 10 });
       release.resolve();
       await f.outbox.idle();
       expect(queries.some((query) => query.includes("mutation"))).toBe(false);
@@ -196,7 +196,7 @@ test("access removed during a fresh publication read prevents the queued mutatio
       eventKey: "removed",
       createdAtMs: 10,
     });
-    advanceLinearSessionGeneration(f.db, "session", { stop: true, now: 10 });
+    await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: 10 });
     release.resolve();
     await f.outbox.idle();
     expect(f.tracker.statuses).toEqual([]);
@@ -213,7 +213,7 @@ test("a stopped task can acknowledge removal of delegation while installation ac
   const f = fixture();
   try {
     applyWorkItemEvent(f.db, f.item.id, "cancel");
-    advanceLinearSessionGeneration(f.db, "session", { stop: true, now: 10 });
+    await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: 10 });
     f.lifecycle.issue.delegateId = "different-app";
     f.enqueue("activity", true);
     await f.outbox.tick();

@@ -17,6 +17,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   recordRunnerCapacity,
+  sqliteDb,
 } from "../db";
 import { RunnerSlotsBusyError, UserFacingError } from "../core";
 import { DEFAULT_RUN_TIMEOUT_MS, recoverAcpConversation, type RunAgentOptions } from "../acp";
@@ -180,7 +181,7 @@ test("session replacement fences a pending helper and releases its canonical ass
   const f = fixture();
   const pending = f.backend.forSession("session", "classify")(f.input);
   await f.dispatched();
-  advanceLinearSessionGeneration(f.db, "session");
+  await advanceLinearSessionGeneration(sqliteDb(f.db), "session");
   await expect(pending).rejects.toThrow(/authority changed/);
   expect(
     f.db
@@ -212,7 +213,7 @@ test("a replacement during the event callback cannot return stale classification
     ...f.input,
     async onEvent() {
       events++;
-      advanceLinearSessionGeneration(f.db, "session");
+      await advanceLinearSessionGeneration(sqliteDb(f.db), "session");
     },
   });
   await f.dispatched();

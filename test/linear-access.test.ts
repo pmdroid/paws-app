@@ -94,8 +94,8 @@ test("revocation remains after prompts, stop recovery, newer session observation
   const db = database();
   session(db);
   await revokeLinearInstallation(sqliteDb(db), { ...scope, eventKey: "revoke", createdAtMs: 20 });
-  advanceLinearSessionGeneration(db, "session", { stop: true, now: 21 });
-  advanceLinearSessionGeneration(db, "session", { now: 22 });
+  await advanceLinearSessionGeneration(sqliteDb(db), "session", { stop: true, now: 21 });
+  await advanceLinearSessionGeneration(sqliteDb(db), "session", { now: 22 });
   session(db, "session", { observedAtMs: 23 });
   await teams(db, "grant", 24, ["team"], []);
   session(db, "new-session", { observedAtMs: 25 });

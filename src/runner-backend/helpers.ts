@@ -82,7 +82,7 @@ export function createRemoteSessionAgentRunner(options: {
       ? null
       : store.run((q) => earliestRunnerCooldownSteps(q, { agent, now: now(), runnerIds }));
   const sessionRun = async (sessionId: string) => {
-    const rows = sessionActiveRuns(options.db, sessionId);
+    const rows = await sessionActiveRuns(sqliteDb(options.db), sessionId);
     return rows.length === 1 ? rows[0]! : null;
   };
   return {

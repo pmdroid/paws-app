@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { asc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 
 export function* countLinearRequestSteps(q: Q, itemId: string, caller: string) {
   const { linearItemCallerRequest, linearItemRequest } = q.t;
@@ -24,8 +23,8 @@ export function* countLinearRequestSteps(q: Q, itemId: string, caller: string) {
   );
 }
 
-export function countLinearRequest(db: Database, itemId: string, caller: string): void {
-  settled(sqliteDb(db).transaction((q) => countLinearRequestSteps(q, itemId, caller)));
+export async function countLinearRequest(store: Db, itemId: string, caller: string): Promise<void> {
+  await store.transaction((q) => countLinearRequestSteps(q, itemId, caller));
 }
 
 export function* linearRequestsByItemSteps(q: Q) {

@@ -385,8 +385,11 @@ export function* recordLinearTurnSteps(q: Q, input: LinearTurnInput): Steps<Stor
   return mapTurn(row);
 }
 
-export function recordLinearTurn(db: Database, input: LinearTurnInput): StoredLinearTurn {
-  return settled(sqliteDb(db).transaction((q) => recordLinearTurnSteps(q, input)));
+export async function recordLinearTurn(
+  store: Db,
+  input: LinearTurnInput,
+): Promise<StoredLinearTurn> {
+  return store.transaction((q) => recordLinearTurnSteps(q, input));
 }
 
 export function* listPendingLinearTurnsSteps(q: Q, sessionId: string): Steps<StoredLinearTurn[]> {
@@ -491,17 +494,7 @@ export function* advanceLinearSessionGenerationSteps(
   return generation;
 }
 
-export function advanceLinearSessionGeneration(
-  db: Database,
-  sessionId: string,
-  options: { stop?: boolean; now?: number } = {},
-): number {
-  return settled(
-    sqliteDb(db).transaction((q) => advanceLinearSessionGenerationSteps(q, sessionId, options)),
-  );
-}
-
-export async function advanceLinearSessionGenerationAsync(
+export async function advanceLinearSessionGeneration(
   store: Db,
   sessionId: string,
   options: { stop?: boolean; now?: number } = {},
@@ -814,8 +807,8 @@ export function* sessionActiveRunsSteps(q: Q, sessionId: string): Steps<SessionR
   );
 }
 
-export function sessionActiveRuns(db: Database, sessionId: string): SessionRun[] {
-  return settled(sqliteDb(db).run((q) => sessionActiveRunsSteps(q, sessionId)));
+export async function sessionActiveRuns(store: Db, sessionId: string): Promise<SessionRun[]> {
+  return store.run((q) => sessionActiveRunsSteps(q, sessionId));
 }
 
 export function* previousIssueSessionIdsSteps(

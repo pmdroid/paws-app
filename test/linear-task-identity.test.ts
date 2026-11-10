@@ -18,6 +18,7 @@ import {
   migrations,
   openDatabase,
   recordLinearTurn,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { intakeDelegatedIssue } from "../src/intake";
@@ -176,9 +177,9 @@ test("prompt before hydration persists, ordered duplicates apply once and Stop f
       payload: "{}",
       createdAtMs,
     });
-    recordLinearTurn(db, turn("later", 20));
-    recordLinearTurn(db, turn("earlier", 10));
-    recordLinearTurn(db, { ...turn("later", 20), body: "Edited comment" });
+    await recordLinearTurn(sqliteDb(db), turn("later", 20));
+    await recordLinearTurn(sqliteDb(db), turn("earlier", 10));
+    await recordLinearTurn(sqliteDb(db), { ...turn("later", 20), body: "Edited comment" });
     expect(getLinearSession(db, "session")?.delegationId).toBeNull();
     expect(listPendingLinearTurns(db, "session").map((entry) => entry.body)).toEqual([
       "earlier",
@@ -191,10 +192,12 @@ test("prompt before hydration persists, ordered duplicates apply once and Stop f
     applyLinearTurns(db, "session", ["earlier"], itemId);
     applyLinearTurns(db, "session", ["earlier"], itemId);
     expect(listPendingLinearTurns(db, "session").map((entry) => entry.eventKey)).toEqual(["later"]);
-    expect(advanceLinearSessionGeneration(db, "session", { stop: true, now: 30 })).toBe(1);
+    expect(
+      await advanceLinearSessionGeneration(sqliteDb(db), "session", { stop: true, now: 30 }),
+    ).toBe(1);
     expect(getLinearSessionGeneration(db, "session")).toBe(1);
     expect(listPendingLinearTurns(db, "session")).toEqual([]);
-    recordLinearTurn(db, turn("after-stop", 40));
+    await recordLinearTurn(sqliteDb(db), turn("after-stop", 40));
     expect(listPendingLinearTurns(db, "session").map((entry) => entry.eventKey)).toEqual([
       "after-stop",
     ]);

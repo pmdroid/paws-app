@@ -8,6 +8,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  sqliteDb,
 } from "../../src/db";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon } from "../../src/runner-daemon";
@@ -196,7 +197,7 @@ if (mode === "prepare") {
   let resumed = false;
   const advance = setInterval(async () => {
     if (nextHelper && existsSync(join(server, "fence")) && !fenced) {
-      advanceLinearSessionGeneration(db, "session");
+      await advanceLinearSessionGeneration(sqliteDb(db), "session");
       fenced = true;
       writeFileSync(join(server, "fenced"), "fenced");
     }

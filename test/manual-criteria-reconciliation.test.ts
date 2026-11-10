@@ -12,6 +12,7 @@ import {
   listOutbox,
   OutboxDispatcher,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -224,7 +225,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     expect(getWorkItem(db, manualId)!.version).toBe(7);
     expect(notices()).toHaveLength(2);
     expect(jobs()).toEqual(afterJobs);
-    advanceLinearSessionGeneration(db, "session", { now: clock.now() });
+    await advanceLinearSessionGeneration(sqliteDb(db), "session", { now: clock.now() });
     enqueueOutbox(db, {
       target: "linear",
       op: "activity",

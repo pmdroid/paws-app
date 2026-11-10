@@ -257,7 +257,7 @@ test.each(["generation", "revocation"])(
     const original = f.access.adapter.session;
     f.access.adapter.session = async (...args) => {
       const result = await original(...args);
-      if (change === "generation") advanceLinearSessionGeneration(f.db, "session");
+      if (change === "generation") await advanceLinearSessionGeneration(sqliteDb(f.db), "session");
       else
         await revokeLinearInstallation(sqliteDb(f.db), {
           ...scope,
@@ -377,7 +377,7 @@ test("a session stop webhook stops the task before its next git operation withou
   await f.gate.prepare(f.item, signal);
   await f.gate.assert(f.item, signal);
   const before = linearReads(f);
-  advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now });
+  await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: f.clock.now });
   f.gate.invalidate({ sessionId: "session" });
   await expect(f.gate.assert(f.item, signal)).rejects.toThrow("stopped or superseded");
   expect(linearReads(f)).toBe(before);

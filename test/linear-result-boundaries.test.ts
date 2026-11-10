@@ -17,27 +17,28 @@ import {
   listOutbox,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
 
-test("only a newer accepted turn can change a non-code task outcome and code stays selected", () => {
+test("only a newer accepted turn can change a non-code task outcome and code stays selected", async () => {
   const db = tempDb();
   try {
     ensureLinearSession(db, { sessionId: "session" });
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     applyWorkItemEvent(db, item.id, "dispatched");
     expect(() => selectTaskModeForTurn(db, item.id, "answer", 1)).toThrow("changed");
-    const first = advanceLinearSessionGeneration(db, "session");
+    const first = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     expect(() => selectTaskModeForTurn(db, item.id, "answer", first)).toThrow("not been selected");
     saveTaskMode(db, item.id, "answer", first);
     expect(() => selectTaskModeForTurn(db, item.id, "artifact", first)).toThrow("newer accepted");
-    const second = advanceLinearSessionGeneration(db, "session");
+    const second = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     expect(selectTaskModeForTurn(db, item.id, "artifact", second)).toBe("artifact");
     expect(getTaskModeGeneration(db, item.id)).toBe(second);
     expect(() => selectTaskModeForTurn(db, item.id, "answer", first)).toThrow("changed");
-    const third = advanceLinearSessionGeneration(db, "session");
+    const third = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     expect(selectTaskModeForTurn(db, item.id, "code", third)).toBe("code");
-    const fourth = advanceLinearSessionGeneration(db, "session");
+    const fourth = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     expect(selectTaskModeForTurn(db, item.id, "answer", fourth)).toBe("code");
     expect(getTaskMode(db, item.id)).toBe("code");
     applyWorkItemEvent(db, item.id, "cancel");

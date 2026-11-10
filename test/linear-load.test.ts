@@ -54,7 +54,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
   const ledger = createLinearLedger({
     now: () => clock.now(),
     log: () => {},
-    countItem: async (itemId, caller) => countLinearRequest(db, itemId, caller),
+    countItem: async (itemId, caller) => await countLinearRequest(sqliteDb(db), itemId, caller),
   });
   const runner = seedRunner(db, clock.now());
   let requests = 0;

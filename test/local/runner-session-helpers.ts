@@ -13,6 +13,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  sqliteDb,
 } from "../../src/db";
 import { writeSecretFile } from "../../src/credentials";
 import { openRunnerCoordinator } from "../../src/runner-coordinator";
@@ -228,7 +229,7 @@ export async function probeRunnerSessionHelpers(
       candidateDenied: true,
       persisted: true,
     });
-    advanceLinearSessionGeneration(db, "session");
+    await advanceLinearSessionGeneration(sqliteDb(db), "session");
     assert.equal((await call(`/v1/helper-commands/${first.command.id}/lease`, {})).status, 409);
     assert.equal(
       (await call(`/v1/helper-commands/${first.command.id}/result`, result)).status,

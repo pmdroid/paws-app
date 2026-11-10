@@ -63,8 +63,11 @@ export function* getLinearCommentSteps(q: Q, commentId: string): Steps<LinearCom
   return row === undefined ? null : mapRow(row);
 }
 
-export function getLinearComment(db: Database, commentId: string): LinearCommentRecord | null {
-  return settled(sqliteDb(db).run((q) => getLinearCommentSteps(q, commentId)));
+export async function getLinearComment(
+  store: Db,
+  commentId: string,
+): Promise<LinearCommentRecord | null> {
+  return store.run((q) => getLinearCommentSteps(q, commentId));
 }
 
 type RecordedLinearComment = { record: LinearCommentRecord; change: LinearCommentChange };

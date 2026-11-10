@@ -180,7 +180,7 @@ test("a cancelled item or a superseded generation hears no stale notice", async 
   try {
     await f.deliver();
     await f.wake("h1");
-    advanceLinearSessionGeneration(f.db, "ses_1");
+    await advanceLinearSessionGeneration(sqliteDb(f.db), "ses_1");
     await f.deliver();
     expect(f.posted()).toEqual(["Opened #7."]);
 

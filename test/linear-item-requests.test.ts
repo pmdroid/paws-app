@@ -12,10 +12,10 @@ test("each task's Linear requests are kept per caller in the database", async ()
   const db = openDatabase(":memory:");
   try {
     migrate(db);
-    countLinearRequest(db, "item-1", "outbox");
-    countLinearRequest(db, "item-1", "outbox");
-    countLinearRequest(db, "item-1", "task-access");
-    countLinearRequest(db, "item-2", "outbox");
+    await countLinearRequest(sqliteDb(db), "item-1", "outbox");
+    await countLinearRequest(sqliteDb(db), "item-1", "outbox");
+    await countLinearRequest(sqliteDb(db), "item-1", "task-access");
+    await countLinearRequest(sqliteDb(db), "item-2", "outbox");
     expect(await linearRequestsByItem(sqliteDb(db))).toEqual(
       new Map([
         ["item-1", 3],
