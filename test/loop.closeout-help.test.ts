@@ -113,10 +113,10 @@ const delivered = (db: ReturnType<typeof tempDb>) =>
     .filter((row) => row.op === "elicitation")
     .map((row) => row.payload as { questionId: string; body: string });
 
-test("a Closeout stall asked while another question is open is delivered after its answer", () => {
+test("a Closeout stall asked while another question is open is delivered after its answer", async () => {
   const { db, asker } = parked();
   const open = ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
-  askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: stalled"), { now: NOW + 1 });
+  await askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: stalled"), { now: NOW + 1 });
   const queued = listCloseoutRecoveries(db, asker.itemId)[0]!;
   expect(getQuestion(db, queued.questionId)).toMatchObject({
     kind: "closeout-help",
@@ -130,9 +130,9 @@ test("a Closeout stall asked while another question is open is delivered after i
   expect(delivered(db).at(-1)?.body).toContain("Closeout needs your help.");
 });
 
-test("a policy field this Paws does not know asks for a Paws update", () => {
+test("a policy field this Paws does not know asks for a Paws update", async () => {
   const { db } = parked();
-  askCloseoutHelp(
+  await askCloseoutHelp(
     db,
     "ses_1",
     help(
@@ -145,14 +145,16 @@ test("a policy field this Paws does not know asks for a Paws update", () => {
   );
 });
 
-test("other blocked policies keep the usual Closeout question", () => {
+test("other blocked policies keep the usual Closeout question", async () => {
   const { db } = parked();
-  askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: invalid YAML"), { now: NOW });
+  await askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: invalid YAML"), {
+    now: NOW,
+  });
   expect(delivered(db)[0]?.body).not.toContain("Update Paws");
   expect(delivered(db)[0]?.body).toContain("Reply with guidance");
 });
 
-test("the Closeout help question names the task as its Linear identifier", () => {
+test("the Closeout help question names the task as its Linear identifier", async () => {
   const { db } = parked();
   const pathId = "PAS-367-01M5NDWPQZ0JQ91E1MFMVEY6EP";
   const summary = formatEvidenceSummary({
@@ -166,7 +168,7 @@ test("the Closeout help question names the task as its Linear identifier", () =>
     exitCode: 1,
     decision: null,
   });
-  askCloseoutHelp(db, "ses_1", { ...help(summary), taskId: pathId }, { now: NOW });
+  await askCloseoutHelp(db, "ses_1", { ...help(summary), taskId: pathId }, { now: NOW });
   const body = delivered(db)[0]?.body ?? "";
   expect(body).toContain("Task: PAS-367\n");
   expect(body).not.toContain("01M5NDWPQZ0JQ91E1MFMVEY6EP");
@@ -185,12 +187,12 @@ const blocked = {
   retryBaseline: ["test:1"],
 };
 
-function askedAbout(
+async function askedAbout(
   checks: { id: string; kind: string; state: string; message: string }[],
   reason = "blocked_check",
 ) {
   const { db, asker } = parked();
-  askCloseoutHelp(db, "ses_1", blocked, { now: NOW, reason, checks });
+  await askCloseoutHelp(db, "ses_1", blocked, { now: NOW, reason, checks });
   const question = getQuestion(db, listCloseoutRecoveries(db, asker.itemId)[0]!.questionId)!;
   return { db, asker, question };
 }
@@ -199,8 +201,8 @@ const runs = (db: ReturnType<typeof tempDb>) =>
   db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM run").get()!.count;
 
 for (const body of ["Retry Closeout", "  RETRY "])
-  test(`${JSON.stringify(body)} on a question blocked on an unreadable policy re-verifies the head without the agent`, () => {
-    const { db, asker, question } = askedAbout([]);
+  test(`${JSON.stringify(body)} on a question blocked on an unreadable policy re-verifies the head without the agent`, async () => {
+    const { db, asker, question } = await askedAbout([]);
     expect(question.options).toEqual(["Retry Closeout"]);
     expect(delivered(db)[0]?.body).toContain("Choose Retry Closeout, or reply retry");
     answer(db, reply(body), questionEffects(db, { now: NOW + 100 }));
@@ -220,8 +222,8 @@ for (const body of ["Retry Closeout", "  RETRY "])
     expect(recoveryOptions(db, asker.itemId).retryBaseline).toEqual([]);
   });
 
-test("a longer reply to that question is guidance and restarts the agent with it", () => {
-  const { db, asker, question } = askedAbout([
+test("a longer reply to that question is guidance and restarts the agent with it", async () => {
+  const { db, asker, question } = await askedAbout([
     { id: "test", kind: "command", state: "failed", message: "command timed out" },
   ]);
   expect(question.options).toEqual(["Retry Closeout"]);
@@ -238,8 +240,8 @@ test("a longer reply to that question is guidance and restarts the agent with it
   ]);
 });
 
-test("a check failing on the code offers no Retry Closeout, and retry restarts the agent", () => {
-  const { db, asker, question } = askedAbout([
+test("a check failing on the code offers no Retry Closeout, and retry restarts the agent", async () => {
+  const { db, asker, question } = await askedAbout([
     { id: "setup", kind: "setup", state: "failed", message: "setup exited 1" },
     { id: "test", kind: "command", state: "failed", message: "command exited 1" },
   ]);
@@ -250,15 +252,15 @@ test("a check failing on the code offers no Retry Closeout, and retry restarts t
   expect(jobs(db).map((job) => job.jobKey)).toEqual([`closeout-guidance:${question.id}`]);
 });
 
-test("blocking review findings offer no Retry Closeout", () => {
-  const { question } = askedAbout([
+test("blocking review findings offer no Retry Closeout", async () => {
+  const { question } = await askedAbout([
     { id: "independent-review", kind: "review", state: "failed", message: "finding at P1" },
   ]);
   expect(question.options).toEqual([]);
 });
 
-test("evidence waiting for a visual review offers no Retry Closeout", () => {
-  const { question } = askedAbout([
+test("evidence waiting for a visual review offers no Retry Closeout", async () => {
+  const { question } = await askedAbout([
     {
       id: "visual-proof",
       kind: "evidence",
@@ -269,13 +271,13 @@ test("evidence waiting for a visual review offers no Retry Closeout", () => {
   expect(question.options).toEqual([]);
 });
 
-test("a spent Closeout retry limit offers no Retry Closeout", () => {
-  const { question } = askedAbout([], "budget_spent");
+test("a spent Closeout retry limit offers no Retry Closeout", async () => {
+  const { question } = await askedAbout([], "budget_spent");
   expect(question.options).toEqual([]);
 });
 
-test("the exported re-verify path settles an unanswered question without the agent", () => {
-  const { db, asker, question } = askedAbout([]);
+test("the exported re-verify path settles an unanswered question without the agent", async () => {
+  const { db, asker, question } = await askedAbout([]);
   db.run("UPDATE question SET status='answered', answer=? WHERE id=?", [
     "Retry Closeout",
     question.id,

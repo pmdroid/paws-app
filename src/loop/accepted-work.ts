@@ -5,14 +5,16 @@ import {
   latestMergeJobSummary,
   applyWorkItemEvent,
   closeoutPolicyDigests,
-  pendingRestartHandoff,
+  pendingRestartHandoffSteps,
   enqueueJobOnce,
   getRun,
   getWorkItem,
+  getWorkItemSteps,
   immediate,
   leaveMergeQueue,
   markRun,
   saveCheckpoint,
+  sqliteDb,
 } from "../db";
 
 const ACCEPTS_FROM: ReadonlySet<WorkItemState> = new Set([
@@ -95,14 +97,15 @@ export function mergeAcceptedWork(
  * it, the accepted work is already on GitHub: the item goes to the merge queue instead of asking,
  * unless the run was delivering findings, review or CI input. Returns false otherwise, so the rejection goes on to the push question and conflict handling.
  */
-export function settleRejectedPush(
+export async function settleRejectedPush(
   db: Database,
   itemId: string,
   input: { remoteHead: string | null; containsAccepted: boolean; now: number },
-): boolean {
-  const accepted = getWorkItem(db, itemId)?.acceptedHead ?? null;
+): Promise<boolean> {
+  const store = sqliteDb(db);
+  const accepted = (await store.run((q) => getWorkItemSteps(q, itemId)))?.acceptedHead ?? null;
   if (accepted === null || (input.remoteHead !== accepted && !input.containsAccepted)) return false;
   // A turn carrying findings, review or CI input was not for nothing: it goes to the question.
-  if (pendingRestartHandoff(db, itemId).handoff) return false;
+  if ((await store.run((q) => pendingRestartHandoffSteps(q, itemId))).handoff) return false;
   return mergeAcceptedWork(db, itemId, { now: input.now });
 }

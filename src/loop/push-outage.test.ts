@@ -57,11 +57,11 @@ function claim(db: Database, now: number) {
 }
 
 /** Runs the next due merge job the way the orchestrator does with a push outage. */
-function attempt(
+async function attempt(
   db: Database,
   now: number,
   pushes: (jobId: number) => "refused" | "works",
-): { id: number; pushed: boolean; held?: boolean } | null {
+): Promise<{ id: number; pushed: boolean; held?: boolean } | null> {
   const job = claim(db, now);
   if (!job) return null;
   try {
@@ -72,26 +72,34 @@ function attempt(
     return { id: job.id, pushed: true };
   } catch (error) {
     if (!(error instanceof PushOutageError)) throw error;
-    const outage = pushRefused(db, {
+    const outage = await pushRefused(db, {
       repository: REPOSITORY,
       error,
       jobId: job.id,
       installationUrl: "https://github.com/settings/installations/2",
       now,
     });
-    expect(parkForPushOutage(db, job, outage!, now)).toBe("parked");
+    expect(await parkForPushOutage(db, job, outage!, now)).toBe("parked");
     return { id: job.id, pushed: false, held: error.held };
   }
 }
 
 describe("a push outage", () => {
-  test("a denied push holds every merge push, fails nothing and asks nothing", () => {
+  test("a denied push holds every merge push, fails nothing and asks nothing", async () => {
     const { db, jobs } = lane();
-    const first = attempt(db, 100, () => "refused");
+    const first = await attempt(db, 100, () => "refused");
     expect(first).toEqual({ id: jobs[0], pushed: false, held: false });
     // The jobs behind it reach their push and wait without trying it.
-    expect(attempt(db, 101, () => "works")).toEqual({ id: jobs[1], pushed: false, held: true });
-    expect(attempt(db, 102, () => "works")).toEqual({ id: jobs[2], pushed: false, held: true });
+    expect(await attempt(db, 101, () => "works")).toEqual({
+      id: jobs[1],
+      pushed: false,
+      held: true,
+    });
+    expect(await attempt(db, 102, () => "works")).toEqual({
+      id: jobs[2],
+      pushed: false,
+      held: true,
+    });
 
     expect(getPushOutage(db, REPOSITORY)).toMatchObject({
       startedAt: 100,
@@ -116,18 +124,18 @@ describe("a push outage", () => {
     expect(listOutbox(db).filter((row) => row.op === "elicitation")).toEqual([]);
   });
 
-  test("one probe retries after 1, 2 and 5 minutes, then every 10 minutes", () => {
+  test("one probe retries after 1, 2 and 5 minutes, then every 10 minutes", async () => {
     const { db, jobs } = lane();
-    attempt(db, 100, () => "refused");
-    attempt(db, 101, () => "works");
-    attempt(db, 102, () => "works");
+    await attempt(db, 100, () => "refused");
+    await attempt(db, 101, () => "works");
+    await attempt(db, 102, () => "works");
     const probes: number[] = [];
     let now: number;
     for (let index = 0; index < 5; index++) {
       now = getPushOutage(db, REPOSITORY)!.nextProbeAt;
       // Only the probe is due; the held jobs wait for the outage to end.
       expect(claim(db, now - 1)).toBeNull();
-      const tried = attempt(db, now, () => "refused");
+      const tried = await attempt(db, now, () => "refused");
       expect(tried).toMatchObject({ id: jobs[0], pushed: false, held: false });
       probes.push(now);
     }
@@ -135,50 +143,50 @@ describe("a push outage", () => {
     expect(getPushOutage(db, REPOSITORY)?.failedProbes).toBe(5);
   });
 
-  test("the first push that works ends it and the held pushes run in queue order", () => {
+  test("the first push that works ends it and the held pushes run in queue order", async () => {
     const { db, jobs } = lane();
-    attempt(db, 100, () => "refused");
-    attempt(db, 101, () => "works");
-    attempt(db, 102, () => "works");
+    await attempt(db, 100, () => "refused");
+    await attempt(db, 101, () => "works");
+    await attempt(db, 102, () => "works");
     const probeAt = getPushOutage(db, REPOSITORY)!.nextProbeAt;
     const ran: number[] = [];
     const pushed = (id: number) => {
       ran.push(id);
       return "works" as const;
     };
-    expect(attempt(db, probeAt, pushed)).toEqual({ id: jobs[0], pushed: true });
+    expect(await attempt(db, probeAt, pushed)).toEqual({ id: jobs[0], pushed: true });
     expect(getPushOutage(db, REPOSITORY)).toBeNull();
-    expect(attempt(db, probeAt + 1, pushed)).toEqual({ id: jobs[1], pushed: true });
-    expect(attempt(db, probeAt + 2, pushed)).toEqual({ id: jobs[2], pushed: true });
+    expect(await attempt(db, probeAt + 1, pushed)).toEqual({ id: jobs[1], pushed: true });
+    expect(await attempt(db, probeAt + 2, pushed)).toEqual({ id: jobs[2], pushed: true });
     expect(ran).toEqual(jobs);
   });
 
-  test("a held job takes the probe over when the probe's item stopped", () => {
+  test("a held job takes the probe over when the probe's item stopped", async () => {
     const { db, jobs } = lane();
-    attempt(db, 100, () => "refused");
-    attempt(db, 101, () => "works");
+    await attempt(db, 100, () => "refused");
+    await attempt(db, 101, () => "works");
     db.run("UPDATE job SET status = 'cancelled' WHERE id = ?", [jobs[0]]);
     db.run("UPDATE job SET run_at = 0 WHERE id = ?", [jobs[1]]);
-    expect(attempt(db, 105, () => "works")).toEqual({ id: jobs[1], pushed: true });
+    expect(await attempt(db, 105, () => "works")).toEqual({ id: jobs[1], pushed: true });
     expect(getPushOutage(db, REPOSITORY)).toBeNull();
   });
 
-  test("the workspace question opens after an hour and closes when pushes work again", () => {
+  test("the workspace question opens after an hour and closes when pushes work again", async () => {
     const { db, jobs } = lane();
     const hour = 100 + PUSH_OUTAGE_QUESTION_MS;
-    attempt(db, 100, () => "refused");
-    attempt(db, 101, () => "works");
-    attempt(db, 102, () => "works");
-    expect(askAboutPushOutage(db, REPOSITORY, hour - 1)).toBe("not_yet");
+    await attempt(db, 100, () => "refused");
+    await attempt(db, 101, () => "works");
+    await attempt(db, 102, () => "works");
+    expect(await askAboutPushOutage(db, REPOSITORY, hour - 1)).toBe("not_yet");
     expect(findOpenQuestion(db, "ses-a")).toBeNull();
 
-    expect(askAboutPushOutage(db, REPOSITORY, hour)).toBe("asked");
+    expect(await askAboutPushOutage(db, REPOSITORY, hour)).toBe("asked");
     const question = findOpenQuestion(db, "ses-a")!;
     expect(question).toMatchObject({ kind: "push-outage", itemId: "item-a" });
     expect(question.body).toContain("https://github.com/settings/installations/2");
     expect(question.body).toContain("denied to paws-helper[bot]");
     // One question for the workspace, not one per item, and the item keeps its state.
-    expect(askAboutPushOutage(db, REPOSITORY, hour + 10 * MINUTE)).toBe("already");
+    expect(await askAboutPushOutage(db, REPOSITORY, hour + 10 * MINUTE)).toBe("already");
     for (const name of ["b", "c"]) expect(findOpenQuestion(db, `ses-${name}`)).toBeNull();
     expect(getWorkItem(db, "item-a")?.state).toBe("running");
     expect(
@@ -188,7 +196,7 @@ describe("a push outage", () => {
     ).toEqual([`question:${question.id}`]);
 
     db.run("UPDATE job SET run_at = 0 WHERE id = ?", [jobs[0]]);
-    attempt(db, hour + 11 * MINUTE, () => "works");
+    await attempt(db, hour + 11 * MINUTE, () => "works");
     expect(getQuestion(db, question.id)?.cancelledAt).toBe(hour + 11 * MINUTE);
     expect(findOpenQuestion(db, "ses-a")).toBeNull();
   });

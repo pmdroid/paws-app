@@ -80,7 +80,7 @@ describe("restart and ask", () => {
     expect(await itemReadiness(db, "item", "start")).not.toBe("cancelled");
   });
 
-  test("a restart keeps the cancel request of an item a person is stopping", () => {
+  test("a restart keeps the cancel request of an item a person is stopping", async () => {
     const { db } = fixture();
     db.run("UPDATE work_item SET cancel_requested=1 WHERE id='item'");
     restart(db, getWorkItem(db, "item")!, { reason: "findings", body: "Fix this.", now: 2 });
@@ -265,7 +265,7 @@ describe("restart and ask", () => {
       jobs: listJobs(db),
     };
     expect(
-      acceptCloseout(db, {
+      await acceptCloseout(db, {
         itemId: item.id,
         expected: { version: verifying.version, runId: verifying.currentRunId },
         base: "base",

@@ -1,11 +1,11 @@
 import type { Database } from "bun:sqlite";
 import {
-  getWorkItem,
-  immediate,
-  saveCheckpoint,
-  saveCloseoutBypassChecks,
-  saveCloseoutRecovery,
-  savePolicyBlock,
+  getWorkItemSteps,
+  saveCheckpointSteps,
+  saveCloseoutBypassChecksSteps,
+  saveCloseoutRecoverySteps,
+  savePolicyBlockSteps,
+  sqliteDb,
   type CloseoutRecovery,
 } from "../db";
 import type { RuleApproval } from "../closeout";
@@ -55,7 +55,7 @@ export type CloseoutHelpCheck = {
  * ask is the `rule` kind, Approve accepts the break for this head with a
  * reason, and Send back or a reply in Linear hands the agent the finding.
  */
-export function askCloseoutHelp(
+export async function askCloseoutHelp(
   db: Database,
   sessionId: string,
   help: CloseoutHelp,
@@ -69,10 +69,10 @@ export function askCloseoutHelp(
     rules?: readonly RuleApproval[];
     policyBlock?: { repository: string; unreadable: MainPolicyError };
   },
-): void {
+): Promise<void> {
   const rules = input.rules ?? [];
-  immediate(db, () => {
-    const item = getWorkItem(db, help.itemId);
+  await sqliteDb(db).transaction(function* (q) {
+    const item = yield* getWorkItemSteps(q, help.itemId);
     if (!item || item.state === "cancelled") return;
     const retry = retryCloseoutOffered(help, input);
     const block = retry ? input.policyBlock : undefined;
@@ -109,9 +109,9 @@ export function askCloseoutHelp(
               ...(retry ? { options: [RETRY_CLOSEOUT] } : {}),
             },
           ).question;
-    saveCloseoutRecovery(db, { ...help, questionId: question.id });
+    yield* saveCloseoutRecoverySteps(q, { ...help, questionId: question.id });
     if (block && question.kind === "closeout-help")
-      savePolicyBlock(db, {
+      yield* savePolicyBlockSteps(q, {
         questionId: question.id,
         itemId: item.id,
         repository: block.repository,
@@ -123,8 +123,8 @@ export function askCloseoutHelp(
         createdAt: input.now,
       });
     if (question.kind === "link")
-      saveCloseoutBypassChecks(
-        db,
+      yield* saveCloseoutBypassChecksSteps(
+        q,
         question.id,
         help.failedChecks.map(
           (id) =>
@@ -137,7 +137,7 @@ export function askCloseoutHelp(
             },
         ),
       );
-    saveCheckpoint(db, item.id, {
+    yield* saveCheckpointSteps(q, item.id, {
       phase: "awaiting_input",
       baseSha: help.base,
       wipCommit: help.head,

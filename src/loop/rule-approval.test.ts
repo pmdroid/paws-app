@@ -32,7 +32,7 @@ const FEEDBACK =
   "Closeout rejected at 7f65200aa1b2c3d4e5f6.\n- api-contract (rule): failed — probe exited 1; P1 finding\n\napi-contract output:\nremoved field Task.title";
 
 /** PAS-633 broke `api-contract`, a rule set to `onFail: approve`, and nothing else failed. */
-function held(publicUrl: string | null = "https://paws.example") {
+async function held(publicUrl: string | null = "https://paws.example") {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1", title: "Signed URLs" });
@@ -53,7 +53,7 @@ function held(publicUrl: string | null = "https://paws.example") {
     "Lea Lead",
     "lea@example.com",
   ]);
-  askCloseoutHelp(
+  await askCloseoutHelp(
     db,
     "ses_1",
     {
@@ -97,8 +97,8 @@ function held(publicUrl: string | null = "https://paws.example") {
 const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea Lead" };
 const effects: LinkAskEffects = { rule: reverifyBypassedSteps };
 
-test("a broken approve rule is a rule link ask with its summary and the link", () => {
-  const { db, itemId, question } = held();
+test("a broken approve rule is a rule link ask with its summary and the link", async () => {
+  const { db, itemId, question } = await held();
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect(question.kind).toBe("link");
   expect(getLinkAsk(db, question.id)).toMatchObject({
@@ -122,7 +122,7 @@ test("a broken approve rule is a rule link ask with its summary and the link", (
 });
 
 test("Approve records who and why and verifies the same head again", async () => {
-  const { db, itemId, question } = held();
+  const { db, itemId, question } = await held();
   expect(
     await decideLinkAsk(
       db,
@@ -181,7 +181,7 @@ test("Approve records who and why and verifies the same head again", async () =>
 });
 
 test("Approve needs a reason and a person who may decide", async () => {
-  const { db, itemId, question } = held();
+  const { db, itemId, question } = await held();
   for (const note of [null, "  "])
     expect(
       await decideLinkAsk(
@@ -210,7 +210,7 @@ test("Approve needs a reason and a person who may decide", async () => {
 });
 
 test("Send back restarts the agent with the finding", async () => {
-  const { db, itemId, question } = held();
+  const { db, itemId, question } = await held();
   expect(
     await decideLinkAsk(
       db,
@@ -237,7 +237,7 @@ test("Send back restarts the agent with the finding", async () => {
 });
 
 test("a reply in Linear sends the finding back and approves nothing", async () => {
-  const { db, itemId, question } = held();
+  const { db, itemId, question } = await held();
   expect(
     await guideLinkAsk(db, {
       questionId: question.id,
@@ -263,8 +263,8 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
   ]);
 });
 
-test("without a public link the rule is a Linear question a reply sends back", () => {
-  const { db, itemId, question } = held(null);
+test("without a public link the rule is a Linear question a reply sends back", async () => {
+  const { db, itemId, question } = await held(null);
   expect(question.kind).toBe("closeout-help");
   expect(getLinkAsk(db, question.id)).toBeNull();
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");

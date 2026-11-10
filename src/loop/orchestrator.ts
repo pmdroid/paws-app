@@ -2012,7 +2012,7 @@ export class Orchestrator {
     jobs.register(JOB_KIND.merge, async (job, context) => {
       const ownerId = readString(job.payload, "itemId");
       if (ownerId !== null && this.mergeTurnTaken(ownerId)) {
-        if (context.isCurrent()) waitForMergeTurn(this.db, job, this.now());
+        if (context.isCurrent()) await waitForMergeTurn(this.db, job, this.now());
         return;
       }
       let waiting: MergeWait | undefined;
@@ -2028,7 +2028,7 @@ export class Orchestrator {
 
         const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
 
-        if (!retryMergeLater(this.db, job, this.now(), delayMs, error)) throw error;
+        if (!(await retryMergeLater(this.db, job, this.now(), delayMs, error))) throw error;
         this.noteHostDiskFull(readString(job.payload, "itemId"), error);
         journalCaught(
           error,
@@ -2048,7 +2048,7 @@ export class Orchestrator {
       if (
         parked === "ask" &&
         itemId &&
-        askAboutSlowCi(this.db, itemId, { checks: waiting.message, now: this.now() })
+        (await askAboutSlowCi(this.db, itemId, { checks: waiting.message, now: this.now() }))
       ) {
         await this.flush();
         return;
@@ -2109,7 +2109,12 @@ export class Orchestrator {
         },
       });
       if (step === "wait" && context.isCurrent())
-        waitForMergeTurn(this.db, withReviewWait(job, reviewWait), this.now(), PULL_REVIEW_POLL_MS);
+        await waitForMergeTurn(
+          this.db,
+          withReviewWait(job, reviewWait),
+          this.now(),
+          PULL_REVIEW_POLL_MS,
+        );
     });
     jobs.register(JOB_KIND.linearComments, async (job, context) => {
       const itemId = (job.payload as { linearCommentsFor?: unknown }).linearCommentsFor;
@@ -2121,7 +2126,7 @@ export class Orchestrator {
         this.linearCommentCapabilities(policy, context.signal),
       );
       if (step === "wait" && context.isCurrent())
-        waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+        await waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
     });
     jobs.register(JOB_KIND.pullComments, async (job, context) => {
       const itemId = (job.payload as { pullCommentsFor?: unknown }).pullCommentsFor;
@@ -2134,7 +2139,12 @@ export class Orchestrator {
         },
       });
       if (step === "wait" && context.isCurrent())
-        waitForMergeTurn(this.db, withReviewWait(job, reviewWait), this.now(), PULL_REVIEW_POLL_MS);
+        await waitForMergeTurn(
+          this.db,
+          withReviewWait(job, reviewWait),
+          this.now(),
+          PULL_REVIEW_POLL_MS,
+        );
     });
     this.options.outbox.setHandler((message, context) =>
       linearCaller(
@@ -2860,7 +2870,7 @@ export class Orchestrator {
     const itemId = readString(job.payload, "itemId");
     const talk = itemId === null ? null : await this.options.conversations?.();
     if (!talk || talk.open(itemId!).length === 0 || !context.isCurrent()) return false;
-    waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
+    await waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
     return true;
   }
 
@@ -2903,7 +2913,7 @@ export class Orchestrator {
     if (!refused || !item || !repository) return false;
     const github = this.githubForRepository(repository);
     const repositoryName = `${repository.owner}/${repository.repo}`;
-    const outage = pushRefused(this.db, {
+    const outage = await pushRefused(this.db, {
       repository: repositoryName,
       error: refused,
       jobId: job.id,
@@ -2912,7 +2922,7 @@ export class Orchestrator {
     });
     // The outage ended between the hold and now: look again shortly.
     if (outage === null) {
-      if (waitForMergeTurn(this.db, job, this.now()) === "lost") throw error;
+      if ((await waitForMergeTurn(this.db, job, this.now())) === "lost") throw error;
       return true;
     }
     if (!refused.held)
@@ -2923,8 +2933,8 @@ export class Orchestrator {
         `push outage on ${repositoryName}; the push waits`,
         this.options.journal,
       );
-    const asked = askAboutPushOutage(this.db, repositoryName, this.now()) === "asked";
-    if (parkForPushOutage(this.db, job, outage, this.now()) === "lost") throw error;
+    const asked = (await askAboutPushOutage(this.db, repositoryName, this.now())) === "asked";
+    if ((await parkForPushOutage(this.db, job, outage, this.now())) === "lost") throw error;
     if (asked) await this.flush();
     return true;
   }
@@ -3959,7 +3969,7 @@ export class Orchestrator {
         const acceptedHead = (
           await git(["-C", worktree, "rev-parse", this.itemHead(item).ref])
         ).trim();
-        const mergeJob = acceptCloseout(this.db, {
+        const mergeJob = await acceptCloseout(this.db, {
           itemId: item.id,
           expected: verdict.owner,
           base,
@@ -4990,7 +5000,7 @@ export class Orchestrator {
             unreadable,
           )
         : null;
-    askCloseoutHelp(this.db, sessionId, context, {
+    await askCloseoutHelp(this.db, sessionId, context, {
       now: this.now(),
       ...(brokenMain ? { error: brokenMain } : {}),
       ...(repositoryName && unreadable
@@ -6301,7 +6311,7 @@ export class Orchestrator {
       return null;
     });
     if (remote === null) return false;
-    return settleRejectedPush(this.db, item.id, {
+    return await settleRejectedPush(this.db, item.id, {
       remoteHead: remote.head,
       containsAccepted: remote.contains,
       now: this.now(),

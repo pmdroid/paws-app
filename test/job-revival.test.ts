@@ -91,15 +91,15 @@ test("a cancelled resume handler stays fenced while its revived row runs a new h
 
 test.each(["done", "cancelled", "dead"] as const)(
   "reviving a %s merge row never refreshes the old handler's fence",
-  (status) => {
+  async (status) => {
     const db = fixture();
     applyWorkItemEvent(db, "item", "turn_ended");
     applyWorkItemEvent(db, "item", "closeout_accepted");
     const input = { itemId: "item", head: "head", summary: "accepted", now: 2 };
-    const id = enqueueVerifiedMerge(db, input);
+    const id = await enqueueVerifiedMerge(db, input);
     const old = claimNextJob(db, { now: 2, queues: [JOB_KIND.merge] })!;
     db.run("UPDATE job SET status=? WHERE id=?", [status, id]);
-    expect(enqueueVerifiedMerge(db, { ...input, now: 3 })).toBe(id);
+    expect(await enqueueVerifiedMerge(db, { ...input, now: 3 })).toBe(id);
     expect(jobVersionCurrent(db, old)).toBe(false);
     const current = claimNextJob(db, { now: 3, queues: [JOB_KIND.merge] })!;
     expect(current.id).toBe(old.id);

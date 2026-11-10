@@ -93,12 +93,16 @@ test("new input or a different pull request head still gets an implement turn", 
   ).toBe(false);
 });
 
-test("a rejected push whose remote is the accepted head goes to the merge queue without a question", () => {
+test("a rejected push whose remote is the accepted head goes to the merge queue without a question", async () => {
   const { db, itemId } = acceptedItem();
   expect(getWorkItem(db, itemId)?.state).toBe("running");
 
   expect(
-    settleRejectedPush(db, itemId, { remoteHead: ACCEPTED, containsAccepted: true, now: 2_000 }),
+    await settleRejectedPush(db, itemId, {
+      remoteHead: ACCEPTED,
+      containsAccepted: true,
+      now: 2_000,
+    }),
   ).toBe(true);
 
   expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
@@ -107,34 +111,46 @@ test("a rejected push whose remote is the accepted head goes to the merge queue 
   expect(mergeJobs(db).map((job) => (job.payload as { head: string }).head)).toEqual([ACCEPTED]);
 });
 
-test("a rejected push whose remote contains the accepted head goes to the merge queue", () => {
+test("a rejected push whose remote contains the accepted head goes to the merge queue", async () => {
   const { db, itemId } = acceptedItem();
   expect(
-    settleRejectedPush(db, itemId, { remoteHead: "ahead", containsAccepted: true, now: 2_000 }),
+    await settleRejectedPush(db, itemId, {
+      remoteHead: "ahead",
+      containsAccepted: true,
+      now: 2_000,
+    }),
   ).toBe(true);
   expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
 });
 
-test("a rejected push whose remote diverged from the accepted head is left to conflict handling", () => {
+test("a rejected push whose remote diverged from the accepted head is left to conflict handling", async () => {
   const { db, itemId } = acceptedItem();
   expect(
-    settleRejectedPush(db, itemId, { remoteHead: "diverged", containsAccepted: false, now: 2_000 }),
+    await settleRejectedPush(db, itemId, {
+      remoteHead: "diverged",
+      containsAccepted: false,
+      now: 2_000,
+    }),
   ).toBe(false);
   expect(
-    settleRejectedPush(db, itemId, { remoteHead: null, containsAccepted: false, now: 2_000 }),
+    await settleRejectedPush(db, itemId, { remoteHead: null, containsAccepted: false, now: 2_000 }),
   ).toBe(false);
   expect(getWorkItem(db, itemId)?.state).toBe("running");
   expect(mergeJobs(db)).toEqual([]);
 });
 
-test("an item without accepted work is not sent to the merge queue", () => {
+test("an item without accepted work is not sent to the merge queue", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "fresh", sessionKey: "ses", now: 1_000 });
   beginImplementRun(db, "fresh", 1_000);
   expect(mergeAcceptedWork(db, "fresh", { now: 2_000 })).toBe(false);
   expect(
-    settleRejectedPush(db, "fresh", { remoteHead: ACCEPTED, containsAccepted: true, now: 2_000 }),
+    await settleRejectedPush(db, "fresh", {
+      remoteHead: ACCEPTED,
+      containsAccepted: true,
+      now: 2_000,
+    }),
   ).toBe(false);
   expect(getWorkItem(db, "fresh")?.state).toBe("running");
 });
@@ -150,7 +166,7 @@ test("an accepted item queued again by a restart leaves that restart for the mer
 });
 
 for (const reason of ["ci", "review"] as const) {
-  test(`a rejected push of a turn carrying ${reason} input goes to the question, not the merge queue`, () => {
+  test(`a rejected push of a turn carrying ${reason} input goes to the question, not the merge queue`, async () => {
     const { db, itemId } = acceptedItem();
     const job = restart(db, getWorkItem(db, itemId)!, {
       reason,
@@ -160,7 +176,11 @@ for (const reason of ["ci", "review"] as const) {
     beginImplementRun(db, itemId, 2_500);
     db.run("UPDATE job SET status = 'running' WHERE id = ?", [job]);
     expect(
-      settleRejectedPush(db, itemId, { remoteHead: ACCEPTED, containsAccepted: true, now: 3_000 }),
+      await settleRejectedPush(db, itemId, {
+        remoteHead: ACCEPTED,
+        containsAccepted: true,
+        now: 3_000,
+      }),
     ).toBe(false);
     expect(getWorkItem(db, itemId)?.state).toBe("running");
     expect(mergeJobs(db)).toEqual([]);

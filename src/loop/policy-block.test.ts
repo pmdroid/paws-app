@@ -69,7 +69,7 @@ function help(id: string): CloseoutHelp {
 
 async function blockedOnMain(db: Database, id: string, repository = REPOSITORY) {
   parked(db, id);
-  askCloseoutHelp(db, `ses-${id}`, help(id), {
+  await askCloseoutHelp(db, `ses-${id}`, help(id), {
     now: NOW,
     reason: "blocked_check",
     error: await policyOutageNote(db, repository, id, null, BROKEN),
@@ -151,7 +151,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
     const asked = await blockedOnMain(db, "ENG-1");
     retry(db, LOADS);
     applyWorkItemEvent(db, "ENG-1", "blocking_question");
-    askCloseoutHelp(
+    await askCloseoutHelp(
       db,
       "ses-ENG-1",
       { ...help("ENG-1"), summary: "Closeout: blocked\nMessage: runner lost" },
@@ -180,10 +180,10 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
     expect(reverifies(db)).toEqual([]);
   });
 
-  test("a closeout-help question with another cause is never answered by Paws", () => {
+  test("a closeout-help question with another cause is never answered by Paws", async () => {
     const db = database();
     parked(db, "ENG-1");
-    askCloseoutHelp(db, "ses-ENG-1", help("ENG-1"), {
+    await askCloseoutHelp(db, "ses-ENG-1", help("ENG-1"), {
       now: NOW,
       reason: "blocked_check",
       checks: [],
