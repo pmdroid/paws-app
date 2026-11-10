@@ -1,4 +1,4 @@
-import { pullRequestReadyQueued, sessionHasFinalResponse } from "../db";
+import { pullRequestReadyQueued, sessionHasFinalResponse, sessionPullRequestOpen } from "../db";
 import type { Database } from "bun:sqlite";
 
 /**
@@ -6,27 +6,33 @@ import type { Database } from "bun:sqlite";
  * comment-only GitHub review's threads, posted once per review id, what a person decided on
  * the risk approval, the record of a question answered in Paws, and the merge queue's review
  * wait, once per generation, head and reason (`merge-review:`), and the wait behind another item
- * after a conflict, once per generation and blocker (`merge-hold:`). A response keeps the session
- * complete, so none reopens it.
+ * after a conflict, once per generation and blocker (`merge-hold:`). The PR response of a later
+ * generation, once per generation, completes the session a person's message reopened. A response
+ * keeps the session complete, so none reopens it.
  */
 export const AFTER_PULL_REQUEST_RESPONSE =
-  /^(merged:|closed:|command:stop:|pull-review:|risk-approval:|paws-answer:|merge-review:|merge-hold:|reply:)/;
+  /^(pull-request-ready:|merged:|closed:|command:stop:|pull-review:|risk-approval:|paws-answer:|merge-review:|merge-hold:|reply:)/;
 
 /**
  * Thoughts that may follow the PR response: a change request on the risk approval, from the
  * Risk card or a Linear reply, and a review or comments on the pull request that sent the item
  * back to the agent (`pull-feedback:`), and a conflict with main that sent it back to rebase
- * (`merge-conflict:`). Each wakes the session, so a person sees the agent work.
+ * (`merge-conflict:`). Each wakes the session, so a person sees the agent work. The
+ * acknowledgement of a person's message in the session (`turn:ack:`, and the `fresh-budget:` line
+ * of the turn it starts) answers them, so it passes too.
  */
-export const AFTER_PULL_REQUEST_THOUGHT = /^(risk-approval:|pull-feedback:|merge-conflict:)/;
+export const AFTER_PULL_REQUEST_THOUGHT =
+  /^(risk-approval:|pull-feedback:|merge-conflict:|turn:ack:|fresh-budget:)/;
 
-/** The PR response completes this generation; only a terminal response or ask may follow. */
 export function hasPublishedPullRequest(
   db: Database,
   sessionId: string,
   generation: number,
 ): boolean {
-  return pullRequestReadyQueued(db, sessionId, generation);
+  return (
+    pullRequestReadyQueued(db, sessionId, generation) ||
+    sessionPullRequestOpen(db, sessionId, generation)
+  );
 }
 
 export function canReportProgress(
@@ -35,5 +41,8 @@ export function canReportProgress(
   generation: number,
   rowId?: number,
 ): boolean {
-  return !sessionHasFinalResponse(db, sessionId, generation, rowId);
+  return (
+    !sessionHasFinalResponse(db, sessionId, generation, rowId) &&
+    !sessionPullRequestOpen(db, sessionId, generation, rowId)
+  );
 }

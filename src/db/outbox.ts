@@ -1,6 +1,6 @@
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
-import { and, asc, desc, eq, gt, ilike, inArray, like, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ilike, inArray, like, lt, lte, ne, or, sql } from "drizzle-orm";
 import {
   DEFAULT_BACKOFF_BASE_MS,
   DEFAULT_BACKOFF_CAP_MS,
@@ -1315,6 +1315,49 @@ export function sessionHasFinalResponse(
 ): boolean {
   return settled(
     sqliteDb(db).run((q) => sessionHasFinalResponseSteps(q, sessionId, generation, rowId)),
+  );
+}
+
+export function* sessionPullRequestOpenSteps(
+  q: Q,
+  sessionId: string,
+  generation: number,
+  rowId?: number,
+) {
+  const { outbox } = q.t;
+  const prefixed = likeOf(q);
+  const row = yield* q.one(
+    q.orm
+      .select({ key: outbox.idempotencyKey })
+      .from(outbox)
+      .where(
+        and(
+          eq(outbox.target, "linear"),
+          eq(outbox.orderingKey, sessionId),
+          lte(outbox.deliveryGeneration, generation),
+          or(
+            prefixed(outbox.idempotencyKey, "pull-request-ready:%"),
+            prefixed(outbox.idempotencyKey, "merged:%"),
+            prefixed(outbox.idempotencyKey, "closed:%"),
+          ),
+          ne(outbox.status, "dropped"),
+          rowId === undefined ? undefined : or(lt(outbox.id, rowId), eq(outbox.status, "sent")),
+        ),
+      )
+      .orderBy(desc(outbox.id))
+      .limit(1),
+  );
+  return row?.key.startsWith("pull-request-ready:") ?? false;
+}
+
+export function sessionPullRequestOpen(
+  db: Database,
+  sessionId: string,
+  generation: number,
+  rowId?: number,
+): boolean {
+  return settled(
+    sqliteDb(db).run((q) => sessionPullRequestOpenSteps(q, sessionId, generation, rowId)),
   );
 }
 

@@ -596,7 +596,7 @@ test("Linear requests while CI is pending and main moves before the merge", asyn
   expect(result.heads).toBeGreaterThan(1);
   expect(result.perCaller, result.operations).toEqual({
     context: 1,
-    outbox: 8,
+    outbox: 7,
     "repository-hints": 1,
     "session-read": 1,
     "task-access": 7,

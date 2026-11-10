@@ -465,7 +465,7 @@ test("post-PR reconstruction refuses backwards phases and appends rebase verific
     ]);
     expect(
       listOutbox(db).findLast((row) => row.op === "linear.session.summary")?.payload,
-    ).toMatchObject({ summary: "ENG-1: rebased onto main, re-verifying" });
+    ).toMatchObject({ summary: "ENG-1: merging" });
     recovered.status("ENG-1: second in queue behind ENG-2");
     createLinearSessionProgress(db, "session", "ENG-1").phase("implementing");
     expect(
@@ -773,7 +773,7 @@ test("repeated merge wakes on a published pull request keep a stable title withi
     wake().phase("publishing");
     markPr(db);
     wake().phase("merging");
-    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: merging");
+    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: waiting to merge");
     for (let tick = 0; tick < 10; tick++) {
       wake().reach("merging");
       clock.advance(30_000);
@@ -782,7 +782,7 @@ test("repeated merge wakes on a published pull request keep a stable title withi
     const summaries = tracker.sessionUpdates.flatMap((update) =>
       update.summary ? [update.summary] : [],
     );
-    expect(summaries).toEqual(["ENG-1: verifying", "ENG-1: merging"]);
+    expect(summaries).toEqual(["ENG-1: verifying", "ENG-1: waiting to merge"]);
     expect(wake().keepalive(null)).toBe("Merging ENG-1.");
 
     // A stable CI wait stays the title through further wakes.
@@ -822,24 +822,23 @@ test("a new head on a published pull request updates it without regressing the p
     clock.advance(120_000);
     wake().restart("ci", 1, 10);
     await flush(dispatcher);
-    expect(tracker.sessionUpdates.at(-1)?.summary).toBe("ENG-1: fixing CI (1 of 3)");
+    expect(tracker.sessionUpdates.at(-1)?.summary).toBe("ENG-1: fixing CI");
     wake().phase("verifying");
     clock.advance(1_000);
     wake().phase("publishing");
-    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: updating the pull request");
+    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: fixing CI");
     expect(latest(db, "linear.session.plan").plan?.at(-1)).toEqual({
       content: "Verify fixes",
       status: "inProgress",
     });
     expect(wake().keepalive(null)).toBe("Merging ENG-1.");
     wake().phase("merging");
-    // Latest wins: the update line waiting on the interval is replaced before it goes out.
-    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: merging");
+    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: waiting to merge");
     clock.advance(120_000);
     await flush(dispatcher);
     const summaries = tracker.sessionUpdates.flatMap((u) => (u.summary ? [u.summary] : []));
     expect(summaries).not.toContain("ENG-1: updating the pull request");
-    expect(summaries.at(-1)).toBe("ENG-1: merging");
+    expect(summaries.at(-1)).toBe("ENG-1: waiting to merge");
     expect(
       latest(db, "linear.session.plan")
         .plan?.slice(3)
@@ -847,9 +846,9 @@ test("a new head on a published pull request updates it without regressing the p
     ).toBe(true);
     wake().phase("completed");
     await flush(dispatcher);
-    expect(tracker.sessionUpdates.at(-1)?.summary).toBe("ENG-1: completed");
+    expect(tracker.sessionUpdates.at(-1)?.summary).toBe("ENG-1: merged");
     wake().reach("merging");
-    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: completed");
+    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: merged");
   } finally {
     db.close();
   }
@@ -862,7 +861,7 @@ test("reconstruction reaches merging once and stale or stopped reporters change 
     markPr(db);
     const captured = createLinearSessionProgress(db, "session", "ENG-1");
     createLinearSessionProgress(db, "session", "ENG-1").reach("merging");
-    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: merging");
+    expect(latest(db, "linear.session.summary").summary).toBe("ENG-1: waiting to merge");
     const rows = listOutbox(db).length;
     createLinearSessionProgress(db, "session", "ENG-1").reach("merging");
     captured.reach("merging");
