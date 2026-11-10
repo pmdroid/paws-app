@@ -59,7 +59,7 @@ test("own_turn starts exactly one suggestion restart from merge_queue, and none 
     expect(
       await startTurn(db, { itemId: "acme-1", head: "b".repeat(40), suggestions: 2, now: 9 }),
     ).toBe("none");
-    expect(getSuggestionTurn(db, "acme-1")).toMatchObject({
+    expect(await getSuggestionTurn(sqliteDb(db), "acme-1")).toMatchObject({
       outcome: "started",
       head: "a".repeat(40),
     });
@@ -74,7 +74,7 @@ test("own_turn starts nothing without suggestions or when another restart is alr
     expect(
       await startTurn(db, { itemId: "acme-2", head: "a".repeat(40), suggestions: 0, now: 5 }),
     ).toBe("none");
-    expect(getSuggestionTurn(db, "acme-2")).toBeNull();
+    expect(await getSuggestionTurn(sqliteDb(db), "acme-2")).toBeNull();
     recordPullComment(db, {
       itemId: "acme-2",
       pullNumber: 7,
@@ -104,7 +104,7 @@ test("own_turn skips the suggestion restart under 45 minutes of awake budget and
       await startTurn(db, { itemId: "acme-3", head: "a".repeat(40), suggestions: 1, now: 5 }),
     ).toBe("skipped");
     expect(getWorkItem(db, "acme-3")?.state).toBe("merge_queue");
-    expect(getSuggestionTurn(db, "acme-3")).toMatchObject({
+    expect(await getSuggestionTurn(sqliteDb(db), "acme-3")).toMatchObject({
       outcome: "skipped",
       reason: expect.stringContaining("44 minutes of the awake budget remain, under 45"),
     });
@@ -186,10 +186,11 @@ const META: OpenFinding = {
 async function handedItem(id: string) {
   const db = mergeQueueItem(id);
   await handSuggestions(sqliteDb(db), id, [GRANT, META], 5);
-  const idAt = (location: string) =>
-    suggestedFindings(db, id).find((record) => record.location === location)!.findingId;
-  const grant = idAt(GRANT.location);
-  const meta = idAt(META.location);
+  const idAt = async (location: string) =>
+    (await suggestedFindings(sqliteDb(db), id)).find((record) => record.location === location)!
+      .findingId;
+  const grant = await idAt(GRANT.location);
+  const meta = await idAt(META.location);
   return { db, grant, meta };
 }
 
@@ -203,7 +204,7 @@ test("a fixed claim stays listed, pending verification, when the next review omi
       "c".repeat(40),
       9,
     );
-    const open = withDecisions([], suggestedFindings(db, "acme-4"));
+    const open = withDecisions([], await suggestedFindings(sqliteDb(db), "acme-4"));
     expect(open).toHaveLength(2);
     expect(open).toContainEqual(
       expect.objectContaining({
@@ -221,7 +222,7 @@ test("a fixed claim stays listed, pending verification, when the next review omi
     expect(section).toContain(
       "(independent-review, below failOn; fixed in ccccccc, pending verification)",
     );
-    const reported = withDecisions([GRANT, META], suggestedFindings(db, "acme-4"));
+    const reported = withDecisions([GRANT, META], await suggestedFindings(sqliteDb(db), "acme-4"));
     expect(reported.map((finding) => finding.decision?.decision)).toEqual(["declined", "fixed"]);
   } finally {
     db.close();
@@ -249,8 +250,13 @@ test("a fixed claim without a commit Paws confirmed, or in prose only, records n
         9,
       ),
     ).toBe(0);
-    expect(suggestedFindings(db, "acme-5").every((record) => record.decision === null)).toBe(true);
-    expect(withDecisions([GRANT, META], suggestedFindings(db, "acme-5"))).toEqual([GRANT, META]);
+    expect(
+      (await suggestedFindings(sqliteDb(db), "acme-5")).every((record) => record.decision === null),
+    ).toBe(true);
+    expect(withDecisions([GRANT, META], await suggestedFindings(sqliteDb(db), "acme-5"))).toEqual([
+      GRANT,
+      META,
+    ]);
   } finally {
     db.close();
   }
@@ -277,7 +283,7 @@ test("a decision belongs to its finding id, not to another finding at the same l
       9,
     );
     const other: OpenFinding = { ...GRANT, explanation: "Drops the refresh token." };
-    const open = withDecisions([other], suggestedFindings(db, "acme-6"));
+    const open = withDecisions([other], await suggestedFindings(sqliteDb(db), "acme-6"));
     expect(open[0]).toEqual(other);
     expect(open[1]).toMatchObject({
       location: GRANT.location,
@@ -300,7 +306,7 @@ test("a declined finding keeps its line and reason when the next review omits it
       9,
     );
     const section = openFindingsSection({
-      findings: withDecisions([], suggestedFindings(db, "acme-7")),
+      findings: withDecisions([], await suggestedFindings(sqliteDb(db), "acme-7")),
       risk: null,
       link: null,
     });
