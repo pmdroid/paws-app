@@ -1,6 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
-import { isLinearAppRevoked, recordLinearInstallation, revokeLinearInstallation } from "../src/db";
+import {
+  isLinearAppRevoked,
+  recordLinearInstallation,
+  revokeLinearInstallation,
+  sqliteDb,
+} from "../src/db";
 import {
   createLinearAuth,
   createLinearClient,
@@ -30,8 +35,8 @@ function fixture() {
     actor: "app",
   };
   writeStoredToken(db, secretsDir, token);
-  const revoke = () =>
-    revokeLinearInstallation(db, { ...scope, eventKey: "revoked", createdAtMs: 2 });
+  const revoke = async () =>
+    await revokeLinearInstallation(sqliteDb(db), { ...scope, eventKey: "revoked", createdAtMs: 2 });
   return { db, home, secretsDir, token, revoke, allowed: () => !isLinearAppRevoked(db, scope) };
 }
 
@@ -49,7 +54,7 @@ test("known revocation blocks fresh credentials and refresh without a network re
       throw new Error("Offline request must not run");
     },
   });
-  f.revoke();
+  await f.revoke();
   expect(auth.hasToken()).toBe(true);
   await expect(auth.ensureFresh()).rejects.toThrow("revoked");
   await expect(auth.forceRefresh()).rejects.toThrow("revoked");
@@ -79,7 +84,7 @@ test.each([false, true])(
     });
     const pending = auth.ensureFresh();
     await started.promise;
-    f.revoke();
+    await f.revoke();
     const expected = replace
       ? { ...f.token, accessToken: "fake-operator-access", refreshToken: "fake-operator-refresh" }
       : { ...f.token, expiresAtMs: 0 };
@@ -116,14 +121,14 @@ test("revocation after token load fences the GraphQL request before transport di
     },
   });
   const pending = client.query("mutation { issueUpdate { success } }");
-  f.revoke();
+  await f.revoke();
   await expect(pending).rejects.toThrow("revoked");
   expect(requests).toBe(0);
 });
 
 test("a revoked installation leaves webhook dispatch available but starts no catch-up polling", async () => {
   const f = fixture();
-  f.revoke();
+  await f.revoke();
   let requests = 0;
   const opened = openLinear({
     db: f.db,
@@ -154,7 +159,7 @@ test("revocation for another client or app user does not block the configured in
     teamId: "other-team",
     observedAtMs: 1,
   });
-  revokeLinearInstallation(f.db, {
+  await revokeLinearInstallation(sqliteDb(f.db), {
     organizationId: "other-org",
     oauthClientId: "other-client",
     eventKey: "other-revoked",
@@ -173,9 +178,9 @@ test("revocation for another client or app user does not block the configured in
   expect(await auth.ensureFresh()).toBe(f.token.accessToken);
 });
 
-test("incomplete configured identity cannot bypass a possibly matching revocation", () => {
+test("incomplete configured identity cannot bypass a possibly matching revocation", async () => {
   const f = fixture();
-  f.revoke();
+  await f.revoke();
   expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: null })).toBe(true);
   expect(isLinearAppRevoked(f.db, { oauthClientId: null, appUserId: "app" })).toBe(true);
   expect(isLinearAppRevoked(f.db, { oauthClientId: null, appUserId: null })).toBe(true);

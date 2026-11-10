@@ -19,6 +19,7 @@ import {
   listUserWorkspaces,
   WORKSPACE_REVOKED_RESPONSE,
   WORKSPACE_REVOKED_SIGN_IN,
+  sqliteDb,
 } from "../src/db";
 import {
   createWorkspaceAccess,
@@ -130,7 +131,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
       now: now + 1,
     });
     expect(workspaceMemberUsable(workspaceMember(db, "workspace", "member"))).toBe(false);
-    expect(listUserWorkspaces(db, "member")).toEqual([]);
+    expect(await listUserWorkspaces(sqliteDb(db), "member")).toEqual([]);
     expect(() =>
       issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }),
     ).toThrow(WORKSPACE_REVOKED_SIGN_IN);

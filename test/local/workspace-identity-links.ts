@@ -11,6 +11,7 @@ import {
   saveWorkspaceIdentityLink,
   syncWorkspaceMember,
   workspaceIdentityLinks,
+  sqliteDb,
 } from "../../src/db";
 import { createSlackIdentityReads } from "../../src/slack";
 import {
@@ -170,7 +171,7 @@ export async function probeWorkspaceIdentityLinks(
     });
   try {
     await access.refreshMemberships();
-    let links = workspaceIdentityLinks(db, workspace.id);
+    let links = await workspaceIdentityLinks(sqliteDb(db), workspace.id);
     const matched = links.filter(
       (link) => link.status === "linked" && link.method === "email",
     ).length;
@@ -262,7 +263,9 @@ export async function probeWorkspaceIdentityLinks(
       "administrator demotion during body read denies and audits the identity mutation",
       demoted?.status === 403 &&
         denial > 0 &&
-        !workspaceIdentityLinks(db, workspace.id).some((link) => link.externalId === "blocked"),
+        !(await workspaceIdentityLinks(sqliteDb(db), workspace.id)).some(
+          (link) => link.externalId === "blocked",
+        ),
       { status: demoted?.status, denials: denial },
     );
     changeWorkspaceRole(db, {
@@ -315,7 +318,9 @@ export async function probeWorkspaceIdentityLinks(
             "SELECT count(*) AS count FROM workspace_access_audit WHERE action='access.denied' AND subject='/api/workspaces/identity-links' AND user_id=?",
           )
           .get(ids[1]!)!.count > denial &&
-        !workspaceIdentityLinks(db, workspace.id).some((link) => link.externalId === "blocked"),
+        !(await workspaceIdentityLinks(sqliteDb(db), workspace.id)).some(
+          (link) => link.externalId === "blocked",
+        ),
       { status: transactionDenial?.status },
     );
     changeWorkspaceRole(db, {
@@ -328,7 +333,7 @@ export async function probeWorkspaceIdentityLinks(
     const github = await save(admin, ids[9]!, "github", "Member-Nine");
     const manualSlack = await save(admin, ids[9]!, "slack", "U999");
     await access.refreshMemberships();
-    links = workspaceIdentityLinks(db, workspace.id);
+    links = await workspaceIdentityLinks(sqliteDb(db), workspace.id);
     observe(
       "admin manual Slack and GitHub mappings persist their method and survive email sync",
       github.status === 200 &&
@@ -350,17 +355,17 @@ export async function probeWorkspaceIdentityLinks(
         ),
       { github: github.status, slack: manualSlack.status },
     );
-    const latest = workspaceIdentityLinks(db, workspace.id).find(
+    const latest = (await workspaceIdentityLinks(sqliteDb(db), workspace.id)).find(
       (link) => link.userId === ids[9] && link.provider === "github",
     )!;
-    saveWorkspaceIdentityLink(db, {
+    await saveWorkspaceIdentityLink(sqliteDb(db), {
       ...latest,
       workspaceId: workspace.id,
       actorId: ids[1]!,
       externalId: "stale-member-nine",
       checkedAt: latest.checkedAt - 1,
     });
-    const afterStaleManual = workspaceIdentityLinks(db, workspace.id).find(
+    const afterStaleManual = (await workspaceIdentityLinks(sqliteDb(db), workspace.id)).find(
       (link) => link.userId === ids[9] && link.provider === "github",
     );
     observe(
@@ -397,18 +402,18 @@ export async function probeWorkspaceIdentityLinks(
     observe(
       "a delayed email lookup cannot overwrite a newer manual identity mapping",
       during.status === 200 &&
-        workspaceIdentityLinks(db, workspace.id).some(
+        (await workspaceIdentityLinks(sqliteDb(db), workspace.id)).some(
           (link) =>
             link.userId === ids[8] && link.externalId === "U888" && link.method === "manual",
         ),
       { status: during.status },
     );
     const cleared = await save(admin, ids[8]!, "slack", null);
-    const reset = workspaceIdentityLinks(db, workspace.id).find(
+    const reset = (await workspaceIdentityLinks(sqliteDb(db), workspace.id)).find(
       (link) => link.userId === ids[8] && link.provider === "slack",
     );
     await service.syncUser(workspace.id, ids[8]!);
-    const rematched = workspaceIdentityLinks(db, workspace.id).find(
+    const rematched = (await workspaceIdentityLinks(sqliteDb(db), workspace.id)).find(
       (link) => link.userId === ids[8] && link.provider === "slack",
     );
     observe(
@@ -425,10 +430,12 @@ export async function probeWorkspaceIdentityLinks(
     await service.syncUser(workspace.id, ids[7]!);
     observe(
       "Slack identities from another installation are recorded as errors without being linked",
-      workspaceIdentityLinks(db, workspace.id).some(
+      (await workspaceIdentityLinks(sqliteDb(db), workspace.id)).some(
         (link) => link.userId === ids[7] && link.status === "error" && link.externalId === null,
       ),
-      workspaceIdentityLinks(db, workspace.id).filter((link) => link.userId === ids[7]),
+      (await workspaceIdentityLinks(sqliteDb(db), workspace.id)).filter(
+        (link) => link.userId === ids[7],
+      ),
     );
     const audit = db
       .query<{ count: number }, []>(
@@ -443,7 +450,7 @@ export async function probeWorkspaceIdentityLinks(
             "SELECT 1 FROM workspace_access_audit WHERE action='identity.link.changed' AND subject LIKE '%:github:manual:linked:member-nine'",
           )
           .get() !== null &&
-        !JSON.stringify(workspaceIdentityLinks(db, workspace.id)).includes(
+        !JSON.stringify(await workspaceIdentityLinks(sqliteDb(db), workspace.id)).includes(
           "fixture-slack-identity-token",
         ),
       { auditedChanges: audit },
@@ -452,7 +459,7 @@ export async function probeWorkspaceIdentityLinks(
     writeFileSync(join(root, "slack-requests.json"), JSON.stringify(requests, null, 2));
     writeFileSync(
       join(root, "links.json"),
-      JSON.stringify(workspaceIdentityLinks(db, workspace.id), null, 2),
+      JSON.stringify(await workspaceIdentityLinks(sqliteDb(db), workspace.id), null, 2),
     );
     await server.stop(true);
     await access.stop();

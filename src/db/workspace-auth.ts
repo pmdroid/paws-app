@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, count, eq, gt, lte } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { immediate } from "./tx";
 import {
   auditWorkspaceAccessSteps,
@@ -40,8 +40,11 @@ export function* saveWorkspaceOAuthRequestSteps(
   return true;
 }
 
-export function saveWorkspaceOAuthRequest(db: Database, input: WorkspaceOAuthRequest): boolean {
-  return settled(sqliteDb(db).transaction((q) => saveWorkspaceOAuthRequestSteps(q, input)));
+export async function saveWorkspaceOAuthRequest(
+  store: Db,
+  input: WorkspaceOAuthRequest,
+): Promise<boolean> {
+  return store.transaction((q) => saveWorkspaceOAuthRequestSteps(q, input));
 }
 
 export function* consumeWorkspaceOAuthRequestSteps(
@@ -72,15 +75,13 @@ export function* consumeWorkspaceOAuthRequestSteps(
   return row ?? null;
 }
 
-export function consumeWorkspaceOAuthRequest(
-  db: Database,
+export async function consumeWorkspaceOAuthRequest(
+  store: Db,
   stateHash: string,
   browserHash: string,
   now: number,
-): WorkspaceOAuthRequest | null {
-  return settled(
-    sqliteDb(db).run((q) => consumeWorkspaceOAuthRequestSteps(q, stateHash, browserHash, now)),
-  );
+): Promise<WorkspaceOAuthRequest | null> {
+  return store.run((q) => consumeWorkspaceOAuthRequestSteps(q, stateHash, browserHash, now));
 }
 
 export function* listUserWorkspacesSteps(q: Q, userId: string) {
@@ -96,8 +97,8 @@ export function* listUserWorkspacesSteps(q: Q, userId: string) {
   return rows as { id: string; name: string; role: WorkspaceRole }[];
 }
 
-export function listUserWorkspaces(db: Database, userId: string) {
-  return settled(sqliteDb(db).run((q) => listUserWorkspacesSteps(q, userId)));
+export async function listUserWorkspaces(store: Db, userId: string) {
+  return store.run((q) => listUserWorkspacesSteps(q, userId));
 }
 
 export function* listWorkspaceMembersSteps(q: Q, workspaceId: string) {
@@ -307,6 +308,6 @@ export function* distinctWorkspaceRepositoriesSteps(q: Q) {
   return rows.map((row) => row.repository);
 }
 
-export function distinctWorkspaceRepositories(db: Database): string[] {
-  return settled(sqliteDb(db).run((q) => distinctWorkspaceRepositoriesSteps(q)));
+export async function distinctWorkspaceRepositories(store: Db): Promise<string[]> {
+  return store.run((q) => distinctWorkspaceRepositoriesSteps(q));
 }

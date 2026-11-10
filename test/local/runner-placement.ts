@@ -15,6 +15,7 @@ import {
   getLinearSessionAccess,
   syncWorkspaceMember,
   saveCheckpoint,
+  sqliteDb,
 } from "../../src/db";
 import { createRunnerPlacement, type PlacementRequest } from "../../src/runner-placement";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../../src/workspace";
@@ -391,7 +392,7 @@ export async function probeRunnerPlacement(
       true,
       { persisted: true },
     );
-    revokeLinearInstallation(db, {
+    await revokeLinearInstallation(sqliteDb(db), {
       eventKey: "placement-revocation",
       organizationId: "org",
       oauthClientId: "app-client",

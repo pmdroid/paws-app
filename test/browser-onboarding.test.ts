@@ -112,6 +112,7 @@ import {
   recordLinearInstallation,
   revokeLinearInstallation,
   getLinearSessionAccess,
+  sqliteDb,
 } from "../src/db";
 import { readStoredToken } from "../src/linear";
 import { createWorkspaceAccess } from "../src/workspace";
@@ -437,7 +438,7 @@ for (const concurrentRevocation of [false, true]) {
         teamId: "team",
         observedAtMs: scene.state.now,
       });
-      revokeLinearInstallation(scene.db, {
+      await revokeLinearInstallation(sqliteDb(scene.db), {
         ...scope,
         eventKey: "first",
         createdAtMs: scene.state.now,
@@ -450,7 +451,7 @@ for (const concurrentRevocation of [false, true]) {
       const next = await scene.installation();
       scene.reopen();
       if (concurrentRevocation)
-        revokeLinearInstallation(scene.db, {
+        await revokeLinearInstallation(sqliteDb(scene.db), {
           ...scope,
           eventKey: "second",
           createdAtMs: scene.state.now + 1,

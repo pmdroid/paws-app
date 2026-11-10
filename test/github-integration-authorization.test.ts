@@ -21,6 +21,7 @@ import {
   openDatabase,
   recordLinearInstallation,
   revokeLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 
 test("transient production authorization persists a wait, survives restart and recovers once alongside a sibling", async () => {
@@ -151,7 +152,11 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
     await auth.ensure(getWorkItem(db, item.id)!, "initial", new AbortController().signal);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
     unavailable = false;
-    revokeLinearInstallation(db, { ...scope, eventKey: "revoked", createdAtMs: 20 });
+    await revokeLinearInstallation(sqliteDb(db), {
+      ...scope,
+      eventKey: "revoked",
+      createdAtMs: 20,
+    });
     await auth.recover();
     expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
     expect(

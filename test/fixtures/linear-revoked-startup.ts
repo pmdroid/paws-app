@@ -6,6 +6,7 @@ import {
   openDatabase,
   recordLinearInstallation,
   revokeLinearInstallation,
+  sqliteDb,
 } from "../../src/db";
 import { startPaws } from "../../src/index";
 
@@ -14,7 +15,7 @@ const db = openDatabase(join(home, "paws.db"));
 migrate(db);
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
 recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
-revokeLinearInstallation(db, { ...scope, eventKey: "revoked", createdAtMs: 2 });
+await revokeLinearInstallation(sqliteDb(db), { ...scope, eventKey: "revoked", createdAtMs: 2 });
 db.close();
 storeLinearToken(home, {
   accessToken: "fake-access",

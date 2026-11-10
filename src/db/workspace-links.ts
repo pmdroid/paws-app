@@ -1,14 +1,11 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, exists, lte, ne, not, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import {
   workspaceMemberUsableWhere,
   workspaceMemberUsable,
   auditWorkspaceAccessSteps,
   workspaceMemberSteps,
 } from "./workspace";
-import { immediate } from "./tx";
-
 export type WorkspaceIdentityLink = {
   userId: string;
   provider: "slack" | "github";
@@ -42,8 +39,8 @@ export function* workspaceIdentityLinksSteps(q: Q, workspaceId: string) {
   return rows as (WorkspaceIdentityLink & { name: string; email: string })[];
 }
 
-export function workspaceIdentityLinks(db: Database, workspaceId: string) {
-  return settled(sqliteDb(db).run((q) => workspaceIdentityLinksSteps(q, workspaceId)));
+export async function workspaceIdentityLinks(store: Db, workspaceId: string) {
+  return store.run((q) => workspaceIdentityLinksSteps(q, workspaceId));
 }
 
 export function* workspaceIdentityCandidatesSteps(q: Q, workspaceId: string) {
@@ -75,8 +72,8 @@ export function* workspaceIdentityCandidatesSteps(q: Q, workspaceId: string) {
   );
 }
 
-export function workspaceIdentityCandidates(db: Database, workspaceId: string) {
-  return settled(sqliteDb(db).run((q) => workspaceIdentityCandidatesSteps(q, workspaceId)));
+export async function workspaceIdentityCandidates(store: Db, workspaceId: string) {
+  return store.run((q) => workspaceIdentityCandidatesSteps(q, workspaceId));
 }
 
 type IdentityLinkInput = WorkspaceIdentityLink & { workspaceId: string; actorId?: string };
@@ -125,6 +122,9 @@ export function* saveWorkspaceIdentityLinkSteps(q: Q, input: IdentityLinkInput) 
     });
 }
 
-export function saveWorkspaceIdentityLink(db: Database, input: IdentityLinkInput): void {
-  immediate(db, () => settled(sqliteDb(db).run((q) => saveWorkspaceIdentityLinkSteps(q, input))));
+export async function saveWorkspaceIdentityLink(
+  store: Db,
+  input: IdentityLinkInput,
+): Promise<void> {
+  await store.transaction((q) => saveWorkspaceIdentityLinkSteps(q, input));
 }

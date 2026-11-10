@@ -15,6 +15,7 @@ import {
   recordLinearInstallation,
   requireLinearTaskDelegation,
   revokeLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeLinearAccessReads,
@@ -190,7 +191,7 @@ test("access removed during a fresh publication read prevents the queued mutatio
     f.enqueue("status");
     await f.outbox.tick();
     await started.promise;
-    revokeLinearInstallation(f.db, {
+    await revokeLinearInstallation(sqliteDb(f.db), {
       ...f.scope,
       eventKey: "removed",
       createdAtMs: 10,

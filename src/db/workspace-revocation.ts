@@ -3,7 +3,7 @@ import { and, asc, count, eq, inArray, isNull, max, notInArray, or, sql } from "
 import { alias } from "drizzle-orm/pg-core";
 import { TERMINAL_WORK_ITEM_STATES } from "../core";
 import { applyLinearCommand } from "./commands";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { delegatedLinearUserIdSql } from "./linear-sessions";
 import { immediate } from "./tx";
 import {
@@ -200,9 +200,9 @@ export function* listWorkspaceMemberSummariesSteps(
   return summaries;
 }
 
-export function listWorkspaceMemberSummaries(
-  db: Database,
+export async function listWorkspaceMemberSummaries(
+  store: Db,
   workspaceId: string,
-): WorkspaceMemberSummary[] {
-  return settled(sqliteDb(db).run((q) => listWorkspaceMemberSummariesSteps(q, workspaceId)));
+): Promise<WorkspaceMemberSummary[]> {
+  return store.run((q) => listWorkspaceMemberSummariesSteps(q, workspaceId));
 }

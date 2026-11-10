@@ -11,6 +11,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   revokeLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import {
@@ -220,7 +221,7 @@ test.each(["unknown", "rejected"])(
 test("child-team removal is checked durably even while authoritative reads still return accessible", async () => {
   const f = await fixture(true);
   await f.gate.prepare(f.item, new AbortController().signal);
-  changeLinearTeamAccess(f.db, {
+  await changeLinearTeamAccess(sqliteDb(f.db), {
     ...scope,
     eventKey: "remove-child",
     createdAtMs: 20,
@@ -235,7 +236,7 @@ test("child-team removal is checked durably even while authoritative reads still
 test("a public-team permission drop triggers fresh team access rather than assuming all teams were removed", async () => {
   const f = await fixture(true);
   await f.gate.prepare(f.item, new AbortController().signal);
-  changeLinearTeamAccess(f.db, {
+  await changeLinearTeamAccess(sqliteDb(f.db), {
     ...scope,
     eventKey: "public-drop",
     createdAtMs: 20,
@@ -257,7 +258,12 @@ test.each(["generation", "revocation"])(
     f.access.adapter.session = async (...args) => {
       const result = await original(...args);
       if (change === "generation") advanceLinearSessionGeneration(f.db, "session");
-      else revokeLinearInstallation(f.db, { ...scope, eventKey: "revoke", createdAtMs: 20 });
+      else
+        await revokeLinearInstallation(sqliteDb(f.db), {
+          ...scope,
+          eventKey: "revoke",
+          createdAtMs: 20,
+        });
       return result;
     };
     await expect(f.gate.prepare(f.item, new AbortController().signal)).rejects.toThrow();

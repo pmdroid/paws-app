@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, exists, inArray, isNotNull, not, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { workspaceMemberUsable, workspaceMemberSteps } from "./workspace";
 import { teamRepositoryAllowedSql } from "./repository-catalog";
 import { getLinearSessionAccess, getLinearSessionAccessSteps } from "./linear-access";
@@ -149,15 +149,13 @@ export function* workspaceSessionRepositoryAllowedSteps(
   return row !== undefined;
 }
 
-export function workspaceSessionRepositoryAllowed(
-  db: Database,
+export async function workspaceSessionRepositoryAllowed(
+  store: Db,
   workspaceId: string,
   sessionId: string,
   repository: string,
-): boolean {
-  return settled(
-    sqliteDb(db).run((q) =>
-      workspaceSessionRepositoryAllowedSteps(q, workspaceId, sessionId, repository),
-    ),
+): Promise<boolean> {
+  return store.run((q) =>
+    workspaceSessionRepositoryAllowedSteps(q, workspaceId, sessionId, repository),
   );
 }
