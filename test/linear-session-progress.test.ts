@@ -7,6 +7,7 @@ import {
   listOutbox,
   OutboxDispatcher,
   stopOutboxSession,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeTracker,
@@ -267,10 +268,10 @@ test("Stop and newer turns fence captured metadata callbacks", async () => {
   const db = tempDb();
   const old = createLinearSessionProgress(db, "session", "ENG-1");
   old.phase("implementing");
-  stopOutboxSession(db, "linear", "session");
+  await stopOutboxSession(sqliteDb(db), "linear", "session");
   old.plan([{ content: "After Stop", status: "completed" }]);
   expect(listOutbox(db).every((row) => row.status === "dropped")).toBe(true);
-  advanceOutboxSession(db, "linear", "session");
+  await advanceOutboxSession(sqliteDb(db), "linear", "session");
   const fresh = createLinearSessionProgress(db, "session", "ENG-1");
   fresh.plan([{ content: "New turn", status: "inProgress" }]);
   old.phase("completed");
@@ -393,7 +394,7 @@ test("a generation change during actual session-update authentication prevents t
     );
     await outbox.tick();
     await started.promise;
-    advanceOutboxSession(db, "linear", "session");
+    await advanceOutboxSession(sqliteDb(db), "linear", "session");
     release.resolve();
     await outbox.idle();
     expect(queries).toEqual([]);
@@ -854,7 +855,7 @@ test("a new head on a published pull request updates it without regressing the p
   }
 });
 
-test("reconstruction reaches merging once and stale or stopped reporters change nothing", () => {
+test("reconstruction reaches merging once and stale or stopped reporters change nothing", async () => {
   const db = tempDb();
   try {
     createLinearSessionProgress(db, "session", "ENG-1").phase("publishing");
@@ -867,7 +868,7 @@ test("reconstruction reaches merging once and stale or stopped reporters change 
     captured.reach("merging");
     expect(listOutbox(db)).toHaveLength(rows);
 
-    advanceOutboxSession(db, "linear", "session");
+    await advanceOutboxSession(sqliteDb(db), "linear", "session");
     captured.phase("publishing");
     expect(
       listOutbox(db).filter((row) => row.status !== "dropped" && row.generation === 0),
@@ -882,7 +883,7 @@ test("reconstruction reaches merging once and stale or stopped reporters change 
       1,
     );
 
-    stopOutboxSession(db, "linear", "session");
+    await stopOutboxSession(sqliteDb(db), "linear", "session");
     fresh.phase("publishing");
     fresh.reach("merging");
     expect(

@@ -28,6 +28,7 @@ import {
   setCurrentRun,
   startAgentWait,
   endAgentWait,
+  sqliteDb,
 } from "./index";
 
 const MINUTE = 60_000;
@@ -534,7 +535,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     });
   });
 
-  test("a CI wait clears its pending job and cannot leak into a new claim", () => {
+  test("a CI wait clears its pending job and cannot leak into a new claim", async () => {
     const clock = new FakeClock(20_000);
     const db = openDatabase(":memory:");
     legacyMigrate(db);
@@ -543,7 +544,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     applyWorkItemEvent(db, item.id, "turn_ended");
     const job = verifyingJob(db, item.id, clock.now());
     markJobAwakeWait(db, job, true, clock.mono(), clock.now());
-    parkLeasedJob(db, job, {
+    await parkLeasedJob(sqliteDb(db), job, {
       now: clock.now(),
       runAt: clock.now(),
       attempts: job.attempts,

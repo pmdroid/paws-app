@@ -16,6 +16,7 @@ import {
   migrate,
   openDatabase,
   setJournalSink,
+  sqliteDb,
 } from "./index";
 
 let lines: string[] = [];
@@ -80,7 +81,7 @@ describe("journal", () => {
     ]);
   });
 
-  test("writes done, dead and cancelled outcomes for item jobs", () => {
+  test("writes done, dead and cancelled outcomes for item jobs", async () => {
     const db = database();
     enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
     completeJob(db, claim(db, JOB_KIND.resume), 1_000);
@@ -90,7 +91,9 @@ describe("journal", () => {
       maxAttempts: 1,
       now: 0,
     });
-    failJob(db, claim(db, JOB_KIND.merge), new Error("merge\nconflict"), { now: 1_000 });
+    await failJob(sqliteDb(db), claim(db, JOB_KIND.merge), new Error("merge\nconflict"), {
+      now: 1_000,
+    });
     enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "c" }, now: 0 });
     cancelOpenJobs(db, { itemId: "c", reason: "stopped", now: 1_000 });
     expect(lines.filter((line) => line.startsWith("job "))).toEqual([
@@ -100,12 +103,12 @@ describe("journal", () => {
     ]);
   });
 
-  test("leaves other queues and retried jobs out", () => {
+  test("leaves other queues and retried jobs out", async () => {
     const db = database();
     enqueueJob(db, { queue: JOB_KIND.catchup, now: 0 });
     completeJob(db, claim(db, JOB_KIND.catchup), 1_000);
     enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
-    failJob(db, claim(db, JOB_KIND.resume), new Error("busy"), { now: 1_000 });
+    await failJob(sqliteDb(db), claim(db, JOB_KIND.resume), new Error("busy"), { now: 1_000 });
     expect(lines.filter((line) => line.startsWith("job "))).toEqual([]);
   });
 });

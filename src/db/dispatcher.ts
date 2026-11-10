@@ -4,11 +4,11 @@ import { DEFAULT_POLL_MS, sleep, type Clock } from "../core";
 import { sqliteDb, type Db } from "./db";
 import {
   claimOutboxHeadsSteps,
-  coalesceOutboxAsync,
+  coalesceOutbox,
   completeOutboxSteps,
   isOutboxCurrent,
   isOutboxCurrentSteps,
-  retryOutboxAsync,
+  retryOutbox,
   releaseOutboxLeaseSteps,
   type OutboxRow,
 } from "./outbox";
@@ -125,7 +125,7 @@ export class OutboxDispatcher {
       const claimed = message;
       if (!(await this.store.run((q) => isOutboxCurrentSteps(q, claimed)))) return;
       const options = { now: this.clock.now(), thoughts: Boolean(this.options.progressIntervalMs) };
-      message = await coalesceOutboxAsync(this.store, claimed, options);
+      message = await coalesceOutbox(this.store, claimed, options);
       const delivered = message;
       await handler(delivered, {
         signal: controller.signal,
@@ -136,7 +136,7 @@ export class OutboxDispatcher {
       await this.store.transaction((q) => completeOutboxSteps(q, delivered, now));
     } catch (error) {
       journalCaught(error, "dispatcher.deliver.isOutboxCurrent", journalItemId(message.payload));
-      await retryOutboxAsync(this.store, message, error, {
+      await retryOutbox(this.store, message, error, {
         now: this.clock.now(),
         baseMs: this.options.backoffBaseMs,
       });

@@ -8,7 +8,7 @@ import {
   listJobsSteps,
   listOutboxSteps,
   onJobReady,
-  retryOutboxAsync,
+  retryOutbox,
   retryOutboxSteps,
   type Db,
   type NewOutbox,
@@ -161,7 +161,7 @@ forEachDialect((open) => {
     );
     await enqueue(db, elicitation("ask:redelivery"));
     const row = await claimOne(db, 0);
-    await retryOutboxAsync(db, row, new Error("down"), { now: 10 });
+    await retryOutbox(db, row, new Error("down"), { now: 10 });
     const jobs = await db.run(listJobsSteps);
     expect(jobs).toHaveLength(1);
     expect(jobs[0]).toMatchObject({

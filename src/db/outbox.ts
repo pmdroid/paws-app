@@ -194,8 +194,11 @@ export function* listOutboxSteps(q: Q, orderingKey?: string) {
  * only that key. Rows with a null ordering key are independent.
  * Status stays `pending` while the lease is held; 001 has no inflight status.
  */
-export function claimOutboxHeads(db: Database, options: OutboxClaimOptions = {}): OutboxRow[] {
-  return settled(sqliteDb(db).run((q) => claimOutboxHeadsSteps(q, options)));
+export async function claimOutboxHeads(
+  store: Db,
+  options: OutboxClaimOptions = {},
+): Promise<OutboxRow[]> {
+  return store.run((q) => claimOutboxHeadsSteps(q, options));
 }
 
 export function* claimOutboxHeadsSteps(q: Q, options: OutboxClaimOptions) {
@@ -295,15 +298,13 @@ export function* isOutboxCurrentSteps(q: Q, row: OutboxRow) {
   return current.generation === fence.generation && (!fence.stopped || current.delivery === "stop");
 }
 
-export function advanceOutboxSession(
-  db: Database,
+export async function advanceOutboxSession(
+  store: Db,
   target: OutboxTarget,
   orderingKey: string,
   options: { stop?: boolean; now?: number } = {},
-): number {
-  return settled(
-    sqliteDb(db).transaction((q) => advanceOutboxSessionSteps(q, target, orderingKey, options)),
-  );
+): Promise<number> {
+  return store.transaction((q) => advanceOutboxSessionSteps(q, target, orderingKey, options));
 }
 
 export function* advanceOutboxSessionSteps(
@@ -345,15 +346,13 @@ export function* advanceOutboxSessionSteps(
   return generation;
 }
 
-export function stopOutboxSession(
-  db: Database,
+export async function stopOutboxSession(
+  store: Db,
   target: OutboxTarget,
   orderingKey: string,
   now = Date.now(),
-): number {
-  return settled(
-    sqliteDb(db).transaction((q) => stopOutboxSessionSteps(q, target, orderingKey, now)),
-  );
+): Promise<number> {
+  return store.transaction((q) => stopOutboxSessionSteps(q, target, orderingKey, now));
 }
 
 export function* stopOutboxSessionSteps(
@@ -373,8 +372,12 @@ function heldBy(q: Q, lockedBy: string | null) {
   return sql`${q.t.outbox.lockedBy} = ${lockedBy}`;
 }
 
-export function completeOutbox(db: Database, row: OutboxRow, now = Date.now()): boolean {
-  return settled(sqliteDb(db).transaction((q) => completeOutboxSteps(q, row, now)));
+export async function completeOutbox(
+  store: Db,
+  row: OutboxRow,
+  now = Date.now(),
+): Promise<boolean> {
+  return store.transaction((q) => completeOutboxSteps(q, row, now));
 }
 
 export function* completeOutboxSteps(q: Q, row: OutboxRow, now: number) {
@@ -417,8 +420,8 @@ export function* completeOutboxSteps(q: Q, row: OutboxRow, now: number) {
   return true;
 }
 
-export function releaseOutboxLease(db: Database, row: OutboxRow): void {
-  settled(sqliteDb(db).run((q) => releaseOutboxLeaseSteps(q, row)));
+export async function releaseOutboxLease(store: Db, row: OutboxRow): Promise<void> {
+  await store.run((q) => releaseOutboxLeaseSteps(q, row));
 }
 
 export function* releaseOutboxLeaseSteps(q: Q, row: OutboxRow) {
@@ -440,19 +443,7 @@ export function* releaseOutboxLeaseSteps(q: Q, row: OutboxRow) {
 
 type RetryOptions = { now?: number; baseMs?: number; capMs?: number };
 
-export function retryOutbox(
-  db: Database,
-  row: OutboxRow,
-  error: unknown,
-  options: RetryOptions = {},
-): void {
-  const { reasked } = settled(
-    sqliteDb(db).transaction((q) => retryOutboxSteps(q, row, error, options)),
-  );
-  if (reasked) emitJobReady(db);
-}
-
-export async function retryOutboxAsync(
+export async function retryOutbox(
   store: Db,
   row: OutboxRow,
   error: unknown,
@@ -551,21 +542,24 @@ type DispatchOptions = OutboxClaimOptions & {
 };
 
 /** Claim ready heads and, when `deliver` is set, mark each sent or schedule a retry. */
-export function dispatchOutbox(db: Database, options: DispatchOptions = {}): OutboxRow[] {
-  const claimed = claimOutboxHeads(db, options);
+export async function dispatchOutbox(
+  store: Db,
+  options: DispatchOptions = {},
+): Promise<OutboxRow[]> {
+  const claimed = await claimOutboxHeads(store, options);
   const deliver = options.deliver;
   if (deliver === undefined) return claimed;
   for (const row of claimed) {
-    if (!isOutboxCurrent(db, row)) {
-      releaseOutboxLease(db, row);
+    if (!(await store.run((q) => isOutboxCurrentSteps(q, row)))) {
+      await releaseOutboxLease(store, row);
       continue;
     }
     try {
       deliver(row);
-      completeOutbox(db, row, options.now);
+      await completeOutbox(store, row, options.now);
     } catch (error) {
       journalCaught(error, "outbox.dispatchOutbox.deliver", journalItemId(row.payload));
-      retryOutbox(db, row, error, { now: options.now });
+      await retryOutbox(store, row, error, { now: options.now });
     }
   }
   return claimed;
@@ -579,17 +573,8 @@ function coalescing(row: OutboxRow, options: { thoughts?: boolean }): { session:
   return { session };
 }
 
-export function coalesceOutbox(
-  db: Database,
-  row: OutboxRow,
-  options: { now?: number; thoughts?: boolean } = {},
-): OutboxRow {
-  if (coalescing(row, options) === null) return row;
-  return settled(sqliteDb(db).transaction((q) => coalesceOutboxSteps(q, row, options)));
-}
-
 /** `coalesceOutbox` for async callers: no transaction when nothing coalesces. */
-export async function coalesceOutboxAsync(
+export async function coalesceOutbox(
   store: Db,
   row: OutboxRow,
   options: { now?: number; thoughts?: boolean } = {},
@@ -674,8 +659,8 @@ function unlockedAt(q: Q, now: number) {
   return sql`(${outbox.lockedUntil} IS NULL OR ${outbox.lockedUntil} <= ${now})`;
 }
 
-export function attachSessionUpdates(db: Database, id: number, now = Date.now()): void {
-  settled(sqliteDb(db).transaction((q) => attachSessionUpdatesSteps(q, id, now)));
+export async function attachSessionUpdates(store: Db, id: number, now = Date.now()): Promise<void> {
+  await store.transaction((q) => attachSessionUpdatesSteps(q, id, now));
 }
 
 export function* attachSessionUpdatesSteps(q: Q, id: number, now: number) {
@@ -1163,8 +1148,12 @@ function mapOutbox(q: Q, row: typeof pgSchema.outbox.$inferSelect): OutboxRow {
   };
 }
 
-export function linearSessionClosed(db: Database, sessionId: string, generation: number): boolean {
-  return settled(sqliteDb(db).run((q) => linearSessionClosedSteps(q, sessionId, generation)));
+export async function linearSessionClosed(
+  store: Db,
+  sessionId: string,
+  generation: number,
+): Promise<boolean> {
+  return store.run((q) => linearSessionClosedSteps(q, sessionId, generation));
 }
 
 export function* linearSessionClosedSteps(q: Q, sessionId: string, generation: number) {
@@ -1237,8 +1226,11 @@ export function* dropUnsentSessionActivitySteps(q: Q, input: SessionActivityDrop
   );
 }
 
-export function dropUnsentSessionActivity(db: Database, input: SessionActivityDrop): void {
-  settled(sqliteDb(db).run((q) => dropUnsentSessionActivitySteps(q, input)));
+export async function dropUnsentSessionActivity(
+  store: Db,
+  input: SessionActivityDrop,
+): Promise<void> {
+  await store.run((q) => dropUnsentSessionActivitySteps(q, input));
 }
 
 export function* linearOutboxKeyedSteps(q: Q, prefix: string) {
@@ -1259,8 +1251,8 @@ export function* linearOutboxKeyedSteps(q: Q, prefix: string) {
   return row !== undefined;
 }
 
-export function linearOutboxKeyed(db: Database, prefix: string): boolean {
-  return settled(sqliteDb(db).run((q) => linearOutboxKeyedSteps(q, prefix)));
+export async function linearOutboxKeyed(store: Db, prefix: string): Promise<boolean> {
+  return store.run((q) => linearOutboxKeyedSteps(q, prefix));
 }
 
 /** The current delivery generation of a Linear session, 0 before its first fence. */
@@ -1372,8 +1364,8 @@ export function* outboxKeyExistsSteps(q: Q, idempotencyKey: string) {
   return row !== undefined;
 }
 
-export function outboxKeyExists(db: Database, idempotencyKey: string): boolean {
-  return settled(sqliteDb(db).run((q) => outboxKeyExistsSteps(q, idempotencyKey)));
+export async function outboxKeyExists(store: Db, idempotencyKey: string): Promise<boolean> {
+  return store.run((q) => outboxKeyExistsSteps(q, idempotencyKey));
 }
 
 export function* dropQuestionElicitationsSteps(q: Q, questionId: string, error: string) {

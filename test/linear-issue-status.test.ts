@@ -10,6 +10,7 @@ import {
   listOutbox,
   requireLinearTaskDelegation,
   saveTaskMode,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker, createLinearTracker, type LinearClient } from "../src/linear";
 import { deliverLinearOutbox } from "../src/loop";
@@ -33,10 +34,10 @@ for (const [type, source] of [
       // Deliver everything the stop queued, as the outbox worker does.
       const tracker = createFakeTracker();
       for (let round = 0; round < 10; round += 1)
-        for (const head of claimOutboxHeads(db, { now: 10 + round })) {
+        for (const head of await claimOutboxHeads(sqliteDb(db), { now: 10 + round })) {
           expect(isOutboxCurrent(db, head)).toBe(true);
           if (head.op === "status") await deliverLinearOutbox(head, tracker, async () => {});
-          completeOutbox(db, head, 10 + round);
+          await completeOutbox(sqliteDb(db), head, 10 + round);
         }
       expect(tracker.statuses).toEqual([]);
     } finally {
