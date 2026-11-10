@@ -2,17 +2,24 @@ import type { Database } from "bun:sqlite";
 import {
   markReviewReplyPostedSteps,
   recordReviewReplies,
-  reportReviewRepliesSteps,
+  getRun,
+  getWorkItem,
+  immediate,
+  markRun,
+  reportReviewReplies,
+  restartsSinceHumanTurn,
   unpostedReviewRepliesSteps,
-  unreportedReviewRepliesSteps,
+  unreportedReviewReplies,
   type Db,
   type NewReviewReply,
   type PullCommentRecord,
   type PullReviewRecord,
   type ReviewReplyOutcome,
   type ReviewReplyRecord,
+  type WorkItemRecord,
 } from "../db";
 import type { ReviewThread } from "../github";
+import { ask, restart } from "./operations";
 
 /** Marks a comment Paws posted as a review reply, so it never comes back as a new comment. */
 export const REVIEW_REPLY_MARKER = "<!-- paws-review-reply -->";
@@ -107,12 +114,94 @@ export function replyListSection(targets: readonly NewReviewReply[]): string {
     "R1 fixed: what you changed",
     "R2 not changed: your answer to a question or note",
     "R3 not changed: why you left it, for the reviewer to decide",
+    EACH_ENTRY,
     "",
-    ...targets.map(
-      (target) =>
-        `R${target.number}. ${target.target === "thread" ? "Thread" : target.target === "review" ? "Review" : "Comment"} by ${target.author ? `@${target.author}` : "someone"}: ${target.excerpt}`,
-    ),
+    ...targets.map(entryLine),
   ].join("\n");
+}
+
+const EACH_ENTRY =
+  "Answer each comment in its own entry. A summary saying you fixed everything is not a reply, and Paws does not accept your turn until every entry has its own.";
+
+function entryLine(target: NewReviewReply): string {
+  return `R${target.number}. ${target.target === "thread" ? "Thread" : target.target === "review" ? "Review" : "Comment"} by ${target.author ? `@${target.author}` : "someone"}: ${target.excerpt}`;
+}
+
+/** Send-backs for missing replies in one round before Paws asks the team instead. */
+export const REPLY_SEND_BACKS = 2;
+
+/**
+ * Check a fix turn's `Review replies` against its reply list before Closeout runs. `complete`
+ * stores the replies and goes on. With an entry missing or without text, the reported replies are
+ * stored, and the item goes back to the same session with the missing entries (`sent_back`, no fix
+ * round spent), or after {@link REPLY_SEND_BACKS} in the round the team is asked and the run ends
+ * (`asked`). One transaction: the stored replies and the send-back or question commit together.
+ */
+export function checkReviewReplies(
+  db: Database,
+  input: {
+    item: WorkItemRecord;
+    runId: string;
+    sessionId: string | null;
+    finalMessage: string;
+    now: number;
+  },
+): "complete" | "sent_back" | "asked" | "stale" {
+  const { item } = input;
+  // Most turn ends have no reply list: skip the write transaction for them.
+  if (unreportedReviewReplies(db, item.id).length === 0) return "complete";
+  try {
+    return immediate(db, () => checkOpenReplies(db, input));
+  } catch (error) {
+    if (error instanceof StaleTurnEnd) return "stale";
+    throw error;
+  }
+}
+
+/** Another writer moved the item on while the turn ended; nothing of this check is kept. */
+class StaleTurnEnd extends Error {}
+
+function checkOpenReplies(
+  db: Database,
+  input: Parameters<typeof checkReviewReplies>[1],
+): "complete" | "sent_back" | "asked" {
+  const { item, now } = input;
+  const current = getWorkItem(db, item.id);
+  if (current?.version !== item.version) throw new StaleTurnEnd();
+  const open = unreportedReviewReplies(db, item.id);
+  if (open.length === 0) return "complete";
+  const reports = parseReviewReplies(input.finalMessage);
+  const missing = open.filter((reply) => !reports.has(reply.number));
+  const complete = missing.length === 0 || input.sessionId === null;
+  reportReviewReplies(db, item.id, reports, now, !complete);
+  if (complete) return "complete";
+  // The round is the restart that handed off the open entries. A later handoff deletes the open
+  // entries of earlier ones, so they share it; the newest row decides should that ever change.
+  const round = open.reduce((a, b) => (b.id > a.id ? b : a)).restartKey;
+  const prefix = `review-replies:${round}:`;
+  const sent = restartsSinceHumanTurn(db, item.id, prefix);
+  const list = missing.map(entryLine).join("\n");
+  if (sent < REPLY_SEND_BACKS) {
+    // restart() ends the run; the next turn resumes the same session. Null: the merge lane owns
+    // the item, so roll back the stored replies too.
+    const job = restart(db, item, {
+      reason: "follow_up",
+      body: `Your turn ended without a reply to every entry of the reply list. ${EACH_ENTRY} End your final message with a \`Review replies\` section that answers these entries, one line each, as \`R<n> fixed: …\` or \`R<n> not changed: …\`:\n\n${list}`,
+      jobKey: `${prefix}${item.version}`,
+      now,
+    });
+    if (job === null) throw new StaleTurnEnd();
+    return "sent_back";
+  }
+  ask(
+    db,
+    { itemId: item.id, runId: input.runId, sessionId: input.sessionId!, version: item.version },
+    "agent",
+    `The agent ended its fix turn ${sent + 1} times without its own reply to every pull request comment it was given, so Closeout has not started. Still without a reply:\n\n${list}\n\nTell the agent how to answer them.`,
+    { now },
+  );
+  if (getRun(db, input.runId)?.status === "active") markRun(db, input.runId, "ended", now);
+  return "asked";
 }
 
 /** Record the reply targets of the restart with job key `restartKey`. Call inside its transaction. */
@@ -143,7 +232,8 @@ export function parseReviewReplies(
     const word = match[2]!.toLowerCase();
     const outcome = word === "fixed" ? "fixed" : word === "answered" ? "answered" : "not_changed";
     const reply = match[3]!.trim();
-    if (reply !== "") reports.set(Number(match[1]), { outcome, reply });
+    // A reply of only markup (`R2 fixed: **`) is no reply; a letter, digit or emoji is.
+    if (/[\p{L}\p{N}\p{So}]/u.test(reply)) reports.set(Number(match[1]), { outcome, reply });
   }
   return reports;
 }
@@ -173,22 +263,6 @@ export function parseFindingDecisions(
     });
   }
   return decisions;
-}
-
-/**
- * Store the fix turn's replies for the item's handed-off comments. Does nothing when no comments
- * wait for a report. The number stored.
- */
-export async function recordAgentReviewReplies(
-  store: Db,
-  itemId: string,
-  finalMessage: string,
-  now: number,
-): Promise<number> {
-  if ((await store.run((q) => unreportedReviewRepliesSteps(q, itemId))).length === 0) return 0;
-  return await store.run((q) =>
-    reportReviewRepliesSteps(q, itemId, parseReviewReplies(finalMessage), now),
-  );
 }
 
 export type ReviewReplyGitHub = {
