@@ -21,6 +21,7 @@ import {
   ensureLinearSession,
   recordLinearInstallation,
   listPendingLinearTurns,
+  saveDependencySnapshot,
 } from "../../src/db";
 import {
   createWorkspaceAccess,
@@ -717,6 +718,15 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       },
     );
     const permittedStop = task("new-member", "stop");
+    // A real item has its Linear snapshot, so the scheduler's sweep does not reconcile it mid-stop.
+    saveDependencySnapshot(db, {
+      itemId: permittedStop.item.id,
+      workspaceId: "workspace",
+      generation: 1,
+      scope: "[]",
+      linearStates: "{}",
+      linearIdentifiers: "{}",
+    });
     polled = [permittedStop.activity];
     await paws.catchUp();
     observe(

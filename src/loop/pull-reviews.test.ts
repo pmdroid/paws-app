@@ -75,7 +75,7 @@ function setup(threads = THREADS, options: { commentsPerPage?: number } = {}) {
   let findings: StoredReviewFinding[] = [];
   const caps: PullReviewCapabilities = {
     now: () => 10,
-    busy: () => busy,
+    busy: async () => busy,
     threads: (_, pullNumber) =>
       readReviewThreads({
         client,

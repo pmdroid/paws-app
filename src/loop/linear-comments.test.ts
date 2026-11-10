@@ -189,7 +189,7 @@ function setup(options: { members?: string[]; agents?: string[] } = {}) {
   const caps: LinearCommentCapabilities = {
     now: () => clock.now(),
     policy,
-    busy: () => busy,
+    busy: async () => busy,
     leaveMergeQueue: async (_item, pullNumber) => {
       leftQueue.push(pullNumber);
       return queueResult;

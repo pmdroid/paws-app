@@ -123,7 +123,7 @@ export function itemForBranch(
 export type PullReviewCapabilities = {
   now(): number;
   /** A turn, evaluation or merge attempt of this item is running in this process. */
-  busy(item: WorkItemRecord): boolean;
+  busy(item: WorkItemRecord): Promise<boolean>;
   /**
    * Take the pull request out of GitHub's merge queue, so GitHub cannot merge the reviewed head
    * while Paws waits. Throws when GitHub cannot be read.
@@ -188,7 +188,7 @@ export async function handlePullReview(
       return "dropped";
     }
   }
-  if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
+  if (item.state !== "merge_queue" || (await caps.busy(item))) return "wait";
   if (await holdForReviewChecks(item, review.pullNumber, review.receivedAt, caps)) return "wait";
   const threads = await caps.threads(item, review.pullNumber);
   const findings = await caps.closeoutFindings(item);

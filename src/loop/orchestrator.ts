@@ -1,5 +1,6 @@
 import {
   getTaskMergeSettingsSteps,
+  getTaskLinearReadSteps,
   keepTaskLinearReadSteps,
   keepTaskMergeSettingsSteps,
   mergeCallInFlightSteps,
@@ -50,15 +51,11 @@ import { restartForPushConflict } from "./push-conflict";
 import {
   saveHumanRetryWindow,
   fixRounds,
-  jobVersionCurrent,
   recordReviewFindings,
   failedCloseoutReviews,
   restartLimit,
   runnerHoldsRunWork,
   runnerWorkHasResult,
-  parkLeasedJob,
-  replaceLeasedJobPayload,
-  refreshVerificationJobVersion,
   type RestartHandoff,
   getItemCandidate,
   recordItemCandidate,
@@ -242,37 +239,28 @@ import {
 import {
   listWaitingProfileRuns,
   getTaskMode,
-  assertLinearSessionCleanup,
   cancelOpenJobs,
   getLinearSessionAccess,
-  getConfirmedRemoteMerge,
   type ConfirmedRemoteMerge,
   getLinearTaskDelegation,
-  getTaskModeGeneration,
   getLinearSessionGeneration,
   getLinearSession,
   acceptLinearStop,
   listPendingLinearTurns,
   saveTaskMode,
-  savePlanProposal,
-  taskRequiresRepository,
   selectTaskModeForTurn,
   completeAnswerTask,
   completeMergedItem,
   completeArtifactTask,
   artifactPublicationReady,
-  listArtifacts,
   getTaskClassification,
-  resolveTaskClassification,
   accrueAwake,
-  hasLiveJob,
   applyWorkItemEvent,
   configureWorkItem,
   enqueueJobOnce,
   recordRebaseReturn,
   enqueueOutboxOnce,
   lastOutboxSequence,
-  attachSessionUpdates,
   getOutbox,
   failWorkItem,
   getQueuePosition,
@@ -280,6 +268,55 @@ import {
   queueWaitSince,
   settled,
   sqliteDb,
+  activeRunnerIdsSteps,
+  announceLinearTurnSteps,
+  applyLinearCommandAsync,
+  artifactPublicationReadySteps,
+  assertLinearSessionCleanupSteps,
+  attachSessionUpdatesSteps,
+  closeoutHeadsStartedSteps,
+  deferWorkItemAsync,
+  dropUnsentSessionActivitySteps,
+  enqueueJobOnceSteps,
+  enqueueOutboxOnceSteps,
+  getConfirmedRemoteMergeSteps,
+  getConversationSteps,
+  getLinearSessionContextSteps,
+  getLinearSessionGenerationSteps,
+  getLinearTaskDelegationSteps,
+  getLinearTurnGenerationSteps,
+  getTaskClassificationSteps,
+  getTaskModeGenerationSteps,
+  hasLiveJobSteps,
+  itemContinuedSteps,
+  latestRestartEventSteps,
+  listAgentCloseoutSteps,
+  listArtifactsSteps,
+  listLinearActivitySnapshotsSteps,
+  listPendingLinearTurnsSteps,
+  listRunnerSetupHoldsSteps,
+  openRunnerRepositoryQuestionsSteps,
+  previousIssueSessionIdsSteps,
+  pullRequestDraftSavedAtSteps,
+  queuedLinearCommentItemIdsSteps,
+  receivedLinearCommentsSteps,
+  recordItemBranchStateSteps,
+  recordLinearCommentSteps,
+  releaseRunnerSetupHoldSteps,
+  replaceLeasedJobPayloadSteps,
+  resolveTaskClassificationSteps,
+  restartHoldSteps,
+  runnerSlotFreeSteps,
+  savePlanProposalSteps,
+  saveRunResultSteps,
+  saveTaskModeSteps,
+  setItemBranchNameSteps,
+  slotWaitRunnersSteps,
+  taskRequiresRepositorySteps,
+  commandInstance,
+  emitJobReady,
+  fixRoundsSteps,
+  getOutboxSteps,
   type Db,
   getRun,
   CLEANUP_BLOCKED_NOTICE,
@@ -289,8 +326,6 @@ import {
   getConversation,
   saveConversation,
   listLinearTurnsForItem,
-  announceLinearTurn,
-  getLinearTurnGeneration,
   discardLinearTurns,
   bindWorkItemRepository,
   getWorkItemRepository,
@@ -300,13 +335,10 @@ import {
   saveWorkItemRepositoryQuestion,
   getWorkItem,
   suggestedFindings,
-  closeoutHeadsStarted,
   getLinkAsk,
   getPullRequestDraft,
-  pullRequestDraftSavedAt,
   savePullRequestDraft,
   savePullRequestText,
-  listAgentCloseout,
   recordAgentCloseout,
   immediate,
   drainInstanceCommands,
@@ -320,9 +352,7 @@ import {
   markJobAwakeWait,
   markRun,
   releaseRunCapacity,
-  restartHold,
   saveCheckpoint,
-  recordItemBranchState,
   recordItemPullRequest,
   saveOpenFindings,
   getPublishedHead,
@@ -330,7 +360,6 @@ import {
   getItemBranchState,
   saveVisualReviewMarks,
   type VisualReviewMark,
-  saveRunResult,
   saveRunCommitPolicy,
   getItemRunCommitPolicy,
   bindLinearSessionTask,
@@ -367,14 +396,9 @@ import {
   reviewerFaultHolds,
   enqueueRunnerSetupCheck,
   holdForRunnerSetup,
-  listRunnerSetupHolds,
   markRunnerSetupNotified,
-  releaseRunnerSetupHold,
   runnerAgentName,
   runnerCapacityWait,
-  activeRunnerIds,
-  runnerSlotFree,
-  slotWaitRunners,
   getTaskMergeSettings,
   pinRunCheckout,
   getTaskLinearRead,
@@ -386,9 +410,6 @@ import {
   resetAwakeTime,
   rebaseReturnedFor,
   gatherLinearComments,
-  getLinearComment,
-  receivedLinearComments,
-  recordLinearComment,
   getWorkItemLinearProjectId,
   listOpenPolicyBlocks,
   assignUnownedItem,
@@ -396,10 +417,8 @@ import {
   cancelItemPendingJobs,
   clearItemRecovery,
   deleteCancelledLinearTurn,
-  dropUnsentSessionActivity,
   hasOpenItemJob,
   issueOpenInOtherSession,
-  itemContinued,
   itemDelegationIssueId,
   itemOwnerUserId,
   itemParentTaskKey,
@@ -414,14 +433,10 @@ import {
   type Q,
   type Steps,
   moveDelegationSession,
-  openRunnerRepositoryQuestions,
   openTaskDependents,
   pausedStoppedSessionItem,
-  previousIssueSessionIds,
-  queuedLinearCommentItemIds,
   recentRepositoryNames,
   rewritePendingLinearTurn,
-  setItemBranchName,
   workspaceUserIdForLinearUser,
 } from "../db";
 import {
@@ -1071,7 +1086,13 @@ export class Orchestrator {
         (await this.forwardFollowUp(event.sessionId, turn))
       )
         return;
-      if (turn && announceLinearTurn(this.db, event.sessionId, turn.eventKey, this.now())) {
+      const announcedSession = event.sessionId;
+      if (
+        turn &&
+        (await this.store.transaction((q) =>
+          announceLinearTurnSteps(q, announcedSession, turn.eventKey, this.now()),
+        ))
+      ) {
         for (const live of this.live.values())
           if (this.itemsForSession(event.sessionId).some((item) => item.id === live.itemId))
             live.controller.abort(FOLLOW_UP_INTERRUPTION);
@@ -1099,16 +1120,23 @@ export class Orchestrator {
             ? LINEAR_ACCESS_CHANGED
             : decision;
         if (!this.admitLinearEvent(event, current, true)) {
-          if (event.sessionId !== null)
-            discardLinearTurns(this.db, event.sessionId, [turnEventKey]);
+          const discarded = event.sessionId;
+          if (discarded !== null)
+            await this.store.transaction((q) =>
+              discardLinearTurnsSteps(q, discarded, [turnEventKey]),
+            );
           return false;
         }
         const open = event.sessionId ? findOpenQuestion(this.db, event.sessionId) : null;
-        const questionDelegationId = open ? getWorkItem(this.db, open.itemId)?.delegationId : null;
+        const questionDelegationId = open
+          ? (await this.store.run((q) => getWorkItemSteps(q, open.itemId)))?.delegationId
+          : null;
         await this.handleLinearEvent(event);
-        if (event.action === "prompted" && event.sessionId) {
+        const promptedSession = event.sessionId;
+        if (event.action === "prompted" && promptedSession) {
           const delegationId =
-            workItemForSession(this.db, event.sessionId)?.delegationId ?? questionDelegationId;
+            (await this.store.run((q) => workItemForSessionSteps(q, promptedSession)))
+              ?.delegationId ?? questionDelegationId;
           if (delegationId) await this.reconcileExecution();
         }
       });
@@ -1123,9 +1151,9 @@ export class Orchestrator {
   private async receiveLinearComment(comment: LinearComment): Promise<boolean> {
     const policy = this.options.linearComments;
     if (policy === undefined) return false;
-    recordLinearComment(this.db, comment, this.now());
+    await this.store.transaction((q) => recordLinearCommentSteps(q, comment, this.now()));
     const wait = policy.wait?.() ?? this.feedbackWait();
-    for (const received of receivedLinearComments(this.db)) {
+    for (const received of await this.store.run((q) => receivedLinearCommentsSteps(q))) {
       if (received.issueId !== comment.issueId) continue;
       const route = await routeLinearComment(this.db, received, policy);
       const authorized =
@@ -1138,7 +1166,7 @@ export class Orchestrator {
     }
     await this.leaveMergeQueueForComments(policy, comment.issueId);
     await this.flush();
-    const stored = getLinearComment(this.db, comment.commentId);
+    const stored = await this.store.run((q) => getLinearCommentSteps(q, comment.commentId));
     return stored !== null && stored.state !== "rejected" && stored.state !== "ignored";
   }
 
@@ -1146,9 +1174,9 @@ export class Orchestrator {
     policy: LinearCommentPolicy,
     issueId: string,
   ): Promise<void> {
-    for (const id of queuedLinearCommentItemIds(this.db, issueId)) {
-      const item = getWorkItem(this.db, id);
-      const pull = item ? getItemPullRequest(this.db, item.id) : null;
+    for (const id of await this.store.run((q) => queuedLinearCommentItemIdsSteps(q, issueId))) {
+      const item = await this.store.run((q) => getWorkItemSteps(q, id));
+      const pull = item ? await this.store.run((q) => getItemPullRequestSteps(q, item.id)) : null;
       if (!item || item.state !== "merge_queue" || pull === null) continue;
       await this.linearCommentCapabilities(policy)
         .leaveMergeQueue(item, pull.pullNumber)
@@ -1190,7 +1218,9 @@ export class Orchestrator {
     return {
       now: () => this.now(),
       policy,
-      busy: (item) => this.jobContexts.has(item.id) || hasLiveJob(this.db, item.id, this.now()),
+      busy: async (item) =>
+        this.jobContexts.has(item.id) ||
+        (await this.store.run((q) => hasLiveJobSteps(q, item.id, this.now()))),
       leaveMergeQueue: async (item, pullNumber) => {
         const repository = this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
@@ -1262,12 +1292,11 @@ export class Orchestrator {
         .map((item) => this.options.remoteExecution?.cancelItem?.(item.id)),
     ]);
     // A previous session's agent the runner reports gone no longer holds up a new delegation.
-    if (
-      items.some(
-        (item) => getConversation(this.db, item.id).blocked && !this.releaseCleanupBlock(item.id),
-      )
-    )
-      throw new Error("ACP process cleanup could not be verified");
+    for (const item of items) {
+      const conversation = await this.store.run((q) => getConversationSteps(q, item.id));
+      if (conversation.blocked && !this.releaseCleanupBlock(item.id))
+        throw new Error("ACP process cleanup could not be verified");
+    }
     const failure = joined.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
   }
@@ -1285,8 +1314,9 @@ export class Orchestrator {
       ...owned.map((live) => live.done),
     ]);
     await Promise.allSettled([...this.sessionEvents.values(), ...this.stopEvents.values()]);
-    if (this.allItems(true).some((item) => getConversation(this.db, item.id).blocked))
-      throw new Error("ACP process cleanup could not be verified");
+    for (const item of this.allItems(true))
+      if ((await this.store.run((q) => getConversationSteps(q, item.id))).blocked)
+        throw new Error("ACP process cleanup could not be verified");
     const failure = joined.find((result) => result.status === "rejected");
     if (failure?.status === "rejected") throw failure.reason;
   }
@@ -1446,12 +1476,15 @@ export class Orchestrator {
     const generation = event.sessionId
       ? getLinearSessionGeneration(this.db, event.sessionId)
       : undefined;
-    return (update, request) =>
+    const sessionId = event.sessionId;
+    return async (update, request) =>
       this.enqueueSessionProgress(
         update,
         `ack:${event.dedupeKey}:${update.kind}${update.kind === "thought" && update.body !== FIRST_ACTIVITY_BODY ? ":pending" : ""}`,
-        (event.sessionId
-          ? getLinearTurnGeneration(this.db, event.sessionId, event.dedupeKey, event.activityId)
+        (sessionId
+          ? await this.store.run((q) =>
+              getLinearTurnGenerationSteps(q, sessionId, event.dedupeKey, event.activityId),
+            )
           : null) ?? generation,
         request,
         event.action === "created" &&
@@ -1460,16 +1493,19 @@ export class Orchestrator {
       );
   }
 
-  private startPost(id: number): void {
-    const row = getOutbox(this.db, id);
-    if (row?.orderingKey == null) return;
-    attachSessionUpdates(this.db, id, this.now());
-    dropUnsentSessionActivity(this.db, {
-      orderingKey: row.orderingKey,
-      body: FIRST_ACTIVITY_BODY,
-      error: `Sent as outbox ${id}.`,
-      now: this.now(),
-    });
+  private async startPost(id: number): Promise<void> {
+    const row = await this.store.run((q) => getOutboxSteps(q, id));
+    const orderingKey = row?.orderingKey;
+    if (orderingKey == null) return;
+    await this.store.transaction((q) => attachSessionUpdatesSteps(q, id, this.now()));
+    await this.store.run((q) =>
+      dropUnsentSessionActivitySteps(q, {
+        orderingKey,
+        body: FIRST_ACTIVITY_BODY,
+        error: `Sent as outbox ${id}.`,
+        now: this.now(),
+      }),
+    );
   }
 
   private async enqueueSessionProgress(
@@ -1481,23 +1517,25 @@ export class Orchestrator {
   ): Promise<void> {
     request?.signal?.throwIfAborted();
     const linearIdentifier = currentLinearCaller().item;
-    const id = enqueueOutboxOnce(this.db, {
-      target: "linear",
-      op: "activity",
-      orderingKey: update.sessionId,
-      idempotencyKey,
-      payload: {
-        ...update,
-        id: update.id ?? crypto.randomUUID(),
-        // Delivered later from the outbox, so it keeps the issue it counts toward.
-        ...(linearIdentifier === undefined ? {} : { linearIdentifier }),
-      },
-      ...(initialActivity
-        ? { delivery: "critical", notBefore: this.now() + FIRST_ACTIVITY_HOLD_MS }
-        : {}),
-      ...(generation === undefined ? {} : { generation }),
-      now: this.now(),
-    });
+    const id = await this.store.transaction((q) =>
+      enqueueOutboxOnceSteps(q, {
+        target: "linear",
+        op: "activity",
+        orderingKey: update.sessionId,
+        idempotencyKey,
+        payload: {
+          ...update,
+          id: update.id ?? crypto.randomUUID(),
+          // Delivered later from the outbox, so it keeps the issue it counts toward.
+          ...(linearIdentifier === undefined ? {} : { linearIdentifier }),
+        },
+        ...(initialActivity
+          ? { delivery: "critical", notBefore: this.now() + FIRST_ACTIVITY_HOLD_MS }
+          : {}),
+        ...(generation === undefined ? {} : { generation }),
+        now: this.now(),
+      }),
+    );
     if (request?.signal) this.activityRequests.set(id, request.signal);
     if (initialActivity) {
       const forget = () => {
@@ -1545,7 +1583,9 @@ export class Orchestrator {
   ) {
     const tracker = this.tracker;
     if (!tracker) throw new Error("Linear is not connected");
-    const initialSession = sessionId ? getLinearSession(this.db, sessionId) : null;
+    const initialSession = sessionId
+      ? await this.store.run((q) => getLinearSessionSteps(q, sessionId))
+      : null;
     const isCurrent = () => {
       if (this.shuttingDown) return false;
       if (initialSession === null || sessionId === null) return true;
@@ -1553,7 +1593,10 @@ export class Orchestrator {
       return current?.generation === initialSession.generation && current.stoppedAt === null;
     };
     if (!isCurrent()) throw new Error("The Linear request changed before intake");
-    const savedRequest = taskKey ? getTaskClassification(this.db, taskKey) : null;
+    const requestKey = taskKey;
+    const savedRequest = requestKey
+      ? await this.store.run((q) => getTaskClassificationSteps(q, requestKey))
+      : null;
     const redirect = savedRequest?.mode !== "clarify" ? savedRequest?.redirect : undefined;
     if (redirect) taskKey = redirect.taskKey;
     const progressTracker = sessionId
@@ -1691,14 +1734,16 @@ export class Orchestrator {
       this.intakeReads.set(sessionId, { snapshot: loadedSnapshot, edges });
     if (result.ok && classification && classification.mode !== "clarify") {
       for (const item of result.items) {
-        if (!getTaskMode(this.db, item.id))
-          saveTaskMode(
-            this.db,
-            item.id,
-            classification.mode,
-            sessionId ? getLinearSessionGeneration(this.db, sessionId) : 0,
-            classification.repository === true,
+        if (!(await this.store.run((q) => getTaskModeSteps(q, item.id)))) {
+          const generation = sessionId
+            ? await this.store.run((q) => getLinearSessionGenerationSteps(q, sessionId))
+            : 0;
+          const { mode } = classification;
+          const repository = classification.repository === true;
+          await this.store.transaction((q) =>
+            saveTaskModeSteps(q, item.id, mode, generation, repository),
           );
+        }
       }
     }
     return result;
@@ -1711,16 +1756,18 @@ export class Orchestrator {
     options: { followupBodies?: readonly string[]; conversation?: string } = {},
   ): Promise<string> {
     await this.hydrateLinearContext(sessionId, signal);
-    const history = listLinearActivitySnapshots(this.db, sessionId)
+    const history = (await this.store.run((q) => listLinearActivitySnapshotsSteps(q, sessionId)))
       .map((raw) => JSON.parse(raw) as LinearActivitySnapshot)
       .filter((activity) => activity.content.type !== "thought" && !activity.ephemeral);
     return [
       JSON.stringify(snapshot),
-      getLinearSessionContext(this.db, sessionId),
+      await this.store.run((q) => getLinearSessionContextSteps(q, sessionId)),
       JSON.stringify(history),
       options.conversation ?? "",
       ...(options.followupBodies ??
-        listPendingLinearTurns(this.db, sessionId).map((turn) => turn.body)),
+        (await this.store.run((q) => listPendingLinearTurnsSteps(q, sessionId))).map(
+          (turn) => turn.body,
+        )),
     ].join("\n\n");
   }
 
@@ -1729,7 +1776,7 @@ export class Orchestrator {
    * branch reads as empty, so the new item starts fresh.
    */
   private async inspectEarlierBranch(earlier: EarlierAttempt): Promise<EarlierBranch> {
-    const previous = getWorkItem(this.db, earlier.itemId);
+    const previous = await this.store.run((q) => getWorkItemSteps(q, earlier.itemId));
     const repository = previous ? this.repositoryForItem(previous) : null;
     const github = repository ? this.githubForRepository(repository) : null;
     if (!repository || !github) return { pull: null, commits: 0 };
@@ -1752,11 +1799,11 @@ export class Orchestrator {
   ): Promise<void> {
     if (!this.tracker?.getSession) return;
     const candidates = (issueId: string) =>
-      previousIssueSessionIds(this.db, incomingSessionId, issueId);
+      this.store.run((q) => previousIssueSessionIdsSteps(q, incomingSessionId, issueId));
     try {
       for (const issueId of issueIds) {
-        for (const sessionId of candidates(issueId)) {
-          const previous = getLinearSession(this.db, sessionId)!;
+        for (const sessionId of await candidates(issueId)) {
+          const previous = (await this.store.run((q) => getLinearSessionSteps(q, sessionId)))!;
           const unfinished = this.itemsForSession(sessionId).some(
             (item) => !isTerminalWorkItemState(item.state),
           );
@@ -1769,8 +1816,9 @@ export class Orchestrator {
             });
             if (
               !isCurrent() ||
-              getLinearSession(this.db, sessionId)?.generation !== previous.generation ||
-              !candidates(issueId).includes(sessionId)
+              (await this.store.run((q) => getLinearSessionSteps(q, sessionId)))?.generation !==
+                previous.generation ||
+              !(await candidates(issueId)).includes(sessionId)
             )
               throw new Error("Linear session ownership changed");
             if (
@@ -1795,7 +1843,7 @@ export class Orchestrator {
             await this.interruptLinearSession(sessionId);
           }
           if (!isCurrent()) throw new Error("Linear intake changed during cleanup");
-          assertLinearSessionCleanup(this.db, sessionId);
+          await this.store.run((q) => assertLinearSessionCleanupSteps(q, sessionId));
         }
       }
     } catch (cause) {
@@ -1812,9 +1860,9 @@ export class Orchestrator {
     return this.options.db;
   }
 
-  private forItem<T>(payload: unknown, run: () => T): T {
+  private async forItem<T>(payload: unknown, run: () => T | Promise<T>): Promise<T> {
     const itemId = readString(payload, "itemId");
-    const item = itemId ? getWorkItem(this.db, itemId) : null;
+    const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
     if (item) return linearItem(item.linearIdentifier, run, item.id);
     // A write for a session that has no item yet, such as a first delegation's sign-in action.
     const identifier = readString(payload, "linearIdentifier");
@@ -1826,19 +1874,19 @@ export class Orchestrator {
     const jobs: Pick<typeof loop, "register"> = {
       register: (queue, handler) =>
         loop.register(queue, (job, context) =>
-          this.forItem(job.payload, () =>
+          this.forItem(job.payload, async () =>
             queue === JOB_KIND.command ||
             queue === JOB_KIND.reverify ||
-            jobVersionCurrent(this.db, job)
+            (await this.store.run((q) => jobVersionCurrentSteps(q, job)))
               ? handler(job, context)
-              : Promise.resolve(),
+              : undefined,
           ),
         ),
     };
     jobs.register("item.ask", async (job, context) => {
       if (!context.isCurrent()) return;
       const id = readString(job.payload, "itemId");
-      const item = id ? getWorkItem(this.db, id) : null;
+      const item = id ? await this.store.run((q) => getWorkItemSteps(q, id)) : null;
       if (!item?.sessionKey || item.cancelRequested) return;
       const payload = job.payload as {
         kind: "agent" | "time-limit";
@@ -1862,7 +1910,8 @@ export class Orchestrator {
           now: this.now(),
         },
       );
-      if (item.currentRunId) releaseRunCapacity(this.db, item.currentRunId, this.now());
+      const heldRunId = item.currentRunId;
+      if (heldRunId) await this.store.run((q) => releaseRunCapacitySteps(q, heldRunId, this.now()));
       await this.flush();
     });
     jobs.register(JOB_KIND.command, async (job, context) => {
@@ -1870,20 +1919,23 @@ export class Orchestrator {
       const command = parseLinearCommand(job.payload);
       if (!command) return;
       const saved = job.payload as { response?: string; options?: { keepPullRequest?: boolean } };
-      const result = applyLinearCommand(
-        this.db,
+      const result = await applyLinearCommandAsync(
+        this.store,
         command,
         this.now(),
         saved.response,
         saved.options,
+        commandInstance(this.db),
       );
       if (result.deferred) {
-        parkLeasedJob(this.db, job, {
-          runAt: this.now() + 1_000,
-          payload: job.payload,
-          attempts: 0,
-          now: this.now(),
-        });
+        await this.store.run((q) =>
+          parkLeasedJobSteps(q, job, {
+            runAt: this.now() + 1_000,
+            payload: job.payload,
+            attempts: 0,
+            now: this.now(),
+          }),
+        );
         return;
       }
       if (!result.applied) return;
@@ -1893,14 +1945,16 @@ export class Orchestrator {
         await this.interruptItem(command.itemId);
       }
     });
-    jobs.register(JOB_KIND.catchup, (job) => {
-      enqueueOutboxOnce(this.db, {
-        target: "linear",
-        op: "linear.catchup",
-        idempotencyKey: `catchup:${job.id}:${job.attempts}`,
-        payload: job.payload,
-        now: this.now(),
-      });
+    jobs.register(JOB_KIND.catchup, async (job) => {
+      await this.store.transaction((q) =>
+        enqueueOutboxOnceSteps(q, {
+          target: "linear",
+          op: "linear.catchup",
+          idempotencyKey: `catchup:${job.id}:${job.attempts}`,
+          payload: job.payload,
+          now: this.now(),
+        }),
+      );
     });
     jobs.register(JOB_KIND.visualReviewReminder, async (job, context) => {
       const questionId = readString(job.payload, "questionId");
@@ -1934,20 +1988,21 @@ export class Orchestrator {
     });
     jobs.register(JOB_KIND.start, async (job, context) => {
       if (await this.waitingForConversation(job, context)) return;
-      if (this.waitingForRunnerSlot(job)) return;
+      if (await this.waitingForRunnerSlot(job)) return;
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.resume, async (job, context) => {
       if (await this.waitingForConversation(job, context)) return;
-      if (this.waitingForRunnerSlot(job)) return;
+      if (await this.waitingForRunnerSlot(job)) return;
       if (await this.mergeInsteadOfTurn(job, context)) return;
       await this.runLeasedJob(job, context, () => this.executeRetried(job, context));
       await this.settleVerifying(job, context);
     });
     jobs.register(JOB_KIND.reverify, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
-      const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      const item =
+        itemId === null ? null : await this.store.run((q) => getWorkItemSteps(q, itemId));
       if (
         !item ||
         !this.reverifyEligible(item) ||
@@ -1961,16 +2016,19 @@ export class Orchestrator {
           await this.waitForVerification(job, context, item);
           return;
         }
-        const clearWait = () => {
+        const clearWait = async () => {
           const payload = job.payload as Record<string, unknown>;
           if (!("verificationWaitSince" in payload)) return;
           const { verificationWaitSince: _since, verificationWaitRunId: _run, ...rest } = payload;
-          if (replaceLeasedJobPayload(this.db, job, rest, this.now()))
+          const current = job;
+          if (
+            await this.store.run((q) => replaceLeasedJobPayloadSteps(q, current, rest, this.now()))
+          )
             job = { ...job, payload: rest };
         };
         if (
-          this.waitingForRunnerSlot(job, () => {
-            clearWait();
+          await this.waitingForRunnerSlot(job, async () => {
+            await clearWait();
             return job;
           })
         )
@@ -1978,22 +2036,26 @@ export class Orchestrator {
         try {
           await this.runLeasedJob(job, context, () =>
             this.runOwnedJob(job.payload, () =>
-              this.reverify(job.payload, job.id, () => {
-                const owned = getWorkItem(this.db, item.id);
-                if (owned?.currentRunId && !jobVersionCurrent(this.db, job))
-                  refreshVerificationJobVersion(this.db, job, owned.currentRunId, this.now());
-                clearWait();
+              this.reverify(job.payload, job.id, async () => {
+                const owned = await this.store.run((q) => getWorkItemSteps(q, item.id));
+                const runId = owned?.currentRunId;
+                if (runId && !(await this.store.run((q) => jobVersionCurrentSteps(q, job))))
+                  await this.store.run((q) =>
+                    refreshVerificationJobVersionSteps(q, job, runId, this.now()),
+                  );
+                await clearWait();
               }),
             ),
           );
           await this.settleVerifying(job, context);
         } catch (error) {
           if (error instanceof VerificationHeld && context.isCurrent()) {
-            const held = itemId === null ? null : getWorkItem(this.db, itemId);
+            const held =
+              itemId === null ? null : await this.store.run((q) => getWorkItemSteps(q, itemId));
             if (held) await this.waitForVerification(job, context, held);
             return;
           }
-          const wait = this.nextRunnerWait(job, error);
+          const wait = await this.nextRunnerWait(job, error);
           if (!wait || !context.isCurrent()) throw error;
           journalCaught(
             error,
@@ -2002,7 +2064,7 @@ export class Orchestrator {
             undefined,
             this.options.journal,
           );
-          clearWait();
+          await clearWait();
           const waitingId = readString(job.payload, "itemId");
           if (waitingId) this.settleItemAwake(waitingId);
           waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
@@ -2029,7 +2091,7 @@ export class Orchestrator {
         const delayMs = transientRetryDelayMs(job.attempts, error, this.options.retryBaseMs);
 
         if (!(await retryMergeLater(this.db, job, this.now(), delayMs, error))) throw error;
-        this.noteHostDiskFull(readString(job.payload, "itemId"), error);
+        await this.noteHostDiskFull(readString(job.payload, "itemId"), error);
         journalCaught(
           error,
           "orchestrator.register.mergeAttempt",
@@ -2053,7 +2115,7 @@ export class Orchestrator {
         await this.flush();
         return;
       }
-      const item = itemId ? getWorkItem(this.db, itemId) : null;
+      const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
       if (item)
         await this.fail(
           item,
@@ -2079,10 +2141,15 @@ export class Orchestrator {
     jobs.register(JOB_KIND.closeStoppedPull, async (job, context) => {
       const itemId = readString(job.payload, "itemId");
       const comment = readString(job.payload, "comment");
-      const item = itemId ? getWorkItem(this.db, itemId) : null;
-      if (!item || item.state !== "cancelled" || getConfirmedRemoteMerge(this.db, item.id)) return;
+      const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
+      if (
+        !item ||
+        item.state !== "cancelled" ||
+        (await this.store.run((q) => getConfirmedRemoteMergeSteps(q, item.id)))
+      )
+        return;
       // A re-delegation that took over the branch owns its pull request now.
-      if (itemContinued(this.db, item.id)) return;
+      if (await this.store.run((q) => itemContinuedSteps(q, item.id))) return;
       await this.joinChangedItems([item.id]);
       const repository = this.repositoryForItem(item);
       const github = repository ? this.githubForRepository(repository) : null;
@@ -2164,7 +2231,9 @@ export class Orchestrator {
   private pullFeedbackCapabilities(signal?: AbortSignal): PullReviewCapabilities {
     return {
       now: () => this.now(),
-      busy: (item) => this.jobContexts.has(item.id) || hasLiveJob(this.db, item.id, this.now()),
+      busy: async (item) =>
+        this.jobContexts.has(item.id) ||
+        (await this.store.run((q) => hasLiveJobSteps(q, item.id, this.now()))),
       threads: async (item, pullNumber) => {
         const repository = this.repositoryForItem(item);
         const github = repository ? this.githubForRepository(repository) : null;
@@ -2225,7 +2294,7 @@ export class Orchestrator {
       fixRoundLimit: (item) => this.fixRoundLimit(item),
       closeoutFindings: async (item) => {
         await this.pullCloseoutEvidence(item);
-        const started = closeoutHeadsStarted(this.db, item.id);
+        const started = await this.store.run((q) => closeoutHeadsStartedSteps(q, item.id));
         try {
           return await storedReviewFindings(
             itemPathId(item),
@@ -2316,23 +2385,26 @@ export class Orchestrator {
             undefined,
             this.options.journal,
           );
-          immediate(this.db, () => {
-            if (!context.isCurrent()) throw context.signal.reason;
-            enqueueJobOnce(this.db, {
-              queue:
-                getWorkItem(this.db, readString(job.payload, "itemId")!)?.state === "verifying"
-                  ? JOB_KIND.reverify
-                  : job.queue,
-              priority: job.priority,
-              payload: job.payload,
-              jobKey: `merge-reconciliation:${job.id}`,
-              now: this.now(),
-              runAt: this.now() + 30000,
-            });
-          });
+          const { inserted } = await this.store.transaction((q) =>
+            this.mergeReconciliationSteps(q, job, context),
+          );
+          if (inserted) emitJobReady(this.store);
         }
       }),
     );
+  }
+
+  private *mergeReconciliationSteps(q: Q, job: Job, context: JobContext) {
+    if (!context.isCurrent()) throw context.signal.reason;
+    const item = yield* getWorkItemSteps(q, readString(job.payload, "itemId")!);
+    return yield* enqueueJobOnceSteps(q, {
+      queue: item?.state === "verifying" ? JOB_KIND.reverify : job.queue,
+      priority: job.priority,
+      payload: job.payload,
+      jobKey: `merge-reconciliation:${job.id}`,
+      now: this.now(),
+      runAt: this.now() + 30000,
+    });
   }
 
   /**
@@ -2348,8 +2420,8 @@ export class Orchestrator {
     if (!(error instanceof GitHubHttpError) || error.status < 500 || !context.isCurrent())
       return false;
     const itemId = readString(payload, "itemId");
-    const item = itemId ? getWorkItem(this.db, itemId) : null;
-    const pull = item ? getItemPullRequest(this.db, item.id) : null;
+    const item = itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
+    const pull = item ? await this.store.run((q) => getItemPullRequestSteps(q, item.id)) : null;
     if (!item || item.state !== "merge_queue" || pull === null) return false;
     const read = await this.readItemPull(item, pull.pullNumber, context.signal, 1).catch(
       () => null,
@@ -2415,16 +2487,20 @@ export class Orchestrator {
       message.op !== "catchup" &&
       message.op !== "linear.catchup"
     ) {
+      const orderingKey = message.orderingKey;
       const itemId =
         readString(message.payload, "itemId") ??
-        (message.orderingKey ? workItemForSession(this.db, message.orderingKey)?.id : undefined);
+        (await this.store.run((q) => workItemForSessionSteps(q, orderingKey)))?.id;
       const issueId =
         readString(message.payload, "linearIssueId") ??
         readString(message.payload, "issueId") ??
         undefined;
       if (
         message.op === "status" &&
-        (!itemId || !issueId || !getLinearTaskDelegation(this.db, itemId, issueId)?.humanActorId)
+        (!itemId ||
+          !issueId ||
+          !(await this.store.run((q) => getLinearTaskDelegationSteps(q, itemId, issueId)))
+            ?.humanActorId)
       )
         throw new Error("Linear workflow updates require verified human task ownership.");
       await this.options.linearAccess.assertDelivery(message.orderingKey, context.signal, {
@@ -2454,7 +2530,8 @@ export class Orchestrator {
       await this.executeQueued(job.payload);
     } catch (error) {
       const itemId = readString(job.payload, "itemId");
-      const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      const item =
+        itemId === null ? null : await this.store.run((q) => getWorkItemSteps(q, itemId));
       if (capacityWaitIn(error) && item?.currentRunId)
         capacityRun = { itemId: item.id, runId: item.currentRunId };
       if (
@@ -2465,7 +2542,10 @@ export class Orchestrator {
         (item.state !== "running" && item.state !== "verifying" && item.state !== "recovering")
       )
         throw error;
-      if (error instanceof RunnerSetupRequired && this.holdForRunnerSetup(item, error.need)) {
+      if (
+        error instanceof RunnerSetupRequired &&
+        (await this.holdForRunnerSetup(item, error.need))
+      ) {
         journalCaught(
           error,
           "orchestrator.executeRetried.executeQueued",
@@ -2476,7 +2556,7 @@ export class Orchestrator {
         return;
       }
       const refused = repositoryRefusedIn(error);
-      if (refused && this.askRunnerRepository(item, refused)) {
+      if (refused && (await this.askRunnerRepository(item, refused))) {
         journalCaught(
           error,
           "orchestrator.executeRetried.executeQueued",
@@ -2490,7 +2570,7 @@ export class Orchestrator {
       if (resetAt !== null) {
         const delayMs = Math.max(0, resetAt - this.now());
         this.settleItemAwake(item.id);
-        deferWorkItem(this.db, item, {
+        await deferWorkItemAsync(this.store, item, {
           retry: retryCount(job.payload),
           delayMs,
           handoff: readString(job.payload, "handoff"),
@@ -2512,7 +2592,7 @@ export class Orchestrator {
       }
       if (slotsBusy(error)) {
         this.settleItemAwake(item.id);
-        deferWorkItem(this.db, item, {
+        await deferWorkItemAsync(this.store, item, {
           retry: retryCount(job.payload),
           delayMs: SLOTS_BUSY_RETRY_MS,
           handoff: readString(job.payload, "handoff"),
@@ -2528,7 +2608,7 @@ export class Orchestrator {
         );
         return;
       }
-      const wait = this.nextRunnerWait(job, error);
+      const wait = await this.nextRunnerWait(job, error);
       if (wait) {
         // Settle the attempt before the park. The parked interval is waiting, not a lease expiry,
         // and the item keeps this run (PAS-898).
@@ -2590,9 +2670,9 @@ export class Orchestrator {
         const delayMs = transientRetryDelayMs(retry, error, this.options.retryBaseMs);
 
         const diskFull = isHostDiskFull(error);
-        if (diskFull) this.noteHostDiskFull(item.id, error);
+        if (diskFull) await this.noteHostDiskFull(item.id, error);
         this.settleItemAwake(item.id);
-        deferWorkItem(this.db, item, {
+        await deferWorkItemAsync(this.store, item, {
           retry,
           delayMs,
           handoff: readString(job.payload, "handoff"),
@@ -2620,7 +2700,7 @@ export class Orchestrator {
       // A start is only claimed while its item is queued, so its retries continue as a resume.
       else if (job.queue === JOB_KIND.start && item.state === "running") {
         this.settleItemAwake(item.id);
-        deferWorkItem(this.db, item, {
+        await deferWorkItemAsync(this.store, item, {
           retry: retryCount(job.payload),
           delayMs: transientRetryDelayMs(1, error, this.options.retryBaseMs),
           handoff: readString(job.payload, "handoff"),
@@ -2641,10 +2721,11 @@ export class Orchestrator {
       if (
         capacityRun &&
         !capacityParked &&
-        getWorkItem(this.db, capacityRun.itemId)?.currentRunId === capacityRun.runId &&
-        !hasLiveJob(this.db, capacityRun.itemId, this.now(), job.id)
+        (await this.store.run((q) => getWorkItemSteps(q, capacityRun!.itemId)))?.currentRunId ===
+          capacityRun.runId &&
+        !(await this.store.run((q) => hasLiveJobSteps(q, capacityRun!.itemId, this.now(), job.id)))
       )
-        closeActiveRun(this.db, capacityRun.runId, this.now(), "lost");
+        await this.store.run((q) => closeActiveRunSteps(q, capacityRun!.runId, this.now(), "lost"));
     }
   }
 
@@ -2653,25 +2734,32 @@ export class Orchestrator {
    * scheduler skips held items, so nothing retries, times out or writes to Linear until the hold
    * ends. False when the item can no longer be held, so the caller retries as before.
    */
-  private holdForRunnerSetup(item: WorkItemRecord, need: RunnerSetupNeed): boolean {
+  private async holdForRunnerSetup(item: WorkItemRecord, need: RunnerSetupNeed): Promise<boolean> {
     const now = this.now();
-    return immediate(this.db, () => {
-      const current = getWorkItem(this.db, item.id);
-      if (
-        !current ||
-        current.cancelRequested ||
-        (current.state !== "running" && current.state !== "recovering")
-      )
-        return false;
-      if (current.currentRunId !== null) {
-        const run = getRun(this.db, current.currentRunId);
-        if (run && (run.status === "active" || run.status === "provisioning"))
-          markRun(this.db, run.id, "lost", now);
-      }
-      restart(this.db, current, { reason: "follow_up", body: "Retry runner setup.", now });
-      this.recordRunnerSetupHold(current, need, now, current.currentRunId);
-      return true;
-    });
+    return await this.store.transaction((q) => this.holdForRunnerSetupSteps(q, item, need, now));
+  }
+
+  private *holdForRunnerSetupSteps(
+    q: Q,
+    item: WorkItemRecord,
+    need: RunnerSetupNeed,
+    now: number,
+  ): Steps<boolean> {
+    const current = yield* getWorkItemSteps(q, item.id);
+    if (
+      !current ||
+      current.cancelRequested ||
+      (current.state !== "running" && current.state !== "recovering")
+    )
+      return false;
+    if (current.currentRunId !== null) {
+      const run = yield* getRunSteps(q, current.currentRunId);
+      if (run && (run.status === "active" || run.status === "provisioning"))
+        yield* markRunSteps(q, run.id, "lost", now);
+    }
+    restart(this.db, current, { reason: "follow_up", body: "Retry runner setup.", now });
+    this.recordRunnerSetupHold(current, need, now, current.currentRunId);
+    return true;
   }
 
   /**
@@ -2720,77 +2808,65 @@ export class Orchestrator {
   private async checkRunnerSetup(ownerUserId: string): Promise<void> {
     const eligibleRunner = this.options.eligibleRunner;
     if (!eligibleRunner) return;
-    const holds = listRunnerSetupHolds(this.db, ownerUserId);
+    const holds = await this.store.run((q) => listRunnerSetupHoldsSteps(q, ownerUserId));
     if (holds.length === 0) return;
     const config = loadConfigFile(join(this.options.pawsRoot, "config.toml"));
     const now = this.now();
     let resumed = false;
     for (const hold of holds) {
-      const item = getWorkItem(this.db, hold.itemId);
+      const item = await this.store.run((q) => getWorkItemSteps(q, hold.itemId));
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
       const runner = eligibleRunner(item.id, this.implementerAgent(item, config), now);
       if (!runner) continue;
       resumed =
-        immediate(this.db, () => {
-          const current = getWorkItem(this.db, item.id);
-          if (!current || current.state !== "queued" || current.cancelRequested) return false;
-          if (!releaseRunnerSetupHold(this.db, current.id, now)) return false;
-          this.options.journal?.(
-            `item ${current.linearIdentifier} resumed: runner setup (${runner.name})`,
-          );
-          const sessionId = this.activitySession(current);
-          if (sessionId !== null)
-            enqueueOutboxOnce(this.db, {
-              target: OUTBOX_ACTIVITY.target,
-              op: OUTBOX_ACTIVITY.op,
-              orderingKey: sessionId,
-              idempotencyKey: `runner-setup-resume:${current.id}:${hold.since}`,
-              payload: {
-                sessionId,
-                itemId: current.id,
-                kind: "thought",
-                body: `Starting ${current.linearIdentifier ?? "this issue"} on ${runner.name}.`,
-              },
-              now,
-            });
-          return true;
-        }) || resumed;
+        (await this.store.transaction((q) =>
+          this.resumeRunnerSetupSteps(q, item.id, hold.since, runner.name, now),
+        )) || resumed;
     }
     if (resumed) await this.dispatch();
   }
 
-  private askRunnerRepository(item: WorkItemRecord, refused: RunnerRepositoryRefused): boolean {
+  private *resumeRunnerSetupSteps(
+    q: Q,
+    itemId: string,
+    since: number,
+    runnerName: string,
+    now: number,
+  ): Steps<boolean> {
+    const current = yield* getWorkItemSteps(q, itemId);
+    if (!current || current.state !== "queued" || current.cancelRequested) return false;
+    if (!(yield* releaseRunnerSetupHoldSteps(q, current.id, now))) return false;
+    this.options.journal?.(
+      `item ${current.linearIdentifier} resumed: runner setup (${runnerName})`,
+    );
+    const sessionId = this.activitySession(current);
+    if (sessionId !== null)
+      yield* enqueueOutboxOnceSteps(q, {
+        target: OUTBOX_ACTIVITY.target,
+        op: OUTBOX_ACTIVITY.op,
+        orderingKey: sessionId,
+        idempotencyKey: `runner-setup-resume:${current.id}:${since}`,
+        payload: {
+          sessionId,
+          itemId: current.id,
+          kind: "thought",
+          body: `Starting ${current.linearIdentifier ?? "this issue"} on ${runnerName}.`,
+        },
+        now,
+      });
+    return true;
+  }
+
+  private async askRunnerRepository(
+    item: WorkItemRecord,
+    refused: RunnerRepositoryRefused,
+  ): Promise<boolean> {
     const now = this.now();
     const runnersUrl = this.options.runnersUrl ?? dashboardUrl("http://127.0.0.1:8787", "/runners");
     this.settleItemAwake(item.id);
-    const asked = immediate(this.db, () => {
-      const current = getWorkItem(this.db, item.id);
-      if (
-        !current ||
-        current.cancelRequested ||
-        !["running", "verifying", "recovering"].includes(current.state)
-      )
-        return false;
-      const sessionId = this.activitySession(current);
-      if (sessionId === null) return false;
-      if (current.currentRunId !== null) {
-        const run = getRun(this.db, current.currentRunId);
-        if (run && (run.status === "active" || run.status === "provisioning"))
-          markRun(this.db, run.id, "lost", now);
-      }
-      ask(
-        this.db,
-        { itemId: current.id, runId: current.currentRunId, sessionId, version: current.version },
-        "runner-repository",
-        runnerRepositoryQuestion(refused.repository, refused.refusals, runnersUrl),
-        {
-          reason: RUNNER_REPOSITORY_REASON,
-          options: [RUNNER_REPOSITORY_RETRY, RUNNER_REPOSITORY_STOP],
-          now,
-        },
-      );
-      return true;
-    });
+    const asked = await this.store.transaction((q) =>
+      this.askRunnerRepositorySteps(q, item.id, refused, runnersUrl, now),
+    );
     if (!asked) return false;
     this.options.journal?.(`item ${item.linearIdentifier} asked: ${refused.message}`);
     void this.flush().catch((caught) => {
@@ -2805,15 +2881,52 @@ export class Orchestrator {
     return true;
   }
 
+  private *askRunnerRepositorySteps(
+    q: Q,
+    itemId: string,
+    refused: RunnerRepositoryRefused,
+    runnersUrl: string,
+    now: number,
+  ): Steps<boolean> {
+    const current = yield* getWorkItemSteps(q, itemId);
+    if (
+      !current ||
+      current.cancelRequested ||
+      !["running", "verifying", "recovering"].includes(current.state)
+    )
+      return false;
+    const sessionId = this.activitySession(current);
+    if (sessionId === null) return false;
+    if (current.currentRunId !== null) {
+      const run = yield* getRunSteps(q, current.currentRunId);
+      if (run && (run.status === "active" || run.status === "provisioning"))
+        yield* markRunSteps(q, run.id, "lost", now);
+    }
+    ask(
+      this.db,
+      { itemId: current.id, runId: current.currentRunId, sessionId, version: current.version },
+      "runner-repository",
+      runnerRepositoryQuestion(refused.repository, refused.refusals, runnersUrl),
+      {
+        reason: RUNNER_REPOSITORY_REASON,
+        options: [RUNNER_REPOSITORY_RETRY, RUNNER_REPOSITORY_STOP],
+        now,
+      },
+    );
+    return true;
+  }
+
   private async checkRunnerRepositories(runnerId: string, answeredBy: string): Promise<void> {
     const allowedOn = this.options.repositoryAllowedOn;
     if (!allowedOn) return;
     const now = this.now();
     const seen = new Set<string>();
-    const waiting = () =>
-      openRunnerRepositoryQuestions(this.db).filter((question) => !seen.has(question.id));
+    const waiting = async () =>
+      (await this.store.run(openRunnerRepositoryQuestionsSteps)).filter(
+        (question) => !seen.has(question.id),
+      );
     let answered = false;
-    for (let batch = waiting(); batch.length > 0; batch = waiting())
+    for (let batch = await waiting(); batch.length > 0; batch = await waiting())
       for (const question of batch) {
         seen.add(question.id);
         if (!allowedOn(question.itemId, runnerId, now)) continue;
@@ -2840,7 +2953,7 @@ export class Orchestrator {
       : `Your runner ${need.runnerName} needs ${runnerAgentName(need.agent)} signed in. Sign in on the [Runners page](${url}); I'll start right after.`;
   }
 
-  private nextRunnerWait(job: Job, caught: unknown): RunnerCapacityWaitState | null {
+  private async nextRunnerWait(job: Job, caught: unknown): Promise<RunnerCapacityWaitState | null> {
     const error = capacityWaitIn(caught);
     if (!error) return null;
     const busy = error.runnerIds.length > 0;
@@ -2853,7 +2966,7 @@ export class Orchestrator {
       since: waited?.since ?? this.now(),
       attempt: waited ? waited.attempt + 1 : 0,
       runnerIds: error.runnerIds,
-      online: waited?.online ?? activeRunnerIds(this.db, this.now()),
+      online: waited?.online ?? (await this.store.run((q) => activeRunnerIdsSteps(q, this.now()))),
       ...(error.holdMs === undefined ? {} : { holdMs: error.holdMs }),
     };
   }
@@ -2874,10 +2987,10 @@ export class Orchestrator {
     return true;
   }
 
-  private waitingForRunnerSlot(job: Job, beforePark?: () => Job): boolean {
+  private async waitingForRunnerSlot(job: Job, beforePark?: () => Promise<Job>): Promise<boolean> {
     const waited = runnerCapacityWait(job.payload);
     const itemId = readString(job.payload, "itemId");
-    const item = itemId === null ? null : getWorkItem(this.db, itemId);
+    const item = itemId === null ? null : await this.store.run((q) => getWorkItemSteps(q, itemId));
     if (
       !waited ||
       !item ||
@@ -2885,17 +2998,15 @@ export class Orchestrator {
       !["running", "recovering", "verifying", "merge_queue"].includes(item.state) ||
       this.shuttingDown ||
       (waited.runnerIds.length === 0 && this.now() - waited.since >= RUNNER_CAPACITY_WAIT_MS) ||
-      this.now() - waited.since >= (waited.holdMs ?? Infinity) ||
-      runnerSlotFree(
-        this.db,
-        slotWaitRunners(this.db, item.currentRunId ?? "", waited, this.now()),
-        this.now(),
-        item.currentRunId ?? "",
-      )
+      this.now() - waited.since >= (waited.holdMs ?? Infinity)
     )
       return false;
+    const runId = item.currentRunId ?? "";
+    const runners = await this.store.run((q) => slotWaitRunnersSteps(q, runId, waited, this.now()));
+    if (await this.store.run((q) => runnerSlotFreeSteps(q, runners, this.now(), runId)))
+      return false;
     const next = { ...waited, attempt: waited.attempt + 1 };
-    job = beforePark?.() ?? job;
+    job = (await beforePark?.()) ?? job;
     const delayMs = this.runnerWaitMs(next, job.queue === JOB_KIND.resume);
     waitForRunnerSlot(this.db, job, this.now(), delayMs, next);
     return true;
@@ -2908,7 +3019,8 @@ export class Orchestrator {
   private async holdForPushOutage(job: Job, error: unknown): Promise<boolean> {
     const refused = pushOutageCause(error);
     const itemId = readString(job.payload, "itemId");
-    const item = refused && itemId ? getWorkItem(this.db, itemId) : null;
+    const item =
+      refused && itemId ? await this.store.run((q) => getWorkItemSteps(q, itemId)) : null;
     const repository = item ? this.repositoryForItem(item) : null;
     if (!refused || !item || !repository) return false;
     const github = this.githubForRepository(repository);
@@ -2939,9 +3051,9 @@ export class Orchestrator {
     return true;
   }
 
-  private noteHostDiskFull(itemId: string | null, error: unknown): void {
+  private async noteHostDiskFull(itemId: string | null, error: unknown): Promise<void> {
     if (itemId === null || !isHostDiskFull(error)) return;
-    const item = getWorkItem(this.db, itemId);
+    const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
     const key = item && hostDiskFullThoughtKey(this.db, item.id, this.now());
     if (item && key) this.post(item, "thought", HOST_DISK_FULL_THOUGHT, key);
   }
@@ -2961,7 +3073,8 @@ export class Orchestrator {
       await operation();
     } catch (error) {
       const itemId = readString(job.payload, "itemId");
-      const item = itemId === null ? null : getWorkItem(this.db, itemId);
+      const item =
+        itemId === null ? null : await this.store.run((q) => getWorkItemSteps(q, itemId));
       if (
         job.attempts >= job.maxAttempts &&
         item &&
@@ -2986,29 +3099,31 @@ export class Orchestrator {
     if (this.shuttingDown) throw new Error("Paws is shutting down");
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
-    const loaded = getWorkItem(this.db, itemId);
+    const loaded = await this.store.run((q) => getWorkItemSteps(q, itemId));
     if (loaded === null) return;
     if (loaded.cancelRequested || loaded.state === "cancelled") return;
     if (loaded.state === "awaiting_input" || loaded.state === "paused") return;
-    if (restartHold(this.db, loaded) !== null) return;
+    if ((await this.store.run((q) => restartHoldSteps(q, loaded))) !== null) return;
     const sessionId = loaded.sessionKey;
-    if (sessionId && getLinearSession(this.db, sessionId))
-      activateLinearItem(this.db, sessionId, loaded.id);
-    if (loaded.state === "queued") applyWorkItemEvent(this.db, loaded.id, "dispatched");
-    if (loaded.state === "recovering") applyWorkItemEvent(this.db, loaded.id, "recovered");
-    let item = getWorkItem(this.db, loaded.id);
+    if (sessionId && (await this.store.run((q) => getLinearSessionSteps(q, sessionId))))
+      await this.store.transaction((q) => activateLinearItemSteps(q, sessionId, loaded.id));
+    if (loaded.state === "queued")
+      await this.store.transaction((q) => applyWorkItemEventSteps(q, loaded.id, "dispatched"));
+    if (loaded.state === "recovering")
+      await this.store.transaction((q) => applyWorkItemEventSteps(q, loaded.id, "recovered"));
+    let item = await this.store.run((q) => getWorkItemSteps(q, loaded.id));
     if (item === null || item.state !== "running") return;
 
     {
       const handoff = readString(payload, "handoff") ?? undefined;
       if (this.options.linearTaskModes && item.sessionKey) {
         if (!(await this.resolveTaskMode(item, handoff))) return;
-        item = getWorkItem(this.db, loaded.id);
+        item = await this.store.run((q) => getWorkItemSteps(q, loaded.id));
         if (!item || item.state !== "running" || item.cancelRequested) return;
-        const mode = getTaskMode(this.db, item.id);
+        const mode = await this.store.run((q) => getTaskModeSteps(q, loaded.id));
         if (isResponseTaskMode(mode)) {
           if (
-            taskRequiresRepository(this.db, item.id) &&
+            (await this.store.run((q) => taskRequiresRepositorySteps(q, loaded.id))) &&
             !(await this.selectRepository(item, "read"))
           )
             return;
@@ -3053,9 +3168,9 @@ export class Orchestrator {
     );
     if (candidates.length === 1) return candidates[0]!;
     if (candidates.length === 0 || !this.tracker?.issueRepositoryHints) return null;
-    const kept = getTaskLinearRead(this.db, item.id, "repository_hints") as
-      | RepositoryHints
-      | undefined;
+    const kept = (await this.store.run((q) =>
+      getTaskLinearReadSteps(q, item.id, "repository_hints"),
+    )) as RepositoryHints | undefined;
     const hints =
       kept ??
       (await linearCaller("repository-hints", () =>
@@ -3064,7 +3179,9 @@ export class Orchestrator {
         }),
       ));
     if (kept === undefined)
-      keepTaskLinearRead(this.db, item.id, "repository_hints", hints, this.now());
+      await this.store.run((q) =>
+        keepTaskLinearReadSteps(q, item.id, "repository_hints", hints, this.now()),
+      );
     const hinted = hintedRepository(candidates, hints);
     return hinted && "bind" in hinted ? hinted.bind : null;
   }
@@ -3095,19 +3212,25 @@ export class Orchestrator {
   }
 
   private async resolveTaskMode(item: WorkItemRecord, handoff?: string): Promise<boolean> {
-    if (getConversation(this.db, item.id).blocked)
+    if ((await this.store.run((q) => getConversationSteps(q, item.id))).blocked)
       throw new Error("ACP process cleanup could not be verified");
-    const saved = getTaskMode(this.db, item.id);
-    const generation = item.sessionKey ? getLinearSessionGeneration(this.db, item.sessionKey) : 0;
-    const taskKey = this.parentTaskKey(item);
-    let classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
+    const saved = await this.store.run((q) => getTaskModeSteps(q, item.id));
     const sessionKey = item.sessionKey;
+    const sessionGeneration = (key: string) =>
+      this.store.run((q) => getLinearSessionGenerationSteps(q, key));
+    const generation = sessionKey ? await sessionGeneration(sessionKey) : 0;
+    const taskKey = this.parentTaskKey(item);
+    let classification = taskKey
+      ? await this.store.run((q) => getTaskClassificationSteps(q, taskKey))
+      : null;
     const delegatedIssueId = this.delegationIssueId(item);
     if (!saved && !classification && taskKey && sessionKey && delegatedIssueId) {
       if (await this.hasOpenPawsPull(item)) {
-        if (this.stopped(item.id) || getLinearSessionGeneration(this.db, sessionKey) !== generation)
+        if (this.stopped(item.id) || (await sessionGeneration(sessionKey)) !== generation)
           return false;
-        saveTaskMode(this.db, item.id, "code", generation, false);
+        await this.store.transaction((q) =>
+          saveTaskModeSteps(q, item.id, "code", generation, false),
+        );
         return true;
       }
       classification = await this.taskPlanner.plan({
@@ -3139,12 +3262,17 @@ export class Orchestrator {
     if (saved === "code" || saved === "plan") return true;
     if (
       saved &&
-      taskRequiresRepository(this.db, item.id) &&
+      (await this.store.run((q) => taskRequiresRepositorySteps(q, item.id))) &&
       getWorkItemRepositoryAnswer(this.db, item.id) &&
-      !getWorkItemRepository(this.db, item.id)
+      !(await this.store.run((q) => getWorkItemRepositorySteps(q, item.id)))
     )
       return true;
-    if (saved && (!handoff || getTaskModeGeneration(this.db, item.id) >= generation)) return true;
+    if (
+      saved &&
+      (!handoff ||
+        (await this.store.run((q) => getTaskModeGenerationSteps(q, item.id))) >= generation)
+    )
+      return true;
     if (!saved && (!classification || classification.mode !== "clarify")) {
       saveTaskMode(
         this.db,
@@ -3167,9 +3295,11 @@ export class Orchestrator {
       const resolved = await classifyTask({
         itemId: itemPathId(item),
         runId: run.id,
-        request: [this.workContext(item), getConversation(this.db, item.id).entries, handoff].join(
-          "\n\n",
-        ),
+        request: [
+          this.workContext(item),
+          (await this.store.run((q) => getConversationSteps(q, item.id))).entries,
+          handoff,
+        ].join("\n\n"),
         pawsRoot: this.options.pawsRoot,
         home: this.options.home,
         profile: this.profileSnapshot(run.id).implementer,
@@ -3181,7 +3311,7 @@ export class Orchestrator {
       controller.signal.throwIfAborted();
       if (
         this.stopped(item.id) ||
-        (item.sessionKey && getLinearSessionGeneration(this.db, item.sessionKey) !== generation)
+        (sessionKey && (await sessionGeneration(sessionKey)) !== generation)
       )
         return false;
       if (resolved.mode === "clarify")
@@ -3196,15 +3326,17 @@ export class Orchestrator {
         controller.signal.throwIfAborted();
         if (
           this.stopped(item.id) ||
-          (item.sessionKey && getLinearSessionGeneration(this.db, item.sessionKey) !== generation)
+          (sessionKey && (await sessionGeneration(sessionKey)) !== generation)
         )
           return false;
         if (snapshot.subIssues.length) {
-          resolveTaskClassification(this.db, {
-            taskKey,
-            itemId: item.id,
-            context: [this.workContext(item), handoff].join("\n\n"),
-          });
+          await this.store.transaction((q) =>
+            resolveTaskClassificationSteps(q, {
+              taskKey,
+              itemId: item.id,
+              context: [this.workContext(item), handoff].join("\n\n"),
+            }),
+          );
           await this.intakeLinearTask(issueId, item.sessionKey, taskKey);
           await this.dispatch();
           return false;
@@ -3218,7 +3350,10 @@ export class Orchestrator {
           generation,
           resolved.repository === true,
         );
-      else saveTaskMode(this.db, item.id, resolved.mode, generation, resolved.repository === true);
+      else
+        await this.store.transaction((q) =>
+          saveTaskModeSteps(q, item.id, resolved.mode, generation, resolved.repository === true),
+        );
       return true;
     } finally {
       this.live.delete(run.id);
@@ -3233,23 +3368,33 @@ export class Orchestrator {
   ): Promise<false> {
     const sessionId = this.activitySession(item);
     if (!sessionId) throw new Error("Task clarification requires a Linear session");
-    immediate(this.db, () => {
-      const current = getWorkItem(this.db, item.id);
-      if (current?.state !== "running" || current.cancelRequested)
-        throw new Error("The task changed before clarification");
-      ask(
-        this.db,
-        { itemId: item.id, runId, sessionId, version: item.version },
-        "clarification",
-        body,
-        {
-          now: this.now(),
-        },
-      );
-      closeActiveRun(this.db, runId, this.now());
-    });
+    await this.store.transaction((q) =>
+      this.requestTaskClarificationSteps(q, item, runId, sessionId, body),
+    );
     await this.flush();
     return false;
+  }
+
+  private *requestTaskClarificationSteps(
+    q: Q,
+    item: WorkItemRecord,
+    runId: string,
+    sessionId: string,
+    body: string,
+  ): Steps<void> {
+    const current = yield* getWorkItemSteps(q, item.id);
+    if (current?.state !== "running" || current.cancelRequested)
+      throw new Error("The task changed before clarification");
+    ask(
+      this.db,
+      { itemId: item.id, runId, sessionId, version: item.version },
+      "clarification",
+      body,
+      {
+        now: this.now(),
+      },
+    );
+    yield* closeActiveRunSteps(q, runId, this.now());
   }
 
   private async runResponse(
@@ -3259,7 +3404,7 @@ export class Orchestrator {
   ): Promise<void> {
     const run = await this.ensureRun(item);
     if (!(await this.checkProfileLabels(item, run.id))) return;
-    item = getWorkItem(this.db, item.id)!;
+    item = (await this.store.run((q) => getWorkItemSteps(q, item.id)))!;
     const profile = this.profileSnapshot(run.id).implementer;
     const live = this.beginLive(item.id, run.id);
     const controller = live.controller;
@@ -3301,8 +3446,8 @@ export class Orchestrator {
       await this.taskAccess()?.assert(item, controller.signal, { allowTerminalIssue: true });
       const promptRunner = await this.prepareConversation(item);
       let repositoryContext = "";
-      if (taskRequiresRepository(this.db, item.id)) {
-        const repository = getWorkItemRepository(this.db, item.id);
+      if (await this.store.run((q) => taskRequiresRepositorySteps(q, item.id))) {
+        const repository = await this.store.run((q) => getWorkItemRepositorySteps(q, item.id));
         if (repository === null) throw new Error("The requested repository has not been selected");
         const auth = this.authorization(item);
         if (auth && !(await auth.ensure(item, "initial", controller.signal))) return;
@@ -3397,7 +3542,7 @@ export class Orchestrator {
       }
       const finish = { runId: run.id, announce: () => sessionProgress?.phase("completed") };
       if (mode === "artifact") {
-        const links = listArtifacts(this.db, item.id)
+        const links = (await this.store.run((q) => listArtifactsSteps(q, item.id)))
           .filter((artifact) => artifact.state === "uploaded")
           .map(
             (artifact) =>
@@ -3417,7 +3562,7 @@ export class Orchestrator {
         !this.askedRuns.has(run.id) &&
         !this.stopped(item.id) &&
         !controller.signal.aborted &&
-        getWorkItem(this.db, item.id)?.state !== "awaiting_input"
+        (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.state !== "awaiting_input"
       ) {
         if (isTransient(error)) throw error;
         await this.fail(
@@ -3454,29 +3599,41 @@ export class Orchestrator {
     const sessionId = this.activitySession(item);
     if (!sessionId) throw new Error("A plan proposal requires a Linear session");
     const parentIssueId = this.delegationIssueId(item) ?? item.linearIssueId;
-    const repository = getWorkItemRepository(this.db, item.id);
-    immediate(this.db, () => {
-      const current = getWorkItem(this.db, item.id);
-      if (current?.state !== "running" || current.cancelRequested || current.currentRunId !== runId)
-        throw new Error("The task changed before its plan could be proposed");
-      const asked = ask(
-        this.db,
-        { itemId: item.id, runId, sessionId, version: current.version },
-        "plan-approval",
-        planProposalBody(item.linearIdentifier, plan),
-        { options: planOptions(plan.drafts.length), now: this.now() },
-      );
-      savePlanProposal(this.db, {
-        questionId: asked.question.id,
-        itemId: item.id,
-        parentIssueId,
-        repository: repository ? `${repository.owner}/${repository.repo}` : null,
-        drafts: plan.drafts,
-        now: this.now(),
-      });
-      closeActiveRun(this.db, runId, this.now());
-    });
+    const repository = await this.store.run((q) => getWorkItemRepositorySteps(q, item.id));
+    await this.store.transaction((q) =>
+      this.proposePlanSteps(q, item, runId, sessionId, parentIssueId, repository, plan),
+    );
     await this.flush();
+  }
+
+  private *proposePlanSteps(
+    q: Q,
+    item: WorkItemRecord,
+    runId: string,
+    sessionId: string,
+    parentIssueId: string,
+    repository: RepositoryBinding | null,
+    plan: ReturnType<typeof parsePlanResult>,
+  ): Steps<void> {
+    const current = yield* getWorkItemSteps(q, item.id);
+    if (current?.state !== "running" || current.cancelRequested || current.currentRunId !== runId)
+      throw new Error("The task changed before its plan could be proposed");
+    const asked = ask(
+      this.db,
+      { itemId: item.id, runId, sessionId, version: current.version },
+      "plan-approval",
+      planProposalBody(item.linearIdentifier, plan),
+      { options: planOptions(plan.drafts.length), now: this.now() },
+    );
+    yield* savePlanProposalSteps(q, {
+      questionId: asked.question.id,
+      itemId: item.id,
+      parentIssueId,
+      repository: repository ? `${repository.owner}/${repository.repo}` : null,
+      drafts: plan.drafts,
+      now: this.now(),
+    });
+    yield* closeActiveRunSteps(q, runId, this.now());
   }
 
   private async runItem(item: WorkItemRecord, handoff?: string): Promise<void> {
@@ -3489,11 +3646,11 @@ export class Orchestrator {
     const pathId = itemPathId(item);
     const branch = worktreeBranch(item);
     if (item.branchName !== branch) {
-      setItemBranchName(this.db, item.id, branch);
+      await this.store.run((q) => setItemBranchNameSteps(q, item.id, branch));
     }
     const run = await this.ensureRun(item);
     if (!(await this.checkProfileLabels(item, run.id))) return;
-    item = getWorkItem(this.db, item.id)!;
+    item = (await this.store.run((q) => getWorkItemSteps(q, item.id)))!;
     const profiles = this.profileSnapshot(run.id);
     const live = this.beginLive(item.id, run.id);
     const controller = live.controller;
@@ -3562,12 +3719,12 @@ export class Orchestrator {
         `${run.id}:working`,
         { ephemeral: true },
       );
-      const returned = latestRestartEvent(this.db, item.id);
+      const returned = await this.store.run((q) => latestRestartEventSteps(q, item.id));
       const fixing =
         returned !== null && ["findings", "ci", "review", "conflict"].includes(returned.reason);
       if (!fixing) sessionProgress?.phase("implementing");
       if (fixing) {
-        const round = fixRounds(this.db, item.id);
+        const round = await this.store.run((q) => fixRoundsSteps(q, item.id));
         const limit = this.fixAttemptLimit(item, returned.reason);
         const label =
           returned.reason === "ci"
@@ -3586,7 +3743,7 @@ export class Orchestrator {
             : `Fixing ${label} for ${item.linearIdentifier}, fix attempt ${round} of ${limit}.`;
         this.post(item, "thought", live.progress, `${item.id}:fix:${item.version}`);
       }
-      if (working !== undefined) this.startPost(working);
+      if (working !== undefined) await this.startPost(working);
       if (!this.taskAccess()) this.postStatus(item, "started");
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
@@ -3613,7 +3770,10 @@ export class Orchestrator {
         if (!this.readProfileSnapshot(run.id)?.candidate)
           await this.preflight(item, run.id, profiles, controller.signal, activity.onEvent);
       } catch (error) {
-        if (this.stopped(item.id) || getWorkItem(this.db, item.id)?.state === "awaiting_input")
+        if (
+          this.stopped(item.id) ||
+          (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.state === "awaiting_input"
+        )
           return;
         if (isTransient(error)) {
           // A temporary failure before the agent starts retries with backoff. A person is asked
@@ -3628,7 +3788,7 @@ export class Orchestrator {
           undefined,
           this.options.journal,
         );
-        closeActiveRun(this.db, run.id, this.now());
+        await this.store.run((q) => closeActiveRunSteps(q, run.id, this.now()));
         const summary = `Closeout: blocked\n${error instanceof Error ? error.message : String(error)}`;
         this.post(item, "thought", summary, `${run.id}:profile-preflight`);
         await this.askCloseoutHelp(item, undefined, summary);
@@ -3689,7 +3849,7 @@ export class Orchestrator {
         this.settleLinearCommentBrief(item, comments);
       this.assertJobCurrent(item.id);
       controller.signal.throwIfAborted();
-      const finished = getWorkItem(this.db, item.id);
+      const finished = await this.store.run((q) => getWorkItemSteps(q, item.id));
       if (finished === null || finished.state === "cancelled" || finished.cancelRequested) return;
       if (executed.run.authRequired) {
         await this.fail(finished, "auth", executed.run.errorMessage ?? "Claude login is missing.");
@@ -3726,9 +3886,9 @@ export class Orchestrator {
         return;
       }
       activity.flush();
-      if (!artifactPublicationReady(this.db, item.id))
+      if (!(await this.store.run((q) => artifactPublicationReadySteps(q, item.id))))
         throw new Error("A requested artifact has not been uploaded successfully");
-      saveRunResult(this.db, run.id, activity.resultBody(), this.now());
+      await this.store.run((q) => saveRunResultSteps(q, run.id, activity.resultBody(), this.now()));
       // A fix turn for pull request comments reports a reply for each one it was handed.
       await recordAgentReviewReplies(this.store, item.id, activity.resultBody(), this.now());
       if (!executed.run.identity)
@@ -3744,23 +3904,28 @@ export class Orchestrator {
         this.now(),
       );
       const base = (await git(["-C", at.repo, "merge-base", at.ref, "origin/main"])).trim();
-      saveCheckpoint(this.db, item.id, {
-        ...getWorkItem(this.db, item.id)?.checkpoint,
-        phase: "running",
-        baseSha: base,
-        wipCommit: head,
-      });
+      const checkpoint = (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.checkpoint;
+      await this.store.run((q) =>
+        saveCheckpointSteps(q, item.id, {
+          ...checkpoint,
+          phase: "running",
+          baseSha: base,
+          wipCommit: head,
+        }),
+      );
       const commits = Number(
         (await git(["-C", at.repo, "rev-list", "--count", `${base}..${head}`])).trim(),
       );
-      recordItemBranchState(this.db, {
-        itemId: item.id,
-        runId: run.id,
-        head,
-        base,
-        commits,
-        recordedAt: this.now(),
-      });
+      await this.store.run((q) =>
+        recordItemBranchStateSteps(q, {
+          itemId: item.id,
+          runId: run.id,
+          head,
+          base,
+          commits,
+          recordedAt: this.now(),
+        }),
+      );
       if (this.options.remoteExecution)
         writeSessionCloseout(
           sessionCloseoutPath(this.options.pawsRoot, pathId),
@@ -3768,11 +3933,11 @@ export class Orchestrator {
           executed.run.closeoutReport,
           pullRequestDraftKey(this.savedDraft(item.id)),
         );
-      else closeActiveRun(this.db, run.id, this.now());
+      else await this.store.run((q) => closeActiveRunSteps(q, run.id, this.now()));
       const suggestionJob = await suggestionTurnRunning(this.store, item.id);
       if (
         suggestionJob !== null &&
-        head === getWorkItem(this.db, item.id)?.acceptedHead &&
+        head === (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.acceptedHead &&
         mergeAcceptedWork(this.db, item.id, { now: this.now(), exceptJobId: suggestionJob })
       ) {
         await this.flush();
@@ -3784,10 +3949,13 @@ export class Orchestrator {
         base,
         head,
         this.candidateFor(run.id),
-        turnPasses(listAgentCloseout(this.db, [run.id]), pullRequestDraftSavedAt(this.db, item.id)),
+        turnPasses(
+          await this.store.run((q) => listAgentCloseoutSteps(q, [run.id])),
+          await this.store.run((q) => pullRequestDraftSavedAtSteps(q, item.id)),
+        ),
       );
     } catch (error) {
-      const current = getWorkItem(this.db, item.id);
+      const current = await this.store.run((q) => getWorkItemSteps(q, item.id));
       if (
         !this.askedRuns.has(run.id) &&
         !controller.signal.aborted &&
@@ -3830,7 +3998,9 @@ export class Orchestrator {
         !this.shuttingDown &&
         (this.jobContexts.get(item.id)?.isCurrent() ?? true)
       )
-        closeActiveRun(this.db, run.id, this.now(), deferred ? "lost" : "ended");
+        await this.store.run((q) =>
+          closeActiveRunSteps(q, run.id, this.now(), deferred ? "lost" : "ended"),
+        );
       this.conversations.delete(item.id);
       try {
         await this.flush();
@@ -3876,7 +4046,7 @@ export class Orchestrator {
     options: {
       decide?: boolean;
       reverifyJobId?: number;
-      onOwned?: () => void;
+      onOwned?: () => Promise<void>;
       fromTurn?: readonly TurnPass[];
     } = {},
   ): Promise<void> {
@@ -3887,8 +4057,8 @@ export class Orchestrator {
       item,
       candidate,
       options.reverifyJobId !== undefined,
-      (owned, assertCurrent, assertOwned) => {
-        options.onOwned?.();
+      async (owned, assertCurrent, assertOwned) => {
+        await options.onOwned?.();
         return this.evaluateOwnedHead(
           owned,
           worktree,
@@ -5236,7 +5406,11 @@ export class Orchestrator {
     return this.verificationHolder(item) !== null;
   }
 
-  private async reverify(payload: unknown, jobId: number, onOwned: () => void): Promise<void> {
+  private async reverify(
+    payload: unknown,
+    jobId: number,
+    onOwned: () => Promise<void>,
+  ): Promise<void> {
     const itemId = readString(payload, "itemId");
     if (itemId === null) return;
     const item = await this.store.run((q) => getWorkItemSteps(q, itemId));
@@ -10330,6 +10504,16 @@ function implementerAgentFor(
     repository ? `${repository.owner}/${repository.repo}` : undefined,
     labels,
   ).implementer.agent;
+}
+
+function* closeActiveRunSteps(
+  q: Q,
+  runId: string,
+  now: number,
+  status: "ended" | "lost" = "ended",
+): Steps<void> {
+  const run = yield* getRunSteps(q, runId);
+  if (run && run.status === "active") yield* markRunSteps(q, runId, status, now);
 }
 
 function closeActiveRun(

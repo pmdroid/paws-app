@@ -126,7 +126,7 @@ function setup(threads = THREADS) {
   let findings: StoredReviewFinding[] = [];
   const caps: PullReviewCapabilities = {
     now: () => clock,
-    busy: () => busy,
+    busy: async () => busy,
     threads: (_, pullNumber) =>
       readReviewThreads({
         client,

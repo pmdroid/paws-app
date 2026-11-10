@@ -87,7 +87,7 @@ export type LinearConversations = {
 export type LinearCommentCapabilities = {
   now(): number;
   policy: LinearCommentPolicy;
-  busy(item: WorkItemRecord): boolean;
+  busy(item: WorkItemRecord): Promise<boolean>;
   leaveMergeQueue(item: WorkItemRecord, pullNumber: number): Promise<LeaveMergeQueueResult>;
   flush(): Promise<void>;
   conversations?(): Promise<LinearConversations | null>;
@@ -334,7 +334,7 @@ export async function deliverLinearComments(
     if (talk.open(itemId).length > 0) return "wait";
   }
   const all = await store.run((q) => pendingLinearCommentsSteps(q, itemId));
-  const idle = talk !== null && item !== null && canConverse(item) && !caps.busy(item);
+  const idle = talk !== null && item !== null && canConverse(item) && !(await caps.busy(item));
   const turns = idle
     ? await store.run((q) => listPendingLinearTurnsSteps(q, item.sessionKey!))
     : [];
@@ -384,7 +384,7 @@ export async function deliverLinearComments(
   }
   if (HELD_STATES.has(item.state) || item.state === "queued") return "done";
   if (ACTIVE_STATES.has(item.state)) return "wait";
-  if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
+  if (item.state !== "merge_queue" || (await caps.busy(item))) return "wait";
   const pull = await store.run((q) => getItemPullRequestSteps(q, item.id));
   if (pull !== null) {
     const queue = await caps.leaveMergeQueue(item, pull.pullNumber);
