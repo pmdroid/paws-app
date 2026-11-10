@@ -543,23 +543,23 @@ type DispatchOptions = OutboxClaimOptions & {
 
 /** Claim ready heads and, when `deliver` is set, mark each sent or schedule a retry. */
 export async function dispatchOutbox(
-  db: Database,
+  store: Db,
   options: DispatchOptions = {},
 ): Promise<OutboxRow[]> {
-  const claimed = await claimOutboxHeads(sqliteDb(db), options);
+  const claimed = await claimOutboxHeads(store, options);
   const deliver = options.deliver;
   if (deliver === undefined) return claimed;
   for (const row of claimed) {
-    if (!isOutboxCurrent(db, row)) {
-      await releaseOutboxLease(sqliteDb(db), row);
+    if (!(await store.run((q) => isOutboxCurrentSteps(q, row)))) {
+      await releaseOutboxLease(store, row);
       continue;
     }
     try {
       deliver(row);
-      await completeOutbox(sqliteDb(db), row, options.now);
+      await completeOutbox(store, row, options.now);
     } catch (error) {
       journalCaught(error, "outbox.dispatchOutbox.deliver", journalItemId(row.payload));
-      await retryOutbox(sqliteDb(db), row, error, { now: options.now });
+      await retryOutbox(store, row, error, { now: options.now });
     }
   }
   return claimed;

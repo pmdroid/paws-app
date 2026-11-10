@@ -9,6 +9,7 @@ import {
   getOutbox,
   legacyMigrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { tempHome } from "./helpers";
 
@@ -123,7 +124,7 @@ describe("sqlite", () => {
       enqueueOutbox(db, { target: "linear", op: "activity", idempotencyKey: "act-1" }),
     ).toThrow();
     const delivered: number[] = [];
-    await dispatchOutbox(db, {
+    await dispatchOutbox(sqliteDb(db), {
       deliver: (row) => {
         delivered.push(row.id);
       },
