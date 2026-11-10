@@ -2234,14 +2234,9 @@ export function createRemoteAgentRunner(options: {
                       answer: questionAnswer,
                     });
                   cursor = row.sequence;
-                  const consumed = cursor;
+                  const { runId: consumedRun, generation } = assigned;
                   await store.run((q) =>
-                    setRunnerWorkConsumedSequenceSteps(
-                      q,
-                      assigned.runId,
-                      assigned.generation,
-                      consumed,
-                    ),
+                    setRunnerWorkConsumedSequenceSteps(q, consumedRun, generation, row.sequence),
                   );
                   continue;
                 }
