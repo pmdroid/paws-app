@@ -155,8 +155,11 @@ const TAILSCALED_SERVICE = "tailscaled.service";
 const AUTHKEY_SECRET = "~/.paws/secrets/tailscale-authkey";
 const RUNNER_BINARY = "/opt/paws-runner/bin/paws-runner";
 const RUNNER_SERVICE = "paws-runner.service";
-/** The rootless Docker daemon `paws-docker.service` runs for agent jobs as paws-runner. */
-const RUNNER_DOCKER_SOCKET = "/run/paws-docker/docker.sock";
+/**
+ * The rootless Docker daemon `paws-agent-docker.service` runs for agent jobs as paws-agent, the
+ * default agentUser, which the config this bootstrap writes keeps.
+ */
+const AGENT_DOCKER_SOCKET = "/run/paws-agent-docker/docker.sock";
 /** Under the stage directory: why the last install failed, when the run script knows. */
 const INSTALL_ERROR_FILE = "install-error";
 export const RUNNER_STATE_DIR = "/var/lib/paws-runner";
@@ -844,14 +847,14 @@ function encryptSecret(
 
 /**
  * What the transient unit runs as root: Docker Engine when the image has none, the runner package
- * with Docker for agent jobs granted, a check that paws-runner reaches its rootless Docker daemon,
+ * with Docker for agent jobs granted, a check that paws-agent reaches its rootless Docker daemon,
  * the pinned mise, then the config. A failed Docker step writes its reason to `install-error`,
  * which the probe reads, and stops before the config so the install never counts as done.
  */
 function runScript(pinned: Pinned): string {
   const { version, sha256, platform } = pinned.mise;
   const url = `https://github.com/jdx/mise/releases/download/v${version}/mise-v${version}-${platform}`;
-  const docker = `--host unix://${RUNNER_DOCKER_SOCKET}`;
+  const docker = `--host unix://${AGENT_DOCKER_SOCKET}`;
   return [
     "#!/bin/sh",
     "set -eu",
@@ -864,9 +867,9 @@ function runScript(pinned: Pinned): string {
     "fi",
     `PAWS_RUNNER_DOCKER_ACCESS=grant sh "$stage/install-runner.sh" ${shellQuote(pinned.runnerVersion)}`,
     "tries=0",
-    `until detail=$(runuser -u paws-runner -- docker ${docker} info 2>&1 >/dev/null); do`,
+    `until detail=$(runuser -u paws-agent -- docker ${docker} info 2>&1 >/dev/null); do`,
     "  tries=$((tries + 1))",
-    `  [ "$tries" -lt 30 ] || fail "Docker for agent jobs is not working: paws-runner could not reach its rootless Docker daemon at ${RUNNER_DOCKER_SOCKET} ($(printf '%s' "$detail" | tail -c 200)). Check journalctl -u paws-docker.service on the VM."`,
+    `  [ "$tries" -lt 30 ] || fail "Docker for agent jobs is not working: paws-agent could not reach its rootless Docker daemon at ${AGENT_DOCKER_SOCKET} ($(printf '%s' "$detail" | tail -c 200)). Check journalctl -u paws-agent-docker.service on the VM."`,
     "  sleep 1",
     "done",
     "mise=$(mktemp)",

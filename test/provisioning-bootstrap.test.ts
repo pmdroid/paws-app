@@ -68,9 +68,9 @@ const RUN_SCRIPT = [
   "fi",
   `PAWS_RUNNER_DOCKER_ACCESS=grant sh "$stage/install-runner.sh" '1.4.0'`,
   "tries=0",
-  "until detail=$(runuser -u paws-runner -- docker --host unix:///run/paws-docker/docker.sock info 2>&1 >/dev/null); do",
+  "until detail=$(runuser -u paws-agent -- docker --host unix:///run/paws-agent-docker/docker.sock info 2>&1 >/dev/null); do",
   "  tries=$((tries + 1))",
-  `  [ "$tries" -lt 30 ] || fail "Docker for agent jobs is not working: paws-runner could not reach its rootless Docker daemon at /run/paws-docker/docker.sock ($(printf '%s' "$detail" | tail -c 200)). Check journalctl -u paws-docker.service on the VM."`,
+  `  [ "$tries" -lt 30 ] || fail "Docker for agent jobs is not working: paws-agent could not reach its rootless Docker daemon at /run/paws-agent-docker/docker.sock ($(printf '%s' "$detail" | tail -c 200)). Check journalctl -u paws-agent-docker.service on the VM."`,
   "  sleep 1",
   "done",
   "mise=$(mktemp)",
@@ -682,7 +682,7 @@ test("the run script installs docker.io when the image has no Docker Engine and 
     "apt-get update",
     "apt-get install -y docker.io",
     "sh access=grant <stage>/install-runner.sh 1.4.0",
-    "runuser -u paws-runner -- docker --host unix:///run/paws-docker/docker.sock info",
+    "runuser -u paws-agent -- docker --host unix:///run/paws-agent-docker/docker.sock info",
   ]);
   // It goes on to mise, which this stub refuses.
   expect(run.calls[4]).toStartWith("curl ");
@@ -698,7 +698,7 @@ test("the run script keeps an installed Docker Engine and fails clearly when the
     false,
   );
   expect(run.error).toStartWith(
-    "Docker for agent jobs is not working: paws-runner could not reach its rootless Docker daemon at /run/paws-docker/docker.sock",
+    "Docker for agent jobs is not working: paws-agent could not reach its rootless Docker daemon at /run/paws-agent-docker/docker.sock",
   );
 
   const apt = runInstall({ dockerd: false, aptGet: 100, runuser: 0 });

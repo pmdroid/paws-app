@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RUNNER_DOCKER_SOCKET, runnerDockerEnv, type RunnerJob } from "../src/runner-execution";
+import {
+  AGENT_DOCKER_SOCKET,
+  agentDockerEnv,
+  RUNNER_DOCKER_SOCKET,
+  runnerDockerEnv,
+  type RunnerJob,
+} from "../src/runner-execution";
 import { executeRunnerCommand } from "../src/runner-worker";
 
 const roots: string[] = [];
@@ -34,6 +40,19 @@ test("workers get DOCKER_HOST only when the rootless Docker socket exists", asyn
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("paws-agent executions get their own daemon's socket while its runtime directory exists", () => {
+  expect(AGENT_DOCKER_SOCKET).toBe("/run/paws-agent-docker/docker.sock");
+  const root = temporary("paws-agent-docker-");
+  // paws-runner cannot enter paws-agent's runtime directory, so only the directory is looked at.
+  const socket = join(root, "paws-agent-docker", "docker.sock");
+  expect(agentDockerEnv(socket)).toEqual({});
+  writeFileSync(join(root, "paws-agent-docker"), "not a directory");
+  expect(agentDockerEnv(socket)).toEqual({});
+  rmSync(join(root, "paws-agent-docker"));
+  mkdirSync(join(root, "paws-agent-docker"), { mode: 0o700 });
+  expect(agentDockerEnv(socket)).toEqual({ DOCKER_HOST: `unix://${socket}` });
 });
 
 test("the agent inherits the worker's local DOCKER_HOST and never a remote one", async () => {

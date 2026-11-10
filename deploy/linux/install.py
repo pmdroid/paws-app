@@ -218,12 +218,14 @@ def validate_identity_separation():
             raise ValueError("Runner service identity has an unrelated supplemental group")
 
 
-# Docker access for runner work: a rootless Docker daemon that runs as paws-runner, the account workers
-# run as, so a container can bind-mount the worker's checkout. The supervisor gives workers DOCKER_HOST
-# when the socket exists (runnerDockerEnv in src/runner-execution/supervisor.ts). No runner work needs the
-# root daemon at /var/run/docker.sock. The package never installs Docker or its rootless tools.
+# Docker access for agent jobs: a rootless Docker daemon that runs as the account agents run as (agentUser),
+# so a container can bind-mount the worker's checkout. "runner" gets paws-docker.service as paws-runner;
+# "paws-agent" gets paws-agent-docker.service as paws-agent, never access to paws-runner's daemon, whose
+# containers could mount the runner's identity keys and spool. Each socket's directory is its owner's alone.
+# The supervisor gives workers DOCKER_HOST for the daemon of the user they run as (runnerDockerEnv and
+# agentDockerEnv in src/runner-execution/supervisor.ts). No runner work needs the root daemon at
+# /var/run/docker.sock. The package never installs Docker or its rootless tools.
 DOCKER_GROUP = "docker"
-DOCKER_ACCOUNT = "paws-runner"
 DOCKER_ACCESS_ENV = "PAWS_RUNNER_DOCKER_ACCESS"
 DOCKER_RISK = "Members of the docker group control the Docker daemon, which runs as root: every agent and check this runner executes can then act as root on this host, and the runner's systemd hardening does not contain it."
 # The PATH the daemon unit runs with; the prerequisites must be on it.
@@ -234,27 +236,44 @@ DOCKER_UNIT = pathlib.Path("/etc/systemd/system/paws-docker.service")
 DOCKER_DATA = pathlib.Path("/var/lib/paws-runner-docker")
 DOCKER_SUBORDINATE = {"uid": pathlib.Path("/etc/subuid"), "gid": pathlib.Path("/etc/subgid")}
 DOCKER_SUBORDINATE_COUNT = 65536
-DOCKER_SOCKET = "/run/paws-docker/docker.sock"
+AGENT_DOCKER_UNIT = pathlib.Path("/etc/systemd/system/paws-agent-docker.service")
+AGENT_DOCKER_DATA = pathlib.Path("/var/lib/paws-agent-docker")
 # PAS-1024 recorded here that it added paws-runner to the docker group; only that membership is removed.
 DOCKER_GROUP_GRANT = STATE / "docker-group.json"
 SYSTEMCTL = "/usr/bin/systemctl"
 USERMOD = "/usr/sbin/usermod"
 GPASSWD = "/usr/bin/gpasswd"
-DOCKER_UNIT_CONTENT = f"""[Unit]
-Description=Rootless Docker daemon for Paws runner work
+
+
+def docker_daemons():
+    """The rootless daemon for each agentUser: the account it runs as, its unit, data and runtime directory."""
+    return {
+        "runner": {"account": "paws-runner", "unit": DOCKER_UNIT, "data": DOCKER_DATA, "runtime": "paws-docker", "serves": "runner work"},
+        "paws-agent": {"account": "paws-agent", "unit": AGENT_DOCKER_UNIT, "data": AGENT_DOCKER_DATA, "runtime": "paws-agent-docker", "serves": "agent jobs as paws-agent"},
+    }
+
+
+def docker_socket(daemon):
+    return f"/run/{daemon['runtime']}/docker.sock"
+
+
+def docker_unit_content(daemon):
+    account, data, runtime = daemon["account"], daemon["data"], daemon["runtime"]
+    return f"""[Unit]
+Description=Rootless Docker daemon for Paws {daemon['serves']}
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
-User={DOCKER_ACCOUNT}
-Group={DOCKER_ACCOUNT}
-RuntimeDirectory=paws-docker
+User={account}
+Group={account}
+RuntimeDirectory={runtime}
 RuntimeDirectoryMode=0700
-Environment=XDG_RUNTIME_DIR=/run/paws-docker
-Environment=HOME={DOCKER_DATA}
+Environment=XDG_RUNTIME_DIR=/run/{runtime}
+Environment=HOME={data}
 Environment=PATH={DOCKER_PATH}
-ExecStart={DOCKER_LAUNCHER} --data-root {DOCKER_DATA}/data --exec-root /run/paws-docker/exec --pidfile /run/paws-docker/docker.pid --host unix://{DOCKER_SOCKET} --exec-opt native.cgroupdriver=cgroupfs
+ExecStart={DOCKER_LAUNCHER} --data-root {data}/data --exec-root /run/{runtime}/exec --pidfile /run/{runtime}/docker.pid --host unix://{docker_socket(daemon)} --exec-opt native.cgroupdriver=cgroupfs
 Delegate=yes
 KillMode=mixed
 Restart=on-failure
@@ -266,6 +285,12 @@ TasksMax=infinity
 [Install]
 WantedBy=multi-user.target
 """
+
+
+# Written from the host paths, before a test can point the paths elsewhere.
+DOCKER_UNIT_CONTENTS = {name: docker_unit_content(daemon) for name, daemon in docker_daemons().items()}
+
+
 # Asks the daemon for its version over the socket, with a bounded wait. It changes nothing.
 DOCKER_PROBE = r'''
 import json, socket, sys
@@ -306,8 +331,12 @@ def docker_access_choice(environ=os.environ):
     return value or None
 
 
-def docker_report(status, message, changed=False):
-    return {"status": status, "changed": changed, "message": message}
+def docker_report(status, message, changed=False, daemon=None, reachable=None):
+    report = {"status": status, "changed": changed, "message": message}
+    if daemon is not None:
+        # Which daemon serves agent jobs, and whether the account they run as reached it.
+        report["agentJobs"] = {"user": daemon["account"], "daemon": daemon["unit"].name, "socket": docker_socket(daemon), "reachable": reachable}
+    return report
 
 
 def run_tool(arguments, timeout=60):
@@ -318,12 +347,12 @@ def run_tool(arguments, timeout=60):
     return None
 
 
-def docker_probe():
-    """What runner work sees at the rootless socket, as paws-runner, waiting up to 30 seconds for the daemon."""
+def docker_probe(account, socket, tries=30):
+    """What an account sees at a rootless socket, waiting up to `tries` seconds for the daemon."""
     outcome = "daemon-unavailable"
-    for _ in range(30):
+    for _ in range(tries):
         try:
-            result = subprocess.run(["/usr/sbin/runuser", "--user", DOCKER_ACCOUNT, "--", "/usr/bin/env", "-i", "PATH=" + DOCKER_PATH, "LANG=C.UTF-8", "/usr/bin/python3", "-I", "-B", "-c", DOCKER_PROBE, DOCKER_SOCKET], env=release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+            result = subprocess.run(["/usr/sbin/runuser", "--user", account, "--", "/usr/bin/env", "-i", "PATH=" + DOCKER_PATH, "LANG=C.UTF-8", "/usr/bin/python3", "-I", "-B", "-c", DOCKER_PROBE, socket], env=release.COMMAND_ENV, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
         except subprocess.TimeoutExpired:
             return outcome
         outcome = result.stdout.decode(errors="replace").strip() if result.returncode == 0 else "daemon-unavailable"
@@ -345,33 +374,33 @@ def next_subordinate_start(content):
     return -(-end // DOCKER_SUBORDINATE_COUNT) * DOCKER_SUBORDINATE_COUNT
 
 
-def add_subordinate_ids():
-    """Give paws-runner one 65536-id range in /etc/subuid and /etc/subgid where it has none. Returns the files it changed."""
+def add_subordinate_ids(account):
+    """Give account one 65536-id range in /etc/subuid and /etc/subgid where it has none. Returns the files it changed."""
     added = []
     for kind, path in DOCKER_SUBORDINATE.items():
         try:
             content = path.read_text()
         except FileNotFoundError:
             content = ""
-        if any(line.startswith(DOCKER_ACCOUNT + ":") for line in content.splitlines()):
+        if any(line.startswith(account + ":") for line in content.splitlines()):
             continue
         start = next_subordinate_start(content)
-        failure = run_tool([USERMOD, f"--add-sub{kind}s", f"{start}-{start + DOCKER_SUBORDINATE_COUNT - 1}", DOCKER_ACCOUNT])
+        failure = run_tool([USERMOD, f"--add-sub{kind}s", f"{start}-{start + DOCKER_SUBORDINATE_COUNT - 1}", account])
         if failure is not None:
-            raise ValueError(f"Could not add subordinate {kind}s for {DOCKER_ACCOUNT}: {failure}")
+            raise ValueError(f"Could not add subordinate {kind}s for {account}: {failure}")
         added.append(str(path))
     return added
 
 
-def docker_data_directory(owner):
-    """`install -d -o paws-runner -g paws-runner -m 0700`, refusing a path that is not a directory."""
+def docker_data_directory(owner, path):
+    """`install -d -o <owner> -g <owner> -m 0700 path`, refusing a path that is not a directory."""
     created = False
     try:
-        DOCKER_DATA.mkdir(mode=0o700)
+        path.mkdir(mode=0o700)
         created = True
     except FileExistsError:
         pass
-    descriptor = os.open(DOCKER_DATA, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         info = os.fstat(descriptor)
         if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (owner.pw_uid, owner.pw_gid, 0o700):
@@ -393,63 +422,75 @@ def write_if_changed(path, content):
     return True
 
 
-def remove_rootless_docker():
-    """Stop and remove the daemon unit. The data directory and subordinate ids stay."""
-    if not DOCKER_UNIT.exists() and not DOCKER_UNIT.is_symlink():
-        return False
-    run_tool([SYSTEMCTL, "disable", "--now", "--", DOCKER_UNIT.name])
-    DOCKER_UNIT.unlink()
-    release.command([SYSTEMCTL, "daemon-reload"])
-    return True
+def remove_rootless_docker(*units):
+    """Stop and remove these daemon units, by default both. The data directories and subordinate ids stay."""
+    present = [unit for unit in units or (DOCKER_UNIT, AGENT_DOCKER_UNIT) if unit.exists() or unit.is_symlink()]
+    for unit in present:
+        run_tool([SYSTEMCTL, "disable", "--now", "--", unit.name])
+        unit.unlink()
+    if present:
+        release.command([SYSTEMCTL, "daemon-reload"])
+    return bool(present)
 
 
-def rootless_docker(choice):
-    """Set up, keep or remove the rootless Docker daemon for runner work.
+def rootless_docker(choice, agent_user=None):
+    """Set up, keep or remove the rootless Docker daemon for agent jobs.
 
-    `grant` sets it up when Docker Engine and its rootless tools are installed; `deny`, or a host
-    without Docker Engine, removes it. Without a choice an existing setup is kept and refreshed.
-    Runs as root after the service identities exist. It never installs a package.
+    `grant` sets up the daemon of the account agents run as (agentUser, read from the host config
+    when not given) when Docker Engine and its rootless tools are installed, and removes the other
+    account's; `deny`, or a host without Docker Engine, removes both. Without a choice an existing
+    setup is kept and refreshed. Runs as root after the service identities exist. It never installs a package.
     """
+    # An unreadable config is the runner's to report; agents then run as the default, paws-agent.
+    served, unserved = ("runner", "paws-agent") if (agent_user or configured_agent_user(RUNNER_CONFIG)) == "runner" else ("paws-agent", "runner")
+    daemon, other = docker_daemons()[served], docker_daemons()[unserved]["unit"]
+    account, unit, socket = daemon["account"], daemon["unit"], docker_socket(daemon)
     try:
-        owner = pwd.getpwnam(DOCKER_ACCOUNT)
+        owner = pwd.getpwnam(account)
     except KeyError:
-        return docker_report("missing-account", f"The {DOCKER_ACCOUNT} service account does not exist; install the runner package first.")
-    configured = DOCKER_UNIT.exists()
+        return docker_report("missing-account", f"The {account} service account does not exist; install the runner package first.")
+    configured = unit.exists() or other.exists()
     if shutil.which("dockerd", path=DOCKER_PATH) is None:
         removed = remove_rootless_docker()
-        return docker_report("absent", "Docker Engine is not installed" + ("; removed the rootless Docker daemon for runner work." if removed else "; nothing changed."), removed)
+        return docker_report("absent", "Docker Engine is not installed" + ("; removed the rootless Docker daemon for agent jobs." if removed else "; nothing changed."), removed)
     if choice == "deny" or choice is None and not configured:
         removed = remove_rootless_docker()
-        intro = "Docker access was declined" if choice == "deny" else "Runner work cannot use Docker"
-        done = "removed the rootless Docker daemon for runner work; its images and data stay" if removed else "nothing changed"
-        return docker_report("declined" if choice == "deny" else "opt-in-required", f"{intro}; {done}. To give runner work a rootless Docker daemon of their own: sudo {DOCKER_ACCESS_ENV}=grant dpkg-reconfigure paws-runner", removed)
+        intro = "Docker access was declined" if choice == "deny" else "Agent jobs cannot use Docker"
+        done = "removed the rootless Docker daemon for agent jobs; its images and data stay" if removed else "nothing changed"
+        return docker_report("declined" if choice == "deny" else "opt-in-required", f"{intro}; {done}. To give agent jobs a rootless Docker daemon of their own: sudo {DOCKER_ACCESS_ENV}=grant dpkg-reconfigure paws-runner", removed)
     missing = sorted({package for command, package in DOCKER_PREREQUISITES if shutil.which(command, path=DOCKER_PATH) is None})
     if missing:
-        return docker_report("missing-prerequisites", f"Rootless Docker for runner work needs {', '.join(missing)}; nothing changed. Install them (sudo apt-get install {' '.join(missing)}), then reconfigure the runner.")
+        return docker_report("missing-prerequisites", f"Rootless Docker for agent jobs needs {', '.join(missing)}; nothing changed. Install them (sudo apt-get install {' '.join(missing)}), then reconfigure the runner.")
     try:
         launcher = release.read_regular(DOCKER_LAUNCHER, 1_048_576)
     except FileNotFoundError:
         launcher = None
     if launcher is None or hashlib.sha256(launcher).hexdigest() != release.DOCKERD_ROOTLESS_SHA256:
         return docker_report("missing-launcher", f"{DOCKER_LAUNCHER} is missing or not the launcher this package ships; nothing changed. Reinstall the paws-runner package.")
-    changed = bool(add_subordinate_ids())
-    changed = docker_data_directory(owner) or changed
-    files = write_if_changed(DOCKER_UNIT, DOCKER_UNIT_CONTENT)
+    # Agents that now run as another account never keep the earlier account's daemon.
+    changed = remove_rootless_docker(other)
+    changed = bool(add_subordinate_ids(account)) or changed
+    changed = docker_data_directory(owner, daemon["data"]) or changed
+    files = write_if_changed(unit, DOCKER_UNIT_CONTENTS[served])
     if files:
         # A daemon already running from an older unit starts again with it.
         release.command([SYSTEMCTL, "daemon-reload"])
-        failure = run_tool([SYSTEMCTL, "enable", "--", DOCKER_UNIT.name]) or run_tool([SYSTEMCTL, "restart", "--", DOCKER_UNIT.name], timeout=120)
+        failure = run_tool([SYSTEMCTL, "enable", "--", unit.name]) or run_tool([SYSTEMCTL, "restart", "--", unit.name], timeout=120)
     else:
-        failure = run_tool([SYSTEMCTL, "enable", "--now", "--", DOCKER_UNIT.name], timeout=120)
+        failure = run_tool([SYSTEMCTL, "enable", "--now", "--", unit.name], timeout=120)
     changed = changed or files
     if failure is not None:
-        return docker_report("start-failed", f"Could not start paws-docker.service: {failure}. Check journalctl -u paws-docker.service; runner work cannot use Docker until it runs.", changed)
-    probe = docker_probe()
+        return docker_report("start-failed", f"Could not start {unit.name}: {failure}. Check journalctl -u {unit.name}; agent jobs cannot use Docker until it runs.", changed, daemon, False)
+    probe = docker_probe(account, socket)
+    # The other account must not reach it: paws-runner never drives paws-agent's containers, nor the reverse.
+    stranger = docker_daemons()[unserved]["account"]
+    if probe == "ready" and docker_probe(stranger, socket, tries=1) != "permission-denied":
+        return docker_report("not-isolated", f"{stranger} can open {socket}, which only {account} may. Check the mode of /run/{daemon['runtime']} and journalctl -u {unit.name} before relying on the agentUser isolation.", changed, daemon, True)
     if probe == "ready":
-        return docker_report("granted" if changed else "ready", ("Set up" if changed else "Kept") + f" a rootless Docker daemon for runner work (paws-docker.service, running as {DOCKER_ACCOUNT} at {DOCKER_SOCKET}); new runner work gets DOCKER_HOST for it.", changed)
+        return docker_report("granted" if changed else "ready", ("Set up" if changed else "Kept") + f" a rootless Docker daemon for agent jobs ({unit.name}, running as {account} at {socket}); new agent jobs get DOCKER_HOST for it.", changed, daemon, True)
     if probe == "daemon-unavailable":
-        return docker_report("daemon-unavailable", f"paws-docker.service is enabled, but the daemon at {DOCKER_SOCKET} did not answer. Check journalctl -u paws-docker.service; runner work cannot use Docker until it does.", changed)
-    return docker_report(probe, f"paws-docker.service is enabled, but paws-runner could not use the daemon at {DOCKER_SOCKET} ({probe}). Check journalctl -u paws-docker.service.", changed)
+        return docker_report("daemon-unavailable", f"{unit.name} is enabled, but the daemon at {socket} did not answer. Check journalctl -u {unit.name}; agent jobs cannot use Docker until it does.", changed, daemon, False)
+    return docker_report(probe, f"{unit.name} is enabled, but {account} could not use the daemon at {socket} ({probe}). Check journalctl -u {unit.name}.", changed, daemon, False)
 
 
 def docker_group_membership():

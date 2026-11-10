@@ -240,8 +240,9 @@ test('"paws-agent" starts the unit with an environment file and stops it through
   expect(lines[1]).toBe(`${RUNNER_SKILLS_ENV}=${skillsPath}`);
   expect(lines[2]).toMatch(new RegExp(`^PAWS_[A-Z_]+=[0-9a-f]{16}/${id}$`));
   expect(lines.slice(3)).toEqual(
-    existsSync("/run/paws-docker/docker.sock")
-      ? ["DOCKER_HOST=unix:///run/paws-docker/docker.sock"]
+    // A paws-agent execution gets its own daemon's socket, never paws-runner's.
+    existsSync("/run/paws-agent-docker")
+      ? ["DOCKER_HOST=unix:///run/paws-agent-docker/docker.sock"]
       : [],
   );
   expect(supervisor.alive!(id)).toBe(true);

@@ -13,6 +13,8 @@ export {
 } from "./spool";
 export type { RunnerBrokerClient } from "./broker";
 export {
+  AGENT_DOCKER_SOCKET,
+  agentDockerEnv,
   createDirectWorkerSupervisor,
   RUNNER_DOCKER_SOCKET,
   RUNNER_SKILLS_ENV,

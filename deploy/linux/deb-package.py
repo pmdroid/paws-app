@@ -67,13 +67,15 @@ case "$1" in
     if command -v systemctl >/dev/null 2>&1; then
       systemctl disable --now -- paws-runner-agents.path || true
       systemctl disable -- paws-runner.service paws-runner-broker.socket paws-runner-broker.service || true
-      if [ -e {root}/etc/systemd/system/paws-docker.service ]; then
-        systemctl disable --now -- paws-docker.service || true
-      fi
+      for unit in paws-docker.service paws-agent-docker.service; do
+        if [ -e {root}/etc/systemd/system/$unit ]; then
+          systemctl disable --now -- "$unit" || true
+        fi
+      done
     fi
     rm -rf -- {root}/opt/paws-runner
     rm -f -- {" ".join(paths)} {root}/var/lib/paws-runner-install/debian-services.json
-    rm -f -- {root}/etc/systemd/system/paws-docker.service
+    rm -f -- {root}/etc/systemd/system/paws-docker.service {root}/etc/systemd/system/paws-agent-docker.service
     if command -v systemctl >/dev/null 2>&1; then
       systemctl daemon-reload || true
     fi
@@ -81,10 +83,10 @@ case "$1" in
 esac
 if [ "$1" = purge ]; then
   rm -f -- {root}/etc/paws-runner/config.json
-  rm -rf -- {root}/var/lib/paws-runner-docker
+  rm -rf -- {root}/var/lib/paws-runner-docker {root}/var/lib/paws-agent-docker
   for file in {root}/etc/subuid {root}/etc/subgid; do
-    if [ -f "$file" ] && grep -q '^paws-runner:' "$file"; then
-      sed -i '/^paws-runner:/d' "$file"
+    if [ -f "$file" ] && grep -Eq '^paws-(runner|agent):' "$file"; then
+      sed -i -E '/^paws-(runner|agent):/d' "$file"
     fi
   done
 fi

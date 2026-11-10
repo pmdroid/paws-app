@@ -18,6 +18,6 @@ test("the runner installer gives agent jobs a rootless Docker daemon only on opt
     child.exited,
   ]);
   expect(stdout + stderr).not.toContain("skipped");
-  expect(stderr).toMatch(/Ran 16 tests[\s\S]*\nOK\n?$/);
+  expect(stderr).toMatch(/Ran 19 tests[\s\S]*\nOK\n?$/);
   expect(code).toBe(0);
 });
