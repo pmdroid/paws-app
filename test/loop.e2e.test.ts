@@ -3078,7 +3078,7 @@ test("a task from start to merge reads its Linear issue context once", async () 
     (call) => !["postProgress", "updateSession", "setStatus"].includes(call),
   );
   expect(reads, result.detail).toEqual([...new Set(reads)]);
-  expect(result.linearCalls.length, result.linearCalls.join(", ")).toBeLessThanOrEqual(15);
+  expect(result.linearCalls.length, result.linearCalls.join(", ")).toBeLessThanOrEqual(16);
 }, 120_000);
 
 test("a repository without a Closeout policy merges without Closeout checks or a question", async () => {

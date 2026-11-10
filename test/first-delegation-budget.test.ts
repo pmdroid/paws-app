@@ -562,7 +562,7 @@ async function firstDelegation(
   }
 }
 
-test("a first delegation from an unknown user stays within 31 Linear requests, and waiting costs none", async () => {
+test("a first delegation from an unknown user stays within 32 Linear requests, and waiting costs none", async () => {
   const result = await firstDelegation();
   expect(result.refused).toBe(false);
   if (result.refused) return;
@@ -571,8 +571,8 @@ test("a first delegation from an unknown user stays within 31 Linear requests, a
   expect(result.pullRequest).toBe(1);
   expect(result.phases.waitingForSignIn, operations).toBe(0);
   expect(result.phases.waitingForRunner, operations).toBe(0);
-  // 30 plus the new run's read of its Implementer and Reviewer labels.
-  expect(result.server.total, JSON.stringify(result.phases)).toBeLessThanOrEqual(31);
+  // 30 plus the new run's read of its Implementer and Reviewer labels and its turn summary.
+  expect(result.server.total, JSON.stringify(result.phases)).toBeLessThanOrEqual(32);
   // The hold: the session, issue, epic and membership, the access check's issue read, the first
   // activity and the one sign-in action. The resume reuses the stored snapshot and re-reads only
   // the issue and the membership, then says once that Nova has no runner.
@@ -582,7 +582,7 @@ test("a first delegation from an unknown user stays within 31 Linear requests, a
     signIn: 3,
     resume: 3,
     waitingForRunner: 0,
-    run: 18,
+    run: 19,
   });
   // The Linear ledger counts every app request toward ENG-1. Only the delegator's own OAuth code exchange
   // and identity read, made with their token, are outside the app's ledger.

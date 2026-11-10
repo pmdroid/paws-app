@@ -1,5 +1,6 @@
 import { riskLine, type RiskClassification } from "../core";
 import { journalCaught } from "../journal";
+import { pullRequestSummary } from "./turn-summary";
 
 /** The single PR response, posted through the usual activity gate. */
 export function pullRequestReadyResponse(input: {
@@ -8,6 +9,7 @@ export function pullRequestReadyResponse(input: {
   pull: { number: number; url?: string | null };
   risk: RiskClassification | null;
   openLine: string;
+  summary?: string;
   riskApproval?: () => string;
   journal?: (line: string) => void;
 }): string {
@@ -28,6 +30,7 @@ export function pullRequestReadyResponse(input: {
     }
   }
   return [
+    pullRequestSummary(input.summary),
     `Opened ${input.pull.url ?? `pull request #${input.pull.number}`}. CI checks and merging will continue in the background. Reply here to request changes.`,
     riskLine(risk),
     automatic,
