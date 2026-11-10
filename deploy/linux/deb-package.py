@@ -23,18 +23,33 @@ def write(path, content, mode=0o644):
 def preinst(root=""):
     """The package's preinst. dpkg runs it from the unpacked control files, before the payload exists on disk.
 
-    No recorded release means nothing to compare, and python3 may not be installed yet.
+    No recorded release means nothing to compare, and python3 may not be installed yet. dpkg-reconfigure runs it
+    from /var/lib/dpkg/info, which keeps no control file with a dot in its name: there the installed copy admits.
     """
     return f"""#!/bin/sh
 set -eu
 case "$1" in
   install|upgrade)
     if [ -e {root}/var/lib/paws-runner-install/release.json ]; then
-      exec /usr/bin/python3 -I -B "${{0%/*}}/deb-control.py" admit
+      control="${{0%/*}}/deb-control.py"
+      [ -f "$control" ] || control={root}/usr/lib/paws-runner-package/deb-control.py
+      exec /usr/bin/python3 -I -B "$control" admit
     fi
     ;;
 esac
 """
+
+
+def postinst(root=""):
+    """The package's postinst. dpkg-reconfigure runs it with `configure`, the same step as an install."""
+    control = f"/usr/bin/python3 -I -B {root}/usr/lib/paws-runner-package/deb-control.py"
+    return f'#!/bin/sh\nset -eu\ncase "$1" in\n  configure) exec {control} configure ;;\n  abort-upgrade|abort-remove|abort-deconfigure) exec {control} restore ;;\nesac\n'
+
+
+def prerm(root=""):
+    """The package's prerm. dpkg-reconfigure runs it with `upgrade`, so it refuses while agent executions are active."""
+    control = f"/usr/bin/python3 -I -B {root}/usr/lib/paws-runner-package/deb-control.py"
+    return f'#!/bin/sh\nset -eu\ncase "$1" in\n  upgrade) exec {control} stop --next-version "$2" ;;\n  remove|deconfigure) exec {control} stop ;;\nesac\n'
 
 
 def postrm(units, root=""):
@@ -93,15 +108,18 @@ def build(arguments):
             (payload / name).chmod(0o644)
         (payload / "dockerd-rootless.sh").write_bytes(launcher)
         (payload / "dockerd-rootless.sh").chmod(0o755)
+        admission = json.dumps({"version": manifest["version"], "artifactSha256": manifest["artifactSha256"], "releaseKeyFingerprint": fingerprint})
+        # For preinst under dpkg-reconfigure, which runs the installed deb-control.py.
+        write(payload / "admission.json", admission)
         size = sum(path.stat().st_size for path in payload.iterdir())
         write(package / "DEBIAN/control", f"Package: paws-runner\nVersion: {manifest['version']}\nArchitecture: {architecture}\nMaintainer: pmdroid <pmdroid@users.noreply.github.com>\nSection: devel\nPriority: optional\nDepends: git, openssl (>= 3), python3, util-linux, coreutils (>= 8.28), systemd\nInstalled-Size: {(size + 1023) // 1024}\nHomepage: https://github.com/pmdroid/paws-app\nDescription: Paws remote Linux runner\n Runs paired coding agents and isolated verification for Paws.\n")
         # dpkg keeps no control file with a dot in its name once the package is unpacked: these exist for preinst only.
         for name in ("install.py", "release.py", "deb-control.py"):
             write(package / "DEBIAN" / name, (ROOT / name).read_text())
-        write(package / "DEBIAN/admission.json", json.dumps({"version": manifest["version"], "artifactSha256": manifest["artifactSha256"], "releaseKeyFingerprint": fingerprint}))
+        write(package / "DEBIAN/admission.json", admission)
         write(package / "DEBIAN/preinst", preinst(), 0o755)
-        write(package / "DEBIAN/postinst", '#!/bin/sh\nset -eu\ncase "$1" in\n  configure) exec /usr/bin/python3 -I -B /usr/lib/paws-runner-package/deb-control.py configure ;;\n  abort-upgrade|abort-remove|abort-deconfigure) exec /usr/bin/python3 -I -B /usr/lib/paws-runner-package/deb-control.py restore ;;\nesac\n', 0o755)
-        write(package / "DEBIAN/prerm", '#!/bin/sh\nset -eu\ncase "$1" in\n  upgrade) exec /usr/bin/python3 -I -B /usr/lib/paws-runner-package/deb-control.py stop --next-version "$2" ;;\n  remove|deconfigure) exec /usr/bin/python3 -I -B /usr/lib/paws-runner-package/deb-control.py stop ;;\nesac\n', 0o755)
+        write(package / "DEBIAN/postinst", postinst(), 0o755)
+        write(package / "DEBIAN/prerm", prerm(), 0o755)
         units = sorted(name for name in release.ASSETS if name.endswith((".service", ".socket", ".path")))
         write(package / "DEBIAN/postrm", postrm(units), 0o755)
         for directory in [package, *[path for path in package.rglob("*") if path.is_dir()]]:
