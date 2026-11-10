@@ -68,7 +68,7 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
         dispatch(input) {
           dispatches++;
           const result = f.helpers.dispatch(input);
-          f.helpers.submit("runner", {
+          void f.helpers.submit("runner", {
             commandId: result.command.id,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             role: "implementer",
@@ -105,7 +105,7 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
     };
     const dispatched = f.helpers.dispatch(input);
     f.db.run("UPDATE workspace_member SET role='member'");
-    expect(() => f.helpers.current(dispatched.command.id)).toThrow("authority changed");
+    await expect(f.helpers.current(dispatched.command.id)).rejects.toThrow("authority changed");
     f.helpers.finish(dispatched.command.id);
     expect(() => f.helpers.dispatch(input)).toThrow("authority changed");
   } finally {
@@ -166,7 +166,7 @@ test("grouping accepts a result after one minute, records usage, and rejects err
             const dispatched = f.helpers.dispatch(input);
             expect(dispatched.command.expiresAt - dispatched.command.issuedAt).toBe(600000);
             f.advance(90000);
-            f.helpers.submit("runner", {
+            void f.helpers.submit("runner", {
               commandId: dispatched.command.id,
               executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
               role: "implementer",
@@ -227,7 +227,7 @@ test("pre-dispatch refusals try the next admin runner without issuing a second h
           attempts++;
           if (attempts === 1) throw new Error("Runner cancellation teardown is still pending");
           const result = f.helpers.dispatch(input);
-          f.helpers.submit(input.runnerId, {
+          void f.helpers.submit(input.runnerId, {
             commandId: result.command.id,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             role: "implementer",
@@ -304,7 +304,9 @@ test("one-runner foreground placement preempts grouping and fences its old lease
       purpose: "helper",
     });
     expect(candidates.map((row) => row.id)).toContain("runner");
-    expect(f.helpers.current(maintenance.command.id).command.purpose).toBe("finding_groups");
+    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
+      "finding_groups",
+    );
     // Invalid dispatch must not fence maintenance either.
     expect(() =>
       f.helpers.dispatch({
@@ -315,7 +317,9 @@ test("one-runner foreground placement preempts grouping and fences its old lease
         prompt: "x".repeat(65537),
       }),
     ).toThrow();
-    expect(f.helpers.current(maintenance.command.id).command.purpose).toBe("finding_groups");
+    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
+      "finding_groups",
+    );
     // A failure after fencing must roll back the fence and usage changes as well.
     f.db.exec(
       "CREATE TEMP TRIGGER refuse_helper BEFORE INSERT ON runner_helper BEGIN SELECT RAISE(ABORT, 'Admission failed'); END",
@@ -329,7 +333,9 @@ test("one-runner foreground placement preempts grouping and fences its old lease
         prompt: "Classify",
       }),
     ).toThrow("Admission failed");
-    expect(f.helpers.current(maintenance.command.id).command.purpose).toBe("finding_groups");
+    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
+      "finding_groups",
+    );
     f.db.exec("DROP TRIGGER refuse_helper");
     const foreground = f.helpers.dispatch({
       runnerId: "runner",
@@ -339,7 +345,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
       prompt: "Classify",
     });
     expect(foreground.command.purpose).toBe("classify");
-    expect(() => f.helpers.current(maintenance.command.id)).toThrow("unavailable");
+    await expect(f.helpers.current(maintenance.command.id)).rejects.toThrow("unavailable");
     expect(
       f.db
         .query<{ outcome: string }, [string]>(
@@ -442,11 +448,15 @@ test("ranking idle and excluded runners never fences maintenance on another runn
       profile,
       prompt: "Classify",
     });
-    expect(f.helpers.current(maintenance.command.id).command.purpose).toBe("finding_groups");
+    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
+      "finding_groups",
+    );
     expect(
       await placement.candidates({ ...request, excludeRunnerIds: ["runner", "idle"] }),
     ).toEqual([]);
-    expect(f.helpers.current(maintenance.command.id).command.purpose).toBe("finding_groups");
+    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
+      "finding_groups",
+    );
   } finally {
     f.db.close();
   }
@@ -473,7 +483,7 @@ test("a failed receipt completion is retried by cleanup before the original erro
         ...f.helpers,
         dispatch(input) {
           const issued = f.helpers.dispatch(input);
-          f.helpers.submit("runner", {
+          void f.helpers.submit("runner", {
             commandId: issued.command.id,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             role: "implementer",
@@ -533,7 +543,7 @@ test("grouping runs on a later admin's runner when the earlier admin has none", 
         dispatch(input) {
           runnerId = input.runnerId;
           const issued = f.helpers.dispatch(input);
-          f.helpers.submit(input.runnerId, {
+          void f.helpers.submit(input.runnerId, {
             commandId: issued.command.id,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             role: "implementer",

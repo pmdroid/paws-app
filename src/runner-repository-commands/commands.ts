@@ -1,21 +1,26 @@
 import type { Database } from "bun:sqlite";
 import {
-  cancelOpenRepositoryCommand,
-  completeRepositoryCommand,
+  cancelOpenRepositoryCommandSteps,
+  completeRepositoryCommandSteps,
   expireDueRepositoryCommands,
-  expireRepositoryCommand,
-  getWorkItem,
-  getWorkItemRepository,
+  expireDueRepositoryCommandsSteps,
+  expireRepositoryCommandSteps,
+  getWorkItemRepositorySteps,
+  getWorkItemSteps,
   immediate,
-  insertRepositoryCommand,
+  insertRepositoryCommandSteps,
   markRepositoryCommandDelivered,
   pendingRepositoryCommands,
   repositoryCommandReachedRunner,
-  repositoryCommandRow,
-  repositoryCommandSettlement,
-  runnerHostVersion,
-  setRepositoryCommandGrant,
-  usableRunner,
+  repositoryCommandRowSteps,
+  repositoryCommandSettlementSteps,
+  runnerHostVersionSteps,
+  setRepositoryCommandGrantSteps,
+  sqliteDb,
+  usableRunnerSteps,
+  type Db,
+  type Q,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
 import {
@@ -84,14 +89,19 @@ function expire(db: Database, at: number) {
   for (const id of expireDueRepositoryCommands(db, at)) settle(db, id, { outcome: "expired" });
 }
 
-function activeRunner(db: Database, runnerId: string, workspace: string) {
-  const runner = usableRunner(db, runnerId);
+async function expireDue(store: Db, db: Database, at: number) {
+  for (const id of await store.run((q) => expireDueRepositoryCommandsSteps(q, at)))
+    settle(db, id, { outcome: "expired" });
+}
+
+function* activeRunnerSteps(q: Q, runnerId: string, workspace: string): Steps<boolean> {
+  const runner = yield* usableRunnerSteps(q, runnerId);
   return runner?.workspaceId === workspace && runner.status === "active";
 }
 
-function itemMatches(db: Database, command: RunnerRepositoryCommand) {
-  const item = getWorkItem(db, command.itemId);
-  const repository = getWorkItemRepository(db, command.itemId);
+function* itemMatchesSteps(q: Q, command: RunnerRepositoryCommand): Steps<boolean> {
+  const item = yield* getWorkItemSteps(q, command.itemId);
+  const repository = yield* getWorkItemRepositorySteps(q, command.itemId);
   return (
     item?.branchName === command.branch &&
     repository?.owner === command.repository.owner &&
@@ -110,24 +120,28 @@ export function rebaseCommitTitle(title: string): string | undefined {
   );
 }
 
-export function enqueueRepositoryCommand(db: Database, input: RepositoryCommandInput): string {
+export async function enqueueRepositoryCommand(
+  db: Database,
+  input: RepositoryCommandInput,
+): Promise<string> {
+  const store = sqliteDb(db);
   const { now, ...fields } = input;
   const at = now ?? Date.now();
   const command = parse(
     JSON.stringify({ ...fields, id: workspaceId(at), type: "rebase", issuedAt: at }),
   );
-  return immediate(db, () => {
-    if (!activeRunner(db, command.runnerId, command.workspaceId))
+  return store.transaction(function* (q) {
+    if (!(yield* activeRunnerSteps(q, command.runnerId, command.workspaceId)))
       throw new RepositoryCommandDeniedError("Runner is not accepting repository commands.");
-    const version = runnerHostVersion(db, command.runnerId);
+    const version = yield* runnerHostVersionSteps(q, command.runnerId);
     if (!runnerReleaseAtLeast(version, REPOSITORY_COMMAND_RUNNER_VERSION))
       throw new RepositoryCommandDeniedError(
         `Repository commands need runner ${REPOSITORY_COMMAND_RUNNER_VERSION.join(".")} or later.`,
       );
-    if (!itemMatches(db, command))
+    if (!(yield* itemMatchesSteps(q, command)))
       throw new RepositoryCommandDeniedError("Repository command does not match its work item.");
     const { title: _title, ...untitled } = command;
-    insertRepositoryCommand(db, {
+    yield* insertRepositoryCommandSteps(q, {
       id: command.id,
       runnerId: command.runnerId,
       itemId: command.itemId,
@@ -139,15 +153,18 @@ export function enqueueRepositoryCommand(db: Database, input: RepositoryCommandI
     });
     waiter(db, command.id);
     setTimeout(
-      () => {
-        try {
-          if (expireRepositoryCommand(db, command.id) !== "done")
-            settle(db, command.id, { outcome: "expired" });
-        } catch (error) {
-          journalCaught(error, "runner-repository-commands.enqueue.expire", null);
-          settle(db, command.id, { outcome: "expired" });
-        }
-      },
+      () =>
+        void store
+          .run((later) => expireRepositoryCommandSteps(later, command.id))
+          .then(
+            (state) => {
+              if (state !== "done") settle(db, command.id, { outcome: "expired" });
+            },
+            (error: unknown) => {
+              journalCaught(error, "runner-repository-commands.enqueue.expire", null);
+              settle(db, command.id, { outcome: "expired" });
+            },
+          ),
       Math.max(0, command.expiresAt - at),
     ).unref();
     return command.id;
@@ -164,15 +181,16 @@ export async function waitForRepositoryCommand(
   const done = new AbortController();
   const stop = signal ? AbortSignal.any([signal, done.signal]) : done.signal;
   try {
-    return await Promise.race(local ? [local.promise, poll(db, id, stop)] : [poll(db, id, stop)]);
+    const polled = poll(sqliteDb(db), id, stop);
+    return await Promise.race(local ? [local.promise, polled] : [polled]);
   } finally {
     done.abort();
   }
 }
 
-async function poll(db: Database, id: string, signal: AbortSignal) {
+async function poll(store: Db, id: string, signal: AbortSignal) {
   for (;;) {
-    const row = repositoryCommandSettlement(db, id, Date.now());
+    const row = await store.run((q) => repositoryCommandSettlementSteps(q, id, Date.now()));
     if (!row) throw new Error("Repository command is unknown.");
     if (row.state === "done")
       return RunnerRepositoryCommandResultSchema.parse(JSON.parse(row.result));
@@ -211,39 +229,44 @@ export function deliverRepositoryCommands(
   });
 }
 
-function current(db: Database, runnerId: string, commandId: string, at: number) {
-  const row = repositoryCommandRow(db, commandId);
+function* currentSteps(q: Q, runnerId: string, commandId: string, at: number) {
+  const row = yield* repositoryCommandRowSteps(q, commandId);
   if (!row || row.runnerId !== runnerId || row.state !== "delivered" || row.expiresAt <= at)
     throw new RepositoryCommandDeniedError("Repository command is not current.");
   const command = parse(row.payload);
-  if (!activeRunner(db, runnerId, command.workspaceId) || !itemMatches(db, command))
+  if (
+    !(yield* activeRunnerSteps(q, runnerId, command.workspaceId)) ||
+    !(yield* itemMatchesSteps(q, command))
+  )
     throw new RepositoryCommandDeniedError("Repository command is not current.");
   return { row, command };
 }
 
-export function issueRepositoryCommandGrant(
+export async function issueRepositoryCommandGrant(
   db: Database,
   input: { runnerId: string; commandId: string },
   at: number,
 ) {
-  expire(db, at);
-  return immediate(db, () => {
-    const { command } = current(db, input.runnerId, input.commandId, at);
+  const store = sqliteDb(db);
+  await expireDue(store, db, at);
+  return store.transaction(function* (q) {
+    const { command } = yield* currentSteps(q, input.runnerId, input.commandId, at);
     const token = workspaceSecret();
     const expiresAt = Math.min(command.expiresAt, at + REPOSITORY_COMMAND_GRANT_MS);
-    setRepositoryCommandGrant(db, command.id, workspaceTokenHash(token), expiresAt);
+    yield* setRepositoryCommandGrantSteps(q, command.id, workspaceTokenHash(token), expiresAt);
     return { token, expiresAt };
   });
 }
 
-export function authorizeRepositoryCommand(
+export async function authorizeRepositoryCommand(
   db: Database,
   input: { runnerId: string; commandId: string; token: string },
   at: number,
-): RunnerRepositoryCommand {
-  expire(db, at);
-  return immediate(db, () => {
-    const { row, command } = current(db, input.runnerId, input.commandId, at);
+): Promise<RunnerRepositoryCommand> {
+  const store = sqliteDb(db);
+  await expireDue(store, db, at);
+  return store.transaction(function* (q) {
+    const { row, command } = yield* currentSteps(q, input.runnerId, input.commandId, at);
     if (
       row.grantHash === null ||
       row.grantHash !== workspaceTokenHash(input.token) ||
@@ -254,16 +277,17 @@ export function authorizeRepositoryCommand(
   });
 }
 
-export function recordRepositoryCommandResult(
+export async function recordRepositoryCommandResult(
   db: Database,
   input: { runnerId: string; commandId: string; result: RunnerRepositoryCommandResult },
   at: number,
 ) {
   const result = RunnerRepositoryCommandResultSchema.parse(input.result);
   const stored = JSON.stringify(result);
-  expire(db, at);
-  const recorded = immediate(db, () => {
-    const row = repositoryCommandRow(db, input.commandId);
+  const store = sqliteDb(db);
+  await expireDue(store, db, at);
+  const recorded = await store.transaction(function* (q) {
+    const row = yield* repositoryCommandRowSteps(q, input.commandId);
     if (!row || row.runnerId !== input.runnerId)
       throw new RepositoryCommandDeniedError("Repository command is unknown.");
     if (row.state === "done") {
@@ -273,7 +297,7 @@ export function recordRepositoryCommandResult(
     }
     if (row.state !== "delivered" || row.expiresAt <= at)
       throw new RepositoryCommandDeniedError("Repository command is not current.");
-    completeRepositoryCommand(db, row.id, stored, at);
+    yield* completeRepositoryCommandSteps(q, row.id, stored, at);
     return true;
   });
   if (recorded) settle(db, input.commandId, result);
@@ -284,13 +308,15 @@ export function repositoryCommandDeliveredTo(db: Database, runnerId: string, id:
   return repositoryCommandReachedRunner(db, id, runnerId);
 }
 
-export function repositoryCommandState(db: Database, id: string, at = Date.now()) {
-  expire(db, at);
-  return repositoryCommandRow(db, id)?.state ?? null;
+export async function repositoryCommandState(db: Database, id: string, at = Date.now()) {
+  const store = sqliteDb(db);
+  await expireDue(store, db, at);
+  return (await store.run((q) => repositoryCommandRowSteps(q, id)))?.state ?? null;
 }
 
-function cancelRepositoryCommand(db: Database, id: string) {
-  if (cancelOpenRepositoryCommand(db, id)) settle(db, id, { outcome: "expired" });
+async function cancelRepositoryCommand(db: Database, id: string) {
+  if (await sqliteDb(db).run((q) => cancelOpenRepositoryCommandSteps(q, id)))
+    settle(db, id, { outcome: "expired" });
 }
 
 const REPOSITORY_REBASE_TIMEOUT_MS = 10 * 60_000;
@@ -302,12 +328,12 @@ export async function rebaseOnRunner(
 ): Promise<RunnerRepositoryCommandResult> {
   try {
     signal?.throwIfAborted();
-    const id = enqueueRepositoryCommand(db, {
+    const id = await enqueueRepositoryCommand(db, {
       ...input,
       expiresAt: input.now + REPOSITORY_REBASE_TIMEOUT_MS,
     });
-    const outcome = await waitForRepositoryCommand(db, id, signal).catch((error: unknown) => {
-      cancelRepositoryCommand(db, id);
+    const outcome = await waitForRepositoryCommand(db, id, signal).catch(async (error: unknown) => {
+      await cancelRepositoryCommand(db, id);
       throw error;
     });
     return outcome.outcome === "expired"

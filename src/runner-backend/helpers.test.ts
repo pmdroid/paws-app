@@ -94,17 +94,18 @@ function fixture(
     readOnly: true,
     checkpoint: false,
   };
-  function current() {
+  async function current() {
     const row = db
       .query<{ id: string }, []>("SELECT id FROM runner_helper ORDER BY rowid DESC")
       .get();
     if (!row) throw new Error("Expected dispatched helper");
-    return helpers.current(row.id).command;
+    return (await helpers.current(row.id)).command;
   }
-  function reply(text = '{"mode":"answer"}') {
-    helpers.submit(current().runnerId, {
+  async function reply(text = '{"mode":"answer"}') {
+    const command = await current();
+    await helpers.submit(command.runnerId, {
       executionId: "01J00000000000000000000000",
-      commandId: current().id,
+      commandId: command.id,
       role: "implementer",
       stopReason: "end_turn",
       cancelled: false,
@@ -149,10 +150,10 @@ test.each(["classify", "select_repository"] as const)(
           text += event.update.content.text;
       },
     });
-    expect(f.current().purpose).toBe(purpose);
-    expect(f.current().prompt).toBe(f.input.prompt);
+    expect((await f.current()).purpose).toBe(purpose);
+    expect((await f.current()).prompt).toBe(f.input.prompt);
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()!.n).toBe(0);
-    f.reply();
+    await f.reply();
     const result = await pending;
     expect(text).toBe('{"mode":"answer"}');
     expect(await recoverAcpConversation(result.transcriptPath!)).toEqual([
@@ -183,10 +184,10 @@ test("cancelling a helper fences later output without invoking a local agent", a
     "session",
     "classify",
   )({ ...f.input, signal: controller.signal });
-  const command = f.current();
+  const command = await f.current();
   controller.abort();
   await expect(pending).rejects.toThrow();
-  expect(() => f.helpers.current(command.id)).toThrow(/unavailable/);
+  await expect(f.helpers.current(command.id)).rejects.toThrow(/unavailable/);
 });
 
 test("a replacement during the event callback cannot return stale classification", async () => {
@@ -202,7 +203,7 @@ test("a replacement during the event callback cannot return stale classification
       advanceLinearSessionGeneration(f.db, "session");
     },
   });
-  f.reply();
+  await f.reply();
   await expect(pending).rejects.toThrow(/authority changed/);
   expect(events).toBe(1);
 });
@@ -215,7 +216,7 @@ test("no active runner fails closed and a deadline cannot retain capacity", asyn
   );
   f.db.run("UPDATE runner SET status='active'");
   const pending = f.backend.forSession("session", "classify")(f.input);
-  f.helpers.acknowledge("runner", f.current().id);
+  await f.helpers.acknowledge("runner", (await f.current()).id);
   f.advance(60_000);
   await expect(pending).rejects.toThrow(/timed out/);
   expect(
@@ -253,8 +254,8 @@ test("a helper waits while task work fills the runner and starts once a slot fre
     if (settled || f.db.query("SELECT 1 FROM runner_helper").get()) break;
     await Bun.sleep(2);
   }
-  expect(f.current().runnerId).toBe("runner");
-  f.helpers.acknowledge("runner", f.current().id);
+  expect((await f.current()).runnerId).toBe("runner");
+  await f.helpers.acknowledge("runner", (await f.current()).id);
   f.advance(60_000);
   await expect(pending).rejects.toThrow(/timed out/);
 });
@@ -399,8 +400,8 @@ test("Placement selects a real helper host and records admission and outcome ato
   const pending = f.backend.forSession("session", "classify")(f.input);
   for (let attempt = 0; attempt < 1000 && calls.length < 2; attempt++) await Bun.sleep(1);
   expect(calls.length).toBe(2);
-  expect(f.current().runnerId).toBe("selected");
-  f.reply();
+  expect((await f.current()).runnerId).toBe("selected");
+  await f.reply();
   await pending;
   expect(calls).toEqual(["candidates", "started", "finished"]);
 });
@@ -484,7 +485,7 @@ test("Three real helper assignments fail over after expired authentication and o
   };
   const first = await waitAttempt(1);
   const submit = (
-    command: ReturnType<typeof f.current>,
+    command: Awaited<ReturnType<typeof f.current>>,
     authRequired: boolean,
     errorMessage?: string,
   ) =>
@@ -500,7 +501,7 @@ test("Three real helper assignments fail over after expired authentication and o
       text: "",
       ...(errorMessage ? { errorMessage } : {}),
     });
-  submit(first, true, "Agent login expired");
+  await submit(first, true, "Agent login expired");
   const second = await waitAttempt(2);
   expect(second.id).not.toBe(first.id);
   expect(second.prompt).toContain("fresh agent session");
@@ -509,10 +510,10 @@ test("Three real helper assignments fail over after expired authentication and o
       .query<{ ended: number }, [string]>("SELECT ended_at AS ended FROM runner_helper WHERE id=?")
       .get(first.id)!.ended,
   ).toBeGreaterThan(0);
-  submit(second, false, "You've hit your session limit. Retry-After: 120");
+  await submit(second, false, "You've hit your session limit. Retry-After: 120");
   const third = await waitAttempt(3);
   expect(third.id).not.toBe(second.id);
-  f.reply();
+  await f.reply();
   const result = await pending;
   expect(result.stopReason).toBe("end_turn");
   expect(attempts).toEqual(["runner", "second", "third"]);
@@ -592,10 +593,10 @@ test("a helper waits for the runner's busy helper slot instead of failing", asyn
   const second = f.backend.forSession("session", "select_repository")(f.input);
   await Bun.sleep(20);
   expect(helperCount()).toBe(1);
-  f.reply();
+  await f.reply();
   await first;
   while (helperCount() < 2) await Bun.sleep(1);
-  f.reply();
+  await f.reply();
   expect((await second).stopReason).toBe("end_turn");
 });
 
@@ -676,9 +677,9 @@ test("a session item waits in a usage pause and places the helper once the coold
     attempt++
   )
     await Bun.sleep(1);
-  expect(f.current().runnerId).toBe("runner");
+  expect((await f.current()).runnerId).toBe("runner");
   expect(usagePause(f.db, run.id)).toBeNull();
-  f.reply();
+  await f.reply();
   expect((await pending).stopReason).toBe("end_turn");
   expect(f.db.query<{ state: string }, []>("SELECT state FROM work_item").get()!.state).toBe(
     "running",
@@ -761,9 +762,9 @@ test("a helper whose named account hits its quota retries with the next account 
   const helperCount = () =>
     f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n;
   for (let attempt = 0; attempt < 1000 && helperCount() < 1; attempt++) await Bun.sleep(1);
-  const first = f.current();
+  const first = await f.current();
   expect(first.account?.bindingId).toBe(bindings[0]!.bindingId);
-  f.helpers.submit(first.runnerId, {
+  await f.helpers.submit(first.runnerId, {
     executionId: workspaceId(),
     commandId: first.id,
     role: "implementer",
@@ -777,11 +778,11 @@ test("a helper whose named account hits its quota retries with the next account 
     account: first.account!,
   });
   for (let attempt = 0; attempt < 1000 && helperCount() < 2; attempt++) await Bun.sleep(1);
-  const second = f.current();
+  const second = await f.current();
   expect(second.runnerId).toBe("runner");
   expect(second.account?.bindingId).toBe(bindings[1]!.bindingId);
   expect(requests.at(-1) ?? []).not.toContain("runner");
-  f.helpers.submit(second.runnerId, {
+  await f.helpers.submit(second.runnerId, {
     executionId: workspaceId(),
     commandId: second.id,
     role: "implementer",
@@ -869,8 +870,8 @@ test("twelve resuming items keep one unacknowledged helper per runner and none f
   while (!progress.done) {
     peak = Math.max(peak, unacknowledgedPerRunner());
     for (const { id, runnerId } of openHelpers()) {
-      f.helpers.acknowledge(runnerId, id);
-      f.helpers.submit(runnerId, helperResult(id));
+      await f.helpers.acknowledge(runnerId, id);
+      await f.helpers.submit(runnerId, helperResult(id));
     }
     await Bun.sleep(1);
   }
@@ -891,7 +892,7 @@ test("a helper the runner never picked up waits for the lane, one it ran and fai
   f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
   await expect(unpicked).rejects.toBeInstanceOf(RunnerSlotsBusyError);
   const ran = f.backend.forSession("session", "classify")(f.input);
-  f.helpers.acknowledge("runner", f.current().id);
+  await f.helpers.acknowledge("runner", (await f.current()).id);
   f.advance(60_000);
   const failure = await ran.catch((error: unknown) => error);
   expect(failure).not.toBeInstanceOf(RunnerSlotsBusyError);
@@ -910,9 +911,9 @@ test("a retry reuses the item's open helper instead of sending a second", async 
   const retry = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
   expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(1);
-  f.helpers.submit("runner", helperResult(out.command.id));
+  await f.helpers.submit("runner", helperResult(out.command.id));
   expect((await retry).stopReason).toBe("end_turn");
-  expect(() => f.helpers.current(out.command.id)).toThrow(/unavailable/);
+  await expect(f.helpers.current(out.command.id)).rejects.toThrow(/unavailable/);
 });
 
 test("a reused helper's sign-in failure excludes its named account, not the runner", async () => {
@@ -961,7 +962,7 @@ test("a reused helper's sign-in failure excludes its named account, not the runn
   });
   const retry = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
-  f.helpers.submit("runner", {
+  await f.helpers.submit("runner", {
     ...helperResult(out.command.id),
     stopReason: "error",
     authRequired: true,
@@ -975,14 +976,14 @@ test("a reused helper's sign-in failure excludes its named account, not the runn
 test("a second attempt on one helper keeps it open until the last attempt finishes", async () => {
   const f = fixture();
   const first = f.backend.forSession("session", "classify")(f.input);
-  const command = f.current();
+  const command = await f.current();
   const second = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
   expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(1);
-  f.helpers.submit("runner", helperResult(command.id));
+  await f.helpers.submit("runner", helperResult(command.id));
   expect((await first).stopReason).toBe("end_turn");
   expect((await second).stopReason).toBe("end_turn");
-  expect(() => f.helpers.current(command.id)).toThrow(/unavailable/);
+  await expect(f.helpers.current(command.id)).rejects.toThrow(/unavailable/);
 });
 
 test("held-back helpers journal one line per runner at most every five minutes", async () => {

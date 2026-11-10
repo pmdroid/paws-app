@@ -254,7 +254,7 @@ export function createRemoteSessionAgentRunner(options: {
             input.signal?.throwIfAborted();
             let result: RunnerHelperResult | null;
             try {
-              result = options.helpers.result(command.id);
+              result = await options.helpers.result(command.id);
             } catch (error) {
               if (now() < deadline) throw error;
               break;
@@ -326,7 +326,7 @@ export function createRemoteSessionAgentRunner(options: {
               ];
               for (const event of events) {
                 input.signal?.throwIfAborted();
-                options.helpers.current(command.id);
+                await options.helpers.current(command.id);
                 appendFileSync(
                   transcript,
                   `${JSON.stringify({ t: new Date(now()).toISOString(), event })}\n`,
@@ -335,12 +335,12 @@ export function createRemoteSessionAgentRunner(options: {
                 await input.onEvent?.(event);
               }
               input.signal?.throwIfAborted();
-              options.helpers.current(command.id);
+              await options.helpers.current(command.id);
               return { ...result, transcriptPath: transcript };
             }
             await delay(options.pollIntervalMs ?? 250, undefined, { signal: input.signal });
           }
-          if (purpose !== "finding_groups" && !options.helpers.acknowledged(command.id))
+          if (purpose !== "finding_groups" && !(await options.helpers.acknowledged(command.id)))
             throw new RunnerSlotsBusyError(HELPER_LANE_BUSY);
           throw new Error("Remote session helper timed out");
         } finally {

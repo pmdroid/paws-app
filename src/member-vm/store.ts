@@ -4,7 +4,6 @@ import {
   emitJobReady,
   enqueueJobSteps,
   insertMemberVmSteps,
-  memberVmById,
   memberVmByIdSteps,
   memberVmForMember,
   memberVmForMemberSteps,
@@ -14,6 +13,7 @@ import {
   retryMemberVmDeleteSteps,
   retryMemberVmStepSteps,
   returnMemberVmToEnrollSteps,
+  sqliteDb,
   workspaceMemberSteps,
   workspaceMemberUsable,
   workspaceMemberVmsSteps,
@@ -37,8 +37,8 @@ export type { MemberVm, MemberVmDeleteStep, MemberVmStep } from "../db";
 
 export type MemberRef = { workspaceId: string; userId: string };
 
-export function getMemberVm(db: Database, id: string): MemberVm | null {
-  return memberVmById(db, id);
+export function getMemberVm(db: Database, id: string): Promise<MemberVm | null> {
+  return sqliteDb(db).run((q) => memberVmByIdSteps(q, id));
 }
 
 export function findMemberVm(db: Database, member: MemberRef): MemberVm | null {

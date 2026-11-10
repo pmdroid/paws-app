@@ -290,10 +290,10 @@ test("a pending helper goes out before a queued login check, which waits until t
   await f.answer({ id: first!.id, runnerId, agent: "claude" });
 
   const helper = f.helper(runnerId);
-  expect(f.helpers.commands(runnerId)).toHaveLength(1);
+  expect(await f.helpers.commands(runnerId)).toHaveLength(1);
   expect(f.delivered(runnerId)).toEqual([]);
 
-  f.helpers.acknowledge(runnerId, helper.id);
+  await f.helpers.acknowledge(runnerId, helper.id);
   expect(f.delivered(runnerId)).toEqual([]);
 
   f.helpers.finish(helper.id);

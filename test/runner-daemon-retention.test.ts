@@ -7,7 +7,7 @@ import { openRunnerDaemon } from "../src/runner-daemon";
 
 const DAY = 24 * 60 * 60_000;
 
-test("routine pruning drops only expired, acknowledged commands and their receipts", () => {
+test("routine pruning drops only expired, acknowledged commands and their receipts", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-daemon-retention-"));
   let now = 10 * DAY;
   const daemon = openRunnerDaemon({
@@ -34,7 +34,7 @@ test("routine pruning drops only expired, acknowledged commands and their receip
     add("live", now + 5 * DAY, 2);
     add("unexpired-receipt", now + 5 * DAY, null);
 
-    expect(daemon.pruneRetired()).toBe(3);
+    expect(await daemon.pruneRetired()).toBe(3);
     const ids = (table: string) =>
       db
         .query<{ id: string }, []>(`SELECT id FROM ${table} ORDER BY id`)
@@ -55,13 +55,13 @@ test("routine pruning drops only expired, acknowledged commands and their receip
     ]);
 
     db.run("UPDATE pending_command SET acknowledged=2 WHERE id='ack-retrying'");
-    expect(daemon.pruneRetired()).toBe(0);
+    expect(await daemon.pruneRetired()).toBe(0);
     now += 10 * 60_000;
-    expect(daemon.pruneRetired()).toBe(2);
+    expect(await daemon.pruneRetired()).toBe(2);
     expect(ids("pending_command")).not.toContain("ack-retrying");
 
     now += 2 * DAY;
-    expect(daemon.pruneRetired()).toBe(2);
+    expect(await daemon.pruneRetired()).toBe(2);
     expect(ids("pending_command")).toEqual(["live", "unacknowledged"]);
     expect(ids("command_receipt")).toEqual(["live", "unacknowledged", "unexpired-receipt"]);
   } finally {
@@ -71,7 +71,7 @@ test("routine pruning drops only expired, acknowledged commands and their receip
   }
 });
 
-test("pruning drops delivered expired retro commands and keeps live or undelivered ones", () => {
+test("pruning drops delivered expired retro commands and keeps live or undelivered ones", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-daemon-retention-"));
   let now = 10 * DAY;
   const daemon = openRunnerDaemon({
@@ -93,7 +93,7 @@ test("pruning drops delivered expired retro commands and keeps live or undeliver
         delivered,
       ]);
     }
-    expect(daemon.pruneRetired()).toBe(2);
+    expect(await daemon.pruneRetired()).toBe(2);
     const ids = (table: string) =>
       db
         .query<{ id: string }, []>(`SELECT id FROM ${table} ORDER BY id`)

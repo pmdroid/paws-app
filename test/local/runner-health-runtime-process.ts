@@ -194,7 +194,7 @@ if (mode === "prepare") {
   let nextHelper: string | undefined;
   let fenced = false;
   let resumed = false;
-  const advance = setInterval(() => {
+  const advance = setInterval(async () => {
     if (nextHelper && existsSync(join(server, "fence")) && !fenced) {
       advanceLinearSessionGeneration(db, "session");
       fenced = true;
@@ -215,7 +215,7 @@ if (mode === "prepare") {
       !config.helpers ||
       !existsSync(join(server, "advance")) ||
       nextHelper ||
-      !coordinator.helpers.result(config.commandIds[0]!)
+      !(await coordinator.helpers.result(config.commandIds[0]!))
     )
       return;
     coordinator.helpers.finish(config.commandIds[0]!);

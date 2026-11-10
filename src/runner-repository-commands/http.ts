@@ -19,13 +19,13 @@ export function createRepositoryCommandsHttp(options: { db: Database; now?: () =
       const commandId = id.parse(decodeURIComponent(path[1]!));
       if (path[2] === "grant") {
         z.strictObject({}).parse(await body(request, 4096));
-        return json(issueRepositoryCommandGrant(options.db, { runnerId, commandId }, now()));
+        return json(await issueRepositoryCommandGrant(options.db, { runnerId, commandId }, now()));
       }
       const result = RunnerRepositoryCommandResultSchema.parse(
         await body(request, RESULT_BODY_LIMIT),
       );
       return json(
-        recordRepositoryCommandResult(options.db, { runnerId, commandId, result }, now()),
+        await recordRepositoryCommandResult(options.db, { runnerId, commandId, result }, now()),
       );
     } catch (error) {
       journalCaught(error, "runner-repository-commands.http", null);

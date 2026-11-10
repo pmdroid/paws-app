@@ -164,13 +164,13 @@ function fixture(file = ":memory:") {
 
 test("an enqueued repository command is delivered once, signed, to its runner", async () => {
   const f = fixture();
-  const id = f.enqueue();
+  const id = await f.enqueue();
   expect(await f.poll("runner-b")).toEqual([]);
   const delivered = await f.poll("runner-a");
   expect(delivered).toHaveLength(1);
   expect(delivered[0]).toMatchObject({ id, type: "rebase", branch: "paws/item-1" });
   expect(await f.poll("runner-a")).toEqual([]);
-  expect(repositoryCommandState(f.db, id)).toBe("delivered");
+  expect(await repositoryCommandState(f.db, id)).toBe("delivered");
   expect((await f.ack(id, "runner-b"))!.status).toBe(403);
   expect((await f.ack(id, "runner-a"))!.status).toBe(200);
 });
@@ -178,10 +178,10 @@ test("an enqueued repository command is delivered once, signed, to its runner", 
 test("the pull request title goes only to a runner that accepts it", async () => {
   const f = fixture();
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.75'");
-  f.enqueue(120_000, "Add widgets");
+  await f.enqueue(120_000, "Add widgets");
   expect((await f.poll("runner-a"))[0]).not.toHaveProperty("title");
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.76'");
-  f.enqueue(120_000, "Add widgets");
+  await f.enqueue(120_000, "Add widgets");
   expect((await f.poll("runner-a"))[0]).toMatchObject({ title: "Add widgets" });
 });
 
@@ -195,7 +195,7 @@ test("a rebase title is one trimmed well-formed line of at most 256 units, or no
 
 test("a grant and a credential go only to the delivered runner while the command is current", async () => {
   const f = fixture();
-  const id = f.enqueue();
+  const id = await f.enqueue();
   expect((await f.grant(id)).status).toBe(403);
   await f.poll("runner-a");
   expect((await f.grant(id, "runner-b")).status).toBe(403);
@@ -221,7 +221,7 @@ test("a grant and a credential go only to the delivered runner while the command
 
 test("a posted result completes waitForRepositoryCommand and replays only unchanged", async () => {
   const f = fixture();
-  const id = f.enqueue();
+  const id = await f.enqueue();
   const waiting = waitForRepositoryCommand(f.db, id);
   const early = await f.post(`/v1/repository-commands/${id}/result`, "runner-a", {
     outcome: "rebased",
@@ -243,18 +243,18 @@ test("a posted result completes waitForRepositoryCommand and replays only unchan
     reason: "other",
   });
   expect(changed!.status).toBe(403);
-  expect(repositoryCommandState(f.db, id)).toBe("done");
+  expect(await repositoryCommandState(f.db, id)).toBe("done");
 });
 
 test("a command past expiresAt is expired and its credential route refuses", async () => {
   const f = fixture();
-  const id = f.enqueue(60_000);
+  const id = await f.enqueue(60_000);
   await f.poll("runner-a");
   const issued = await f.grant(id);
   expect(issued.status).toBe(200);
   f.advance(60_000);
   expect((await f.credential(id, issued.body.token))!.status).toBe(403);
-  expect(repositoryCommandState(f.db, id)).toBe("expired");
+  expect(await repositoryCommandState(f.db, id)).toBe("expired");
   expect(await waitForRepositoryCommand(f.db, id)).toEqual({ outcome: "expired" });
   expect((await f.grant(id)).status).toBe(403);
   const late = await f.post(`/v1/repository-commands/${id}/result`, "runner-a", {
@@ -266,19 +266,19 @@ test("a command past expiresAt is expired and its credential route refuses", asy
 
 test("an undelivered command past expiresAt is never delivered", async () => {
   const f = fixture();
-  const id = f.enqueue(60_000);
+  const id = await f.enqueue(60_000);
   f.advance(60_000);
   expect(await f.poll("runner-a")).toEqual([]);
-  expect(repositoryCommandState(f.db, id)).toBe("expired");
+  expect(await repositoryCommandState(f.db, id)).toBe("expired");
 });
 
-test("a branch outside paws/ or an old runner is refused at enqueue", () => {
+test("a branch outside paws/ or an old runner is refused at enqueue", async () => {
   const f = fixture();
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.62'");
-  expect(() => f.enqueue()).toThrow(/runner 0\.1\.63/);
+  await expect(f.enqueue()).rejects.toThrow(/runner 0\.1\.63/);
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.63'");
   f.db.run("UPDATE work_item SET branch_name='main' WHERE id='item-1'");
-  expect(() => f.enqueue()).toThrow();
+  await expect(f.enqueue()).rejects.toThrow();
 });
 
 test("a runner rebase resolves with the runner's result, and as failed on a timeout or refusal", async () => {
@@ -301,7 +301,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
     );
   const rebased = rebase();
   const [command] = await f.poll("runner-a");
-  recordRepositoryCommandResult(
+  await recordRepositoryCommandResult(
     f.db,
     {
       runnerId: "runner-a",
@@ -330,7 +330,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
   expect(issued.status).toBe(200);
   granted.abort(new Error("item stopped"));
   await expect(late).rejects.toThrow("item stopped");
-  expect(repositoryCommandState(f.db, delivered!.id, f.now())).toBe("expired");
+  expect(await repositoryCommandState(f.db, delivered!.id, f.now())).toBe("expired");
   expect((await f.credential(delivered!.id, issued.body.token))!.status).toBe(403);
   expect((await f.grant(delivered!.id)).status).toBe(403);
 

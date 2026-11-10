@@ -209,7 +209,7 @@ export async function probeRunnerSessionHelpers(
       ).status,
       403,
     );
-    assert.deepEqual(coordinator.helpers.result(first.command.id), result);
+    assert.deepEqual(await coordinator.helpers.result(first.command.id), result);
     await coordinator.stop();
     db.close();
     db = openDatabase(dbPath);
@@ -220,7 +220,7 @@ export async function probeRunnerSessionHelpers(
       db,
       port: runnerPort,
     });
-    assert.deepEqual(coordinator.helpers.result(first.command.id), result);
+    assert.deepEqual(await coordinator.helpers.result(first.command.id), result);
     assert.deepEqual((await call("/v1/helper-commands")).body.commands, []);
     observe("helper acknowledgments and immutable results survive coordinator reopen", true, {
       exactRetry: true,
@@ -234,7 +234,7 @@ export async function probeRunnerSessionHelpers(
       (await call(`/v1/helper-commands/${first.command.id}/result`, result)).status,
       409,
     );
-    assert.throws(() => coordinator.helpers.result(first.command.id), /authority changed/);
+    await assert.rejects(coordinator.helpers.result(first.command.id), /authority changed/);
     coordinator.helpers.finish(first.command.id);
     observe("a newer Linear request fences the old helper and its result", true, {
       oldGeneration: first.command.sessionGeneration,
@@ -307,19 +307,25 @@ export async function probeRunnerSessionHelpers(
     );
     const fenced = coordinator.helpers.dispatch(input);
     db.run("UPDATE runner SET fence=fence+1 WHERE id=?", [runnerId]);
-    assert.throws(() => coordinator.helpers.result(fenced.command.id), /identity changed/);
+    await assert.rejects(coordinator.helpers.result(fenced.command.id), /identity changed/);
     coordinator.helpers.finish(fenced.command.id);
     const removed = coordinator.helpers.dispatch(input);
     db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id=?", [
       workspace.id,
       userId,
     ]);
-    assert.throws(() => coordinator.helpers.current(removed.command.id), /identity is unavailable/);
+    await assert.rejects(
+      coordinator.helpers.current(removed.command.id),
+      /identity is unavailable/,
+    );
     db.run("UPDATE workspace_member SET active=1 WHERE workspace_id=? AND user_id=?", [
       workspace.id,
       userId,
     ]);
-    assert.throws(() => coordinator.helpers.current(removed.command.id), /identity is unavailable/);
+    await assert.rejects(
+      coordinator.helpers.current(removed.command.id),
+      /identity is unavailable/,
+    );
     observe(
       "workspace membership, organization and runner fences are rechecked for helper work",
       true,
@@ -334,8 +340,11 @@ export async function probeRunnerSessionHelpers(
     const replacement = await pair("Revoked helper runner", RUNNER_IDENTITIES[1]);
     const pending = coordinator.helpers.dispatch({ ...input, runnerId: replacement });
     await coordinator.control.setStatus(principal, replacement, "revoked");
-    assert.throws(() => coordinator.helpers.current(pending.command.id), /identity is unavailable/);
-    assert.throws(() => coordinator.helpers.commands(replacement), /identity is unavailable/);
+    await assert.rejects(
+      coordinator.helpers.current(pending.command.id),
+      /identity is unavailable/,
+    );
+    await assert.rejects(coordinator.helpers.commands(replacement), /identity is unavailable/);
     observe("administrative runner revocation prevents helper result acceptance", true, {
       revoked: true,
     });

@@ -163,7 +163,7 @@ test("retro.db: the Drizzle schema matches the bootstrap and its phases", () => 
   db.close();
 });
 
-test("a commands.db made by the old bootstrap opens, keeps its rows and prunes", () => {
+test("a commands.db made by the old bootstrap opens, keeps its rows and prunes", async () => {
   const now = 10 * DAY;
   const old = now - 2 * DAY;
   const fixture = openFixture("commands.db", OLD_COMMANDS_BOOTSTRAP);
@@ -194,7 +194,7 @@ test("a commands.db made by the old bootstrap opens, keeps its rows and prunes",
   const db = openDatabase(join(root, "commands.db"));
   try {
     expect(definitions(db)).toEqual(before);
-    expect(daemon.pruneRetired()).toBe(5);
+    expect(await daemon.pruneRetired()).toBe(5);
     const q = drizzle(db);
     expect(q.select().from(commandSchema.commandReceipt).all()).toEqual([
       { id: "waiting", expiresAt: old },

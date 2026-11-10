@@ -406,7 +406,7 @@ export function createRepositoryCommandAccess(options: {
         token: received.token,
       };
       const authorize = () => authorizeRepositoryCommand(options.db, access, now());
-      const command = authorize();
+      const command = await authorize();
       if (!/^paws\//.test(command.branch)) return denied();
       const repository = `${command.repository.owner}/${command.repository.repo}`;
       const installationId = options.installationForRepository(repository);
@@ -415,13 +415,13 @@ export function createRepositoryCommandAccess(options: {
       const matchesBot = async () =>
         sameBot(await github(() => checkpointBot(repository)), command.bot);
       if (!(await matchesBot())) return denied();
-      authorize();
+      await authorize();
       if (options.installationForRepository(repository) !== installationId) return denied();
       const credential = await github(() =>
         options.github.mintInstallationToken({ access: "write", repository, installationId }),
       );
       if (!(await matchesBot())) return denied();
-      const current = authorize();
+      const current = await authorize();
       const checkedAt = now();
       if (
         options.installationForRepository(repository) !== installationId ||
