@@ -316,7 +316,7 @@ test("a successful background sign-in check wakes parked work", async () => {
   const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
     id: string;
   };
-  health.submit(id, {
+  await health.submit(id, {
     executionId: "01J00000000000000000000001",
     commandId: command.id,
     role: "implementer",

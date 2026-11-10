@@ -16,7 +16,7 @@ try {
     eventKey: Buffer.alloc(32, 7),
   });
   const health = createRunnerHealth({ db, work, now: () => Number(timestamp) });
-  console.log(JSON.stringify({ pid: process.pid, result: health.read(runnerId, commandId) }));
+  console.log(JSON.stringify({ pid: process.pid, result: await health.read(runnerId, commandId) }));
 } finally {
   db.close();
 }

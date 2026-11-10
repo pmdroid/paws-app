@@ -312,12 +312,12 @@ async function runRecovering(input: {
           handled.add(command.id);
           work.acknowledge(simulatedRunnerId, command.id);
           if (command.type === "login_check")
-            health.submit(simulatedRunnerId, {
+            await health.submit(simulatedRunnerId, {
               ...receipt(command),
               login: { agent: command.agent, authenticated: true, method: "subscription" },
             });
           if (command.type === "probe")
-            health.submit(simulatedRunnerId, {
+            await health.submit(simulatedRunnerId, {
               ...receipt(command),
               models: [{ id: "fixture-implement-model", name: "Fixture" }],
             });

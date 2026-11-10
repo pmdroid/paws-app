@@ -107,7 +107,7 @@ export async function probeRunnerDaemonHealth(
     await coordinator.control.setStatus(principal, paired.runnerId, "active");
     assert.equal(paired.phase, "paired");
     if (paired.phase !== "paired") throw new Error("Missing runner identity");
-    const command = coordinator.health.request(principal, paired.runnerId, {
+    const command = await coordinator.health.request(principal, paired.runnerId, {
       type: "probe",
       profile: { agent: "codex", model: null },
     });
@@ -129,7 +129,7 @@ export async function probeRunnerDaemonHealth(
     };
     assert.deepEqual(await daemon.postHealth(result), { duplicate: false });
     assert.deepEqual(await daemon.postHealth(result), { duplicate: true });
-    assert.deepEqual(coordinator.health.read(paired.runnerId, command.commandId), result);
+    assert.deepEqual(await coordinator.health.read(paired.runnerId, command.commandId), result);
     observe(
       "daemon validates signed health commands and delivers immutable results over real mTLS",
       true,
@@ -141,7 +141,7 @@ export async function probeRunnerDaemonHealth(
       },
     );
     await assert.rejects(daemon.postHealth({ ...result, agentExited: false }), RunnerRequestError);
-    const login = coordinator.health.request(principal, paired.runnerId, {
+    const login = await coordinator.health.request(principal, paired.runnerId, {
       type: "login_check",
       agent: "codex",
     });
@@ -153,7 +153,7 @@ export async function probeRunnerDaemonHealth(
       login: { agent: "codex", authenticated: false, method: "none" },
     };
     assert.deepEqual(await daemon.postHealth(loginResult), { duplicate: false });
-    assert.deepEqual(coordinator.health.read(paired.runnerId, login.commandId), loginResult);
+    assert.deepEqual(await coordinator.health.read(paired.runnerId, login.commandId), loginResult);
     observe(
       "daemon delivers command-bound login status without accepting a changed health result",
       true,
@@ -200,7 +200,7 @@ export async function probeRunnerDaemonHealth(
     });
     daemon = openRunnerDaemon(daemonOptions);
     assert.deepEqual(await daemon.postHealth(result), { duplicate: true });
-    assert.deepEqual(coordinator.health.read(paired.runnerId, login.commandId), loginResult);
+    assert.deepEqual(await coordinator.health.read(paired.runnerId, login.commandId), loginResult);
     await coordinator.control.setStatus(principal, paired.runnerId, "revoked");
     await assert.rejects(daemon.postHealth(result));
     assert.equal(errors.length, 0);
