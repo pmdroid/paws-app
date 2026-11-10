@@ -1,18 +1,19 @@
 import {
   workspaceMemberUsable,
-  auditWorkspaceAccess,
-  consumeWorkspaceBootstrap,
-  deleteWorkspaceSession,
-  getWorkspace,
+  auditWorkspaceAccessSteps,
+  consumeWorkspaceBootstrapSteps,
+  deleteWorkspaceSessionSteps,
+  getWorkspaceSteps,
   githubAttribution,
-  listUserWorkspaces,
-  listWorkspaceMembers,
+  listUserWorkspacesSteps,
+  listWorkspaceMembersSteps,
   membershipFresh,
-  putWorkspaceUser,
-  syncWorkspaceMember,
-  workspaceForOrganization,
-  workspaceLinearMember,
-  workspaceMember,
+  putWorkspaceUserSteps,
+  sqliteDb,
+  syncWorkspaceMemberSteps,
+  workspaceForOrganizationSteps,
+  workspaceLinearMemberSteps,
+  workspaceMemberSteps,
 } from "../db";
 import { journalCaught } from "../journal";
 import { handleDecisions } from "./decisions";
@@ -86,6 +87,16 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     throw new Error("Paws browser sign-in requires an HTTPS origin.");
   const origin = configured.origin;
   const now = options.now ?? Date.now;
+  const store = sqliteDb(options.db);
+  const memberOf = (workspaceKey: string, userId: string) =>
+    store.run((q) => workspaceMemberSteps(q, workspaceKey, userId));
+  const workspaceOf = (organizationId: string) =>
+    store.run((q) => workspaceForOrganizationSteps(q, organizationId));
+  const syncMember = (input: Parameters<typeof syncWorkspaceMemberSteps>[1]) =>
+    store.transaction((q) => syncWorkspaceMemberSteps(q, input));
+  const userWorkspaces = (userId: string) => store.run((q) => listUserWorkspacesSteps(q, userId));
+  const deleteSession = (tokenHash: string) =>
+    store.run((q) => deleteWorkspaceSessionSteps(q, tokenHash));
   const linearActions = createWorkspaceLinearActions({
     db: options.db,
     organizationId: options.installedOrganization.id,
@@ -118,8 +129,8 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     force = false,
     permitted = false,
   ): Promise<void> {
-    const member = workspaceMember(options.db, workspaceKey, userId);
-    const workspace = getWorkspace(options.db, workspaceKey);
+    const member = await memberOf(workspaceKey, userId);
+    const workspace = await store.run((q) => getWorkspaceSteps(q, workspaceKey));
     if (
       member === null ||
       workspace === null ||
@@ -141,13 +152,13 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     if (operation === undefined) {
       operation = options.memberships
         .member(workspace.organizationId, member.linearUserId, AbortSignal.timeout(10_000))
-        .then((identity) => {
+        .then(async (identity) => {
           if (
             identity.userId !== member.linearUserId ||
             identity.organizationId !== workspace.organizationId
           )
             throw new Error("Linear returned another member.");
-          const applied = syncWorkspaceMember(options.db, {
+          const applied = await syncMember({
             workspaceId: workspaceKey,
             userId,
             active: identity.active && !identity.guest,
@@ -157,7 +168,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           });
           if (
             permitted &&
-            (!applied || !workspaceMemberUsable(workspaceMember(options.db, workspaceKey, userId)))
+            (!applied || !workspaceMemberUsable(await memberOf(workspaceKey, userId)))
           )
             throw new Error("Current permitted Linear membership is required for attribution.");
         });
@@ -178,9 +189,9 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     now,
   });
   async function refreshMemberships() {
-    const workspace = workspaceForOrganization(options.db, options.installedOrganization.id);
+    const workspace = await workspaceOf(options.installedOrganization.id);
     if (workspace === null) return;
-    for (const member of listWorkspaceMembers(options.db, workspace.id))
+    for (const member of await store.run((q) => listWorkspaceMembersSteps(q, workspace.id)))
       await refresh(workspace.id, member.id, true);
     await links.syncWorkspace(workspace.id);
   }
@@ -237,7 +248,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         return json({ error: "Method not allowed" }, 405);
       const perIp = limits.startsPerIp.take(ip);
       if (!perIp.allowed) return limited(limits.startsPerIp, perIp.retryAfterSeconds);
-      const link = options.assignments?.open(linkId) ?? null;
+      const link = (await options.assignments?.open(linkId)) ?? null;
       if (link === null) return notFound();
       // A finished link shows only its signed-in creator where the task stands. Anyone else,
       // signed in or not, gets the same 404 as an unknown link and learns nothing.
@@ -245,7 +256,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         link.state === "done" ? requestWorkspaceSession(options.db, request, now()) : null;
       const member =
         link.state === "done" && viewer?.principal.workspaceId === link.workspaceId
-          ? workspaceMember(options.db, link.workspaceId, viewer.principal.userId)
+          ? await memberOf(link.workspaceId, viewer.principal.userId)
           : null;
       const creator =
         link.state === "done" &&
@@ -371,7 +382,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       const held =
         result.assignmentHash === null
           ? null
-          : (options.assignments?.issueIdentifier(result.assignmentHash) ?? null);
+          : ((await options.assignments?.issueIdentifier(result.assignmentHash)) ?? null);
       const identity = await (held === null ? read() : linearItem(held, read));
       if (
         identity.userId !== result.identity.userId ||
@@ -380,10 +391,12 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
         return json({ error: "Current Linear membership is required." }, 403);
       if (!identity.active || identity.guest) {
         // A fresh read ends an existing membership and its sessions, as a membership refresh does.
-        const known = workspaceForOrganization(options.db, identity.organizationId);
-        const linked = known && workspaceLinearMember(options.db, known.id, identity.userId);
+        const known = await workspaceOf(identity.organizationId);
+        const linked =
+          known &&
+          (await store.run((q) => workspaceLinearMemberSteps(q, known.id, identity.userId)));
         if (linked)
-          syncWorkspaceMember(options.db, {
+          await syncMember({
             workspaceId: known.id,
             userId: linked.userId,
             active: false,
@@ -400,24 +413,26 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           403,
         );
       }
-      const userId = putWorkspaceUser(options.db, {
+      const user = {
         id: workspaceId(now()),
         linearUserId: result.identity.userId,
         name: result.identity.name,
         email: result.identity.email,
-      });
-      let workspace = workspaceForOrganization(options.db, result.identity.organizationId);
+      };
+      const userId = await store.run((q) => putWorkspaceUserSteps(q, user));
+      let workspace = await workspaceOf(result.identity.organizationId);
       let syncAt = observedAt;
       if (result.bootstrapHash !== null) {
         syncAt = now();
-        workspace = consumeWorkspaceBootstrap(options.db, {
+        const claim = {
           id: workspaceId(now()),
           organizationId: result.identity.organizationId,
           name: options.installedOrganization.name,
           tokenHash: result.bootstrapHash,
           userId,
           now: syncAt,
-        });
+        };
+        workspace = await store.transaction((q) => consumeWorkspaceBootstrapSteps(q, claim));
       }
       if (workspace === null) {
         if (!identity.admin)
@@ -426,18 +441,19 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             403,
           );
         const grant = issueWorkspaceBootstrap(options.db, result.identity.organizationId, now());
-        workspace = consumeWorkspaceBootstrap(options.db, {
+        const claim = {
           id: workspaceId(now()),
           organizationId: result.identity.organizationId,
           name: options.installedOrganization.name,
           tokenHash: workspaceTokenHash(grant),
           userId,
           now: now(),
-        });
+        };
+        workspace = await store.transaction((q) => consumeWorkspaceBootstrapSteps(q, claim));
       }
-      if (workspaceMember(options.db, workspace.id, userId)?.revokedAt != null)
+      if ((await memberOf(workspace.id, userId))?.revokedAt != null)
         throw new WorkspaceAccessRevoked();
-      syncWorkspaceMember(options.db, {
+      await syncMember({
         workspaceId: workspace.id,
         userId,
         active: true,
@@ -448,7 +464,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       let location = dashboardPath();
       if (result.assignmentHash !== null) {
         if (!options.assignments) throw new Error("Assignment sign-in is unavailable.");
-        const completion = options.assignments.complete(
+        const completion = await options.assignments.complete(
           result.assignmentHash,
           workspace.id,
           result.identity.userId,
@@ -465,10 +481,10 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           completion.linkId === null
             ? dashboardIssuePath(completion.identifier)
             : `/onboard/${completion.linkId}`;
-      } else options.assignments?.releaseFor(workspace.id, result.identity.userId);
+      } else await options.assignments?.releaseFor(workspace.id, result.identity.userId);
       await links.syncUser(workspace.id, userId);
       const previous = requestWorkspaceSession(options.db, request, now());
-      if (previous !== null) deleteWorkspaceSession(options.db, previous.session.tokenHash);
+      if (previous !== null) await deleteSession(previous.session.tokenHash);
       const issued = issueWorkspaceSession(options.db, {
         userId,
         workspaceId: workspace.id,
@@ -553,33 +569,29 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       memberships: options.memberships,
     });
     if (administration !== null) return administration;
-    if (path === "/api/auth/session" && request.method === "GET")
+    if (path === "/api/auth/session" && request.method === "GET") {
+      const member = await memberOf(access.principal.workspaceId, access.principal.userId);
       return json({
         ...access.principal,
-        user: (() => {
-          const member = workspaceMember(
-            options.db,
-            access.principal.workspaceId,
-            access.principal.userId,
-          );
-          return member ? { name: member.name, email: member.email } : null;
-        })(),
+        user: member ? { name: member.name, email: member.email } : null,
         csrfToken: access.session.csrfToken,
-        workspaces: listUserWorkspaces(options.db, access.principal.userId),
+        workspaces: await userWorkspaces(access.principal.userId),
       });
+    }
     if (path === "/api/workspaces" && request.method === "GET")
-      return json({ workspaces: listUserWorkspaces(options.db, access.principal.userId) });
+      return json({ workspaces: await userWorkspaces(access.principal.userId) });
     if (path === "/api/auth/logout" && request.method === "POST") {
       if (request.headers.get("origin") !== origin || !validWorkspaceCsrf(request, access.session))
         return json({ error: "CSRF token required." }, 403);
-      deleteWorkspaceSession(options.db, access.session.tokenHash);
-      auditWorkspaceAccess(options.db, {
+      await deleteSession(access.session.tokenHash);
+      const ended = {
         workspaceId: access.principal.workspaceId,
         userId: access.principal.userId,
         action: "session.ended",
         subject: access.principal.userId,
         now: now(),
-      });
+      };
+      await store.run((q) => auditWorkspaceAccessSteps(q, ended));
       return Response.json(
         { ok: true },
         { headers: { "cache-control": "no-store", "set-cookie": clearWorkspaceSessionCookie() } },

@@ -22,9 +22,9 @@ function database(): Database {
   return db;
 }
 
-function issueList(db: Database, now: number): IssueListResponse {
+async function issueList(db: Database, now: number): Promise<IssueListResponse> {
   const provider = createLiveStatusProvider(db, { now: () => new Date(now), env: {} });
-  const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(provider.issues())));
+  const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
   if (!parsed.ok) throw new Error(parsed.error);
   return parsed.response;
 }
@@ -49,7 +49,7 @@ function minutesByState(states: { state: string; ms: number }[]): Record<string,
 }
 
 describe("state times", () => {
-  test("an item with a crash, a question, a rejected Closeout and a restart: its states add up to its age", () => {
+  test("an item with a crash, a question, a rejected Closeout and a restart: its states add up to its age", async () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-1", now: T0 });
     walk(db, "PAS-1", T0, [
@@ -65,7 +65,9 @@ describe("state times", () => {
       [125, "closeout_accepted"],
     ]);
 
-    const item = issueList(db, T0 + 140 * MIN).issues.find((entry) => entry.id === "PAS-1")!;
+    const item = (await issueList(db, T0 + 140 * MIN)).issues.find(
+      (entry) => entry.id === "PAS-1",
+    )!;
     const times = item.stateTimes!;
     expect(times.since).toBe(new Date(T0).toISOString());
     expect(times.until).toBe(new Date(T0 + 140 * MIN).toISOString());
@@ -82,21 +84,21 @@ describe("state times", () => {
     expect(total).toBe(Date.parse(times.until) - Date.parse(times.since));
   });
 
-  test("the current state counts up to now and a merged item stops at its merge", () => {
+  test("the current state counts up to now and a merged item stops at its merge", async () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-2", now: T0 });
     walk(db, "PAS-2", T0, [[5, "dispatched"]]);
-    const at = (now: number) =>
-      issueList(db, now).issues.find((entry) => entry.id === "PAS-2")!.stateTimes!;
-    expect(minutesByState(at(T0 + 20 * MIN).states)).toEqual({ queued: 5, running: 15 });
-    expect(minutesByState(at(T0 + 50 * MIN).states)).toEqual({ queued: 5, running: 45 });
+    const at = async (now: number) =>
+      (await issueList(db, now)).issues.find((entry) => entry.id === "PAS-2")!.stateTimes!;
+    expect(minutesByState((await at(T0 + 20 * MIN)).states)).toEqual({ queued: 5, running: 15 });
+    expect(minutesByState((await at(T0 + 50 * MIN)).states)).toEqual({ queued: 5, running: 45 });
 
     walk(db, "PAS-2", T0, [
       [60, "turn_ended"],
       [62, "closeout_accepted"],
       [70, "merge_accepted"],
     ]);
-    const merged = at(T0 + 5 * HOUR);
+    const merged = await at(T0 + 5 * HOUR);
     expect(merged.current).toBeNull();
     expect(merged.until).toBe(new Date(T0 + 70 * MIN).toISOString());
     expect(minutesByState(merged.states)).toEqual({
@@ -112,7 +114,7 @@ describe("state times", () => {
     expect([...totals.states]).toEqual([["queued", 7 * MIN]]);
   });
 
-  test("the last 24 hours: median and p90 from start to merge and the average per state", () => {
+  test("the last 24 hours: median and p90 from start to merge and the average per state", async () => {
     const db = database();
     const now = T0 + 24 * HOUR;
     // Ten items merged today, taking 10, 20, … 100 minutes: queued 5, verifying 2, merge queue 1.
@@ -140,7 +142,7 @@ describe("state times", () => {
     insertQueuedItem(db, { id: "PAS-91", now: T0 });
     walk(db, "PAS-91", T0, [[5, "dispatched"]]);
 
-    const times = issueList(db, now).mergedTimes!;
+    const times = (await issueList(db, now)).mergedTimes!;
     expect(times.since).toBe(new Date(T0).toISOString());
     expect(times.merged).toBe(10);
     // Sorted ages 10 … 100: the median is (50 + 60) / 2, the nearest-rank p90 the 9th.
@@ -155,9 +157,9 @@ describe("state times", () => {
     ]);
   });
 
-  test("no merged times while nothing merged in the last 24 hours", () => {
+  test("no merged times while nothing merged in the last 24 hours", async () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-3", now: T0 });
-    expect(issueList(db, T0 + HOUR).mergedTimes).toBeNull();
+    expect((await issueList(db, T0 + HOUR)).mergedTimes).toBeNull();
   });
 });

@@ -587,25 +587,25 @@ export async function probeRunnerBackend(
       { text: "Yes, the old route still answers with 410.", sequence: 6 },
     ]);
     const status = createLiveStatusProvider(db);
-    const listed = status.issues().agentCloseout.find((entry) => entry.runId === first.run.id);
-    assert.ok(listed);
-    const remoteCloseout = status
-      .issue(listed!.itemId)
-      ?.agentCloseout.find((entry) => entry.runId === first.run.id);
-    const remoteAttempt = remoteCloseout?.attempts.at(-1);
-    assert.deepEqual(
-      remoteAttempt?.checks.map((check) => [
-        check.id,
-        check.state,
-        status.checkLog({
-          itemId: remoteCloseout!.itemId,
-          attempt: remoteAttempt.number,
-          checkId: check.id,
-          run: first.run.id,
-        })?.stdout,
-      ]),
-      [["test", "failed", "1 fail on the runner"]],
+    const listed = (await status.issues()).agentCloseout.find(
+      (entry) => entry.runId === first.run.id,
     );
+    assert.ok(listed);
+    const remoteCloseout = (await status.issue(listed!.itemId))?.agentCloseout.find(
+      (entry) => entry.runId === first.run.id,
+    );
+    const remoteAttempt = remoteCloseout?.attempts.at(-1);
+    const remoteChecks: unknown[] = [];
+    for (const check of remoteAttempt?.checks ?? []) {
+      const log = await status.checkLog({
+        itemId: remoteCloseout!.itemId,
+        attempt: remoteAttempt!.number,
+        checkId: check.id,
+        run: first.run.id,
+      });
+      remoteChecks.push([check.id, check.state, log?.stdout]);
+    }
+    assert.deepEqual(remoteChecks, [["test", "failed", "1 fail on the runner"]]);
     observe(
       "signed remote implementation imports the exact candidate while canonical verification remains pending",
       true,

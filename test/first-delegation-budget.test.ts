@@ -417,7 +417,7 @@ async function firstDelegation(
         ? assignments.authorize(event)
         : { outcome: "refused", reason: "Only workspace members may delegate." },
     recheckLinearEvent: async (event) =>
-      access.recheckLinearEvent(event) && assignments.recheck(event),
+      (await access.recheckLinearEvent(event)) && (await assignments.recheck(event)),
     authorizeLinearIntake: (sessionId, spec) => assignments.authorizeIntake(sessionId, spec),
   });
   const state = () => listWorkItems(db)[0]?.state ?? null;

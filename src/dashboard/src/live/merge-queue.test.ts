@@ -101,7 +101,7 @@ function queued(db: Database, id: string, session: string, at: number) {
   finishCloseoutProgress(db, item.id, identity, "accepted", at);
 }
 
-test("the merge queue reads queue facts, issue summaries and banners for the reader's sessions only", () => {
+test("the merge queue reads queue facts, issue summaries and banners for the reader's sessions only", async () => {
   const db = openDatabase(":memory:");
   open.push(db);
   migrate(db);
@@ -138,7 +138,7 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
 
   const seen = recordQueries(db);
   const provider = createLiveStatusProvider(db, { sessionIds: ["ses_mine"], env: {} });
-  const parsed = parseMergeQueueResponse(JSON.parse(JSON.stringify(provider.mergeQueue())));
+  const parsed = parseMergeQueueResponse(JSON.parse(JSON.stringify(await provider.mergeQueue())));
   if (!parsed.ok) throw new Error(parsed.error);
   const queue = parsed.response;
 
@@ -169,6 +169,6 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
   const reads = seen.join("\n");
   for (const table of DETAIL_TABLES) expect(reads).not.toMatch(new RegExp(`\\b${table}\\b`));
   seen.length = 0;
-  provider.issue("ENG-1");
+  await provider.issue("ENG-1");
   expect(seen.join("\n")).toMatch(/\bcloseout_step\b/);
 });

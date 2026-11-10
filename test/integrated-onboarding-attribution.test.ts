@@ -296,7 +296,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     });
     const policy = async (): Promise<GitCommitPolicy> => ({
       bot: await botProvider.botIdentity!(),
-      credit: workspace.delegatorCommitCredit(db, current().id),
+      credit: await workspace.delegatorCommitCredit(db, current().id),
     });
     auth = new GitHubInstallationCheck(
       db,

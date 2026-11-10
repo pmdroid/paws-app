@@ -1,10 +1,13 @@
 import {
   workspaceMemberUsable,
-  auditWorkspaceAccess,
-  enqueueJob,
-  immediate,
-  listWorkspaceRepositories,
-  workspaceMember,
+  auditWorkspaceAccessSteps,
+  emitJobReady,
+  enqueueJobSteps,
+  listWorkspaceRepositoriesSteps,
+  sqliteDb,
+  workspaceMemberSteps,
+  type Q,
+  type Steps,
   type WorkspaceSession,
 } from "../db";
 import { isWorkspaceAdmin } from "./eligibility";
@@ -25,29 +28,33 @@ export async function handleWorkspaceGitHubIntegration(
 ): Promise<Response | null> {
   if (new URL(request.url).pathname !== "/api/workspaces/github-integration") return null;
   const principal = options.principal;
-  const permitted = () => {
-    const member = workspaceMember(options.db, principal.workspaceId, principal.userId);
+  const store = sqliteDb(options.db);
+  function* permittedSteps(q: Q) {
+    const member = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);
     return workspaceMemberUsable(member) && isWorkspaceAdmin(member.role);
-  };
-  const audit = (action: string) =>
-    auditWorkspaceAccess(options.db, {
+  }
+  const auditSteps = (q: Q, action: string) =>
+    auditWorkspaceAccessSteps(q, {
       workspaceId: principal.workspaceId,
       userId: principal.userId,
       action,
       subject: "github-integration",
       now: options.now(),
     });
-  const deny = () => {
-    audit("access.denied");
+  function* denySteps(q: Q) {
+    yield* auditSteps(q, "access.denied");
     return Response.json(
       { error: "Workspace administration and a valid CSRF token are required." },
       { status: 403 },
     );
-  };
-  if (!permitted()) return deny();
+  }
+  const deny = () => store.run(denySteps);
+  if (!(await store.run(permittedSteps))) return deny();
   if (!["GET", "POST"].includes(request.method))
     return Response.json({ error: "Use GET or POST." }, { status: 405 });
-  const repositories = listWorkspaceRepositories(options.db, principal.workspaceId);
+  const repositories = await store.run((q) =>
+    listWorkspaceRepositoriesSteps(q, principal.workspaceId),
+  );
   if (request.method === "GET")
     return Response.json(
       {
@@ -57,11 +64,14 @@ export async function handleWorkspaceGitHubIntegration(
       },
       { headers: { "cache-control": "no-store" } },
     );
-  const authorized = () =>
-    permitted() &&
-    request.headers.get("origin") === options.origin &&
-    validWorkspaceCsrf(request, options.session);
-  if (!authorized()) return deny();
+  function* authorizedSteps(q: Q) {
+    return (
+      (yield* permittedSteps(q)) &&
+      request.headers.get("origin") === options.origin &&
+      validWorkspaceCsrf(request, options.session)
+    );
+  }
+  if (!(await store.run(authorizedSteps))) return deny();
   const snapshot = JSON.stringify(repositories);
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]);
   let ready = repositories.length > 0;
@@ -73,24 +83,36 @@ export async function handleWorkspaceGitHubIntegration(
     journalCaught(caughtError1, "github-integration.handleWorkspaceGitHubIntegration.map", null);
     ready = false;
   }
-  return immediate(options.db, () => {
+  const { response, queued } = await store.transaction(function* (q): Steps<{
+    response: Response;
+    queued: boolean;
+  }> {
     if (
-      !authorized() ||
-      JSON.stringify(listWorkspaceRepositories(options.db, principal.workspaceId)) !== snapshot
+      !(yield* authorizedSteps(q)) ||
+      JSON.stringify(yield* listWorkspaceRepositoriesSteps(q, principal.workspaceId)) !== snapshot
     )
-      return deny();
+      return { response: yield* denySteps(q), queued: false };
     if (!ready || signal.aborted) {
-      audit("github.integration.unavailable");
-      return Response.json(
-        {
-          error:
-            "Restore the configured GitHub App installation and approved repository permissions, then retry.",
-        },
-        { status: 409 },
-      );
+      yield* auditSteps(q, "github.integration.unavailable");
+      return {
+        response: Response.json(
+          {
+            error:
+              "Restore the configured GitHub App installation and approved repository permissions, then retry.",
+          },
+          { status: 409 },
+        ),
+        queued: false,
+      };
     }
-    audit("github.integration.revalidated");
-    enqueueJob(options.db, { queue: "github.auth.recover", priority: 0, now: options.now() });
-    return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
+    yield* auditSteps(q, "github.integration.revalidated");
+    yield* enqueueJobSteps(q, { queue: "github.auth.recover", priority: 0, now: options.now() });
+    return {
+      response: Response.json({ ok: true }, { headers: { "cache-control": "no-store" } }),
+      queued: true,
+    };
   });
+  // Wake the job loop once the recovery job is committed.
+  if (queued) emitJobReady(store);
+  return response;
 }

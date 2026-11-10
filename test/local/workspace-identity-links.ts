@@ -273,11 +273,12 @@ export async function probeWorkspaceIdentityLinks(
       now: Date.now(),
     });
     const concurrent = openDatabase(join(root, "identity-links.sqlite"));
-    const transaction = db.transaction.bind(db);
-    Object.defineProperty(db, "transaction", {
+    // The store reads `inTransaction` as it enters a transaction, before BEGIN IMMEDIATE.
+    const restore = () => Reflect.deleteProperty(db, "inTransaction");
+    Object.defineProperty(db, "inTransaction", {
       configurable: true,
-      value: (run: () => unknown) => {
-        Object.defineProperty(db, "transaction", { configurable: true, value: transaction });
+      get() {
+        restore();
         changeWorkspaceRole(concurrent, {
           workspaceId: workspace.id,
           actorId: ids[0]!,
@@ -285,7 +286,7 @@ export async function probeWorkspaceIdentityLinks(
           role: "member",
           now: Date.now(),
         });
-        return transaction(run);
+        return db.inTransaction;
       },
     });
     let transactionDenial: Response | null;
@@ -303,7 +304,7 @@ export async function probeWorkspaceIdentityLinks(
         { ...context, origin, now: Date.now() },
       );
     } finally {
-      Object.defineProperty(db, "transaction", { configurable: true, value: transaction });
+      restore();
       concurrent.close();
     }
     observe(

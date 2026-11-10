@@ -66,22 +66,23 @@ function event(db: Database, runId: string, generation: number, type: string): v
   );
 }
 
-function item(db: Database, id: string, now: number): StatusItem {
-  const found = createLiveStatusProvider(db, { now: () => new Date(now) })
-    .issues()
-    .issues.find((entry) => entry.title === id);
+async function item(db: Database, id: string, now: number): Promise<StatusItem> {
+  const found = (
+    await createLiveStatusProvider(db, { now: () => new Date(now) }).issues()
+  ).issues.find((entry) => entry.title === id);
+
   if (!found) throw new Error(`no item ${id}`);
   return found;
 }
 
 describe("what an item does now", () => {
-  test("an item with live runner work shows Running on its runner", () => {
+  test("an item with live runner work shows Running on its runner", async () => {
     const db = database();
     const now = START + 5 * MINUTE;
     const runId = running(db, "live");
     work(db, runId, "agentbox", true, now);
     event(db, runId, 1, "activity");
-    const shown = item(db, "live", now);
+    const shown = await item(db, "live", now);
     expect(shown.doing).toEqual({
       kind: "running",
       runners: ["agentbox"],
@@ -92,7 +93,7 @@ describe("what an item does now", () => {
     expect(itemTime(shown, now)).toContain("Running on agentbox");
   });
 
-  test("live runner work is preparing until its current generation reports agent activity", () => {
+  test("live runner work is preparing until its current generation reports agent activity", async () => {
     const db = database();
     const now = START + 5 * MINUTE;
     const runId = running(db, "setup");
@@ -100,25 +101,25 @@ describe("what an item does now", () => {
     event(db, runId, 1, "activity");
     event(db, runId, 2, "progress");
     event(db, runId, 2, "progress");
-    const preparing = item(db, "setup", now);
+    const preparing = await item(db, "setup", now);
     expect(preparing.doing).toMatchObject({ kind: "running", phase: "preparing" });
     expect(itemTime(preparing, now)).toContain(
       "Preparing: checking out and installing runtimes on agentbox",
     );
     event(db, runId, 2, "activity");
-    const agent = item(db, "setup", now);
+    const agent = await item(db, "setup", now);
     expect(agent.doing).toMatchObject({ kind: "running", phase: "agent" });
     expect(itemTime(agent, now)).toContain("Running on agentbox");
   });
 
-  test("a run without runner work has no phase", () => {
+  test("a run without runner work has no phase", async () => {
     const db = database();
     const now = START + MINUTE;
     running(db, "local");
-    expect(item(db, "local", now).doing?.phase).toBeUndefined();
+    expect((await item(db, "local", now)).doing?.phase).toBeUndefined();
   });
 
-  test("an item parked in a slot wait shows Waiting for a slot with its runners and wait time", () => {
+  test("an item parked in a slot wait shows Waiting for a slot with its runners and wait time", async () => {
     const db = database();
     const now = START + 26 * MINUTE;
     insertQueuedItem(db, { id: "parked", title: "parked", now: START });
@@ -132,14 +133,14 @@ describe("what an item does now", () => {
       runAt: now + MINUTE,
       now: START,
     });
-    const shown = item(db, "parked", now);
+    const shown = await item(db, "parked", now);
     expect(shown.doing).toMatchObject({ kind: "slot", runners: ["agentbox", "spare"] });
     expect(itemPill(shown)).toContain(">Waiting for a slot<");
     expect(itemTime(shown, now)).toContain("Waiting for a slot on agentbox, spare · 1.9 h active");
     expect(doingTimeLine(shown, now)).toBe("1.9 h active · waiting 26 min");
   });
 
-  test("the issue page splits the item's time by stage and marks stages that are not counted", () => {
+  test("the issue page splits the item's time by stage and marks stages that are not counted", async () => {
     const db = database();
     const now = START + MINUTE;
     running(db, "staged");
@@ -147,7 +148,7 @@ describe("what an item does now", () => {
       "UPDATE work_item SET implement_ms=?, fix_ms=?, closeout_ms=?, max_awake_ms=?, max_fix_ms=0, max_closeout_ms=0 WHERE id='staged'",
       [130 * MINUTE, 65 * MINUTE, 22 * MINUTE, 180 * MINUTE],
     );
-    const shown = item(db, "staged", now);
+    const shown = await item(db, "staged", now);
     expect(shown.stageTimes).toEqual({
       implementation: { ms: 130 * MINUTE, limitMs: 180 * MINUTE },
       fixes: { ms: 65 * MINUTE, limitMs: 0 },
@@ -158,7 +159,7 @@ describe("what an item does now", () => {
     );
   });
 
-  test("an item with a usage pause shows Paused with the reset time", () => {
+  test("an item with a usage pause shows Paused with the reset time", async () => {
     const db = database();
     const runId = running(db, "paused");
     startUsagePause(db, {
@@ -170,7 +171,7 @@ describe("what an item does now", () => {
       resumeAt: START + 60 * MINUTE,
       pausedAt: START + MINUTE,
     });
-    const shown = item(db, "paused", START + 2 * MINUTE);
+    const shown = await item(db, "paused", START + 2 * MINUTE);
     expect(shown.doing).toMatchObject({ kind: "paused", until: "2026-11-01T15:00:00.000Z" });
     expect(itemPill(shown)).toContain(">Usage limit<");
     expect(itemTime(shown, START + 2 * MINUTE)).toContain(
@@ -178,14 +179,14 @@ describe("what an item does now", () => {
     );
   });
 
-  test("a running item whose pinned run waits for its busy runner shows Waiting, not Running", () => {
+  test("a running item whose pinned run waits for its busy runner shows Waiting, not Running", async () => {
     const db = database();
     const now = START + 10 * MINUTE;
     work(db, running(db, "one"), "agentbox", true, now);
     work(db, running(db, "two"), "agentbox", true, now);
     work(db, running(db, "pinned"), "agentbox", false, now);
     saveItemHolds(db, [{ itemId: "pinned", reason: "slot", blockers: [] }]);
-    const shown = item(db, "pinned", now);
+    const shown = await item(db, "pinned", now);
     expect(shown.state).toBe("running");
     expect(shown.doing).toMatchObject({ kind: "slot", runners: ["agentbox"] });
     expect(itemTime(shown, now)).toContain("Waiting for a slot on agentbox");
@@ -195,13 +196,13 @@ describe("what an item does now", () => {
     expect(agentbox.running.filter((session) => session.movable)).toHaveLength(2);
   });
 
-  test("an item with no live work and no transition for 30 minutes shows Stalled", () => {
+  test("an item with no live work and no transition for 30 minutes shows Stalled", async () => {
     const db = database();
     running(db, "stuck");
-    const fresh = item(db, "stuck", START + STALL_MS - MINUTE);
+    const fresh = await item(db, "stuck", START + STALL_MS - MINUTE);
     expect(fresh.doing).toMatchObject({ kind: "idle" });
     expect(fresh.doing?.stalled).toBeUndefined();
-    const stale = item(db, "stuck", START + STALL_MS);
+    const stale = await item(db, "stuck", START + STALL_MS);
     expect(stale.doing).toMatchObject({ kind: "idle", stalled: true });
     expect(itemPill(stale)).toContain("Stalled");
   });

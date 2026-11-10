@@ -147,10 +147,10 @@ function recordSql(db: Database): string[] {
 }
 
 describe("overview resource", () => {
-  test("draws Overview from its own resource", () => {
+  test("draws Overview from its own resource", async () => {
     const db = fixture();
     const live = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} });
-    const parsed = parseOverviewResponse(JSON.parse(JSON.stringify(live.overview())));
+    const parsed = parseOverviewResponse(JSON.parse(JSON.stringify(await live.overview())));
     if (!parsed.ok) throw new Error(parsed.error);
     expect(overviewHtml(parsed.response)).toContain('id="attention-heading"');
     expect(parsed.response.issues.map((issue) => issue.id)).toEqual([
@@ -162,13 +162,16 @@ describe("overview resource", () => {
     ]);
     expect(parsed.response.mergeQueueCount).toBe(1);
     expect(parsed.response.issues.find((issue) => issue.id === "ENG-2")?.verdict?.decision).toBe(
-      live.issues().verdicts.find((verdict) => verdict.itemId === "ENG-2")?.decision,
+      (await live.issues()).verdicts.find((verdict) => verdict.itemId === "ENG-2")?.decision,
     );
   });
 
-  test("keeps the risk decision card anchor and does not call a held reviewer check failed", () => {
+  test("keeps the risk decision card anchor and does not call a held reviewer check failed", async () => {
     const db = fixture();
-    const overview = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} }).overview();
+    const overview = await createLiveStatusProvider(db, {
+      now: () => new Date(NOW),
+      env: {},
+    }).overview();
     const html = overviewHtml(overview);
     const attention = section(html, "attention-heading", "work-heading");
     expect(attention).toContain(`/issues/ENG-4#${LINK_ASK_ANCHORS.risk}`);
@@ -192,15 +195,15 @@ describe("overview resource", () => {
     expect(section(html, "work-heading", "queued-heading")).toContain("ENG-5");
   });
 
-  test("reads no check output, evidence, CI rounds, agent Closeout or merge queue detail", () => {
+  test("reads no check output, evidence, CI rounds, agent Closeout or merge queue detail", async () => {
     const db = fixture();
     const statements = recordSql(db);
     const live = createLiveStatusProvider(db, { now: () => new Date(NOW), env: {} });
-    const body = JSON.stringify(live.overview());
+    const body = JSON.stringify(await live.overview());
     const overview = statements.splice(0);
     // The issue pages and the merge queue do read those tables.
-    for (const issue of live.issues().issues) live.issue(issue.id);
-    live.mergeQueue();
+    for (const issue of (await live.issues()).issues) await live.issue(issue.id);
+    await live.mergeQueue();
     const detail = statements.splice(0);
     // A whole closeout_step row, as raw SQL or as Drizzle writes it.
     const wholeStep = /SELECT \* FROM closeout_step|"stdout".* from "closeout_step"/s;
@@ -224,10 +227,10 @@ describe("overview resource", () => {
     expect(body).not.toContain("check output that only the issue page reads");
   });
 
-  test("lists only the reader's sessions", () => {
+  test("lists only the reader's sessions", async () => {
     const db = fixture();
     insertQueuedItem(db, { id: "ENG-9", title: "Elsewhere", sessionKey: "s2", now: NOW });
-    const mine = createLiveStatusProvider(db, {
+    const mine = await createLiveStatusProvider(db, {
       now: () => new Date(NOW),
       env: {},
       sessionIds: ["s2"],
