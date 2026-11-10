@@ -319,7 +319,7 @@ test("ask_team context reaches the runner journal's question event", async () =>
     expect(answered).toHaveLength(1);
     expect(JSON.parse(readFileSync(recorded, "utf8")).askTeam.ok).toBe(true);
     const execution = journal.admit(input, Date.now())!;
-    journal.ingest(execution.id, readFileSync(join(outputDirectory, "events.jsonl")));
+    await journal.ingest(execution.id, readFileSync(join(outputDirectory, "events.jsonl")));
     expect(
       journal
         .pending(execution.id)

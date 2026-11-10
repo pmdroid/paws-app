@@ -86,7 +86,7 @@ export async function probeBoundaries(
   await probeRunnerHealth(join(root, "runner-health"), observe);
   await probeRunnerCoordinator(join(root, "runner-coordinator"), observe);
   await probeRunnerControlStartup(join(root, "runner-control-startup"), observe);
-  probeRunnerJournal(join(root, "runner-journal"), observe);
+  await probeRunnerJournal(join(root, "runner-journal"), observe);
   await probeRunnerDaemonHealth(join(root, "runner-daemon-health"), observe);
   await probeRunnerTranscripts(join(root, "runner-transcripts"), observe);
   await probeRunnerArtifacts(join(root, "runner-artifacts"), observe);

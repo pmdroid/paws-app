@@ -24,14 +24,14 @@ const command: WorkCommand = {
   profile: { agent: "codex", model: null },
   prompt: "Implement delegated work",
 };
-test("policy chunk requests retain their offset and digest through the journal", () => {
+test("policy chunk requests retain their offset and digest through the journal", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-policy-chunk-"));
   const journal = openExecutionJournal(root);
   try {
     const execution = journal.admit(command, 1000)!;
     const requestId = "11111111-1111-4111-8111-111111111111";
     const event = { type: "closeout_policy" as const, offset: 24000, hash: "a".repeat(64) };
-    journal.ingest(execution.id, Buffer.from(JSON.stringify({ ...event, requestId }) + "\n"));
+    await journal.ingest(execution.id, Buffer.from(JSON.stringify({ ...event, requestId }) + "\n"));
     expect(journal.pending(execution.id)).toEqual([{ sequence: 1, event }]);
     expect(journal.requestId(execution.id, 1)).toBe(requestId);
   } finally {
@@ -39,7 +39,7 @@ test("policy chunk requests retain their offset and digest through the journal",
     rmSync(root, { recursive: true, force: true });
   }
 });
-test("durable execution admission preserves question values and rejects changed journal prefixes atomically", () => {
+test("durable execution admission preserves question values and rejects changed journal prefixes atomically", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-journal-"));
   let journal = openExecutionJournal(root);
   try {
@@ -47,7 +47,7 @@ test("durable execution admission preserves question values and rejects changed 
     const prefix = Buffer.from(
       `${JSON.stringify({ type: "question", requestId: "11111111-1111-4111-8111-111111111111", question: "Which API?", options: [{ label: "Existing API", value: "existing_api" }] })}\n`,
     );
-    journal.ingest(execution.id, Buffer.concat([prefix, Buffer.from('{"type":')]));
+    await journal.ingest(execution.id, Buffer.concat([prefix, Buffer.from('{"type":')]));
     expect(journal.pending(execution.id)).toEqual([
       {
         sequence: 1,
@@ -65,11 +65,11 @@ test("durable execution admission preserves question values and rejects changed 
     expect(() => journal.admit({ ...command, prompt: "Changed" }, 2000)).toThrow(
       "Persisted command changed",
     );
-    expect(() =>
+    await expect(
       journal.ingest(execution.id, Buffer.from(prefix.toString().replace("Which", "Other"))),
-    ).toThrow("rewritten");
+    ).rejects.toThrow("rewritten");
     expect(journal.pending(execution.id)).toHaveLength(1);
-    journal.ingest(execution.id, prefix);
+    await journal.ingest(execution.id, prefix);
     journal.sent(execution.id, 1);
     expect(journal.pending(execution.id)).toEqual([]);
     expect(journal.requestId(execution.id, 1)).toBe("11111111-1111-4111-8111-111111111111");
@@ -82,7 +82,7 @@ test("durable execution admission preserves question values and rejects changed 
 });
 
 for (const phase of ["complete", "interrupted"] as const) {
-  test(`terminal ${phase} execution refuses new records while queued deliveries can be acknowledged`, () => {
+  test(`terminal ${phase} execution refuses new records while queued deliveries can be acknowledged`, async () => {
     const root = mkdtempSync(join(tmpdir(), "paws-execution-terminal-"));
     let journal = openExecutionJournal(root);
     try {
@@ -95,11 +95,11 @@ for (const phase of ["complete", "interrupted"] as const) {
           options: [],
         }) + "\n",
       );
-      journal.ingest(execution.id, prefix);
+      await journal.ingest(execution.id, prefix);
       journal.phase(execution.id, phase);
       journal.close();
       journal = openExecutionJournal(root);
-      expect(() => journal.ingest(execution.id, Buffer.concat([prefix, prefix]))).toThrow(
+      await expect(journal.ingest(execution.id, Buffer.concat([prefix, prefix]))).rejects.toThrow(
         "terminal",
       );
       expect(journal.pending(execution.id)).toHaveLength(1);
@@ -115,7 +115,7 @@ for (const phase of ["complete", "interrupted"] as const) {
   });
 }
 
-test("answer receipts require delivered questions and preserve gaps over progress", () => {
+test("answer receipts require delivered questions and preserve gaps over progress", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-answers-"));
   const journal = openExecutionJournal(root);
   try {
@@ -126,7 +126,7 @@ test("answer receipts require delivered questions and preserve gaps over progres
       question: "Which API?",
       options: [],
     };
-    journal.ingest(
+    await journal.ingest(
       execution.id,
       Buffer.from(
         [
@@ -189,7 +189,7 @@ test("answer receipts require delivered questions and preserve gaps over progres
   }
 });
 
-test("live deliveries include tool status and output while private thoughts stay local", () => {
+test("live deliveries include tool status and output while private thoughts stay local", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-tool-progress-"));
   const journal = openExecutionJournal(root);
   try {
@@ -212,7 +212,7 @@ test("live deliveries include tool status and output while private thoughts stay
         content: [{ type: "content", content: { type: "text", text: "Screenshot saved" } }],
       },
     ];
-    journal.ingest(
+    await journal.ingest(
       execution.id,
       Buffer.from(
         updates
@@ -250,7 +250,7 @@ test("live deliveries include tool status and output while private thoughts stay
   }
 });
 
-test("permission decisions are delivered with their reason and secrets redacted", () => {
+test("permission decisions are delivered with their reason and secrets redacted", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-permission-"));
   const journal = openExecutionJournal(root);
   try {
@@ -275,7 +275,7 @@ test("permission decisions are delivered with their reason and secrets redacted"
         kind: "read",
       },
     ];
-    journal.ingest(
+    await journal.ingest(
       execution.id,
       Buffer.from(decisions.map((event) => JSON.stringify({ type: "acp", event }) + "\n").join("")),
     );
@@ -309,29 +309,29 @@ test("permission decisions are delivered with their reason and secrets redacted"
   }
 });
 
-test("pull request records carry the agent's title and description", () => {
+test("pull request records carry the agent's title and description", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-pr-"));
   const journal = openExecutionJournal(root);
   try {
     const execution = journal.admit(command, 1000)!;
     const valid = `${JSON.stringify({ type: "pull_request", title: "Add rows", body: "Adds rows." })}\n`;
-    journal.ingest(execution.id, Buffer.from(valid));
+    await journal.ingest(execution.id, Buffer.from(valid));
     expect(journal.pending(execution.id)).toEqual([
       { sequence: 1, event: { type: "pull_request", title: "Add rows", body: "Adds rows." } },
     ]);
-    expect(() =>
+    await expect(
       journal.ingest(
         execution.id,
         Buffer.from(valid + `${JSON.stringify({ type: "pull_request", title: "", body: "x" })}\n`),
       ),
-    ).toThrow("Invalid runner pull request");
+    ).rejects.toThrow("Invalid runner pull request");
   } finally {
     journal.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("Closeout records carry the agent's check attempt and output", () => {
+test("Closeout records carry the agent's check attempt and output", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-closeout-"));
   const journal = openExecutionJournal(root);
   try {
@@ -346,11 +346,11 @@ test("Closeout records carry the agent's check attempt and output", () => {
       maxAttempts: 3,
     };
     const valid = `${JSON.stringify({ type: "closeout", progress })}\n`;
-    journal.ingest(execution.id, Buffer.from(valid));
+    await journal.ingest(execution.id, Buffer.from(valid));
     expect(journal.pending(execution.id)).toEqual([
       { sequence: 1, event: { type: "closeout", progress } },
     ]);
-    expect(() =>
+    await expect(
       journal.ingest(
         execution.id,
         Buffer.from(
@@ -358,36 +358,36 @@ test("Closeout records carry the agent's check attempt and output", () => {
             `${JSON.stringify({ type: "closeout", progress: { ...progress, type: "finished" } })}\n`,
         ),
       ),
-    ).toThrow("Invalid runner Closeout progress");
+    ).rejects.toThrow("Invalid runner Closeout progress");
   } finally {
     journal.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("progress records carry the agent's update text", () => {
+test("progress records carry the agent's update text", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-progress-"));
   const journal = openExecutionJournal(root);
   try {
     const execution = journal.admit(command, 1000)!;
     const valid = `${JSON.stringify({ type: "progress", text: "Found the cause." })}\n`;
-    journal.ingest(execution.id, Buffer.from(valid));
+    await journal.ingest(execution.id, Buffer.from(valid));
     expect(journal.pending(execution.id)).toEqual([
       { sequence: 1, event: { type: "progress", text: "Found the cause." } },
     ]);
-    expect(() =>
+    await expect(
       journal.ingest(
         execution.id,
         Buffer.from(valid + `${JSON.stringify({ type: "progress", text: "x".repeat(501) })}\n`),
       ),
-    ).toThrow("Invalid runner progress");
+    ).rejects.toThrow("Invalid runner progress");
   } finally {
     journal.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("plan records replace the checklist without waiting for an answer", () => {
+test("plan records replace the checklist without waiting for an answer", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-plan-"));
   const journal = openExecutionJournal(root);
   try {
@@ -399,7 +399,7 @@ test("plan records replace the checklist without waiting for an answer", () => {
         { content: "Write the parser", status: "inProgress" },
       ],
     })}\n`;
-    journal.ingest(execution.id, Buffer.from(valid));
+    await journal.ingest(execution.id, Buffer.from(valid));
     expect(journal.pending(execution.id)).toEqual([
       {
         sequence: 1,
@@ -413,12 +413,12 @@ test("plan records replace the checklist without waiting for an answer", () => {
       },
     ]);
     expect(journal.requestId(execution.id, 1)).toBeNull();
-    expect(() =>
+    await expect(
       journal.ingest(
         execution.id,
         Buffer.from(valid + `${JSON.stringify({ type: "plan", steps: [] })}\n`),
       ),
-    ).toThrow("Invalid runner plan");
+    ).rejects.toThrow("Invalid runner plan");
   } finally {
     journal.close();
     rmSync(root, { recursive: true, force: true });
@@ -445,7 +445,7 @@ test("the session upload cursor survives a reopen and stops once the snapshot is
     rmSync(root, { recursive: true, force: true });
   }
 });
-test("a publication keeps its first outcome, published commit and refusal across reopening", () => {
+test("a publication keeps its first outcome, published commit and refusal across reopening", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-publication-journal-"));
   let journal = openExecutionJournal(root);
   try {
@@ -462,12 +462,12 @@ test("a publication keeps its first outcome, published commit and refusal across
       candidateSha: "b".repeat(40),
       tokens: 7,
     };
-    expect(journal.beginPublication(execution.id, outcome, "c".repeat(40))).toEqual({
+    expect(await journal.beginPublication(execution.id, outcome, "c".repeat(40))).toEqual({
       result: outcome,
       lease: "c".repeat(40),
     });
     expect(journal.execution(execution.id)?.phase).toBe("publishing");
-    journal.beginPublication(execution.id, { ...outcome, stopReason: "error" });
+    await journal.beginPublication(execution.id, { ...outcome, stopReason: "error" });
     expect(journal.publication(execution.id)?.result.stopReason).toBe("end_turn");
     expect(() => journal.published(execution.id, "not a sha")).toThrow();
     journal.published(execution.id, "d".repeat(40));
@@ -559,7 +559,7 @@ test("upgrade reconciles a terminal execution an older release stored in a shape
     rmSync(root, { recursive: true, force: true });
   }
 });
-test("journal lines with and without their write time deliver the same events", () => {
+test("journal lines with and without their write time deliver the same events", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-journal-time-"));
   const journal = openExecutionJournal(root);
   try {
@@ -573,9 +573,9 @@ test("journal lines with and without their write time deliver the same events", 
         },
       },
     ];
-    const deliver = (id: string, t?: string) => {
+    const deliver = async (id: string, t?: string) => {
       const execution = journal.admit({ ...command, id, runId: id }, 1000)!;
-      journal.ingest(
+      await journal.ingest(
         execution.id,
         Buffer.from(
           lines.map((line) => JSON.stringify({ ...line, ...(t ? { t } : {}) }) + "\n").join(""),
@@ -583,9 +583,9 @@ test("journal lines with and without their write time deliver the same events", 
       );
       return journal.pending(execution.id);
     };
-    const timed = deliver("timed", "2026-11-03T18:09:14.123Z");
+    const timed = await deliver("timed", "2026-11-03T18:09:14.123Z");
     expect(timed).toHaveLength(2);
-    expect(timed).toEqual(deliver("untimed"));
+    expect(timed).toEqual(await deliver("untimed"));
   } finally {
     journal.close();
     rmSync(root, { recursive: true, force: true });

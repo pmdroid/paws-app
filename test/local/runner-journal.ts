@@ -34,7 +34,7 @@ const prefix = Buffer.from(
 );
 type Observe = (name: string, passed: boolean, observed: unknown) => void;
 
-export function probeRunnerJournal(root: string, observe: Observe) {
+export async function probeRunnerJournal(root: string, observe: Observe) {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const child = Bun.spawnSync(
     [process.execPath, "--no-env-file", import.meta.path, "--write", root],
@@ -80,18 +80,18 @@ export function probeRunnerJournal(root: string, observe: Observe) {
         options: [],
       }) + '\n{"type":"question"}\n',
     );
-    assert.throws(() => journal.ingest(id, Buffer.concat([prefix, next])));
+    await assert.rejects(journal.ingest(id, Buffer.concat([prefix, next])));
     assert.equal(journal.pending(id).length, 1);
-    assert.throws(() =>
+    await assert.rejects(
       journal.ingest(id, Buffer.from(prefix.toString().replace("Which", "Other"))),
     );
-    journal.ingest(id, prefix);
+    await journal.ingest(id, prefix);
     assert.equal(journal.pending(id).length, 1);
     observe("Invalid suffixes roll back delivery and prefix cursors atomically", true, {
       pending: journal.pending(id).length,
     });
     assert.throws(() => journal.answered(id, 2), /delivered question/);
-    journal.ingest(id, Buffer.concat([prefix, next.subarray(0, next.indexOf(10) + 1)]));
+    await journal.ingest(id, Buffer.concat([prefix, next.subarray(0, next.indexOf(10) + 1)]));
     assert.equal(journal.pending(id).length, 2);
     journal.sent(id, 1);
     journal.sent(id, 2);
@@ -131,7 +131,7 @@ export function probeRunnerJournal(root: string, observe: Observe) {
       next.subarray(0, next.indexOf(10) + 1),
       receiptRecords,
     ]);
-    journal.ingest(id, consumed);
+    await journal.ingest(id, consumed);
     assert.equal(journal.requestId(id, 3), receiptRequest);
     assert.throws(() => journal.answered(id, 3), /delivered question/);
     journal.sent(id, 3);
@@ -146,8 +146,8 @@ export function probeRunnerJournal(root: string, observe: Observe) {
     assert.equal(journal.answerCursor(id), 4);
     assert.equal(journal.phase(id, "interrupted"), true);
     assert.equal(journal.phase(id, "running"), false);
-    journal.ingest(id, Buffer.concat([consumed, Buffer.from('{"type":')]));
-    assert.throws(() => journal.ingest(id, Buffer.concat([prefix, prefix])), /terminal/);
+    await journal.ingest(id, Buffer.concat([consumed, Buffer.from('{"type":')]));
+    await assert.rejects(journal.ingest(id, Buffer.concat([prefix, prefix])), /terminal/);
     assert.deepEqual(journal.pending(id), []);
     assert.equal(journal.admit(command, 3000), null);
     assert.deepEqual(journal.executions(true), []);
@@ -165,14 +165,14 @@ if (import.meta.main) {
     const root = process.argv[3]!;
     const journal = openExecutionJournal(root);
     const execution = journal.admit(command, 1000)!;
-    journal.ingest(execution.id, Buffer.concat([prefix, Buffer.from('{"type":')]));
+    await journal.ingest(execution.id, Buffer.concat([prefix, Buffer.from('{"type":')]));
     journal.transcriptUploaded(execution.id, 0, prefix.length);
     writeFileSync(join(root, "execution"), execution.id);
     process.kill(process.pid, "SIGKILL");
   } else {
     const root = mkdtempSync(join(tmpdir(), "paws-runner-journal-"));
     const observations: unknown[] = [];
-    probeRunnerJournal(root, (name, passed, observed) => {
+    await probeRunnerJournal(root, (name, passed, observed) => {
       observations.push({ name, passed, observed });
     });
     writeFileSync(join(root, "observations.json"), JSON.stringify(observations, null, 2));
