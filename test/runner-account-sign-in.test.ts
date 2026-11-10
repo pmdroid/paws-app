@@ -162,10 +162,10 @@ const policy = (db: ReturnType<typeof openDatabase>, runnerId: string) =>
 
 test("a named sign-in targets only its binding and leaves the default sign-in alone", async () => {
   const { db, runnerId, principal, login, account, binding, queued, signedIn } = await fixture();
-  const named = login.start(principal, runnerId, "codex", binding.id);
+  const named = await login.start(principal, runnerId, "codex", binding.id);
   expect(named.bindingId).toBe(binding.id);
-  expect(login.start(principal, runnerId, "codex", binding.id).id).toBe(named.id);
-  const legacy = login.start(principal, runnerId, "codex");
+  expect((await login.start(principal, runnerId, "codex", binding.id)).id).toBe(named.id);
+  const legacy = await login.start(principal, runnerId, "codex");
   expect(legacy.id).not.toBe(named.id);
   expect(legacy.bindingId).toBeNull();
   expect(queued().map(({ id, type, account: target }) => ({ id, type, target }))).toEqual([
@@ -177,7 +177,7 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
     { id: legacy.id, type: "login", target: undefined },
   ]);
 
-  login.exchange(runnerId, named.id, {
+  await login.exchange(runnerId, named.id, {
     state: "connected",
     terminal: "",
     authorization: null,
@@ -185,7 +185,7 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
   });
   expect(policy(db, runnerId)).toBeNull();
   expect(signedIn).toEqual([]);
-  login.exchange(runnerId, legacy.id, {
+  await login.exchange(runnerId, legacy.id, {
     state: "connected",
     terminal: "",
     authorization: null,
@@ -194,12 +194,13 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
   expect(policy(db, runnerId)?.ready).toBe(1);
   expect(signedIn).toEqual(["codex"]);
 
-  const again = login.start(principal, runnerId, "codex", binding.id);
+  const again = await login.start(principal, runnerId, "codex", binding.id);
   expect(again.id).not.toBe(named.id);
   expect(
-    login.list(principal, runnerId).accounts.find((entry) => entry.agent === "codex")?.session?.id,
+    (await login.list(principal, runnerId)).accounts.find((entry) => entry.agent === "codex")
+      ?.session?.id,
   ).toBe(legacy.id);
-  expect(login.list(principal, runnerId).bindings).toEqual([
+  expect((await login.list(principal, runnerId)).bindings).toEqual([
     {
       accountId: account.id,
       bindingId: binding.id,
@@ -232,8 +233,8 @@ test("a completed named sign-in repairs only its binding's sign-in failure", asy
       now: now - 1,
       state: "auth_required",
     });
-  const named = login.start(principal, runnerId, "codex", binding.id);
-  login.exchange(runnerId, named.id, {
+  const named = await login.start(principal, runnerId, "codex", binding.id);
+  await login.exchange(runnerId, named.id, {
     state: "connected",
     terminal: "",
     authorization: null,
@@ -256,15 +257,19 @@ test("a disabled account can still sign in; a foreign or removed binding cannot"
     enabled: false,
     now,
   });
-  expect(login.start(principal, runnerId, "codex", binding.id).bindingId).toBe(binding.id);
-  expect(() => login.start(principal, runnerId, "claude", binding.id)).toThrow(/not available/);
+  expect((await login.start(principal, runnerId, "codex", binding.id)).bindingId).toBe(binding.id);
+  await expect(login.start(principal, runnerId, "claude", binding.id)).rejects.toThrow(
+    /not available/,
+  );
   const elsewhere = bindAgentAccount(db, {
     workspaceId: workspace,
     accountId: account.id,
     runnerId: otherRunner,
     now,
   });
-  expect(() => login.start(principal, runnerId, "codex", elsewhere.id)).toThrow(/not available/);
+  await expect(login.start(principal, runnerId, "codex", elsewhere.id)).rejects.toThrow(
+    /not available/,
+  );
   expect((await browser(`codex/login?binding=${elsewhere.id}`))!.status).toBe(409);
   expect((await browser("codex/login?binding=..%2Fx"))!.status).toBe(400);
   expect((await browser("codex/login?binding=01JMISSING0000000000000000"))!.status).toBe(403);
@@ -273,7 +278,7 @@ test("a disabled account can still sign in; a foreign or removed binding cannot"
 
 test("a runner without account sign-in keeps refusing a named sign-in", async () => {
   const { db, runnerId, principal, login, binding, queued, browser } = await fixture("0.1.59");
-  expect(() => login.start(principal, runnerId, "codex", binding.id)).toThrow(/0\.1\.61/);
+  await expect(login.start(principal, runnerId, "codex", binding.id)).rejects.toThrow(/0\.1\.61/);
   const response = (await browser(`codex/login?binding=${binding.id}`))!;
   expect(response.status).toBe(409);
   expect(((await response.json()) as { error: string }).error).toMatch(/0\.1\.61/);
@@ -293,10 +298,12 @@ test("re-signing in a binding waits until its running work drains", async () => 
     [workspace, runnerId, account.id, binding.id, now],
   );
   db.run("PRAGMA foreign_keys=ON");
-  expect(() => login.start(principal, runnerId, "codex", binding.id)).toThrow(/still running/);
-  expect(login.start(principal, runnerId, "codex").bindingId).toBeNull();
+  await expect(login.start(principal, runnerId, "codex", binding.id)).rejects.toThrow(
+    /still running/,
+  );
+  expect((await login.start(principal, runnerId, "codex")).bindingId).toBeNull();
   db.run("UPDATE runner_work SET ended_at=? WHERE run_id='run-1'", [now]);
-  expect(login.start(principal, runnerId, "codex", binding.id).bindingId).toBe(binding.id);
+  expect((await login.start(principal, runnerId, "codex", binding.id)).bindingId).toBe(binding.id);
   db.close();
 });
 

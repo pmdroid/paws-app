@@ -1,33 +1,36 @@
 import {
-  workspaceMemberUsable,
   AgentAccountError,
-  auditWorkspaceAccess,
-  bindingRunningCount,
-  cancelPendingRunnerLogins,
-  closeRunnerLogin,
-  getAgentAccount,
-  getAgentBinding,
-  getRunner,
-  immediate,
-  insertRunnerLogin,
-  latestAgentRunnerLoginId,
-  latestBindingRunnerLoginId,
+  auditWorkspaceAccessSteps,
+  bindingRunningCountSteps,
+  cancelPendingRunnerLoginsSteps,
+  closeRunnerLoginSteps,
+  emitJobReady,
+  getAgentAccountSteps,
+  getAgentBindingSteps,
+  getRunnerSteps,
+  insertRunnerLoginSteps,
+  latestAgentRunnerLoginIdSteps,
+  latestBindingRunnerLoginIdSteps,
   legacyAgentAccountId,
   legacyAgentBindingId,
-  pendingRunnerLoginCount,
-  pendingRunnerLoginId,
-  recordAccountObservation,
-  runnerAccountUnsupported,
-  runnerAgentOpenWorkCount,
-  runnerAgentPolicyState,
-  runnerLoginRow,
-  runnerNamedBindings,
-  setRunnerAgentSignedIn,
-  storedAgentBindingId,
-  updateRunnerLogin,
-  wakeRunnerSlotWaits,
-  workspaceMember,
+  pendingRunnerLoginCountSteps,
+  pendingRunnerLoginIdSteps,
+  recordAccountObservationSteps,
+  runnerAccountUnsupportedSteps,
+  runnerAgentOpenWorkCountSteps,
+  runnerAgentPolicyStateSteps,
+  runnerLoginRowSteps,
+  runnerNamedBindingsSteps,
+  setRunnerAgentSignedInSteps,
+  sqliteDb,
+  storedAgentBindingIdSteps,
+  updateRunnerLoginSteps,
+  wakeRunnerSlotWaitsSteps,
+  workspaceMemberSteps,
+  workspaceMemberUsable,
+  type Q,
   type RunnerLoginRow,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
@@ -66,27 +69,28 @@ export function createRunnerLogin(options: {
   onSignedIn?: (input: { runnerId: string; agent: Agent }) => void;
 }) {
   const { db, work } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const inputs = new Map<string, { id: string; value: RunnerLoginInput }>();
-  function access(workspaceId: string, userId: string, runnerId: string) {
-    const member = workspaceMember(db, workspaceId, userId);
-    const runner = getRunner(db, runnerId);
+  function* accessSteps(q: Q, workspaceId: string, userId: string, runnerId: string) {
+    const member = yield* workspaceMemberSteps(q, workspaceId, userId);
+    const runner = yield* getRunnerSteps(q, runnerId);
     if (
       !workspaceMemberUsable(member) ||
       !runner ||
       runner.workspaceId !== workspaceId ||
       runner.ownerUserId !== userId ||
       (runner.status !== "active" && runner.status !== "paused") ||
-      !workspaceMemberUsable(workspaceMember(db, workspaceId, runner.ownerUserId))
+      !workspaceMemberUsable(yield* workspaceMemberSteps(q, workspaceId, runner.ownerUserId))
     )
       throw new Error("Agent account access denied");
     return runner;
   }
-  function read(id: string) {
-    const row = runnerLoginRow(db, id);
+  function* readSteps(q: Q, id: string): Steps<Row> {
+    const row = yield* runnerLoginRowSteps(q, id);
     if (!row) throw new Error("Login session is unavailable");
     if (pending(row) && row.expiresAt <= now()) {
-      closeRunnerLogin(db, id, "expired");
+      yield* closeRunnerLoginSteps(q, id, "expired");
       inputs.delete(id);
       return {
         ...row,
@@ -112,9 +116,15 @@ export function createRunnerLogin(options: {
         : null,
     };
   }
-  function own(principal: WorkspacePrincipal, runnerId: string, agent: Agent, id: string) {
-    access(principal.workspaceId, principal.userId, runnerId);
-    const row = read(id);
+  function* ownSteps(
+    q: Q,
+    principal: WorkspacePrincipal,
+    runnerId: string,
+    agent: Agent,
+    id: string,
+  ) {
+    yield* accessSteps(q, principal.workspaceId, principal.userId, runnerId);
+    const row = yield* readSteps(q, id);
     if (
       row.runnerId !== runnerId ||
       row.workspaceId !== principal.workspaceId ||
@@ -124,15 +134,16 @@ export function createRunnerLogin(options: {
       throw new Error("Login session access denied");
     return row;
   }
-  function namedAccount(
+  function* namedAccountSteps(
+    q: Q,
     principal: WorkspacePrincipal,
     runnerId: string,
     agent: Agent,
     bindingId: string,
-  ): RunnerAccount | null {
-    const binding = getAgentBinding(db, principal.workspaceId, bindingId);
+  ): Steps<RunnerAccount | null> {
+    const binding = yield* getAgentBindingSteps(q, principal.workspaceId, bindingId);
     if (binding.legacy && binding.runnerId === runnerId && binding.agent === agent) return null;
-    const account = getAgentAccount(db, principal.workspaceId, binding.accountId);
+    const account = yield* getAgentAccountSteps(q, principal.workspaceId, binding.accountId);
     if (
       binding.legacy ||
       binding.runnerId !== runnerId ||
@@ -144,74 +155,86 @@ export function createRunnerLogin(options: {
     return { accountId: account.id, bindingId: binding.id };
   }
   const api = {
-    stop() {
+    async stop() {
       inputs.clear();
-      cancelPendingRunnerLogins(db);
+      await store.run((q) => cancelPendingRunnerLoginsSteps(q));
     },
     list(principal: WorkspacePrincipal, runnerId: string) {
-      access(principal.workspaceId, principal.userId, runnerId);
-      const agents = (["claude", "codex", "grok", "opencode"] as const).filter((agent) =>
-        work.supportsAgent(runnerId, agent),
-      );
-      return {
-        accounts: agents.map((agent) => {
-          const account = runnerAgentPolicyState(db, runnerId, agent);
-          const session = latestAgentRunnerLoginId(db, {
+      return store.run(function* (q) {
+        yield* accessSteps(q, principal.workspaceId, principal.userId, runnerId);
+        const agents = (["claude", "codex", "grok", "opencode"] as const).filter((agent) =>
+          work.supportsAgent(runnerId, agent),
+        );
+        const accounts = [];
+        for (const agent of agents) {
+          const account = yield* runnerAgentPolicyStateSteps(q, runnerId, agent);
+          const session = yield* latestAgentRunnerLoginIdSteps(q, {
             runnerId,
             userId: principal.userId,
             agent,
           });
           // Sign-in replaces the credentials these tasks read from their next request on.
-          const running = runnerAgentOpenWorkCount(db, runnerId, agent, now());
-          const binding = storedAgentBindingId(db, legacyAgentBindingId(runnerId, agent));
-          return {
+          const running = yield* runnerAgentOpenWorkCountSteps(q, runnerId, agent, now());
+          const binding = yield* storedAgentBindingIdSteps(
+            q,
+            legacyAgentBindingId(runnerId, agent),
+          );
+          accounts.push({
             agent,
             accountId: binding ? legacyAgentAccountId(principal.workspaceId, agent) : null,
             bindingId: binding,
             connected: account?.ready === 1 && account.authExpired === 0,
             running,
-            session: session ? snapshot(read(session)) : null,
-          };
-        }),
-        bindings: runnerNamedBindings(db, runnerId, principal.workspaceId)
-          .filter((binding) => agents.includes(binding.agent))
-          .map((binding) => {
-            const session = latestBindingRunnerLoginId(db, {
-              runnerId,
-              userId: principal.userId,
-              bindingId: binding.bindingId,
-            });
-            return {
-              ...binding,
-              enabled: binding.enabled === 1,
-              held:
-                runnerAccountUnsupported(db, runnerId, binding.bindingId, binding.agent) === null,
-              running: bindingRunningCount(db, binding.bindingId, now()),
-              session: session ? snapshot(read(session)) : null,
-            };
-          }),
-      };
+            session: session ? snapshot(yield* readSteps(q, session)) : null,
+          });
+        }
+        const bindings = [];
+        for (const binding of yield* runnerNamedBindingsSteps(q, runnerId, principal.workspaceId)) {
+          if (!agents.includes(binding.agent)) continue;
+          const session = yield* latestBindingRunnerLoginIdSteps(q, {
+            runnerId,
+            userId: principal.userId,
+            bindingId: binding.bindingId,
+          });
+          bindings.push({
+            ...binding,
+            enabled: binding.enabled === 1,
+            held:
+              (yield* runnerAccountUnsupportedSteps(
+                q,
+                runnerId,
+                binding.bindingId,
+                binding.agent,
+              )) === null,
+            running: yield* bindingRunningCountSteps(q, binding.bindingId, now()),
+            session: session ? snapshot(yield* readSteps(q, session)) : null,
+          });
+        }
+        return { accounts, bindings };
+      });
     },
     start(principal: WorkspacePrincipal, runnerId: string, agent: Agent, bindingId?: string) {
-      return immediate(db, () => {
-        access(principal.workspaceId, principal.userId, runnerId);
+      return store.transaction(function* (q) {
+        yield* accessSteps(q, principal.workspaceId, principal.userId, runnerId);
         const at = now();
-        for (const sessionId of inputs.keys()) read(sessionId);
-        const account = bindingId ? namedAccount(principal, runnerId, agent, bindingId) : null;
-        const existing = pendingRunnerLoginId(db, {
+        for (const sessionId of inputs.keys()) yield* readSteps(q, sessionId);
+        const account = bindingId
+          ? yield* namedAccountSteps(q, principal, runnerId, agent, bindingId)
+          : null;
+        const existing = yield* pendingRunnerLoginIdSteps(q, {
           runnerId,
           userId: principal.userId,
           agent,
           bindingId: account?.bindingId ?? null,
           at,
         });
-        if (existing) return snapshot(read(existing));
-        if (account && bindingRunningCount(db, account.bindingId, at) > 0)
+        if (existing) return snapshot(yield* readSteps(q, existing));
+        if (account && (yield* bindingRunningCountSteps(q, account.bindingId, at)) > 0)
           throw new SignInRefused(
             "Work is still running with this account. Let it finish or stop it, then sign in again.",
             409,
           );
-        if (pendingRunnerLoginCount(db, runnerId, at) >= 4)
+        if ((yield* pendingRunnerLoginCountSteps(q, runnerId, at)) >= 4)
           throw new SignInRefused(
             "This runner already has four sign-ins waiting. Finish one first.",
             429,
@@ -228,7 +251,7 @@ export function createRunnerLogin(options: {
           expiresAt,
           ...(account ? { account } : {}),
         });
-        insertRunnerLogin(db, {
+        yield* insertRunnerLoginSteps(q, {
           id,
           runnerId,
           workspaceId: principal.workspaceId,
@@ -238,24 +261,25 @@ export function createRunnerLogin(options: {
           updatedAt: at,
           bindingId: account?.bindingId ?? null,
         });
-        auditWorkspaceAccess(db, {
+        yield* auditWorkspaceAccessSteps(q, {
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           action: "runner.agent_login",
           subject: `${runnerId}/${agent}${account ? `/${account.bindingId}` : ""}`,
           now: at,
         });
-        return snapshot(read(id));
+        return snapshot(yield* readSteps(q, id));
       });
     },
-    exchange(runnerId: string, id: string, input: RunnerLoginUpdate) {
+    async exchange(runnerId: string, id: string, input: RunnerLoginUpdate) {
       const update = RunnerLoginUpdateSchema.parse(input);
       let signedIn: { runnerId: string; agent: Agent } | undefined;
-      const reply = immediate(db, () => {
-        const row = read(id);
+      let woke = false;
+      const reply = await store.transaction(function* (q) {
+        const row = yield* readSteps(q, id);
         if (row.runnerId !== runnerId) throw new Error("Login runner changed");
         try {
-          access(row.workspaceId, row.userId, runnerId);
+          yield* accessSteps(q, row.workspaceId, row.userId, runnerId);
         } catch (caughtError1) {
           journalCaught(
             caughtError1,
@@ -264,7 +288,7 @@ export function createRunnerLogin(options: {
             "optional file may be absent",
           );
           inputs.delete(id);
-          cancelPendingRunnerLogins(db, id);
+          yield* cancelPendingRunnerLoginsSteps(q, id);
           return { cancelled: true, input: null };
         }
         if (!pending(row)) return { cancelled: row.state !== "connected", input: null };
@@ -286,7 +310,7 @@ export function createRunnerLogin(options: {
         const finished = update.state === "connected" || update.state === "failed";
         if (finished) inputs.delete(id);
         const terminal = finished ? "" : update.terminal;
-        updateRunnerLogin(db, id, {
+        yield* updateRunnerLoginSteps(q, id, {
           state: update.state,
           terminal,
           authorization:
@@ -296,28 +320,31 @@ export function createRunnerLogin(options: {
         });
         if (update.state === "connected" && row.bindingId !== null) inputs.delete(id);
         if (update.state === "connected" && row.bindingId === null) {
-          setRunnerAgentSignedIn(db, runnerId, row.agent, true);
-          wakeRunnerSlotWaits(db, runnerId, now());
+          yield* setRunnerAgentSignedInSteps(q, runnerId, row.agent, true);
+          woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, now());
           inputs.delete(id);
           signedIn = { runnerId, agent: row.agent };
         }
         if (update.state === "connected") {
           const at = now();
-          recordAccountObservation(db, {
-            bindingId: row.bindingId ?? legacyAgentBindingId(runnerId, row.agent),
-            source: "sign_in",
-            sourceId: id,
-            observedAt: at,
-            now: at,
-            state: "ok",
-            clears: ["auth"],
-          });
+          yield* q.transaction((tx) =>
+            recordAccountObservationSteps(tx, {
+              bindingId: row.bindingId ?? legacyAgentBindingId(runnerId, row.agent),
+              source: "sign_in",
+              sourceId: id,
+              observedAt: at,
+              now: at,
+              state: "ok",
+              clears: ["auth"],
+            }),
+          );
         }
         return {
           cancelled: false,
           input: !finished && answer && answer.id === update.inputId ? answer : null,
         };
       });
+      if (woke) emitJobReady(store);
       if (signedIn) {
         try {
           options.onSignedIn?.(signedIn);
@@ -338,24 +365,24 @@ export function createRunnerLogin(options: {
         const runnerId = match[1]!;
         const agent = match[2] as Agent | undefined;
         const id = match[3];
-        if (!agent && request.method === "GET") return json(api.list(principal, runnerId));
+        if (!agent && request.method === "GET") return json(await api.list(principal, runnerId));
         if (agent && !id && request.method === "POST") {
           const binding = new URL(request.url).searchParams.get("binding");
           if (binding !== null && !bindingParameter.test(binding))
             return json({ error: "Unsupported agent account request." }, 400);
-          return json(api.start(principal, runnerId, agent, binding ?? undefined));
+          return json(await api.start(principal, runnerId, agent, binding ?? undefined));
         }
         if (!agent || !id) return json({ error: "Unsupported agent account request." }, 405);
-        const row = own(principal, runnerId, agent, id);
+        const row = await store.run((q) => ownSteps(q, principal, runnerId, agent, id));
         if (!match[4] && request.method === "GET") return json(snapshot(row));
         if (!match[4] && request.method === "DELETE") {
-          if (pending(row)) closeRunnerLogin(db, id, "cancelled");
+          if (pending(row)) await store.run((q) => closeRunnerLoginSteps(q, id, "cancelled"));
           inputs.delete(id);
-          return json(snapshot(read(id)));
+          return json(snapshot(await store.run((q) => readSteps(q, id))));
         }
         if (match[4] && request.method === "POST") {
           const value = RunnerLoginInputSchema.parse(await body(request));
-          const current = own(principal, runnerId, agent, id);
+          const current = await store.run((q) => ownSteps(q, principal, runnerId, agent, id));
           if (
             !pending(current) ||
             !current.inputId ||
@@ -385,7 +412,11 @@ export function createRunnerLogin(options: {
       if (request.method !== "POST") return json({ error: "Use POST." }, 405);
       try {
         return json(
-          api.exchange(runnerId, match[1]!, RunnerLoginUpdateSchema.parse(await body(request))),
+          await api.exchange(
+            runnerId,
+            match[1]!,
+            RunnerLoginUpdateSchema.parse(await body(request)),
+          ),
         );
       } catch (caughtError3) {
         journalCaught(caughtError3, "runner-login.fetch.json", null);

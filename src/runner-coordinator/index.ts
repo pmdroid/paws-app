@@ -338,7 +338,7 @@ export async function openRunnerCoordinator(options: {
       return withSigningKeys(await http.hostEnrollment(request), signing.signingKeys);
     },
     async stop() {
-      login.stop();
+      await login.stop();
       clearInterval(timer);
       clearInterval(modelTimer);
       clearInterval(signInTimer);
