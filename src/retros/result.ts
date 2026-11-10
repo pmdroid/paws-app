@@ -861,12 +861,18 @@ type AttemptSettlement = {
   now: number;
 };
 
-export function settleRetroAttempt(
+/** What a settlement still has to write, after its reads. Null when the retro is gone. */
+type SettlementWrite = ((tx: Q) => Steps<RetroSettlement>) | null;
+
+/** Reads outside a transaction, then writes in its own, as the sync wrappers did. */
+export async function settleRetroAttempt(
   db: Database,
   root: string,
   input: AttemptSettlement,
 ): Promise<RetroSettlement> {
-  return sqliteDb(db).transaction((q) => settleRetroAttemptSteps(q, root, input));
+  const store = sqliteDb(db);
+  const write = await store.run((q) => settlementSteps(q, root, input));
+  return write === null ? { ok: false, reason: "not_found" } : store.transaction(write);
 }
 
 export function* settleRetroAttemptSteps(
@@ -874,15 +880,19 @@ export function* settleRetroAttemptSteps(
   root: string,
   input: AttemptSettlement,
 ): Steps<RetroSettlement> {
+  const write = yield* settlementSteps(q, root, input);
+  return write === null ? { ok: false, reason: "not_found" } : yield* q.transaction(write);
+}
+
+function* settlementSteps(q: Q, root: string, input: AttemptSettlement): Steps<SettlementWrite> {
   const retro = yield* getRetroSteps(q, input.retroId);
-  if (retro === null || retro.digestSha256 === null) return { ok: false, reason: "not_found" };
+  if (retro === null || retro.digestSha256 === null) return null;
   const stored = yield* readRetroArtifactSteps(q, root, retro.id, "digest");
-  if (!stored.ok || stored.artifact.sha256 !== retro.digestSha256) {
-    yield* q.transaction((tx) =>
-      failRetroAttemptSteps(tx, { ...input, error: "digest_unreadable", now: input.now }),
-    );
-    return { ok: false, reason: "digest_unreadable" };
-  }
+  if (!stored.ok || stored.artifact.sha256 !== retro.digestSha256)
+    return function* (tx) {
+      yield* failRetroAttemptSteps(tx, { ...input, error: "digest_unreadable", now: input.now });
+      return { ok: false, reason: "digest_unreadable" };
+    };
   const digest = JSON.parse(new TextDecoder().decode(stored.bytes)) as RetroDigest;
   let validated: RetroResultValidation;
   if (!retroNeedsGeneration(digest))
@@ -904,34 +914,35 @@ export function* settleRetroAttemptSteps(
     });
   if (!validated.ok) {
     const diagnostic = validated.diagnostic;
-    const recorded = yield* q.transaction((tx) =>
-      failRetroAttemptSteps(tx, {
+    return function* (tx) {
+      const recorded = yield* failRetroAttemptSteps(tx, {
         retroId: retro.id,
         attempt: input.attempt,
         owner: input.owner,
         error: retroDiagnosticError(diagnostic),
         now: input.now,
-      }),
-    );
-    return {
-      ok: false,
-      reason: "invalid_result",
-      diagnostic: validated.diagnostic,
-      recorded,
-      retryable: recorded && input.attempt < retroAttemptLimits(retro.executionLimits).maxAttempts,
+      });
+      return {
+        ok: false,
+        reason: "invalid_result",
+        diagnostic,
+        recorded,
+        retryable:
+          recorded && input.attempt < retroAttemptLimits(retro.executionLimits).maxAttempts,
+      };
     };
   }
   const report = validated.report;
-  const publication = yield* q.transaction((tx) =>
-    publishRetroSteps(tx, {
+  return function* (tx) {
+    const publication = yield* publishRetroSteps(tx, {
       retroId: retro.id,
       attempt: input.attempt,
       owner: input.owner,
       result: report,
       items: retroReportItems(report),
       now: input.now,
-    }),
-  );
-  if (!publication.ok) return publication;
-  return { ok: true, report: validated.report, publication };
+    });
+    if (!publication.ok) return publication;
+    return { ok: true, report, publication };
+  };
 }

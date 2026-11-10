@@ -86,18 +86,6 @@ export function workspaceSessionIds(
   ).filter((id) => getLinearSessionAccess(db, id) === "allowed");
 }
 
-export function* workspaceSessionIdsSteps(
-  q: Q,
-  workspaceId: string,
-  userId: string,
-  clientId: string,
-) {
-  const allowed: string[] = [];
-  for (const id of yield* workspaceSessionCandidatesSteps(q, workspaceId, userId, clientId))
-    if ((yield* getLinearSessionAccessSteps(q, id)) === "allowed") allowed.push(id);
-  return allowed;
-}
-
 export function* sessionRepositoriesAllowedSteps(
   q: Q,
   sessionIds: readonly string[],
