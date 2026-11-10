@@ -91,7 +91,14 @@ import {
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { createHash, randomUUID } from "node:crypto";
-import { ask, askSteps, restart, restartSteps, awaitQuestion } from "./operations";
+import {
+  ask,
+  askSteps,
+  restart,
+  restartSteps,
+  awaitQuestion,
+  awaitQuestionSteps,
+} from "./operations";
 import {
   RUNNER_REPOSITORY_REASON,
   RUNNER_REPOSITORY_RETRY,
@@ -541,14 +548,17 @@ import {
 import {
   askForVisualReview,
   cancelVisualReviewQuestion,
-  carryVisualReview,
+  carryVisualReviewSteps,
   dueVisualReview,
+  dueVisualReviewSteps,
   pendingVisualReview,
+  pendingVisualReviewSteps,
   planVisualReviewCarry,
   postNote,
   remindVisualReview,
   reviewable,
   visualReviewApprovals,
+  visualReviewApprovalsSteps,
   visualReviewPullRequestNote,
   visualReviewHandoff,
 } from "./visual-review";
@@ -9369,25 +9379,27 @@ export class Orchestrator {
         due.evidenceIds,
         this.evidenceStorage(),
       );
-      const outcome = immediate(this.db, () => {
-        const now = dueVisualReview(this.db, item.id, requirements, approvals);
+      const db = this.db;
+      const at = this.now();
+      const outcome = await this.store.transaction(function* (q) {
+        const now = yield* dueVisualReviewSteps(q, item.id, requirements, approvals);
         if (now === null) return "none" as const;
         if (now.requirement.id !== due.requirement.id) return "again" as const;
-        const current = getWorkItem(this.db, item.id);
+        const current = yield* getWorkItemSteps(q, item.id);
         if (!reviewable(current)) return "none" as const;
         const carried = plan.carried.filter((entry) => now.evidenceIds.includes(entry.evidenceId));
         if (carried.length === now.evidenceIds.length) {
-          const review = carryVisualReview(this.db, {
+          const review = yield* carryVisualReviewSteps(q, {
             item: current,
             sessionId,
             checkId: now.requirement.id,
             evidenceIds: now.evidenceIds,
             carried,
             head,
-            now: this.now(),
+            now: at,
           });
           approvals.push(
-            ...visualReviewApprovals(this.db, item.id, itemPathId(item)).filter(
+            ...(yield* visualReviewApprovalsSteps(q, item.id, itemPathId(item))).filter(
               (approval) =>
                 approval.checkId === review.checkId &&
                 approval.commit === head &&
@@ -9398,7 +9410,7 @@ export class Orchestrator {
         }
         const runId = current.currentRunId ?? null;
         if (
-          !askForVisualReview(this.db, {
+          !askForVisualReview(db, {
             item,
             runId,
             sessionId,
@@ -9408,7 +9420,7 @@ export class Orchestrator {
             base,
             head,
             publicUrl: evidence.publicUrl,
-            now: this.now(),
+            now: at,
           })
         )
           return "none" as const;
@@ -9437,18 +9449,19 @@ export class Orchestrator {
   ): Promise<boolean> {
     if (pendingVisualReview(this.db, item) === null)
       await this.openVisualReviewCheck(item, worktree, base, head);
-    const waiting = immediate(this.db, () => {
-      const current = getWorkItem(this.db, item.id);
+    const now = this.now();
+    const waiting = await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, item.id);
       if (
         !current ||
         current.cancelRequested ||
         (current.state !== "verifying" && current.state !== "merge_queue")
       )
         return true;
-      const pending = pendingVisualReview(this.db, current);
+      const pending = yield* pendingVisualReviewSteps(q, current);
       if (pending === null) return false;
-      awaitQuestion(this.db, current, pending.question, this.now());
-      if (current.currentRunId) releaseRunCapacity(this.db, current.currentRunId, this.now());
+      yield* awaitQuestionSteps(q, current, pending.question, now);
+      if (current.currentRunId) yield* releaseRunCapacitySteps(q, current.currentRunId, now);
       return true;
     });
     await this.flush();

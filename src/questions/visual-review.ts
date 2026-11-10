@@ -1,16 +1,24 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
-  approvedVisualReviewRows,
+  approvedVisualReviewRowsSteps,
   insertVisualReviewRow,
-  itemVisualReviewRows,
+  insertVisualReviewRowSteps,
+  itemVisualReviewRowsSteps,
   lastVisualReviewFeedbackRow,
+  lastVisualReviewFeedbackRowSteps,
   markVisualReviewRowStale,
+  markVisualReviewRowStaleSteps,
   recordVisualReviewAnswerRow,
-  visualReviewRoundCounts,
-  visualReviewRow,
+  recordVisualReviewAnswerRowSteps,
+  settled,
+  sqliteDb,
+  visualReviewRoundCountsSteps,
+  visualReviewRowSteps,
+  type Q,
+  type Steps,
 } from "../db";
-import { ask } from "./lifecycle";
+import { ask, askSteps } from "./lifecycle";
 import type { StoredQuestion } from "./store";
 
 /** The question Paws asks when an `approval: human` check has its files. */
@@ -97,22 +105,53 @@ type VisualReviewRow = {
   carried: string | null;
 };
 
+type StepsAsk = (
+  q: Q,
+  asker: { itemId: string; runId: string | null; sessionId: string },
+  kind: "visual-review",
+  body: string,
+  input: { options: string[]; context?: string; now: number },
+) => Steps<{ question: StoredQuestion }>;
+
+type OpenInput = {
+  itemId: string;
+  runId: string | null;
+  sessionId: string;
+  checkId: string;
+  evidenceIds: readonly string[];
+  headCommit: string;
+  now: number;
+  /** Files among `evidenceIds` that are not asked about again. */
+  carried?: readonly VisualReviewCarry[];
+  shown?: VisualReviewShown;
+};
+
+/** Opens the review question and records the files it shows, in the caller's transaction. */
+export function* openVisualReviewSteps(
+  q: Q,
+  input: OpenInput & { ask?: StepsAsk },
+): Steps<{ question: StoredQuestion; review: StoredVisualReview }> {
+  const { question } = yield* (input.ask ?? askSteps)(
+    q,
+    { itemId: input.itemId, runId: input.runId, sessionId: input.sessionId },
+    "visual-review",
+    VISUAL_REVIEW_QUESTION,
+    {
+      options: [...VISUAL_REVIEW_OPTIONS],
+      ...(input.shown ? { context: JSON.stringify(input.shown) } : {}),
+      now: input.now,
+    },
+  );
+  return {
+    question,
+    review: yield* insertVisualReviewSteps(q, { ...input, questionId: question.id }),
+  };
+}
+
 /** Opens the review question and records the files it shows. Call inside a transaction. */
 export function openVisualReview(
   db: Database,
-  input: {
-    ask?: typeof ask;
-    itemId: string;
-    runId: string | null;
-    sessionId: string;
-    checkId: string;
-    evidenceIds: readonly string[];
-    headCommit: string;
-    now: number;
-    /** Files among `evidenceIds` that are not asked about again. */
-    carried?: readonly VisualReviewCarry[];
-    shown?: VisualReviewShown;
-  },
+  input: OpenInput & { ask?: typeof ask },
 ): { question: StoredQuestion; review: StoredVisualReview } {
   const { question } = (input.ask ?? ask)(
     db,
@@ -128,24 +167,18 @@ export function openVisualReview(
   return { question, review: insertVisualReview(db, { ...input, questionId: question.id }) };
 }
 
-/**
- * Records the files a review question asks about, bound to `headCommit`. The
- * question is a link ask answered on the item page, or an older Linear
- * question with options. Call inside a transaction.
- */
-export function insertVisualReview(
-  db: Database,
-  input: {
-    questionId: string;
-    itemId: string;
-    checkId: string;
-    evidenceIds: readonly string[];
-    headCommit: string;
-    now: number;
-    carried?: readonly VisualReviewCarry[];
-  },
-): StoredVisualReview {
-  insertVisualReviewRow(db, {
+type InsertInput = {
+  questionId: string;
+  itemId: string;
+  checkId: string;
+  evidenceIds: readonly string[];
+  headCommit: string;
+  now: number;
+  carried?: readonly VisualReviewCarry[];
+};
+
+export function* insertVisualReviewSteps(q: Q, input: InsertInput): Steps<StoredVisualReview> {
+  yield* insertVisualReviewRowSteps(q, {
     questionId: input.questionId,
     itemId: input.itemId,
     checkId: input.checkId,
@@ -154,7 +187,16 @@ export function insertVisualReview(
     headCommit: input.headCommit,
     ...(input.carried?.length ? { carried: input.carried } : {}),
   });
-  return getVisualReview(db, input.questionId)!;
+  return (yield* getVisualReviewSteps(q, input.questionId))!;
+}
+
+/**
+ * Records the files a review question asks about, bound to `headCommit`. The
+ * question is a link ask answered on the item page, or an older Linear
+ * question with options. Call inside a transaction.
+ */
+export function insertVisualReview(db: Database, input: InsertInput): StoredVisualReview {
+  return settled(sqliteDb(db).run((q) => insertVisualReviewSteps(q, input)));
 }
 
 /**
@@ -175,26 +217,24 @@ export function visualReviewLinkDetail(
   ].join(" ");
 }
 
-/**
- * Records an accepted review without a question: every file carried an
- * earlier approval. It names the latest original approver. Call inside a transaction.
- */
-export function recordCarriedVisualReview(
-  db: Database,
-  input: {
-    itemId: string;
-    checkId: string;
-    evidenceIds: readonly string[];
-    carried: readonly VisualReviewCarry[];
-    headCommit: string;
-    now: number;
-  },
-): StoredVisualReview {
+type CarriedInput = {
+  itemId: string;
+  checkId: string;
+  evidenceIds: readonly string[];
+  carried: readonly VisualReviewCarry[];
+  headCommit: string;
+  now: number;
+};
+
+export function* recordCarriedVisualReviewSteps(
+  q: Q,
+  input: CarriedInput,
+): Steps<StoredVisualReview> {
   const latest = input.carried.reduce((last, entry) =>
     entry.approvedAt > last.approvedAt ? entry : last,
   );
   const id = `carry_${randomUUID()}`;
-  insertVisualReviewRow(db, {
+  yield* insertVisualReviewRowSteps(q, {
     questionId: id,
     itemId: input.itemId,
     checkId: input.checkId,
@@ -206,7 +246,15 @@ export function recordCarriedVisualReview(
     answeredBy: latest.approvedBy,
     answeredAt: input.now,
   });
-  return getVisualReview(db, id)!;
+  return (yield* getVisualReviewSteps(q, id))!;
+}
+
+/**
+ * Records an accepted review without a question: every file carried an
+ * earlier approval. It names the latest original approver. Call inside a transaction.
+ */
+export function recordCarriedVisualReview(db: Database, input: CarriedInput): StoredVisualReview {
+  return settled(sqliteDb(db).run((q) => recordCarriedVisualReviewSteps(q, input)));
 }
 
 /** Every file of the review carried over, so nobody was asked. */
@@ -220,19 +268,15 @@ export function carriedInFull(review: {
   );
 }
 
-/**
- * Each file a person accepted for the check, oldest approval first, with the
- * approval it came from. A carried file points at the file the person saw, so
- * screens are always compared with what a person accepted. A review that went
- * stale still counts: the person accepted those screens.
- */
-export function humanApprovedScreens(
-  db: Database,
+type ApprovedScreen = Omit<VisualReviewCarry, "evidenceId" | "match">;
+
+export function* humanApprovedScreensSteps(
+  q: Q,
   itemId: string,
   checkId: string,
-): Omit<VisualReviewCarry, "evidenceId" | "match">[] {
-  const rows = approvedVisualReviewRows(db, itemId, checkId) as VisualReviewRow[];
-  const seen = new Map<string, Omit<VisualReviewCarry, "evidenceId" | "match">>();
+): Steps<ApprovedScreen[]> {
+  const rows = (yield* approvedVisualReviewRowsSteps(q, itemId, checkId)) as VisualReviewRow[];
+  const seen = new Map<string, ApprovedScreen>();
   for (const review of rows.map(mapVisualReview)) {
     const carried = new Map(review.carried.map((entry) => [entry.evidenceId, entry]));
     for (const id of review.evidenceIds) {
@@ -257,21 +301,62 @@ export function humanApprovedScreens(
   return [...seen.values()];
 }
 
-export function getVisualReview(db: Database, questionId: string): StoredVisualReview | null {
-  const row = visualReviewRow(db, questionId) as VisualReviewRow | undefined;
+/**
+ * Each file a person accepted for the check, oldest approval first, with the
+ * approval it came from. A carried file points at the file the person saw, so
+ * screens are always compared with what a person accepted. A review that went
+ * stale still counts: the person accepted those screens.
+ */
+export function humanApprovedScreens(
+  db: Database,
+  itemId: string,
+  checkId: string,
+): ApprovedScreen[] {
+  return settled(sqliteDb(db).run((q) => humanApprovedScreensSteps(q, itemId, checkId)));
+}
+
+export function* getVisualReviewSteps(q: Q, questionId: string): Steps<StoredVisualReview | null> {
+  const row = (yield* visualReviewRowSteps(q, questionId)) as VisualReviewRow | undefined;
   return row === undefined ? null : mapVisualReview(row);
+}
+
+export function getVisualReview(db: Database, questionId: string): StoredVisualReview | null {
+  return settled(sqliteDb(db).run((q) => getVisualReviewSteps(q, questionId)));
+}
+
+type ContinueInput = {
+  itemId: string;
+  runId: string | null;
+  sessionId: string;
+  checkId: string;
+  now: number;
+};
+
+export function* openVisualReviewContinueSteps(
+  q: Q,
+  input: ContinueInput & { ask?: StepsAsk },
+): Steps<StoredQuestion> {
+  const { question } = yield* (input.ask ?? askSteps)(
+    q,
+    { itemId: input.itemId, runId: input.runId, sessionId: input.sessionId },
+    "visual-review",
+    visualReviewContinueQuestion(VISUAL_REVIEW_ROUNDS),
+    { options: [...VISUAL_REVIEW_CONTINUE_OPTIONS], now: input.now },
+  );
+  yield* insertVisualReviewRowSteps(q, {
+    questionId: question.id,
+    itemId: input.itemId,
+    checkId: input.checkId,
+    evidenceIds: [],
+    createdAt: input.now,
+    kind: "continue",
+  });
+  return question;
 }
 
 export function openVisualReviewContinue(
   db: Database,
-  input: {
-    ask?: typeof ask;
-    itemId: string;
-    runId: string | null;
-    sessionId: string;
-    checkId: string;
-    now: number;
-  },
+  input: ContinueInput & { ask?: typeof ask },
 ): StoredQuestion {
   const { question } = (input.ask ?? ask)(
     db,
@@ -291,43 +376,69 @@ export function openVisualReviewContinue(
   return question;
 }
 
+type ReviewAnswer = {
+  outcome: VisualReviewOutcome;
+  answeredBy: string;
+  now: number;
+  feedback?: string;
+  headCommit?: string;
+};
+
+export function* recordVisualReviewAnswerSteps(q: Q, questionId: string, input: ReviewAnswer) {
+  yield* recordVisualReviewAnswerRowSteps(q, questionId, input);
+}
+
 export function recordVisualReviewAnswer(
   db: Database,
   questionId: string,
-  input: {
-    outcome: VisualReviewOutcome;
-    answeredBy: string;
-    now: number;
-    feedback?: string;
-    headCommit?: string;
-  },
+  input: ReviewAnswer,
 ): void {
   recordVisualReviewAnswerRow(db, questionId, input);
+}
+
+export function* markVisualReviewStaleSteps(q: Q, questionId: string) {
+  yield* markVisualReviewRowStaleSteps(q, questionId);
 }
 
 export function markVisualReviewStale(db: Database, questionId: string): void {
   markVisualReviewRowStale(db, questionId);
 }
 
-export function acceptedVisualReviews(db: Database, itemId: string): StoredVisualReview[] {
-  return (itemVisualReviewRows(db, itemId, ["accepted"], true) as VisualReviewRow[]).map(
-    mapVisualReview,
-  );
+export function* acceptedVisualReviewsSteps(q: Q, itemId: string) {
+  return (
+    (yield* itemVisualReviewRowsSteps(q, itemId, ["accepted"], true)) as VisualReviewRow[]
+  ).map(mapVisualReview);
 }
 
-export function rejectedEvidenceIds(db: Database, itemId: string): Set<string> {
-  const rows = itemVisualReviewRows(
-    db,
+export function acceptedVisualReviews(db: Database, itemId: string): StoredVisualReview[] {
+  return settled(sqliteDb(db).run((q) => acceptedVisualReviewsSteps(q, itemId)));
+}
+
+export function* rejectedEvidenceIdsSteps(q: Q, itemId: string): Steps<Set<string>> {
+  const rows = (yield* itemVisualReviewRowsSteps(
+    q,
     itemId,
     ["changes_requested", "stale"],
     false,
-  ) as VisualReviewRow[];
+  )) as VisualReviewRow[];
   return new Set(rows.flatMap((row) => mapVisualReview(row).evidenceIds));
 }
 
-export function visualReviewRounds(db: Database, itemId: string, checkId: string): number {
-  const row = visualReviewRoundCounts(db, itemId, checkId);
+export function rejectedEvidenceIds(db: Database, itemId: string): Set<string> {
+  return settled(sqliteDb(db).run((q) => rejectedEvidenceIdsSteps(q, itemId)));
+}
+
+export function* visualReviewRoundsSteps(q: Q, itemId: string, checkId: string): Steps<number> {
+  const row = yield* visualReviewRoundCountsSteps(q, itemId, checkId);
   return row.changes - VISUAL_REVIEW_ROUNDS * row.continued;
+}
+
+export function visualReviewRounds(db: Database, itemId: string, checkId: string): number {
+  return settled(sqliteDb(db).run((q) => visualReviewRoundsSteps(q, itemId, checkId)));
+}
+
+export function* lastVisualReviewFeedbackSteps(q: Q, itemId: string, checkId: string) {
+  return yield* lastVisualReviewFeedbackRowSteps(q, itemId, checkId);
 }
 
 export function lastVisualReviewFeedback(
