@@ -18,39 +18,42 @@ import { checkoutExclusionsFor, loadConfigFile } from "../config";
 import { join, relative, sep } from "node:path";
 import type { Database } from "bun:sqlite";
 import {
-  unansweredRunnerQuestions,
-  setRunnerWorkConsumedSequence,
-  askedQuestionRow,
-  questionRowById,
+  unansweredRunnerQuestionsSteps,
+  setRunnerWorkConsumedSequenceSteps,
+  askedQuestionRowSteps,
+  questionRowByIdSteps,
   workspaceMemberUsableSql,
-  getTaskMode,
+  getTaskModeSteps,
   closeFallbackAttempts,
   fallbackHistory,
   legacyAgentAccountId,
   legacyAgentBindingId,
   getWorkItem,
-  immediate,
+  getWorkItemSteps,
   listHooks,
-  startAgentWait,
-  endAgentWait,
-  pinnedSlotsReserved,
-  releasePinnedSlot,
+  startAgentWaitAsync,
+  endAgentWaitAsync,
+  pinnedSlotsReservedSteps,
+  releasePinnedSlotSteps,
   recordFallbackAttempt,
-  runnerHasCapacity,
-  runnerSlotsHeldBetweenCommands,
+  runnerHasCapacitySteps,
+  runnerSlotsHeldBetweenCommandsSteps,
   saveCheckpoint,
+  saveCheckpointSteps,
   runnerLeaseCutoff,
-  runnerEventsAfter,
-  clearRunnerSessionMove,
-  noteRunnerSessionMove,
-  recordItemCandidate,
+  runnerEventsAfterSteps,
+  clearRunnerSessionMoveSteps,
+  noteRunnerSessionMoveSteps,
+  recordItemCandidateSteps,
   releaseRunnerReservation,
+  releaseRunnerReservationSteps,
   reserveRunnerSlot,
+  reserveRunnerSlotSteps,
   runnerReservationHolder,
-  unassignedRunnerReservations,
-  settled,
+  unassignedRunnerReservationsSteps,
   sqliteDb,
   type Db,
+  type Q,
 } from "../db";
 import {
   ArtifactRejectedError,
@@ -111,6 +114,7 @@ import { createRemoteHandover } from "./handover";
 import { conversationTurns } from "./conversation";
 import type { RunnerHelpers } from "../runner-helpers";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
+import { syncSteps } from "./sync-steps";
 import {
   CheckpointLookupFailed,
   ensureStartOnRemote,
@@ -317,6 +321,7 @@ export function createRemoteAgentRunner(options: {
   };
 }) {
   const { db, work, results, health } = options;
+  const store = options.store ?? sqliteDb(db);
   const now = options.now ?? Date.now;
   const mono = options.mono ?? systemClock.mono;
   const interval = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -324,9 +329,8 @@ export function createRemoteAgentRunner(options: {
   const hungRunMs = Math.max(silentRunMs, options.hungRunMs ?? DEFAULT_HUNG_RUN_MS);
   const instanceId = options.instanceId ?? randomUUID();
   const reservations = new Map<string, string>();
-  const reserved = (runId: string) =>
-    reservations.has(runId) ||
-    settled(runnerReservationHolder(sqliteDb(db), runId, now())) !== null;
+  const reserved = async (runId: string) =>
+    reservations.has(runId) || (await runnerReservationHolder(store, runId, now())) !== null;
   const readers = new Set<string>();
   /** Items told that their runner lost a run, so a run lost again on a retry says it once. */
   const toldLost = new Set<string>();
@@ -413,7 +417,11 @@ export function createRemoteAgentRunner(options: {
     const agent = placement.profile?.agent;
     const accountCheck = untils.filter((until) => until > now()).sort((a, b) => a - b)[0];
     const resetsAt = agent
-      ? (accountCheck ?? usageLimitReset(agent, getWorkItem(db, itemId)?.sessionKey ?? null))
+      ? (accountCheck ??
+        usageLimitReset(
+          agent,
+          (await store.run((q) => getWorkItemSteps(q, itemId)))?.sessionKey ?? null,
+        ))
       : null;
     const heldForSession =
       !placement.pinnedRunnerId &&
@@ -441,27 +449,30 @@ export function createRemoteAgentRunner(options: {
       throw new RunnerCapacityWait(busy, heldForSession ? SESSION_GRACE_MS : undefined, details);
     const readyRunners = options.placement
       ? async () => {
-          const runId = getWorkItem(db, itemId)?.currentRunId;
+          const runId = (await store.run((q) => getWorkItemSteps(q, itemId)))?.currentRunId;
           const candidates = await options.placement!.candidates({
             ...placement,
-            reserved: unassigned(runId ?? undefined),
+            reserved: await unassigned(runId ?? undefined),
           });
-          if (!runId || reserved(runId)) return [];
-          const pending = unassigned(runId);
-          return candidates
-            .filter((runner) => {
+          if (!runId || (await reserved(runId))) return [];
+          const pending = await unassigned(runId);
+          const ready: string[] = [];
+          for (const runner of candidates) {
+            const free = await store.run(function* (q) {
               const held =
-                runnerSlotsHeldBetweenCommands(db, runner.id, now(), runId) +
-                pinnedSlotsReserved(db, runner.id, itemId, now());
-              return runnerHasCapacity(
-                db,
+                (yield* runnerSlotsHeldBetweenCommandsSteps(q, runner.id, now(), runId)) +
+                (yield* pinnedSlotsReservedSteps(q, runner.id, itemId, now()));
+              return yield* runnerHasCapacitySteps(
+                q,
                 runner.id,
                 now(),
                 runId,
                 (pending.get(runner.id) ?? 0) + held,
               );
-            })
-            .map((runner) => runner.id);
+            });
+            if (free) ready.push(runner.id);
+          }
+          return ready;
         }
       : undefined;
     if (agent && limit && limit.resumeAt > now())
@@ -501,7 +512,10 @@ export function createRemoteAgentRunner(options: {
       try {
         const selected = await select(itemId, placement, limit, rejected);
         // It lands: the session leaves the old runner's card and shows on the new one.
-        if (move.from) clearRunnerSessionMove(db, runId, move.from);
+        if (move.from) {
+          const from = move.from;
+          await store.run((q) => clearRunnerSessionMoveSteps(q, runId, from));
+        }
         return selected;
       } catch (error) {
         if (error instanceof UsageLimitPause || placement.signal?.aborted) throw error;
@@ -515,14 +529,16 @@ export function createRemoteAgentRunner(options: {
           move.waiting = true;
           const why = handoverWaitReason(move, rejected, error, placement.profile?.agent);
           // The runner card shows the reason Linear gets on the session's row.
-          if (move.from)
-            noteRunnerSessionMove(db, {
+          if (move.from) {
+            const note = {
               runId,
               runnerId: move.from,
-              status: "waiting",
+              status: "waiting" as const,
               reason: why,
               now: now(),
-            });
+            };
+            await store.run((q) => noteRunnerSessionMoveSteps(q, note));
+          }
           await onEvent?.({ type: "progress", text: handoverWaitNotice(db, move, why) });
         }
       }
@@ -553,9 +569,10 @@ export function createRemoteAgentRunner(options: {
   }
   /** Reservations per runner whose run has no runner_work row there yet. */
   function unassigned(excludeRunId = "") {
-    const counts = settled(
-      unassignedRunnerReservations(sqliteDb(db), now(), instanceId, excludeRunId),
-    );
+    return store.run((q) => unassignedSteps(q, excludeRunId));
+  }
+  function* unassignedSteps(q: Q, excludeRunId = "") {
+    const counts = yield* unassignedRunnerReservationsSteps(q, now(), instanceId, excludeRunId);
     const assigned = new Map(
       db
         .query<{ runId: string; runnerId: string }, [string]>(
@@ -577,13 +594,13 @@ export function createRemoteAgentRunner(options: {
     offered: string[] = [],
     untils: number[] = [],
   ) {
-    const item = getWorkItem(db, itemId);
+    const item = await store.run((q) => getWorkItemSteps(q, itemId));
     if (!item?.currentRunId) throw new Error("Remote task has no current run");
     let candidates: readonly { id: string; workspaceId: string; account?: PlacementAccount }[] =
       options.placement
         ? await options.placement.candidates({
             ...placement,
-            reserved: unassigned(item.currentRunId),
+            reserved: await unassigned(item.currentRunId),
             onRejected: (id, reason, until) => {
               rejected.push(`${id}: ${reason}`);
               if (until !== undefined) untils.push(until);
@@ -629,43 +646,40 @@ export function createRemoteAgentRunner(options: {
         rejected.push(`${runner.id}: excluded after failed attempt`);
         continue;
       }
-      if (reserved(item.currentRunId)) {
+      if (await reserved(item.currentRunId)) {
         rejected.push(`${runner.id}: the run is already being placed`);
         continue;
       }
-      const free = () =>
-        runnerHasCapacity(
-          db,
-          runner.id,
-          now(),
-          item.currentRunId!,
-          (unassigned(item.currentRunId!).get(runner.id) ?? 0) +
-            runnerSlotsHeldBetweenCommands(db, runner.id, now(), item.currentRunId!) +
-            pinnedSlotsReserved(db, runner.id, itemId, now()),
-        );
-      if (!free()) {
+      function* free(q: Q) {
+        const extra =
+          ((yield* unassignedSteps(q, item!.currentRunId!)).get(runner.id) ?? 0) +
+          (yield* runnerSlotsHeldBetweenCommandsSteps(q, runner.id, now(), item!.currentRunId!)) +
+          (yield* pinnedSlotsReservedSteps(q, runner.id, itemId, now()));
+        return yield* runnerHasCapacitySteps(q, runner.id, now(), item!.currentRunId!, extra);
+      }
+      if (!(await store.run(free))) {
         rejected.push(`${runner.id}${NO_FREE_CAPACITY}`);
         continue;
       }
       try {
-        const taken = immediate(db, () => {
-          if (!free()) return NO_FREE_CAPACITY;
+        const taken = await store.transaction(function* (q) {
+          if (!(yield* free(q))) return NO_FREE_CAPACITY;
           if (
-            !settled(
-              reserveRunnerSlot(sqliteDb(db), {
+            !(yield* q.transaction((inner) =>
+              reserveRunnerSlotSteps(inner, {
                 runId: item.currentRunId!,
                 runnerId: runner.id,
                 instanceId,
                 now: now(),
               }),
-            )
+            ))
           )
             return ": the run is already being placed";
-          const mode = getTaskMode(db, itemId);
+          const mode = yield* getTaskModeSteps(q, itemId);
           if (isResponseTaskMode(mode))
             work.scopeTask(item.currentRunId!, runner.workspaceId, work.identity(runner.id).userId);
           else work.scope(item.currentRunId!, runner.workspaceId);
-          releasePinnedSlot(db, itemId);
+          yield* releasePinnedSlotSteps(q, itemId);
           return null;
         });
         if (taken) {
@@ -686,13 +700,13 @@ export function createRemoteAgentRunner(options: {
    * which names the heads it covers: it attaches only to the same command, and cancels other open
    * work no attempt here is reading so it can be placed again.
    */
-  function attachedWork(
+  async function attachedWork(
     itemId: string,
     type: WorkCommand["type"],
     closeoutPrompt?: string,
     readPrompt?: string,
   ) {
-    const runId = getWorkItem(db, itemId)?.currentRunId;
+    const runId = (await store.run((q) => getWorkItemSteps(q, itemId)))?.currentRunId;
     if (!runId) return undefined;
     const row = db
       .query<
@@ -727,7 +741,7 @@ export function createRemoteAgentRunner(options: {
         command.prompt === `${closeoutPrompt}\n\n${readPrompt}`);
     if (closeoutPrompt !== undefined && (command.type !== type || !sameCloseout)) {
       // The run holds one command at a time, so the stale one would block the new assignment.
-      if (!reserved(runId)) {
+      if (!(await reserved(runId))) {
         try {
           const issuedAt = now();
           work.enqueue({
@@ -749,9 +763,7 @@ export function createRemoteAgentRunner(options: {
     if (command.type !== type) return undefined;
     if (
       reservations.has(runId) ||
-      !settled(
-        reserveRunnerSlot(sqliteDb(db), { runId, runnerId: row.runnerId, instanceId, now: now() }),
-      )
+      !(await reserveRunnerSlot(store, { runId, runnerId: row.runnerId, instanceId, now: now() }))
     )
       throw new RunnerCapacityWait([row.runnerId]);
     reservations.set(runId, row.runnerId);
@@ -780,7 +792,7 @@ export function createRemoteAgentRunner(options: {
   const cancelItem = createRemoteCancellation({ ...options, checkpoint: checkpointBeforeStop });
   const handOverItem = createRemoteHandover(options);
   return {
-    store: options.store ?? sqliteDb(db),
+    store,
     cancelItem,
     handOverItem,
     runInProgress: (runId: string) => readers.has(runId),
@@ -800,7 +812,7 @@ export function createRemoteAgentRunner(options: {
           const left = handedOverFrom(db, itemId);
           if (left) Object.assign(move, left);
         }
-        const mode = getTaskMode(db, itemId);
+        const mode = await store.run((q) => getTaskModeSteps(q, itemId));
         const responseTask = isResponseTaskMode(mode);
         // The control plane keeps no worktree for the item: its head is a ref in the bare mirror.
         const itemCandidate = (repository: { owner: string; repo: string }) => ({
@@ -849,7 +861,7 @@ export function createRemoteAgentRunner(options: {
           holder?.agent === profile.agent
             ? { runnerId: holder.runnerId, bindingId: holder.bindingId }
             : undefined;
-        const runId = getWorkItem(db, itemId)?.currentRunId;
+        const runId = (await store.run((q) => getWorkItemSteps(q, itemId)))?.currentRunId;
         const { pinnedRunnerId, preferRunnerId } =
           !input.prepareOnly && runId
             ? runRunner(db, {
@@ -898,7 +910,7 @@ export function createRemoteAgentRunner(options: {
         // task binds its Linear session again below, before any event is read.
         const attached = input.prepareOnly
           ? undefined
-          : attachedWork(
+          : await attachedWork(
               itemId,
               responseTask ? "task" : input.role === "reviewer" ? "review" : "run",
               closeoutWork ? input.prompt : undefined,
@@ -922,7 +934,9 @@ export function createRemoteAgentRunner(options: {
         const sessionBusy =
           session !== undefined &&
           chosen?.offered.includes(session.runnerId) === true &&
-          !runnerHasCapacity(db, session.runnerId, now(), selected.runId);
+          !(await store.run((q) =>
+            runnerHasCapacitySteps(q, session.runnerId, now(), selected.runId),
+          ));
         const controller = new AbortController();
         const abort = () => controller.abort(input.signal?.reason);
         input.signal?.addEventListener("abort", abort, { once: true });
@@ -984,29 +998,31 @@ export function createRemoteAgentRunner(options: {
             const id = randomUUID();
             const issuedAt = now();
             try {
-              immediate(db, () => {
-                work.enqueue({
-                  id,
-                  runnerId: selected.id,
-                  workspaceId: selected.workspaceId,
-                  issuedAt,
-                  expiresAt: issuedAt + 120_000,
-                  type: "probe",
-                  profile,
-                  ...commandAccount(selected.account),
-                });
-                options.placement?.started({
-                  commandId: id,
-                  runnerId: selected.id,
-                  itemId,
-                  runId: selected.runId,
-                  profile,
-                  ...(selected.account ? { account: selected.account } : {}),
-                  role: input.role,
-                  purpose: "prepare",
-                  startedAt: issuedAt,
-                });
-              });
+              await store.transaction(() =>
+                syncSteps(() => {
+                  work.enqueue({
+                    id,
+                    runnerId: selected.id,
+                    workspaceId: selected.workspaceId,
+                    issuedAt,
+                    expiresAt: issuedAt + 120_000,
+                    type: "probe",
+                    profile,
+                    ...commandAccount(selected.account),
+                  });
+                  options.placement?.started({
+                    commandId: id,
+                    runnerId: selected.id,
+                    itemId,
+                    runId: selected.runId,
+                    profile,
+                    ...(selected.account ? { account: selected.account } : {}),
+                    role: input.role,
+                    purpose: "prepare",
+                    startedAt: issuedAt,
+                  });
+                }),
+              );
             } catch (error) {
               if (error instanceof PlacementRaceError)
                 throw placementRace(itemId, selected.id, error);
@@ -1023,14 +1039,16 @@ export function createRemoteAgentRunner(options: {
               else work.scope(selected.runId, selected.workspaceId);
               const result = await health.read(selected.id, id);
               if (result) {
-                const disposition = immediate(db, () =>
-                  options.placement?.finished({
-                    commandId: id,
-                    runnerId: selected.id,
-                    profile,
-                    result,
-                    finishedAt: now(),
-                  }),
+                const disposition = await store.transaction(() =>
+                  syncSteps(() =>
+                    options.placement?.finished({
+                      commandId: id,
+                      runnerId: selected.id,
+                      profile,
+                      result,
+                      finishedAt: now(),
+                    }),
+                  ),
                 );
                 if (
                   disposition?.retryable &&
@@ -1075,7 +1093,8 @@ export function createRemoteAgentRunner(options: {
                 networkGit,
                 signal,
               });
-            const wip = getWorkItem(db, itemId)?.checkpoint?.wipCommit;
+            const wip = (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint
+              ?.wipCommit;
             const head = await candidateHead(scoped.repository);
             if (!wip || wip === head) return;
             const known = await git([
@@ -1151,7 +1170,7 @@ export function createRemoteAgentRunner(options: {
             },
             networkGit: (args: string[]) => Promise<string>,
           ) => {
-            const checkpoint = getWorkItem(db, itemId)?.checkpoint;
+            const checkpoint = (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint;
             // A handoff saved by an earlier fallback still goes out until a runner receives it.
             const pending = checkpoint?.lostCommits;
             if (!scoped.repository || !scoped.item.branchName) return pending;
@@ -1216,13 +1235,15 @@ export function createRemoteAgentRunner(options: {
                 !taskScope && input.role === "implementer" && input.networkGit
                   ? await remoteStart(scoped, input.networkGit)
                   : undefined;
-              if (!taskScope && scoped.repository && scoped.item.branchName)
-                recordItemCandidate(db, {
+              if (!taskScope && scoped.repository && scoped.item.branchName) {
+                const candidate = {
                   itemId,
                   sha: await candidateHead(scoped.repository),
                   branch: scoped.item.branchName,
                   recordedAt: now(),
-                });
+                };
+                await store.run((q) => recordItemCandidateSteps(q, candidate));
+              }
               phase("start_commit");
               // A runner command does not carry the caller's session, so a resume replays.
               const replayed = input.resume?.replayPrompt ?? input.prompt;
@@ -1331,7 +1352,9 @@ export function createRemoteAgentRunner(options: {
                   : undefined
                 : head;
               if (!taskScope && !scoped.item.checkpoint && input.role === "implementer")
-                saveCheckpoint(db, itemId, { phase: "running", baseSha, wipCommit: baseSha });
+                await store.run((q) =>
+                  saveCheckpointSteps(q, itemId, { phase: "running", baseSha, wipCommit: baseSha }),
+                );
               const acceptsRebase =
                 !taskScope &&
                 versionAtLeast(
@@ -1342,7 +1365,8 @@ export function createRemoteAgentRunner(options: {
                     .get(selected.id)?.version,
                   REBASE_RUNNER_VERSION,
                 );
-              const checkpointBase = getWorkItem(db, itemId)?.checkpoint?.baseSha;
+              const checkpointBase = (await store.run((q) => getWorkItemSteps(q, itemId)))
+                ?.checkpoint?.baseSha;
               const upstreamMain = acceptsRebase
                 ? await git([
                     "--git-dir",
@@ -1401,7 +1425,8 @@ export function createRemoteAgentRunner(options: {
                   : undefined;
               if (
                 restoreCheckpoint &&
-                getWorkItem(db, itemId)?.checkpoint?.wipCommit !== restoreCheckpoint.sha
+                (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint?.wipCommit !==
+                  restoreCheckpoint.sha
               ) {
                 journal(
                   `item ${itemId} starts from ${head ?? "no head"} instead of its checkpoint ${restoreCheckpoint.sha}`,
@@ -1410,7 +1435,8 @@ export function createRemoteAgentRunner(options: {
               }
               if (restoreCheckpoint && head) {
                 const saved = restoreCheckpoint.sha;
-                const savedOn = getWorkItem(db, itemId)?.checkpoint?.checkpointMain;
+                const savedOn = (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint
+                  ?.checkpointMain;
                 const savedMain = savedOn?.sha === saved ? savedOn.main : undefined;
                 const startsOn = (bases: string[]) =>
                   checkpointStart(
@@ -1468,7 +1494,7 @@ export function createRemoteAgentRunner(options: {
                     // Session grace chooses the initial runner. Recheck the selected runner's
                     // authority without starting a new grace wait during preparation.
                     session: undefined,
-                    reserved: unassigned(selected.runId),
+                    reserved: await unassigned(selected.runId),
                   })
                 ).some(
                   (runner) =>
@@ -1707,12 +1733,17 @@ export function createRemoteAgentRunner(options: {
                     }),
               };
               try {
-                immediate(db, () => {
+                await store.transaction(function* (q) {
                   const others =
-                    settled(
-                      unassignedRunnerReservations(sqliteDb(db), now(), instanceId, selected.runId),
-                    ).get(selected.id) ?? 0;
-                  if (!runnerHasCapacity(db, selected.id, now(), selected.runId, others))
+                    (yield* unassignedRunnerReservationsSteps(
+                      q,
+                      now(),
+                      instanceId,
+                      selected.runId,
+                    )).get(selected.id) ?? 0;
+                  if (
+                    !(yield* runnerHasCapacitySteps(q, selected.id, now(), selected.runId, others))
+                  )
                     throw new RetryableRunnerError(
                       selected.id,
                       "Runner became busy before assignment",
@@ -1722,7 +1753,7 @@ export function createRemoteAgentRunner(options: {
                       true,
                     );
                   work.assign(assigned);
-                  settled(releaseRunnerReservation(sqliteDb(db), selected.runId, instanceId));
+                  yield* releaseRunnerReservationSteps(q, selected.runId, instanceId);
                   options.placement?.started({
                     commandId: assigned.id,
                     runnerId: selected.id,
@@ -1760,7 +1791,13 @@ export function createRemoteAgentRunner(options: {
                       to: selected.id,
                       ...(pinnedRunnerId === move.from
                         ? {}
-                        : { gone: runnerGoneReason(db, pinnedRunnerId, now() - RUNNER_ONLINE_MS) }),
+                        : {
+                            gone: await runnerGoneReason(
+                              store,
+                              pinnedRunnerId,
+                              now() - RUNNER_ONLINE_MS,
+                            ),
+                          }),
                       agent: profile.agent,
                     }
                   : undefined;
@@ -1769,8 +1806,8 @@ export function createRemoteAgentRunner(options: {
                 if (restorePlan && !restorePlan.eligible)
                   await emit({
                     type: "progress",
-                    text: sessionMoveNotice({
-                      db,
+                    text: await sessionMoveNotice({
+                      store,
                       ...restoreNotice,
                       outcome: { restored: false, failure: restorePlan.failure },
                     }),
@@ -1866,7 +1903,22 @@ export function createRemoteAgentRunner(options: {
               signal.throwIfAborted();
               // The runner's heartbeat no longer names this work, so it is gone, not just quiet.
               if (liveness()?.lostAt != null) {
-                const recovered = immediate(db, () =>
+                const recovered = await store.transaction(() =>
+                  syncSteps(() =>
+                    options.placement?.finished({
+                      commandId: assigned.id,
+                      runnerId: selected.id,
+                      profile,
+                      failure: "heartbeat_lost",
+                      finishedAt: now(),
+                    }),
+                  ),
+                );
+                if (!recovered?.retryable) throw error;
+                throw await lostRun("the runner no longer reports the command");
+              }
+              const interrupted = await store.transaction(() =>
+                syncSteps(() =>
                   options.placement?.finished({
                     commandId: assigned.id,
                     runnerId: selected.id,
@@ -1874,18 +1926,7 @@ export function createRemoteAgentRunner(options: {
                     failure: "heartbeat_lost",
                     finishedAt: now(),
                   }),
-                );
-                if (!recovered?.retryable) throw error;
-                throw await lostRun("the runner no longer reports the command");
-              }
-              const interrupted = immediate(db, () =>
-                options.placement?.finished({
-                  commandId: assigned.id,
-                  runnerId: selected.id,
-                  profile,
-                  failure: "heartbeat_lost",
-                  finishedAt: now(),
-                }),
+                ),
               );
               if (!interrupted?.retryable) throw error;
               if (heartbeatLost())
@@ -1907,14 +1948,16 @@ export function createRemoteAgentRunner(options: {
             if (questionError) throw questionError;
             complete = results.read(assigned.runId, assigned.generation, assigned.id);
             if (complete && !disposition)
-              disposition = immediate(db, () =>
-                options.placement?.finished({
-                  commandId: assigned.id,
-                  runnerId: selected.id,
-                  profile,
-                  result: complete!,
-                  finishedAt: now(),
-                }),
+              disposition = await store.transaction(() =>
+                syncSteps(() =>
+                  options.placement?.finished({
+                    commandId: assigned.id,
+                    runnerId: selected.id,
+                    profile,
+                    result: complete!,
+                    finishedAt: now(),
+                  }),
+                ),
               );
             if (complete && disposition?.retryable && input.role === "reviewer")
               throw new RetryableRunnerError(
@@ -1978,8 +2021,8 @@ export function createRemoteAgentRunner(options: {
                 await emit(
                   {
                     type: "progress",
-                    text: sessionMoveNotice({
-                      db,
+                    text: await sessionMoveNotice({
+                      store,
                       ...notice,
                       outcome: event.restored
                         ? { restored: true, turn: plan.turn }
@@ -1999,11 +2042,12 @@ export function createRemoteAgentRunner(options: {
               }
               if (event.type === "hook_failed") await emit(event, origin);
               const waitRun = { itemId, runId: assigned.runId, generation: assigned.generation };
-              if (event.type === "agent_wait_started") startAgentWait(db, waitRun, mono(), now());
+              if (event.type === "agent_wait_started")
+                await startAgentWaitAsync(store, waitRun, mono(), now());
               if (event.type === "agent_wait_ended")
-                endAgentWait(db, waitRun, mono(), now(), event.waitedMs);
+                await endAgentWaitAsync(store, waitRun, mono(), now(), event.waitedMs);
               if (event.type === "checkpoint" && assigned.type === "run")
-                recordRunnerCheckpoint(db, {
+                await recordRunnerCheckpoint(store, {
                   itemId,
                   runId: assigned.runId,
                   baseSha: baseSha!,
@@ -2190,10 +2234,20 @@ export function createRemoteAgentRunner(options: {
                       answer: questionAnswer,
                     });
                   cursor = row.sequence;
-                  setRunnerWorkConsumedSequence(db, assigned.runId, assigned.generation, cursor);
+                  const consumed = cursor;
+                  await store.run((q) =>
+                    setRunnerWorkConsumedSequenceSteps(
+                      q,
+                      assigned.runId,
+                      assigned.generation,
+                      consumed,
+                    ),
+                  );
                   continue;
                 }
-                const stored = askedQuestionRow(db, selected.runId, "agent");
+                const stored = await store.run((q) =>
+                  askedQuestionRowSteps(q, selected.runId, "agent"),
+                );
                 if (stored && stored.body !== event.text)
                   throw new Error("Remote runner sent overlapping questions");
                 if (!input.askTeam) throw new Error("Remote question channel is unavailable");
@@ -2209,10 +2263,17 @@ export function createRemoteAgentRunner(options: {
                         for (;;) {
                           signal.throwIfAborted();
                           if (
-                            !ownsAskedQuestion(db, stored.itemId, selected.runId, stored.sessionId)
+                            !(await ownsAskedQuestion(
+                              store,
+                              stored.itemId,
+                              selected.runId,
+                              stored.sessionId,
+                            ))
                           )
                             throw new Error("Question owner is stale");
-                          const current = questionRowById(db, stored.id);
+                          const current = await store.run((q) =>
+                            questionRowByIdSteps(q, stored.id),
+                          );
                           if (
                             !current ||
                             current.status === "cancelled" ||
@@ -2232,9 +2293,10 @@ export function createRemoteAgentRunner(options: {
                   questionAnswer = answer.answer;
                   // Replays have distinct journal sequences. Answer every outstanding copy,
                   // including copies consumed by an attachment before this one.
-                  for (const pending of unansweredRunnerQuestions(db, currentCommand, [
-                    "question",
-                  ])) {
+                  const unanswered = await store.run((q) =>
+                    unansweredRunnerQuestionsSteps(q, currentCommand, ["question"]),
+                  );
+                  for (const pending of unanswered) {
                     const replay = scrub(work.openEvent(pending));
                     if (replay.type !== "question" || replay.text !== event.text) continue;
                     results.answer({
@@ -2286,20 +2348,22 @@ export function createRemoteAgentRunner(options: {
               if (unconfirmed || now() - heardAt >= hungRunMs) {
                 const at = now();
                 const minutes = Math.round((at - heardAt) / 60_000);
-                const recovered = immediate(db, () => {
-                  db.run(
-                    "UPDATE runner_work SET ended_at=?,lost_at=? WHERE run_id=? AND generation=? AND ended_at IS NULL",
-                    [at, at, assigned.runId, assigned.generation],
-                  );
-                  db.run("DELETE FROM runner_work_grant WHERE run_id=?", [assigned.runId]);
-                  return options.placement?.finished({
-                    commandId: assigned.id,
-                    runnerId: selected.id,
-                    profile,
-                    failure: "heartbeat_lost",
-                    finishedAt: at,
-                  });
-                });
+                const recovered = await store.transaction(() =>
+                  syncSteps(() => {
+                    db.run(
+                      "UPDATE runner_work SET ended_at=?,lost_at=? WHERE run_id=? AND generation=? AND ended_at IS NULL",
+                      [at, at, assigned.runId, assigned.generation],
+                    );
+                    db.run("DELETE FROM runner_work_grant WHERE run_id=?", [assigned.runId]);
+                    return options.placement?.finished({
+                      commandId: assigned.id,
+                      runnerId: selected.id,
+                      profile,
+                      failure: "heartbeat_lost",
+                      finishedAt: at,
+                    });
+                  }),
+                );
                 if (!recovered?.retryable) throw new Error(RUN_LOST_MESSAGE);
                 throw await lostRun(
                   unconfirmed
@@ -2310,14 +2374,16 @@ export function createRemoteAgentRunner(options: {
               }
             }
             if (options.placement && heartbeatLost() && !unreachableWithAuthority()) {
-              const lost = immediate(db, () =>
-                options.placement?.finished({
-                  commandId: assigned.id,
-                  runnerId: selected.id,
-                  profile,
-                  failure: "heartbeat_lost",
-                  finishedAt: now(),
-                }),
+              const lost = await store.transaction(() =>
+                syncSteps(() =>
+                  options.placement?.finished({
+                    commandId: assigned.id,
+                    runnerId: selected.id,
+                    profile,
+                    failure: "heartbeat_lost",
+                    finishedAt: now(),
+                  }),
+                ),
               );
               if (!lost?.retryable) throw new Error("The runner stopped sending heartbeats.");
               throw new RetryableRunnerError(
@@ -2436,19 +2502,26 @@ export function createRemoteAgentRunner(options: {
               complete.candidateSha,
             );
             work.current(assigned.runId, assigned.generation);
-            recordItemCandidate(db, {
+            const candidate = {
               itemId,
               sha: complete.candidateSha,
               branch: scoped.item.branchName,
               recordedAt: now(),
-            });
-            if (complete.stopReason !== "end_turn" || complete.errorMessage)
-              saveCheckpoint(db, itemId, {
-                ...getWorkItem(db, itemId)?.checkpoint,
-                phase: "running",
-                baseSha: getWorkItem(db, itemId)?.checkpoint?.baseSha ?? baseSha!,
-                wipCommit: complete.candidateSha,
+            };
+            await store.run((q) => recordItemCandidateSteps(q, candidate));
+            if (complete.stopReason !== "end_turn" || complete.errorMessage) {
+              const wipCommit = complete.candidateSha;
+              await store.run(function* (q) {
+                const saved = (yield* getWorkItemSteps(q, itemId))?.checkpoint;
+                const base = (yield* getWorkItemSteps(q, itemId))?.checkpoint?.baseSha;
+                yield* saveCheckpointSteps(q, itemId, {
+                  ...saved,
+                  phase: "running",
+                  baseSha: base ?? baseSha!,
+                  wipCommit,
+                });
               });
+            }
             // The checkpoint keeps the work so far; the task waits for the reset.
             if (
               disposition?.usageLimit &&
@@ -2490,12 +2563,16 @@ export function createRemoteAgentRunner(options: {
           // A bundle on the worker is insufficient: its push can be refused. Require the
           // final stop checkpoint delivered for this generation before consuming the retry.
           const stopCheckpoint = complete.interrupted
-            ? runnerEventsAfter(db, {
-                runId: assigned.runId,
-                generation: assigned.generation,
-                after: 0,
-                types: ["checkpoint"],
-              })
+            ? (
+                await store.run((q) =>
+                  runnerEventsAfterSteps(q, {
+                    runId: assigned.runId,
+                    generation: assigned.generation,
+                    after: 0,
+                    types: ["checkpoint"],
+                  }),
+                )
+              )
                 .map((row) => work.openEvent(row))
                 .filter((event) => event.type === "checkpoint" && event.reason === "stop")
                 .at(-1)
@@ -2508,7 +2585,8 @@ export function createRemoteAgentRunner(options: {
             stopCheckpoint?.type === "checkpoint" &&
             stopCheckpoint.dropped === undefined &&
             (!stopCheckpoint.sha ||
-              getWorkItem(db, itemId)?.checkpoint?.wipCommit === stopCheckpoint.sha);
+              (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint?.wipCommit ===
+                stopCheckpoint.sha);
           if (
             assigned.type === "run" &&
             complete.interrupted &&
@@ -2520,7 +2598,7 @@ export function createRemoteAgentRunner(options: {
             !complete.timedOut &&
             !interruption.retried &&
             !signal.aborted &&
-            getWorkItem(db, itemId)?.state === "running"
+            (await store.run((q) => getWorkItemSteps(q, itemId)))?.state === "running"
           ) {
             interruption.retried = true;
             journal(
@@ -2537,14 +2615,16 @@ export function createRemoteAgentRunner(options: {
               true,
             );
           }
-          if (complete.handedOver && assigned.type === "run")
-            noteRunnerSessionMove(db, {
+          if (complete.handedOver && assigned.type === "run") {
+            const note = {
               runId: assigned.runId,
               runnerId: selected.id,
-              status: "stayed",
+              status: "stayed" as const,
               reason: "The session waits on its question, so it stays here until the team answers.",
               now: now(),
-            });
+            };
+            await store.run((q) => noteRunnerSessionMoveSteps(q, note));
+          }
           if (assigned.type === "task") {
             const history = await recoverAcpConversation(transcript, previousTranscript.length);
             signal.throwIfAborted();
@@ -2564,7 +2644,7 @@ export function createRemoteAgentRunner(options: {
           }
           // Keep the handoff through cancellation, lost runners and failed candidate imports.
           // Only a successfully completed implementer command proves the agent received it.
-          const delivered = getWorkItem(db, itemId)?.checkpoint;
+          const delivered = (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint;
           if (
             assigned.type === "run" &&
             delivered?.lostCommits &&
@@ -2578,7 +2658,7 @@ export function createRemoteAgentRunner(options: {
             !complete.errorMessage
           ) {
             const { lostCommits: _sent, ...rest } = delivered;
-            saveCheckpoint(db, itemId, rest);
+            await store.run((q) => saveCheckpointSteps(q, itemId, rest));
           }
           await work.finish(assigned.runId, assigned.generation);
           command = undefined;
@@ -2608,7 +2688,7 @@ export function createRemoteAgentRunner(options: {
             // A Paws restart leaves implementer work and response tasks running on the runner, and
             // a verifying item's Closeout review or check run; the startup resume or re-verify
             // reattaches to them.
-            const state = getWorkItem(db, itemId)?.state;
+            const state = (await store.run((q) => getWorkItemSteps(q, itemId)))?.state;
             const detached =
               signal.reason instanceof PawsShutdown &&
               command !== undefined &&
@@ -2620,8 +2700,8 @@ export function createRemoteAgentRunner(options: {
             if (!detached)
               try {
                 if (command)
-                  endAgentWait(
-                    db,
+                  await endAgentWaitAsync(
+                    store,
                     { itemId, runId: command.runId, generation: command.generation },
                     mono(),
                     now(),
@@ -2673,12 +2753,12 @@ export function createRemoteAgentRunner(options: {
             if (readCommand) await options.agentRead?.close(readCommand);
             // Keep attachment fenced through cleanup, then free the slot before returning.
             reservations.delete(selected.runId);
-            settled(releaseRunnerReservation(sqliteDb(db), selected.runId, instanceId));
+            await releaseRunnerReservation(store, selected.runId, instanceId);
           }
         }
       };
       return async (input: RunAgentOptions) => {
-        const runId = getWorkItem(db, itemId)?.currentRunId;
+        const runId = (await store.run((q) => getWorkItemSteps(q, itemId)))?.currentRunId;
         if (runId && readers.has(runId)) throw new RunnerCapacityWait([]);
         if (runId) readers.add(runId);
         try {
@@ -2751,13 +2831,13 @@ type HandoverMove = { from?: string; repository?: string; waiting?: boolean };
  * The owner checks of `ask()` for a question this run already opened. The item version is left
  * out because opening the question bumped it.
  */
-function ownsAskedQuestion(
-  db: Database,
+async function ownsAskedQuestion(
+  store: Db,
   itemId: string,
   runId: string,
   sessionId: string,
-): boolean {
-  const item = getWorkItem(db, itemId);
+): Promise<boolean> {
+  const item = await store.run((q) => getWorkItemSteps(q, itemId));
   return (
     item !== null &&
     !item.cancelRequested &&

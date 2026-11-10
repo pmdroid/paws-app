@@ -7,15 +7,16 @@ import { RunnerHelperBusyError, type RunnerHelpers } from "../runner-helpers";
 import type { PlacementAccount, PlacementCandidate, RunnerPlacement } from "../runner-placement";
 import { RunnerSlotsBusyError, systemClock, UserFacingError } from "../core";
 import {
-  earliestRunnerCooldown,
-  immediate,
-  linearSessionClientId,
-  recentRunners,
+  earliestRunnerCooldownSteps,
+  linearSessionClientIdSteps,
+  recentRunnersSteps,
   runnerHelperAvailability,
-  runnerHostVersion,
-  runnerOwner,
+  runnerHostVersionSteps,
+  runnerOwnerSteps,
   sessionActiveRuns,
+  sqliteDb,
   workspaceSessionIds,
+  type Db,
 } from "../db";
 import {
   FINDING_GROUPS_RUNNER_VERSION,
@@ -23,6 +24,7 @@ import {
   type RunnerHelperResult,
 } from "../runner-protocol";
 import { versionAtLeast } from "./session-restore";
+import { syncSteps } from "./sync-steps";
 import { usageLimitWait } from "./usage-limit-wait";
 
 import {
@@ -47,6 +49,7 @@ function noRunnerMessage(agent: string, causes: ReadonlySet<string>): string {
 
 export function createRemoteSessionAgentRunner(options: {
   db: Database;
+  store?: Db;
   helpers: RunnerHelpers;
   now?: () => number;
   mono?: () => number;
@@ -54,6 +57,7 @@ export function createRemoteSessionAgentRunner(options: {
   placement?: RunnerPlacement;
   journal?: (line: string) => void;
 }) {
+  const store = options.store ?? sqliteDb(options.db);
   const now = options.now ?? Date.now;
   const mono = options.mono ?? systemClock.mono;
   const heldJournaled = new Map<string, number>();
@@ -66,10 +70,10 @@ export function createRemoteSessionAgentRunner(options: {
     );
   };
   const waiters = new Map<string, number>();
-  const earliestCooldown = (runnerIds: readonly string[], agent: string) =>
+  const earliestCooldown = async (runnerIds: readonly string[], agent: string) =>
     runnerIds.length === 0
       ? null
-      : earliestRunnerCooldown(options.db, { agent, now: now(), runnerIds });
+      : store.run((q) => earliestRunnerCooldownSteps(q, { agent, now: now(), runnerIds }));
   const sessionRun = (sessionId: string) => {
     const rows = sessionActiveRuns(options.db, sessionId);
     return rows.length === 1 ? rows[0]! : null;
@@ -155,7 +159,7 @@ export function createRemoteSessionAgentRunner(options: {
                     if (until !== undefined && until > now()) checks.push({ runnerId, until });
                   },
                 })
-              : recentRunners(options.db, now() - 60_000);
+              : await store.run((q) => recentRunnersSteps(q, now() - 60_000));
           for (const runner of runners) {
             if (
               excluded.includes(runner.id) ||
@@ -165,15 +169,15 @@ export function createRemoteSessionAgentRunner(options: {
             if (purpose === "finding_groups") {
               if (
                 !versionAtLeast(
-                  runnerHostVersion(options.db, runner.id),
+                  await store.run((q) => runnerHostVersionSteps(q, runner.id)),
                   FINDING_GROUPS_RUNNER_VERSION,
                 )
               ) {
                 causes.add("runner version too old");
                 continue;
               }
-              const owner = runnerOwner(options.db, runner.id);
-              const clientId = linearSessionClientId(options.db, sessionId);
+              const owner = await store.run((q) => runnerOwnerSteps(q, runner.id));
+              const clientId = await store.run((q) => linearSessionClientIdSteps(q, sessionId));
               if (
                 !owner ||
                 !clientId ||
@@ -188,34 +192,36 @@ export function createRemoteSessionAgentRunner(options: {
             }
             try {
               placed = runner.account;
-              command = immediate(options.db, () => {
-                const dispatched = options.helpers.dispatch({
-                  runnerId: runner.id,
-                  sessionId,
-                  purpose,
-                  profile,
-                  prompt: input.prompt,
-                  ...(runner.account?.named
-                    ? {
-                        account: {
-                          accountId: runner.account.accountId,
-                          bindingId: runner.account.bindingId,
-                        },
-                      }
-                    : {}),
-                }).command;
-                options.placement?.started({
-                  commandId: dispatched.id,
-                  runnerId: runner.id,
-                  sessionId,
-                  profile,
-                  ...(runner.account ? { account: runner.account } : {}),
-                  role: input.role,
-                  purpose: "helper",
-                  startedAt: now(),
-                });
-                return dispatched;
-              });
+              command = await store.transaction(() =>
+                syncSteps(() => {
+                  const dispatched = options.helpers.dispatch({
+                    runnerId: runner.id,
+                    sessionId,
+                    purpose,
+                    profile,
+                    prompt: input.prompt,
+                    ...(runner.account?.named
+                      ? {
+                          account: {
+                            accountId: runner.account.accountId,
+                            bindingId: runner.account.bindingId,
+                          },
+                        }
+                      : {}),
+                  }).command;
+                  options.placement?.started({
+                    commandId: dispatched.id,
+                    runnerId: runner.id,
+                    sessionId,
+                    profile,
+                    ...(runner.account ? { account: runner.account } : {}),
+                    role: input.role,
+                    purpose: "helper",
+                    startedAt: now(),
+                  });
+                  return dispatched;
+                }),
+              );
               break;
             } catch (caughtError1) {
               const busy = caughtError1 instanceof RunnerHelperBusyError ? caughtError1 : null;
@@ -229,7 +235,7 @@ export function createRemoteSessionAgentRunner(options: {
           if (slotBusy && now() >= waitUntil)
             throw new RunnerSlotsBusyError(held.size > 0 ? HELPER_LANE_BUSY : undefined);
           if (!slotBusy) {
-            const runnerCooldown = earliestCooldown(cooling, profile.agent);
+            const runnerCooldown = await earliestCooldown(cooling, profile.agent);
             const cooldown = [...(runnerCooldown ? [runnerCooldown] : []), ...checks].sort(
               (a, b) => a.until - b.until,
             )[0];
@@ -260,14 +266,16 @@ export function createRemoteSessionAgentRunner(options: {
               break;
             }
             if (result) {
-              const disposition = immediate(options.db, () =>
-                options.placement?.finished({
-                  commandId: command!.id,
-                  runnerId: command!.runnerId,
-                  profile,
-                  result,
-                  finishedAt: now(),
-                }),
+              const disposition = await store.transaction(() =>
+                syncSteps(() =>
+                  options.placement?.finished({
+                    commandId: command!.id,
+                    runnerId: command!.runnerId,
+                    profile,
+                    result,
+                    finishedAt: now(),
+                  }),
+                ),
               );
               accounted = true;
               if (
@@ -351,21 +359,23 @@ export function createRemoteSessionAgentRunner(options: {
           // Cleanup failures must not replace the original timeout, fence or cancellation error.
           try {
             if (!accounted && others === 0)
-              immediate(options.db, () =>
-                options.placement?.finished({
-                  commandId: command.id,
-                  runnerId: command.runnerId,
-                  profile,
-                  failure: input.signal?.aborted
-                    ? input.signal.reason instanceof Error &&
-                      input.signal.reason.name === "TimeoutError"
-                      ? "timeout"
-                      : "cancelled"
-                    : now() >= deadline
-                      ? "timeout"
-                      : "error",
-                  finishedAt: now(),
-                }),
+              await store.transaction(() =>
+                syncSteps(() =>
+                  options.placement?.finished({
+                    commandId: command.id,
+                    runnerId: command.runnerId,
+                    profile,
+                    failure: input.signal?.aborted
+                      ? input.signal.reason instanceof Error &&
+                        input.signal.reason.name === "TimeoutError"
+                        ? "timeout"
+                        : "cancelled"
+                      : now() >= deadline
+                        ? "timeout"
+                        : "error",
+                    finishedAt: now(),
+                  }),
+                ),
               );
           } catch (error) {
             journalCaught(error, "helpers.forSession.accountingCleanup", null);

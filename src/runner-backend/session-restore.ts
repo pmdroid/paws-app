@@ -4,9 +4,10 @@ import {
   lastRunCommandAccount,
   latestSealedSnapshot,
   runnerAgentLoginReady,
-  runnerStanding,
+  runnerStandingSteps,
   runnerTargetForRestore,
-  storedRunnerName,
+  storedRunnerNameSteps,
+  type Db,
 } from "../db";
 import {
   CLAUDE_SESSION_RESTORE_RUNNER_VERSION,
@@ -125,8 +126,12 @@ export function planSessionRestore(
 }
 
 /** How the run's earlier runner became unusable, after its name. */
-export function runnerGoneReason(db: Database, runnerId: string, onlineSince: number): string {
-  const runner = runnerStanding(db, runnerId);
+export async function runnerGoneReason(
+  store: Db,
+  runnerId: string,
+  onlineSince: number,
+): Promise<string> {
+  const runner = await store.run((q) => runnerStandingSteps(q, runnerId));
   if (!runner) return "is gone";
   if (runner.revokedAt !== null || runner.status === "revoked") return "was revoked";
   if (runner.status === "draining") return "is draining";
@@ -136,8 +141,8 @@ export function runnerGoneReason(db: Database, runnerId: string, onlineSince: nu
 }
 
 /** The Linear notice for a moved run, posted once per move. */
-export function sessionMoveNotice(input: {
-  db: Database;
+export async function sessionMoveNotice(input: {
+  store: Db;
   from: string;
   to: string;
   /** How the earlier runner became unusable; absent when it handed the session over. */
@@ -150,17 +155,23 @@ export function sessionMoveNotice(input: {
         failure: SessionRestoreFailure;
         versions?: { saved: string; savedOn: string; target: string };
       };
-}): string {
-  const name = (id: string) => storedRunnerName(input.db, id) ?? id;
-  const to = name(input.to);
+}): Promise<string> {
+  const name = async (id: string) =>
+    (await input.store.run((q) => storedRunnerNameSteps(q, id))) ?? id;
+  const to = await name(input.to);
+  const from = await name(input.from);
   const moved =
     input.gone === undefined
-      ? `Moved from ${name(input.from)} to ${to}.`
-      : `Moved this run to ${to} because ${name(input.from)} ${input.gone}.`;
+      ? `Moved from ${from} to ${to}.`
+      : `Moved this run to ${to} because ${from} ${input.gone}.`;
   const { outcome } = input;
   if (outcome.restored)
     return `${moved} Continuing the agent's session from turn ${outcome.turn}.\n`;
   const agent = AGENT_NAMES[input.agent] ?? input.agent;
+  const savedOn =
+    outcome.versions && outcome.versions.saved !== outcome.versions.target
+      ? await name(outcome.versions.savedOn)
+      : undefined;
   const reason = {
     no_snapshot: "no saved session",
     old_runner: `${to}'s runner is too old`,
@@ -172,7 +183,7 @@ export function sessionMoveNotice(input: {
     unpack: "the saved session held a file outside its session folder",
     load:
       outcome.versions && outcome.versions.saved !== outcome.versions.target
-        ? `the saved session didn't load: ${agent} ${outcome.versions.saved} on ${name(outcome.versions.savedOn)}, ${outcome.versions.target} on ${to}`
+        ? `the saved session didn't load: ${agent} ${outcome.versions.saved} on ${savedOn}, ${outcome.versions.target} on ${to}`
         : "the saved session didn't load",
   }[outcome.failure];
   return `${moved} Starting a new session from the last pushed commit: the earlier session couldn't be restored (${reason}).\n`;

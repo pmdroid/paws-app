@@ -2,14 +2,15 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import {
-  getWorkItem,
-  immediate,
-  itemOpenRunnerWork,
-  lastRunnerEventSequence,
-  runnerEventsAfter,
-  runnerHostVersion,
-  runnerResultPayload,
-  runnerWorkEnded,
+  getWorkItemSteps,
+  itemOpenRunnerWorkSteps,
+  lastRunnerEventSequenceSteps,
+  runnerEventsAfterSteps,
+  runnerHostVersionSteps,
+  runnerResultPayloadSteps,
+  runnerWorkEndedSteps,
+  sqliteDb,
+  type Db,
 } from "../db";
 import {
   HANDOVER_RUNNER_VERSION,
@@ -56,20 +57,22 @@ export type RunnerHandoverOutcome =
  */
 export function createRemoteHandover(options: {
   db: Database;
+  store?: Db;
   work: RunnerWork;
   now?: () => number;
   pollIntervalMs?: number;
 }) {
   const { db, work } = options;
+  const store = options.store ?? sqliteDb(db);
   const now = options.now ?? Date.now;
   return async function handOverItem(
     itemId: string,
     signal?: AbortSignal,
   ): Promise<RunnerHandoverOutcome> {
-    const request = immediate(db, () => {
-      const row = itemOpenRunnerWork(db, itemId);
+    const request = await store.transaction(function* (q) {
+      const row = yield* itemOpenRunnerWorkSteps(q, itemId);
       if (!row) return null;
-      const version = runnerHostVersion(db, row.runnerId);
+      const version = yield* runnerHostVersionSteps(q, row.runnerId);
       if (!versionAtLeast(version, HANDOVER_RUNNER_VERSION)) return "old_runner" as const;
       const at = now();
       work.enqueue({
@@ -83,7 +86,7 @@ export function createRemoteHandover(options: {
         // The runner finishes the handover by the command's expiry, or reports it could not.
         expiresAt: at + RUNNER_HANDOVER_LIMIT_MS,
       });
-      const after = lastRunnerEventSequence(db, row.runId, row.generation);
+      const after = yield* lastRunnerEventSequenceSteps(q, row.runId, row.generation);
       return { ...row, after, deadline: at + RUNNER_HANDOVER_LIMIT_MS + DELIVERY_GRACE_MS };
     });
     if (!request) return { status: "not_running" };
@@ -91,25 +94,35 @@ export function createRemoteHandover(options: {
     let deadline = request.deadline;
     while (now() < deadline) {
       signal?.throwIfAborted();
-      const stored = runnerResultPayload(db, request.runId, request.generation);
+      const stored = await store.run((q) =>
+        runnerResultPayloadSteps(q, request.runId, request.generation),
+      );
       const result = stored === null ? null : RunnerResultSchema.parse(JSON.parse(stored));
       if (result?.handoverFailure) return { status: "failed", reason: result.handoverFailure };
       if (result && !result.handedOver) return { status: "finished" };
       // The attempt ends the work once it has imported the WIP commit, or once it failed to.
-      if (result && runnerWorkEnded(db, request.runId, request.generation)) {
+      if (
+        result &&
+        (await store.run((q) => runnerWorkEndedSteps(q, request.runId, request.generation)))
+      ) {
         const wipCommit = result.candidateSha ?? null;
-        return wipCommit === null || getWorkItem(db, itemId)?.checkpoint?.wipCommit === wipCommit
+        return wipCommit === null ||
+          (await store.run((q) => getWorkItemSteps(q, itemId)))?.checkpoint?.wipCommit === wipCommit
           ? { status: "handed_over", wipCommit }
           : { status: "unanswered" };
       }
       const events = result
         ? []
-        : runnerEventsAfter(db, {
-            runId: request.runId,
-            generation: request.generation,
-            after: request.after,
-            types: ["handover", "handover_interrupted"],
-          })
+        : (
+            await store.run((q) =>
+              runnerEventsAfterSteps(q, {
+                runId: request.runId,
+                generation: request.generation,
+                after: request.after,
+                types: ["handover", "handover_interrupted"],
+              }),
+            )
+          )
             .map((row) => work.openEvent(row))
             .filter((event) => event.type === "handover" || event.type === "handover_interrupted");
       const failure = events.find(

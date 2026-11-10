@@ -1,5 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { runnerConversationLane, unfinishedConversationHelpers } from "../db";
+import {
+  runnerConversationLaneSteps,
+  sqliteDb,
+  unfinishedConversationHelpersSteps,
+  type Db,
+} from "../db";
 import { journalCaught } from "../journal";
 import type { RunnerHelpers } from "../runner-helpers";
 import {
@@ -26,16 +31,18 @@ export type ConversationTurn = {
 
 export function conversationTurns(options: {
   db: Database;
+  store?: Db;
   helpers: RunnerHelpers;
   holder: (itemId: string) => Holder | undefined;
   now?: () => number;
 }) {
-  const { db } = options;
+  const store = options.store ?? sqliteDb(options.db);
   const now = options.now ?? Date.now;
   return {
-    lane(itemId: string): "closed" | "full" | "free" {
+    async lane(itemId: string): Promise<"closed" | "full" | "free"> {
       const holder = options.holder(itemId);
-      return holder ? runnerConversationLane(db, holder.runnerId, now()) : "closed";
+      if (!holder) return "closed";
+      return store.run((q) => runnerConversationLaneSteps(q, holder.runnerId, now()));
     },
     start(itemId: string, sessionId: string, prompt: string): boolean {
       const holder = options.holder(itemId);
@@ -56,8 +63,9 @@ export function conversationTurns(options: {
         return false;
       }
     },
-    open(itemId: string): ConversationTurn[] {
-      return unfinishedConversationHelpers(db).flatMap((row) => {
+    async open(itemId: string): Promise<ConversationTurn[]> {
+      const rows = await store.run((q) => unfinishedConversationHelpersSteps(q));
+      return rows.flatMap((row) => {
         const command = JSON.parse(
           Buffer.from(
             (JSON.parse(row.envelope) as { payload: string }).payload,

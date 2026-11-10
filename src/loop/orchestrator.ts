@@ -2982,7 +2982,7 @@ export class Orchestrator {
   ): Promise<boolean> {
     const itemId = readString(job.payload, "itemId");
     const talk = itemId === null ? null : await this.options.conversations?.();
-    if (!talk || talk.open(itemId!).length === 0 || !context.isCurrent()) return false;
+    if (!talk || (await talk.open(itemId!)).length === 0 || !context.isCurrent()) return false;
     await waitForMergeTurn(this.db, job, this.now(), PULL_REVIEW_POLL_MS);
     return true;
   }
@@ -8428,7 +8428,7 @@ export class Orchestrator {
     if (!item || !this.options.linearComments || !canConverse(item) || this.isLive(item.id))
       return false;
     const talk = await this.options.conversations?.();
-    if (!talk || talk.lane(item.id) === "closed") return false;
+    if (!talk || (await talk.lane(item.id)) === "closed") return false;
     gatherLinearComments(
       this.db,
       item.id,

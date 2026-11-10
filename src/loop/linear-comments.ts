@@ -78,9 +78,9 @@ export type LinearConversationTurn = {
 };
 
 export type LinearConversations = {
-  lane(itemId: string): "closed" | "full" | "free";
+  lane(itemId: string): Promise<"closed" | "full" | "free">;
   start(itemId: string, sessionId: string, prompt: string): boolean;
-  open(itemId: string): LinearConversationTurn[];
+  open(itemId: string): Promise<LinearConversationTurn[]>;
   finish(commandId: string): void;
 };
 
@@ -331,7 +331,7 @@ export async function deliverLinearComments(
   const talk = (await caps.conversations?.()) ?? null;
   if (talk !== null) {
     if (await postConversationReplies(store, itemId, talk, caps)) await caps.flush();
-    if (talk.open(itemId).length > 0) return "wait";
+    if ((await talk.open(itemId)).length > 0) return "wait";
   }
   const all = await store.run((q) => pendingLinearCommentsSteps(q, itemId));
   const idle = talk !== null && item !== null && canConverse(item) && !(await caps.busy(item));
@@ -351,7 +351,7 @@ export async function deliverLinearComments(
   }
   const { kept, unknown } = await store.run((q) => currentSteps(q, item, all, caps));
   if (idle) {
-    const lane = talk!.lane(item.id);
+    const lane = await talk!.lane(item.id);
     if (lane === "full") return "wait";
     if (lane === "free" && (kept.length > 0 || turns.length > 0)) {
       await startConversation(store, item, kept, turns, talk!, caps.now());
@@ -506,7 +506,7 @@ async function postConversationReplies(
 ): Promise<boolean> {
   const now = caps.now();
   let posted = false;
-  for (const turn of talk.open(itemId)) {
+  for (const turn of await talk.open(itemId)) {
     if (turn.result === null && !turn.expired) continue;
     const plan = turn.result?.startWork;
     const left = plan ? await leftMergeQueue(store, itemId, caps) : true;

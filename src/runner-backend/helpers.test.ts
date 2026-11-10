@@ -101,6 +101,14 @@ function fixture(
     if (!row) throw new Error("Expected dispatched helper");
     return (await helpers.current(row.id)).command;
   }
+  /** Waits for the backend to read the store and dispatch its helper. */
+  async function dispatched() {
+    for (let tick = 0; tick < 100; tick++) {
+      if (db.query("SELECT 1 FROM runner_helper WHERE ended_at IS NULL").get()) break;
+      await Bun.sleep(0);
+    }
+    return current();
+  }
   async function reply(text = '{"mode":"answer"}') {
     const command = await current();
     await helpers.submit(command.runnerId, {
@@ -125,6 +133,7 @@ function fixture(
     input,
     helpers,
     current,
+    dispatched,
     reply,
     journaled,
     advance: (ms: number) => (now += ms),
@@ -150,6 +159,7 @@ test.each(["classify", "select_repository"] as const)(
           text += event.update.content.text;
       },
     });
+    await f.dispatched();
     expect((await f.current()).purpose).toBe(purpose);
     expect((await f.current()).prompt).toBe(f.input.prompt);
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()!.n).toBe(0);
@@ -168,6 +178,7 @@ test.each(["classify", "select_repository"] as const)(
 test("session replacement fences a pending helper and releases its canonical assignment", async () => {
   const f = fixture();
   const pending = f.backend.forSession("session", "classify")(f.input);
+  await f.dispatched();
   advanceLinearSessionGeneration(f.db, "session");
   await expect(pending).rejects.toThrow(/authority changed/);
   expect(
@@ -184,7 +195,7 @@ test("cancelling a helper fences later output without invoking a local agent", a
     "session",
     "classify",
   )({ ...f.input, signal: controller.signal });
-  const command = await f.current();
+  const command = await f.dispatched();
   controller.abort();
   await expect(pending).rejects.toThrow();
   await expect(f.helpers.current(command.id)).rejects.toThrow(/unavailable/);
@@ -203,6 +214,7 @@ test("a replacement during the event callback cannot return stale classification
       advanceLinearSessionGeneration(f.db, "session");
     },
   });
+  await f.dispatched();
   await f.reply();
   await expect(pending).rejects.toThrow(/authority changed/);
   expect(events).toBe(1);
@@ -216,7 +228,7 @@ test("no active runner fails closed and a deadline cannot retain capacity", asyn
   );
   f.db.run("UPDATE runner SET status='active'");
   const pending = f.backend.forSession("session", "classify")(f.input);
-  await f.helpers.acknowledge("runner", (await f.current()).id);
+  await f.helpers.acknowledge("runner", (await f.dispatched()).id);
   f.advance(60_000);
   await expect(pending).rejects.toThrow(/timed out/);
   expect(
@@ -889,10 +901,11 @@ test("twelve resuming items keep one unacknowledged helper per runner and none f
 test("a helper the runner never picked up waits for the lane, one it ran and failed does not", async () => {
   const f = fixture();
   const unpicked = f.backend.forSession("session", "classify")(f.input);
+  await f.dispatched();
   f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
   await expect(unpicked).rejects.toBeInstanceOf(RunnerSlotsBusyError);
   const ran = f.backend.forSession("session", "classify")(f.input);
-  await f.helpers.acknowledge("runner", (await f.current()).id);
+  await f.helpers.acknowledge("runner", (await f.dispatched()).id);
   f.advance(60_000);
   const failure = await ran.catch((error: unknown) => error);
   expect(failure).not.toBeInstanceOf(RunnerSlotsBusyError);
@@ -976,7 +989,7 @@ test("a reused helper's sign-in failure excludes its named account, not the runn
 test("a second attempt on one helper keeps it open until the last attempt finishes", async () => {
   const f = fixture();
   const first = f.backend.forSession("session", "classify")(f.input);
-  const command = await f.current();
+  const command = await f.dispatched();
   const second = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
   expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM runner_helper").get()!.n).toBe(1);
