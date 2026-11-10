@@ -53,11 +53,11 @@ test("Scheduler dispatch is durable and admits each ready item once across proce
 test("A failing scheduler contender names its error in the assertion", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-scheduler-contender-"));
   try {
-    // A file where the contender expects its directory: it cannot open the database.
+    // A file where the contender expects its directory: it cannot copy its warm-up database.
     writeFileSync(join(root, "file"), "");
     await assert.rejects(
       contenderExited(spawnContender(join(root, "file"), 0)),
-      /exited 1 \(signal none\)\nstderr: Scheduler contender 0 failed: .*SQLiteError: unable to open database file/s,
+      /exited 1 \(signal none\)\nstderr: Scheduler contender 0 failed: .*ENOTDIR: not a directory, copyfile/s,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
