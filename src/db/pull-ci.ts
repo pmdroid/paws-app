@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { CiRoundCheck } from "./ci-rounds";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { emitJobReady } from "./jobs";
 import { jsonValue, parsedJson } from "./json-text";
 import { gatherPullFeedbackSteps, type PullFeedbackWait } from "./pull-comments";
@@ -232,47 +232,50 @@ function mapRow(q: Q, row: Row): PullCiFailureRecord {
 }
 
 /** Keep the lane timer in the existing failure row without scheduling review feedback. */
+export function* laneCiFailureTimeSteps(
+  q: Q,
+  failure: Omit<PullCiFailureRecord, "handledAt" | "outcome">,
+): Steps<number> {
+  const t = q.t.pullCiFailure;
+  const row = yield* selectFailureSteps(q, failure.itemId, failure.head);
+  const first = row?.laneFirstFailureAt ?? failure.observedAt;
+  yield* q.exec(
+    q.orm
+      .insert(t)
+      .values({
+        ...failure,
+        failedChecks: jsonValue(q, failure.failedChecks),
+        checks: jsonValue(q, failure.checks),
+        laneFirstFailureAt: first,
+        handledAt: failure.observedAt,
+        outcome: "cleared",
+      })
+      .onConflictDoUpdate({
+        target: [t.itemId, t.head],
+        set: { laneFirstFailureAt: first },
+      }),
+  );
+  return first;
+}
+
 export function laneCiFailureTime(
   db: Database,
   failure: Omit<PullCiFailureRecord, "handledAt" | "outcome">,
 ): number {
-  return settled(
-    sqliteDb(db).run(function* (q) {
-      const t = q.t.pullCiFailure;
-      const row = yield* selectFailureSteps(q, failure.itemId, failure.head);
-      const first = row?.laneFirstFailureAt ?? failure.observedAt;
-      yield* q.exec(
-        q.orm
-          .insert(t)
-          .values({
-            ...failure,
-            failedChecks: jsonValue(q, failure.failedChecks),
-            checks: jsonValue(q, failure.checks),
-            laneFirstFailureAt: first,
-            handledAt: failure.observedAt,
-            outcome: "cleared",
-          })
-          .onConflictDoUpdate({
-            target: [t.itemId, t.head],
-            set: { laneFirstFailureAt: first },
-          }),
-      );
-      return first;
-    }),
-  );
+  return settled(sqliteDb(db).run((q) => laneCiFailureTimeSteps(q, failure)));
 }
 
 /** Observing another head invalidates the old collection window. */
-export function resetOtherLaneCiFailures(db: Database, itemId: string, head: string): void {
-  settled(
-    sqliteDb(db).run(function* (q) {
-      const t = q.t.pullCiFailure;
-      yield* q.exec(
-        q.orm
-          .update(t)
-          .set({ laneFirstFailureAt: null })
-          .where(and(eq(t.itemId, itemId), ne(t.head, head))),
-      );
-    }),
+export function* resetOtherLaneCiFailuresSteps(q: Q, itemId: string, head: string) {
+  const t = q.t.pullCiFailure;
+  yield* q.exec(
+    q.orm
+      .update(t)
+      .set({ laneFirstFailureAt: null })
+      .where(and(eq(t.itemId, itemId), ne(t.head, head))),
   );
+}
+
+export function resetOtherLaneCiFailures(db: Database, itemId: string, head: string): void {
+  settled(sqliteDb(db).run((q) => resetOtherLaneCiFailuresSteps(q, itemId, head)));
 }

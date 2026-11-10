@@ -1,20 +1,20 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
-  applyWorkItemEvent,
+  applyWorkItemEventSteps,
   beginMergeCall,
   mergeStopRequestedSteps,
   carriedAcceptForSteps,
   closeoutPolicyDigestsSteps,
   completeMergedItemSteps,
   countMergeDenialsSteps,
-  endMergeCall,
+  emitJobReady,
   endMergeCallSteps,
-  enqueueJobOnce,
+  enqueueJobOnceSteps,
+  fixRoundsSteps,
   getConfirmedRemoteMergeSteps,
   getWorkItemSteps,
   hasCiRerunSteps,
-  immediate,
   leaveMergeQueueSteps,
   MERGE_DENIED_REASON,
   mergeCallInFlightSteps,
@@ -52,6 +52,7 @@ import {
   REBASE_CONFLICT_THOUGHT,
   askHelp,
   ciRound,
+  ciRoundAsync,
   feedbackHold,
   mergeHeld,
   mergeQueueTurn,
@@ -63,8 +64,8 @@ import {
   type OrderCapabilities,
 } from "./orders";
 import type { RebaseConflict } from "./budget";
-import { mainMoved as checkQueueBehind } from "./queue-conflicts";
-import { ciFixes, rebaseBudgetFor } from "./returns";
+import { mainMovedAsync as checkQueueBehind } from "./queue-conflicts";
+import { rebaseBudgetFor, rebaseBudgetForSteps } from "./returns";
 import {
   laneTurn,
   serialMergeStep,
@@ -72,7 +73,7 @@ import {
   type MergeStep,
   type SerialMergeStep,
 } from "./step";
-import { githubQueueWatch, wakeMergesBehind } from "./wait";
+import { githubQueueWatch } from "./wait";
 
 export type MergePublication = MergePull & {
   github: GitHubBinding & { gitExec: GitExec };
@@ -206,7 +207,7 @@ export async function advanceMerge(
   const outside = await mergedOutsideLane(store, item, caps);
   if (outside) return outside;
   if (await store.run((q) => mergeCallInFlightSteps(q, item.id))) {
-    reverifyAfterRestart(db, item, input.jobId, caps.now());
+    await reverifyAfterRestart(store, item, input.jobId, caps.now());
     return { kind: "returned" };
   }
   const merge: MergeContext = { db, store, item, caps };
@@ -229,7 +230,11 @@ export async function advanceMerge(
     const handed = await mergeThroughGitHubQueue(merge, input.payload, published);
     if (handed !== "no_queue") {
       if (handed.kind === "merged")
-        checkQueueBehind(db, { repository: queueName(repository), main: null, now: caps.now() });
+        await checkQueueBehind(store, {
+          repository: queueName(repository),
+          main: null,
+          now: caps.now(),
+        });
       return handed;
     }
   }
@@ -245,7 +250,7 @@ export async function advanceMerge(
       // A change to a check marked `recheck: true` spent every waiting acceptance; each
       // re-verifies now, in parallel up to the free slots, and keeps its place instead of
       // waiting for its turn at the front.
-      reverify(
+      await reverify(
         merge,
         { kind: "reverify", head: published.head, base: "", rebased: false },
         input.jobId,
@@ -291,8 +296,8 @@ export async function advanceMerge(
   let mergedPolicyError: MergeResultPolicyError | undefined;
   const turn = await laneTurn({
     read: () => readPullFacts(lane),
-    facts: (facts) => {
-      facts.readiness = collectCiFailure(merge, pull.number, facts.head, facts.readiness);
+    facts: async (facts) => {
+      facts.readiness = await collectCiFailure(merge, pull.number, facts.head, facts.readiness);
       mainPolicy = caps.policyDigests(item, published.worktree);
       return mergeFacts(store, item.id, facts, mainPolicy, mergeSettings.mainMoved, {
         head: published.head,
@@ -345,7 +350,7 @@ export async function advanceMerge(
   // A review recorded during the turn stopped the squash or rebase; it goes to the agent first.
   // A turn that already rebased goes on to re-verify the pushed head.
   if ((turn.kind === "stopped" || turn.kind === "blocked") && !caps.stopped()) {
-    const late = reviewHold(db, item.id, caps.now(), caps.feedbackWait());
+    const late = await reviewHold(store, item.id, caps.now(), caps.feedbackWait());
     if (late) return late;
   }
   const rerun = await rerunCancelledCi(store, item, caps, turn, pull.number);
@@ -356,12 +361,16 @@ export async function advanceMerge(
     base: result?.base ?? null,
     files: result?.conflictFiles ?? null,
   };
+  const rebaseBudget = await store.run((q) =>
+    rebaseBudgetForSteps(q, item.id, conflict, caps.now()),
+  );
+  const ciFixes = await store.run((q) => fixRoundsSteps(q, item.id));
   const { step, leaveQueue } = serialMergeStep({
     turn,
     queued,
     mainMoved: mergeSettings.mainMoved,
-    rebaseBudget: rebaseBudgetFor(db, item.id, conflict, caps.now()),
-    ciFixes: ciFixes(db, item.id),
+    rebaseBudget,
+    ciFixes,
     ciFixLimit,
   });
   if (leaveQueue) {
@@ -383,7 +392,7 @@ export async function advanceMerge(
   if (step.kind === "wait" && step.reason === "ci")
     return caps.stopped() ? { kind: "obsolete" } : step;
   if (turn.kind === "merged") {
-    checkQueueBehind(db, {
+    await checkQueueBehind(store, {
       repository: queueName(repository),
       main: turn.result.sha ?? null,
       now: caps.now(),
@@ -420,7 +429,7 @@ export async function advanceMerge(
     });
   if (step.kind === "ask_risk") return holdForRisk(store, item, caps, published);
   if (step.kind === "reverify") {
-    reverify(merge, step, input.jobId);
+    await reverify(merge, step, input.jobId);
     if (step.rebased) await voice.flush();
     return { kind: "returned" };
   }
@@ -492,11 +501,11 @@ export async function advanceMerge(
     )
       return { kind: "returned" };
     if (askHelp(merge, ciFixQuestion(checks, ciFixLimit, pull.url), "budget_spent")) {
-      round("asked");
+      await ciRoundAsync(merge, head, readiness.checks, "asked", ciFixLimit, null);
       await voice.flush();
       return { kind: "asked" };
     }
-    round("failed");
+    await ciRoundAsync(merge, head, readiness.checks, "failed", ciFixLimit, null);
   }
   // A person merged the pull request on GitHub during the turn, so the lane found it closed.
   const late = await mergedOutsideLane(store, item, caps);
@@ -741,22 +750,23 @@ function pendingMergeOutcome(): MergeStep {
  * GitHub does not show the merge that may have been in flight when Paws stopped, so the merge
  * fails closed: Closeout checks the head again before the lane does, and the item keeps its place.
  */
-function reverifyAfterRestart(
-  db: Database,
+async function reverifyAfterRestart(
+  store: Db,
   item: WorkItemRecord,
   jobId: number,
   now: number,
-): void {
-  immediate(db, () => {
-    endMergeCall(db, item.id);
-    applyWorkItemEvent(db, item.id, "reverify_requested");
-    enqueueJobOnce(db, {
+): Promise<void> {
+  const job = await store.transaction(function* (q) {
+    yield* endMergeCallSteps(q, item.id);
+    yield* applyWorkItemEventSteps(q, item.id, "reverify_requested");
+    return yield* enqueueJobOnceSteps(q, {
       queue: JOB_KIND.reverify,
       jobKey: `reverify:restart:${item.id}:${jobId}`,
       payload: { itemId: item.id },
       now,
     });
   });
+  if (job.inserted) emitJobReady(store);
   journal(`item ${item.linearIdentifier} re-verifies: its merge call may have been in flight`);
 }
 
@@ -877,22 +887,23 @@ async function holdForRisk(
  * Send the item back to `verifying` for Closeout on `head`, keeping its place in the queue. After
  * a rebase only the session title moves; the next merge job carries the accepted new head.
  */
-function reverify(
-  { db, item, caps }: MergeContext,
+async function reverify(
+  { store, item, caps }: MergeContext,
   step: Extract<SerialMergeStep, { kind: "reverify" }>,
   jobId: number,
-): void {
-  immediate(db, () => {
-    applyWorkItemEvent(db, item.id, "reverify_requested");
-    enqueueJobOnce(db, {
+): Promise<void> {
+  const job = await store.transaction(function* (q) {
+    yield* applyWorkItemEventSteps(q, item.id, "reverify_requested");
+    return yield* enqueueJobOnceSteps(q, {
       queue: JOB_KIND.reverify,
       jobKey: `reverify:${item.id}:${step.head}:merge:${jobId}`,
       payload: { itemId: item.id },
       now: caps.now(),
     });
   });
+  if (job.inserted) emitJobReady(store);
   // Busy now, it no longer holds the lane: the ready tasks behind it look again.
-  wakeMergesBehind(db, caps.now());
+  await store.run((q) => wakeMergesBehindSteps(q, caps.now()));
   if (step.rebased)
     caps.voice.status(
       item,

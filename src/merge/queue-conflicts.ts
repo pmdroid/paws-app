@@ -1,7 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
+  emitJobReady,
   enqueueJobOnce,
+  enqueueJobOnceSteps,
   getItemPullRequestSteps,
   getWorkItemSteps,
   immediate,
@@ -13,6 +15,8 @@ import {
   recordRebaseReturn,
   type Db,
   type MergeQueuePosition,
+  type Q,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import type { RebaseConflict } from "./budget";
@@ -39,13 +43,29 @@ export type QueueConflictSweep = { repository: string; main: string | null };
  */
 export function mainMoved(db: Database, input: QueueConflictSweep & { now: number }): void {
   if (behindFront(db, input.repository).length === 0) return;
+  enqueueJobOnce(db, sweepJob(input));
+}
+
+/** {@link mainMoved} on the store, for a caller outside a synchronous transaction. */
+export async function mainMovedAsync(
+  store: Db,
+  input: QueueConflictSweep & { now: number },
+): Promise<void> {
+  const inserted = await store.run(function* (q): Steps<boolean> {
+    if ((yield* behindFrontSteps(q, input.repository)).length === 0) return false;
+    return (yield* enqueueJobOnceSteps(q, sweepJob(input))).inserted;
+  });
+  if (inserted) emitJobReady(store);
+}
+
+function sweepJob(input: QueueConflictSweep & { now: number }) {
   const payload: QueueConflictSweep = { repository: input.repository, main: input.main };
-  enqueueJobOnce(db, {
+  return {
     queue: JOB_KIND.queueConflicts,
     jobKey: `queue-conflicts:${input.repository.toLowerCase()}:${input.main ?? input.now}`,
     payload,
     now: input.now,
-  });
+  };
 }
 
 export function queueConflictSweep(payload: unknown): QueueConflictSweep | null {
@@ -155,15 +175,17 @@ function behindFront(db: Database, repository: string): string[] {
 
 /** {@link behindFront}, read through the store. */
 function queuedBehindFront(store: Db, repository: string): Promise<string[]> {
-  return store.run(function* (q) {
-    const behind: string[] = [];
-    for (const entry of yield* listMergeQueuesSteps(q))
-      if (queuedBehind(entry, repository)) behind.push(entry.itemId);
-    const waiting: string[] = [];
-    for (const itemId of behind)
-      if (!(yield* itemJobRunningSteps(q, JOB_KIND.merge, itemId))) waiting.push(itemId);
-    return waiting;
-  });
+  return store.run((q) => behindFrontSteps(q, repository));
+}
+
+function* behindFrontSteps(q: Q, repository: string): Steps<string[]> {
+  const behind: string[] = [];
+  for (const entry of yield* listMergeQueuesSteps(q))
+    if (queuedBehind(entry, repository)) behind.push(entry.itemId);
+  const waiting: string[] = [];
+  for (const itemId of behind)
+    if (!(yield* itemJobRunningSteps(q, JOB_KIND.merge, itemId))) waiting.push(itemId);
+  return waiting;
 }
 
 function queuedBehind(entry: MergeQueuePosition, repository: string): boolean {
