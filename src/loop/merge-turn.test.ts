@@ -14,6 +14,7 @@ import {
   migrate,
   openDatabase,
   OutboxDispatcher,
+  sqliteDb,
 } from "../db";
 import { createFakeTracker } from "../linear";
 import { mergeAcceptedWork } from "./accepted-work";
@@ -46,7 +47,7 @@ async function hungTurn() {
   });
   insertQueuedItem(db, { id: ITEM, sessionKey: "", now: clock.now() });
   beginImplementRun(db, ITEM, clock.now());
-  markCloseoutAccepted(db, ITEM, HEAD);
+  await markCloseoutAccepted(sqliteDb(db), ITEM, HEAD);
   const read = tracker.issueMergeContext.bind(tracker);
   let entered!: () => void;
   const reached = new Promise<void>((resolve) => (entered = resolve));

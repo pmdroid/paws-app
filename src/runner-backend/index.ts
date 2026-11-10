@@ -32,8 +32,8 @@ import {
   getWorkItemSteps,
   refundLostTurnAsync,
   listHooks,
-  startAgentWaitAsync,
-  endAgentWaitAsync,
+  startAgentWait,
+  endAgentWait,
   pinnedSlotsReservedSteps,
   releasePinnedSlotSteps,
   recordFallbackAttempt,
@@ -2068,9 +2068,9 @@ export function createRemoteAgentRunner(options: {
               if (event.type === "hook_failed") await emit(event, origin);
               const waitRun = { itemId, runId: assigned.runId, generation: assigned.generation };
               if (event.type === "agent_wait_started")
-                await startAgentWaitAsync(store, waitRun, mono(), now());
+                await startAgentWait(store, waitRun, mono(), now());
               if (event.type === "agent_wait_ended")
-                await endAgentWaitAsync(store, waitRun, mono(), now(), event.waitedMs);
+                await endAgentWait(store, waitRun, mono(), now(), event.waitedMs);
               if (event.type === "checkpoint" && event.sha && event.dropped === undefined)
                 savedAt = now();
               if (event.type === "checkpoint" && assigned.type === "run")
@@ -2722,7 +2722,7 @@ export function createRemoteAgentRunner(options: {
             if (!detached)
               try {
                 if (command)
-                  await endAgentWaitAsync(
+                  await endAgentWait(
                     store,
                     { itemId, runId: command.runId, generation: command.generation },
                     mono(),

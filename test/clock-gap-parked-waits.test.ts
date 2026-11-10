@@ -47,12 +47,17 @@ function boot(clock: Clock & { now(): number } = new FakeClock(1_000_000)) {
   return { db, host };
 }
 
-function park(db: Database, now: number, wait: Wait, withCheckpoint: boolean): number {
+async function park(
+  db: Database,
+  now: number,
+  wait: Wait,
+  withCheckpoint: boolean,
+): Promise<number> {
   insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", now });
   const saved = withCheckpoint ? checkpoint : undefined;
   const { item } = beginImplementRun(db, "eng-9", now, saved);
   if (wait === "transient backoff") {
-    deferWorkItem(db, item, {
+    await deferWorkItem(sqliteDb(db), item, {
       retry: 2,
       delayMs: BACKOFF_MS,
       handoff: "keep going",
@@ -132,7 +137,7 @@ describe("a clock gap during a parked wait", () => {
           const clock = new FakeClock(1_000_000);
           const { db, host } = boot(clock);
           try {
-            const owner = park(db, clock.now(), wait, withCheckpoint);
+            const owner = await park(db, clock.now(), wait, withCheckpoint);
             await host.tick();
             const before = snapshot(db);
 
@@ -168,7 +173,7 @@ describe("a clock gap during a parked wait", () => {
         const clock = new FakeClock(1_000_000);
         const { db, host } = boot(clock);
         try {
-          const owner = park(db, clock.now(), wait, withCheckpoint);
+          const owner = await park(db, clock.now(), wait, withCheckpoint);
           await host.tick();
           const before = snapshot(db);
 
@@ -196,7 +201,7 @@ describe("a clock gap during a parked wait", () => {
       const clock: Clock = { now: () => wall.now, mono: () => wall.mono };
       const { db, host } = boot(clock);
       try {
-        const owner = park(db, wall.now, wait, false);
+        const owner = await park(db, wall.now, wait, false);
         await host.tick();
         const before = snapshot(db);
 
@@ -228,7 +233,7 @@ describe("ownership a clock gap does not invent", () => {
   async function abandoned(how: "stale version" | "cancelled" | "another item's job") {
     const clock = new FakeClock(1_000_000);
     const { db, host } = boot(clock);
-    const owner = park(db, clock.now(), "transient backoff", false);
+    const owner = await park(db, clock.now(), "transient backoff", false);
     if (how === "stale version") db.run("UPDATE work_item SET version=version+1 WHERE id='eng-9'");
     if (how === "cancelled")
       db.run("UPDATE job SET status='cancelled', finished_at=? WHERE id=?", [clock.now(), owner]);
@@ -282,11 +287,11 @@ describe("ownership a clock gap does not invent", () => {
     });
   }
 
-  test("a capacity wait parked at an older item version is not a parked wait at startup", () => {
+  test("a capacity wait parked at an older item version is not a parked wait at startup", async () => {
     const clock = new FakeClock(1_000_000);
     const { db, host } = boot(clock);
     try {
-      park(db, clock.now(), "first-start capacity wait", true);
+      await park(db, clock.now(), "first-start capacity wait", true);
       db.run("UPDATE work_item SET version=version+1 WHERE id='eng-9'");
       clock.sleep(TWO_HOURS + 1);
       expect(recoverOnStartup(db, clock.now())).toEqual([
@@ -304,7 +309,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
     const clock = new FakeClock(1_000_000);
     const { db, host } = boot(clock);
     try {
-      park(db, clock.now(), "transient backoff", true);
+      await park(db, clock.now(), "transient backoff", true);
       insertQueuedItem(db, { id: "eng-10", sessionKey: "session-10", now: clock.now() });
       beginImplementRun(db, "eng-10", clock.now());
       enqueueJob(db, {

@@ -18,6 +18,7 @@ import {
   migrate,
   openDatabase,
   prepareShutdown,
+  sqliteDb,
 } from "../db";
 import { startHost } from "./index";
 import { HostSupervisor } from "./supervisor";
@@ -110,7 +111,7 @@ describe("supervisor accrual writes", () => {
       await host.tick();
       applyWorkItemEvent(db, "eng-9", "turn_ended");
       applyWorkItemEvent(db, "eng-9", "closeout_accepted");
-      markCloseoutAccepted(db, "eng-9", "accepted");
+      await markCloseoutAccepted(sqliteDb(db), "eng-9", "accepted");
       for (let hour = 0; hour < 4; hour += 1) {
         clock.advance(60 * 60_000);
         await host.tick();
@@ -241,17 +242,21 @@ describe("host suspension and clock gaps", () => {
   ] as const;
 
   /** Puts eng-9 where `held` names and returns what a clock gap must leave as it is. */
-  function hold(db: ReturnType<typeof boot>["db"], clock: FakeClock, held: (typeof HELD)[number]) {
+  async function hold(
+    db: ReturnType<typeof boot>["db"],
+    clock: FakeClock,
+    held: (typeof HELD)[number],
+  ) {
     const { run } = startRun(db, clock);
     if (held === "paused") applyWorkItemEvent(db, "eng-9", "pause");
     if (held === "awaiting_input") applyWorkItemEvent(db, "eng-9", "blocking_question");
     if (held === "accepted") {
       applyWorkItemEvent(db, "eng-9", "turn_ended");
-      markCloseoutAccepted(db, "eng-9", "wip");
+      await markCloseoutAccepted(sqliteDb(db), "eng-9", "wip");
       verifyingJob(db, clock);
     }
     if (held === "merge_queue" || held === "merge_call") {
-      markCloseoutAccepted(db, "eng-9", "wip");
+      await markCloseoutAccepted(sqliteDb(db), "eng-9", "wip");
       enterMergeQueue(db, "eng-9", { ...checkpoint, phase: "merge_queue" });
       enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-9" }, now: clock.now() });
       claimNextJob(db, { workerId: "merger", now: clock.now(), queues: [JOB_KIND.merge] });
@@ -282,7 +287,7 @@ describe("host suspension and clock gaps", () => {
       test(`a host suspension ${gapName} leaves ${held} work with its owner`, async () => {
         const { clock, db, host } = boot();
         try {
-          const run = hold(db, clock, held);
+          const run = await hold(db, clock, held);
           await host.tick();
           const before = snapshot(db, run.id);
 
@@ -502,7 +507,7 @@ test("the supervisor stops the live agent when the time limit asks instead of fa
   );
   insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", maxAwakeMs: 1_000, now: 0 });
   const { run } = beginImplementRun(db, "eng-9", clock.now(), checkpoint);
-  markCloseoutAccepted(db, "eng-9", "wip");
+  await markCloseoutAccepted(sqliteDb(db), "eng-9", "wip");
   await host.tick();
   clock.advance(500);
   await host.tick();
