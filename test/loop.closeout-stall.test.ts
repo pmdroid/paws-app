@@ -219,8 +219,11 @@ for (const template of [null, "Issue: {{issue.identifier}}: {{issue.title}}"]) {
       expect(f.stalls()).toEqual([]);
 
       f.gate.next = { decision: "accepted", exhausted: false, summary: "fake accepted" };
-      f.db.run("UPDATE runner_work SET ended_at=?", [Date.now()]);
-      f.orchestrator.reconcileExecution();
+      f.db.run("UPDATE runner_work SET ended_at=?, teardown_confirmed_at=?", [
+        Date.now(),
+        Date.now(),
+      ]);
+      await f.orchestrator.reconcileExecution();
       await f.tickResume();
       const fixes = f.prompts.filter((prompt) => prompt.includes("Fix the P1 review finding."));
       expect(fixes).toHaveLength(1);
