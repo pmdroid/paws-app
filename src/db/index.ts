@@ -190,3 +190,4 @@ export * from "./runner-results";
 export * from "./runner-helpers";
 export * from "./member-vm-delete";
 export * from "./runner-backend-reads";
+export * from "./github-activation-reads";
