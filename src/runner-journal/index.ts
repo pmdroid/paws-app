@@ -564,7 +564,10 @@ export function openExecutionJournal(root: string) {
             .where(eq(delivery.executionId, id)),
         ))!.sequence;
         let message = "";
-        function* append(event: z.infer<typeof RunnerEventSchema>, requestId: string | null = null) {
+        function* append(
+          event: z.infer<typeof RunnerEventSchema>,
+          requestId: string | null = null,
+        ) {
           yield* q.exec(
             orm.insert(delivery).values({
               executionId: id,
