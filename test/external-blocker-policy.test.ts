@@ -78,12 +78,15 @@ test("an outside blocker completed in Linear releases the item", async () => {
   }
 });
 
-test("a canceled outside blocker holds the item", async () => {
+test("an outside blocker canceled in Linear releases the item; an open one holds it", async () => {
   const f = await fixture();
   try {
-    f.lifecycle.issue.stateType = "canceled";
+    f.lifecycle.issue.stateType = "started";
     await f.refresh();
     expect(f.ready()).toBe(false);
+    f.lifecycle.issue.stateType = "canceled";
+    await f.refresh();
+    expect(f.ready()).toBe(true);
   } finally {
     f.db.close();
   }

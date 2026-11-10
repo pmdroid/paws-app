@@ -236,7 +236,8 @@ function blockerSatisfied(
   const states = new Map<string, string>(JSON.parse(saved.linearStates));
   const byId = new Map(current.siblings.map((entry) => [entry.linearIssueId, entry]));
   return function* (q, id) {
-    if (states.get(id) === "canceled") return false;
+    // A blocker cancelled in Linear no longer blocks, the same as a completed one.
+    if (states.get(id) === "canceled") return true;
     const blocker = byId.get(id);
     // A blocker outside the delegation follows its Paws work, or its Linear state without any.
     if (!blocker)
@@ -360,7 +361,7 @@ function* writeItemDependenciesSteps(
     linearIdentifiers: JSON.stringify([...identifiers]),
   });
   const waiting = [...states]
-    .filter(([, state]) => state !== "completed")
+    .filter(([, state]) => state !== "completed" && state !== "canceled")
     .map(([id]) => identifiers.get(id) ?? id)
     .sort();
   if (waiting.length && current.item.state === "queued")

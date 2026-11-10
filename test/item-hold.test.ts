@@ -86,7 +86,7 @@ function externalBlocker(db: Database, state: string) {
   );
 }
 
-for (const state of ["started", "canceled"])
+for (const state of ["started", "unstarted"])
   test(`an item blocked by a ${state} issue Paws does not run names that issue`, async () => {
     const db = tempDb();
     const journaled: string[] = [];
@@ -241,6 +241,19 @@ test("migration 124 keeps the stored holds and accepts the workspace reason", ()
       { item_id: "PAS-8", reason: "blocked", blockers: '["PAS-7"]' },
       { item_id: "PAS-9", reason: "workspace", blockers: "[]" },
     ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("an item blocked only by an issue canceled in Linear is not held", async () => {
+  const db = tempDb();
+  try {
+    externalBlocker(db, "canceled");
+    const { lines, log } = journal();
+    await dispatch(db, { now: 1, log, admission: createAdmission({ db }) });
+    expect(listItemHolds(db)).toEqual([]);
+    expect(lines).toEqual([]);
   } finally {
     db.close();
   }
