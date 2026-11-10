@@ -1883,7 +1883,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       if (findingGrouping)
         registerFindingGrouping(created.jobs, {
           groupingTime: runtime.file.findingsGroupingTime ?? "06:00",
-          workspaces: () => listWorkspaceIds(db),
+          workspaces: () => listWorkspaceIds(sqliteDb(db)),
           run: (workspaceId, signal) =>
             findingGrouping.run(workspaceId, AbortSignal.any([signal, abort.signal])),
         });

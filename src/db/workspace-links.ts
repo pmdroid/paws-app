@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, exists, lte, ne, not, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import {
   workspaceMemberUsableWhere,
   workspaceMemberUsable,
@@ -40,8 +39,8 @@ export function* workspaceIdentityLinksSteps(q: Q, workspaceId: string) {
   return rows as (WorkspaceIdentityLink & { name: string; email: string })[];
 }
 
-export function workspaceIdentityLinks(db: Database, workspaceId: string) {
-  return settled(sqliteDb(db).run((q) => workspaceIdentityLinksSteps(q, workspaceId)));
+export async function workspaceIdentityLinks(store: Db, workspaceId: string) {
+  return store.run((q) => workspaceIdentityLinksSteps(q, workspaceId));
 }
 
 export function* workspaceIdentityCandidatesSteps(q: Q, workspaceId: string) {

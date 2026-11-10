@@ -397,7 +397,7 @@ export function registerFindingGrouping(
   jobs: JobLoop,
   options: {
     groupingTime: string;
-    workspaces: () => string[];
+    workspaces: () => Promise<string[]>;
     run: (workspaceId: string, signal: AbortSignal) => Promise<void>;
     now?: () => number;
   },
@@ -412,7 +412,7 @@ export function registerFindingGrouping(
     await jobs.store.run((q) => recoverFindingGroupRunsSteps(q, at));
     const iso = new Date(at).toISOString();
     if (iso.slice(11, 16) < options.groupingTime) return;
-    for (const workspaceId of options.workspaces())
+    for (const workspaceId of await options.workspaces())
       await enqueueJobOnceAsync(jobs.store, {
         queue: "findings.group",
         jobKey: `findings.group:${workspaceId}:${iso.slice(0, 10)}`,

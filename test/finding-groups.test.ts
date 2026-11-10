@@ -251,7 +251,7 @@ test("scheduler honors HH:MM UTC and manual grouping can run before that time", 
     const calls: string[] = [];
     registerFindingGrouping(jobs, {
       groupingTime: "06:00",
-      workspaces: () => ["ws"],
+      workspaces: async () => ["ws"],
       run: async (id) => {
         calls.push(id);
       },

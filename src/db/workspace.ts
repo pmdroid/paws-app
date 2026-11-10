@@ -47,16 +47,16 @@ function* findWorkspaceSteps(q: Q, column: "id" | "linearOrganizationId", value:
   return row ?? null;
 }
 
-export function getWorkspaceSteps(q: Q, id: string) {
-  return findWorkspaceSteps(q, "id", id);
+export function* getWorkspaceSteps(q: Q, id: string) {
+  return yield* findWorkspaceSteps(q, "id", id);
 }
 
 export function getWorkspace(db: Database, id: string): WorkspaceRecord | null {
   return settled(sqliteDb(db).run((q) => getWorkspaceSteps(q, id)));
 }
 
-export function workspaceForOrganizationSteps(q: Q, organizationId: string) {
-  return findWorkspaceSteps(q, "linearOrganizationId", organizationId);
+export function* workspaceForOrganizationSteps(q: Q, organizationId: string) {
+  return yield* findWorkspaceSteps(q, "linearOrganizationId", organizationId);
 }
 
 export function workspaceForOrganization(
@@ -566,8 +566,8 @@ export function* listWorkspaceIdsSteps(q: Q) {
   return (yield* q.all(q.orm.select({ id: w.id }).from(w))).map((row) => row.id);
 }
 
-export function listWorkspaceIds(db: Database): string[] {
-  return settled(sqliteDb(db).run((q) => listWorkspaceIdsSteps(q)));
+export async function listWorkspaceIds(store: Db): Promise<string[]> {
+  return store.run((q) => listWorkspaceIdsSteps(q));
 }
 
 export function* openDelegationWorkspaceIdSteps(

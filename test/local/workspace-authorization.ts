@@ -15,6 +15,7 @@ import {
   MEMBERSHIP_BACKSTOP_MS,
   syncWorkspaceMember,
   workspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import { createLinearMembershipReads } from "../../src/linear";
 import { startServer } from "../../src/server";
@@ -726,7 +727,7 @@ export async function probeWorkspaceAuthorization(
       now: Date.now() + 2,
     });
     db.run("UPDATE workspace_member SET role='admin' WHERE user_id=?", [ownerId]);
-    changeLinearTeamAccess(db, {
+    await changeLinearTeamAccess(sqliteDb(db), {
       eventKey: "fixture-team-removal",
       organizationId: "org",
       oauthClientId: "client",

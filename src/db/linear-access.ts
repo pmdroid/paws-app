@@ -172,8 +172,11 @@ export function* revokeLinearInstallationSteps(
   );
 }
 
-export function revokeLinearInstallation(db: Database, input: LinearRevocationEvent): string[] {
-  return settled(sqliteDb(db).transaction((q) => revokeLinearInstallationSteps(q, input)));
+export async function revokeLinearInstallation(
+  store: Db,
+  input: LinearRevocationEvent,
+): Promise<string[]> {
+  return store.transaction((q) => revokeLinearInstallationSteps(q, input));
 }
 
 type LinearTeamAccessChange = LinearInstallationScope & {
@@ -266,8 +269,11 @@ export function* changeLinearTeamAccessSteps(q: Q, input: LinearTeamAccessChange
   return [...affected].sort();
 }
 
-export function changeLinearTeamAccess(db: Database, input: LinearTeamAccessChange): string[] {
-  return settled(sqliteDb(db).transaction((q) => changeLinearTeamAccessSteps(q, input)));
+export async function changeLinearTeamAccess(
+  store: Db,
+  input: LinearTeamAccessChange,
+): Promise<string[]> {
+  return store.transaction((q) => changeLinearTeamAccessSteps(q, input));
 }
 
 type LinearInstallationSessionsScope = Pick<

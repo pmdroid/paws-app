@@ -10,6 +10,7 @@ import {
   putWorkspaceUser,
   workspaceMember,
   workspaceIdentityLinks,
+  sqliteDb,
 } from "../../src/db";
 import type { HealthReport } from "../../src/server";
 import { startPaws } from "../../src/index";
@@ -336,7 +337,7 @@ try {
       failedRoute.status === 500 && !detailsVisible && recovered.status === 200,
       { failed: failedRoute.status, detailsVisible, recovered: recovered.status },
     );
-    const link = workspaceIdentityLinks(paws.db, workspace.id).find(
+    const link = (await workspaceIdentityLinks(sqliteDb(paws.db), workspace.id)).find(
       (value) => value.userId === userId && value.provider === "slack",
     );
     observe(

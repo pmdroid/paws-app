@@ -14,6 +14,7 @@ import {
   recordLinearInstallation,
   replaceWorkspaceRepositories,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createLinearMembershipReads } from "../src/linear";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
@@ -221,7 +222,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     mapping(false);
     expect(identifiers((await list("member")).body)).toEqual([]);
     expect(identifiers((await list("administrator")).body)).toEqual(["PRIVATE-42"]);
-    changeLinearTeamAccess(db, {
+    await changeLinearTeamAccess(sqliteDb(db), {
       eventKey: "fixture-team-b-removal",
       organizationId: "org",
       oauthClientId: "client",
