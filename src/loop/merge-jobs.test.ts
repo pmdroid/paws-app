@@ -671,10 +671,10 @@ describe("slow CI question", () => {
 
   test("Merge returns the accepted head to the merge queue and starts a fresh wait", async () => {
     const { db, clock } = await askedAboutSlowCi();
-    const runs = listRuns(db, "eng-1").length;
+    const runs = (await listRuns(sqliteDb(db), "eng-1")).length;
     expect(reply(db, "Merge the accepted work", clock.now())).toBe("answered");
     expect(getWorkItem(db, "eng-1")).toMatchObject({ state: "merge_queue", acceptedHead: "h" });
-    expect(listRuns(db, "eng-1")).toHaveLength(runs);
+    expect(await listRuns(sqliteDb(db), "eng-1")).toHaveLength(runs);
     const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
     expect(job.payload).toMatchObject({ itemId: "eng-1", head: "h" });
     expect(await parkMerge(sqliteDb(db), job, clock.now(), { reason: "ci", head: "h" })).toBe(

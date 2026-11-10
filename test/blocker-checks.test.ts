@@ -8,6 +8,7 @@ import {
   openDatabase,
   recordLinearInstallation,
   saveItemHolds,
+  sqliteDb,
 } from "../src/db";
 import {
   BLOCKED_RELATIONS_POLL_MS,
@@ -77,7 +78,9 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
   await reconciler.sweep({ now: clock });
   const child = listWorkItems(db).find((item) => item.linearIssueId === "acme-child")!;
   if (options.blocked !== false)
-    saveItemHolds(db, [{ itemId: child.id, reason: "blocked", blockers: ["ACME-12"] }]);
+    await saveItemHolds(sqliteDb(db), [
+      { itemId: child.id, reason: "blocked", blockers: ["ACME-12"] },
+    ]);
   tracker.blockerReads.length = 0;
   let executionReconciles = 0;
   const polls = createRelationsPolls({

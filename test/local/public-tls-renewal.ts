@@ -12,6 +12,7 @@ import {
   insertQueuedItem,
   openDatabase,
   migrate,
+  sqliteDb,
 } from "../../src/db";
 import { loadPublicTls, validatePublicTls, PUBLIC_TLS_RESTART_EXIT } from "../../src/deployment";
 import { startServer } from "../../src/server";
@@ -356,8 +357,8 @@ export async function probePublicTlsRenewal(root: string, observe: Observe) {
     assert.equal(await fingerprint(cliPort), oldFingerprint);
     const db = openDatabase(join(home, "paws.db"));
     insertQueuedItem(db, { id: itemId, branchName: "paws/tls-1", now: Date.now() });
-    saveRunCommitPolicy(
-      db,
+    await saveRunCommitPolicy(
+      sqliteDb(db),
       beginImplementRun(db, itemId, Date.now(), { phase: "running", turn: 1 }).run.id,
       APP_POLICY,
     );

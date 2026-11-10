@@ -9,6 +9,7 @@ import {
   recordConfirmedRemoteMerge,
   recordRebaseReturn,
   saveCandidatePaths,
+  sqliteDb,
 } from "../src/db";
 import { tempDb } from "./helpers";
 import { workspaceDispatch } from "./fake-workspace";
@@ -54,7 +55,7 @@ test("two items that change a hot file do not run together; the second starts af
     expect(
       await workspaceDispatch(db, { now: NOW, log: (line: string) => log.push(line) }),
     ).toEqual(["first"]);
-    expect(listItemHolds(db)).toEqual([
+    expect(await listItemHolds(sqliteDb(db))).toEqual([
       { itemId: "second", reason: "overlap", blockers: ["first"], files: [PROVIDER] },
     ]);
     expect(log).toContain("item second held: waiting for first to merge (both change provider.ts)");
@@ -63,11 +64,11 @@ test("two items that change a hot file do not run together; the second starts af
     expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
     setState(db, "first", "merge_queue");
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
-    expect(listItemHolds(db).map((hold) => hold.reason)).toEqual(["overlap"]);
+    expect((await listItemHolds(sqliteDb(db))).map((hold) => hold.reason)).toEqual(["overlap"]);
 
     setState(db, "first", "merged");
     expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual(["second"]);
-    expect(listItemHolds(db)).toEqual([]);
+    expect(await listItemHolds(sqliteDb(db))).toEqual([]);
   } finally {
     db.close();
   }
@@ -80,7 +81,7 @@ test("items that change different files run in parallel", async () => {
     item(db, "first", [PROVIDER]);
     item(db, "second", ["src/b.ts"], 2);
     expect(await workspaceDispatch(db, { now: NOW })).toEqual(["first", "second"]);
-    expect(listItemHolds(db)).toEqual([]);
+    expect(await listItemHolds(sqliteDb(db))).toEqual([]);
   } finally {
     db.close();
   }
@@ -106,7 +107,7 @@ test("an item with no candidate yet is not held", async () => {
     setState(db, "first", "running");
     item(db, "second", null, 2);
     expect(await workspaceDispatch(db, { now: NOW })).toEqual(["second"]);
-    expect(listItemHolds(db)).toEqual([]);
+    expect(await listItemHolds(sqliteDb(db))).toEqual([]);
   } finally {
     db.close();
   }
@@ -148,7 +149,7 @@ test("a merge-queue item that depends on the queued item does not hold it", asyn
     item(db, "prerequisite", [PROVIDER], 2);
     blocks(db, "prerequisite", "dependent");
     expect(await workspaceDispatch(db, { now: NOW })).toEqual(["prerequisite"]);
-    expect(listItemHolds(db)).toEqual([]);
+    expect(await listItemHolds(sqliteDb(db))).toEqual([]);
   } finally {
     db.close();
   }
@@ -180,7 +181,7 @@ test("an item the queued item depends on still holds it", async () => {
     item(db, "dependent", [PROVIDER], 2);
     blocks(db, "dependent", "unrelated");
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
-    expect(listItemHolds(db).map((hold) => [hold.itemId, hold.reason])).toEqual([
+    expect((await listItemHolds(sqliteDb(db))).map((hold) => [hold.itemId, hold.reason])).toEqual([
       ["dependent", "overlap"],
     ]);
   } finally {
@@ -207,7 +208,7 @@ test("a merge-queue item behind the returned front does not hold it", async () =
     item(db, "front", [PROVIDER], 2);
     place(db, "front", 10);
     expect(await workspaceDispatch(db, { now: NOW })).toEqual(["front"]);
-    expect(listItemHolds(db)).toEqual([]);
+    expect(await listItemHolds(sqliteDb(db))).toEqual([]);
   } finally {
     db.close();
   }
@@ -237,7 +238,7 @@ test("a merge-queue item ahead of a returned item still holds it", async () => {
     item(db, "returned", [PROVIDER], 2);
     place(db, "returned", 20);
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
-    expect(listItemHolds(db)).toEqual([
+    expect(await listItemHolds(sqliteDb(db))).toEqual([
       { itemId: "returned", reason: "overlap", blockers: ["ahead"], files: [PROVIDER] },
     ]);
   } finally {
@@ -346,7 +347,7 @@ test("held items that change the same hot file start oldest first", async () => 
     item(db, "b", [PROVIDER], 1);
     item(db, "c", [PROVIDER], 4);
     expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
-    expect(listOverlapHoldAges(db)).toEqual(
+    expect(await listOverlapHoldAges(sqliteDb(db))).toEqual(
       new Map([
         ["a", NOW],
         ["b", NOW + 1],
@@ -359,7 +360,7 @@ test("held items that change the same hot file start oldest first", async () => 
     expect(
       await workspaceDispatch(db, { now: NOW + 2, log: (line: string) => log.push(line) }),
     ).toEqual(["a"]);
-    expect(listItemHolds(db)).toEqual([
+    expect(await listItemHolds(sqliteDb(db))).toEqual([
       { itemId: "b", reason: "overlap", blockers: ["a"], files: [PROVIDER] },
       { itemId: "c", reason: "overlap", blockers: ["a"], files: [PROVIDER] },
     ]);
@@ -367,10 +368,12 @@ test("held items that change the same hot file start oldest first", async () => 
 
     setState(db, "a", "running");
     expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
-    expect(listItemHolds(db).map((hold) => [hold.itemId, hold.blockers])).toEqual([
-      ["b", ["a"]],
-      ["c", ["a"]],
-    ]);
+    expect((await listItemHolds(sqliteDb(db))).map((hold) => [hold.itemId, hold.blockers])).toEqual(
+      [
+        ["b", ["a"]],
+        ["c", ["a"]],
+      ],
+    );
   } finally {
     db.close();
   }
@@ -388,8 +391,8 @@ test("an item keeps its hold age across a restart from failed and a conflict res
     expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual(["a"]);
     setState(db, "a", "running");
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
-    expect(listItemHolds(db)).toEqual([]);
-    expect(listOverlapHoldAges(db).get("a")).toBe(NOW);
+    expect(await listItemHolds(sqliteDb(db))).toEqual([]);
+    expect((await listOverlapHoldAges(sqliteDb(db))).get("a")).toBe(NOW);
 
     setState(db, "a", "failed");
     expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
@@ -398,7 +401,7 @@ test("an item keeps its hold age across a restart from failed and a conflict res
     setState(db, "a", "queued");
     item(db, "c", [PROVIDER], 1);
     expect(await workspaceDispatch(db, { now: NOW + 4 })).toEqual([]);
-    expect(listOverlapHoldAges(db).get("a")).toBe(NOW);
+    expect((await listOverlapHoldAges(sqliteDb(db))).get("a")).toBe(NOW);
     setState(db, "second", "merged");
     expect(await workspaceDispatch(db, { now: NOW + 5 })).toEqual(["a"]);
 
@@ -406,14 +409,14 @@ test("an item keeps its hold age across a restart from failed and a conflict res
     expect(await workspaceDispatch(db, { now: NOW + 6 })).toEqual([]);
     setState(db, "a", "queued");
     expect(await workspaceDispatch(db, { now: NOW + 7 })).toEqual(["a"]);
-    expect(listItemHolds(db)).toEqual([
+    expect(await listItemHolds(sqliteDb(db))).toEqual([
       { itemId: "c", reason: "overlap", blockers: ["a"], files: [PROVIDER] },
     ]);
-    expect(listOverlapHoldAges(db).get("a")).toBe(NOW);
+    expect((await listOverlapHoldAges(sqliteDb(db))).get("a")).toBe(NOW);
 
     setState(db, "a", "merged");
     expect(await workspaceDispatch(db, { now: NOW + 8 })).toEqual(["c"]);
-    expect(listOverlapHoldAges(db).has("a")).toBe(false);
+    expect((await listOverlapHoldAges(sqliteDb(db))).has("a")).toBe(false);
   } finally {
     db.close();
   }
@@ -429,8 +432,8 @@ test("an item without a candidate is never held, even behind an older held item"
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
     item(db, "unknown", null, 4);
     expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual(["unknown"]);
-    expect(listItemHolds(db).map((hold) => hold.itemId)).toEqual(["a"]);
-    expect(listOverlapHoldAges(db).has("unknown")).toBe(false);
+    expect((await listItemHolds(sqliteDb(db))).map((hold) => hold.itemId)).toEqual(["a"]);
+    expect((await listOverlapHoldAges(sqliteDb(db))).has("unknown")).toBe(false);
   } finally {
     db.close();
   }

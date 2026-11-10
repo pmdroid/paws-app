@@ -71,7 +71,7 @@ test("migration 062 starts items without a snapshot so startup resyncs them", ()
   }
 });
 
-test("a delegation is snapshot-ready only when every active item has a snapshot", () => {
+test("a delegation is snapshot-ready only when every active item has a snapshot", async () => {
   const db = tempDb();
   try {
     const first = insertQueuedItem(db, { id: "first", now: 1 });
@@ -91,11 +91,11 @@ test("a delegation is snapshot-ready only when every active item has a snapshot"
         "INSERT INTO item_dependency_snapshot(item_id,workspace_id,generation,scope,linear_states) VALUES(?,'workspace',1,'[]','[]')",
         [itemId],
       );
-    expect(delegationSnapshotsComplete(db, first.delegationId)).toBe(false);
+    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(false);
     snap("first");
-    expect(delegationSnapshotsComplete(db, first.delegationId)).toBe(false);
+    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(false);
     snap("second");
-    expect(delegationSnapshotsComplete(db, first.delegationId)).toBe(true);
+    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(true);
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('removed',?,'removed','DEP-5','Removed','queued','paws/removed',3,1)",
       [first.delegationId],
@@ -103,7 +103,7 @@ test("a delegation is snapshot-ready only when every active item has a snapshot"
     db.run(
       "INSERT INTO work_item_specification(item_id,hash,revision,present) VALUES('removed','hash',1,0)",
     );
-    expect(delegationSnapshotsComplete(db, first.delegationId)).toBe(true);
+    expect(await delegationSnapshotsComplete(db, first.delegationId)).toBe(true);
   } finally {
     db.close();
   }

@@ -12,6 +12,7 @@ import {
   insertQueuedItem,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { answerQuestion, openQuestion } from "../src/questions";
 
@@ -48,7 +49,7 @@ test("repository binding survives restart and rejects a different binding", () =
   }
 });
 
-test("an interpreted offered repository survives restart without changing the answer or binding", () => {
+test("an interpreted offered repository survives restart without changing the answer or binding", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-repository-choice-"));
   const filename = join(root, "paws.db");
   const repositories = ["one", "two"].map((repo) => ({
@@ -66,20 +67,22 @@ test("an interpreted offered repository survives restart without changing the an
       body: "Which repository?",
     });
     saveWorkItemRepositoryQuestion(db, item.id, question.id, repositories);
-    expect(rememberWorkItemRepositoryChoice(db, item.id, question.id, repositories[1]!)).toBe(
-      false,
-    );
+    expect(
+      await rememberWorkItemRepositoryChoice(sqliteDb(db), item.id, question.id, repositories[1]!),
+    ).toBe(false);
     answerQuestion(db, question.id, {
       answer: "Use the second repository for this change.",
       answeredBy: "owner",
     });
-    expect(() =>
-      rememberWorkItemRepositoryChoice(db, item.id, question.id, {
+    await expect(
+      rememberWorkItemRepositoryChoice(sqliteDb(db), item.id, question.id, {
         ...repositories[1]!,
         remoteUrl: "https://github.com/unoffered/elsewhere.git",
       }),
-    ).toThrow("not offered");
-    expect(rememberWorkItemRepositoryChoice(db, item.id, question.id, repositories[1]!)).toBe(true);
+    ).rejects.toThrow("not offered");
+    expect(
+      await rememberWorkItemRepositoryChoice(sqliteDb(db), item.id, question.id, repositories[1]!),
+    ).toBe(true);
     db.close();
     db = openDatabase(filename);
     migrate(db);
@@ -95,9 +98,9 @@ test("an interpreted offered repository survives restart without changing the an
     });
     saveWorkItemRepositoryQuestion(db, item.id, replacement.id, repositories);
     expect(getWorkItemRepositoryChoice(db, item.id)).toBeNull();
-    expect(rememberWorkItemRepositoryChoice(db, item.id, question.id, repositories[0]!)).toBe(
-      false,
-    );
+    expect(
+      await rememberWorkItemRepositoryChoice(sqliteDb(db), item.id, question.id, repositories[0]!),
+    ).toBe(false);
   } finally {
     db.close();
     rmSync(root, { recursive: true, force: true });

@@ -17,6 +17,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   resumeUsagePauseNow,
+  sqliteDb,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
 import {
@@ -810,8 +811,8 @@ async function runRemoteFault(fault: Fault) {
       retries: listJobs(db)
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => (job.payload as { retry?: number }).retry ?? 0),
-      runs: listRuns(db).map((run) => `${run.kind}:${run.status}`),
-      runIds: listRuns(db).map((run) => run.id),
+      runs: (await listRuns(sqliteDb(db))).map((run) => `${run.kind}:${run.status}`),
+      runIds: (await listRuns(sqliteDb(db))).map((run) => run.id),
       faultedAttempts: runner.faultedAttempts,
       deferredState: runner.deferredState,
       heldSlots: runner.heldSlots,
@@ -821,7 +822,7 @@ async function runRemoteFault(fault: Fault) {
       recovered: runner.recovered,
       detail: JSON.stringify({
         state: getWorkItem(db, item.id)?.state,
-        runs: listRuns(db).map((run) => `${run.kind}:${run.status}`),
+        runs: (await listRuns(sqliteDb(db))).map((run) => `${run.kind}:${run.status}`),
         jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
         faultedAttempts: runner.faultedAttempts,

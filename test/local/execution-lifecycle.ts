@@ -14,6 +14,7 @@ import {
   ensureLinearSession,
   recordLinearInstallation,
   getWorkItem,
+  sqliteDb,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
 import { readyItems, syncItemDependencies } from "../../src/intake";
@@ -132,7 +133,7 @@ export async function probeExecutionLifecycle(
       agent: "codex",
       freshSession: true,
     });
-    saveRunResult(db, run.id, "Published the exact API schema.", clock.now());
+    await saveRunResult(sqliteDb(db), run.id, "Published the exact API schema.", clock.now());
     setCurrentRun(db, "handoff-0", run.id);
     assert.equal(
       await orchestrator.dependencyHandoff("handoff-1"),

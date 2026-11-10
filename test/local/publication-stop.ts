@@ -21,6 +21,7 @@ import {
   applyLinearCommand,
   applyWorkItemEvent,
   immediate,
+  sqliteDb,
 } from "../../src/db";
 import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
@@ -708,8 +709,8 @@ export async function probePublicationStop(
             freshSession: true,
             now: clock.now(),
           });
-          saveRunResult(
-            db,
+          await saveRunResult(
+            sqliteDb(db),
             producer.id,
             suffix === "old" ? "Obsolete schema" : "Current schema",
             clock.now(),

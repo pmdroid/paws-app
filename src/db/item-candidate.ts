@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 export type ItemCandidate = {
   itemId: string;
@@ -20,8 +19,8 @@ export function* recordItemCandidateSteps(q: Q, candidate: ItemCandidate) {
   );
 }
 
-export function recordItemCandidate(db: Database, candidate: ItemCandidate): void {
-  settled(sqliteDb(db).run((q) => recordItemCandidateSteps(q, candidate)));
+export async function recordItemCandidate(store: Db, candidate: ItemCandidate): Promise<void> {
+  await store.run((q) => recordItemCandidateSteps(q, candidate));
 }
 
 export function* getItemCandidateSteps(q: Q, itemId: string) {
@@ -32,6 +31,6 @@ export function* getItemCandidateSteps(q: Q, itemId: string) {
   return row ?? null;
 }
 
-export function getItemCandidate(db: Database, itemId: string): ItemCandidate | null {
-  return settled(sqliteDb(db).run((q) => getItemCandidateSteps(q, itemId)));
+export async function getItemCandidate(store: Db, itemId: string): Promise<ItemCandidate | null> {
+  return store.run((q) => getItemCandidateSteps(q, itemId));
 }

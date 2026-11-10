@@ -26,6 +26,7 @@ import {
   saveGitHubAttribution,
   saveRunCommitPolicy,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import { GitHubInstallationCheck } from "../../src/loop";
 import { signRunnerCommand, verifyRunnerCommand } from "../../src/runner-protocol";
@@ -156,7 +157,7 @@ export async function probeStandaloneAttribution(root: string) {
     observations.push(
       "linking credits exactly the delegator from a local lookup, and revoking credit creates no hold",
     );
-    saveRunCommitPolicy(db, run.id, policy);
+    await saveRunCommitPolicy(sqliteDb(db), run.id, policy);
     const reopened = openDatabase(dbPath);
     try {
       assert.deepEqual(getItemRunCommitPolicy(reopened, item.id), policy);

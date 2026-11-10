@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { asc, eq, isNotNull } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 export type ItemHoldReason =
@@ -52,8 +51,8 @@ export function* listItemHoldsSteps(q: Q) {
   });
 }
 
-export function listItemHolds(db: Database): ItemHold[] {
-  return settled(sqliteDb(db).run((q) => listItemHoldsSteps(q)));
+export async function listItemHolds(store: Db): Promise<ItemHold[]> {
+  return store.run((q) => listItemHoldsSteps(q));
 }
 
 export function* listOverlapHoldAgesSteps(q: Q) {
@@ -67,8 +66,8 @@ export function* listOverlapHoldAgesSteps(q: Q) {
   return new Map(rows.map((row) => [row.itemId, row.since!]));
 }
 
-export function listOverlapHoldAges(db: Database): Map<string, number> {
-  return settled(sqliteDb(db).run((q) => listOverlapHoldAgesSteps(q)));
+export async function listOverlapHoldAges(store: Db): Promise<Map<string, number>> {
+  return store.run((q) => listOverlapHoldAgesSteps(q));
 }
 
 export function* saveItemHoldsSteps(q: Q, holds: readonly ItemHold[], now = Date.now()) {
@@ -128,10 +127,10 @@ export function* saveItemHoldsSteps(q: Q, holds: readonly ItemHold[], now = Date
   return changes;
 }
 
-export function saveItemHolds(
-  db: Database,
+export async function saveItemHolds(
+  store: Db,
   holds: readonly ItemHold[],
   now?: number,
-): ItemHoldChange[] {
-  return settled(sqliteDb(db).run((q) => saveItemHoldsSteps(q, holds, now)));
+): Promise<ItemHoldChange[]> {
+  return store.run((q) => saveItemHoldsSteps(q, holds, now));
 }

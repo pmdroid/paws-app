@@ -29,6 +29,7 @@ import {
   getItemCandidate,
   recordItemCandidateSteps,
   wakeMergesBehindSteps,
+  sqliteDb,
 } from "../db";
 import {
   adoptRunnerRebase,
@@ -262,8 +263,8 @@ export async function advanceMerge(
     if (caps.stopped()) return { kind: "obsolete" };
   }
   const lane: SerialMergeInput = {
-    publishedAt: (head) => {
-      const candidate = getItemCandidate(db, item.id);
+    publishedAt: async (head) => {
+      const candidate = await getItemCandidate(sqliteDb(db), item.id);
       return candidate?.sha === head ? candidate.recordedAt : null;
     },
     worktree: published.worktree,

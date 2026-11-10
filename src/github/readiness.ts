@@ -170,7 +170,7 @@ type ReadinessInput = {
   prNumber: number;
   head: string;
   /** Paws publication time for the exact requested head, in milliseconds. */
-  publishedAt?: (head: string) => number | null;
+  publishedAt?: (head: string) => number | null | Promise<number | null>;
   sleep?: (ms: number) => Promise<void>;
   isCancelled?: () => boolean;
   onWait?: (message: string) => Promise<void>;
@@ -309,7 +309,7 @@ export async function readMergeReadiness(input: ReadinessInput): Promise<Readine
       latestPerName(baseChecks, (check) => check),
       required,
       baseBranch,
-      input.publishedAt?.(input.head) ?? null,
+      (await input.publishedAt?.(input.head)) ?? null,
     );
     if (ci.outcome === "ci_failed") return await withLogTails(input, token, ci, checks);
     if (ci.outcome !== "ready") return ci;

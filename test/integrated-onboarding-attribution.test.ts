@@ -11,6 +11,7 @@ import {
   type GitCommitPolicy,
 } from "../src/core";
 import * as dbApi from "../src/db";
+import { saveRunCommitPolicy, sqliteDb } from "../src/db";
 import { INSTALLATION_PERMISSIONS } from "../src/github";
 import {
   createFakeTracker,
@@ -356,7 +357,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(policyCoauthors(await policy())).toEqual([
       { id: 7, login: "creator", name: "Creator", email: "7+creator@users.noreply.github.com" },
     ]);
-    dbApi.saveRunCommitPolicy(db, current().currentRunId!, captured);
+    await saveRunCommitPolicy(sqliteDb(db), current().currentRunId!, captured);
     const persisted = dbApi.openDatabase(path);
     try {
       expect(dbApi.getRun(persisted, current().currentRunId!)!.checkpoint!.commitPolicy).toEqual(

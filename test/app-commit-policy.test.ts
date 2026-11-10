@@ -19,6 +19,7 @@ import {
   getRun,
   getItemRunCommitPolicy,
   insertRun,
+  sqliteDb,
 } from "../src/db";
 import type { RunnerCommand } from "../src/runner-protocol";
 
@@ -241,7 +242,7 @@ test("protected helper rejects a bad intermediate commit even with a valid final
   expect((await f.invoke(["rev-parse", "HEAD"])).trim()).toBe(checkpoint.sha!);
 });
 
-test("run attribution snapshot persists across reopen and cannot switch repair identities", () => {
+test("run attribution snapshot persists across reopen and cannot switch repair identities", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-policy-db-"));
   roots.push(root);
   const path = join(root, "paws.sqlite");
@@ -249,22 +250,22 @@ test("run attribution snapshot persists across reopen and cannot switch repair i
   migrate(db);
   const item = insertQueuedItem(db, { id: "item", now: 1 });
   const { run } = beginImplementRun(db, item.id, 1);
-  saveRunCommitPolicy(db, run.id, policy);
+  await saveRunCommitPolicy(sqliteDb(db), run.id, policy);
   db.close();
   db = openDatabase(path);
   try {
     expect(getRun(db, run.id)?.checkpoint?.commitPolicy).toEqual(policy);
     insertRun(db, { itemId: item.id, now: 2 });
     expect(getItemRunCommitPolicy(db, item.id)).toEqual(policy);
-    expect(() =>
-      saveRunCommitPolicy(db, run.id, { ...policy, credit: { ...credit, id: 9 } }),
-    ).toThrow("cannot change");
+    await expect(
+      saveRunCommitPolicy(sqliteDb(db), run.id, { ...policy, credit: { ...credit, id: 9 } }),
+    ).rejects.toThrow("cannot change");
   } finally {
     db.close();
   }
 });
 
-test("a run stored with the old lead and steerer policy keeps crediting only the steerer", () => {
+test("a run stored with the old lead and steerer policy keeps crediting only the steerer", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   try {
@@ -282,7 +283,7 @@ test("a run stored with the old lead and steerer policy keeps crediting only the
       run.id,
     ]);
     expect(getItemRunCommitPolicy(db, item.id)).toEqual(policy);
-    saveRunCommitPolicy(db, run.id, policy);
+    await saveRunCommitPolicy(sqliteDb(db), run.id, policy);
     db.run("UPDATE run SET checkpoint=? WHERE id=?", [
       JSON.stringify({ phase: "running", commitPolicy: { bot: policy.bot, projectLead: null } }),
       run.id,

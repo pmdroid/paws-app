@@ -24,6 +24,7 @@ import {
   listRuns,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { HostSupervisor } from "../src/host/supervisor";
 import { WakeDetector } from "../src/host/wake";
@@ -629,7 +630,7 @@ async function runWithFault(fault: {
             (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
         )
         .map((job) => (job.payload as { retry?: number }).retry ?? 0),
-      runs: listRuns(db).map((run) => `${run.kind}:${run.status}`),
+      runs: (await listRuns(sqliteDb(db))).map((run) => `${run.kind}:${run.status}`),
       jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
       implementations,
       waits,

@@ -40,14 +40,14 @@ test("cancelling an item with a pending request leaves no reconciliation rows fo
   }
 });
 
-test("the delegation of a cancelled item is no longer held as reconciling", () => {
+test("the delegation of a cancelled item is no longer held as reconciling", async () => {
   const db = tempDb();
   try {
     seed(db);
     db.run("DELETE FROM item_reconciliation_request WHERE item_id='live'");
-    assert.equal(hasPendingDelegationChanges(db, "delegation"), true);
+    assert.equal(await hasPendingDelegationChanges(db, "delegation"), true);
     applyWorkItemEvent(db, "cancelled", "cancel");
-    assert.equal(hasPendingDelegationChanges(db, "delegation"), false);
+    assert.equal(await hasPendingDelegationChanges(db, "delegation"), false);
   } finally {
     db.close();
   }

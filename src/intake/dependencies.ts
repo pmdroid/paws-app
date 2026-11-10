@@ -114,12 +114,18 @@ function* snapshotSteps(q: Q, target: Target): Steps<Snapshot | null> {
   return saved;
 }
 
-export function delegationSnapshotsComplete(db: Database, delegationId: string): boolean {
-  return !delegationHasItemWithoutSnapshot(db, delegationId);
+export async function delegationSnapshotsComplete(
+  db: Database,
+  delegationId: string,
+): Promise<boolean> {
+  return !(await delegationHasItemWithoutSnapshot(sqliteDb(db), delegationId));
 }
 
-export function hasPendingDelegationChanges(db: Database, delegationId: string): boolean {
-  return delegationHasReconciliationWork(db, delegationId);
+export async function hasPendingDelegationChanges(
+  db: Database,
+  delegationId: string,
+): Promise<boolean> {
+  return delegationHasReconciliationWork(sqliteDb(db), delegationId);
 }
 
 export function readyItems(db: Database, target: Target): DependencyReadiness {

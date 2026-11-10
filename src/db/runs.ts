@@ -15,7 +15,7 @@ import {
 import { readCheckpoint } from "./checkpoint";
 import { randomUUID } from "node:crypto";
 import type { Checkpoint, RunKind, RunStatus, GitCommitPolicy } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonText } from "./json-text";
 
 export type StoredRun = {
@@ -89,8 +89,8 @@ export function* listRunsSteps(q: Q, itemId?: string): Steps<StoredRun[]> {
 }
 
 /** Every run, oldest first. Pass `itemId` to keep one work item. */
-export function listRuns(db: Database, itemId?: string): StoredRun[] {
-  return settled(sqliteDb(db).run((q) => listRunsSteps(q, itemId)));
+export async function listRuns(store: Db, itemId?: string): Promise<StoredRun[]> {
+  return store.run((q) => listRunsSteps(q, itemId));
 }
 
 export function* runOwnerSteps(q: Q, runId: string): Steps<string | null> {
@@ -141,8 +141,8 @@ export function* recordReviewRoundsSteps(q: Q, id: string, rounds: number): Step
 }
 
 /** How many review rounds the item needed by the time this run verified it. */
-export function recordReviewRounds(db: Database, id: string, rounds: number): void {
-  settled(sqliteDb(db).run((q) => recordReviewRoundsSteps(q, id, rounds)));
+export async function recordReviewRounds(store: Db, id: string, rounds: number): Promise<void> {
+  await store.run((q) => recordReviewRoundsSteps(q, id, rounds));
 }
 
 export function* releaseRunCapacitySteps(q: Q, runId: string, now: number): Steps<void> {
@@ -180,8 +180,13 @@ export function* saveRunResultSteps(
   );
 }
 
-export function saveRunResult(db: Database, id: string, resultBody: string, now: number): void {
-  settled(sqliteDb(db).run((q) => saveRunResultSteps(q, id, resultBody, now)));
+export async function saveRunResult(
+  store: Db,
+  id: string,
+  resultBody: string,
+  now: number,
+): Promise<void> {
+  await store.run((q) => saveRunResultSteps(q, id, resultBody, now));
 }
 
 /** `run.checkpoint` is JSON text on SQLite and `jsonb` on Postgres. */
@@ -222,8 +227,12 @@ export function* saveRunCommitPolicySteps(q: Q, id: string, policy: GitCommitPol
   });
 }
 
-export function saveRunCommitPolicy(db: Database, id: string, policy: GitCommitPolicy): void {
-  settled(sqliteDb(db).run((q) => saveRunCommitPolicySteps(q, id, policy)));
+export async function saveRunCommitPolicy(
+  store: Db,
+  id: string,
+  policy: GitCommitPolicy,
+): Promise<void> {
+  await store.run((q) => saveRunCommitPolicySteps(q, id, policy));
 }
 
 function* saveCheckpointSteps(q: Q, id: string, checkpoint: Checkpoint): Steps<void> {
@@ -318,8 +327,8 @@ export function* loseActiveItemRunsSteps(q: Q, itemId: string, now: number) {
   );
 }
 
-export function loseActiveItemRuns(db: Database, itemId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => loseActiveItemRunsSteps(q, itemId, now)));
+export async function loseActiveItemRuns(store: Db, itemId: string, now: number): Promise<void> {
+  await store.run((q) => loseActiveItemRunsSteps(q, itemId, now));
 }
 
 export type AnsweredRunQuestion = {
@@ -358,8 +367,11 @@ export function* latestRunningAnswerSteps(q: Q, runId: string): Steps<AnsweredRu
   return row ? { ...row, options: row.options as string | null, answer: row.answer! } : null;
 }
 
-export function latestRunningAnswer(db: Database, runId: string): AnsweredRunQuestion | null {
-  return settled(sqliteDb(db).run((q) => latestRunningAnswerSteps(q, runId)));
+export async function latestRunningAnswer(
+  store: Db,
+  runId: string,
+): Promise<AnsweredRunQuestion | null> {
+  return store.run((q) => latestRunningAnswerSteps(q, runId));
 }
 
 /** When any of these items' runs last changed, or null when they have none. */
@@ -374,6 +386,9 @@ export function* latestRunUpdateSteps(q: Q, itemIds: readonly string[]) {
   return row?.at ?? null;
 }
 
-export function latestRunUpdate(db: Database, itemIds: readonly string[]): number | null {
-  return settled(sqliteDb(db).run((q) => latestRunUpdateSteps(q, itemIds)));
+export async function latestRunUpdate(
+  store: Db,
+  itemIds: readonly string[],
+): Promise<number | null> {
+  return store.run((q) => latestRunUpdateSteps(q, itemIds));
 }

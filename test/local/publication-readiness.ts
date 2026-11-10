@@ -324,14 +324,14 @@ export async function probePublicationReadiness(root: string) {
       }
       for (
         let tries = 0;
-        tries < 100 && hasPendingDelegationChanges(f.db, f.target.delegationId);
+        tries < 100 && (await hasPendingDelegationChanges(f.db, f.target.delegationId));
         tries++
       )
         await Bun.sleep(10);
       assert(joined);
       assert(exited);
       assert.equal(mergeCalls, 0);
-      assert(!hasPendingDelegationChanges(f.db, f.target.delegationId));
+      assert(!(await hasPendingDelegationChanges(f.db, f.target.delegationId)));
       const job = f.db
         .query<{ status: string; worker: string | null }, []>(
           "SELECT status,locked_by AS worker FROM job WHERE queue='github.merge'",
@@ -361,13 +361,16 @@ export async function probePublicationReadiness(root: string) {
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
-      assert(hasPendingDelegationChanges(f.db, f.target.delegationId));
+      assert(await hasPendingDelegationChanges(f.db, f.target.delegationId));
       f.tracker.loadEpic = original;
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
-      assert(!hasPendingDelegationChanges(f.db, f.target.delegationId));
+      assert(!(await hasPendingDelegationChanges(f.db, f.target.delegationId)));
       observe(
         "Failed authoritative reads hold publication durably and repaired reads release the same candidate",
-        { loads: f.loads(), pending: hasPendingDelegationChanges(f.db, f.target.delegationId) },
+        {
+          loads: f.loads(),
+          pending: await hasPendingDelegationChanges(f.db, f.target.delegationId),
+        },
       );
     } finally {
       await f.close();
@@ -455,10 +458,10 @@ export async function probePublicationReadiness(root: string) {
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
-      assert(hasPendingDelegationChanges(f.db, f.target.delegationId));
+      assert(await hasPendingDelegationChanges(f.db, f.target.delegationId));
       observe(
         "A session generation change during the fresh read cannot approve the old publication context",
-        { pending: hasPendingDelegationChanges(f.db, f.target.delegationId) },
+        { pending: await hasPendingDelegationChanges(f.db, f.target.delegationId) },
       );
     } finally {
       await f.close();

@@ -270,11 +270,11 @@ export function* pendingRestartHandoffSteps(
  * Recover the latest unfinished agent input. Inspect the latest activation before its handoff
  * so an older cancelled job cannot resurrect input after a newer turn completed.
  */
-export function pendingRestartHandoff(
-  db: Database,
+export async function pendingRestartHandoff(
+  store: Db,
   itemId: string,
-): { handoff?: string; limit?: number } {
-  return settled(sqliteDb(db).run((q) => pendingRestartHandoffSteps(q, itemId)));
+): Promise<{ handoff?: string; limit?: number }> {
+  return store.run((q) => pendingRestartHandoffSteps(q, itemId));
 }
 
 const UNSETTLED_EXITS = ["lease_expired", "deferred"];
