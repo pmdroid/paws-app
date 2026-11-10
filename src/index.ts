@@ -1956,7 +1956,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
       });
       created.jobs.register(RETRO_DISPATCH_JOB, async () => {
         await runnerReady;
-        retroDispatcher?.tick();
+        await retroDispatcher?.tick();
       });
       enqueueJobOnce(db, {
         queue: RETRO_DISPATCH_JOB,
