@@ -96,7 +96,7 @@ export {
   linkAskAvailable,
   linkAskUrl,
   remindLinkAsk,
-  reverifyBypassed,
+  reverifyBypassedSteps,
   BYPASS_REPLY_NOTE,
   RULE_REPLY_NOTE,
   type LinkAskBypass,

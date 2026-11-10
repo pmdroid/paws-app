@@ -131,9 +131,9 @@ test("the visual review is a link ask without options, reminded once from the sh
   ]);
 });
 
-test("Approve on the page passes the check for that head and those files", () => {
+test("Approve on the page passes the check for that head and those files", async () => {
   const { db, itemId, question } = reviewing();
-  const outcome = decideLinkAsk(db, {
+  const outcome = await decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
     note: null,
@@ -162,11 +162,11 @@ test("Approve on the page passes the check for that head and those files", () =>
   );
 });
 
-test("Approve after the other checks finished completes the evaluation of the same head", () => {
+test("Approve after the other checks finished completes the evaluation of the same head", async () => {
   const { db, itemId, question } = reviewing();
   awaitQuestion(db, getWorkItem(db, itemId)!, question, NOW + 50);
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-  decideLinkAsk(db, {
+  await decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
     note: null,
@@ -182,10 +182,10 @@ test("Approve after the other checks finished completes the evaluation of the sa
   ).toEqual([[`visual-review-accepted:${question.id}`, { itemId, decide: true }]]);
 });
 
-test("someone else cannot approve on the page", () => {
+test("someone else cannot approve on the page", async () => {
   const { db, question } = reviewing();
   expect(
-    decideLinkAsk(db, {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "approve",
       note: null,
@@ -197,7 +197,7 @@ test("someone else cannot approve on the page", () => {
   expect(getVisualReview(db, question.id)?.outcome).toBeNull();
 });
 
-test("Request changes on the page restarts the item with the marks and the note", () => {
+test("Request changes on the page restarts the item with the marks and the note", async () => {
   const { db, itemId, question } = reviewing();
   const marks = [
     {
@@ -209,7 +209,7 @@ test("Request changes on the page restarts the item with the marks and the note"
       createdAt: NOW + 90,
     },
   ];
-  const outcome = decideLinkAsk(db, {
+  const outcome = await decideLinkAsk(db, {
     questionId: question.id,
     decision: "changes",
     note: "The Retry button wraps under the row.",
@@ -232,9 +232,9 @@ test("Request changes on the page restarts the item with the marks and the note"
   expect((resume!.payload as { reason: string }).reason).toBe("review");
 });
 
-test("a Linear reply that says approve requests changes and never approves", () => {
+test("a Linear reply that says approve requests changes and never approves", async () => {
   const { db, itemId, question } = reviewing();
-  const guided = guideLinkAsk(db, {
+  const guided = await guideLinkAsk(db, {
     questionId: question.id,
     eventKey: "activity:reply",
     body: "approve",
@@ -259,11 +259,11 @@ test("a Linear reply that says approve requests changes and never approves", () 
   );
 });
 
-test("a new head closes the open ask unless it has the same patch", () => {
+test("a new head closes the open ask unless it has the same patch", async () => {
   const { db, itemId, question } = reviewing();
-  expect(closeLinkAsksOnHead(db, itemId, "rebased", NOW + 10, [question.id])).toBe(0);
+  expect(await closeLinkAsksOnHead(db, itemId, "rebased", NOW + 10, [question.id])).toBe(0);
   expect(getLinkAsk(db, question.id)?.closedAt).toBeNull();
-  expect(closeLinkAsksOnHead(db, itemId, "different", NOW + 20)).toBe(1);
+  expect(await closeLinkAsksOnHead(db, itemId, "different", NOW + 20)).toBe(1);
   expect(getLinkAsk(db, question.id)?.closedReason).toBe("head_moved");
   expect(findOpenQuestion(db, "ses_1")).toBeNull();
 });
@@ -297,7 +297,7 @@ test("a later commit with a different patch asks again", async () => {
   const approved = commit("retry button on one line");
   const { db, itemId, question } = reviewing();
   db.run("UPDATE link_ask SET head_commit = ? WHERE question_id = ?", [approved, question.id]);
-  decideLinkAsk(db, {
+  await decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
     note: null,

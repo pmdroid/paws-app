@@ -136,7 +136,7 @@ test("the question lists the open findings' text without changing the dashboard 
 test("Rethink the approach restarts the item with the findings, the note and a new round budget", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    decideLinkAsk(db, {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "rethink",
       note: "Validate the session once at the boundary.",
@@ -168,7 +168,7 @@ test("Rethink the approach restarts the item with the findings, the note and a n
 test("Rethink the approach needs no note", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    decideLinkAsk(db, {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "rethink",
       note: null,
@@ -184,7 +184,7 @@ test("Rethink the approach needs no note", async () => {
 test("Keep going restarts the item with four more rounds", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    decideLinkAsk(db, {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "continue",
       note: null,
@@ -205,7 +205,7 @@ test("Keep going restarts the item with four more rounds", async () => {
 test("Stop ends the item as asked and sends nothing back to the agent", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    decideLinkAsk(db, {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "stop",
       note: null,
@@ -228,7 +228,7 @@ test("a decision of another kind does not fit a rounds ask", async () => {
   const { db, itemId, question } = await asked();
   for (const decision of ["approve", "changes", "answer"] as const)
     expect(
-      decideLinkAsk(db, {
+      await decideLinkAsk(db, {
         questionId: question.id,
         decision,
         note: "note",
@@ -243,7 +243,7 @@ test("a decision of another kind does not fit a rounds ask", async () => {
 test("someone who did not delegate and does not lead the project cannot stop the item", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    decideLinkAsk(db, {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "stop",
       note: null,
@@ -258,7 +258,7 @@ test("someone who did not delegate and does not lead the project cannot stop the
 test("a reply in Linear is Rethink the approach with the reply as the note", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    guideLinkAsk(db, {
+    await guideLinkAsk(db, {
       questionId: question.id,
       eventKey: "activity:reply",
       body: "Stop patching; move the check into the middleware.",
@@ -289,7 +289,7 @@ test("a reply in Linear is Rethink the approach with the reply as the note", asy
   ]);
   // The page cannot decide again once the reply did.
   expect(
-    decideLinkAsk(db, {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "stop",
       note: null,

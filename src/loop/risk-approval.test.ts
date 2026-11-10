@@ -219,7 +219,7 @@ function approvalWithFixes(
 /** A person approved S on the Risk card. */
 async function riskApproved() {
   const fixture = await asked();
-  decideLinkAsk(fixture.db, {
+  await decideLinkAsk(fixture.db, {
     questionId: fixture.question.id,
     decision: "approve",
     note: null,
@@ -322,7 +322,7 @@ test("a normal-tier head, or a Paws without an https link, needs no approval", a
 
 test("Approve on the Risk card binds to S and sends the item back to the merge queue", async () => {
   const { db, itemId, question } = await asked();
-  const outcome = decideLinkAsk(db, {
+  const outcome = await decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
     note: null,
@@ -362,7 +362,7 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
 
 test("Request changes on the Risk card restarts the item with the note", async () => {
   const { db, itemId, question } = await asked();
-  decideLinkAsk(db, {
+  await decideLinkAsk(db, {
     questionId: question.id,
     decision: "changes",
     note: "Keep the old tokens valid for a day.",
@@ -385,7 +385,7 @@ test("Request changes on the Risk card restarts the item with the note", async (
 test("a Linear reply requests changes and never approves, even when it says approve", async () => {
   const { db, itemId, question } = await asked();
   expect(
-    guideLinkAsk(db, {
+    await guideLinkAsk(db, {
       questionId: question.id,
       eventKey: "reply-1",
       body: "approve",
@@ -407,7 +407,7 @@ test("a Linear reply requests changes and never approves, even when it says appr
 
 test("Stop stops the item and leaves the pull request open", async () => {
   const { db, itemId, question } = await asked();
-  const outcome = decideLinkAsk(db, {
+  const outcome = await decideLinkAsk(db, {
     questionId: question.id,
     decision: "stop",
     note: null,
@@ -432,7 +432,7 @@ test("someone who is neither the delegator nor the lead cannot answer", async ()
   const { db, itemId, question } = await asked();
   for (const decision of ["approve", "changes", "stop"] as const)
     expect(
-      decideLinkAsk(db, {
+      await decideLinkAsk(db, {
         questionId: question.id,
         decision,
         note: decision === "changes" ? "Rewrite it." : null,
@@ -450,7 +450,7 @@ test("Stop only fits a risk approval", async () => {
   const { db, question } = await asked();
   db.run("UPDATE link_ask SET kind = 'screenshots' WHERE question_id = ?", [question.id]);
   expect(
-    decideLinkAsk(db, {
+    await decideLinkAsk(db, {
       questionId: question.id,
       decision: "stop",
       note: null,
@@ -463,7 +463,7 @@ test("Stop only fits a risk approval", async () => {
 
 test("a new head after the approval needs a new approval; a rebase onto main keeps it", async () => {
   const { db, question } = await asked();
-  decideLinkAsk(db, {
+  await decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
     note: null,
@@ -499,7 +499,7 @@ test("the ask, its link and the decision reach Linear after the pull request res
       ],
     }),
   );
-  decideLinkAsk(db, {
+  await decideLinkAsk(db, {
     questionId: question.id,
     decision: "changes",
     note: "Split it.",
@@ -632,7 +632,7 @@ test("a carried-over approval is checked again against the high-risk paths in fo
 test("a rebase that changed the patch asks again, even when the change is only a test", async () => {
   const { db, itemId } = await asked(heads.both);
   const question = findOpenQuestion(db, "ses_1")!;
-  decideLinkAsk(db, {
+  await decideLinkAsk(db, {
     questionId: question.id,
     decision: "approve",
     note: null,

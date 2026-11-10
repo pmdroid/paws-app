@@ -103,11 +103,11 @@ describe("an unreadable Closeout policy on main", () => {
     expect(asked[1]).toMatchObject({ item_id: "ENG-2" });
   });
 
-  test("Closeout's own question names the breaking commit and links the repository question", () => {
+  test("Closeout's own question names the breaking commit and links the repository question", async () => {
     const db = queue("ENG-1", "ENG-2");
     hold(db, "ENG-1");
     const [question] = questions(db);
-    const note = policyOutageNote(db, REPOSITORY, "ENG-2", "https://paws.example");
+    const note = await policyOutageNote(db, REPOSITORY, "ENG-2", "https://paws.example");
     expect(note).toContain(BROKEN.commit!);
     expect(note).toContain(`https://paws.example/dashboard/questions/${question!.id}`);
     expect(

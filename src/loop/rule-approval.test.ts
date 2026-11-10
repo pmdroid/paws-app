@@ -20,7 +20,7 @@ import { recoveryOptions } from "./closeout-recovery";
 import {
   decideLinkAsk,
   guideLinkAsk,
-  reverifyBypassed,
+  reverifyBypassedSteps,
   RULE_REPLY_NOTE,
   type LinkAskEffects,
 } from "./link-ask";
@@ -95,9 +95,7 @@ function held(publicUrl: string | null = "https://paws.example") {
 }
 
 const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea Lead" };
-const effects: (db: ReturnType<typeof openDatabase>) => LinkAskEffects = (db) => ({
-  rule: (linkAsk, item, now) => reverifyBypassed(db, linkAsk, item, now),
-});
+const effects: LinkAskEffects = { rule: reverifyBypassedSteps };
 
 test("a broken approve rule is a rule link ask with its summary and the link", () => {
   const { db, itemId, question } = held();
@@ -123,10 +121,10 @@ test("a broken approve rule is a rule link ask with its summary and the link", (
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
 });
 
-test("Approve records who and why and verifies the same head again", () => {
+test("Approve records who and why and verifies the same head again", async () => {
   const { db, itemId, question } = held();
   expect(
-    decideLinkAsk(
+    await decideLinkAsk(
       db,
       {
         questionId: question.id,
@@ -136,7 +134,7 @@ test("Approve records who and why and verifies the same head again", () => {
         actor,
         now: NOW + 100,
       },
-      effects(db),
+      effects,
     ),
   ).toBe("answered");
   expect(getWorkItem(db, itemId)).toMatchObject({
@@ -182,18 +180,18 @@ test("Approve records who and why and verifies the same head again", () => {
   ]);
 });
 
-test("Approve needs a reason and a person who may decide", () => {
+test("Approve needs a reason and a person who may decide", async () => {
   const { db, itemId, question } = held();
   for (const note of [null, "  "])
     expect(
-      decideLinkAsk(
+      await decideLinkAsk(
         db,
         { questionId: question.id, decision: "approve", note, answeredBy: "lead", actor, now: NOW },
-        effects(db),
+        effects,
       ),
     ).toBe("rejected");
   expect(
-    decideLinkAsk(
+    await decideLinkAsk(
       db,
       {
         questionId: question.id,
@@ -203,7 +201,7 @@ test("Approve needs a reason and a person who may decide", () => {
         actor,
         now: NOW,
       },
-      effects(db),
+      effects,
     ),
   ).toBe("forbidden");
   expect(getQuestion(db, question.id)?.status).toBe("open");
@@ -211,10 +209,10 @@ test("Approve needs a reason and a person who may decide", () => {
   expect(recoveryOptions(db, itemId).bypasses).toEqual([]);
 });
 
-test("Send back restarts the agent with the finding", () => {
+test("Send back restarts the agent with the finding", async () => {
   const { db, itemId, question } = held();
   expect(
-    decideLinkAsk(
+    await decideLinkAsk(
       db,
       {
         questionId: question.id,
@@ -224,7 +222,7 @@ test("Send back restarts the agent with the finding", () => {
         actor,
         now: NOW + 100,
       },
-      effects(db),
+      effects,
     ),
   ).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
@@ -238,10 +236,10 @@ test("Send back restarts the agent with the finding", () => {
   expect(recoveryOptions(db, itemId)).toEqual({ retryBaseline: ["api-contract:1"], bypasses: [] });
 });
 
-test("a reply in Linear sends the finding back and approves nothing", () => {
+test("a reply in Linear sends the finding back and approves nothing", async () => {
   const { db, itemId, question } = held();
   expect(
-    guideLinkAsk(db, {
+    await guideLinkAsk(db, {
       questionId: question.id,
       eventKey: "activity:approve",
       body: "Approved, ship it",

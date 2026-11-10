@@ -3,20 +3,26 @@ import { randomUUID } from "node:crypto";
 import {
   openItemIdsForRepository,
   enqueueOutboxOnce,
-  fixRounds,
-  getPullReview,
-  pendingPullComments,
-  settlePullComments,
+  enqueueOutboxOnceSteps,
+  fixRoundsSteps,
+  getPullReviewSteps,
+  pendingPullCommentsSteps,
+  settlePullCommentsSteps,
   getItemPullRequest,
   getWorkItem,
+  getWorkItemSteps,
   immediate,
   recordPullReview,
-  recordReviewEscape,
-  settlePullReview,
+  recordReviewEscapeSteps,
+  settlePullReviewSteps,
+  sqliteDb,
   type PullReviewRecord,
   type PullFeedbackWait,
   type PullReviewState,
+  type NewOutbox,
+  type Q,
   type ReviewCheckWait,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import type { StoredReviewFinding } from "../closeout";
@@ -155,24 +161,30 @@ export async function handlePullReview(
   reviewId: number,
   caps: PullReviewCapabilities,
 ): Promise<PullReviewStep> {
+  const store = sqliteDb(db);
   const started = caps.now();
-  const review = getPullReview(db, reviewId);
-  if (review === null || review.handledAt !== null) return "done";
-  const item = getWorkItem(db, review.itemId);
+  // One read, so no other job runs between the review and its item, as in the synchronous read.
+  const read = await store.run(function* (q) {
+    const review = yield* getPullReviewSteps(q, reviewId);
+    if (review === null || review.handledAt !== null) return null;
+    return { review, item: yield* getWorkItemSteps(q, review.itemId) };
+  });
+  if (read === null) return "done";
+  const { review, item } = read;
   if (item === null || ENDED.has(item.state) || item.cancelRequested) {
-    settlePullReview(db, reviewId, "dropped", caps.now());
+    await store.run((q) => settlePullReviewSteps(q, reviewId, "dropped", caps.now()));
     return "dropped";
   }
   if (review.state === "commented") {
     // Recorded before comment-only reviews became comments; `recordCommentDelivery` has them now.
-    settlePullReview(db, reviewId, "dropped", caps.now());
+    await store.run((q) => settlePullReviewSteps(q, reviewId, "dropped", caps.now()));
     return "dropped";
   }
   if (item.state === "merge_queue") {
     // Before waiting on anything: GitHub's own merge queue does not wait for Paws.
     const queue = await caps.leaveMergeQueue(item, review.pullNumber);
     if (queue === "merged" || queue === "closed") {
-      settlePullReview(db, reviewId, "dropped", caps.now());
+      await store.run((q) => settlePullReviewSteps(q, reviewId, "dropped", caps.now()));
       return "dropped";
     }
   }
@@ -182,14 +194,14 @@ export async function handlePullReview(
   const findings = await caps.closeoutFindings(item);
   const head = await pullCiHead(db, item, review.pullNumber, caps.pullHead);
   if (head === "unreadable") return "wait";
-  const step = immediate(db, (): PullReviewStep => {
-    const current = getWorkItem(db, item.id);
+  const step = await store.transaction(function* (q): Steps<PullReviewStep> {
+    const current = yield* getWorkItemSteps(q, item.id);
     if (current === null || current.version !== item.version || current.state !== "merge_queue")
       return "wait";
-    const rounds = fixRounds(db, current.id);
+    const rounds = yield* fixRoundsSteps(q, current.id);
     const limit = caps.fixRoundLimit(current);
     // Comments that arrived with the review go to the agent in the same restart.
-    const comments = pendingPullComments(db, current.id).filter(
+    const comments = (yield* pendingPullCommentsSteps(q, current.id)).filter(
       (comment) => comment.pullNumber === review.pullNumber,
     );
     const others = comments.filter(
@@ -237,7 +249,7 @@ export async function handlePullReview(
         now: caps.now(),
       });
       if (jobId === null) return "wait";
-      postPullFeedback(db, {
+      yield* postPullFeedbackSteps(q, {
         sessionId: caps.session(current),
         item: current,
         key: jobKey,
@@ -245,9 +257,9 @@ export async function handlePullReview(
         now: caps.now(),
       });
       recordReplyTargets(db, current.id, jobKey, targets, caps.now());
-      settlePullComments(db, comments, "covered", caps.now());
+      yield* settlePullCommentsSteps(q, comments, "covered", caps.now());
       if (failure !== null)
-        postPullFeedback(db, {
+        yield* postPullFeedbackSteps(q, {
           sessionId: caps.session(current),
           item: current,
           key: `${jobKey}:ci`,
@@ -255,7 +267,7 @@ export async function handlePullReview(
           now: caps.now(),
         });
       if (current.acceptedHead !== null)
-        recordReviewEscape(db, {
+        yield* recordReviewEscapeSteps(q, {
           triggerKey: jobKey,
           itemId: current.id,
           trigger: "review",
@@ -266,12 +278,12 @@ export async function handlePullReview(
           },
           recordedAt: caps.now(),
         });
-      settlePullReview(db, reviewId, "restarted", caps.now());
+      yield* settlePullReviewSteps(q, reviewId, "restarted", caps.now());
       return "restarted";
     }
     const sessionId = caps.session(current);
     if (sessionId === null) {
-      settlePullReview(db, reviewId, "dropped", caps.now());
+      yield* settlePullReviewSteps(q, reviewId, "dropped", caps.now());
       return "dropped";
     }
     ask(
@@ -287,7 +299,7 @@ export async function handlePullReview(
       { reason: "budget_spent", now: caps.now() },
     );
     if (failure !== null) pullCiAsked(db, { item: current, failure, limit, now: caps.now() });
-    settlePullReview(db, reviewId, "asked", caps.now());
+    yield* settlePullReviewSteps(q, reviewId, "asked", caps.now());
     return "asked";
   });
   if (step !== "wait") await caps.flush();
@@ -299,33 +311,40 @@ export async function handlePullReview(
  * pull request response, so the key carries the `pull-feedback:` prefix the activity gate lets
  * through. A thought, so the session shows the agent working again. Once per restart job key.
  */
-export function postPullFeedback(
-  db: Database,
-  input: {
-    sessionId: string | null;
-    item: WorkItemRecord;
-    key: string;
-    body: string;
-    now: number;
-  },
-): void {
-  if (input.sessionId === null) return;
-  enqueueOutboxOnce(db, {
+export function postPullFeedback(db: Database, input: PullFeedback): void {
+  if (input.sessionId !== null) enqueueOutboxOnce(db, pullFeedbackRow(input.sessionId, input));
+}
+
+export function* postPullFeedbackSteps(q: Q, input: PullFeedback): Steps<void> {
+  if (input.sessionId !== null)
+    yield* enqueueOutboxOnceSteps(q, pullFeedbackRow(input.sessionId, input));
+}
+
+type PullFeedback = {
+  sessionId: string | null;
+  item: WorkItemRecord;
+  key: string;
+  body: string;
+  now: number;
+};
+
+function pullFeedbackRow(sessionId: string, input: PullFeedback): NewOutbox {
+  return {
     target: "linear",
     op: "activity",
-    orderingKey: input.sessionId,
+    orderingKey: sessionId,
     idempotencyKey: `pull-feedback:${input.key}`,
     delivery: "critical",
     payload: {
       id: randomUUID(),
-      sessionId: input.sessionId,
+      sessionId,
       itemId: input.item.id,
       issueId: input.item.linearIssueId,
       kind: "thought",
       body: input.body,
     },
     now: input.now,
-  });
+  };
 }
 
 /** The review body and its unresolved threads, as the agent and the team read them. */
