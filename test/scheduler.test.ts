@@ -1,10 +1,10 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setJournalSink } from "../src/db";
-import { probeScheduler } from "./local/scheduler";
+import { contenderExited, probeScheduler, spawnContender } from "./local/scheduler";
 
 test("Scheduler dispatch is durable and admits each ready item once across processes", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-scheduler-"));
@@ -46,6 +46,20 @@ test("Scheduler dispatch is durable and admits each ready item once across proce
     );
   } finally {
     restore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("A failing scheduler contender names its error in the assertion", async () => {
+  const root = mkdtempSync(join(tmpdir(), "paws-scheduler-contender-"));
+  try {
+    // A file where the contender expects its directory: it cannot open the database.
+    writeFileSync(join(root, "file"), "");
+    await assert.rejects(
+      contenderExited(spawnContender(join(root, "file"), 0)),
+      /exited 1 \(signal none\)\nstderr: Scheduler contender 0 failed: .*SQLiteError: unable to open database file/s,
+    );
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

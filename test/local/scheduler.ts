@@ -30,16 +30,54 @@ const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 if (process.argv[2] === "--contender") {
   const root = process.argv[3]!,
     contender = process.argv[4]!;
-  const db = openDatabase(join(root, "paws.sqlite"));
-  writeFileSync(join(root, `ready-${contender}`), "");
-  const deadline = Date.now() + 15_000;
-  while (!existsSync(join(root, "go"))) {
-    if (Date.now() > deadline) throw new Error("Scheduler contender gate timed out");
-    await pause(5);
+  try {
+    const db = openDatabase(join(root, "paws.sqlite"));
+    writeFileSync(join(root, `ready-${contender}`), "");
+    const deadline = Date.now() + 15_000;
+    while (!existsSync(join(root, "go"))) {
+      if (Date.now() > deadline) throw new Error("Scheduler contender gate timed out");
+      await pause(5);
+    }
+    const admitted = await workspaceDispatch(db, { now: 1000 });
+    writeFileSync(join(root, `result-${contender}.json`), JSON.stringify(admitted));
+    db.close();
+  } catch (error) {
+    process.stderr.write(`Scheduler contender ${contender} failed: ${Bun.inspect(error)}\n`);
+    process.exitCode = 1;
   }
-  const admitted = await workspaceDispatch(db, { now: 1000 });
-  writeFileSync(join(root, `result-${contender}.json`), JSON.stringify(admitted));
-  db.close();
+}
+
+export function spawnContender(directory: string, contender: number) {
+  return Bun.spawn(
+    [
+      process.execPath,
+      "--no-env-file",
+      import.meta.filename,
+      "--contender",
+      directory,
+      `${contender}`,
+    ],
+    {
+      env: { PATH: process.env["PATH"], HOME: directory, TMPDIR: directory },
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+}
+
+/** Waits for a contender and fails with its exit code, signal, stderr and stdout. */
+export async function contenderExited(child: ReturnType<typeof spawnContender>): Promise<void> {
+  const [exit, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  assert.equal(
+    exit,
+    0,
+    `Scheduler contender exited ${exit} (signal ${child.signalCode ?? "none"})\n` +
+      `stderr: ${stderr || "(empty)"}\nstdout: ${stdout || "(empty)"}`,
+  );
 }
 
 export async function probeScheduler(
@@ -74,34 +112,17 @@ export async function probeScheduler(
     (db.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
   {
     const { directory, db } = setup("competing", 20);
-    const children = Array.from({ length: 20 }, (_, index) =>
-      Bun.spawn(
-        [
-          process.execPath,
-          "--no-env-file",
-          import.meta.filename,
-          "--contender",
-          directory,
-          String(index),
-        ],
-        {
-          env: { PATH: process.env["PATH"], HOME: directory, TMPDIR: directory },
-          stdout: "pipe",
-          stderr: "pipe",
-        },
-      ),
-    );
+    const children = Array.from({ length: 20 }, (_, index) => spawnContender(directory, index));
     try {
       const deadline = Date.now() + 15_000;
       while (readdirSync(directory).filter((name) => name.startsWith("ready-")).length !== 20) {
+        const exited = children.find((child) => child.exitCode !== null);
+        if (exited) await contenderExited(exited);
         if (Date.now() > deadline) throw new Error("Contenders did not become ready");
         await pause(5);
       }
       writeFileSync(join(directory, "go"), "");
-      for (const child of children) {
-        const [exit, error] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-        assert.equal(exit, 0, error);
-      }
+      await Promise.all(children.map(contenderExited));
       assert.equal(count(db, "scheduler_admission"), 20);
       assert.equal(count(db, "job"), 20);
       observed("Twenty processes atomically admit every ready item once", {
