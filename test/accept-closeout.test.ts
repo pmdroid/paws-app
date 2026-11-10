@@ -31,8 +31,12 @@ function verifying(db: Database, state = "verifying") {
   return { version: item.version, runId: run.id };
 }
 
-function accept(db: Database, expected: { version: number; runId: string | null }, extra = {}) {
-  return acceptCloseout(db, {
+async function accept(
+  db: Database,
+  expected: { version: number; runId: string | null },
+  extra = {},
+) {
+  return await acceptCloseout(db, {
     itemId: "item",
     expected,
     base,
@@ -47,10 +51,10 @@ function queueEntries(db: Database): number {
   return db.query<{ n: number }, []>("SELECT count(*) AS n FROM merge_queue_entry").get()!.n;
 }
 
-test("initial verification commits acceptance, checkpoint, a fresh queue place and the merge job", () => {
+test("initial verification commits acceptance, checkpoint, a fresh queue place and the merge job", async () => {
   const db = tempDb();
   const expected = verifying(db);
-  expect(accept(db, expected)).not.toBeNull();
+  expect(await accept(db, expected)).not.toBeNull();
   const item = getWorkItem(db, "item")!;
   expect(item.state).toBe("merge_queue");
   expect(item.checkpoint).toEqual({ phase: "merge_queue", baseSha: base, wipCommit: head });
@@ -60,26 +64,26 @@ test("initial verification commits acceptance, checkpoint, a fresh queue place a
   ]);
 });
 
-test("re-verification from the merge queue keeps its place and keys the job to the reverify job", () => {
+test("re-verification from the merge queue keeps its place and keys the job to the reverify job", async () => {
   const db = tempDb();
   const expected = verifying(db, "merge_queue");
-  expect(accept(db, expected, { reverifyJobId: 7 })).not.toBeNull();
+  expect(await accept(db, expected, { reverifyJobId: 7 })).not.toBeNull();
   expect(getWorkItem(db, "item")?.state).toBe("merge_queue");
   expect(getWorkItem(db, "item")?.checkpoint?.wipCommit).toBe(head);
   expect(queueEntries(db)).toBe(1);
   expect(listJobs(db).map((job) => job.jobKey)).toEqual([`merge:item:${head}:reverify:7`]);
 });
 
-test("replaying the same accepted candidate leaves one merge job", () => {
+test("replaying the same accepted candidate leaves one merge job", async () => {
   const db = tempDb();
   const expected = verifying(db);
-  accept(db, expected);
-  expect(accept(db, expected)).toBeNull();
+  await accept(db, expected);
+  expect(await accept(db, expected)).toBeNull();
   expect(listJobs(db)).toHaveLength(1);
   const queued = tempDb();
   const fromQueue = verifying(queued, "merge_queue");
-  accept(queued, fromQueue, { reverifyJobId: 7 });
-  accept(queued, fromQueue, { reverifyJobId: 7 });
+  await accept(queued, fromQueue, { reverifyJobId: 7 });
+  await accept(queued, fromQueue, { reverifyJobId: 7 });
   expect(listJobs(queued)).toHaveLength(1);
 });
 
@@ -98,34 +102,34 @@ test.each([
     "a state the acceptance no longer applies to",
     (db: Database) => db.run("UPDATE work_item SET state = 'awaiting_input'"),
   ],
-])("%s prevents an obsolete acceptance from committing", (_, change) => {
+])("%s prevents an obsolete acceptance from committing", async (_, change) => {
   const db = tempDb();
   const expected = verifying(db);
   change(db);
   const before = getWorkItem(db, "item");
-  expect(accept(db, expected)).toBeNull();
+  expect(await accept(db, expected)).toBeNull();
   expect(getWorkItem(db, "item")).toEqual(before);
   expect(queueEntries(db)).toBe(1);
   expect(listJobs(db)).toHaveLength(0);
 });
 
-test("a failure while writing the merge job rolls back the state, checkpoint and queue place", () => {
+test("a failure while writing the merge job rolls back the state, checkpoint and queue place", async () => {
   const db = tempDb();
   const expected = verifying(db);
   const before = getWorkItem(db, "item");
   db.run("CREATE TRIGGER fail_job BEFORE INSERT ON job BEGIN SELECT RAISE(ABORT, 'injected'); END");
-  expect(() => accept(db, expected)).toThrow("injected");
+  await expect(accept(db, expected)).rejects.toThrow("injected");
   expect(getWorkItem(db, "item")).toEqual(before);
   expect(queueEntries(db)).toBe(1);
   expect(listJobs(db)).toHaveLength(0);
 });
 
-test("a reopened database finds the accepted candidate's merge job", () => {
+test("a reopened database finds the accepted candidate's merge job", async () => {
   const dir = mkdtempSync(join(tmpdir(), "paws-accept-"));
   try {
     const path = join(dir, "paws.db");
     const db = migratedDatabase(path);
-    accept(db, verifying(db));
+    await accept(db, verifying(db));
     db.close();
     const reopened = openDatabase(path);
     expect(getWorkItem(reopened, "item")?.state).toBe("merge_queue");
@@ -139,39 +143,41 @@ test("a reopened database finds the accepted candidate's merge job", () => {
 
 test.each(["merged", "completed", "cancelled", "failed"])(
   "a %s item cannot revive a done merge job",
-  (state) => {
+  async (state) => {
     const db = tempDb();
     const expected = verifying(db);
-    const id = accept(db, expected)!;
+    const id = (await accept(db, expected))!;
     db.run("UPDATE job SET status='done' WHERE id=?", [id]);
     db.run("UPDATE work_item SET state=? WHERE id='item'", [state]);
     const item = getWorkItem(db, "item")!;
-    expect(accept(db, { version: item.version, runId: item.currentRunId })).toBeNull();
+    expect(await accept(db, { version: item.version, runId: item.currentRunId })).toBeNull();
     expect(getJob(db, id)?.status).toBe("done");
     db.close();
   },
 );
 
-test("re-acceptance revives a done merge job with the current item fence", () => {
+test("re-acceptance revives a done merge job with the current item fence", async () => {
   const db = tempDb();
-  const id = accept(db, verifying(db))!;
+  const id = (await accept(db, verifying(db)))!;
   db.run("UPDATE job SET status='done', attempts=3 WHERE id=?", [id]);
   db.run("UPDATE work_item SET state='verifying', version=version+1 WHERE id='item'");
   const item = getWorkItem(db, "item")!;
-  expect(accept(db, { version: item.version, runId: item.currentRunId })).toBe(id);
+  expect(await accept(db, { version: item.version, runId: item.currentRunId })).toBe(id);
   expect(getJob(db, id)).toMatchObject({ status: "pending", attempts: 0 });
   expect(jobVersionCurrent(db, getJob(db, id)!)).toBe(true);
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
   db.run("UPDATE work_item SET cancel_requested=1 WHERE id='item'");
   const cancelled = getWorkItem(db, "item")!;
-  expect(accept(db, { version: cancelled.version, runId: cancelled.currentRunId })).toBeNull();
+  expect(
+    await accept(db, { version: cancelled.version, runId: cancelled.currentRunId }),
+  ).toBeNull();
   expect(getJob(db, id)?.status).toBe("done");
   db.close();
 });
 
-test("a confirmed merge cannot be revived while the merged item edge is still pending", () => {
+test("a confirmed merge cannot be revived while the merged item edge is still pending", async () => {
   const db = tempDb();
-  const id = accept(db, verifying(db))!;
+  const id = (await accept(db, verifying(db)))!;
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
   recordConfirmedRemoteMerge(db, {
     itemId: "item",
@@ -184,7 +190,7 @@ test("a confirmed merge cannot be revived while the merged item edge is still pe
   });
   const item = getWorkItem(db, "item")!;
   expect(item.state).toBe("merge_queue");
-  expect(accept(db, { version: item.version, runId: item.currentRunId })).toBeNull();
+  expect(await accept(db, { version: item.version, runId: item.currentRunId })).toBeNull();
   expect(getJob(db, id)?.status).toBe("done");
   db.close();
 });

@@ -136,7 +136,7 @@ export async function probeBoundaries(
     const recovering = insertQueuedItem(db, { id: "recovering-item", now: clock.now() });
     beginImplementRun(db, recovering.id, clock.now());
     enterMergeQueue(db, recovering.id, checkpoint);
-    const original = enqueueVerifiedMerge(db, {
+    const original = await enqueueVerifiedMerge(db, {
       itemId: recovering.id,
       head: checkpoint.wipCommit,
       summary: "Accepted synthetic candidate",
@@ -147,7 +147,7 @@ export async function probeBoundaries(
       applyWorkItemEvent(db, recovering.id, "closeout_accepted");
     const reverification = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.reverify] });
     if (reverification === null) throw new Error("Recovery did not schedule re-verification");
-    const retry = enqueueVerifiedMerge(db, {
+    const retry = await enqueueVerifiedMerge(db, {
       itemId: recovering.id,
       head: checkpoint.wipCommit,
       summary: "Reverified synthetic candidate",

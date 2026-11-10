@@ -3,20 +3,25 @@ import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
 import {
   githubDeliveryRecorded,
   openMergeJobs,
-  applyWorkItemEvent,
+  applyWorkItemEventSteps,
+  emitJobReady,
   jobVersionCurrent,
-  reenqueueJob,
+  reenqueueJobSteps,
   getWorkItem,
-  getConfirmedRemoteMerge,
+  getWorkItemSteps,
+  getConfirmedRemoteMergeSteps,
   immediate,
-  saveCheckpoint,
+  saveCheckpointSteps,
   parkLeasedJob,
+  parkLeasedJobSteps,
   recordGitHubDelivery,
-  retryLeasedJob,
-  returnToMergeQueue,
+  retryLeasedJobSteps,
+  returnToMergeQueueSteps,
+  sqliteDb,
   type Job,
+  type Q,
   type RunnerCapacityWaitState,
-  markCloseoutAccepted,
+  markCloseoutAcceptedSteps,
 } from "../db";
 import {
   MERGE_CI_ASK_AFTER_MS,
@@ -31,20 +36,21 @@ import { worktreeBranch } from "./sources";
 
 export const MERGE_OWNER_POLL_MS = 5_000;
 
-export function waitForMergeTurn(
+export async function waitForMergeTurn(
   db: Database,
   job: Job,
   now: number,
   delayMs = MERGE_OWNER_POLL_MS,
-): "parked" | "lost" {
-  return parkLeasedJob(db, job, {
-    runAt: now + delayMs,
-    payload: payloadRecord(job.payload),
-    attempts: job.attempts - 1,
-    now,
-  })
-    ? "parked"
-    : "lost";
+): Promise<"parked" | "lost"> {
+  const parked = await sqliteDb(db).run((q) =>
+    parkLeasedJobSteps(q, job, {
+      runAt: now + delayMs,
+      payload: payloadRecord(job.payload),
+      attempts: job.attempts - 1,
+      now,
+    }),
+  );
+  return parked ? "parked" : "lost";
 }
 
 export function waitForRunnerSlot(
@@ -64,18 +70,20 @@ export function waitForRunnerSlot(
     : "lost";
 }
 
-export function retryMergeLater(
+export async function retryMergeLater(
   db: Database,
   job: Job,
   now: number,
   delayMs: number,
   error: unknown,
-): boolean {
-  return retryLeasedJob(
-    db,
-    job,
-    now + delayMs,
-    error instanceof Error ? error.message : String(error),
+): Promise<boolean> {
+  return await sqliteDb(db).run((q) =>
+    retryLeasedJobSteps(
+      q,
+      job,
+      now + delayMs,
+      error instanceof Error ? error.message : String(error),
+    ),
   );
 }
 
@@ -184,45 +192,49 @@ function payloadRecord(payload: unknown): Record<string, unknown> {
   return { ...(payload as Record<string, unknown>) };
 }
 
-export function enqueueVerifiedMerge(
-  db: Database,
-  input: { itemId: string; head: string; summary: string; now: number; reverifyJobId?: number },
-): number {
+type VerifiedMerge = {
+  itemId: string;
+  head: string;
+  summary: string;
+  now: number;
+  reverifyJobId?: number;
+};
+
+function* enqueueVerifiedMergeSteps(q: Q, input: VerifiedMerge) {
   const suffix = input.reverifyJobId === undefined ? "" : `:reverify:${input.reverifyJobId}`;
   const jobKey = `merge:${input.itemId}:${input.head}${suffix}`;
   const payload = { itemId: input.itemId, summary: input.summary, head: input.head };
-  return reenqueueJob(db, {
-    queue: JOB_KIND.merge,
-    jobKey,
-    payload,
-    now: input.now,
-  }).id;
+  return yield* q.transaction((tx) =>
+    reenqueueJobSteps(tx, { queue: JOB_KIND.merge, jobKey, payload, now: input.now }),
+  );
+}
+
+export async function enqueueVerifiedMerge(db: Database, input: VerifiedMerge): Promise<number> {
+  const store = sqliteDb(db);
+  const { id, armed } = await store.transaction((q) => enqueueVerifiedMergeSteps(q, input));
+  if (armed) emitJobReady(store);
+  return id;
 }
 
 export type VerificationOwner = { version: number; runId: string | null };
 
-export function applyCloseoutAcceptance(
-  db: Database,
-  itemId: string,
-  expected: VerificationOwner,
-): boolean {
-  return immediate(db, () => {
-    const current = getWorkItem(db, itemId);
-    if (
-      !current ||
-      current.cancelRequested ||
-      getConfirmedRemoteMerge(db, itemId) !== null ||
-      current.version !== expected.version ||
-      current.currentRunId !== expected.runId ||
-      (current.state !== "verifying" && current.state !== "merge_queue")
-    )
-      return false;
-    if (current.state === "verifying") applyWorkItemEvent(db, current.id, "closeout_accepted");
-    return true;
-  });
+function* applyCloseoutAcceptanceSteps(q: Q, itemId: string, expected: VerificationOwner) {
+  const current = yield* getWorkItemSteps(q, itemId);
+  if (
+    !current ||
+    current.cancelRequested ||
+    (yield* getConfirmedRemoteMergeSteps(q, itemId)) !== null ||
+    current.version !== expected.version ||
+    current.currentRunId !== expected.runId ||
+    (current.state !== "verifying" && current.state !== "merge_queue")
+  )
+    return false;
+  if (current.state === "verifying")
+    yield* q.transaction((tx) => applyWorkItemEventSteps(tx, current.id, "closeout_accepted"));
+  return true;
 }
 
-export function acceptCloseout(
+export async function acceptCloseout(
   db: Database,
   input: {
     itemId: string;
@@ -233,17 +245,18 @@ export function acceptCloseout(
     now: number;
     reverifyJobId?: number;
   },
-): number | null {
-  return immediate(db, () => {
-    if (!applyCloseoutAcceptance(db, input.itemId, input.expected)) return null;
-    markCloseoutAccepted(db, input.itemId, input.head);
-    saveCheckpoint(db, input.itemId, {
+): Promise<number | null> {
+  const store = sqliteDb(db);
+  const accepted = await store.transaction(function* (q) {
+    if (!(yield* applyCloseoutAcceptanceSteps(q, input.itemId, input.expected))) return null;
+    yield* markCloseoutAcceptedSteps(q, input.itemId, input.head);
+    yield* saveCheckpointSteps(q, input.itemId, {
       phase: "merge_queue",
       baseSha: input.base,
       wipCommit: input.head,
     });
-    if (input.reverifyJobId === undefined) returnToMergeQueue(db, input.itemId);
-    return enqueueVerifiedMerge(db, {
+    if (input.reverifyJobId === undefined) yield* returnToMergeQueueSteps(q, input.itemId);
+    return yield* enqueueVerifiedMergeSteps(q, {
       itemId: input.itemId,
       head: input.head,
       summary: input.summary,
@@ -251,29 +264,35 @@ export function acceptCloseout(
       reverifyJobId: input.reverifyJobId,
     });
   });
+  if (accepted === null) return null;
+  if (accepted.armed) emitJobReady(store);
+  return accepted.id;
 }
 
 export const SLOW_CI_REASON = "ci_slow";
 
-export function askAboutSlowCi(
+export async function askAboutSlowCi(
   db: Database,
   itemId: string,
   input: { checks: string; now: number },
-): boolean {
-  const item = getWorkItem(db, itemId);
-  if (!item?.sessionKey || item.cancelRequested || item.state !== "merge_queue") return false;
-  const hours = Math.round(MERGE_CI_ASK_AFTER_MS / (60 * 60_000));
-  ask(
-    db,
-    { itemId, runId: item.currentRunId, sessionId: item.sessionKey, version: item.version },
-    "time-limit",
-    [
-      `GitHub CI is still pending ${hours} hours after it started on the accepted head; merge or stop?`,
-      input.checks,
-      `The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
-      `${TIME_LIMIT_MERGE} keeps waiting for CI and merges once it passes, without another agent turn. Stop ends the task without merging: the branch and its pull request stay.`,
-    ].join("\n\n"),
-    { options: [TIME_LIMIT_MERGE, "Stop"], reason: SLOW_CI_REASON, now: input.now },
-  );
-  return true;
+): Promise<boolean> {
+  // The read and the ask stay in one synchronous pass on SQLite, as before.
+  return await sqliteDb(db).run(function* (q) {
+    const item = yield* getWorkItemSteps(q, itemId);
+    if (!item?.sessionKey || item.cancelRequested || item.state !== "merge_queue") return false;
+    const hours = Math.round(MERGE_CI_ASK_AFTER_MS / (60 * 60_000));
+    ask(
+      db,
+      { itemId, runId: item.currentRunId, sessionId: item.sessionKey, version: item.version },
+      "time-limit",
+      [
+        `GitHub CI is still pending ${hours} hours after it started on the accepted head; merge or stop?`,
+        input.checks,
+        `The accepted work is on branch \`${item.branchName || worktreeBranch(item)}\`.`,
+        `${TIME_LIMIT_MERGE} keeps waiting for CI and merges once it passes, without another agent turn. Stop ends the task without merging: the branch and its pull request stay.`,
+      ].join("\n\n"),
+      { options: [TIME_LIMIT_MERGE, "Stop"], reason: SLOW_CI_REASON, now: input.now },
+    );
+    return true;
+  });
 }

@@ -66,7 +66,7 @@ const failing = (): Nodes => [
   } as Nodes[number],
 ];
 
-function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
+async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
@@ -197,7 +197,7 @@ function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 }) {
     mergedOutsideLane: async () => null,
     completed: unused("completed"),
   };
-  const mergeJob = enqueueVerifiedMerge(db, {
+  const mergeJob = await enqueueVerifiedMerge(db, {
     itemId: "eng-1",
     head: HEAD,
     summary: "Closeout accepted.",
@@ -321,19 +321,19 @@ const ask: typeof rawAsk = (db, asker, ...args) => {
   return result;
 };
 
-const resumes = (db: ReturnType<typeof setup>["db"]) =>
+const resumes = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   listJobs(db)
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => job.payload as { handoff: string; reason: string });
 
-const thoughts = (db: ReturnType<typeof setup>["db"]) =>
+const thoughts = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   listOutbox(db)
     .filter((row) => row.idempotencyKey.startsWith("pull-feedback:"))
     .map((row) => (row.payload as { body: string }).body);
 
 describe("failed CI while a pull request waits for review", () => {
   test("a failing check_run wakes the merge job, is recorded, and is repaired once at the batch deadline", async () => {
-    const h = setup();
+    const h = await setup();
     const observed = h.now();
     expect(h.checkRun(HEAD, undefined, "check-1")).toBe(true);
     expect(h.mergeJob().runAt).toBe(observed);
@@ -381,7 +381,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("a delivery for another head or branch does not wake the merge job or repair the candidate", async () => {
-    const h = setup();
+    const h = await setup();
     h.state.ci = () => [{ name: "test", conclusion: "SUCCESS", detailsUrl: null }];
     const parked = h.mergeJob().runAt;
     h.checkRun("b".repeat(40), "someone-else");
@@ -395,7 +395,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("an obsolete head's failure is dropped when the lane reads the current head", async () => {
-    const h = setup();
+    const h = await setup();
     await h.evaluate();
     const moved = "c".repeat(40);
     saveCheckpoint(h.db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: moved });
@@ -409,7 +409,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("CI before a burst of comments waits for the burst and goes back with every comment", async () => {
-    const h = setup();
+    const h = await setup();
     const start = h.now();
     await h.evaluate();
     h.tick(20_000);
@@ -435,7 +435,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("CI during a burst of comments extends the quiet time, never past the longest wait", async () => {
-    const h = setup();
+    const h = await setup();
     const start = h.now();
     h.conversation(1, "pascal", "First note.");
     h.tick(30_000);
@@ -458,7 +458,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("CI after the comments still lets the feedback settle under custom wait settings", async () => {
-    const h = setup({ quietMs: 10_000, maxMs: 30_000 });
+    const h = await setup({ quietMs: 10_000, maxMs: 30_000 });
     const start = h.now();
     h.conversation(1, "pascal", "Rename the helper.");
     h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
@@ -478,7 +478,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("a changes-requested review takes the CI failure in its one restart; an early wake keeps its deadline", async () => {
-    const h = setup();
+    const h = await setup();
     h.state.review = "CHANGES_REQUESTED";
     const start = h.now();
     h.changesRequested(601, "Please fix the ordering.");
@@ -507,7 +507,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("changes requested earlier still lets CI be seen, and goes back once for CI", async () => {
-    const h = setup();
+    const h = await setup();
     h.state.review = "CHANGES_REQUESTED";
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
     h.tick(60_000);
@@ -517,7 +517,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("pending, green or unreadable CI waits for the review without spending a round", async () => {
-    const h = setup();
+    const h = await setup();
     h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
     expect(await h.evaluate()).toMatchObject({ kind: "wait", reason: "review" });
     h.state.ci = () => [{ name: "test", conclusion: "SUCCESS", detailsUrl: null }];
@@ -547,7 +547,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("with the fix rounds spent it asks once with budget_spent, and replays do not ask again", async () => {
-    const h = setup();
+    const h = await setup();
     h.state.limit = 0;
     await h.evaluate();
     h.tick(60_000);
@@ -569,14 +569,14 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("cancellation or a superseded item version cannot restart from the recorded failure", async () => {
-    const cancelled = setup();
+    const cancelled = await setup();
     await cancelled.evaluate();
     cancelled.db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = 'eng-1'");
     cancelled.tick(60_000);
     expect(await cancelled.runDue()).toEqual(["dropped"]);
     expect(resumes(cancelled.db)).toEqual([]);
 
-    const superseded = setup();
+    const superseded = await setup();
     await superseded.evaluate();
     applyWorkItemEvent(superseded.db, "eng-1", "reverify_requested");
     applyWorkItemEvent(superseded.db, "eng-1", "closeout_accepted");
@@ -587,7 +587,7 @@ describe("failed CI while a pull request waits for review", () => {
     expect(fixRounds(superseded.db, "eng-1")).toBe(0);
   });
   test("a failure whose head moved before the batch ran is dropped without a restart or a round", async () => {
-    const h = setup();
+    const h = await setup();
     await h.evaluate();
     expect(pendingPullCiFailures(h.db, "eng-1")).toHaveLength(1);
     h.state.pullHead = "d".repeat(40);
@@ -600,7 +600,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("a head GitHub cannot return keeps the failure pending until the head is read", async () => {
-    const h = setup();
+    const h = await setup();
     await h.evaluate();
     h.state.pullHead = null;
     h.tick(60_000);
@@ -616,7 +616,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("a failure recorded while a due comment batch reads GitHub waits for its own window", async () => {
-    const h = setup();
+    const h = await setup();
     h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
     h.conversation(1, "pascal", "Rename the helper.");
     await h.evaluate();
@@ -644,7 +644,7 @@ describe("failed CI while a pull request waits for review", () => {
   });
 
   test("a failure recorded while a due changes-requested review reads GitHub is not charged with it", async () => {
-    const h = setup();
+    const h = await setup();
     h.state.review = "CHANGES_REQUESTED";
     h.state.ci = () => [{ name: "test", conclusion: null, detailsUrl: null }];
     h.changesRequested(601, "Please fix the ordering.");
