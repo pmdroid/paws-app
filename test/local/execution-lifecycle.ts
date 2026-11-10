@@ -135,7 +135,7 @@ export async function probeExecutionLifecycle(
     saveRunResult(db, run.id, "Published the exact API schema.", clock.now());
     setCurrentRun(db, "handoff-0", run.id);
     assert.equal(
-      orchestrator.dependencyHandoff("handoff-1"),
+      await orchestrator.dependencyHandoff("handoff-1"),
       "Completed dependencies:\nhandoff-0: Published the exact API schema.",
     );
     await orchestrator.reconcileExecution();
@@ -148,15 +148,16 @@ export async function probeExecutionLifecycle(
     observe(
       "dependency completion schedules once with the completed result",
       starts.length === 1 &&
-        JSON.parse(starts[0]!.payload).handoff === orchestrator.dependencyHandoff("handoff-1"),
+        JSON.parse(starts[0]!.payload).handoff ===
+          (await orchestrator.dependencyHandoff("handoff-1")),
       starts,
     );
     db.run("UPDATE run SET checkpoint='null' WHERE id=?", [run.id]);
     observe(
       "a valid JSON null dependency checkpoint falls back to completion",
-      orchestrator.dependencyHandoff("handoff-1") ===
+      (await orchestrator.dependencyHandoff("handoff-1")) ===
         "Completed dependencies:\nhandoff-0: Completed.",
-      orchestrator.dependencyHandoff("handoff-1"),
+      await orchestrator.dependencyHandoff("handoff-1"),
     );
     seed("external", ["queued"]);
     db.run(

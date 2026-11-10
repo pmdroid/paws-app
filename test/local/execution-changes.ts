@@ -292,7 +292,7 @@ export async function probeExecutionChanges(
       resumed &&
         getWorkItem(db, "pause-0")?.state === "queued" &&
         getWorkItem(db, "pause-0")?.checkpoint?.wipCommit === "preserved-commit" &&
-        orchestrator.dependencyHandoff("pause-0")?.includes("preserved-commit") === true,
+        (await orchestrator.dependencyHandoff("pause-0"))?.includes("preserved-commit") === true,
       getWorkItem(db, "pause-0"),
     );
     observe(

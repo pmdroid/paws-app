@@ -723,7 +723,7 @@ export async function probePublicationStop(
       );
     }
     await current.orchestrator.reconcileExecution();
-    const handoff = current.orchestrator.dependencyHandoff("handoff-history-consumer");
+    const handoff = await current.orchestrator.dependencyHandoff("handoff-history-consumer");
     const readyIds = db
       .query<{ id: string }, []>("SELECT item_id AS id FROM scheduler_admission")
       .all()
