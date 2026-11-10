@@ -207,7 +207,10 @@ export const workItemMergeSettings = pgTable(
       "work_item_merge_settings_check_1",
       sql`merge_order IN ('queue','ci-green','github-queue')`,
     ),
-    check("work_item_merge_settings_check_2", sql`main_moved IN ('overlap','green','ci','closeout')`),
+    check(
+      "work_item_merge_settings_check_2",
+      sql`main_moved IN ('overlap','green','ci','closeout')`,
+    ),
   ],
 );
 
