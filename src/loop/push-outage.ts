@@ -3,13 +3,16 @@ import {
   releasePushOutageJobs,
   endPushOutage,
   getJob,
+  getJobSteps,
   getPushOutage,
-  getWorkItem,
+  getPushOutageSteps,
+  getWorkItemSteps,
   immediate,
-  listPushOutages,
-  parkLeasedJob,
-  recordPushOutage,
-  setPushOutageQuestion,
+  listPushOutagesSteps,
+  parkLeasedJobSteps,
+  recordPushOutageSteps,
+  setPushOutageQuestionSteps,
+  sqliteDb,
   takePushOutageProbe,
   type Job,
   type PushOutage,
@@ -52,7 +55,7 @@ export function holdPush(db: Database, repository: string, jobId: number | null)
  * Records GitHub's refusal of a push from `jobId`. A held push records nothing; it returns the
  * outage that held it, or null when that outage has ended since.
  */
-export function pushRefused(
+export async function pushRefused(
   db: Database,
   input: {
     repository: string;
@@ -61,11 +64,11 @@ export function pushRefused(
     installationUrl: string | null;
     now: number;
   },
-): PushOutage | null {
-  return immediate(db, () => {
-    const current = getPushOutage(db, input.repository);
+): Promise<PushOutage | null> {
+  return await sqliteDb(db).transaction(function* (q) {
+    const current = yield* getPushOutageSteps(q, input.repository);
     if (input.error.held) return current;
-    const outage = recordPushOutage(db, {
+    const outage = yield* recordPushOutageSteps(q, {
       repository: input.repository,
       error: scrubTokens(input.error.stderr.trim()).slice(0, 4096),
       jobId: input.jobId,
@@ -83,12 +86,12 @@ export function pushRefused(
  * Parks a merge job the outage holds without spending an attempt. The probe wakes at its next
  * probe time; every other job waits for the outage to end.
  */
-export function parkForPushOutage(
+export async function parkForPushOutage(
   db: Database,
   job: Job,
   outage: PushOutage,
   now: number,
-): "parked" | "lost" {
+): Promise<"parked" | "lost"> {
   const payload =
     typeof job.payload === "object" && job.payload !== null && !Array.isArray(job.payload)
       ? { ...(job.payload as Record<string, unknown>) }
@@ -97,18 +100,19 @@ export function parkForPushOutage(
   const message = probe
     ? `${pushOutageBanner(outage)} Next try at ${new Date(outage.nextProbeAt).toISOString()}.`
     : pushOutageBanner(outage);
-  return parkLeasedJob(db, job, {
-    runAt: probe ? outage.nextProbeAt : now + PUSH_OUTAGE_HOLD_MS,
-    payload: {
-      ...payload,
-      pushOutage: outage.repository,
-      mergeWait: { reason: "push_outage", message, at: now },
-    },
-    attempts: job.attempts - 1,
-    now,
-  })
-    ? "parked"
-    : "lost";
+  const parked = await sqliteDb(db).run((q) =>
+    parkLeasedJobSteps(q, job, {
+      runAt: probe ? outage.nextProbeAt : now + PUSH_OUTAGE_HOLD_MS,
+      payload: {
+        ...payload,
+        pushOutage: outage.repository,
+        mergeWait: { reason: "push_outage", message, at: now },
+      },
+      attempts: job.attempts - 1,
+      now,
+    }),
+  );
+  return parked ? "parked" : "lost";
 }
 
 /**
@@ -132,26 +136,26 @@ export function pushWorked(db: Database, repository: string, now: number): PushO
  * on the Linear session of the probe's item. The item keeps its state. Nothing is asked while
  * another outage's question is open, or again after a person answered it.
  */
-export function askAboutPushOutage(
+export async function askAboutPushOutage(
   db: Database,
   repository: string,
   now: number,
-): "asked" | "not_yet" | "already" | "no_session" {
-  return immediate(db, () => {
-    const outage = getPushOutage(db, repository);
+): Promise<"asked" | "not_yet" | "already" | "no_session"> {
+  return await sqliteDb(db).transaction(function* (q) {
+    const outage = yield* getPushOutageSteps(q, repository);
     if (outage === null || now - outage.startedAt < PUSH_OUTAGE_QUESTION_MS) return "not_yet";
     if (outage.questionId !== null) return "already";
-    const open = listPushOutages(db).some((entry) => {
+    const open = (yield* listPushOutagesSteps(q)).some((entry) => {
       const question = entry.questionId ? getQuestion(db, entry.questionId) : null;
       return question?.status === "open" || question?.status === "queued";
     });
     if (open) return "already";
-    const probe = outage.probeJobId === null ? null : getJob(db, outage.probeJobId);
+    const probe = outage.probeJobId === null ? null : yield* getJobSteps(q, outage.probeJobId);
     const itemId =
       probe && typeof (probe.payload as { itemId?: unknown } | null)?.itemId === "string"
         ? (probe.payload as { itemId: string }).itemId
         : null;
-    const item = itemId ? getWorkItem(db, itemId) : null;
+    const item = itemId ? yield* getWorkItemSteps(q, itemId) : null;
     if (!item?.sessionKey || item.cancelRequested) return "no_session";
     const asked = ask(
       db,
@@ -165,7 +169,7 @@ export function askAboutPushOutage(
       pushOutageQuestion(outage),
       { reason: "push_outage", now },
     );
-    setPushOutageQuestion(db, repository, asked.question.id);
+    yield* setPushOutageQuestionSteps(q, repository, asked.question.id);
     return "asked";
   });
 }

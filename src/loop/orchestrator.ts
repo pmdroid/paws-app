@@ -2903,7 +2903,7 @@ export class Orchestrator {
     if (!refused || !item || !repository) return false;
     const github = this.githubForRepository(repository);
     const repositoryName = `${repository.owner}/${repository.repo}`;
-    const outage = pushRefused(this.db, {
+    const outage = await pushRefused(this.db, {
       repository: repositoryName,
       error: refused,
       jobId: job.id,
@@ -2923,8 +2923,8 @@ export class Orchestrator {
         `push outage on ${repositoryName}; the push waits`,
         this.options.journal,
       );
-    const asked = askAboutPushOutage(this.db, repositoryName, this.now()) === "asked";
-    if (parkForPushOutage(this.db, job, outage, this.now()) === "lost") throw error;
+    const asked = (await askAboutPushOutage(this.db, repositoryName, this.now())) === "asked";
+    if ((await parkForPushOutage(this.db, job, outage, this.now())) === "lost") throw error;
     if (asked) await this.flush();
     return true;
   }
