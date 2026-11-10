@@ -1476,6 +1476,19 @@ class FakeSystemctl:
         return [call[0] for call in self.calls]
 
 
+PREINST_CONTROL = """import importlib.util, os, pathlib
+from types import SimpleNamespace
+spec = importlib.util.spec_from_file_location("deb_control", {deb_control!r})
+deb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(deb)
+deb.ROOT = pathlib.Path(__file__).parent
+deb.installer.STATE = pathlib.Path({state!r})
+# Only root can own the record outside a namespace; admitted_release insists on it.
+pathlib.Path.lstat = lambda path: SimpleNamespace(st_uid=0, st_mode=os.lstat(path).st_mode)
+deb.main()
+"""
+
+
 class RunnerUpgrade(unittest.TestCase):
     """deb-control.py configure against a temp root and a fake systemctl."""
 
@@ -1509,6 +1522,62 @@ class RunnerUpgrade(unittest.TestCase):
             self.order.append(step)
             return result
         return call
+
+    def preinst(self, installed, incoming, action="upgrade"):
+        """Run the package's preinst as dpkg does, from a folder of control files, with `installed` recorded."""
+        host = self.root / "host"
+        state = host / "var/lib/paws-runner-install"
+        control = self.root / "control"
+        state.mkdir(parents=True, exist_ok=True)
+        control.mkdir(exist_ok=True)
+        (control / "deb-control.py").write_text(PREINST_CONTROL.format(deb_control=str(pathlib.Path(sys.argv[1]).with_name("deb-control.py")), state=str(state)))
+        (control / "preinst").write_text(load("deb-package").preinst(str(host)))
+        (state / "release.json").unlink(missing_ok=True)
+        if installed is not None:
+            (state / "release.json").write_text(json.dumps({"status": "installed", "releaseKeyFingerprint": "key", **installed}))
+            (state / "release.json").chmod(0o600)
+        (control / "admission.json").write_text(json.dumps({"releaseKeyFingerprint": "key", **incoming}))
+        return subprocess.run(["/bin/sh", str(control / "preinst"), action, "0.1.75"], env={"PATH": "/usr/bin:/bin", "LANG": "C"}, capture_output=True, timeout=30)
+
+    def test_preinst_refuses_an_older_package_before_dpkg_unpacks_it(self):
+        result = self.preinst({"version": "0.1.75", "artifactSha256": "new"}, {"version": "0.1.73", "artifactSha256": "old"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stderr.decode().strip(), "Release version must advance the installed version")
+
+    def test_preinst_admits_the_same_artifact_and_a_newer_version_and_refuses_another_artifact_of_the_same_version(self):
+        installed = {"version": "0.1.75", "artifactSha256": "same"}
+        for incoming in (installed, {"version": "0.1.76", "artifactSha256": "next"}):
+            result = self.preinst(installed, incoming)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertNotEqual(self.preinst(installed, {"version": "0.1.75", "artifactSha256": "other"}).returncode, 0)
+
+    def test_preinst_checks_only_an_install_or_upgrade_with_a_recorded_release(self):
+        older = {"version": "0.1.73", "artifactSha256": "old"}
+        self.assertEqual(self.preinst({"version": "0.1.75", "artifactSha256": "new"}, older, "abort-upgrade").returncode, 0)
+        self.assertEqual(self.preinst(None, older, "install").returncode, 0)
+
+    def test_the_package_carries_what_preinst_needs_in_its_control_files(self):
+        package = load("deb-package")
+        manifest = {"version": "0.1.75", "platform": "linux-x64", "artifactSha256": "digest"}
+        built = {}
+
+        def verified(arguments, staging):
+            for name in ("manifest.json", "manifest.sig", "release.pub"):
+                (staging / name).write_text("x")
+            return manifest, self.artifact, "fingerprint"
+
+        def dpkg_deb(command, **options):
+            control = pathlib.Path(command[-2]) / "DEBIAN"
+            built.update({path.name: path.read_text() for path in control.iterdir()})
+            pathlib.Path(command[-1]).write_bytes(b"deb")
+
+        with mock.patch.object(package.release, "verify_release", verified), mock.patch.object(package.subprocess, "run", dpkg_deb):
+            package.build(SimpleNamespace(output=str(self.root / "output")))
+        self.assertEqual(built["preinst"], package.preinst())
+        self.assertEqual(json.loads(built["admission.json"]), {"version": "0.1.75", "artifactSha256": "digest", "releaseKeyFingerprint": "fingerprint"})
+        deploy = pathlib.Path(sys.argv[1]).parent
+        for name in ("deb-control.py", "install.py", "release.py"):
+            self.assertEqual(built[name], (deploy / name).read_text())
 
     def switch(self, unpacked, destination, pointers):
         self.order.append("switch")

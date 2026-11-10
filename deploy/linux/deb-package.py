@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import importlib.util
+import json
 import pathlib
 import shutil
 import subprocess
@@ -17,6 +18,23 @@ def write(path, content, mode=0o644):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     path.chmod(mode)
+
+
+def preinst(root=""):
+    """The package's preinst. dpkg runs it from the unpacked control files, before the payload exists on disk.
+
+    No recorded release means nothing to compare, and python3 may not be installed yet.
+    """
+    return f"""#!/bin/sh
+set -eu
+case "$1" in
+  install|upgrade)
+    if [ -e {root}/var/lib/paws-runner-install/release.json ]; then
+      exec /usr/bin/python3 -I -B "${{0%/*}}/deb-control.py" admit
+    fi
+    ;;
+esac
+"""
 
 
 def postrm(units, root=""):
@@ -65,7 +83,7 @@ def build(arguments):
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="paws-deb-") as temporary:
         root = pathlib.Path(temporary)
-        manifest, artifact, _ = release.verify_release(arguments, root)
+        manifest, artifact, fingerprint = release.verify_release(arguments, root)
         architecture = {"linux-x64": "amd64", "linux-arm64": "arm64"}[manifest["platform"]]
         package = root / "package"
         payload = package / "usr/lib/paws-runner-package"
@@ -77,6 +95,11 @@ def build(arguments):
         (payload / "dockerd-rootless.sh").chmod(0o755)
         size = sum(path.stat().st_size for path in payload.iterdir())
         write(package / "DEBIAN/control", f"Package: paws-runner\nVersion: {manifest['version']}\nArchitecture: {architecture}\nMaintainer: pmdroid <pmdroid@users.noreply.github.com>\nSection: devel\nPriority: optional\nDepends: git, openssl (>= 3), python3, util-linux, coreutils (>= 8.28), systemd\nInstalled-Size: {(size + 1023) // 1024}\nHomepage: https://github.com/pmdroid/paws-app\nDescription: Paws remote Linux runner\n Runs paired coding agents and isolated verification for Paws.\n")
+        # dpkg keeps no control file with a dot in its name once the package is unpacked: these exist for preinst only.
+        for name in ("install.py", "release.py", "deb-control.py"):
+            write(package / "DEBIAN" / name, (ROOT / name).read_text())
+        write(package / "DEBIAN/admission.json", json.dumps({"version": manifest["version"], "artifactSha256": manifest["artifactSha256"], "releaseKeyFingerprint": fingerprint}))
+        write(package / "DEBIAN/preinst", preinst(), 0o755)
         write(package / "DEBIAN/postinst", '#!/bin/sh\nset -eu\ncase "$1" in\n  configure) exec /usr/bin/python3 -I -B /usr/lib/paws-runner-package/deb-control.py configure ;;\n  abort-upgrade|abort-remove|abort-deconfigure) exec /usr/bin/python3 -I -B /usr/lib/paws-runner-package/deb-control.py restore ;;\nesac\n', 0o755)
         write(package / "DEBIAN/prerm", '#!/bin/sh\nset -eu\ncase "$1" in\n  upgrade) exec /usr/bin/python3 -I -B /usr/lib/paws-runner-package/deb-control.py stop --next-version "$2" ;;\n  remove|deconfigure) exec /usr/bin/python3 -I -B /usr/lib/paws-runner-package/deb-control.py stop ;;\nesac\n', 0o755)
         units = sorted(name for name in release.ASSETS if name.endswith((".service", ".socket", ".path")))
