@@ -91,7 +91,7 @@ import {
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { createHash, randomUUID } from "node:crypto";
-import { ask, restart, restartSteps, awaitQuestion } from "./operations";
+import { ask, askSteps, restart, restartSteps, awaitQuestion } from "./operations";
 import {
   RUNNER_REPOSITORY_REASON,
   RUNNER_REPOSITORY_RETRY,
@@ -371,9 +371,7 @@ import {
   saveVisualReviewMarks,
   type VisualReviewMark,
   listRunsSteps,
-  bindLinearSessionTask,
   type StoredLinearSession,
-  activateLinearItem,
   getLinearSessionContext,
   listLinearActivitySnapshots,
   type Job,
@@ -438,7 +436,7 @@ import {
   suggestedFindingsSteps,
   type Q,
   type Steps,
-  moveDelegationSession,
+  moveDelegationSessionSteps,
   openTaskDependentsSteps,
   workspaceUserIdForLinearUserSteps,
 } from "../db";
@@ -526,6 +524,7 @@ import {
   answerer,
   canAnswer,
   cancelItemQuestions,
+  cancelItemQuestionsSteps,
   cancelQuestion,
   findAskedQuestion,
   findOpenQuestion,
@@ -7958,15 +7957,16 @@ export class Orchestrator {
         return false;
       }
       this.assertJobCurrent(item.id);
-      saved.profileQuestion = immediate(this.db, () => {
-        const { question: asked } = ask(
-          this.db,
+      const now = this.now();
+      saved.profileQuestion = await this.store.transaction(function* (q) {
+        const { question: asked } = yield* askSteps(
+          q,
           { itemId: item.id, runId, sessionId },
           "agent",
           body,
-          { options: [USE_THE_DEFAULT, "I fixed the label"], now: this.now() },
+          { options: [USE_THE_DEFAULT, "I fixed the label"], now },
         );
-        closeActiveRun(this.db, runId, this.now());
+        yield* closeActiveRunSteps(q, runId, now);
         return asked.id;
       });
       writeFileSync(snapshot, JSON.stringify(saved), { mode: 0o600 });
@@ -8495,25 +8495,37 @@ export class Orchestrator {
     );
     if (!paused) return false;
     await this.interruptLinearSession(paused.sessionKey);
-    const resumed = immediate(this.db, () => {
-      const item = getWorkItem(this.db, paused.id);
-      if (item?.state !== "paused" || item.sessionKey !== paused.sessionKey || !isCurrent())
+    const now = this.now();
+    const shuttingDown = () => this.shuttingDown;
+    const authorize = this.options.authorizeLinearIntake;
+    const resumed = await this.store.transaction(function* (q) {
+      const item = yield* getWorkItemSteps(q, paused.id);
+      const current = yield* getLinearSessionSteps(q, session.sessionId);
+      if (
+        item?.state !== "paused" ||
+        item.sessionKey !== paused.sessionKey ||
+        shuttingDown() ||
+        current?.generation !== session.generation ||
+        current.stoppedAt !== null ||
+        authorize?.(session.sessionId, snapshot) === false
+      )
         return false;
-      moveDelegationSession(this.db, {
+      yield* moveDelegationSessionSteps(q, {
         delegationId: paused.delegationId,
         from: paused.sessionKey,
         to: session.sessionId,
       });
-      bindLinearSessionTask(this.db, session.sessionId, paused.delegationId);
-      activateLinearItem(this.db, session.sessionId, item.id);
-      cancelItemQuestions(this.db, item.id, this.now());
-      restart(this.db, getWorkItem(this.db, item.id)!, {
+      yield* bindLinearSessionTaskSteps(q, session.sessionId, paused.delegationId);
+      yield* activateLinearItemSteps(q, session.sessionId, item.id);
+      yield* cancelItemQuestionsSteps(q, item.id, now);
+      yield* restartSteps(q, (yield* getWorkItemSteps(q, item.id))!, {
         reason: "follow_up",
         body: "The issue was delegated again in Linear. Continue the task from its branch.",
-        now: this.now(),
+        now,
       });
       return true;
     });
+    if (resumed) emitJobReady(this.store);
     if (resumed) await this.reconcileExecution();
     await this.flush();
     return resumed;
