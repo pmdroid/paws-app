@@ -2,7 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  describeOverriddenSections,
   loadConfigFile,
+  overriddenConfigSections,
   loadRuntime,
   parseBriefTemplates,
   readConfigText,
@@ -157,4 +159,15 @@ test("triple quotes in a comment or a one-line string do not hide later sections
     expect(text).toContain("max_awake_ms = 5400000");
     expect(text).toContain('order = "ci-green"');
   }
+});
+
+test("config.toml sections the saved settings override are named, the rest are not", () => {
+  const a = instance(shared(), "ACME");
+  writeFileSync(a.configPath, `${BOOTSTRAP}\n[merge.projects.abc]\nmain_moved = "ci"\n`);
+  expect(overriddenConfigSections(a.configPath)).toEqual([]);
+  updateSetting(a.db, CONFIG_SETTINGS_KEY, () => '[merge]\norder = "ci-green"\n');
+  expect(overriddenConfigSections(a.configPath)).toEqual(["merge", "merge.projects.abc"]);
+  expect(describeOverriddenSections(["merge"])).toBe(
+    "config.toml [merge] is ignored: the Settings page saved this section to the database, which wins",
+  );
 });

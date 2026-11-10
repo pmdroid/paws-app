@@ -6466,8 +6466,23 @@ export class Orchestrator {
         ...(context ? { projectId: context.projectId, labels: context.labels } : {}),
       },
     };
-    if (context !== null)
+    if (context === null) return settings;
+    try {
       await this.store.run((q) => keepTaskMergeSettingsSteps(q, item.id, settings, this.now()));
+    } catch (error) {
+      signal?.throwIfAborted();
+      journalCaught(
+        error,
+        `orchestrator.mergeSettingsFor.keep order=${settings.order} main_moved=${settings.mainMoved}`,
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return {
+        ...policy.default,
+        resolved: { sources: { order: "default", mainMoved: "default" } },
+      };
+    }
     return settings;
   }
 

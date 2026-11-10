@@ -7,6 +7,7 @@ import {
   closeoutPolicyRoot,
   exeDevTokenStatus,
   loadRuntime,
+  overriddenConfigSections,
   tailscaleAuthKeyStatus,
   pawsPaths,
   type AgentProfiles,
@@ -63,6 +64,7 @@ export type GitHubDoctorFacts = {
 
 export type ProbeFacts = {
   configError: string | null;
+  overriddenSections?: string[];
   agentProfiles?: AgentProfiles[];
   grokLogin?: GrokLoginStatus | null;
   configured: boolean;
@@ -121,6 +123,7 @@ export async function realProbeFacts(env: EnvSource): Promise<ProbeFacts> {
   ]);
   return {
     configError: runtime.configError,
+    overriddenSections: overriddenConfigSections(pawsPaths(runtime.env.home).configFile),
     agentProfiles,
     grokLogin,
     configured: runtime.configured,
