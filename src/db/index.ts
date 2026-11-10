@@ -193,6 +193,7 @@ export * from "./github-integration-holds";
 export * from "./inbox-rows";
 export * from "./linear-poll-reads";
 export * from "./runner-backend-reads";
+export * from "./github-activation-reads";
 export * from "./agent-session-rows";
 export * from "./runner-control-reads";
 export * from "./runner-eligibility";

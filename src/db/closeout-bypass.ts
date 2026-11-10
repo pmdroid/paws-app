@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull } from "drizzle-orm";
-import type { Q, Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 
 /**
  * A failed Closeout check a bypass link ask offers, as Closeout judged it on
@@ -19,19 +19,6 @@ export type CloseoutBypassCheck = {
   approvedBy: string | null;
   approvedByName: string | null;
   approvedAt: number | null;
-};
-
-type Row = {
-  question_id: string;
-  check_id: string;
-  kind: string;
-  state: string;
-  attempt: number | null;
-  message: string;
-  reason: string | null;
-  approved_by: string | null;
-  approved_by_name: string | null;
-  approved_at: number | null;
 };
 
 export function* saveCloseoutBypassChecksSteps(
@@ -58,41 +45,11 @@ export function saveCloseoutBypassChecks(
   questionId: string,
   checks: readonly { id: string; kind: string; state: string; attempt?: number; message: string }[],
 ): void {
-  checks.forEach((check, ordinal) =>
-    db.run(
-      `INSERT INTO closeout_bypass_check (question_id, check_id, kind, state, attempt, message, ordinal)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        questionId,
-        check.id,
-        check.kind,
-        check.state,
-        check.attempt ?? null,
-        check.message,
-        ordinal,
-      ],
-    ),
-  );
+  settled(sqliteDb(db).run((q) => saveCloseoutBypassChecksSteps(q, questionId, checks)));
 }
 
 export function listCloseoutBypassChecks(db: Database, questionId: string): CloseoutBypassCheck[] {
-  return db
-    .query<Row, [string]>(
-      "SELECT * FROM closeout_bypass_check WHERE question_id = ? ORDER BY ordinal",
-    )
-    .all(questionId)
-    .map((row) => ({
-      questionId: row.question_id,
-      checkId: row.check_id,
-      kind: row.kind,
-      state: row.state,
-      attempt: row.attempt,
-      message: row.message,
-      reason: row.reason,
-      approvedBy: row.approved_by,
-      approvedByName: row.approved_by_name,
-      approvedAt: row.approved_at,
-    }));
+  return settled(sqliteDb(db).run((q) => listCloseoutBypassChecksSteps(q, questionId)));
 }
 
 export function* listCloseoutBypassChecksSteps(
@@ -164,13 +121,5 @@ export function approveCloseoutBypassChecks(
     now: number;
   },
 ): boolean {
-  for (const check of input.checks) {
-    const updated = db.run(
-      `UPDATE closeout_bypass_check SET reason = ?, approved_by = ?, approved_by_name = ?, approved_at = ?
-       WHERE question_id = ? AND check_id = ? AND approved_at IS NULL`,
-      [check.reason, input.approvedBy, input.approvedByName, input.now, questionId, check.checkId],
-    );
-    if (updated.changes === 0) return false;
-  }
-  return true;
+  return settled(sqliteDb(db).run((q) => approveCloseoutBypassChecksSteps(q, questionId, input)));
 }
