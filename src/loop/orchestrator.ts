@@ -3740,7 +3740,7 @@ export class Orchestrator {
                 : "Closeout findings";
         const counter = returned.reason === "conflict" ? "" : ` (${round} of ${limit})`;
         sessionProgress?.restart(returned.reason, round, returned.version, limit);
-        sessionProgress?.status(`${item.linearIdentifier}: fixing ${label}${counter}`);
+        sessionProgress?.restartWait(`${item.linearIdentifier}: fixing ${label}${counter}`);
         live.progress =
           returned.reason === "conflict"
             ? `Resolving merge conflicts for ${item.linearIdentifier}.`
@@ -6260,7 +6260,7 @@ export class Orchestrator {
   private statusAfterPullRequest(item: WorkItemRecord, body: string): void {
     if (!(this.jobContexts.get(item.id)?.isCurrent() ?? true)) return;
     if (getWorkItem(this.db, item.id)?.state === "cancelled") return;
-    this.sessionProgress(item)?.status(body);
+    this.sessionProgress(item)?.mergeStatus(body);
     void this.flush().catch((caughtError10) => {
       journalCaught(
         caughtError10,
@@ -7648,7 +7648,7 @@ export class Orchestrator {
         const limit = this.fixAttemptLimit(item, wait.restart);
         const restarted = latestRestartEvent(this.db, item.id);
         if (restarted) progress.restart(wait.restart, round, restarted.version, limit);
-        progress.status(
+        progress.restartWait(
           `${name}: waiting for a runner to ${
             wait.restart === "ci"
               ? `fix CI (${round} of ${limit})`

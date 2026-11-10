@@ -239,7 +239,8 @@ export function createLinearSessionProgress(
         waits.push({ content: step, status: "inProgress" });
       }
       publishPlan();
-      publish("linear.session.summary", { sessionId, summary: title.slice(0, 255) });
+      if (!afterPr())
+        publish("linear.session.summary", { sessionId, summary: title.slice(0, 255) });
     },
     restart(reason: string, round: number, version: number, limit = 3) {
       started = true;
@@ -264,17 +265,26 @@ export function createLinearSessionProgress(
           : step,
       );
       milestones.push({ content, status: "inProgress" });
-      if (!afterPr()) phase = "fixing";
+      const pullRequest = afterPr();
+      if (!pullRequest) phase = "fixing";
       // Due now, with the summary below: the turn's new step should not lag it by the interval.
       publishPlan(true);
-      publish(
-        "linear.session.summary",
-        {
-          sessionId,
-          summary: `${identifier}: ${reason === "ci" ? `fixing CI (${round} of ${limit})` : reason === "review" ? `fixing review findings (${round} of ${limit})` : reason === "conflict" ? "resolving merge conflict" : `fixing Closeout findings (${round} of ${limit})`}`,
-        },
-        true,
-      );
+      const status = pullRequest
+        ? reason === "ci"
+          ? "fixing CI"
+          : reason === "review"
+            ? "fixing review comments"
+            : reason === "conflict"
+              ? "fixing merge conflicts"
+              : "fixing Closeout findings"
+        : reason === "ci"
+          ? `fixing CI (${round} of ${limit})`
+          : reason === "review"
+            ? `fixing review findings (${round} of ${limit})`
+            : reason === "conflict"
+              ? "resolving merge conflict"
+              : `fixing Closeout findings (${round} of ${limit})`;
+      publish("linear.session.summary", { sessionId, summary: `${identifier}: ${status}` }, true);
     },
     phase(next: Phase) {
       started = true;
@@ -291,24 +301,10 @@ export function createLinearSessionProgress(
           if (last?.content !== content || last.status === "completed")
             milestones.push({ content, status: "inProgress" });
           publishPlan();
-          publish(
-            "linear.session.summary",
-            {
-              sessionId,
-              summary: `${identifier}: ${fixing ? "checking fixes" : "rebased onto main, re-verifying"}`,
-            },
-            true,
-          );
         }
         return;
       }
-      if (next === "publishing" && afterPr()) {
-        publish("linear.session.summary", {
-          sessionId,
-          summary: `${identifier}: updating the pull request`,
-        });
-        return;
-      }
+      if (next === "publishing" && afterPr()) return;
       if (next === "merging")
         milestones = milestones.map((step, index) =>
           index >= hostSteps.length ? { ...step, status: "completed" } : step,
@@ -324,7 +320,11 @@ export function createLinearSessionProgress(
               : "creating files"
           : next === "fixing"
             ? "fixing Closeout findings"
-            : next;
+            : next === "merging" && afterPr()
+              ? "waiting to merge"
+              : next === "completed" && afterPr()
+                ? "merged"
+                : next;
       const summary = `${identifier}: ${status}`.slice(0, 255);
       publish("linear.session.summary", { sessionId, summary }, next === "completed");
     },
@@ -360,6 +360,12 @@ export function createLinearSessionProgress(
     },
     status(text: string) {
       publish("linear.session.summary", { sessionId, summary: text.slice(0, 255) }, true);
+    },
+    mergeStatus(text: string) {
+      this.status(afterPr() ? `${identifier}: waiting to merge` : text);
+    },
+    restartWait(text: string) {
+      if (!afterPr()) this.status(text);
     },
     link(label: string, url: string) {
       // Links are not throttled, so they sort ahead of a plan or summary that is still waiting.

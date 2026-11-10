@@ -2386,7 +2386,7 @@ for (const movedHead of [false, true]) {
           .query<{ summary: string }, []>("SELECT summary FROM title_write")
           .all()
           .map((row) => row.summary),
-      ).toEqual(["ENG-31: publishing", "ENG-31: merging", "ENG-31: completed"]);
+      ).toEqual(["ENG-31: publishing", "ENG-31: waiting to merge", "ENG-31: merged"]);
       // The waiting merge keeps its job. A moved head never sends the accepted head back to
       // Closeout or merges another head.
       expect(
@@ -2437,14 +2437,10 @@ test("by default a rebased head merges on green CI without running Closeout agai
   // No Closeout round for the rebased head, and no second review.
   expect(result.rounds, result.detail).toEqual([]);
   expect(result.reviews, result.detail).toBe(result.reviewsBeforeUpdate);
-  const updated = `Branch updated onto main ${result.movedMain.slice(0, 7)}, waiting for CI.`;
-  expect(
-    result.summaries.some((line) => line.startsWith(updated)),
-    result.detail,
-  ).toBe(true);
-  expect(result.summaries, result.detail).not.toContain(
-    `Rebased onto main ${result.movedMain.slice(0, 7)}, re-verifying.`,
-  );
+  expect(afterPullRequest(result.summaries), result.detail).toEqual([
+    "ENG-73: waiting to merge",
+    "ENG-73: merged",
+  ]);
 }, 120_000);
 
 test("an issue rule for the task's Linear label runs Closeout again after a rebase", async () => {
@@ -2457,9 +2453,10 @@ test("an issue rule for the task's Linear label runs Closeout again after a reba
   expect(result.state, result.detail).toBe("merged");
   expect(result.rounds, result.detail).toHaveLength(1);
   expect(result.reviews, result.detail).toBeGreaterThan(result.reviewsBeforeUpdate);
-  expect(result.summaries, result.detail).toContain(
-    `Rebased onto main ${result.movedMain.slice(0, 7)}, re-verifying.`,
-  );
+  expect(afterPullRequest(result.summaries), result.detail).toEqual([
+    "ENG-73: waiting to merge",
+    "ENG-73: merged",
+  ]);
 }, 120_000);
 
 test("a rebased and re-verified merge still passes the GitHub App integration", async () => {
@@ -2479,7 +2476,7 @@ test("a rebased and re-verified merge still passes the GitHub App integration", 
   expect(result.rounds, result.detail).toHaveLength(1);
   expect(result.reviews, result.detail).toBeGreaterThan(result.reviewsBeforeUpdate);
   const rebased = `Rebased onto main ${result.movedMain.slice(0, 7)}, re-verifying.`;
-  expect(result.summaries, result.detail).toContain(rebased);
+  expect(result.summaries, result.detail).not.toContain(rebased);
   expect(result.thoughts, result.detail).not.toContain(rebased);
   expect(checks).toBeGreaterThan(0);
 }, 120_000);
@@ -3046,7 +3043,11 @@ test.each([false, true])(
       expect(tracker.progress.map((update) => update.body)).not.toContain(
         "CI: `test` failed. Sent back to the agent, fix 1 of 3.",
       );
-      expect(queuedSummary()).toContain("CI: `test` failed. Sent back to the agent, fix 1 of 3.");
+      expect(queuedSummary()).not.toContain(
+        "CI: `test` failed. Sent back to the agent, fix 1 of 3.",
+      );
+      expect(queuedSummary()).toContain("ENG-91: fixing CI");
+      expect(queuedSummary()).not.toContain("ENG-91: fixing CI (1 of 3)");
       expect(tracker.progress.filter((update) => update.kind === "response")).toHaveLength(
         ask ? 3 : 2,
       );
@@ -3223,8 +3224,8 @@ test("with the GitHub merge queue order, Paws queues the accepted pull request a
     implementRuns: 1,
     enqueued: 1,
     selfMerges: 0,
-    added: true,
-    moved: true,
+    added: false,
+    moved: false,
     rebaseOrRecheck: false,
     queueResponses: [],
     dashboard: [
@@ -3233,6 +3234,10 @@ test("with the GitHub merge queue order, Paws queues the accepted pull request a
     ],
   });
 }, 120_000);
+
+function afterPullRequest(summaries: readonly string[]): string[] {
+  return summaries.slice(summaries.findIndex((line) => line.endsWith(": publishing")) + 1);
+}
 
 /**
  * One task under `[merge] order = "github-queue"`. `onQueued` runs on each pass that finds the
