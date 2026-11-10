@@ -603,7 +603,7 @@ export async function probeRunnerTaskAuthority(
           );
           db.run(restore!, [item.id]);
         }
-        coordinator.work.finish(run.id, 1);
+        await coordinator.work.finish(run.id, 1);
         await daemon.acknowledgeCommand(command.id);
         observe(
           `signed ${purpose} task ${withRepository ? "with" : "without"} repository retains questions, sealed response and exact result authority`,

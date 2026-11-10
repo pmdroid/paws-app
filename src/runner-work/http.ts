@@ -89,7 +89,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
       }
       const download = /^\/v1\/skills\/([^/]+)\/([^/]+)$/.exec(path);
       if (download && request.method === "GET" && options.skillsRoot) {
-        const skill = work.skillBundle(
+        const skill = await work.skillBundle(
           runnerId,
           RunnerSkillSchema.shape.name.parse(decodeURIComponent(download[1]!)),
           RunnerSkillSchema.shape.version.parse(decodeURIComponent(download[2]!)),

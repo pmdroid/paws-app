@@ -192,7 +192,7 @@ test("an accepted result survives a reopen and lease expiry, and recovery reatta
     expect(resumes(f.db)).toHaveLength(1);
     expect(resumes(f.db)[0]?.payload).not.toHaveProperty("handoff");
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
-    f.work.finish(f.run.id, 1);
+    await f.work.finish(f.run.id, 1);
     expect(() => f.results.read(f.run.id, 1, command.id)).toThrow();
   } finally {
     f.close();

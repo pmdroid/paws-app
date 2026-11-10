@@ -352,7 +352,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
       (await artifacts.fetch(request({ ...extra, generation: 2 }), runnerId))!.status,
       409,
     );
-    work.finish(run.id, 1);
+    await work.finish(run.id, 1);
     assert.equal((await artifacts.fetch(request(chunk(0)), runnerId))!.status, 409);
     await assert.rejects(async () => artifacts.snapshot(run.id, 1, descriptor));
     observe("per-command evidence is bounded and finished work loses storage access", true, {

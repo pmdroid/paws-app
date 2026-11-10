@@ -1,69 +1,74 @@
-import { runnerCommandAuthorityUntil, extendStalledRunnerWork } from "../db";
 import {
-  acknowledgeRunnerCommand,
-  assignRunnerWork,
-  availableRunnerIdentity,
-  confirmRunnerWork,
-  confirmRunnerWorkTeardown,
-  deleteRunnerWorkGrants,
-  deliverableRunnerCommands,
-  endRunnerWork,
-  extendRunnerWorkLease,
-  finishRunnerWork,
-  getRun,
-  insertRunnerCommand,
-  insertRunnerEvent,
-  insertRunnerWorkGrant,
-  linearSessionClientId,
-  loseRunnerWork,
-  noteRunnerLiveReport,
-  noteRunnerSeen,
-  noteRunnerTerminations,
-  openRunnerAssignments,
-  runnerCheckpointPending,
-  runnerCommandAcknowledgedBy,
-  runnerCommandEnvelope,
-  runnerFinishedRuns,
-  runnerHostVersion,
-  runnerResultForCommand,
-  runnerWorkAssignment,
-  runnerWorkGrantValid,
-  runnerWorkStillReported,
-  setRunnerWorkLastSequence,
-  storedRunnerEvent,
-  type RunnerAssignment as Assignment,
-  workspaceInLinearOrganization,
-  workspaceSessionRepositoryAllowed,
-  listSkills,
-  recordCommandAccount,
-  recordRunnerAccountCapability,
-  recordRunAgentSetup,
-  recordRunnerCapacity,
-  runnerStanding,
-  wakeRunnerSlotWaits,
-  recordRunnerAgents,
-  recordRunnerRepositories,
-  recordRunnerRuntimes,
-  recordRunnerSkills,
-  runnerAgentTargets,
-  lastInstanceHeartbeat,
+  extendStalledRunnerWork,
+  acknowledgeRunnerCommandSteps,
+  assignRunnerWorkSteps,
+  availableRunnerIdentitySteps,
+  confirmRunnerWorkSteps,
+  confirmRunnerWorkTeardownSteps,
+  deleteRunnerWorkGrantsSteps,
+  deliverableRunnerCommandsSteps,
+  emitJobReady,
+  endRunnerWorkSteps,
+  extendRunnerWorkLeaseSteps,
+  finishRunnerWorkSteps,
+  getLinearSessionAccessSteps,
+  getLinearSessionSteps,
+  getRunSteps,
+  getTaskModeGenerationSteps,
+  getTaskModeSteps,
+  getWorkItemRepositorySteps,
+  getWorkItemSteps,
+  insertRunnerCommandSteps,
+  insertRunnerEventSteps,
+  insertRunnerWorkGrantSteps,
+  lastInstanceHeartbeatSteps,
+  linearSessionClientIdSteps,
+  listSkillsSteps,
+  loseRunnerWorkSteps,
+  nextRoutineHealthCommandSteps,
+  noteRunnerLiveReportSteps,
+  noteRunnerSeenSteps,
+  noteRunnerTerminationsSteps,
+  openRunnerAssignmentsSteps,
+  recordCommandAccountSteps,
+  recordRunAgentSetupSteps,
+  recordRunnerAccountCapabilitySteps,
+  recordRunnerAgentsSteps,
+  recordRunnerCapacityWakingSteps,
+  recordRunnerHostStatusSteps,
+  recordRunnerRepositoriesSteps,
+  recordRunnerRuntimesSteps,
+  recordRunnerSkillsSteps,
+  runnerAgentTargetsSteps,
+  runnerCancelPendingSteps,
+  runnerCheckpointPendingSteps,
+  runnerCommandAcknowledgedBySteps,
+  runnerCommandAuthorityUntilSteps,
+  runnerCommandEnvelopeSteps,
+  runnerFinishedRunsSteps,
+  runnerHasCapacitySteps,
+  runnerHostVersionSteps,
   runnerLeaseCutoff,
-  getLinearSessionAccess,
-  getLinearSession,
-  getTaskMode,
-  getTaskModeGeneration,
-  getWorkItem,
-  getWorkItemRepository,
-  immediate,
-  recordRunnerHostStatus,
-  runnerHasCapacity,
   runnerLeaseLive,
+  runnerResultForCommandSteps,
+  runnerStandingSteps,
+  runnerWorkAssignmentSteps,
+  runnerWorkGrantValidSteps,
+  runnerWorkStillReportedSteps,
+  runTeardownOwnerSteps,
+  setRunnerWorkLastSequenceSteps,
+  settled as settledValue,
+  sqliteDb,
+  storedRunnerEventSteps,
+  taskRequiresRepositorySteps,
+  wakeRunnerSlotWaitsSteps,
+  workspaceInLinearOrganizationSteps,
+  workspaceSessionIdsSteps,
+  workspaceSessionRepositoryAllowedSteps,
+  type Q,
+  type Steps,
+  type RunnerAssignment as Assignment,
   type RunnerHostSample,
-  taskRequiresRepository,
-  workspaceSessionIds,
-  runnerCancelPending,
-  runTeardownOwner,
-  nextRoutineHealthCommand,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { KeyObject } from "node:crypto";
@@ -105,6 +110,14 @@ import { openRunnerEvent, payloadSha256, sealRunnerEvent, type StoredRunnerEvent
 
 export { RunnerEventSchema, type RunnerEvent } from "../runner-protocol";
 type WorkCommand = Extract<RunnerCommand, { type: "run" | "review" | "task" }>;
+type ResponseTask = {
+  item: { id: string };
+  sessionId: string;
+  sessionGeneration: number;
+  taskModeGeneration: number;
+  purpose: string | null;
+  repository: { owner: string; repo: string; remoteUrl: string } | undefined;
+};
 
 /**
  * Work the runner acknowledged this long ago and no longer reports is lost. The margin covers a
@@ -131,17 +144,16 @@ export function createRunnerWork(options: {
   now?: () => number;
 }) {
   const { db } = options;
+  const store = sqliteDb(db);
+  // Methods that still return synchronously read the settled result of their SQLite Steps,
+  // which finish before they return, until every caller can await them.
+  const transaction = <T>(body: (q: Q) => Steps<T>) => settledValue(store.transaction(body));
+  const read = <T>(body: (q: Q) => Steps<T>) => settledValue(store.run(body));
   const { eventKey } = options;
   const now = options.now ?? Date.now;
-  function assignment(runId: string) {
-    return runnerWorkAssignment(db, runId);
-  }
-  function availableIdentity(id: string) {
-    return availableRunnerIdentity(db, id);
-  }
   /** Registered skills a runner should have installed. Removed ones are left out, so runners delete them. */
-  function skillManifest(): RunnerSkill[] {
-    return listSkills(db)
+  function* skillManifestSteps(q: Q): Steps<RunnerSkill[]> {
+    return (yield* listSkillsSteps(q))
       .filter((skill) => skill.removedAt === null)
       .map(({ name, version, sha256, sizeBytes, agents }) => ({
         name,
@@ -151,17 +163,18 @@ export function createRunnerWork(options: {
         agents,
       }));
   }
-  function runner(id: string) {
-    const row = availableIdentity(id);
+  function* runnerSteps(q: Q, id: string) {
+    const row = yield* availableRunnerIdentitySteps(q, id);
     if (!row) throw new Error("Runner identity is unavailable.");
     return row;
   }
-  function activeTask(runId: string, allowPendingQuestion = false) {
-    const execution = getRun(db, runId);
-    const item = execution ? getWorkItem(db, execution.itemId) : null;
+  function* activeTaskSteps(q: Q, runId: string, allowPendingQuestion = false) {
+    const execution = yield* getRunSteps(q, runId);
+    const item = execution ? yield* getWorkItemSteps(q, execution.itemId) : null;
     // A run Paws stops for a cap or a restart publishes its WIP commit first: until that
     // checkpoint request expires, its runner may still send the commit and push it.
-    const checkpointing = item?.currentRunId === runId && runnerCheckpointPending(db, runId, now());
+    const checkpointing =
+      item?.currentRunId === runId && (yield* runnerCheckpointPendingSteps(q, runId, now()));
     if (
       !item ||
       item.currentRunId !== runId ||
@@ -172,7 +185,7 @@ export function createRunnerWork(options: {
     )
       throw new Error("Run is no longer active.");
     const sessionId = item.sessionKey;
-    if (!sessionId || getLinearSessionAccess(db, sessionId) !== "allowed")
+    if (!sessionId || (yield* getLinearSessionAccessSteps(q, sessionId)) !== "allowed")
       throw new Error("Linear task access is unavailable.");
     if (item.state === "awaiting_input" && !allowPendingQuestion && !checkpointing) {
       const question = findOpenQuestion(db, sessionId);
@@ -181,56 +194,54 @@ export function createRunnerWork(options: {
     }
     return { item, sessionId };
   }
-  function task(runId: string, workspaceId: string, allowPendingQuestion = false) {
-    const { item, sessionId } = activeTask(runId, allowPendingQuestion);
-    const repository = getWorkItemRepository(db, item.id);
+  function* taskSteps(q: Q, runId: string, workspaceId: string, allowPendingQuestion = false) {
+    const { item, sessionId } = yield* activeTaskSteps(q, runId, allowPendingQuestion);
+    const repository = yield* getWorkItemRepositorySteps(q, item.id);
     if (!repository) throw new Error("Run repository is not bound.");
     if (
-      !workspaceSessionRepositoryAllowed(
-        db,
+      !(yield* workspaceSessionRepositoryAllowedSteps(
+        q,
         workspaceId,
         sessionId,
         `${repository.owner}/${repository.repo}`,
-      )
+      ))
     )
       throw new Error("Run is outside the runner workspace repository access.");
     return { item, repository };
   }
-  function responseTask(
+  function* responseTaskSteps(
+    q: Q,
     runId: string,
     workspaceId: string,
     allowPendingQuestion = false,
     userId?: string,
   ) {
-    const { item, sessionId } = activeTask(runId, allowPendingQuestion);
-    const session = getLinearSession(db, sessionId);
-    const purpose = getTaskMode(db, item.id);
-    const clientId = linearSessionClientId(db, sessionId);
+    const { item, sessionId } = yield* activeTaskSteps(q, runId, allowPendingQuestion);
+    const session = yield* getLinearSessionSteps(q, sessionId);
+    const purpose = yield* getTaskModeSteps(q, item.id);
+    const clientId = yield* linearSessionClientIdSteps(q, sessionId);
     if (
       !session ||
       session.stoppedAt !== null ||
       !clientId ||
       (purpose !== "answer" && purpose !== "artifact" && purpose !== "plan") ||
-      !workspaceInLinearOrganization(db, workspaceId, session.organizationId) ||
+      !(yield* workspaceInLinearOrganizationSteps(q, workspaceId, session.organizationId)) ||
       (userId !== undefined &&
-        !workspaceSessionIds(db, workspaceId, userId, clientId).includes(sessionId))
+        !(yield* workspaceSessionIdsSteps(q, workspaceId, userId, clientId)).includes(sessionId))
     )
       throw new RunnerWorkFencedError("Linear response task authority changed");
     return {
       item,
       sessionId,
       sessionGeneration: session.generation,
-      taskModeGeneration: getTaskModeGeneration(db, item.id),
+      taskModeGeneration: yield* getTaskModeGenerationSteps(q, item.id),
       purpose,
-      repository: taskRequiresRepository(db, item.id)
-        ? task(runId, workspaceId, allowPendingQuestion).repository
+      repository: (yield* taskRequiresRepositorySteps(q, item.id))
+        ? (yield* taskSteps(q, runId, workspaceId, allowPendingQuestion)).repository
         : undefined,
     };
   }
-  function bindTask(
-    command: Extract<WorkCommand, { type: "task" }>,
-    current: ReturnType<typeof responseTask>,
-  ) {
+  function bindTask(command: Extract<WorkCommand, { type: "task" }>, current: ResponseTask) {
     if (
       command.itemId !== current.item.id ||
       command.sessionId !== current.sessionId ||
@@ -246,11 +257,8 @@ export function createRunnerWork(options: {
     )
       throw new RunnerWorkFencedError("Linear response task binding changed");
   }
-  /** Whether the runner's latest heartbeat named this run among the work it still runs. */
-  function stillReported(runnerId: string, runId: string) {
-    return runnerWorkStillReported(db, runnerId, runId);
-  }
-  function live(
+  function* liveSteps(
+    q: Q,
     runnerId: string,
     runId: string,
     generation: number,
@@ -258,9 +266,9 @@ export function createRunnerWork(options: {
     allowPendingQuestion = false,
     settled = false,
     reported?: boolean,
-  ): Assignment {
-    const identity = runner(runnerId);
-    const work = assignment(runId);
+  ): Steps<Assignment> {
+    const identity = yield* runnerSteps(q, runnerId);
+    const work = yield* runnerWorkAssignmentSteps(q, runId);
     const lapsed = work !== null && work.leaseUntil <= at && !settled;
     // A lapsed lease keeps its grace while the runner still reports the run, however full the
     // runner is: a busy Paws answers the renewing heartbeat late. Capacity decides the rest.
@@ -273,21 +281,22 @@ export function createRunnerWork(options: {
       work.endedAt !== null ||
       (lapsed &&
         (work.leaseUntil + RUNNER_LEASE_GRACE_MS <= at ||
-          (!(reported ?? stillReported(runnerId, runId)) &&
-            !runnerHasCapacity(db, runnerId, at, runId))))
+          // Whether the runner's latest heartbeat named this run among the work it still runs.
+          (!(reported ?? (yield* runnerWorkStillReportedSteps(q, runnerId, runId))) &&
+            !(yield* runnerHasCapacitySteps(q, runnerId, at, runId)))))
     )
       throw new RunnerWorkFencedError("Runner work is fenced or its lease expired.");
-    const command = workCommand(work);
+    const command = yield* workCommandSteps(q, work);
     if (command.expiresAt <= at && !settled)
       throw new RunnerWorkFencedError("Runner command expired.");
     if (command.type === "task") {
       bindTask(
         command,
-        responseTask(runId, work.workspaceId, allowPendingQuestion, identity.userId),
+        yield* responseTaskSteps(q, runId, work.workspaceId, allowPendingQuestion, identity.userId),
       );
       return work;
     }
-    const current = task(runId, work.workspaceId, allowPendingQuestion);
+    const current = yield* taskSteps(q, runId, work.workspaceId, allowPendingQuestion);
     if (
       current.item.id !== command.itemId ||
       current.repository.owner !== command.repository.owner ||
@@ -297,12 +306,13 @@ export function createRunnerWork(options: {
       throw new Error("Run repository binding changed.");
     return work;
   }
-  function renew(
+  function* renewSteps(
+    q: Q,
     work: Assignment,
     at: number,
     credit?: { offlineBudgetMs: number; aliveAt: number },
   ) {
-    const expiresAt = workCommand(work).expiresAt;
+    const expiresAt = (yield* workCommandSteps(q, work)).expiresAt;
     const leaseUntil = Math.min(expiresAt, at + RUNNER_LEASE_MS);
     const authorityUntil = credit
       ? executionAuthorityUntil({
@@ -313,21 +323,18 @@ export function createRunnerWork(options: {
           budgetMs: credit.offlineBudgetMs,
         })
       : leaseUntil + RUNNER_LEASE_GRACE_MS;
-    extendRunnerWorkLease(
-      db,
+    yield* extendRunnerWorkLeaseSteps(
+      q,
       work.runId,
       Math.max(leaseUntil, authorityUntil - RUNNER_LEASE_GRACE_MS),
     );
     return leaseUntil;
   }
-  function accepted(work: Assignment) {
-    return runnerResultForCommand(db, work, work.commandId) !== null;
+  function* acceptedSteps(q: Q, work: Assignment) {
+    return (yield* runnerResultForCommandSteps(q, work, work.commandId)) !== null;
   }
-  function acknowledgedBy(work: Assignment, at: number) {
-    return runnerCommandAcknowledgedBy(db, work.commandId, at);
-  }
-  function workCommand(work: Assignment): WorkCommand {
-    const stored = runnerCommandEnvelope(db, work.commandId);
+  function* workCommandSteps(q: Q, work: Assignment): Steps<WorkCommand> {
+    const stored = yield* runnerCommandEnvelopeSteps(q, work.commandId);
     if (stored === null) throw new Error("Run command is unavailable.");
     const envelope = JSON.parse(stored) as { payload: string };
     const command = RunnerCommandSchema.parse(
@@ -341,9 +348,10 @@ export function createRunnerWork(options: {
       command.generation !== work.generation
     )
       throw new Error("Run command binding changed.");
-    return { ...command, expiresAt: runnerCommandAuthorityUntil(db, work.commandId) };
+    return { ...command, expiresAt: yield* runnerCommandAuthorityUntilSteps(q, work.commandId) };
   }
-  function authorized(
+  function* authorizedSteps(
+    q: Q,
     input: {
       runnerId: string;
       runId: string;
@@ -351,26 +359,33 @@ export function createRunnerWork(options: {
       token: string;
     },
     allowPendingQuestion = false,
-  ): Assignment {
+  ): Steps<Assignment> {
     const at = now();
-    const work = live(input.runnerId, input.runId, input.generation, at, allowPendingQuestion);
+    const work = yield* liveSteps(
+      q,
+      input.runnerId,
+      input.runId,
+      input.generation,
+      at,
+      allowPendingQuestion,
+    );
     if (
-      !runnerWorkGrantValid(
-        db,
+      !(yield* runnerWorkGrantValidSteps(
+        q,
         {
           tokenHash: workspaceTokenHash(input.token),
           runId: input.runId,
           generation: input.generation,
         },
         at,
-      )
+      ))
     )
       throw new Error("Run grant is invalid or expired.");
     return work;
   }
-  function supportsAgent(runnerId: string, agent: string) {
+  function* supportsAgentSteps(q: Q, runnerId: string, agent: string) {
     if (agent !== "opencode") return true;
-    const version = runnerHostVersion(db, runnerId);
+    const version = yield* runnerHostVersionSteps(q, runnerId);
     const parts = version
       ?.match(/^(\d+)\.(\d+)\.(\d+)(?:$|[-+])/)
       ?.slice(1)
@@ -380,10 +395,10 @@ export function createRunnerWork(options: {
       if (part !== OPENCODE_RUNNER_VERSION[index]) return part > OPENCODE_RUNNER_VERSION[index]!;
     return true;
   }
-  function queue(command: RunnerCommand) {
+  function* queueSteps(q: Q, command: RunnerCommand) {
     const agent =
       "profile" in command ? command.profile.agent : "agent" in command ? command.agent : null;
-    if (agent && !supportsAgent(command.runnerId, agent))
+    if (agent && !(yield* supportsAgentSteps(q, command.runnerId, agent)))
       throw new Error(
         `OpenCode needs runner ${OPENCODE_RUNNER_VERSION.join(".")} or later. Upgrade the runner, then try again.`,
       );
@@ -392,8 +407,8 @@ export function createRunnerWork(options: {
       privateKey: options.privateKey,
       command,
     });
-    recordCommandAccount(db, command, now());
-    insertRunnerCommand(db, {
+    yield* q.transaction((savepoint) => recordCommandAccountSteps(savepoint, command, now()));
+    yield* insertRunnerCommandSteps(q, {
       id: command.id,
       runnerId: command.runnerId,
       runId: "runId" in command ? command.runId : null,
@@ -405,29 +420,41 @@ export function createRunnerWork(options: {
     return envelope;
   }
   return {
-    supportsAgent,
+    supportsAgent(runnerId: string, agent: string) {
+      return read((q) => supportsAgentSteps(q, runnerId, agent));
+    },
     identity(runnerId: string) {
-      return runner(runnerId);
+      return read((q) => runnerSteps(q, runnerId));
     },
     scope(runId: string, workspaceId: string) {
-      return task(runId, workspaceId);
+      return read((q) => taskSteps(q, runId, workspaceId));
     },
     scopeTask(runId: string, workspaceId: string, userId?: string) {
-      return responseTask(runId, workspaceId, false, userId);
+      return read((q) => responseTaskSteps(q, runId, workspaceId, false, userId));
     },
     current(runId: string, generation: number) {
-      const assigned = assignment(runId);
-      if (!assigned) throw new RunnerWorkFencedError("Runner work is unavailable.");
-      const current = live(assigned.runnerId, runId, generation, now(), false, accepted(assigned));
-      return { assignment: current, command: workCommand(current) };
+      return read(function* (q) {
+        const assigned = yield* runnerWorkAssignmentSteps(q, runId);
+        if (!assigned) throw new RunnerWorkFencedError("Runner work is unavailable.");
+        const current = yield* liveSteps(
+          q,
+          assigned.runnerId,
+          runId,
+          generation,
+          now(),
+          false,
+          yield* acceptedSteps(q, assigned),
+        );
+        return { assignment: current, command: yield* workCommandSteps(q, current) };
+      });
     },
     assign(input: WorkCommand) {
       const command = RunnerCommandSchema.parse(input);
       if (command.type !== "run" && command.type !== "review" && command.type !== "task")
         throw new Error("Work command is required.");
-      return immediate(db, () => {
+      return transaction(function* (q) {
         const at = now();
-        const accepting = runner(command.runnerId);
+        const accepting = yield* runnerSteps(q, command.runnerId);
         if (
           accepting.status !== "active" ||
           accepting.workspaceId !== command.workspaceId ||
@@ -436,19 +463,25 @@ export function createRunnerWork(options: {
         )
           throw new Error("Runner is not accepting this assignment.");
         if (
-          runnerCancelPending(db, command.runnerId) &&
-          !runnerHasCapacity(db, command.runnerId, at, command.runId)
+          (yield* runnerCancelPendingSteps(q, command.runnerId)) &&
+          !(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId))
         )
           throw new RunnerTeardownPending([command.runnerId]);
-        if (!runnerHasCapacity(db, command.runnerId, at, command.runId))
+        if (!(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId)))
           throw new Error("Runner is occupied by active work.");
         if (command.type === "task")
           bindTask(
             command,
-            responseTask(command.runId, command.workspaceId, false, accepting.userId),
+            yield* responseTaskSteps(
+              q,
+              command.runId,
+              command.workspaceId,
+              false,
+              accepting.userId,
+            ),
           );
         else {
-          const { item, repository } = task(command.runId, command.workspaceId);
+          const { item, repository } = yield* taskSteps(q, command.runId, command.workspaceId);
           if (
             item.id !== command.itemId ||
             repository.owner !== command.repository.owner ||
@@ -457,16 +490,17 @@ export function createRunnerWork(options: {
           )
             throw new Error("Run assignment repository or task changed.");
         }
-        const owner = runTeardownOwner(db, command.runId);
+        const owner = yield* runTeardownOwnerSteps(q, command.runId);
         if (owner !== null) throw new RunnerTeardownPending([owner]);
-        const previous = assignment(command.runId);
+        const previous = yield* runnerWorkAssignmentSteps(q, command.runId);
         if (
           command.generation !== (previous?.generation ?? 0) + 1 ||
           (previous?.endedAt === null &&
-            (accepted(previous)
+            ((yield* acceptedSteps(q, previous))
               ? previous.leaseUntil > at
               : runnerLeaseLive(previous.leaseUntil, at)) &&
-            availableIdentity(previous.runnerId)?.fence === previous.runnerFence)
+            (yield* availableRunnerIdentitySteps(q, previous.runnerId))?.fence ===
+              previous.runnerFence)
         )
           throw new Error("Run assignment generation conflicts.");
         const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
@@ -474,13 +508,13 @@ export function createRunnerWork(options: {
           command.type === "run" &&
           command.livePreview &&
           !runnerReleaseAtLeast(
-            runnerHostVersion(db, command.runnerId),
+            yield* runnerHostVersionSteps(q, command.runnerId),
             LIVE_PREVIEW_RUNNER_VERSION,
           )
         )
           delete command.livePreview;
-        const envelope = queue(command);
-        assignRunnerWork(db, {
+        const envelope = yield* queueSteps(q, command);
+        yield* assignRunnerWorkSteps(q, {
           runId: command.runId,
           runnerId: command.runnerId,
           workspaceId: command.workspaceId,
@@ -489,8 +523,8 @@ export function createRunnerWork(options: {
           commandId: command.id,
           leaseUntil,
         });
-        deleteRunnerWorkGrants(db, command.runId);
-        recordRunAgentSetup(db, {
+        yield* deleteRunnerWorkGrantsSteps(q, command.runId);
+        yield* recordRunAgentSetupSteps(q, {
           runId: command.runId,
           runnerId: command.runnerId,
           agent: command.profile.agent,
@@ -517,8 +551,8 @@ export function createRunnerWork(options: {
       if (command.type === "helper") throw new Error("Use session assignment for helper commands.");
       if (command.type === "rebase")
         throw new Error("Use enqueueRepositoryCommand for repository commands.");
-      return immediate(db, () => {
-        const identity = runner(command.runnerId);
+      return transaction(function* (q) {
+        const identity = yield* runnerSteps(q, command.runnerId);
         if (
           identity.workspaceId !== command.workspaceId ||
           command.issuedAt > now() ||
@@ -526,22 +560,22 @@ export function createRunnerWork(options: {
         )
           throw new Error("Command scope or lifetime is invalid.");
         if (command.type === "cancel") {
-          const work = assignment(command.runId);
+          const work = yield* runnerWorkAssignmentSteps(q, command.runId);
           if (!work || work.runnerId !== command.runnerId || work.generation !== command.generation)
             throw new Error("Cancellation assignment changed.");
-          endRunnerWork(db, work.runId, work.generation, now());
-          deleteRunnerWorkGrants(db, work.runId);
+          yield* endRunnerWorkSteps(q, work.runId, work.generation, now());
+          yield* deleteRunnerWorkGrantsSteps(q, work.runId);
         }
         // A handover keeps the work live: the runner still publishes its WIP commit and result.
         // So does a checkpoint: the runner publishes the WIP commit while the agent goes on.
         if (command.type === "handover" || command.type === "checkpoint") {
-          const work = assignment(command.runId);
+          const work = yield* runnerWorkAssignmentSteps(q, command.runId);
           if (
             !work ||
             work.runnerId !== command.runnerId ||
             work.generation !== command.generation ||
             work.endedAt !== null ||
-            workCommand(work).type !== "run"
+            (yield* workCommandSteps(q, work)).type !== "run"
           )
             throw new Error(
               command.type === "handover"
@@ -549,46 +583,49 @@ export function createRunnerWork(options: {
                 : "Checkpoint assignment changed.",
             );
         }
-        return queue(command);
+        return yield* queueSteps(q, command);
       });
     },
     commands(runnerId: string): SignedRunnerCommand[] {
-      runner(runnerId);
-      const result: SignedRunnerCommand[] = [];
-      // A sign-in someone is waiting on goes out before probes and sign-in checks queued earlier.
-      const routine = nextRoutineHealthCommand(db, runnerId, now());
-      let ordinal = 0;
-      while (result.length < 16) {
-        const rows = deliverableRunnerCommands(db, {
-          runnerId,
-          now: now(),
-          after: ordinal,
-          leaseCutoff: runnerLeaseCutoff(now()),
-        });
-        for (const row of rows) {
-          ordinal = row.ordinal;
-          const envelope = JSON.parse(row.envelope) as SignedRunnerCommand;
-          const payload = JSON.parse(
-            Buffer.from(envelope.payload, "base64url").toString("utf8"),
-          ) as RunnerCommand;
-          if (
-            (payload.type === "probe" || payload.type === "login_check") &&
-            row.ordinal !== routine
-          )
-            continue;
-          if (payload.type === "run" || payload.type === "review" || payload.type === "task") {
-            try {
-              live(runnerId, row.runId!, row.generation!, now());
-            } catch (caughtError1) {
-              journalCaught(caughtError1, "control.commands.live", null);
+      const result = read(function* (q) {
+        yield* runnerSteps(q, runnerId);
+        const signed: SignedRunnerCommand[] = [];
+        // A sign-in someone is waiting on goes out before probes and sign-in checks queued earlier.
+        const routine = yield* nextRoutineHealthCommandSteps(q, runnerId, now());
+        let ordinal = 0;
+        while (signed.length < 16) {
+          const rows = yield* deliverableRunnerCommandsSteps(q, {
+            runnerId,
+            now: now(),
+            after: ordinal,
+            leaseCutoff: runnerLeaseCutoff(now()),
+          });
+          for (const row of rows) {
+            ordinal = row.ordinal;
+            const envelope = JSON.parse(row.envelope) as SignedRunnerCommand;
+            const payload = JSON.parse(
+              Buffer.from(envelope.payload, "base64url").toString("utf8"),
+            ) as RunnerCommand;
+            if (
+              (payload.type === "probe" || payload.type === "login_check") &&
+              row.ordinal !== routine
+            )
               continue;
+            if (payload.type === "run" || payload.type === "review" || payload.type === "task") {
+              try {
+                yield* liveSteps(q, runnerId, row.runId!, row.generation!, now());
+              } catch (caughtError1) {
+                journalCaught(caughtError1, "control.commands.live", null);
+                continue;
+              }
             }
+            signed.push(envelope);
+            if (signed.length === 16) break;
           }
-          result.push(envelope);
-          if (result.length === 16) break;
+          if (rows.length < 64) break;
         }
-        if (rows.length < 64) break;
-      }
+        return signed;
+      });
       for (const command of deliverRepositoryCommands(db, runnerId, now(), 16 - result.length))
         result.push(
           signRunnerCommand({ keyId: options.keyId, privateKey: options.privateKey, command }),
@@ -596,9 +633,9 @@ export function createRunnerWork(options: {
       return result;
     },
     acknowledge(runnerId: string, commandId: string) {
-      runner(runnerId);
+      read((q) => runnerSteps(q, runnerId));
       if (
-        acknowledgeRunnerCommand(db, runnerId, commandId, now()) !== 1 &&
+        read((q) => acknowledgeRunnerCommandSteps(q, runnerId, commandId, now())) !== 1 &&
         !repositoryCommandDeliveredTo(db, runnerId, commandId)
       )
         throw new Error("Runner command is unknown.");
@@ -628,49 +665,61 @@ export function createRunnerWork(options: {
     ) {
       const running =
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
-      return immediate(db, () => {
-        runner(runnerId);
-        const storedVersion = runnerHostVersion(db, runnerId);
+      // The capacity, repository and slot-wait writes that wake jobs say so once they commit.
+      let woke = false;
+      const reply = transaction(function* (q) {
+        yield* runnerSteps(q, runnerId);
+        const storedVersion = yield* runnerHostVersionSteps(q, runnerId);
         const version = host.runnerVersion ?? storedVersion;
-        const aliveAt = lastInstanceHeartbeat(db);
+        const aliveAt = yield* lastInstanceHeartbeatSteps(q);
         const offlineCredit =
           aliveAt !== null &&
           runnerReleaseAtLeast(host.runnerVersion ?? storedVersion, OFFLINE_LEASE_RUNNER_VERSION)
             ? { offlineBudgetMs: RUNNER_OFFLINE_BUDGET_MS, aliveAt }
             : undefined;
         const at = now();
-        const reconnected = (runnerStanding(db, runnerId)?.lastSeenAt ?? 0) <= at - 60_000;
-        const concurrency = recordRunnerCapacity(
-          db,
+        const reconnected =
+          ((yield* runnerStandingSteps(q, runnerId))?.lastSeenAt ?? 0) <= at - 60_000;
+        const capacityRecorded = yield* recordRunnerCapacityWakingSteps(
+          q,
           runnerId,
           capacity,
           ceiling,
           conversations,
           at,
         );
-        noteRunnerSeen(db, runnerId, at);
+        const concurrency = capacityRecorded.concurrency;
+        woke = capacityRecorded.woke;
+        yield* noteRunnerSeenSteps(q, runnerId, at);
         if (Object.values(host).some((value) => value !== undefined))
-          recordRunnerHostStatus(db, runnerId, host, at);
-        const skills: RunnerSkill[] | undefined = installed && skillManifest();
-        if (installed) recordRunnerSkills(db, runnerId, installed, at);
-        if (runtimes) recordRunnerRuntimes(db, runnerId, runtimes, at);
-        if (agents) recordRunnerAgents(db, runnerId, agents, at);
-        if (repositories !== undefined) recordRunnerRepositories(db, runnerId, repositories, at);
-        recordRunnerAccountCapability(db, runnerId, accounts, at);
-        if (reconnected) wakeRunnerSlotWaits(db, runnerId, at);
-        const targets: RunnerAgentTarget[] | undefined =
-          agents &&
-          runnerAgentTargets(db, runnerId).flatMap((target) => {
+          yield* recordRunnerHostStatusSteps(q, runnerId, host, at);
+        const skills: RunnerSkill[] | undefined = installed && (yield* skillManifestSteps(q));
+        if (installed) yield* recordRunnerSkillsSteps(q, runnerId, installed, at);
+        if (runtimes) yield* recordRunnerRuntimesSteps(q, runnerId, runtimes, at);
+        if (agents) yield* recordRunnerAgentsSteps(q, runnerId, agents, at);
+        if (
+          repositories !== undefined &&
+          (yield* q.transaction((savepoint) =>
+            recordRunnerRepositoriesSteps(savepoint, runnerId, repositories, at),
+          ))
+        )
+          woke = true;
+        yield* recordRunnerAccountCapabilitySteps(q, runnerId, accounts, at);
+        if (reconnected && (yield* wakeRunnerSlotWaitsSteps(q, runnerId, at))) woke = true;
+        let targets: RunnerAgentTarget[] | undefined;
+        if (agents) {
+          targets = [];
+          for (const target of yield* runnerAgentTargetsSteps(q, runnerId)) {
             const parsed = RunnerAgentTargetSchema.safeParse(target);
-            return parsed.success && supportsAgent(runnerId, parsed.data.agent)
-              ? [parsed.data]
-              : [];
-          });
+            if (parsed.success && (yield* supportsAgentSteps(q, runnerId, parsed.data.agent)))
+              targets.push(parsed.data);
+          }
+        }
         // A receipt ACK and an expired command never confirm worker termination.
         // Only a generation/command-bound broker confirmation releases cleanup ownership.
         for (const entry of terminated ?? [])
-          confirmRunnerWorkTeardown(db, { ...entry, runnerId, at });
-        const rows = openRunnerAssignments(db, runnerId);
+          yield* confirmRunnerWorkTeardownSteps(q, { ...entry, runnerId, at });
+        const rows = yield* openRunnerAssignmentsSteps(q, runnerId);
         const leases: { runId: string; generation: number; expiresAt: number }[] = [];
         const fenced: { runId: string; generation: number }[] = [];
         const causal = running !== undefined && liveAfter !== undefined;
@@ -678,10 +727,13 @@ export function createRunnerWork(options: {
           running && liveAfter !== undefined ? Math.min(liveAfter, at) : at - RUNNER_LIVE_GRACE_MS;
         for (const row of rows) {
           try {
-            const settled = accepted(row);
+            const settled = yield* acceptedSteps(q, row);
             const named = running?.has(`${row.runId}:${row.generation}`);
-            const observed = running !== undefined && acknowledgedBy(row, sampledAfter);
-            live(
+            const observed =
+              running !== undefined &&
+              (yield* runnerCommandAcknowledgedBySteps(q, row.commandId, sampledAfter));
+            yield* liveSteps(
+              q,
               runnerId,
               row.runId,
               row.generation,
@@ -690,10 +742,15 @@ export function createRunnerWork(options: {
               settled,
               named || !causal || observed ? named : undefined,
             );
-            if (named) confirmRunnerWork(db, { runId: row.runId, generation: row.generation, at });
+            if (named)
+              yield* confirmRunnerWorkSteps(q, {
+                runId: row.runId,
+                generation: row.generation,
+                at,
+              });
             else if (running && !settled && observed) {
-              loseRunnerWork(db, row.runId, row.generation, at);
-              deleteRunnerWorkGrants(db, row.runId);
+              yield* loseRunnerWorkSteps(q, row.runId, row.generation, at);
+              yield* deleteRunnerWorkGrantsSteps(q, row.runId);
               fenced.push({ runId: row.runId, generation: row.generation });
               continue;
             }
@@ -701,28 +758,28 @@ export function createRunnerWork(options: {
             leases.push({
               runId: row.runId,
               generation: row.generation,
-              expiresAt: renew(row, at, offlineCredit),
+              expiresAt: yield* renewSteps(q, row, at, offlineCredit),
             });
           } catch (caughtError2) {
             journalCaught(caughtError2, "control.heartbeat.live", null);
-            endRunnerWork(db, row.runId, row.generation, at);
-            deleteRunnerWorkGrants(db, row.runId);
+            yield* endRunnerWorkSteps(q, row.runId, row.generation, at);
+            yield* deleteRunnerWorkGrantsSteps(q, row.runId);
             fenced.push({ runId: row.runId, generation: row.generation });
           }
         }
         // A run Paws already ended that the runner still names keeps its process alive there, so
         // a conversation blocked on its cleanup stays blocked until a report leaves it out.
-        if (reported && terminated) noteRunnerTerminations(db, runnerId, at);
+        if (reported && terminated) yield* noteRunnerTerminationsSteps(q, runnerId, at);
         if (reported) {
-          noteRunnerLiveReport(db, runnerId, at);
+          yield* noteRunnerLiveReportSteps(q, runnerId, at);
           for (const { runId, generation } of reported)
-            confirmRunnerWork(db, { runId, generation, at, runnerId });
+            yield* confirmRunnerWorkSteps(q, { runId, generation, at, runnerId });
         }
         const finishedRuns = runnerReleaseAtLeast(
           host.runnerVersion ?? storedVersion,
           WORK_ROOT_CLEANUP_RUNNER_VERSION,
         )
-          ? runnerFinishedRuns(db, runnerId)
+          ? yield* runnerFinishedRunsSteps(q, runnerId)
           : [];
         return {
           leases,
@@ -740,23 +797,28 @@ export function createRunnerWork(options: {
             : {}),
         };
       });
+      if (woke) emitJobReady(store);
+      return reply;
     },
     /** The registered bundle a runner may download: only the current pin of a skill that is not removed. */
-    skillBundle(runnerId: string, name: string, version: string): RunnerSkill {
-      runner(runnerId);
-      const skill = skillManifest().find((entry) => entry.name === name);
-      if (!skill || skill.version !== version) throw new Error("Skill bundle is not registered.");
-      return skill;
+    skillBundle(runnerId: string, name: string, version: string): Promise<RunnerSkill> {
+      return store.run(function* (q) {
+        yield* runnerSteps(q, runnerId);
+        const skill = (yield* skillManifestSteps(q)).find((entry) => entry.name === name);
+        if (!skill || skill.version !== version) throw new Error("Skill bundle is not registered.");
+        return skill;
+      });
     },
     issueGrant(input: { runnerId: string; runId: string; commandId: string; generation: number }) {
-      return immediate(db, () => {
-        const work = live(input.runnerId, input.runId, input.generation, now());
+      return transaction(function* (q) {
+        const work = yield* liveSteps(q, input.runnerId, input.runId, input.generation, now());
         if (work.commandId !== input.commandId) throw new Error("Run command changed.");
         const token = workspaceSecret();
-        const leaseUntil = work.leaseUntil > now() ? work.leaseUntil : renew(work, now());
+        const leaseUntil =
+          work.leaseUntil > now() ? work.leaseUntil : yield* renewSteps(q, work, now());
         const expiresAt = Math.min(leaseUntil, now() + 60_000);
-        deleteRunnerWorkGrants(db, input.runId);
-        insertRunnerWorkGrant(db, {
+        yield* deleteRunnerWorkGrantsSteps(q, input.runId);
+        yield* insertRunnerWorkGrantSteps(q, {
           tokenHash: workspaceTokenHash(token),
           runId: input.runId,
           generation: input.generation,
@@ -776,12 +838,16 @@ export function createRunnerWork(options: {
       const event = JSON.stringify(RunnerEventSchema.parse(withoutJournalTime(input.event)));
       if (!Number.isSafeInteger(input.sequence) || input.sequence < 1)
         throw new Error("Event sequence is invalid.");
-      return immediate(db, () => {
+      return transaction(function* (q) {
         const at = now();
-        const key = { runId: input.runId, generation: input.generation, sequence: input.sequence };
-        const saved = storedRunnerEvent(db, key, key.sequence);
-        const work = authorized(input, saved !== null);
-        const command = workCommand(work);
+        const key = {
+          runId: input.runId,
+          generation: input.generation,
+          sequence: input.sequence,
+        };
+        const saved = yield* storedRunnerEventSteps(q, key, key.sequence);
+        const work = yield* authorizedSteps(q, input, saved !== null);
+        const command = yield* workCommandSteps(q, work);
         if (
           command.type === "task" &&
           (input.event.type === "candidate" ||
@@ -795,8 +861,8 @@ export function createRunnerWork(options: {
         }
         if (input.sequence !== work.lastSequence + 1) throw new Error("Event sequence has a gap.");
         const sealed = sealRunnerEvent(eventKey, input, event);
-        insertRunnerEvent(db, key, sealed, at);
-        setRunnerWorkLastSequence(db, input.runId, input.sequence);
+        yield* insertRunnerEventSteps(q, key, sealed, at);
+        yield* setRunnerWorkLastSequenceSteps(q, input.runId, input.sequence);
         return { duplicate: false };
       });
     },
@@ -804,18 +870,23 @@ export function createRunnerWork(options: {
       return openRunnerEvent(db, eventKey, row);
     },
     authorize(input: { runnerId: string; runId: string; generation: number; token: string }) {
-      const work = authorized(input);
-      const command = workCommand(work);
-      return {
-        command,
-        branch: command.type === "task" ? null : getWorkItem(db, command.itemId)!.branchName,
-      };
+      return read(function* (q) {
+        const work = yield* authorizedSteps(q, input);
+        const command = yield* workCommandSteps(q, work);
+        return {
+          command,
+          branch:
+            command.type === "task"
+              ? null
+              : (yield* getWorkItemSteps(q, command.itemId))!.branchName,
+        };
+      });
     },
-    finish(runId: string, generation: number) {
-      immediate(db, () => {
-        if (finishRunnerWork(db, runId, generation, now()) !== 1)
+    async finish(runId: string, generation: number) {
+      await store.transaction(function* (q) {
+        if ((yield* finishRunnerWorkSteps(q, runId, generation, now())) !== 1)
           throw new Error("Run assignment changed.");
-        deleteRunnerWorkGrants(db, runId);
+        yield* deleteRunnerWorkGrantsSteps(q, runId);
       });
     },
   };

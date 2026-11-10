@@ -335,7 +335,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
           oversized: { status: 403, pulls, cancelled },
         },
       );
-      work.finish(run.id, generation);
+      await work.finish(run.id, generation);
     }
     db.close();
     const reopened = openDatabase(join(root, "paws.sqlite"));

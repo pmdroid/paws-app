@@ -363,6 +363,32 @@ export function* recordRunnerCapacitySteps(
   return Math.min(row?.desired ?? ceiling, ceiling);
 }
 
+/**
+ * recordRunnerCapacity's queries: `woke` says the caller emits job ready once they commit, as
+ * the wrapper does.
+ */
+export function* recordRunnerCapacityWakingSteps(
+  q: Q,
+  runnerId: string,
+  capacity: number,
+  ceiling: number | undefined,
+  conversations: number | undefined,
+  now: number,
+): Steps<{ concurrency: number | undefined; woke: boolean }> {
+  const before = yield* runnerOccupancyCapacitySteps(q, runnerId);
+  const concurrency = yield* recordRunnerCapacitySteps(
+    q,
+    runnerId,
+    capacity,
+    ceiling,
+    conversations,
+  );
+  const woke =
+    (yield* runnerOccupancyCapacitySteps(q, runnerId)) > before &&
+    (yield* wakeRunnerSlotWaitsSteps(q, runnerId, now));
+  return { concurrency, woke };
+}
+
 export function recordRunnerCapacity(
   db: Database,
   runnerId: string,

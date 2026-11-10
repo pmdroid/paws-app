@@ -273,7 +273,7 @@ export async function probeRunnerSessionHelpers(
     coordinator.helpers.finish(selected.command.id);
     coordinator.work.assign(workCommand);
     assert.throws(() => coordinator.helpers.dispatch(input), /busy/);
-    coordinator.work.finish(run.id, 1);
+    await coordinator.work.finish(run.id, 1);
     observe("helper and repository execution cannot claim the same runner simultaneously", true, {
       helperThenRunDenied: true,
       runThenHelperDenied: true,

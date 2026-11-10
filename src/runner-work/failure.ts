@@ -10,6 +10,9 @@ const UNAVAILABLE_SQLITE = [5, 6, 10, 13];
  */
 export function runnerRequestUnavailable(error: unknown): boolean {
   if (error instanceof SQLiteError) return UNAVAILABLE_SQLITE.includes(error.errno & 255);
+  // Drizzle wraps the SQLiteError of a query it ran in its own error.
+  if (error instanceof Error && error.name === "DrizzleError" && error.cause instanceof SQLiteError)
+    return runnerRequestUnavailable(error.cause);
   return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
