@@ -3,7 +3,7 @@ import { createHash, type KeyObject } from "node:crypto";
 import { join } from "node:path";
 import { chmodSync, writeSync } from "node:fs";
 import { z } from "zod";
-import { immediate, openDatabase } from "../db";
+import { openDatabase, sqliteDb } from "../db";
 import type { Changes } from "bun:sqlite";
 import { and, desc, eq, gt, inArray, lt, notInArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
@@ -199,6 +199,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   const db = openDatabase(dbPath);
   chmodSync(dbPath, 0o600);
   createCommandStore(db);
+  const store = sqliteDb(db);
   const q = drizzle(db);
   const changes = (query: { run(): unknown }) => (query.run() as Changes).changes;
   const storedCommand = (id: string) =>
@@ -213,31 +214,32 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     q.update(pendingRetroCommand).set({ delivered: 1 }).where(eq(pendingRetroCommand.id, id)).run();
 
   let prunedAt = Number.NEGATIVE_INFINITY;
-  function pruneRetired() {
+  async function pruneRetired(): Promise<number> {
     ensureOpen();
     const at = now();
     if (at - prunedAt < RETIRED_PRUNE_INTERVAL_MS && at >= prunedAt) return 0;
     prunedAt = at;
     const cutoff = at - RETIRED_RECEIPT_RETENTION_MS;
-    return immediate(db, () => {
+    return store.transaction(function* (tx) {
       const expired = q
         .select({ id: commandReceipt.id })
         .from(commandReceipt)
         .where(lt(commandReceipt.expiresAt, cutoff));
-      const commands =
-        changes(
-          q
-            .delete(pendingCommand)
-            .where(and(eq(pendingCommand.acknowledged, 2), inArray(pendingCommand.id, expired))),
-        ) +
-        changes(
-          q
-            .delete(pendingRetroCommand)
-            .where(
-              and(eq(pendingRetroCommand.delivered, 1), inArray(pendingRetroCommand.id, expired)),
-            ),
-        );
-      const receipts = changes(
+      const commands = yield* tx.all(
+        q
+          .delete(pendingCommand)
+          .where(and(eq(pendingCommand.acknowledged, 2), inArray(pendingCommand.id, expired)))
+          .returning({ id: pendingCommand.id }),
+      );
+      const retros = yield* tx.all(
+        q
+          .delete(pendingRetroCommand)
+          .where(
+            and(eq(pendingRetroCommand.delivered, 1), inArray(pendingRetroCommand.id, expired)),
+          )
+          .returning({ id: pendingRetroCommand.id }),
+      );
+      const receipts = yield* tx.all(
         q
           .delete(commandReceipt)
           .where(
@@ -252,9 +254,10 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
                 q.select({ id: pendingRetroCommand.id }).from(pendingRetroCommand),
               ),
             ),
-          ),
+          )
+          .returning({ id: commandReceipt.id }),
       );
-      return commands + receipts;
+      return commands.length + retros.length + receipts.length;
     });
   }
   function ensureOpen() {
@@ -400,14 +403,22 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   async function pollCommands(path: string) {
     const identity = paired();
     trustedSigningKeys(identity, pins);
-    pruneRetired();
-    for (const row of q
-      .select({ id: pendingCommand.id })
-      .from(pendingCommand)
-      .where(eq(pendingCommand.acknowledged, 1))
-      .orderBy(sql`rowid`)
-      .all())
-      await acknowledgeCommand(row.id);
+    // The prune commits before it returns. Read the acknowledged commands before yielding, so an
+    // acknowledgement that starts meanwhile is posted by its own call and not again here. The
+    // finally awaits the prune whether or not the read throws, so its failure is never unhandled.
+    const pruned = pruneRetired();
+    let acknowledged: { id: string }[];
+    try {
+      acknowledged = q
+        .select({ id: pendingCommand.id })
+        .from(pendingCommand)
+        .where(eq(pendingCommand.acknowledged, 1))
+        .orderBy(sql`rowid`)
+        .all();
+    } finally {
+      await pruned;
+    }
+    for (const row of acknowledged) await acknowledgeCommand(row.id);
     const response = z
       .strictObject({ commands: z.array(SignedRunnerCommandSchema).max(16) })
       .parse(await authenticated(path, "GET"));
@@ -418,7 +429,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     const rejected: RunnerCommandRejection[] = [];
     const deniedRepositories = new Set<string>();
     for (const envelope of response.commands) {
-      const result = immediate(db, () => {
+      const result = await store.transaction(function* (tx) {
         const verified = verifyRunnerCommand(envelope, {
           trustedKeys,
           runnerId: identity.runnerId,
@@ -434,9 +445,11 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         )
           throw new Error("Runner command arrived through the wrong queue.");
         if (verified.ok)
-          q.insert(pendingCommand)
-            .values({ id: verified.command.id, payload: JSON.stringify(verified.command) })
-            .run();
+          yield* tx.exec(
+            q
+              .insert(pendingCommand)
+              .values({ id: verified.command.id, payload: JSON.stringify(verified.command) }),
+          );
         return verified;
       });
       if (!result.ok) rejected.push(result.reason);
@@ -480,7 +493,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   async function pollRetroCommands() {
     const identity = paired();
     trustedSigningKeys(identity, pins);
-    pruneRetired();
+    await pruneRetired();
     const response = z
       .strictObject({ commands: z.array(z.unknown()).max(16) })
       .parse(await authenticated("/v1/retro-commands", "GET"));
@@ -490,7 +503,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     const accountBindings = new Set(heldBindings().map((binding) => binding.bindingId));
     const rejected: RunnerRetroCommandRejection[] = [];
     for (const envelope of response.commands) {
-      const result = immediate(db, () => {
+      const result = await store.transaction(function* (tx) {
         const verified = verifyRunnerRetroCommand(envelope, {
           trustedKeys,
           runnerId: identity.runnerId,
@@ -506,16 +519,20 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
           claimCommand,
         });
         if (verified.ok) {
-          q.insert(pendingRetroCommand)
-            .values({ id: verified.command.id, payload: JSON.stringify(verified.command) })
-            .run();
-          q.insert(retroAttempt)
-            .values({ retroId: verified.command.retroId, attempt: verified.command.attempt })
-            .onConflictDoUpdate({
-              target: retroAttempt.retroId,
-              set: { attempt: sql`MAX(${retroAttempt.attempt}, excluded.attempt)` },
-            })
-            .run();
+          yield* tx.exec(
+            q
+              .insert(pendingRetroCommand)
+              .values({ id: verified.command.id, payload: JSON.stringify(verified.command) }),
+          );
+          yield* tx.exec(
+            q
+              .insert(retroAttempt)
+              .values({ retroId: verified.command.retroId, attempt: verified.command.attempt })
+              .onConflictDoUpdate({
+                target: retroAttempt.retroId,
+                set: { attempt: sql`MAX(${retroAttempt.attempt}, excluded.attempt)` },
+              }),
+          );
         }
         return verified;
       });
@@ -526,12 +543,12 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   }
   const retroPath = (id: string, action: string) =>
     `/v1/retro-commands/${encodeURIComponent(id)}/${action}`;
-  function forgetCommands() {
-    immediate(db, () => {
-      q.delete(pendingCommand).run();
-      q.delete(pendingRetroCommand).run();
-      q.delete(retroAttempt).run();
-      q.delete(commandReceipt).run();
+  async function forgetCommands() {
+    await store.transaction(function* (tx) {
+      yield* tx.exec(q.delete(pendingCommand));
+      yield* tx.exec(q.delete(pendingRetroCommand));
+      yield* tx.exec(q.delete(retroAttempt));
+      yield* tx.exec(q.delete(commandReceipt));
     });
   }
   async function identityRefused(): Promise<boolean> {
@@ -566,7 +583,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       const parsedToken = EnrollmentTokenSchema.parse(token);
       if (current) {
         retireIdentity(options.root, now());
-        forgetCommands();
+        await forgetCommands();
         previous = null;
         state = null;
       }
@@ -590,7 +607,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       trustedSigningKeys(enrolled, pins);
       if (previous && identity.runnerId === previous.runnerId)
         throw new Error("Re-enrollment requires a new runner identity.");
-      if (previous) forgetCommands();
+      if (previous) await forgetCommands();
       observedAt = 0;
       writeState(options.root, enrolled);
       state = enrolled;
