@@ -534,7 +534,7 @@ test("an older usage reading never replaces a newer one", () => {
   expect(runnerAgentUsage(f.db, runnerId, "claude")).toBeNull();
 });
 
-test("a completed sign-in queues one login check for that agent", () => {
+test("a completed sign-in queues one login check for that agent", async () => {
   const f = fixture();
   const runnerId = f.runner();
   const login = createRunnerLogin({
@@ -543,9 +543,9 @@ test("a completed sign-in queues one login check for that agent", () => {
     now: f.now,
     onSignedIn: (signedIn) => f.health.afterSignIn(signedIn.runnerId, signedIn.agent),
   });
-  const session = login.start(f.owner, runnerId, "claude");
+  const session = await login.start(f.owner, runnerId, "claude");
   expect(f.checks()).toHaveLength(0);
-  login.exchange(runnerId, session.id, {
+  await login.exchange(runnerId, session.id, {
     state: "connected",
     terminal: "",
     authorization: null,
@@ -577,7 +577,7 @@ test("a sign-in goes to the runner before sign-in checks queued ahead of it", as
       issuedAt: f.now(),
       expiresAt: f.now() + 120_000,
     });
-  const session = login.start(f.owner, runnerId, "claude");
+  const session = await login.start(f.owner, runnerId, "claude");
   const delivered = () =>
     f.work.commands(runnerId).map((envelope) => {
       const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
@@ -591,7 +591,7 @@ test("a sign-in goes to the runner before sign-in checks queued ahead of it", as
 
   f.work.acknowledge(runnerId, session.id);
   expect(delivered()).toEqual([]);
-  login.exchange(runnerId, session.id, {
+  await login.exchange(runnerId, session.id, {
     state: "connected",
     terminal: "",
     authorization: null,
