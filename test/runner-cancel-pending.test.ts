@@ -18,6 +18,7 @@ import {
   runnerOccupancy,
   runnerSlotFree,
   runnerSlotsHeldBetweenCommands,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerWork, createRunnerWorkHttp, RunnerTeardownPending } from "../src/runner-work";
 import { CONFIRMED_TEARDOWN_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
@@ -129,16 +130,16 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
     expect(runnerSlotsHeldBetweenCommands(db, "box", now)).toBe(0);
     work.acknowledge("box", cancel.id);
-    expect(runnerCancelPending(db, "box")).toBe(true);
+    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
     now = cancel.expiresAt + 1;
     const report = [{ runId: run.id, generation: 1 }];
     const host = { runnerVersion: CONFIRMED_TEARDOWN_RUNNER_VERSION.join(".") };
     work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, report);
-    expect(runnerSlotFree(db, ["box"], now, run.id)).toBe(false);
+    expect(await runnerSlotFree(sqliteDb(db), ["box"], now, run.id)).toBe(false);
     db.close();
     db = openDatabase(path);
     work = controller();
-    expect(runnerCancelPending(db, "box")).toBe(true);
+    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
     const next = {
       ...command,
       id: "work-2",
@@ -162,7 +163,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     );
     expect(response!.status).toBe(200);
     expect(((await response!.json()) as { terminated: unknown }).terminated).toEqual([termination]);
-    expect(runnerCancelPending(db, "box")).toBe(false);
+    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(false);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(0);
     // Between-command ownership survives until the owning run ends.
     expect(runnerSlotsHeldBetweenCommands(db, "box", now)).toBe(1);
@@ -195,15 +196,15 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], undefined, [
       termination,
     ]);
-    expect(runnerCancelPending(db, "box")).toBe(true);
+    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
     // Generic release/recovery paths end authority but keep the slot until confirmation.
     releaseRunCapacity(db, run.id, now);
-    expect(runnerSlotFree(db, ["box"], now)).toBe(false);
+    expect(await runnerSlotFree(sqliteDb(db), ["box"], now)).toBe(false);
     work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], undefined, [
       { runId: run.id, generation: 2, commandId: "cancel-2" },
     ]);
-    expect(runnerSlotFree(db, ["box"], now)).toBe(true);
+    expect(await runnerSlotFree(sqliteDb(db), ["box"], now)).toBe(true);
     const other = insertQueuedItem(db, { id: "item-2", now, sessionKey: "session-2" });
     const retry = beginImplementRun(db, other.id, now).run;
     recordLinearInstallation(db, {
@@ -227,14 +228,14 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     };
     work.assign(undelivered);
     db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, retry.id]);
-    expect(runnerCancelPending(db, "box")).toBe(true);
+    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
     expect(() => work.assign({ ...undelivered, id: "work-4", generation: 2 })).toThrow(
       RunnerTeardownPending,
     );
     now = undelivered.expiresAt + 1;
-    expect(runnerCancelPending(db, "box")).toBe(true);
+    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
     work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], undefined, []);
-    expect(runnerCancelPending(db, "box")).toBe(false);
+    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(false);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(0);
     const reported = {
       ...undelivered,
@@ -250,7 +251,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     releaseRunCapacity(db, retry.id, now);
     now = reported.expiresAt + 1;
     work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [], undefined, []);
-    expect(runnerCancelPending(db, "box")).toBe(true);
+    expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
   } finally {
     db.close();
@@ -258,7 +259,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
   }
 });
 
-test("a runner that never reported terminations keeps the legacy release on cancel receipt or loss", () => {
+test("a runner that never reported terminations keeps the legacy release on cancel receipt or loss", async () => {
   const db = openDatabase(":memory:");
   try {
     migrate(db);
@@ -276,15 +277,15 @@ test("a runner that never reported terminations keeps the legacy release on canc
     db.run(
       "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at) VALUES('cancel','old','cancelled',1,'cancel','{}',5000,1100)",
     );
-    expect(runnerCancelPending(db, "old")).toBe(false);
+    expect(await runnerCancelPending(sqliteDb(db), "old")).toBe(false);
     ended("lost", 1200);
-    expect(runnerCancelPending(db, "old")).toBe(false);
+    expect(await runnerCancelPending(sqliteDb(db), "old")).toBe(false);
     db.run("UPDATE runner SET terminations_since=1050");
     expect(runnerOccupancy(db, "old", 1300).occupied).toBe(2);
     db.run("UPDATE runner SET terminations_since=1150");
     expect(runnerOccupancy(db, "old", 1300).occupied).toBe(1);
     db.run("UPDATE runner SET terminations_since=1250");
-    expect(runnerCancelPending(db, "old")).toBe(false);
+    expect(await runnerCancelPending(sqliteDb(db), "old")).toBe(false);
   } finally {
     db.close();
   }

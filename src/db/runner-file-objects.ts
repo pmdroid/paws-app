@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 export type RunnerFileObject = {
   key: string;
@@ -26,8 +25,8 @@ export function* recordRunnerFileObjectSteps(q: Q, row: RunnerFileObject) {
   return true;
 }
 
-export function recordRunnerFileObject(db: Database, row: RunnerFileObject): boolean {
-  return settled(sqliteDb(db).run((q) => recordRunnerFileObjectSteps(q, row)));
+export async function recordRunnerFileObject(store: Db, row: RunnerFileObject): Promise<boolean> {
+  return store.run((q) => recordRunnerFileObjectSteps(q, row));
 }
 
 export function* runnerFileObjectNamesSteps(
@@ -45,12 +44,12 @@ export function* runnerFileObjectNamesSteps(
   return rows.map((row) => row.name);
 }
 
-export function runnerFileObjectNames(
-  db: Database,
+export async function runnerFileObjectNames(
+  store: Db,
   commandId: string,
   kind: RunnerFileObject["kind"],
-): string[] {
-  return settled(sqliteDb(db).run((q) => runnerFileObjectNamesSteps(q, commandId, kind)));
+): Promise<string[]> {
+  return store.run((q) => runnerFileObjectNamesSteps(q, commandId, kind));
 }
 
 export function* prunableRunnerFileObjectsSteps(q: Q, before: number, limit = 500) {
@@ -74,8 +73,12 @@ export function* prunableRunnerFileObjectsSteps(q: Q, before: number, limit = 50
   return rows.map((row) => row.key);
 }
 
-export function prunableRunnerFileObjects(db: Database, before: number, limit = 500): string[] {
-  return settled(sqliteDb(db).run((q) => prunableRunnerFileObjectsSteps(q, before, limit)));
+export async function prunableRunnerFileObjects(
+  store: Db,
+  before: number,
+  limit = 500,
+): Promise<string[]> {
+  return store.run((q) => prunableRunnerFileObjectsSteps(q, before, limit));
 }
 
 export function* runnerCommandRunsSteps(q: Q) {
@@ -91,14 +94,14 @@ export function* runnerCommandRunsSteps(q: Q) {
   return rows.flatMap((row) => (row.runId ? [{ id: row.id, runId: row.runId }] : []));
 }
 
-export function runnerCommandRuns(db: Database): { id: string; runId: string }[] {
-  return settled(sqliteDb(db).run(runnerCommandRunsSteps));
+export async function runnerCommandRuns(store: Db): Promise<{ id: string; runId: string }[]> {
+  return store.run((q) => runnerCommandRunsSteps(q));
 }
 
 export function* forgetRunnerFileObjectSteps(q: Q, key: string) {
   yield* q.exec(q.orm.delete(q.t.runnerFileObject).where(eq(q.t.runnerFileObject.key, key)));
 }
 
-export function forgetRunnerFileObject(db: Database, key: string): void {
-  settled(sqliteDb(db).run((q) => forgetRunnerFileObjectSteps(q, key)));
+export async function forgetRunnerFileObject(store: Db, key: string): Promise<void> {
+  await store.run((q) => forgetRunnerFileObjectSteps(q, key));
 }

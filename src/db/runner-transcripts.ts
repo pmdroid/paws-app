@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 
 export type RunnerTranscriptRow = {
   commandId: string;
@@ -141,10 +141,10 @@ export function* plaintextTranscriptChunksSteps(
   );
 }
 
-export function plaintextTranscriptChunks(
-  db: Database,
+export async function plaintextTranscriptChunks(
+  store: Db,
   after: readonly [runId: string, generation: number, offset: number],
   limit: number,
-): PlaintextTranscriptChunk[] {
-  return settled(sqliteDb(db).run((q) => plaintextTranscriptChunksSteps(q, after, limit)));
+): Promise<PlaintextTranscriptChunk[]> {
+  return store.run((q) => plaintextTranscriptChunksSteps(q, after, limit));
 }

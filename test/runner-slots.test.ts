@@ -8,6 +8,7 @@ import {
   releaseRunCapacity,
   requestRunnerSessionMove,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { tempDb } from "./helpers";
@@ -65,22 +66,31 @@ function fixture(now: number) {
   return { db, work };
 }
 
-test("the runner overview reports used and total slots like placement counts them", () => {
+test("the runner overview reports used and total slots like placement counts them", async () => {
   const now = Date.now();
   const { db, work } = fixture(now);
-  expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 0, total: 1 });
+  expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.slots).toEqual({
+    used: 0,
+    total: 1,
+  });
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,3)", ["runner-1"]);
   work(0, now + 60_000);
   markRun(db, work(1, now - RUNNER_LEASE_GRACE_MS - 1), "ended", now);
-  expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 1, total: 3 });
+  expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.slots).toEqual({
+    used: 1,
+    total: 3,
+  });
   work(2, now - 1);
-  expect(listRunnerOverview(db, "ws-1", now)[0]?.slots).toEqual({ used: 2, total: 3 });
+  expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.slots).toEqual({
+    used: 2,
+    total: 3,
+  });
 });
 
-test("the runner overview lists each live session with its issue and phase", () => {
+test("the runner overview lists each live session with its issue and phase", async () => {
   const now = Date.now();
   const { db, work } = fixture(now);
-  expect(listRunnerOverview(db, "ws-1", now)[0]?.running).toEqual([]);
+  expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.running).toEqual([]);
   const lease = now + 60_000;
   const working = work(0, lease, { startedAt: now - 50_000, title: "Write the parser" });
   const closeout = work(1, lease, { state: "verifying", startedAt: now - 40_000 });
@@ -93,7 +103,7 @@ test("the runner overview lists each live session with its issue and phase", () 
   markRun(db, work(4, now - RUNNER_LEASE_GRACE_MS - 1, { startedAt: now - 10_000 }), "ended", now);
   releaseRunCapacity(db, work(5, lease, { startedAt: now - 5_000 }), now);
 
-  expect(listRunnerOverview(db, "ws-1", now)[0]?.running).toEqual([
+  expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.running).toEqual([
     {
       runId: working,
       identifier: "ENG-0",
@@ -133,7 +143,7 @@ test("the runner overview lists each live session with its issue and phase", () 
   ]);
 });
 
-test("a run placed on a runner stays in its list through Closeout and leaves when it ends", () => {
+test("a run placed on a runner stays in its list through Closeout and leaves when it ends", async () => {
   const now = Date.now();
   const { db, work } = fixture(now);
   const runId = work(0, now + 60_000, { startedAt: now - 30_000, title: "Write the parser" });
@@ -146,39 +156,44 @@ test("a run placed on a runner stays in its list through Closeout and leaves whe
     movable: true,
     move: null,
   };
-  expect(listRunnerOverview(db, "ws-1", now)[0]?.running).toEqual([session]);
+  expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.running).toEqual([session]);
 
   db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, runId]);
   db.run("UPDATE work_item SET state='verifying' WHERE id='item-0'");
-  const [held] = listRunnerOverview(db, "ws-1", now + 120_000);
+  const [held] = await listRunnerOverview(sqliteDb(db), "ws-1", now + 120_000);
   expect(held?.running).toEqual([{ ...session, phase: "closeout", movable: false }]);
   expect(held?.slots.used).toBe(1);
 
   releaseRunCapacity(db, runId, now + 130_000);
-  const [after] = listRunnerOverview(db, "ws-1", now + 130_000);
+  const [after] = await listRunnerOverview(sqliteDb(db), "ws-1", now + 130_000);
   expect(after?.running).toEqual([]);
   expect(after?.slots.used).toBe(0);
 });
 
-test("a session moving off a runner shows its move there, and not once it landed elsewhere", () => {
+test("a session moving off a runner shows its move there, and not once it landed elsewhere", async () => {
   const now = Date.now();
   const { db, work } = fixture(now);
   const runId = work(0, now + 60_000);
-  requestRunnerSessionMove(db, { runId, runnerId: "runner-1", userId: "owner", now });
-  expect(listRunnerOverview(db, "ws-1", now)[0]?.running[0]?.move).toEqual({
+  await requestRunnerSessionMove(sqliteDb(db), {
+    runId,
+    runnerId: "runner-1",
+    userId: "owner",
+    now,
+  });
+  expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.running[0]?.move).toEqual({
     status: "moving",
     reason: null,
   });
   // Handed over and waiting: the slot is held, the lease ended, and the row says why.
   db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [now, runId]);
-  noteRunnerSessionMove(db, {
+  await noteRunnerSessionMove(sqliteDb(db), {
     runId,
     runnerId: "runner-1",
     status: "waiting",
     reason: "Every other runner is busy.",
     now,
   });
-  const [waiting] = listRunnerOverview(db, "ws-1", now)[0]!.running;
+  const [waiting] = (await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]!.running;
   expect(waiting).toMatchObject({
     movable: false,
     move: { status: "waiting", reason: "Every other runner is busy." },
@@ -189,7 +204,7 @@ test("a session moving off a runner shows its move there, and not once it landed
     [now, now],
   );
   db.run("UPDATE runner_work SET runner_id='runner-2',ended_at=NULL WHERE run_id=?", [runId]);
-  const overview = listRunnerOverview(db, "ws-1", now);
+  const overview = await listRunnerOverview(sqliteDb(db), "ws-1", now);
   expect(overview.find((runner) => runner.id === "runner-1")?.running).toEqual([]);
   expect(overview.find((runner) => runner.id === "runner-2")?.running).toMatchObject([
     { runId, movable: true, move: null },

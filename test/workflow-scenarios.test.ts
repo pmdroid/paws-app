@@ -396,7 +396,7 @@ function runnerWorld() {
 }
 
 describe("runner control across Paws restarts", () => {
-  test("PAS-943/961: a stop whose teardown is unconfirmed keeps the slot through restarts, sweeps and the cancel receipt", () => {
+  test("PAS-943/961: a stop whose teardown is unconfirmed keeps the slot through restarts, sweeps and the cancel receipt", async () => {
     const { w, controller, run, command, host, workspaceId } = runnerWorld();
     try {
       expect(
@@ -419,16 +419,16 @@ describe("runner control across Paws restarts", () => {
         expiresAt: w.now + MINUTE,
       };
       controller().enqueue(cancel);
-      const held = () => {
+      const held = async () => {
         expect(factsOf(w.db, "item")).toMatchObject({ state: "paused", liveJobs: [] });
         expect(runnerOccupancy(w.db, "box", w.now).occupied).toBe(1);
-        expect(runnerCancelPending(w.db, "box")).toBe(true);
+        expect(await runnerCancelPending(sqliteDb(w.db), "box")).toBe(true);
         expect(unexpectedViolations(w.db, w.now)).toEqual([]);
       };
-      held();
+      await held();
       w.crash();
       w.start();
-      held();
+      await held();
       controller().acknowledge("box", cancel.id);
       w.advance(cancel.expiresAt - w.now + RUNNER_LEASE_GRACE_MS + 1);
       controller().heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [
@@ -437,7 +437,7 @@ describe("runner control across Paws restarts", () => {
       w.stop();
       w.start();
       w.settle();
-      held();
+      await held();
       expect(() =>
         controller().assign({ ...command, id: "work-2", generation: 2, issuedAt: w.now }),
       ).toThrow(RunnerTeardownPending);
@@ -454,7 +454,7 @@ describe("runner control across Paws restarts", () => {
         undefined,
         [{ runId: run.id, generation: 1, commandId: command.id }],
       );
-      expect(runnerCancelPending(w.db, "box")).toBe(false);
+      expect(await runnerCancelPending(sqliteDb(w.db), "box")).toBe(false);
       expect(runnerOccupancy(w.db, "box", w.now).occupied).toBe(0);
       w.crash();
       w.start();

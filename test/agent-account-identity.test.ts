@@ -20,6 +20,7 @@ import {
   recordCommandAccount,
   recordLinearInstallation,
   recordRunnerAccountCapability,
+  sqliteDb,
 } from "../src/db";
 import { runnerAccountHome } from "../src/runner-execution";
 import {
@@ -35,7 +36,7 @@ import { tempHome } from "./helpers";
 const SECRET = "sk-ant-oat01-PAS1021-planted-secret";
 const HOUR = 3_600_000;
 
-function fixture() {
+async function fixture() {
   const db = openDatabase(join(tempHome(), "paws.sqlite"));
   legacyMigrate(db);
   let clock = Date.now();
@@ -75,29 +76,43 @@ function fixture() {
       [id, clock],
     );
   }
-  const named = (label: string) =>
-    createAgentAccount(db, { workspaceId: workspace.id, agent: "claude", label, now: clock }).id;
+  const named = async (label: string) =>
+    (
+      await createAgentAccount(sqliteDb(db), {
+        workspaceId: workspace.id,
+        agent: "claude",
+        label,
+        now: clock,
+      })
+    ).id;
   const accounts = {
-    a: named("A"),
-    b: named("B"),
+    a: await named("A"),
+    b: await named("B"),
     legacy: legacyAgentAccountId(workspace.id, "claude"),
   };
-  const bind = (accountId: string, runnerId: string) =>
-    bindAgentAccount(db, { workspaceId: workspace.id, accountId, runnerId, now: clock }).id;
+  const bind = async (accountId: string, runnerId: string) =>
+    (
+      await bindAgentAccount(sqliteDb(db), {
+        workspaceId: workspace.id,
+        accountId,
+        runnerId,
+        now: clock,
+      })
+    ).id;
   const bindings = {
-    a1: bind(accounts.a, "R1"),
-    a2: bind(accounts.a, "R2"),
-    b1: bind(accounts.b, "R1"),
+    a1: await bind(accounts.a, "R1"),
+    a2: await bind(accounts.a, "R2"),
+    b1: await bind(accounts.b, "R1"),
   };
-  const report = (runnerId: string, ids: string[]) =>
-    recordRunnerAccountCapability(
-      db,
+  const report = async (runnerId: string, ids: string[]) =>
+    await recordRunnerAccountCapability(
+      sqliteDb(db),
       runnerId,
       { protocol: 1, bindings: ids.map((bindingId) => ({ bindingId, agent: "claude" })) },
       clock,
     );
-  report("R1", [bindings.a1, bindings.b1]);
-  report("R2", [bindings.a2]);
+  await report("R1", [bindings.a1, bindings.b1]);
+  await report("R2", [bindings.a2]);
   return {
     db,
     workspaceId: workspace.id,
@@ -107,9 +122,9 @@ function fixture() {
   };
 }
 
-function code(run: () => unknown) {
+async function code(run: () => unknown) {
   try {
-    run();
+    await run();
   } catch (error) {
     if (error instanceof AgentAccountError) return error.code;
     throw error;
@@ -117,8 +132,8 @@ function code(run: () => unknown) {
   return null;
 }
 
-test("wrong-account use: a command, result or heartbeat that mixes identities is refused", () => {
-  const f = fixture();
+test("wrong-account use: a command, result or heartbeat that mixes identities is refused", async () => {
+  const f = await fixture();
   const command = (
     id: string,
     runnerId: string,
@@ -135,7 +150,7 @@ test("wrong-account use: a command, result or heartbeat that mixes identities is
       account,
     }) as RunnerCommand;
   expect(
-    code(() =>
+    await code(async () =>
       recordCommandAccount(
         f.db,
         command("x1", "R1", { accountId: f.accounts.a, bindingId: f.bindings.b1 }),
@@ -144,7 +159,7 @@ test("wrong-account use: a command, result or heartbeat that mixes identities is
     ),
   ).toBe("binding_mismatch");
   expect(
-    code(() =>
+    await code(async () =>
       recordCommandAccount(
         f.db,
         command("x2", "R1", { accountId: f.accounts.a, bindingId: f.bindings.a2 }),
@@ -233,8 +248,10 @@ test("a legacy installation upgrades to default sign-in accounts and rolls back 
 
     legacyMigrate(db);
     const legacy = legacyAgentAccountId("w", "claude");
-    expect(listAgentAccounts(db, "w")).toMatchObject([{ id: legacy, legacy: true, enabled: true }]);
-    expect(listAgentBindings(db, "w")).toMatchObject([
+    expect(await listAgentAccounts(sqliteDb(db), "w")).toMatchObject([
+      { id: legacy, legacy: true, enabled: true },
+    ]);
+    expect(await listAgentBindings(sqliteDb(db), "w")).toMatchObject([
       {
         id: legacyAgentBindingId("r", "claude"),
         accountId: legacy,
@@ -252,13 +269,13 @@ test("a legacy installation upgrades to default sign-in accounts and rolls back 
     ]);
 
     db.run("UPDATE runner SET last_seen_at=1");
-    const named = createAgentAccount(db, {
+    const named = await createAgentAccount(sqliteDb(db), {
       workspaceId: "w",
       agent: "claude",
       label: "A",
       now: 10,
     });
-    const binding = bindAgentAccount(db, {
+    const binding = await bindAgentAccount(sqliteDb(db), {
       workspaceId: "w",
       accountId: named.id,
       runnerId: "r",
@@ -267,8 +284,8 @@ test("a legacy installation upgrades to default sign-in accounts and rolls back 
     db.run(
       "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('r','0.1.61',10)",
     );
-    recordRunnerAccountCapability(
-      db,
+    await recordRunnerAccountCapability(
+      sqliteDb(db),
       "r",
       { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
       10,
@@ -305,16 +322,14 @@ test("a legacy installation upgrades to default sign-in accounts and rolls back 
 
     legacyMigrate(db);
     expect(applied()).toEqual(before);
-    expect(
-      listAgentAccounts(db, "w")
-        .map((row) => row.id)
-        .sort(),
-    ).toEqual([legacy, legacyAgentAccountId("w", "codex"), named.id].sort());
+    expect((await listAgentAccounts(sqliteDb(db), "w")).map((row) => row.id).sort()).toEqual(
+      [legacy, legacyAgentAccountId("w", "codex"), named.id].sort(),
+    );
     expect(
       db.query("SELECT command_id AS id,account_id AS account FROM runner_command_account").all(),
     ).toEqual([{ id: "named", account: named.id }]);
 
-    expect(admitAgentAccounts(db, "w", "claude")).toEqual({
+    expect(await admitAgentAccounts(sqliteDb(db), "w", "claude")).toEqual({
       agent: "claude",
       eligible: [legacy],
       skipped: [],

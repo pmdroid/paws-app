@@ -192,7 +192,7 @@ async function fixture() {
   const ready = async (): Promise<MemberVm> => {
     await startMemberVm(sqliteDb(db), { ...member, now: clock.now() });
     for (let index = 0; index < 500; index++) {
-      const row = findMemberVm(db, member)!;
+      const row = (await findMemberVm(db, member))!;
       if (row.failure !== null) throw new Error(row.failure);
       if (row.step === "health" && row.runnerId)
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [clock.now(), row.runnerId]);

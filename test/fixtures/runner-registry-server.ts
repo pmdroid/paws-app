@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { openDatabase, runnerForCertificate } from "../../src/db";
+import { openDatabase, runnerForCertificate, sqliteDb } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { openRunnerAuthority, startRunnerListener } from "../../src/runner-identity";
 
@@ -19,11 +19,11 @@ listener = await startRunnerListener({
     cert: readFileSync(join(root, "server.pem"), "utf8"),
     ca: readFileSync(join(root, "authority.pem"), "utf8"),
   },
-  authorize(peer) {
-    return runnerForCertificate(db, peer.fingerprint, Date.now()) !== null;
+  async authorize(peer) {
+    return (await runnerForCertificate(sqliteDb(db), peer.fingerprint, Date.now())) !== null;
   },
   async fetch(_request, peer) {
-    const runner = runnerForCertificate(db, peer.fingerprint, Date.now());
+    const runner = await runnerForCertificate(sqliteDb(db), peer.fingerprint, Date.now());
     return runner ? Response.json(runner) : new Response(null, { status: 403 });
   },
 });

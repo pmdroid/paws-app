@@ -12,6 +12,7 @@ import {
   runnerAllowsRepository,
   setRunnerAdminRepositories,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -143,15 +144,20 @@ async function fixture() {
 test("a runner with no admin list and no host list allows any repository", async () => {
   const runner = await fixture();
   expect(runnerAllowsRepository(runner.db, runner.runnerId, "acme/anything")).toBe(true);
-  recordRunnerRepositories(runner.db, runner.runnerId, null, runner.now);
+  await recordRunnerRepositories(sqliteDb(runner.db), runner.runnerId, null, runner.now);
   expect(runnerAllowsRepository(runner.db, runner.runnerId, "acme/anything")).toBe(true);
   expect(await runner.list()).toEqual({ admin: null, host: null });
 });
 
 test("an admin list excludes a repository the host allows, matching case-insensitively", async () => {
   const runner = await fixture();
-  recordRunnerRepositories(runner.db, runner.runnerId, ["acme/looky", "acme/paws"], runner.now);
-  setRunnerAdminRepositories(runner.db, {
+  await recordRunnerRepositories(
+    sqliteDb(runner.db),
+    runner.runnerId,
+    ["acme/looky", "acme/paws"],
+    runner.now,
+  );
+  await setRunnerAdminRepositories(sqliteDb(runner.db), {
     runnerId: runner.runnerId,
     workspaceId: runner.workspaceId,
     userId: runner.userId,

@@ -14,6 +14,7 @@ import {
   recordRunnerHostStatus,
   runnerHelperAvailability,
   runnerOccupancy,
+  sqliteDb,
 } from "../db";
 import { RUNNER_CONVERSATION_MS } from "../runner-protocol";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../workspace";
@@ -24,7 +25,7 @@ afterEach(() => {
   for (const close of cleanup.splice(0)) close();
 });
 
-function fixture(version: string | null, conversations?: number) {
+async function fixture(version: string | null, conversations?: number) {
   const root = mkdtempSync(join(tmpdir(), "paws-conversation-lane-"));
   const db = openDatabase(join(root, "paws.db"));
   migrate(db);
@@ -57,7 +58,8 @@ function fixture(version: string | null, conversations?: number) {
       observedAtMs: now,
     });
   recordRunnerCapacity(db, "runner", 1, 1, conversations);
-  if (version) recordRunnerHostStatus(db, "runner", { runnerVersion: version }, now);
+  if (version)
+    await recordRunnerHostStatus(sqliteDb(db), "runner", { runnerVersion: version }, now);
   const helpers = createRunnerHelpers({
     db,
     keyId: "fixture",
@@ -88,8 +90,8 @@ function fixture(version: string | null, conversations?: number) {
   return { db, now, workspace: workspace.id, dispatch };
 }
 
-test("a conversation starts with every work slot busy and fills no work slot", () => {
-  const { db, now, workspace, dispatch } = fixture("0.1.77", 2);
+test("a conversation starts with every work slot busy and fills no work slot", async () => {
+  const { db, now, workspace, dispatch } = await fixture("0.1.77", 2);
   dispatch("session-1", "classify");
   expect(runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 1 });
   expect(runnerHelperAvailability(db, "runner", now, true).available).toBe(false);
@@ -97,13 +99,13 @@ test("a conversation starts with every work slot busy and fills no work slot", (
   const command = dispatch("session-2", "conversation");
   expect(command.expiresAt - command.issuedAt).toBe(RUNNER_CONVERSATION_MS);
   expect(runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 1 });
-  const [runner] = listRunnerOverview(db, workspace, now);
+  const [runner] = await listRunnerOverview(sqliteDb(db), workspace, now);
   expect(runner!.slots).toEqual({ used: 1, total: 1 });
   expect(runner!.conversations).toEqual({ used: 1, total: 2 });
 });
 
-test("a third conversation waits for a conversation slot, not a work slot", () => {
-  const { db, now, dispatch } = fixture("0.1.77", 2);
+test("a third conversation waits for a conversation slot, not a work slot", async () => {
+  const { db, now, dispatch } = await fixture("0.1.77", 2);
   dispatch("session-1", "conversation");
   dispatch("session-2", "conversation");
   expect(() => dispatch("session-3", "conversation")).toThrow("Runner is busy");
@@ -119,8 +121,8 @@ for (const [name, version, conversations] of [
   ["a runner that is not told the control plane's level", "0.1.75", 2],
   ["a runner that refuses Claude's reply and start_work calls", "0.1.76", 2],
 ] as const)
-  test(`${name} admits no conversation`, () => {
-    const { db, now, dispatch } = fixture(version, conversations);
+  test(`${name} admits no conversation`, async () => {
+    const { db, now, dispatch } = await fixture(version, conversations);
     expect(runnerHelperAvailability(db, "runner", now, true, true).available).toBe(false);
     expect(() => dispatch("session-1", "conversation")).toThrow("Runner is busy");
   });

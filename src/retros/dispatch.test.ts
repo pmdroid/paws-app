@@ -22,6 +22,7 @@ import {
   retroWatermarks,
   runnerOccupancy,
   writeRetroArtifact,
+  sqliteDb,
 } from "../db";
 import { verifyRunnerRetroCommand, type RunnerRetroCommand } from "../runner-protocol";
 import { createRetroDispatcher, retroRetryDelayMs } from "./index";
@@ -691,7 +692,7 @@ describe("agent account admission", () => {
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const accountId = legacyAgentAccountId("ws", "codex");
-    ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
+    await ensureLegacyAgentBinding(sqliteDb(db), "R1", "codex", clock.now);
     db.run("UPDATE agent_account SET enabled=0 WHERE id=?", [accountId]);
     const dispatcher = open(db);
     await dispatcher.tick();
@@ -707,7 +708,7 @@ describe("agent account admission", () => {
     const { db, clock, open } = world();
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
-    const binding = ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
+    const binding = await ensureLegacyAgentBinding(sqliteDb(db), "R1", "codex", clock.now);
     recordAccountObservation(db, {
       bindingId: binding.id,
       source: "result",
@@ -760,7 +761,7 @@ describe("agent account admission", () => {
     addRunner(db, { id: "R1", capacity: 4 });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const accountId = legacyAgentAccountId("ws", "codex");
-    const binding = ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
+    const binding = await ensureLegacyAgentBinding(sqliteDb(db), "R1", "codex", clock.now);
     recordAccountObservation(db, {
       bindingId: binding.id,
       source: "result",
@@ -812,7 +813,7 @@ describe("agent account admission", () => {
     addRunner(db, { id: "R1", capacity: 4 });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const accountId = legacyAgentAccountId("ws", "codex");
-    const binding = ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
+    const binding = await ensureLegacyAgentBinding(sqliteDb(db), "R1", "codex", clock.now);
     db.run("UPDATE agent_account SET concurrency=1 WHERE id=?", [accountId]);
     createRetro(db, {
       id: "r0",

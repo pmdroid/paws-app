@@ -725,13 +725,13 @@ test("a helper whose named account hits its quota retries with the next account 
           .query<{ id: string }, []>("SELECT workspace_id AS id FROM runner WHERE id='runner'")
           .get()!.id;
         for (const label of ["A", "B"]) {
-          const account = createAgentAccount(db, {
+          const account = await createAgentAccount(sqliteDb(db), {
             workspaceId: workspace,
             agent: "codex",
             label,
             now: Date.now(),
           });
-          const binding = bindAgentAccount(db, {
+          const binding = await bindAgentAccount(sqliteDb(db), {
             workspaceId: workspace,
             accountId: account.id,
             runnerId: "runner",
@@ -743,8 +743,8 @@ test("a helper whose named account hits its quota retries with the next account 
           "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner','0.1.61',?)",
           [Date.now()],
         );
-        recordRunnerAccountCapability(
-          db,
+        await recordRunnerAccountCapability(
+          sqliteDb(db),
           "runner",
           {
             protocol: 1,
@@ -944,13 +944,13 @@ test("a reused helper's sign-in failure excludes its named account, not the runn
   const workspace = f.db
     .query<{ id: string }, []>("SELECT workspace_id AS id FROM runner WHERE id='runner'")
     .get()!.id;
-  const account = createAgentAccount(f.db, {
+  const account = await createAgentAccount(sqliteDb(f.db), {
     workspaceId: workspace,
     agent: "codex",
     label: "A",
     now: Date.now(),
   });
-  const binding = bindAgentAccount(f.db, {
+  const binding = await bindAgentAccount(sqliteDb(f.db), {
     workspaceId: workspace,
     accountId: account.id,
     runnerId: "runner",
@@ -960,8 +960,8 @@ test("a reused helper's sign-in failure excludes its named account, not the runn
     "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('runner','0.1.61',?)",
     [Date.now()],
   );
-  recordRunnerAccountCapability(
-    f.db,
+  await recordRunnerAccountCapability(
+    sqliteDb(f.db),
     "runner",
     { protocol: 1, bindings: [{ bindingId: binding.id, agent: "codex" }] },
     Date.now(),

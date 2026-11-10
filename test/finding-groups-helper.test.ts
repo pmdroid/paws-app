@@ -7,10 +7,11 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
   recordRunnerHostStatus,
+  sqliteDb,
 } from "../src/db";
 import { tempDb } from "./helpers";
 
-function seed() {
+async function seed() {
   const db = tempDb();
   let now = Date.now();
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',1)");
@@ -43,7 +44,7 @@ function seed() {
     [now, now],
   );
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner','codex',1)");
-  recordRunnerHostStatus(db, "runner", { runnerVersion: "0.1.53" }, now);
+  await recordRunnerHostStatus(sqliteDb(db), "runner", { runnerVersion: "0.1.53" }, now);
   const { privateKey } = generateKeyPairSync("ed25519");
   const helpers = createRunnerHelpers({ db, keyId: "key", privateKey, now: () => now });
   return {
@@ -57,7 +58,7 @@ function seed() {
 }
 
 test("daily helper uses an admin runner, accepts a stopped reporting session, and fences role changes", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     let dispatches = 0;
     const helper = createFindingGroupHelper({
@@ -114,9 +115,9 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
 });
 
 test("daily helper refuses older runners and cannot read a session from another workspace", async () => {
-  const f = seed();
+  const f = await seed();
   try {
-    recordRunnerHostStatus(f.db, "runner", { runnerVersion: "0.1.50" }, f.now);
+    await recordRunnerHostStatus(sqliteDb(f.db), "runner", { runnerVersion: "0.1.50" }, f.now);
     const helper = createFindingGroupHelper({
       db: f.db,
       profile: () => ({ agent: "codex", model: null }),
@@ -155,7 +156,7 @@ test("daily helper refuses older runners and cannot read a session from another 
 
 test("grouping accepts a result after one minute, records usage, and rejects error results", async () => {
   for (const failed of [false, true]) {
-    const f = seed();
+    const f = await seed();
     try {
       const helper = createFindingGroupHelper({
         db: f.db,
@@ -210,13 +211,13 @@ test("grouping accepts a result after one minute, records usage, and rejects err
 });
 
 test("pre-dispatch refusals try the next admin runner without issuing a second helper", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     f.db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'runner2',workspace_id,owner_user_id,'Second','active',created_at,last_seen_at FROM runner WHERE id='runner'",
     );
     f.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES('runner2','codex',1)");
-    recordRunnerHostStatus(f.db, "runner2", { runnerVersion: "0.1.53" }, f.now);
+    await recordRunnerHostStatus(sqliteDb(f.db), "runner2", { runnerVersion: "0.1.53" }, f.now);
     let attempts = 0;
     const helper = createFindingGroupHelper({
       db: f.db,
@@ -259,7 +260,7 @@ test("pre-dispatch refusals try the next admin runner without issuing a second h
 
 test("one-runner foreground placement preempts grouping and fences its old lease", async () => {
   const { createRunnerPlacement } = await import("../src/runner-placement");
-  const f = seed();
+  const f = await seed();
   try {
     const profile = { agent: "codex" as const, model: null };
     const placement = createRunnerPlacement({ db: f.db, now: () => f.now });
@@ -360,7 +361,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
 
 test("cleanup accounting cannot replace a local abort and reports cancellation instead of heartbeat loss", async () => {
   const { createRemoteSessionAgentRunner } = await import("../src/runner-backend");
-  const f = seed();
+  const f = await seed();
   try {
     f.db.run("UPDATE linear_session SET stopped_at=NULL");
     const abort = new AbortController();
@@ -415,7 +416,7 @@ test("cleanup accounting cannot replace a local abort and reports cancellation i
 
 test("ranking idle and excluded runners never fences maintenance on another runner", async () => {
   const { createRunnerPlacement } = await import("../src/runner-placement");
-  const f = seed();
+  const f = await seed();
   try {
     f.db.run(
       "UPDATE linear_session SET stopped_at=NULL,creator_id='linear-admin',issue_id='issue'",
@@ -464,7 +465,7 @@ test("ranking idle and excluded runners never fences maintenance on another runn
 
 test("a failed receipt completion is retried by cleanup before the original error propagates", async () => {
   const { createRunnerPlacement } = await import("../src/runner-placement");
-  const f = seed();
+  const f = await seed();
   try {
     const placement = createRunnerPlacement({ db: f.db });
     const original = new Error("Transient receipt failure");
@@ -518,7 +519,7 @@ test("a failed receipt completion is retried by cleanup before the original erro
 });
 
 test("grouping runs on a later admin's runner when the earlier admin has none", async () => {
-  const f = seed();
+  const f = await seed();
   try {
     putWorkspaceUser(f.db, {
       id: "aaa",
@@ -576,7 +577,7 @@ test("grouping runs on a later admin's runner when the earlier admin has none", 
 
 test("grouping does not dispatch a session the runner owner cannot authorize", async () => {
   const { insertQueuedItem } = await import("../src/db");
-  const f = seed();
+  const f = await seed();
   try {
     insertQueuedItem(f.db, { id: "outside", sessionKey: "reporting-session", now: f.now });
     f.db.run(

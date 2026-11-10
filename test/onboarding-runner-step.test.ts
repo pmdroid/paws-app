@@ -224,7 +224,7 @@ async function fixture({
   /** Runs the member VM job until `until` holds, as the job loop would in the background. */
   const drive = async (until: (row: MemberVm) => boolean) => {
     for (let index = 0; index < 500; index++) {
-      const row = findMemberVm(db, member)!;
+      const row = (await findMemberVm(db, member))!;
       if (until(row)) return row;
       if ((await loop.tick()) === null) clock.advance(MEMBER_VM_POLL_MS);
     }
@@ -386,7 +386,7 @@ test("Create VM creates the member's VM, its steps update without a reload, and 
   expect(page.buttons()).toEqual(["create-vm", "add-host"]);
   await page.click("create-vm");
   expect(f.requests).toContain("POST /api/runners/vm");
-  expect(findMemberVm(f.db, f.member)?.step).toBe("create");
+  expect((await findMemberVm(f.db, f.member))?.step).toBe("create");
   // The same document now shows the VM's steps; the page polls faster while it sets up.
   expect(page.runner()?.getAttribute("data-runner")).toBe("setting-up");
   const states = () =>
@@ -465,7 +465,7 @@ test("a failed VM step shows its error and Retry resumes from it", async () => {
   expect(page.buttons()).toEqual(["retry-vm"]);
   await page.click("retry-vm");
   expect(f.requests).toContain("POST /api/runners/vm/retry");
-  expect(findMemberVm(f.db, f.member)?.failure).toBeNull();
+  expect((await findMemberVm(f.db, f.member))?.failure).toBeNull();
   expect(page.runner()?.getAttribute("data-runner")).toBe("setting-up");
 });
 
@@ -538,7 +538,7 @@ test("an inactive member's Create VM and Add a host requests are refused", async
     });
     expect(response.status).toBe(403);
   }
-  expect(findMemberVm(f.db, f.member)).toBeNull();
+  expect(await findMemberVm(f.db, f.member)).toBeNull();
 });
 
 test("the page's inline script and style are the only ones its policy allows", async () => {

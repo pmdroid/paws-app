@@ -3,11 +3,11 @@ import { JOB_KIND } from "../src/core";
 import {
   listJobsSteps,
   onJobReady,
-  recordRunnerRepositoriesAsync,
+  recordRunnerRepositories,
   recordRunnerRepositoriesSteps,
   runnerRepositoryListsSteps,
   runnerRepositoryRefusalSteps,
-  setRunnerAdminRepositoriesAsync,
+  setRunnerAdminRepositories,
   setRunnerAdminRepositoriesSteps,
   type Db,
 } from "../src/db";
@@ -143,10 +143,10 @@ forEachDialect((connect) => {
       if (source === db) woken += 1;
     });
     try {
-      await recordRunnerRepositoriesAsync(db, "box", ["acme/paws"], 1);
+      await recordRunnerRepositories(db, "box", ["acme/paws"], 1);
       expect(woken).toBe(0);
       await askRepository(db);
-      await recordRunnerRepositoriesAsync(db, "box", ["acme/looky"], 2);
+      await recordRunnerRepositories(db, "box", ["acme/looky"], 2);
       expect(woken).toBe(1);
       const choice = {
         runnerId: "box",
@@ -155,9 +155,9 @@ forEachDialect((connect) => {
         repositories: ["acme/paws"],
         now: 3,
       };
-      await setRunnerAdminRepositoriesAsync(db, choice);
+      await setRunnerAdminRepositories(db, choice);
       expect(woken).toBe(2);
-      await setRunnerAdminRepositoriesAsync(db, choice);
+      await setRunnerAdminRepositories(db, choice);
       expect(woken).toBe(2);
     } finally {
       stopWake();

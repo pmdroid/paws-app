@@ -19,6 +19,7 @@ import {
   resumeAccountHealthNow,
   setAgentAccountConcurrency,
   setAgentAccountEnabled,
+  sqliteDb,
 } from "../src/db";
 import {
   bindingReadiness,
@@ -33,7 +34,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function seed(db: Database) {
+async function seed(db: Database) {
   db.run("INSERT INTO workspace VALUES('W1','org-W1','W1',?)", [NOW]);
   db.run(
     "INSERT INTO workspace_user(id,linear_user_id,name,email) VALUES('U1','linear-U1','Owner','owner@example.test')",
@@ -47,26 +48,41 @@ function seed(db: Database) {
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,'W1','U1',?,'active',?,?)",
       [runner, runner, NOW, NOW],
     );
-  const a = createAgentAccount(db, { workspaceId: "W1", agent: "claude", label: "A", now: NOW });
-  const b = createAgentAccount(db, { workspaceId: "W1", agent: "claude", label: "B", now: NOW });
-  const c = createAgentAccount(db, { workspaceId: "W1", agent: "codex", label: "C", now: NOW });
-  const bind = (accountId: string, runnerId: string) =>
-    bindAgentAccount(db, { workspaceId: "W1", accountId, runnerId, now: NOW }).id;
+  const a = await createAgentAccount(sqliteDb(db), {
+    workspaceId: "W1",
+    agent: "claude",
+    label: "A",
+    now: NOW,
+  });
+  const b = await createAgentAccount(sqliteDb(db), {
+    workspaceId: "W1",
+    agent: "claude",
+    label: "B",
+    now: NOW,
+  });
+  const c = await createAgentAccount(sqliteDb(db), {
+    workspaceId: "W1",
+    agent: "codex",
+    label: "C",
+    now: NOW,
+  });
+  const bind = async (accountId: string, runnerId: string) =>
+    (await bindAgentAccount(sqliteDb(db), { workspaceId: "W1", accountId, runnerId, now: NOW })).id;
   return {
     accounts: { a: a.id, b: b.id, c: c.id },
     bindings: {
-      a1: bind(a.id, "R1"),
-      a2: bind(a.id, "R2"),
-      b1: bind(b.id, "R1"),
-      c2: bind(c.id, "R2"),
+      a1: await bind(a.id, "R1"),
+      a2: await bind(a.id, "R2"),
+      b1: await bind(b.id, "R1"),
+      c2: await bind(c.id, "R2"),
     },
   };
 }
 
-function fixture(path = ":memory:") {
+async function fixture(path = ":memory:") {
   const db = openDatabase(path);
   migrate(db);
-  return { db, ...seed(db) };
+  return { db, ...(await seed(db)) };
 }
 
 const seen = (db: Database, at: number) => db.run("UPDATE runner SET last_seen_at=?", [at]);
@@ -109,8 +125,8 @@ function attempt(db: Database, commandId: string, bindingId: string, startedAt: 
   );
 }
 
-test("the same account on two runners shares a quota cooldown; other accounts and providers stay ready", () => {
-  const { db, bindings } = fixture();
+test("the same account on two runners shares a quota cooldown; other accounts and providers stay ready", async () => {
+  const { db, bindings } = await fixture();
   const reset = NOW + 2 * 3_600_000;
   expect(exhaust(db, bindings.a1, "cmd-1", NOW, reset)).toEqual({ quota: "applied" });
   for (const bindingId of [bindings.a1, bindings.a2])
@@ -123,10 +139,10 @@ test("the same account on two runners shares a quota cooldown; other accounts an
     expect(bindingReadiness(db, { bindingId, now: NOW + 1 })).toMatchObject({ ready: true });
 });
 
-test("a runner's default sign-in keeps its quota to that runner", () => {
-  const { db } = fixture();
-  const r1 = ensureLegacyAgentBinding(db, "R1", "claude", NOW).id;
-  const r2 = ensureLegacyAgentBinding(db, "R2", "claude", NOW).id;
+test("a runner's default sign-in keeps its quota to that runner", async () => {
+  const { db } = await fixture();
+  const r1 = (await ensureLegacyAgentBinding(sqliteDb(db), "R1", "claude", NOW)).id;
+  const r2 = (await ensureLegacyAgentBinding(sqliteDb(db), "R2", "claude", NOW)).id;
   exhaust(db, r1, "cmd-1", NOW);
   expect(bindingReadiness(db, { bindingId: r1, now: NOW + 1 })).toMatchObject({
     reason: "exhausted",
@@ -134,8 +150,8 @@ test("a runner's default sign-in keeps its quota to that runner", () => {
   expect(bindingReadiness(db, { bindingId: r2, now: NOW + 1 })).toMatchObject({ ready: true });
 });
 
-test("a sign-in failure disables only its binding until a successful repair", () => {
-  const { db, bindings } = fixture();
+test("a sign-in failure disables only its binding until a successful repair", async () => {
+  const { db, bindings } = await fixture();
   recordAccountObservation(db, {
     bindingId: bindings.a1,
     source: "result",
@@ -168,8 +184,8 @@ test("a sign-in failure disables only its binding until a successful repair", ()
   });
 });
 
-test("a stale or late success cannot erase a newer failure, and a repeat changes nothing", () => {
-  const { db, bindings } = fixture();
+test("a stale or late success cannot erase a newer failure, and a repeat changes nothing", async () => {
+  const { db, bindings } = await fixture();
   recordAccountObservation(db, {
     bindingId: bindings.a1,
     source: "result",
@@ -212,9 +228,9 @@ test("a stale or late success cannot erase a newer failure, and a repeat changes
   expect(before).toMatchObject({ failures: 1, sourceId: "cmd-3", bindingId: bindings.a1 });
 });
 
-test("a success cannot re-enable a removed binding or a disabled account", () => {
-  const { db, bindings, accounts } = fixture();
-  removeAgentBinding(db, { workspaceId: "W1", bindingId: bindings.a1, now: NOW });
+test("a success cannot re-enable a removed binding or a disabled account", async () => {
+  const { db, bindings, accounts } = await fixture();
+  await removeAgentBinding(sqliteDb(db), { workspaceId: "W1", bindingId: bindings.a1, now: NOW });
   expect(
     recordAccountObservation(db, {
       bindingId: bindings.a1,
@@ -229,7 +245,7 @@ test("a success cannot re-enable a removed binding or a disabled account", () =>
   expect(bindingReadiness(db, { bindingId: bindings.a1, now: NOW + 1 })).toMatchObject({
     reason: "removed",
   });
-  setAgentAccountEnabled(db, {
+  await setAgentAccountEnabled(sqliteDb(db), {
     workspaceId: "W1",
     accountId: accounts.b,
     enabled: false,
@@ -244,8 +260,8 @@ test("a success cannot re-enable a removed binding or a disabled account", () =>
   });
 });
 
-test("exhausted, auth-required, offline, busy, paused, restricted and unsupported-model stay distinct", () => {
-  const { db, bindings, accounts } = fixture();
+test("exhausted, auth-required, offline, busy, paused, restricted and unsupported-model stay distinct", async () => {
+  const { db, bindings, accounts } = await fixture();
   const reason = (bindingId: string, model?: string) => {
     const readiness = bindingReadiness(db, { bindingId, model: model ?? null, now: NOW + 1 });
     return readiness.ready ? "ready" : readiness.reason;
@@ -273,17 +289,19 @@ test("exhausted, auth-required, offline, busy, paused, restricted and unsupporte
   });
   expect(reason(bindings.a2)).toBe("auth-required");
   db.run("UPDATE runner SET last_seen_at=? WHERE id='R3'", [NOW - 120_000]);
-  const r3 = bindAgentAccount(db, {
-    workspaceId: "W1",
-    accountId: accounts.c,
-    runnerId: "R3",
-    now: NOW,
-  }).id;
+  const r3 = (
+    await bindAgentAccount(sqliteDb(db), {
+      workspaceId: "W1",
+      accountId: accounts.c,
+      runnerId: "R3",
+      now: NOW,
+    })
+  ).id;
   expect(reason(r3)).toBe("offline");
   db.run("UPDATE runner SET last_seen_at=?,status='paused' WHERE id='R3'", [NOW]);
   expect(reason(r3)).toBe("paused");
   db.run("UPDATE runner SET status='active' WHERE id='R3'");
-  setAgentAccountConcurrency(db, {
+  await setAgentAccountConcurrency(sqliteDb(db), {
     workspaceId: "W1",
     accountId: accounts.c,
     concurrency: 1,
@@ -303,8 +321,8 @@ test("exhausted, auth-required, offline, busy, paused, restricted and unsupporte
   expect(reason(bindings.b1, "sonnet-9")).toBe("ready");
 });
 
-test("a provider restriction cannot be bypassed by rotating to another account", () => {
-  const { db, bindings } = fixture();
+test("a provider restriction cannot be bypassed by rotating to another account", async () => {
+  const { db, bindings } = await fixture();
   recordAccountObservation(db, {
     bindingId: bindings.a1,
     source: "result",
@@ -322,8 +340,8 @@ test("a provider restriction cannot be bypassed by rotating to another account",
   });
 });
 
-test("an unknown reset backs off with bounded jitter instead of a fixed retry", () => {
-  const { db, bindings, accounts } = fixture();
+test("an unknown reset backs off with bounded jitter instead of a fixed retry", async () => {
+  const { db, bindings, accounts } = await fixture();
   const delays: number[] = [];
   let at = NOW;
   for (let failure = 1; failure <= 8; failure++) {
@@ -347,8 +365,8 @@ test("an unknown reset backs off with bounded jitter instead of a fixed retry", 
   ).toBeGreaterThan(1);
 });
 
-test("a due recheck admits one real attempt; the others keep waiting for its result", () => {
-  const { db, bindings } = fixture();
+test("a due recheck admits one real attempt; the others keep waiting for its result", async () => {
+  const { db, bindings } = await fixture();
   exhaust(db, bindings.a1, "cmd-1", NOW);
   const due = bindingAccountHealth(db, bindings.a1)[0]!.nextCheckAt!;
   seen(db, due);
@@ -383,8 +401,8 @@ test("a due recheck admits one real attempt; the others keep waiting for its res
   });
 });
 
-test("low quota is advisory and never blocks", () => {
-  const { db, bindings } = fixture();
+test("low quota is advisory and never blocks", async () => {
+  const { db, bindings } = await fixture();
   recordAccountObservation(db, {
     bindingId: bindings.a1,
     source: "result",
@@ -400,11 +418,11 @@ test("low quota is advisory and never blocks", () => {
   });
 });
 
-test("cooldowns survive a restart and resume-now makes the account due", () => {
+test("cooldowns survive a restart and resume-now makes the account due", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-account-health-"));
   roots.push(root);
   const path = join(root, "paws.sqlite");
-  const first = fixture(path);
+  const first = await fixture(path);
   exhaust(first.db, first.bindings.a1, "cmd-1", NOW);
   first.db.close();
   const db = openDatabase(path);
@@ -413,7 +431,7 @@ test("cooldowns survive a restart and resume-now makes the account due", () => {
     reason: "exhausted",
   });
   expect(exhaust(db, first.bindings.a1, "cmd-1", NOW)).toEqual({ quota: "duplicate" });
-  resumeAccountHealthNow(db, "claude", null, NOW + 2);
+  await resumeAccountHealthNow(sqliteDb(db), "claude", null, NOW + 2);
   expect(bindingReadiness(db, { bindingId: first.bindings.a2, now: NOW + 2 })).toMatchObject({
     ready: true,
     revalidating: true,
@@ -421,8 +439,8 @@ test("cooldowns survive a restart and resume-now makes the account due", () => {
   db.close();
 });
 
-test("a usage-limit result shares its cooldown across the account and returns the recheck", () => {
-  const { db, bindings } = fixture();
+test("a usage-limit result shares its cooldown across the account and returns the recheck", async () => {
+  const { db, bindings } = await fixture();
   const placement = createRunnerPlacement({ db, now: () => NOW + 50 });
   attempt(db, "cmd-limit", bindings.a1, NOW);
   const outcome = placement.finished({

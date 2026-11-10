@@ -44,19 +44,7 @@ function sameList(stored: string | null, reported: string | null): boolean {
   return JSON.stringify(JSON.parse(stored)) === reported;
 }
 
-export function recordRunnerRepositories(
-  db: Database,
-  runnerId: string,
-  repositories: readonly string[] | null,
-  at: number,
-): void {
-  const enqueued = settled(
-    sqliteDb(db).transaction((q) => recordRunnerRepositoriesSteps(q, runnerId, repositories, at)),
-  );
-  if (enqueued) emitJobReady(db);
-}
-
-export async function recordRunnerRepositoriesAsync(
+export async function recordRunnerRepositories(
   store: Db,
   runnerId: string,
   repositories: readonly string[] | null,
@@ -121,14 +109,7 @@ export function* setRunnerAdminRepositoriesSteps(
   return woke || enqueued;
 }
 
-export function setRunnerAdminRepositories(db: Database, input: RunnerAdminRepositories): void {
-  const enqueued = settled(
-    sqliteDb(db).transaction((q) => setRunnerAdminRepositoriesSteps(q, input)),
-  );
-  if (enqueued) emitJobReady(db);
-}
-
-export async function setRunnerAdminRepositoriesAsync(
+export async function setRunnerAdminRepositories(
   store: Db,
   input: RunnerAdminRepositories,
 ): Promise<void> {
@@ -153,8 +134,11 @@ export function* runnerRepositoryListsSteps(q: Q, runnerId: string) {
   };
 }
 
-export function runnerRepositoryLists(db: Database, runnerId: string): RunnerRepositoryLists {
-  return settled(sqliteDb(db).run((q) => runnerRepositoryListsSteps(q, runnerId)));
+export async function runnerRepositoryLists(
+  store: Db,
+  runnerId: string,
+): Promise<RunnerRepositoryLists> {
+  return store.run((q) => runnerRepositoryListsSteps(q, runnerId));
 }
 
 export type RunnerRepositoryRefusal = { list: "admin" | "host"; allowed: string[] };
@@ -251,6 +235,8 @@ export function* openRunnerRepositoryQuestionsSteps(q: Q): Steps<RunnerRepositor
   );
 }
 
-export function openRunnerRepositoryQuestions(db: Database): RunnerRepositoryQuestion[] {
-  return settled(sqliteDb(db).run((q) => openRunnerRepositoryQuestionsSteps(q)));
+export async function openRunnerRepositoryQuestions(
+  store: Db,
+): Promise<RunnerRepositoryQuestion[]> {
+  return store.run((q) => openRunnerRepositoryQuestionsSteps(q));
 }

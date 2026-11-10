@@ -22,6 +22,7 @@ import {
   runnerHasCapacity,
   stopInstance,
   updateRunnerStatus,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { RunnerRequestError } from "../src/runner-daemon";
@@ -510,7 +511,7 @@ test.skipIf(!linuxUser)(
     const f = await fixture();
     try {
       await f.advance(STEP);
-      updateRunnerStatus(f.db, {
+      await updateRunnerStatus(sqliteDb(f.db), {
         runnerId: f.runnerId,
         workspaceId: f.workspaceId,
         userId: f.userId,

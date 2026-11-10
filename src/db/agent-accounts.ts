@@ -26,7 +26,7 @@ import {
   type RunnerCommand,
   type RunnerRetroCommand,
 } from "../runner-protocol";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 import { TEARDOWN_UNRESOLVED } from "./runner-capacity";
 import { runnerLeaseCutoff } from "./runner-lease";
@@ -170,8 +170,12 @@ export function* getAgentAccountSteps(q: Q, workspaceId: string, id: string) {
   return row;
 }
 
-export function getAgentAccount(db: Database, workspaceId: string, id: string): AgentAccount {
-  return settled(sqliteDb(db).run((q) => getAgentAccountSteps(q, workspaceId, id)));
+export async function getAgentAccount(
+  store: Db,
+  workspaceId: string,
+  id: string,
+): Promise<AgentAccount> {
+  return store.run((q) => getAgentAccountSteps(q, workspaceId, id));
 }
 
 export function* getAgentBindingSteps(q: Q, workspaceId: string, id: string) {
@@ -185,8 +189,8 @@ export function* getAgentBindingSteps(q: Q, workspaceId: string, id: string) {
   return row;
 }
 
-export function getAgentBinding(db: Database, workspaceId: string, id: string) {
-  return settled(sqliteDb(db).run((q) => getAgentBindingSteps(q, workspaceId, id)));
+export async function getAgentBinding(store: Db, workspaceId: string, id: string) {
+  return store.run((q) => getAgentBindingSteps(q, workspaceId, id));
 }
 
 export function* listAgentAccountsSteps(q: Q, workspaceId: string) {
@@ -201,8 +205,8 @@ export function* listAgentAccountsSteps(q: Q, workspaceId: string) {
   return rows.map(account);
 }
 
-export function listAgentAccounts(db: Database, workspaceId: string): AgentAccount[] {
-  return settled(sqliteDb(db).run((q) => listAgentAccountsSteps(q, workspaceId)));
+export async function listAgentAccounts(store: Db, workspaceId: string): Promise<AgentAccount[]> {
+  return store.run((q) => listAgentAccountsSteps(q, workspaceId));
 }
 
 export function* listAgentBindingsSteps(q: Q, workspaceId: string, accountId?: string) {
@@ -223,12 +227,12 @@ export function* listAgentBindingsSteps(q: Q, workspaceId: string, accountId?: s
   return rows.map(binding);
 }
 
-export function listAgentBindings(
-  db: Database,
+export async function listAgentBindings(
+  store: Db,
   workspaceId: string,
   accountId?: string,
-): AgentAccountBinding[] {
-  return settled(sqliteDb(db).run((q) => listAgentBindingsSteps(q, workspaceId, accountId)));
+): Promise<AgentAccountBinding[]> {
+  return store.run((q) => listAgentBindingsSteps(q, workspaceId, accountId));
 }
 
 export function* ensureLegacyAgentBindingSteps(
@@ -274,15 +278,13 @@ export function* ensureLegacyAgentBindingSteps(
   return (yield* bindingRowSteps(q, id))!;
 }
 
-export function ensureLegacyAgentBinding(
-  db: Database,
+export async function ensureLegacyAgentBinding(
+  store: Db,
   runnerId: string,
   agent: RunnerCodingAgent,
   at: number,
-): AgentAccountBinding {
-  return settled(
-    sqliteDb(db).transaction((q) => ensureLegacyAgentBindingSteps(q, runnerId, agent, at)),
-  );
+): Promise<AgentAccountBinding> {
+  return store.transaction((q) => ensureLegacyAgentBindingSteps(q, runnerId, agent, at));
 }
 
 function parseLabel(value: string): string {
@@ -353,11 +355,11 @@ export function* createAgentAccountSteps(
   return (yield* accountRowSteps(q, id))!;
 }
 
-export function createAgentAccount(
-  db: Database,
+export async function createAgentAccount(
+  store: Db,
   input: { workspaceId: string; agent: RunnerCodingAgent; label: string; now: number },
-): AgentAccount {
-  return settled(sqliteDb(db).transaction((q) => createAgentAccountSteps(q, input)));
+): Promise<AgentAccount> {
+  return store.transaction((q) => createAgentAccountSteps(q, input));
 }
 
 function* liveAccountSteps(q: Q, workspaceId: string, id: string) {
@@ -384,11 +386,11 @@ export function* renameAgentAccountSteps(
   return (yield* accountRowSteps(q, row.id))!;
 }
 
-export function renameAgentAccount(
-  db: Database,
+export async function renameAgentAccount(
+  store: Db,
   input: { workspaceId: string; accountId: string; label: string; now: number },
-): AgentAccount {
-  return settled(sqliteDb(db).transaction((q) => renameAgentAccountSteps(q, input)));
+): Promise<AgentAccount> {
+  return store.transaction((q) => renameAgentAccountSteps(q, input));
 }
 
 export function* setAgentAccountEnabledSteps(
@@ -406,11 +408,11 @@ export function* setAgentAccountEnabledSteps(
   return (yield* accountRowSteps(q, row.id))!;
 }
 
-export function setAgentAccountEnabled(
-  db: Database,
+export async function setAgentAccountEnabled(
+  store: Db,
   input: { workspaceId: string; accountId: string; enabled: boolean; now: number },
-): AgentAccount {
-  return settled(sqliteDb(db).transaction((q) => setAgentAccountEnabledSteps(q, input)));
+): Promise<AgentAccount> {
+  return store.transaction((q) => setAgentAccountEnabledSteps(q, input));
 }
 
 export function* setAgentAccountConcurrencySteps(
@@ -433,11 +435,11 @@ export function* setAgentAccountConcurrencySteps(
   return input.concurrency;
 }
 
-export function setAgentAccountConcurrency(
-  db: Database,
+export async function setAgentAccountConcurrency(
+  store: Db,
   input: { workspaceId: string; accountId: string; concurrency: number | null; now: number },
-): number | null {
-  return settled(sqliteDb(db).transaction((q) => setAgentAccountConcurrencySteps(q, input)));
+): Promise<number | null> {
+  return store.transaction((q) => setAgentAccountConcurrencySteps(q, input));
 }
 
 export function* removeAgentAccountSteps(
@@ -463,11 +465,11 @@ export function* removeAgentAccountSteps(
   return (yield* accountRowSteps(q, row.id))!;
 }
 
-export function removeAgentAccount(
-  db: Database,
+export async function removeAgentAccount(
+  store: Db,
   input: { workspaceId: string; accountId: string; now: number },
-): AgentAccount {
-  return settled(sqliteDb(db).transaction((q) => removeAgentAccountSteps(q, input)));
+): Promise<AgentAccount> {
+  return store.transaction((q) => removeAgentAccountSteps(q, input));
 }
 
 export function* bindAgentAccountSteps(
@@ -506,11 +508,11 @@ export function* bindAgentAccountSteps(
   return (yield* bindingRowSteps(q, id))!;
 }
 
-export function bindAgentAccount(
-  db: Database,
+export async function bindAgentAccount(
+  store: Db,
   input: { workspaceId: string; accountId: string; runnerId: string; now: number },
-): AgentAccountBinding {
-  return settled(sqliteDb(db).transaction((q) => bindAgentAccountSteps(q, input)));
+): Promise<AgentAccountBinding> {
+  return store.transaction((q) => bindAgentAccountSteps(q, input));
 }
 
 export function* removeAgentBindingSteps(
@@ -530,11 +532,11 @@ export function* removeAgentBindingSteps(
   return (yield* bindingRowSteps(q, row.id))!;
 }
 
-export function removeAgentBinding(
-  db: Database,
+export async function removeAgentBinding(
+  store: Db,
   input: { workspaceId: string; bindingId: string; now: number },
-): AgentAccountBinding {
-  return settled(sqliteDb(db).transaction((q) => removeAgentBindingSteps(q, input)));
+): Promise<AgentAccountBinding> {
+  return store.transaction((q) => removeAgentBindingSteps(q, input));
 }
 
 export function* recordRunnerAccountCapabilitySteps(
@@ -562,13 +564,13 @@ export function* recordRunnerAccountCapabilitySteps(
   );
 }
 
-export function recordRunnerAccountCapability(
-  db: Database,
+export async function recordRunnerAccountCapability(
+  store: Db,
   runnerId: string,
   capability: RunnerAccountCapability | undefined,
   at: number,
-): void {
-  settled(sqliteDb(db).run((q) => recordRunnerAccountCapabilitySteps(q, runnerId, capability, at)));
+): Promise<void> {
+  await store.run((q) => recordRunnerAccountCapabilitySteps(q, runnerId, capability, at));
 }
 
 export function* runnerAccountUnsupportedSteps(
@@ -609,16 +611,14 @@ export function* runnerAccountUnsupportedSteps(
   return null;
 }
 
-export function runnerAccountUnsupported(
-  db: Database,
+export async function runnerAccountUnsupported(
+  store: Db,
   runnerId: string,
   bindingId: string,
   agent: RunnerCodingAgent,
   options: { signIn?: boolean } = {},
-): string | null {
-  return settled(
-    sqliteDb(db).run((q) => runnerAccountUnsupportedSteps(q, runnerId, bindingId, agent, options)),
-  );
+): Promise<string | null> {
+  return store.run((q) => runnerAccountUnsupportedSteps(q, runnerId, bindingId, agent, options));
 }
 
 function commandAgent(command: RunnerCommand | RunnerRetroCommand): RunnerCodingAgent | null {
@@ -727,12 +727,12 @@ export function* admitAgentAccountsSteps(q: Q, workspaceId: string, agent: Runne
   return { agent, eligible, skipped };
 }
 
-export function admitAgentAccounts(
-  db: Database,
+export async function admitAgentAccounts(
+  store: Db,
   workspaceId: string,
   agent: RunnerCodingAgent,
-): AccountAdmission {
-  return settled(sqliteDb(db).run((q) => admitAgentAccountsSteps(q, workspaceId, agent)));
+): Promise<AccountAdmission> {
+  return store.run((q) => admitAgentAccountsSteps(q, workspaceId, agent));
 }
 
 export function* liveAccountBindingSteps(q: Q, runnerId: string, accountId: string) {
@@ -748,12 +748,12 @@ export function* liveAccountBindingSteps(q: Q, runnerId: string, accountId: stri
   return row ? binding(row) : null;
 }
 
-export function liveAccountBinding(
-  db: Database,
+export async function liveAccountBinding(
+  store: Db,
   runnerId: string,
   accountId: string,
-): AgentAccountBinding | null {
-  return settled(sqliteDb(db).run((q) => liveAccountBindingSteps(q, runnerId, accountId)));
+): Promise<AgentAccountBinding | null> {
+  return store.run((q) => liveAccountBindingSteps(q, runnerId, accountId));
 }
 
 export function* agentAccountConcurrencySteps(q: Q, accountId: string) {
@@ -767,8 +767,11 @@ export function* agentAccountConcurrencySteps(q: Q, accountId: string) {
   return row?.concurrency ?? null;
 }
 
-export function agentAccountConcurrency(db: Database, accountId: string): number | null {
-  return settled(sqliteDb(db).run((q) => agentAccountConcurrencySteps(q, accountId)));
+export async function agentAccountConcurrency(
+  store: Db,
+  accountId: string,
+): Promise<number | null> {
+  return store.run((q) => agentAccountConcurrencySteps(q, accountId));
 }
 
 export function* accountSlotsInUseSteps(
@@ -845,8 +848,8 @@ export function* storedAgentBindingIdSteps(q: Q, id: string) {
   return row?.id ?? null;
 }
 
-export function storedAgentBindingId(db: Database, id: string): string | null {
-  return settled(sqliteDb(db).run((q) => storedAgentBindingIdSteps(q, id)));
+export async function storedAgentBindingId(store: Db, id: string): Promise<string | null> {
+  return store.run((q) => storedAgentBindingIdSteps(q, id));
 }
 
 export type RunnerNamedBinding = {
@@ -883,12 +886,12 @@ export function* runnerNamedBindingsSteps(q: Q, runnerId: string, workspaceId: s
   );
 }
 
-export function runnerNamedBindings(
-  db: Database,
+export async function runnerNamedBindings(
+  store: Db,
   runnerId: string,
   workspaceId: string,
-): RunnerNamedBinding[] {
-  return settled(sqliteDb(db).run((q) => runnerNamedBindingsSteps(q, runnerId, workspaceId)));
+): Promise<RunnerNamedBinding[]> {
+  return store.run((q) => runnerNamedBindingsSteps(q, runnerId, workspaceId));
 }
 
 export function* bindingRunningCountSteps(q: Q, bindingId: string, at: number) {
@@ -914,6 +917,10 @@ export function* bindingRunningCountSteps(q: Q, bindingId: string, at: number) {
   return work!.count + helpers!.count;
 }
 
-export function bindingRunningCount(db: Database, bindingId: string, at: number): number {
-  return settled(sqliteDb(db).run((q) => bindingRunningCountSteps(q, bindingId, at)));
+export async function bindingRunningCount(
+  store: Db,
+  bindingId: string,
+  at: number,
+): Promise<number> {
+  return store.run((q) => bindingRunningCountSteps(q, bindingId, at));
 }

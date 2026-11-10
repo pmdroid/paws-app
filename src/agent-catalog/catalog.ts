@@ -15,6 +15,7 @@ import {
   type AgentVersionStatus,
   type CatalogPackage,
   type NpmVersionMetadata,
+  sqliteDb,
 } from "../db";
 import type { NpmRegistry } from "./registry";
 
@@ -98,7 +99,7 @@ export function createAgentCatalog(options: {
           continue;
         }
         const rows = await evaluateAgent(agent, spec, versions, load, at);
-        saveAgentVersions(db, rows);
+        await saveAgentVersions(sqliteDb(db), rows);
       } catch (error) {
         journalCaught(error, "catalog.run.load", null);
         complete = false;
@@ -107,7 +108,7 @@ export function createAgentCatalog(options: {
     }
     // Only a refresh in which every agent was evaluated on fresh npm reads counts as the day's
     // refresh. A failed read, an error or a crash part way leaves it due at the next hourly check.
-    if (complete && staleReads.size === 0) markAgentCatalogRefreshed(db, at);
+    if (complete && staleReads.size === 0) await markAgentCatalogRefreshed(sqliteDb(db), at);
   }
 
   async function read(name: string, at: number, signal?: AbortSignal): Promise<Versions | null> {
@@ -115,15 +116,15 @@ export function createAgentCatalog(options: {
     try {
       const result = await registry.fetchPackage(name, stored?.etag ?? null, signal);
       if (result.status === "not-modified" && stored) {
-        touchNpmPackage(db, name, at);
+        await touchNpmPackage(sqliteDb(db), name, at);
         return stored.versions;
       }
       if (result.status === "ok") {
-        saveNpmPackage(db, name, result.etag, result.versions, at);
+        await saveNpmPackage(sqliteDb(db), name, result.etag, result.versions, at);
         return result.versions;
       }
       if (result.status === "not-found") {
-        saveNpmPackage(db, name, null, {}, at);
+        await saveNpmPackage(sqliteDb(db), name, null, {}, at);
         return {};
       }
       staleReads.set(name, stored?.fetchedAt ?? 0);
@@ -245,7 +246,7 @@ export function createAgentCatalog(options: {
       });
     }
     // A version npm no longer lists keeps its row, but is never offered again.
-    for (const previous of listAgentVersions(db, agent))
+    for (const previous of await listAgentVersions(sqliteDb(db), agent))
       if (!(previous.version in versions)) {
         const refused = previous.status === "refused";
         rows.push({
@@ -270,7 +271,7 @@ export function createAgentCatalog(options: {
     current: { own: Verdict; load: (name: string) => Promise<Versions | null>; at: number },
     next: { verdict: Verdict; nativeVersion: string | null },
   ): Promise<{ verdict: Verdict; nativeVersion: string | null }> {
-    const previous = readAgentVersion(db, agent, version);
+    const previous = await readAgentVersion(sqliteDb(db), agent, version);
     if (!previous)
       return {
         verdict: worst([
@@ -371,7 +372,7 @@ export function createAgentCatalog(options: {
   return {
     refresh,
     async refreshIfDue(signal) {
-      const last = lastAgentCatalogRefresh(db);
+      const last = await lastAgentCatalogRefresh(sqliteDb(db));
       if (last !== null && now() - last < AGENT_CATALOG_REFRESH_MS) return false;
       await refresh(signal);
       return true;

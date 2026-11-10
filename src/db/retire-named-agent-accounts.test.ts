@@ -9,11 +9,12 @@ import {
   legacyMigrate,
   openDatabase,
   removeAgentAccount,
+  sqliteDb,
 } from "./index";
 
 const NOW = 1_800_000_000_000;
 
-test("the migration disables each named account, journals it once and leaves the default sign-in", () => {
+test("the migration disables each named account, journals it once and leaves the default sign-in", async () => {
   const ids = loadMigrationFiles().map((entry) => entry.id);
   const db = openDatabase(":memory:");
   legacyMigrate(db, { until: ids[ids.indexOf(migration.id) - 1]! });
@@ -29,20 +30,20 @@ test("the migration disables each named account, journals it once and leaves the
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES('R1','acme','ada','acme-1','active',?)",
     [NOW],
   );
-  ensureLegacyAgentBinding(db, "R1", "claude", NOW);
-  const named = createAgentAccount(db, {
+  await ensureLegacyAgentBinding(sqliteDb(db), "R1", "claude", NOW);
+  const named = await createAgentAccount(sqliteDb(db), {
     workspaceId: "acme",
     agent: "claude",
     label: "Acme team Claude",
     now: NOW,
   });
-  const removed = createAgentAccount(db, {
+  const removed = await createAgentAccount(sqliteDb(db), {
     workspaceId: "acme",
     agent: "codex",
     label: "Old Codex",
     now: NOW,
   });
-  removeAgentAccount(db, { workspaceId: "acme", accountId: removed.id, now: NOW });
+  await removeAgentAccount(sqliteDb(db), { workspaceId: "acme", accountId: removed.id, now: NOW });
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
   try {
@@ -59,6 +60,8 @@ test("the migration disables each named account, journals it once and leaves the
   expect(lines.filter((line) => line.includes("agent account"))).toEqual([
     `agent account ${named.id} (claude "Acme team Claude", workspace acme) disabled: named accounts were replaced by per-runner sign-in`,
   ]);
-  expect(admitAgentAccounts(db, "acme", "claude").eligible).toEqual(["legacy_claude_acme"]);
+  expect((await admitAgentAccounts(sqliteDb(db), "acme", "claude")).eligible).toEqual([
+    "legacy_claude_acme",
+  ]);
   db.close();
 });

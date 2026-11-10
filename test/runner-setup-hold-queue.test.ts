@@ -14,6 +14,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { writeAgentSettings } from "../src/config";
 import { createFakeTracker, type FakeTracker } from "../src/linear";
@@ -138,7 +139,7 @@ test("a delegator without a runner, beside another member's free runner, is held
     const users = workspace(db);
     await paws.reconcileExecution();
     await paws.reconcileExecution();
-    expect(getRunnerSetupHold(db, "mine")).toMatchObject({
+    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({
       reason: "no-runner",
       ownerUserId: users.me,
     });
@@ -165,7 +166,7 @@ test("a delegator without a runner, beside another member's free runner, is held
     await paws.reconcileExecution();
     expect(itemJobs(db, "mine")).toBe(0);
     while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
-    expect(getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
     expect(itemJobs(db, "mine")).toBe(1);
   } finally {
     await paws.shutdown();
@@ -181,7 +182,7 @@ test("a delegator whose own runner needs its agent signed in hears the runner an
     const users = workspace(db);
     addRunner(db, "member-vm", users.me!, START, 0);
     await paws.reconcileExecution();
-    expect(getRunnerSetupHold(db, "mine")).toMatchObject({
+    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({
       reason: "agent-not-signed-in",
       runnerId: "member-vm",
     });
@@ -222,11 +223,11 @@ async function held(prepare: (db: Database, users: Record<string, string>, now: 
   const paws = orchestrator(db, clock, jobs);
   const users = workspace(db);
   await paws.reconcileExecution();
-  expect(getRunnerSetupHold(db, "mine")).not.toBeNull();
+  expect(await getRunnerSetupHold(sqliteDb(db), "mine")).not.toBeNull();
   prepare(db, users, clock.now());
   while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
   // The prepared state alone is not enough, or the fixture would have resumed already.
-  expect(getRunnerSetupHold(db, "mine")).not.toBeNull();
+  expect(await getRunnerSetupHold(sqliteDb(db), "mine")).not.toBeNull();
   forgetChecks(db);
   return {
     db,
@@ -323,7 +324,7 @@ for (const trigger of TRIGGERS)
       trigger.fire(db, users, clock.now());
       expect(checkJobs(db)).toEqual([users.me!]);
       expect(await fixture.runChecks()).toBe(1);
-      expect(getRunnerSetupHold(db, "mine")).toBeNull();
+      expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
       expect(thoughts(db)).toEqual([HOLD_LINE, `Starting PAS-1 on ${trigger.runner}.`]);
       expect(itemJobs(db, "mine")).toBe(1);
     } finally {
@@ -346,7 +347,7 @@ test("a runner that becomes usable for another member leaves this member's hold 
     db.run("UPDATE runner_policy SET sharing=1 WHERE runner_id='theirs'");
     expect(checkJobs(db)).toEqual([users.me!]);
     await fixture.runChecks();
-    expect(getRunnerSetupHold(db, "mine")).not.toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).not.toBeNull();
     expect(thoughts(db)).toEqual([HOLD_LINE]);
     expect(itemJobs(db, "mine")).toBe(0);
   } finally {
@@ -388,7 +389,7 @@ test("two triggers at once resume the item once", async () => {
       fixture.jobs.tick([JOB_KIND.runnerSetupCheck]),
     ]);
     expect(checkJobs(db)).toEqual([]);
-    expect(getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
     expect(thoughts(db)).toEqual([HOLD_LINE, "Starting PAS-1 on own."]);
     expect(itemJobs(db, "mine")).toBe(1);
   } finally {
@@ -440,10 +441,10 @@ test("an Acme issue labelled Codex starts on its owner's Codex-only runner", asy
     onlyCodex(db, "own");
     label("Codex");
     await paws.reconcileExecution();
-    expect(getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
     await Bun.sleep(0);
     expect(counted.reads).toBe(1);
-    expect(getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
     expect(itemJobs(db, "mine")).toBe(1);
   } finally {
     await paws.shutdown();
@@ -462,7 +463,9 @@ test("a labelled Acme issue is held for its labelled agent and resumes when that
     label("Codex");
     await paws.reconcileExecution();
     await Bun.sleep(0);
-    expect(getRunnerSetupHold(db, "mine")).toMatchObject({ reason: "agent-not-signed-in" });
+    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({
+      reason: "agent-not-signed-in",
+    });
     expect(thoughts(db)).toHaveLength(1);
     expect(thoughts(db)[0]).toContain("Codex");
     await paws.reconcileExecution();
@@ -473,7 +476,7 @@ test("a labelled Acme issue is held for its labelled agent and resumes when that
     db.run("UPDATE runner SET last_seen_at=?", [clock.now()]);
     await paws.reconcileExecution();
     while ((await jobs.tick([JOB_KIND.runnerSetupCheck])) !== null);
-    expect(getRunnerSetupHold(db, "mine")).toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toBeNull();
     expect(itemJobs(db, "mine")).toBe(1);
   } finally {
     await paws.shutdown();
@@ -491,7 +494,7 @@ test("without presets a label can't change the agent, so a hold costs no Linear 
     await paws.reconcileExecution();
     await Bun.sleep(0);
     expect(counted.reads).toBe(0);
-    expect(getRunnerSetupHold(db, "mine")).toMatchObject({ reason: "no-runner" });
+    expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({ reason: "no-runner" });
   } finally {
     await paws.shutdown();
     db.close();

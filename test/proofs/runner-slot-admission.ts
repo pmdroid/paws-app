@@ -33,14 +33,14 @@ export default {
       "unavailable authority returns an item verdict without aborting admission",
       itemRunnerVerdicts(db, { itemId: "stopped", agent: "claude", now: NOW }) === null,
     );
-    const goldbox = pair("goldbox", 6, ["other/repo"]);
+    const goldbox = await pair("goldbox", 6, ["other/repo"]);
     for (const id of ["a", "b", "c"]) queue(id);
     proof.expect("a repository refused everywhere stays queued", (await pass()).length === 0);
     proof.expect(
       "no refused start can be claimed",
       claimNextJob(db, { now: NOW, queues: [JOB_KIND.start] }) === null,
     );
-    const agentbox = pair("agentbox", 2, [REPOSITORY]);
+    const agentbox = await pair("agentbox", 2, [REPOSITORY]);
     const admitted = await pass();
     proof.expect("only two items are admitted", admitted.length === 2, admitted);
     proof.expect(
@@ -72,13 +72,13 @@ export default {
       getWorkItem(db, "c")?.state === "queued",
       getWorkItem(db, "c")?.state,
     );
-    recordRunnerRepositories(db, goldbox, [REPOSITORY], NOW + 1);
+    await recordRunnerRepositories(sqliteDb(db), goldbox, [REPOSITORY], NOW + 1);
     proof.expect("newly allowed capacity admits the held item", (await pass()).includes("c"));
     proof.expect(
       "newly eligible runner owns the third admission",
       schedulerRunnerSlots(db, NOW).find((slot) => slot.itemId === "c")?.runnerId === goldbox,
     );
-    const spare = pair("spare", 1, [REPOSITORY]);
+    const spare = await pair("spare", 1, [REPOSITORY]);
     const alternatives = await createRunnerPlacement({ db, now: () => NOW }).candidates({
       itemId: "c",
       role: "implementer",

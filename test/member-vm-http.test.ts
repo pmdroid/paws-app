@@ -11,6 +11,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import {
   createMemberVmHttp,
@@ -136,7 +137,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
   };
   const drive = async (until: (row: MemberVm) => boolean) => {
     for (let index = 0; index < 500; index++) {
-      const row = findMemberVm(db, member)!;
+      const row = (await findMemberVm(db, member))!;
       if (until(row)) return row;
       if ((await loop.tick()) === null) clock.advance(MEMBER_VM_POLL_MS);
     }
@@ -166,7 +167,7 @@ describe("member VM routes", () => {
     f.setAvailable(false);
     expect(await f.call(f.member, "GET")).toEqual({ status: 200, body: { available: false } });
     expect(await f.call(f.member, "POST")).toEqual({ status: 200, body: { available: false } });
-    expect(findMemberVm(f.db, f.member)).toBeNull();
+    expect(await findMemberVm(f.db, f.member)).toBeNull();
   });
 
   test("inactive members are refused on every route", async () => {
@@ -177,7 +178,7 @@ describe("member VM routes", () => {
       ["POST", "/api/runners/vm/retry"],
     ] as const)
       expect((await f.call(f.inactive, method, path)).status).toBe(403);
-    expect(findMemberVm(f.db, f.inactive)).toBeNull();
+    expect(await findMemberVm(f.db, f.inactive)).toBeNull();
   });
 
   test("other paths fall through and wrong methods answer 405", async () => {
@@ -242,7 +243,7 @@ describe("member VM routes", () => {
       },
     });
     expect((await f.call(f.member, "POST", "/api/runners/vm", { pool: "a b" })).status).toBe(400);
-    expect(findMemberVm(f.db, f.member)).toBeNull();
+    expect(await findMemberVm(f.db, f.member)).toBeNull();
     const started = vmOf((await f.call(f.member, "POST", "/api/runners/vm", { pool: "gpu" })).body);
     expect(started.pool).toBe("gpu");
     await f.drive((row) => row.step !== "create");
@@ -350,7 +351,7 @@ describe("member VM routes", () => {
     expect(states(ready)).toEqual(["create:done", "install:done", "enroll:done", "health:done"]);
     for (const entry of ready.steps) expect(entry.elapsedMs).not.toBeNull();
 
-    const [runner] = listRunnerOverview(f.db, f.workspace.id, f.clock.now());
+    const [runner] = await listRunnerOverview(sqliteDb(f.db), f.workspace.id, f.clock.now());
     expect(runner).toMatchObject({
       id: ready.runnerId,
       ownerUserId: f.member.userId,

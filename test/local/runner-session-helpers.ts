@@ -86,7 +86,7 @@ export async function probeRunnerSessionHelpers(
   async function pair(name: string, runner: (typeof RUNNER_IDENTITIES)[number]) {
     const { token } = await coordinator.control.createEnrollment(principal, { name });
     const runnerId = workspaceId(now);
-    enrollRunner(db, {
+    await enrollRunner(sqliteDb(db), {
       tokenHash: workspaceTokenHash(token),
       runnerId,
       name,

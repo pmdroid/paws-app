@@ -41,8 +41,8 @@ export function getMemberVm(db: Database, id: string): Promise<MemberVm | null> 
   return sqliteDb(db).run((q) => memberVmByIdSteps(q, id));
 }
 
-export function findMemberVm(db: Database, member: MemberRef): MemberVm | null {
-  return memberVmForMember(db, member.workspaceId, member.userId);
+export async function findMemberVm(db: Database, member: MemberRef): Promise<MemberVm | null> {
+  return await memberVmForMember(sqliteDb(db), member.workspaceId, member.userId);
 }
 
 /** `pool` applies to a new VM only; an existing one keeps where it is. */

@@ -21,6 +21,7 @@ import {
   prepareShutdown,
   recoverOnStartup,
   type Job,
+  sqliteDb,
 } from "../src/db";
 import { HostSupervisor, WakeDetector } from "../src/host";
 import { dispatch } from "../src/scheduler";
@@ -330,7 +331,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
       await host.tick();
       const ids = ["eng-9", "eng-10", "eng-11", "eng-12"];
       const before = ids.map((id) => snapshot(db, id));
-      const hold = getRunnerSetupHold(db, "eng-11");
+      const hold = await getRunnerSetupHold(sqliteDb(db), "eng-11");
       const outbox = listOutbox(db).length;
 
       for (const gapMs of [5 * 60_000, TWO_HOURS, TWO_HOURS + 1]) {
@@ -341,7 +342,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
       }
 
       expect(ids.map((id) => snapshot(db, id))).toEqual(before);
-      expect(getRunnerSetupHold(db, "eng-11")).toEqual(hold);
+      expect(await getRunnerSetupHold(sqliteDb(db), "eng-11")).toEqual(hold);
       expect(getWorkItem(db, "eng-12")?.state).toBe("awaiting_input");
       expect(listOutbox(db)).toHaveLength(outbox);
       expect(db.query("SELECT COUNT(*) AS n FROM wake").get()).toEqual({ n: 3 });

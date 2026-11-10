@@ -50,7 +50,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
 });
 
-function setup(options: { version?: string; conversations?: number } = {}) {
+async function setup(options: { version?: string; conversations?: number } = {}) {
   const db = openDatabase(":memory:");
   migrate(db);
   const clock = new FakeClock(T0);
@@ -73,7 +73,12 @@ function setup(options: { version?: string; conversations?: number } = {}) {
     [workspace.id, userId, T0, T0],
   );
   recordRunnerCapacity(db, "runner", 1, 1, options.conversations ?? 2);
-  recordRunnerHostStatus(db, "runner", { runnerVersion: options.version ?? "0.1.77" }, T0);
+  await recordRunnerHostStatus(
+    sqliteDb(db),
+    "runner",
+    { runnerVersion: options.version ?? "0.1.77" },
+    T0,
+  );
   const helpers = createRunnerHelpers({
     db,
     keyId: "acme",
@@ -251,7 +256,7 @@ function setup(options: { version?: string; conversations?: number } = {}) {
 }
 
 test("with every work slot busy, a message on an idle item starts a conversation at once and the reply reaches the session", async () => {
-  const f = setup();
+  const f = await setup();
   f.item("acme-busy", "running");
   const acme = f.item("acme-1");
   const slots = f.taskSlots();
@@ -286,7 +291,7 @@ test("with every work slot busy, a message on an idle item starts a conversation
 });
 
 test("a reply in the Linear session of an idle item goes to a conversation, not a restart", async () => {
-  const f = setup();
+  const f = await setup();
   const acme = f.item("acme-1");
   await f.reply(acme.session, "Is the retry covered by a test?");
   expect(f.resumes()).toEqual([]);
@@ -298,7 +303,7 @@ test("a reply in the Linear session of an idle item goes to a conversation, not 
 });
 
 test("a turn that ends without a reply posts its final message as the reply", async () => {
-  const f = setup();
+  const f = await setup();
   const acme = f.item("acme-1", "queued");
   await f.say("acme-1", "c-1", "Which file holds the checkout form?");
   expect(await f.deliver("acme-1")).toBe("wait");
@@ -309,7 +314,7 @@ test("a turn that ends without a reply posts its final message as the reply", as
 });
 
 test("three messages on three items with a conversation limit of 2: two run and the third waits for a conversation slot", async () => {
-  const f = setup({ conversations: 2 });
+  const f = await setup({ conversations: 2 });
   for (const id of ["acme-1", "acme-2", "acme-3"]) {
     f.item(id);
     await f.say(id, `c-${id}`, `What does ${id} change?`);
@@ -335,7 +340,7 @@ test("three messages on three items with a conversation limit of 2: two run and 
 });
 
 test("a timeout posts the timeout reply once and keeps the session", async () => {
-  const f = setup();
+  const f = await setup();
   const acme = f.item("acme-1");
   await f.say("acme-1", "c-1", "Walk me through the whole payment flow.");
   expect(await f.deliver("acme-1")).toBe("wait");
@@ -348,7 +353,7 @@ test("a timeout posts the timeout reply once and keeps the session", async () =>
 });
 
 test("a helper that expires without a result posts the timeout reply once", async () => {
-  const f = setup();
+  const f = await setup();
   const acme = f.item("acme-1");
   await f.say("acme-1", "c-1", "Walk me through the whole payment flow.");
   expect(await f.deliver("acme-1")).toBe("wait");
@@ -361,7 +366,7 @@ test("a helper that expires without a result posts the timeout reply once", asyn
 });
 
 test("a message while a work turn runs is delivered at the turn boundary, as today", async () => {
-  const f = setup();
+  const f = await setup();
   f.item("acme-1", "running");
   await f.say("acme-1", "c-1", "Also cover the empty cart.");
   expect(await f.deliver("acme-1")).toBe("wait");
@@ -373,7 +378,7 @@ test("a message while a work turn runs is delivered at the turn boundary, as tod
 // and 0.1.75 drop `replies` and `startWork` from the result): the turn could not act on the message.
 for (const version of ["0.1.73", "0.1.75", "0.1.76"])
   test(`a runner at ${version}, which cannot return a conversation's replies or start_work, gets a follow_up restart with the message`, async () => {
-    const f = setup({ version });
+    const f = await setup({ version });
     f.item("acme-1");
     await f.say("acme-1", "c-1", "Use the v2 endpoint.");
     expect(await f.deliver("acme-1")).toBe("restarted");
@@ -384,7 +389,7 @@ for (const version of ["0.1.73", "0.1.75", "0.1.76"])
   });
 
 test("a queued item's start job waits while a conversation runs on its session", async () => {
-  const f = setup();
+  const f = await setup();
   f.item("acme-1", "queued");
   await f.say("acme-1", "c-1", "What is left to do?");
   expect(await f.deliver("acme-1")).toBe("wait");
@@ -419,7 +424,7 @@ test("a queued item's start job waits while a conversation runs on its session",
 });
 
 test("session replies past the prompt budget wait for the next conversation", async () => {
-  const f = setup();
+  const f = await setup();
   const acme = f.item("acme-1");
   await f.turn(acme.session, "turn-1", `First: ${"a".repeat(40_000)}`);
   await f.turn(acme.session, "turn-2", `Second: ${"b".repeat(40_000)}`);
@@ -439,7 +444,7 @@ test("session replies past the prompt budget wait for the next conversation", as
 });
 
 test("start_work in a conversation on a 0.1.77 runner restarts the item with the plan and posts it, holding no slot while it waits", async () => {
-  const f = setup({ version: "0.1.77" });
+  const f = await setup({ version: "0.1.77" });
   f.item("acme-busy", "running");
   const acme = f.item("acme-1");
   const slots = f.taskSlots();
@@ -471,7 +476,7 @@ test("start_work in a conversation on a 0.1.77 runner restarts the item with the
 });
 
 test("start_work after the item moved on posts that the work did not start", async () => {
-  const f = setup();
+  const f = await setup();
   const acme = f.item("acme-1");
   await f.say("acme-1", "c-1", "Please rename the flag.");
   expect(await f.deliver("acme-1")).toBe("wait");

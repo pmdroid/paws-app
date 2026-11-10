@@ -13,6 +13,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   recordRunnerAccountCapability,
+  sqliteDb,
 } from "../src/db";
 import {
   createRunnerPlacement,
@@ -143,13 +144,13 @@ test("no runner signed in to the reviewer's agent: placement offers none and wai
 
 test("a named account bound to a runner no longer stands in for that runner's own sign-in", async () => {
   const f = acme();
-  const named = createAgentAccount(f.db, {
+  const named = await createAgentAccount(sqliteDb(f.db), {
     workspaceId: f.workspaceId,
     agent: "claude",
     label: "Acme team Claude",
     now: f.now,
   });
-  const binding = bindAgentAccount(f.db, {
+  const binding = await bindAgentAccount(sqliteDb(f.db), {
     workspaceId: f.workspaceId,
     accountId: named.id,
     runnerId: "acme-1",
@@ -159,8 +160,8 @@ test("a named account bound to a runner no longer stands in for that runner's ow
     "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES('acme-1','0.1.61',?)",
     [f.now],
   );
-  recordRunnerAccountCapability(
-    f.db,
+  await recordRunnerAccountCapability(
+    sqliteDb(f.db),
     "acme-1",
     { protocol: 1, bindings: [{ bindingId: binding.id, agent: "claude" }] },
     f.now,

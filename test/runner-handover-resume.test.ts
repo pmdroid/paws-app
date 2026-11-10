@@ -20,6 +20,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerControl, createRunnerSessionMoves } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
@@ -675,9 +676,9 @@ function moveRequest(runnerId: string, runId: string) {
 }
 
 /** The sessions `runnerId`'s card lists. */
-function card(runnerId: string) {
+async function card(runnerId: string) {
   return (
-    listRunnerOverview(context.db, context.workspaceId, context.now).find(
+    (await listRunnerOverview(sqliteDb(context.db), context.workspaceId, context.now)).find(
       (runner) => runner.id === runnerId,
     )?.running ?? []
   );
@@ -722,11 +723,11 @@ test("an admin moves a session from its runner card, and it continues on the sec
   const { runners } = context;
   const moves = sessionMoves();
   const { record, running, onA } = await runningOnA();
-  expect(card(runners.a)).toMatchObject([{ runId: record.runId, movable: true, move: null }]);
+  expect(await card(runners.a)).toMatchObject([{ runId: record.runId, movable: true, move: null }]);
 
   const response = await moves.fetch(moveRequest(runners.a, record.runId), context.principal);
   expect(response.status).toBe(202);
-  expect(card(runners.a)[0]?.move).toEqual({ status: "moving", reason: null });
+  expect((await card(runners.a))[0]?.move).toEqual({ status: "moving", reason: null });
   // Asking twice while it moves does not ask the runner again.
   expect((await moves.fetch(moveRequest(runners.a, record.runId), context.principal)).status).toBe(
     202,
@@ -739,8 +740,8 @@ test("an admin moves a session from its runner card, and it continues on the sec
   expect(onB.repository.baseSha).toBe(wip);
   expect(onB.prompt).toContain("Paws moved this session to another runner");
   // It left A's card and shows on B's, with no move pending.
-  expect(card(runners.a)).toEqual([]);
-  expect(card(runners.b)).toMatchObject([{ runId: record.runId, movable: true, move: null }]);
+  expect(await card(runners.a)).toEqual([]);
+  expect(await card(runners.b)).toMatchObject([{ runId: record.runId, movable: true, move: null }]);
   expect(await context.next(runners.a, 10)).toBeNull();
 
   context.submit(onB, runners.b, { candidateSha: wip });
@@ -763,7 +764,7 @@ test("with no eligible runner the card row says why, as Linear hears it", async 
   expect(notices).toContain(
     "Waiting to move this session from A: Sign in to Claude on another runner. Paws moves it as soon as a runner fits.\n",
   );
-  expect(card(runners.a)).toMatchObject([
+  expect(await card(runners.a)).toMatchObject([
     {
       runId: record.runId,
       movable: false,
@@ -806,7 +807,7 @@ test("a member's or inactive admin's move request is refused and the runner is n
     });
   }
   await moves.settled();
-  expect(card(runners.a)).toMatchObject([{ runId: record.runId, movable: true, move: null }]);
+  expect(await card(runners.a)).toMatchObject([{ runId: record.runId, movable: true, move: null }]);
   expect(await context.next(runners.a, 50)).toBeNull();
   await finish(onA, running);
 });
@@ -817,7 +818,7 @@ test("a session that is not running on that runner is not moved", async () => {
   const { record, running, onA } = await runningOnA();
   const response = await moves.fetch(moveRequest(runners.b, record.runId), context.principal);
   expect(response.status).toBe(409);
-  expect(card(runners.a)[0]?.move).toBeNull();
+  expect((await card(runners.a))[0]?.move).toBeNull();
   expect(await context.next(runners.a, 50)).toBeNull();
   await finish(onA, running);
 });
@@ -867,13 +868,13 @@ test("Move running work on a draining runner moves both sessions to the second r
   const turns = await twoRunningOnA();
   db.run("UPDATE runner SET status='draining' WHERE id=?", [runners.a]);
   db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
-  expect(card(runners.a)).toHaveLength(2);
+  expect(await card(runners.a)).toHaveLength(2);
 
   const response = await moves.fetch(moveAllRequest(runners.a), context.principal);
   expect(response.status).toBe(202);
   expect(await response.json()).toEqual({ ok: true, moving: 2 });
   // One move per session, each through the same path as Move to another runner.
-  expect(card(runners.a).map((session) => session.move)).toEqual([
+  expect((await card(runners.a)).map((session) => session.move)).toEqual([
     { status: "moving", reason: null },
     { status: "moving", reason: null },
   ]);
@@ -892,13 +893,13 @@ test("Move running work on a draining runner moves both sessions to the second r
   const runIds = turns.map(({ onA }) => onA.runId).sort();
   expect(landed.map((command) => command.runId).sort()).toEqual(runIds);
   // Both left A's card, so it is drained, and B lists both with no move pending.
-  expect(card(runners.a)).toEqual([]);
+  expect(await card(runners.a)).toEqual([]);
   expect(
-    card(runners.b)
+    (await card(runners.b))
       .map(({ runId, movable, move }) => ({ runId, movable, move }))
       .sort((left, right) => left.runId.localeCompare(right.runId)),
   ).toEqual(runIds.map((runId) => ({ runId, movable: true, move: null })));
-  const overview = listRunnerOverview(db, context.workspaceId, context.now);
+  const overview = await listRunnerOverview(sqliteDb(db), context.workspaceId, context.now);
   expect(overview.find((runner) => runner.id === runners.a)).toMatchObject({
     status: "draining",
     slots: { used: 0 },
@@ -933,7 +934,7 @@ test("with no eligible runner both sessions stay on the draining card with the r
     await delay(1);
   // Both stay listed with the reason, so the card counts two waiting instead of Drained.
   expect(
-    card(runners.a)
+    (await card(runners.a))
       .map(({ runId, movable, move }) => ({ runId, movable, move }))
       .sort((left, right) => left.runId.localeCompare(right.runId)),
   ).toEqual(
@@ -980,7 +981,7 @@ test("Move running work needs a draining runner and an admin", async () => {
   });
   expect(inactive.status).toBe(403);
   await moves.settled();
-  expect(card(runners.a)).toMatchObject([{ runId: record.runId, move: null }]);
+  expect(await card(runners.a)).toMatchObject([{ runId: record.runId, move: null }]);
   expect(await context.next(runners.a, 50)).toBeNull();
   db.run("UPDATE runner SET status='active' WHERE id=?", [runners.a]);
   await finish(onA, running);

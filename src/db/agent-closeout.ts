@@ -1,8 +1,7 @@
-import type { Database } from "bun:sqlite";
 import { asc, eq, inArray, max } from "drizzle-orm";
 import { journalCaught } from "../journal";
 import { CLOSEOUT_OUTPUT_CAP_BYTES } from "./closeout-progress";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import type * as pgSchema from "./schema-pg";
 
 export type AgentCloseoutCheck = {
@@ -109,16 +108,14 @@ export function* recordAgentCloseoutSteps(
   );
 }
 
-export function recordAgentCloseout(
-  db: Database,
+export async function recordAgentCloseout(
+  store: Db,
   runId: string,
   itemId: string,
   progress: AgentCloseoutProgress,
   now: number,
-): void {
-  settled(
-    sqliteDb(db).transaction((q) => recordAgentCloseoutSteps(q, runId, itemId, progress, now)),
-  );
+): Promise<void> {
+  await store.transaction((q) => recordAgentCloseoutSteps(q, runId, itemId, progress, now));
 }
 
 export function* listAgentCloseoutSteps(q: Q, runIds: readonly string[]) {
@@ -134,8 +131,11 @@ export function* listAgentCloseoutSteps(q: Q, runIds: readonly string[]) {
   return rows.map(toEvent);
 }
 
-export function listAgentCloseout(db: Database, runIds: readonly string[]): AgentCloseoutEvent[] {
-  return settled(sqliteDb(db).run((q) => listAgentCloseoutSteps(q, runIds)));
+export async function listAgentCloseout(
+  store: Db,
+  runIds: readonly string[],
+): Promise<AgentCloseoutEvent[]> {
+  return store.run((q) => listAgentCloseoutSteps(q, runIds));
 }
 
 function toEvent(row: EventRow): AgentCloseoutEvent {

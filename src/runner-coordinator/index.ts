@@ -40,7 +40,7 @@ import {
   type RunnerTranscriptObjects,
 } from "../runner-transcripts";
 import { createSealedRunnerFiles, type RunFileObjects } from "../run-files";
-import { runnerCommandRuns } from "../db";
+import { runnerCommandRuns, sqliteDb } from "../db";
 import {
   createAgentSessions,
   createAgentSessionsHttp,
@@ -171,7 +171,7 @@ export async function openRunnerCoordinator(options: {
   });
   if (runnerFiles) {
     try {
-      const commands = runnerCommandRuns(options.db);
+      const commands = await runnerCommandRuns(sqliteDb(options.db));
       await inputs.migrateLocal(commands);
       await artifacts.migrateLocal(commands);
     } catch (error) {

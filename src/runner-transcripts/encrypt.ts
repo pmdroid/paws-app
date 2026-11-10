@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { plaintextTranscriptChunks } from "../db";
+import { plaintextTranscriptChunks, sqliteDb } from "../db";
 import { createRunFileChunks, type RunFileObjects } from "../run-files";
 import { denied, transcriptPrefix } from "./store";
 
@@ -32,7 +32,7 @@ export async function encryptRunnerTranscripts(options: {
   let converted = 0;
   let skipped = 0;
   for (;;) {
-    const rows = plaintextTranscriptChunks(db, after, BATCH);
+    const rows = await plaintextTranscriptChunks(sqliteDb(db), after, BATCH);
     if (!rows.length) break;
     for (const row of rows) {
       signal?.throwIfAborted();

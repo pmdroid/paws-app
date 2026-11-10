@@ -20,6 +20,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -298,9 +299,10 @@ async function delegate(delegatorRunner: DelegatorRunner) {
 
   const controller = new AbortController();
   const loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
-  const settled = () => {
+  const settled = async () => {
     const current = getWorkItem(db, item.id)!;
-    if (getRunnerSetupHold(db, item.id) && current.state === "queued") return true;
+    if ((await getRunnerSetupHold(sqliteDb(db), item.id)) && current.state === "queued")
+      return true;
     return listJobs(db).some(
       (job) =>
         (job.queue === JOB_KIND.resume ||
@@ -310,7 +312,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     );
   };
   const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline && !settled()) await Bun.sleep(10);
+  while (Date.now() < deadline && !(await settled())) await Bun.sleep(10);
   // Let the job that held the item finish before reading jobs.
   await Bun.sleep(100);
 
@@ -351,7 +353,7 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
       thoughts: fixture.thoughts(),
     });
     expect(getWorkItem(db, itemId)!.state, detail).toBe("queued");
-    expect(getRunnerSetupHold(db, itemId), detail).toMatchObject({
+    expect(await getRunnerSetupHold(sqliteDb(db), itemId), detail).toMatchObject({
       reason: "no-runner",
       ownerUserId: fixture.memberId,
       notifiedAt: expect.any(Number),
@@ -404,7 +406,7 @@ test("a delegator whose runner needs its agent signed in hears the runner and th
   try {
     const { db, itemId } = fixture;
     expect(getWorkItem(db, itemId)!.state).toBe("queued");
-    expect(getRunnerSetupHold(db, itemId)).toMatchObject({
+    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toMatchObject({
       reason: "agent-not-signed-in",
       runnerId: fixture.memberRunner,
       agent: "claude",
@@ -421,7 +423,7 @@ test("a delegator whose runner is only busy still waits for capacity", async () 
   const fixture = await delegate("busy");
   try {
     const { db, itemId } = fixture;
-    expect(getRunnerSetupHold(db, itemId)).toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
     expect(
       fixture
         .itemJobs()
@@ -449,7 +451,7 @@ test("a delegator whose own runner is offline waits for it instead of hearing th
   const fixture = await delegate("offline");
   try {
     const { db, itemId } = fixture;
-    expect(getRunnerSetupHold(db, itemId)).toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
     expect(
       fixture
         .itemJobs()
@@ -472,10 +474,10 @@ test("Stop ends the hold", async () => {
   const fixture = await delegate("none");
   try {
     const { db, itemId } = fixture;
-    expect(getRunnerSetupHold(db, itemId)).not.toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).not.toBeNull();
     const stop: LinearCommand = { type: "stop", itemId, source: "linear", requestedAt: Date.now() };
     expect(applyLinearCommand(db, stop).applied).toBe(true);
-    expect(getRunnerSetupHold(db, itemId)).toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
     expect(getWorkItem(db, itemId)!.state).toBe("paused");
   } finally {
     await fixture.close();
@@ -486,14 +488,14 @@ test("undelegation cancels a held item and ends its hold", async () => {
   const fixture = await delegate("none");
   try {
     const { db, itemId } = fixture;
-    expect(getRunnerSetupHold(db, itemId)).not.toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).not.toBeNull();
     await stopUndelegatedIssue(
       db,
       { organizationId: "org", appUserId: "app-user", issueId: "issue-1", createdAtMs: Date.now() },
       { notify() {} },
     );
     expect(getWorkItem(db, itemId)!.state).toBe("cancelled");
-    expect(getRunnerSetupHold(db, itemId)).toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
   } finally {
     await fixture.close();
   }
@@ -503,7 +505,7 @@ test("signing the agent in resumes the held item in the same run and session, wi
   const fixture = await delegate("unsigned");
   try {
     const { db, itemId } = fixture;
-    const hold = getRunnerSetupHold(db, itemId)!;
+    const hold = (await getRunnerSetupHold(sqliteDb(db), itemId))!;
     const item = getWorkItem(db, itemId)!;
     expect(hold.runId).not.toBeNull();
     expect(item.currentRunId).toBe(hold.runId);
@@ -515,7 +517,7 @@ test("signing the agent in resumes the held item in the same run and session, wi
     while (Date.now() < deadline && !active()) await Bun.sleep(10);
 
     const resumed = getWorkItem(db, itemId)!;
-    expect(getRunnerSetupHold(db, itemId)).toBeNull();
+    expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
     expect(active()).toBe(true);
     expect(resumed.currentRunId).toBe(hold.runId);
     expect(resumed.sessionKey).toBe("session-1");
