@@ -72,7 +72,7 @@ function setup(options: { version?: string; conversations?: number } = {}) {
     [workspace.id, userId, T0, T0],
   );
   recordRunnerCapacity(db, "runner", 1, 1, options.conversations ?? 2);
-  recordRunnerHostStatus(db, "runner", { runnerVersion: options.version ?? "0.1.74" }, T0);
+  recordRunnerHostStatus(db, "runner", { runnerVersion: options.version ?? "0.1.77" }, T0);
   const helpers = createRunnerHelpers({
     db,
     keyId: "acme",
@@ -368,15 +368,19 @@ test("a message while a work turn runs is delivered at the turn boundary, as tod
   expect(f.brief("acme-1")?.text).toContain("Also cover the empty cart.");
 });
 
-test("an older runner gets today's restart", async () => {
-  const f = setup({ version: "0.1.73" });
-  f.item("acme-1");
-  await f.say("acme-1", "c-1", "Use the v2 endpoint.");
-  expect(await f.deliver("acme-1")).toBe("restarted");
-  expect(await f.conversations()).toEqual([]);
-  expect(f.resumes()).toHaveLength(1);
-  expect((f.resumes()[0]!.payload as { reason: string }).reason).toBe("follow_up");
-});
+// 0.1.74 to 0.1.76 run conversations but refuse Claude's reply and start_work calls (and 0.1.74
+// and 0.1.75 drop `replies` and `startWork` from the result): the turn could not act on the message.
+for (const version of ["0.1.73", "0.1.75", "0.1.76"])
+  test(`a runner at ${version}, which cannot return a conversation's replies or start_work, gets a follow_up restart with the message`, async () => {
+    const f = setup({ version });
+    f.item("acme-1");
+    await f.say("acme-1", "c-1", "Use the v2 endpoint.");
+    expect(await f.deliver("acme-1")).toBe("restarted");
+    expect(await f.conversations()).toEqual([]);
+    expect(f.resumes()).toHaveLength(1);
+    expect((f.resumes()[0]!.payload as { reason: string }).reason).toBe("follow_up");
+    expect(f.brief("acme-1")?.text).toContain("Use the v2 endpoint.");
+  });
 
 test("a queued item's start job waits while a conversation runs on its session", async () => {
   const f = setup();
@@ -433,8 +437,8 @@ test("session replies past the prompt budget wait for the next conversation", as
   expect(listPendingLinearTurns(f.db, acme.session)).toEqual([]);
 });
 
-test("start_work in a conversation restarts the item with the plan and posts it, holding no slot while it waits", async () => {
-  const f = setup();
+test("start_work in a conversation on a 0.1.77 runner restarts the item with the plan and posts it, holding no slot while it waits", async () => {
+  const f = setup({ version: "0.1.77" });
   f.item("acme-busy", "running");
   const acme = f.item("acme-1");
   const slots = f.taskSlots();
@@ -442,6 +446,9 @@ test("start_work in a conversation restarts the item with the plan and posts it,
   await f.say("acme-1", "c-1", "Please add a test for the card retry.");
   expect(await f.deliver("acme-1")).toBe("wait");
   const [started] = await f.conversations();
+  // The person's message goes to the agent session that the work turn resumes.
+  expect(started!.command.prompt).toContain("Please add a test for the card retry.");
+  expect(started!.command.conversation!.resumeSessionId).toBe("claude-acme-1");
 
   const plan = "Add a test that checkout retries a card once on a gateway timeout.";
   await f.answer(started!.id, { text: "", replies: ["I will add that test."], startWork: plan });

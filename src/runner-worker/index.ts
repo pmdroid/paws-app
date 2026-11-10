@@ -244,7 +244,7 @@ export const HANDOVER_STEP_TIMEOUT_MS = 60_000;
 export const CONVERSATION_RESULT_MARGIN_MS = 30_000;
 
 const CONVERSATION_PREAMBLE =
-  "A person wrote about this item. This turn is read-only: read the checkout and answer with the reply tool. Edits, commits and pushes are refused. Call start_work only when the person asked for a change or agreed to one; it ends this turn, and a work turn resumes this session with edits allowed. Never claim to have changed code in this turn.";
+  "A person wrote about this item. This turn is read-only: read the checkout and answer with the reply tool. Edits, commits and pushes are refused. Call start_work only when the person asked for a change or agreed to one; it ends this turn, and a work turn resumes this session with edits allowed. Its plan holds at most 4,000 characters: summarize what you will change and point at the person's messages instead of quoting them. Never claim to have changed code in this turn.";
 
 /** Time for start_work's answer to reach the agent before its conversation turn stops. */
 const START_WORK_GRACE_MS = 500;

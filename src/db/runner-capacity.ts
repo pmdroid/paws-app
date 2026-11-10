@@ -1,5 +1,5 @@
 import type { RunnerCapacityWaitState } from "./items";
-import { CONVERSATION_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
+import { CONVERSATION_TOOLS_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
 import type { Database } from "bun:sqlite";
 import {
   and,
@@ -648,7 +648,9 @@ function* conversationLaneSteps(q: Q, runnerId: string) {
   );
   return {
     limit: capacity?.limit ?? 0,
-    supported: runnerReleaseAtLeast(status?.version, CONVERSATION_RUNNER_VERSION),
+    // A conversation acts only through `reply` and `start_work`. Earlier runners refuse Claude's
+    // calls to them in the read-only turn, and before 0.1.76 drop `replies` and `startWork` too.
+    supported: runnerReleaseAtLeast(status?.version, CONVERSATION_TOOLS_RUNNER_VERSION),
   };
 }
 

@@ -89,7 +89,7 @@ function fixture(version: string | null, conversations?: number) {
 }
 
 test("a conversation starts with every work slot busy and fills no work slot", () => {
-  const { db, now, workspace, dispatch } = fixture("0.1.74", 2);
+  const { db, now, workspace, dispatch } = fixture("0.1.77", 2);
   dispatch("session-1", "classify");
   expect(runnerOccupancy(db, "runner", now)).toEqual({ capacity: 1, occupied: 1 });
   expect(runnerHelperAvailability(db, "runner", now, true).available).toBe(false);
@@ -103,7 +103,7 @@ test("a conversation starts with every work slot busy and fills no work slot", (
 });
 
 test("a third conversation waits for a conversation slot, not a work slot", () => {
-  const { db, now, dispatch } = fixture("0.1.74", 2);
+  const { db, now, dispatch } = fixture("0.1.77", 2);
   dispatch("session-1", "conversation");
   dispatch("session-2", "conversation");
   expect(() => dispatch("session-3", "conversation")).toThrow("Runner is busy");
@@ -114,8 +114,10 @@ test("a third conversation waits for a conversation slot, not a work slot", () =
 
 for (const [name, version, conversations] of [
   ["an older runner", "0.1.73", 2],
-  ["a runner that reports no conversation lane", "0.1.74", undefined],
-  ["a runner with the lane turned off", "0.1.74", 0],
+  ["a runner that reports no conversation lane", "0.1.77", undefined],
+  ["a runner with the lane turned off", "0.1.77", 0],
+  ["a runner that is not told the control plane's level", "0.1.75", 2],
+  ["a runner that refuses Claude's reply and start_work calls", "0.1.76", 2],
 ] as const)
   test(`${name} admits no conversation`, () => {
     const { db, now, dispatch } = fixture(version, conversations);

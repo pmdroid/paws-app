@@ -91,7 +91,8 @@ export const RunnerHelperResultSchema = RunnerResultSchema.omit({
         Buffer.byteLength(JSON.stringify(text)) <= RUNNER_RESULT_BODY_LIMIT - resultMetadataBudget,
     ),
   replies: z.array(z.string().min(1).max(4000)).min(1).max(5).optional(),
-  /** The plan of a conversation turn that called `start_work` (runner 0.1.74 and later). */
+  /** The plan of a conversation turn that called `start_work`. The field is accepted from runner
+   * 0.1.74; conversations run from 0.1.77, the first runner whose guard allows the call. */
   startWork: z.string().min(1).max(4000).optional(),
 });
 

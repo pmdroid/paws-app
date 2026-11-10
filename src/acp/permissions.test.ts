@@ -2,7 +2,7 @@ import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { decidePermission, type GuardContext } from "./permissions";
+import { decidePermission, decideReadOnlyPermission, type GuardContext } from "./permissions";
 
 const home = "/home/dev";
 const pawsRoot = "/home/dev/.paws";
@@ -10,6 +10,17 @@ const worktree = "/home/dev/.paws/worktrees/ENG-1";
 const ctx: GuardContext = { home, worktree, pawsRoot };
 
 describe("permission guard", () => {
+  test("a read-only turn allows Paws host tools under Claude's MCP name, and no other server's", () => {
+    for (const name of ["mcp__paws__reply", "mcp__paws__start_work", "start_work"])
+      expect(
+        decideReadOnlyPermission({ name, kind: "other", rawInput: { plan: "Add a test." } }, ctx),
+      ).toMatchObject({ allow: true });
+    for (const name of ["mcp__other__start_work", "mcp__paws__write_file"])
+      expect(
+        decideReadOnlyPermission({ name, kind: "other", rawInput: { plan: "x" } }, ctx).allow,
+      ).toBe(false);
+  });
+
   test("allows edits and commands inside the worktree", () => {
     expect(
       decidePermission({ kind: "edit", locations: [{ path: `${worktree}/src/main.ts` }] }, ctx)
