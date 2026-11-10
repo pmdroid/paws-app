@@ -1,0 +1,64 @@
+import { expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { cpSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Project } from "ts-morph";
+import { convert, manipulationSettings, type Report } from "./db-async";
+
+const repo = join(import.meta.dir, "../..");
+const fixtures = join(import.meta.dir, "fixtures/db-async");
+
+function run(dir: string): Report {
+  const project = new Project({
+    tsConfigFilePath: join(repo, "tsconfig.json"),
+    skipAddingFilesFromTsConfig: true,
+    manipulationSettings,
+  });
+  const files = project
+    .addSourceFilesAtPaths(join(dir, "**/*.ts"))
+    .filter((file) => !file.getFilePath().endsWith("/outside.ts"));
+  const report = convert(project, { files, dbDir: join(dir, "db") });
+  project.saveSync();
+  spawnSync("bun", ["x", "oxfmt", "-c", join(repo, ".oxfmtrc.json"), dir], { cwd: repo });
+  return report;
+}
+
+const dir = realpathSync(mkdtempSync(join(tmpdir(), "db-async-")));
+cpSync(join(fixtures, "before"), dir, { recursive: true });
+const first = run(dir);
+const read = (root: string, file: string) => readFileSync(join(root, file), "utf8");
+const boundary = (file: string) =>
+  first.boundaries.filter((b) => b.file === join(dir, file)).map((b) => [b.line, b.reason]);
+
+test.each([
+  ["a simple call awaits and wraps its Database in sqliteDb", "simple.ts"],
+  ["a Db argument is kept as is", "db-arg.ts"],
+  ["propagation reaches the caller's caller", "propagation.ts"],
+  ["a sync test callback becomes async", "sync-test.ts"],
+  ["a .map callback stays synchronous", "map.ts"],
+  ["a transaction body stays synchronous", "transaction.ts"],
+  ["callers of a folded fooAsync sibling use the final name", "fold.ts"],
+  ["an export used outside the globs stays synchronous", "outside.ts"],
+  ["wrappers become async over Db and fooAsync siblings fold in", "db/items.ts"],
+])("%s", (_name, file) => {
+  expect(read(dir, file)).toBe(read(join(fixtures, "after"), file));
+});
+
+test("boundaries and exports without a Steps form are reported", () => {
+  expect(boundary("map.ts")).toEqual([[5, "sync callback (map)"]]);
+  expect(boundary("transaction.ts")).toEqual([
+    [6, "inside a transaction(...) body"],
+    [7, "inside a transaction(...) body"],
+  ]);
+  expect(boundary("outside.ts")).toEqual([[5, "used outside the given files"]]);
+  expect(first.withoutSteps.map((s) => s.name)).toEqual(["itemFile"]);
+  expect(first).toMatchObject({ wrappers: 3, folded: 1, calls: 7, wrapped: 4, asyncFunctions: 6 });
+});
+
+test("a second run changes nothing", () => {
+  const report = run(dir);
+  expect(report).toMatchObject({ wrappers: 0, calls: 0, asyncFunctions: 0, files: [] });
+  for (const file of ["simple.ts", "fold.ts", "db/items.ts", "propagation.ts"])
+    expect(read(dir, file)).toBe(read(join(fixtures, "after"), file));
+});
