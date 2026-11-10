@@ -34,16 +34,27 @@ const SIDE_FILES = ["-wal", "-shm"];
 /**
  * Whether `path` was built by the migrations from before drizzle-kit. Leaves the disk as it found
  * it: a plain read-only open of a WAL database creates its -wal and -shm files, so a database with
- * no -wal, whose main file is therefore complete, is opened immutable.
+ * no -wal, whose main file is therefore complete, is opened immutable. Immutable skips locking, so
+ * an open that fails falls back to a locked read, and `locked` forces one before a rename.
  */
-export function isLegacyDatabase(path: string): boolean {
+export function isLegacyDatabase(path: string, locked = false): boolean {
   if (!existsSync(path)) return false;
-  const old = existsSync(`${path}-wal`)
-    ? new Database(path, { readonly: true })
-    : new Database(
-        `${pathToFileURL(path).href}?immutable=1`,
-        constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI,
+  if (!locked && !existsSync(`${path}-wal`)) {
+    try {
+      return hasLegacyTables(
+        new Database(
+          `${pathToFileURL(path).href}?immutable=1`,
+          constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI,
+        ),
       );
+    } catch {
+      // Another process may be writing it; read it with locks below.
+    }
+  }
+  return hasLegacyTables(new Database(path, { readonly: true }));
+}
+
+function hasLegacyTables(old: Database): boolean {
   try {
     const names = new Set(
       old
@@ -73,6 +84,7 @@ export function setAsideLegacyDatabase(
     throw new Error(
       `${path} is from before drizzle-kit migrations and cannot be carried over. Paws would start on an empty database, and the workspace, members, runners and items in this one would be lost. Paws changed nothing. To set this database aside and start empty, set PAWS_RESET_LEGACY_DATABASE=1 and start Paws again.`,
     );
+  if (!isLegacyDatabase(path, true)) return null;
   const target = `${path}.pre-drizzle-${now.toISOString().replace(/[-:]|\.\d+/g, "")}`;
   for (const suffix of ["", ...SIDE_FILES])
     if (existsSync(target + suffix)) throw new Error(`${target + suffix} already exists`);
