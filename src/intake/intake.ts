@@ -6,6 +6,7 @@ import type { DependencyEdge, EpicSnapshot } from "../linear";
 import { orderByBlocks, type OrderNode } from "./order";
 import {
   findAcceptedIntake,
+  findAcceptedIntakeSteps,
   insertRunningQueueSteps,
   readAdoptedParentSteps,
   readEarlierAttemptSteps,
@@ -146,9 +147,17 @@ export async function intakeDelegatedIssue(
   }
   const sessionId = input.sessionId ?? "";
   let adopted = false;
+  let existed = false;
   let result: IntakeResult;
   try {
     result = await store.transaction(function* (q) {
+      const raced = yield* findAcceptedIntakeSteps(q, input.linearIssueId, taskKey);
+      if (raced !== null) {
+        existed = true;
+        const admitted = { ok: true as const, ...raced, alreadyExisted: true as const };
+        input.onAccepted?.(admitted);
+        return admitted;
+      }
       input.beforeAdmit?.();
       if (
         snapshot.subIssues.length > 0 &&
@@ -210,7 +219,7 @@ export async function intakeDelegatedIssue(
     throw error;
   }
   // An adopted parent answers once, with a summary, after its sub-issue sessions open.
-  if (adopted || (delegatedAlone && input.acknowledged)) return result;
+  if (existed || adopted || (delegatedAlone && input.acknowledged)) return result;
   await announce(
     tracker,
     input.sessionId,

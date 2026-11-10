@@ -55,7 +55,7 @@ export function findAcceptedIntake(
   return sqliteDb(db).run((q) => findAcceptedIntakeSteps(q, linearIssueId, taskKey));
 }
 
-function* findAcceptedIntakeSteps(
+export function* findAcceptedIntakeSteps(
   q: Q,
   linearIssueId: string,
   taskKey: string,
