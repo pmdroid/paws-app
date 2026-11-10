@@ -318,7 +318,15 @@ function rewriteWrapper({ fn, steps }: Wrapper) {
   );
 }
 
-export function convert(project: Project, options: { files: SourceFile[]; dbDir: string }): Report {
+export type ConvertOptions = {
+  /** Reference scope: every file searched for callers. */
+  files: SourceFile[];
+  dbDir: string;
+  /** Files whose wrappers are converted; all of `files` when absent. */
+  wrappers?: SourceFile[];
+};
+
+export function convert(project: Project, options: ConvertOptions): Report {
   const report: Report = {
     wrappers: 0,
     folded: 0,
@@ -332,7 +340,7 @@ export function convert(project: Project, options: { files: SourceFile[]; dbDir:
   const inScope = new Set(options.files);
   const home = project.getSourceFile(resolve(options.dbDir, "db.ts"));
   if (!home) throw new Error(`no db.ts in ${options.dbDir}`);
-  const plans = findWrappers(options.files, options.dbDir, report)
+  const plans = findWrappers(options.wrappers ?? options.files, options.dbDir, report)
     .map((wrapper) => plan(wrapper, inScope, report))
     .filter((p): p is Plan => p !== null);
   const awaits = new Map<CallExpression, { wrap: boolean; name: string }>();
@@ -424,15 +432,37 @@ export function renderReport(report: Report, root: string): string {
   ].join("\n");
 }
 
+/** `--wrappers` takes every argument up to `--` or the end; the rest are the reference globs. */
+export function parseArgs(argv: string[]): { globs: string[]; wrappers?: string[] } {
+  const at = argv.indexOf("--wrappers");
+  if (at === -1) return { globs: argv };
+  const end = argv.indexOf("--", at + 1);
+  const stop = end === -1 ? argv.length : end;
+  return {
+    globs: [...argv.slice(0, at), ...argv.slice(end === -1 ? stop : stop + 1)],
+    wrappers: argv.slice(at + 1, stop),
+  };
+}
+
 if (import.meta.main) {
-  const globs = process.argv.slice(2);
-  if (globs.length === 0) {
-    console.error("usage: bun scripts/codemods/db-async.ts <globs…>");
+  const { globs, wrappers } = parseArgs(process.argv.slice(2));
+  if (globs.length === 0 || wrappers?.length === 0) {
+    console.error(
+      "usage: bun scripts/codemods/db-async.ts <globs…> [--wrappers <src/db files…> [--]]",
+    );
     process.exit(2);
   }
   const project = new Project({ tsConfigFilePath: "tsconfig.json", manipulationSettings });
   const files = project.addSourceFilesAtPaths(globs);
-  const report = convert(project, { files, dbDir: resolve("src/db") });
+  const picked = wrappers?.map((path) => {
+    const file = project.getSourceFile(resolve(path));
+    if (!file || !files.includes(file)) {
+      console.error(`--wrappers ${path} is not among the files the globs match`);
+      process.exit(2);
+    }
+    return file;
+  });
+  const report = convert(project, { files, dbDir: resolve("src/db"), wrappers: picked });
   await project.save();
   writeFileSync("codemod-report.md", renderReport(report, process.cwd()));
   if (report.files.length > 0)

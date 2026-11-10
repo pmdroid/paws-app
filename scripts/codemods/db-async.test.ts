@@ -4,12 +4,12 @@ import { cpSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Project } from "ts-morph";
-import { convert, manipulationSettings, type Report } from "./db-async";
+import { convert, manipulationSettings, parseArgs, type Report } from "./db-async";
 
 const repo = join(import.meta.dir, "../..");
 const fixtures = join(import.meta.dir, "fixtures/db-async");
 
-function run(dir: string): Report {
+function run(dir: string, wrappers?: string[]): Report {
   const project = new Project({
     tsConfigFilePath: join(repo, "tsconfig.json"),
     skipAddingFilesFromTsConfig: true,
@@ -18,7 +18,8 @@ function run(dir: string): Report {
   const files = project
     .addSourceFilesAtPaths(join(dir, "**/*.ts"))
     .filter((file) => !file.getFilePath().endsWith("/outside.ts"));
-  const report = convert(project, { files, dbDir: join(dir, "db") });
+  const picked = wrappers?.map((file) => files.find((f) => f.getFilePath() === join(dir, file))!);
+  const report = convert(project, { files, dbDir: join(dir, "db"), wrappers: picked });
   project.saveSync();
   spawnSync("bun", ["x", "oxfmt", "-c", join(repo, ".oxfmtrc.json"), dir], { cwd: repo });
   return report;
@@ -61,4 +62,26 @@ test("a second run changes nothing", () => {
   expect(report).toMatchObject({ wrappers: 0, calls: 0, asyncFunctions: 0, files: [] });
   for (const file of ["simple.ts", "fold.ts", "db/items.ts", "propagation.ts"])
     expect(read(dir, file)).toBe(read(join(fixtures, "after"), file));
+});
+
+test("--wrappers converts only the named files' wrappers and still finds every caller", () => {
+  const fixture = join(import.meta.dir, "fixtures/db-async-wrappers");
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "db-async-wrappers-")));
+  cpSync(join(fixture, "before"), root, { recursive: true });
+  const report = run(root, ["db/picked.ts"]);
+  expect(report).toMatchObject({ wrappers: 1, calls: 1, wrapped: 1, boundaries: [] });
+  for (const file of ["caller.ts", "db/picked.ts", "db/skipped.ts"])
+    expect(read(root, file)).toBe(read(join(fixture, "after"), file));
+});
+
+test("--wrappers takes the arguments up to -- or the end", () => {
+  expect(parseArgs(["src/**/*.ts"])).toEqual({ globs: ["src/**/*.ts"] });
+  expect(parseArgs(["src/**/*.ts", "--wrappers", "src/db/a.ts", "src/db/b.ts"])).toEqual({
+    globs: ["src/**/*.ts"],
+    wrappers: ["src/db/a.ts", "src/db/b.ts"],
+  });
+  expect(parseArgs(["--wrappers", "src/db/a.ts", "--", "src/**/*.ts", "test/**/*.ts"])).toEqual({
+    globs: ["src/**/*.ts", "test/**/*.ts"],
+    wrappers: ["src/db/a.ts"],
+  });
 });
