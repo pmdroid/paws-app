@@ -1,6 +1,6 @@
 import { journalCaught } from "../journal";
 import { journal } from "./journal";
-import { heartbeatInstance, ownerGone } from "./instances";
+import { heartbeatInstanceSteps, ownerGoneSteps } from "./instances";
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, isNotNull, isNull, like, or, sql, type SQL } from "drizzle-orm";
 import {
@@ -13,38 +13,33 @@ import {
   type StartupDecision,
   type WorkItemState,
 } from "../core";
-import { applyDecision, applyDecisionSteps } from "./decisions";
-import { emitJobReady, enqueueJobOnce, enqueueJobOnceSteps } from "./jobs";
+import { applyDecisionSteps } from "./decisions";
+import { emitJobReady, enqueueJobOnceSteps } from "./jobs";
 import { enqueueOutboxOnceSteps } from "./outbox";
 import {
-  applyWorkItemEvent,
   applyWorkItemEventSteps,
   getWorkItemSteps,
   listInFlightItems,
-  listWorkItemsByStates,
+  listWorkItemsByStatesSteps,
   saveCheckpointSteps,
 } from "./items";
 import type { WorkItemRecord } from "./items";
 import {
-  runnerHoldsRunWork,
+  runnerHoldsRunWorkSteps,
   runnerLeaseCutoff,
-  shiftRunnerLeasesForDowntime,
+  shiftRunnerLeasesForDowntimeSteps,
 } from "./runner-lease";
-import { mergeCallInFlight } from "./remote-merges";
-import { ensureRestartQuestion, ensureRestartQuestionSteps } from "./restart-hold";
+import { mergeCallInFlightSteps } from "./remote-merges";
+import { ensureRestartQuestionSteps } from "./restart-hold";
 import {
-  claimRun,
-  getRun,
+  claimRunSteps,
   getRunSteps,
-  markRun,
   markRunSteps,
-  releaseRunCapacity,
-  runOwner,
+  releaseRunCapacitySteps,
+  runOwnerSteps,
 } from "./runs";
 import { pendingRestartHandoffSteps } from "./restart";
-import { orm } from "./orm";
-import { job } from "./schema";
-import { immediate } from "./tx";
+import { jsonField } from "./json-text";
 import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 
 /** Commit dirty files on the item branch. Sync, so shutdown can finish before exit. */
@@ -69,16 +64,41 @@ export const RUN_TAKEOVER_MS = 30_000;
  * Downtime of the instance that owned a run, up to `offlineBudgetMs`, does not count against its
  * open runner lease while no other instance was alive.
  */
+export function* recoverOnStartupSteps(
+  q: Q,
+  now: number,
+  offlineBudgetMs: number | undefined,
+  instanceId: string | undefined,
+  wake: { armed: boolean },
+) {
+  yield* shiftRunnerLeasesForDowntimeSteps(q, now, offlineBudgetMs, instanceId);
+  return yield* recoverItemsSteps(q, now, instanceId, true, wake);
+}
+
 export function recoverOnStartup(
   db: Database,
   now = Date.now(),
   offlineBudgetMs?: number,
   instanceId?: string,
 ): StartupDecision[] {
-  return immediate(db, () => {
-    shiftRunnerLeasesForDowntime(db, now, offlineBudgetMs, instanceId);
-    return recoverItems(db, now, instanceId, true);
-  });
+  const wake = { armed: false };
+  const decisions = settled(
+    sqliteDb(db).transaction((q) =>
+      recoverOnStartupSteps(q, now, offlineBudgetMs, instanceId, wake),
+    ),
+  );
+  if (wake.armed) emitJobReady(db);
+  return decisions;
+}
+
+export function* takeOverGoneRunsSteps(
+  q: Q,
+  instanceId: string,
+  now: number,
+  wake: { armed: boolean },
+) {
+  yield* shiftRunnerLeasesForDowntimeSteps(q, now, undefined, instanceId);
+  return yield* recoverItemsSteps(q, now, instanceId, false, wake);
 }
 
 export function takeOverGoneRuns(
@@ -86,145 +106,144 @@ export function takeOverGoneRuns(
   instanceId: string,
   now = Date.now(),
 ): StartupDecision[] {
-  return immediate(db, () => {
-    shiftRunnerLeasesForDowntime(db, now, undefined, instanceId);
-    return recoverItems(db, now, instanceId, false);
-  });
+  const wake = { armed: false };
+  const decisions = settled(
+    sqliteDb(db).transaction((q) => takeOverGoneRunsSteps(q, instanceId, now, wake)),
+  );
+  if (wake.armed) emitJobReady(db);
+  return decisions;
 }
 
-function recoverItems(
-  db: Database,
+function* recoverItemsSteps(
+  q: Q,
   now: number,
   instanceId: string | undefined,
   unowned: boolean,
-): StartupDecision[] {
-  const takesOver = instanceId === undefined ? () => true : takeoverFilter(db, instanceId, now);
-  const items = listWorkItemsByStates(db, STARTUP_STATES).filter((item) =>
-    takesOver(item, unowned),
-  );
+  wake: { armed: boolean },
+): Steps<StartupDecision[]> {
+  const gone = instanceId === undefined ? null : yield* ownerGoneSteps(q, instanceId, now);
+  const items: WorkItemRecord[] = [];
+  for (const item of yield* listWorkItemsByStatesSteps(q, STARTUP_STATES)) {
+    if (gone === null) {
+      items.push(item);
+      continue;
+    }
+    const owner = item.currentRunId === null ? null : yield* runOwnerSteps(q, item.currentRunId);
+    if (owner === null ? unowned : gone(owner)) items.push(item);
+  }
   const decisions: StartupDecision[] = [];
   let resumes = 0;
   const nextResumeAt = () => now + STARTUP_RESUME_SPACING_MS * resumes++;
   for (const item of items) {
     if (instanceId !== undefined && item.currentRunId !== null) {
-      const from = runOwner(db, item.currentRunId);
-      claimRun(db, item.currentRunId, instanceId);
+      const from = yield* runOwnerSteps(q, item.currentRunId);
+      yield* claimRunSteps(q, item.currentRunId, instanceId);
       if (from !== null)
         journal(
           `run ${item.currentRunId} taken over item=${item.id} from=${from} by=${instanceId}`,
         );
     }
-    if (ensureRestartQuestion(db, item, now)) {
+    const restart = yield* ensureRestartQuestionSteps(q, item, now);
+    if (restart.armed) wake.armed = true;
+    if (restart.held) {
       decisions.push({ type: "ask_restart" });
       continue;
     }
-    if (hasParkedCapacityWait(db, item)) continue;
-    if (hasPendingAnswerResume(db, item.id)) continue;
-    if (hasPendingTransientRetry(db, item)) continue;
-    const holds = runnerHoldsWork(db, item, now);
+    if (yield* hasParkedCapacityWaitSteps(q, item)) continue;
+    if (yield* hasPendingAnswerResumeSteps(q, item.id)) continue;
+    if (yield* hasPendingTransientRetrySteps(q, item)) continue;
+    const holds = yield* runnerHoldsWorkSteps(q, item, now);
     const decision = decideStartup({
       itemState: item.state,
       recoveryAttempts: item.recoveryAttempts,
       checkpoint: item.checkpoint,
       runnerHoldsWork: holds,
-      mergeCallInFlight: mergeCallInFlight(db, item.id),
-      runActive: runActive(db, item),
+      mergeCallInFlight: yield* mergeCallInFlightSteps(q, item.id),
+      runActive: yield* runActiveSteps(q, item),
       ...(item.resumedAt === null ? {} : { sinceResumeMs: now - item.resumedAt }),
     });
     // A re-verify the shutdown cut short attaches to the runner's Closeout work itself.
     const followed =
       decision.type === "resume"
-        ? decision.reattach === true && hasPendingResume(db, item.id, "process_restart")
+        ? decision.reattach === true &&
+          (yield* hasPendingResumeSteps(q, item.id, "process_restart"))
         : decision.type === "reverify" &&
           holds &&
           item.state === "verifying" &&
-          hasOpenReverify(db, item.id);
-    if (!followed)
-      applyDecision(db, item, decision, now, {
+          (yield* hasOpenReverifySteps(q, item.id));
+    if (
+      !followed &&
+      (yield* applyDecisionSteps(q, item, decision, now, {
         ...(decision.type === "resume" ? { runAt: nextResumeAt() } : {}),
-      });
+      }))
+    )
+      wake.armed = true;
     decisions.push(decision);
   }
   const taken = new Set(items.map((item) => item.id));
-  for (const item of listWorkItemsByStates(db, ["awaiting_input"])) {
+  for (const item of yield* listWorkItemsByStatesSteps(q, ["awaiting_input"])) {
     if (taken.has(item.id) && item.currentRunId !== null)
-      releaseRunCapacity(db, item.currentRunId, now);
+      yield* releaseRunCapacitySteps(q, item.currentRunId, now);
   }
-  if (items.some((item) => item.state === "awaiting_input"))
-    enqueueJobOnce(db, {
+  if (items.some((item) => item.state === "awaiting_input")) {
+    const { inserted } = yield* enqueueJobOnceSteps(q, {
       queue: JOB_KIND.catchup,
       jobKey: `startup-questions:${now}`,
       payload: { reason: "open_questions" },
       now,
     });
+    if (inserted) wake.armed = true;
+  }
   return decisions;
 }
 
-function takeoverFilter(
-  db: Database,
-  self: string,
-  now: number,
-): (item: WorkItemRecord, unowned: boolean) => boolean {
-  const gone = ownerGone(db, self, now);
-  return (item, unowned) => {
-    const owner = item.currentRunId === null ? null : runOwner(db, item.currentRunId);
-    return owner === null ? unowned : gone(owner);
-  };
-}
-
 /** A capacity wait already has its next attempt; restarting neither spends recovery nor adds a job. */
-function hasParkedCapacityWait(db: Database, item: WorkItemRecord): boolean {
+function* hasParkedCapacityWaitSteps(q: Q, item: WorkItemRecord) {
   if (item.cancelRequested || !["running", "recovering", "verifying"].includes(item.state))
     return false;
-  return jobExists(
-    db,
+  const { job } = q.t;
+  return yield* jobExistsSteps(
+    q,
     eq(job.status, "pending"),
     inArray(job.queue, [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify]),
-    payloadIs("itemId", item.id),
-    isNotNull(sql`json_extract(${job.payload}, '$.capacityWait')`),
+    payloadIs(q, "itemId", item.id),
+    isNotNull(jsonField(q, job.payload, "capacityWait")),
     or(isNull(job.itemVersion), eq(job.itemVersion, item.version)),
   );
 }
 
-function jobExists(db: Database, ...conditions: (SQL | undefined)[]): boolean {
-  return (
-    orm(db)
+function* jobExistsSteps(q: Q, ...conditions: (SQL | undefined)[]) {
+  const row = yield* q.one(
+    q.orm
       .select({ one: sql`1` })
-      .from(job)
-      .where(and(...conditions))
-      .get() !== undefined
+      .from(q.t.job)
+      .where(and(...conditions)),
   );
+  return row !== undefined;
 }
 
-function payloadIs(key: "itemId" | "reason", value: string): SQL {
-  return sql`json_extract(${job.payload}, ${sql.raw(`'$.${key}'`)}) = ${value}`;
+function payloadIs(q: Q, key: "itemId" | "reason", value: string): SQL {
+  return sql`${jsonField(q, q.t.job.payload, key)} = ${value}`;
 }
 
-function hasPendingAnswerResume(db: Database, itemId: string): boolean {
-  return jobExists(
-    db,
-    inArray(job.status, ["pending", "running"]),
-    like(job.jobKey, "resume:answer:%"),
-    payloadIs("itemId", itemId),
-  );
-}
-
-function hasOpenReverify(db: Database, itemId: string): boolean {
-  return jobExists(
-    db,
+function* hasOpenReverifySteps(q: Q, itemId: string) {
+  const { job } = q.t;
+  return yield* jobExistsSteps(
+    q,
     eq(job.queue, JOB_KIND.reverify),
     inArray(job.status, ["pending", "running"]),
-    payloadIs("itemId", itemId),
+    payloadIs(q, "itemId", itemId),
   );
 }
 
-function hasPendingTransientRetry(db: Database, item: WorkItemRecord): boolean {
-  return jobExists(
-    db,
+function* hasPendingTransientRetrySteps(q: Q, item: WorkItemRecord) {
+  const { job } = q.t;
+  return yield* jobExistsSteps(
+    q,
     inArray(job.queue, [JOB_KIND.resume, JOB_KIND.reverify]),
     eq(job.status, "pending"),
-    payloadIs("itemId", item.id),
-    payloadIs("reason", "transient_failure"),
+    payloadIs(q, "itemId", item.id),
+    payloadIs(q, "reason", "transient_failure"),
     or(isNull(job.itemVersion), eq(job.itemVersion, item.version)),
   );
 }
@@ -233,14 +252,38 @@ function keepsVerification(item: WorkItemRecord): boolean {
   return item.state === "verifying" && hasVerificationCandidate(item.checkpoint);
 }
 
-function hasPendingResume(db: Database, itemId: string, reason: string): boolean {
-  return jobExists(
-    db,
+function* hasPendingResumeSteps(q: Q, itemId: string, reason: string) {
+  const { job } = q.t;
+  return yield* jobExistsSteps(
+    q,
     eq(job.queue, JOB_KIND.resume),
     eq(job.status, "pending"),
-    payloadIs("itemId", itemId),
-    payloadIs("reason", reason),
+    payloadIs(q, "itemId", itemId),
+    payloadIs(q, "reason", reason),
   );
+}
+
+function* ownsSteps(q: Q, item: WorkItemRecord, instanceId: string | undefined) {
+  if (instanceId === undefined || item.currentRunId === null) return true;
+  const owner = yield* runOwnerSteps(q, item.currentRunId);
+  return owner === null || owner === instanceId;
+}
+
+export function* prepareShutdownSteps(q: Q, now: number, instanceId: string | undefined) {
+  if (instanceId !== undefined) yield* heartbeatInstanceSteps(q, instanceId, now);
+  for (const item of yield* listWorkItemsByStatesSteps(q, ["running", "verifying"])) {
+    if (!(yield* ownsSteps(q, item, instanceId))) continue;
+    if ((yield* hasParkedCapacityWaitSteps(q, item)) || (yield* runnerHoldsWorkSteps(q, item, now)))
+      continue;
+    if (item.currentRunId !== null) yield* markRunSteps(q, item.currentRunId, "lost", now);
+    if (!keepsVerification(item)) yield* applyWorkItemEventSteps(q, item.id, "lease_expired");
+  }
+  for (const item of yield* listWorkItemsByStatesSteps(q, ["merge_queue"])) {
+    if (!(yield* ownsSteps(q, item, instanceId))) continue;
+    if (!(yield* runActiveSteps(q, item))) continue;
+    yield* markRunSteps(q, item.currentRunId!, "lost", now);
+    yield* applyWorkItemEventSteps(q, item.id, "lease_expired");
+  }
 }
 
 /**
@@ -257,13 +300,10 @@ export function prepareShutdown(
   commitWip?: ShutdownWipCommit,
   instanceId?: string,
 ): void {
-  const owns = (item: WorkItemRecord) => {
-    if (instanceId === undefined || item.currentRunId === null) return true;
-    const owner = runOwner(db, item.currentRunId);
-    return owner === null || owner === instanceId;
-  };
+  const store = sqliteDb(db);
   if (commitWip !== undefined) {
-    for (const item of listInFlightItems(db).filter(owns)) {
+    for (const item of listInFlightItems(db)) {
+      if (!settled(store.run((q) => ownsSteps(q, item, instanceId)))) continue;
       try {
         commitWip(item);
       } catch (caughtError1) {
@@ -272,31 +312,20 @@ export function prepareShutdown(
       }
     }
   }
-  immediate(db, () => {
-    if (instanceId !== undefined) heartbeatInstance(db, instanceId, now);
-    const running = listWorkItemsByStates(db, ["running", "verifying"]).filter(owns);
-    for (const item of running) {
-      if (hasParkedCapacityWait(db, item) || runnerHoldsWork(db, item, now)) continue;
-      if (item.currentRunId !== null) markRun(db, item.currentRunId, "lost", now);
-      if (!keepsVerification(item)) applyWorkItemEvent(db, item.id, "lease_expired");
-    }
-    for (const item of listWorkItemsByStates(db, ["merge_queue"]).filter(owns)) {
-      if (!runActive(db, item)) continue;
-      markRun(db, item.currentRunId!, "lost", now);
-      applyWorkItemEvent(db, item.id, "lease_expired");
-    }
-  });
+  settled(store.transaction((q) => prepareShutdownSteps(q, now, instanceId)));
 }
 
-function runActive(db: Database, item: WorkItemRecord): boolean {
-  return item.currentRunId !== null && getRun(db, item.currentRunId)?.status === "active";
+function* runActiveSteps(q: Q, item: WorkItemRecord) {
+  return (
+    item.currentRunId !== null && (yield* getRunSteps(q, item.currentRunId))?.status === "active"
+  );
 }
 
-function runnerHoldsWork(db: Database, item: WorkItemRecord, now: number): boolean {
+function* runnerHoldsWorkSteps(q: Q, item: WorkItemRecord, now: number) {
   return (
     (item.state === "running" || item.state === "verifying") &&
     item.currentRunId !== null &&
-    runnerHoldsRunWork(db, item.currentRunId, now, item.cancelRequested)
+    (yield* runnerHoldsRunWorkSteps(q, item.currentRunId, now, item.cancelRequested))
   );
 }
 
