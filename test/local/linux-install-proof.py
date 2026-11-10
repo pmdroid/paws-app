@@ -147,7 +147,7 @@ def main():
             raise RuntimeError("Dedicated service identities are missing")
         if pathlib.Path("/opt/paws-runner/current").resolve() != pathlib.Path("/opt/paws-runner/releases/0.1.1"):
             raise RuntimeError("Fixed release pointer is incorrect")
-        if run(["/opt/paws-runner/bin/bun", "--version"]).strip() != "1.4.2":
+        if run(["/opt/paws-runner/bin/bun", "--version"]).strip() != "1.4.4":
             raise RuntimeError("Pinned installed runtime failed")
         runner_path = pathlib.Path("/opt/paws-runner/bin/paws-runner")
         if not runner_path.is_symlink() or os.readlink(runner_path) != "../current/bin/paws-runner" or runner_path.read_bytes() != installer.release.RUNNER_LAUNCHER:
@@ -360,7 +360,7 @@ module.main()
             if (pathlib.Path("/opt/paws-runner/current/node_modules/.bin") / name).exists():
                 raise RuntimeError("The release still carries a bundled agent")
         runtime_path = pathlib.Path("/opt/paws-runner/bin/bun")
-        if not runtime_path.is_symlink() or os.readlink(runtime_path) != "../current/bin/bun" or hashlib.sha256(runtime_path.read_bytes()).hexdigest() != candidate_runtime_sha or run([str(runtime_path), "--version"]).strip() != "1.4.2":
+        if not runtime_path.is_symlink() or os.readlink(runtime_path) != "../current/bin/bun" or hashlib.sha256(runtime_path.read_bytes()).hexdigest() != candidate_runtime_sha or run([str(runtime_path), "--version"]).strip() != "1.4.4":
             raise RuntimeError("Fixed runtime path does not select the verified release runtime")
         installed_state = state_path.read_bytes()
         runtime_path.unlink()

@@ -25,7 +25,7 @@ import {
   type TlsPaths,
 } from ".";
 
-const BUN = { version: "1.4.2", path: "/opt/bun/bin/bun" };
+const BUN = { version: "1.4.4", path: "/opt/bun/bin/bun" };
 const HOST = "agentbox.example.ts.net";
 const homes: string[] = [];
 let certs: string;
