@@ -23,7 +23,7 @@ import {
   BYPASS_REPLY_NOTE,
   decideLinkAsk,
   guideLinkAsk,
-  reverifyBypassed,
+  reverifyBypassedSteps,
   type LinkAskEffects,
 } from "./link-ask";
 
@@ -86,9 +86,7 @@ function blocked(publicUrl: string | null = "https://paws.example") {
 }
 
 const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea Lead" };
-const effects: (db: ReturnType<typeof openDatabase>) => LinkAskEffects = (db) => ({
-  bypass: (linkAsk, item, now) => reverifyBypassed(db, linkAsk, item, now),
-});
+const effects: LinkAskEffects = { bypass: reverifyBypassedSteps };
 
 test("Closeout help is a bypass link ask with the failed checks of the head", () => {
   const { db, itemId, question } = blocked();
@@ -117,10 +115,10 @@ test("Closeout help is a bypass link ask with the failed checks of the head", ()
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
 });
 
-test("bypassing from the page writes the rows and verifies the same head again", () => {
+test("bypassing from the page writes the rows and verifies the same head again", async () => {
   const { db, itemId, question } = blocked();
   expect(
-    decideLinkAsk(
+    await decideLinkAsk(
       db,
       {
         questionId: question.id,
@@ -131,7 +129,7 @@ test("bypassing from the page writes the rows and verifies the same head again",
         actor,
         now: NOW + 100,
       },
-      effects(db),
+      effects,
     ),
   ).toBe("answered");
   expect(getWorkItem(db, itemId)).toMatchObject({
@@ -181,7 +179,7 @@ test("bypassing from the page writes the rows and verifies the same head again",
   );
 });
 
-test("a bypass needs offered checks, each once, each with a reason", () => {
+test("a bypass needs offered checks, each once, each with a reason", async () => {
   const { db, itemId, question } = blocked();
   for (const bypasses of [
     [],
@@ -193,7 +191,7 @@ test("a bypass needs offered checks, each once, each with a reason", () => {
     ],
   ])
     expect(
-      decideLinkAsk(
+      await decideLinkAsk(
         db,
         {
           questionId: question.id,
@@ -204,7 +202,7 @@ test("a bypass needs offered checks, each once, each with a reason", () => {
           actor,
           now: NOW + 100,
         },
-        effects(db),
+        effects,
       ),
     ).toBe("rejected");
   expect(getQuestion(db, question.id)?.status).toBe("open");
@@ -212,10 +210,10 @@ test("a bypass needs offered checks, each once, each with a reason", () => {
   expect(recoveryOptions(db, itemId).bypasses).toEqual([]);
 });
 
-test("someone who did not delegate and does not lead the project cannot bypass", () => {
+test("someone who did not delegate and does not lead the project cannot bypass", async () => {
   const { db, itemId, question } = blocked();
   expect(
-    decideLinkAsk(
+    await decideLinkAsk(
       db,
       {
         questionId: question.id,
@@ -226,7 +224,7 @@ test("someone who did not delegate and does not lead the project cannot bypass",
         actor,
         now: NOW + 100,
       },
-      effects(db),
+      effects,
     ),
   ).toBe("forbidden");
   expect(getQuestion(db, question.id)?.status).toBe("open");
@@ -234,10 +232,10 @@ test("someone who did not delegate and does not lead the project cannot bypass",
   expect(recoveryOptions(db, itemId).bypasses).toEqual([]);
 });
 
-test("a /paws bypass reply in Linear is guidance and gets the link back once", () => {
+test("a /paws bypass reply in Linear is guidance and gets the link back once", async () => {
   const { db, itemId, question } = blocked();
   expect(
-    guideLinkAsk(db, {
+    await guideLinkAsk(db, {
       questionId: question.id,
       eventKey: "activity:bypass",
       body: "/paws bypass test -- Known fixture failure",
@@ -255,10 +253,10 @@ test("a /paws bypass reply in Linear is guidance and gets the link back once", (
   ]);
 });
 
-test("guidance from the page restarts the agent and authorizes a new round", () => {
+test("guidance from the page restarts the agent and authorizes a new round", async () => {
   const { db, itemId, question } = blocked();
   expect(
-    decideLinkAsk(
+    await decideLinkAsk(
       db,
       {
         questionId: question.id,
@@ -268,7 +266,7 @@ test("guidance from the page restarts the agent and authorizes a new round", () 
         actor,
         now: NOW + 100,
       },
-      effects(db),
+      effects,
     ),
   ).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");

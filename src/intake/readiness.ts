@@ -24,8 +24,8 @@ export function itemReadiness(
   db: Database,
   itemId: string,
   phase: ReadinessPhase,
-): ReadinessHold | null {
-  return settled(sqliteDb(db).run((q) => itemReadinessSteps(q, itemId, phase)));
+): Promise<ReadinessHold | null> {
+  return sqliteDb(db).run((q) => itemReadinessSteps(q, itemId, phase));
 }
 
 export function* itemReadinessSteps(

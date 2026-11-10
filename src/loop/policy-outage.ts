@@ -3,10 +3,12 @@ import { dashboardPath, dashboardUrl } from "../dashboard-links";
 import {
   endPolicyOutage,
   getPolicyOutage,
+  getPolicyOutageSteps,
   getWorkItem,
   immediate,
   recordPolicyOutage,
   setPolicyOutageQuestion,
+  sqliteDb,
   type PolicyOutage,
   type WorkItemRecord,
 } from "../db";
@@ -91,14 +93,14 @@ export function policyLoadFailed(decision: DecisionDocument | null | undefined):
   );
 }
 
-export function policyOutageNote(
+export async function policyOutageNote(
   db: Database,
   repository: string,
   itemId: string,
   publicUrl: string | null,
   unreadable: MainPolicyError | null = null,
-): string {
-  const outage = getPolicyOutage(db, repository);
+): Promise<string> {
+  const outage = await sqliteDb(db).run((q) => getPolicyOutageSteps(q, repository));
   const changedBy = unreadable?.commit ?? outage?.changedBy ?? null;
   const changed = changedBy
     ? ` Commit ${changedBy} last changed \`${unreadable?.path ?? outage?.policyPath}\`.`

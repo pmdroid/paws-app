@@ -5,7 +5,7 @@ import {
   delegationHasItemWithoutSnapshot,
   delegationHasReconciliationWork,
   delegationHasReconciliationWorkSteps,
-  enqueueOutboxOnce,
+  enqueueOutboxOnceSteps,
   getConfirmedRemoteMergeSteps,
   itemSpecificationPresentSteps,
   latestIssueIdentifierSteps,
@@ -13,8 +13,8 @@ import {
   listPresentDelegationItemsSteps,
   readDependencyScopeSteps,
   readDependencySnapshotSteps,
-  saveDependencySnapshot,
-  saveTaskBlocks,
+  saveDependencySnapshotSteps,
+  saveTaskBlocksSteps,
   settled,
   sqliteDb,
   type Q,
@@ -50,10 +50,6 @@ export type DependencyReadiness = {
   heldItemIds: string[];
   cycleHeldItemIds: string[];
 };
-
-function scope(db: Database, target: Target): Scope | null {
-  return settled(sqliteDb(db).run((q) => scopeSteps(q, target)));
-}
 
 function* scopeSteps(q: Q, target: Target): Steps<Scope | null> {
   const located = yield* itemSpecificationPresentSteps(q, target.itemId);
@@ -111,10 +107,6 @@ function* scopeSteps(q: Q, target: Target): Steps<Scope | null> {
   };
 }
 
-function snapshot(db: Database, target: Target): Snapshot | null {
-  return settled(sqliteDb(db).run((q) => snapshotSteps(q, target)));
-}
-
 function* snapshotSteps(q: Q, target: Target): Steps<Snapshot | null> {
   const saved = yield* readDependencySnapshotSteps(q, target.itemId);
   if (saved && saved.workspaceId !== target.workspaceId)
@@ -131,9 +123,7 @@ export function hasPendingDelegationChanges(db: Database, delegationId: string):
 }
 
 export function readyItems(db: Database, target: Target): DependencyReadiness {
-  return db
-    .transaction(() => settled(sqliteDb(db).run((q) => readReadyItemsSteps(q, target, false))))
-    .deferred();
+  return settled(sqliteDb(db).run((q) => readyItemsSteps(q, target)));
 }
 
 export function* readyItemsSteps(q: Q, target: Target): Steps<DependencyReadiness> {
@@ -141,9 +131,7 @@ export function* readyItemsSteps(q: Q, target: Target): Steps<DependencyReadines
 }
 
 export function canAdvanceItem(db: Database, target: Target): boolean {
-  return db
-    .transaction(() => settled(sqliteDb(db).run((q) => canAdvanceSteps(q, target))))
-    .deferred();
+  return settled(sqliteDb(db).run((q) => canAdvanceItemSteps(q, target)));
 }
 
 export function* canAdvanceItemSteps(q: Q, target: Target): Steps<boolean> {
@@ -212,9 +200,7 @@ function* readReadyItemsSteps(
  * rules as `readyItems`. Empty without a dependency snapshot.
  */
 export function itemBlockers(db: Database, target: Target): string[] {
-  return db
-    .transaction(() => settled(sqliteDb(db).run((q) => readItemBlockersSteps(q, target))))
-    .deferred();
+  return settled(sqliteDb(db).run((q) => itemBlockersSteps(q, target)));
 }
 
 export function* itemBlockersSteps(q: Q, target: Target): Steps<string[]> {
@@ -279,9 +265,10 @@ export async function syncItemDependencies(
     expectedGeneration === Number.MAX_SAFE_INTEGER
   )
     throw new Error("Invalid dependency snapshot generation");
-  const initial = scope(db, target);
+  const store = sqliteDb(db);
+  const initial = await store.run((q) => scopeSteps(q, target));
   if (!initial) throw new Error("Dependency workspace or task ownership changed");
-  if ((snapshot(db, target)?.generation ?? 0) !== expectedGeneration)
+  if (((await store.run((q) => snapshotSteps(q, target)))?.generation ?? 0) !== expectedGeneration)
     throw new Error("Dependency snapshot changed");
   const issueIds = new Set(initial.siblings.map((item) => item.linearIssueId));
   const edges = new Map<string, DependencyEdge>();
@@ -313,11 +300,13 @@ export async function syncItemDependencies(
     identifiers.set(id, issue.identifier ?? id);
   }
   signal?.throwIfAborted();
-  return writeItemDependencies(
-    db,
-    { ...target, expectedGeneration },
-    { edges: [...edges.values()], states, identifiers },
-    initial.token,
+  return store.transaction((q) =>
+    writeItemDependenciesSteps(
+      q,
+      { ...target, expectedGeneration },
+      { edges: [...edges.values()], states, identifiers },
+      initial.token,
+    ),
   );
 }
 
@@ -326,64 +315,68 @@ export function recordItemDependencies(
   input: Target & { expectedGeneration: number },
   reads: DependencyReads,
 ): DependencyReadiness {
-  return writeItemDependencies(db, input, reads, null);
+  return settled(
+    sqliteDb(db).transaction((q) => writeItemDependenciesSteps(q, input, reads, null)),
+  );
 }
 
 export function itemDependenciesCurrent(db: Database, target: Target): boolean {
   try {
-    const current = scope(db, target);
-    return current !== null && snapshot(db, target)?.scope === current.token;
+    return settled(
+      sqliteDb(db).run(function* (q) {
+        const current = yield* scopeSteps(q, target);
+        return current !== null && (yield* snapshotSteps(q, target))?.scope === current.token;
+      }),
+    );
   } catch (caughtError1) {
     journalCaught(caughtError1, "dependencies.itemDependenciesCurrent.scope", target.itemId);
     return false;
   }
 }
 
-function writeItemDependencies(
-  db: Database,
+function* writeItemDependenciesSteps(
+  q: Q,
   input: Target & { expectedGeneration: number },
   reads: DependencyReads,
   token: string | null,
-): DependencyReadiness {
+): Steps<DependencyReadiness> {
   const { itemId, workspaceId, expectedGeneration } = input;
   const target = { itemId, workspaceId };
   const { edges, states, identifiers } = reads;
-  return db
-    .transaction(() => {
-      const current = scope(db, target);
-      if (
-        !current ||
-        (token !== null && current.token !== token) ||
-        (snapshot(db, target)?.generation ?? 0) !== expectedGeneration
-      )
-        throw new Error("Dependency snapshot changed");
-      saveTaskBlocks(db, [current.item.linearIssueId], edges);
-      saveDependencySnapshot(db, {
-        itemId,
-        workspaceId,
-        generation: expectedGeneration + 1,
-        scope: current.token,
-        linearStates: JSON.stringify([...states]),
-        linearIdentifiers: JSON.stringify([...identifiers]),
-      });
-      const waiting = [...states]
-        .filter(([, state]) => state !== "completed")
-        .map(([id]) => identifiers.get(id) ?? id)
-        .sort();
-      if (waiting.length && current.item.state === "queued")
-        enqueueOutboxOnce(db, {
-          target: "linear",
-          op: "activity",
-          orderingKey: current.identity.sessionId,
-          idempotencyKey: `waiting:${itemId}:${waiting.join(",")}`,
-          payload: {
-            sessionId: current.identity.sessionId,
-            kind: "thought",
-            body: `Waiting for ${waiting.join(", ")} before starting.`,
-          },
-          now: Date.now(),
-        });
-      return readyItems(db, target);
-    })
-    .immediate();
+  const current = yield* scopeSteps(q, target);
+  if (
+    !current ||
+    (token !== null && current.token !== token) ||
+    ((yield* snapshotSteps(q, target))?.generation ?? 0) !== expectedGeneration
+  )
+    throw new Error("Dependency snapshot changed");
+  yield* q.transaction((tx) => saveTaskBlocksSteps(tx, [current.item.linearIssueId], edges));
+  yield* saveDependencySnapshotSteps(q, {
+    itemId,
+    workspaceId,
+    generation: expectedGeneration + 1,
+    scope: current.token,
+    linearStates: JSON.stringify([...states]),
+    linearIdentifiers: JSON.stringify([...identifiers]),
+  });
+  const waiting = [...states]
+    .filter(([, state]) => state !== "completed")
+    .map(([id]) => identifiers.get(id) ?? id)
+    .sort();
+  if (waiting.length && current.item.state === "queued")
+    yield* q.transaction((tx) =>
+      enqueueOutboxOnceSteps(tx, {
+        target: "linear",
+        op: "activity",
+        orderingKey: current.identity.sessionId,
+        idempotencyKey: `waiting:${itemId}:${waiting.join(",")}`,
+        payload: {
+          sessionId: current.identity.sessionId,
+          kind: "thought",
+          body: `Waiting for ${waiting.join(", ")} before starting.`,
+        },
+        now: Date.now(),
+      }),
+    );
+  return yield* readyItemsSteps(q, target);
 }

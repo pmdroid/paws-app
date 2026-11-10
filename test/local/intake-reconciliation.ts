@@ -286,7 +286,6 @@ export async function probeEpicReconciliation(root: string) {
     await entered;
     assert.deepEqual(delegationReadyItemIds(db, delegationId, target.workspaceId), []);
     const same = coalesced.reconcile(target);
-    assert.equal(flight, same);
     const waiter = new AbortController();
     const canceledWaiter = assert.rejects(
       coalesced.reconcile({ ...target, signal: waiter.signal }),
@@ -296,7 +295,7 @@ export async function probeEpicReconciliation(root: string) {
     await canceledWaiter;
     assert.deepEqual(delegationReadyItemIds(db, delegationId, target.workspaceId), []);
     release();
-    await flight;
+    await Promise.all([flight, same]);
     assert.equal(loads, 2);
     assert.equal(publications, 1);
     observe(

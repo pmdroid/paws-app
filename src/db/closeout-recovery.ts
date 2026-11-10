@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { eq, sql } from "drizzle-orm";
-import type { Q } from "./db";
-import { jsonValue } from "./json-text";
+import { asc, eq, sql } from "drizzle-orm";
+import type { Q, Steps } from "./db";
+import { jsonText, jsonValue } from "./json-text";
 import { orm } from "./orm";
 import { closeoutRecovery, question } from "./schema";
 
@@ -44,6 +44,35 @@ export function saveCloseoutRecovery(
       retryBaseline: JSON.stringify(input.retryBaseline),
     })
     .run();
+}
+
+export function* listCloseoutRecoveriesSteps(q: Q, itemId: string): Steps<CloseoutRecovery[]> {
+  const { closeoutRecovery: recovery, question: asked } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        questionId: recovery.questionId,
+        taskId: recovery.taskId,
+        itemId: recovery.itemId,
+        base: recovery.base,
+        head: recovery.head,
+        policyDigest: recovery.policyDigest,
+        failedChecks: jsonText(q, recovery.failedChecks),
+        retryBaseline: jsonText(q, recovery.retryBaseline),
+        summary: recovery.summary,
+        answer: asked.answer,
+        answeredBy: asked.answeredBy,
+      })
+      .from(recovery)
+      .innerJoin(asked, eq(asked.id, recovery.questionId))
+      .where(eq(recovery.itemId, itemId))
+      .orderBy(asc(asked.createdAt), q.dialect === "sqlite" ? sql`question.rowid` : asc(asked.id)),
+  );
+  return rows.map((row) => ({
+    ...row,
+    failedChecks: JSON.parse(row.failedChecks) as string[],
+    retryBaseline: JSON.parse(row.retryBaseline) as string[],
+  }));
 }
 
 export function listCloseoutRecoveries(db: Database, itemId: string): CloseoutRecovery[] {
