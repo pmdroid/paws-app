@@ -1,23 +1,33 @@
 import {
-  workspaceMemberUsableSql,
   workspaceMemberUsable,
   auditWorkspaceAccessSteps,
   commandAccountSteps,
   emitJobReady,
-  getRunner,
   getRunnerSteps,
+  HEALTH_COMMAND_KINDS,
+  healthCheckHistorySteps,
+  healthCommandEnvelopeSteps,
+  healthResultJsonSteps,
+  insertHealthResultSteps,
+  LOGIN_CHECK_KINDS,
+  pendingHealthChecksSteps,
   recordAccountObservationSteps,
-  immediate,
   recordRunnerAgentUsageSteps,
-  runnerAgentCheckStates,
-  wakeRunnerSlotWaitsSteps,
-  runnerAgentUsage,
-  runnerLaneHelperWaiting,
+  runnerAgentCheckStatesSteps,
+  runnerAgentPolicyRowSteps,
+  runnerAgentUsageSteps,
+  runnerLaneHelperWaitingSteps,
+  runnerLastSeenSteps,
+  seenMemberRunnersSteps,
+  setLegacyAgentQuotaSteps,
+  setLegacyAgentReadySteps,
   sqliteDb,
-  workspaceMember,
+  touchRunnerSeenSteps,
+  wakeRunnerSlotWaitsSteps,
   workspaceMemberSteps,
   type Q,
   type RunnerAgentLimit,
+  type Steps,
 } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
@@ -89,13 +99,6 @@ export function createRunnerHealth(options: {
   const { db, work } = options;
   const store = sqliteDb(db);
   const now = options.now ?? Date.now;
-  function visible(principal: WorkspacePrincipal, runnerId: string) {
-    const member = workspaceMember(db, principal.workspaceId, principal.userId);
-    const runner = getRunner(db, runnerId);
-    if (!workspaceMemberUsable(member) || runner?.workspaceId !== principal.workspaceId)
-      throw new Error("Runner access denied");
-    return { member, runner };
-  }
   function* visibleSteps(q: Q, principal: WorkspacePrincipal, runnerId: string) {
     const member = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);
     const runner = yield* getRunnerSteps(q, runnerId);
@@ -114,14 +117,10 @@ export function createRunnerHealth(options: {
       throw new Error("Runner identity is unavailable");
     return runner;
   }
-  function command(commandId: string, runnerId: string) {
-    const row = db
-      .query<{ envelope: string }, [string, string]>(
-        "SELECT envelope FROM runner_command WHERE id=? AND runner_id=? AND kind IN ('probe','login_check')",
-      )
-      .get(commandId, runnerId);
-    if (!row) throw new Error("Runner health command is unavailable");
-    const envelope = JSON.parse(row.envelope) as { payload: string };
+  function* commandSteps(q: Q, commandId: string, runnerId: string) {
+    const envelopeJson = yield* healthCommandEnvelopeSteps(q, commandId, runnerId);
+    if (envelopeJson === null) throw new Error("Runner health command is unavailable");
+    const envelope = JSON.parse(envelopeJson) as { payload: string };
     const value = RunnerCommandSchema.parse(
       JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")),
     );
@@ -133,30 +132,14 @@ export function createRunnerHealth(options: {
       throw new Error("Runner health command binding changed");
     return value;
   }
-  function pendingChecks(runnerId: string, at: number) {
-    return db
-      .query<{ count: number }, [string, number]>(
-        "SELECT COUNT(*) AS count FROM runner_command c LEFT JOIN runner_health_result h ON h.command_id=c.id WHERE c.runner_id=? AND c.kind IN ('probe','login_check') AND c.expires_at>? AND h.command_id IS NULL",
-      )
-      .get(runnerId, at)!.count;
-  }
   /** Latest sign-in checks per agent. Bounded so old command rows are not rescanned. */
-  function history(runnerId: string, at: number) {
+  function* historySteps(
+    q: Q,
+    runnerId: string,
+    at: number,
+  ): Steps<(agent: Agent) => History | undefined> {
     const latest = new Map<string, History>();
-    const rows = db
-      .query<
-        {
-          id: string;
-          envelope: string;
-          expiresAt: number;
-          receivedAt: number | null;
-          resultJson: string | null;
-        },
-        [string]
-      >(
-        "SELECT c.id,c.envelope,c.expires_at AS expiresAt,h.received_at AS receivedAt,h.result_json AS resultJson FROM runner_command c LEFT JOIN runner_health_result h ON h.command_id=c.id WHERE c.runner_id=? AND c.kind='login_check' ORDER BY c.ordinal DESC LIMIT 256",
-      )
-      .all(runnerId);
+    const rows = yield* healthCheckHistorySteps(q, runnerId, LOGIN_CHECK_KINDS, 256);
     for (const row of rows) {
       const envelope = JSON.parse(row.envelope) as { payload: string };
       const value = JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")) as {
@@ -203,7 +186,7 @@ export function createRunnerHealth(options: {
         const { member, runner } = yield* visibleSteps(q, principal, runnerId);
         if (!isWorkspaceAdmin(member.role))
           throw new Error("Workspace administrator access is required");
-        if (pendingChecks(runnerId, at) >= 4)
+        if ((yield* pendingHealthChecksSteps(q, runnerId, at)) >= 4)
           throw new Error("Runner health checks are already pending");
         const commandId = randomUUID();
         const expiresAt = at + 120_000;
@@ -229,26 +212,22 @@ export function createRunnerHealth(options: {
      * Queues a login_check per agent that is due on active, recently seen runners. Queues nothing
      * on a runner while a helper waits for its lane. Never queues probe: it runs a model turn.
      */
-    refresh() {
+    async refresh() {
       const at = now();
-      const runners = db
-        .query<{ id: string; workspaceId: string }, [number]>(
-          `SELECT r.id,r.workspace_id AS workspaceId FROM runner r
-          JOIN workspace_member o ON o.workspace_id=r.workspace_id AND o.user_id=r.owner_user_id
-          WHERE r.status='active' AND r.revoked_at IS NULL AND ${workspaceMemberUsableSql("o")} AND r.last_seen_at>?
-          ORDER BY r.id`,
-        )
-        .all(at - RECENTLY_SEEN_MS);
+      const runners = await store.run((q) => seenMemberRunnersSteps(q, at - RECENTLY_SEEN_MS));
       const errors: unknown[] = [];
       for (const runner of runners) {
         try {
-          immediate(db, () => {
-            if (runnerLaneHelperWaiting(db, runner.id, at)) return;
-            const last = history(runner.id, at);
+          await store.transaction(function* (q) {
+            if (yield* runnerLaneHelperWaitingSteps(q, runner.id, at)) return;
+            const last = yield* historySteps(q, runner.id, at);
             const states = new Map(
-              runnerAgentCheckStates(db, runner.id).map((state) => [state.agent, state]),
+              (yield* runnerAgentCheckStatesSteps(q, runner.id)).map((state) => [
+                state.agent,
+                state,
+              ]),
             );
-            let pending = pendingChecks(runner.id, at);
+            let pending = yield* pendingHealthChecksSteps(q, runner.id, at);
             for (const agent of runnerAgents) {
               if (!work.supportsAgent(runner.id, agent)) continue;
               if (pending >= 4) return;
@@ -266,69 +245,69 @@ export function createRunnerHealth(options: {
     },
     /** Checks an agent right after its sign-in completes, unless a check is already in flight. */
     afterSignIn(runnerId: string, agent: Agent) {
-      return immediate(db, () => {
+      return store.transaction(function* (q) {
         const at = now();
-        const runner = getRunner(db, runnerId);
+        const runner = yield* getRunnerSteps(q, runnerId);
         if (
           !runner ||
           !work.supportsAgent(runnerId, agent) ||
           runner.status !== "active" ||
-          !workspaceMemberUsable(workspaceMember(db, runner.workspaceId, runner.ownerUserId)) ||
-          history(runnerId, at)(agent)?.inFlight ||
-          pendingChecks(runnerId, at) >= 4
+          !workspaceMemberUsable(
+            yield* workspaceMemberSteps(q, runner.workspaceId, runner.ownerUserId),
+          ) ||
+          (yield* historySteps(q, runnerId, at))(agent)?.inFlight ||
+          (yield* pendingHealthChecksSteps(q, runnerId, at)) >= 4
         )
           return false;
         queueCheck(runner, agent, at);
         return true;
       });
     },
-    agents(principal: WorkspacePrincipal, runnerId: string): AgentSignIn[] {
-      const { runner } = visible(principal, runnerId);
-      const at = now();
-      const last = history(runnerId, at);
-      return runnerAgents.map((agent): AgentSignIn => {
-        const entry = last(agent);
-        const checkedAt = entry?.result?.receivedAt ?? null;
-        const policy = db
-          .query<
-            {
-              extraUsage: number;
-              quotaState: string;
-              resetsAt: number | null;
-              cooldownUntil: number;
-            },
-            [string, string]
-          >(
-            "SELECT extra_usage AS extraUsage,quota_state AS quotaState,resets_at AS resetsAt,cooldown_until AS cooldownUntil FROM runner_agent_policy WHERE runner_id=? AND agent=?",
-          )
-          .get(runner.id, agent);
-        const extraUsage = policy?.extraUsage === 1;
-        const extra = extraUsage ? { extraUsage: true as const } : {};
-        if (entry?.inFlight) return { agent, status: "checking", checkedAt, ...extra };
-        if (entry?.result && !entry.result.authenticated)
-          return { agent, status: "signed_out", checkedAt, ...extra };
-        const usage = runnerAgentUsage(db, runnerId, agent);
-        const limits = usage ? { limits: usage.limits, limitsAt: usage.observedAt } : {};
-        if (policy?.quotaState === "exhausted" && policy.cooldownUntil > at)
-          return {
-            agent,
-            status: "usage_limit",
-            checkedAt,
-            ...extra,
-            resetsAt: policy.resetsAt ?? policy.cooldownUntil,
-            ...limits,
-          };
-        if (policy?.quotaState === "spent_extra" && extraUsage)
-          return {
-            agent,
-            status: "extra_usage",
-            checkedAt,
-            ...extra,
-            resetsAt: policy.resetsAt,
-            ...limits,
-          };
-        if (entry?.result) return { agent, status: "signed_in", checkedAt, ...extra, ...limits };
-        return { agent, status: "unknown", checkedAt, ...extra };
+    agents(principal: WorkspacePrincipal, runnerId: string): Promise<AgentSignIn[]> {
+      return store.run(function* (q) {
+        const { runner } = yield* visibleSteps(q, principal, runnerId);
+        const at = now();
+        const last = yield* historySteps(q, runnerId, at);
+        const signIns: AgentSignIn[] = [];
+        for (const agent of runnerAgents) {
+          const entry = last(agent);
+          const checkedAt = entry?.result?.receivedAt ?? null;
+          const policy = yield* runnerAgentPolicyRowSteps(q, runner.id, agent);
+          const extraUsage = policy?.extraUsage === 1;
+          const extra = extraUsage ? { extraUsage: true as const } : {};
+          if (entry?.inFlight) {
+            signIns.push({ agent, status: "checking", checkedAt, ...extra });
+            continue;
+          }
+          if (entry?.result && !entry.result.authenticated) {
+            signIns.push({ agent, status: "signed_out", checkedAt, ...extra });
+            continue;
+          }
+          const usage = yield* runnerAgentUsageSteps(q, runnerId, agent);
+          const limits = usage ? { limits: usage.limits, limitsAt: usage.observedAt } : {};
+          if (policy?.quotaState === "exhausted" && policy.cooldownUntil > at)
+            signIns.push({
+              agent,
+              status: "usage_limit",
+              checkedAt,
+              ...extra,
+              resetsAt: policy.resetsAt ?? policy.cooldownUntil,
+              ...limits,
+            });
+          else if (policy?.quotaState === "spent_extra" && extraUsage)
+            signIns.push({
+              agent,
+              status: "extra_usage",
+              checkedAt,
+              ...extra,
+              resetsAt: policy.resetsAt,
+              ...limits,
+            });
+          else if (entry?.result)
+            signIns.push({ agent, status: "signed_in", checkedAt, ...extra, ...limits });
+          else signIns.push({ agent, status: "unknown", checkedAt, ...extra });
+        }
+        return signIns;
       });
     },
     async submit(runnerId: string, input: RunnerHealthResult) {
@@ -336,7 +315,7 @@ export function createRunnerHealth(options: {
       let woke = false;
       const submitted = await store.transaction(function* (q) {
         const runner = yield* identitySteps(q, runnerId);
-        const assigned = command(result.commandId, runnerId);
+        const assigned = yield* commandSteps(q, result.commandId, runnerId);
         const at = now();
         if (
           assigned.workspaceId !== runner.workspaceId ||
@@ -360,21 +339,12 @@ export function createRunnerHealth(options: {
         )
           throw new Error("Runner health result contradicts its command");
         const value = JSON.stringify(result);
-        const previous = db
-          .query<{ result_json: string }, [string]>(
-            "SELECT result_json FROM runner_health_result WHERE command_id=?",
-          )
-          .get(result.commandId);
-        if (previous) {
-          if (previous.result_json !== value) throw new Error("Runner health result changed");
+        const previous = yield* healthResultJsonSteps(q, result.commandId);
+        if (previous !== null) {
+          if (previous !== value) throw new Error("Runner health result changed");
           return { duplicate: true };
         }
-        db.run("INSERT INTO runner_health_result VALUES(?,?,?,?)", [
-          result.commandId,
-          runnerId,
-          value,
-          at,
-        ]);
+        yield* insertHealthResultSteps(q, result.commandId, runnerId, value, at);
         const legacy = !assigned.account;
         const owner =
           assigned.type === "login_check" ? yield* commandAccountSteps(q, assigned.id) : null;
@@ -408,10 +378,7 @@ export function createRunnerHealth(options: {
           (yield* observe(result.login.authenticated ? "ok" : "auth_required", "auth")) &&
           legacy
         ) {
-          db.run(
-            "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?1,?2,?3,1-?3) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=?3,auth_expired=1-?3",
-            [runnerId, assigned.agent, result.login.authenticated ? 1 : 0],
-          );
+          yield* setLegacyAgentReadySteps(q, runnerId, assigned.agent, result.login.authenticated);
           if (result.login.authenticated) woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
         }
         if (legacy && result.agentLimits)
@@ -423,11 +390,7 @@ export function createRunnerHealth(options: {
           });
         if (assigned.type === "login_check" && result.login?.authenticated && result.agentLimits) {
           const extraUsage =
-            db
-              .query<{ extraUsage: number }, [string, string]>(
-                "SELECT extra_usage AS extraUsage FROM runner_agent_policy WHERE runner_id=? AND agent=?",
-              )
-              .get(runnerId, assigned.agent)?.extraUsage === 1;
+            (yield* runnerAgentPolicyRowSteps(q, runnerId, assigned.agent))?.extraUsage === 1;
           const spent = result.agentLimits.filter((limit) => limit.usedPercent >= 100);
           const until = spent.length
             ? Math.max(...spent.map((limit) => limit.resetsAt ?? at + 15 * 60_000))
@@ -439,58 +402,43 @@ export function createRunnerHealth(options: {
             (yield* observe(cools ? "exhausted" : low ? "low" : "ok", "quota", resetsAt)) &&
             legacy
           )
-            db.run(
-              "UPDATE runner_agent_policy SET quota_state=?,resets_at=?,cooldown_until=? WHERE runner_id=? AND agent=?",
-              [
-                cools ? "exhausted" : spent.length ? "spent_extra" : "ok",
-                until,
-                cools ? until! : 0,
-                runnerId,
-                assigned.agent,
-              ],
-            );
+            yield* setLegacyAgentQuotaSteps(q, runnerId, assigned.agent, {
+              state: cools ? "exhausted" : spent.length ? "spent_extra" : "ok",
+              resetsAt: until,
+              cooldownUntil: cools ? until! : 0,
+            });
         }
-        db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
+        yield* touchRunnerSeenSteps(q, runnerId, at);
         return { duplicate: false };
       });
       if (woke) emitJobReady(store);
       return submitted;
     },
     async read(runnerId: string, commandId: string) {
-      await store.run((q) => identitySteps(q, runnerId));
-      if (command(commandId, runnerId).expiresAt <= now())
-        throw new Error("Runner health command has expired");
-      const row = db
-        .query<{ result_json: string }, [string, string]>(
-          "SELECT result_json FROM runner_health_result WHERE runner_id=? AND command_id=?",
-        )
-        .get(runnerId, commandId);
-      return row ? RunnerHealthResultSchema.parse(JSON.parse(row.result_json)) : null;
+      const resultJson = await store.run(function* (q) {
+        yield* identitySteps(q, runnerId);
+        if ((yield* commandSteps(q, commandId, runnerId)).expiresAt <= now())
+          throw new Error("Runner health command has expired");
+        return yield* healthResultJsonSteps(q, commandId, runnerId);
+      });
+      return resultJson ? RunnerHealthResultSchema.parse(JSON.parse(resultJson)) : null;
     },
     async list(principal: WorkspacePrincipal, runnerId: string) {
-      await store.run((q) => visibleSteps(q, principal, runnerId));
-      const checks = db
-        .query<
-          { id: string; expiresAt: number; receivedAt: number | null; resultJson: string | null },
-          [string]
-        >(
-          "SELECT c.id,c.expires_at AS expiresAt,h.received_at AS receivedAt,h.result_json AS resultJson FROM runner_command c LEFT JOIN runner_health_result h ON h.command_id=c.id WHERE c.runner_id=? AND c.kind IN ('probe','login_check') ORDER BY c.rowid DESC LIMIT 12",
-        )
-        .all(runnerId)
-        .map((row) => ({
-          command: command(row.id, runnerId),
-          expiresAt: row.expiresAt,
-          receivedAt: row.receivedAt,
-          result: row.resultJson
-            ? RunnerHealthResultSchema.parse(JSON.parse(row.resultJson))
-            : null,
-        }));
-      const lastSeenAt = db
-        .query<{ lastSeenAt: number | null }, [string]>(
-          "SELECT last_seen_at AS lastSeenAt FROM runner WHERE id=?",
-        )
-        .get(runnerId)!.lastSeenAt;
-      return { lastSeenAt, checks };
+      return store.run(function* (q) {
+        yield* visibleSteps(q, principal, runnerId);
+        const checks = [];
+        for (const row of yield* healthCheckHistorySteps(q, runnerId, HEALTH_COMMAND_KINDS, 12))
+          checks.push({
+            command: yield* commandSteps(q, row.id, runnerId),
+            expiresAt: row.expiresAt,
+            receivedAt: row.receivedAt,
+            result: row.resultJson
+              ? RunnerHealthResultSchema.parse(JSON.parse(row.resultJson))
+              : null,
+          });
+        const lastSeenAt = yield* runnerLastSeenSteps(q, runnerId);
+        return { lastSeenAt, checks };
+      });
     },
     async browser(request: Request, principal: WorkspacePrincipal): Promise<Response | null> {
       const match = /^\/api\/runners\/([0-7][0-9A-HJKMNP-TV-Z]{25})\/health$/.exec(

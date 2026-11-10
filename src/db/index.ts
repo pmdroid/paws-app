@@ -188,5 +188,6 @@ export * from "./runner-transcripts";
 export * from "./work-item-fields";
 export * from "./runner-results";
 export * from "./runner-helpers";
-export * from "./member-vm-delete";
 export * from "./runner-backend-reads";
+export * from "./runner-health-reads";
+export * from "./member-vm-delete";
