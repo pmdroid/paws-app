@@ -20,7 +20,7 @@ import {
 import {
   applyLinearTurnsSteps,
   clearConversationBlockSteps,
-  deferWorkItemAsync,
+  deferWorkItem,
   delegatedLinearUserIdSteps,
   deleteCancelledLinearTurnSteps,
   enqueueJobOnceAsync,
@@ -43,7 +43,7 @@ import {
   listBlockedConversationsSteps,
   listLinearActivitySnapshotsSteps,
   listPendingLinearTurnsSteps,
-  markJobAwakeWaitAsync,
+  markJobAwakeWait,
   markLinearActivitiesListedSteps,
   pausedStoppedSessionItemSteps,
   recentRepositoryNamesSteps,
@@ -2077,7 +2077,7 @@ export class Orchestrator {
           );
           await clearWait();
           const waitingId = readString(job.payload, "itemId");
-          if (waitingId) this.settleItemAwake(waitingId);
+          if (waitingId) await this.settleItemAwake(waitingId);
           await waitForRunnerSlot(this.db, job, this.now(), this.runnerWaitMs(wait), wait);
         }
       });
@@ -2114,7 +2114,7 @@ export class Orchestrator {
       }
       if (waiting === undefined) return;
       const waitingId = readString(job.payload, "itemId");
-      if (waitingId) this.settleItemAwake(waitingId);
+      if (waitingId) await this.settleItemAwake(waitingId);
       const parked = await parkMerge(this.store, job, this.now(), waiting);
       if (parked === "parked" || parked === "lost") return;
       const itemId = readString(job.payload, "itemId");
@@ -2614,8 +2614,8 @@ export class Orchestrator {
       const resetAt = usageResetAt(error);
       if (resetAt !== null) {
         const delayMs = Math.max(0, resetAt - this.now());
-        this.settleItemAwake(item.id);
-        await deferWorkItemAsync(this.store, item, {
+        await this.settleItemAwake(item.id);
+        await deferWorkItem(this.store, item, {
           retry: retryCount(job.payload),
           delayMs,
           handoff: readString(job.payload, "handoff"),
@@ -2636,8 +2636,8 @@ export class Orchestrator {
         return;
       }
       if (slotsBusy(error)) {
-        this.settleItemAwake(item.id);
-        await deferWorkItemAsync(this.store, item, {
+        await this.settleItemAwake(item.id);
+        await deferWorkItem(this.store, item, {
           retry: retryCount(job.payload),
           delayMs: SLOTS_BUSY_RETRY_MS,
           handoff: readString(job.payload, "handoff"),
@@ -2657,7 +2657,7 @@ export class Orchestrator {
       if (wait) {
         // Settle the attempt before the park. The parked interval is waiting, not a lease expiry,
         // and the item keeps this run (PAS-898).
-        this.settleItemAwake(item.id);
+        await this.settleItemAwake(item.id);
         if (
           (await waitForRunnerSlot(
             this.db,
@@ -2716,8 +2716,8 @@ export class Orchestrator {
 
         const diskFull = isHostDiskFull(error);
         if (diskFull) await this.noteHostDiskFull(item.id, error);
-        this.settleItemAwake(item.id);
-        await deferWorkItemAsync(this.store, item, {
+        await this.settleItemAwake(item.id);
+        await deferWorkItem(this.store, item, {
           retry,
           delayMs,
           handoff: readString(job.payload, "handoff"),
@@ -2744,8 +2744,8 @@ export class Orchestrator {
         );
       // A start is only claimed while its item is queued, so its retries continue as a resume.
       else if (job.queue === JOB_KIND.start && item.state === "running") {
-        this.settleItemAwake(item.id);
-        await deferWorkItemAsync(this.store, item, {
+        await this.settleItemAwake(item.id);
+        await deferWorkItem(this.store, item, {
           retry: retryCount(job.payload),
           delayMs: transientRetryDelayMs(1, error, this.options.retryBaseMs),
           handoff: readString(job.payload, "handoff"),
@@ -2908,7 +2908,7 @@ export class Orchestrator {
   ): Promise<boolean> {
     const now = this.now();
     const runnersUrl = this.options.runnersUrl ?? dashboardUrl("http://127.0.0.1:8787", "/runners");
-    this.settleItemAwake(item.id);
+    await this.settleItemAwake(item.id);
     const asked = await this.store.transaction((q) =>
       this.askRunnerRepositorySteps(q, item.id, refused, runnersUrl, now),
     );
@@ -8981,7 +8981,7 @@ export class Orchestrator {
     if (delayMs !== undefined && head !== "" && item.checkpoint?.phase === "verifying") {
       const reviewer =
         reviewerFault === undefined ? null : await this.reviewerHold(item, reviewerFault);
-      await deferWorkItemAsync(this.store, item, {
+      await deferWorkItem(this.store, item, {
         retry: reasons.length,
         delayMs,
         handoff: null,
@@ -9027,7 +9027,7 @@ export class Orchestrator {
       return { key, alert: null };
     const held = [
       item,
-      ...reviewerFaultHolds(this.db, key).filter((entry) => entry.id !== item.id),
+      ...(await reviewerFaultHolds(this.store, key)).filter((entry) => entry.id !== item.id),
     ];
     const names = held.map((entry) => entry.linearIdentifier ?? entry.id).join(", ");
     return {
@@ -10766,20 +10766,19 @@ export class Orchestrator {
   ): Promise<void> {
     const clock = this.options.clock ?? systemClock;
     const job = this.leasedJobs.get(itemId);
-    if (job) await markJobAwakeWaitAsync(this.store, job, true, clock.mono(), clock.now(), reason);
+    if (job) await markJobAwakeWait(this.store, job, true, clock.mono(), clock.now(), reason);
     try {
       if (sleep) await sleep(ms);
       else await delay(ms, undefined, signal ? { signal } : {});
     } finally {
-      if (job)
-        await markJobAwakeWaitAsync(this.store, job, false, clock.mono(), clock.now(), reason);
+      if (job) await markJobAwakeWait(this.store, job, false, clock.mono(), clock.now(), reason);
     }
   }
 
   /** Records awake time up to this instant, under the item's category before the next wait. */
-  private settleItemAwake(itemId: string): void {
+  private async settleItemAwake(itemId: string): Promise<void> {
     const clock = this.options.clock ?? systemClock;
-    accrueAwake(this.db, itemId, clock.mono(), clock.now());
+    await accrueAwake(this.store, itemId, clock.mono(), clock.now());
   }
 }
 

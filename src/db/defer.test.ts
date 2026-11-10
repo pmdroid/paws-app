@@ -13,16 +13,17 @@ import {
   openDatabase,
   saveCheckpoint,
   setJournalSink,
+  sqliteDb,
 } from "./index";
 
-test("deferring a running item loses its run, moves it to recovering, and schedules a resume", () => {
+test("deferring a running item loses its run, moves it to recovering, and schedules a resume", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
   const { item, run } = beginImplementRun(db, "item-1", 1_000);
   const lines: string[] = [];
   const restore = setJournalSink((line) => lines.push(line));
-  deferWorkItem(db, item, {
+  await deferWorkItem(sqliteDb(db), item, {
     retry: 2,
     delayMs: 5_000,
     handoff: "keep going",
@@ -55,19 +56,19 @@ test("deferring a running item loses its run, moves it to recovering, and schedu
   );
 });
 
-test("deferring the same item version twice schedules one resume", () => {
+test("deferring the same item version twice schedules one resume", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item-1", now: 1_000 });
   const { item } = beginImplementRun(db, "item-1", 1_000);
   const input = { retry: 1, delayMs: 10, handoff: null, message: "Retrying.", now: 2_000 };
-  deferWorkItem(db, item, input);
-  deferWorkItem(db, getWorkItem(db, "item-1")!, { ...input, retry: 2 });
+  await deferWorkItem(sqliteDb(db), item, input);
+  await deferWorkItem(sqliteDb(db), getWorkItem(db, "item-1")!, { ...input, retry: 2 });
   expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
   expect(getWorkItem(db, "item-1")?.state).toBe("recovering");
 });
 
-test("deferring verification of a recorded candidate keeps it verifying and re-verifies that head", () => {
+test("deferring verification of a recorded candidate keeps it verifying and re-verifies that head", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
@@ -75,7 +76,7 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
   applyWorkItemEvent(db, "item-1", "turn_ended");
   saveCheckpoint(db, "item-1", { phase: "verifying", baseSha: "base", wipCommit: "head" });
   const verifying = getWorkItem(db, "item-1")!;
-  deferWorkItem(db, verifying, {
+  await deferWorkItem(sqliteDb(db), verifying, {
     retry: 2,
     delayMs: 5_000,
     handoff: "keep going",
@@ -98,7 +99,7 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
     },
   ]);
   expect(jobs[0]!.payload).not.toHaveProperty("handoff");
-  deferWorkItem(db, getWorkItem(db, "item-1")!, {
+  await deferWorkItem(sqliteDb(db), getWorkItem(db, "item-1")!, {
     retry: MAX_TRANSIENT_RETRIES,
     delayMs: 10,
     handoff: null,
@@ -112,13 +113,13 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
   ).toEqual([MAX_TRANSIENT_RETRIES - 1, 1]);
 });
 
-test("deferring verification without a recorded candidate falls back to a resume", () => {
+test("deferring verification without a recorded candidate falls back to a resume", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item-1", now: 1_000 });
   beginImplementRun(db, "item-1", 1_000);
   applyWorkItemEvent(db, "item-1", "turn_ended");
-  deferWorkItem(db, getWorkItem(db, "item-1")!, {
+  await deferWorkItem(sqliteDb(db), getWorkItem(db, "item-1")!, {
     retry: 1,
     delayMs: 10,
     handoff: null,
@@ -129,15 +130,15 @@ test("deferring verification without a recorded candidate falls back to a resume
   expect(listJobs(db).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
 });
 
-test("a Closeout fault re-verifies the same version once per faulted job and carries the faults", () => {
+test("a Closeout fault re-verifies the same version once per faulted job and carries the faults", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
   beginImplementRun(db, "item-1", 1_000);
   applyWorkItemEvent(db, "item-1", "turn_ended");
   saveCheckpoint(db, "item-1", { phase: "verifying", baseSha: "base", wipCommit: "head" });
-  const fault = (jobId: number, reasons: string[], now: number) =>
-    deferWorkItem(db, getWorkItem(db, "item-1")!, {
+  const fault = async (jobId: number, reasons: string[], now: number) =>
+    await deferWorkItem(sqliteDb(db), getWorkItem(db, "item-1")!, {
       retry: reasons.length,
       delayMs: 60_000,
       handoff: null,
@@ -145,9 +146,9 @@ test("a Closeout fault re-verifies the same version once per faulted job and car
       now,
       closeoutFault: { head: "head", reasons, jobId },
     });
-  fault(7, ["lost"], 2_000);
-  fault(7, ["lost"], 2_500);
-  fault(8, ["lost", "lost again"], 3_000);
+  await fault(7, ["lost"], 2_000);
+  await fault(7, ["lost"], 2_500);
+  await fault(8, ["lost", "lost again"], 3_000);
   expect(getWorkItem(db, "item-1")?.state).toBe("verifying");
   expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toMatchObject([
     { runAt: 62_000, payload: { reason: "closeout_fault", closeoutFaults: { reasons: ["lost"] } } },

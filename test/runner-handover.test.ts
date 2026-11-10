@@ -20,6 +20,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
@@ -599,7 +600,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
         db.run("UPDATE work_item SET awake_ms=max_awake_ms, implement_ms=max_awake_ms WHERE id=?", [
           record.id,
         ]);
-        expect(accrueAwake(db, record.id, 0, Date.now())).toMatchObject({
+        expect(await accrueAwake(sqliteDb(db), record.id, 0, Date.now())).toMatchObject({
           asked: true,
           stopAgent: true,
         });

@@ -23,6 +23,7 @@ import {
   saveTaskMode,
   setCurrentRun,
   type WorkItemRecord,
+  sqliteDb,
 } from "../src/db";
 import { migratedDatabase, tempDb, tempHome } from "./helpers";
 
@@ -142,12 +143,14 @@ function announceMerge(_db: Database) {
   };
 }
 
-test("a confirmed merge commits its state, run, jobs and notice together and only once", () => {
+test("a confirmed merge commits its state, run, jobs and notice together and only once", async () => {
   const file = join(tempHome(), "paws.db");
   const db = migratedDatabase(file);
   const { item, run, jobId } = mergingTask(db);
   const { announced, announce } = announceMerge(db);
-  expect(completeMergedItem(db, { itemId: item.id, now: 4, announce })?.state).toBe("merged");
+  expect(
+    (await completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce }))?.state,
+  ).toBe("merged");
   db.close();
   const restored = openDatabase(file);
   databases.push(restored);
@@ -160,39 +163,41 @@ test("a confirmed merge commits its state, run, jobs and notice together and onl
     idempotencyKey: `merged:${item.id}:0`,
     payload: { kind: "response", body: "Merged #7 into main at abc. ENG-1 is Done." },
   });
-  expect(completeMergedItem(restored, { itemId: item.id, now: 5, announce })).toBeNull();
+  expect(
+    await completeMergedItem(sqliteDb(restored), { itemId: item.id, now: 5, announce }),
+  ).toBeNull();
   expect(announced).toEqual([item.id]);
   expect(listOutbox(restored, "session")).toHaveLength(1);
 });
 
-test("a fault in the merge notice leaves the task in the merge queue", () => {
+test("a fault in the merge notice leaves the task in the merge queue", async () => {
   const db = tempDb();
   databases.push(db);
   const { item, run, jobId } = mergingTask(db);
   breakOutbox(db);
   const { announce } = announceMerge(db);
-  expect(() => completeMergedItem(db, { itemId: item.id, now: 4, announce })).toThrow(
-    "injected fault",
-  );
+  await expect(
+    completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce }),
+  ).rejects.toThrow("injected fault");
   expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
   expect(getRun(db, run.id)?.status).toBe("active");
   expect(getJob(db, jobId)?.status).toBe("pending");
 });
 
-test("a merge result for a cancelled, superseded or unconfirmed task changes nothing", () => {
+test("a merge result for a cancelled, superseded or unconfirmed task changes nothing", async () => {
   const db = tempDb();
   databases.push(db);
   const { item } = mergingTask(db);
   const { announced, announce } = announceMerge(db);
   applyWorkItemEvent(db, item.id, "restart");
   applyWorkItemEvent(db, item.id, "dispatched");
-  expect(completeMergedItem(db, { itemId: item.id, now: 4, announce })).toBeNull();
+  expect(await completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce })).toBeNull();
   applyWorkItemEvent(db, item.id, "cancel");
-  expect(completeMergedItem(db, { itemId: item.id, now: 4, announce })).toBeNull();
+  expect(await completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce })).toBeNull();
   const other = insertQueuedItem(db, { id: "ENG-2" });
   beginImplementRun(db, other.id, 5);
   enterMergeQueue(db, other.id, { phase: "merge_queue" });
-  expect(completeMergedItem(db, { itemId: other.id, now: 6, announce })).toBeNull();
+  expect(await completeMergedItem(sqliteDb(db), { itemId: other.id, now: 6, announce })).toBeNull();
   expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
   expect(getWorkItem(db, other.id)?.state).toBe("merge_queue");
   expect(announced).toEqual([]);

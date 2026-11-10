@@ -22,6 +22,7 @@ import {
   upsertCloseoutStep,
   type CloseoutProgressIdentity,
   type CloseoutStepWrite,
+  sqliteDb,
 } from "../src/db";
 import { handleStatusRequest } from "../src/dashboard";
 import { render, type RenderModel } from "../src/dashboard/src/client/render";
@@ -235,8 +236,8 @@ describe("live closeout ui", () => {
     // Closeout time counts while a job verifies the item.
     enqueueJob(db, { queue: "run.reverify", payload: { itemId: id }, now });
     claimNextJob(db, { now, leaseMs: 60_000, queues: ["run.reverify"] });
-    accrueAwake(db, id, 0, now);
-    accrueAwake(db, id, 1_000, now + 1_000);
+    await accrueAwake(sqliteDb(db), id, 0, now);
+    await accrueAwake(sqliteDb(db), id, 1_000, now + 1_000);
     const run = (await snapshotOf(db, now + 1_000)).runs.find((entry) => entry.itemId === id);
     expect(run?.state).toBe("stopped");
     expect(run?.summary).toBe(

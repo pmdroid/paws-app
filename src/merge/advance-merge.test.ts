@@ -14,6 +14,7 @@ import {
   listOutbox,
   listRebaseReturns,
   recordPullReview,
+  sqliteDb,
 } from "../db";
 import {
   CLOSEOUT_RECHECK_DIGEST,
@@ -235,7 +236,7 @@ describe("advanceMerge and a pull request merged outside the lane", () => {
     });
     expect(h.db.query("SELECT item_id FROM merge_queue_entry").all()).toEqual([]);
     // What the job runner does with a merged step: the item is merged and its merge work stops.
-    completeMergedItem(h.db, { itemId: "ENG-1", now: h.clock.now() });
+    await completeMergedItem(sqliteDb(h.db), { itemId: "ENG-1", now: h.clock.now() });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merged");
     expect(listJobs(h.db).find((job) => job.id === later)?.status).toBe("cancelled");
   });
@@ -513,7 +514,7 @@ for (const changedIdentity of [false, true]) {
       Date.now(),
     );
     // An old database can still contain the superseded accepted_head.
-    markCloseoutAccepted(h.db, item.id, item.accepted);
+    await markCloseoutAccepted(sqliteDb(h.db), item.id, item.accepted);
     expect(await h.pass(item.id)).toEqual({ kind: "returned" });
     expect(h.github.merged).toEqual([]);
     expect(getWorkItem(h.db, item.id)?.state).toBe("verifying");
