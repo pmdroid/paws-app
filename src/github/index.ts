@@ -143,7 +143,7 @@ export { defaultGitExec } from "./git";
 export {
   PUSH_OUTAGE_PROBE_MS,
   PushOutageError,
-  isGitOutage,
+  isPermanentGitFailure,
   isPushOutage,
   pushOutageCause,
   pushOutageProbeDelayMs,

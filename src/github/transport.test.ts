@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isGitOutage } from "./transport";
+import { isPermanentGitFailure } from "./transport";
 
 test.each([
   ["a failed token request", "fetch failed"],
@@ -9,7 +9,7 @@ test.each([
   ["a reset next to a ref error", "error: cannot lock ref 'a'\nConnection reset by peer"],
   ["a server error from the remote", "remote: Internal Server Error\nfatal: unable to access 'x'"],
 ])("%s is an outage", (_name, output) => {
-  expect(isGitOutage(output)).toBe(true);
+  expect(isPermanentGitFailure(output)).toBe(false);
 });
 
 test.each([
@@ -25,5 +25,5 @@ test.each([
     ].join("\n"),
   ],
 ])("%s is permanent", (_name, output) => {
-  expect(isGitOutage(output)).toBe(false);
+  expect(isPermanentGitFailure(output)).toBe(true);
 });

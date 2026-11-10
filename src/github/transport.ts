@@ -24,11 +24,10 @@ const PUSH_REFUSAL_REASON =
 
 const FETCH_REF_LINE = /^From |^\s.* -> /;
 
-export function isGitOutage(output: string): boolean {
+export function isPermanentGitFailure(output: string): boolean {
   const lines = output.split("\n").filter((line) => !FETCH_REF_LINE.test(line));
-  return (
-    !lines.some((line) => /^(?:fatal|error): /.test(line)) || isTransientGitError(lines.join("\n"))
-  );
+  const reportedByGit = lines.some((line) => /^(?:fatal|error): /.test(line));
+  return reportedByGit && !isTransientGitError(lines.join("\n"));
 }
 
 export function isPushOutage(stderr: string): boolean {

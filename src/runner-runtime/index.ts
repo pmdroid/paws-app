@@ -3,7 +3,7 @@ import { closeSync, constants, fsyncSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { prepareRepositorySnapshot } from "../acp";
 import {
-  isGitOutage,
+  isPermanentGitFailure,
   isPushOutage,
   PUBLICATION_STAGING_FAILURE,
   pushOutageProbeDelayMs,
@@ -1416,13 +1416,13 @@ export async function openRunnerRuntime(options: {
       entry.execution.phase = "running";
     } catch (error) {
       journalCaught(error, "runner-runtime.launch.grant", entry.execution.command.itemId);
-      const retrying =
-        error instanceof RemoteFailure &&
-        (!(error instanceof GitHubFailure) ||
-          entry.abort.signal.aborted ||
-          closing.signal.aborted ||
-          isGitOutage(error.message.replace(`${GITHUB_UNAVAILABLE}: `, "")));
-      if (!retrying)
+      const permanent =
+        !(error instanceof RemoteFailure) ||
+        (error instanceof GitHubFailure &&
+          !entry.abort.signal.aborted &&
+          !closing.signal.aborted &&
+          isPermanentGitFailure(error.message.replace(`${GITHUB_UNAVAILABLE}: `, "")));
+      if (permanent)
         void interrupt(
           entry,
           error instanceof Error ? error.message : "preparation failed",
