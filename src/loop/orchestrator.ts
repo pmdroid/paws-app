@@ -601,7 +601,7 @@ import {
   type LinearCommentPolicy,
   type LinearConversations,
 } from "./linear-comments";
-import { postReviewReplies, recordAgentReviewReplies } from "./review-replies";
+import { checkReviewReplies, postReviewReplies } from "./review-replies";
 import { deliverGitHubOutbox, fixRoundNoticeSteps } from "./fix-round-notice";
 import { suggestedFindingsSection } from "./pull-comments";
 import {
@@ -3939,8 +3939,17 @@ export class Orchestrator {
       if (!(await this.store.run((q) => artifactPublicationReadySteps(q, item.id))))
         throw new Error("A requested artifact has not been uploaded successfully");
       await this.store.run((q) => saveRunResultSteps(q, run.id, activity.resultBody(), this.now()));
-      // A fix turn for pull request comments reports a reply for each one it was handed.
-      await recordAgentReviewReplies(this.store, item.id, activity.resultBody(), this.now());
+      // A fix turn for pull request comments must reply to each one it was handed before Closeout.
+      // Not complete: restart() or ask() has ended the run, or another writer moved the item on
+      // (`stale`, nothing stored). Closeout does not start.
+      const replies = checkReviewReplies(this.db, {
+        item: finished,
+        runId: run.id,
+        sessionId: this.activitySession(finished),
+        finalMessage: activity.resultBody(),
+        now: this.now(),
+      });
+      if (replies !== "complete") return;
       if (!executed.run.identity)
         throw new Error("Implementer did not report a concrete session model");
       this.saveCandidate(run.id, executed.run.identity);

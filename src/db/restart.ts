@@ -174,6 +174,31 @@ export function* latestHumanTurnSteps(q: Q, itemId: string): Steps<number> {
   return row!.id;
 }
 
+/** Restarts of `itemId` whose job key starts with `prefix`, since the latest human turn. */
+export function* restartsSinceHumanTurnSteps(q: Q, itemId: string, prefix: string): Steps<number> {
+  const { job } = q.t;
+  const after = yield* latestHumanTurnSteps(q, itemId);
+  const row = yield* q.one(
+    q.orm
+      .select({ count: sql<number>`COUNT(*)`.mapWith(Number) })
+      .from(job)
+      .where(
+        and(
+          eq(job.queue, JOB_KIND.resume),
+          sql`${text(q, "itemId")} = ${itemId}`,
+          // A plain prefix comparison: `_` and `%` in a job key are not wildcards.
+          sql`substr(${job.jobKey}, 1, ${prefix.length}) = ${prefix}`,
+          gt(job.activationId, after),
+        ),
+      ),
+  );
+  return row!.count;
+}
+
+export function restartsSinceHumanTurn(db: Database, itemId: string, prefix: string): number {
+  return settled(sqliteDb(db).run((q) => restartsSinceHumanTurnSteps(q, itemId, prefix)));
+}
+
 /** Latest human retry window, ordered by activation rather than reusable row id. */
 export function latestHumanTurn(db: Database, itemId: string): number {
   return settled(sqliteDb(db).run((q) => latestHumanTurnSteps(q, itemId)));
