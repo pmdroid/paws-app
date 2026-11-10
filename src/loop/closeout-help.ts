@@ -11,7 +11,13 @@ import {
 import type { RuleApproval } from "../closeout";
 import { shortCommit } from "../questions";
 import { ask } from "./operations";
-import { PREPARATION_FAILED, RETRY_CLOSEOUT, recoveryQuestion } from "./closeout-recovery";
+import {
+  NO_SESSION_MODEL,
+  PREPARATION_FAILED,
+  RESTART_IMPLEMENTATION,
+  RETRY_CLOSEOUT,
+  recoveryQuestion,
+} from "./closeout-recovery";
 import { askWithLink, linkAskAvailable } from "./link-ask";
 import type { MainPolicyError } from "./policy-outage";
 
@@ -24,6 +30,7 @@ function retryCloseoutOffered(
 ): boolean {
   if (input.reason === "budget_spent" || input.reason === "rule_approval") return false;
   if (help.head === "" || help.summary.startsWith(PREPARATION_FAILED)) return false;
+  if (help.summary.startsWith(NO_SESSION_MODEL)) return false;
   return !(input.checks ?? []).some(
     (check) =>
       (check.kind === "evidence" && check.state !== "passed") ||
@@ -78,6 +85,9 @@ export async function askCloseoutHelp(
     const block = retry ? input.policyBlock : undefined;
     const body = recoveryQuestion(help, input.error);
     const retryNote = `Choose ${RETRY_CLOSEOUT}, or reply retry, to run Closeout again on this head without the agent.`;
+    // Without a session model there is nothing for Closeout to retry: only a fresh implementation helps.
+    const fresh = help.summary.startsWith(NO_SESSION_MODEL);
+    const freshNote = `Choose ${RESTART_IMPLEMENTATION}, or reply with guidance, to start a fresh implementation turn.`;
     const question =
       linkAskAvailable(input.publicUrl) &&
       help.failedChecks.length > 0 &&
@@ -102,11 +112,19 @@ export async function askCloseoutHelp(
               ...(input.version !== undefined ? { version: input.version } : {}),
             },
             "closeout-help",
-            retry ? [body, retryNote, ...(block ? [RETRIES_BY_ITSELF] : [])].join("\n\n") : body,
+            retry
+              ? [body, retryNote, ...(block ? [RETRIES_BY_ITSELF] : [])].join("\n\n")
+              : fresh
+                ? [body, freshNote].join("\n\n")
+                : body,
             {
               now: input.now,
               reason: input.reason ?? "closeout_help",
-              ...(retry ? { options: [RETRY_CLOSEOUT] } : {}),
+              ...(retry
+                ? { options: [RETRY_CLOSEOUT] }
+                : fresh
+                  ? { options: [RESTART_IMPLEMENTATION] }
+                  : {}),
             },
           ).question;
     yield* saveCloseoutRecoverySteps(q, { ...help, questionId: question.id });
