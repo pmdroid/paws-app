@@ -18,7 +18,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { JOB_KIND } from "../core";
 import { runnerCapacityWait } from "./items";
 import { emitJobReady } from "./jobs";
@@ -202,8 +202,8 @@ export function* activeRunnerIdsSteps(q: Q, now: number) {
   return rows.map((row) => row.id);
 }
 
-export function activeRunnerIds(db: Database, now: number): string[] {
-  return settled(sqliteDb(db).run((q) => activeRunnerIdsSteps(q, now)));
+export async function activeRunnerIds(store: Db, now: number): Promise<string[]> {
+  return store.run((q) => activeRunnerIdsSteps(q, now));
 }
 
 export function* slotWaitRunnersSteps(
@@ -227,13 +227,13 @@ export function* slotWaitRunnersSteps(
   return [...wait.runnerIds, ...active.filter((id) => !known.has(id))];
 }
 
-export function slotWaitRunners(
-  db: Database,
+export async function slotWaitRunners(
+  store: Db,
   runId: string,
   wait: RunnerCapacityWaitState,
   now: number,
-): readonly string[] {
-  return settled(sqliteDb(db).run((q) => slotWaitRunnersSteps(q, runId, wait, now)));
+): Promise<readonly string[]> {
+  return store.run((q) => slotWaitRunnersSteps(q, runId, wait, now));
 }
 
 export function* runnerSlotFreeSteps(q: Q, runnerIds: readonly string[], now: number, runId = "") {
@@ -301,13 +301,13 @@ export function wakeRunnerSlotWaits(db: Database, runnerId: string, now: number)
     emitJobReady(db);
 }
 
-export function runnerSlotFree(
-  db: Database,
+export async function runnerSlotFree(
+  store: Db,
   runnerIds: readonly string[],
   now: number,
   runId = "",
-): boolean {
-  return settled(sqliteDb(db).run((q) => runnerSlotFreeSteps(q, runnerIds, now, runId)));
+): Promise<boolean> {
+  return store.run((q) => runnerSlotFreeSteps(q, runnerIds, now, runId));
 }
 
 /**
@@ -462,8 +462,11 @@ export function* setRunnerConcurrencySteps(q: Q, input: RunnerConcurrencyInput) 
   });
 }
 
-export function setRunnerConcurrency(db: Database, input: RunnerConcurrencyInput): void {
-  settled(sqliteDb(db).transaction((q) => setRunnerConcurrencySteps(q, input)));
+export async function setRunnerConcurrency(
+  store: Db,
+  input: RunnerConcurrencyInput,
+): Promise<void> {
+  await store.transaction((q) => setRunnerConcurrencySteps(q, input));
 }
 
 /** A runner slot the scheduler reserved for an item resuming on its pinned runner. */
@@ -522,8 +525,11 @@ export function* savePinnedSlotsSteps(q: Q, slots: ReadonlyMap<number, PinnedSlo
   }
 }
 
-export function savePinnedSlots(db: Database, slots: ReadonlyMap<number, PinnedSlot>): void {
-  settled(sqliteDb(db).run((q) => savePinnedSlotsSteps(q, slots)));
+export async function savePinnedSlots(
+  store: Db,
+  slots: ReadonlyMap<number, PinnedSlot>,
+): Promise<void> {
+  await store.run((q) => savePinnedSlotsSteps(q, slots));
 }
 
 /** Releases the item's reservation once its run is placed. */
@@ -544,8 +550,8 @@ export function* releasePinnedSlotSteps(q: Q, itemId: string) {
   );
 }
 
-export function releasePinnedSlot(db: Database, itemId: string): void {
-  settled(sqliteDb(db).run((q) => releasePinnedSlotSteps(q, itemId)));
+export async function releasePinnedSlot(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => releasePinnedSlotSteps(q, itemId));
 }
 
 /**
@@ -612,8 +618,8 @@ export function* runnerCancelPendingSteps(q: Q, runnerId: string) {
   return row !== undefined;
 }
 
-export function runnerCancelPending(db: Database, runnerId: string): boolean {
-  return settled(sqliteDb(db).run((q) => runnerCancelPendingSteps(q, runnerId)));
+export async function runnerCancelPending(store: Db, runnerId: string): Promise<boolean> {
+  return store.run((q) => runnerCancelPendingSteps(q, runnerId));
 }
 
 export function* runTeardownOwnerSteps(q: Q, runId: string) {
@@ -627,8 +633,8 @@ export function* runTeardownOwnerSteps(q: Q, runId: string) {
   return row?.runnerId ?? null;
 }
 
-export function runTeardownOwner(db: Database, runId: string): string | null {
-  return settled(sqliteDb(db).run((q) => runTeardownOwnerSteps(q, runId)));
+export async function runTeardownOwner(store: Db, runId: string): Promise<string | null> {
+  return store.run((q) => runTeardownOwnerSteps(q, runId));
 }
 
 /** The conversation slots a runner offers and whether its release can run conversations. */
@@ -785,8 +791,8 @@ export function openSessionHelper(
   return settled(sqliteDb(db).run((q) => openSessionHelperSteps(q, sessionId, generation, now)));
 }
 
-export function runnerHelperAcknowledged(db: Database, id: string): boolean {
-  return settled(sqliteDb(db).run((q) => runnerHelperAcknowledgedSteps(q, id)));
+export async function runnerHelperAcknowledged(store: Db, id: string): Promise<boolean> {
+  return store.run((q) => runnerHelperAcknowledgedSteps(q, id));
 }
 
 /** Foreground session helpers fence unfinished maintenance work before taking its slot.
@@ -860,12 +866,12 @@ export function* runnerConversationLaneSteps(
     : "full";
 }
 
-export function runnerConversationLane(
-  db: Database,
+export async function runnerConversationLane(
+  store: Db,
   runnerId: string,
   now: number,
-): "closed" | "full" | "free" {
-  return settled(sqliteDb(db).run((q) => runnerConversationLaneSteps(q, runnerId, now)));
+): Promise<"closed" | "full" | "free"> {
+  return store.run((q) => runnerConversationLaneSteps(q, runnerId, now));
 }
 
 export function* unfinishedConversationHelpersSteps(q: Q) {
@@ -884,8 +890,8 @@ export function* unfinishedConversationHelpersSteps(q: Q) {
   );
 }
 
-export function unfinishedConversationHelpers(db: Database) {
-  return settled(sqliteDb(db).run((q) => unfinishedConversationHelpersSteps(q)));
+export async function unfinishedConversationHelpers(store: Db) {
+  return store.run((q) => unfinishedConversationHelpersSteps(q));
 }
 
 export function* conversationsInUseSteps(

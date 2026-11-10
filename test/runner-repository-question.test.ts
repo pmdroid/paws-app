@@ -15,6 +15,7 @@ import {
   recordRunnerRepositories,
   setRunnerAdminRepositories,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { Orchestrator } from "../src/loop";
 import {
@@ -152,7 +153,7 @@ async function withPaws(
 
 test("the only runner's host list lacks the repository: one question names the runner, the file and the repository", async () => {
   await withPaws(async ({ db, clock, jobs, paws }) => {
-    recordRunnerRepositories(db, "runner-1", ["acme/monorepo"], START);
+    await recordRunnerRepositories(sqliteDb(db), "runner-1", ["acme/monorepo"], START);
     await paws.reconcileExecution();
     await start(jobs);
     expect(getWorkItem(db, "cli")?.state).toBe("awaiting_input");
@@ -178,7 +179,7 @@ test("the only runner's host list lacks the repository: one question names the r
 
 test("the runner page's list refuses: the question names the runner page", async () => {
   await withPaws(async ({ db, jobs, paws }) => {
-    setRunnerAdminRepositories(db, {
+    await setRunnerAdminRepositories(sqliteDb(db), {
       runnerId: "runner-1",
       workspaceId: "ws",
       userId: "me",
@@ -195,13 +196,13 @@ test("the runner page's list refuses: the question names the runner page", async
   });
 });
 
-test("a runner that allows the repository is only offline: no question, and the wait says it is offline", () => {
+test("a runner that allows the repository is only offline: no question, and the wait says it is offline", async () => {
   const db = tempDb();
   try {
     workspace(db);
-    recordRunnerRepositories(db, "runner-1", ["acme/monorepo"], START);
+    await recordRunnerRepositories(sqliteDb(db), "runner-1", ["acme/monorepo"], START);
     addRunner(db, "runner-2", 0);
-    recordRunnerRepositories(db, "runner-2", ["acme/cli"], 0);
+    await recordRunnerRepositories(sqliteDb(db), "runner-2", ["acme/cli"], 0);
     expect(itemRepositoryRefusals(db, { itemId: "cli", now: START + 120_000 })).toBeNull();
     expect(
       new RunnerCapacityWait([], undefined, [
@@ -223,7 +224,7 @@ test("a runner that allows the repository is only offline: no question, and the 
 
 test("Retry with nothing fixed asks once more; Retry after the host list is fixed places the item", async () => {
   await withPaws(async ({ db, clock, jobs, paws }) => {
-    recordRunnerRepositories(db, "runner-1", ["acme/monorepo"], START);
+    await recordRunnerRepositories(sqliteDb(db), "runner-1", ["acme/monorepo"], START);
     await paws.reconcileExecution();
     await start(jobs);
     const first = questions(db)[0]!;
@@ -264,13 +265,18 @@ test("Retry with nothing fixed asks once more; Retry after the host list is fixe
 
 test("a heartbeat that now allows the repository answers the question as Retry", async () => {
   await withPaws(async ({ db, clock, jobs, paws }) => {
-    recordRunnerRepositories(db, "runner-1", ["acme/monorepo"], START);
+    await recordRunnerRepositories(sqliteDb(db), "runner-1", ["acme/monorepo"], START);
     await paws.reconcileExecution();
     await start(jobs);
     clock.advance(1_000);
-    recordRunnerRepositories(db, "runner-1", ["acme/monorepo"], clock.now());
+    await recordRunnerRepositories(sqliteDb(db), "runner-1", ["acme/monorepo"], clock.now());
     expect(await jobs.tick([JOB_KIND.runnerRepositoryCheck])).toBeNull();
-    recordRunnerRepositories(db, "runner-1", ["acme/monorepo", "acme/cli"], clock.now());
+    await recordRunnerRepositories(
+      sqliteDb(db),
+      "runner-1",
+      ["acme/monorepo", "acme/cli"],
+      clock.now(),
+    );
     while ((await jobs.tick([JOB_KIND.runnerRepositoryCheck])) !== null);
     expect(questions(db)[0]).toMatchObject({
       status: "answered",
@@ -284,7 +290,7 @@ test("a heartbeat that now allows the repository answers the question as Retry",
 
 test("Stop cancels the item", async () => {
   await withPaws(async ({ db, clock, jobs, paws }) => {
-    recordRunnerRepositories(db, "runner-1", ["acme/monorepo"], START);
+    await recordRunnerRepositories(sqliteDb(db), "runner-1", ["acme/monorepo"], START);
     await paws.reconcileExecution();
     await start(jobs);
     clock.advance(1_000);
@@ -302,16 +308,21 @@ test("Stop cancels the item", async () => {
 
 test("only a runner that now allows the repository answers, and it is recorded as the answerer", async () => {
   await withPaws(async ({ db, clock, jobs, paws }) => {
-    recordRunnerRepositories(db, "runner-1", ["acme/monorepo"], START);
+    await recordRunnerRepositories(sqliteDb(db), "runner-1", ["acme/monorepo"], START);
     await paws.reconcileExecution();
     await start(jobs);
     clock.advance(1_000);
     db.run("UPDATE runner SET revoked_at=?,status='revoked' WHERE id='runner-1'", [clock.now()]);
-    recordRunnerRepositories(db, "runner-1", ["acme/monorepo", "acme/other"], clock.now());
+    await recordRunnerRepositories(
+      sqliteDb(db),
+      "runner-1",
+      ["acme/monorepo", "acme/other"],
+      clock.now(),
+    );
     while ((await jobs.tick([JOB_KIND.runnerRepositoryCheck])) !== null);
     expect(questions(db)[0]!.status).toBe("open");
     addRunner(db, "runner-2", clock.now());
-    recordRunnerRepositories(db, "runner-2", ["acme/cli"], clock.now());
+    await recordRunnerRepositories(sqliteDb(db), "runner-2", ["acme/cli"], clock.now());
     while ((await jobs.tick([JOB_KIND.runnerRepositoryCheck])) !== null);
     expect(questions(db)[0]).toMatchObject({ status: "answered", by: "runner:runner-2" });
   });

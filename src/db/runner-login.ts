@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, count, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 const PENDING = ["starting", "waiting"];
 
@@ -43,8 +42,8 @@ export function* runnerLoginRowSteps(q: Q, id: string) {
   return row ?? null;
 }
 
-export function runnerLoginRow(db: Database, id: string): RunnerLoginRow | null {
-  return settled(sqliteDb(db).run((q) => runnerLoginRowSteps(q, id)));
+export async function runnerLoginRow(store: Db, id: string): Promise<RunnerLoginRow | null> {
+  return store.run((q) => runnerLoginRowSteps(q, id));
 }
 
 export function* closeRunnerLoginSteps(q: Q, id: string, state: "expired" | "cancelled") {
@@ -57,8 +56,12 @@ export function* closeRunnerLoginSteps(q: Q, id: string, state: "expired" | "can
   );
 }
 
-export function closeRunnerLogin(db: Database, id: string, state: "expired" | "cancelled"): void {
-  settled(sqliteDb(db).run((q) => closeRunnerLoginSteps(q, id, state)));
+export async function closeRunnerLogin(
+  store: Db,
+  id: string,
+  state: "expired" | "cancelled",
+): Promise<void> {
+  await store.run((q) => closeRunnerLoginSteps(q, id, state));
 }
 
 export function* cancelPendingRunnerLoginsSteps(q: Q, id?: string) {
@@ -71,8 +74,8 @@ export function* cancelPendingRunnerLoginsSteps(q: Q, id?: string) {
   );
 }
 
-export function cancelPendingRunnerLogins(db: Database, id?: string): void {
-  settled(sqliteDb(db).run((q) => cancelPendingRunnerLoginsSteps(q, id)));
+export async function cancelPendingRunnerLogins(store: Db, id?: string): Promise<void> {
+  await store.run((q) => cancelPendingRunnerLoginsSteps(q, id));
 }
 
 function* latestLoginIdSteps(q: Q, where: ReturnType<typeof and>) {
@@ -105,11 +108,11 @@ export function* latestAgentRunnerLoginIdSteps(
   );
 }
 
-export function latestAgentRunnerLoginId(
-  db: Database,
+export async function latestAgentRunnerLoginId(
+  store: Db,
   input: { runnerId: string; userId: string; agent: string },
-): string | null {
-  return settled(sqliteDb(db).run((q) => latestAgentRunnerLoginIdSteps(q, input)));
+): Promise<string | null> {
+  return store.run((q) => latestAgentRunnerLoginIdSteps(q, input));
 }
 
 export function* latestBindingRunnerLoginIdSteps(
@@ -127,11 +130,11 @@ export function* latestBindingRunnerLoginIdSteps(
   );
 }
 
-export function latestBindingRunnerLoginId(
-  db: Database,
+export async function latestBindingRunnerLoginId(
+  store: Db,
   input: { runnerId: string; userId: string; bindingId: string },
-): string | null {
-  return settled(sqliteDb(db).run((q) => latestBindingRunnerLoginIdSteps(q, input)));
+): Promise<string | null> {
+  return store.run((q) => latestBindingRunnerLoginIdSteps(q, input));
 }
 
 type PendingLogin = {
@@ -163,8 +166,8 @@ export function* pendingRunnerLoginIdSteps(q: Q, input: PendingLogin) {
   return row?.id ?? null;
 }
 
-export function pendingRunnerLoginId(db: Database, input: PendingLogin): string | null {
-  return settled(sqliteDb(db).run((q) => pendingRunnerLoginIdSteps(q, input)));
+export async function pendingRunnerLoginId(store: Db, input: PendingLogin): Promise<string | null> {
+  return store.run((q) => pendingRunnerLoginIdSteps(q, input));
 }
 
 export function* pendingRunnerLoginCountSteps(q: Q, runnerId: string, at: number) {
@@ -178,8 +181,12 @@ export function* pendingRunnerLoginCountSteps(q: Q, runnerId: string, at: number
   return row!.count;
 }
 
-export function pendingRunnerLoginCount(db: Database, runnerId: string, at: number): number {
-  return settled(sqliteDb(db).run((q) => pendingRunnerLoginCountSteps(q, runnerId, at)));
+export async function pendingRunnerLoginCount(
+  store: Db,
+  runnerId: string,
+  at: number,
+): Promise<number> {
+  return store.run((q) => pendingRunnerLoginCountSteps(q, runnerId, at));
 }
 
 type NewRunnerLogin = {
@@ -197,8 +204,8 @@ export function* insertRunnerLoginSteps(q: Q, input: NewRunnerLogin) {
   yield* q.exec(q.orm.insert(q.t.runnerLogin).values({ ...input, state: "starting" }));
 }
 
-export function insertRunnerLogin(db: Database, input: NewRunnerLogin): void {
-  settled(sqliteDb(db).run((q) => insertRunnerLoginSteps(q, input)));
+export async function insertRunnerLogin(store: Db, input: NewRunnerLogin): Promise<void> {
+  await store.run((q) => insertRunnerLoginSteps(q, input));
 }
 
 type RunnerLoginProgress = {
@@ -214,6 +221,10 @@ export function* updateRunnerLoginSteps(q: Q, id: string, progress: RunnerLoginP
   yield* q.exec(q.orm.update(l).set(progress).where(eq(l.id, id)));
 }
 
-export function updateRunnerLogin(db: Database, id: string, progress: RunnerLoginProgress): void {
-  settled(sqliteDb(db).run((q) => updateRunnerLoginSteps(q, id, progress)));
+export async function updateRunnerLogin(
+  store: Db,
+  id: string,
+  progress: RunnerLoginProgress,
+): Promise<void> {
+  await store.run((q) => updateRunnerLoginSteps(q, id, progress));
 }

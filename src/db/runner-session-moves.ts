@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 
 /**
  * `moving` while the runner hands the session over or Paws places it, `waiting` while no runner
@@ -29,8 +29,8 @@ export function* requestRunnerSessionMoveSteps(q: Q, input: MoveRequest): Steps<
 }
 
 /** Starts or restarts the move of `runId` off `runnerId`. */
-export function requestRunnerSessionMove(db: Database, input: MoveRequest): void {
-  settled(sqliteDb(db).run((q) => requestRunnerSessionMoveSteps(q, input)));
+export async function requestRunnerSessionMove(store: Db, input: MoveRequest): Promise<void> {
+  await store.run((q) => requestRunnerSessionMoveSteps(q, input));
 }
 
 type MoveNote = {
@@ -58,8 +58,8 @@ export function* noteRunnerSessionMoveSteps(q: Q, input: MoveNote): Steps<void> 
 }
 
 /** Records how the move of `runId` off `runnerId` stands, creating it for a move Paws started. */
-export function noteRunnerSessionMove(db: Database, input: MoveNote): void {
-  settled(sqliteDb(db).run((q) => noteRunnerSessionMoveSteps(q, input)));
+export async function noteRunnerSessionMove(store: Db, input: MoveNote): Promise<void> {
+  await store.run((q) => noteRunnerSessionMoveSteps(q, input));
 }
 
 export function* clearRunnerSessionMoveSteps(q: Q, runId: string, runnerId: string): Steps<void> {
@@ -67,8 +67,12 @@ export function* clearRunnerSessionMoveSteps(q: Q, runId: string, runnerId: stri
 }
 
 /** Forgets the move of `runId` off `runnerId`, as when the run ended before it moved. */
-export function clearRunnerSessionMove(db: Database, runId: string, runnerId: string): void {
-  settled(sqliteDb(db).run((q) => clearRunnerSessionMoveSteps(q, runId, runnerId)));
+export async function clearRunnerSessionMove(
+  store: Db,
+  runId: string,
+  runnerId: string,
+): Promise<void> {
+  await store.run((q) => clearRunnerSessionMoveSteps(q, runId, runnerId));
 }
 
 export function* runnerSessionMoveSteps(
@@ -87,12 +91,12 @@ export function* runnerSessionMoveSteps(
 }
 
 /** The move of `runId` off `runnerId`, or null when none was asked or it landed elsewhere. */
-export function runnerSessionMove(
-  db: Database,
+export async function runnerSessionMove(
+  store: Db,
   runId: string,
   runnerId: string,
-): RunnerSessionMove | null {
-  return settled(sqliteDb(db).run((q) => runnerSessionMoveSteps(q, runId, runnerId)));
+): Promise<RunnerSessionMove | null> {
+  return store.run((q) => runnerSessionMoveSteps(q, runId, runnerId));
 }
 
 function thisMove(q: Q, runId: string, runnerId: string) {

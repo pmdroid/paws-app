@@ -20,7 +20,7 @@ import {
   RUNNER_OFFLINE_BUDGET_MS,
   runnerReleaseAtLeast,
 } from "../runner-protocol";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { ownerGoneSteps } from "./instances";
 
 export { PAWS_ALIVE_LEASE_SKEW_MS };
@@ -62,8 +62,8 @@ export function* endRevokedRunnerAuthoritySteps(q: Q, now: number) {
   );
 }
 
-export function endRevokedRunnerAuthority(db: Database, now: number): void {
-  settled(sqliteDb(db).run((q) => endRevokedRunnerAuthoritySteps(q, now)));
+export async function endRevokedRunnerAuthority(store: Db, now: number): Promise<void> {
+  await store.run((q) => endRevokedRunnerAuthoritySteps(q, now));
 }
 
 /** The result of the work's current command. Queries select from runner_work. */
@@ -127,8 +127,8 @@ export function* runnerWorkSettledSteps(q: Q, runId: string, now: number) {
  * for the current command, or when the runner acknowledged a cancel Paws sent for it. The halt
  * core (restart, stop, take-over) waits for this before it releases a runner it did not ask to stop.
  */
-export function runnerWorkSettled(db: Database, runId: string, now: number): boolean {
-  return settled(sqliteDb(db).run((q) => runnerWorkSettledSteps(q, runId, now)));
+export async function runnerWorkSettled(store: Db, runId: string, now: number): Promise<boolean> {
+  return store.run((q) => runnerWorkSettledSteps(q, runId, now));
 }
 
 type InstanceSpan = { id: string; startedAt: number; heartbeatAt: number };
@@ -301,6 +301,6 @@ export function* runnerWorkHasResultSteps(q: Q, runId: string) {
 }
 
 /** The current command delivered a result that its owning run has not imported yet. */
-export function runnerWorkHasResult(db: Database, runId: string): boolean {
-  return settled(sqliteDb(db).run((q) => runnerWorkHasResultSteps(q, runId)));
+export async function runnerWorkHasResult(store: Db, runId: string): Promise<boolean> {
+  return store.run((q) => runnerWorkHasResultSteps(q, runId));
 }

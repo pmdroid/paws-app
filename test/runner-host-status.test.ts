@@ -15,6 +15,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   saveSkill,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { createRunnerHostSampler } from "../src/runner-daemon";
@@ -636,14 +637,14 @@ test("a heartbeat with runtimes stores them and the runner list returns them", a
     { tool: "node", version: "22", status: "installed", error: null, reportedAt: at },
     { tool: "python", version: "3.99", status: "failed", error: failure, reportedAt: at },
   ];
-  expect(listRunnerRuntimes(runner.db, runner.runnerId)).toEqual(expected);
+  expect(await listRunnerRuntimes(sqliteDb(runner.db), runner.runnerId)).toEqual(expected);
   const list = (await runner.list()) as unknown as { runners: { runtimes: unknown }[] };
   expect(list.runners[0]!.runtimes).toEqual(expected);
 
   // A heartbeat without the field, from a runner that has not installed any, keeps the rows.
   runner.advance(15_000);
   expect((await runner.heartbeat(sample))?.status).toBe(200);
-  expect(listRunnerRuntimes(runner.db, runner.runnerId)).toEqual(expected);
+  expect(await listRunnerRuntimes(sqliteDb(runner.db), runner.runnerId)).toEqual(expected);
 
   // The next report replaces the last one.
   expect(
@@ -653,7 +654,7 @@ test("a heartbeat with runtimes stores them and the runner list returns them", a
       })
     )?.status,
   ).toBe(200);
-  expect(listRunnerRuntimes(runner.db, runner.runnerId)).toEqual([
+  expect(await listRunnerRuntimes(sqliteDb(runner.db), runner.runnerId)).toEqual([
     {
       tool: "python",
       version: "3.99",
@@ -674,7 +675,7 @@ test("a heartbeat with a malformed runtime is refused", async () => {
     { tool: "node", version: "22", status: "installed", path: "/usr/bin" },
   ])
     expect((await runner.heartbeat({ runtimes: [runtime] }))?.status).toBe(403);
-  expect(listRunnerRuntimes(runner.db, runner.runnerId)).toEqual([]);
+  expect(await listRunnerRuntimes(sqliteDb(runner.db), runner.runnerId)).toEqual([]);
 });
 
 test("first activation ignores sign-in probes and remembers work after its lease moves", async () => {

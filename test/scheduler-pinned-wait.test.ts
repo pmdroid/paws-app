@@ -10,6 +10,7 @@ import {
   releasePinnedSlot,
   runnerHasCapacity,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { saveSchedulingContext } from "../src/scheduler";
 import { tempDb } from "./helpers";
@@ -166,7 +167,7 @@ test("with another runner free, the waiting item's slot stays off limits to the 
     expect(pinnedSlotsReserved(db, "B", "Y", NOW + 2)).toBe(0);
     expect(pinnedSlotsReserved(db, "A", "X", NOW + 2)).toBe(0);
     // Once X is placed the reservation is gone.
-    releasePinnedSlot(db, "X");
+    await releasePinnedSlot(sqliteDb(db), "X");
     expect(pinnedSlotsReserved(db, "A", "Y", NOW + 2)).toBe(0);
   } finally {
     db.close();

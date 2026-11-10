@@ -23,6 +23,7 @@ import {
   runnerWorkSettled,
   runnerHoldsRunWork,
   runnerWorkHasResult,
+  sqliteDb,
 } from "./index";
 
 const RENEWAL_MS = 60_000;
@@ -77,10 +78,10 @@ describe("the runner lease grace", () => {
       expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(0);
     });
 
-    test(`the halt core waits ${label}`, () => {
+    test(`the halt core waits ${label}`, async () => {
       const { clock, db, run } = leased();
       clock.advance(away);
-      expect(runnerWorkSettled(db, run.id, clock.now())).toBe(false);
+      expect(await runnerWorkSettled(sqliteDb(db), run.id, clock.now())).toBe(false);
     });
   }
 
@@ -172,23 +173,23 @@ describe("the runner lease grace", () => {
     expect(runnerHasCapacity(db, "runner", clock.now())).toBe(true);
   });
 
-  test("the halt core may release past the grace", () => {
+  test("the halt core may release past the grace", async () => {
     const { clock, db, run } = leased();
     clock.advance(PAST);
-    expect(runnerWorkSettled(db, run.id, clock.now())).toBe(true);
+    expect(await runnerWorkSettled(sqliteDb(db), run.id, clock.now())).toBe(true);
   });
 
-  test("the halt core may release inside the grace once the runner sent its result", () => {
+  test("the halt core may release inside the grace once the runner sent its result", async () => {
     const { clock, db, run } = leased();
     clock.advance(RENEWAL_MS + 59_000);
     db.run(
       "INSERT INTO runner_result(run_id,generation,command_id,payload,received_at) VALUES(?,1,'command','{}',?)",
       [run.id, clock.now()],
     );
-    expect(runnerWorkSettled(db, run.id, clock.now())).toBe(true);
+    expect(await runnerWorkSettled(sqliteDb(db), run.id, clock.now())).toBe(true);
   });
 
-  test("recovery retains a delivered current-command result after lease grace", () => {
+  test("recovery retains a delivered current-command result after lease grace", async () => {
     const { clock, db, item, run } = leased();
     clock.advance(PAST);
     expect(runnerHoldsRunWork(db, run.id, clock.now())).toBe(false);
@@ -196,10 +197,10 @@ describe("the runner lease grace", () => {
       "INSERT INTO runner_result(run_id,generation,command_id,payload,received_at) VALUES(?,1,'other','{}',?)",
       [run.id, clock.now()],
     );
-    expect(runnerWorkHasResult(db, run.id)).toBe(false);
+    expect(await runnerWorkHasResult(sqliteDb(db), run.id)).toBe(false);
     db.run("UPDATE runner_result SET command_id='command' WHERE run_id=?", [run.id]);
     expect(runnerHoldsRunWork(db, run.id, clock.now())).toBe(true);
-    expect(runnerWorkHasResult(db, run.id)).toBe(true);
+    expect(await runnerWorkHasResult(sqliteDb(db), run.id)).toBe(true);
     expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(1);
     expect(getRun(db, run.id)?.status).toBe("active");
@@ -208,25 +209,25 @@ describe("the runner lease grace", () => {
     expect(getWorkItem(db, item.id)?.state).toBe("running");
     expect(getRun(db, run.id)?.status).toBe("active");
     db.run("UPDATE runner_work SET ended_at=? WHERE run_id=?", [clock.now(), run.id]);
-    expect(runnerWorkHasResult(db, run.id)).toBe(false);
+    expect(await runnerWorkHasResult(sqliteDb(db), run.id)).toBe(false);
     db.close();
   });
 
-  test("the halt core may release inside the grace once the runner acknowledged a cancel", () => {
+  test("the halt core may release inside the grace once the runner acknowledged a cancel", async () => {
     const { clock, db, run } = leased();
     clock.advance(RENEWAL_MS + 59_000);
     db.run(
       "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at) VALUES('cancel','runner',?,1,'cancel','{}',?,NULL)",
       [run.id, clock.now() + 65_000],
     );
-    expect(runnerWorkSettled(db, run.id, clock.now())).toBe(false);
+    expect(await runnerWorkSettled(sqliteDb(db), run.id, clock.now())).toBe(false);
     db.run("UPDATE runner_command SET acknowledged_at=? WHERE id='cancel'", [clock.now()]);
-    expect(runnerWorkSettled(db, run.id, clock.now())).toBe(true);
+    expect(await runnerWorkSettled(sqliteDb(db), run.id, clock.now())).toBe(true);
   });
 });
 
 describe("slots held between commands", () => {
-  test("runs holding slots on a full runner compete only with its live commands", () => {
+  test("runs holding slots on a full runner compete only with its live commands", async () => {
     const clock = new FakeClock(1_000_000);
     const db = openDatabase(":memory:");
     migrate(db);
@@ -252,21 +253,21 @@ describe("slots held between commands", () => {
       return run;
     });
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), "new-run")).toBe(4);
-    expect(runnerSlotFree(db, ["runner"], clock.now())).toBe(false);
+    expect(await runnerSlotFree(sqliteDb(db), ["runner"], clock.now())).toBe(false);
     for (const run of runs) {
       expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now(), run.id)).toBe(0);
-      expect(runnerSlotFree(db, ["runner"], clock.now(), run.id)).toBe(true);
+      expect(await runnerSlotFree(sqliteDb(db), ["runner"], clock.now(), run.id)).toBe(true);
     }
     db.run("UPDATE runner_work SET ended_at=NULL,lease_until=? WHERE run_id IN (?,?)", [
       clock.now() + RENEWAL_MS,
       runs[0]!.id,
       runs[1]!.id,
     ]);
-    expect(runnerSlotFree(db, ["runner"], clock.now(), runs[2]!.id)).toBe(false);
+    expect(await runnerSlotFree(sqliteDb(db), ["runner"], clock.now(), runs[2]!.id)).toBe(false);
     db.close();
   });
 
-  test("a run never placed also wakes for a runner that came online during its wait", () => {
+  test("a run never placed also wakes for a runner that came online during its wait", async () => {
     const clock = new FakeClock(1_000_000);
     const db = openDatabase(":memory:");
     migrate(db);
@@ -296,17 +297,22 @@ describe("slots held between commands", () => {
       [tied!.id, clock.now(), clock.now()],
     );
     const wait = { since: clock.now(), attempt: 0, runnerIds: ["busy"] };
-    const free = (runId: string, online?: string[]) =>
-      runnerSlotFree(
-        db,
-        slotWaitRunners(db, runId, online ? { ...wait, online } : wait, clock.now()),
+    const free = async (runId: string, online?: string[]) =>
+      await runnerSlotFree(
+        sqliteDb(db),
+        await slotWaitRunners(
+          sqliteDb(db),
+          runId,
+          online ? { ...wait, online } : wait,
+          clock.now(),
+        ),
         clock.now(),
         runId,
       );
-    expect(free(fresh!.id, ["busy"])).toBe(true);
-    expect(free(fresh!.id, ["busy", "free"])).toBe(false);
-    expect(free(fresh!.id)).toBe(true);
-    expect(free(tied!.id, ["busy"])).toBe(false);
+    expect(await free(fresh!.id, ["busy"])).toBe(true);
+    expect(await free(fresh!.id, ["busy", "free"])).toBe(false);
+    expect(await free(fresh!.id)).toBe(true);
+    expect(await free(tied!.id, ["busy"])).toBe(false);
     db.close();
   });
 });

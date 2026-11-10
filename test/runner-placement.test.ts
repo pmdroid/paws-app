@@ -15,6 +15,7 @@ import {
   recordLinearInstallation,
   recordRunnerRepositories,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import {
   createRunnerPlacement,
@@ -177,14 +178,14 @@ test("work goes only to runners whose reported repositories include the item's r
       "team",
     ]);
     const now = placed.now();
-    recordRunnerRepositories(placed.db, "own", ["acme/paws-app"], now);
+    await recordRunnerRepositories(sqliteDb(placed.db), "own", ["acme/paws-app"], now);
     const rejected: [string, string][] = [];
     expect(await placed.ids({ onRejected: (id, reason) => rejected.push([id, reason]) })).toEqual([
       "second",
     ]);
     expect(rejected).toContainEqual(["own", "repository not allowed in the runner's host config"]);
-    recordRunnerRepositories(placed.db, "own", ["ACME/looky"], now);
-    recordRunnerRepositories(placed.db, "second", null, now);
+    await recordRunnerRepositories(sqliteDb(placed.db), "own", ["ACME/looky"], now);
+    await recordRunnerRepositories(sqliteDb(placed.db), "second", null, now);
     expect(await placed.ids()).toEqual(["own", "second"]);
   } finally {
     placed.db.close();

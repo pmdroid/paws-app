@@ -12,6 +12,7 @@ import {
   recordAgentCloseout,
   releaseRunCapacity,
   setCurrentRun,
+  sqliteDb,
 } from "../src/db";
 import { createLiveStatusProvider } from "../src/dashboard/src/live/provider";
 import { parseIssueDetailResponse, parseIssueListResponse } from "../src/dashboard/src/contract";
@@ -102,9 +103,9 @@ if (!text.includes("fixed")) {
     env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home },
     postUpdate: { post: async () => ({ posted: true }) },
     closeoutProgress: {
-      record(progress) {
+      async record(progress) {
         clock += 1_000;
-        recordAgentCloseout(db, run.id, "ENG-7", progress, clock);
+        await recordAgentCloseout(sqliteDb(db), run.id, "ENG-7", progress, clock);
       },
     },
   });
@@ -112,7 +113,7 @@ if (!text.includes("fixed")) {
   expect(recorded.closeouts).toHaveLength(4);
   expect(recorded.closeouts[1]).toStartWith("test failed (exit 1).");
   expect(recorded.closeouts[2]).toBe("test passed.");
-  expect(listAgentCloseout(db, [run.id]).map((event) => event.sequence)).toEqual([
+  expect((await listAgentCloseout(sqliteDb(db), [run.id])).map((event) => event.sequence)).toEqual([
     1, 2, 3, 4, 5, 6, 7, 8,
   ]);
 
@@ -181,7 +182,7 @@ test("a running check reports how long it has run and a later stale report sends
     attempt: 1,
     maxAttempts: null,
   };
-  recordAgentCloseout(db, run.id, "ENG-8", { type: "started", ...attempt }, 10_000);
+  await recordAgentCloseout(sqliteDb(db), run.id, "ENG-8", { type: "started", ...attempt }, 10_000);
   const running = (await createLiveStatusProvider(db, {
     now: () => new Date(25_000),
   }).issue("ENG-8"))!.agentCloseout.find((entry) => entry.runId === run.id)!;
@@ -190,8 +191,8 @@ test("a running check reports how long it has run and a later stale report sends
     elapsedMs: 15_000,
     active: true,
   });
-  recordAgentCloseout(
-    db,
+  await recordAgentCloseout(
+    sqliteDb(db),
     run.id,
     "ENG-8",
     {
@@ -207,8 +208,8 @@ test("a running check reports how long it has run and a later stale report sends
     },
     26_000,
   );
-  recordAgentCloseout(
-    db,
+  await recordAgentCloseout(
+    sqliteDb(db),
     run.id,
     "ENG-8",
     {
@@ -232,7 +233,7 @@ test("a running check reports how long it has run and a later stale report sends
     (entry) => entry.runId === run.id,
   )!;
   expect(stale.attempts.at(-1)!.checks[0]!.state).toBe("pending");
-  const stored = listAgentCloseout(db, [run.id])[1]!.progress;
+  const stored = (await listAgentCloseout(sqliteDb(db), [run.id]))[1]!.progress;
   expect(stored.type === "finished" && stored.truncated).toBe(true);
   expect(stored.type === "finished" && Buffer.byteLength(stored.stdout)).toBe(64 * 1024);
 });
@@ -241,8 +242,8 @@ test("a check still running when its run ended stops at the run's end and points
   const db = tempDb();
   insertQueuedItem(db, { id: "ENG-10", title: "Restart", now: 1 });
   const { run } = beginImplementRun(db, "ENG-10", 2);
-  recordAgentCloseout(
-    db,
+  await recordAgentCloseout(
+    sqliteDb(db),
     run.id,
     "ENG-10",
     {
@@ -259,8 +260,8 @@ test("a check still running when its run ended stops at the run's end and points
   releaseRunCapacity(db, run.id, 575_000);
   const next = insertRun(db, { itemId: "ENG-10", now: 600_000 });
   setCurrentRun(db, "ENG-10", next.id);
-  recordAgentCloseout(
-    db,
+  await recordAgentCloseout(
+    sqliteDb(db),
     next.id,
     "ENG-10",
     {
@@ -312,9 +313,9 @@ test("an evidence check takes its state from the report and lets the round finis
     failedAttempts: 0,
   };
   const lint = { head, id: "lint", kind: "command", command: "bun run lint", attempt: 1 };
-  const report = (lintStatus: string, status: string, at: number) =>
-    recordAgentCloseout(
-      db,
+  const report = async (lintStatus: string, status: string, at: number) =>
+    await recordAgentCloseout(
+      sqliteDb(db),
       run.id,
       "ENG-9",
       {
@@ -335,10 +336,16 @@ test("an evidence check takes its state from the report and lets the round finis
       },
       at,
     );
-  report("missing", "missing", 10_000);
-  recordAgentCloseout(db, run.id, "ENG-9", { type: "started", ...lint, maxAttempts: null }, 11_000);
-  recordAgentCloseout(
-    db,
+  await report("missing", "missing", 10_000);
+  await recordAgentCloseout(
+    sqliteDb(db),
+    run.id,
+    "ENG-9",
+    { type: "started", ...lint, maxAttempts: null },
+    11_000,
+  );
+  await recordAgentCloseout(
+    sqliteDb(db),
     run.id,
     "ENG-9",
     {
@@ -367,7 +374,7 @@ test("an evidence check takes its state from the report and lets the round finis
     state: "pending",
   });
   expect((await attemptOf()).decision).toBe("running");
-  report("passed", "passed", 13_000);
+  await report("passed", "passed", 13_000);
   expect((await attemptOf()).checks.find((check) => check.id === "visual-proof")).toMatchObject({
     kind: "evidence",
     state: "passed",

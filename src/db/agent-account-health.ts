@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, count, eq, gt, gte, isNull, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
 import { legacyAgentBindingId } from "./agent-accounts";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 
 export type AccountHealthKind = "quota" | "auth" | "provider" | "model";
 export type AccountHealthState =
@@ -343,11 +343,11 @@ export function* resumeAccountHealthNowSteps(
   );
 }
 
-export function resumeAccountHealthNow(
-  db: Database,
+export async function resumeAccountHealthNow(
+  store: Db,
   agent: string,
   runnerId: string | null,
   now: number,
-): void {
-  settled(sqliteDb(db).run((q) => resumeAccountHealthNowSteps(q, agent, runnerId, now)));
+): Promise<void> {
+  await store.run((q) => resumeAccountHealthNowSteps(q, agent, runnerId, now));
 }

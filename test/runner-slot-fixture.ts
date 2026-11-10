@@ -10,6 +10,7 @@ import {
   recordRunnerCapacity,
   recordRunnerRepositories,
   type RunnerHostRefusal,
+  sqliteDb,
 } from "../src/db";
 import { itemRunnerVerdicts } from "../src/runner-placement";
 import { dispatch } from "../src/scheduler";
@@ -34,7 +35,7 @@ export function workspaceWithRunners(db: Database) {
     now: NOW,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, REPOSITORY, "team"]);
-  const pair = (name: string, slots: number, repositories: string[] | null) => {
+  const pair = async (name: string, slots: number, repositories: string[] | null) => {
     const id = workspaceId();
     db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
@@ -43,7 +44,7 @@ export function workspaceWithRunners(db: Database) {
     db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [id]);
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [id]);
     recordRunnerCapacity(db, id, slots, undefined, undefined, NOW);
-    recordRunnerRepositories(db, id, repositories, NOW);
+    await recordRunnerRepositories(sqliteDb(db), id, repositories, NOW);
     return id;
   };
   const queue = (id: string) => {

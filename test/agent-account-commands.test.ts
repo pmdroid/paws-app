@@ -11,6 +11,7 @@ import {
   migrate,
   openDatabase,
   putWorkspaceUser,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -123,13 +124,13 @@ test("an old runner keeps running the default sign-in and never receives a named
     named: false,
   });
 
-  const account = createAgentAccount(db, {
+  const account = await createAgentAccount(sqliteDb(db), {
     workspaceId: workspace,
     agent: "claude",
     label: "B",
     now,
   });
-  const binding = bindAgentAccount(db, {
+  const binding = await bindAgentAccount(sqliteDb(db), {
     workspaceId: workspace,
     accountId: account.id,
     runnerId,

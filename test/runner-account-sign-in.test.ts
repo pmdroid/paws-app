@@ -13,6 +13,7 @@ import {
   putWorkspaceUser,
   recordAccountObservation,
   setAgentAccountEnabled,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerHealth } from "../src/runner-health";
@@ -106,13 +107,13 @@ async function fixture(runnerVersion = "0.1.61") {
     onSignedIn: ({ agent }) => signedIn.push(agent),
   });
   const health = createRunnerHealth({ db, work, now: () => now });
-  const account = createAgentAccount(db, {
+  const account = await createAgentAccount(sqliteDb(db), {
     workspaceId: workspace.id,
     agent: "codex",
     label: "Second",
     now,
   });
-  const binding = bindAgentAccount(db, {
+  const binding = await bindAgentAccount(sqliteDb(db), {
     workspaceId: workspace.id,
     accountId: account.id,
     runnerId,
@@ -218,7 +219,7 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
 test("a completed named sign-in repairs only its binding's sign-in failure", async () => {
   const { db, now, runnerId, otherRunner, workspace, principal, login, account, binding } =
     await fixture();
-  const other = bindAgentAccount(db, {
+  const other = await bindAgentAccount(sqliteDb(db), {
     workspaceId: workspace,
     accountId: account.id,
     runnerId: otherRunner,
@@ -251,7 +252,7 @@ test("a completed named sign-in repairs only its binding's sign-in failure", asy
 test("a disabled account can still sign in; a foreign or removed binding cannot", async () => {
   const { db, now, runnerId, otherRunner, workspace, principal, login, account, binding, browser } =
     await fixture();
-  setAgentAccountEnabled(db, {
+  await setAgentAccountEnabled(sqliteDb(db), {
     workspaceId: workspace,
     accountId: account.id,
     enabled: false,
@@ -261,7 +262,7 @@ test("a disabled account can still sign in; a foreign or removed binding cannot"
   await expect(login.start(principal, runnerId, "claude", binding.id)).rejects.toThrow(
     /not available/,
   );
-  const elsewhere = bindAgentAccount(db, {
+  const elsewhere = await bindAgentAccount(sqliteDb(db), {
     workspaceId: workspace,
     accountId: account.id,
     runnerId: otherRunner,

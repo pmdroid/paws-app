@@ -13,6 +13,7 @@ import {
   saveNpmPackage,
   type AgentVersionRow,
   type RunnerAgentView,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerControl, createRunnerHttp } from "../src/runner-control";
 import { RunnerAgentTargetSchema, type RunnerAgentTarget } from "../src/runner-protocol";
@@ -104,7 +105,7 @@ async function fixture() {
       nativeVersion: status === "eligible" ? `${version}-native` : null,
       checkedAt: now,
     }) satisfies AgentVersionRow;
-  saveAgentVersions(db, [
+  await saveAgentVersions(sqliteDb(db), [
     row("claude", "2.0.0", "eligible", "A"),
     row("claude", "2.1.0", "eligible", "B"),
     row("claude", "2.2.0", "waiting", "C"),
@@ -112,9 +113,13 @@ async function fixture() {
     row("codex", "0.9.0", "eligible", "E"),
   ]);
   // The native build packages the catalog checked, and the platform package Claude's pins.
-  const npm = (name: string, versions: Record<string, Record<string, string>>, seed: string) =>
-    saveNpmPackage(
-      db,
+  const npm = async (
+    name: string,
+    versions: Record<string, Record<string, string>>,
+    seed: string,
+  ) =>
+    await saveNpmPackage(
+      sqliteDb(db),
       name,
       null,
       Object.fromEntries(
@@ -132,13 +137,13 @@ async function fixture() {
       now - 5 * DAY,
     );
   const platform = "@anthropic-ai/claude-agent-sdk-linux-x64";
-  npm(
+  await npm(
     "@anthropic-ai/claude-agent-sdk",
     { "2.0.0-native": {}, "2.1.0-native": { [platform]: "2.1.0-native" } },
     "N",
   );
-  npm(platform, { "2.1.0-native": {} }, "P");
-  npm("@openai/codex", { "0.9.0-native": {} }, "X");
+  await npm(platform, { "2.1.0-native": {} }, "P");
+  await npm("@openai/codex", { "0.9.0-native": {} }, "X");
   const post = async (path: string, body?: unknown) => {
     const response = (await browser.browser(
       new Request(`https://paws.invalid${path}`, {
@@ -210,7 +215,7 @@ test("a heartbeat with agents is stored and shown on the runner card", async () 
     },
     { agent: "codex", current: "0.9.0", pending: null, reportedAt: runner.now() },
   ];
-  expect(listRunnerAgents(runner.db, runner.runnerId)).toEqual(expected);
+  expect(await listRunnerAgents(sqliteDb(runner.db), runner.runnerId)).toEqual(expected);
   expect((await runner.list()).runners[0]!.codingAgents).toEqual(expected);
 });
 
@@ -223,7 +228,7 @@ test("a malformed agent report is refused", async () => {
     { agent: "claude", version: "1.0.0", status: "failed", error: "x".repeat(501) },
   ])
     expect((await runner.heartbeat({ agents: [agent] })).status).toBe(403);
-  expect(listRunnerAgents(runner.db, runner.runnerId)).toEqual([]);
+  expect(await listRunnerAgents(sqliteDb(runner.db), runner.runnerId)).toEqual([]);
 });
 
 test("Update sends the eligible version with its integrity, and the card follows the install", async () => {
@@ -259,7 +264,9 @@ test("Update sends the eligible version with its integrity, and the card follows
   ]);
   const target = sent[0]!.id;
   const pending = async () =>
-    listRunnerAgents(runner.db, runner.runnerId).find((entry) => entry.agent === "claude")!.pending;
+    (await listRunnerAgents(sqliteDb(runner.db), runner.runnerId)).find(
+      (entry) => entry.agent === "claude",
+    )!.pending;
   expect(await pending()).toMatchObject({ version: "2.1.0", status: "requested" });
 
   await runner.heartbeat({
@@ -286,7 +293,7 @@ test("Update sends the eligible version with its integrity, and the card follows
     ],
   });
   expect(done.body!.agents).toEqual([]);
-  expect(listRunnerAgents(runner.db, runner.runnerId)[0]).toMatchObject({
+  expect((await listRunnerAgents(sqliteDb(runner.db), runner.runnerId))[0]).toMatchObject({
     current: "2.1.0",
     pending: null,
   });
@@ -307,7 +314,7 @@ test("an install the runner reports failed shows its error until someone asks ag
       { agent: "claude", version: "2.1.0", status: "failed", target: first!.id, error },
     ],
   });
-  expect(listRunnerAgents(runner.db, runner.runnerId)[0]!.pending).toMatchObject({
+  expect((await listRunnerAgents(sqliteDb(runner.db), runner.runnerId))[0]!.pending).toMatchObject({
     status: "failed",
     error,
   });
@@ -322,7 +329,7 @@ test("an install the runner reports failed shows its error until someone asks ag
     })
   ).body!.agents as { id: string }[];
   expect(second!.id).not.toBe(first!.id);
-  expect(listRunnerAgents(runner.db, runner.runnerId)[0]!.pending).toMatchObject({
+  expect((await listRunnerAgents(sqliteDb(runner.db), runner.runnerId))[0]!.pending).toMatchObject({
     status: "requested",
     error: null,
   });
@@ -353,7 +360,7 @@ test("a version that is not eligible cannot be chosen", async () => {
     "Its integrity changed.",
   ]);
   expect((await runner.heartbeat({ agents: installed })).body!.agents).toEqual([]);
-  expect(listRunnerAgents(runner.db, runner.runnerId)[0]!.pending).toMatchObject({
+  expect((await listRunnerAgents(sqliteDb(runner.db), runner.runnerId))[0]!.pending).toMatchObject({
     status: "failed",
     error: "Paws no longer offers Claude 2.1.0: Its integrity changed.",
   });
@@ -432,7 +439,7 @@ test("Update all runners never moves a runner back, and asks again after a faile
   }[];
   expect(second!.version).toBe("2.1.0");
   expect(second!.id).not.toBe(first!.id);
-  expect(listRunnerAgents(runner.db, runner.runnerId)[0]!.pending).toMatchObject({
+  expect((await listRunnerAgents(sqliteDb(runner.db), runner.runnerId))[0]!.pending).toMatchObject({
     status: "requested",
   });
 });

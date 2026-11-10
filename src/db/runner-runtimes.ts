@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { asc, eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 /** A runtime as a runner last reported it in its heartbeat. */
 export type RunnerRuntimeStatus = {
@@ -46,13 +45,13 @@ export function* recordRunnerRuntimesSteps(
 }
 
 /** Replace what the runner reported last; runtimes it no longer lists are gone from it. */
-export function recordRunnerRuntimes(
-  db: Database,
+export async function recordRunnerRuntimes(
+  store: Db,
   runnerId: string,
   runtimes: readonly ReportedRuntime[],
   reportedAt: number,
-): void {
-  settled(sqliteDb(db).run((q) => recordRunnerRuntimesSteps(q, runnerId, runtimes, reportedAt)));
+): Promise<void> {
+  await store.run((q) => recordRunnerRuntimesSteps(q, runnerId, runtimes, reportedAt));
 }
 
 export function* listRunnerRuntimesSteps(q: Q, runnerId: string) {
@@ -73,6 +72,9 @@ export function* listRunnerRuntimesSteps(q: Q, runnerId: string) {
   return rows as RunnerRuntimeStatus[];
 }
 
-export function listRunnerRuntimes(db: Database, runnerId: string): RunnerRuntimeStatus[] {
-  return settled(sqliteDb(db).run((q) => listRunnerRuntimesSteps(q, runnerId)));
+export async function listRunnerRuntimes(
+  store: Db,
+  runnerId: string,
+): Promise<RunnerRuntimeStatus[]> {
+  return store.run((q) => listRunnerRuntimesSteps(q, runnerId));
 }

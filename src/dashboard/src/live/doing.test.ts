@@ -191,7 +191,9 @@ describe("what an item does now", () => {
     expect(shown.state).toBe("running");
     expect(shown.doing).toMatchObject({ kind: "slot", runners: ["agentbox"] });
     expect(itemTime(shown, now)).toContain("Waiting for a slot on agentbox");
-    const agentbox = listRunnerOverview(db, "workspace", now).find((r) => r.id === "agentbox")!;
+    const agentbox = (await listRunnerOverview(sqliteDb(db), "workspace", now)).find(
+      (r) => r.id === "agentbox",
+    )!;
     const pinned = agentbox.running.find((session) => session.title === "pinned")!;
     expect(pinned.movable).toBe(false);
     expect(agentbox.running.filter((session) => session.movable)).toHaveLength(2);
@@ -210,12 +212,14 @@ describe("what an item does now", () => {
 });
 
 describe("runner slots", () => {
-  test("live commands and holds between commands stay apart in the runner overview", () => {
+  test("live commands and holds between commands stay apart in the runner overview", async () => {
     const db = database();
     const now = START + 10 * MINUTE;
     for (const id of ["a", "b"]) work(db, running(db, id), "agentbox", true, now);
     for (const id of ["c", "d"]) work(db, running(db, id), "agentbox", false, now);
-    const agentbox = listRunnerOverview(db, "workspace", now).find((r) => r.id === "agentbox")!;
+    const agentbox = (await listRunnerOverview(sqliteDb(db), "workspace", now)).find(
+      (r) => r.id === "agentbox",
+    )!;
     expect(agentbox.slots).toEqual({ used: 4, total: 2 });
     expect(agentbox.running.map((session) => [session.title, session.movable]).sort()).toEqual([
       ["a", true],

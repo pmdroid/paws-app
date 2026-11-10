@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   and,
   eq,
@@ -10,7 +9,7 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 export const MEMBER_VM_DELETE_STEPS = ["drain", "tailnet", "revoke", "destroy", "clear"] as const;
@@ -56,10 +55,6 @@ const STEP_AT = {
   ready: "readyAt",
 } as const satisfies Record<Exclude<MemberVmStep, "create">, string>;
 
-function run<T>(db: Database, steps: (q: Q) => Steps<T>): T {
-  return settled(sqliteDb(db).run(steps));
-}
-
 function columns(q: Q) {
   const { memberVm: m } = q.t;
   return {
@@ -75,8 +70,8 @@ export function* memberVmByIdSteps(q: Q, id: string) {
   return (row ?? null) as MemberVm | null;
 }
 
-export function memberVmById(db: Database, id: string): MemberVm | null {
-  return run(db, (q) => memberVmByIdSteps(q, id));
+export async function memberVmById(store: Db, id: string): Promise<MemberVm | null> {
+  return store.run((q) => memberVmByIdSteps(q, id));
 }
 
 export function* memberVmForMemberSteps(q: Q, workspaceId: string, userId: string) {
@@ -90,12 +85,12 @@ export function* memberVmForMemberSteps(q: Q, workspaceId: string, userId: strin
   return (row ?? null) as MemberVm | null;
 }
 
-export function memberVmForMember(
-  db: Database,
+export async function memberVmForMember(
+  store: Db,
   workspaceId: string,
   userId: string,
-): MemberVm | null {
-  return run(db, (q) => memberVmForMemberSteps(q, workspaceId, userId));
+): Promise<MemberVm | null> {
+  return store.run((q) => memberVmForMemberSteps(q, workspaceId, userId));
 }
 
 export function* workspaceMemberVmsSteps(q: Q, workspaceId: string) {
@@ -110,8 +105,8 @@ export function* workspaceMemberVmsSteps(q: Q, workspaceId: string) {
   return rows as MemberVm[];
 }
 
-export function workspaceMemberVms(db: Database, workspaceId: string): MemberVm[] {
-  return run(db, (q) => workspaceMemberVmsSteps(q, workspaceId));
+export async function workspaceMemberVms(store: Db, workspaceId: string): Promise<MemberVm[]> {
+  return store.run((q) => workspaceMemberVmsSteps(q, workspaceId));
 }
 
 export function* memberVmNameTakenSteps(q: Q, name: string) {
@@ -119,8 +114,8 @@ export function* memberVmNameTakenSteps(q: Q, name: string) {
   return (yield* q.one(q.orm.select({ id: m.id }).from(m).where(eq(m.vmName, name)))) !== undefined;
 }
 
-export function memberVmNameTaken(db: Database, name: string): boolean {
-  return run(db, (q) => memberVmNameTakenSteps(q, name));
+export async function memberVmNameTaken(store: Db, name: string): Promise<boolean> {
+  return store.run((q) => memberVmNameTakenSteps(q, name));
 }
 
 type NewMemberVm = {
@@ -141,8 +136,8 @@ export function* insertMemberVmSteps(q: Q, input: NewMemberVm) {
   );
 }
 
-export function insertMemberVm(db: Database, input: NewMemberVm): void {
-  run(db, (q) => insertMemberVmSteps(q, input));
+export async function insertMemberVm(store: Db, input: NewMemberVm): Promise<void> {
+  await store.run((q) => insertMemberVmSteps(q, input));
 }
 
 export function* returnMemberVmToEnrollSteps(q: Q, id: string, now: number) {
@@ -163,8 +158,8 @@ export function* returnMemberVmToEnrollSteps(q: Q, id: string, now: number) {
   );
 }
 
-export function returnMemberVmToEnroll(db: Database, id: string, now: number): void {
-  run(db, (q) => returnMemberVmToEnrollSteps(q, id, now));
+export async function returnMemberVmToEnroll(store: Db, id: string, now: number): Promise<void> {
+  await store.run((q) => returnMemberVmToEnrollSteps(q, id, now));
 }
 
 export function* retryMemberVmStepSteps(q: Q, id: string, now: number) {
@@ -186,8 +181,8 @@ export function* retryMemberVmStepSteps(q: Q, id: string, now: number) {
   );
 }
 
-export function retryMemberVmStep(db: Database, id: string, now: number): void {
-  run(db, (q) => retryMemberVmStepSteps(q, id, now));
+export async function retryMemberVmStep(store: Db, id: string, now: number): Promise<void> {
+  await store.run((q) => retryMemberVmStepSteps(q, id, now));
 }
 
 export function* releaseRevokedMemberVmRunnerSteps(
@@ -217,13 +212,13 @@ export function* releaseRevokedMemberVmRunnerSteps(
   );
 }
 
-export function releaseRevokedMemberVmRunner(
-  db: Database,
+export async function releaseRevokedMemberVmRunner(
+  store: Db,
   workspaceId: string,
   userId: string,
   now: number,
-): void {
-  run(db, (q) => releaseRevokedMemberVmRunnerSteps(q, workspaceId, userId, now));
+): Promise<void> {
+  await store.run((q) => releaseRevokedMemberVmRunnerSteps(q, workspaceId, userId, now));
 }
 
 export function* setMemberVmPoolSteps(q: Q, id: string, pool: string, now: number) {
@@ -231,8 +226,13 @@ export function* setMemberVmPoolSteps(q: Q, id: string, pool: string, now: numbe
   yield* q.exec(q.orm.update(m).set({ pool, updatedAt: now }).where(eq(m.id, id)));
 }
 
-export function setMemberVmPool(db: Database, id: string, pool: string, now: number): void {
-  run(db, (q) => setMemberVmPoolSteps(q, id, pool, now));
+export async function setMemberVmPool(
+  store: Db,
+  id: string,
+  pool: string,
+  now: number,
+): Promise<void> {
+  await store.run((q) => setMemberVmPoolSteps(q, id, pool, now));
 }
 
 export type MemberVmStepFields = {
@@ -258,11 +258,11 @@ export function* updateMemberVmStepSteps(
   return rows.length;
 }
 
-export function updateMemberVmStep(
-  db: Database,
+export async function updateMemberVmStep(
+  store: Db,
   input: { id: string; step: string; fields: MemberVmStepFields; now: number },
-): number {
-  return run(db, (q) => updateMemberVmStepSteps(q, input));
+): Promise<number> {
+  return store.run((q) => updateMemberVmStepSteps(q, input));
 }
 
 export function* restoreMemberVmCreateRequestSteps(q: Q, id: string, at: number | null) {
@@ -275,8 +275,12 @@ export function* restoreMemberVmCreateRequestSteps(q: Q, id: string, at: number 
   );
 }
 
-export function restoreMemberVmCreateRequest(db: Database, id: string, at: number | null): void {
-  run(db, (q) => restoreMemberVmCreateRequestSteps(q, id, at));
+export async function restoreMemberVmCreateRequest(
+  store: Db,
+  id: string,
+  at: number | null,
+): Promise<void> {
+  await store.run((q) => restoreMemberVmCreateRequestSteps(q, id, at));
 }
 
 export function* advanceMemberVmStepSteps(
@@ -295,11 +299,11 @@ export function* advanceMemberVmStepSteps(
   return rows.length;
 }
 
-export function advanceMemberVmStep(
-  db: Database,
+export async function advanceMemberVmStep(
+  store: Db,
   input: { id: string; from: string; to: Exclude<MemberVmStep, "create">; now: number },
-): number {
-  return run(db, (q) => advanceMemberVmStepSteps(q, input));
+): Promise<number> {
+  return store.run((q) => advanceMemberVmStepSteps(q, input));
 }
 
 export function* failMemberVmStepSteps(
@@ -315,11 +319,11 @@ export function* failMemberVmStepSteps(
   );
 }
 
-export function failMemberVmStep(
-  db: Database,
+export async function failMemberVmStep(
+  store: Db,
   input: { id: string; step: string; failure: string; now: number },
-): void {
-  run(db, (q) => failMemberVmStepSteps(q, input));
+): Promise<void> {
+  await store.run((q) => failMemberVmStepSteps(q, input));
 }
 
 export function* beginMemberVmDeleteSteps(
@@ -346,11 +350,11 @@ export function* beginMemberVmDeleteSteps(
   );
 }
 
-export function beginMemberVmDelete(
-  db: Database,
+export async function beginMemberVmDelete(
+  store: Db,
   input: { id: string; requestedBy: string; force: number; now: number },
-): void {
-  run(db, (q) => beginMemberVmDeleteSteps(q, input));
+): Promise<void> {
+  await store.run((q) => beginMemberVmDeleteSteps(q, input));
 }
 
 export function* retryMemberVmDeleteSteps(q: Q, id: string, force: number, now: number) {
@@ -370,8 +374,13 @@ export function* retryMemberVmDeleteSteps(q: Q, id: string, force: number, now: 
   );
 }
 
-export function retryMemberVmDelete(db: Database, id: string, force: number, now: number): void {
-  run(db, (q) => retryMemberVmDeleteSteps(q, id, force, now));
+export async function retryMemberVmDelete(
+  store: Db,
+  id: string,
+  force: number,
+  now: number,
+): Promise<void> {
+  await store.run((q) => retryMemberVmDeleteSteps(q, id, force, now));
 }
 
 export function* recordMemberVmEnrollmentSteps(
@@ -387,9 +396,9 @@ export function* recordMemberVmEnrollmentSteps(
   );
 }
 
-export function recordMemberVmEnrollment(
-  db: Database,
+export async function recordMemberVmEnrollment(
+  store: Db,
   input: { tokenHash: string; memberVmId: string; now: number },
-): void {
-  run(db, (q) => recordMemberVmEnrollmentSteps(q, input));
+): Promise<void> {
+  await store.run((q) => recordMemberVmEnrollmentSteps(q, input));
 }

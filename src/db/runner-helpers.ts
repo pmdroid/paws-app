@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, isNull, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
 export type RunnerHelperRow = {
@@ -80,8 +80,12 @@ export function* unacknowledgedRunnerHelpersSteps(
   return rows.map((row) => row.id);
 }
 
-export function unacknowledgedRunnerHelpers(db: Database, runnerId: string, at: number): string[] {
-  return settled(sqliteDb(db).run((q) => unacknowledgedRunnerHelpersSteps(q, runnerId, at)));
+export async function unacknowledgedRunnerHelpers(
+  store: Db,
+  runnerId: string,
+  at: number,
+): Promise<string[]> {
+  return store.run((q) => unacknowledgedRunnerHelpersSteps(q, runnerId, at));
 }
 
 export function* acknowledgeRunnerHelperSteps(q: Q, id: string, at: number) {
@@ -94,8 +98,8 @@ export function* acknowledgeRunnerHelperSteps(q: Q, id: string, at: number) {
   );
 }
 
-export function acknowledgeRunnerHelper(db: Database, id: string, at: number): void {
-  settled(sqliteDb(db).run((q) => acknowledgeRunnerHelperSteps(q, id, at)));
+export async function acknowledgeRunnerHelper(store: Db, id: string, at: number): Promise<void> {
+  await store.run((q) => acknowledgeRunnerHelperSteps(q, id, at));
 }
 
 /** Whether the stored result is this payload: JSON equality on Postgres, text on SQLite. */
@@ -110,8 +114,12 @@ export function* runnerHelperResultMatchesSteps(q: Q, id: string, payload: strin
   return row !== undefined;
 }
 
-export function runnerHelperResultMatches(db: Database, id: string, payload: string): boolean {
-  return settled(sqliteDb(db).run((q) => runnerHelperResultMatchesSteps(q, id, payload)));
+export async function runnerHelperResultMatches(
+  store: Db,
+  id: string,
+  payload: string,
+): Promise<boolean> {
+  return store.run((q) => runnerHelperResultMatchesSteps(q, id, payload));
 }
 
 export function* storeRunnerHelperResultSteps(q: Q, id: string, payload: string) {
@@ -124,8 +132,12 @@ export function* storeRunnerHelperResultSteps(q: Q, id: string, payload: string)
   );
 }
 
-export function storeRunnerHelperResult(db: Database, id: string, payload: string): void {
-  settled(sqliteDb(db).run((q) => storeRunnerHelperResultSteps(q, id, payload)));
+export async function storeRunnerHelperResult(
+  store: Db,
+  id: string,
+  payload: string,
+): Promise<void> {
+  await store.run((q) => storeRunnerHelperResultSteps(q, id, payload));
 }
 
 export function* endRunnerHelperSteps(q: Q, id: string, at: number) {

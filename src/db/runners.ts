@@ -229,13 +229,13 @@ function* listRunnerSessionsSteps(
 }
 
 /** Keeps only the latest host sample per runner. */
-export function recordRunnerHostStatus(
-  db: Database,
+export async function recordRunnerHostStatus(
+  store: Db,
   runnerId: string,
   sample: RunnerHostSample,
   reportedAt: number,
-): void {
-  settled(sqliteDb(db).run((q) => recordRunnerHostStatusSteps(q, runnerId, sample, reportedAt)));
+): Promise<void> {
+  await store.run((q) => recordRunnerHostStatusSteps(q, runnerId, sample, reportedAt));
 }
 
 export function* recordRunnerHostStatusSteps(
@@ -326,12 +326,12 @@ export function* runnerAgentUsageSteps(q: Q, runnerId: string, agent: string) {
 }
 
 /** Runners with their latest host sample. Idle means no open work and no pending command. */
-export function listRunnerOverview(
-  db: Database,
+export async function listRunnerOverview(
+  store: Db,
   workspaceId: string,
   now: number,
-): RunnerOverview[] {
-  return settled(sqliteDb(db).run((q) => listRunnerOverviewSteps(q, workspaceId, now)));
+): Promise<RunnerOverview[]> {
+  return store.run((q) => listRunnerOverviewSteps(q, workspaceId, now));
 }
 
 export function* listRunnerOverviewSteps(
@@ -515,12 +515,12 @@ export function* listRunnerOverviewSteps(
   return overview;
 }
 
-export function runnerForCertificate(
-  db: Database,
+export async function runnerForCertificate(
+  store: Db,
   fingerprint: string,
   now: number,
-): RunnerRecord | null {
-  return settled(sqliteDb(db).run((q) => runnerForCertificateSteps(q, fingerprint, now)));
+): Promise<RunnerRecord | null> {
+  return store.run((q) => runnerForCertificateSteps(q, fingerprint, now));
 }
 
 export function* runnerForCertificateSteps(
@@ -681,8 +681,8 @@ type RunnerEnrollInput = {
  * mark the token used and audit `runner.paired` with that member as actor. Throws, writing
  * nothing, when the token is used, expired or its member may no longer own a runner.
  */
-export function enrollRunner(db: Database, input: RunnerEnrollInput): RunnerEnrollment {
-  return settled(sqliteDb(db).transaction((q) => enrollRunnerSteps(q, input)));
+export async function enrollRunner(store: Db, input: RunnerEnrollInput): Promise<RunnerEnrollment> {
+  return store.transaction((q) => enrollRunnerSteps(q, input));
 }
 
 export function* enrollRunnerSteps(q: Q, input: RunnerEnrollInput): Steps<RunnerEnrollment> {
@@ -800,16 +800,7 @@ type RunnerStatusUpdate = {
   now: number;
 };
 
-export function updateRunnerStatus(db: Database, input: RunnerStatusUpdate): string[] {
-  const fingerprints = settled(sqliteDb(db).transaction((q) => updateRunnerStatusSteps(q, input)));
-  if (input.status === "active") emitJobReady(db);
-  return fingerprints;
-}
-
-export async function updateRunnerStatusAsync(
-  store: Db,
-  input: RunnerStatusUpdate,
-): Promise<string[]> {
+export async function updateRunnerStatus(store: Db, input: RunnerStatusUpdate): Promise<string[]> {
   const fingerprints = await store.transaction((q) => updateRunnerStatusSteps(q, input));
   if (input.status === "active") emitJobReady(store);
   return fingerprints;
@@ -895,8 +886,11 @@ export type RunnerAvailability = {
 };
 
 /** The runner that holds a run's remote work, as last reported. */
-export function runRunnerAvailability(db: Database, runId: string): RunnerAvailability | null {
-  return settled(sqliteDb(db).run((q) => runRunnerAvailabilitySteps(q, runId)));
+export async function runRunnerAvailability(
+  store: Db,
+  runId: string,
+): Promise<RunnerAvailability | null> {
+  return store.run((q) => runRunnerAvailabilitySteps(q, runId));
 }
 
 export function* runRunnerAvailabilitySteps(q: Q, runId: string): Steps<RunnerAvailability | null> {

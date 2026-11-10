@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { emitJobReady, enqueueJobSteps } from "./jobs";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 
 /**
  * A queued item held because its delegator has no runner Paws may use. The scheduler skips it,
@@ -43,8 +43,11 @@ export function* getRunnerSetupHoldSteps(q: Q, itemId: string): Steps<RunnerSetu
   return row ?? null;
 }
 
-export function getRunnerSetupHold(db: Database, itemId: string): RunnerSetupHold | null {
-  return settled(sqliteDb(db).run((q) => getRunnerSetupHoldSteps(q, itemId)));
+export async function getRunnerSetupHold(
+  store: Db,
+  itemId: string,
+): Promise<RunnerSetupHold | null> {
+  return store.run((q) => getRunnerSetupHoldSteps(q, itemId));
 }
 
 export function* listRunnerSetupHoldsSteps(q: Q, ownerUserId?: string): Steps<RunnerSetupHold[]> {
@@ -58,8 +61,11 @@ export function* listRunnerSetupHoldsSteps(q: Q, ownerUserId?: string): Steps<Ru
   );
 }
 
-export function listRunnerSetupHolds(db: Database, ownerUserId?: string): RunnerSetupHold[] {
-  return settled(sqliteDb(db).run((q) => listRunnerSetupHoldsSteps(q, ownerUserId)));
+export async function listRunnerSetupHolds(
+  store: Db,
+  ownerUserId?: string,
+): Promise<RunnerSetupHold[]> {
+  return store.run((q) => listRunnerSetupHoldsSteps(q, ownerUserId));
 }
 
 type HoldInput = {
@@ -143,8 +149,12 @@ export function* releaseRunnerSetupHoldSteps(q: Q, itemId: string, now?: number)
  * run for `takeRunnerSetupResume`. False when the hold was already gone, so two checks at once
  * resume the item once. Call inside the transaction that posts the resume.
  */
-export function releaseRunnerSetupHold(db: Database, itemId: string, now?: number): boolean {
-  return settled(sqliteDb(db).run((q) => releaseRunnerSetupHoldSteps(q, itemId, now)));
+export async function releaseRunnerSetupHold(
+  store: Db,
+  itemId: string,
+  now?: number,
+): Promise<boolean> {
+  return store.run((q) => releaseRunnerSetupHoldSteps(q, itemId, now));
 }
 
 export function* takeRunnerSetupResumeSteps(q: Q, itemId: string, runId: string): Steps<boolean> {
@@ -162,8 +172,12 @@ export function* takeRunnerSetupResumeSteps(q: Q, itemId: string, runId: string)
  * Whether `runId` is the run a released runner-setup hold stopped, so the start continues it
  * instead of opening a new one. Consumes the record either way.
  */
-export function takeRunnerSetupResume(db: Database, itemId: string, runId: string): boolean {
-  return settled(sqliteDb(db).run((q) => takeRunnerSetupResumeSteps(q, itemId, runId)));
+export async function takeRunnerSetupResume(
+  store: Db,
+  itemId: string,
+  runId: string,
+): Promise<boolean> {
+  return store.run((q) => takeRunnerSetupResumeSteps(q, itemId, runId));
 }
 
 export function* enqueueRunnerSetupCheckSteps(

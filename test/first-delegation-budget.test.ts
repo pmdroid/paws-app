@@ -15,6 +15,7 @@ import {
   migrate,
   openDatabase,
   putWorkspaceUser,
+  sqliteDb,
 } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import {
@@ -511,7 +512,10 @@ async function firstDelegation(
           .all()
           .map((row) => row.status),
       };
-    expect(getRunnerSetupHold(db, item.id), server.operations.join(", ")).toMatchObject({
+    expect(
+      await getRunnerSetupHold(sqliteDb(db), item.id),
+      server.operations.join(", "),
+    ).toMatchObject({
       reason: "no-runner",
     });
 

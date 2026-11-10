@@ -30,7 +30,7 @@ export type RunnerWaitQuestion = { answer(): string | null; cancel(): void };
  * `askAfterMs` the team is asked whether to move the task or keep waiting.
  */
 export async function waitForRunner(input: {
-  runner(): RunnerAvailability | null;
+  runner(): RunnerAvailability | null | Promise<RunnerAvailability | null>;
   now(): number;
   sleep(ms: number): Promise<void>;
   /** The reason to show on the waiting step, or null once the wait ends. */
@@ -48,7 +48,7 @@ export async function waitForRunner(input: {
   let question = input.asked?.() ?? undefined;
   try {
     for (;;) {
-      const runner = input.runner();
+      const runner = await input.runner();
       const reason = runnerWaitReason(runner, input.now());
       if (runner === null || reason === null) return "available";
       if (shown === null) since = input.now();

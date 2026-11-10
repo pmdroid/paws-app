@@ -26,6 +26,7 @@ import {
   runnerOccupancy,
   enqueueOutbox,
   listOutbox,
+  sqliteDb,
 } from "../../src/db";
 import { createLiveStatusProvider } from "../../src/dashboard/src/live/provider";
 import { workspaceId, issueWorkspaceBootstrap, workspaceTokenHash } from "../../src/workspace";
@@ -398,8 +399,8 @@ export async function probeRunnerBackend(
           },
         },
         closeoutProgress: {
-          record(progress) {
-            recordAgentCloseout(db, first.run.id, first.id, progress, Date.now());
+          async record(progress) {
+            await recordAgentCloseout(sqliteDb(db), first.run.id, first.id, progress, Date.now());
           },
         },
         publishArtifact: {

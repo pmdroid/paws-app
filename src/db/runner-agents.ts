@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, exists, ne, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 import { auditWorkspaceAccessSteps } from "./workspace";
 import { agentCatalogSummarySteps, readAgentVersionSteps } from "./agent-versions";
@@ -62,13 +61,13 @@ const name = (agent: string) => NAMES[agent] ?? agent;
 export const runnerAgentName = name;
 
 /** Replace what the runner reported last, and drop each target it now runs. */
-export function recordRunnerAgents(
-  db: Database,
+export async function recordRunnerAgents(
+  store: Db,
   runnerId: string,
   agents: readonly RunnerAgentReport[],
   reportedAt: number,
-): void {
-  settled(sqliteDb(db).run((q) => recordRunnerAgentsSteps(q, runnerId, agents, reportedAt)));
+): Promise<void> {
+  await store.run((q) => recordRunnerAgentsSteps(q, runnerId, agents, reportedAt));
 }
 
 export function* recordRunnerAgentsSteps(
@@ -156,8 +155,11 @@ function* blocked(q: Q, target: TargetRecord) {
 }
 
 /** The targets the heartbeat reply carries: each one the catalog still allows. */
-export function runnerAgentTargets(db: Database, runnerId: string): RunnerAgentTargetRow[] {
-  return settled(sqliteDb(db).run((q) => runnerAgentTargetsSteps(q, runnerId)));
+export async function runnerAgentTargets(
+  store: Db,
+  runnerId: string,
+): Promise<RunnerAgentTargetRow[]> {
+  return store.run((q) => runnerAgentTargetsSteps(q, runnerId));
 }
 
 export function* runnerAgentTargetsSteps(q: Q, runnerId: string) {
@@ -170,8 +172,8 @@ export function* runnerAgentTargetsSteps(q: Q, runnerId: string) {
   return allowed;
 }
 
-export function listRunnerAgents(db: Database, runnerId: string): RunnerAgentView[] {
-  return settled(sqliteDb(db).run((q) => listRunnerAgentsSteps(q, runnerId)));
+export async function listRunnerAgents(store: Db, runnerId: string): Promise<RunnerAgentView[]> {
+  return store.run((q) => listRunnerAgentsSteps(q, runnerId));
 }
 
 export function* listRunnerAgentsSteps(q: Q, runnerId: string) {
@@ -305,8 +307,8 @@ type UpdateRequest = Request & {
   catalogPackages: CatalogPackages;
 };
 
-export function requestRunnerAgentUpdate(db: Database, input: UpdateRequest): void {
-  settled(sqliteDb(db).transaction((q) => requestRunnerAgentUpdateSteps(q, input)));
+export async function requestRunnerAgentUpdate(store: Db, input: UpdateRequest): Promise<void> {
+  await store.transaction((q) => requestRunnerAgentUpdateSteps(q, input));
 }
 
 export function* requestRunnerAgentUpdateSteps(q: Q, input: UpdateRequest) {
@@ -349,8 +351,11 @@ type UpdateAllRequest = Omit<Request, "id"> & {
   catalogPackages: CatalogPackages;
 };
 
-export function requestAllRunnerAgentUpdates(db: Database, input: UpdateAllRequest): number {
-  return settled(sqliteDb(db).transaction((q) => requestAllRunnerAgentUpdatesSteps(q, input)));
+export async function requestAllRunnerAgentUpdates(
+  store: Db,
+  input: UpdateAllRequest,
+): Promise<number> {
+  return store.transaction((q) => requestAllRunnerAgentUpdatesSteps(q, input));
 }
 
 export function* requestAllRunnerAgentUpdatesSteps(q: Q, input: UpdateAllRequest) {

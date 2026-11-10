@@ -4764,9 +4764,9 @@ export class Orchestrator {
     const { pollMs, askAfterMs } = this.options.runnerWait ?? {};
     let runnerName = "";
     const outcome = await waitForRunner({
-      runner: () => {
+      runner: async () => {
         assertCurrent();
-        const runner = runRunnerAvailability(this.db, runId);
+        const runner = await runRunnerAvailability(sqliteDb(this.db), runId);
         if (runner) runnerName = runner.name;
         return runner;
       },

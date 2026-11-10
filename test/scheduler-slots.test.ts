@@ -99,9 +99,9 @@ test("a task between its run and Closeout keeps its runner slot until the run en
       second,
     ]);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
-    expect(runnerSlotFree(db, ["goldbox"], NOW + 2)).toBe(false);
+    expect(await runnerSlotFree(sqliteDb(db), ["goldbox"], NOW + 2)).toBe(false);
     db.run("UPDATE run SET status='ended' WHERE id=?", [second]);
-    expect(runnerSlotFree(db, ["goldbox"], NOW + 3)).toBe(true);
+    expect(await runnerSlotFree(sqliteDb(db), ["goldbox"], NOW + 3)).toBe(true);
     expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual(["next-4"]);
   } finally {
     db.close();
@@ -127,10 +127,10 @@ test("a task waiting for CI between its run and Closeout frees its runner slot",
        payload=json_set(payload,'$.awakeWait',json_object('kind','ci','worker','worker','attempt',0)) WHERE id=?`,
       [NOW + 60_000, recheck],
     );
-    expect(runnerSlotFree(db, ["goldbox"], NOW + 2)).toBe(true);
+    expect(await runnerSlotFree(sqliteDb(db), ["goldbox"], NOW + 2)).toBe(true);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["next-4"]);
     db.run("UPDATE job SET payload=json_remove(payload,'$.awakeWait') WHERE id=?", [recheck]);
-    expect(runnerSlotFree(db, ["goldbox"], NOW + 3)).toBe(false);
+    expect(await runnerSlotFree(sqliteDb(db), ["goldbox"], NOW + 3)).toBe(false);
   } finally {
     db.close();
   }

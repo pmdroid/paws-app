@@ -5,7 +5,7 @@ import {
   memberVmByIdSteps,
   parkLeasedJobSteps,
   sqliteDb,
-  updateRunnerStatusAsync,
+  updateRunnerStatus,
   type Db,
   type Job,
   type JobContext,
@@ -111,7 +111,7 @@ async function runDeleteStep(
       const runners = vmRunners(db, row);
       for (const runner of runners)
         if (runner.status !== "draining")
-          await updateRunnerStatusAsync(store, {
+          await updateRunnerStatus(store, {
             runnerId: runner.id,
             workspaceId: runner.workspaceId,
             userId: actor,
@@ -173,7 +173,7 @@ async function runDeleteStep(
     case "revoke": {
       revokeUnusedEnrollments(db, row);
       for (const runner of vmRunners(db, row)) {
-        const fingerprints = await updateRunnerStatusAsync(store, {
+        const fingerprints = await updateRunnerStatus(store, {
           runnerId: runner.id,
           workspaceId: runner.workspaceId,
           userId: actor,

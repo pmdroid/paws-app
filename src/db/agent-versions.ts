@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { jsonText } from "./json-text";
 
 /** What Paws keeps from one version in an npm registry document. */
@@ -109,14 +109,14 @@ export function* saveNpmPackageSteps(
  * Store a freshly fetched registry document. The first integrity seen for each version is kept;
  * a later, different integrity is recorded once and never cleared.
  */
-export function saveNpmPackage(
-  db: Database,
+export async function saveNpmPackage(
+  store: Db,
   name: string,
   etag: string | null,
   versions: Record<string, NpmVersionMetadata>,
   now: number,
-): void {
-  settled(sqliteDb(db).transaction((q) => saveNpmPackageSteps(q, name, etag, versions, now)));
+): Promise<void> {
+  await store.transaction((q) => saveNpmPackageSteps(q, name, etag, versions, now));
 }
 
 export function* touchNpmPackageSteps(q: Q, name: string, now: number) {
@@ -127,8 +127,8 @@ export function* touchNpmPackageSteps(q: Q, name: string, now: number) {
 }
 
 /** Record a 304: the stored document is still current. */
-export function touchNpmPackage(db: Database, name: string, now: number): void {
-  settled(sqliteDb(db).run((q) => touchNpmPackageSteps(q, name, now)));
+export async function touchNpmPackage(store: Db, name: string, now: number): Promise<void> {
+  await store.run((q) => touchNpmPackageSteps(q, name, now));
 }
 
 export function* readNpmIntegritySteps(q: Q, name: string, version: string) {
@@ -176,8 +176,11 @@ export function* saveAgentVersionsSteps(q: Q, rows: readonly AgentVersionRow[]) 
 }
 
 /** Replace the catalog rows of one agent. A version no longer reported keeps its last row. */
-export function saveAgentVersions(db: Database, rows: readonly AgentVersionRow[]): void {
-  settled(sqliteDb(db).transaction((q) => saveAgentVersionsSteps(q, rows)));
+export async function saveAgentVersions(
+  store: Db,
+  rows: readonly AgentVersionRow[],
+): Promise<void> {
+  await store.transaction((q) => saveAgentVersionsSteps(q, rows));
 }
 
 function agentVersionColumns(q: Q) {
@@ -206,12 +209,12 @@ export function* readAgentVersionSteps(q: Q, agent: string, version: string) {
   return row ?? null;
 }
 
-export function readAgentVersion(
-  db: Database,
+export async function readAgentVersion(
+  store: Db,
   agent: string,
   version: string,
-): AgentVersionRow | null {
-  return settled(sqliteDb(db).run((q) => readAgentVersionSteps(q, agent, version)));
+): Promise<AgentVersionRow | null> {
+  return store.run((q) => readAgentVersionSteps(q, agent, version));
 }
 
 export function* listAgentVersionsSteps(q: Q, agent?: string) {
@@ -232,8 +235,8 @@ export function* listAgentVersionsSteps(q: Q, agent?: string) {
 }
 
 /** The catalog, newest publication first within each agent. */
-export function listAgentVersions(db: Database, agent?: string): AgentVersionRow[] {
-  return settled(sqliteDb(db).run((q) => listAgentVersionsSteps(q, agent)));
+export async function listAgentVersions(store: Db, agent?: string): Promise<AgentVersionRow[]> {
+  return store.run((q) => listAgentVersionsSteps(q, agent));
 }
 
 export function* lastAgentCatalogRefreshSteps(q: Q) {
@@ -248,8 +251,8 @@ export function* lastAgentCatalogRefreshSteps(q: Q) {
 }
 
 /** When the last complete refresh of the agent catalog ran, or null before the first one. */
-export function lastAgentCatalogRefresh(db: Database): number | null {
-  return settled(sqliteDb(db).run(lastAgentCatalogRefreshSteps));
+export async function lastAgentCatalogRefresh(store: Db): Promise<number | null> {
+  return store.run((q) => lastAgentCatalogRefreshSteps(q));
 }
 
 export function* markAgentCatalogRefreshedSteps(q: Q, at: number) {
@@ -263,8 +266,8 @@ export function* markAgentCatalogRefreshedSteps(q: Q, at: number) {
 }
 
 /** Record a refresh in which every agent was evaluated on fresh npm reads. */
-export function markAgentCatalogRefreshed(db: Database, at: number): void {
-  settled(sqliteDb(db).run((q) => markAgentCatalogRefreshedSteps(q, at)));
+export async function markAgentCatalogRefreshed(store: Db, at: number): Promise<void> {
+  await store.run((q) => markAgentCatalogRefreshedSteps(q, at));
 }
 
 /** What the Runners page shows per agent: the newest version on offer and each refusal with its reason. */
@@ -300,6 +303,6 @@ export function* agentCatalogSummarySteps(q: Q) {
   return [...byAgent.values()];
 }
 
-export function agentCatalogSummary(db: Database): AgentCatalogSummary[] {
-  return settled(sqliteDb(db).run(agentCatalogSummarySteps));
+export async function agentCatalogSummary(store: Db): Promise<AgentCatalogSummary[]> {
+  return store.run((q) => agentCatalogSummarySteps(q));
 }

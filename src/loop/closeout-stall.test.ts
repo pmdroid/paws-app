@@ -19,6 +19,7 @@ import {
   saveCheckpoint,
   setCurrentRun,
   startUsagePause,
+  sqliteDb,
 } from "../db";
 import { answer, findOpenQuestion } from "../questions";
 import { questionEffects } from "./question-effects";
@@ -46,8 +47,8 @@ test("quiet verification retries once across restart, then asks a person", async
         journal: (line) => lines.push(line),
       });
     clock.advance(31 * 60_000);
-    recordAgentCloseout(
-      db,
+    await recordAgentCloseout(
+      sqliteDb(db),
       getWorkItem(db, "stalled")!.currentRunId!,
       "stalled",
       {
