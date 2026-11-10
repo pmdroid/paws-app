@@ -21,6 +21,21 @@ export function listRepositoryCatalog(db: Database): CatalogEntry[] {
     .all();
 }
 
+export function* listRepositoryCatalogSteps(q: Q): Steps<CatalogEntry[]> {
+  const { repositoryCatalog } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        owner: repositoryCatalog.owner,
+        repo: repositoryCatalog.repo,
+        remoteUrl: repositoryCatalog.remoteUrl,
+        defaultBranch: repositoryCatalog.defaultBranch,
+      })
+      .from(repositoryCatalog)
+      .orderBy(repositoryCatalog.repository),
+  );
+}
+
 export async function refreshRepositoryCatalog(
   db: Database,
   list: () => Promise<readonly CatalogEntry[]>,
@@ -82,6 +97,51 @@ export function listRepositoryCandidates(
   const candidates = [
     ...configured,
     ...listRepositoryCatalog(db),
+    ...teamLinks.map((name) => {
+      const [owner, repo] = name.split("/");
+      return { owner: owner!, repo: repo!, remoteUrl: `https://github.com/${name}.git` };
+    }),
+  ];
+  const seen = new Set<string>();
+  return candidates
+    .filter((candidate) => {
+      const name = `${candidate.owner}/${candidate.repo}`.toLowerCase();
+      if (seen.has(name) || (teamLinks.length > 0 && !teamLinks.includes(name))) return false;
+      seen.add(name);
+      return true;
+    })
+    .map(({ owner, repo, remoteUrl }) => ({ owner, repo, remoteUrl }));
+}
+
+function* listTeamRepositoriesSteps(q: Q, sessionId: string): Steps<string[]> {
+  const { linearSession, workspace, workspaceRepository } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({ repository: sql<string>`lower(${workspaceRepository.repository})` })
+      .from(workspaceRepository)
+      .innerJoin(workspace, eq(workspace.id, workspaceRepository.workspaceId))
+      .innerJoin(
+        linearSession,
+        and(
+          eq(linearSession.organizationId, workspace.linearOrganizationId),
+          eq(linearSession.teamId, workspaceRepository.teamId),
+        ),
+      )
+      .where(eq(linearSession.sessionId, sessionId))
+      .orderBy(sql`lower(${workspaceRepository.repository})`),
+  );
+  return rows.map((row) => row.repository);
+}
+
+export function* listRepositoryCandidatesSteps(
+  q: Q,
+  sessionId: string | null,
+  configured: readonly RepositoryBinding[],
+): Steps<RepositoryBinding[]> {
+  const teamLinks = sessionId ? yield* listTeamRepositoriesSteps(q, sessionId) : [];
+  const candidates = [
+    ...configured,
+    ...(yield* listRepositoryCatalogSteps(q)),
     ...teamLinks.map((name) => {
       const [owner, repo] = name.split("/");
       return { owner: owner!, repo: repo!, remoteUrl: `https://github.com/${name}.git` };

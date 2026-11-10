@@ -8,6 +8,16 @@ import {
   saveCandidateRiskSteps,
 } from "../db";
 import {
+  bindWorkItemRepositorySteps,
+  listRepositoryCandidates,
+  reviewerFaultHolds,
+  getWorkItemRepositoryAnswerSteps,
+  getWorkItemRepositoryChoiceSteps,
+  listRepositoryCandidatesSteps,
+  listRepositoryCatalogSteps,
+  rememberWorkItemRepositoryChoiceSteps,
+} from "../db";
+import {
   applyLinearTurnsSteps,
   clearConversationBlockSteps,
   deferWorkItemAsync,
@@ -347,11 +357,8 @@ import {
   getConversation,
   saveConversation,
   listLinearTurnsForItem,
-  bindWorkItemRepository,
   getWorkItemRepository,
   getWorkItemRepositoryAnswer,
-  getWorkItemRepositoryChoice,
-  rememberWorkItemRepositoryChoice,
   saveWorkItemRepositoryQuestion,
   getWorkItem,
   getPullRequestDraft,
@@ -371,8 +378,6 @@ import {
   getLinearSessionContext,
   listLinearActivitySnapshots,
   applyLinearCommand,
-  listRepositoryCatalog,
-  listRepositoryCandidates,
   type Job,
   type JobLoop,
   type JobContext,
@@ -386,7 +391,6 @@ import {
   PULL_REVIEW_CHECK_MAX_WAIT_MS,
   type CloseoutFaults,
   releaseReviewerFaultHolds,
-  reviewerFaultHolds,
   enqueueRunnerSetupCheck,
   holdForRunnerSetup,
   markRunnerSetupNotified,
@@ -10331,15 +10335,15 @@ export class Orchestrator {
         if (!allowed) throw new Error("The selected repository is no longer accessible");
         return true;
       }
-      const catalog = listRepositoryCatalog(this.db).map(({ owner, repo, remoteUrl }) => ({
-        owner,
-        repo,
-        remoteUrl,
-      }));
-      const configured = listRepositoryCandidates(
-        this.db,
-        item.sessionKey,
-        this.options.repositories ?? [],
+      const catalog = (await this.store.run((q) => listRepositoryCatalogSteps(q))).map(
+        ({ owner, repo, remoteUrl }) => ({
+          owner,
+          repo,
+          remoteUrl,
+        }),
+      );
+      const configured = await this.store.run((q) =>
+        listRepositoryCandidatesSteps(q, item.sessionKey, this.options.repositories ?? []),
       );
       const listed = (candidate: RepositoryBinding) =>
         catalog.some((entry) => sameRepository(entry, candidate));
@@ -10354,8 +10358,8 @@ export class Orchestrator {
           candidates.push(candidate);
       }
       if (this.stopped(item.id)) return false;
-      const savedAnswer = getWorkItemRepositoryAnswer(this.db, item.id);
-      const remembered = getWorkItemRepositoryChoice(this.db, item.id);
+      const savedAnswer = await this.store.run((q) => getWorkItemRepositoryAnswerSteps(q, item.id));
+      const remembered = await this.store.run((q) => getWorkItemRepositoryChoiceSteps(q, item.id));
       let selected =
         remembered && candidates.some((candidate) => sameRepository(candidate, remembered))
           ? remembered
@@ -10401,7 +10405,9 @@ export class Orchestrator {
         if (!(await current())) return false;
         if (
           savedAnswer &&
-          !rememberWorkItemRepositoryChoice(this.db, item.id, savedAnswer.questionId, selected)
+          !(await this.store.transaction((q) =>
+            rememberWorkItemRepositoryChoiceSteps(q, item.id, savedAnswer.questionId, selected!),
+          ))
         )
           return false;
         if (auth && !(await auth.ensure(item, "initial", controller.signal))) {
@@ -10414,7 +10420,7 @@ export class Orchestrator {
         controller.signal.throwIfAborted();
         if (this.stopped(item.id)) return false;
         if (accessible) {
-          bindWorkItemRepository(this.db, item.id, selected);
+          await this.store.transaction((q) => bindWorkItemRepositorySteps(q, item.id, selected!));
           if (savedAnswer)
             await this.store.transaction((q) =>
               enqueueOutboxOnceSteps(q, {
@@ -10452,7 +10458,9 @@ export class Orchestrator {
           await this.fail(item, "no_repository", "No configured GitHub repository is accessible.");
           return false;
         }
-        bindWorkItemRepository(this.db, item.id, candidates[0]!);
+        await this.store.transaction((q) =>
+          bindWorkItemRepositorySteps(q, item.id, candidates[0]!),
+        );
         return true;
       }
       const recent = await this.store.run((q) => recentRepositoryNamesSteps(q, 50));
@@ -10566,7 +10574,7 @@ export class Orchestrator {
         controller.signal.throwIfAborted();
         if (!(await current())) return false;
         if (accessible) {
-          bindWorkItemRepository(this.db, item.id, choice.bind);
+          await this.store.transaction((q) => bindWorkItemRepositorySteps(q, item.id, choice.bind));
           // A runner posts its own start line naming the repository.
           if (!this.options.remoteExecution)
             this.post(
