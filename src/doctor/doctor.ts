@@ -7,6 +7,7 @@ import {
   loadEnv,
   pawsPaths,
   type EnvSource,
+  describeOverriddenSections,
   isTailnetUrl,
   type ExeDevTokenStatus,
   type TailscaleAuthKeyStatus,
@@ -114,6 +115,8 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       FIX.repo,
     ),
   );
+  const overridden = facts.overriddenSections ?? [];
+  if (overridden.length > 0) checks.push(overriddenSectionsNote(overridden));
   if (facts.exeDevToken !== undefined) checks.push(exeDevCheck(facts.exeDevToken));
   if (facts.tailscaleAuthKey !== undefined)
     checks.push(tailscaleAuthKeyCheck(facts.tailscaleAuthKey, isTailnetUrl(facts.publicUrl)));
@@ -354,6 +357,10 @@ function tailscaleAuthKeyCheck(status: TailscaleAuthKeyStatus, tailnet: boolean)
         FIX.tailscaleAuthKey,
       );
   }
+}
+
+function overriddenSectionsNote(sections: readonly string[]): DoctorCheck {
+  return note("settings-overrides", describeOverriddenSections(sections));
 }
 
 function note(name: string, detail: string): DoctorCheck {

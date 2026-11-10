@@ -59,6 +59,19 @@ test("doctor reports the local prerequisites and skips webhook checks", () => {
   expect(text).not.toContain("\n  fix:");
 });
 
+test("doctor notes config.toml sections the database overrides, naming them", () => {
+  const ready = probe(true);
+  expect(doctorChecks(ready).find((item) => item.name === "settings-overrides")).toBeUndefined();
+  ready.facts.overriddenSections = ["merge", "queue"];
+  expect(doctorChecks(ready).find((item) => item.name === "settings-overrides")).toEqual({
+    name: "settings-overrides",
+    ok: true,
+    note: true,
+    detail:
+      "config.toml [merge], [queue] are ignored: the Settings page saved these sections to the database, which wins",
+  });
+});
+
 test("doctor reports whether the exe.dev token is present and readable", () => {
   const exeDev = (status: ProbeFacts["exeDevToken"]) => {
     const ready = probe(true);

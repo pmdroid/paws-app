@@ -50,6 +50,20 @@ export function updateConfigText(configPath: string, change: (current: string) =
   });
 }
 
+export function overriddenConfigSections(configPath: string): string[] {
+  if (storedSettings(configPath) === null) return [];
+  const sections = new Set<string>();
+  splitSections(readFileText(configPath), (settings, heading) => {
+    if (settings && heading !== undefined) sections.add(heading);
+    return false;
+  });
+  return [...sections];
+}
+
+export function describeOverriddenSections(sections: readonly string[]): string {
+  return `config.toml ${sections.map((name) => `[${name}]`).join(", ")} ${sections.length === 1 ? "is" : "are"} ignored: the Settings page saved ${sections.length === 1 ? "this section" : "these sections"} to the database, which wins`;
+}
+
 function replaceConfigText(path: string, next: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const mode = existsSync(path) ? statSync(path).mode & 0o600 : 0o600;
@@ -89,7 +103,10 @@ function isSettingsSection(section: string): boolean {
   );
 }
 
-function splitSections(text: string, keep: (settings: boolean) => boolean): string {
+function splitSections(
+  text: string,
+  keep: (settings: boolean, heading?: string) => boolean,
+): string {
   let settings = false;
   let open: string | null = null;
   return text
@@ -99,7 +116,7 @@ function splitSections(text: string, keep: (settings: boolean) => boolean): stri
         open === null ? /^\s*\[\[?\s*([^[\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line) : null;
       if (heading?.[1]) settings = isSettingsSection(heading[1]);
       open = openStringAfter(line, open);
-      return keep(settings);
+      return keep(settings, heading?.[1]);
     })
     .join("\n")
     .trim();

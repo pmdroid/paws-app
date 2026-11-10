@@ -78,6 +78,8 @@ import {
   pawsPaths,
   readMergeSettings,
   readQueueSettings,
+  describeOverriddenSections,
+  overriddenConfigSections,
   useSavedSettingsReader,
   useSettingsStore,
   type EnvSource,
@@ -495,6 +497,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     read: () => readSetting(db, CONFIG_SETTINGS_KEY),
     update: (change) => updateSetting(db, CONFIG_SETTINGS_KEY, change),
   });
+  const overriddenSections = overriddenConfigSections(paths.configFile);
+  if (overriddenSections.length > 0) journal(describeOverriddenSections(overriddenSections));
   const reconnectLinear = publicDashboard
     ? createBrowserOnboarding({
         db,
