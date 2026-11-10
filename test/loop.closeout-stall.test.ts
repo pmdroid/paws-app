@@ -276,8 +276,73 @@ test("a reverify waits beside the turn's own Closeout and survives its state cha
     f.db.run("UPDATE job SET run_at=0 WHERE id=?", [jobId]);
     await f.tickReverify();
     expect(listJobs(f.db).find((job) => job.id === jobId)?.status).toBe("done");
+    // The run it waited for accepted the same head, so it starts no second run (PAS-1491).
+    expect(f.gate.runs).toHaveLength(1);
+    expect(getWorkItem(f.db, item.id)?.state).toBe("merge_queue");
+  } finally {
+    f.release();
+    await f.turn;
+    await f.close();
+  }
+}, 90_000);
+
+test("a check run whose lease lapsed keeps its claim, and a reverify waiting on it starts no second run", async () => {
+  const f = await verifyingWithHeldGate({ remote: true });
+  let release!: () => void;
+  try {
+    f.release();
+    await f.turn;
+    await f.restart();
+    const item = listWorkItems(f.db)[0]!;
+    const head = f.gate.runs[0]!.headSha;
+    f.gate.held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // As for PAS-1457: a closeout_fault re-verify runs the check run for the same head.
+    const checkJob = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      payload: { itemId: item.id, reason: "closeout_fault", recheckHead: true },
+      now: Date.now(),
+    });
+    const checking = f.tickReverify();
+    while (f.gate.runs.length < 2) await Bun.sleep(10);
+    const waiter = enqueueJob(f.db, {
+      queue: JOB_KIND.reverify,
+      payload: { itemId: item.id },
+      now: Date.now(),
+    });
+    // The renewal timer fell behind, so the running check job's lease lapsed, twice, across a
+    // claim and a reverify poll.
+    for (let poll = 0; poll < 2; poll++) {
+      f.db.run("UPDATE job SET locked_until = ? WHERE id = ?", [Date.now() - 60_000, checkJob]);
+      f.db.run("UPDATE job SET run_at = 0 WHERE id = ?", [waiter]);
+      await f.tickReverify();
+      expect(listJobs(f.db).find((job) => job.id === checkJob)).toMatchObject({
+        status: "running",
+        attempts: 1,
+      });
+      expect(listJobs(f.db).find((job) => job.id === waiter)).toMatchObject({
+        status: "pending",
+        attempts: 0,
+      });
+    }
+    expect(f.gate.runs).toHaveLength(2);
+
+    release();
+    await checking;
+    expect(listJobs(f.db).find((job) => job.id === checkJob)).toMatchObject({
+      status: "done",
+      lastError: null,
+    });
+    expect(getWorkItem(f.db, item.id)).toMatchObject({ state: "merge_queue", acceptedHead: head });
+    expect(closeoutFaultJobs(f.db).filter((job) => job.id !== checkJob)).toEqual([]);
+
+    f.db.run("UPDATE job SET run_at = 0 WHERE id = ?", [waiter]);
+    await f.tickReverify();
+    expect(listJobs(f.db).find((job) => job.id === waiter)?.status).toBe("done");
     expect(f.gate.runs).toHaveLength(2);
   } finally {
+    release?.();
     f.release();
     await f.turn;
     await f.close();

@@ -5161,10 +5161,31 @@ export class Orchestrator {
           ...payload,
           verificationWaitSince: since,
           verificationWaitRunId: current.currentRunId,
+          // The accepted head when the wait began, kept across polls (PAS-1491).
+          verificationWaitAccepted:
+            "verificationWaitAccepted" in payload
+              ? payload.verificationWaitAccepted
+              : current.acceptedHead,
         },
         attempts: job.attempts - 1,
         now: this.now(),
       }),
+    );
+  }
+
+  /**
+   * The check run this re-verify parked behind accepted `head`, so it needs no second run
+   * (PAS-1491). A head that was already accepted when the wait began still runs, and so does a
+   * decide request.
+   */
+  private acceptedWhileWaiting(payload: unknown, item: WorkItemRecord, head: string): boolean {
+    const record = payload as Record<string, unknown>;
+    return (
+      readBoolean(payload, "decide") !== true &&
+      "verificationWaitAccepted" in record &&
+      head !== "" &&
+      item.acceptedHead === head &&
+      record.verificationWaitAccepted !== head
     );
   }
 
@@ -5250,6 +5271,12 @@ export class Orchestrator {
       return;
     }
     if (item.state !== "verifying" && item.state !== "merge_queue") return;
+    if (this.acceptedWhileWaiting(payload, item, head)) {
+      this.options.journal?.(
+        `reverify job ${jobId} for item ${itemId} ends: the check run it waited for accepted ${head}`,
+      );
+      return;
+    }
     const candidate = await this.candidateForItem(item);
     if (!candidate) return;
     await this.evaluateHead(item, worktree, base, head, candidate, {

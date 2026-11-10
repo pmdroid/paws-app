@@ -97,6 +97,12 @@ export function* cancelUnhandledJobSteps(q: Q, claimed: Job, reason: string, now
 export class JobLoop {
   private readonly handlers = new Map<string, JobHandler>();
   private readonly inflight = new Set<Promise<void>>();
+  /**
+   * Renews the lease of each job this loop is still running. A lease that lapsed while the
+   * process was busy (event-loop lag) let the next claim take the running job again, and that
+   * second activation ended the first one's claim (PAS-1491).
+   */
+  private readonly renewals = new Map<number, () => boolean>();
   private readonly wakers = new Set<() => void>();
   private anyInFlight = 0;
   private controlInFlight = 0;
@@ -249,6 +255,13 @@ export class JobLoop {
     notesClaim: boolean,
   ): Promise<{ job: Job; done: Promise<void> } | null> {
     const now = this.clock.now();
+    // Renewed after `now`, so a claim at `now` cannot see a job of this loop as expired.
+    for (const [id, renew] of [...this.renewals])
+      try {
+        renew();
+      } catch (error) {
+        journalCaught(error, "loop.tick.renewLease", null, `job ${id}`);
+      }
     // claimNextJob used to sit outside the handler try. A locked or closed database rejected
     // the claimer permanently; the process kept serving HTTP and renewed nothing. The job
     // already claimed by another slot keeps its lease and its handler.
@@ -322,6 +335,8 @@ export class JobLoop {
       Math.max(1, Math.min(10_000, leaseMs / 3)),
     );
     renewal.unref?.();
+    const renew = () => context.extendLease();
+    this.renewals.set(job.id, renew);
     try {
       await trackHostOperation(`job:${job.queue}`, () => handler(job, context));
       if (await stillCurrent()) {
@@ -338,6 +353,7 @@ export class JobLoop {
       }
     } finally {
       clearInterval(renewal);
+      if (this.renewals.get(job.id) === renew) this.renewals.delete(job.id);
     }
   }
 
