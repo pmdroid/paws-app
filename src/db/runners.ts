@@ -17,7 +17,7 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
 import { jsonField } from "./json-text";
 import { auditWorkspaceAccessSteps, workspaceMemberUsableWhere } from "./workspace";
 import { endRevokedRunnerAuthoritySteps, runnerLeaseCutoff } from "./runner-lease";
@@ -800,6 +800,15 @@ type RunnerStatusUpdate = {
 export function updateRunnerStatus(db: Database, input: RunnerStatusUpdate): string[] {
   const fingerprints = settled(sqliteDb(db).transaction((q) => updateRunnerStatusSteps(q, input)));
   if (input.status === "active") emitJobReady(db);
+  return fingerprints;
+}
+
+export async function updateRunnerStatusAsync(
+  store: Db,
+  input: RunnerStatusUpdate,
+): Promise<string[]> {
+  const fingerprints = await store.transaction((q) => updateRunnerStatusSteps(q, input));
+  if (input.status === "active") emitJobReady(store);
   return fingerprints;
 }
 

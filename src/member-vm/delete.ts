@@ -1,10 +1,11 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
-  auditWorkspaceAccess,
-  immediate,
-  parkLeasedJob,
-  updateRunnerStatus,
+  auditWorkspaceAccessSteps,
+  parkLeasedJobSteps,
+  sqliteDb,
+  updateRunnerStatusAsync,
+  type Db,
   type Job,
   type JobContext,
   type JobLoop,
@@ -45,15 +46,16 @@ export function registerMemberVmDeleteJob(jobs: JobLoop, options: MemberVmDelete
 }
 
 export function createMemberVmDeleteHandler(db: Database, options: MemberVmDeleteJobOptions) {
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const pollMs = options.pollMs ?? MEMBER_VM_DELETE_POLL_MS;
   return async (job: Job, context: JobContext): Promise<void> => {
     const id = memberVmId(job.payload);
-    const row = id === null ? null : getMemberVm(db, id);
+    const row = id === null ? null : await getMemberVm(db, id);
     if (row === null || row.deleteStep === null || row.deleteFailure !== null) return;
     let outcome: Outcome;
     try {
-      outcome = await runDeleteStep(db, row, options, now);
+      outcome = await runDeleteStep(db, store, row, options, now);
     } catch (error) {
       if (error instanceof StepMoved || !context.isCurrent()) return;
       const secrets = await Promise.resolve()
@@ -75,17 +77,20 @@ export function createMemberVmDeleteHandler(db: Database, options: MemberVmDelet
     }
     if (outcome === "done" || !context.isCurrent()) return;
     const at = now();
-    parkLeasedJob(db, job, {
-      runAt: outcome === "wait" ? at + pollMs : at,
-      payload: job.payload,
-      attempts: job.attempts - 1,
-      now: at,
-    });
+    await store.run((q) =>
+      parkLeasedJobSteps(q, job, {
+        runAt: outcome === "wait" ? at + pollMs : at,
+        payload: job.payload,
+        attempts: job.attempts - 1,
+        now: at,
+      }),
+    );
   };
 }
 
 async function runDeleteStep(
   db: Database,
+  store: Db,
   row: MemberVm,
   options: MemberVmDeleteJobOptions,
   now: () => number,
@@ -106,7 +111,7 @@ async function runDeleteStep(
       const runners = vmRunners(db, row);
       for (const runner of runners)
         if (runner.status !== "draining")
-          updateRunnerStatus(db, {
+          await updateRunnerStatusAsync(store, {
             runnerId: runner.id,
             workspaceId: runner.workspaceId,
             userId: actor,
@@ -136,13 +141,15 @@ async function runDeleteStep(
       for (const task of tasks) {
         if (stopRequested(db, task.itemId)) continue;
         await options.stopTask(task.itemId);
-        auditWorkspaceAccess(db, {
-          workspaceId: row.workspaceId,
-          userId: actor,
-          action: "member_vm.delete.stop_task",
-          subject: task.itemId,
-          now: now(),
-        });
+        await store.run((q) =>
+          auditWorkspaceAccessSteps(q, {
+            workspaceId: row.workspaceId,
+            userId: actor,
+            action: "member_vm.delete.stop_task",
+            subject: task.itemId,
+            now: now(),
+          }),
+        );
       }
       advance(db, row, "tailnet", now());
       return "advance";
@@ -166,7 +173,7 @@ async function runDeleteStep(
     case "revoke": {
       revokeUnusedEnrollments(db, row);
       for (const runner of vmRunners(db, row)) {
-        const fingerprints = updateRunnerStatus(db, {
+        const fingerprints = await updateRunnerStatusAsync(store, {
           runnerId: runner.id,
           workspaceId: runner.workspaceId,
           userId: actor,
@@ -201,7 +208,7 @@ async function runDeleteStep(
     }
 
     case "clear": {
-      immediate(db, () => {
+      await store.transaction(function* (q) {
         const at = now();
         db.run(
           `UPDATE job SET status='cancelled',finished_at=?,locked_by=NULL,locked_until=NULL,
@@ -215,7 +222,7 @@ async function runDeleteStep(
         ).changes;
         if (removed !== 1) throw new StepMoved();
         db.run("DELETE FROM member_vm_enrollment WHERE member_vm_id=?", [row.id]);
-        auditWorkspaceAccess(db, {
+        yield* auditWorkspaceAccessSteps(q, {
           workspaceId: row.workspaceId,
           userId: actor,
           action: "member_vm.deleted",
