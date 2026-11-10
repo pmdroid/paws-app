@@ -1646,7 +1646,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 .allowed
             )
               return deny(teamMemberDenial(db, item));
-            const repositoryDenial = teamRepositoryDenial(
+            const repositoryDenial = await teamRepositoryDenial(
               db,
               item,
               { workspaceId: currentWorkspace.id, teamId: session.teamId },

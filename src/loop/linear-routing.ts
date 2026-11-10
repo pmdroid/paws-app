@@ -1,8 +1,8 @@
-import type { Database } from "bun:sqlite";
 import {
-  delegationParentTaskKey,
+  delegationParentTaskKeySteps,
   ensureLinearSessionSteps,
-  workItemForSession,
+  workItemForSessionSteps,
+  type Db,
   type Q,
   type Steps,
   type StoredLinearSession,
@@ -52,11 +52,12 @@ export function linearSessionCreatorId(event: AcceptedLinearEvent): string | nul
       : null;
 }
 
-export function sessionTaskKey(db: Database, session: StoredLinearSession): string {
+export async function sessionTaskKey(store: Db, session: StoredLinearSession): Promise<string> {
   const delegationId =
-    workItemForSession(db, session.sessionId)?.delegationId ?? session.delegationId;
+    (await store.run((q) => workItemForSessionSteps(q, session.sessionId)))?.delegationId ??
+    session.delegationId;
   if (delegationId) {
-    const taskKey = delegationParentTaskKey(db, delegationId);
+    const taskKey = await store.run((q) => delegationParentTaskKeySteps(q, delegationId));
     if (taskKey) return taskKey;
   }
   return `session:${session.sessionId}`;

@@ -1125,7 +1125,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
       publicUrl: PUBLIC_URL,
     });
     try {
-      display.remember(f.itemId, heads.s, {
+      await display.remember(f.itemId, heads.s, {
         ...display.inputs(),
         policyDigest: "policy",
         policyPaths: ["tools/rules.ts"],
@@ -1195,7 +1195,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
   });
 }
 
-test("a corrupt risk row cannot prevent the sole pull-request response", () => {
+test("a corrupt risk row cannot prevent the sole pull-request response", async () => {
   const f = cleanRiskFixture();
   const display = new RiskDisplayReader({
     db: f.db,
@@ -1204,7 +1204,7 @@ test("a corrupt risk row cannot prevent the sole pull-request response", () => {
     readSettings: () => ({ autoApproveHighRisk: true, repositories: {} }),
   });
   try {
-    display.remember(f.itemId, heads.s, {
+    await display.remember(f.itemId, heads.s, {
       ...display.inputs(),
       policyDigest: "policy",
       policyPaths: [],

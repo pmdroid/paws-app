@@ -119,7 +119,7 @@ test("one elicitation without options names the recurring bug class and links to
     },
   ]);
   // Nobody answered yet, so no new round budget.
-  expect(recoveryOptions(db, itemId).retryBaseline).toEqual([]);
+  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual([]);
 });
 
 test("the question lists the open findings' text without changing the dashboard detail", async () => {
@@ -156,7 +156,7 @@ test("Rethink the approach restarts the item with the findings, the note and a n
   expect(body).toContain("(most are unchecked null)");
   expect(body).toContain("Note from the person: Validate the session once at the boundary.");
   expect(body).toContain(ROUNDS.handoff);
-  expect(recoveryOptions(db, itemId).retryBaseline).toEqual(BASELINE);
+  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
   expect(
     db
       .query("SELECT action FROM workspace_access_audit")
@@ -195,7 +195,7 @@ test("Keep going restarts the item with four more rounds", async () => {
   ).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(handoff(db)).toContain("A person allowed 4 more review rounds: fix the open findings.");
-  expect(recoveryOptions(db, itemId).retryBaseline).toEqual(BASELINE);
+  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
   const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-decided:"));
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     "Lea allowed 4 more review rounds in Paws.",
@@ -282,7 +282,7 @@ test("a reply in Linear is Rethink the approach with the reply as the note", asy
     "Note from the person: Stop patching; move the check into the middleware.",
   );
   expect(body).toContain(ROUNDS.handoff);
-  expect(recoveryOptions(db, itemId).retryBaseline).toEqual(BASELINE);
+  expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
   const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-guidance:"));
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     "Sent your reply to the agent: it rethinks the approach with the open findings and a new round budget.",

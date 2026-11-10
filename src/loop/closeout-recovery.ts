@@ -1,9 +1,10 @@
 import type { Database } from "bun:sqlite";
 import {
-  getLinkAsk,
-  humanRetryBaseline,
-  listCloseoutBypassChecks,
-  listCloseoutRecoveries,
+  getLinkAskSteps,
+  humanRetryBaselineSteps,
+  listCloseoutBypassChecksSteps,
+  listCloseoutRecoveriesSteps,
+  sqliteDb,
   type CloseoutRecovery,
 } from "../db";
 import type { CloseoutBypass } from "../closeout";
@@ -26,15 +27,16 @@ export function retriesCloseout(question: Pick<StoredQuestion, "options" | "answ
 /** A reply that tries to bypass a check, such as `/paws bypass lint -- reason`. It is guidance now. */
 export const BYPASS_REPLY = /^\s*\/?(?:paws\s+)?bypass\b/i;
 
-export function recoveryOptions(
+export async function recoveryOptions(
   db: Database,
   itemId: string,
-): { retryBaseline: readonly string[]; bypasses: CloseoutBypass[] } {
-  const retryBaseline = new Set<string>(humanRetryBaseline(db, itemId));
+): Promise<{ retryBaseline: readonly string[]; bypasses: CloseoutBypass[] }> {
+  const store = sqliteDb(db);
+  const retryBaseline = new Set<string>(await store.run((q) => humanRetryBaselineSteps(q, itemId)));
   const bypasses: CloseoutBypass[] = [];
   // Only a person authorizes fresh check attempts or a bypass. Rebases retain failures.
-  for (const recovery of listCloseoutRecoveries(db, itemId)) {
-    const linkAsk = getLinkAsk(db, recovery.questionId);
+  for (const recovery of await store.run((q) => listCloseoutRecoveriesSteps(q, itemId))) {
+    const linkAsk = await store.run((q) => getLinkAskSteps(q, recovery.questionId));
     if (linkAsk === null) {
       // A reply in Linear is guidance, whatever it says. It never bypasses a check.
       const question = recovery.answer === null ? null : getQuestion(db, recovery.questionId);
@@ -52,7 +54,9 @@ export function recoveryOptions(
       for (const key of recovery.retryBaseline) retryBaseline.add(key);
     if (linkAsk.decision !== "approve") continue;
     // Bypasses are approved on the item page, one reason per check.
-    for (const check of listCloseoutBypassChecks(db, recovery.questionId))
+    for (const check of await store.run((q) =>
+      listCloseoutBypassChecksSteps(q, recovery.questionId),
+    ))
       if (check.approvedBy !== null && check.reason !== null)
         bypasses.push({
           questionId: recovery.questionId,

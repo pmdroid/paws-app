@@ -2,9 +2,9 @@ import type { Database } from "bun:sqlite";
 import {
   markReviewReplyPostedSteps,
   recordReviewReplies,
-  reportReviewReplies,
+  reportReviewRepliesSteps,
   unpostedReviewRepliesSteps,
-  unreportedReviewReplies,
+  unreportedReviewRepliesSteps,
   type Db,
   type NewReviewReply,
   type PullCommentRecord,
@@ -179,14 +179,16 @@ export function parseFindingDecisions(
  * Store the fix turn's replies for the item's handed-off comments. Does nothing when no comments
  * wait for a report. The number stored.
  */
-export function recordAgentReviewReplies(
-  db: Database,
+export async function recordAgentReviewReplies(
+  store: Db,
   itemId: string,
   finalMessage: string,
   now: number,
-): number {
-  if (unreportedReviewReplies(db, itemId).length === 0) return 0;
-  return reportReviewReplies(db, itemId, parseReviewReplies(finalMessage), now);
+): Promise<number> {
+  if ((await store.run((q) => unreportedReviewRepliesSteps(q, itemId))).length === 0) return 0;
+  return await store.run((q) =>
+    reportReviewRepliesSteps(q, itemId, parseReviewReplies(finalMessage), now),
+  );
 }
 
 export type ReviewReplyGitHub = {

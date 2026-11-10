@@ -762,7 +762,9 @@ function teamRepositoryIntegration(db: ReturnType<typeof tempDb>) {
       const repository =
         getWorkItemRepository(db, item.id) ?? getWorkItemRepositoryChoice(db, item.id);
       const decision =
-        scope && repository ? (teamRepositoryDenial(db, item, scope, repository) ?? true) : false;
+        scope && repository
+          ? ((await teamRepositoryDenial(db, item, scope, repository)) ?? true)
+          : false;
       decisions.push(decision);
       return decision;
     },

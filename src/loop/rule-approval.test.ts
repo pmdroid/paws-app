@@ -153,7 +153,7 @@ test("Approve records who and why and verifies the same head again", async () =>
     approvedAt: NOW + 100,
   });
   // Bound to the task, base, head and policy; applyBypasses passes it for that head only.
-  expect(recoveryOptions(db, itemId).bypasses).toEqual([
+  expect((await recoveryOptions(db, itemId)).bypasses).toEqual([
     {
       questionId: question.id,
       taskId: "PAS-633",
@@ -206,7 +206,7 @@ test("Approve needs a reason and a person who may decide", async () => {
   ).toBe("forbidden");
   expect(getQuestion(db, question.id)?.status).toBe("open");
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-  expect(recoveryOptions(db, itemId).bypasses).toEqual([]);
+  expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
 });
 
 test("Send back restarts the agent with the finding", async () => {
@@ -233,7 +233,10 @@ test("Send back restarts the agent with the finding", async () => {
   expect(handoff).toContain("removed field Task.title");
   expect(handoff).toContain("api-contract (rule): failed");
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
-  expect(recoveryOptions(db, itemId)).toEqual({ retryBaseline: ["api-contract:1"], bypasses: [] });
+  expect(await recoveryOptions(db, itemId)).toEqual({
+    retryBaseline: ["api-contract:1"],
+    bypasses: [],
+  });
 });
 
 test("a reply in Linear sends the finding back and approves nothing", async () => {
@@ -256,7 +259,7 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
   expect(handoff).toContain("The reply is guidance and approves nothing");
   expect(handoff).toContain("removed field Task.title");
   expect(listCloseoutBypassChecks(db, question.id)[0]?.approvedAt).toBeNull();
-  expect(recoveryOptions(db, itemId).bypasses).toEqual([]);
+  expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
   const notes = listOutbox(db).filter((row) => row.idempotencyKey.startsWith("link-ask-guidance:"));
   expect(notes.map((row) => (row.payload as { body: string }).body)).toEqual([
     `${RULE_REPLY_NOTE} ${LINK}`,
