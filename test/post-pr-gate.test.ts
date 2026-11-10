@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import { FakeClock } from "../src/core";
-import { advanceLinearSessionGeneration, enqueueOutbox, OutboxDispatcher } from "../src/db";
+import {
+  advanceLinearSessionGeneration,
+  enqueueOutbox,
+  OutboxDispatcher,
+  sqliteDb,
+} from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { createLinearSessionProgress, deliverLinearOutbox } from "../src/loop";
 import { tempDb } from "./helpers";
@@ -48,7 +53,7 @@ test("a CI send-back in a later generation of an open pull request posts no prog
   const { db, tracker, flush, post } = harness();
   post(`pull-request-ready:${ITEM}:0`, "response", true);
   await flush();
-  advanceLinearSessionGeneration(db, "session");
+  await advanceLinearSessionGeneration(sqliteDb(db), "session");
   for (const key of PROGRESS) post(key, "thought");
   post("pull-feedback:restart:ci:1", "thought");
   post("merge-conflict:1:e51458c", "thought");
@@ -66,7 +71,7 @@ test("progress opens again in a later generation once the pull request merged", 
   post(`pull-request-ready:${ITEM}:0`, "response", true);
   post(`merged:${ITEM}:0`, "response", true);
   await flush();
-  advanceLinearSessionGeneration(db, "session");
+  await advanceLinearSessionGeneration(sqliteDb(db), "session");
   post(`update:${ITEM}:${RUN}:2:1`, "thought");
   await flush();
   expect(tracker.progress.at(-1)?.body).toBe(`update:${ITEM}:${RUN}:2:1`);

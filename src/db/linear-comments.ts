@@ -63,8 +63,11 @@ export function* getLinearCommentSteps(q: Q, commentId: string): Steps<LinearCom
   return row === undefined ? null : mapRow(row);
 }
 
-export function getLinearComment(db: Database, commentId: string): LinearCommentRecord | null {
-  return settled(sqliteDb(db).run((q) => getLinearCommentSteps(q, commentId)));
+export async function getLinearComment(
+  store: Db,
+  commentId: string,
+): Promise<LinearCommentRecord | null> {
+  return store.run((q) => getLinearCommentSteps(q, commentId));
 }
 
 type RecordedLinearComment = { record: LinearCommentRecord; change: LinearCommentChange };
@@ -138,12 +141,12 @@ export function* recordLinearCommentSteps(
   };
 }
 
-export function recordLinearComment(
-  db: Database,
+export async function recordLinearComment(
+  store: Db,
   receipt: LinearCommentReceipt,
   now: number,
-): RecordedLinearComment {
-  return settled(sqliteDb(db).transaction((q) => recordLinearCommentSteps(q, receipt, now)));
+): Promise<RecordedLinearComment> {
+  return store.transaction((q) => recordLinearCommentSteps(q, receipt, now));
 }
 
 type LinearCommentOutcome = {
@@ -176,12 +179,12 @@ export function* settleLinearCommentsSteps(
     );
 }
 
-export function settleLinearComments(
-  db: Database,
+export async function settleLinearComments(
+  store: Db,
   commentIds: readonly string[],
   outcome: LinearCommentOutcome,
-): void {
-  settled(sqliteDb(db).transaction((q) => settleLinearCommentsSteps(q, commentIds, outcome)));
+): Promise<void> {
+  await store.transaction((q) => settleLinearCommentsSteps(q, commentIds, outcome));
 }
 
 type LinearCommentRoute = {
@@ -215,12 +218,12 @@ export function* queueLinearCommentSteps(
   return queued.length > 0;
 }
 
-export function queueLinearComment(
-  db: Database,
+export async function queueLinearComment(
+  store: Db,
   commentId: string,
   route: LinearCommentRoute,
-): boolean {
-  return settled(sqliteDb(db).run((q) => queueLinearCommentSteps(q, commentId, route)));
+): Promise<boolean> {
+  return store.run((q) => queueLinearCommentSteps(q, commentId, route));
 }
 
 type LinearCommentDelivery = { via: LinearCommentVia; itemVersion: number; now: number };
@@ -245,14 +248,12 @@ export function* markLinearCommentsDeliveredSteps(
     );
 }
 
-export function markLinearCommentsDelivered(
-  db: Database,
+export async function markLinearCommentsDelivered(
+  store: Db,
   commentIds: readonly string[],
   delivery: LinearCommentDelivery,
-): void {
-  settled(
-    sqliteDb(db).transaction((q) => markLinearCommentsDeliveredSteps(q, commentIds, delivery)),
-  );
+): Promise<void> {
+  await store.transaction((q) => markLinearCommentsDeliveredSteps(q, commentIds, delivery));
 }
 
 export function* receivedLinearCommentsSteps(q: Q): Steps<LinearCommentRecord[]> {
@@ -267,8 +268,8 @@ export function* receivedLinearCommentsSteps(q: Q): Steps<LinearCommentRecord[]>
   return rows.map(mapRow);
 }
 
-export function receivedLinearComments(db: Database): LinearCommentRecord[] {
-  return settled(sqliteDb(db).run(receivedLinearCommentsSteps));
+export async function receivedLinearComments(store: Db): Promise<LinearCommentRecord[]> {
+  return store.run((q) => receivedLinearCommentsSteps(q));
 }
 
 export function* pendingLinearCommentsSteps(q: Q, itemId: string): Steps<LinearCommentRecord[]> {
@@ -304,8 +305,8 @@ export function* queuedLinearCommentItemIdsSteps(q: Q, issueId: string): Steps<s
   return rows.map((row) => row.itemId!);
 }
 
-export function queuedLinearCommentItemIds(db: Database, issueId: string): string[] {
-  return settled(sqliteDb(db).run((q) => queuedLinearCommentItemIdsSteps(q, issueId)));
+export async function queuedLinearCommentItemIds(store: Db, issueId: string): Promise<string[]> {
+  return store.run((q) => queuedLinearCommentItemIdsSteps(q, issueId));
 }
 
 export function* linearCommentAuthorSteps(q: Q, commentId: string): Steps<string | null> {
@@ -319,8 +320,8 @@ export function* linearCommentAuthorSteps(q: Q, commentId: string): Steps<string
   return row?.authorId ?? null;
 }
 
-export function linearCommentAuthor(db: Database, commentId: string): string | null {
-  return settled(sqliteDb(db).run((q) => linearCommentAuthorSteps(q, commentId)));
+export async function linearCommentAuthor(store: Db, commentId: string): Promise<string | null> {
+  return store.run((q) => linearCommentAuthorSteps(q, commentId));
 }
 
 export function* gatherLinearCommentsSteps(
@@ -365,20 +366,7 @@ export function* gatherLinearCommentsSteps(
   return inserted;
 }
 
-export function gatherLinearComments(
-  db: Database,
-  itemId: string,
-  receivedAt: number,
-  wait: PullFeedbackWait,
-  jobKey: string,
-): void {
-  const inserted = settled(
-    sqliteDb(db).transaction((q) => gatherLinearCommentsSteps(q, itemId, receivedAt, wait, jobKey)),
-  );
-  if (inserted) emitJobReady(db);
-}
-
-export async function gatherLinearCommentsAsync(
+export async function gatherLinearComments(
   store: Db,
   itemId: string,
   receivedAt: number,
@@ -449,10 +437,10 @@ export function* commentOpenedAgentSessionSteps(q: Q, issueId: string, commentId
   return row !== undefined;
 }
 
-export function commentOpenedAgentSession(
-  db: Database,
+export async function commentOpenedAgentSession(
+  store: Db,
   issueId: string,
   commentId: string,
-): boolean {
-  return settled(sqliteDb(db).run((q) => commentOpenedAgentSessionSteps(q, issueId, commentId)));
+): Promise<boolean> {
+  return store.run((q) => commentOpenedAgentSessionSteps(q, issueId, commentId));
 }

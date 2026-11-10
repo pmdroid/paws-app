@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { workItemForSession } from "../src/db";
+import { workItemForSession, sqliteDb } from "../src/db";
 import { tempDb } from "./helpers";
 
-test("workItemForSession prefers the in-flight item over a newer queued or failed sibling", () => {
+test("workItemForSession prefers the in-flight item over a newer queued or failed sibling", async () => {
   const db = tempDb();
   try {
     db.run(
@@ -17,8 +17,8 @@ test("workItemForSession prefers the in-flight item over a newer queued or faile
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('newer-failed','fail-epic','newer-failed','FF','Failed','failed','paws/newer-failed',1,2,'fail-session')",
     );
-    expect(workItemForSession(db, "queue-session")?.id).toBe("older-running");
-    expect(workItemForSession(db, "fail-session")?.id).toBe("older-live");
+    expect((await workItemForSession(sqliteDb(db), "queue-session"))?.id).toBe("older-running");
+    expect((await workItemForSession(sqliteDb(db), "fail-session"))?.id).toBe("older-live");
   } finally {
     db.close();
   }

@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, isNotNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { jsonField } from "./json-text";
 
 export function* linearSessionsForIssueContextSteps(q: Q, issueId: string) {
@@ -20,8 +20,8 @@ export function* linearSessionsForIssueContextSteps(q: Q, issueId: string) {
   return rows.map((row) => row.sessionId).sort();
 }
 
-export function linearSessionsForIssueContext(db: Database, issueId: string): string[] {
-  return settled(sqliteDb(db).run((q) => linearSessionsForIssueContextSteps(q, issueId)));
+export async function linearSessionsForIssueContext(store: Db, issueId: string): Promise<string[]> {
+  return store.run((q) => linearSessionsForIssueContextSteps(q, issueId));
 }
 
 type LinearIssueContextInput = {
@@ -45,8 +45,11 @@ export function* saveLinearIssueContextSteps(q: Q, input: LinearIssueContextInpu
   );
 }
 
-export function saveLinearIssueContext(db: Database, input: LinearIssueContextInput): void {
-  settled(sqliteDb(db).run((q) => saveLinearIssueContextSteps(q, input)));
+export async function saveLinearIssueContext(
+  store: Db,
+  input: LinearIssueContextInput,
+): Promise<void> {
+  await store.run((q) => saveLinearIssueContextSteps(q, input));
 }
 
 export function* getLinearIssueContextSteps(q: Q, sessionId: string) {

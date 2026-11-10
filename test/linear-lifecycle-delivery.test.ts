@@ -9,6 +9,7 @@ import {
   listOutbox,
   openDatabase,
   migrate,
+  sqliteDb,
 } from "../src/db";
 import { attachOrchestrator } from "../src/loop";
 import { createFakeTracker, openLinear, type AcceptedLinearEvent } from "../src/linear";
@@ -196,7 +197,7 @@ test("an old prompted intake failure cannot terminate a newer session generation
   ).catch((error: unknown) => error);
   try {
     await ready.promise;
-    const generation = advanceLinearSessionGeneration(db, "session");
+    const generation = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     release.resolve();
     await old;
     expect(tracker.progress).toEqual([]);

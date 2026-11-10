@@ -75,7 +75,7 @@ test("child notifications refresh only their installation sessions and retain co
     ...notification,
     createdAtMs: 11,
   });
-  advanceLinearSessionGeneration(db, "session");
+  await advanceLinearSessionGeneration(sqliteDb(db), "session");
   pending.resolve({
     id: "child",
     teamId: "team",

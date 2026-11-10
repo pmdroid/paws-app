@@ -4,10 +4,11 @@ import {
   listWorkItemFacts,
   putWorkspaceUser,
   saveWorkItemLinearProject,
+  sqliteDb,
 } from "../src/db";
 import { tempDb } from "./helpers";
 
-test("lists each item's owner, Linear project, and creation time", () => {
+test("lists each item's owner, Linear project, and creation time", async () => {
   const db = tempDb();
   const older = insertQueuedItem(db, { id: "older", title: "Older", now: 10 });
   const newer = insertQueuedItem(db, { id: "newer", title: "Newer", now: 20 });
@@ -22,7 +23,10 @@ test("lists each item's owner, Linear project, and creation time", () => {
     email: "ada@example.test",
   });
   db.run("UPDATE work_item SET owner_user_id = ? WHERE id = ?", [userId, newer.id]);
-  saveWorkItemLinearProject(db, newer.id, { id: "linear-project", name: "Exports" });
+  await saveWorkItemLinearProject(sqliteDb(db), newer.id, {
+    id: "linear-project",
+    name: "Exports",
+  });
   db.run("UPDATE work_item SET owner_user_id = ? WHERE id = ?", [userId, older.id]);
 
   expect(listWorkItemFacts(db)).toEqual([

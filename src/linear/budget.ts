@@ -194,7 +194,7 @@ export function createLinearLedger(
     now?: () => number;
     random?: () => number;
     log?: (line: string) => void;
-    countItem?: (itemId: string, caller: string) => void;
+    countItem?: (itemId: string, caller: string) => void | Promise<void>;
     shared?: LinearSharedBudget;
   } = {},
 ): LinearLedger {
@@ -330,7 +330,7 @@ export function createLinearLedger(
     },
     async observe(caller, seen, item, itemId, operation) {
       record(caller, { requests: 1, complexity: seen.complexity ?? 0 }, item);
-      if (itemId !== undefined) options.countItem?.(itemId, caller);
+      if (itemId !== undefined) await options.countItem?.(itemId, caller);
       const { endpoint, ...limits } = seen;
       if (endpoint !== undefined) {
         endpoints.set(endpoint.name, endpoint);

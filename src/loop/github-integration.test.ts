@@ -13,6 +13,7 @@ import {
   migrate,
   openDatabase,
   saveCheckpoint,
+  sqliteDb,
 } from "../db";
 import { LinearRateLimitError } from "../linear";
 import { getQuestion } from "../questions";
@@ -178,7 +179,8 @@ for (const invalidation of [
       if (invalidation === "membership") f.deny();
       if (invalidation === "stop")
         f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [item.id]);
-      if (invalidation === "generation") advanceLinearSessionGeneration(f.db, item.sessionKey!);
+      if (invalidation === "generation")
+        await advanceLinearSessionGeneration(sqliteDb(f.db), item.sessionKey!);
       if (invalidation === "candidate") f.supersede();
       if (invalidation === "checkpoint")
         saveCheckpoint(f.db, item.id, {

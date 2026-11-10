@@ -25,6 +25,7 @@ import {
   recordLinearTurn,
   recordRunnerHostStatus,
   runnerTaskSlots,
+  sqliteDb,
 } from "../src/db";
 import type { AcceptedLinearEvent } from "../src/linear";
 import {
@@ -188,8 +189,8 @@ function setup(options: { version?: string; conversations?: number } = {}) {
       expect(await orchestrator.onLinearEvent(comment(itemId, id, body))).toBe(true);
     },
     deliver: (itemId: string) => deliverLinearComments(db, itemId, caps()),
-    turn: (session: string, key: string, body: string) =>
-      recordLinearTurn(db, {
+    turn: async (session: string, key: string, body: string) =>
+      await recordLinearTurn(sqliteDb(db), {
         eventKey: key,
         activityId: null,
         sessionId: session,
@@ -200,7 +201,7 @@ function setup(options: { version?: string; conversations?: number } = {}) {
         now: clock.now(),
       }),
     reply: async (session: string, body: string) => {
-      recordLinearTurn(db, {
+      await recordLinearTurn(sqliteDb(db), {
         eventKey: `turn:${session}:1`,
         activityId: null,
         sessionId: session,
@@ -270,7 +271,7 @@ test("with every work slot busy, a message on an idle item starts a conversation
   expect(f.taskSlots()).toEqual(slots);
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
   expect(f.resumes()).toEqual([]);
-  expect(getLinearComment(f.db, "c-1")!.state).toBe("delivered");
+  expect((await getLinearComment(sqliteDb(f.db), "c-1"))!.state).toBe("delivered");
 
   await f.answer(started!.id, {
     text: "Done.",
@@ -320,7 +321,7 @@ test("three messages on three items with a conversation limit of 2: two run and 
     "acme-1",
     "acme-2",
   ]);
-  expect(getLinearComment(f.db, "c-acme-3")!.state).toBe("queued");
+  expect((await getLinearComment(sqliteDb(f.db), "c-acme-3"))!.state).toBe("queued");
   expect(f.resumes()).toEqual([]);
 
   await f.answer((await f.conversations())[0]!.id, { text: "acme-1 renames the flag." });
@@ -420,8 +421,8 @@ test("a queued item's start job waits while a conversation runs on its session",
 test("session replies past the prompt budget wait for the next conversation", async () => {
   const f = setup();
   const acme = f.item("acme-1");
-  f.turn(acme.session, "turn-1", `First: ${"a".repeat(40_000)}`);
-  f.turn(acme.session, "turn-2", `Second: ${"b".repeat(40_000)}`);
+  await f.turn(acme.session, "turn-1", `First: ${"a".repeat(40_000)}`);
+  await f.turn(acme.session, "turn-2", `Second: ${"b".repeat(40_000)}`);
   expect(await f.deliver("acme-1")).toBe("wait");
   const [first] = await f.conversations();
   expect(first!.command.prompt).toContain("First:");

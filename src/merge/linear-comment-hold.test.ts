@@ -31,7 +31,11 @@ test("a queued Linear comment holds the merge until it is handed over or settled
     message: "A comment on the Linear issue goes to the agent before this pull request merges.",
   });
   expect(db.query("SELECT count(*) AS n FROM job").get()).toEqual({ n: 0 });
-  settleLinearComments(db, ["c-1"], { state: "ignored", reason: "superseded", now: 20 });
+  await settleLinearComments(sqliteDb(db), ["c-1"], {
+    state: "ignored",
+    reason: "superseded",
+    now: 20,
+  });
   expect(await reviewHold(store, "eng-1", 30, WAIT)).toBeNull();
   db.close();
 });

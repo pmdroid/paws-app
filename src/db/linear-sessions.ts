@@ -299,8 +299,11 @@ export function* workItemForSessionSteps(q: Q, sessionId: string): Steps<Session
   return row ?? null;
 }
 
-export function workItemForSession(db: Database, sessionId: string): SessionWorkItem | null {
-  return settled(sqliteDb(db).run((q) => workItemForSessionSteps(q, sessionId)));
+export async function workItemForSession(
+  store: Db,
+  sessionId: string,
+): Promise<SessionWorkItem | null> {
+  return store.run((q) => workItemForSessionSteps(q, sessionId));
 }
 
 /** The delegator rule shared by item reads and bulk access revocation. Aliases are internal SQL. */
@@ -382,8 +385,11 @@ export function* recordLinearTurnSteps(q: Q, input: LinearTurnInput): Steps<Stor
   return mapTurn(row);
 }
 
-export function recordLinearTurn(db: Database, input: LinearTurnInput): StoredLinearTurn {
-  return settled(sqliteDb(db).transaction((q) => recordLinearTurnSteps(q, input)));
+export async function recordLinearTurn(
+  store: Db,
+  input: LinearTurnInput,
+): Promise<StoredLinearTurn> {
+  return store.transaction((q) => recordLinearTurnSteps(q, input));
 }
 
 export function* listPendingLinearTurnsSteps(q: Q, sessionId: string): Steps<StoredLinearTurn[]> {
@@ -488,17 +494,7 @@ export function* advanceLinearSessionGenerationSteps(
   return generation;
 }
 
-export function advanceLinearSessionGeneration(
-  db: Database,
-  sessionId: string,
-  options: { stop?: boolean; now?: number } = {},
-): number {
-  return settled(
-    sqliteDb(db).transaction((q) => advanceLinearSessionGenerationSteps(q, sessionId, options)),
-  );
-}
-
-export async function advanceLinearSessionGenerationAsync(
+export async function advanceLinearSessionGeneration(
   store: Db,
   sessionId: string,
   options: { stop?: boolean; now?: number } = {},
@@ -558,15 +554,13 @@ export function* getLinearTurnGenerationSteps(
   return row?.announcedGeneration ?? null;
 }
 
-export function getLinearTurnGeneration(
-  db: Database,
+export async function getLinearTurnGeneration(
+  store: Db,
   sessionId: string,
   eventKey: string,
   activityId: string | null,
-): number | null {
-  return settled(
-    sqliteDb(db).run((q) => getLinearTurnGenerationSteps(q, sessionId, eventKey, activityId)),
-  );
+): Promise<number | null> {
+  return store.run((q) => getLinearTurnGenerationSteps(q, sessionId, eventKey, activityId));
 }
 
 export function* announceLinearTurnSteps(
@@ -667,12 +661,12 @@ export function* discardLinearTurnsSteps(
     );
 }
 
-export function discardLinearTurns(
-  db: Database,
+export async function discardLinearTurns(
+  store: Db,
   sessionId: string,
   eventKeys: readonly string[],
-): void {
-  settled(sqliteDb(db).transaction((q) => discardLinearTurnsSteps(q, sessionId, eventKeys)));
+): Promise<void> {
+  await store.transaction((q) => discardLinearTurnsSteps(q, sessionId, eventKeys));
 }
 
 export function* acceptLinearStopSteps(
@@ -707,18 +701,7 @@ export function* acceptLinearStopSteps(
   return generation;
 }
 
-export function acceptLinearStop(
-  db: Database,
-  sessionId: string,
-  eventKey: string,
-  now: number,
-): number | null {
-  return settled(
-    sqliteDb(db).transaction((q) => acceptLinearStopSteps(q, sessionId, eventKey, now)),
-  );
-}
-
-export async function acceptLinearStopAsync(
+export async function acceptLinearStop(
   store: Db,
   sessionId: string,
   eventKey: string,
@@ -747,8 +730,12 @@ export function* releaseIdleSessionItemSteps(q: Q, itemId: string, now: number):
   );
 }
 
-export function releaseIdleSessionItem(db: Database, itemId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => releaseIdleSessionItemSteps(q, itemId, now)));
+export async function releaseIdleSessionItem(
+  store: Db,
+  itemId: string,
+  now: number,
+): Promise<void> {
+  await store.run((q) => releaseIdleSessionItemSteps(q, itemId, now));
 }
 
 export function* linearSessionClientIdSteps(q: Q, sessionId: string): Steps<string | null> {
@@ -782,12 +769,12 @@ export function* linearSessionInWorkspaceSteps(
   return row !== undefined;
 }
 
-export function linearSessionInWorkspace(
-  db: Database,
+export async function linearSessionInWorkspace(
+  store: Db,
   sessionId: string,
   workspaceId: string,
-): boolean {
-  return settled(sqliteDb(db).run((q) => linearSessionInWorkspaceSteps(q, sessionId, workspaceId)));
+): Promise<boolean> {
+  return store.run((q) => linearSessionInWorkspaceSteps(q, sessionId, workspaceId));
 }
 
 type SessionRun = { itemId: string; runId: string };
@@ -809,8 +796,8 @@ export function* sessionActiveRunsSteps(q: Q, sessionId: string): Steps<SessionR
   );
 }
 
-export function sessionActiveRuns(db: Database, sessionId: string): SessionRun[] {
-  return settled(sqliteDb(db).run((q) => sessionActiveRunsSteps(q, sessionId)));
+export async function sessionActiveRuns(store: Db, sessionId: string): Promise<SessionRun[]> {
+  return store.run((q) => sessionActiveRunsSteps(q, sessionId));
 }
 
 export function* previousIssueSessionIdsSteps(
@@ -847,14 +834,12 @@ export function* previousIssueSessionIdsSteps(
   return rows.map((row) => row.sessionId);
 }
 
-export function previousIssueSessionIds(
-  db: Database,
+export async function previousIssueSessionIds(
+  store: Db,
   incomingSessionId: string,
   issueId: string,
-): string[] {
-  return settled(
-    sqliteDb(db).run((q) => previousIssueSessionIdsSteps(q, incomingSessionId, issueId)),
-  );
+): Promise<string[]> {
+  return store.run((q) => previousIssueSessionIdsSteps(q, incomingSessionId, issueId));
 }
 
 type StoppedSessionItem = { id: string; sessionKey: string; delegationId: string };
@@ -901,14 +886,12 @@ export function* pausedStoppedSessionItemSteps(
   return row ? { ...row, sessionKey: row.sessionKey! } : null;
 }
 
-export function pausedStoppedSessionItem(
-  db: Database,
+export async function pausedStoppedSessionItem(
+  store: Db,
   incomingSessionId: string,
   issueId: string,
-): StoppedSessionItem | null {
-  return settled(
-    sqliteDb(db).run((q) => pausedStoppedSessionItemSteps(q, incomingSessionId, issueId)),
-  );
+): Promise<StoppedSessionItem | null> {
+  return store.run((q) => pausedStoppedSessionItemSteps(q, incomingSessionId, issueId));
 }
 
 type LinearTurnKey = { sessionId: string; eventKey: string };
@@ -929,8 +912,12 @@ export function* rewritePendingLinearTurnSteps(q: Q, turn: LinearTurnKey, body: 
   );
 }
 
-export function rewritePendingLinearTurn(db: Database, turn: LinearTurnKey, body: string): void {
-  settled(sqliteDb(db).run((q) => rewritePendingLinearTurnSteps(q, turn, body)));
+export async function rewritePendingLinearTurn(
+  store: Db,
+  turn: LinearTurnKey,
+  body: string,
+): Promise<void> {
+  await store.run((q) => rewritePendingLinearTurnSteps(q, turn, body));
 }
 
 export function* deleteCancelledLinearTurnSteps(q: Q, turn: LinearTurnKey) {
@@ -948,8 +935,8 @@ export function* deleteCancelledLinearTurnSteps(q: Q, turn: LinearTurnKey) {
   );
 }
 
-export function deleteCancelledLinearTurn(db: Database, turn: LinearTurnKey): void {
-  settled(sqliteDb(db).run((q) => deleteCancelledLinearTurnSteps(q, turn)));
+export async function deleteCancelledLinearTurn(store: Db, turn: LinearTurnKey): Promise<void> {
+  await store.run((q) => deleteCancelledLinearTurnSteps(q, turn));
 }
 
 /** Whether Stop was recorded for a generation of this session newer than `generation`. */
@@ -970,8 +957,12 @@ export function* linearStoppedAfterSteps(q: Q, sessionId: string, generation: nu
   return row !== undefined;
 }
 
-export function linearStoppedAfter(db: Database, sessionId: string, generation: number): boolean {
-  return settled(sqliteDb(db).run((q) => linearStoppedAfterSteps(q, sessionId, generation)));
+export async function linearStoppedAfter(
+  store: Db,
+  sessionId: string,
+  generation: number,
+): Promise<boolean> {
+  return store.run((q) => linearStoppedAfterSteps(q, sessionId, generation));
 }
 
 /** The newest live session on this issue while a sub-issue delegated under it has open work. */
@@ -1006,6 +997,6 @@ export function* parentIssueSessionSteps(q: Q, issueId: string) {
   return row?.sessionId ?? null;
 }
 
-export function parentIssueSession(db: Database, issueId: string): string | null {
-  return settled(sqliteDb(db).run((q) => parentIssueSessionSteps(q, issueId)));
+export async function parentIssueSession(store: Db, issueId: string): Promise<string | null> {
+  return store.run((q) => parentIssueSessionSteps(q, issueId));
 }

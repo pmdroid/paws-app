@@ -629,7 +629,8 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
   const linear = openLinear({
     db,
     signal: abort.signal,
-    countItemRequest: (itemId, caller) => countLinearRequest(db, itemId, caller),
+    countItemRequest: async (itemId, caller) =>
+      await countLinearRequest(sqliteDb(db), itemId, caller),
     budget: linearBudgetStore(sqliteDb(db), runtime.linearClientId ?? "linear"),
     secretsDir: paths.secretsDir,
     isAuthorized: () =>

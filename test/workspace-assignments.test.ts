@@ -25,6 +25,7 @@ import {
   recordLinearInstallation,
   syncWorkspaceMember,
   workspaceLinearMember,
+  sqliteDb,
 } from "../src/db";
 import { readyItems, syncItemDependencies } from "../src/intake";
 import { attachOrchestrator, deliverLinearOutbox } from "../src/loop";
@@ -545,9 +546,12 @@ for (const change of [
       await f.assignments.authorize(f.event);
       expect((await f.callback(await f.begin())).status).toBe(303);
       if (change === "stop")
-        advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() });
+        await advanceLinearSessionGeneration(sqliteDb(f.db), "session", {
+          stop: true,
+          now: f.clock.now(),
+        });
       if (change === "generation")
-        advanceLinearSessionGeneration(f.db, "session", { now: f.clock.now() });
+        await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { now: f.clock.now() });
       if (change === "delegation") f.ownership.delegateId = "another-app";
       if (change === "spec") f.tracker.epics.get("issue")!.description = "New criteria";
       if (change === "repository")
@@ -649,7 +653,7 @@ function linkMember(f: ReturnType<typeof fixture>) {
   });
 }
 
-const rules: [string, string, (f: ReturnType<typeof fixture>) => void][] = [
+const rules: [string, string, (f: ReturnType<typeof fixture>) => unknown][] = [
   [
     "delegated elsewhere",
     "This issue is delegated to another agent.",
@@ -678,7 +682,11 @@ const rules: [string, string, (f: ReturnType<typeof fixture>) => void][] = [
   [
     "stopped session",
     "This session was stopped or replaced by a newer delegation.",
-    (f) => advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() }),
+    async (f) =>
+      await advanceLinearSessionGeneration(sqliteDb(f.db), "session", {
+        stop: true,
+        now: f.clock.now(),
+      }),
   ],
   ["inactive account", "Your Linear account is not active.", (f) => f.setActive(false)],
   ["outside the team", "You are not a member of this issue's Linear team.", (f) => f.setTeams([])],
@@ -694,7 +702,7 @@ for (const [rule, reason, apply] of rules)
     const f = fixture();
     try {
       linkMember(f);
-      apply(f);
+      await apply(f);
       expect(await f.assignments.authorize(f.event)).toEqual({ outcome: "refused", reason });
     } finally {
       await f.close();
@@ -930,7 +938,7 @@ test("a new canonical generation does not reuse an obsolete onboarding hold", as
   try {
     await f.assignments.authorize(f.event);
     const previous = f.link();
-    advanceLinearSessionGeneration(f.db, "session", { now: f.clock.now() });
+    await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { now: f.clock.now() });
     expect(
       await f.assignments.authorize({ ...f.event, dedupeKey: "new-assignment" }),
     ).toMatchObject({ outcome: "refused" });
@@ -1262,7 +1270,10 @@ test("a stopped session closes its onboarding page", async () => {
     await f.assignments.authorize(f.event);
     const link = f.link();
     const cookie = sessionCookie(await f.callback(await f.begin(link)));
-    advanceLinearSessionGeneration(f.db, "session", { stop: true, now: f.clock.now() });
+    await advanceLinearSessionGeneration(sqliteDb(f.db), "session", {
+      stop: true,
+      now: f.clock.now(),
+    });
     const opened = await fetch(`${f.local}${onboardPath(link)}`, {
       redirect: "manual",
       headers: { cookie },

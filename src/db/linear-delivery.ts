@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { getOutboxSteps, type OutboxRow } from "./outbox";
 
 export function* prepareLinearActivitySteps(q: Q, message: OutboxRow) {
@@ -42,6 +41,6 @@ export function* prepareLinearActivitySteps(q: Q, message: OutboxRow) {
   return (yield* getOutboxSteps(q, message.id))!;
 }
 
-export function prepareLinearActivity(db: Database, message: OutboxRow): OutboxRow {
-  return settled(sqliteDb(db).run((q) => prepareLinearActivitySteps(q, message)));
+export async function prepareLinearActivity(store: Db, message: OutboxRow): Promise<OutboxRow> {
+  return store.run((q) => prepareLinearActivitySteps(q, message));
 }

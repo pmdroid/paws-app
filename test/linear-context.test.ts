@@ -12,6 +12,7 @@ import {
   hasLinearSessionSnapshotContext,
   saveLinearActivitySnapshot,
   listLinearActivitySnapshots,
+  sqliteDb,
 } from "../src/db";
 import { tempDb } from "./helpers";
 
@@ -55,27 +56,31 @@ test("preserves initiating comment, earlier thread and guidance provenance with 
   expect(renderLinearSessionContext(parseLinearSessionContext("{}"))).toBe("");
 });
 
-test("thin polling context cannot erase richer webhook context and activity snapshots are immutable", () => {
+test("thin polling context cannot erase richer webhook context and activity snapshots are immutable", async () => {
   const db = tempDb();
   try {
-    saveLinearSessionContext(db, "session", "poll issue", 0);
-    saveLinearSessionContext(db, "session", "rich mention", 2);
-    saveLinearSessionContext(db, "session", "later thin poll", 0);
-    expect(hasLinearSessionSnapshotContext(db, "session")).toBe(false);
-    saveLinearSessionSnapshotContext(db, "session", "API source thread and issue details");
-    expect(hasLinearSessionSnapshotContext(db, "session")).toBe(true);
+    await saveLinearSessionContext(sqliteDb(db), "session", "poll issue", 0);
+    await saveLinearSessionContext(sqliteDb(db), "session", "rich mention", 2);
+    await saveLinearSessionContext(sqliteDb(db), "session", "later thin poll", 0);
+    expect(await hasLinearSessionSnapshotContext(sqliteDb(db), "session")).toBe(false);
+    await saveLinearSessionSnapshotContext(
+      sqliteDb(db),
+      "session",
+      "API source thread and issue details",
+    );
+    expect(await hasLinearSessionSnapshotContext(sqliteDb(db), "session")).toBe(true);
     expect(getLinearSessionContext(db, "session")).toBe(
       "rich mention\n\nAPI source thread and issue details",
     );
-    saveLinearSessionContext(db, "session", "sparse webhook", 1);
+    await saveLinearSessionContext(sqliteDb(db), "session", "sparse webhook", 1);
     expect(getLinearSessionContext(db, "session")).toContain("API source thread and issue details");
-    saveLinearActivitySnapshot(db, {
+    await saveLinearActivitySnapshot(sqliteDb(db), {
       id: "a",
       sessionId: "session",
       createdAt: date,
       snapshot: JSON.stringify(activity("a")),
     });
-    saveLinearActivitySnapshot(db, {
+    await saveLinearActivitySnapshot(sqliteDb(db), {
       id: "a",
       sessionId: "session",
       createdAt: date,

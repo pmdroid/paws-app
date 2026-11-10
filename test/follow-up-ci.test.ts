@@ -22,6 +22,7 @@ import {
   recordItemPullRequest,
   recordPullComment,
   restart,
+  sqliteDb,
 } from "../src/db";
 import { fakeMergeReadiness, type GitHubClient, type GitHubResponse } from "../src/github";
 
@@ -62,7 +63,7 @@ async function waitingTask(
     ci?: Ci;
     pull?: boolean;
     log?: string | null;
-    onCiRead?: (db: ReturnType<typeof openDatabase>, itemId: string) => void;
+    onCiRead?: (db: ReturnType<typeof openDatabase>, itemId: string) => unknown;
   } = {},
 ) {
   const home = tempHome();
@@ -78,7 +79,7 @@ async function waitingTask(
     if (req.method === "GET" && req.path === "/repos/acme/one/pulls/7")
       return { status: 200, body: { state: "open", mergeable: true, head: { sha: HEAD } } };
     if (req.path === "/graphql") {
-      options.onCiRead?.(db, itemId);
+      await options.onCiRead?.(db, itemId);
       if (options.ci === "throws") throw new Error(`boom ${TOKEN}`);
       if (options.ci === "unreadable") return { status: 502, body: null };
       const body = fakeMergeReadiness(HEAD);
@@ -301,7 +302,7 @@ test("a head that moves during the CI read attaches no stale CI facts", async ()
 test("a stop during the CI read restarts nothing", async () => {
   const f = await waitingTask({
     ci: "failed",
-    onCiRead: (db) => acceptLinearStop(db, "session", "stop-1", Date.now()),
+    onCiRead: async (db) => await acceptLinearStop(sqliteDb(db), "session", "stop-1", Date.now()),
   });
   try {
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please fix the build"));

@@ -7,14 +7,17 @@ import type { UsageLimitWait } from "./failover";
 
 export function usageLimitWait(
   options: { db: Database; now: () => number; mono: () => number; interval: number },
-  target: () => { itemId: string; runId: string } | null,
+  target: () =>
+    | { itemId: string; runId: string }
+    | null
+    | Promise<{ itemId: string; runId: string } | null>,
   input: RunAgentOptions,
 ): UsageLimitWait {
   const { db, now, mono, interval } = options;
   return {
     now,
     async pause(limit, profilesChanged) {
-      const run = target();
+      const run = await target();
       if (!run) throw limit;
       const { itemId, runId } = run;
       const agent = agentName(limit.agent);

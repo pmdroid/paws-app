@@ -1,7 +1,7 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
-  advanceLinearSessionGenerationAsync,
+  advanceLinearSessionGeneration,
   ensureLinearSessionSteps,
   getLinearSession,
   getLinearSessionAccess,
@@ -209,7 +209,7 @@ export class LinearTaskAccess {
     request.signal.throwIfAborted();
     if ((await this.sessionGeneration(access.sessionId)) !== generation) return false;
     if (allowed) return this.allowed(access.sessionId);
-    await advanceLinearSessionGenerationAsync(this.store, access.sessionId, {
+    await advanceLinearSessionGeneration(this.store, access.sessionId, {
       stop: true,
       now: (this.options.now ?? Date.now)(),
     });

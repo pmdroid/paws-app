@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 function sessionUrl(q: Q, payload: SQL): { url: SQL<string | null>; present: SQL } {
   if (q.dialect === "sqlite") {
@@ -58,6 +57,9 @@ export function* getLinearConversationSourceSteps(q: Q, sessionId: string) {
   return null;
 }
 
-export function getLinearConversationSource(db: Database, sessionId: string): string | null {
-  return settled(sqliteDb(db).run((q) => getLinearConversationSourceSteps(q, sessionId)));
+export async function getLinearConversationSource(
+  store: Db,
+  sessionId: string,
+): Promise<string | null> {
+  return store.run((q) => getLinearConversationSourceSteps(q, sessionId));
 }

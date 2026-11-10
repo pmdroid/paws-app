@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { asc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 export function* countLinearRequestSteps(q: Q, itemId: string, caller: string) {
   const { linearItemCallerRequest, linearItemRequest } = q.t;
@@ -24,8 +23,8 @@ export function* countLinearRequestSteps(q: Q, itemId: string, caller: string) {
   );
 }
 
-export function countLinearRequest(db: Database, itemId: string, caller: string): void {
-  settled(sqliteDb(db).transaction((q) => countLinearRequestSteps(q, itemId, caller)));
+export async function countLinearRequest(store: Db, itemId: string, caller: string): Promise<void> {
+  await store.transaction((q) => countLinearRequestSteps(q, itemId, caller));
 }
 
 export function* linearRequestsByItemSteps(q: Q) {
@@ -38,8 +37,8 @@ export function* linearRequestsByItemSteps(q: Q) {
   return new Map(rows.map((row) => [row.itemId, row.requests]));
 }
 
-export function linearRequestsByItem(db: Database): Map<string, number> {
-  return settled(sqliteDb(db).run(linearRequestsByItemSteps));
+export async function linearRequestsByItem(store: Db): Promise<Map<string, number>> {
+  return store.run((q) => linearRequestsByItemSteps(q));
 }
 
 export function* linearRequestsByCallerSteps(q: Q, itemId: string) {
@@ -60,6 +59,9 @@ export function* linearRequestsByCallerSteps(q: Q, itemId: string) {
   >;
 }
 
-export function linearRequestsByCaller(db: Database, itemId: string): Record<string, number> {
-  return settled(sqliteDb(db).run((q) => linearRequestsByCallerSteps(q, itemId)));
+export async function linearRequestsByCaller(
+  store: Db,
+  itemId: string,
+): Promise<Record<string, number>> {
+  return store.run((q) => linearRequestsByCallerSteps(q, itemId));
 }

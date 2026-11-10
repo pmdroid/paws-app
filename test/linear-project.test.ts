@@ -5,6 +5,7 @@ import {
   migrate,
   openDatabase,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue } from "../src/intake";
 import {
@@ -80,12 +81,12 @@ test("an issue webhook that moves the issue to another project updates it", asyn
     organizationId: "org",
     project: { id: "linear", name: "Linear projects" },
   });
-  applyLinearIssueProject(db, moved!.issueId, moved!.project);
+  await applyLinearIssueProject(sqliteDb(db), moved!.issueId, moved!.project);
   expect(await projectOf()).toEqual({ id: "linear", name: "Linear projects" });
 
   const removed = parseLinearIssueProjectChange(projectWebhook({ projectId: null }));
   expect(removed?.project).toBeNull();
-  applyLinearIssueProject(db, removed!.issueId, removed!.project);
+  await applyLinearIssueProject(sqliteDb(db), removed!.issueId, removed!.project);
   expect(await projectOf()).toBeNull();
   db.close();
 });

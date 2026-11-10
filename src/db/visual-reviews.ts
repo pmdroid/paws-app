@@ -105,12 +105,13 @@ export async function linearConversationUrlAsync(
   return `https://linear.app/issue/${encodeURIComponent(identifier)}`;
 }
 
-export function linearConversationUrl(
+export async function linearConversationUrl(
   db: Database,
   sessionId: string | null,
   identifier: string,
-): string {
-  const source = sessionId === null ? null : getLinearConversationSource(db, sessionId);
+): Promise<string> {
+  const source =
+    sessionId === null ? null : await getLinearConversationSource(sqliteDb(db), sessionId);
   if (source !== null) {
     try {
       const url = new URL(source);

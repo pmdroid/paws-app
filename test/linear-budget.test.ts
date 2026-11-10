@@ -311,7 +311,9 @@ describe("shared Linear budget", () => {
     const counted: string[][] = [];
     const ledger = createLinearLedger({
       log: () => {},
-      countItem: (id, caller) => counted.push([id, caller]),
+      countItem: (id, caller) => {
+        counted.push([id, caller]);
+      },
     });
     const client = createLinearClient({
       auth: AUTH,

@@ -9,6 +9,7 @@ import {
   openDatabase,
   resolveTaskClassification,
   saveTaskClassification,
+  sqliteDb,
 } from "../src/db";
 import { runAgent } from "../src/acp";
 import { createTaskPlanner, type AgentLaunch } from "../src/loop";
@@ -98,7 +99,7 @@ test.each([false, true])(
     try {
       const first = f.plan("first").catch((error: unknown) => error);
       await f.waitForFirst();
-      advanceLinearSessionGeneration(f.db, "session");
+      await advanceLinearSessionGeneration(sqliteDb(f.db), "session");
       expect(await Promise.all([f.plan("replacement"), f.plan("replacement")])).toEqual([
         { mode: "answer" },
         { mode: "answer" },
@@ -123,7 +124,7 @@ test.each([false, true])(
     try {
       const first = f.plan("first").catch((error: unknown) => error);
       await f.waitForFirst();
-      advanceLinearSessionGeneration(f.db, "session");
+      await advanceLinearSessionGeneration(sqliteDb(f.db), "session");
       const next = f.plan("replacement").catch((error: unknown) => error);
       await f.planner.stop("session");
       expect(await first).toBeInstanceOf(Error);

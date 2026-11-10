@@ -180,8 +180,11 @@ export function* linearSessionsForDelegatedTeamsSteps(
   return rows.map((row) => row.sessionId);
 }
 
-export function linearSessionsForDelegatedTeams(db: Database, input: DelegatedTeams): string[] {
-  return settled(sqliteDb(db).run((q) => linearSessionsForDelegatedTeamsSteps(q, input)));
+export async function linearSessionsForDelegatedTeams(
+  store: Db,
+  input: DelegatedTeams,
+): Promise<string[]> {
+  return store.run((q) => linearSessionsForDelegatedTeamsSteps(q, input));
 }
 
 type UndelegatedIssue = {
@@ -226,6 +229,9 @@ export function* linearSessionsForUndelegatedIssueSteps(
   return rows.map((row) => row.sessionId);
 }
 
-export function linearSessionsForUndelegatedIssue(db: Database, input: UndelegatedIssue): string[] {
-  return settled(sqliteDb(db).run((q) => linearSessionsForUndelegatedIssueSteps(q, input)));
+export async function linearSessionsForUndelegatedIssue(
+  store: Db,
+  input: UndelegatedIssue,
+): Promise<string[]> {
+  return store.run((q) => linearSessionsForUndelegatedIssueSteps(q, input));
 }

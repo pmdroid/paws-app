@@ -8,7 +8,7 @@ import {
   type InboxStore,
   type Sleeper,
 } from "../src/linear";
-import { insertQueuedItem, linearWebhookWarning } from "../src/db";
+import { insertQueuedItem, linearWebhookWarning, sqliteDb } from "../src/db";
 import { tempDb } from "./helpers";
 
 const NOW = 1_700_000_000_000;
@@ -137,7 +137,7 @@ describe("catch-up poll in a quiet workspace", () => {
     const db = tempDb();
     const store = createInboxStore(db);
     expect((await deliver(store, NOW, "secret")).status).toBe(200);
-    expect(linearWebhookWarning(db, NOW + MINUTE)).toBeNull();
+    expect(await linearWebhookWarning(sqliteDb(db), NOW + MINUTE)).toBeNull();
     const missed = startCatchUpPoller({
       source: countingSource(() => missedPrompt()).source,
       store,
@@ -148,7 +148,7 @@ describe("catch-up poll in a quiet workspace", () => {
     });
     await waitFor(() => store.get("activity:activity-missed") !== null);
     await missed.stop();
-    expect(linearWebhookWarning(db, NOW + 20 * MINUTE)).toEqual({
+    expect(await linearWebhookWarning(sqliteDb(db), NOW + 20 * MINUTE)).toEqual({
       reason: "missed",
       lastVerifiedMs: NOW,
       missedMs: NOW + 20 * MINUTE,
@@ -168,23 +168,23 @@ describe("catch-up poll in a quiet workspace", () => {
     expect(waits).toEqual([MINUTE]);
 
     expect((await deliver(store, NOW + 22 * MINUTE, "secret")).status).toBe(200);
-    expect(linearWebhookWarning(db, NOW + 22 * MINUTE)).toBeNull();
+    expect(await linearWebhookWarning(sqliteDb(db), NOW + 22 * MINUTE)).toBeNull();
     db.close();
   });
 
   test("an hour without a verified delivery warns only while sessions are active", async () => {
     const db = tempDb();
     expect((await deliver(createInboxStore(db), NOW, "secret")).status).toBe(200);
-    expect(linearWebhookWarning(db, NOW + 2 * HOUR)).toBeNull();
+    expect(await linearWebhookWarning(sqliteDb(db), NOW + 2 * HOUR)).toBeNull();
     insertQueuedItem(db, { id: "item", sessionKey: "session-webhook" });
-    expect(linearWebhookWarning(db, NOW + HOUR)).toBeNull();
-    expect(linearWebhookWarning(db, NOW + 2 * HOUR)).toEqual({
+    expect(await linearWebhookWarning(sqliteDb(db), NOW + HOUR)).toBeNull();
+    expect(await linearWebhookWarning(sqliteDb(db), NOW + 2 * HOUR)).toEqual({
       reason: "silent",
       lastVerifiedMs: NOW,
       missedMs: null,
     });
     db.run("UPDATE work_item SET state = 'merged'");
-    expect(linearWebhookWarning(db, NOW + 2 * HOUR)).toBeNull();
+    expect(await linearWebhookWarning(sqliteDb(db), NOW + 2 * HOUR)).toBeNull();
     db.close();
   });
 });

@@ -6,7 +6,7 @@ import { chmod, link, lstat, mkdir, open, realpath, unlink } from "node:fs/promi
 import { dirname, join } from "node:path";
 import { git, requestText, type AgentInputFile } from "../acp";
 import type { LinearFileTransfer } from "../linear";
-import { getVisualReviewMark, recordLinearInput } from "../db";
+import { getVisualReviewMark, recordLinearInput, sqliteDb } from "../db";
 import { readEvidenceBytes, type EvidenceStorage } from "../evidence";
 
 const MAX_BYTES = 20 * 1024 * 1024;
@@ -74,7 +74,7 @@ export function createLinearInputLoader(options: {
       const path = join(turnDirectory, `${id}${extension}`);
       await writeAtomic(path, bytes);
       request.signal.throwIfAborted();
-      recordLinearInput(options.db, {
+      await recordLinearInput(sqliteDb(options.db), {
         sessionId: request.sessionId,
         turnId: request.turnId,
         assetId: id,

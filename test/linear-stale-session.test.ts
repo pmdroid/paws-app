@@ -15,6 +15,7 @@ import {
   openDatabase,
   recordLinearInstallation,
   saveConversation,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeTracker,
@@ -239,7 +240,7 @@ test.each(["unavailable", "issue", "app", "id", "generation", "authorization"])(
     const f = await fixture();
     f.tracker.getSession = async () => {
       if (failure === "unavailable") throw new Error("Linear unavailable");
-      if (failure === "generation") advanceLinearSessionGeneration(f.db, "old");
+      if (failure === "generation") await advanceLinearSessionGeneration(sqliteDb(f.db), "old");
       if (failure === "authorization") f.revoke();
       return {
         ...f.snapshot,
