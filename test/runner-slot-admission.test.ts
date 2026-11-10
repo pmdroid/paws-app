@@ -326,7 +326,7 @@ test("a successful background sign-in check wakes parked work", async () => {
     now: () => at,
   });
   const health = createRunnerHealth({ db, work, now: () => at });
-  expect(health.afterSignIn(id, "claude")).toBe(true);
+  expect(await health.afterSignIn(id, "claude")).toBe(true);
   const envelope = work.commands(id)[0]!;
   const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
     id: string;
