@@ -80,6 +80,7 @@ import {
   localKey,
   prepareState,
   readState,
+  retireIdentity,
   trustedSigningKeys,
   validateIdentity,
   writeState,
@@ -88,6 +89,7 @@ import {
 import { downloadRunnerInputs } from "./inputs";
 import {
   httpsOrigin,
+  isIdentityRejected,
   requestBytes,
   requestJson,
   requestStream,
@@ -131,6 +133,7 @@ export const EnrollmentTokenSchema = z
 
 const RETIRED_RECEIPT_RETENTION_MS = 24 * 60 * 60_000;
 const RETIRED_PRUNE_INTERVAL_MS = 10 * 60_000;
+const IDENTITY_REJECTED_RETRY_MS = 60_000;
 
 export type RunnerDaemonOptions = {
   root: string;
@@ -146,6 +149,7 @@ export type RunnerDaemonOptions = {
   /** Host metrics sent with every heartbeat. */
   sampleHost?: () => RunnerHostStatus;
   accountBindings?: () => RunnerAccountCapability["bindings"];
+  log?: (line: string) => void;
 };
 
 export function openRunnerDaemon(options: RunnerDaemonOptions) {
@@ -174,6 +178,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   let state = readState(options.root);
   let closed = false;
   let observedAt = 0;
+  let rejection: { error: RunnerRequestError; attemptAt: number } | null = null;
   /** The result Paws accepts now. The level is read per result: a redeploy or restart moves it. */
   async function acceptedResult<Result extends object>(result: Result): Promise<Result> {
     const { protocolLevel } = await api.heartbeat();
@@ -282,12 +287,39 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       expiresAt: certificate.notAfter,
     };
   }
+  function identityRetryIn(): number {
+    if (!rejection) return 0;
+    const elapsed = now() - rejection.attemptAt;
+    return elapsed >= 0 && elapsed < IDENTITY_REJECTED_RETRY_MS
+      ? IDENTITY_REJECTED_RETRY_MS - elapsed
+      : 0;
+  }
   async function authenticated(
     path: string,
     method: "GET" | "POST",
     body?: unknown,
     runGrant?: string,
   ) {
+    if (rejection) {
+      if (identityRetryIn() > 0) throw rejection.error;
+      rejection.attemptAt = now();
+    }
+    try {
+      const response = await send(path, method, body, runGrant);
+      rejection = null;
+      return response;
+    } catch (error) {
+      if (isIdentityRejected(error)) {
+        if (!rejection)
+          (options.log ?? console.error)(
+            `This runner's identity is no longer known to ${origins.controlPlaneUrl}. Add it again from Runners and run the command there.`,
+          );
+        rejection = { error, attemptAt: rejection?.attemptAt ?? now() };
+      } else if (error instanceof RunnerRequestError && error.status < 500) rejection = null;
+      throw error;
+    }
+  }
+  async function send(path: string, method: "GET" | "POST", body?: unknown, runGrant?: string) {
     const identity = paired();
     const response = await requestJson({
       origin: origins.runnerApiUrl,
@@ -494,25 +526,50 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
   }
   const retroPath = (id: string, action: string) =>
     `/v1/retro-commands/${encodeURIComponent(id)}/${action}`;
+  function forgetCommands() {
+    immediate(db, () => {
+      q.delete(pendingCommand).run();
+      q.delete(pendingRetroCommand).run();
+      q.delete(retroAttempt).run();
+      q.delete(commandReceipt).run();
+    });
+  }
+  async function identityRefused(): Promise<boolean> {
+    try {
+      await send("/v1/certificate", "GET");
+    } catch (error) {
+      if (isIdentityRejected(error)) return true;
+      journalCaught(error, "daemon.identityRefused", null, "only a 403 replaces the identity");
+    }
+    ensureOpen();
+    return false;
+  }
   const api = {
     status,
+    identityRetryIn,
+    identityReplaced() {
+      if (!rejection || state?.phase !== "paired") return false;
+      const stored = readState(options.root);
+      return stored?.phase === "paired" && stored.certificate !== state.certificate;
+    },
     capacity: () => applied,
     ceiling: () => ceiling,
     conversationCapacity: () => conversations ?? 0,
     pendingCommands,
     pruneRetired,
-    /**
-     * Enroll with a member's single-use token: prepare the key and CSR, post once, store the
-     * identity Paws returns. A daemon already paired with a valid certificate returns its status
-     * without contacting Paws, so a retried bootstrap is harmless.
-     */
     async enroll(name: string, token: string) {
       ensureOpen();
-      const previous = state?.phase === "paired" ? state : null;
-      if (previous && describeRunnerCertificate(previous.certificate).notAfter > now())
-        return status();
+      let previous = state?.phase === "paired" ? state : null;
+      const current = previous && describeRunnerCertificate(previous.certificate).notAfter > now();
+      if (current && (token === "" || !(await identityRefused()))) return status();
       const parsedName = runnerName.parse(name);
       const parsedToken = EnrollmentTokenSchema.parse(token);
+      if (current) {
+        retireIdentity(options.root, now());
+        forgetCommands();
+        previous = null;
+        state = null;
+      }
       if (!state) state = await prepareState(options.root, origins);
       const prepared = state;
       const response = await requestJson({
@@ -533,13 +590,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
       trustedSigningKeys(enrolled, pins);
       if (previous && identity.runnerId === previous.runnerId)
         throw new Error("Re-enrollment requires a new runner identity.");
-      if (previous)
-        immediate(db, () => {
-          q.delete(pendingCommand).run();
-          q.delete(pendingRetroCommand).run();
-          q.delete(retroAttempt).run();
-          q.delete(commandReceipt).run();
-        });
+      if (previous) forgetCommands();
       observedAt = 0;
       writeState(options.root, enrolled);
       state = enrolled;
@@ -622,6 +673,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
         } catch (error) {
           if (
             index === attempts.length - 1 ||
+            isIdentityRejected(error) ||
             !(error instanceof RunnerRequestError) ||
             error.status !== 403 ||
             /\bfenced\b/i.test(error.reason ?? "")

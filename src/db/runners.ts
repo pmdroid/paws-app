@@ -993,6 +993,54 @@ export function* runnerOwnerSteps(q: Q, runnerId: string) {
   return row ?? null;
 }
 
+export function* workspaceRunnerHostSteps(q: Q, runnerId: string, workspaceId: string) {
+  const { runner } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ ownerId: runner.ownerUserId, revokedAt: runner.revokedAt })
+      .from(runner)
+      .where(and(eq(runner.id, runnerId), eq(runner.workspaceId, workspaceId))),
+  );
+  return row ?? null;
+}
+
+export function* setRunnerAgentExtraUsageSteps(
+  q: Q,
+  input: { runnerId: string; agent: string; extraUsage: boolean; at: number },
+) {
+  const { runnerAgentPolicy: p } = q.t;
+  const set = input.extraUsage
+    ? {
+        extraUsage: 1,
+        quotaState: sql`CASE WHEN ${p.quotaState}='exhausted' AND ${p.cooldownUntil}>${input.at} THEN 'spent_extra' ELSE ${p.quotaState} END`,
+        cooldownUntil: sql`CASE WHEN ${p.quotaState}='exhausted' AND ${p.cooldownUntil}>${input.at} THEN 0 ELSE ${p.cooldownUntil} END`,
+      }
+    : {
+        extraUsage: 0,
+        quotaState: sql`CASE WHEN ${p.quotaState}='spent_extra' THEN 'exhausted' ELSE ${p.quotaState} END`,
+        cooldownUntil: sql`CASE WHEN ${p.quotaState}='spent_extra' THEN COALESCE(${p.resetsAt},${input.at + 900_000}) ELSE ${p.cooldownUntil} END`,
+      };
+  const changed = yield* q.all(
+    q.orm
+      .update(p)
+      .set(set)
+      .where(and(eq(p.runnerId, input.runnerId), eq(p.agent, input.agent)))
+      .returning({ runnerId: p.runnerId }),
+  );
+  return changed.length > 0;
+}
+
+export function* setRunnerSharingSteps(q: Q, runnerId: string, sharing: boolean) {
+  const { runnerPolicy: p } = q.t;
+  const value = sharing ? 1 : 0;
+  yield* q.exec(
+    q.orm
+      .insert(p)
+      .values({ runnerId, sharing: value })
+      .onConflictDoUpdate({ target: p.runnerId, set: { sharing: value } }),
+  );
+}
+
 export function recentRunners(
   db: Database,
   seenAfter: number,

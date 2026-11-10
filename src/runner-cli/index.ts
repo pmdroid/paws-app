@@ -345,6 +345,7 @@ export async function runRunnerCli(
     const daemon = openRunnerDaemon({
       root: "/var/lib/paws-runner",
       ...config,
+      log: error,
       sampleHost: createRunnerHostSampler({ workRoot: "/var/lib/paws-runner" }),
       accountBindings: () =>
         runnerAccountBindings("/var/lib/paws-agent", {

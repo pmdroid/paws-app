@@ -82,8 +82,8 @@ export async function probeRunnerSessionHelpers(
     port: 0,
   });
   const runnerPort = coordinator.port;
-  function pair(name: string, runner: (typeof RUNNER_IDENTITIES)[number]) {
-    const { token } = coordinator.control.createEnrollment(principal, { name });
+  async function pair(name: string, runner: (typeof RUNNER_IDENTITIES)[number]) {
+    const { token } = await coordinator.control.createEnrollment(principal, { name });
     const runnerId = workspaceId(now);
     enrollRunner(db, {
       tokenHash: workspaceTokenHash(token),
@@ -92,11 +92,11 @@ export async function probeRunnerSessionHelpers(
       certificate: describeRunnerCertificate(runner.certificate),
       now,
     });
-    coordinator.control.setStatus(principal, runnerId, "active");
+    await coordinator.control.setStatus(principal, runnerId, "active");
     return runnerId;
   }
   try {
-    const runnerId = pair("Session helper runner", RUNNER_IDENTITIES[0]);
+    const runnerId = await pair("Session helper runner", RUNNER_IDENTITIES[0]);
     const { key, certificate } = RUNNER_IDENTITIES[0];
     async function call(path: string, value?: unknown) {
       return await new Promise<{ status: number; body: Record<string, unknown> }>(
@@ -331,9 +331,9 @@ export async function probeRunnerSessionHelpers(
       },
     );
     coordinator.helpers.finish(removed.command.id);
-    const replacement = pair("Revoked helper runner", RUNNER_IDENTITIES[1]);
+    const replacement = await pair("Revoked helper runner", RUNNER_IDENTITIES[1]);
     const pending = coordinator.helpers.dispatch({ ...input, runnerId: replacement });
-    coordinator.control.setStatus(principal, replacement, "revoked");
+    await coordinator.control.setStatus(principal, replacement, "revoked");
     assert.throws(() => coordinator.helpers.current(pending.command.id), /identity is unavailable/);
     assert.throws(() => coordinator.helpers.commands(replacement), /identity is unavailable/);
     observe("administrative runner revocation prevents helper result acceptance", true, {

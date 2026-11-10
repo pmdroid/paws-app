@@ -87,7 +87,7 @@ async function setup() {
     runners[name] = (
       await control.enroll({
         ...pending,
-        token: control.createEnrollment(principal, pending).token,
+        token: (await control.createEnrollment(principal, pending)).token,
       })
     ).runnerId;
   }

@@ -78,7 +78,7 @@ async function fixture() {
   const pending = { name: "Host VM", csr: client.csr };
   const { runnerId } = await control.enroll({
     ...pending,
-    token: control.createEnrollment(principal, pending).token,
+    token: (await control.createEnrollment(principal, pending)).token,
   });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const work = createRunnerWork({

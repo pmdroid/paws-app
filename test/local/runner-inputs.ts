@@ -89,7 +89,7 @@ export async function probeRunnerInputs(
   };
   const identity = await control.enroll({
     ...pending,
-    token: control.createEnrollment(principal, pending).token,
+    token: (await control.createEnrollment(principal, pending)).token,
   });
   const { runnerId } = identity;
 
@@ -210,9 +210,9 @@ export async function probeRunnerInputs(
   const listener = await startRunnerListener({
     tls,
     hostname: "127.0.0.1",
-    authorize(peer) {
+    async authorize(peer) {
       try {
-        control.authenticate(peer);
+        await control.authenticate(peer);
         return true;
       } catch {
         return false;
@@ -220,7 +220,7 @@ export async function probeRunnerInputs(
     },
     async fetch(input, peer) {
       return (
-        (await inputs.fetch(input, control.authenticate(peer).id)) ??
+        (await inputs.fetch(input, (await control.authenticate(peer)).id)) ??
         new Response(null, { status: 404 })
       );
     },

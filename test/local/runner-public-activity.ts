@@ -101,12 +101,12 @@ export async function probeRunnerPublicActivity(root: string) {
   const prefix = Buffer.from(rows.slice(0, 600).join(""));
   const raw = Buffer.from(rows.join(""));
   try {
-    journal.ingest(execution.id, prefix);
+    await journal.ingest(execution.id, prefix);
     const first = journal.pending(execution.id);
     for (const row of first) journal.sent(execution.id, row.sequence);
     journal.close();
     journal = openExecutionJournal(journalRoot);
-    journal.ingest(execution.id, raw);
+    await journal.ingest(execution.id, raw);
     const events = [...first, ...journal.pending(execution.id)].map((row) =>
       RunnerEventSchema.parse(JSON.parse(JSON.stringify(row.event))),
     );
@@ -138,7 +138,7 @@ export async function probeRunnerPublicActivity(root: string) {
     assert.deepEqual(messages, ["Setting up the frontend.", "All tools finished."]);
     assert(!JSON.stringify(events).includes("hidden-chain-of-thought"));
     const before = journal.transcriptCursor(execution.id);
-    assert.throws(() => journal.ingest(execution.id, Buffer.alloc(16_777_217)), /size limit/);
+    await assert.rejects(journal.ingest(execution.id, Buffer.alloc(16_777_217)), /size limit/);
     assert.deepEqual(journal.transcriptCursor(execution.id), before);
     const directory = join(root, "runs", run.id);
     mkdirSync(directory, { recursive: true, mode: 0o700 });

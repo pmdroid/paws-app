@@ -77,7 +77,7 @@ async function fixture() {
     return (
       await control.enroll({
         ...pending,
-        token: control.createEnrollment(principal, pending).token,
+        token: (await control.createEnrollment(principal, pending)).token,
       })
     ).runnerId;
   };

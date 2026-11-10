@@ -215,9 +215,9 @@ export async function openRunnerCoordinator(options: {
     port: options.port,
     now: options.now,
     takeLogDetail: takeRejectedFields,
-    authorize(peer) {
+    async authorize(peer) {
       try {
-        control.authenticate(peer);
+        await control.authenticate(peer);
         return true;
       } catch (caughtError1) {
         journalCaught(caughtError1, "runner-coordinator.authorize.authenticate", null);
@@ -226,7 +226,7 @@ export async function openRunnerCoordinator(options: {
     },
     revoked: (peer) => control.revoked(peer),
     async fetch(request, peer) {
-      const runnerId = control.authenticate(peer).id;
+      const runnerId = (await control.authenticate(peer)).id;
       const renewal = await http.runner(request, peer);
       if (renewal) return withSigningKeys(renewal, signing.signingKeys);
       return (

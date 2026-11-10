@@ -84,7 +84,7 @@ export async function probeRunnerLinearOutput(root: string) {
       kind: "execute",
     },
   ];
-  journal.ingest(
+  await journal.ingest(
     execution.id,
     Buffer.from(
       [

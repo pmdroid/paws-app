@@ -27,7 +27,7 @@ import { freeVmNameSteps, MEMBER_VM_QUEUE, type MemberRef, type MemberVm } from 
 export type MintEnrollment = (
   member: MemberRef,
   input: { name: string },
-) => { token: string; expiresAt: number };
+) => { token: string; expiresAt: number } | Promise<{ token: string; expiresAt: number }>;
 
 type Secrets = readonly (string | null | undefined | Promise<string | null>)[];
 
@@ -127,7 +127,7 @@ async function runStep(
   const vm = row.vmName;
   const member = { workspaceId: row.workspaceId, userId: row.userId };
   const mint = async () => {
-    const enrollment = options.mintEnrollment(member, { name: vm });
+    const enrollment = await options.mintEnrollment(member, { name: vm });
     minted(enrollment.token);
     await store.run((q) =>
       recordMemberVmEnrollmentSteps(q, {

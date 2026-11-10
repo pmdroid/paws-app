@@ -84,7 +84,7 @@ export async function probeRunnerRepositoryAccess(
   const pending = { name: "Repository VM", csr: client.csr };
   const identity = await control.enroll({
     ...pending,
-    token: control.createEnrollment(principal, pending).token,
+    token: (await control.createEnrollment(principal, pending)).token,
   });
   const { runnerId } = identity;
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
@@ -96,7 +96,7 @@ export async function probeRunnerRepositoryAccess(
   const reviewRequest = { name: "Review VM", csr: client.csr };
   const reviewIdentity = await control.enroll({
     ...reviewRequest,
-    token: control.createEnrollment(principal, reviewRequest).token,
+    token: (await control.createEnrollment(principal, reviewRequest)).token,
   });
   const reviewRunnerId = reviewIdentity.runnerId;
   db.run("UPDATE runner SET status='active' WHERE id=?", [reviewRunnerId]);
@@ -191,9 +191,9 @@ export async function probeRunnerRepositoryAccess(
   try {
     listener = await startRunnerListener({
       tls: { ...tls, ca: authority.certificate },
-      authorize(peer) {
+      async authorize(peer) {
         try {
-          control.authenticate(peer);
+          await control.authenticate(peer);
           return true;
         } catch {
           return false;
@@ -201,7 +201,7 @@ export async function probeRunnerRepositoryAccess(
       },
       async fetch(input, peer) {
         return (
-          (await endpoint(input, control.authenticate(peer).id)) ??
+          (await endpoint(input, (await control.authenticate(peer)).id)) ??
           new Response(null, { status: 404 })
         );
       },

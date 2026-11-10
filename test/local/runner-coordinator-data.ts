@@ -192,7 +192,7 @@ export async function probeRunnerCoordinatorData(
   const statusError = (status: number) => (error: unknown) =>
     error instanceof RunnerRequestError && error.status === status;
   try {
-    const enrollmentGrant = coordinator.control.createEnrollment(principal, {
+    const enrollmentGrant = await coordinator.control.createEnrollment(principal, {
       name: "Coordinator data",
     });
     const enrolled = await daemon.enroll("Coordinator data", enrollmentGrant.token);
@@ -387,7 +387,7 @@ export async function probeRunnerCoordinatorData(
       statusError(409),
     );
     await assert.rejects(daemon.finishTranscript(run.id, finish, grant.token), statusError(409));
-    coordinator.control.setStatus(principal, runnerId, "revoked");
+    await coordinator.control.setStatus(principal, runnerId, "revoked");
     await assert.rejects(daemon.uploadArtifact(run.id, artifactChunk(0), grant.token));
     observe("every mounted coordinator data route rejects expired leases and revoked peers", true, {
       leaseStatuses: [409, 409, 409],

@@ -6,7 +6,7 @@ import { and, eq, gt, gte, inArray, isNull, lt, ne, notExists, notInArray, sql }
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
-import { openDatabase, immediate } from "../db";
+import { openDatabase, sqliteDb } from "../db";
 import {
   RunnerArtifactSchema,
   RunnerActivitySchema,
@@ -127,6 +127,7 @@ export function openExecutionJournal(root: string) {
   chmodSync(path, 0o600);
   ddl(db);
   const orm = drizzle(db);
+  const store = sqliteDb(db);
   // Recover a crash between recording Paws's decision and changing the execution phase.
   orm
     .update(execution)
@@ -388,22 +389,24 @@ export function openExecutionJournal(root: string) {
         .onConflictDoNothing()
         .run();
     },
-    beginPublication(id: string, result: RunnerResult, lease?: string) {
-      immediate(db, () => {
-        orm
-          .insert(publication)
-          .values({
-            executionId: id,
-            payload: JSON.stringify(RunnerResultSchema.parse(result)),
-            lease: lease ?? null,
-          })
-          .onConflictDoNothing()
-          .run();
-        orm
-          .update(execution)
-          .set({ phase: "publishing" })
-          .where(and(eq(execution.id, id), notInArray(execution.phase, TERMINAL_PHASES)))
-          .run();
+    async beginPublication(id: string, result: RunnerResult, lease?: string) {
+      await store.transaction(function* beginPublicationSteps(q) {
+        yield* q.exec(
+          orm
+            .insert(publication)
+            .values({
+              executionId: id,
+              payload: JSON.stringify(RunnerResultSchema.parse(result)),
+              lease: lease ?? null,
+            })
+            .onConflictDoNothing(),
+        );
+        yield* q.exec(
+          orm
+            .update(execution)
+            .set({ phase: "publishing" })
+            .where(and(eq(execution.id, id), notInArray(execution.phase, TERMINAL_PHASES))),
+        );
       });
       return storedPublication(id)!;
     },
@@ -527,18 +530,19 @@ export function openExecutionJournal(root: string) {
         ) === 1
       );
     },
-    ingest(id: string, bytes: Buffer) {
+    async ingest(id: string, bytes: Buffer) {
       if (bytes.length > 16_777_216) throw new Error("Runner event journal exceeds size limit");
-      immediate(db, () => {
-        const row = orm
-          .select({
-            consumed: execution.consumed,
-            prefixHash: execution.prefixHash,
-            phase: execution.phase,
-          })
-          .from(execution)
-          .where(eq(execution.id, id))
-          .get();
+      await store.transaction(function* ingestSteps(q) {
+        const row = yield* q.one(
+          orm
+            .select({
+              consumed: execution.consumed,
+              prefixHash: execution.prefixHash,
+              phase: execution.phase,
+            })
+            .from(execution)
+            .where(eq(execution.id, id)),
+        );
         if (!row) throw new Error("Unknown execution journal");
         const terminal = row.phase === "complete" || row.phase === "interrupted";
         if (terminal && (bytes.length < row.consumed || bytes.indexOf(10, row.consumed) !== -1))
@@ -553,26 +557,29 @@ export function openExecutionJournal(root: string) {
         // Result replay still validates the consumed prefix of a terminal execution.
         if (terminal) return;
         let offset = row.consumed;
-        let sequence = orm
-          .select({ sequence: sql<number>`COALESCE(MAX(${delivery.sequence}),0)` })
-          .from(delivery)
-          .where(eq(delivery.executionId, id))
-          .get()!.sequence;
-        let message = "";
-        function append(event: z.infer<typeof RunnerEventSchema>, requestId: string | null = null) {
+        let sequence = (yield* q.one(
           orm
-            .insert(delivery)
-            .values({
+            .select({ sequence: sql<number>`COALESCE(MAX(${delivery.sequence}),0)` })
+            .from(delivery)
+            .where(eq(delivery.executionId, id)),
+        ))!.sequence;
+        let message = "";
+        function* append(
+          event: z.infer<typeof RunnerEventSchema>,
+          requestId: string | null = null,
+        ) {
+          yield* q.exec(
+            orm.insert(delivery).values({
               executionId: id,
               sequence: ++sequence,
               payload: JSON.stringify(RunnerEventSchema.parse(event)),
               requestId,
-            })
-            .run();
+            }),
+          );
         }
-        function flushMessage() {
+        function* flushMessage() {
           if (!message) return;
-          append({
+          yield* append({
             type: "activity",
             update: {
               sessionUpdate: "agent_message_chunk",
@@ -588,7 +595,7 @@ export function openExecutionJournal(root: string) {
           const raw = withoutJournalTime(JSON.parse(bytes.subarray(offset, end).toString("utf8")));
           let event: z.infer<typeof RunnerEventSchema> | undefined;
           let requestId: string | null = null;
-          const q = question.safeParse(raw);
+          const asked = question.safeParse(raw);
           const artifactRequest = artifact.safeParse(raw);
           const policy = policyRequest.safeParse(raw);
           const ciRerun = ciRerunRequest.safeParse(raw);
@@ -607,14 +614,14 @@ export function openExecutionJournal(root: string) {
               throw new Error("Artifact request binding changed");
             event = { type: "artifact", artifact: artifactRequest.data.artifact };
             requestId = artifactRequest.data.requestId;
-          } else if (q.success) {
+          } else if (asked.success) {
             event = {
               type: "question",
-              text: q.data.question,
-              ...(q.data.context === undefined ? {} : { context: q.data.context }),
-              options: q.data.options,
+              text: asked.data.question,
+              ...(asked.data.context === undefined ? {} : { context: asked.data.context }),
+              options: asked.data.options,
             };
-            requestId = q.data.requestId;
+            requestId = asked.data.requestId;
           } else {
             if (raw && typeof raw === "object" && "type" in raw && raw.type === "plan") {
               const parsed = RunnerEventSchema.safeParse(raw);
@@ -755,27 +762,28 @@ export function openExecutionJournal(root: string) {
                     const count = Math.min(65_536 - message.length, text.length);
                     message += text.slice(0, count);
                     text = text.slice(count);
-                    if (message.length === 65_536) flushMessage();
+                    if (message.length === 65_536) yield* flushMessage();
                   }
                 } else event = { type: "activity", update: update.data };
               }
             }
           }
           if (event) {
-            flushMessage();
-            append(event, requestId);
+            yield* flushMessage();
+            yield* append(event, requestId);
           }
           offset = end + 1;
         }
-        flushMessage();
-        orm
-          .update(execution)
-          .set({
-            consumed: offset,
-            prefixHash: createHash("sha256").update(bytes.subarray(0, offset)).digest("hex"),
-          })
-          .where(eq(execution.id, id))
-          .run();
+        yield* flushMessage();
+        yield* q.exec(
+          orm
+            .update(execution)
+            .set({
+              consumed: offset,
+              prefixHash: createHash("sha256").update(bytes.subarray(0, offset)).digest("hex"),
+            })
+            .where(eq(execution.id, id)),
+        );
       });
     },
     pending(id: string) {

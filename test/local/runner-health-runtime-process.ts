@@ -118,13 +118,13 @@ if (mode === "prepare") {
   };
   const daemon = openRunnerDaemon(daemonOptions(config));
   try {
-    const pending = coordinator.control.createEnrollment(principal, {
+    const pending = await coordinator.control.createEnrollment(principal, {
       name: "Durable health runner",
     });
 
     const paired = await daemon.enroll("Durable health runner", pending.token);
     if (paired.phase !== "paired") throw new Error("Runner enrollment failed");
-    coordinator.control.setStatus(principal, paired.runnerId, "active");
+    await coordinator.control.setStatus(principal, paired.runnerId, "active");
     assert(paired.phase === "paired");
     if (process.argv[4] === "helpers") {
       config.helpers = true;

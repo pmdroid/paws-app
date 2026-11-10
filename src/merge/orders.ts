@@ -1,38 +1,46 @@
-import { mergeStopRequested } from "../db";
 import type { ask } from "../questions";
 import { journal, journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { mergeQueueLine, type RepositoryBinding } from "../core";
 import {
-  laneCiFailureTime,
-  resetOtherLaneCiFailures,
   artifactPublicationReady,
-  clearPullCiFailures,
+  clearPullCiFailuresSteps,
+  emitJobReady,
   getItemPullRequestSteps,
   getLinearSessionGenerationSteps,
   getWorkItem,
   getWorkItemSteps,
-  immediate,
   joinMergeQueueSteps,
+  laneCiFailureTimeSteps,
   leaveMergeQueueSteps,
   markMergeQueueNotifiedSteps,
-  mergeQueuePosition,
+  mergeQueuePositionSteps,
+  mergeStopRequested,
+  mergeStopRequestedSteps,
   pendingChangeRequests,
-  pendingPullCiFailures,
+  pendingChangeRequestsSteps,
   pendingLinearComments,
+  pendingLinearCommentsSteps,
+  pendingPullCiFailures,
+  pendingPullCiFailuresSteps,
   pendingPullComments,
-  pullReviewCheckWait,
+  pendingPullCommentsSteps,
+  pullReviewCheckWaitSteps,
   rebaseReturnedForSteps,
-  recordPullCiFailure,
-  settlePullCiFailures,
-  wakePullReviews,
   recordCiRound,
+  recordCiRoundSteps,
   recordConfirmedRemoteMergeSteps,
+  recordPullCiFailureSteps,
   recordRebaseReturn,
+  resetOtherLaneCiFailuresSteps,
+  settlePullCiFailuresSteps,
+  wakePullReviewsSteps,
   type CiRound,
   type CiRoundCheck,
   type Db,
   type PullFeedbackWait,
+  type Q,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import {
@@ -49,6 +57,7 @@ import type { RebaseConflict } from "./budget";
 import {
   askMergeHelp,
   rebaseBudgetFor,
+  rebaseBudgetForSteps,
   returnToAgent,
   type MergeRestart,
   type MergeReturnReason,
@@ -69,58 +78,70 @@ const CI_FIX_SOURCE = {
 /**
  * A changes-requested review or a pull request comment that has not reached the agent yet holds
  * the merge. Checked before the merge work and again, synchronously, right before the squash or
- * enqueue call: webhook ingestion runs on the same thread, so feedback recorded before that call
- * always wins.
+ * enqueue call ({@link mergeHeld}): webhook ingestion runs on the same thread, so feedback
+ * recorded before that call always wins.
  */
 export function reviewHold(
-  db: Database,
+  store: Db,
   itemId: string,
   now: number,
   wait: PullFeedbackWait,
-): MergeStep | null {
-  if (!feedbackPending(db, itemId)) return null;
-  if (!pullFeedbackPending(db, itemId))
+): Promise<MergeStep | null> {
+  return store.run(function* (q): Steps<MergeStep | null> {
+    if (!(yield* feedbackPendingSteps(q, itemId))) return null;
+    if (!(yield* pullFeedbackPendingSteps(q, itemId)))
+      return {
+        kind: "wait",
+        message: "A comment on the Linear issue goes to the agent before this pull request merges.",
+        queued: true,
+        reason: "review",
+      };
+    yield* wakePullReviewsSteps(q, itemId, now, wait);
+    const checks = yield* pullReviewCheckWaitSteps(q, itemId);
     return {
       kind: "wait",
-      message: "A comment on the Linear issue goes to the agent before this pull request merges.",
+      message: checks
+        ? `Waiting for review checks on ${checks.head.slice(0, 7)}: ${checks.names.join(", ")}.`
+        : "Requested changes go back to the agent before this pull request merges.",
       queued: true,
       reason: "review",
     };
-  wakePullReviews(db, itemId, now, wait);
-  const checks = pullReviewCheckWait(db, itemId);
-  return {
-    kind: "wait",
-    message: checks
-      ? `Waiting for review checks on ${checks.head.slice(0, 7)}: ${checks.names.join(", ")}.`
-      : "Requested changes go back to the agent before this pull request merges.",
-    queued: true,
-    reason: "review",
-  };
+  });
 }
 
 export async function feedbackHold(
   merge: MergeContext,
   payload: unknown,
 ): Promise<MergeStep | null> {
-  const { db, store, item, caps } = merge;
-  if (!feedbackPending(db, item.id)) return null;
+  const { store, item, caps } = merge;
+  if (!(await store.run((q) => feedbackPendingSteps(q, item.id)))) return null;
   const pull = await store.run((q) => getItemPullRequestSteps(q, item.id));
   const head = ciWaitVerification(payload)?.head ?? item.checkpoint?.wipCommit;
   if (pull !== null && head) await observeHeldCi(merge, { number: pull.pullNumber, head });
   if (caps.stopped()) return { kind: "obsolete" };
-  return reviewHold(db, item.id, caps.now(), caps.feedbackWait());
+  return reviewHold(store, item.id, caps.now(), caps.feedbackWait());
 }
 
 /** All merge paths use the same durable first-failure window, including fresh squash reads. */
 export function collectCiFailure(
-  { db, item, caps }: MergeContext,
+  merge: MergeContext,
   pullNumber: number,
   head: string,
   ci: Readiness,
-): Readiness {
-  resetOtherLaneCiFailures(db, item.id, head);
+): Promise<Readiness> {
+  return merge.store.run((q) => collectCiFailureSteps(q, merge, pullNumber, head, ci));
+}
+
+function* collectCiFailureSteps(
+  q: Q,
+  { item, caps }: Pick<MergeContext, "item" | "caps">,
+  pullNumber: number,
+  head: string,
+  ci: Readiness,
+): Steps<Readiness> {
+  yield* resetOtherLaneCiFailuresSteps(q, item.id, head);
   if (ci.outcome !== "ci_failed") return ci;
-  const first = laneCiFailureTime(db, {
+  const first = yield* laneCiFailureTimeSteps(q, {
     itemId: item.id,
     head,
     pullNumber,
@@ -135,7 +156,7 @@ export function collectCiFailure(
 }
 
 export async function observeHeldCi(
-  { db, store, item, caps }: MergeContext,
+  { store, item, caps }: MergeContext,
   pull: { number: number; head: string },
 ): Promise<void> {
   const ci = await caps.readPullCi(item, pull).catch((error: unknown): PullCi => {
@@ -143,36 +164,37 @@ export async function observeHeldCi(
     return { state: "unknown", message: "could not read GitHub CI" };
   });
   if (caps.stopped() || (ci.state === "unknown" && ci.moved !== true)) return;
-  immediate(db, () => {
-    const current = getWorkItem(db, item.id);
+  const enqueued = await store.transaction(function* (q): Steps<boolean> {
+    const current = yield* getWorkItemSteps(q, item.id);
     if (
       current === null ||
       current.version !== item.version ||
       current.state !== "merge_queue" ||
       current.cancelRequested ||
-      mergeStopRequested(db, item.id)
+      (yield* mergeStopRequestedSteps(q, item.id))
     )
-      return;
-    resetOtherLaneCiFailures(db, item.id, pull.head);
+      return false;
+    yield* resetOtherLaneCiFailuresSteps(q, item.id, pull.head);
     if (ci.state === "unknown") {
-      settlePullCiFailures(db, pendingPullCiFailures(db, item.id), "dropped", caps.now());
-      return;
+      const pending = yield* pendingPullCiFailuresSteps(q, item.id);
+      yield* settlePullCiFailuresSteps(q, pending, "dropped", caps.now());
+      return false;
     }
     if (ci.state !== "failed") {
-      clearPullCiFailures(db, item.id, pull.head, caps.now());
-      return;
+      yield* clearPullCiFailuresSteps(q, item.id, pull.head, caps.now());
+      return false;
     }
-    const collected = collectCiFailure({ db, store, item, caps }, pull.number, pull.head, {
+    const collected = yield* collectCiFailureSteps(q, { item, caps }, pull.number, pull.head, {
       outcome: "ci_failed",
       message: ci.message ?? "CI failed on the candidate commit",
       failedChecks: ci.failedChecks,
       checks: ci.checks,
       waitingChecks: ci.waitingChecks,
     });
-    if (collected.outcome === "pending") return;
+    if (collected.outcome === "pending") return false;
     const waiting = new Set(ci.waitingChecks?.map((check) => check.name));
-    recordPullCiFailure(
-      db,
+    const recorded = yield* recordPullCiFailureSteps(
+      q,
       {
         itemId: item.id,
         head: pull.head,
@@ -199,7 +221,9 @@ export async function observeHeldCi(
       },
       caps.feedbackWait(),
     );
+    return recorded.enqueued;
   });
+  if (enqueued) emitJobReady(store);
 }
 
 /** Whether the merge call must not be made now: stopped, artifacts missing, or a review pending. */
@@ -209,6 +233,25 @@ export function mergeHeld({ db, item, caps }: MergeContext): boolean {
     mergeStopRequested(db, item.id) ||
     !artifactPublicationReady(db, item.id) ||
     feedbackPending(db, item.id)
+  );
+}
+
+function* feedbackPendingSteps(q: Q, itemId: string): Steps<boolean> {
+  return (
+    (yield* pullFeedbackPendingSteps(q, itemId)) ||
+    (yield* pendingLinearCommentsSteps(q, itemId)).length > 0
+  );
+}
+
+function* pullFeedbackPendingSteps(q: Q, itemId: string): Steps<boolean> {
+  if (
+    (yield* pendingChangeRequestsSteps(q, itemId)).length > 0 ||
+    (yield* pendingPullCommentsSteps(q, itemId)).length > 0
+  )
+    return true;
+  const version = (yield* getWorkItemSteps(q, itemId))?.version;
+  return (yield* pendingPullCiFailuresSteps(q, itemId)).some(
+    (failure) => failure.itemVersion === version,
   );
 }
 
@@ -339,6 +382,30 @@ export function ciRound(
   });
 }
 
+/** {@link ciRound} on the store, for a caller outside a synchronous transaction. */
+export function ciRoundAsync(
+  { store, item, caps }: MergeContext,
+  head: string,
+  checks: readonly CiRoundCheck[] | undefined,
+  next: CiRound["next"],
+  limit: number,
+  fix: number | null,
+): Promise<void> {
+  return store.run(function* (q) {
+    const current = yield* getWorkItemSteps(q, item.id);
+    yield* recordCiRoundSteps(q, {
+      itemId: item.id,
+      head,
+      runId: current?.currentRunId ?? item.currentRunId,
+      next,
+      fix,
+      fixLimit: limit,
+      checks: [...(checks ?? [])],
+      recordedAt: caps.now(),
+    });
+  });
+}
+
 export async function mergeQueueTurn(
   { db, store, item, caps }: MergeContext,
   repository: { owner: string; repo: string },
@@ -356,7 +423,10 @@ export async function mergeQueueTurn(
     ...credentials(github),
   });
   if (caps.stopped()) return undefined;
-  if (review === "unreadable" && mergeQueuePosition(db, item.id, held) === null)
+  if (
+    review === "unreadable" &&
+    (await store.run((q) => mergeQueuePositionSteps(q, item.id, held))) === null
+  )
     return {
       message: "Could not read the pull request's reviews.",
       queued: true,
@@ -387,7 +457,7 @@ export async function mergeQueueTurn(
       now: caps.now(),
     }),
   );
-  const place = mergeQueuePosition(db, item.id, held);
+  const place = await store.run((q) => mergeQueuePositionSteps(q, item.id, held));
   if (place === null) return undefined;
   // A busy task ahead keeps its place but does not hold the lane: the first ready task moves.
   const nextId = place.nextItemId;
@@ -450,7 +520,7 @@ async function reviewWaitConflict(
     journal(`${found}: sent back to the agent to rebase`);
     return { kind: "returned" };
   }
-  const budget = rebaseBudgetFor(db, item.id, conflict, caps.now());
+  const budget = await store.run((q) => rebaseBudgetForSteps(q, item.id, conflict, caps.now()));
   if (
     budget.allowed ||
     !askHelp(
@@ -498,7 +568,7 @@ export async function mergeThroughGitHubQueue(
   const { db, store, item, caps } = merge;
   const { repository, github, pull, head } = published;
   const name = `${repository.owner}/${repository.repo}`;
-  resetOtherLaneCiFailures(db, item.id, head);
+  await store.run((q) => resetOtherLaneCiFailuresSteps(q, item.id, head));
   const watch = githubQueueWatch(payload) ?? { queued: false };
   const result = await githubQueueMerge({
     owner: repository.owner,
@@ -518,7 +588,7 @@ export async function mergeThroughGitHubQueue(
   // The review job may take the pull request out of GitHub's queue meanwhile; that removal is
   // the review's, not a person's or a failed check's.
   if (result.outcome !== "merged") {
-    const held = reviewHold(db, item.id, caps.now(), caps.feedbackWait());
+    const held = await reviewHold(store, item.id, caps.now(), caps.feedbackWait());
     if (held) return held;
   }
   switch (result.outcome) {
@@ -569,7 +639,7 @@ export async function mergeThroughGitHubQueue(
       );
       return { kind: "merged" };
     case "ci_failed": {
-      const ci = collectCiFailure(merge, pull.number, head, result.readiness);
+      const ci = await collectCiFailure(merge, pull.number, head, result.readiness);
       if (ci.outcome === "pending")
         return { kind: "wait", reason: "ci", message: ci.message, head, githubQueue: watch };
       return githubQueueCiFailed(
@@ -598,7 +668,9 @@ export async function mergeThroughGitHubQueue(
           return null;
         });
         const conflict: RebaseConflict = { base, files: null };
-        const budget = rebaseBudgetFor(db, item.id, conflict, caps.now());
+        const budget = await store.run((q) =>
+          rebaseBudgetForSteps(q, item.id, conflict, caps.now()),
+        );
         if (
           base !== null &&
           sendBack(

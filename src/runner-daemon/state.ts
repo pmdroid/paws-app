@@ -124,6 +124,10 @@ export async function prepareState(
   }
 }
 
+export function retireIdentity(root: string, at: number): void {
+  renameSync(join(root, "identity"), join(root, `identity.replaced-${at}`));
+}
+
 export function localKey(root: string): string {
   const key = readSecretFile(join(root, "identity", "runner-key.pem"));
   if (!key) throw new Error("Runner private key is missing.");

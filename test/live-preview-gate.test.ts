@@ -61,9 +61,11 @@ async function assignedPreview(runnerVersion: string) {
     const pending = { name: "Runner", csr: (await createRunnerKey(join(root, "client"))).csr };
     const { runnerId } = await control.enroll({
       ...pending,
-      token: control.createEnrollment(
-        { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: now(), teamIds: [] },
-        pending,
+      token: (
+        await control.createEnrollment(
+          { workspaceId: workspace.id, userId, role: "admin", authenticatedAt: now(), teamIds: [] },
+          pending,
+        )
       ).token,
     });
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);

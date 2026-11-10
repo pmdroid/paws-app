@@ -140,7 +140,7 @@ export async function probeRunnerEnrollment(
       body: JSON.stringify(body),
     });
   try {
-    assert.throws(
+    await assert.rejects(
       () => control.createEnrollment(inactive, { name: "inactive-host" }),
       /Active workspace membership/,
     );
@@ -210,7 +210,7 @@ export async function probeRunnerEnrollment(
     assert.equal(identity.workspaceId, workspace.id);
     assert.equal(identity.authority, authority.certificate);
     const peer = describeRunnerCertificate(identity.certificate);
-    assert.equal(control.authenticate(peer).id, identity.runnerId);
+    assert.equal((await control.authenticate(peer)).id, identity.runnerId);
     assert.equal(getRunner(db, identity.runnerId)!.ownerUserId, member.userId);
     assert.equal(getRunner(db, identity.runnerId)!.name, "member-host");
     assert.equal(getRunner(db, identity.runnerId)!.status, "paused");
@@ -230,7 +230,7 @@ export async function probeRunnerEnrollment(
       post("/api/runner-enrollments", { token: "x".repeat(43), name: "again", csr: host.csr }),
     );
     assert.equal(unknown.status, 401);
-    const expiring = control.createEnrollment(member, { name: "late" });
+    const expiring = await control.createEnrollment(member, { name: "late" });
     now = expiring.expiresAt;
     await assert.rejects(
       () => control.enroll({ token: expiring.token, name: "late", csr: host.csr }),
@@ -244,7 +244,7 @@ export async function probeRunnerEnrollment(
       runners: runners(),
     });
 
-    const leaving = control.createEnrollment(member, { name: "leaving" });
+    const leaving = await control.createEnrollment(member, { name: "leaving" });
     syncWorkspaceMember(db, {
       workspaceId: workspace.id,
       userId: member.userId,

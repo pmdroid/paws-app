@@ -100,7 +100,7 @@ async function remoteFixture(
   const polling = new AbortController();
   let loop: Promise<void> | undefined;
   try {
-    const enrollmentGrant = coordinator.control.createEnrollment(
+    const enrollmentGrant = await coordinator.control.createEnrollment(
       {
         workspaceId: "workspace",
         userId: "admin",
