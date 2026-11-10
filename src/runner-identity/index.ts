@@ -6,5 +6,5 @@ export {
   validateRunnerRequest,
 } from "./certificates";
 export type { RunnerAuthority, RunnerCertificate } from "./certificates";
-export { startRunnerListener } from "./listener";
+export { RUNNER_IDENTITY_REJECTED, RUNNER_REVOKED_FENCED, startRunnerListener } from "./listener";
 export type { RunnerListener, RunnerPeer, RunnerTls } from "./listener";

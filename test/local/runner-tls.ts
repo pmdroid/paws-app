@@ -196,7 +196,10 @@ export async function probeRunnerTls(root: string, observe: Observe): Promise<vo
     pawsRevoked.add(lapsed.fingerprint);
     listener.revoke(lapsed.fingerprint);
     const revokedRefusal = await denied({ cert: lapsed.pem, key });
-    assert.deepEqual(lapsedRefusal, { status: 403, body: "" });
+    assert.deepEqual(lapsedRefusal, {
+      status: 403,
+      body: JSON.stringify({ error: "Runner identity is revoked or expired." }),
+    });
     assert.equal((revokedRefusal as { status: number }).status, 403);
     assert.equal(JSON.parse((revokedRefusal as { body: string }).body).code, "fenced");
     observe(
