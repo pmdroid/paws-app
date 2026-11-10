@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
-  failRetroAttempt,
-  getRetro,
-  publishRetro,
-  readRetroArtifact,
+  failRetroAttemptSteps,
+  getRetroSteps,
+  publishRetroSteps,
+  readRetroArtifactSteps,
+  sqliteDb,
   type ImprovementActionStep,
+  type Q,
   type RetroItemInput,
   type RetroPublication,
+  type Steps,
 } from "../db";
 import type { RetroDigest, RetroDigestRecord } from "./digest";
 import { retroAttemptLimits } from "./settings";
@@ -850,16 +853,34 @@ export type RetroSettlement =
     }
   | Extract<RetroPublication, { ok: false }>;
 
+type AttemptSettlement = {
+  retroId: string;
+  attempt: number;
+  owner: string;
+  output: string | null;
+  now: number;
+};
+
 export function settleRetroAttempt(
   db: Database,
   root: string,
-  input: { retroId: string; attempt: number; owner: string; output: string | null; now: number },
-): RetroSettlement {
-  const retro = getRetro(db, input.retroId);
+  input: AttemptSettlement,
+): Promise<RetroSettlement> {
+  return sqliteDb(db).transaction((q) => settleRetroAttemptSteps(q, root, input));
+}
+
+export function* settleRetroAttemptSteps(
+  q: Q,
+  root: string,
+  input: AttemptSettlement,
+): Steps<RetroSettlement> {
+  const retro = yield* getRetroSteps(q, input.retroId);
   if (retro === null || retro.digestSha256 === null) return { ok: false, reason: "not_found" };
-  const stored = readRetroArtifact(db, root, retro.id, "digest");
+  const stored = yield* readRetroArtifactSteps(q, root, retro.id, "digest");
   if (!stored.ok || stored.artifact.sha256 !== retro.digestSha256) {
-    failRetroAttempt(db, { ...input, error: "digest_unreadable", now: input.now });
+    yield* q.transaction((tx) =>
+      failRetroAttemptSteps(tx, { ...input, error: "digest_unreadable", now: input.now }),
+    );
     return { ok: false, reason: "digest_unreadable" };
   }
   const digest = JSON.parse(new TextDecoder().decode(stored.bytes)) as RetroDigest;
@@ -882,13 +903,16 @@ export function settleRetroAttempt(
       limits: retroOutputLimits(retro.outputLimits),
     });
   if (!validated.ok) {
-    const recorded = failRetroAttempt(db, {
-      retroId: retro.id,
-      attempt: input.attempt,
-      owner: input.owner,
-      error: retroDiagnosticError(validated.diagnostic),
-      now: input.now,
-    });
+    const diagnostic = validated.diagnostic;
+    const recorded = yield* q.transaction((tx) =>
+      failRetroAttemptSteps(tx, {
+        retroId: retro.id,
+        attempt: input.attempt,
+        owner: input.owner,
+        error: retroDiagnosticError(diagnostic),
+        now: input.now,
+      }),
+    );
     return {
       ok: false,
       reason: "invalid_result",
@@ -897,14 +921,17 @@ export function settleRetroAttempt(
       retryable: recorded && input.attempt < retroAttemptLimits(retro.executionLimits).maxAttempts,
     };
   }
-  const publication = publishRetro(db, {
-    retroId: retro.id,
-    attempt: input.attempt,
-    owner: input.owner,
-    result: validated.report,
-    items: retroReportItems(validated.report),
-    now: input.now,
-  });
+  const report = validated.report;
+  const publication = yield* q.transaction((tx) =>
+    publishRetroSteps(tx, {
+      retroId: retro.id,
+      attempt: input.attempt,
+      owner: input.owner,
+      result: report,
+      items: retroReportItems(report),
+      now: input.now,
+    }),
+  );
   if (!publication.ok) return publication;
   return { ok: true, report: validated.report, publication };
 }

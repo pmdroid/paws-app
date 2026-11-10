@@ -90,6 +90,7 @@ import {
   retroOutputLimits,
   retroRepairProblems,
   settleRetroAttempt,
+  settleRetroAttemptSteps,
 } from "./result";
 import { retroAttemptLimits, type RetroAgentProfile } from "./settings";
 import type { RetroDigest } from "./digest";
@@ -434,7 +435,7 @@ export function createRetroDispatcher(options: {
       if (identity === null || !(yield* runnerHasWorkspaceAuthoritySteps(q, identity)))
         yield* fail("The runner's owner lost workspace authority before the result arrived.");
       else if (result.outcome === "completed") {
-        const settled = settleRetroAttempt(db, root, {
+        const settled = yield* settleRetroAttemptSteps(q, root, {
           retroId: dispatch.retroId,
           attempt: dispatch.attempt,
           owner: owner(dispatch.commandId),
@@ -573,7 +574,7 @@ export function createRetroDispatcher(options: {
           : null;
       });
       if (started === null) return;
-      const settled = settleRetroAttempt(db, root, {
+      const settled = await settleRetroAttempt(db, root, {
         retroId: retro.id,
         attempt: started,
         owner: LOCAL_OWNER,
