@@ -1126,10 +1126,10 @@ export class Orchestrator {
     const wait = policy.wait?.() ?? this.feedbackWait();
     for (const received of receivedLinearComments(this.db)) {
       if (received.issueId !== comment.issueId) continue;
-      const route = routeLinearComment(this.db, received, policy);
+      const route = await routeLinearComment(this.db, received, policy);
       const authorized =
         route.kind === "queue" ? await authorizeLinearComment(route, policy) : true;
-      commitLinearCommentRoute(this.db, received.commentId, route, {
+      await commitLinearCommentRoute(this.db, received.commentId, route, {
         now: this.now(),
         wait,
         authorized,
