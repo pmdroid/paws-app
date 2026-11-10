@@ -259,11 +259,11 @@ test("a Linear reply that says approve requests changes and never approves", asy
   );
 });
 
-test("a new head closes the open ask unless it has the same patch", () => {
+test("a new head closes the open ask unless it has the same patch", async () => {
   const { db, itemId, question } = reviewing();
-  expect(closeLinkAsksOnHead(db, itemId, "rebased", NOW + 10, [question.id])).toBe(0);
+  expect(await closeLinkAsksOnHead(db, itemId, "rebased", NOW + 10, [question.id])).toBe(0);
   expect(getLinkAsk(db, question.id)?.closedAt).toBeNull();
-  expect(closeLinkAsksOnHead(db, itemId, "different", NOW + 20)).toBe(1);
+  expect(await closeLinkAsksOnHead(db, itemId, "different", NOW + 20)).toBe(1);
   expect(getLinkAsk(db, question.id)?.closedReason).toBe("head_moved");
   expect(findOpenQuestion(db, "ses_1")).toBeNull();
 });

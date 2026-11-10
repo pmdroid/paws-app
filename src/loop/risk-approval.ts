@@ -224,7 +224,7 @@ export async function askRiskApproval(
   const item = await store.run((q) => getWorkItemSteps(q, input.item.id));
   if (item === null || item.cancelRequested || item.state !== "merge_queue") return "unavailable";
   if (!riskGateOn(input.publicUrl) || item.sessionKey === null) return "unavailable";
-  closeLinkAsksOnHead(db, item.id, input.head, input.now);
+  await closeLinkAsksOnHead(db, item.id, input.head, input.now);
   if ((await openRiskAsk(store, item.id)) !== null) return "asked";
   const risk = await store.run((q) => getCandidateRiskSteps(q, item.id, input.head));
   const fix = await store.run((q) => getRiskFixSteps(q, item.id, input.head));

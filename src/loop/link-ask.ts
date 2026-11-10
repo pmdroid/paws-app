@@ -8,7 +8,6 @@ import {
   applyWorkItemEventSteps,
   approveCloseoutBypassChecksSteps,
   auditWorkspaceAccessSteps,
-  closeLinkAsk,
   closeLinkAskSteps,
   delegatedLinearUserId,
   emitJobReady,
@@ -17,14 +16,13 @@ import {
   enqueueOutboxOnceSteps,
   failWorkItemSteps,
   getLinkAskSteps,
-  getWorkItem,
   getWorkItemSteps,
   immediate,
   listCloseoutBypassChecksSteps,
   listCloseoutRecoveriesSteps,
   LINK_ASK_DECISIONS,
   LINK_ASK_NOTE_REQUIRED,
-  openLinkAsks,
+  openLinkAsksSteps,
   recordLinkAskDecisionSteps,
   saveCheckpointSteps,
   sqliteDb,
@@ -603,20 +601,20 @@ export async function guideLinkAsk(
  * `keep` names asks whose commit has the same patch as `head`, which stay
  * open. Returns how many closed.
  */
-export function closeLinkAsksOnHead(
+export async function closeLinkAsksOnHead(
   db: Database,
   itemId: string,
   head: string,
   now: number,
   keep: readonly string[] = [],
-): number {
-  return immediate(db, () => {
-    const moved = openLinkAsks(db, itemId).filter(
+): Promise<number> {
+  return await sqliteDb(db).transaction(function* (q) {
+    const moved = (yield* openLinkAsksSteps(q, itemId)).filter(
       (entry) => entry.headCommit !== head && !keep.includes(entry.questionId),
     );
-    const item = getWorkItem(db, itemId);
+    const item = yield* getWorkItemSteps(q, itemId);
     for (const linkAsk of moved) {
-      closeLinkAsk(db, linkAsk.questionId, { reason: "head_moved", now });
+      yield* closeLinkAskSteps(q, linkAsk.questionId, { reason: "head_moved", now });
       const question = getQuestion(db, linkAsk.questionId);
       if (question?.status === "open" || question?.status === "queued")
         cancelQuestion(db, linkAsk.questionId, now);

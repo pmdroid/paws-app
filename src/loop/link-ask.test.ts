@@ -236,8 +236,8 @@ test("no reminder once the ask is decided", async () => {
 
 test("a new head closes the open ask", async () => {
   const { db, question } = asked();
-  expect(closeLinkAsksOnHead(db, "PAS-633", HEAD, NOW + 50)).toBe(0);
-  expect(closeLinkAsksOnHead(db, "PAS-633", "4b317d5ffff", NOW + 100)).toBe(1);
+  expect(await closeLinkAsksOnHead(db, "PAS-633", HEAD, NOW + 50)).toBe(0);
+  expect(await closeLinkAsksOnHead(db, "PAS-633", "4b317d5ffff", NOW + 100)).toBe(1);
   expect(getLinkAsk(db, question.id)).toMatchObject({ closedReason: "head_moved", decision: null });
   expect(getQuestion(db, question.id)?.status).toBe("cancelled");
   expect(findOpenQuestion(db, "ses_1")).toBeNull();

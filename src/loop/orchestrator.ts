@@ -3910,13 +3910,13 @@ export class Orchestrator {
   ): Promise<void> {
     if (options.startRound) await this.startCloseoutRound(item, head);
     if (
-      closeLinkAsksOnHead(
+      (await closeLinkAsksOnHead(
         this.db,
         item.id,
         head,
         this.now(),
         await this.samePatchVisualReview(item, worktree, base, head),
-      ) > 0
+      )) > 0
     )
       await this.flush();
     if (!options.decide && (await this.openVisualReviewCheck(item, worktree, base, head)))
