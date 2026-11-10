@@ -101,7 +101,7 @@ import {
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
 import { restartForPushConflict } from "./push-conflict";
 import {
-  saveHumanRetryWindow,
+  saveHumanRetryWindowSteps,
   fixRounds,
   restartLimit,
   type RestartHandoff,
@@ -290,7 +290,6 @@ import {
   getLinearTaskDelegation,
   getLinearSessionGeneration,
   getLinearSession,
-  listPendingLinearTurns,
   saveTaskMode,
   selectTaskModeForTurn,
   completeAnswerTask,
@@ -298,7 +297,6 @@ import {
   getTaskClassification,
   accrueAwake,
   enqueueJobOnce,
-  recordRebaseReturn,
   enqueueOutboxOnce,
   lastOutboxSequence,
   getOutbox,
@@ -366,8 +364,6 @@ import {
   setRunningCloseoutStepDetail,
   markRun,
   releaseRunCapacity,
-  getItemPullRequest,
-  getItemBranchState,
   saveVisualReviewMarks,
   type VisualReviewMark,
   listRunsSteps,
@@ -401,7 +397,6 @@ import {
   assignUnownedItemSteps,
   bumpItemVersionSteps,
   cancelItemPendingJobsSteps,
-  clearItemRecovery,
   clearItemRecoverySteps,
   hasOpenItemJob,
   itemOwnerUserIdSteps,
@@ -726,7 +721,7 @@ import {
 } from "./open-findings";
 import type { RuntimeList } from "../runtimes";
 import { createRuntimeLists } from "./runtime-lists";
-import { startFreshBudget } from "./time-budget";
+import { startFreshBudgetSteps } from "./time-budget";
 import { HOST_DISK_FULL_THOUGHT, hostDiskFullThoughtKey } from "./disk-full";
 import { questionEffects } from "./question-effects";
 import { GitHubInstallationCheck, type GitHubIntegration } from "./github-integration";
@@ -8639,21 +8634,25 @@ export class Orchestrator {
     await this.pullCloseoutEvidence(item);
     const retryBaseline = await snapshotRetryBaseline(itemPathId(item), this.options.pawsRoot);
 
-    immediate(this.db, () => {
-      const current = getWorkItem(this.db, item!.id);
+    const target = item;
+    const now = this.now();
+    const caps = this.options.caps;
+    const timeLimitsSteps = (q: Q, itemId: string) => this.timeLimitsSteps(q, itemId);
+    const restarted = await this.store.transaction(function* (q) {
+      const current = yield* getWorkItemSteps(q, target.id);
       if (
         !current ||
         current.state === "cancelled" ||
-        getLinearSessionGeneration(this.db, sessionId) !== generation ||
+        (yield* getLinearSessionGenerationSteps(q, sessionId)) !== generation ||
         (current.cancelRequested && !before?.cancelRequested)
       )
-        return;
-      const pending = listPendingLinearTurns(this.db, sessionId);
-      if (!pending.length) return;
+        return false;
+      const pending = yield* listPendingLinearTurnsSteps(q, sessionId);
+      if (!pending.length) return false;
       const moved =
         current.version !== before?.version ||
-        (getItemBranchState(this.db, item!.id)?.head ?? null) !== branchHead;
-      const pull = getItemPullRequest(this.db, item!.id);
+        ((yield* getItemBranchStateSteps(q, target.id))?.head ?? null) !== branchHead;
+      const pull = yield* getItemPullRequestSteps(q, target.id);
       const context =
         ci === null || pull === null
           ? null
@@ -8667,33 +8666,37 @@ export class Orchestrator {
       const handoff = [...pending.map((turn) => turn.body), ...(context ? [context] : [])].join(
         "\n\n",
       );
-      if (current.state === "paused") cancelItemQuestions(this.db, current.id, this.now());
-      if (item!.cancelRequested || item!.state === "failed") clearItemRecovery(this.db, item!.id);
-      startFreshBudget(this.db, {
-        itemId: item!.id,
+      if (current.state === "paused") yield* cancelItemQuestionsSteps(q, current.id, now);
+      if (target.cancelRequested || target.state === "failed")
+        yield* clearItemRecoverySteps(q, target.id);
+      yield* startFreshBudgetSteps(q, {
+        itemId: target.id,
         sessionId,
         key: jobKey,
-        maxAwakeMs: this.options.caps?.maxAwakeMs,
-        limits: this.timeLimits(item!.id),
-        now: this.now(),
+        maxAwakeMs: caps?.maxAwakeMs,
+        limits: yield* timeLimitsSteps(q, target.id),
+        now,
       });
-      const jobId = restart(this.db, getWorkItem(this.db, item!.id)!, {
+      const restartedJob = yield* restartSteps(q, (yield* getWorkItemSteps(q, target.id))!, {
         reason: rebase ? "conflict" : "follow_up",
         body: rebase ? `${REBASE_CONFLICT_INSTRUCTION}\n\n${handoff}` : handoff,
         jobKey,
-        now: this.now(),
+        now,
       });
-      if (jobId !== null) saveHumanRetryWindow(this.db, item!.id, jobId, retryBaseline);
+      const jobId = restartedJob?.id ?? null;
+      if (jobId !== null) yield* saveHumanRetryWindowSteps(q, target.id, jobId, retryBaseline);
       if (rebase && jobId !== null)
-        recordRebaseReturn(this.db, {
-          itemId: item!.id,
+        yield* recordRebaseReturnSteps(q, {
+          itemId: target.id,
           jobId,
           candidate: null,
           reason: "linear",
           ...conflict,
-          recordedAt: this.now(),
+          recordedAt: now,
         });
+      return restartedJob?.armed === true;
     });
+    if (restarted) emitJobReady(this.store);
     await this.flush();
   }
 
