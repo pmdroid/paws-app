@@ -1,5 +1,6 @@
 import {
   getTaskMergeSettingsSteps,
+  getTaskLinearReadSteps,
   keepTaskLinearReadSteps,
   keepTaskMergeSettingsSteps,
   mergeCallInFlightSteps,
@@ -3167,9 +3168,9 @@ export class Orchestrator {
     );
     if (candidates.length === 1) return candidates[0]!;
     if (candidates.length === 0 || !this.tracker?.issueRepositoryHints) return null;
-    const kept = getTaskLinearRead(this.db, item.id, "repository_hints") as
-      | RepositoryHints
-      | undefined;
+    const kept = (await this.store.run((q) =>
+      getTaskLinearReadSteps(q, item.id, "repository_hints"),
+    )) as RepositoryHints | undefined;
     const hints =
       kept ??
       (await linearCaller("repository-hints", () =>
@@ -3178,7 +3179,9 @@ export class Orchestrator {
         }),
       ));
     if (kept === undefined)
-      keepTaskLinearRead(this.db, item.id, "repository_hints", hints, this.now());
+      await this.store.run((q) =>
+        keepTaskLinearReadSteps(q, item.id, "repository_hints", hints, this.now()),
+      );
     const hinted = hintedRepository(candidates, hints);
     return hinted && "bind" in hinted ? hinted.bind : null;
   }
@@ -3223,9 +3226,11 @@ export class Orchestrator {
     const delegatedIssueId = this.delegationIssueId(item);
     if (!saved && !classification && taskKey && sessionKey && delegatedIssueId) {
       if (await this.hasOpenPawsPull(item)) {
-        if (this.stopped(item.id) || getLinearSessionGeneration(this.db, sessionKey) !== generation)
+        if (this.stopped(item.id) || (await sessionGeneration(sessionKey)) !== generation)
           return false;
-        saveTaskMode(this.db, item.id, "code", generation, false);
+        await this.store.transaction((q) =>
+          saveTaskModeSteps(q, item.id, "code", generation, false),
+        );
         return true;
       }
       classification = await this.taskPlanner.plan({
