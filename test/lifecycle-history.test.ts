@@ -18,6 +18,7 @@ import {
   saveCheckpoint,
   savePlanProposal,
   saveTaskMode,
+  sqliteDb,
 } from "../src/db";
 import { ask, questionEffects, restart } from "../src/loop";
 import { answer } from "../src/questions";
@@ -51,7 +52,7 @@ function reply(db: Database, body: string, now: number) {
   );
 }
 
-function askedAtTimeLimit() {
+async function askedAtTimeLimit() {
   const clock = new FakeClock(Date.now());
   const db = database();
   const item = insertQueuedItem(db, {
@@ -64,13 +65,13 @@ function askedAtTimeLimit() {
   const now = clock.now();
   applyWorkItemEvent(db, item.id, "turn_ended", { now });
   applyWorkItemEvent(db, item.id, "closeout_accepted", { now });
-  markCloseoutAccepted(db, item.id, "accepted");
+  await markCloseoutAccepted(sqliteDb(db), item.id, "accepted");
   applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review", now });
   applyWorkItemEvent(db, item.id, "dispatched", { now });
   saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
-  accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+  await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
   clock.advance(31 * MINUTE);
-  accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+  await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
   const request = listJobs(db).find((job) => job.queue === "item.ask")!.payload as {
     body: string;
     options: string[];
@@ -88,7 +89,7 @@ function askedAtTimeLimit() {
 }
 
 test("Merge at the time limit records one acceptance, no agent turn, and no running time", async () => {
-  const { clock, db, itemId, askedAt } = askedAtTimeLimit();
+  const { clock, db, itemId, askedAt } = await askedAtTimeLimit();
   clock.advance(10 * MINUTE);
   expect(reply(db, "Merge the accepted work", clock.now()).status).toBe("answered");
   expect(history(db, itemId, askedAt)).toEqual(["awaiting_input -closeout_accepted-> merge_queue"]);
@@ -107,8 +108,8 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
   expect(restartedFromMergeQueue(db, itemId)).toBe(true);
 });
 
-test("Stop at the time limit records answer_stopped from the wait, not a run failure", () => {
-  const { clock, db, itemId, askedAt } = askedAtTimeLimit();
+test("Stop at the time limit records answer_stopped from the wait, not a run failure", async () => {
+  const { clock, db, itemId, askedAt } = await askedAtTimeLimit();
   expect(reply(db, "Stop", clock.now()).status).toBe("answered");
   expect(history(db, itemId, askedAt)).toEqual(["awaiting_input -answer_stopped-> failed"]);
 });
