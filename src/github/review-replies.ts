@@ -33,6 +33,21 @@ export async function replyToReviewComment(
     throw new Error(`GitHub review comment reply failed: status ${response.status}`);
 }
 
+export async function reactToComment(
+  input: Access & { commentId: number; on: "review" | "conversation" },
+): Promise<void> {
+  const token = await acquireOperationToken(input, "pr");
+  const kind = input.on === "review" ? "pulls" : "issues";
+  const response = await input.client.request({
+    method: "POST",
+    path: repoApiPath(input.owner, input.repo, `/${kind}/comments/${input.commentId}/reactions`),
+    token,
+    body: { content: "eyes" },
+  });
+  if (response.status !== 200 && response.status !== 201)
+    throw new Error(`GitHub comment reaction failed: status ${response.status}`);
+}
+
 /** Add a comment to the pull request's conversation. */
 export async function commentOnPullRequest(
   input: Access & { prNumber: number; body: string },
@@ -85,22 +100,25 @@ export type FakeReviewReplies = {
   comments: { prNumber: number; body: string }[];
   /** Thread node ids resolved. */
   resolved: string[];
+  reactions: { on: "review" | "conversation"; commentId: number; content: string }[];
   respond(request: { method: string; path: string; body?: unknown }): GitHubResponse | null;
 };
 
 /**
- * Records review replies, conversation comments and thread resolutions. `respond` answers those
- * three requests and returns null for any other.
+ * Records review replies, conversation comments, reactions and thread resolutions. `respond`
+ * answers those four requests and returns null for any other.
  */
 export function createFakeReviewReplies(): FakeReviewReplies {
   const fake: FakeReviewReplies = {
     replies: [],
     comments: [],
     resolved: [],
+    reactions: [],
     respond(request) {
       if (request.method !== "POST") return null;
       const body = (request.body ?? {}) as {
         body?: string;
+        content?: string;
         query?: string;
         variables?: Record<string, unknown>;
       };
@@ -110,6 +128,15 @@ export function createFakeReviewReplies(): FakeReviewReplies {
           prNumber: Number(reply[1]),
           commentId: Number(reply[2]),
           body: body.body ?? "",
+        });
+        return { status: 201, body: {} };
+      }
+      const reaction = /\/(pulls|issues)\/comments\/(\d+)\/reactions$/.exec(request.path);
+      if (reaction) {
+        fake.reactions.push({
+          on: reaction[1] === "pulls" ? "review" : "conversation",
+          commentId: Number(reaction[2]),
+          content: body.content ?? "",
         });
         return { status: 201, body: {} };
       }

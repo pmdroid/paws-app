@@ -105,6 +105,7 @@ function fixtureGitHub(input: {
   /** `dirty`: GitHub reports the pull request conflicting with main and runs no checks on it. */
   ci: { pending: boolean; failed: boolean; dirty: boolean };
   calls: GitHubCall[];
+  comments: Map<number, { body: string; html_url: string }[]>;
   closed: Set<number>;
   merged: Map<number, string>;
   opened: FakeGitHub["opened"];
@@ -213,7 +214,7 @@ function fixtureGitHub(input: {
       }
     },
   };
-  return { client, ci, calls, closed, merged, opened: pulls.opened };
+  return { client, ci, calls, comments, closed, merged, opened: pulls.opened };
 }
 
 export const ACME = {
