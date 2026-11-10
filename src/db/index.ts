@@ -188,3 +188,4 @@ export * from "./runner-transcripts";
 export * from "./work-item-fields";
 export * from "./runner-results";
 export * from "./runner-helpers";
+export * from "./github-oauth";
