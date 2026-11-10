@@ -1,7 +1,14 @@
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
-import { listSkills, SKILL_AGENTS, skillRollouts, type SkillPin, type SkillSource } from "../db";
+import {
+  listSkillsSteps,
+  SKILL_AGENTS,
+  skillRolloutsSteps,
+  sqliteDb,
+  type SkillPin,
+  type SkillSource,
+} from "../db";
 import {
   addSkill,
   addSkills,
@@ -54,11 +61,12 @@ export async function handleSkillSettingsRequest(
     return json({ error: "Skill settings are only available on the local Paws origin" }, 403);
   if (options.role !== undefined && !isWorkspaceAdmin(options.role))
     return json({ error: "Only workspace admins can change skills." }, 403);
-  const listing = (notice?: string, found?: FoundSkill[]) => {
-    const skills = listSkills(options.db);
+  const store = sqliteDb(options.db);
+  const listing = async (notice?: string, found?: FoundSkill[]) => {
+    const skills = await store.run(listSkillsSteps);
     return json({
       skills,
-      rollouts: skillRollouts(options.db, skills),
+      rollouts: await store.run((q) => skillRolloutsSteps(q, skills)),
       ...(options.updates ? { updates: options.updates.available(skills) } : {}),
       agents: SKILL_AGENTS,
       limitBytes: options.limit ?? SKILL_BUNDLE_LIMIT,
@@ -67,8 +75,8 @@ export async function handleSkillSettingsRequest(
     });
   };
   if (request.method === "GET") {
-    await options.updates?.check(listSkills(options.db));
-    return listing();
+    await options.updates?.check(await store.run(listSkillsSteps));
+    return await listing();
   }
   if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
   if (!sameToken(request.headers.get("x-paws-csrf"), options.csrfToken))
@@ -87,7 +95,7 @@ export async function handleSkillSettingsRequest(
       const upload = await readSkillUpload(request, options.limit ?? SKILL_BUNDLE_LIMIT);
       const skill = await addUploadedSkill(registry, upload.folder, upload.files, upload);
       options.audit("settings.skill.add", added(skill));
-      return listing(`Added ${skill.name} ${shortVersion(skill)}.`);
+      return await listing(`Added ${skill.name} ${shortVersion(skill)}.`);
     }
     let body: unknown;
     try {
@@ -101,7 +109,7 @@ export async function handleSkillSettingsRequest(
     const agents = stringList(body.agents);
     switch (body.action) {
       case "find":
-        return listing(undefined, await findSkills(registry, parseSource(body.source)));
+        return await listing(undefined, await findSkills(registry, parseSource(body.source)));
       case "add": {
         const paths = stringList(body.paths);
         if (paths) {
@@ -116,7 +124,7 @@ export async function handleSkillSettingsRequest(
           const hookCount = hooks.length
             ? ` and ${hooks.length} hook${hooks.length === 1 ? "" : "s"}`
             : "";
-          return listing(
+          return await listing(
             `Added ${skills.map((skill) => `${skill.name} ${shortVersion(skill)}`).join(", ")}${hookCount}.`,
           );
         }
@@ -125,31 +133,31 @@ export async function handleSkillSettingsRequest(
           ...(agents ? { agents } : {}),
         });
         options.audit("settings.skill.add", added(skill));
-        return listing(`Added ${skill.name} ${shortVersion(skill)}.`);
+        return await listing(`Added ${skill.name} ${shortVersion(skill)}.`);
       }
       case "update": {
         const { before, after } = await updateSkill(registry, name);
         if (before.version === after.version)
-          return listing(`${name} is already at the newest version, ${shortVersion(after)}.`);
+          return await listing(`${name} is already at the newest version, ${shortVersion(after)}.`);
         options.audit(
           "settings.skill.update",
           `Updated skill ${name} ${shortVersion(before)} → ${shortVersion(after)}`,
         );
-        return listing(`Updated ${name} to ${shortVersion(after)}.`);
+        return await listing(`Updated ${name} to ${shortVersion(after)}.`);
       }
       case "agents": {
         if (agents === undefined) return json({ error: "Choose the agents for this skill." }, 400);
-        const { after } = changeSkillAgents(registry, name, agents);
+        const { after } = await changeSkillAgents(registry, name, agents);
         options.audit(
           "settings.skill.agents",
           `Skill ${name} now applies to ${agentList(after.agents)}`,
         );
-        return listing(`${name} now applies to ${agentList(after.agents)}.`);
+        return await listing(`${name} now applies to ${agentList(after.agents)}.`);
       }
       case "remove": {
-        const skill = removeSkill(registry, name);
+        const skill = await removeSkill(registry, name);
         options.audit("settings.skill.remove", `Removed skill ${name} ${shortVersion(skill)}`);
-        return listing(`Removed ${name}. Runners uninstall it before their next run.`);
+        return await listing(`Removed ${name}. Runners uninstall it before their next run.`);
       }
       default:
         return json({ error: "Unknown skill action" }, 400);

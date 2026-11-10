@@ -1,6 +1,20 @@
 import type { Database } from "bun:sqlite";
-import { accrueAwake, enqueueJobOnce, immediate, listInFlightItems, recordWake } from "../db";
-import { awakeCapReached, countsAwakeTime, JOB_KIND, sleep, type Clock } from "../core";
+import {
+  accrueAwakeSteps,
+  emitJobReady,
+  enqueueJobOnceSteps,
+  listWorkItemsByStatesSteps,
+  recordWakeSteps,
+  sqliteDb,
+} from "../db";
+import {
+  awakeCapReached,
+  countsAwakeTime,
+  IN_FLIGHT_ITEM_STATES,
+  JOB_KIND,
+  sleep,
+  type Clock,
+} from "../core";
 import { WakeDetector, type WakeSample } from "./wake";
 
 export class HostSupervisor {
@@ -16,14 +30,14 @@ export class HostSupervisor {
     readonly stopAgent?: (itemId: string) => void,
   ) {}
 
-  tick(): void {
+  async tick(): Promise<void> {
     if (this.stopped) return;
     const sample = this.detector.sample();
     if (sample && sample.gapMs > this.detector.thresholdMs) {
-      this.handleWake(sample);
+      await this.handleWake(sample);
     }
     if (sample) this.detector.commit(sample);
-    this.accrue();
+    await this.accrue();
   }
 
   stop(): void {
@@ -35,30 +49,38 @@ export class HostSupervisor {
     sleeper: (ms: number, signal?: AbortSignal) => Promise<void> = sleep,
   ): Promise<void> {
     while (!signal.aborted && !this.stopped) {
-      this.tick();
+      await this.tick();
       if (signal.aborted || this.stopped) break;
       await sleeper(this.pollMs, signal);
     }
   }
 
-  private accrue(): void {
+  private async accrue(): Promise<void> {
     const now = this.clock.now();
     const mono = this.clock.mono();
     const observed = new Map<string, number>();
     const stops: string[] = [];
-    immediate(this.db, () => {
-      for (const item of listInFlightItems(this.db)) {
+    const lastObservedMono = this.lastObservedMono;
+    const jobReady = await sqliteDb(this.db).transaction(function* (q) {
+      let ready = false;
+      for (const item of yield* listWorkItemsByStatesSteps(q, IN_FLIGHT_ITEM_STATES)) {
         observed.set(item.id, mono);
         if (!countsAwakeTime(item.state, item.checkpoint, item.acceptedHead)) continue;
         // Skipped ticks still advance the baseline in memory, excluding parked time.
         const since = Math.max(
-          item.lastMonoMs ?? this.lastObservedMono.get(item.id) ?? mono,
-          this.lastObservedMono.get(item.id) ?? -Infinity,
+          item.lastMonoMs ?? lastObservedMono.get(item.id) ?? mono,
+          lastObservedMono.get(item.id) ?? -Infinity,
         );
         if (mono <= since && !awakeCapReached(item)) continue;
-        if (accrueAwake(this.db, item.id, mono, now, since).stopAgent) stops.push(item.id);
+        const accrued = yield* q.transaction((tx) =>
+          accrueAwakeSteps(tx, item.id, mono, now, since),
+        );
+        ready ||= accrued.jobReady;
+        if (accrued.outcome.stopAgent) stops.push(item.id);
       }
+      return ready;
     });
+    if (jobReady) emitJobReady(this.db);
     this.lastObservedMono = observed;
     for (const id of stops) this.stopAgent?.(id);
   }
@@ -70,22 +92,24 @@ export class HostSupervisor {
    * merge lane's own checks of head, verdict and policy decide what happens next. The gap is
    * recorded once and Linear is caught up.
    */
-  private handleWake(sample: WakeSample): void {
+  private async handleWake(sample: WakeSample): Promise<void> {
     const now = this.clock.now();
-    immediate(this.db, () => {
-      const inserted = recordWake(this.db, {
+    const enqueued = await sqliteDb(this.db).transaction(function* (q) {
+      const inserted = yield* recordWakeSteps(q, {
         fromWall: sample.fromWall,
         toWall: sample.toWall,
         sleptMs: sample.gapMs,
         now,
       });
-      if (!inserted) return;
-      enqueueJobOnce(this.db, {
+      if (!inserted) return false;
+      const job = yield* enqueueJobOnceSteps(q, {
         queue: JOB_KIND.catchup,
         jobKey: `catchup:${sample.fromWall}`,
         payload: { reason: "wake", sleptMs: sample.gapMs, at: sample.toWall },
         now,
       });
+      return job.inserted;
     });
+    if (enqueued) emitJobReady(this.db);
   }
 }

@@ -101,27 +101,27 @@ function activities(db: ReturnType<typeof boot>["db"]) {
 }
 
 describe("supervisor accrual writes", () => {
-  test("hours in the merge queue do not count as agent time after a review restart", () => {
+  test("hours in the merge queue do not count as agent time after a review restart", async () => {
     const { clock, db, host } = boot();
     try {
       startRun(db, clock);
-      host.tick();
+      await host.tick();
       clock.advance(10 * 60_000);
-      host.tick();
+      await host.tick();
       applyWorkItemEvent(db, "eng-9", "turn_ended");
       applyWorkItemEvent(db, "eng-9", "closeout_accepted");
       markCloseoutAccepted(db, "eng-9", "accepted");
       for (let hour = 0; hour < 4; hour += 1) {
         clock.advance(60 * 60_000);
-        host.tick();
+        await host.tick();
       }
       // A changes-requested review sends the item back; it waits a tick for a runner.
       applyWorkItemEvent(db, "eng-9", "restart", { kind: "restart", reason: "review" });
-      host.tick();
+      await host.tick();
       applyWorkItemEvent(db, "eng-9", "dispatched");
-      host.tick();
+      await host.tick();
       clock.advance(5 * 60_000);
-      host.tick();
+      await host.tick();
 
       expect(getWorkItem(db, "eng-9")).toMatchObject({
         state: "running",
@@ -133,7 +133,7 @@ describe("supervisor accrual writes", () => {
     }
   });
 
-  test("only changed awake items are written once per tick", () => {
+  test("only changed awake items are written once per tick", async () => {
     const { clock, db, host } = boot();
     try {
       for (const id of ["awake", "paused", "idle"]) {
@@ -149,27 +149,27 @@ describe("supervisor accrual writes", () => {
       `);
       const writes = () => db.query<{ id: string }, []>("SELECT id FROM item_write").all();
 
-      host.tick();
-      host.tick();
+      await host.tick();
+      await host.tick();
       expect(writes()).toEqual([]);
       clock.advance(250);
-      host.tick();
+      await host.tick();
       expect(writes()).toEqual([{ id: "awake" }]);
       expect(getWorkItem(db, "awake")).toMatchObject({ awakeMs: 250, agentMs: 250 });
       expect(getWorkItem(db, "paused")).toMatchObject({ awakeMs: 0, lastMonoMs: null });
       expect(getWorkItem(db, "idle")).toMatchObject({ awakeMs: 0, lastMonoMs: null });
-      host.tick();
+      await host.tick();
       clock.sleep(1_000);
-      host.tick();
+      await host.tick();
       expect(writes()).toEqual([{ id: "awake" }]);
       clock.advance(250);
-      host.tick();
+      await host.tick();
       expect(writes()).toEqual([{ id: "awake" }, { id: "awake" }]);
 
       applyWorkItemEvent(db, "paused", "resume");
       db.exec("DELETE FROM item_write");
       clock.advance(250);
-      host.tick();
+      await host.tick();
       expect(writes()).toEqual([{ id: "awake" }, { id: "paused" }]);
       expect(getWorkItem(db, "paused")).toMatchObject({ awakeMs: 250, agentMs: 250 });
     } finally {
@@ -178,24 +178,24 @@ describe("supervisor accrual writes", () => {
     }
   });
 
-  test("all item writes in a tick commit or roll back together", () => {
+  test("all item writes in a tick commit or roll back together", async () => {
     const { clock, db, host } = boot();
     try {
       for (const id of ["first", "second"]) {
         insertQueuedItem(db, { id, now: clock.now() });
         beginImplementRun(db, id, clock.now());
       }
-      host.tick();
+      await host.tick();
       clock.advance(250);
       db.exec(`
         CREATE TEMP TRIGGER reject_second BEFORE UPDATE ON work_item
         WHEN NEW.id = 'second' BEGIN SELECT RAISE(ABORT, 'tick failed'); END;
       `);
-      expect(() => host.tick()).toThrow("tick failed");
+      await expect(host.tick()).rejects.toThrow("tick failed");
       expect(getWorkItem(db, "first")).toMatchObject({ awakeMs: 0, agentMs: 0, lastMonoMs: null });
       expect(getWorkItem(db, "second")).toMatchObject({ awakeMs: 0, agentMs: 0, lastMonoMs: null });
       db.exec("DROP TRIGGER reject_second");
-      host.tick();
+      await host.tick();
       expect(getWorkItem(db, "first")).toMatchObject({ awakeMs: 250, agentMs: 250 });
       expect(getWorkItem(db, "second")).toMatchObject({ awakeMs: 250, agentMs: 250 });
     } finally {
@@ -279,16 +279,16 @@ describe("host suspension and clock gaps", () => {
 
   for (const [gapName, gapMs] of GAPS)
     for (const held of HELD)
-      test(`a host suspension ${gapName} leaves ${held} work with its owner`, () => {
+      test(`a host suspension ${gapName} leaves ${held} work with its owner`, async () => {
         const { clock, db, host } = boot();
         try {
           const run = hold(db, clock, held);
-          host.tick();
+          await host.tick();
           const before = snapshot(db, run.id);
 
           clock.sleep(gapMs);
-          host.tick();
-          host.tick();
+          await host.tick();
+          await host.tick();
 
           // No reset, no new implementer, no cancelled job and no rewritten hold.
           expect(snapshot(db, run.id)).toEqual(before);
@@ -306,7 +306,7 @@ describe("host suspension and clock gaps", () => {
         }
       });
 
-  test("a wall-clock correction is recorded like a suspension and changes no item", () => {
+  test("a wall-clock correction is recorded like a suspension and changes no item", async () => {
     const wall = { now: 1_000_000, mono: 1_000_000 };
     const clock: Clock = { now: () => wall.now, mono: () => wall.mono };
     const db = openDatabase(":memory:");
@@ -314,16 +314,16 @@ describe("host suspension and clock gaps", () => {
     const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
     try {
       const { run } = startRun(db, new FakeClock(wall.now));
-      host.tick();
+      await host.tick();
       const before = snapshot(db, run.id);
       // NTP steps the wall clock three hours ahead while monotonic time moves one second.
       wall.now += 3 * 60 * 60_000 + 1_000;
       wall.mono += 1_000;
-      host.tick();
+      await host.tick();
       // And back again: a negative gap is no wake at all.
       wall.now -= 3 * 60 * 60_000;
       wall.mono += 1_000;
-      host.tick();
+      await host.tick();
       expect(snapshot(db, run.id)).toEqual(before);
       expect(getWorkItem(db, "eng-9")?.agentMs).toBe(2_000);
       expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([{ slept_ms: 3 * 60 * 60_000 }]);
@@ -334,18 +334,18 @@ describe("host suspension and clock gaps", () => {
     }
   });
 
-  test("a process restart is not a clock gap: a new supervisor records no wake", () => {
+  test("a process restart is not a clock gap: a new supervisor records no wake", async () => {
     const { clock, db, host } = boot();
     try {
       const { run } = startRun(db, clock);
-      host.tick();
+      await host.tick();
       host.stop();
       const before = snapshot(db, run.id);
       clock.sleep(TWO_HOURS + 1);
       const next = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
-      next.tick();
+      await next.tick();
       clock.advance(250);
-      next.tick();
+      await next.tick();
       next.stop();
       expect(snapshot(db, run.id)).toEqual(before);
       expect(db.query("SELECT 1 FROM wake").all()).toEqual([]);
@@ -355,32 +355,32 @@ describe("host suspension and clock gaps", () => {
     }
   });
 
-  test("awake time does not include the sleep, and the cap still trips on awake time", () => {
+  test("awake time does not include the sleep, and the cap still trips on awake time", async () => {
     const { clock, db, host } = boot();
     startRun(db, clock, { maxAwakeMs: 1_000 });
-    host.tick();
+    await host.tick();
     clock.sleep(30 * 60_000);
     clock.advance(10);
-    host.tick();
+    await host.tick();
     expect(getWorkItem(db, "eng-9")).toMatchObject({ state: "running", awakeMs: 10 });
 
     clock.advance(990);
-    host.tick();
+    await host.tick();
     expect(listJobs(db).some((job) => job.queue === "item.ask")).toBe(true);
   });
 
-  test("the default budget counts implementation only: Closeout time never stops the task", () => {
+  test("the default budget counts implementation only: Closeout time never stops the task", async () => {
     const { clock, db, host } = boot();
     try {
       startRun(db, clock);
-      host.tick();
+      await host.tick();
       clock.advance(45 * 60_000);
-      host.tick();
+      await host.tick();
       expect(getWorkItem(db, "eng-9")?.state).toBe("running");
       applyWorkItemEvent(db, "eng-9", "turn_ended");
       verifyingJob(db, clock);
       clock.advance(4 * 60 * 60_000);
-      host.tick();
+      await host.tick();
       expect(getWorkItem(db, "eng-9")).toMatchObject({
         state: "verifying",
         implementMs: 45 * 60_000,
@@ -416,21 +416,21 @@ describe("host suspension and clock gaps", () => {
     };
     try {
       startRun(db, clock);
-      host.tick();
+      await host.tick();
       clock.advance(40 * 60_000);
-      host.tick();
+      await host.tick();
       applyWorkItemEvent(db, "eng-9", "turn_ended");
       // Two idle hours pass without a tick, then a job claims the item.
       clock.advance(2 * 60 * 60_000);
       const { running } = await verify();
       clock.advance(20 * 60_000);
-      host.tick();
+      await host.tick();
       // The job ends between ticks, and the item sits in verifying for two hours.
       clock.advance(5 * 60_000);
       finish();
       await running;
       clock.advance(2 * 60 * 60_000);
-      host.tick();
+      await host.tick();
       expect(getWorkItem(db, "eng-9")).toMatchObject({
         state: "verifying",
         awakeMs: 65 * 60_000,
@@ -443,24 +443,24 @@ describe("host suspension and clock gaps", () => {
     }
   });
 
-  test("parked time is not awake time", () => {
+  test("parked time is not awake time", async () => {
     const { clock, db, host } = boot();
     startRun(db, clock);
-    host.tick();
+    await host.tick();
     applyWorkItemEvent(db, "eng-9", "blocking_question");
     clock.advance(10_000);
-    host.tick();
+    await host.tick();
     applyWorkItemEvent(db, "eng-9", "answer_received");
     clock.advance(100);
-    host.tick();
+    await host.tick();
     expect(getWorkItem(db, "eng-9")?.awakeMs).toBe(100);
   });
 
-  test("a wake with nothing in flight still enqueues catch-up and no pause note", () => {
+  test("a wake with nothing in flight still enqueues catch-up and no pause note", async () => {
     const { clock, db, host } = boot();
-    host.tick();
+    await host.tick();
     clock.sleep(5 * 60_000);
-    host.tick();
+    await host.tick();
     expect(activities(db)).toHaveLength(0);
     expect(listJobs(db).filter((job) => job.queue === "linear.catchup")).toHaveLength(1);
   });
@@ -478,21 +478,21 @@ describe("host suspension and clock gaps", () => {
     expect(getRun(db, run.id)?.status).toBe("lost");
   });
 
-  test("stop leaves the item resumable", () => {
+  test("stop leaves the item resumable", async () => {
     const { db, clock, host } = boot();
     startRun(db, clock);
-    host.tick();
+    await host.tick();
     host.stop();
     clock.advance(100);
-    host.tick();
+    await host.tick();
     expect(getWorkItem(db, "eng-9")?.awakeMs).toBe(0);
     prepareShutdown(db, clock.now());
     expect(getWorkItem(db, "eng-9")?.state).toBe("recovering");
-    host.tick();
+    await host.tick();
   });
 });
 
-test("the supervisor stops the live agent when the time limit asks instead of failing", () => {
+test("the supervisor stops the live agent when the time limit asks instead of failing", async () => {
   const clock = new FakeClock(1_000_000);
   const db = openDatabase(":memory:");
   migrate(db);
@@ -503,16 +503,16 @@ test("the supervisor stops the live agent when the time limit asks instead of fa
   insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", maxAwakeMs: 1_000, now: 0 });
   const { run } = beginImplementRun(db, "eng-9", clock.now(), checkpoint);
   markCloseoutAccepted(db, "eng-9", "wip");
-  host.tick();
+  await host.tick();
   clock.advance(500);
-  host.tick();
+  await host.tick();
   expect(stopped).toEqual([]);
   clock.advance(600);
-  host.tick();
+  await host.tick();
   expect(stopped).toEqual(["eng-9"]);
   expect(getWorkItem(db, "eng-9")?.state).toBe("running");
   expect(listJobs(db).filter((job) => job.queue === "item.ask")).toHaveLength(1);
   expect(getRun(db, run.id)?.status).toBe("ended");
-  host.tick();
+  await host.tick();
   expect(stopped).toEqual(["eng-9"]);
 });

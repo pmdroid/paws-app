@@ -721,9 +721,9 @@ describe("skill pins", () => {
 
   test("removing a skill marks it for removal on the runners", async () => {
     await addSkill(registry(fakeSkillResolver()), { kind: "npm", package: "impeccable" });
-    const removed = removeSkill({ db, now: 5 }, "fake");
+    const removed = await removeSkill({ db, now: 5 }, "fake");
     expect(removed.removedAt).toBe(5);
-    expect(() => removeSkill({ db, now: 6 }, "fake")).toThrow("No skill named fake");
+    await expect(removeSkill({ db, now: 6 }, "fake")).rejects.toThrow("No skill named fake");
   });
 
   test("a removed skill is forgotten once no runner reports it", async () => {
@@ -753,7 +753,7 @@ describe("skill pins", () => {
     ];
     recordRunnerSkills(db, "runner-1", installed, 2);
     recordRunnerSkills(db, "runner-2", installed, 2);
-    removeSkill({ db, now: 5 }, "fake");
+    await removeSkill({ db, now: 5 }, "fake");
     recordRunnerSkills(db, "runner-1", [], 6);
     expect(getSkill(db, "fake")?.removedAt).toBe(5);
     recordRunnerSkills(db, "runner-2", [], 7);

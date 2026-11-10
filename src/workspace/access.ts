@@ -279,13 +279,13 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
           member: { name: owner.name, email: owner.email },
           memberOfTeam: owner.teamIds.includes(done.teamId),
           csrfToken: signedIn.session.csrfToken,
-          readiness: options.onboardingReadiness?.({
+          readiness: (await options.onboardingReadiness?.({
             workspaceId: done.workspaceId,
             userId: owner.userId,
             teamId: done.teamId,
             projectLeadIds: done.projectLeadIds,
             now: now(),
-          }) ?? {
+          })) ?? {
             runner: { state: "needed" },
             agents: { claude: "waiting", codex: "waiting" },
             memberVm: false,

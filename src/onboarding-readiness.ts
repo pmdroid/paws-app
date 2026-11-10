@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { runnerNameAndOwner, workspaceLinearMember } from "./db";
+import { runnerNameAndOwnerSteps, sqliteDb, workspaceLinearMemberSteps } from "./db";
 import { findMemberVm, memberVmView } from "./member-vm";
 import { eligibleRunners, type EligibleRunner } from "./runner-placement";
 import type { OnboardingAgent, OnboardingReadinessReader } from "./workspace";
@@ -16,17 +16,16 @@ const AGENTS = ["claude", "codex"] as const;
  * VM that finishes shows as ready on the next read.
  */
 export function createOnboardingReadiness(db: Database): OnboardingReadinessReader {
-  const runnerRow = (id: string) => runnerNameAndOwner(db, id);
-  const ownerName = (id: string) => runnerRow(id)?.ownerName ?? "Your project lead";
-  return ({ workspaceId, userId, teamId, projectLeadIds, now }) => {
-    const leadUserIds = [
-      ...new Set(
-        projectLeadIds.flatMap((linearUserId) => {
-          const lead = workspaceLinearMember(db, workspaceId, linearUserId);
-          return lead && lead.userId !== userId ? [lead.userId] : [];
-        }),
-      ),
-    ].sort();
+  const store = sqliteDb(db);
+  const runnerRow = (id: string) => store.run((q) => runnerNameAndOwnerSteps(q, id));
+  const ownerName = async (id: string) => (await runnerRow(id))?.ownerName ?? "Your project lead";
+  return async ({ workspaceId, userId, teamId, projectLeadIds, now }) => {
+    const leads = new Set<string>();
+    for (const linearUserId of projectLeadIds) {
+      const lead = await store.run((q) => workspaceLinearMemberSteps(q, workspaceId, linearUserId));
+      if (lead && lead.userId !== userId) leads.add(lead.userId);
+    }
+    const leadUserIds = [...leads].sort();
     const check = (agent: string, purpose: "prepare" | "work"): EligibleRunner[] =>
       eligibleRunners(db, {
         workspaceId,
@@ -59,11 +58,11 @@ export function createOnboardingReadiness(db: Database): OnboardingReadinessRead
       }))
       .sort((a, b) => b.connected - a.connected || b.own - a.own)[0]?.runner;
     if (best) {
-      const name = runnerRow(best.id)?.name ?? best.id;
+      const name = (await runnerRow(best.id))?.name ?? best.id;
       return {
         runner:
           best.reason === "lead-shared"
-            ? { state: "ready", id: best.id, name, sharedBy: ownerName(best.id) }
+            ? { state: "ready", id: best.id, name, sharedBy: await ownerName(best.id) }
             : { state: "ready", id: best.id, name },
         agents: { claude: agentState(best.id, 0), codex: agentState(best.id, 1) },
         memberVm,
@@ -91,12 +90,12 @@ export function createOnboardingReadiness(db: Database): OnboardingReadinessRead
     const down = own ?? shared;
     if (down) {
       const state = down.reason === "paused" ? "paused" : "offline";
-      const name = runnerRow(down.id)?.name ?? down.id;
+      const name = (await runnerRow(down.id))?.name ?? down.id;
       return {
         runner:
           down === own
             ? { state, id: down.id, name }
-            : { state, name, sharedBy: ownerName(down.id) },
+            : { state, name, sharedBy: await ownerName(down.id) },
         agents: waiting,
         memberVm,
       };
@@ -104,7 +103,7 @@ export function createOnboardingReadiness(db: Database): OnboardingReadinessRead
     const unshared = runners.find((runner) => runner.reason === "not-shared");
     return {
       runner: unshared
-        ? { state: "needed", reason: `${ownerName(unshared.id)}'s runner isn't shared.` }
+        ? { state: "needed", reason: `${await ownerName(unshared.id)}'s runner isn't shared.` }
         : { state: "needed" },
       agents: waiting,
       memberVm,

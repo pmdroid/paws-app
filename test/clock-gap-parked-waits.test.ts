@@ -117,8 +117,8 @@ function activities(db: Database) {
 }
 
 async function observe(db: Database, host: HostSupervisor, now: number): Promise<void> {
-  host.tick();
-  host.tick();
+  await host.tick();
+  await host.tick();
   expect(await dispatch(db, { now })).toEqual([]);
   await dispatch(db, { now });
 }
@@ -132,7 +132,7 @@ describe("a clock gap during a parked wait", () => {
           const { db, host } = boot(clock);
           try {
             const owner = park(db, clock.now(), wait, withCheckpoint);
-            host.tick();
+            await host.tick();
             const before = snapshot(db);
 
             clock.sleep(gapMs);
@@ -168,7 +168,7 @@ describe("a clock gap during a parked wait", () => {
         const { db, host } = boot(clock);
         try {
           const owner = park(db, clock.now(), wait, withCheckpoint);
-          host.tick();
+          await host.tick();
           const before = snapshot(db);
 
           prepareShutdown(db, clock.now());
@@ -196,7 +196,7 @@ describe("a clock gap during a parked wait", () => {
       const { db, host } = boot(clock);
       try {
         const owner = park(db, wall.now, wait, false);
-        host.tick();
+        await host.tick();
         const before = snapshot(db);
 
         wall.now += 3 * 60 * 60_000 + 1_000;
@@ -224,7 +224,7 @@ describe("a clock gap during a parked wait", () => {
 });
 
 describe("ownership a clock gap does not invent", () => {
-  function abandoned(how: "stale version" | "cancelled" | "another item's job") {
+  async function abandoned(how: "stale version" | "cancelled" | "another item's job") {
     const clock = new FakeClock(1_000_000);
     const { db, host } = boot(clock);
     const owner = park(db, clock.now(), "transient backoff", false);
@@ -235,15 +235,15 @@ describe("ownership a clock gap does not invent", () => {
       insertQueuedItem(db, { id: "eng-10", now: clock.now() });
       db.run("UPDATE job SET payload=json_set(payload,'$.itemId','eng-10') WHERE id=?", [owner]);
     }
-    host.tick();
+    await host.tick();
     clock.sleep(TWO_HOURS + 1);
-    host.tick();
+    await host.tick();
     return { clock, db, host, owner };
   }
 
   for (const how of ["stale version", "cancelled", "another item's job"] as const) {
-    test(`a ${how} transient retry does not stop startup from resuming abandoned work once`, () => {
-      const { clock, db, host, owner } = abandoned(how);
+    test(`a ${how} transient retry does not stop startup from resuming abandoned work once`, async () => {
+      const { clock, db, host, owner } = await abandoned(how);
       try {
         expect(recoverOnStartup(db, clock.now())).toEqual([
           { type: "resume", freshSession: true, checkpoint: null },
@@ -263,7 +263,7 @@ describe("ownership a clock gap does not invent", () => {
     });
 
     test(`a ${how} transient retry does not keep the orphan sweep from picking the work up`, async () => {
-      const { clock, db, host, owner } = abandoned(how);
+      const { clock, db, host, owner } = await abandoned(how);
       try {
         enqueueJob(db, { queue: JOB_KIND.command, payload: { itemId: "eng-9" }, now: 0 });
         db.run("UPDATE job SET status='done', finished_at=0 WHERE queue=?", [JOB_KIND.command]);
@@ -327,7 +327,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
       applyWorkItemEvent(db, "eng-12", "blocking_question");
       db.run("UPDATE work_item SET recovery_attempts=1 WHERE id IN ('eng-9','eng-10')");
 
-      host.tick();
+      await host.tick();
       const ids = ["eng-9", "eng-10", "eng-11", "eng-12"];
       const before = ids.map((id) => snapshot(db, id));
       const hold = getRunnerSetupHold(db, "eng-11");
@@ -337,7 +337,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
         clock.sleep(gapMs);
         await observe(db, host, clock.now());
         clock.advance(250);
-        host.tick();
+        await host.tick();
       }
 
       expect(ids.map((id) => snapshot(db, id))).toEqual(before);

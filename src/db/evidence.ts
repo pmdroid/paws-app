@@ -34,6 +34,11 @@ export type StoredEvidence = {
   assetUrl?: string | null;
 };
 
+export function* saveEvidenceSteps(q: Q, row: StoredEvidence) {
+  const { assetUrl: _, ...values } = row;
+  yield* q.exec(q.orm.insert(q.t.evidence).values(values));
+}
+
 export function saveEvidence(db: Database, row: StoredEvidence): void {
   const { assetUrl: _, ...values } = row;
   orm(db).insert(evidence).values(values).run();
@@ -82,6 +87,17 @@ export function setEvidenceAssetUrl(db: Database, id: string, assetUrl: string):
 
 export type EvidenceObject = typeof evidenceObject.$inferSelect;
 
+export function* saveEvidenceObjectSteps(q: Q, row: EvidenceObject) {
+  const inserted = yield* q.all(
+    q.orm
+      .insert(q.t.evidenceObject)
+      .values(row)
+      .onConflictDoNothing()
+      .returning({ id: q.t.evidenceObject.id }),
+  );
+  return inserted.length > 0;
+}
+
 export function saveEvidenceObject(db: Database, row: EvidenceObject): boolean {
   return (
     orm(db)
@@ -126,6 +142,81 @@ export function localEvidenceFiles(
 }
 
 export type CloseoutEvidenceObject = typeof closeoutEvidenceObject.$inferSelect;
+
+export function* listCloseoutEvidenceObjectsSteps(q: Q, tasks: readonly string[]) {
+  if (tasks.length === 0) return [];
+  return yield* q.all(
+    q.orm
+      .select()
+      .from(q.t.closeoutEvidenceObject)
+      .where(inArray(q.t.closeoutEvidenceObject.task, [...tasks])),
+  );
+}
+
+export function* getCloseoutEvidenceObjectSteps(q: Q, task: string, path: string) {
+  const row = yield* q.one(
+    q.orm
+      .select()
+      .from(q.t.closeoutEvidenceObject)
+      .where(
+        and(eq(q.t.closeoutEvidenceObject.task, task), eq(q.t.closeoutEvidenceObject.path, path)),
+      ),
+  );
+  return row ?? null;
+}
+
+export function* saveCloseoutEvidenceObjectSteps(q: Q, row: CloseoutEvidenceObject) {
+  yield* q.exec(
+    q.orm
+      .insert(q.t.closeoutEvidenceObject)
+      .values(row)
+      .onConflictDoUpdate({
+        target: [q.t.closeoutEvidenceObject.task, q.t.closeoutEvidenceObject.path],
+        set: {
+          prefix: row.prefix,
+          sizeBytes: row.sizeBytes,
+          sha256: row.sha256,
+          modifiedAt: row.modifiedAt,
+          storedAt: row.storedAt,
+        },
+      }),
+  );
+}
+
+export function* insertCloseoutEvidenceObjectSteps(q: Q, row: CloseoutEvidenceObject) {
+  const inserted = yield* q.all(
+    q.orm
+      .insert(q.t.closeoutEvidenceObject)
+      .values(row)
+      .onConflictDoNothing()
+      .returning({ task: q.t.closeoutEvidenceObject.task }),
+  );
+  return inserted.length > 0;
+}
+
+export function* closeoutTasksOfItemSteps(q: Q, ref: string, sessionIds?: readonly string[]) {
+  const rows = yield* q.all(
+    q.orm
+      .select({ id: q.t.workItem.id, sessionKey: q.t.workItem.sessionKey })
+      .from(q.t.workItem)
+      .where(or(eq(q.t.workItem.id, ref), eq(q.t.workItem.linearIdentifier, ref))),
+  );
+  const items = rows
+    .filter(
+      (item) =>
+        sessionIds === undefined ||
+        (item.sessionKey !== null && sessionIds.includes(item.sessionKey)),
+    )
+    .map((item) => item.id);
+  if (items.length === 0) return [];
+  const tasks = yield* q.all(
+    q.orm
+      .selectDistinct({ task: q.t.closeoutProgress.taskId })
+      .from(q.t.closeoutProgress)
+      .where(inArray(q.t.closeoutProgress.itemId, items)),
+  );
+  return tasks.map((row) => row.task);
+}
 
 export function listCloseoutEvidenceObjects(
   db: Database,

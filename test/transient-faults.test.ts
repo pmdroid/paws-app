@@ -588,7 +588,7 @@ async function runWithFault(fault: {
           fault.clock.advance(delayed.runAt - clock.now());
         }
       }
-      if (fault.clock) host.tick();
+      if (fault.clock) await host.tick();
     }
     const drainBy = Date.now() + 10_000;
     while (Date.now() < drainBy && listOutbox(db).some((row) => row.status === "pending")) {

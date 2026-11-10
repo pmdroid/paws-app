@@ -28,7 +28,7 @@ export type AgentSettingsOptions = {
   applyToWaiting?: () => number;
   /** Records a changed workspace setting in the audit history. */
   audit?: (action: string, subject: string) => void;
-  runnerReadiness?: (agent: ImplementerName) => RunnerReadiness[];
+  runnerReadiness?: (agent: ImplementerName) => RunnerReadiness[] | Promise<RunnerReadiness[]>;
 };
 
 function settingsRevision(configPath: string): string {
@@ -173,7 +173,7 @@ export async function handleAgentSettingsRequest(
   let warnings: string[] = [];
   try {
     if (options.runnerReadiness)
-      warnings = reviewerRunnerWarnings(settings, options.runnerReadiness);
+      warnings = await reviewerRunnerWarnings(settings, options.runnerReadiness);
   } catch (caughtError5) {
     journalCaught(caughtError5, "handler.handleAgentSettingsRequest.runnerReadiness", null);
   }

@@ -185,14 +185,14 @@ async function fixture({
   });
   const vmHttp = createMemberVmHttp({ db, available: () => available, now: () => clock.now() });
   const read = createOnboardingReadiness(db);
-  const page = () =>
+  const page = async () =>
     onboardingPage({
       identifier: "TEST-1",
       issueUrl: null,
       teamName: "Platform",
       member: { name: "Ada Lovelace", email: "ada@example.invalid" },
       memberOfTeam: true,
-      readiness: read({
+      readiness: await read({
         workspaceId: workspace.id,
         userId,
         teamId: "team",
@@ -220,7 +220,7 @@ async function fixture({
       new Response(null, { status: 404 })
     );
   };
-  const open = async () => load(await page().text(), fetch);
+  const open = async () => load(await (await page()).text(), fetch);
   /** Runs the member VM job until `until` holds, as the job loop would in the background. */
   const drive = async (until: (row: MemberVm) => boolean) => {
     for (let index = 0; index < 500; index++) {
@@ -503,7 +503,7 @@ test("Add a host shows the one command with a single-use token that a reload nev
   expect(page.document.querySelector("#host-command-text")?.textContent).toBe(shown);
 
   // Reloading shows the form again, never the token.
-  const reloaded = await f.page().text();
+  const reloaded = await (await f.page()).text();
   expect(reloaded).not.toContain(token!);
   const again = await f.open();
   expect(again.document.querySelector("#host-command-text")).toBeNull();
