@@ -87,7 +87,7 @@ function askedAtTimeLimit() {
   return { clock, db, itemId: item.id, askedAt: asked.version };
 }
 
-test("Merge at the time limit records one acceptance, no agent turn, and no running time", () => {
+test("Merge at the time limit records one acceptance, no agent turn, and no running time", async () => {
   const { clock, db, itemId, askedAt } = askedAtTimeLimit();
   clock.advance(10 * MINUTE);
   expect(reply(db, "Merge the accepted work", clock.now()).status).toBe("answered");
@@ -95,7 +95,7 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
 
   clock.advance(5 * MINUTE);
   const provider = createLiveStatusProvider(db, { now: () => new Date(clock.now()), env: {} });
-  const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(provider.issues())));
+  const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(await provider.issues())));
   if (!parsed.ok) throw new Error(parsed.error);
   const times = parsed.response.issues.find((entry) => entry.id === itemId)!.stateTimes!;
   expect(times.current).toBe("merge_queue");

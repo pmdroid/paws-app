@@ -211,11 +211,13 @@ export async function probeRunnerPublicActivity(root: string) {
       });
       assert(!references.includes(join(directory, "acp.jsonl")));
     }
-    const statusRun = createLiveStatusProvider(db, {
-      pawsHome: root,
-      sessionIds: options.sessionIds,
-      env: options.env,
-    }).issues().runs[0]!;
+    const statusRun = (
+      await createLiveStatusProvider(db, {
+        pawsHome: root,
+        sessionIds: options.sessionIds,
+        env: options.env,
+      }).issues()
+    ).runs[0]!;
     assert(!("transcript" in statusRun));
     assert(
       text.includes("Source 0 inspected") &&

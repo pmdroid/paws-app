@@ -138,11 +138,11 @@ describe("status payload budget", () => {
     const live = createLiveStatusProvider(db, { env: {} });
     const calls: string[] = [];
     const provider = {
-      issues: () => (calls.push("issues"), live.issues()),
-      overview: () => (calls.push("overview"), live.overview()),
-      checkLog: (request: Parameters<typeof live.checkLog>[0]) => (
+      issues: async () => (calls.push("issues"), await live.issues()),
+      overview: async () => (calls.push("overview"), await live.overview()),
+      checkLog: async (request: Parameters<typeof live.checkLog>[0]) => (
         calls.push("checkLog"),
-        live.checkLog(request)
+        await live.checkLog(request)
       ),
     };
     const response = (await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {

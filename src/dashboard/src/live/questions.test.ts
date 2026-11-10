@@ -51,7 +51,7 @@ function provider(db: Database, sessionIds?: readonly string[]) {
   });
 }
 
-function tablesRead(db: Database, read: () => unknown): Set<string> {
+async function tablesRead(db: Database, read: () => Promise<unknown>): Promise<Set<string>> {
   const tables = new Set<string>();
   const query = db.query.bind(db);
   const prepare = db.prepare.bind(db);
@@ -62,7 +62,7 @@ function tablesRead(db: Database, read: () => unknown): Set<string> {
   db.query = ((sql: string) => (record(sql), query(sql))) as typeof db.query;
   db.prepare = ((sql: string) => (record(sql), prepare(sql))) as typeof db.prepare;
   try {
-    read();
+    await read();
   } finally {
     db.query = query;
     db.prepare = prepare;
@@ -71,7 +71,7 @@ function tablesRead(db: Database, read: () => unknown): Set<string> {
 }
 
 describe("question resources", () => {
-  test("the list carries the snapshot's open questions with the issue each card names", () => {
+  test("the list carries the snapshot's open questions with the issue each card names", async () => {
     const db = database();
     asking(db, "ENG-1", "s1", "q-1");
     asking(db, "ENG-2", "s1b", "q-2", "link");
@@ -88,14 +88,14 @@ describe("question resources", () => {
     });
     asking(db, "ENG-3", "s2", "q-3");
     const live = provider(db, ["s1", "s1b"]);
-    const parsed = parseQuestionListResponse(JSON.parse(JSON.stringify(live.questions())));
+    const parsed = parseQuestionListResponse(JSON.parse(JSON.stringify(await live.questions())));
     if (!parsed.ok) throw new Error(parsed.error);
     const list = parsed.response;
     expect(Object.keys(list).sort()).toEqual(["generatedAt", "questions", "source"]);
     expect(list.questions.map((question) => question.id)).toEqual(["q-1", "q-2"]);
     for (const card of list.questions) {
       const { issue, ...question } = card;
-      const page = live.issue(card.itemId)!;
+      const page = (await live.issue(card.itemId))!;
       const shown = page.questions.find((entry) => entry.id === card.id)!;
       const { risk: _risk, bypass: _bypass, ...ask } = shown.linkAsk ?? {};
       expect(question).toEqual({
@@ -108,25 +108,27 @@ describe("question resources", () => {
     expect(list.questions[1]?.linkAsk).toMatchObject({ kind: "risk", head: "a".repeat(40) });
   });
 
-  test("a question outside the reader's sessions reads like an unknown one", () => {
+  test("a question outside the reader's sessions reads like an unknown one", async () => {
     const db = database();
     asking(db, "ENG-1", "s1", "q-1");
     asking(db, "ENG-2", "s2", "q-2");
     const live = provider(db, ["s1"]);
-    const parsed = parseQuestionDetailResponse(JSON.parse(JSON.stringify(live.question("q-1"))));
+    const parsed = parseQuestionDetailResponse(
+      JSON.parse(JSON.stringify(await live.question("q-1"))),
+    );
     if (!parsed.ok) throw new Error(parsed.error);
     expect(parsed.response.question).toMatchObject({
       id: "q-1",
       itemId: "ENG-1",
       issue: { id: "ENG-1", title: "Title of ENG-1" },
     });
-    expect(live.question("q-2")).toBeNull();
-    expect(live.question("q-404")).toBeNull();
-    expect(provider(db, []).questions().questions).toEqual([]);
-    expect(provider(db, ["s2"]).question("q-2")?.question.itemId).toBe("ENG-2");
+    expect(await live.question("q-2")).toBeNull();
+    expect(await live.question("q-404")).toBeNull();
+    expect((await provider(db, []).questions()).questions).toEqual([]);
+    expect((await provider(db, ["s2"]).question("q-2"))?.question.itemId).toBe("ENG-2");
   });
 
-  test("the list reads no Closeout, evidence, merge, CI or delivery rows", () => {
+  test("the list reads no Closeout, evidence, merge, CI or delivery rows", async () => {
     const db = database();
     asking(db, "ENG-1", "s1", "q-1");
     const live = provider(db, ["s1"]);
@@ -139,10 +141,10 @@ describe("question resources", () => {
       "outbox",
       "job",
     ];
-    const page = tablesRead(db, () => live.issue("ENG-1"));
+    const page = await tablesRead(db, () => live.issue("ENG-1"));
     expect(unread.filter((table) => page.has(table)).length).toBeGreaterThan(3);
-    const questions = tablesRead(db, () => live.questions());
-    const detail = tablesRead(db, () => live.question("q-1"));
+    const questions = await tablesRead(db, () => live.questions());
+    const detail = await tablesRead(db, () => live.question("q-1"));
     for (const table of unread) {
       expect(questions.has(table)).toBe(false);
       expect(detail.has(table)).toBe(false);
