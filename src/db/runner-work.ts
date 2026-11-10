@@ -1127,45 +1127,41 @@ export async function branchRunnerWork(
 }
 
 /** Compensate authority that was live at the last responsive control-plane sample. */
-export function extendStalledRunnerWork(db: Database, startedAt: number, lagMs: number): void {
-  settled(
-    sqliteDb(db).transaction(function* (q) {
-      const { runnerWork: w, runnerWorkGrant: g, runnerCommand: c } = q.t;
-      const rows = yield* q.all(
-        q.orm
-          .select({
-            runId: w.runId,
-            generation: w.generation,
-            leaseUntil: w.leaseUntil,
-            commandId: w.commandId,
-          })
-          .from(w)
-          .where(and(isNull(w.endedAt), gt(w.leaseUntil, runnerLeaseCutoff(startedAt)))),
-      );
-      for (const row of rows) {
-        yield* extendRunnerWorkLeaseSteps(q, row.runId, row.leaseUntil + lagMs);
-        yield* q.exec(
-          q.orm
-            .update(c)
-            .set({ expiresAt: sql`${c.expiresAt} + ${lagMs}` })
-            .where(and(eq(c.id, row.commandId), gt(c.expiresAt, startedAt))),
-        );
-
-        yield* q.exec(
-          q.orm
-            .update(g)
-            .set({ expiresAt: sql`${g.expiresAt} + ${lagMs}` })
-            .where(
-              and(
-                eq(g.runId, row.runId),
-                eq(g.generation, row.generation),
-                gt(g.expiresAt, startedAt),
-              ),
-            ),
-        );
-      }
-    }),
+export function* extendStalledRunnerWorkSteps(q: Q, startedAt: number, lagMs: number) {
+  const { runnerWork: w, runnerWorkGrant: g, runnerCommand: c } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        runId: w.runId,
+        generation: w.generation,
+        leaseUntil: w.leaseUntil,
+        commandId: w.commandId,
+      })
+      .from(w)
+      .where(and(isNull(w.endedAt), gt(w.leaseUntil, runnerLeaseCutoff(startedAt)))),
   );
+  for (const row of rows) {
+    yield* extendRunnerWorkLeaseSteps(q, row.runId, row.leaseUntil + lagMs);
+    yield* q.exec(
+      q.orm
+        .update(c)
+        .set({ expiresAt: sql`${c.expiresAt} + ${lagMs}` })
+        .where(and(eq(c.id, row.commandId), gt(c.expiresAt, startedAt))),
+    );
+
+    yield* q.exec(
+      q.orm
+        .update(g)
+        .set({ expiresAt: sql`${g.expiresAt} + ${lagMs}` })
+        .where(
+          and(eq(g.runId, row.runId), eq(g.generation, row.generation), gt(g.expiresAt, startedAt)),
+        ),
+    );
+  }
+}
+
+export function extendStalledRunnerWork(db: Database, startedAt: number, lagMs: number): void {
+  settled(sqliteDb(db).transaction((q) => extendStalledRunnerWorkSteps(q, startedAt, lagMs)));
 }
 
 export function* setRunnerWorkConsumedSequenceSteps(
@@ -1192,41 +1188,41 @@ export async function setRunnerWorkConsumedSequence(
   await store.run((q) => setRunnerWorkConsumedSequenceSteps(q, runId, generation, sequence));
 }
 
-export function itemSessionResults(db: Database, itemId: string) {
-  return settled(
-    sqliteDb(db).run(function* (q: Q) {
-      const { runnerResult: result, runnerCommand: command, run } = q.t;
-      return yield* q.all(
-        q.orm
-          .select({
-            envelope: jsonText(q, command.envelope),
-            payload: jsonText(q, result.payload),
-            receivedAt: result.receivedAt,
-          })
-          .from(result)
-          .innerJoin(command, eq(command.id, result.commandId))
-          .innerJoin(run, eq(run.id, result.runId))
-          .where(and(eq(run.itemId, itemId), eq(command.kind, "run")))
-          .orderBy(desc(result.receivedAt), desc(result.generation)),
-      );
-    }),
+export function* itemSessionResultsSteps(q: Q, itemId: string) {
+  const { runnerResult: result, runnerCommand: command, run } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({
+        envelope: jsonText(q, command.envelope),
+        payload: jsonText(q, result.payload),
+        receivedAt: result.receivedAt,
+      })
+      .from(result)
+      .innerJoin(command, eq(command.id, result.commandId))
+      .innerJoin(run, eq(run.id, result.runId))
+      .where(and(eq(run.itemId, itemId), eq(command.kind, "run")))
+      .orderBy(desc(result.receivedAt), desc(result.generation)),
   );
 }
-export function runPlacementCommand(db: Database, runId: string) {
-  return settled(
-    sqliteDb(db).run(function* (q: Q) {
-      const { runnerWork: work, runnerCommand: command } = q.t;
-      return yield* q.one(
-        q.orm
-          .select({
-            runnerId: work.runnerId,
-            kind: command.kind,
-            envelope: jsonText(q, command.envelope),
-          })
-          .from(work)
-          .leftJoin(command, eq(command.id, work.commandId))
-          .where(eq(work.runId, runId)),
-      );
-    }),
+
+export function itemSessionResults(db: Database, itemId: string) {
+  return settled(sqliteDb(db).run((q) => itemSessionResultsSteps(q, itemId)));
+}
+export function* runPlacementCommandSteps(q: Q, runId: string) {
+  const { runnerWork: work, runnerCommand: command } = q.t;
+  return yield* q.one(
+    q.orm
+      .select({
+        runnerId: work.runnerId,
+        kind: command.kind,
+        envelope: jsonText(q, command.envelope),
+      })
+      .from(work)
+      .leftJoin(command, eq(command.id, work.commandId))
+      .where(eq(work.runId, runId)),
   );
+}
+
+export function runPlacementCommand(db: Database, runId: string) {
+  return settled(sqliteDb(db).run((q) => runPlacementCommandSteps(q, runId)));
 }
