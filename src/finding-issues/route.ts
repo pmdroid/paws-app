@@ -1,15 +1,17 @@
 import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
-  auditWorkspaceAccess,
-  claimReviewFindingIssue,
-  getReviewFindingIssue,
-  getWorkItemRepository,
-  listWorkItems,
+  auditWorkspaceAccessSteps,
+  claimReviewFindingIssueSteps,
+  getReviewFindingIssueSteps,
+  getWorkItemRepositorySteps,
+  listWorkItemsSteps,
   reviewFindingKey,
   reviewFindingPlace,
-  saveReviewFindingIssue,
-  workspaceMember,
+  saveReviewFindingIssueSteps,
+  sqliteDb,
+  workspaceMemberSteps,
+  type Q,
   type ReviewFindingIssue,
   type WorkItemRecord,
   type WorkspaceSession,
@@ -65,16 +67,17 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
     if (access === undefined) return Response.json({ error: "Sign in to Paws." }, { status: 401 });
     if (request.method !== "POST")
       return new Response(null, { status: 405, headers: { allow: "POST" } });
-    const { db } = options;
+    const store = sqliteDb(options.db);
     const { principal } = access;
-    const refuse = (subject: string, error: string) => {
-      auditWorkspaceAccess(db, {
+    const refuse = async (subject: string, error: string) => {
+      const audit = {
         workspaceId: principal.workspaceId,
         userId: principal.userId,
         action: "access.denied",
         subject,
         now: now(),
-      });
+      };
+      await store.run((q) => auditWorkspaceAccessSteps(q, audit));
       return Response.json({ error }, { status: 403 });
     };
     if (
@@ -82,7 +85,9 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
       !validWorkspaceCsrf(request, access.session)
     )
       return refuse(FINDING_ISSUE_PATH, "A valid CSRF token is required.");
-    const member = workspaceMember(db, principal.workspaceId, principal.userId);
+    const member = await store.run((q) =>
+      workspaceMemberSteps(q, principal.workspaceId, principal.userId),
+    );
     // A Linear guest never becomes an active member, so this covers "not a guest" too.
     if (!workspaceMemberUsable(member)) return refuse(FINDING_ISSUE_PATH, FINDING_ISSUE_FILERS);
     const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
@@ -98,7 +103,7 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
         { error: "Send the issue, the review, and the finding's location and text." },
         { status: 400 },
       );
-    const item = visibleItem(db, itemId, access.sessionIds);
+    const item = await store.run((q) => visibleItemSteps(q, itemId, access.sessionIds));
     if (item === null) return Response.json({ error: "Issue not found." }, { status: 404 });
     const found = latestPreExisting(options.reviews(item.id), reviewId, location, explanation);
     if (found === null)
@@ -106,7 +111,7 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
         { error: "That pre-existing finding is not on this issue. Refresh the issue." },
         { status: 409 },
       );
-    const bound = getWorkItemRepository(db, item.id);
+    const bound = await store.run((q) => getWorkItemRepositorySteps(q, item.id));
     if (bound === null)
       return Response.json(
         { error: "Paws does not know this issue's repository." },
@@ -117,29 +122,25 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
     const place = reviewFindingPlace(location);
     if (key === null || place === null)
       return Response.json({ error: "The finding names no line." }, { status: 409 });
-    const stored = getReviewFindingIssue(db, key);
+    const stored = await store.run((q) => getReviewFindingIssueSteps(q, key));
     if (stored) return Response.json(reply(stored, false));
     if (options.file === undefined)
       return Response.json({ error: "Linear is not connected." }, { status: 503 });
     let pending = filing.get(key);
     let filed = false;
     if (pending === undefined) {
-      if (
-        !claimReviewFindingIssue(db, {
-          key,
-          finding: { repository, location, text: explanation },
-          itemId: item.id,
-          by: principal.userId,
-          now: now(),
-        })
-      )
-        return Response.json(
-          { error: "The improvement inbox already accepted this finding and files its issue." },
-          { status: 409 },
-        );
       filed = true;
       const file = options.file;
+      const claim = {
+        key,
+        finding: { repository, location, text: explanation },
+        itemId: item.id,
+        by: principal.userId,
+        now: now(),
+      };
       pending = (async () => {
+        if (!(await store.run((q) => claimReviewFindingIssueSteps(q, claim))))
+          throw new ClaimedElsewhere();
         const issue = await file(
           {
             key,
@@ -156,7 +157,7 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
           },
           { signal: request.signal },
         );
-        return saveReviewFindingIssue(db, {
+        const row = {
           key,
           repository,
           path: place.path,
@@ -167,13 +168,19 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
           itemId: item.id,
           filedBy: principal.userId,
           filedAt: now(),
-        });
+        };
+        return store.run((q) => saveReviewFindingIssueSteps(q, row));
       })().finally(() => filing.delete(key));
       filing.set(key, pending);
     }
     try {
       return Response.json(reply(await pending, filed));
     } catch (error) {
+      if (error instanceof ClaimedElsewhere)
+        return Response.json(
+          { error: "The improvement inbox already accepted this finding and files its issue." },
+          { status: 409 },
+        );
       journalCaught(error, "finding-issues.file", item.id);
       const message = error instanceof Error && error.message ? error.message : String(error);
       return Response.json({ error: `Linear did not file the issue: ${message}` }, { status: 502 });
@@ -181,17 +188,16 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
   };
 }
 
+class ClaimedElsewhere extends Error {}
+
 function reply(issue: ReviewFindingIssue, filed: boolean) {
   return { identifier: issue.identifier, url: issue.url, filed };
 }
 
 /** The newest visible work item with public id `id`. */
-function visibleItem(
-  db: Database,
-  id: string,
-  sessionIds: readonly string[],
-): WorkItemRecord | null {
-  const matches = listWorkItems(db).filter(
+function* visibleItemSteps(q: Q, id: string, sessionIds: readonly string[]) {
+  const items: WorkItemRecord[] = yield* listWorkItemsSteps(q);
+  const matches = items.filter(
     (item) =>
       (item.linearIdentifier === id || item.id === id) &&
       item.sessionKey !== null &&
