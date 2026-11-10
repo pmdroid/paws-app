@@ -5,7 +5,9 @@ import {
   prunableRunnerFileObjectsSteps,
   recordRunnerFileObjectSteps,
   sqliteDb,
+  type Q,
   type RunnerFileObject,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
 import { RUN_FILE_CHUNK_BYTES } from "./kinds";
@@ -32,11 +34,16 @@ export function createSealedRunnerFiles(options: {
   const now = options.now ?? Date.now;
   if (key.length !== 32) throw new Error("Runner file key is invalid.");
   return {
-    async write(objectKey: string, file: SealedRunnerFile, bytes: Uint8Array, admit?: () => void) {
+    async write(
+      objectKey: string,
+      file: SealedRunnerFile,
+      bytes: Uint8Array,
+      admit?: (q: Q) => Steps<void>,
+    ) {
       if (bytes.byteLength > RUN_FILE_CHUNK_BYTES)
         throw new Error("Runner file chunk is too large");
       await store.transaction(function* (q) {
-        admit?.();
+        if (admit) yield* admit(q);
         const sha256 = createHmac("sha256", key).update(bytes).digest("hex");
         const row = { ...file, key: objectKey, sha256, createdAt: now() };
         if (!(yield* recordRunnerFileObjectSteps(q, row)))

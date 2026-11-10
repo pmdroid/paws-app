@@ -116,61 +116,61 @@ const VM_STEPS = (states: OnboardingVmStep["state"][]): OnboardingVmStep[] =>
     state: states[index]!,
   }));
 
-test("a member with no runner needs one, and another member's runner does not count", () => {
+test("a member with no runner needs one, and another member's runner does not count", async () => {
   const w = workspace();
   runner(w.db, "theirs", { owner: "colleague", agents: { claude: { ready: 1 } } });
-  expect(w.read()).toEqual(NEEDED);
+  expect(await w.read()).toEqual(NEEDED);
 });
 
-test("another member's runner never counts, shared or not, unless they lead the issue's project", () => {
+test("another member's runner never counts, shared or not, unless they lead the issue's project", async () => {
   const w = workspace();
   runner(w.db, "theirs", { owner: "colleague", sharing: 1, agents: { claude: { ready: 1 } } });
   runner(w.db, "private", { owner: "lead", agents: { claude: { ready: 1 } } });
   runner(w.db, "stopped", { owner: "colleague", seenAgoMs: 10 * 60_000 });
-  expect(w.read()).toEqual(NEEDED);
+  expect(await w.read()).toEqual(NEEDED);
   // The lead's own unshared runner stays theirs, and the page says so.
-  expect(w.read(["lead"])).toEqual({
+  expect(await w.read(["lead"])).toEqual({
     ...NEEDED,
     runner: { state: "needed", reason: "lead's runner isn't shared." },
   });
   // A colleague who does not lead the project lends nothing, even with sharing on.
-  expect(w.read(["someone-else"])).toEqual(NEEDED);
+  expect(await w.read(["someone-else"])).toEqual(NEEDED);
 });
 
-test("a runner the issue's project lead shares makes the step ready, naming who shares it", () => {
+test("a runner the issue's project lead shares makes the step ready, naming who shares it", async () => {
   const w = workspace();
   runner(w.db, "shared", {
     owner: "lead",
     sharing: 1,
     agents: { claude: { ready: 1 }, codex: { ready: 1 } },
   });
-  expect(w.read(["lead"])).toEqual({
+  expect(await w.read(["lead"])).toEqual({
     runner: { state: "ready", id: "shared", name: "shared-host", sharedBy: "lead" },
     agents: { claude: "connected", codex: "connected" },
     memberVm: false,
   });
   // The member's own runner wins when it is as far along.
   runner(w.db, "mine", { agents: { claude: { ready: 1 }, codex: { ready: 1 } } });
-  expect(w.read(["lead"])).toEqual({
+  expect(await w.read(["lead"])).toEqual({
     runner: { state: "ready", id: "mine", name: "mine-host" },
     agents: { claude: "connected", codex: "connected" },
     memberVm: false,
   });
 });
 
-test("the lead's shared runner that is offline says so", () => {
+test("the lead's shared runner that is offline says so", async () => {
   const w = workspace();
   runner(w.db, "shared", { owner: "lead", sharing: 1, seenAgoMs: 10 * 60_000 });
-  expect(w.read(["lead"])).toEqual({
+  expect(await w.read(["lead"])).toEqual({
     ...NEEDED,
     runner: { state: "offline", name: "shared-host", sharedBy: "lead" },
   });
 });
 
-test("the step turns ready when the member's runner enrolls, with no restart", () => {
+test("the step turns ready when the member's runner enrolls, with no restart", async () => {
   const w = workspace();
   vm(w.db, "enroll");
-  expect(w.read()).toEqual({
+  expect(await w.read()).toEqual({
     runner: {
       state: "setting-up",
       name: "me-paws",
@@ -181,17 +181,17 @@ test("the step turns ready when the member's runner enrolls, with no restart", (
   });
   // The VM's runner enrolls and reports in; the next read shows it.
   runner(w.db, "vm-runner");
-  expect(w.read()).toEqual({
+  expect(await w.read()).toEqual({
     runner: { state: "ready", id: "vm-runner", name: "vm-runner-host" },
     agents: WAITING,
     memberVm: true,
   });
 });
 
-test("a VM being set up or failed shows as the runner step, with each setup step", () => {
+test("a VM being set up or failed shows as the runner step, with each setup step", async () => {
   const w = workspace();
   vm(w.db, "install");
-  expect(w.read()).toEqual({
+  expect(await w.read()).toEqual({
     runner: {
       state: "setting-up",
       name: "me-paws",
@@ -201,7 +201,7 @@ test("a VM being set up or failed shows as the runner step, with each setup step
     memberVm: true,
   });
   w.db.run("UPDATE member_vm SET failure='npm ci failed'");
-  expect(w.read()).toEqual({
+  expect(await w.read()).toEqual({
     runner: {
       state: "failed",
       name: "me-paws",
@@ -213,30 +213,30 @@ test("a VM being set up or failed shows as the runner step, with each setup step
   });
 });
 
-test("an offline or paused own runner says so", () => {
+test("an offline or paused own runner says so", async () => {
   const w = workspace();
   runner(w.db, "old", { seenAgoMs: 10 * 60_000 });
-  expect(w.read()).toEqual({
+  expect(await w.read()).toEqual({
     ...NEEDED,
     runner: { state: "offline", id: "old", name: "old-host" },
   });
   w.db.run("UPDATE runner SET status='paused',last_seen_at=?", [NOW]);
-  expect(w.read()).toEqual({
+  expect(await w.read()).toEqual({
     ...NEEDED,
     runner: { state: "paused", id: "old", name: "old-host" },
   });
 });
 
-test("a ready runner reports each coding agent's sign-in, preferring the most connected", () => {
+test("a ready runner reports each coding agent's sign-in, preferring the most connected", async () => {
   const w = workspace();
   runner(w.db, "a", { agents: { claude: { ready: 1 }, codex: { ready: 0, authExpired: 1 } } });
-  expect(w.read()).toEqual({
+  expect(await w.read()).toEqual({
     runner: { state: "ready", id: "a", name: "a-host" },
     agents: { claude: "connected", codex: "expired" },
     memberVm: false,
   });
   runner(w.db, "b", { agents: { claude: { ready: 1 }, codex: { ready: 1 } } });
-  expect(w.read()).toEqual({
+  expect(await w.read()).toEqual({
     runner: { state: "ready", id: "b", name: "b-host" },
     agents: { claude: "connected", codex: "connected" },
     memberVm: false,

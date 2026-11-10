@@ -25,7 +25,7 @@ import {
 } from "../runner-protocol";
 import { runnerFailureStatus, type RunnerWork } from "../runner-work";
 import type { Database } from "bun:sqlite";
-import { runnerFileObjectNames } from "../db";
+import { runnerFileObjectNamesSteps, type Q } from "../db";
 import {
   missingRunFileObject,
   SealedRunnerFileConflictError,
@@ -266,8 +266,8 @@ export function createRunnerArtifactStore(options: {
               digest: digest(value.artifact),
             },
             bytes,
-            () => {
-              const names = runnerFileObjectNames(remote.db, command.id, "artifact");
+            function* (q: Q) {
+              const names = yield* runnerFileObjectNamesSteps(q, command.id, "artifact");
               if (!names.includes(value.artifact.id) && names.length >= RUNNER_ARTIFACT_COUNT_LIMIT)
                 throw limited();
             },
