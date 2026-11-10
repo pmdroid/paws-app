@@ -1792,7 +1792,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
           tracker: linear.tracker,
           lifecycle: linear.issueLifecycle,
           ...(parents ? { scopeSnapshot: parents.scopeSnapshot } : {}),
-          onChanges: (changes) => {
+          onChanges: function* (q, changes) {
             for (const { itemId, issue } of changes.issues)
               saveSchedulingContext(db, {
                 itemId,
@@ -1800,7 +1800,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
                 ...("projectLeadId" in issue ? { projectLeadId: issue.projectLeadId } : {}),
                 priority: issue.priority,
               });
-            attached.applyDelegationChanges(changes);
+            yield* attached.applyDelegationChangesSteps(q, changes);
           },
           afterChanges: (changes) => attached.finishDelegationChanges(changes),
         });

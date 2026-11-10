@@ -1,3 +1,4 @@
+import { syncSteps } from "../src/runner-backend";
 import { expect, test } from "bun:test";
 import {
   bindLinearSessionTask,
@@ -72,7 +73,7 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
       },
     },
     lifecycle,
-    onChanges() {},
+    onChanges: () => syncSteps(() => {}),
     now: () => clock,
   });
   await reconciler.sweep({ now: clock });

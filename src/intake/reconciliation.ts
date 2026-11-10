@@ -38,6 +38,7 @@ import {
   updateReconciledWorkItemSteps,
   sqliteDb,
   type Q,
+  type Steps,
 } from "../db";
 
 export const SWEEP_FULL_REFRESH_MS = 6 * 60 * 60_000;
@@ -102,7 +103,7 @@ export function createItemReconciler(input: {
   db: Database;
   tracker: Pick<TrackerAdapter, "loadEpic" | "listDeps" | "listBlockers">;
   lifecycle: Pick<LinearIssueLifecycle, "inspect">;
-  onChanges: (changes: ItemChanges) => void;
+  onChanges: (q: Q, changes: ItemChanges) => Steps<void>;
   afterChanges?: (changes: ItemChanges) => Promise<void>;
   scopeSnapshot?: (
     sessionId: string,
@@ -246,7 +247,7 @@ export function createItemReconciler(input: {
             kind,
             token: crypto.randomUUID(),
           });
-      input.onChanges({ ...change });
+      yield* input.onChanges(q, { ...change });
       const effects = yield* listItemReconciliationEffectsSteps(q, initial.delegationId);
       change.specChangedItemIds = effects
         .filter((effect) => effect.kind === "spec")

@@ -1,3 +1,4 @@
+import { syncSteps } from "../src/runner-backend";
 import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
 import { FakeClock } from "../src/core";
@@ -164,7 +165,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       db,
       tracker,
       lifecycle,
-      onChanges() {},
+      onChanges: () => syncSteps(() => {}),
     });
     closeReconciler = () => reconciler.close();
     expect(await reconciler.issueChanged({ issueId: "outside", organizationId: "other" })).toEqual(

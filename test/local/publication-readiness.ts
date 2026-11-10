@@ -1,3 +1,4 @@
+import { syncSteps } from "../../src/runner-backend";
 import assert from "node:assert/strict";
 import type { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -101,7 +102,7 @@ export async function probePublicationReadiness(root: string) {
       db,
       tracker,
       lifecycle,
-      onChanges: (changes) => onChanges(changes),
+      onChanges: (_q, changes) => syncSteps(() => onChanges(changes)),
       afterChanges: (changes) => afterChanges(changes),
       now: () => clock.now(),
     });

@@ -1,3 +1,4 @@
+import { syncSteps } from "../src/runner-backend";
 import { expect, test } from "bun:test";
 import {
   applyLinearIssueProject,
@@ -127,7 +128,12 @@ test("a reconcile after the issue moved in Linear stores the new project", async
     assigneeId: null,
     delegateId: "app",
   });
-  const reconciler = createItemReconciler({ db, tracker, lifecycle, onChanges() {} });
+  const reconciler = createItemReconciler({
+    db,
+    tracker,
+    lifecycle,
+    onChanges: () => syncSteps(() => {}),
+  });
   const epic = tracker.epics.get("issue")!;
   epic.projectId = "linear";
   epic.projectName = "Linear projects";

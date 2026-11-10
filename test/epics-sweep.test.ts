@@ -1,3 +1,4 @@
+import { syncSteps } from "../src/runner-backend";
 import { expect, test } from "bun:test";
 import { bindLinearSessionTask, migrate, openDatabase, recordLinearInstallation } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue, SWEEP_FULL_REFRESH_MS } from "../src/intake";
@@ -53,7 +54,7 @@ async function sweepFixture() {
       },
     },
     lifecycle,
-    onChanges() {},
+    onChanges: () => syncSteps(() => {}),
     now: () => clock,
   });
   return {

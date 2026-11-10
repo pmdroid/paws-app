@@ -77,7 +77,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     tracker,
     lifecycle,
     now: () => clock.now(),
-    onChanges: (changes) => orchestrator.applyDelegationChanges(changes),
+    onChanges: (q, changes) => orchestrator.applyDelegationChangesSteps(q, changes),
   });
   try {
     const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });

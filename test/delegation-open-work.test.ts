@@ -1,3 +1,4 @@
+import { syncSteps } from "../src/runner-backend";
 import { expect, test } from "bun:test";
 import { bindLinearSessionTask, recordLinearInstallation } from "../src/db";
 import {
@@ -48,7 +49,7 @@ test("a delegation whose only item is cancelled is no longer treated as running 
     db,
     tracker,
     lifecycle,
-    onChanges: () => {},
+    onChanges: () => syncSteps(() => {}),
   });
   try {
     const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "only", now: 1000 });

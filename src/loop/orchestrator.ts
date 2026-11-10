@@ -91,7 +91,7 @@ import {
 } from "./activity-policy";
 import { reaskDeadQuestion } from "./dead-question";
 import { createHash, randomUUID } from "node:crypto";
-import { ask, restart, awaitQuestion } from "./operations";
+import { ask, restart, restartSteps, awaitQuestion } from "./operations";
 import {
   RUNNER_REPOSITORY_REASON,
   RUNNER_REPOSITORY_RETRY,
@@ -285,7 +285,6 @@ import {
 import {
   listWaitingProfileRuns,
   getTaskMode,
-  cancelOpenJobs,
   getLinearSessionAccess,
   type ConfirmedRemoteMerge,
   getLinearTaskDelegation,
@@ -377,7 +376,6 @@ import {
   activateLinearItem,
   getLinearSessionContext,
   listLinearActivitySnapshots,
-  applyLinearCommand,
   type Job,
   type JobLoop,
   type JobContext,
@@ -400,16 +398,17 @@ import {
   pinRunCheckout,
   getTaskLinearRead,
   type TaskMergeSettings,
-  resetAwakeTime,
+  resetAwakeTimeSteps,
   getWorkItemLinearProjectId,
   assignUnownedItemSteps,
-  bumpItemVersion,
+  bumpItemVersionSteps,
   cancelItemPendingJobsSteps,
   clearItemRecovery,
+  clearItemRecoverySteps,
   hasOpenItemJob,
   itemOwnerUserId,
   itemParentTaskKey,
-  itemSpecificationRevision,
+  itemSpecificationRevisionSteps,
   landedTaskBlockersSteps,
   latestRestartEvent,
   listItemIds,
@@ -440,7 +439,7 @@ import {
   type Q,
   type Steps,
   moveDelegationSession,
-  openTaskDependents,
+  openTaskDependentsSteps,
   workspaceUserIdForLinearUserSteps,
 } from "../db";
 import {
@@ -7128,21 +7127,21 @@ export class Orchestrator {
     await this.assertReconciled(item);
   }
 
-  applyDelegationChanges(changes: ExecutionChanges): void {
-    immediate(this.db, () => {
+  *applyDelegationChangesSteps(q: Q, changes: ExecutionChanges): Steps<void> {
+    {
       for (const itemId of changes.addedItemIds) {
-        const item = getWorkItem(this.db, itemId);
+        const item = yield* getWorkItemSteps(q, itemId);
         if (
           !item ||
           item.delegationId !== changes.delegationId ||
           item.sessionKey !== changes.sessionId
         )
           throw new Error("Changed task ownership does not match the delegation");
-        saveTaskMode(
-          this.db,
+        yield* saveTaskModeSteps(
+          q,
           itemId,
           "code",
-          getLinearSessionGeneration(this.db, changes.sessionId),
+          yield* getLinearSessionGenerationSteps(q, changes.sessionId),
           true,
         );
       }
@@ -7150,11 +7149,11 @@ export class Orchestrator {
         ...changes.removedItemIds,
         ...changes.canceledItemIds,
         ...(changes.parentCanceled
-          ? this.delegationItems(changes.delegationId).map((item) => item.id)
+          ? (yield* this.delegationItemsSteps(q, changes.delegationId)).map((item) => item.id)
           : []),
       ]);
       for (const itemId of new Set([...canceled, ...changes.specChangedItemIds])) {
-        const item = getWorkItem(this.db, itemId);
+        const item = yield* getWorkItemSteps(q, itemId);
         if (
           !item ||
           item.delegationId !== changes.delegationId ||
@@ -7163,15 +7162,22 @@ export class Orchestrator {
           throw new Error("Changed task ownership does not match the delegation");
         if (isTerminalWorkItemState(item.state)) continue;
         if (canceled.has(itemId)) {
-          applyLinearCommand(this.db, {
-            type: "cancel",
-            itemId,
-            source: "linear",
-            requestedAt: this.now(),
-          });
-          const dependents = openTaskDependents(this.db, changes.delegationId, item.linearIssueId);
+          yield* applyLinearCommandSteps(
+            q,
+            { type: "cancel", itemId, source: "linear", requestedAt: this.now() },
+            this.now(),
+            undefined,
+            {},
+            commandInstance(this.db),
+            { ready: false },
+          );
+          const dependents = yield* openTaskDependentsSteps(
+            q,
+            changes.delegationId,
+            item.linearIssueId,
+          );
           if (dependents.length)
-            enqueueOutboxOnce(this.db, {
+            yield* enqueueOutboxOnceSteps(q, {
               target: "linear",
               op: "activity",
               orderingKey: changes.sessionId,
@@ -7192,12 +7198,12 @@ export class Orchestrator {
             !canReportSessionProgress(
               this.db,
               changes.sessionId,
-              getLinearSessionGeneration(this.db, changes.sessionId),
+              yield* getLinearSessionGenerationSteps(q, changes.sessionId),
             )
           )
             continue;
-          const revision = itemSpecificationRevision(this.db, itemId) ?? 0;
-          enqueueOutboxOnce(this.db, {
+          const revision = (yield* itemSpecificationRevisionSteps(q, itemId)) ?? 0;
+          yield* enqueueOutboxOnceSteps(q, {
             target: "linear",
             op: "activity",
             orderingKey: changes.sessionId,
@@ -7213,24 +7219,28 @@ export class Orchestrator {
         }
         cancelItemQuestions(this.db, itemId, this.now());
         if (item.state === "failed") {
-          clearItemRecovery(this.db, itemId);
-          resetAwakeTime(this.db, itemId);
+          yield* clearItemRecoverySteps(q, itemId);
+          yield* resetAwakeTimeSteps(q, itemId);
         }
         if (item.state === "paused") {
-          cancelOpenJobs(this.db, { itemId, reason: "Linear criteria changed", now: this.now() });
-          bumpItemVersion(this.db, itemId);
+          yield* cancelOpenJobsSteps(q, {
+            itemId,
+            reason: "Linear criteria changed",
+            now: this.now(),
+          });
+          yield* bumpItemVersionSteps(q, itemId);
           continue;
         }
-        restart(this.db, item, {
+        yield* restartSteps(q, item, {
           reason: "follow_up",
           body: "The task criteria changed in Linear. Read the updated issue and finish the work from its branch.",
           now: this.now(),
         });
-        enqueueOutboxOnce(this.db, {
+        yield* enqueueOutboxOnceSteps(q, {
           target: "linear",
           op: "activity",
           orderingKey: changes.sessionId,
-          idempotencyKey: `criteria-changed:${item.id}:${getWorkItem(this.db, item.id)!.version}`,
+          idempotencyKey: `criteria-changed:${item.id}:${(yield* getWorkItemSteps(q, item.id))!.version}`,
           payload: {
             sessionId: changes.sessionId,
             kind: "thought",
@@ -7239,10 +7249,15 @@ export class Orchestrator {
           now: this.now(),
         });
       }
-    });
+    }
+  }
+
+  applyDelegationChanges(changes: ExecutionChanges): Promise<void> {
+    return this.store.transaction((q) => this.applyDelegationChangesSteps(q, changes));
   }
 
   async finishDelegationChanges(changes: ExecutionChanges): Promise<void> {
+    emitJobReady(this.store);
     const affected = new Set([
       ...changes.removedItemIds,
       ...changes.canceledItemIds,
@@ -8220,12 +8235,7 @@ export class Orchestrator {
   }
 
   private *assignSessionSteps(q: Q, delegationId: string, sessionId: string): Steps<void> {
-    const items: WorkItemRecord[] = [];
-    for (const id of yield* listItemIdsSteps(q, false)) {
-      const item = yield* getWorkItemSteps(q, id);
-      if (item?.delegationId === delegationId) items.push(item);
-    }
-    items.sort((left, right) => left.position - right.position);
+    const items = yield* this.delegationItemsSteps(q, delegationId);
     const item =
       items.find((entry) => inFlight(entry.state)) ??
       items.find((entry) => entry.state === "queued");
@@ -8883,6 +8893,15 @@ export class Orchestrator {
       if (item) items.push(item);
     }
     return items;
+  }
+
+  private *delegationItemsSteps(q: Q, delegationId: string): Steps<WorkItemRecord[]> {
+    const items: WorkItemRecord[] = [];
+    for (const id of yield* listItemIdsSteps(q, false)) {
+      const item = yield* getWorkItemSteps(q, id);
+      if (item?.delegationId === delegationId) items.push(item);
+    }
+    return items.sort((left, right) => left.position - right.position);
   }
 
   private delegationItems(delegationId: string): WorkItemRecord[] {
