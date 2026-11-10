@@ -298,8 +298,6 @@ import {
   completeArtifactTask,
   getTaskClassification,
   accrueAwake,
-  applyWorkItemEvent,
-  configureWorkItem,
   enqueueJobOnce,
   recordRebaseReturn,
   enqueueOutboxOnce,
@@ -357,8 +355,6 @@ import {
   getRun,
   CLEANUP_BLOCKED_NOTICE,
   blockConversation as blockStoredConversation,
-  getConversation,
-  saveConversation,
   listLinearTurnsForItem,
   getWorkItemRepository,
   getWorkItemRepositoryAnswer,
@@ -406,9 +402,9 @@ import {
   type TaskMergeSettings,
   resetAwakeTime,
   getWorkItemLinearProjectId,
-  assignUnownedItem,
+  assignUnownedItemSteps,
   bumpItemVersion,
-  cancelItemPendingJobs,
+  cancelItemPendingJobsSteps,
   clearItemRecovery,
   hasOpenItemJob,
   itemOwnerUserId,
@@ -445,7 +441,7 @@ import {
   type Steps,
   moveDelegationSession,
   openTaskDependents,
-  workspaceUserIdForLinearUser,
+  workspaceUserIdForLinearUserSteps,
 } from "../db";
 import {
   publishAccepted,
@@ -1674,20 +1670,29 @@ export class Orchestrator {
             })
         : null;
     if (!isCurrent()) throw new Error("The Linear request changed before intake");
-    const retireRedirectedItem = () => {
+    const now = () => this.now();
+    function* retireRedirectedItemSteps(q: Q) {
       if (!redirect) return;
-      const previous = getWorkItem(this.db, redirect.itemId);
+      const previous = yield* getWorkItemSteps(q, redirect.itemId);
       if (!previous || previous.state === "cancelled") return;
-      applyWorkItemEvent(this.db, previous.id, "cancel");
-      if (previous.currentRunId) markRun(this.db, previous.currentRunId, "ended", this.now());
-      cancelItemPendingJobs(this.db, previous.id, this.now());
-    };
-    const assignUnownedItems = (actorId: string | null, items: readonly { id: string }[]) => {
+      yield* applyWorkItemEventSteps(q, previous.id, "cancel");
+      if (previous.currentRunId) yield* markRunSteps(q, previous.currentRunId, "ended", now());
+      yield* cancelItemPendingJobsSteps(q, previous.id, now());
+    }
+    function* assignUnownedItemsSteps(
+      q: Q,
+      actorId: string | null,
+      items: readonly { id: string }[],
+    ) {
       if (items.length === 0 || !actorId) return;
-      const ownerId = workspaceUserIdForLinearUser(this.db, actorId);
+      const ownerId = yield* workspaceUserIdForLinearUserSteps(q, actorId);
       if (!ownerId) return;
-      for (const item of items) assignUnownedItem(this.db, item.id, ownerId);
-    };
+      for (const item of items) yield* assignUnownedItemSteps(q, item.id, ownerId);
+    }
+    const settings = this.options;
+    const assignSessionSteps = (q: Q, delegationId: string, session: string) =>
+      this.assignSessionSteps(q, delegationId, session);
+    const timeLimitsSteps = (q: Q, itemId: string) => this.timeLimitsSteps(q, itemId);
     const intakeCurrent = () =>
       isCurrent() &&
       (!sessionId ||
@@ -1706,34 +1711,33 @@ export class Orchestrator {
         : undefined,
       startFresh: options.startFresh === true,
       inspectBranch: (earlier) => this.inspectEarlierBranch(earlier),
-      beforeAdmit: retireRedirectedItem,
-      onAccepted: (accepted) => {
-        immediate(this.db, () => {
-          retireRedirectedItem();
-          if (accepted.ok && options.conversation)
-            for (const child of accepted.items) {
-              const stored = getConversation(this.db, child.id);
-              if (stored.entries === "[]" && !stored.transcript)
-                saveConversation(this.db, child.id, options.conversation, null);
-            }
-          if (sessionId !== null) {
-            const actorId =
-              this.options.linearIntakeActor?.(sessionId) ??
-              getLinearSession(this.db, sessionId)?.creatorId ??
-              null;
-            if (initialSession)
-              bindLinearSessionTask(this.db, sessionId, accepted.delegation.id, { actorId });
-            this.assignSession(accepted.delegation.id, sessionId);
-            this.options.onLinearIntake?.(sessionId, accepted);
-            if (accepted.ok) assignUnownedItems(actorId, accepted.items);
+      beforeAdmit: retireRedirectedItemSteps,
+      onAccepted: function* (q, accepted) {
+        yield* retireRedirectedItemSteps(q);
+        if (accepted.ok && options.conversation)
+          for (const child of accepted.items) {
+            const stored = yield* getConversationSteps(q, child.id);
+            if (stored.entries === "[]" && !stored.transcript)
+              yield* saveConversationSteps(q, child.id, options.conversation, null);
           }
-          if (redirect && accepted.ok && this.options.caps)
-            for (const child of accepted.items)
-              configureWorkItem(this.db, child.id, {
-                maxAwakeMs: this.options.caps.maxAwakeMs,
-                limits: this.timeLimits(child.id),
-              });
-        });
+        if (sessionId !== null) {
+          const actorId =
+            settings.linearIntakeActor?.(sessionId) ??
+            (yield* getLinearSessionSteps(q, sessionId))?.creatorId ??
+            null;
+          if (initialSession)
+            yield* bindLinearSessionTaskSteps(q, sessionId, accepted.delegation.id, { actorId });
+          yield* assignSessionSteps(q, accepted.delegation.id, sessionId);
+          settings.onLinearIntake?.(sessionId, accepted);
+          if (accepted.ok) yield* assignUnownedItemsSteps(q, actorId, accepted.items);
+        }
+        const caps = settings.caps;
+        if (redirect && accepted.ok && caps)
+          for (const child of accepted.items)
+            yield* configureWorkItemSteps(q, child.id, {
+              maxAwakeMs: caps.maxAwakeMs,
+              limits: yield* timeLimitsSteps(q, child.id),
+            });
       },
       ...(taskKey ? { taskKey } : {}),
       ...(classification && classification.mode !== "code" ? { singleIssue: true } : {}),
@@ -6457,9 +6461,13 @@ export class Orchestrator {
   }
 
   private timeLimits(itemId: string): StageLimits | undefined {
+    return settled(this.store.run((q) => this.timeLimitsSteps(q, itemId)));
+  }
+
+  private *timeLimitsSteps(q: Q, itemId: string): Steps<StageLimits | undefined> {
     const limits = this.options.caps?.limits;
     if (limits === undefined) return undefined;
-    return limits(getWorkItem(this.db, itemId)?.linearProjectId ?? null);
+    return limits((yield* getWorkItemSteps(q, itemId))?.linearProjectId ?? null);
   }
 
   private readMergePolicy(): MergeSettings {
@@ -8211,12 +8219,17 @@ export class Orchestrator {
     });
   }
 
-  private assignSession(delegationId: string, sessionId: string): void {
-    const items = this.delegationItems(delegationId);
+  private *assignSessionSteps(q: Q, delegationId: string, sessionId: string): Steps<void> {
+    const items: WorkItemRecord[] = [];
+    for (const id of yield* listItemIdsSteps(q, false)) {
+      const item = yield* getWorkItemSteps(q, id);
+      if (item?.delegationId === delegationId) items.push(item);
+    }
+    items.sort((left, right) => left.position - right.position);
     const item =
       items.find((entry) => inFlight(entry.state)) ??
       items.find((entry) => entry.state === "queued");
-    if (item) activateLinearItem(this.db, sessionId, item.id);
+    if (item) yield* activateLinearItemSteps(q, sessionId, item.id);
   }
 
   private assertJobCurrent(itemId: string): void {

@@ -12,8 +12,10 @@ import {
   insertRun,
   recordLinearInstallation,
   saveConversation,
+  type Q,
+  type Steps,
 } from "../src/db";
-import { intakeDelegatedIssue } from "../src/intake";
+import { intakeDelegatedIssue, type IntakeResult } from "../src/intake";
 import { acknowledgeNewSession, createFakeTracker } from "../src/linear";
 import { systemClock } from "../src/core";
 import { attachOrchestrator } from "../src/loop";
@@ -45,7 +47,11 @@ function fixture() {
       teamId: "team",
       observedAtMs: 1,
     });
-  const admit = (sessionId: string, onAccepted?: () => void, taskKey = sessionId) =>
+  const admit = (
+    sessionId: string,
+    onAccepted?: (q: Q, result: IntakeResult) => Steps<void>,
+    taskKey = sessionId,
+  ) =>
     intakeDelegatedIssue(db, tracker, {
       linearIssueId: "issue",
       sessionId,
@@ -90,7 +96,8 @@ test("a new session replaces an empty failed attempt and preserves its history",
 test("replacement and retirement roll back together when admission fails", async () => {
   const { db, id, admit } = await failedAttempt();
   await expect(
-    admit("new", () => {
+    admit("new", function* (q) {
+      yield* q.all(q.orm.select().from(q.t.workItem));
       throw new Error("Admission failed");
     }),
   ).rejects.toThrow("Admission failed");

@@ -74,8 +74,8 @@ export async function intakeDelegatedIssue(
     singleIssue?: boolean;
     acknowledged?: boolean;
     isCurrent?: () => boolean;
-    onAccepted?: (result: IntakeResult) => void;
-    beforeAdmit?: () => void;
+    onAccepted?: (q: Q, result: IntakeResult) => Steps<void>;
+    beforeAdmit?: (q: Q) => Steps<void>;
     reconcileSessions?: (issueIds: readonly string[]) => Promise<void>;
     /** The delegation asked to start fresh: no earlier branch is continued. */
     startFresh?: boolean;
@@ -94,7 +94,7 @@ export async function intakeDelegatedIssue(
   const existing = await findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (existing !== null) {
     const result = { ok: true as const, ...existing, alreadyExisted: true as const };
-    input.onAccepted?.(result);
+    if (input.onAccepted) await store.transaction((q) => input.onAccepted!(q, result));
     return result;
   }
   const loaded = await tracker.loadEpic(input.linearIssueId);
@@ -117,7 +117,7 @@ export async function intakeDelegatedIssue(
   const accepted = await findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (accepted !== null) {
     const result = { ok: true as const, ...accepted, alreadyExisted: true as const };
-    input.onAccepted?.(result);
+    if (input.onAccepted) await store.transaction((q) => input.onAccepted!(q, result));
     return result;
   }
   const continuations =
@@ -141,7 +141,7 @@ export async function intakeDelegatedIssue(
       identifiers,
       alreadyExisted: false,
     } as const;
-    input.onAccepted?.(result);
+    if (input.onAccepted) await store.transaction((q) => input.onAccepted!(q, result));
     await announce(tracker, input.sessionId, "error", cycleMessage(identifiers));
     return result;
   }
@@ -155,10 +155,10 @@ export async function intakeDelegatedIssue(
       if (raced !== null) {
         existed = true;
         const admitted = { ok: true as const, ...raced, alreadyExisted: true as const };
-        input.onAccepted?.(admitted);
+        if (input.onAccepted) yield* input.onAccepted(q, admitted);
         return admitted;
       }
-      input.beforeAdmit?.();
+      if (input.beforeAdmit) yield* input.beforeAdmit(q);
       if (
         snapshot.subIssues.length > 0 &&
         sessionId.length > 0 &&
@@ -173,7 +173,7 @@ export async function intakeDelegatedIssue(
           items: [],
           alreadyExisted: false,
         } as const;
-        input.onAccepted?.(admitted);
+        if (input.onAccepted) yield* input.onAccepted(q, admitted);
         return admitted;
       }
       if (delegatedAlone && sessionId.length > 0)
@@ -209,7 +209,7 @@ export async function intakeDelegatedIssue(
         items: saved.items,
         alreadyExisted: false,
       } as const;
-      input.onAccepted?.(admitted);
+      if (input.onAccepted) yield* input.onAccepted(q, admitted);
       return admitted;
     });
   } catch (error) {
