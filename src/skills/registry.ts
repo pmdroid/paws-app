@@ -4,13 +4,15 @@ import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { HOOK_AGENTS, WORKSPACE_HOOK_LIMIT, type HookAgent, type WorkspaceHook } from "../core";
 import {
-  getSkill,
-  listHooks,
-  markSkillRemoved,
-  saveHook,
-  saveSkill,
-  setSkillAgents,
+  getSkillSteps,
+  listHooksSteps,
+  markSkillRemovedSteps,
+  saveHookSteps,
+  saveSkillSteps,
+  setSkillAgentsSteps,
   SKILL_AGENTS,
+  sqliteDb,
+  type Q,
   type SkillAgent,
   type SkillPin,
   type SkillSource,
@@ -75,16 +77,18 @@ export async function findSkills(
     ...skillManifests(tree),
     ...hookFiles(tree),
   ]);
-  return skillFolders(resolved.files, resolved.suggestedName).map((skill) => {
+  const found: FoundSkill[] = [];
+  for (const skill of skillFolders(resolved.files, resolved.suggestedName)) {
     const name = skillName(skill.name);
-    const existing = getSkill(registry.db, name);
-    return {
+    const existing = await sqliteDb(registry.db).run((q) => getSkillSteps(q, name));
+    found.push({
       ...skill,
       name,
       added: existing !== null && existing.removedAt === null,
       hooks: skillHooks(resolved.files, skill.path),
-    };
-  });
+    });
+  }
+  return found;
 }
 
 export async function addSkills(
@@ -127,7 +131,8 @@ export async function addSkills(
     throw new SkillError(
       "Hooks run only for Claude and Codex. Choose one of them, or leave the hooks out.",
     );
-  if (listHooks(registry.db).length + hooks.length > WORKSPACE_HOOK_LIMIT)
+  const store = sqliteDb(registry.db);
+  if ((await store.run(listHooksSteps)).length + hooks.length > WORKSPACE_HOOK_LIMIT)
     throw new SkillError(
       `Paws runs at most ${WORKSPACE_HOOK_LIMIT} hooks. Remove some, or add fewer of this skill's hooks.`,
       409,
@@ -148,7 +153,7 @@ export async function addSkills(
       ),
     );
   }
-  for (const hook of hooks) saveHook(registry.db, hook, registry.now);
+  for (const hook of hooks) await store.run((q) => saveHookSteps(q, hook, registry.now));
   return { skills: pins, hooks };
 }
 
@@ -170,7 +175,7 @@ export async function updateSkill(
   registry: SkillRegistry,
   name: string,
 ): Promise<{ before: SkillPin; after: SkillPin }> {
-  const before = activeSkill(registry.db, name);
+  const before = await sqliteDb(registry.db).run((q) => activeSkillSteps(q, name));
   if (before.source.kind === "upload")
     throw new SkillError("An uploaded skill has no source to update. Upload the folder again.");
   const resolved = await registry.resolver.resolve(before.source, registry.signal);
@@ -185,25 +190,31 @@ export async function updateSkill(
   return { before, after };
 }
 
-export function changeSkillAgents(
+export async function changeSkillAgents(
   registry: Pick<SkillRegistry, "db" | "now">,
   name: string,
   agents: readonly string[],
-): { before: SkillPin; after: SkillPin } {
-  const before = activeSkill(registry.db, name);
-  setSkillAgents(registry.db, name, skillAgents(agents), registry.now);
-  return { before, after: getSkill(registry.db, name)! };
+): Promise<{ before: SkillPin; after: SkillPin }> {
+  const store = sqliteDb(registry.db);
+  const before = await store.run((q) => activeSkillSteps(q, name));
+  const chosen = skillAgents(agents);
+  await store.run((q) => setSkillAgentsSteps(q, name, chosen, registry.now));
+  return { before, after: (await store.run((q) => getSkillSteps(q, name)))! };
 }
 
 /** Mark the skill for removal. Runners uninstall it; the bundle stays until it is re-added. */
-export function removeSkill(registry: Pick<SkillRegistry, "db" | "now">, name: string): SkillPin {
-  activeSkill(registry.db, name);
-  markSkillRemoved(registry.db, name, registry.now);
-  return getSkill(registry.db, name)!;
+export async function removeSkill(
+  registry: Pick<SkillRegistry, "db" | "now">,
+  name: string,
+): Promise<SkillPin> {
+  const store = sqliteDb(registry.db);
+  await store.run((q) => activeSkillSteps(q, name));
+  await store.run((q) => markSkillRemovedSteps(q, name, registry.now));
+  return (await store.run((q) => getSkillSteps(q, name)))!;
 }
 
-function activeSkill(db: Database, name: string): SkillPin {
-  const skill = getSkill(db, name);
+function* activeSkillSteps(q: Q, name: string) {
+  const skill = yield* getSkillSteps(q, name);
   if (skill === null || skill.removedAt !== null)
     throw new SkillError(`No skill named ${name} is registered.`, 404);
   return skill;
@@ -229,7 +240,8 @@ async function pin(
   files: SkillFiles,
   replacing = false,
 ): Promise<SkillPin> {
-  const existing = getSkill(registry.db, skill.name);
+  const store = sqliteDb(registry.db);
+  const existing = await store.run((q) => getSkillSteps(q, skill.name));
   if (!replacing && existing !== null && existing.removedAt === null)
     throw new SkillError(
       `A skill named ${skill.name} is already registered. Update it instead.`,
@@ -241,11 +253,12 @@ async function pin(
     version: skill.version,
     ...(registry.limit === undefined ? {} : { limit: registry.limit }),
   });
-  saveSkill(registry.db, {
+  const saved = {
     ...skill,
     sha256: bundle.sha256,
     sizeBytes: bundle.sizeBytes,
     updatedAt: registry.now,
-  });
-  return getSkill(registry.db, skill.name)!;
+  };
+  await store.run((q) => saveSkillSteps(q, saved));
+  return (await store.run((q) => getSkillSteps(q, skill.name)))!;
 }

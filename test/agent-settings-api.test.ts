@@ -503,7 +503,7 @@ describe("reviewer profile validation", () => {
     });
   });
 
-  test("runner readiness counts only active runners with the agent ready and signed in", () => {
+  test("runner readiness counts only active runners with the agent ready and signed in", async () => {
     const db = openDatabase(join(tempHome(), "paws.db"));
     migrate(db);
     const now = Date.now();
@@ -541,12 +541,12 @@ describe("reviewer profile validation", () => {
       [expired],
     );
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [paused]);
-    expect(activeRunnerReadiness(db, "codex")).toEqual([
+    expect(await activeRunnerReadiness(db, "codex")).toEqual([
       { name: "blank", ready: false },
       { name: "expired", ready: false },
       { name: "ready", ready: true },
     ]);
-    expect(activeRunnerReadiness(db, "claude").every((entry) => !entry.ready)).toBe(true);
+    expect((await activeRunnerReadiness(db, "claude")).every((entry) => !entry.ready)).toBe(true);
     db.close();
   });
 });

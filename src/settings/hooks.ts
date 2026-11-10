@@ -13,7 +13,7 @@ import {
   type HookEvent,
   type WorkspaceHook,
 } from "../core";
-import { deleteHook, listHooks, listSkills, saveHook } from "../db";
+import { deleteHookSteps, listHooksSteps, listSkillsSteps, saveHookSteps, sqliteDb } from "../db";
 import {
   addUploadedSkill,
   SKILL_BUNDLE_LIMIT,
@@ -54,16 +54,17 @@ export async function handleHookSettingsRequest(
     return json({ error: "Hook settings are only available on the local Paws origin" }, 403);
   if (options.role !== undefined && !isWorkspaceAdmin(options.role))
     return json({ error: "Only workspace admins can change hooks." }, 403);
-  const skills = () =>
-    listSkills(options.db)
+  const store = sqliteDb(options.db);
+  const skills = async () =>
+    (await store.run(listSkillsSteps))
       .filter((skill) => skill.removedAt === null)
       .map((skill) => ({ name: skill.name, agents: skill.agents }));
-  const listing = (notice?: string, uploaded?: UploadedHook) =>
+  const listing = async (notice?: string, uploaded?: UploadedHook) =>
     json({
-      hooks: listHooks(options.db),
+      hooks: await store.run(listHooksSteps),
       events: HOOK_EVENTS.map((id) => ({ id, label: HOOK_EVENT_LABELS[id] })),
       agents: HOOK_AGENTS,
-      skills: skills(),
+      skills: await skills(),
       limit: WORKSPACE_HOOK_LIMIT,
       limitBytes: options.limit ?? SKILL_BUNDLE_LIMIT,
       ...(notice ? { notice } : {}),
@@ -81,7 +82,7 @@ export async function handleHookSettingsRequest(
         "settings.skill.add",
         `Uploaded hook ${uploaded.path} as skill ${uploaded.skill}`,
       );
-      return listing(
+      return await listing(
         `Uploaded ${uploaded.skill}. Review the prefilled script path and command, then add the hook.`,
         uploaded,
       );
@@ -100,7 +101,8 @@ export async function handleHookSettingsRequest(
   }
   if (!isRecord(body)) return json({ error: "Expected a JSON object" }, 400);
   if (body.action === "remove") {
-    const removed = typeof body.id === "string" ? deleteHook(options.db, body.id) : null;
+    const id = body.id;
+    const removed = typeof id === "string" ? await store.run((q) => deleteHookSteps(q, id)) : null;
     if (!removed) return json({ error: "That hook is already gone." }, 404);
     options.audit("settings.hook.remove", `Removed hook ${describeHook(removed)}`);
     return listing("Removed the hook. Runs that already started keep it until they end.");
@@ -124,7 +126,7 @@ export async function handleHookSettingsRequest(
   const problem = workspaceHookProblem(hook);
   if (problem) return json({ error: problem }, 400);
   if (hook.skill !== null) {
-    const skill = skills().find((entry) => entry.name === hook.skill);
+    const skill = (await skills()).find((entry) => entry.name === hook.skill);
     if (!skill) return json({ error: `No registered skill is named ${hook.skill}.` }, 400);
     const missing = hook.agents.filter((agent) => !(skill.agents as string[]).includes(agent));
     if (missing.length)
@@ -133,12 +135,13 @@ export async function handleHookSettingsRequest(
         400,
       );
   }
-  if (listHooks(options.db).length >= WORKSPACE_HOOK_LIMIT)
+  if ((await store.run(listHooksSteps)).length >= WORKSPACE_HOOK_LIMIT)
     return json(
       { error: `Paws runs at most ${WORKSPACE_HOOK_LIMIT} hooks. Remove one first.` },
       409,
     );
-  saveHook(options.db, hook, (options.now ?? Date.now)());
+  const now = (options.now ?? Date.now)();
+  await store.run((q) => saveHookSteps(q, hook, now));
   options.audit("settings.hook.add", `Added hook ${describeHook(hook)}`);
   return listing(`Added the hook. Runs that start from now on get it.`);
 }
