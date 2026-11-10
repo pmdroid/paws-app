@@ -64,13 +64,14 @@ import {
 import type { SkillResolver, SkillUpdates } from "../skills";
 import {
   auditWorkspaceAccess,
-  firstWorkspaceId,
-  getArtifact,
-  getWorkItem,
+  auditWorkspaceAccessSteps,
+  firstWorkspaceIdSteps,
+  getArtifactSteps,
+  getWorkItemSteps,
   hotFiles,
-  listWorkspaceRepositoryNames,
+  listWorkspaceRepositoryNamesSteps,
   sqliteDb,
-  workspaceSessionIds,
+  workspaceSessionIdsSteps,
   type Db,
 } from "../db";
 import {
@@ -354,7 +355,7 @@ type Secrets = {
 async function route(request: Request, secrets: Secrets): Promise<Response> {
   const path = new URL(request.url).pathname;
   if (request.method === "GET" && path === "/health") {
-    const report = secrets.health();
+    const report = await secrets.health();
     return Response.json(report, {
       status: report.ok ? 200 : 503,
       headers: { "cache-control": "no-store" },
@@ -422,17 +423,19 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
       if (access === null || secrets.db === undefined)
         return Response.json({ error: "Sign in to Paws." }, { status: 401 });
+      const store = secrets.store ?? sqliteDb(secrets.db);
       const selected =
         new URL(request.url).searchParams.get("workspaceId") ??
         request.headers.get("x-paws-workspace");
       if (selected !== null && selected !== access.principal.workspaceId) {
-        auditWorkspaceAccess(secrets.db, {
+        const denied = {
           workspaceId: access.principal.workspaceId,
           userId: access.principal.userId,
           action: "access.denied",
           subject: path,
           now: Date.now(),
-        });
+        };
+        await store.run((q) => auditWorkspaceAccessSteps(q, denied));
         return Response.json({ error: "Workspace access denied." }, { status: 403 });
       }
       const privileged =
@@ -445,13 +448,14 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           (request.headers.get("origin") !== workspace.origin ||
             !validWorkspaceCsrf(request, access.session)))
       ) {
-        auditWorkspaceAccess(secrets.db, {
+        const denied = {
           workspaceId: access.principal.workspaceId,
           userId: access.principal.userId,
           action: "access.denied",
           subject: path,
           now: Date.now(),
-        });
+        };
+        await store.run((q) => auditWorkspaceAccessSteps(q, denied));
         return Response.json(
           { error: "Workspace administration and a valid CSRF token are required." },
           { status: 403 },
@@ -477,11 +481,9 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       }
       csrfToken = access.session.csrfToken;
       principal = access.principal;
-      sessionIds = workspaceSessionIds(
-        secrets.db,
-        access.principal.workspaceId,
-        access.principal.userId,
-        workspace.clientId,
+      const { workspaceId, userId } = access.principal;
+      sessionIds = await store.run((q) =>
+        workspaceSessionIdsSteps(q, workspaceId, userId, workspace.clientId),
       );
       if (path === "/api/execution-controls" && secrets.executionControls !== undefined) {
         const response = await secrets.executionControls(request, access.principal, sessionIds);
@@ -590,12 +592,13 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   }
   if (path === FINDING_SETTINGS_PATH && secrets.db) {
     const db = secrets.db;
-    const workspaceId = principal?.workspaceId ?? firstWorkspaceId(db);
+    const store = secrets.store ?? sqliteDb(db);
+    const workspaceId = principal?.workspaceId ?? (await store.run(firstWorkspaceIdSteps));
     if (!workspaceId) return Response.json({ error: "Connect Linear first." }, { status: 404 });
     const configPath = secrets.agentSettings?.configPath;
     return (await handleFindingSettingsRequest(request, {
       db,
-      store: secrets.store ?? sqliteDb(db),
+      store,
       csrfToken,
       workspaceId,
       groupingTime: (configPath && loadConfigFile(configPath).findingsGroupingTime) || "06:00",
@@ -656,6 +659,10 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       highRiskFile,
       ...agentSettings
     } = secrets.agentSettings;
+    const repositoryNames = (db: Database) =>
+      (secrets.store ?? sqliteDb(db)).run((q) =>
+        listWorkspaceRepositoryNamesSteps(q, principal?.workspaceId),
+      );
     const shared = {
       ...agentSettings,
       csrfToken,
@@ -679,10 +686,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...shared,
         ...(path === BRIEF_SETTINGS_PATH && secrets.db
           ? {
-              repos: [
-                ...(shared.repos ?? []),
-                ...listWorkspaceRepositoryNames(secrets.db, principal?.workspaceId),
-              ],
+              repos: [...(shared.repos ?? []), ...(await repositoryNames(secrets.db))],
             }
           : {}),
       })) ??
@@ -691,10 +695,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(path === CHECKOUT_SETTINGS_PATH && secrets.db
           ? {
               // The stored GitHub connection and team mappings, not a GitHub call.
-              repos: [
-                ...(shared.repos ?? []),
-                ...listWorkspaceRepositoryNames(secrets.db, principal?.workspaceId),
-              ],
+              repos: [...(shared.repos ?? []), ...(await repositoryNames(secrets.db))],
             }
           : {}),
         ...(checkoutFacts ? { inspect: checkoutFacts } : {}),
@@ -705,10 +706,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
         ...(path === MERGE_SETTINGS_PATH && secrets.db
           ? {
               // The stored GitHub connection and team mappings, not a GitHub call.
-              repos: [
-                ...(shared.repos ?? []),
-                ...listWorkspaceRepositoryNames(secrets.db, principal?.workspaceId),
-              ],
+              repos: [...(shared.repos ?? []), ...(await repositoryNames(secrets.db))],
             }
           : {}),
         ...(highRiskFile ? { highRiskFile } : {}),
@@ -738,8 +736,12 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       ? {
           readLinearArtifact: async (id: string, signal?: AbortSignal) => {
             if (sessionIds !== undefined) {
-              const artifact = getArtifact(secrets.db!, id);
-              const item = artifact === null ? null : getWorkItem(secrets.db!, artifact.itemId);
+              const store = secrets.store ?? sqliteDb(secrets.db!);
+              const artifact = await store.run((q) => getArtifactSteps(q, id));
+              const item =
+                artifact === null
+                  ? null
+                  : await store.run((q) => getWorkItemSteps(q, artifact.itemId));
               if (item?.sessionKey == null || !sessionIds.includes(item.sessionKey)) return null;
             }
             return secrets.readLinearArtifact!(id, signal);

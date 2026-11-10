@@ -1,11 +1,14 @@
 import {
   workspaceMemberUsable,
-  auditWorkspaceAccess,
-  enqueueJob,
-  immediate,
-  latestGitHubDelivery,
-  listWorkspaceRepositories,
-  workspaceMember,
+  auditWorkspaceAccessSteps,
+  emitJobReady,
+  enqueueJobSteps,
+  latestGitHubDeliverySteps,
+  listWorkspaceRepositoriesSteps,
+  sqliteDb,
+  workspaceMemberSteps,
+  type Q,
+  type Steps,
 } from "../db";
 import { isWorkspaceAdmin, requestWorkspaceSession, validWorkspaceCsrf } from "../workspace";
 import { journalCaught } from "../journal";
@@ -53,6 +56,7 @@ export function createHostedGitHubConnect(options: {
   now?: () => number;
 }) {
   const { db } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const origin = new URL(options.origin).origin;
   if (new URL(origin).protocol !== "https:")
@@ -63,40 +67,43 @@ export function createHostedGitHubConnect(options: {
     if (![START, CALLBACK].includes(url.pathname)) return null;
     const access = requestWorkspaceSession(db, request, now());
     const selected = url.searchParams.get("workspaceId") ?? request.headers.get("x-paws-workspace");
-    const permitted = () => {
+    function* permittedSteps(q: Q) {
       const current = requestWorkspaceSession(db, request, now());
       const member = access
-        ? workspaceMember(db, access.principal.workspaceId, access.principal.userId)
+        ? yield* workspaceMemberSteps(q, access.principal.workspaceId, access.principal.userId)
         : null;
-      return (
+      return Boolean(
         access &&
         current?.session.tokenHash === access.session.tokenHash &&
         workspaceMemberUsable(member) &&
-        isWorkspaceAdmin(member.role)
+        isWorkspaceAdmin(member.role),
       );
-    };
-    const audit = (action: string) =>
-      auditWorkspaceAccess(db, {
+    }
+    const permitted = () => store.run(permittedSteps);
+    const auditSteps = (q: Q, action: string) =>
+      auditWorkspaceAccessSteps(q, {
         workspaceId: access?.principal.workspaceId ?? null,
         userId: access?.principal.userId ?? null,
         action,
         subject: url.pathname,
         now: now(),
       });
-    const administrator = () => {
+    const audit = (action: string) => store.run((q) => auditSteps(q, action));
+    function* administratorSteps(q: Q) {
       const member = access
-        ? workspaceMember(db, access.principal.workspaceId, access.principal.userId)
+        ? yield* workspaceMemberSteps(q, access.principal.workspaceId, access.principal.userId)
         : null;
       return Boolean(workspaceMemberUsable(member) && isWorkspaceAdmin(member.role));
-    };
+    }
+    const administrator = () => store.run(administratorSteps);
     const signedIn = () => {
       const current = requestWorkspaceSession(db, request, now());
       return access && current?.session.tokenHash === access.session.tokenHash;
     };
-    const denied = () => {
-      audit("access.denied");
+    function* deniedSteps(q: Q): Steps<Response> {
+      yield* auditSteps(q, "access.denied");
       return Response.json(
-        administrator()
+        (yield* administratorSteps(q))
           ? { code: "reauth_required", error: "Sign in again to connect GitHub." }
           : {
               code: "admin_required",
@@ -104,7 +111,10 @@ export function createHostedGitHubConnect(options: {
             },
         { status: 403 },
       );
-    };
+    }
+    const denied = () => store.run(deniedSteps);
+    const repositoriesOf = (workspaceId: string) =>
+      store.run((q) => listWorkspaceRepositoriesSteps(q, workspaceId));
     if (
       url.origin !== origin ||
       (request.headers.has("host") && request.headers.get("host") !== url.host) ||
@@ -119,14 +129,18 @@ export function createHostedGitHubConnect(options: {
       } catch (caughtError1) {
         journalCaught(caughtError1, "github-connect.createHostedGitHubConnect.template", null);
         return Response.json(
-          { status: "setup_required", canManage: administrator(), requiresSignIn: !permitted() },
+          {
+            status: "setup_required",
+            canManage: await administrator(),
+            requiresSignIn: !(await permitted()),
+          },
           { headers: { "cache-control": "no-store" } },
         );
       }
       const workspaceId = access!.principal.workspaceId;
-      const scope = JSON.stringify(listWorkspaceRepositories(db, workspaceId));
+      const scope = JSON.stringify(await repositoriesOf(workspaceId));
       const repositories = [
-        ...new Set(listWorkspaceRepositories(db, workspaceId).map((entry) => entry.repository)),
+        ...new Set((await repositoriesOf(workspaceId)).map((entry) => entry.repository)),
       ];
       try {
         const signal = AbortSignal.any([request.signal, AbortSignal.timeout(30000)]);
@@ -166,9 +180,9 @@ export function createHostedGitHubConnect(options: {
           for (const repository of repositories)
             if (!(await check(repository, "write", signal))) connected = false;
         }
-        if (!signedIn()) return denied();
+        if (!signedIn()) return await denied();
         if (
-          JSON.stringify(listWorkspaceRepositories(db, workspaceId)) !== scope ||
+          JSON.stringify(await repositoriesOf(workspaceId)) !== scope ||
           JSON.stringify(activation.template()) !== JSON.stringify(app)
         )
           return Response.json(
@@ -186,11 +200,11 @@ export function createHostedGitHubConnect(options: {
                   : connected
                     ? "connected"
                     : "needs_connection",
-            canManage: administrator(),
-            requiresSignIn: !permitted(),
+            canManage: await administrator(),
+            requiresSignIn: !(await permitted()),
             installationUrl: discovered.installationUrl,
             repositoryCount: repositories.length,
-            lastDelivery: latestGitHubDelivery(db),
+            lastDelivery: await store.run(latestGitHubDeliverySteps),
           },
           { headers: { "cache-control": "no-store" } },
         );
@@ -206,7 +220,7 @@ export function createHostedGitHubConnect(options: {
         );
       }
     }
-    if (!permitted()) return denied();
+    if (!(await permitted())) return denied();
     if (url.pathname === START) {
       if (
         request.method !== "POST" ||
@@ -254,8 +268,8 @@ export function createHostedGitHubConnect(options: {
           { status: 400 },
         );
       }
-      if (!permitted()) return denied();
-      const initialRepositories = listWorkspaceRepositories(db, access!.principal.workspaceId);
+      if (!(await permitted())) return denied();
+      const initialRepositories = await repositoriesOf(access!.principal.workspaceId);
       const initialScope = JSON.stringify(initialRepositories);
       let discoveredApp: ActiveGitHubApp | undefined;
       if (installationId === undefined) {
@@ -284,10 +298,9 @@ export function createHostedGitHubConnect(options: {
             AbortSignal.any([request.signal, AbortSignal.timeout(30000)]),
             options.fetch,
           );
-          if (!permitted()) return denied();
+          if (!(await permitted())) return await denied();
           if (
-            JSON.stringify(listWorkspaceRepositories(db, access!.principal.workspaceId)) !==
-              initialScope ||
+            JSON.stringify(await repositoriesOf(access!.principal.workspaceId)) !== initialScope ||
             JSON.stringify(activation.template()) !== JSON.stringify(discoveredApp)
           )
             return Response.json(
@@ -306,7 +319,7 @@ export function createHostedGitHubConnect(options: {
             "github-connect.createHostedGitHubConnect.discoverGitHubInstallation",
             null,
           );
-          if (!permitted()) return denied();
+          if (!(await permitted())) return denied();
           return Response.json(
             {
               error:
@@ -318,17 +331,21 @@ export function createHostedGitHubConnect(options: {
       }
       if (typeof installationId !== "string")
         return Response.json({ error: "Install the GitHub App first." }, { status: 409 });
-      return immediate(db, () => {
-        if (!permitted()) return denied();
+      return store.transaction(function* (q) {
+        if (!(yield* permittedSteps(q))) return yield* deniedSteps(q);
         const workspaceId = access!.principal.workspaceId;
-        const scope = JSON.stringify(listWorkspaceRepositories(db, workspaceId));
+        const scope = JSON.stringify(yield* listWorkspaceRepositoriesSteps(q, workspaceId));
         if (scope !== initialScope)
           return Response.json(
             { error: "Workspace access changed. Refresh and try again." },
             { status: 409 },
           );
         const repositories = [
-          ...new Set(listWorkspaceRepositories(db, workspaceId).map((entry) => entry.repository)),
+          ...new Set(
+            (yield* listWorkspaceRepositoriesSteps(q, workspaceId)).map(
+              (entry) => entry.repository,
+            ),
+          ),
         ];
         if (!repositories.length)
           return Response.json(
@@ -383,7 +400,7 @@ export function createHostedGitHubConnect(options: {
             now() + 600000,
           ],
         );
-        audit("github.connect.started");
+        yield* auditSteps(q, "github.connect.started");
         return Response.json(
           {
             authorizationUrl: githubAppAuthorization({
@@ -408,8 +425,9 @@ export function createHostedGitHubConnect(options: {
       url.searchParams.has("error")
     )
       return denied();
-    const pending = immediate(db, () =>
-      db
+    // oxlint-disable-next-line require-yield -- the claim is one raw statement in its own transaction
+    const pending = await store.transaction(function* () {
+      return db
         .query<Pending, [string, string, string, string, number]>(
           "UPDATE workspace_github_oauth SET status='claimed' WHERE state_hash=? AND workspace_id=? AND user_id=? AND session_hash=? AND expires_at>? AND status='pending' RETURNING *",
         )
@@ -419,8 +437,8 @@ export function createHostedGitHubConnect(options: {
           access!.principal.userId,
           access!.session.tokenHash,
           now(),
-        ),
-    );
+        );
+    });
     if (!pending) return denied();
     try {
       const intent = activation.read<Intent>(pending.secret_id);
@@ -433,17 +451,19 @@ export function createHostedGitHubConnect(options: {
       });
       const secretId = randomUUID();
       activation.save(secretId, { ...intent.app, installationId: intent.installationId });
-      return immediate(db, () => {
+      const job = { ready: false };
+      const response = await store.transaction(function* (q) {
         const currentApp = activation.template();
         if (
           currentApp.appId !== intent.app.appId ||
           currentApp.clientId !== intent.app.clientId ||
           currentApp.privateKeyPem !== intent.app.privateKeyPem ||
-          !permitted() ||
+          !(yield* permittedSteps(q)) ||
           pending.expires_at <= now() ||
-          JSON.stringify(listWorkspaceRepositories(db, pending.workspace_id)) !== intent.scope
+          JSON.stringify(yield* listWorkspaceRepositoriesSteps(q, pending.workspace_id)) !==
+            intent.scope
         )
-          return denied();
+          return yield* deniedSteps(q);
         const changed = db.run(
           "UPDATE workspace_github_connection SET generation=generation+1,secret_id=?,actor_id=?,installation_id=?,repositories=? WHERE workspace_id=? AND generation=?",
           [
@@ -464,14 +484,15 @@ export function createHostedGitHubConnect(options: {
           "UPDATE workspace_github_oauth SET status='complete' WHERE state_hash=? AND status='claimed'",
           [pending.state_hash],
         );
-        auditWorkspaceAccess(db, {
+        yield* auditWorkspaceAccessSteps(q, {
           workspaceId: pending.workspace_id,
           userId: pending.user_id,
           action: "github.connect.activated",
           subject: `${intent.app.appId}:${intent.installationId}:${human.id}`,
           now: now(),
         });
-        enqueueJob(db, { queue: "github.auth.recover", now: now() });
+        yield* enqueueJobSteps(q, { queue: "github.auth.recover", now: now() });
+        job.ready = true;
         return new Response(null, {
           status: 303,
           headers: {
@@ -480,12 +501,14 @@ export function createHostedGitHubConnect(options: {
           },
         });
       });
+      if (job.ready) emitJobReady(store);
+      return response;
     } catch (caughtError7) {
       journalCaught(caughtError7, "github-connect.createHostedGitHubConnect.read", null);
       db.run("UPDATE workspace_github_oauth SET status='failed' WHERE state_hash=?", [
         pending.state_hash,
       ]);
-      audit("github.connect.failed");
+      await audit("github.connect.failed");
       return Response.json(
         { error: "GitHub connection could not be verified. Start again." },
         { status: 409 },
