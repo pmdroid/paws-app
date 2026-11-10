@@ -108,7 +108,7 @@ for (const reconnect of [false, true])
     expect((await start("192.0.2.1")).status).toBe(303);
   });
 
-test("OAuth state stays bounded across instances and admits starts after expiration", () => {
+test("OAuth state stays bounded across instances and admits starts after expiration", async () => {
   const { db, home } = fixture();
   const another = openDatabase(join(home, "paws.sqlite"));
   cleanups.push(() => another.close());
@@ -119,12 +119,12 @@ test("OAuth state stays bounded across instances and admits starts after expirat
       bootstrap: null,
       now,
     });
-  for (let attempt = 0; attempt < 1_000; attempt++) expect(start(db).status).toBe(303);
-  expect(start(another).status).toBe(429);
+  for (let attempt = 0; attempt < 1_000; attempt++) expect((await start(db)).status).toBe(303);
+  expect((await start(another)).status).toBe(429);
   expect(db.query("SELECT count(*) AS count FROM workspace_oauth_request").get()).toEqual({
     count: 1_000,
   });
-  expect(start(another, 601_000).status).toBe(303);
+  expect((await start(another, 601_000)).status).toBe(303);
   expect(db.query("SELECT count(*) AS count FROM workspace_oauth_request").get()).toEqual({
     count: 1,
   });
