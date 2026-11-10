@@ -14,25 +14,20 @@ concurrency:
 
 jobs:
   test:
-    name: test (${{ matrix.shard }}/4)
+    name: test (${{ matrix.shard }}/6)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
-      - run: bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --shard=${{ matrix.shard }}/4 --timings=timings-${{ matrix.shard }}.json --timings=test-timings.json --update-timings
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: timings-${{ matrix.shard }}
-          path: timings-${{ matrix.shard }}.json
+      - run: bun scripts/test-watchdog.ts --parallel=4 --timeout=20000 --no-orphans --shard=${{ matrix.shard }}/6 --timings=test-timings.json
 
   check:
     name: lint, format, types, test, dashboard build
