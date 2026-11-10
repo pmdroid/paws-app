@@ -2,13 +2,14 @@ import type { Database } from "bun:sqlite";
 import { and, asc, count, eq, inArray, isNull, max, notInArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { TERMINAL_WORK_ITEM_STATES } from "../core";
-import { applyLinearCommand } from "./commands";
+import { applyLinearCommandSteps } from "./commands";
+import { commandInstance } from "./command-delivery";
+import { emitJobReady } from "./jobs";
 import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { delegatedLinearUserIdSql } from "./linear-sessions";
-import { immediate } from "./tx";
 import {
-  auditWorkspaceAccess,
-  workspaceMember,
+  auditWorkspaceAccessSteps,
+  workspaceMemberSteps,
   WORKSPACE_REVOKED_RESPONSE,
   type WorkspaceRole,
 } from "./workspace";
@@ -23,52 +24,63 @@ type RevocationChange = {
 };
 
 /** Persist the access cut-off and stop its work in the same write transaction. */
-export function changeWorkspaceRevocation(db: Database, input: RevocationChange): string[] {
-  return immediate(db, () => {
-    const queries = sqliteDb(db);
-    settled(queries.run((q) => requireWorkspaceAdminSteps(q, input.workspaceId, input.actorId)));
-    const member = workspaceMember(db, input.workspaceId, input.userId);
-    if (!member) throw new Error("Choose a workspace member.");
-    if (input.revoked && input.actorId === input.userId)
-      throw new Error("You cannot revoke your own access.");
-    // The usable admin actor remains; refusing self-revocation also protects the last admin.
-    if ((member.revokedAt !== null) === input.revoked) return [];
-    settled(queries.run((q) => recordWorkspaceRevocationSteps(q, input)));
-    const stopped: string[] = [];
-    if (input.revoked) {
-      const items = settled(
-        queries.run((q) =>
-          memberOpenItemsSteps(q, input.workspaceId, input.userId, member.linearUserId),
-        ),
+export function* changeWorkspaceRevocationSteps(
+  q: Q,
+  input: RevocationChange,
+  self: string | undefined,
+  notifications: { ready: boolean },
+) {
+  yield* requireWorkspaceAdminSteps(q, input.workspaceId, input.actorId);
+  const member = yield* workspaceMemberSteps(q, input.workspaceId, input.userId);
+  if (!member) throw new Error("Choose a workspace member.");
+  if (input.revoked && input.actorId === input.userId)
+    throw new Error("You cannot revoke your own access.");
+  // The usable admin actor remains; refusing self-revocation also protects the last admin.
+  if ((member.revokedAt !== null) === input.revoked) return [];
+  yield* recordWorkspaceRevocationSteps(q, input);
+  const stopped: string[] = [];
+  if (input.revoked) {
+    const items = yield* memberOpenItemsSteps(
+      q,
+      input.workspaceId,
+      input.userId,
+      member.linearUserId,
+    );
+    for (const item of items) {
+      const result = yield* applyLinearCommandSteps(
+        q,
+        { type: "stop", source: "dashboard", itemId: item.id, requestedAt: input.now },
+        input.now,
+        WORKSPACE_REVOKED_RESPONSE,
+        { responseOnly: true, keepPullRequest: true },
+        self,
+        notifications,
       );
-      for (const item of items) {
-        const result = applyLinearCommand(
-          db,
-          {
-            type: "stop",
-            source: "dashboard",
-            itemId: item.id,
-            requestedAt: input.now,
-          },
-          input.now,
-          WORKSPACE_REVOKED_RESPONSE,
-          { responseOnly: true, keepPullRequest: true },
-        );
-        // A merge call in flight queues the Stop durably; it applies once GitHub answers.
-        if (result.deferred) continue;
-        if (!result.applied)
-          throw new Error("Work changed before access could be revoked. Try again.");
-        stopped.push(item.id);
-      }
+      // A merge call in flight queues the Stop durably; it applies once GitHub answers.
+      if (result.deferred) continue;
+      if (!result.applied)
+        throw new Error("Work changed before access could be revoked. Try again.");
+      stopped.push(item.id);
     }
-    auditWorkspaceAccess(db, {
-      ...input,
-      userId: input.actorId,
-      subject: input.userId,
-      action: input.revoked ? "workspace.member_revoked" : "workspace.member_restored",
-    });
-    return stopped;
+  }
+  yield* auditWorkspaceAccessSteps(q, {
+    ...input,
+    userId: input.actorId,
+    subject: input.userId,
+    action: input.revoked ? "workspace.member_revoked" : "workspace.member_restored",
   });
+  return stopped;
+}
+
+export function changeWorkspaceRevocation(db: Database, input: RevocationChange): string[] {
+  const notifications = { ready: false };
+  const stopped = settled(
+    sqliteDb(db).transaction((q) =>
+      changeWorkspaceRevocationSteps(q, input, commandInstance(db), notifications),
+    ),
+  );
+  if (notifications.ready) emitJobReady(db);
+  return stopped;
 }
 
 export function* recordWorkspaceRevocationSteps(q: Q, input: RevocationChange): Steps<void> {
