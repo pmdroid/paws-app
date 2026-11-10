@@ -388,7 +388,7 @@ describe("pull request comments restart the item", () => {
 
   test("a comment fix on an accepted head is one candidate review escape, even redelivered", async () => {
     const { db, caps, conversation, inline } = setup();
-    markCloseoutAccepted(db, "eng-1", "h");
+    await markCloseoutAccepted(sqliteDb(db), "eng-1", "h");
     conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
     conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
     inline({ id: 9001, review: 601, author: "cursor[bot]", body: "Bug: off by one." });

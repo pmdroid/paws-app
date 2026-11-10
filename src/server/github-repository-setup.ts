@@ -11,9 +11,21 @@ import {
   type ActiveGitHubApp,
 } from "../auth";
 import {
+  advanceGithubConnectionSteps,
   auditWorkspaceAccessSteps,
+  claimGithubOAuthSteps,
+  completeGithubOAuthSteps,
+  deleteGithubOAuthSteps,
   emitJobReady,
   enqueueJobSteps,
+  ensureGithubConnectionSteps,
+  expiredGithubOAuthSteps,
+  failGithubOAuthSteps,
+  githubConnectionSteps,
+  githubOAuthStateExistsSteps,
+  insertGithubOAuthSteps,
+  latestCompleteGithubOAuthSteps,
+  updateGithubOAuthIntentSteps,
   listWorkspaceRepositoriesSteps,
   replaceWorkspaceRepositoriesSteps,
   sqliteDb,
@@ -68,11 +80,7 @@ export function createGitHubRepositorySetup(options: {
       url.pathname === CALLBACK &&
       (!state ||
         state.length > 128 ||
-        !db
-          .query(
-            "SELECT 1 FROM workspace_github_oauth WHERE state_hash=? AND json_extract(intent,'$.kind')=?",
-          )
-          .get(hash(state), KIND))
+        !(await store.run((q) => githubOAuthStateExistsSteps(q, hash(state), KIND))))
     )
       return null;
     const access = requestWorkspaceSession(db, request, now());
@@ -122,20 +130,14 @@ export function createGitHubRepositorySetup(options: {
     }
     const scope = () => store.run(scopeSteps);
     const listed = () => store.run((q) => listWorkspaceRepositoriesSteps(q, workspaceId));
-    const generation = () =>
-      db
-        .query<{ generation: number }, [string]>(
-          "SELECT generation FROM workspace_github_connection WHERE workspace_id=?",
-        )
-        .get(workspaceId)?.generation ?? 0;
-    const find = () =>
-      db
-        .query<Pending, [string, string, string, string, number]>(
-          "SELECT * FROM workspace_github_oauth WHERE workspace_id=? AND user_id=? AND session_hash=? AND json_extract(intent,'$.kind')=? AND status='complete' AND expires_at>? ORDER BY expires_at DESC LIMIT 1",
-        )
-        .get(workspaceId, userId, sessionHash, KIND, now());
+    const requester = { workspaceId, userId, sessionHash };
+    function* generationSteps(q: Q) {
+      return (yield* githubConnectionSteps(q, workspaceId))?.generation ?? 0;
+    }
+    const generation = () => store.run(generationSteps);
+    const find = () => store.run((q) => latestCompleteGithubOAuthSteps(q, requester, KIND, now()));
     function* unchangedSteps(q: Q, pending: Pending, secret: Secret) {
-      const row = find();
+      const row = yield* latestCompleteGithubOAuthSteps(q, requester, KIND, now());
       return Boolean(
         permitted() &&
         row?.state_hash === pending.state_hash &&
@@ -143,7 +145,7 @@ export function createGitHubRepositorySetup(options: {
         row.expected_generation === pending.expected_generation &&
         row.intent === pending.intent &&
         pending.expires_at > now() &&
-        generation() === pending.expected_generation &&
+        (yield* generationSteps(q)) === pending.expected_generation &&
         JSON.parse(pending.intent).scope === (yield* scopeSteps(q)) &&
         JSON.stringify(activation.template()) === JSON.stringify(secret.app),
       );
@@ -152,23 +154,19 @@ export function createGitHubRepositorySetup(options: {
       store.run((q) => unchangedSteps(q, pending, secret));
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]);
     try {
-      for (const expired of db
-        .query<{ state_hash: string; secret_id: string }, [string, string, number]>(
-          "SELECT state_hash,secret_id FROM workspace_github_oauth WHERE workspace_id=? AND json_extract(intent,'$.kind')=? AND expires_at<=?",
-        )
-        .all(workspaceId, KIND, now())) {
+      for (const expired of await store.run((q) =>
+        expiredGithubOAuthSteps(q, workspaceId, KIND, now()),
+      )) {
         activation.remove(expired.secret_id);
-        db.run("DELETE FROM workspace_github_oauth WHERE state_hash=?", [expired.state_hash]);
+        await store.run((q) => deleteGithubOAuthSteps(q, expired.state_hash));
       }
       if (url.pathname === CALLBACK) {
         const code = url.searchParams.get("code");
         if (!state || !code || code.length > 4096 || url.searchParams.has("error"))
           return reply({ error: "GitHub sign-in was not completed. Start again." }, 400);
-        const pending = db
-          .query<Pending, [string, string, string, string, number]>(
-            "UPDATE workspace_github_oauth SET status='claimed' WHERE state_hash=? AND workspace_id=? AND user_id=? AND session_hash=? AND status='pending' AND expires_at>? RETURNING *",
-          )
-          .get(hash(state), workspaceId, userId, sessionHash, now());
+        const pending = await store.run((q) =>
+          claimGithubOAuthSteps(q, hash(state), requester, now()),
+        );
         if (!pending) return denied();
         const secret = activation.read<Secret>(pending.secret_id);
         let grantId: string | undefined;
@@ -184,18 +182,16 @@ export function createGitHubRepositorySetup(options: {
           if (
             !permitted() ||
             pending.expires_at <= now() ||
-            generation() !== pending.expected_generation ||
+            (await generation()) !== pending.expected_generation ||
             JSON.parse(pending.intent).scope !== (await scope()) ||
             JSON.stringify(activation.template()) !== JSON.stringify(secret.app)
           )
             return denied();
           grantId = randomUUID();
           activation.save(grantId, { ...secret, user });
-          const changed = db.run(
-            "UPDATE workspace_github_oauth SET status='complete',secret_id=? WHERE state_hash=? AND status='claimed'",
-            [grantId, pending.state_hash],
-          );
-          if (changed.changes !== 1) throw new Error("GitHub setup changed. Start again.");
+          const granted = grantId;
+          if (!(await store.run((q) => completeGithubOAuthSteps(q, pending.state_hash, granted))))
+            throw new Error("GitHub setup changed. Start again.");
           grantId = undefined;
           return new Response(null, {
             status: 303,
@@ -207,10 +203,7 @@ export function createGitHubRepositorySetup(options: {
         } finally {
           activation.remove(pending.secret_id);
           if (grantId) activation.remove(grantId);
-          db.run(
-            "UPDATE workspace_github_oauth SET status='failed' WHERE state_hash=? AND status='claimed'",
-            [pending.state_hash],
-          );
+          await store.run((q) => failGithubOAuthSteps(q, pending.state_hash, true));
         }
       }
       if (request.method === "POST") {
@@ -223,19 +216,14 @@ export function createGitHubRepositorySetup(options: {
         try {
           await store.transaction(function* (q) {
             if (!permitted()) throw new Error("Workspace access changed. Sign in again.");
-            db.run(
-              "INSERT INTO workspace_github_oauth(state_hash,workspace_id,user_id,session_hash,secret_id,expected_generation,intent,expires_at) VALUES(?,?,?,?,?,?,?,?)",
-              [
-                hash(secret.state),
-                workspaceId,
-                userId,
-                sessionHash,
-                secret.id,
-                generation(),
-                JSON.stringify({ kind: KIND, scope: yield* scopeSteps(q) }),
-                now() + 600_000,
-              ],
-            );
+            yield* insertGithubOAuthSteps(q, {
+              ...requester,
+              stateHash: hash(secret.state),
+              secretId: secret.id,
+              expectedGeneration: yield* generationSteps(q),
+              intent: JSON.stringify({ kind: KIND, scope: yield* scopeSteps(q) }),
+              expiresAt: now() + 600_000,
+            });
           });
         } catch (error) {
           activation.remove(secret.id);
@@ -250,7 +238,7 @@ export function createGitHubRepositorySetup(options: {
           }),
         });
       }
-      const pending = find();
+      const pending = await find();
       if (!pending)
         return request.method === "PUT"
           ? reply(
@@ -360,30 +348,23 @@ export function createGitHubRepositorySetup(options: {
               now: now(),
             }),
           );
-          db.run(
-            "INSERT INTO workspace_github_connection(workspace_id) VALUES(?) ON CONFLICT DO NOTHING",
-            [workspaceId],
-          );
-          const changed = db.run(
-            "UPDATE workspace_github_connection SET generation=generation+1,secret_id=?,actor_id=?,installation_id=?,repositories=? WHERE workspace_id=? AND generation=?",
-            [
-              activeId,
-              userId,
-              choices.installationId,
-              JSON.stringify(repositories),
+          yield* ensureGithubConnectionSteps(q, workspaceId);
+          if (
+            !(yield* advanceGithubConnectionSteps(q, {
               workspaceId,
-              pending.expected_generation,
-            ],
-          );
-          if (changed.changes !== 1)
+              expectedGeneration: pending.expected_generation,
+              secretId: activeId,
+              actorId: userId,
+              installationId: choices.installationId,
+              repositories,
+            }))
+          )
             throw new Error("A newer GitHub connection is active. Refresh and try again.");
-          db.run(
-            "UPDATE workspace_github_oauth SET expected_generation=?,intent=? WHERE state_hash=?",
-            [
-              pending.expected_generation + 1,
-              JSON.stringify({ kind: KIND, scope: yield* scopeSteps(q) }),
-              pending.state_hash,
-            ],
+          yield* updateGithubOAuthIntentSteps(
+            q,
+            pending.state_hash,
+            pending.expected_generation + 1,
+            JSON.stringify({ kind: KIND, scope: yield* scopeSteps(q) }),
           );
           yield* auditWorkspaceAccessSteps(q, {
             workspaceId,

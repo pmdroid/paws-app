@@ -9,18 +9,19 @@ import {
   listJobs,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../db";
 import { answer } from "../questions";
 import { ask } from "./operations";
 import { questionEffects } from "./question-effects";
 
-test("an answer restarts the task with a fresh transient-retry count", () => {
+test("an answer restarts the task with a fresh transient-retry count", async () => {
   const clock = new FakeClock(20_000);
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "acme-7", sessionKey: "ses", now: clock.now() });
   beginImplementRun(db, item.id, clock.now());
-  deferWorkItem(db, getWorkItem(db, item.id)!, {
+  await deferWorkItem(sqliteDb(db), getWorkItem(db, item.id)!, {
     retry: MAX_TRANSIENT_RETRIES,
     delayMs: 0,
     handoff: null,

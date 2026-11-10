@@ -165,9 +165,9 @@ export class JobLoop {
   }
 
   /** Closeout time counts only while a job holds the item, so settle it at each claim and end. */
-  private settleAwake(job: Job, boundary: "claimed" | "ending"): void {
+  private async settleAwake(job: Job, boundary: "claimed" | "ending"): Promise<void> {
     try {
-      accrueAtJobBoundary(this.db, job, boundary, this.clock.mono(), this.clock.now());
+      await accrueAtJobBoundary(this.store, job, boundary, this.clock.mono(), this.clock.now());
     } catch (error) {
       journalCaught(error, "loop.settleAwake", journalItemId(job.payload));
     }
@@ -303,7 +303,7 @@ export class JobLoop {
   }
 
   private async execute(job: Job, handler: JobHandler): Promise<void> {
-    this.settleAwake(job, "claimed");
+    await this.settleAwake(job, "claimed");
     const controller = new AbortController();
     const current = () => {
       if (!controller.signal.aborted && !isJobCurrent(this.db, job))
@@ -340,14 +340,14 @@ export class JobLoop {
     try {
       await trackHostOperation(`job:${job.queue}`, () => handler(job, context));
       if (await stillCurrent()) {
-        this.settleAwake(job, "ending");
+        await this.settleAwake(job, "ending");
         const now = this.clock.now();
         await this.store.run((q) => completeJobSteps(q, job, now));
       }
     } catch (error) {
       journalCaught(error, "loop.tick.handler", journalItemId(job.payload));
       if (await stillCurrent()) {
-        this.settleAwake(job, "ending");
+        await this.settleAwake(job, "ending");
         const options = { now: this.clock.now(), baseMs: this.options.backoffBaseMs };
         await this.store.run((q) => failJobSteps(q, job, error, options));
       }

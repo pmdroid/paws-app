@@ -13,6 +13,7 @@ import {
   markCloseoutAccepted,
   getWorkItem,
   recordCarriedAccept,
+  sqliteDb,
 } from "./index";
 
 test("each head of an item is ordered by when Closeout first evaluated it", () => {
@@ -40,13 +41,13 @@ test("each head of an item is ordered by when Closeout first evaluated it", () =
 });
 
 for (const changedIdentity of [false, true]) {
-  test(`a rejection retires acceptance with ${changedIdentity ? "a new" : "the same"} progress identity`, () => {
+  test(`a rejection retires acceptance with ${changedIdentity ? "a new" : "the same"} progress identity`, async () => {
     const db = openDatabase(":memory:");
     migrate(db);
     insertQueuedItem(db, { id: "item" });
     const identity = { taskId: "task", base: "b", head: "s", policyDigest: "p", policyPath: null };
     finishCloseoutProgress(db, "item", identity, "accepted", 10);
-    markCloseoutAccepted(db, "item", "s");
+    await markCloseoutAccepted(sqliteDb(db), "item", "s");
     finishCloseoutProgress(
       db,
       "item",
@@ -62,13 +63,13 @@ for (const changedIdentity of [false, true]) {
 }
 
 for (const decision of ["exhausted", "blocked"] as const) {
-  test(`a ${decision} verdict ${decision === "exhausted" ? "retires" : "keeps"} the accepted head`, () => {
+  test(`a ${decision} verdict ${decision === "exhausted" ? "retires" : "keeps"} the accepted head`, async () => {
     const db = openDatabase(":memory:");
     migrate(db);
     insertQueuedItem(db, { id: "item" });
     const identity = { taskId: "task", base: "b", head: "s", policyDigest: "p", policyPath: null };
     finishCloseoutProgress(db, "item", identity, "accepted", 10);
-    markCloseoutAccepted(db, "item", "s");
+    await markCloseoutAccepted(sqliteDb(db), "item", "s");
     finishCloseoutProgress(db, "item", { ...identity, base: "c" }, decision, 20);
     expect(getWorkItem(db, "item")?.acceptedHead).toBe(decision === "exhausted" ? null : "s");
     // Either way the older acceptance is not resurrected by the newer identity's row.
@@ -77,11 +78,11 @@ for (const decision of ["exhausted", "blocked"] as const) {
   });
 }
 
-test("rejecting a carried head retires its source acceptance", () => {
+test("rejecting a carried head retires its source acceptance", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item" });
-  markCloseoutAccepted(db, "item", "s");
+  await markCloseoutAccepted(sqliteDb(db), "item", "s");
   recordCarriedAccept(db, {
     itemId: "item",
     head: "rebased",

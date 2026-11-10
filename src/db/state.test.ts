@@ -141,7 +141,7 @@ describe("restart recovery", () => {
 
   for (const queue of [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify]) {
     for (const graceful of [true, false]) {
-      test(`a parked ${queue} survives repeated ${graceful ? "graceful" : "crash"} restarts without recovery`, () => {
+      test(`a parked ${queue} survives repeated ${graceful ? "graceful" : "crash"} restarts without recovery`, async () => {
         const { db, clock } = harness();
         const item = insertQueuedItem(db, { now: clock.now() });
         const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
@@ -157,12 +157,12 @@ describe("restart recovery", () => {
           },
           now: clock.now(),
         });
-        accrueAwake(db, item.id, clock.mono(), clock.now());
+        await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
         for (let restart = 0; restart < 3; restart++) {
           if (graceful) prepareShutdown(db, clock.now());
           expect(recoverOnStartup(db, clock.now())).toEqual([]);
           clock.advance(20 * 60_000);
-          accrueAwake(db, item.id, clock.mono(), clock.now());
+          await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
         }
         expect(getWorkItem(db, item.id)).toMatchObject({
           state,
@@ -237,11 +237,11 @@ describe("restart recovery", () => {
   });
 
   describe("a pending transient retry", () => {
-    function deferred() {
+    async function deferred() {
       const { db, clock } = harness();
       const item = insertQueuedItem(db, { sessionKey: "ses", now: clock.now() });
       const { item: running } = beginImplementRun(db, item.id, clock.now(), checkpoint);
-      deferWorkItem(db, running, {
+      await deferWorkItem(sqliteDb(db), running, {
         retry: 4,
         delayMs: 600_000,
         handoff: "keep going",
@@ -253,8 +253,8 @@ describe("restart recovery", () => {
     const pendingResumes = (db: ReturnType<typeof harness>["db"]) =>
       listJobs(db).filter((job) => job.queue === JOB_KIND.resume && job.status === "pending");
 
-    test("survives repeated restarts with its deadline, retry count and handoff", () => {
-      const { db, clock, item, runAt } = deferred();
+    test("survives repeated restarts with its deadline, retry count and handoff", async () => {
+      const { db, clock, item, runAt } = await deferred();
       for (let restart = 0; restart < 3; restart++) {
         clock.advance(1_000);
         prepareShutdown(db, clock.now());
@@ -267,8 +267,8 @@ describe("restart recovery", () => {
       expect(claimNextJob(db, { now: clock.now() })).toBeNull();
     });
 
-    test("runs once with its saved retry count when due", () => {
-      const { db, clock, runAt } = deferred();
+    test("runs once with its saved retry count when due", async () => {
+      const { db, clock, runAt } = await deferred();
       clock.advance(700_000);
       recoverOnStartup(db, clock.now());
       const claimed = claimNextJob(db, { now: clock.now() });
@@ -277,8 +277,8 @@ describe("restart recovery", () => {
       expect(claimNextJob(db, { now: clock.now() })).toBeNull();
     });
 
-    test("does not run after the item is cancelled", () => {
-      const { db, clock, item } = deferred();
+    test("does not run after the item is cancelled", async () => {
+      const { db, clock, item } = await deferred();
       recoverOnStartup(db, clock.now());
       cancelOpenJobs(db, { itemId: item.id, reason: "stop", now: clock.now() });
       clock.advance(700_000);
@@ -566,32 +566,37 @@ describe("restart recovery", () => {
 });
 
 describe("hard caps", () => {
-  test("stored turn columns from older installs do not cap work", () => {
+  test("stored turn columns from older installs do not cap work", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
     db.run("UPDATE work_item SET turn_count = 100, max_turns = 1 WHERE id = ?", [item.id]);
-    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+    await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(400);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).capped).toBe(false);
+    expect(
+      (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).capped,
+    ).toBe(false);
     expect(getWorkItem(db, item.id)?.state).toBe("running");
     expect(listOutbox(db)).toHaveLength(0);
   });
 
-  test("awake time counts monotonic time and ignores a wall-clock sleep", () => {
+  test("awake time counts monotonic time and ignores a wall-clock sleep", async () => {
     const { clock, db } = harness();
     const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+    await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     clock.sleep(3 * 60 * 60_000);
     clock.advance(400);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).item.awakeMs).toBe(
-      400,
-    );
+    expect(
+      (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).item
+        .awakeMs,
+    ).toBe(400);
     expect(getWorkItem(db, item.id)?.state).toBe("running");
     clock.advance(600);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).capped).toBe(true);
+    expect(
+      (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).capped,
+    ).toBe(true);
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
     expect(listOutbox(db)[0]?.payload).toEqual({
       sessionId: item.id,
@@ -600,65 +605,82 @@ describe("hard caps", () => {
     });
   });
 
-  test("time parked for a Linear answer is not awake time", () => {
+  test("time parked for a Linear answer is not awake time", async () => {
     const { clock, db } = harness();
     const item = insertQueuedItem(db, { maxAwakeMs: 50_000, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+    await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "blocking_question");
     clock.advance(10_000);
-    syncClock(db, item.id, clock.mono());
+    await syncClock(sqliteDb(db), item.id, clock.mono());
     applyWorkItemEvent(db, item.id, "answer_received");
     clock.advance(100);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).item.awakeMs).toBe(
-      100,
-    );
+    expect(
+      (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).item
+        .awakeMs,
+    ).toBe(100);
   });
 
-  test("time waiting in the merge queue is not awake time", () => {
+  test("time waiting in the merge queue is not awake time", async () => {
     const { clock, db } = harness();
     const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+    await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "turn_ended");
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     clock.advance(4 * 60 * 60_000);
-    const result = accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+    const result = await accrueAwake(
+      sqliteDb(db),
+      item.id,
+      clock.mono(),
+      clock.now(),
+      undefined,
+      true,
+    );
     expect(result.capped).toBe(false);
     expect(result.item.awakeMs).toBe(0);
     expect(getWorkItem(db, item.id)?.state).toBe("merge_queue");
   });
 
-  test("re-checking a candidate Closeout accepted is not awake time", () => {
+  test("re-checking a candidate Closeout accepted is not awake time", async () => {
     const { clock, db } = harness();
     const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+    await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "turn_ended");
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
     applyWorkItemEvent(db, item.id, "reverify_requested");
     clock.advance(4 * 60 * 60_000);
-    const result = accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+    const result = await accrueAwake(
+      sqliteDb(db),
+      item.id,
+      clock.mono(),
+      clock.now(),
+      undefined,
+      true,
+    );
     expect(result.capped).toBe(false);
     expect(result.item.awakeMs).toBe(0);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
   });
 
-  test("an accepted task sent back to the agent counts awake time again", () => {
+  test("an accepted task sent back to the agent counts awake time again", async () => {
     const { clock, db } = harness();
     const item = insertQueuedItem(db, { limits: { fixes: 1_000 }, now: clock.now() });
     beginImplementRun(db, item.id, clock.now());
-    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+    await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "turn_ended");
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
     applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
     applyWorkItemEvent(db, item.id, "dispatched");
     // The merge queue dropped the baseline; the supervisor's next tick starts the clock again.
-    accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true);
+    await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(2_000);
-    expect(accrueAwake(db, item.id, clock.mono(), clock.now(), undefined, true).asked).toBe(true);
+    expect(
+      (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).asked,
+    ).toBe(true);
   });
 });
 

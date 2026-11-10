@@ -14,6 +14,7 @@ import {
   markRun,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { createFakeGitHub, type GitHubResponse } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -159,8 +160,10 @@ async function runAccepted(options: {
         const runId = item.currentRunId;
         if (runId) markRun(db, runId, "active", Date.now());
         db.run("UPDATE work_item SET max_awake_ms = 1, awake_ms = 60000 WHERE id = ?", [item.id]);
-        accrueAwake(db, item.id, 0, Date.now());
-        expect(accrueAwake(db, item.id, 4 * 60 * 60_000, Date.now()).capped).toBe(false);
+        await accrueAwake(sqliteDb(db), item.id, 0, Date.now());
+        expect((await accrueAwake(sqliteDb(db), item.id, 4 * 60 * 60_000, Date.now())).capped).toBe(
+          false,
+        );
         if (runId) markRun(db, runId, "ended", Date.now());
         capChecked = true;
       }

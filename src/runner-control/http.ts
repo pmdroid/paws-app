@@ -47,7 +47,7 @@ export function createRunnerHttp(
   control: RunnerControl,
   options: {
     /** Per-agent sign-in status added to each runner in the list. */
-    agents?: (principal: WorkspacePrincipal, runnerId: string) => readonly unknown[];
+    agents?: (principal: WorkspacePrincipal, runnerId: string) => Promise<readonly unknown[]>;
     hostWarnings?: (runnerId: string) => readonly string[];
     /** What a new host's config needs: this Paws's endpoints and the repositories it may run. */
     hostConfig?: () => RunnerHostConfig | null;
@@ -92,13 +92,15 @@ export function createRunnerHttp(
       try {
         if (path === "/api/runners" && request.method === "GET")
           return json({
-            runners: (await control.list(principal, sessionIds)).map((runner) => ({
-              ...runner,
-              ...(options.agents ? { agents: options.agents(principal, runner.id) } : {}),
-              ...(options.hostWarnings?.(runner.id).length
-                ? { hostWarnings: options.hostWarnings(runner.id) }
-                : {}),
-            })),
+            runners: await Promise.all(
+              (await control.list(principal, sessionIds)).map(async (runner) => ({
+                ...runner,
+                ...(options.agents ? { agents: await options.agents(principal, runner.id) } : {}),
+                ...(options.hostWarnings?.(runner.id).length
+                  ? { hostWarnings: options.hostWarnings(runner.id) }
+                  : {}),
+              })),
+            ),
             serverVersion: control.serverVersion(),
             agentVersions: await control.agentVersions(),
           });
