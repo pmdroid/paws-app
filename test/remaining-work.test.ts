@@ -12,6 +12,7 @@ import {
   listOutbox,
   recordConfirmedRemoteMerge,
   savePullRequestDraft,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { deliverLinearOutbox } from "../src/loop";
@@ -43,7 +44,7 @@ function itemWithReport(report: Record<string, unknown>) {
   return { db, item, tracker };
 }
 
-function merge(db: Database, itemId: string) {
+async function merge(db: Database, itemId: string) {
   recordConfirmedRemoteMerge(db, {
     itemId,
     repositoryOwner: "acme",
@@ -53,7 +54,7 @@ function merge(db: Database, itemId: string) {
     mergeSha: "abc",
     confirmedAt: 3,
   });
-  expect(completeMergedItem(db, { itemId, now: 4 })?.state).toBe("merged");
+  expect((await completeMergedItem(sqliteDb(db), { itemId, now: 4 }))?.state).toBe("merged");
 }
 
 async function deliverAll(db: Database, tracker: ReturnType<typeof createFakeTracker>) {
@@ -76,7 +77,7 @@ test("two parts left for later become two delegated sub-issues after the merge, 
   expect(listOutbox(db).filter((row) => row.op === "linear.remaining_issues")).toEqual([]);
   expect(tracker.subIssueRequests).toEqual([]);
 
-  merge(db, item.id);
+  await merge(db, item.id);
   await deliverAll(db, tracker);
   await deliverAll(db, tracker);
 
@@ -102,7 +103,7 @@ test("two parts left for later become two delegated sub-issues after the merge, 
 test("a report without remaining files nothing after the merge", async () => {
   const { db, item, tracker } = itemWithReport({ title: "Fix acme", body: "Fixed it." });
   expect(getPullRequestDraft(db, item.id)).toEqual({ title: "Fix acme", body: "Fixed it." });
-  merge(db, item.id);
+  await merge(db, item.id);
   await deliverAll(db, tracker);
   expect(listOutbox(db).filter((row) => row.op === "linear.remaining_issues")).toEqual([]);
   expect(tracker.subIssueRequests).toEqual([]);

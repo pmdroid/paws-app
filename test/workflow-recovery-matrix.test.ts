@@ -175,8 +175,8 @@ type InitialFacts = { facts: ReturnType<typeof factsOf>; jobs: Job[]; jobIds: nu
 
 describe("every combined state through every recovery entry", () => {
   for (const [name, entry] of Object.entries(ENTRIES))
-    test(name, () => {
-      const w = new World().seed(FIXTURES);
+    test(name, async () => {
+      const w = await new World().seed(FIXTURES);
       try {
         expect(violations(w.db, w.now)).toEqual([]);
         const initial = new Map(
@@ -199,19 +199,22 @@ describe("every combined state through every recovery entry", () => {
 });
 
 describe("preserved reproducers for open gaps", () => {
-  test.failing(`${STARTUP_RESUME_DUPLICATE} (fix pending; remove .failing when it lands)`, () => {
-    const w = new World().seed(["recovering"]);
-    try {
-      w.crash();
-      w.start();
-      expect(violations(w.db, w.now)).toEqual([]);
-    } finally {
-      w.close();
-    }
-  });
+  test.failing(
+    `${STARTUP_RESUME_DUPLICATE} (fix pending; remove .failing when it lands)`,
+    async () => {
+      const w = await new World().seed(["recovering"]);
+      try {
+        w.crash();
+        w.start();
+        expect(violations(w.db, w.now)).toEqual([]);
+      } finally {
+        w.close();
+      }
+    },
+  );
 
-  test.failing(`${ORPHANED_MERGE_CALL} (fix pending; remove .failing when it lands)`, () => {
-    const w = new World().seed(["merge_inflight"]);
+  test.failing(`${ORPHANED_MERGE_CALL} (fix pending; remove .failing when it lands)`, async () => {
+    const w = await new World().seed(["merge_inflight"]);
     try {
       w.db.run(
         "UPDATE job SET status='dead', last_error='attempts exhausted', finished_at=? WHERE queue=?",

@@ -13,6 +13,7 @@ import {
   mergeCallInFlight,
   prepareShutdown,
   recoverOnStartup,
+  sqliteDb,
 } from "../db";
 import { mergeHarness, pendingCi, type MergeHarness } from "./advance-harness";
 
@@ -265,7 +266,9 @@ test("a stop after the last squash guard defers until the remote merge completes
   h.clock.advance(1_000);
   drainCommands(h.db, new CommandBus(), h.clock.now());
   expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
-  expect(completeMergedItem(h.db, { itemId: item.id, now: h.clock.now() })?.state).toBe("merged");
+  expect(
+    (await completeMergedItem(sqliteDb(h.db), { itemId: item.id, now: h.clock.now() }))?.state,
+  ).toBe("merged");
   h.clock.advance(1_000);
   drainCommands(h.db, new CommandBus(), h.clock.now());
   expect(getWorkItem(h.db, item.id)?.state).toBe("merged");
