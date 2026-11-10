@@ -94,8 +94,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
     store.run((q) => workspaceForOrganizationSteps(q, organizationId));
   const syncMember = (input: Parameters<typeof syncWorkspaceMemberSteps>[1]) =>
     store.transaction((q) => syncWorkspaceMemberSteps(q, input));
-  const userWorkspaces = (userId: string) =>
-    store.run((q) => listUserWorkspacesSteps(q, userId));
+  const userWorkspaces = (userId: string) => store.run((q) => listUserWorkspacesSteps(q, userId));
   const deleteSession = (tokenHash: string) =>
     store.run((q) => deleteWorkspaceSessionSteps(q, tokenHash));
   const linearActions = createWorkspaceLinearActions({

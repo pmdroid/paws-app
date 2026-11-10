@@ -216,7 +216,8 @@ export function createWorkspaceAssignments(options: {
     return hold && (yield* holdsSteps(q, hold.sessionId))?.tokenHash === tokenHash ? hold : null;
   }
   const expired = (hold: Hold) => (hold.linkExpiresAt ?? hold.expiresAt) <= now();
-  const invalidateSteps = (q: Q, hold: Hold) => invalidateWorkspaceAssignmentSteps(q, hold.tokenHash);
+  const invalidateSteps = (q: Q, hold: Hold) =>
+    invalidateWorkspaceAssignmentSteps(q, hold.tokenHash);
   const invalidate = (hold: Hold) => store.run((q) => invalidateSteps(q, hold));
   /**
    * Ends a pending hold that outlived its link: one final response that completes the Linear
@@ -748,7 +749,9 @@ export function createWorkspaceAssignments(options: {
             queued: false,
           };
         const release =
-          hold.status === "pending" ? yield* releaseSteps(q, hold) : { released: true, queued: false };
+          hold.status === "pending"
+            ? yield* releaseSteps(q, hold)
+            : { released: true, queued: false };
         if (!release.released) throw new Error("Assignment membership is unavailable.");
         return {
           completion: { outcome: "resumed", identifier: holdIdentifier(hold), linkId: hold.linkId },
@@ -867,7 +870,10 @@ export function createWorkspaceAssignments(options: {
             const result = await options.continue(event);
             if (result === false) throw new Error("Assignment continuation is still held.");
             await store.run((q) =>
-              moveWorkspaceAssignmentSteps(q, hold.tokenHash, { from: "accepted", to: "continued" }),
+              moveWorkspaceAssignmentSteps(q, hold.tokenHash, {
+                from: "accepted",
+                to: "continued",
+              }),
             );
           } catch (error) {
             // A refusal is final for this hold: say why once instead of retrying the job.

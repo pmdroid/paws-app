@@ -834,7 +834,7 @@ export function startPaws(source?: EnvSource, options?: StartOptions): PawsProce
     if (!bot) throw new Error("Attribution App bot authority is unavailable");
     const policy = options?.commitPolicyForItem
       ? await options.commitPolicyForItem(item)
-      : { bot, credit: delegatorCommitCredit(db, item.id) };
+      : { bot, credit: await delegatorCommitCredit(db, item.id) };
     if (
       bot.appId !== policy.bot.appId ||
       bot.id !== policy.bot.id ||

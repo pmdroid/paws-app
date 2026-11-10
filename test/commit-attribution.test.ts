@@ -68,10 +68,10 @@ function fixture() {
   return { db, now, item, bindings };
 }
 
-test("credit is the delegating member's linked GitHub identity, never the project lead", () => {
+test("credit is the delegating member's linked GitHub identity, never the project lead", async () => {
   const f = fixture();
   try {
-    expect(delegatorCommitCredit(f.db, f.item.id)).toEqual({
+    expect(await delegatorCommitCredit(f.db, f.item.id)).toEqual({
       id: 2,
       login: "steerer",
       name: "steerer",
@@ -84,16 +84,16 @@ test("credit is the delegating member's linked GitHub identity, never the projec
   }
 });
 
-test("a delegator who did not link GitHub gets no credit", () => {
+test("a delegator who did not link GitHub gets no credit", async () => {
   const f = fixture();
   try {
     revokeGitHubAttribution(f.db, f.bindings.get("steerer")!, f.now);
-    expect(delegatorCommitCredit(f.db, f.item.id)).toBeNull();
+    expect(await delegatorCommitCredit(f.db, f.item.id)).toBeNull();
     f.db.run(
       "INSERT INTO workspace_identity_link(workspace_id,user_id,provider,external_id,installation_id,method,status,checked_at) VALUES('workspace','steerer','github','steerer',NULL,'manual','linked',?)",
       [f.now],
     );
-    expect(delegatorCommitCredit(f.db, f.item.id)).toBeNull();
+    expect(await delegatorCommitCredit(f.db, f.item.id)).toBeNull();
     expect(fetchSpy).not.toHaveBeenCalled();
   } finally {
     f.db.close();
@@ -101,7 +101,7 @@ test("a delegator who did not link GitHub gets no credit", () => {
 });
 
 for (const scenario of ["no-actor", "unknown-actor", "inactive", "no-workspace"] as const)
-  test(`no credit without a permitted delegating member: ${scenario}`, () => {
+  test(`no credit without a permitted delegating member: ${scenario}`, async () => {
     const f = fixture();
     try {
       if (scenario === "no-actor")
@@ -112,7 +112,7 @@ for (const scenario of ["no-actor", "unknown-actor", "inactive", "no-workspace"]
         f.db.run("UPDATE workspace_member SET active=0 WHERE user_id='steerer'");
       if (scenario === "no-workspace")
         f.db.run("UPDATE linear_session SET organization_id='other'");
-      expect(delegatorCommitCredit(f.db, f.item.id)).toBeNull();
+      expect(await delegatorCommitCredit(f.db, f.item.id)).toBeNull();
     } finally {
       f.db.close();
     }
