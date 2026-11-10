@@ -2,12 +2,16 @@ import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   askedQuestionRow,
-  insertQuestionRow,
-  nextQueuedQuestionRow,
-  openQuestionRow,
-  questionEventConsumed,
-  questionRowById,
+  insertQuestionRowSteps,
+  nextQueuedQuestionRowSteps,
+  openQuestionRowSteps,
+  questionEventConsumedSteps,
+  questionRowByIdSteps,
+  settled,
+  sqliteDb,
+  type Q,
   type QuestionRow,
+  type Steps,
 } from "../db";
 import type { QuestionOption } from "./channel";
 
@@ -64,13 +68,16 @@ export function openQuestion(db: Database, input: NewQuestion): StoredQuestion {
   return insertQuestion(db, { ...input, kind: "agent", status: "open" });
 }
 
-export function insertQuestion(
-  db: Database,
-  input: NewQuestion & { kind: QuestionKind; status: "queued" | "open"; context?: string },
-): StoredQuestion {
+type QuestionInsert = NewQuestion & {
+  kind: QuestionKind;
+  status: "queued" | "open";
+  context?: string;
+};
+
+export function* insertQuestionSteps(q: Q, input: QuestionInsert): Steps<StoredQuestion> {
   const id = randomUUID();
   const now = input.now ?? Date.now();
-  insertQuestionRow(db, {
+  yield* insertQuestionRowSteps(q, {
     id,
     itemId: input.itemId,
     runId: input.runId ?? null,
@@ -83,20 +90,32 @@ export function insertQuestion(
     status: input.status,
     createdAt: now,
   });
-  const stored = getQuestion(db, id);
+  const stored = yield* getQuestionSteps(q, id);
   if (stored === null) throw new Error("insertQuestion did not store a row");
   return stored;
 }
 
+export function insertQuestion(db: Database, input: QuestionInsert): StoredQuestion {
+  return settled(sqliteDb(db).run((q) => insertQuestionSteps(q, input)));
+}
+
+export function* getQuestionSteps(q: Q, id: string): Steps<StoredQuestion | null> {
+  const row = yield* questionRowByIdSteps(q, id);
+  return row === null ? null : mapQuestion(row);
+}
+
 export function getQuestion(db: Database, id: string): StoredQuestion | null {
-  const row = questionRowById(db, id);
+  return settled(sqliteDb(db).run((q) => getQuestionSteps(q, id)));
+}
+
+export function* findOpenQuestionSteps(q: Q, sessionId: string): Steps<StoredQuestion | null> {
+  const row = yield* openQuestionRowSteps(q, sessionId);
   return row === null ? null : mapQuestion(row);
 }
 
 /** Latest unanswered question on this Linear agent session. */
 export function findOpenQuestion(db: Database, sessionId: string): StoredQuestion | null {
-  const row = openQuestionRow(db, sessionId);
-  return row === null ? null : mapQuestion(row);
+  return settled(sqliteDb(db).run((q) => findOpenQuestionSteps(q, sessionId)));
 }
 
 /** The question this run still waits on for one kind, open or queued. */
@@ -109,13 +128,21 @@ export function findAskedQuestion(
   return row === null ? null : mapQuestion(row);
 }
 
-export function nextQueuedQuestion(db: Database, sessionId: string): StoredQuestion | null {
-  const row = nextQueuedQuestionRow(db, sessionId);
+export function* nextQueuedQuestionSteps(q: Q, sessionId: string): Steps<StoredQuestion | null> {
+  const row = yield* nextQueuedQuestionRowSteps(q, sessionId);
   return row === null ? null : mapQuestion(row);
 }
 
+export function nextQueuedQuestion(db: Database, sessionId: string): StoredQuestion | null {
+  return settled(sqliteDb(db).run((q) => nextQueuedQuestionSteps(q, sessionId)));
+}
+
+export function* questionReplyConsumedSteps(q: Q, sessionId: string, eventKey: string) {
+  return yield* questionEventConsumedSteps(q, sessionId, eventKey);
+}
+
 export function questionReplyConsumed(db: Database, sessionId: string, eventKey: string): boolean {
-  return questionEventConsumed(db, sessionId, eventKey);
+  return settled(sqliteDb(db).run((q) => questionReplyConsumedSteps(q, sessionId, eventKey)));
 }
 
 function mapQuestion(row: QuestionRow): StoredQuestion {
