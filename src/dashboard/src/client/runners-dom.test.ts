@@ -132,6 +132,16 @@ test("Add a runner shows the 409 message instead of a command", async () => {
   };
   await submit();
   expect(root.querySelector("#runner-enroll-command")?.textContent).toContain("tok_en-123");
+  const docker = root.querySelector<HTMLInputElement>('input[name="docker-access"]')!;
+  expect(docker.checked).toBe(true);
+  expect(root.querySelector("#runner-enroll-command")?.textContent).toContain(
+    "PAWS_RUNNER_DOCKER_ACCESS=grant",
+  );
+  docker.checked = false;
+  docker.dispatchEvent(new window.Event("change", { bubbles: true }) as unknown as Event);
+  expect(root.querySelector("#runner-enroll-command")?.textContent).toContain(
+    "PAWS_RUNNER_DOCKER_ACCESS=deny",
+  );
   refused = true;
   await submit();
   const dialog = root.querySelector("#runner-add-dialog")!;

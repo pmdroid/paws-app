@@ -155,6 +155,10 @@ const TAILSCALED_SERVICE = "tailscaled.service";
 const AUTHKEY_SECRET = "~/.paws/secrets/tailscale-authkey";
 const RUNNER_BINARY = "/opt/paws-runner/bin/paws-runner";
 const RUNNER_SERVICE = "paws-runner.service";
+/** The rootless Docker daemon `paws-docker.service` runs for agent jobs as paws-runner. */
+const RUNNER_DOCKER_SOCKET = "/run/paws-docker/docker.sock";
+/** Under the stage directory: why the last install failed, when the run script knows. */
+const INSTALL_ERROR_FILE = "install-error";
 export const RUNNER_STATE_DIR = "/var/lib/paws-runner";
 
 const SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/;
@@ -254,7 +258,12 @@ export function createExeDevBootstrap(options: ExeDevBootstrapOptions): ExeDevBo
   async function probe(step: BootstrapStep, vm: string): Promise<InstallStatus> {
     const result = await exec(step, vm, PROBE_COMMAND);
     if (result.exitCode !== 0) throw failure(step, vm, "could not read the install state", result);
-    return classify(parseProbe(result.stdout), pinned);
+    const state = parseProbe(result.stdout);
+    const status = classify(state, pinned);
+    // Only a status read reports the reason; a new install retries over it.
+    if (step === "status" && status === "failed" && state.Error)
+      throw new BootstrapError(step, `${vm}: the runner install failed: ${logTail(state.Error)}`);
+    return status;
   }
 
   /** Make the VM's token key, encrypt `token` to it, and have the VM decrypt it into its file. */
@@ -626,6 +635,7 @@ const PROBE_COMMAND = `sudo sh -c ${shellQuote(
     `printf 'Version=%s\\n' "$(dpkg-query -W -f='\${db:Status-Status} \${Version}' paws-runner 2>/dev/null)"`,
     `printf 'Config=%s\\n' "$(sha256sum ${RUNNER_CONFIG_PATH} 2>/dev/null | cut -d' ' -f1)"`,
     `printf 'Mise=%s\\n' "$(sha256sum ${BOOTSTRAP_MISE_PATH} 2>/dev/null | cut -d' ' -f1)"`,
+    `printf 'Error=%s\\n' "$(head -c 400 ${BOOTSTRAP_STAGE_DIR}/${INSTALL_ERROR_FILE} 2>/dev/null)"`,
   ].join("; "),
 )}`;
 
@@ -832,15 +842,33 @@ function encryptSecret(
   ).toString("base64");
 }
 
-/** What the transient unit runs as root: the runner package, the pinned mise, then the config. */
+/**
+ * What the transient unit runs as root: Docker Engine when the image has none, the runner package
+ * with Docker for agent jobs granted, a check that paws-runner reaches its rootless Docker daemon,
+ * the pinned mise, then the config. A failed Docker step writes its reason to `install-error`,
+ * which the probe reads, and stops before the config so the install never counts as done.
+ */
 function runScript(pinned: Pinned): string {
   const { version, sha256, platform } = pinned.mise;
   const url = `https://github.com/jdx/mise/releases/download/v${version}/mise-v${version}-${platform}`;
+  const docker = `--host unix://${RUNNER_DOCKER_SOCKET}`;
   return [
     "#!/bin/sh",
     "set -eu",
     `stage=${BOOTSTRAP_STAGE_DIR}`,
-    `sh "$stage/install-runner.sh" ${shellQuote(pinned.runnerVersion)}`,
+    `rm -f "$stage/${INSTALL_ERROR_FILE}"`,
+    `fail() { printf '%s\\n' "$1" | tr '\\n' ' ' > "$stage/${INSTALL_ERROR_FILE}"; printf '%s\\n' "$1" >&2; exit 1; }`,
+    "if ! command -v dockerd >/dev/null 2>&1; then",
+    "  export DEBIAN_FRONTEND=noninteractive",
+    "  { apt-get update && apt-get install -y docker.io; } || fail 'Could not install Docker Engine (the docker.io package), which agent jobs on this runner need.'",
+    "fi",
+    `PAWS_RUNNER_DOCKER_ACCESS=grant sh "$stage/install-runner.sh" ${shellQuote(pinned.runnerVersion)}`,
+    "tries=0",
+    `until detail=$(runuser -u paws-runner -- docker ${docker} info 2>&1 >/dev/null); do`,
+    "  tries=$((tries + 1))",
+    `  [ "$tries" -lt 30 ] || fail "Docker for agent jobs is not working: paws-runner could not reach its rootless Docker daemon at ${RUNNER_DOCKER_SOCKET} ($(printf '%s' "$detail" | tail -c 200)). Check journalctl -u paws-docker.service on the VM."`,
+    "  sleep 1",
+    "done",
     "mise=$(mktemp)",
     `trap 'rm -f "$mise"' EXIT`,
     `curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 1 -o "$mise" ${shellQuote(url)}`,

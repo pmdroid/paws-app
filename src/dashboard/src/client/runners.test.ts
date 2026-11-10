@@ -1099,7 +1099,7 @@ describe("coding agent versions", () => {
 });
 
 describe("hostEnrollmentCommand", () => {
-  const command = hostEnrollmentCommand({
+  const enrollment = {
     token: "tok_en-123",
     expiresAt: now,
     name: "Pascal's box",
@@ -1108,9 +1108,17 @@ describe("hostEnrollmentCommand", () => {
       runnerApiUrl: "https://paws.example.com:8788",
       allowedRepositories: ["acme/app"],
     },
+  };
+  const command = hostEnrollmentCommand(enrollment, true);
+  test("grants or denies Docker for agent jobs explicitly, so the installer never asks a terminal", () => {
+    expect(command.split(" && ")[0]).toBe(
+      "curl -fsSL https://get.paws.boo | sudo env PAWS_RUNNER_DOCKER_ACCESS=grant sh",
+    );
+    expect(hostEnrollmentCommand(enrollment, false).split(" && ")[0]).toBe(
+      "curl -fsSL https://get.paws.boo | sudo env PAWS_RUNNER_DOCKER_ACCESS=deny sh",
+    );
   });
   test("installs, configures, enrolls with a token file and starts the daemon", () => {
-    expect(command.startsWith("curl -fsSL https://get.paws.boo | sudo sh")).toBe(true);
     expect(command).toContain(
       "--name 'Pascal'\\''s box' --token-file /etc/paws-runner/enrollment-token",
     );

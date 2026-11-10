@@ -1,5 +1,5 @@
 import { fixtureProvider, fullStatusFixture } from "../src/dashboard/test/fixtures";
-// Runners → Add a host for a workspace member: the button, the dialog and its one command.
+// Runners → Add a runner for a workspace member: the button, the dialog, its Docker choice and its one command.
 // Usage: bun run build:dashboard && bun --no-env-file scripts/verify-runner-add-host-ui.ts <screenshot dir>
 import { chromium, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
@@ -63,21 +63,33 @@ try {
     page.on("pageerror", (error) => errors.push(error.message));
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto(`http://127.0.0.1:${server.port}/dashboard/runners`);
-    const add = page.getByRole("button", { name: "Add a host" });
+    const add = page.getByRole("button", { name: "Add a runner" });
     await expect(add).toBeVisible();
     await page.screenshot({
       path: join(directory, `runners-add-host-${width}.png`),
       fullPage: true,
     });
     await add.click();
-    const dialog = page.getByRole("dialog", { name: "Add a host" });
+    const dialog = page.getByRole("dialog", { name: "Add a runner" });
     await expect(dialog).toBeVisible();
-    await dialog.getByLabel("Host name").fill("build-box");
+    await dialog.getByLabel("Runner name").fill("build-box");
     await dialog.getByRole("button", { name: "Create command" }).click();
     const command = dialog.locator("#runner-enroll-command");
     await expect(command).toContainText("runner enroll --config /etc/paws-runner/config.json");
     await expect(command).toContainText(token);
     await expect(dialog.getByRole("button", { name: "Copy command" })).toBeVisible();
+    const docker = dialog.getByRole("checkbox", { name: /Docker for agent jobs/ });
+    await expect(docker).toBeChecked();
+    await expect(command).toContainText("sudo env PAWS_RUNNER_DOCKER_ACCESS=grant sh");
+    await docker.uncheck();
+    await expect(dialog.locator("#runner-enroll-command")).toContainText(
+      "sudo env PAWS_RUNNER_DOCKER_ACCESS=deny sh",
+    );
+    await page.screenshot({
+      path: join(directory, `runners-add-runner-no-docker-${width}.png`),
+      fullPage: true,
+    });
+    await dialog.getByRole("checkbox", { name: /Docker for agent jobs/ }).check();
     await expect
       .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
       .toBe(true);
@@ -89,7 +101,7 @@ try {
   }
   expect(minted).toEqual([{ name: "build-box" }, { name: "build-box" }]);
   expect(errors).toEqual([]);
-  console.log(`Runners → Add a host checks passed. Screenshots in ${directory}`);
+  console.log(`Runners → Add a runner checks passed. Screenshots in ${directory}`);
 } finally {
   await browser.close();
   server.stop(true);

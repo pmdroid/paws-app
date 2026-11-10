@@ -223,7 +223,7 @@ A turn that continues on another account starts a fresh agent session. It keeps 
 ## Add the host
 
 1. Open your Paws dashboard at `https://paws.example.com:8787/dashboard/runners` and sign in. Any workspace member can add a host and owns the runner it adds.
-2. Select **Add a runner**, enter the name you want to see in Paws, and select **Create command**. Until the workspace has a repository, Paws answers "Connect GitHub and add a repository before adding a runner." and creates no command.
+2. Select **Add a runner**, enter the name you want to see in Paws, leave **Docker for agent jobs** ticked or untick it, and select **Create command**. The command runs the installer with `PAWS_RUNNER_DOCKER_ACCESS=grant` or `deny`, so it never depends on a terminal to ask. Until the workspace has a repository, Paws answers "Connect GitHub and add a repository before adding a runner." and creates no command.
 3. Copy the command and run it on the VM. It installs the runner, writes `/etc/paws-runner/config.json` for this Paws, stores a single-use enrollment token in a root-owned mode 0600 file, enrolls, and starts `paws-runner.service`.
 
 The token expires after ten minutes and works once. The runner appears under **Runners**, owned by you, as soon as the command prints `"paired":true`. Running the command again on an enrolled host that Paws still accepts changes nothing and leaves the token unused. If the token expires, create a new command.
