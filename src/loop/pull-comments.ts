@@ -1,25 +1,30 @@
 import type { Database } from "bun:sqlite";
 import {
-  openItemIdForPull,
-  fixRounds,
-  getItemPullRequest,
-  getWorkItem,
-  immediate,
-  pendingChangeRequests,
-  pendingPullCiFailures,
-  pendingPullComments,
-  rebaseReturnedFor,
-  recordPullComment,
-  recordRebaseReturn,
-  settlePullCiFailures,
-  settlePullComments,
+  emitJobReady,
+  openItemIdForPullSteps,
+  fixRoundsSteps,
+  getItemPullRequestSteps,
+  getWorkItemSteps,
+  pendingChangeRequestsSteps,
+  pendingPullCiFailuresSteps,
+  pendingPullCommentsSteps,
+  rebaseReturnedForSteps,
+  recordPullCommentSteps,
+  recordRebaseReturnSteps,
+  restartSteps,
+  settled,
+  settlePullCiFailuresSteps,
+  settlePullCommentsSteps,
+  sqliteDb,
   type PullCommentRecord,
   type PullFeedbackWait,
+  type Q,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import type { ReviewThread } from "../github";
 import { REBASE_CONFLICT_INSTRUCTION, rebaseBudgetFor } from "../merge";
-import { ask, restart } from "./operations";
+import { ask } from "./operations";
 import {
   authors,
   deliverFeedback,
@@ -163,29 +168,28 @@ export function prepareCommentDelivery(
     const issue = record(payload.issue);
     if (typeof issue.number !== "number" || issue.pull_request === undefined) return null;
     const pullNumber = issue.number;
-    return () =>
-      immediate(db, () => {
-        // A conversation comment names no branch; only a pull request Paws recorded opening counts,
-        // which also leaves out every fork.
-        const item = itemForPull(db, owner, repo, pullNumber);
-        if (item === null) return false;
-        return recordPullComment(
-          db,
-          {
-            source: "conversation",
-            commentId,
-            itemId: item.id,
-            pullNumber,
-            reviewId: null,
-            author,
-            body: text,
-            path: null,
-            line: null,
-            receivedAt: now,
-          },
-          wait,
-        );
-      });
+    return commitDelivery(db, function* (q) {
+      // A conversation comment names no branch; only a pull request Paws recorded opening counts,
+      // which also leaves out every fork.
+      const item = yield* itemForPullSteps(q, owner, repo, pullNumber);
+      if (item === null) return NOT_RECORDED;
+      return yield* recordPullCommentSteps(
+        q,
+        {
+          source: "conversation",
+          commentId,
+          itemId: item.id,
+          pullNumber,
+          reviewId: null,
+          author,
+          body: text,
+          path: null,
+          line: null,
+          receivedAt: now,
+        },
+        wait,
+      );
+    });
   }
   const pull = record(payload.pull_request);
   const head = record(pull.head);
@@ -200,41 +204,53 @@ export function prepareCommentDelivery(
   )
     return null;
   const inline = event === "pull_request_review_comment";
-  return () =>
-    immediate(db, () => {
-      const item = itemForBranch(db, owner, repo, branch);
-      if (item === null) return false;
-      const opened = getItemPullRequest(db, item.id);
-      if (opened !== null && opened.pullNumber !== pullNumber) return false;
-      const reviewId = inline ? comment.pull_request_review_id : commentId;
-      const line = comment.line ?? comment.original_line;
-      return recordPullComment(
-        db,
-        {
-          source: inline ? "inline" : "review",
-          commentId,
-          itemId: item.id,
-          pullNumber,
-          reviewId: typeof reviewId === "number" ? reviewId : null,
-          author,
-          body: text,
-          path: inline && typeof comment.path === "string" ? comment.path : null,
-          line: inline && typeof line === "number" ? line : null,
-          receivedAt: now,
-        },
-        wait,
-      );
-    });
+  return commitDelivery(db, function* (q) {
+    const item = itemForBranch(db, owner, repo, branch);
+    if (item === null) return NOT_RECORDED;
+    const opened = yield* getItemPullRequestSteps(q, item.id);
+    if (opened !== null && opened.pullNumber !== pullNumber) return NOT_RECORDED;
+    const reviewId = inline ? comment.pull_request_review_id : commentId;
+    const line = comment.line ?? comment.original_line;
+    return yield* recordPullCommentSteps(
+      q,
+      {
+        source: inline ? "inline" : "review",
+        commentId,
+        itemId: item.id,
+        pullNumber,
+        reviewId: typeof reviewId === "number" ? reviewId : null,
+        author,
+        body: text,
+        path: inline && typeof comment.path === "string" ? comment.path : null,
+        line: inline && typeof line === "number" ? line : null,
+        receivedAt: now,
+      },
+      wait,
+    );
+  });
 }
 
-function itemForPull(
-  db: Database,
+type CommentReceipt = { recorded: boolean; enqueued: boolean };
+
+const NOT_RECORDED: CommentReceipt = { recorded: false, enqueued: false };
+
+/** Synchronous until `acceptGitHubDelivery` can await its receipt transaction. */
+function commitDelivery(db: Database, steps: (q: Q) => Steps<CommentReceipt>): () => boolean {
+  return () => {
+    const { recorded, enqueued } = settled(sqliteDb(db).transaction(steps));
+    if (enqueued) emitJobReady(db);
+    return recorded;
+  };
+}
+
+function* itemForPullSteps(
+  q: Q,
   owner: string,
   repo: string,
   pullNumber: number,
-): WorkItemRecord | null {
-  const id = openItemIdForPull(db, owner, repo, pullNumber);
-  return id === null ? null : getWorkItem(db, id);
+): Steps<WorkItemRecord | null> {
+  const id = yield* openItemIdForPullSteps(q, owner, repo, pullNumber);
+  return id === null ? null : yield* getWorkItemSteps(q, id);
 }
 
 /**
@@ -248,27 +264,34 @@ export async function handlePullComments(
   itemId: string,
   caps: PullReviewCapabilities,
 ): Promise<PullReviewStep> {
+  const store = sqliteDb(db);
   const started = caps.now();
-  const open = pendingPullComments(db, itemId);
-  const failures = pendingPullCiFailures(db, itemId);
+  const open = await store.run((q) => pendingPullCommentsSteps(q, itemId));
+  const failures = await store.run((q) => pendingPullCiFailuresSteps(q, itemId));
   if (open.length === 0 && failures.length === 0) return "done";
-  const item = getWorkItem(db, itemId);
+  const item = await store.run((q) => getWorkItemSteps(q, itemId));
   if (item === null || ENDED.has(item.state) || item.cancelRequested) {
-    settlePullComments(db, open, "dropped", caps.now());
-    settlePullCiFailures(db, failures, "dropped", caps.now());
+    await store.run((q) => settlePullCommentsSteps(q, open, "dropped", caps.now()));
+    await store.run((q) => settlePullCiFailuresSteps(q, failures, "dropped", caps.now()));
     return "dropped";
   }
   const ci = currentPullCi(db, item, caps.now());
   if (settleCovered(db, open, caps.now()) === open.length && ci === null) return "done";
   // A changes-requested review still waiting takes these comments with it.
-  if (pendingChangeRequests(db, itemId).length > 0) return "wait";
+  if ((await store.run((q) => pendingChangeRequestsSteps(q, itemId))).length > 0) return "wait";
   const pullNumber = open.at(-1)?.pullNumber ?? ci!.pullNumber;
   if (item.state === "merge_queue") {
     // Before waiting on anything: GitHub's own merge queue does not wait for Paws.
     const queue = await caps.leaveMergeQueue(item, pullNumber);
     if (queue === "merged" || queue === "closed") {
-      settlePullComments(db, pendingPullComments(db, itemId), "dropped", caps.now());
-      settlePullCiFailures(db, pendingPullCiFailures(db, itemId), "dropped", caps.now());
+      await store.run(function* (q) {
+        const comments = yield* pendingPullCommentsSteps(q, itemId);
+        yield* settlePullCommentsSteps(q, comments, "dropped", caps.now());
+      });
+      await store.run(function* (q) {
+        const pending = yield* pendingPullCiFailuresSteps(q, itemId);
+        yield* settlePullCiFailuresSteps(q, pending, "dropped", caps.now());
+      });
       return "dropped";
     }
   }
@@ -280,8 +303,9 @@ export async function handlePullComments(
   const head = await pullCiHead(db, item, pullNumber, caps.pullHead);
   if (head === "unreadable") return "wait";
   const conflict = (await caps.pullConflict?.(item, pullNumber)) ?? null;
-  const step = immediate(db, (): PullReviewStep => {
-    const current = getWorkItem(db, item.id);
+  const job = { ready: false };
+  const step = await store.transaction(function* (q): Steps<PullReviewStep> {
+    const current = yield* getWorkItemSteps(q, item.id);
     if (current === null || current.version !== item.version || current.state !== "merge_queue")
       return "wait";
     const now = caps.now();
@@ -293,7 +317,7 @@ export async function handlePullComments(
     );
     if (!hasFeedback(feedback)) return "done";
     const { comments, digest, failure } = feedback;
-    const rounds = fixRounds(db, current.id);
+    const rounds = yield* fixRoundsSteps(q, current.id);
     const limit = caps.fixRoundLimit(current);
     if (rounds < limit) {
       const first = comments[0];
@@ -302,21 +326,22 @@ export async function handlePullComments(
         : `ci:${current.id}:${failure!.head}`;
       const rebase =
         conflict !== null &&
-        !rebaseReturnedFor(db, current.id, conflict.head) &&
+        !(yield* rebaseReturnedForSteps(q, current.id, conflict.head)) &&
         rebaseBudgetFor(db, current.id, { ...conflict, files: null, reason: "merge" }, now).allowed
           ? conflict
           : null;
-      const jobId = restart(db, current, {
+      const restarted = yield* restartSteps(q, current, {
         reason: comments.length > 0 ? "review" : "ci",
         body: feedbackHandoff(rebase ? [REBASE_CONFLICT_INSTRUCTION] : [], feedback),
         jobKey,
         now,
       });
-      if (jobId === null) return "wait";
+      if (restarted === null) return "wait";
+      job.ready = restarted.armed;
       if (rebase)
-        recordRebaseReturn(db, {
+        yield* recordRebaseReturnSteps(q, {
           itemId: current.id,
-          jobId,
+          jobId: restarted.id,
           candidate: rebase.head,
           reason: "merge",
           base: rebase.base,
@@ -333,8 +358,8 @@ export async function handlePullComments(
     }
     const sessionId = caps.session(current);
     if (sessionId === null) {
-      settlePullComments(db, comments, "dropped", now);
-      if (failure !== null) settlePullCiFailures(db, [failure], "dropped", now);
+      yield* settlePullCommentsSteps(q, comments, "dropped", now);
+      if (failure !== null) yield* settlePullCiFailuresSteps(q, [failure], "dropped", now);
       return "dropped";
     }
     ask(
@@ -351,10 +376,11 @@ export async function handlePullComments(
         : pullCiQuestion(db, failure!, limit),
       { reason: "budget_spent", now },
     );
-    settlePullComments(db, comments, "asked", now);
+    yield* settlePullCommentsSteps(q, comments, "asked", now);
     if (failure !== null) pullCiAsked(db, { item: current, failure, limit, now });
     return "asked";
   });
+  if (job.ready) emitJobReady(store);
   if (step !== "wait" && step !== "done") await caps.flush();
   return step;
 }
