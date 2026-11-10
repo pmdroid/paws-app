@@ -1,15 +1,29 @@
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
+  advanceMemberVmDeleteSteps,
   auditWorkspaceAccessSteps,
+  blockMemberVmDeleteSteps,
+  clearDeletedMemberVmSteps,
+  failMemberVmDeleteSteps,
+  itemStopRequestedSteps,
+  liveRunnerSteps,
   memberVmByIdSteps,
+  memberVmEnrolledRunnerIdsSteps,
+  memberVmJobRunningSteps,
+  nameEnrolledRunnersSteps,
   parkLeasedJobSteps,
+  pendingNameEnrollmentSteps,
+  revokeUnusedMemberVmEnrollmentsSteps,
+  runnerBlockingTasksSteps,
+  setMemberVmDeleteRunnerSteps,
   sqliteDb,
   updateRunnerStatus,
   type Db,
   type Job,
   type JobContext,
   type JobLoop,
+  type MemberVmRunner,
   runnerLeaseCutoff,
 } from "../db";
 import { isProvisioningError, type ExeDev } from "../provisioning";
@@ -55,7 +69,7 @@ export function createMemberVmDeleteHandler(db: Database, options: MemberVmDelet
     if (row === null || row.deleteStep === null || row.deleteFailure !== null) return;
     let outcome: Outcome;
     try {
-      outcome = await runDeleteStep(db, store, row, options, now);
+      outcome = await runDeleteStep(store, row, options, now);
     } catch (error) {
       if (error instanceof StepMoved || !context.isCurrent()) return;
       const secrets = await Promise.resolve()
@@ -67,12 +81,8 @@ export function createMemberVmDeleteHandler(db: Database, options: MemberVmDelet
         });
       const text = redact(error instanceof Error ? error.message : String(error), secrets);
       journalCaught(text, "member-vm.delete");
-      const at = now();
-      db.run(
-        `UPDATE member_vm SET delete_failure=?,updated_at=?
-        WHERE id=? AND delete_step=? AND delete_failure IS NULL`,
-        [text, at, row.id, row.deleteStep],
-      );
+      const step = row.deleteStep;
+      await store.run((q) => failMemberVmDeleteSteps(q, row.id, step, text, now()));
       return;
     }
     if (outcome === "done" || !context.isCurrent()) return;
@@ -89,7 +99,6 @@ export function createMemberVmDeleteHandler(db: Database, options: MemberVmDelet
 }
 
 async function runDeleteStep(
-  db: Database,
   store: Db,
   row: MemberVm,
   options: MemberVmDeleteJobOptions,
@@ -100,15 +109,13 @@ async function runDeleteStep(
   const actor = row.deleteRequestedBy ?? row.userId;
   switch (row.deleteStep) {
     case "drain": {
-      if (provisioningInFlight(db, row.id, now())) return "wait";
-      revokeUnusedEnrollments(db, row);
+      if (await store.run((q) => memberVmJobRunningSteps(q, MEMBER_VM_QUEUE, row.id, now())))
+        return "wait";
+      await store.run((q) => revokeUnusedMemberVmEnrollmentsSteps(q, row.id));
       const runnerId = row.deleteRunnerId ?? row.runnerId;
       if (row.deleteRunnerId === null && runnerId !== null)
-        db.run("UPDATE member_vm SET delete_runner_id=? WHERE id=? AND delete_step='drain'", [
-          runnerId,
-          row.id,
-        ]);
-      const runners = vmRunners(db, row);
+        await store.run((q) => setMemberVmDeleteRunnerSteps(q, row.id, runnerId));
+      const runners = await vmRunners(store, row);
       for (const runner of runners)
         if (runner.status !== "draining")
           await updateRunnerStatus(store, {
@@ -118,28 +125,22 @@ async function runDeleteStep(
             status: "draining",
             now: now(),
           });
-      if (row.enrollmentsTracked !== 1) untrackedEnrollments(db, row, runners, now());
+      if (row.enrollmentsTracked !== 1) await untrackedEnrollments(store, row, runners, now());
       const seen = new Set<string>();
-      const tasks = runners
-        .flatMap((runner) => blockingTasks(db, runner.id, now()))
-        .filter((task) => !seen.has(task.itemId) && seen.add(task.itemId));
+      const tasks: MemberVmBlockingTask[] = [];
+      for (const runner of runners)
+        for (const task of await blockingTasks(store, runner.id, now()))
+          if (!seen.has(task.itemId) && seen.add(task.itemId)) tasks.push(task);
       if (tasks.length > 0 && row.deleteForce !== 1) {
         const names = tasks.map((task) => task.identifier).join(", ");
-        const changed = db.run(
-          `UPDATE member_vm SET delete_failure=?,delete_blocked=?,updated_at=?
-          WHERE id=? AND delete_step='drain' AND delete_failure IS NULL`,
-          [
-            `${names} ${tasks.length === 1 ? "is" : "are"} running on ${vm}. Wait for ${tasks.length === 1 ? "it" : "them"} to finish and retry, or force the delete to stop ${tasks.length === 1 ? "it" : "them"}.`,
-            JSON.stringify(tasks),
-            now(),
-            row.id,
-          ],
-        ).changes;
-        if (changed !== 1) throw new StepMoved();
+        const failure = `${names} ${tasks.length === 1 ? "is" : "are"} running on ${vm}. Wait for ${tasks.length === 1 ? "it" : "them"} to finish and retry, or force the delete to stop ${tasks.length === 1 ? "it" : "them"}.`;
+        const at = now();
+        if (!(await store.run((q) => blockMemberVmDeleteSteps(q, row.id, failure, tasks, at))))
+          throw new StepMoved();
         return "done";
       }
       for (const task of tasks) {
-        if (stopRequested(db, task.itemId)) continue;
+        if (await store.run((q) => itemStopRequestedSteps(q, task.itemId))) continue;
         await options.stopTask(task.itemId);
         await store.run((q) =>
           auditWorkspaceAccessSteps(q, {
@@ -151,7 +152,7 @@ async function runDeleteStep(
           }),
         );
       }
-      advance(db, row, "tailnet", now());
+      await advance(store, row, "tailnet", now());
       return "advance";
     }
 
@@ -166,13 +167,13 @@ async function runDeleteStep(
           journalCaught(caughtError2, "delete.runDeleteStep.resolve", null);
         }
       }
-      advance(db, row, "revoke", now());
+      await advance(store, row, "revoke", now());
       return "advance";
     }
 
     case "revoke": {
-      revokeUnusedEnrollments(db, row);
-      for (const runner of vmRunners(db, row)) {
+      await store.run((q) => revokeUnusedMemberVmEnrollmentsSteps(q, row.id));
+      for (const runner of await vmRunners(store, row)) {
         const fingerprints = await updateRunnerStatus(store, {
           runnerId: runner.id,
           workspaceId: runner.workspaceId,
@@ -182,7 +183,7 @@ async function runDeleteStep(
         });
         for (const fingerprint of fingerprints) options.disconnect?.(fingerprint);
       }
-      advance(db, row, "destroy", now());
+      await advance(store, row, "destroy", now());
       return "advance";
     }
 
@@ -203,25 +204,15 @@ async function runDeleteStep(
             `exe.dev has a VM named ${vm}, but its create was interrupted before exe.dev answered, so Paws cannot tell whether it made it. Paws left it in place. If it is yours, remove it on exe.dev, then Retry.`,
           );
       }
-      advance(db, row, "clear", now());
+      await advance(store, row, "clear", now());
       return "advance";
     }
 
     case "clear": {
       await store.transaction(function* (q) {
         const at = now();
-        db.run(
-          `UPDATE job SET status='cancelled',finished_at=?,locked_by=NULL,locked_until=NULL,
-          last_error='member VM deleted' WHERE queue=? AND status IN ('pending','running')
-          AND json_extract(payload,'$.memberVmId')=?`,
-          [at, MEMBER_VM_QUEUE, row.id],
-        );
-        const removed = db.run(
-          "DELETE FROM member_vm WHERE id=? AND delete_step='clear' AND delete_failure IS NULL",
-          [row.id],
-        ).changes;
-        if (removed !== 1) throw new StepMoved();
-        db.run("DELETE FROM member_vm_enrollment WHERE member_vm_id=?", [row.id]);
+        if (!(yield* clearDeletedMemberVmSteps(q, row.id, MEMBER_VM_QUEUE, at)))
+          throw new StepMoved();
         yield* auditWorkspaceAccessSteps(q, {
           workspaceId: row.workspaceId,
           userId: actor,
@@ -236,120 +227,56 @@ async function runDeleteStep(
   return "done";
 }
 
-export function blockingTasks(db: Database, runnerId: string, now: number): MemberVmBlockingTask[] {
-  return db
-    .query<MemberVmBlockingTask, [string, number]>(
-      `SELECT DISTINCT i.id AS itemId,i.linear_identifier AS identifier,i.title
-      FROM runner_work w JOIN run r ON r.id=w.run_id JOIN work_item i ON i.id=r.item_id
-      WHERE w.runner_id=? AND ((w.ended_at IS NULL AND w.lease_until>?) OR r.status IN ('active','provisioning'))
-      ORDER BY r.created_at,i.id`,
-    )
-    .all(runnerId, runnerLeaseCutoff(now));
+export function blockingTasks(
+  store: Db,
+  runnerId: string,
+  now: number,
+): Promise<MemberVmBlockingTask[]> {
+  return store.run((q) => runnerBlockingTasksSteps(q, runnerId, runnerLeaseCutoff(now)));
 }
 
-function stopRequested(db: Database, itemId: string): boolean {
-  return (
-    db
-      .query<{ requested: number }, [string]>(
-        "SELECT cancel_requested AS requested FROM work_item WHERE id=?",
-      )
-      .get(itemId)?.requested === 1
-  );
-}
-
-function provisioningInFlight(db: Database, id: string, now: number): boolean {
-  return (
-    db
-      .query<{ one: number }, [string, number, string]>(
-        `SELECT 1 AS one FROM job WHERE queue=? AND status='running' AND locked_until>?
-        AND json_extract(payload,'$.memberVmId')=? LIMIT 1`,
-      )
-      .get(MEMBER_VM_QUEUE, now, id) !== null
-  );
-}
-
-function revokeUnusedEnrollments(db: Database, row: MemberVm): void {
-  db.run(
-    `DELETE FROM runner_enrollment WHERE used_at IS NULL AND token_hash IN
-    (SELECT token_hash FROM member_vm_enrollment WHERE member_vm_id=?)`,
-    [row.id],
-  );
-}
-
-function untrackedEnrollments(
-  db: Database,
+async function untrackedEnrollments(
+  store: Db,
   row: MemberVm,
   known: readonly { id: string }[],
   now: number,
-): void {
+): Promise<void> {
   const ids = new Set(known.map((runner) => runner.id));
-  const runners = db
-    .query<{ id: string; name: string }, [string, string, string, number]>(
-      `SELECT DISTINCT r.id,r.name FROM runner_enrollment e JOIN runner r ON r.id=e.runner_id
-      WHERE e.workspace_id=? AND e.user_id=? AND e.name=? AND e.expires_at>?
-      AND r.status<>'revoked' AND r.revoked_at IS NULL ORDER BY r.created_at,r.id`,
+  const runners = (
+    await store.run((q) =>
+      nameEnrolledRunnersSteps(q, row.workspaceId, row.userId, row.vmName, row.createdAt),
     )
-    .all(row.workspaceId, row.userId, row.vmName, row.createdAt)
-    .filter((runner) => !ids.has(runner.id));
+  ).filter((runner) => !ids.has(runner.id));
   if (runners.length > 0)
     throw new Error(
       `${row.vmName} was created before Paws recorded which runners a VM enrolls, so Paws cannot tell whether ${runners.map((runner) => `runner ${runner.name} (${runner.id})`).join(", ")} belongs to it or was paired by hand. Ask a workspace admin to revoke it on its runner page, then Retry. A host paired by hand under this name has to be revoked and paired again.`,
     );
-  const pending = db
-    .query<{ expiresAt: number }, [string, string, string, number]>(
-      `SELECT MAX(expires_at) AS expiresAt FROM runner_enrollment WHERE workspace_id=? AND user_id=?
-      AND name=? AND used_at IS NULL AND expires_at>?`,
-    )
-    .get(row.workspaceId, row.userId, row.vmName, now);
-  if (pending?.expiresAt)
+  const pending = await store.run((q) =>
+    pendingNameEnrollmentSteps(q, row.workspaceId, row.userId, row.vmName, now),
+  );
+  if (pending)
     throw new Error(
-      `${row.vmName} was created before Paws recorded which tokens a VM enrolls with, and an enrollment token for that name is still valid until ${new Date(pending.expiresAt).toISOString()}. Retry after it expires.`,
+      `${row.vmName} was created before Paws recorded which tokens a VM enrolls with, and an enrollment token for that name is still valid until ${new Date(pending).toISOString()}. Retry after it expires.`,
     );
 }
 
-function vmRunners(
-  db: Database,
-  row: MemberVm,
-): { id: string; workspaceId: string; status: string }[] {
-  const enrolled = db
-    .query<{ runnerId: string }, [string]>(
-      `SELECT e.runner_id AS runnerId FROM member_vm_enrollment m
-      JOIN runner_enrollment e ON e.token_hash=m.token_hash
-      WHERE m.member_vm_id=? AND e.runner_id IS NOT NULL`,
-    )
-    .all(row.id)
-    .map((entry) => entry.runnerId);
+async function vmRunners(store: Db, row: MemberVm): Promise<MemberVmRunner[]> {
+  const enrolled = await store.run((q) => memberVmEnrolledRunnerIdsSteps(q, row.id));
   const ids = new Set(
     [row.deleteRunnerId, row.runnerId, ...enrolled].filter((value) => value !== null),
   );
-  return [...ids]
-    .map((id) => liveRunner(db, id))
-    .filter(
-      (runner): runner is NonNullable<typeof runner> =>
-        runner !== null && runner.workspaceId === row.workspaceId,
-    );
+  const runners: MemberVmRunner[] = [];
+  for (const id of ids) {
+    const runner = await store.run((q) => liveRunnerSteps(q, id));
+    if (runner !== null && runner.workspaceId === row.workspaceId) runners.push(runner);
+  }
+  return runners;
 }
 
-function liveRunner(
-  db: Database,
-  id: string,
-): { id: string; workspaceId: string; status: string } | null {
-  return db
-    .query<{ id: string; workspaceId: string; status: string }, [string]>(
-      `SELECT id,workspace_id AS workspaceId,status FROM runner
-      WHERE id=? AND status<>'revoked' AND revoked_at IS NULL`,
-    )
-    .get(id);
-}
-
-function advance(db: Database, row: MemberVm, step: MemberVmDeleteStep, at: number): void {
-  const changed = db.run(
-    `UPDATE member_vm SET delete_step=?,delete_step_started_at=?,
-    delete_at=json_set(COALESCE(delete_at,'{}'),'$.' || ?,?),updated_at=?
-    WHERE id=? AND delete_step=? AND delete_failure IS NULL`,
-    [step, at, step, at, at, row.id, row.deleteStep],
-  ).changes;
-  if (changed !== 1) throw new StepMoved();
+async function advance(store: Db, row: MemberVm, step: MemberVmDeleteStep, at: number) {
+  const from = row.deleteStep!;
+  if (!(await store.run((q) => advanceMemberVmDeleteSteps(q, row.id, from, step, at))))
+    throw new StepMoved();
 }
 
 class StepMoved extends Error {
