@@ -701,18 +701,7 @@ export function* acceptLinearStopSteps(
   return generation;
 }
 
-export function acceptLinearStop(
-  db: Database,
-  sessionId: string,
-  eventKey: string,
-  now: number,
-): number | null {
-  return settled(
-    sqliteDb(db).transaction((q) => acceptLinearStopSteps(q, sessionId, eventKey, now)),
-  );
-}
-
-export async function acceptLinearStopAsync(
+export async function acceptLinearStop(
   store: Db,
   sessionId: string,
   eventKey: string,

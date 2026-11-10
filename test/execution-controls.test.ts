@@ -15,6 +15,7 @@ import {
   getOutbox,
   getWorkItem,
   submitCommand,
+  sqliteDb,
 } from "../src/db";
 import { createExecutionControlsFixture, probeExecutionControls } from "./local/execution-controls";
 
@@ -146,8 +147,8 @@ test("Resume restarts an item a Linear stop paused, and Stop cancels it", async 
   const fixture = createExecutionControlsFixture(root);
   try {
     const { db, orchestrator, call } = fixture;
-    const stop = () => {
-      acceptLinearStop(db, "session-controlled", `stop:${Date.now()}`, Date.now());
+    const stop = async () => {
+      await acceptLinearStop(sqliteDb(db), "session-controlled", `stop:${Date.now()}`, Date.now());
       submitCommand(db, orchestrator.bus, {
         type: "stop",
         source: "linear",
@@ -155,7 +156,7 @@ test("Resume restarts an item a Linear stop paused, and Stop cancels it", async 
         requestedAt: Date.now(),
       });
     };
-    stop();
+    await stop();
     assert.equal(getWorkItem(db, "controlled")?.state, "paused");
     const view = (await (await call()).json()) as { actions: string[] };
     assert.deepEqual(view.actions, ["stop", "resume"]);
@@ -163,7 +164,7 @@ test("Resume restarts an item a Linear stop paused, and Stop cancels it", async 
     assert.equal(getWorkItem(db, "controlled")?.state, "queued");
     assert.equal(getLinearSession(db, "session-controlled")?.stoppedAt, null);
 
-    stop();
+    await stop();
     assert.equal((await call("stop")).status, 200);
     assert.equal(getWorkItem(db, "controlled")?.state, "cancelled");
   } finally {

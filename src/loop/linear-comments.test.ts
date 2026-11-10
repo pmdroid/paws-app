@@ -637,7 +637,7 @@ describe("routing to the right work", () => {
     try {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "First." })));
-      acceptLinearStop(f.db, SESSION, "stop-1", T0 + 2_000);
+      await acceptLinearStop(sqliteDb(f.db), SESSION, "stop-1", T0 + 2_000);
       expect(await f.deliver()).toBe("done");
       expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "session_stopped" });
       expect(f.resumeJobs()).toHaveLength(0);

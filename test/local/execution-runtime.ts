@@ -13,6 +13,7 @@ import {
   recordLinearInstallation,
   saveCheckpoint,
   saveTaskMode,
+  sqliteDb,
 } from "../../src/db";
 import {
   hasPendingDelegationChanges,
@@ -315,7 +316,12 @@ export async function probeExecutionRuntime(input: {
       revision: 2,
     },
   );
-  acceptLinearStop(db, sessionId, JSON.stringify(["activity", "runtime-session-late"]), Date.now());
+  await acceptLinearStop(
+    sqliteDb(db),
+    sessionId,
+    JSON.stringify(["activity", "runtime-session-late"]),
+    Date.now(),
+  );
   applyWorkItemEvent(db, itemId, "cancel");
   const late = {
     type: "AgentSessionEvent",

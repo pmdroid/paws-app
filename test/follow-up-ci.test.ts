@@ -22,6 +22,7 @@ import {
   recordItemPullRequest,
   recordPullComment,
   restart,
+  sqliteDb,
 } from "../src/db";
 import { fakeMergeReadiness, type GitHubClient, type GitHubResponse } from "../src/github";
 
@@ -301,7 +302,7 @@ test("a head that moves during the CI read attaches no stale CI facts", async ()
 test("a stop during the CI read restarts nothing", async () => {
   const f = await waitingTask({
     ci: "failed",
-    onCiRead: async (db) => acceptLinearStop(db, "session", "stop-1", Date.now()),
+    onCiRead: async (db) => await acceptLinearStop(sqliteDb(db), "session", "stop-1", Date.now()),
   });
   try {
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please fix the build"));

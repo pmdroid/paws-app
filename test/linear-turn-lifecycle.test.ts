@@ -124,17 +124,17 @@ test("Stop receipts survive a newer generation and roll back with the enclosing 
     ).rejects.toThrow("rollback");
     expect(getLinearSession(db, "session")).toBeNull();
     expect(db.query("SELECT * FROM linear_stop_receipt").all()).toEqual([]);
-    expect(acceptLinearStop(db, "session", "stop", 1)).toBe(1);
-    expect(acceptLinearStop(db, "session", "another-stop", 2)).toBe(1);
+    expect(await acceptLinearStop(sqliteDb(db), "session", "stop", 1)).toBe(1);
+    expect(await acceptLinearStop(sqliteDb(db), "session", "another-stop", 2)).toBe(1);
     await advanceLinearSessionGeneration(sqliteDb(db), "session", { now: 3 });
     const current = getLinearSession(db, "session");
     db.close();
     db = openDatabase(path);
     migrate(db);
-    expect(acceptLinearStop(db, "session", "stop", 1)).toBeNull();
+    expect(await acceptLinearStop(sqliteDb(db), "session", "stop", 1)).toBeNull();
     expect(getLinearSession(db, "session")).toEqual(current);
-    expect(acceptLinearStop(db, "other", "stop", 4)).toBe(1);
-    expect(acceptLinearStop(db, "session", "new-stop", 4)).toBe(3);
+    expect(await acceptLinearStop(sqliteDb(db), "other", "stop", 4)).toBe(1);
+    expect(await acceptLinearStop(sqliteDb(db), "session", "new-stop", 4)).toBe(3);
   } finally {
     db.close();
   }
