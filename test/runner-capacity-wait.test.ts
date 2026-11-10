@@ -240,12 +240,12 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         handled.add(command.id);
         work.acknowledge(freeRunner, command.id);
         if (command.type === "login_check")
-          health.submit(freeRunner, {
+          await health.submit(freeRunner, {
             ...receipt(command),
             login: { agent: command.agent, authenticated: true, method: "subscription" },
           });
         if (command.type === "probe")
-          health.submit(freeRunner, {
+          await health.submit(freeRunner, {
             ...receipt(command),
             models: [{ id: "fixture-implement-model", name: "Fixture" }],
           });

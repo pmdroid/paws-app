@@ -141,11 +141,14 @@ export async function probeRunnerHealth(
       { ...principal, userId: memberId },
       { ...principal, workspaceId: workspaceId() },
     ])
-      assert.throws(() => health.request(actor, runnerId, requestInput));
-    assert.throws(() =>
+      await assert.rejects(health.request(actor, runnerId, requestInput));
+    await assert.rejects(
       health.request(principal, runnerId, { ...requestInput, extra: true } as never),
     );
-    assert.equal(health.list({ ...principal, userId: memberId }, runnerId).checks.length, 0);
+    assert.equal(
+      (await health.list({ ...principal, userId: memberId }, runnerId)).checks.length,
+      0,
+    );
     const browserRequest = new Request(`https://localhost/api/runners/${runnerId}/health`);
     const browserResult = await health.browser(browserRequest, principal);
     assert.equal(browserResult?.status, 200);
@@ -164,13 +167,13 @@ export async function probeRunnerHealth(
       unknownRequestFieldDenied: true,
       memberRead: true,
     });
-    assert.equal(health.list(principal, runnerId).lastSeenAt, null);
+    assert.equal((await health.list(principal, runnerId)).lastSeenAt, null);
     work.heartbeat(runnerId);
-    assert.equal(health.list(principal, runnerId).lastSeenAt, now);
+    assert.equal((await health.list(principal, runnerId)).lastSeenAt, now);
     now += 1000;
     work.heartbeat(runnerId);
-    assert.equal(health.list(principal, runnerId).lastSeenAt, now);
-    const pending = health.request(principal, runnerId, requestInput);
+    assert.equal((await health.list(principal, runnerId)).lastSeenAt, now);
+    const pending = await health.request(principal, runnerId, requestInput);
     const verified = verifyRunnerCommand(work.commands(runnerId)[0], {
       trustedKeys: new Map([["health-fixture", signing.publicKey]]),
       runnerId,
@@ -187,7 +190,7 @@ export async function probeRunnerHealth(
       true,
       {
         commandId: pending.commandId,
-        lastSeenAt: health.list(principal, runnerId).lastSeenAt,
+        lastSeenAt: (await health.list(principal, runnerId)).lastSeenAt,
       },
     );
     listener = await startRunnerListener({
@@ -256,7 +259,7 @@ export async function probeRunnerHealth(
     };
     assert.equal((await send(result)).status, 200);
     assert.deepEqual((await send(result)).value, { duplicate: true });
-    const unicodeCommand = health.request(principal, runnerId, requestInput);
+    const unicodeCommand = await health.request(principal, runnerId, requestInput);
     const unicodeResult = {
       ...result,
       commandId: unicodeCommand.commandId,
@@ -266,7 +269,7 @@ export async function probeRunnerHealth(
     const unicodeBytes = Buffer.byteLength(JSON.stringify(unicodeResult));
     assert(unicodeBytes > 131_072 && unicodeBytes < RUNNER_RESULT_BODY_LIMIT);
     assert.equal((await send(unicodeResult)).status, 200);
-    const escapedCommand = health.request(principal, runnerId, requestInput);
+    const escapedCommand = await health.request(principal, runnerId, requestInput);
     const escapedResult = {
       ...result,
       commandId: escapedCommand.commandId,
@@ -289,7 +292,7 @@ export async function probeRunnerHealth(
     assert.deepEqual((await send(escapedResult)).value, { duplicate: true });
     assert.equal((await send({ ...result, models: [] })).status, 403);
     assert.equal((await send({ ...result, commandId: workspaceId() })).status, 403);
-    assert.throws(() => health.submit(workspaceId(), result));
+    await assert.rejects(health.submit(workspaceId(), result));
     await assert.rejects(() => send(result, null));
     assert.equal((await send({ ...result, errorMessage: "x".repeat(131_072) })).status, 403);
     let pulls = 0;
@@ -326,7 +329,7 @@ export async function probeRunnerHealth(
         models: Array(129).fill({ id: "x", name: "x" }),
       }).success,
     );
-    assert.deepEqual(health.read(runnerId, pending.commandId), result);
+    assert.deepEqual(await health.read(runnerId, pending.commandId), result);
     observe(
       "actual mTLS health delivery enforces immutable receipts, command binding and bounded public fields",
       true,
@@ -370,35 +373,38 @@ export async function probeRunnerHealth(
       childPid: recovered.pid,
       commandId: recovered.result.commandId,
     });
-    const login = health.request(principal, runnerId, { type: "login_check", agent: "claude" });
+    const login = await health.request(principal, runnerId, {
+      type: "login_check",
+      agent: "claude",
+    });
     const loginResult = {
       ...result,
       commandId: login.commandId,
       login: { agent: "claude" as const, authenticated: true, method: "subscription" as const },
     };
-    assert.throws(() =>
+    await assert.rejects(
       health.submit(runnerId, { ...loginResult, login: { ...loginResult.login, agent: "codex" } }),
     );
-    assert.throws(() => health.submit(runnerId, { ...loginResult, authRequired: true }));
-    assert.throws(() =>
+    await assert.rejects(health.submit(runnerId, { ...loginResult, authRequired: true }));
+    await assert.rejects(
       health.submit(runnerId, { ...loginResult, login: { ...loginResult.login, method: "none" } }),
     );
-    assert.throws(() => health.submit(runnerId, { ...result, login: loginResult.login }));
-    health.submit(runnerId, loginResult);
-    for (let count = 0; count < 4; count++) health.request(principal, runnerId, requestInput);
-    assert.throws(() => health.request(principal, runnerId, requestInput));
+    await assert.rejects(health.submit(runnerId, { ...result, login: loginResult.login }));
+    await health.submit(runnerId, loginResult);
+    for (let count = 0; count < 4; count++) await health.request(principal, runnerId, requestInput);
+    await assert.rejects(health.request(principal, runnerId, requestInput));
     observe("login results match the signed agent and pending health commands are bounded", true, {
       loginAgent: "claude",
       contradictoryResultsDenied: 4,
       pendingLimit: 4,
     });
     now += 120_001;
-    assert.throws(() => health.read(runnerId, pending.commandId));
+    await assert.rejects(health.read(runnerId, pending.commandId));
     assert.equal((await send(result)).status, 403);
-    const fresh = health.request(principal, runnerId, requestInput);
+    const fresh = await health.request(principal, runnerId, requestInput);
     await control.setStatus(principal, runnerId, "revoked");
-    assert.throws(() => health.submit(runnerId, { ...result, commandId: fresh.commandId }));
-    assert.throws(() => health.read(runnerId, fresh.commandId));
+    await assert.rejects(health.submit(runnerId, { ...result, commandId: fresh.commandId }));
+    await assert.rejects(health.read(runnerId, fresh.commandId));
     await assert.rejects(() => send({ ...result, commandId: fresh.commandId }));
     observe(
       "expired health commands and revoked runner identities cannot publish or recover results",

@@ -370,7 +370,7 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
         commands.set(command.id, command);
         if (command.type === "probe") {
           services.work.acknowledge(runnerId, command.id);
-          services.health.submit(runnerId, result(command, workspaceId()));
+          await services.health.submit(runnerId, result(command, workspaceId()));
         } else if (!pending.some((c) => c.id === command.id)) pending.push(command);
       }
       return { commands: pending, rejected: [], deniedRepositories: [] };

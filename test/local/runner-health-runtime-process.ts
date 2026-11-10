@@ -148,22 +148,28 @@ if (mode === "prepare") {
       );
     } else {
       config.commandIds.push(
-        coordinator.health.request(principal, paired.runnerId, {
-          type: "probe",
-          profile: { agent: "claude", model: "fixture-model" },
-        }).commandId,
+        (
+          await coordinator.health.request(principal, paired.runnerId, {
+            type: "probe",
+            profile: { agent: "claude", model: "fixture-model" },
+          })
+        ).commandId,
       );
       config.commandIds.push(
-        coordinator.health.request(principal, paired.runnerId, {
-          type: "login_check",
-          agent: "claude",
-        }).commandId,
+        (
+          await coordinator.health.request(principal, paired.runnerId, {
+            type: "login_check",
+            agent: "claude",
+          })
+        ).commandId,
       );
       config.commandIds.push(
-        coordinator.health.request(principal, paired.runnerId, {
-          type: "probe",
-          profile: { agent: "claude", model: "hold" },
-        }).commandId,
+        (
+          await coordinator.health.request(principal, paired.runnerId, {
+            type: "probe",
+            profile: { agent: "claude", model: "hold" },
+          })
+        ).commandId,
       );
     }
     writeFileSync(join(root, "fixture.json"), JSON.stringify(config));

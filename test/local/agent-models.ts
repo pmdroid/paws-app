@@ -124,7 +124,7 @@ export async function probeAgentModels(
     const methods = JSON.parse(readFileSync(trace, "utf8")).methods;
     assert.equal(methods.includes("session/prompt"), false);
     assert.equal(result.agentExited, true);
-    health().submit(runnerId, {
+    await health().submit(runnerId, {
       executionId: workspaceId(),
       commandId: command.id,
       role: result.role,

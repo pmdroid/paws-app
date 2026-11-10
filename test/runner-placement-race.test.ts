@@ -200,12 +200,12 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
         handled.add(command.id);
         work.acknowledge(runnerId, command.id);
         if (command.type === "login_check")
-          health.submit(runnerId, {
+          await health.submit(runnerId, {
             ...receipt(command),
             login: { agent: command.agent, authenticated: true, method: "subscription" },
           });
         if (command.type === "probe")
-          health.submit(runnerId, {
+          await health.submit(runnerId, {
             ...receipt(command),
             models: [{ id: "fixture-implement-model", name: "Fixture" }],
           });

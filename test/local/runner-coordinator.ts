@@ -411,7 +411,7 @@ export async function probeRunnerCoordinator(
     await coordinator.stop();
     coordinator = await openRunnerCoordinator({ ...options, port: firstPort });
     assert.deepEqual(
-      coordinator.health.read(identity.runnerId, healthCommand.commandId),
+      await coordinator.health.read(identity.runnerId, healthCommand.commandId),
       healthResult,
     );
     observe(

@@ -1,17 +1,22 @@
 import {
   workspaceMemberUsableSql,
   workspaceMemberUsable,
-  auditWorkspaceAccess,
-  commandAccount,
+  auditWorkspaceAccessSteps,
+  commandAccountSteps,
+  emitJobReady,
   getRunner,
-  recordAccountObservation,
+  getRunnerSteps,
+  recordAccountObservationSteps,
   immediate,
-  recordRunnerAgentUsage,
+  recordRunnerAgentUsageSteps,
   runnerAgentCheckStates,
-  wakeRunnerSlotWaits,
+  wakeRunnerSlotWaitsSteps,
   runnerAgentUsage,
   runnerLaneHelperWaiting,
+  sqliteDb,
   workspaceMember,
+  workspaceMemberSteps,
+  type Q,
   type RunnerAgentLimit,
 } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
@@ -82,6 +87,7 @@ export function createRunnerHealth(options: {
   now?: () => number;
 }) {
   const { db, work } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   function visible(principal: WorkspacePrincipal, runnerId: string) {
     const member = workspaceMember(db, principal.workspaceId, principal.userId);
@@ -89,6 +95,24 @@ export function createRunnerHealth(options: {
     if (!workspaceMemberUsable(member) || runner?.workspaceId !== principal.workspaceId)
       throw new Error("Runner access denied");
     return { member, runner };
+  }
+  function* visibleSteps(q: Q, principal: WorkspacePrincipal, runnerId: string) {
+    const member = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);
+    const runner = yield* getRunnerSteps(q, runnerId);
+    if (!workspaceMemberUsable(member) || runner?.workspaceId !== principal.workspaceId)
+      throw new Error("Runner access denied");
+    return { member, runner };
+  }
+  /** The runner, while it is not revoked and its owner may still use the workspace. */
+  function* identitySteps(q: Q, runnerId: string) {
+    const runner = yield* getRunnerSteps(q, runnerId);
+    if (
+      !runner ||
+      runner.status === "revoked" ||
+      !workspaceMemberUsable(yield* workspaceMemberSteps(q, runner.workspaceId, runner.ownerUserId))
+    )
+      throw new Error("Runner identity is unavailable");
+    return runner;
   }
   function command(commandId: string, runnerId: string) {
     const row = db
@@ -172,11 +196,11 @@ export function createRunnerHealth(options: {
     });
   }
   const api = {
-    request(principal: WorkspacePrincipal, runnerId: string, input: HealthRequest) {
+    async request(principal: WorkspacePrincipal, runnerId: string, input: HealthRequest) {
       const parsed = requestSchema.parse(input);
-      return immediate(db, () => {
+      return store.transaction(function* (q) {
         const at = now();
-        const { member, runner } = visible(principal, runnerId);
+        const { member, runner } = yield* visibleSteps(q, principal, runnerId);
         if (!isWorkspaceAdmin(member.role))
           throw new Error("Workspace administrator access is required");
         if (pendingChecks(runnerId, at) >= 4)
@@ -191,7 +215,7 @@ export function createRunnerHealth(options: {
           expiresAt,
           ...parsed,
         });
-        auditWorkspaceAccess(db, {
+        yield* auditWorkspaceAccessSteps(q, {
           workspaceId: runner.workspaceId,
           userId: principal.userId,
           action: `runner.${parsed.type}`,
@@ -307,16 +331,11 @@ export function createRunnerHealth(options: {
         return { agent, status: "unknown", checkedAt, ...extra };
       });
     },
-    submit(runnerId: string, input: RunnerHealthResult) {
+    async submit(runnerId: string, input: RunnerHealthResult) {
       const result = RunnerHealthResultSchema.parse(input);
-      return immediate(db, () => {
-        const runner = getRunner(db, runnerId);
-        if (
-          !runner ||
-          runner.status === "revoked" ||
-          !workspaceMemberUsable(workspaceMember(db, runner.workspaceId, runner.ownerUserId))
-        )
-          throw new Error("Runner identity is unavailable");
+      let woke = false;
+      const submitted = await store.transaction(function* (q) {
+        const runner = yield* identitySteps(q, runnerId);
         const assigned = command(result.commandId, runnerId);
         const at = now();
         if (
@@ -357,12 +376,13 @@ export function createRunnerHealth(options: {
           at,
         ]);
         const legacy = !assigned.account;
-        const owner = assigned.type === "login_check" ? commandAccount(db, assigned.id) : null;
-        const observe = (
+        const owner =
+          assigned.type === "login_check" ? yield* commandAccountSteps(q, assigned.id) : null;
+        function* observe(
           state: "ok" | "auth_required" | "exhausted" | "low",
           kind: "auth" | "quota",
           resetsAt: number | null = null,
-        ) => {
+        ) {
           if (!owner) return true;
           const base = {
             bindingId: owner.bindingId,
@@ -371,30 +391,31 @@ export function createRunnerHealth(options: {
             observedAt: assigned.issuedAt,
             now: at,
           };
-          const outcome = recordAccountObservation(
-            db,
+          const observation =
             state === "ok"
               ? { ...base, state, clears: [kind] }
               : state === "exhausted"
                 ? { ...base, state, resetsAt }
-                : { ...base, state },
-          )[kind];
+                : { ...base, state };
+          const outcome = (yield* q.transaction((tx) =>
+            recordAccountObservationSteps(tx, observation),
+          ))[kind];
           return outcome === "applied";
-        };
+        }
         if (
           assigned.type === "login_check" &&
           result.login &&
-          observe(result.login.authenticated ? "ok" : "auth_required", "auth") &&
+          (yield* observe(result.login.authenticated ? "ok" : "auth_required", "auth")) &&
           legacy
         ) {
           db.run(
             "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?1,?2,?3,1-?3) ON CONFLICT(runner_id,agent) DO UPDATE SET ready=?3,auth_expired=1-?3",
             [runnerId, assigned.agent, result.login.authenticated ? 1 : 0],
           );
-          if (result.login.authenticated) wakeRunnerSlotWaits(db, runnerId, at);
+          if (result.login.authenticated) woke = yield* wakeRunnerSlotWaitsSteps(q, runnerId, at);
         }
         if (legacy && result.agentLimits)
-          recordRunnerAgentUsage(db, {
+          yield* recordRunnerAgentUsageSteps(q, {
             runnerId,
             agent: assigned.type === "login_check" ? assigned.agent : assigned.profile.agent,
             limits: result.agentLimits,
@@ -414,7 +435,10 @@ export function createRunnerHealth(options: {
           const resetsAt = spent.every((limit) => limit.resetsAt !== null) ? until : null;
           const low = result.agentLimits.some((limit) => limit.usedPercent >= 80);
           const cools = spent.length > 0 && !extraUsage;
-          if (observe(cools ? "exhausted" : low ? "low" : "ok", "quota", resetsAt) && legacy)
+          if (
+            (yield* observe(cools ? "exhausted" : low ? "low" : "ok", "quota", resetsAt)) &&
+            legacy
+          )
             db.run(
               "UPDATE runner_agent_policy SET quota_state=?,resets_at=?,cooldown_until=? WHERE runner_id=? AND agent=?",
               [
@@ -429,15 +453,11 @@ export function createRunnerHealth(options: {
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [at, runnerId]);
         return { duplicate: false };
       });
+      if (woke) emitJobReady(store);
+      return submitted;
     },
-    read(runnerId: string, commandId: string) {
-      const runner = getRunner(db, runnerId);
-      if (
-        !runner ||
-        runner.status === "revoked" ||
-        !workspaceMemberUsable(workspaceMember(db, runner.workspaceId, runner.ownerUserId))
-      )
-        throw new Error("Runner identity is unavailable");
+    async read(runnerId: string, commandId: string) {
+      await store.run((q) => identitySteps(q, runnerId));
       if (command(commandId, runnerId).expiresAt <= now())
         throw new Error("Runner health command has expired");
       const row = db
@@ -447,8 +467,8 @@ export function createRunnerHealth(options: {
         .get(runnerId, commandId);
       return row ? RunnerHealthResultSchema.parse(JSON.parse(row.result_json)) : null;
     },
-    list(principal: WorkspacePrincipal, runnerId: string) {
-      visible(principal, runnerId);
+    async list(principal: WorkspacePrincipal, runnerId: string) {
+      await store.run((q) => visibleSteps(q, principal, runnerId));
       const checks = db
         .query<
           { id: string; expiresAt: number; receivedAt: number | null; resultJson: string | null },
@@ -478,9 +498,11 @@ export function createRunnerHealth(options: {
       );
       if (!match) return null;
       try {
-        if (request.method === "GET") return json(api.list(principal, match[1]!));
+        if (request.method === "GET") return json(await api.list(principal, match[1]!));
         if (request.method !== "POST") return json({ error: "Use GET or POST." }, 405);
-        return json(api.request(principal, match[1]!, requestSchema.parse(await body(request))));
+        return json(
+          await api.request(principal, match[1]!, requestSchema.parse(await body(request))),
+        );
       } catch (caughtError1) {
         journalCaught(caughtError1, "runner-health.browser.json", null);
         return json({ error: "Runner health request is unavailable." }, 403);
@@ -491,7 +513,7 @@ export function createRunnerHealth(options: {
       if (request.method !== "POST") return json({ error: "Use POST." }, 405);
       try {
         return json(
-          api.submit(
+          await api.submit(
             runnerId,
             RunnerHealthResultSchema.parse(await body(request, RUNNER_RESULT_BODY_LIMIT)),
           ),

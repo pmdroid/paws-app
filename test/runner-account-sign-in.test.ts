@@ -331,8 +331,10 @@ test("a named sign-in check does not change the default sign-in's readiness or u
       method: "subscription" as const,
     },
   };
-  expect(() => health.submit(runnerId, result)).toThrow(/contradicts/);
-  expect(health.submit(runnerId, { ...result, account: target })).toEqual({ duplicate: false });
+  await expect(health.submit(runnerId, result)).rejects.toThrow(/contradicts/);
+  expect(await health.submit(runnerId, { ...result, account: target })).toEqual({
+    duplicate: false,
+  });
   expect(policy(db, runnerId)).toBeNull();
   expect(
     db.query("SELECT COUNT(*) AS count FROM runner_agent_usage WHERE runner_id=?").get(runnerId),

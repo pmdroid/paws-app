@@ -603,19 +603,19 @@ async function runRemoteFault(fault: Fault) {
           runner.stale = false;
         }
         if (command.type === "login_check")
-          health.submit(runnerId, {
+          await health.submit(runnerId, {
             ...receipt(command),
             login: { agent: command.agent, authenticated: true, method: "subscription" },
           });
         if (command.type === "probe" && fault === "preparation-usage-limit" && runner.faulty) {
           runner.faultedAttempts++;
-          health.submit(runnerId, {
+          await health.submit(runnerId, {
             ...receipt(command),
             stopReason: "error",
             errorMessage: "You've hit your session limit. Retry-After: 120",
           });
         } else if (command.type === "probe")
-          health.submit(runnerId, {
+          await health.submit(runnerId, {
             ...receipt(command),
             models: [{ id: "fixture-implement-model", name: "Fixture" }],
           });

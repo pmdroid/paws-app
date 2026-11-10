@@ -1021,7 +1021,7 @@ export function createRemoteAgentRunner(options: {
                   work.identity(selected.id).userId,
                 );
               else work.scope(selected.runId, selected.workspaceId);
-              const result = health.read(selected.id, id);
+              const result = await health.read(selected.id, id);
               if (result) {
                 const disposition = immediate(db, () =>
                   options.placement?.finished({

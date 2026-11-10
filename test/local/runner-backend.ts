@@ -2023,7 +2023,7 @@ export async function probeRunnerBackend(
     assert.equal(probe.type, "probe");
     if (probe.type !== "probe") throw new Error("Unexpected preparation command");
     assert.equal(probe.profile.model, null);
-    health.submit(runnerId, { ...result(probe), models: [{ id: "model", name: "Model" }] });
+    await health.submit(runnerId, { ...result(probe), models: [{ id: "model", name: "Model" }] });
     const ready = await preparation;
     assert.equal(ready.role, "reviewer");
     assert.equal(ready.identity?.model, "model");
@@ -2523,7 +2523,7 @@ export async function probeRunnerBackend(
         const reviewerProbe = await next(reviewerPrepareHost);
         assert.equal(reviewerProbe.type, "probe");
         // Independence belongs to fresh preflight identities, not the prior implementation.
-        health.submit(reviewerPrepareHost, {
+        await health.submit(reviewerPrepareHost, {
           ...result(reviewerProbe),
           models: [{ id: "model", name: "Model" }],
         });
@@ -2832,7 +2832,7 @@ export async function probeRunnerBackend(
     pendingFailover = preparing;
     const failoverProbe = await next(probeHost);
     assert.equal(failoverProbe.type, "probe");
-    health.submit(probeHost, {
+    await health.submit(probeHost, {
       ...result(failoverProbe),
       models: [{ id: "model", name: "Model" }],
     });
