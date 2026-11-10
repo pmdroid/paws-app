@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, max, notInArray, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { recordImprovementProposalSteps, type ImprovementActionStep } from "./improvements";
 import { jsonValue } from "./json-text";
 import type * as pgSchema from "./schema-pg";
@@ -192,12 +192,12 @@ function settingsFromRow(q: Q, row: SettingsRow): RetroSettingsRevision {
   };
 }
 
-export function getRetroSettingsRevision(
-  db: Database,
+export async function getRetroSettingsRevision(
+  store: Db,
   workspaceId: string,
   revision: number,
-): RetroSettingsRevision | null {
-  return settled(sqliteDb(db).run((q) => getRetroSettingsRevisionSteps(q, workspaceId, revision)));
+): Promise<RetroSettingsRevision | null> {
+  return store.run((q) => getRetroSettingsRevisionSteps(q, workspaceId, revision));
 }
 
 export function* getRetroSettingsRevisionSteps(q: Q, workspaceId: string, revision: number) {
@@ -255,8 +255,8 @@ export function* getRetroSteps(q: Q, id: string) {
   return row === undefined ? null : retroFromRow(q, row);
 }
 
-export function listRetros(db: Database, workspaceId: string): Retro[] {
-  return settled(sqliteDb(db).run((q) => listRetrosSteps(q, workspaceId)));
+export async function listRetros(store: Db, workspaceId: string): Promise<Retro[]> {
+  return store.run((q) => listRetrosSteps(q, workspaceId));
 }
 
 export function* listRetrosSteps(q: Q, workspaceId: string) {
@@ -336,8 +336,11 @@ export function* createRetroSteps(q: Q, input: NewRetro) {
   return { retro: (yield* getRetroSteps(q, input.id))!, created: true };
 }
 
-export function retroRepositories(db: Database, retroId: string): RetroRepositoryCursor[] {
-  return settled(sqliteDb(db).run((q) => retroRepositoriesSteps(q, retroId)));
+export async function retroRepositories(
+  store: Db,
+  retroId: string,
+): Promise<RetroRepositoryCursor[]> {
+  return store.run((q) => retroRepositoriesSteps(q, retroId));
 }
 
 export function* retroRepositoriesSteps(q: Q, retroId: string) {
@@ -515,8 +518,8 @@ type CoverageGap = {
   now: number;
 };
 
-export function recordRetroCoverageGap(db: Database, input: CoverageGap): void {
-  settled(sqliteDb(db).run((q) => recordRetroCoverageGapSteps(q, input)));
+export async function recordRetroCoverageGap(store: Db, input: CoverageGap): Promise<void> {
+  await store.run((q) => recordRetroCoverageGapSteps(q, input));
 }
 
 export function* recordRetroCoverageGapSteps(q: Q, input: CoverageGap) {
@@ -781,8 +784,8 @@ type AttemptFailure = {
   now: number;
 };
 
-export function failRetroAttempt(db: Database, input: AttemptFailure): boolean {
-  return settled(sqliteDb(db).transaction((q) => failRetroAttemptSteps(q, input)));
+export async function failRetroAttempt(store: Db, input: AttemptFailure): Promise<boolean> {
+  return store.transaction((q) => failRetroAttemptSteps(q, input));
 }
 
 export function* failRetroAttemptSteps(q: Q, input: AttemptFailure) {

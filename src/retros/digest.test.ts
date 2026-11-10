@@ -15,6 +15,7 @@ import {
   retroRepositories,
   saveRetroSettingsRevision,
   startRetroAttempt,
+  sqliteDb,
 } from "../db";
 import {
   boundRetroDigest,
@@ -216,7 +217,7 @@ const counted = (digest: RetroDigest) =>
   digest.records.filter((record) => record.scope === "counted").map((r) => r.evidenceId);
 
 describe("incremental retro windows", () => {
-  test("the first retro starts at its window and a later one counts a new answer on an old item", () => {
+  test("the first retro starts at its window and a later one counts a new answer on an old item", async () => {
     const { db, root } = world();
     const old = item(db, "PAS-100", { createdAt: at(1) });
     const first = question(db, old, { createdAt: at(1, 5), answeredAt: at(2) });
@@ -239,7 +240,7 @@ describe("incremental retro windows", () => {
     expect(counted(digest)).not.toContain(`question:${first}`);
     expect(digest.sessions.map((entry) => entry.itemId).sort()).toEqual([old, fresh].sort());
     expect(getRetro(db, "r2")!.state).toBe("queued");
-    expect(retroRepositories(db, "r2")).toEqual([
+    expect(await retroRepositories(sqliteDb(db), "r2")).toEqual([
       { repository: REPO, startCursor: at(3), endCursor: at(6) },
     ]);
   });

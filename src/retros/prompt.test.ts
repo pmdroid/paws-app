@@ -13,6 +13,7 @@ import {
   retroRepositories,
   syncWorkspaceMember,
   writeRetroArtifact,
+  sqliteDb,
 } from "../db";
 import type { AgentModelCatalog } from "../runner-models";
 import type { WorkspacePrincipal } from "../workspace";
@@ -543,7 +544,7 @@ describe("authorized preview", () => {
     queuedRetro(db, root, { id: "r1" });
     const before = {
       retro: getRetro(db, "r1"),
-      cursors: retroRepositories(db, "r1"),
+      cursors: await retroRepositories(sqliteDb(db), "r1"),
       files: readdirSync(root).sort(),
       artifacts: db.query("SELECT * FROM retro_artifact ORDER BY kind").all(),
     };
@@ -554,7 +555,7 @@ describe("authorized preview", () => {
     expect(preview.ok && preview.source.kind).toBe("saved");
     expect({
       retro: getRetro(db, "r1"),
-      cursors: retroRepositories(db, "r1"),
+      cursors: await retroRepositories(sqliteDb(db), "r1"),
       files: readdirSync(root).sort(),
       artifacts: db.query("SELECT * FROM retro_artifact ORDER BY kind").all(),
     }).toEqual(before);

@@ -28,6 +28,7 @@ import {
   startRetroAttempt,
   writeRetroArtifact,
   type RetroItemInput,
+  sqliteDb,
 } from "./index";
 
 const REPO = "pmdroid/paws-app";
@@ -208,7 +209,7 @@ describe("retro windows", () => {
 });
 
 describe("retro generation", () => {
-  test("a failed attempt retries the same retro with its frozen input", () => {
+  test("a failed attempt retries the same retro with its frozen input", async () => {
     const { db, root } = harness();
     frozen(db, root, { id: "r1", start: 0, end: 7 * DAY, cursor: 40 });
     const later = settings(db, [REPO], "A different prompt {{digest}}");
@@ -217,7 +218,13 @@ describe("retro generation", () => {
     const first = startRetroAttempt(db, { retroId: "r1", owner: "a", now: 10, leaseMs: 100 });
     expect(first).toEqual({ attempt: 1 });
     expect(
-      failRetroAttempt(db, { retroId: "r1", attempt: 1, owner: "a", error: "lost", now: 20 }),
+      await failRetroAttempt(sqliteDb(db), {
+        retroId: "r1",
+        attempt: 1,
+        owner: "a",
+        error: "lost",
+        now: 20,
+      }),
     ).toBe(true);
     expect(retroWatermarks(db, "ws")).toEqual([]);
     expect(getRetro(db, "r1")!.result).toBeNull();
@@ -281,11 +288,11 @@ describe("retro generation", () => {
     expect(listRetroItems(db, "r1")).toEqual([]);
   });
 
-  test("a recorded coverage gap blocks publication and the watermark", () => {
+  test("a recorded coverage gap blocks publication and the watermark", async () => {
     const { db, root } = harness();
     frozen(db, root, { id: "r1", start: 0, end: DAY, cursor: 9 });
     startRetroAttempt(db, { retroId: "r1", owner: "a", now: 10, leaseMs: 100 });
-    recordRetroCoverageGap(db, {
+    await recordRetroCoverageGap(sqliteDb(db), {
       retroId: "r1",
       repository: REPO,
       kind: "missing_artifact",
@@ -393,10 +400,10 @@ describe("retro collection", () => {
     ).toThrow(/frozen/);
   });
 
-  test("closing a retro releases its repositories without moving the watermark", () => {
+  test("closing a retro releases its repositories without moving the watermark", async () => {
     const { db, root } = harness();
     frozen(db, root, { id: "r1", start: 0, end: DAY, cursor: 9 });
-    recordRetroCoverageGap(db, {
+    await recordRetroCoverageGap(sqliteDb(db), {
       retroId: "r1",
       repository: REPO,
       kind: "retention_gap",
@@ -416,7 +423,7 @@ describe("retro collection", () => {
     ]);
     expect(retroWatermarks(db, "ws")).toEqual([]);
     expect(db.query("SELECT count(*) AS n FROM retro_collection_lock").get()).toEqual({ n: 0 });
-    expect(retroRepositories(db, "r1")[0]!.endCursor).toBe(9);
+    expect((await retroRepositories(sqliteDb(db), "r1"))[0]!.endCursor).toBe(9);
   });
 });
 

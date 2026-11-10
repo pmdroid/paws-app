@@ -169,7 +169,7 @@ describe("retro dispatch, composed with a fake runner", () => {
 
     db.run("UPDATE runner_helper SET ended_at=? WHERE id='helper-1'", [clock.now]);
     await dispatcher.tick();
-    const [dispatch] = listRetroDispatches(db, "r1");
+    const [dispatch] = await listRetroDispatches(sqliteDb(db), "r1");
     expect(dispatch).toMatchObject({ runnerId: "R1", attempt: 1, fetchedAt: null });
     expect(getRetro(db, "r1")).toMatchObject({ state: "generating", attempt: 1 });
     expect(dispatcher.generation("r1")).toMatchObject({
@@ -200,7 +200,7 @@ describe("retro dispatch, composed with a fake runner", () => {
     runner.seen(reopened);
     await dispatcher.tick();
     await dispatcher.tick();
-    expect(listRetroDispatches(reopened, "r1")).toHaveLength(1);
+    expect(await listRetroDispatches(sqliteDb(reopened), "r1")).toHaveLength(1);
     expect(getRetro(reopened, "r1")).toMatchObject({ state: "generating", attempt: 1 });
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "generating",
@@ -257,7 +257,7 @@ describe("placement", () => {
     expect(dispatcher.generation("r1")!.detail).toContain("1 need a runner update");
     for (const id of ["OLD", "MEMBER", "SIGNED_OUT"])
       expect(await fakeRunner(id, clock).poll(dispatcher)).toEqual([]);
-    expect(listRetroDispatches(db, "r1")).toEqual([]);
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toEqual([]);
   });
 
   test("a quota cooldown on the selected agent is a wait that spends no attempt", async () => {
@@ -294,7 +294,7 @@ describe("placement", () => {
     const dispatcher = open(db);
     await dispatcher.tick();
     expect(getRetro(db, "r1")!.state).toBe("published");
-    expect(listRetroDispatches(db, "r1")).toEqual([]);
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toEqual([]);
     expect(dispatcher.generation("r1")!.state).toBe("ready");
   });
 
@@ -340,7 +340,7 @@ describe("placement", () => {
       error:
         "The frozen digest is 8.3 MiB (8,718,484 bytes); runners accept at most 8.0 MiB (8,388,608 bytes).",
     });
-    expect(listRetroDispatches(db, "r2")).toEqual([]);
+    expect(await listRetroDispatches(sqliteDb(db), "r2")).toEqual([]);
   });
 });
 
@@ -363,7 +363,7 @@ describe("recovery", () => {
       diagnostic: "unknown_outcome",
       attempt: 1,
     });
-    expect(listRetroDispatches(db, "r1")).toHaveLength(1);
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toHaveLength(1);
     expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(1);
 
     expect(
@@ -404,7 +404,7 @@ describe("recovery", () => {
     expect(getRetro(db, "r1")!.error).toContain(`against digest ${digestSha256.slice(0, 12)}`);
 
     await dispatcher.tick();
-    expect(listRetroDispatches(db, "r1")).toHaveLength(1);
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toHaveLength(1);
     clock.now += retroRetryDelayMs(1);
     runner.seen(db);
     await dispatcher.tick();
@@ -429,7 +429,7 @@ describe("recovery", () => {
     clock.now += 86_400_000;
     runner.seen(db);
     await dispatcher.tick();
-    expect(listRetroDispatches(db, "r1")).toHaveLength(2);
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toHaveLength(2);
   });
 
   test("an invalid result's retry is a repair turn that gets the exact problems", async () => {
@@ -505,7 +505,7 @@ describe("recovery", () => {
     clock.now += 86_400_000;
     runner.seen(db);
     await dispatcher.tick();
-    expect(listRetroDispatches(db, "r1")).toHaveLength(1);
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toHaveLength(1);
   });
 
   test("an unfetched command is re-signed under the same id; a lost fetch costs no attempt", async () => {
@@ -515,24 +515,26 @@ describe("recovery", () => {
     runner.seen(db);
     const dispatcher = open(db);
     await dispatcher.tick();
-    const [dispatch] = listRetroDispatches(db, "r1");
+    const [dispatch] = await listRetroDispatches(sqliteDb(db), "r1");
     clock.now += 290_000;
     runner.seen(db);
     const [resent] = await runner.poll(dispatcher);
     expect(resent!.id).toBe(dispatch!.commandId);
-    expect(listRetroDispatches(db, "r1")[0]!.deliveries).toBe(2);
+    expect((await listRetroDispatches(sqliteDb(db), "r1"))[0]!.deliveries).toBe(2);
 
     clock.now += 300_000 + 60_001;
     runner.seen(db);
     await dispatcher.tick();
-    expect(listRetroDispatches(db, "r1")[0]).toMatchObject({ releaseReason: "not_started" });
+    expect((await listRetroDispatches(sqliteDb(db), "r1"))[0]).toMatchObject({
+      releaseReason: "not_started",
+    });
     await dispatcher.tick();
-    expect(listRetroDispatches(db, "r1")).toHaveLength(1);
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toHaveLength(1);
     expect(dispatcher.generation("r1")).toMatchObject({ diagnostic: "retry_backoff" });
     clock.now += retroRetryDelayMs(1);
     runner.seen(db);
     await dispatcher.tick();
-    const dispatches = listRetroDispatches(db, "r1");
+    const dispatches = await listRetroDispatches(sqliteDb(db), "r1");
     expect(dispatches).toHaveLength(2);
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "generating",
@@ -549,24 +551,24 @@ describe("recovery", () => {
     runner.seen(db);
     const dispatcher = open(db);
     await dispatcher.tick();
-    const [dispatch] = listRetroDispatches(db, "r1");
+    const [dispatch] = await listRetroDispatches(sqliteDb(db), "r1");
     clock.now = dispatch!.expiresAt;
     runner.seen(db);
     await dispatcher.tick();
     expect(getRetroDispatch(db, dispatch!.commandId)).toMatchObject({
       releaseReason: "not_started",
     });
-    expect(retroSlotsHeld(db, "R1")).toBe(0);
+    expect(await retroSlotsHeld(sqliteDb(db), "R1")).toBe(0);
     expect(await dispatcher.commands("R1")).toEqual([]);
     for (let round = 1; round <= 3; round += 1) {
       clock.now += retroRetryDelayMs(round) - 1;
       runner.seen(db);
       await dispatcher.tick();
-      expect(listRetroDispatches(db, "r1")).toHaveLength(round);
+      expect(await listRetroDispatches(sqliteDb(db), "r1")).toHaveLength(round);
       clock.now += 1;
       runner.seen(db);
       await dispatcher.tick();
-      const latest = listRetroDispatches(db, "r1").at(-1)!;
+      const latest = (await listRetroDispatches(sqliteDb(db), "r1")).at(-1)!;
       expect(latest.attempt).toBe(round + 1);
       clock.now = latest.expiresAt;
       runner.seen(db);
@@ -596,8 +598,8 @@ describe("recovery", () => {
       db.run("UPDATE runner SET last_seen_at=? WHERE id='R2'", [clock.now]);
       await dispatcher.tick();
     }
-    expect(listRetroDispatches(db, "r1")).toHaveLength(1);
-    expect(listRetroDispatches(db, "r1")[0]!.releasedAt).toBeNull();
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toHaveLength(1);
+    expect((await listRetroDispatches(sqliteDb(db), "r1"))[0]!.releasedAt).toBeNull();
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "generating",
       diagnostic: "unknown_outcome",
@@ -617,7 +619,9 @@ describe("recovery", () => {
     await dispatcher.tick();
     db.run("UPDATE runner SET status='revoked', revoked_at=? WHERE id='R1'", [clock.now]);
     await dispatcher.tick();
-    expect(listRetroDispatches(db, "r1")[0]).toMatchObject({ releaseReason: "not_started" });
+    expect((await listRetroDispatches(sqliteDb(db), "r1"))[0]).toMatchObject({
+      releaseReason: "not_started",
+    });
     expect(dispatcher.generation("r1")).toMatchObject({ attemptsUsed: 0 });
   });
 
@@ -661,7 +665,9 @@ describe("recovery", () => {
     await dispatcher.tick();
     db.run("UPDATE workspace_member SET role='member' WHERE user_id='admin'");
     await dispatcher.tick();
-    expect(listRetroDispatches(db, "r1")[0]).toMatchObject({ releaseReason: "not_started" });
+    expect((await listRetroDispatches(sqliteDb(db), "r1"))[0]).toMatchObject({
+      releaseReason: "not_started",
+    });
     expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
   });
 
@@ -696,7 +702,7 @@ describe("agent account admission", () => {
     db.run("UPDATE agent_account SET enabled=0 WHERE id=?", [accountId]);
     const dispatcher = open(db);
     await dispatcher.tick();
-    expect(listRetroDispatches(db, "r1")).toEqual([]);
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toEqual([]);
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "waiting_for_runner",
       diagnostic: "no_runner",
@@ -720,7 +726,7 @@ describe("agent account admission", () => {
     });
     const dispatcher = open(db);
     await dispatcher.tick();
-    expect(listRetroDispatches(db, "r1")).toEqual([]);
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toEqual([]);
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "waiting_for_runner",
       diagnostic: "no_runner",
@@ -739,7 +745,7 @@ describe("agent account admission", () => {
     clock.now += 60_000;
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     await dispatcher.tick();
-    expect(listRetroDispatches(db, "r1")).toEqual([]);
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toEqual([]);
     expect(dispatcher.generation("r1")).toMatchObject({ diagnostic: "no_runner", attempt: 0 });
 
     recordAccountObservation(db, {
@@ -753,7 +759,7 @@ describe("agent account admission", () => {
       clears: ["provider", "model"],
     });
     await dispatcher.tick();
-    expect(listRetroDispatches(db, "r1")).toHaveLength(1);
+    expect(await listRetroDispatches(sqliteDb(db), "r1")).toHaveLength(1);
   });
 
   test("an open retro reservation fences quota revalidation for further attempts", async () => {
