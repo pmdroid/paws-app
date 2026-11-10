@@ -135,13 +135,17 @@ export async function handleHookSettingsRequest(
         400,
       );
   }
-  if ((await store.run(listHooksSteps)).length >= WORKSPACE_HOOK_LIMIT)
+  const now = (options.now ?? Date.now)();
+  const added = await store.transaction(function* (q) {
+    if ((yield* listHooksSteps(q)).length >= WORKSPACE_HOOK_LIMIT) return false;
+    yield* saveHookSteps(q, hook, now);
+    return true;
+  });
+  if (!added)
     return json(
       { error: `Paws runs at most ${WORKSPACE_HOOK_LIMIT} hooks. Remove one first.` },
       409,
     );
-  const now = (options.now ?? Date.now)();
-  await store.run((q) => saveHookSteps(q, hook, now));
   options.audit("settings.hook.add", `Added hook ${describeHook(hook)}`);
   return listing(`Added the hook. Runs that start from now on get it.`);
 }

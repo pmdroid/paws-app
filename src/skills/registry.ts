@@ -153,7 +153,9 @@ export async function addSkills(
       ),
     );
   }
-  for (const hook of hooks) await store.run((q) => saveHookSteps(q, hook, registry.now));
+  await store.transaction(function* (q) {
+    for (const hook of hooks) yield* saveHookSteps(q, hook, registry.now);
+  });
   return { skills: pins, hooks };
 }
 
@@ -195,11 +197,11 @@ export async function changeSkillAgents(
   name: string,
   agents: readonly string[],
 ): Promise<{ before: SkillPin; after: SkillPin }> {
-  const store = sqliteDb(registry.db);
-  const before = await store.run((q) => activeSkillSteps(q, name));
-  const chosen = skillAgents(agents);
-  await store.run((q) => setSkillAgentsSteps(q, name, chosen, registry.now));
-  return { before, after: (await store.run((q) => getSkillSteps(q, name)))! };
+  return sqliteDb(registry.db).transaction(function* (q) {
+    const before = yield* activeSkillSteps(q, name);
+    yield* setSkillAgentsSteps(q, name, skillAgents(agents), registry.now);
+    return { before, after: (yield* getSkillSteps(q, name))! };
+  });
 }
 
 /** Mark the skill for removal. Runners uninstall it; the bundle stays until it is re-added. */
@@ -207,10 +209,11 @@ export async function removeSkill(
   registry: Pick<SkillRegistry, "db" | "now">,
   name: string,
 ): Promise<SkillPin> {
-  const store = sqliteDb(registry.db);
-  await store.run((q) => activeSkillSteps(q, name));
-  await store.run((q) => markSkillRemovedSteps(q, name, registry.now));
-  return (await store.run((q) => getSkillSteps(q, name)))!;
+  return sqliteDb(registry.db).transaction(function* (q) {
+    yield* activeSkillSteps(q, name);
+    yield* markSkillRemovedSteps(q, name, registry.now);
+    return (yield* getSkillSteps(q, name))!;
+  });
 }
 
 function* activeSkillSteps(q: Q, name: string) {
