@@ -2,7 +2,7 @@ import { constants, Database } from "bun:sqlite";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { migrate as drizzleMigrate } from "drizzle-orm/bun-sqlite/migrator";
-import { journal } from "../journal";
+import { journal, journalCaught } from "../journal";
 import { orm } from "./orm";
 
 export const MIGRATIONS_FOLDER = fileURLToPath(new URL("./drizzle", import.meta.url));
@@ -47,8 +47,9 @@ export function isLegacyDatabase(path: string, locked = false): boolean {
           constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI,
         ),
       );
-    } catch {
+    } catch (error) {
       // Another process may be writing it; read it with locks below.
+      journalCaught(error, "migrate.isLegacyDatabase.immutable", null);
     }
   }
   return hasLegacyTables(new Database(path, { readonly: true }));
