@@ -645,16 +645,14 @@ export function runnerCheckpointPending(db: Database, runId: string, now: number
 }
 
 /** Control-plane authority may outlive the signed delivery deadline after a host stall. */
+export function* runnerCommandAuthorityUntilSteps(q: Q, commandId: string): Steps<number> {
+  const c = q.t.runnerCommand;
+  const row = yield* q.one(q.orm.select({ until: c.expiresAt }).from(c).where(eq(c.id, commandId)));
+  return row?.until ?? 0;
+}
+
 export function runnerCommandAuthorityUntil(db: Database, commandId: string): number {
-  return settled(
-    sqliteDb(db).run(function* (q) {
-      const c = q.t.runnerCommand;
-      const row = yield* q.one(
-        q.orm.select({ until: c.expiresAt }).from(c).where(eq(c.id, commandId)),
-      );
-      return row?.until ?? 0;
-    }),
-  );
+  return settled(sqliteDb(db).run((q) => runnerCommandAuthorityUntilSteps(q, commandId)));
 }
 
 export function* runnerCommandEnvelopeSteps(q: Q, commandId: string) {

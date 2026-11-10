@@ -345,3 +345,89 @@ export function runnerFollowUpsAfter(
 ): { sequence: number; body: string }[] {
   return settled(sqliteDb(db).run((q) => runnerFollowUpsAfterSteps(q, key, after)));
 }
+
+/** Runner events still stored as plaintext, after `after` in key order. */
+export function* plaintextRunnerEventsSteps(
+  q: Q,
+  after: readonly [runId: string, generation: number, sequence: number],
+  limit: number,
+): Steps<StoredRunnerEventRow[]> {
+  const { runnerEvent: e } = q.t;
+  const [runId, generation, sequence] = after;
+  return yield* q.all(
+    q.orm
+      .select(eventColumns(q))
+      .from(e)
+      .where(
+        and(
+          sql`(${e.runId}, ${e.generation}, ${e.sequence}) > (${runId}, ${generation}, ${sequence})`,
+          isNull(e.keyId),
+        ),
+      )
+      .orderBy(e.runId, e.generation, e.sequence)
+      .limit(limit),
+  );
+}
+
+type SealedRunnerEvent = {
+  payload: string;
+  keyId: string;
+  payloadSha256: string;
+  type: string | null;
+  handedOver: number | null;
+  reason: string | null;
+};
+
+/** Replaces a plaintext event's payload with its sealed columns, unless it is sealed already. */
+export function* sealRunnerEventSteps(
+  q: Q,
+  key: RunKey & { sequence: number },
+  sealed: SealedRunnerEvent,
+): Steps<void> {
+  const { runnerEvent: e } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(e)
+      .set({ ...sealed, payload: jsonFromText(q, sealed.payload) })
+      .where(
+        and(
+          eq(e.runId, key.runId),
+          eq(e.generation, key.generation),
+          eq(e.sequence, key.sequence),
+          isNull(e.keyId),
+        ),
+      ),
+  );
+}
+
+/**
+ * Deletes up to `limit` events of runs that ended before `cutoff`, keeping the questions and
+ * artifacts nobody answered, and returns how many it deleted.
+ */
+export function* pruneRunnerEventsSteps(q: Q, cutoff: number, limit: number): Steps<number> {
+  const { runnerEvent: e } = q.t;
+  const prunableRuns = sql`
+    SELECT r.id FROM run r
+    WHERE r.status IN ('ended','lost') AND r.updated_at<${cutoff}
+      AND NOT EXISTS(SELECT 1 FROM work_item i WHERE i.current_run_id=r.id
+        AND i.state NOT IN ('merged','completed','cancelled'))
+      AND NOT EXISTS(SELECT 1 FROM runner_work w WHERE w.run_id=r.id AND w.ended_at IS NULL)
+      AND NOT EXISTS(SELECT 1 FROM runner_event q
+        WHERE q.run_id=r.id
+          AND (q.type IN ('question','artifact','closeout_policy','ci_rerun') OR (q.type IS NULL AND q.key_id IS NULL))
+          AND NOT EXISTS(SELECT 1 FROM runner_question_answer a
+            WHERE a.run_id=q.run_id AND a.generation=q.generation AND a.sequence=q.sequence))`;
+  const prunable = sql`
+    SELECT e.rowid FROM runner_event e
+    WHERE e.run_id IN (${prunableRuns})
+      AND NOT EXISTS(SELECT 1 FROM runner_question_answer a
+        WHERE a.run_id=e.run_id AND a.generation=e.generation AND a.sequence=e.sequence)
+    LIMIT ${limit}`;
+  const deleted = yield* q.all(
+    q.orm
+      .delete(e)
+      .where(sql`rowid IN (${prunable})`)
+      .returning({ sequence: e.sequence }),
+  );
+  return deleted.length;
+}
