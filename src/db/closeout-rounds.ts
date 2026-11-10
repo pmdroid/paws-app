@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { desc, eq } from "drizzle-orm";
+import type { Q } from "./db";
+import { jsonText } from "./json-text";
 
 /**
  * A fresh Closeout retry budget for one rebased head. Evidence recorded before
@@ -57,6 +60,19 @@ export function saveHumanRetryWindow(
     "INSERT OR IGNORE INTO closeout_retry_window(job_id,activation_id,item_id,retry_baseline) VALUES (?1,(SELECT activation_id FROM job WHERE id=?1),?2,?3)",
     [jobId, itemId, JSON.stringify(baseline)],
   );
+}
+
+export function* humanRetryBaselineSteps(q: Q, itemId: string) {
+  const { closeoutRetryWindow: window } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ baseline: jsonText(q, window.retryBaseline) })
+      .from(window)
+      .where(eq(window.itemId, itemId))
+      .orderBy(desc(window.activationId))
+      .limit(1),
+  );
+  return row ? (JSON.parse(row.baseline) as string[]) : [];
 }
 
 export function humanRetryBaseline(db: Database, itemId: string): string[] {

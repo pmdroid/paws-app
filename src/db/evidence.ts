@@ -85,6 +85,11 @@ export function setEvidenceAssetUrl(db: Database, id: string, assetUrl: string):
   orm(db).update(evidence).set({ assetUrl }).where(eq(evidence.id, id)).run();
 }
 
+export function* setEvidenceAssetUrlSteps(q: Q, id: string, assetUrl: string) {
+  const { evidence: table } = q.t;
+  yield* q.exec(q.orm.update(table).set({ assetUrl }).where(eq(table.id, id)));
+}
+
 export type EvidenceObject = typeof evidenceObject.$inferSelect;
 
 export function* saveEvidenceObjectSteps(q: Q, row: EvidenceObject) {
