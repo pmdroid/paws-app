@@ -208,7 +208,7 @@ export function createImprovementsHttp(options: {
     }
     if (path === ATTENTION) {
       if (request.method !== "GET") return json({ error: "Use GET." }, 405);
-      return json(improvementAttention(db, reviewer, now()));
+      return json(await improvementAttention(db, reviewer, now()));
     }
     const followed = FOLLOW_THROUGH.exec(path);
     if (followed) {
@@ -274,7 +274,7 @@ export function createImprovementsHttp(options: {
           );
         const { expectedVersion, evidence, revision, deployment, ...stated } = parsed.data;
         return respond(
-          recordVerification(db, {
+          await recordVerification(db, {
             access: actor,
             improvementId,
             expectedVersion,
@@ -295,7 +295,7 @@ export function createImprovementsHttp(options: {
         const parsed = criterionSchema.safeParse(body);
         if (!parsed.success) return json({ error: "Send expectedVersion and the criterion." }, 400);
         return respond(
-          recordCriterion(db, {
+          await recordCriterion(db, {
             access: actor,
             improvementId,
             expectedVersion: parsed.data.expectedVersion,
@@ -310,7 +310,7 @@ export function createImprovementsHttp(options: {
       if (parsed.data.choice === "redelegate")
         return respond(await delegate(parsed.data.expectedVersion, true));
       return respond(
-        recoverImprovement(db, {
+        await recoverImprovement(db, {
           access: actor,
           improvementId,
           expectedVersion: parsed.data.expectedVersion,
