@@ -594,6 +594,40 @@ export async function accrueAwakeAsync(
   return outcome;
 }
 
+function* refundLostTurnSteps(
+  q: Q,
+  id: string,
+  mono: number,
+  now: number,
+  lostMs: number,
+): Steps<{ refundedMs: number; jobReady: boolean }> {
+  const { jobReady } = yield* accrueAwakeSteps(q, id, mono, now);
+  const stage = STAGE_COLUMN[yield* agentTurnStageSteps(q, id)];
+  const item = yield* requireWorkItemSteps(q, id);
+  const refundedMs = Math.max(0, Math.min(lostMs, item[stage], item.agentMs, item.awakeMs));
+  if (refundedMs > 0)
+    yield* setItemSteps(q, id, {
+      awakeMs: item.awakeMs - refundedMs,
+      agentMs: item.agentMs - refundedMs,
+      [stage]: item[stage] - refundedMs,
+    });
+  return { refundedMs, jobReady };
+}
+
+export async function refundLostTurnAsync(
+  store: Db,
+  id: string,
+  mono: number,
+  now: number,
+  lostMs: number,
+): Promise<number> {
+  const { refundedMs, jobReady } = await store.transaction((q) =>
+    refundLostTurnSteps(q, id, mono, now, lostMs),
+  );
+  if (jobReady) emitJobReady(store);
+  return refundedMs;
+}
+
 type BoundaryJob = { id: number; payload: unknown };
 
 function boundaryItemId(job: BoundaryJob): string | null {

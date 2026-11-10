@@ -30,6 +30,7 @@ import {
   legacyAgentBindingId,
   getWorkItem,
   getWorkItemSteps,
+  refundLostTurnAsync,
   listHooks,
   startAgentWaitAsync,
   endAgentWaitAsync,
@@ -183,6 +184,8 @@ const RUN_LOST_THOUGHT = "The runner lost this run after it restarted; continuin
 const RUN_HUNG_THOUGHT = (minutes: number) =>
   `The agent sent nothing for ${minutes} minutes, so Paws stopped it; continuing from the branch.`;
 const RUN_LOST_MESSAGE = "The runner no longer runs this command.";
+export const restoredCheckpointNote = (sha: string) =>
+  `This checkout holds the work saved at the last checkpoint (${sha.slice(0, 8)}) of the turn before this one, as uncommitted changes. Read git status and git diff, keep that work, and continue from it.`;
 const NO_FREE_CAPACITY = ": no free capacity";
 const ACCOUNT_CONCURRENCY_LIMIT = ": account at its concurrency limit";
 
@@ -1245,74 +1248,6 @@ export function createRemoteAgentRunner(options: {
                 await store.run((q) => recordItemCandidateSteps(q, candidate));
               }
               phase("start_commit");
-              // A runner command does not carry the caller's session, so a resume replays.
-              const replayed = input.resume?.replayPrompt ?? input.prompt;
-              const commandId = randomUUID();
-              const githubRead =
-                !taskScope &&
-                input.role === "implementer" &&
-                input.readOnly !== true &&
-                input.githubRead !== undefined &&
-                options.agentRead !== undefined &&
-                versionAtLeast(hostVersion(selected.id), GITHUB_READ_RUNNER_VERSION) &&
-                (await options.agentRead.open({
-                  commandId,
-                  itemId,
-                  runId: selected.runId,
-                  repository: scoped.repository
-                    ? `${scoped.repository.owner}/${scoped.repository.repo}`
-                    : null,
-                }));
-              if (githubRead) readCommand = commandId;
-              const prompt = [lostNote, replayed, githubRead ? input.githubRead!.prompt : undefined]
-                .filter(Boolean)
-                .join("\n\n");
-              const prepared = input.prepareInputFiles
-                ? await input.prepareInputFiles({
-                    workspace: input.worktreePath,
-                    prompt,
-                    signal,
-                  })
-                : { prompt, inputFiles: [] };
-              const files = snapshotAgentInputs(input.worktreePath, [
-                ...suppliedInputs,
-                ...prepared.inputFiles,
-              ]);
-              const skillBundle =
-                !taskScope && input.role === "implementer"
-                  ? await snapshotImplementationSkills({
-                      pawsRoot: input.pawsRoot,
-                      worktree: itemCandidate(scoped.repository!).mirror,
-                      repository: `${scoped.repository!.owner}/${scoped.repository!.repo}`,
-                      signal,
-                    })
-                  : undefined;
-              const skillsInputId = skillBundle ? files.length : undefined;
-              if (skillBundle)
-                files.push({
-                  path: `${input.worktreePath}/.paws-skills-${randomUUID()}.json`,
-                  mimeType: "application/vnd.paws.skills+json",
-                  bytes: skillBundle,
-                });
-              if (files.length && !options.inputs)
-                throw new Error("Remote agent input transfer is unavailable");
-              if (prepared.prompt.length > 65_536 && !options.inputs)
-                throw new Error("Remote conversation context transfer is unavailable");
-              const inputFiles = files.length
-                ? await options.inputs!.stage(
-                    commandId,
-                    files.map((file) => ({
-                      ...file,
-                      path: relative(input.worktreePath, file.path).split(sep).join("/"),
-                    })),
-                    selected.runId,
-                  )
-                : undefined;
-              const promptContext =
-                prepared.prompt.length > 65_536
-                  ? await options.inputs!.stagePrompt(commandId, prepared.prompt, selected.runId)
-                  : undefined;
-              phase("prompt");
               // A run that leaves its pinned runner may continue its saved agent session there.
               let restorePlan: SessionRestorePlan | undefined =
                 !taskScope &&
@@ -1465,6 +1400,82 @@ export function createRemoteAgentRunner(options: {
                   }
                 }
               }
+              // A runner command does not carry the caller's session, so a resume replays.
+              const replayed = input.resume?.replayPrompt ?? input.prompt;
+              const commandId = randomUUID();
+              const githubRead =
+                !taskScope &&
+                input.role === "implementer" &&
+                input.readOnly !== true &&
+                input.githubRead !== undefined &&
+                options.agentRead !== undefined &&
+                versionAtLeast(hostVersion(selected.id), GITHUB_READ_RUNNER_VERSION) &&
+                (await options.agentRead.open({
+                  commandId,
+                  itemId,
+                  runId: selected.runId,
+                  repository: scoped.repository
+                    ? `${scoped.repository.owner}/${scoped.repository.repo}`
+                    : null,
+                }));
+              if (githubRead) readCommand = commandId;
+              const prompt = [
+                lostNote,
+                restoreCheckpoint &&
+                versionAtLeast(hostVersion(selected.id), HIDDEN_CHECKPOINT_RUNNER_VERSION)
+                  ? restoredCheckpointNote(restoreCheckpoint.sha)
+                  : undefined,
+                replayed,
+                githubRead ? input.githubRead!.prompt : undefined,
+              ]
+                .filter(Boolean)
+                .join("\n\n");
+              const prepared = input.prepareInputFiles
+                ? await input.prepareInputFiles({
+                    workspace: input.worktreePath,
+                    prompt,
+                    signal,
+                  })
+                : { prompt, inputFiles: [] };
+              const files = snapshotAgentInputs(input.worktreePath, [
+                ...suppliedInputs,
+                ...prepared.inputFiles,
+              ]);
+              const skillBundle =
+                !taskScope && input.role === "implementer"
+                  ? await snapshotImplementationSkills({
+                      pawsRoot: input.pawsRoot,
+                      worktree: itemCandidate(scoped.repository!).mirror,
+                      repository: `${scoped.repository!.owner}/${scoped.repository!.repo}`,
+                      signal,
+                    })
+                  : undefined;
+              const skillsInputId = skillBundle ? files.length : undefined;
+              if (skillBundle)
+                files.push({
+                  path: `${input.worktreePath}/.paws-skills-${randomUUID()}.json`,
+                  mimeType: "application/vnd.paws.skills+json",
+                  bytes: skillBundle,
+                });
+              if (files.length && !options.inputs)
+                throw new Error("Remote agent input transfer is unavailable");
+              if (prepared.prompt.length > 65_536 && !options.inputs)
+                throw new Error("Remote conversation context transfer is unavailable");
+              const inputFiles = files.length
+                ? await options.inputs!.stage(
+                    commandId,
+                    files.map((file) => ({
+                      ...file,
+                      path: relative(input.worktreePath, file.path).split(sep).join("/"),
+                    })),
+                    selected.runId,
+                  )
+                : undefined;
+              const promptContext =
+                prepared.prompt.length > 65_536
+                  ? await options.inputs!.stagePrompt(commandId, prepared.prompt, selected.runId)
+                  : undefined;
+              phase("prompt");
               const generation =
                 (db
                   .query<{ generation: number }, [string]>(
@@ -1851,6 +1862,7 @@ export function createRemoteAgentRunner(options: {
           let complete: RunnerResult | null = null;
           let disposition: ReturnType<RunnerPlacement["finished"]> | undefined;
           let heardAt = now();
+          let savedAt = heardAt;
           const liveness = () =>
             db
               .query<{ confirmedAt: number | null; lostAt: number | null }, [string, number]>(
@@ -1881,6 +1893,19 @@ export function createRemoteAgentRunner(options: {
             journal(
               `item ${itemId} run ${assigned.runId} generation ${assigned.generation} lost on runner ${selected.id}: ${how}`,
             );
+            if (assigned.type === "run") {
+              const refunded = await refundLostTurnAsync(
+                store,
+                itemId,
+                mono(),
+                now(),
+                now() - savedAt,
+              );
+              if (refunded > 0)
+                journal(
+                  `item ${itemId} does not count the ${Math.round(refunded / 60_000)} minutes run ${assigned.runId} spent after its last checkpoint`,
+                );
+            }
             if (!toldLost.has(itemId)) {
               toldLost.add(itemId);
               await emit({ type: "progress", text: `${thought}\n` });
@@ -2046,6 +2071,8 @@ export function createRemoteAgentRunner(options: {
                 await startAgentWaitAsync(store, waitRun, mono(), now());
               if (event.type === "agent_wait_ended")
                 await endAgentWaitAsync(store, waitRun, mono(), now(), event.waitedMs);
+              if (event.type === "checkpoint" && event.sha && event.dropped === undefined)
+                savedAt = now();
               if (event.type === "checkpoint" && assigned.type === "run")
                 await recordRunnerCheckpoint(store, {
                   itemId,
