@@ -80,6 +80,7 @@ import {
 import { dashboardUrl } from "../dashboard-links";
 import { RiskDisplayReader, type RiskDisplay } from "./risk-display";
 import { pullRequestReadyResponse } from "./pull-request-response";
+import { readTurnSummary, transcriptOffset } from "./turn-summary";
 import type { ItemRunnerVerdicts, RunnerHostRefusal } from "../db";
 import {
   AFTER_PULL_REQUEST_RESPONSE,
@@ -372,6 +373,7 @@ import {
   getItemBranchState,
   saveVisualReviewMarks,
   type VisualReviewMark,
+  listRunsSteps,
   bindLinearSessionTask,
   type StoredLinearSession,
   activateLinearItem,
@@ -3817,6 +3819,8 @@ export class Orchestrator {
         prompt,
       });
 
+      const transcript = `${runDir(this.options.pawsRoot, run.id)}/acp.jsonl`;
+      const turnStart = await transcriptOffset(transcript);
       const executed = await executeItem({
         role: "implementer",
         profile: profiles.implementer,
@@ -3890,6 +3894,9 @@ export class Orchestrator {
         return;
       }
       activity.flush();
+      const worked = await readTurnSummary(transcript, turnStart, item.id, this.options.journal);
+      if (worked && this.canReportProgress(item.id))
+        this.post(item, "thought", worked, `${run.id}:worked:${turnStart}`);
       if (!(await this.store.run((q) => artifactPublicationReadySteps(q, item.id))))
         throw new Error("A requested artifact has not been uploaded successfully");
       await this.store.run((q) => saveRunResultSteps(q, run.id, activity.resultBody(), this.now()));
@@ -6006,6 +6013,7 @@ export class Orchestrator {
     const generation = sessionKey
       ? await this.store.run((q) => getLinearSessionGenerationSteps(q, sessionKey))
       : 0;
+    const runs = await this.store.run((q) => listRunsSteps(q, item.id));
     this.post(
       item,
       "response",
@@ -6015,6 +6023,8 @@ export class Orchestrator {
         pull: published.pull,
         risk,
         openLine,
+        summary: runs.findLast((stored) => stored.checkpoint?.resultBody?.trim())?.checkpoint
+          ?.resultBody,
         riskApproval: () =>
           this.riskDisplay(item.id, published.head)?.detail ?? "Manual approval required",
         journal: this.options.journal,
