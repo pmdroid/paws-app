@@ -1,13 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
-import type { Q } from "./db";
+import { settled, sqliteDb, type Q } from "./db";
 import { orm } from "./orm";
 import {
   closeoutEvidenceObject,
   closeoutProgress,
   evidence,
   evidenceObject,
-  visualReviewMark,
   workItem,
 } from "./schema";
 
@@ -114,36 +113,50 @@ export function saveEvidenceObject(db: Database, row: EvidenceObject): boolean {
   );
 }
 
+export function* getEvidenceObjectSteps(q: Q, id: string) {
+  const { evidenceObject: o } = q.t;
+  const row = yield* q.one(q.orm.select().from(o).where(eq(o.id, id)));
+  return (row as EvidenceObject | undefined) ?? null;
+}
+
 export function getEvidenceObject(db: Database, id: string): EvidenceObject | null {
-  return orm(db).select().from(evidenceObject).where(eq(evidenceObject.id, id)).get() ?? null;
+  return settled(sqliteDb(db).run((q) => getEvidenceObjectSteps(q, id)));
+}
+
+export function* deleteEvidenceObjectSteps(q: Q, id: string) {
+  const { evidenceObject: o } = q.t;
+  yield* q.exec(q.orm.delete(o).where(eq(o.id, id)));
 }
 
 export function deleteEvidenceObject(db: Database, id: string): void {
-  orm(db).delete(evidenceObject).where(eq(evidenceObject.id, id)).run();
+  settled(sqliteDb(db).run((q) => deleteEvidenceObjectSteps(q, id)));
+}
+
+export function* localEvidenceFilesSteps(q: Q) {
+  const { evidence: e, evidenceObject: o, visualReviewMark: mark } = q.t;
+  const columns = { itemId: e.itemId, headCommit: e.headCommit, checkId: e.checkId };
+  const files = yield* q.all(
+    q.orm
+      .select({ id: e.id, ...columns })
+      .from(e)
+      .leftJoin(o, eq(o.id, e.id))
+      .where(isNull(o.id)),
+  );
+  const marks = yield* q.all(
+    q.orm
+      .select({ id: mark.id, ...columns })
+      .from(mark)
+      .innerJoin(e, eq(e.id, mark.evidenceId))
+      .leftJoin(o, eq(o.id, mark.id))
+      .where(isNull(o.id)),
+  );
+  return [...files, ...marks];
 }
 
 export function localEvidenceFiles(
   db: Database,
 ): { id: string; itemId: string; headCommit: string; checkId: string }[] {
-  const columns = {
-    itemId: evidence.itemId,
-    headCommit: evidence.headCommit,
-    checkId: evidence.checkId,
-  };
-  const files = orm(db)
-    .select({ id: evidence.id, ...columns })
-    .from(evidence)
-    .leftJoin(evidenceObject, eq(evidenceObject.id, evidence.id))
-    .where(isNull(evidenceObject.id))
-    .all();
-  const marks = orm(db)
-    .select({ id: visualReviewMark.id, ...columns })
-    .from(visualReviewMark)
-    .innerJoin(evidence, eq(evidence.id, visualReviewMark.evidenceId))
-    .leftJoin(evidenceObject, eq(evidenceObject.id, visualReviewMark.id))
-    .where(isNull(evidenceObject.id))
-    .all();
-  return [...files, ...marks];
+  return settled(sqliteDb(db).run((q) => localEvidenceFilesSteps(q)));
 }
 
 export type CloseoutEvidenceObject = typeof closeoutEvidenceObject.$inferSelect;

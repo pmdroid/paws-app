@@ -1,13 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, count, eq, gt, lte } from "drizzle-orm";
 import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
-import { immediate } from "./tx";
 import {
   auditWorkspaceAccessSteps,
   workspaceMemberSteps,
   workspaceMemberUsable,
   workspaceMemberUsableWhere,
-  syncWorkspaceMember,
+  syncWorkspaceMemberSteps,
   type WorkspaceRole,
 } from "./workspace";
 
@@ -178,32 +177,31 @@ export function* setWorkspaceRoleSteps(q: Q, input: RoleChange): Steps<void> {
   });
 }
 
-export function changeWorkspaceRole(
-  db: Database,
-  input: RoleChange & {
-    verified?: { active: boolean; guest: boolean; teamIds: readonly string[] };
-  },
-): void {
-  const error = immediate(db, () => {
-    settled(
-      sqliteDb(db).run((q) => requireWorkspaceAdminSteps(q, input.workspaceId, input.actorId)),
-    );
-    if (input.verified !== undefined) {
-      if (
-        !syncWorkspaceMember(db, {
-          ...input,
-          active: input.verified.active && !input.verified.guest,
-          role: "member",
-          teamIds: input.verified.teamIds,
-        })
-      )
-        throw new Error("Linear membership changed. Try again.");
-      if (input.verified.guest) return "Linear guests can't use Paws.";
-      if (!input.verified.active) return "Current Linear membership is required.";
-    }
-    settled(sqliteDb(db).run((q) => setWorkspaceRoleSteps(q, input)));
-    return null;
-  });
+type RoleChangeInput = RoleChange & {
+  verified?: { active: boolean; guest: boolean; teamIds: readonly string[] };
+};
+
+export function* changeWorkspaceRoleSteps(q: Q, input: RoleChangeInput) {
+  yield* requireWorkspaceAdminSteps(q, input.workspaceId, input.actorId);
+  if (input.verified !== undefined) {
+    if (
+      !(yield* syncWorkspaceMemberSteps(q, {
+        ...input,
+        active: input.verified.active && !input.verified.guest,
+        role: "member",
+        teamIds: input.verified.teamIds,
+      }))
+    )
+      throw new Error("Linear membership changed. Try again.");
+    if (input.verified.guest) return "Linear guests can't use Paws.";
+    if (!input.verified.active) return "Current Linear membership is required.";
+  }
+  yield* setWorkspaceRoleSteps(q, input);
+  return null;
+}
+
+export function changeWorkspaceRole(db: Database, input: RoleChangeInput): void {
+  const error = settled(sqliteDb(db).transaction((q) => changeWorkspaceRoleSteps(q, input)));
   if (error !== null) throw new Error(error);
 }
 

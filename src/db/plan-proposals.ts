@@ -2,11 +2,10 @@ import type { Database } from "bun:sqlite";
 import { and, eq, isNull } from "drizzle-orm";
 import { validateSubIssueDrafts, type FiledSubIssue, type SubIssueDraft } from "../core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
-import { applyWorkItemEvent, cancelAdvancingJobs, getWorkItem } from "./items";
-import { markRun } from "./runs";
+import { applyWorkItemEventSteps, cancelAdvancingJobsSteps, getWorkItemSteps } from "./items";
+import { markRunSteps } from "./runs";
 import { jsonText, jsonValue } from "./json-text";
-import { getTaskMode } from "./tasks";
-import { immediate } from "./tx";
+import { getTaskModeSteps } from "./tasks";
 
 /** The sub-issues one plan run proposed, keyed by the question that asks to file them. */
 export type PlanProposal = {
@@ -105,15 +104,17 @@ export function recordPlanFiled(
   return settled(sqliteDb(db).transaction((q) => recordPlanFiledSteps(q, questionId, filed, now)));
 }
 
+export function* completePlanTaskSteps(q: Q, itemId: string, now: number) {
+  const item = yield* getWorkItemSteps(q, itemId);
+  if (!item || item.state !== "awaiting_input" || item.cancelRequested)
+    throw new Error("Plan task is no longer waiting for approval");
+  if ((yield* getTaskModeSteps(q, itemId)) !== "plan")
+    throw new Error("Only plan tasks complete at the plan approval");
+  yield* applyWorkItemEventSteps(q, itemId, "answer_completed", { now });
+  if (item.currentRunId) yield* markRunSteps(q, item.currentRunId, "ended", now);
+  yield* cancelAdvancingJobsSteps(q, itemId, "plan_completed", now);
+}
+
 export function completePlanTask(db: Database, itemId: string, now: number): void {
-  immediate(db, () => {
-    const item = getWorkItem(db, itemId);
-    if (!item || item.state !== "awaiting_input" || item.cancelRequested)
-      throw new Error("Plan task is no longer waiting for approval");
-    if (getTaskMode(db, itemId) !== "plan")
-      throw new Error("Only plan tasks complete at the plan approval");
-    applyWorkItemEvent(db, itemId, "answer_completed", { now });
-    if (item.currentRunId) markRun(db, item.currentRunId, "ended", now);
-    cancelAdvancingJobs(db, itemId, "plan_completed", now);
-  });
+  settled(sqliteDb(db).transaction((q) => completePlanTaskSteps(q, itemId, now)));
 }

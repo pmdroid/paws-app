@@ -165,12 +165,16 @@ export function runnerRepositoryRefusal(
   return settled(sqliteDb(db).run((q) => runnerRepositoryRefusalSteps(q, runnerId, repository)));
 }
 
+export function* runnerAllowsRepositorySteps(q: Q, runnerId: string, repository: string) {
+  return (yield* runnerRepositoryRefusalSteps(q, runnerId, repository)) === null;
+}
+
 export function runnerAllowsRepository(
   db: Database,
   runnerId: string,
   repository: string,
 ): boolean {
-  return runnerRepositoryRefusal(db, runnerId, repository) === null;
+  return settled(sqliteDb(db).run((q) => runnerAllowsRepositorySteps(q, runnerId, repository)));
 }
 
 function* enqueueRepositoryCheckSteps(

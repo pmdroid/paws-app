@@ -387,34 +387,34 @@ export function schedulerRunnerSlots(db: Database, now: number) {
 }
 
 /** Replace or abandon a scheduler choice; physical reservations keep their own lifecycle. */
+export function* setSchedulerRunnerSlotSteps(q: Q, itemId: string, runnerId: string | null) {
+  const { job, schedulerAdmission: admission } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ id: job.id, payload: jsonText(q, job.payload) })
+      .from(admission)
+      .innerJoin(job, eq(job.id, admission.jobId))
+      .where(eq(admission.itemId, itemId)),
+  );
+  if (!row) return;
+  const { admissionRunnerId: _choice, ...payload } = JSON.parse(row.payload);
+  yield* q.exec(
+    q.orm
+      .update(job)
+      .set({
+        payload: jsonValue(q, {
+          ...payload,
+          ...(runnerId ? { admissionRunnerId: runnerId } : {}),
+        }),
+      })
+      .where(eq(job.id, row.id)),
+  );
+}
+
 export function setSchedulerRunnerSlot(
   db: Database,
   itemId: string,
   runnerId: string | null,
 ): void {
-  settled(
-    sqliteDb(db).run(function* (q: Q) {
-      const { job, schedulerAdmission: admission } = q.t;
-      const row = yield* q.one(
-        q.orm
-          .select({ id: job.id, payload: jsonText(q, job.payload) })
-          .from(admission)
-          .innerJoin(job, eq(job.id, admission.jobId))
-          .where(eq(admission.itemId, itemId)),
-      );
-      if (!row) return;
-      const { admissionRunnerId: _choice, ...payload } = JSON.parse(row.payload);
-      yield* q.exec(
-        q.orm
-          .update(job)
-          .set({
-            payload: jsonValue(q, {
-              ...payload,
-              ...(runnerId ? { admissionRunnerId: runnerId } : {}),
-            }),
-          })
-          .where(eq(job.id, row.id)),
-      );
-    }),
-  );
+  settled(sqliteDb(db).run((q) => setSchedulerRunnerSlotSteps(q, itemId, runnerId)));
 }
