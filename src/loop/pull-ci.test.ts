@@ -77,7 +77,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
   });
   beginImplementRun(db, "eng-1", 1);
   enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: HEAD });
-  markCloseoutAccepted(db, "eng-1", HEAD);
+  await markCloseoutAccepted(sqliteDb(db), "eng-1", HEAD);
   recordItemPullRequest(db, {
     itemId: "eng-1",
     pullNumber: 7,

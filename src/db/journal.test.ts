@@ -68,14 +68,14 @@ describe("journal", () => {
     expect(lines.join("\n")).not.toContain("secret prompt text");
   });
 
-  test("writes one line when a work item hits its time cap", () => {
+  test("writes one line when a work item hits its time cap", async () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-3", maxAwakeMs: 1_000 });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = 'PAS-3'");
     beginImplementRun(db, "PAS-3", 1_000);
-    accrueAwake(db, "PAS-3", 0, 1_000, undefined, true);
+    await accrueAwake(sqliteDb(db), "PAS-3", 0, 1_000, undefined, true);
     lines = [];
-    accrueAwake(db, "PAS-3", 1_000, 2_000, undefined, true);
+    await accrueAwake(sqliteDb(db), "PAS-3", 1_000, 2_000, undefined, true);
     expect(lines.filter((line) => line.startsWith("item "))).toEqual([
       "item PAS-3 failed: cap:time",
     ]);

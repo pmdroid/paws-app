@@ -632,7 +632,7 @@ describe("slow CI question", () => {
     insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", now: clock.now() });
     beginImplementRun(db, "eng-1", clock.now());
     enterMergeQueue(db, "eng-1", { phase: "merge_queue", wipCommit: "h" });
-    markCloseoutAccepted(db, "eng-1", "h");
+    await markCloseoutAccepted(sqliteDb(db), "eng-1", "h");
     enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-1" }, now: clock.now() });
     const first = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
     expect(await parkMerge(sqliteDb(db), first, clock.now(), { reason: "ci", head: "h" })).toBe(

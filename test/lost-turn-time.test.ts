@@ -22,8 +22,8 @@ test("a turn declared lost gives back its implementation time after the last che
   databases.push(db);
   const { id } = insertQueuedItem(db, { sessionKey: "session" });
   applyWorkItemEvent(db, id, "dispatched");
-  accrueAwake(db, id, 0, 1, undefined, true);
-  accrueAwake(db, id, 60 * MINUTE, 2, undefined, true);
+  await accrueAwake(sqliteDb(db), id, 0, 1, undefined, true);
+  await accrueAwake(sqliteDb(db), id, 60 * MINUTE, 2, undefined, true);
   expect(getWorkItem(db, id)!.implementMs).toBe(60 * MINUTE);
 
   expect(await refundLostTurnAsync(sqliteDb(db), id, 60 * MINUTE, 3, 40 * MINUTE)).toBe(

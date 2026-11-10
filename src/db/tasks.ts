@@ -2,15 +2,13 @@ import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import type { TaskMode } from "../core";
 import { settled, sqliteDb, type Q } from "./db";
-import { orm } from "./orm";
 import { workItemTask } from "./schema";
-import { immediate } from "./tx";
-import { applyWorkItemEvent, cancelAdvancingJobs, getWorkItem } from "./items";
-import { enqueueOutboxOnce } from "./outbox";
-import { markRun } from "./runs";
-import { artifactPublicationReady, listArtifacts } from "./artifacts";
-import { getLinearSessionGeneration } from "./linear-sessions";
-import { enqueueIssueStatus } from "./linear-delegation";
+import { applyWorkItemEventSteps, cancelAdvancingJobsSteps, getWorkItemSteps } from "./items";
+import { enqueueOutboxOnceSteps } from "./outbox";
+import { markRunSteps } from "./runs";
+import { artifactPublicationReadySteps, listArtifactsSteps } from "./artifacts";
+import { getLinearSessionGenerationSteps } from "./linear-sessions";
+import { enqueueIssueStatusSteps } from "./linear-delegation";
 
 type TaskRow = typeof workItemTask.$inferSelect;
 
@@ -80,6 +78,36 @@ export function getTaskModeGeneration(db: Database, itemId: string): number {
   return settled(sqliteDb(db).run((q) => getTaskModeGenerationSteps(q, itemId)));
 }
 
+export function* selectTaskModeForTurnSteps(
+  q: Q,
+  itemId: string,
+  mode: TaskMode,
+  generation: number,
+  repository = false,
+) {
+  const item = yield* getWorkItemSteps(q, itemId);
+  if (
+    !item?.sessionKey ||
+    item.state !== "running" ||
+    item.cancelRequested ||
+    (yield* getLinearSessionGenerationSteps(q, item.sessionKey)) !== generation
+  )
+    throw new Error("The task changed before its requested outcome could be saved");
+  const saved = yield* getTaskModeSteps(q, itemId);
+  if (saved === null) throw new Error("Task mode has not been selected");
+  if (saved === "code") return saved;
+  if ((yield* getTaskModeGenerationSteps(q, itemId)) >= generation)
+    throw new Error("Task outcome changes require a newer accepted turn");
+  const { workItemTask: task } = q.t;
+  yield* q.exec(
+    q.orm
+      .update(task)
+      .set({ mode, generation, repositoryContext: repository ? 1 : 0, response: null })
+      .where(eq(task.itemId, itemId)),
+  );
+  return mode;
+}
+
 export function selectTaskModeForTurn(
   db: Database,
   itemId: string,
@@ -87,30 +115,24 @@ export function selectTaskModeForTurn(
   generation: number,
   repository = false,
 ): TaskMode {
-  return immediate(db, () => {
-    const item = getWorkItem(db, itemId);
-    if (
-      !item?.sessionKey ||
-      item.state !== "running" ||
-      item.cancelRequested ||
-      getLinearSessionGeneration(db, item.sessionKey) !== generation
-    )
-      throw new Error("The task changed before its requested outcome could be saved");
-    const saved = getTaskMode(db, itemId);
-    if (saved === null) throw new Error("Task mode has not been selected");
-    if (saved === "code") return saved;
-    if (getTaskModeGeneration(db, itemId) >= generation)
-      throw new Error("Task outcome changes require a newer accepted turn");
-    orm(db)
-      .update(workItemTask)
-      .set({ mode, generation, repositoryContext: repository ? 1 : 0, response: null })
-      .where(eq(workItemTask.itemId, itemId))
-      .run();
-    return mode;
-  });
+  return settled(
+    sqliteDb(db).transaction((q) =>
+      selectTaskModeForTurnSteps(q, itemId, mode, generation, repository),
+    ),
+  );
 }
 
 export type ResultFinish = { runId?: string; announce?: () => void };
+
+export function* completeAnswerTaskSteps(
+  q: Q,
+  itemId: string,
+  response: string,
+  now = Date.now(),
+  finish: ResultFinish = {},
+) {
+  yield* completeResultTaskSteps(q, itemId, response, "answer", now, finish);
+}
 
 export function completeAnswerTask(
   db: Database,
@@ -119,7 +141,24 @@ export function completeAnswerTask(
   now = Date.now(),
   finish: ResultFinish = {},
 ): void {
-  completeResultTask(db, itemId, response, "answer", now, finish);
+  settled(
+    sqliteDb(db).transaction((q) => completeAnswerTaskSteps(q, itemId, response, now, finish)),
+  );
+}
+
+export function* completeArtifactTaskSteps(
+  q: Q,
+  itemId: string,
+  response: string,
+  now = Date.now(),
+  finish: ResultFinish = {},
+) {
+  if (
+    !(yield* artifactPublicationReadySteps(q, itemId)) ||
+    !(yield* listArtifactsSteps(q, itemId)).some((artifact) => artifact.state === "uploaded")
+  )
+    throw new Error("Artifact completion requires a successfully uploaded deliverable");
+  yield* completeResultTaskSteps(q, itemId, response, "artifact", now, finish);
 }
 
 export function completeArtifactTask(
@@ -129,51 +168,50 @@ export function completeArtifactTask(
   now = Date.now(),
   finish: ResultFinish = {},
 ): void {
-  immediate(db, () => {
-    if (
-      !artifactPublicationReady(db, itemId) ||
-      !listArtifacts(db, itemId).some((artifact) => artifact.state === "uploaded")
-    )
-      throw new Error("Artifact completion requires a successfully uploaded deliverable");
-    completeResultTask(db, itemId, response, "artifact", now, finish);
-  });
+  settled(
+    sqliteDb(db).transaction((q) => completeArtifactTaskSteps(q, itemId, response, now, finish)),
+  );
 }
 
-function completeResultTask(
-  db: Database,
+function* completeResultTaskSteps(
+  q: Q,
   itemId: string,
   response: string,
   mode: "answer" | "artifact",
   now: number,
   finish: ResultFinish,
-): void {
+) {
   if (!response.trim()) throw new Error("Answer completion requires a prepared response");
-  immediate(db, () => {
-    const item = getWorkItem(db, itemId);
-    if (
-      !item ||
-      item.state !== "running" ||
-      item.cancelRequested ||
-      (finish.runId !== undefined && item.currentRunId !== finish.runId)
-    )
-      throw new Error("Task is no longer running");
-    if (getTaskMode(db, itemId) !== mode)
-      throw new Error(`Only ${mode} tasks complete at this response boundary`);
-    if (!item.sessionKey) throw new Error("Answer task has no session");
-    orm(db).update(workItemTask).set({ response }).where(eq(workItemTask.itemId, itemId)).run();
-    applyWorkItemEvent(db, itemId, mode === "answer" ? "answer_completed" : "artifact_completed");
-    if (item.currentRunId) markRun(db, item.currentRunId, "ended", now);
-    cancelAdvancingJobs(db, itemId, `${mode}_completed`, now);
-    enqueueOutboxOnce(db, {
-      target: "linear",
-      op: "activity",
-      orderingKey: item.sessionKey,
-      idempotencyKey: `${mode}-completed:${itemId}`,
-      payload: { sessionId: item.sessionKey, kind: "response", body: response },
-      now,
-    });
-    // An answer does not finish the issue; a delivered artifact does.
-    if (mode === "artifact") enqueueIssueStatus(db, getWorkItem(db, itemId)!, "completed", now);
-    finish.announce?.();
+  const item = yield* getWorkItemSteps(q, itemId);
+  if (
+    !item ||
+    item.state !== "running" ||
+    item.cancelRequested ||
+    (finish.runId !== undefined && item.currentRunId !== finish.runId)
+  )
+    throw new Error("Task is no longer running");
+  if ((yield* getTaskModeSteps(q, itemId)) !== mode)
+    throw new Error(`Only ${mode} tasks complete at this response boundary`);
+  if (!item.sessionKey) throw new Error("Answer task has no session");
+  const { workItemTask: task } = q.t;
+  yield* q.exec(q.orm.update(task).set({ response }).where(eq(task.itemId, itemId)));
+  yield* applyWorkItemEventSteps(
+    q,
+    itemId,
+    mode === "answer" ? "answer_completed" : "artifact_completed",
+  );
+  if (item.currentRunId) yield* markRunSteps(q, item.currentRunId, "ended", now);
+  yield* cancelAdvancingJobsSteps(q, itemId, `${mode}_completed`, now);
+  yield* enqueueOutboxOnceSteps(q, {
+    target: "linear",
+    op: "activity",
+    orderingKey: item.sessionKey,
+    idempotencyKey: `${mode}-completed:${itemId}`,
+    payload: { sessionId: item.sessionKey, kind: "response", body: response },
+    now,
   });
+  // An answer does not finish the issue; a delivered artifact does.
+  if (mode === "artifact")
+    yield* enqueueIssueStatusSteps(q, (yield* getWorkItemSteps(q, itemId))!, "completed", now);
+  finish.announce?.();
 }

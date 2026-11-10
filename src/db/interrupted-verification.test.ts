@@ -17,6 +17,7 @@ import {
   requeueOrphanedWork,
   restartHold,
   saveCheckpoint,
+  sqliteDb,
 } from "./index";
 
 const NOW = 1_000_000;
@@ -56,9 +57,15 @@ describe("interrupted verification", () => {
     expect(restartHold(db, held)).not.toBeNull();
   });
 
-  test("a start leaves a backed-off re-verify of a deferred candidate where it is", () => {
+  test("a start leaves a backed-off re-verify of a deferred candidate where it is", async () => {
     const { db, item } = verifying();
-    deferWorkItem(db, item, { retry: 1, delayMs: 60_000, handoff: null, message: null, now: NOW });
+    await deferWorkItem(sqliteDb(db), item, {
+      retry: 1,
+      delayMs: 60_000,
+      handoff: null,
+      message: null,
+      now: NOW,
+    });
     prepareShutdown(db, NOW + 1);
     expect(recoverOnStartup(db, NOW + 2)).toEqual([]);
     expect(pending(db)).toMatchObject([
