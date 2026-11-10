@@ -1,7 +1,3 @@
 src/runner-placement/browser.ts | const row = db .query<{ resultJson: string }, [string, string]>( | not yet converted to Drizzle
 src/runner-placement/browser.ts | usage: db .query< | not yet converted to Drizzle
-src/runner-placement/browser.ts | const host = db .query<{ ownerId: string; revokedAt: number | null }, [string, string]>( | not yet converted to Drizzle
-src/runner-placement/browser.ts | const changed = db.run( | not yet converted to Drizzle
-src/runner-placement/browser.ts | const row = db .query<{ ownerId: string; revokedAt: number | null }, [string, string]>( | not yet converted to Drizzle
 src/runner-placement/browser.ts | agents: db .query(`SELECT agent,ready,auth_expired AS authExpired,quota_state AS quotaState, | not yet converted to Drizzle
-src/runner-placement/browser.ts | db.run( | not yet converted to Drizzle

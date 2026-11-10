@@ -640,6 +640,22 @@ test("the runner's owner and admins switch extra usage per agent, others get 403
     expect(await read()).toEqual([{ agent: "claude", extraUsage: true }]);
     expect(await toggle(placed.owner, "admin", false)).toBe(200);
     expect(await read()).toEqual([{ agent: "claude", extraUsage: false }]);
+    const quota = () =>
+      placed.db
+        .query(
+          "SELECT quota_state AS state,cooldown_until AS until FROM runner_agent_policy WHERE runner_id=?",
+        )
+        .get(runnerId);
+    placed.db.run(
+      "UPDATE runner_agent_policy SET quota_state='exhausted',cooldown_until=? WHERE runner_id=?",
+      [placed.now() + 60_000, runnerId],
+    );
+    expect(await toggle(placed.colleague, "member", true)).toBe(200);
+    expect(quota()).toEqual({ state: "spent_extra", until: 0 });
+    expect(await toggle(placed.colleague, "member", false)).toBe(200);
+    expect(quota()).toEqual({ state: "exhausted", until: placed.now() + 900_000 });
+    expect(await toggle(placed.colleague, "member", false)).toBe(200);
+    expect(quota()).toEqual({ state: "exhausted", until: placed.now() + 900_000 });
   } finally {
     placed.db.close();
     rmSync(placed.root, { recursive: true, force: true });
