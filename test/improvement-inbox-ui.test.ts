@@ -112,7 +112,7 @@ async function settle() {
   for (let i = 0; i < 30; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function harness() {
+async function harness() {
   const linear = createFakeImprovementLinear();
   const starts: string[] = [];
   const startSession: StartIssueSession = async (target) => {
@@ -120,7 +120,7 @@ function harness() {
     return { id: `session-${starts.length}`, url: null };
   };
   const w = world({ linear, startSession, dashboardUrl: "https://paws.test/" });
-  seedDaily(w.db);
+  await seedDaily(w.db);
   const retros = createRetroReviewHttp({ db: w.db, artifactRoot: w.root, now: w.now });
   const requests: { method: string; path: string }[] = [];
   const holds: { path: string; release: () => void }[] = [];
@@ -274,7 +274,7 @@ describe("improvement routes", () => {
 
 describe("improvement inbox contract", () => {
   test("the page parses what the improvement and retro routes answer", async () => {
-    const t = harness();
+    const t = await harness();
     const id = t.w.retro.a;
     const read = async (path: string) => (await t.w.api("ada", path)).body;
     expect(parseImprovementList(await read("/api/improvements")).ok).toBe(true);
@@ -292,7 +292,7 @@ describe("improvement inbox contract", () => {
 
 describe("improvement inbox", () => {
   test("a daily finding filed from Findings is read-only: no decision, delegation or follow-through", async () => {
-    const t = harness();
+    const t = await harness();
     const daily = (await t.w.api("ada", "/api/improvements?source=daily")).body.items[0]
       .id as string;
     t.w.db.run("UPDATE finding_group SET status = 'filed', filed_issue = 'PAS-77'");
@@ -321,7 +321,7 @@ describe("improvement inbox", () => {
   });
 
   test("a daily finding dismissed from Findings shows no review attention and cannot be reopened here", async () => {
-    const t = harness();
+    const t = await harness();
     const daily = (await t.w.api("ada", "/api/improvements?source=daily")).body.items[0]
       .id as string;
     t.w.db.run("UPDATE finding_group SET status = 'dismissed', status_reason = 'Noise'");
@@ -334,7 +334,7 @@ describe("improvement inbox", () => {
   });
 
   test("lists both sources once each, with filters, and keeps the report capped at five", async () => {
-    const t = harness();
+    const t = await harness();
     await t.open("/improvements");
     const rows = [...t.root.querySelectorAll("[data-improvement-row]")].map((row) =>
       row.getAttribute("data-improvement-row"),
@@ -361,7 +361,7 @@ describe("improvement inbox", () => {
   });
 
   test("report source → one issue → explicit delegation → merged awaiting verification → verified", async () => {
-    const t = harness();
+    const t = await harness();
     const id = t.w.retro.a;
     await t.open(`/improvements/${id}?source=weekly`);
     expect(t.find('[data-improvement-choice="create"]').getAttribute("aria-pressed")).toBe("true");
@@ -442,7 +442,7 @@ describe("improvement inbox", () => {
   });
 
   test("a daily finding links known work by default and can add an evidence comment", async () => {
-    const t = harness();
+    const t = await harness();
     const retroAccept = await t.w.api("ada", `/api/improvements/${t.w.retro.a}/decision`, {
       expectedVersion: 1,
       decision: { kind: "accept", proposalVersion: 1, intent: { kind: "link", issue: "PAS-60" } },
@@ -479,7 +479,7 @@ describe("improvement inbox", () => {
   });
 
   test("reject asks for a reason, files nothing and stays in history", async () => {
-    const t = harness();
+    const t = await harness();
     const id = t.w.retro.a;
     await t.open(`/improvements/${id}`);
     await t.click('[data-improvement-choice="reject"]');
@@ -492,7 +492,7 @@ describe("improvement inbox", () => {
   });
 
   test("a decision from another tab answers stale and shows the current state", async () => {
-    const t = harness();
+    const t = await harness();
     const id = t.w.retro.a;
     await t.open(`/improvements/${id}`);
     const other = await t.w.api("bea", `/api/improvements/${id}/decision`, {
@@ -507,7 +507,7 @@ describe("improvement inbox", () => {
   });
 
   test("late answers for an earlier selection, page or version are dropped", async () => {
-    const t = harness();
+    const t = await harness();
     const [a, daily] = [
       t.w.retro.a,
       (await t.w.api("ada", "/api/improvements?source=daily")).body.items[0].id,
@@ -538,7 +538,7 @@ describe("improvement inbox", () => {
   });
 
   test("selection, evidence expansion and the list scroll survive polling; phone back keeps filters", async () => {
-    const t = harness();
+    const t = await harness();
     const id = t.w.retro.a;
     await t.open(`/improvements/${id}?source=weekly`);
     const back = t.find("[data-improvement-back]");
@@ -558,7 +558,7 @@ describe("improvement inbox", () => {
   });
 
   test("a missing item, a missing report and a lost permission explain themselves", async () => {
-    const t = harness();
+    const t = await harness();
     await t.open("/improvements/01UNKNOWNIMPROVEMENT");
     expect(t.text()).toContain("not in your inbox");
     await t.open("/improvements/reports/nope");
@@ -572,7 +572,7 @@ describe("improvement inbox", () => {
   });
 
   test("the navigation count clears on lost access and drops a late answer for an earlier reader", async () => {
-    const t = harness();
+    const t = await harness();
     await t.open("/improvements");
     expect(t.counts.at(-1)).toBe(2);
     t.w.db.run("UPDATE workspace_member SET active = 0 WHERE user_id = 'user-ada'");
@@ -590,7 +590,7 @@ describe("improvement inbox", () => {
   });
 
   test("retrying a failed generation opens the retro the run endpoint returns", async () => {
-    const t = harness();
+    const t = await harness();
     await t.open("/improvements/reports/r1");
     const r1 = t.page.view().report;
     const failed = {
@@ -613,7 +613,7 @@ describe("improvement inbox", () => {
   });
 
   test("a mutation answer after navigating away leaves the new item alone", async () => {
-    const t = harness();
+    const t = await harness();
     const a = t.w.retro.a;
     const daily = (await t.w.api("ada", "/api/improvements?source=daily")).body.items[0].id;
     await t.open(`/improvements/${a}`);
@@ -636,7 +636,7 @@ describe("improvement inbox", () => {
   });
 
   test("polling keeps every row Show more loaded and its next page", async () => {
-    const t = harness();
+    const t = await harness();
     await t.open("/improvements");
     const full = t.page.view().list;
     const pages = [0, 1, 2].map((n) => ({
@@ -665,7 +665,7 @@ describe("improvement inbox", () => {
   });
 
   test("a mutation answer after leaving and returning to the item stays stale", async () => {
-    const t = harness();
+    const t = await harness();
     const a = t.w.retro.a;
     const daily = (await t.w.api("ada", "/api/improvements?source=daily")).body.items[0].id;
     await t.open(`/improvements/${a}`);
@@ -685,7 +685,7 @@ describe("improvement inbox", () => {
   });
 
   test("Review polling picks up a schedule another tab changed", async () => {
-    const t = harness();
+    const t = await harness();
     await t.open("/improvements");
     expect(t.page.view().schedule.state).toBe("ready");
     t.answers.set("/api/retros/schedule", () =>
@@ -696,7 +696,7 @@ describe("improvement inbox", () => {
   });
 
   test("history polling keeps every page Show more loaded", async () => {
-    const t = harness();
+    const t = await harness();
     await t.open("/improvements/history");
     const entry = t.page.view().history.retros[0];
     const pages = [0, 1, 2].map((n) => ({
@@ -729,7 +729,7 @@ describe("improvement inbox", () => {
   });
 
   test("history lists the retro and the settings tab keeps daily and weekly controls apart", async () => {
-    const t = harness();
+    const t = await harness();
     await t.open("/improvements/history");
     expect(t.text()).toContain("Each retro keeps its frozen report");
     expect(t.find('a[href="/dashboard/improvements/reports/r1"]')).toBeTruthy();
@@ -744,7 +744,7 @@ describe("improvement inbox", () => {
 const DAY = 86_400_000;
 
 /** Ada accepts the acme/a pattern, Paws files IMP-1, and work on it reaches `state`. */
-async function filedWork(t: ReturnType<typeof harness>, state: string) {
+async function filedWork(t: Awaited<ReturnType<typeof harness>>, state: string) {
   const id = t.w.retro.a;
   expect((await t.w.api("ada", `/api/improvements/${id}/decision`, accept())).status).toBe(200);
   await t.deliver();
@@ -768,16 +768,17 @@ async function filedWork(t: ReturnType<typeof harness>, state: string) {
 }
 
 /** Reopens the report: leaving for the history and coming back reads it again. */
-async function reopen(t: ReturnType<typeof harness>, path: string) {
+async function reopen(t: Awaited<ReturnType<typeof harness>>, path: string) {
   await t.open("/improvements/history");
   await t.open(path);
 }
 
-const now = (t: ReturnType<typeof harness>) => t.find('[data-retro-item="p1"] [data-retro-now]');
+const now = (t: Awaited<ReturnType<typeof harness>>) =>
+  t.find('[data-retro-item="p1"] [data-retro-now]');
 
 describe("retro history", () => {
   test("lists each period with sessions, profile, decisions and issue links, without excerpts", async () => {
-    const t = harness();
+    const t = await harness();
     t.as("admin");
     await t.open("/improvements/history");
     const row = t.find('[data-retro-row="r1"]');
@@ -818,7 +819,7 @@ describe("retro history", () => {
   });
 
   test("several reports page by period, and a retro added between pages repeats or skips none", async () => {
-    const t = harness();
+    const t = await harness();
     for (const [id, weeks] of [
       ["r0", -1],
       ["r2", 1],
@@ -873,7 +874,7 @@ describe("retro history", () => {
   });
 
   test("a direct link selects the item and loads its saved evidence; Back and Forward keep the report", async () => {
-    const t = harness();
+    const t = await harness();
     await t.open("/improvements/reports/r1?item=p1");
     const card = t.find('[data-retro-item="p1"]');
     expect(card.getAttribute("aria-current")).toBe("true");
@@ -899,7 +900,7 @@ describe("retro history", () => {
   });
 
   test("downloads the original digest, and refuses after access is lost without showing it", async () => {
-    const t = harness();
+    const t = await harness();
     t.as("admin");
     await t.open("/improvements/reports/r1");
     expect(t.text()).toContain("not rebuilt from current sessions");
@@ -935,7 +936,7 @@ describe("retro history", () => {
   });
 
   test("an old report shows the current outcome apart from its frozen claims", async () => {
-    const t = harness();
+    const t = await harness();
     const id = await filedWork(t, "merged");
     await t.open("/improvements/reports/r1");
     expect(now(t).getAttribute("data-retro-now")).toBe("awaiting_verification");
@@ -976,7 +977,7 @@ describe("retro history", () => {
   });
 
   test("canceled work shows as canceled now, not as a resolved report item", async () => {
-    const t = harness();
+    const t = await harness();
     await filedWork(t, "cancelled");
     await t.open("/improvements/reports/r1");
     expect(now(t).getAttribute("data-retro-now")).toBe("canceled");
@@ -984,7 +985,7 @@ describe("retro history", () => {
   });
 
   test("another report with the same item id never shows the earlier report's evidence", async () => {
-    const t = harness();
+    const t = await harness();
     await t.open("/improvements/reports/r1?item=p1");
     expect(t.find('[data-retro-item="p1"]').textContent).toContain("Answered question in acme/a");
     const body = (await (
@@ -1005,7 +1006,7 @@ describe("retro history", () => {
   });
 
   test("the prompt coverage says what the agent received, apart from the full digest", async () => {
-    const t = harness();
+    const t = await harness();
     t.as("admin");
     await t.open("/improvements/reports/r1");
     expect(t.find("[data-retro-prompt-coverage]").getAttribute("data-retro-prompt-coverage")).toBe(
