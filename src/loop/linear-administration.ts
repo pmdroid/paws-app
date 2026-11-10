@@ -2,28 +2,33 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import { isTerminalWorkItemState, type LinearCommand, type WorkItemState } from "../core";
 import {
-  issueItemsCreatedBy,
-  applyLinearCommand,
-  mergeCallInFlight,
-  changeLinearTeamAccess,
-  completeMergedItem,
-  getConfirmedRemoteMerge,
-  getItemPullRequest,
-  getWorkItem,
+  issueItemsCreatedBySteps,
+  applyLinearCommandSteps,
+  mergeCallInFlightSteps,
+  changeLinearTeamAccessSteps,
+  commandInstance,
+  completeMergedItemSteps,
+  emitJobReady,
+  getConfirmedRemoteMergeSteps,
+  getItemPullRequestSteps,
+  getWorkItemSteps,
   journal,
-  advanceLinearSessionGeneration,
-  dropLinearSessionDeliveries,
-  getLinearSessionAccess,
-  getLinearSession,
-  getLinearInstallationPermissions,
-  listLinearInstallationSessions,
-  immediate,
-  hasLinearNotification,
-  linearSessionsForDelegatedTeams,
-  linearSessionsForUndelegatedIssue,
-  listWorkItems,
-  recordLinearNotification,
-  revokeLinearInstallation,
+  advanceLinearSessionGenerationSteps,
+  dropLinearSessionDeliveriesSteps,
+  getLinearSessionAccessSteps,
+  getLinearSessionSteps,
+  getLinearInstallationPermissionsSteps,
+  listLinearInstallationSessionsSteps,
+  hasLinearNotificationSteps,
+  linearSessionsForDelegatedTeamsSteps,
+  linearSessionsForUndelegatedIssueSteps,
+  listWorkItemsSteps,
+  recordLinearNotificationSteps,
+  revokeLinearInstallationSteps,
+  sqliteDb,
+  type Db,
+  type Q,
+  type Steps,
 } from "../db";
 import {
   parseLinearAdministration,
@@ -34,6 +39,9 @@ import {
 import { worktreeBranch } from "./sources";
 
 const notifications = new WeakMap<Database, Map<string, Promise<void>>>();
+
+/** Where commands applied in a transaction forward from, and whether a job became ready. */
+type CommandContext = { self: string | undefined; notifications: { ready: boolean } };
 
 export async function handleLinearAdministration(
   db: Database,
@@ -51,6 +59,7 @@ export async function handleLinearAdministration(
 ): Promise<boolean> {
   const administration = parseLinearAdministration(event);
   if (administration === null) return false;
+  const store = sqliteDb(db);
   if (options.oauthClientId === null || administration.oauthClientId !== options.oauthClientId)
     return true;
   if (
@@ -60,7 +69,7 @@ export async function handleLinearAdministration(
   )
     return true;
   if (administration.kind === "notification") {
-    if (hasLinearNotification(db, administration)) return true;
+    if (await store.run((q) => hasLinearNotificationSteps(q, administration))) return true;
     if (options.reconcile === undefined)
       throw new Error("Linear notification reconciliation is unavailable.");
     let pending = notifications.get(db);
@@ -82,8 +91,8 @@ export async function handleLinearAdministration(
             await stopUndelegatedIssue(db, administration, options);
         })
         .then(() => options.reconcile?.(administration))
-        .then(() => {
-          recordLinearNotification(db, administration);
+        .then(async () => {
+          await store.run((q) => recordLinearNotificationSteps(q, administration));
         })
         .finally(() => {
           pending.delete(key);
@@ -93,37 +102,45 @@ export async function handleLinearAdministration(
     await work;
     return true;
   }
-  let commands: LinearCommand[] = [];
-  const stopped = immediate(db, () => {
+  const context: CommandContext = {
+    self: commandInstance(db),
+    notifications: { ready: false },
+  };
+  const { commands, stopped } = await store.transaction(function* (q) {
     const sessions =
       administration.kind === "revoked"
-        ? revokeLinearInstallation(db, { ...administration, eventKey: event.dedupeKey })
-        : changeLinearTeamAccess(db, { ...administration, eventKey: event.dedupeKey });
-    const affected = new Set(
-      [...sessions, ...listLinearInstallationSessions(db, administration)].filter(
-        (id) =>
-          getLinearSessionAccess(db, id) ===
-          (administration.kind === "revoked" ? "revoked" : "team_removed"),
-      ),
-    );
+        ? yield* revokeLinearInstallationSteps(q, { ...administration, eventKey: event.dedupeKey })
+        : yield* changeLinearTeamAccessSteps(q, { ...administration, eventKey: event.dedupeKey });
+    const affected = new Set<string>();
+    for (const id of [
+      ...sessions,
+      ...(yield* listLinearInstallationSessionsSteps(q, administration)),
+    ])
+      if (
+        (yield* getLinearSessionAccessSteps(q, id)) ===
+        (administration.kind === "revoked" ? "revoked" : "team_removed")
+      )
+        affected.add(id);
     if (administration.kind === "teams")
-      for (const id of linearSessionsForDelegatedTeams(db, {
+      for (const id of yield* linearSessionsForDelegatedTeamsSteps(q, {
         ...administration,
         teamIds: administration.removedTeamIds,
       }))
         affected.add(id);
-    commands = cancelSessions(db, affected, administration.createdAtMs);
+    const cancelled = yield* cancelSessionsSteps(q, affected, administration.createdAtMs, context);
     if (administration.kind === "revoked")
-      for (const id of affected) dropLinearSessionDeliveries(db, id);
-    return affected;
+      for (const id of affected) yield* dropLinearSessionDeliveriesSteps(q, id);
+    return { commands: cancelled, stopped: affected };
   });
-  await deliver(db, commands, stopped, options);
+  if (context.notifications.ready) emitJobReady(store);
+  await deliver(store, commands, stopped, options);
   if (
     administration.kind === "teams" &&
     !administration.canAccessAllPublicTeams &&
-    getLinearInstallationPermissions(db, administration)?.canAccessAllPublicTeams === false
+    (await store.run((q) => getLinearInstallationPermissionsSteps(q, administration)))
+      ?.canAccessAllPublicTeams === false
   ) {
-    const affected = listLinearInstallationSessions(db, administration);
+    const affected = await store.run((q) => listLinearInstallationSessionsSteps(q, administration));
     if (affected.length > 0) {
       if (options.revalidate === undefined)
         throw new Error("Linear permission reconciliation is unavailable.");
@@ -146,13 +163,18 @@ export async function stopUndelegatedIssue(
     interrupt?: (sessionId: string) => Promise<void>;
   },
 ): Promise<void> {
-  let commands: LinearCommand[] = [];
-  const stopped = immediate(db, () => {
-    const affected = new Set(linearSessionsForUndelegatedIssue(db, undelegation));
-    commands = cancelSessions(db, affected, undelegation.createdAtMs);
-    return affected;
+  const store = sqliteDb(db);
+  const context: CommandContext = {
+    self: commandInstance(db),
+    notifications: { ready: false },
+  };
+  const { commands, stopped } = await store.transaction(function* (q) {
+    const affected = new Set(yield* linearSessionsForUndelegatedIssueSteps(q, undelegation));
+    const cancelled = yield* cancelSessionsSteps(q, affected, undelegation.createdAtMs, context);
+    return { commands: cancelled, stopped: affected };
   });
-  await deliver(db, commands, stopped, options);
+  if (context.notifications.ready) emitJobReady(store);
+  await deliver(store, commands, stopped, options);
 }
 
 export const ISSUE_CLOSED_RESPONSE = {
@@ -184,17 +206,25 @@ export async function closeClosedIssueTasks(
     now?: () => number;
   },
 ): Promise<ClosedIssueTask[]> {
+  const store = sqliteDb(db);
+  const context: CommandContext = {
+    self: commandInstance(db),
+    notifications: { ready: false },
+  };
   const now = options.now?.() ?? Date.now();
   const response = ISSUE_CLOSED_RESPONSE[closed.stateType];
   const status = closed.stateType === "completed" ? "Done" : "Canceled";
   const commands: LinearCommand[] = [];
   const sessions = new Set<string>();
-  const results = immediate(db, () => {
+  const results = await store.transaction(function* (q) {
     const outcomes: ClosedIssueTask[] = [];
-    for (const row of openIssueTasks(db, closed)) {
+    for (const row of yield* openIssueTasksSteps(q, closed)) {
       const label = `item ${row.identifier}`;
-      if (row.state === "merge_queue" && getConfirmedRemoteMerge(db, row.id) !== null) {
-        if (completeMergedItem(db, { itemId: row.id, now }) !== null) {
+      if (
+        row.state === "merge_queue" &&
+        (yield* getConfirmedRemoteMergeSteps(q, row.id)) !== null
+      ) {
+        if ((yield* completeMergedItemSteps(q, { itemId: row.id, now })) !== null) {
           journal(`${label} merged: its Linear issue moved to ${status}`);
           outcomes.push({ itemId: row.id, outcome: "merged" });
           continue;
@@ -208,8 +238,16 @@ export async function closeClosedIssueTasks(
       };
       const result =
         closed.stateType === "canceled"
-          ? cancelWithPull(db, command, now)
-          : applyLinearCommand(db, command, now, response);
+          ? yield* cancelWithPullSteps(q, command, now, context)
+          : yield* applyLinearCommandSteps(
+              q,
+              command,
+              now,
+              response,
+              {},
+              context.self,
+              context.notifications,
+            );
       if (result.deferred) continue;
       if (!result.applied) throw new Error(`Could not close Linear task ${row.id}`);
       journal(`${label} cancelled: its Linear issue moved to ${status} outside this task`);
@@ -219,34 +257,48 @@ export async function closeClosedIssueTasks(
     }
     return outcomes;
   });
-  await deliver(db, commands, sessions, options);
+  if (context.notifications.ready) emitJobReady(store);
+  await deliver(store, commands, sessions, options);
   return results;
 }
 
 /** The cancel for an issue canceled in Linear: it closes the pull request and says so. */
-function cancelWithPull(db: Database, command: LinearCommand, now: number) {
-  const item = getWorkItem(db, command.itemId);
-  const pull = getItemPullRequest(db, command.itemId);
+function* cancelWithPullSteps(
+  q: Q,
+  command: LinearCommand,
+  now: number,
+  context: CommandContext,
+): Steps<{ applied: boolean; deferred?: boolean }> {
+  const item = yield* getWorkItemSteps(q, command.itemId);
+  const pull = yield* getItemPullRequestSteps(q, command.itemId);
   if (item === null) return { applied: false };
   const comment = `Closed because ${item.linearIdentifier} was canceled in Linear. The branch \`${worktreeBranch(item)}\` is kept.`;
   return pull === null
-    ? applyLinearCommand(db, command, now, ISSUE_CLOSED_RESPONSE.canceled, {
-        closePullRequest: { comment },
-      })
-    : applyLinearCommand(
-        db,
+    ? yield* applyLinearCommandSteps(
+        q,
+        command,
+        now,
+        ISSUE_CLOSED_RESPONSE.canceled,
+        { closePullRequest: { comment } },
+        context.self,
+        context.notifications,
+      )
+    : yield* applyLinearCommandSteps(
+        q,
         command,
         now,
         `Canceled in Linear. PR #${pull.pullNumber} was closed; the branch is kept.`,
         { closePullRequest: { comment }, responseOnly: true },
+        context.self,
+        context.notifications,
       );
 }
 
-function openIssueTasks(
-  db: Database,
+function* openIssueTasksSteps(
+  q: Q,
   closed: LinearIssueClosed,
-): { id: string; identifier: string; state: WorkItemState; sessionKey: string | null }[] {
-  return issueItemsCreatedBy(db, closed.issueId, closed.closedAtMs)
+): Steps<{ id: string; identifier: string; state: WorkItemState; sessionKey: string | null }[]> {
+  return (yield* issueItemsCreatedBySteps(q, closed.issueId, closed.closedAtMs))
     .map((row) => ({ ...row, state: row.state as WorkItemState }))
     .filter(
       (row) =>
@@ -257,16 +309,17 @@ function openIssueTasks(
     );
 }
 
-function cancelSessions(
-  db: Database,
+function* cancelSessionsSteps(
+  q: Q,
   affected: ReadonlySet<string>,
   requestedAt: number,
-): LinearCommand[] {
+  context: CommandContext,
+): Steps<LinearCommand[]> {
   for (const id of affected)
-    if (getLinearSession(db, id)?.stoppedAt == null)
-      advanceLinearSessionGeneration(db, id, { stop: true, now: requestedAt });
+    if ((yield* getLinearSessionSteps(q, id))?.stoppedAt == null)
+      yield* advanceLinearSessionGenerationSteps(q, id, { stop: true, now: requestedAt });
   const commands: LinearCommand[] = [];
-  for (const item of listWorkItems(db)) {
+  for (const item of yield* listWorkItemsSteps(q)) {
     const sessionId = item.sessionKey;
     if (sessionId === null || !affected.has(sessionId) || isTerminalWorkItemState(item.state))
       continue;
@@ -276,7 +329,15 @@ function cancelSessions(
       source: "linear",
       requestedAt,
     };
-    const result = applyLinearCommand(db, command);
+    const result = yield* applyLinearCommandSteps(
+      q,
+      command,
+      requestedAt,
+      undefined,
+      {},
+      context.self,
+      context.notifications,
+    );
     if (result.deferred) continue;
     if (!result.applied) throw new Error(`Could not cancel Linear task ${item.id}`);
     commands.push(command);
@@ -284,8 +345,14 @@ function cancelSessions(
   return commands;
 }
 
+function* sessionMergingSteps(q: Q, sessionId: string): Steps<boolean> {
+  for (const item of yield* listWorkItemsSteps(q))
+    if (item.sessionKey === sessionId && (yield* mergeCallInFlightSteps(q, item.id))) return true;
+  return false;
+}
+
 async function deliver(
-  db: Database,
+  store: Db,
   commands: readonly LinearCommand[],
   sessions: ReadonlySet<string>,
   options: {
@@ -300,15 +367,11 @@ async function deliver(
     journalCaught(error, "linear-administration.deliver.notify", null);
     failures.push(error);
   }
+  const interruptible: string[] = [];
+  for (const id of sessions)
+    if (!(await store.run((q) => sessionMergingSteps(q, id)))) interruptible.push(id);
   const results = await Promise.allSettled(
-    [...sessions]
-      .filter(
-        (id) =>
-          !listWorkItems(db).some(
-            (item) => item.sessionKey === id && mergeCallInFlight(db, item.id),
-          ),
-      )
-      .map(async (id) => options.interrupt?.(id)),
+    interruptible.map(async (id) => options.interrupt?.(id)),
   );
   for (const result of results) if (result.status === "rejected") failures.push(result.reason);
   if (failures.length > 0) throw failures[0];

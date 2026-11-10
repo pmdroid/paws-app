@@ -1,40 +1,45 @@
 import type { Database } from "bun:sqlite";
 import { isTerminalWorkItemState } from "../core";
 import {
-  commentOpenedAgentSession,
-  itemsForLinearIssue,
-  linearStoppedAfter,
-  parentIssueSession,
-  applyLinearTurns,
+  commentOpenedAgentSessionSteps,
+  itemsForLinearIssueSteps,
+  linearStoppedAfterSteps,
+  parentIssueSessionSteps,
+  applyLinearTurnsSteps,
   DEFAULT_PULL_FEEDBACK_WAIT,
-  enqueueOutboxOnce,
-  gatherLinearComments,
-  getLinearComment,
-  getLinearSession,
-  getLinearSessionAccess,
-  getLinearSessionInstallation,
-  getItemPullRequest,
-  getWorkItem,
-  immediate,
-  linearCommentAuthor,
-  listPendingLinearTurns,
-  markLinearCommentsDelivered,
-  pendingChangeRequests,
-  pendingLinearComments,
-  pendingPullCiFailures,
-  pendingPullComments,
-  queueLinearComment,
-  settleLinearComments,
+  emitJobReady,
+  enqueueOutboxOnceSteps,
+  gatherLinearCommentsSteps,
+  getLinearCommentSteps,
+  getLinearSessionSteps,
+  getLinearSessionAccessSteps,
+  getLinearSessionInstallationSteps,
+  getItemPullRequestSteps,
+  getWorkItemSteps,
+  linearCommentAuthorSteps,
+  listPendingLinearTurnsSteps,
+  markLinearCommentsDeliveredSteps,
+  pendingChangeRequestsSteps,
+  pendingLinearCommentsSteps,
+  pendingPullCiFailuresSteps,
+  pendingPullCommentsSteps,
+  queueLinearCommentSteps,
+  restartSteps,
+  settled,
+  settleLinearCommentsSteps,
+  sqliteDb,
+  type Db,
   type LinearCommentAuthority,
   type LinearCommentRecord,
   type PullFeedbackWait,
+  type Q,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import type { LeaveMergeQueueResult } from "../github";
 import { isPawsStop } from "../linear";
 import { findOpenQuestion } from "../questions";
 import { publicToolText } from "./activity";
-import { restart } from "./operations";
 
 export type LinearCommentActor = { id: string; teamId: string | null };
 
@@ -111,11 +116,19 @@ export const LINEAR_COMMENT_RESTART =
 export const LINEAR_COMMENT_INSTRUCTION =
   "These comments were posted on the Linear issue while you worked on it. Treat them as direction from the team. A comment can be a question, a note or a status line rather than a request; change nothing for those.";
 
-export function routeLinearComment(
+export async function routeLinearComment(
   db: Database,
   comment: LinearCommentRecord,
   policy: LinearCommentPolicy,
-): LinearCommentRoute {
+): Promise<LinearCommentRoute> {
+  return await sqliteDb(db).run((q) => routeLinearCommentSteps(q, comment, policy));
+}
+
+function* routeLinearCommentSteps(
+  q: Q,
+  comment: LinearCommentRecord,
+  policy: LinearCommentPolicy,
+): Steps<LinearCommentRoute> {
   const settle = (state: "ignored" | "rejected", reason: string): LinearCommentRoute => ({
     kind: "settle",
     state,
@@ -129,14 +142,15 @@ export function routeLinearComment(
   const agent = policy.agents.includes(comment.authorId);
   if (!agent && (comment.botActor !== null || (comment.actorType ?? "user") !== "user"))
     return settle("ignored", "bot");
-  if (inAgentSession(db, comment, policy.appUserId)) return settle("ignored", "agent_session");
-  const items = itemsForLinearIssue(db, comment.issueId);
+  if (yield* inAgentSessionSteps(q, comment, policy.appUserId))
+    return settle("ignored", "agent_session");
+  const items = yield* itemsForLinearIssueSteps(q, comment.issueId);
   const open = items.filter(
     (row) => !isTerminalWorkItemState(row.state as WorkItemRecord["state"]),
   );
   if (open.length === 0) {
     if (items.length > 0) return settle("ignored", "ended");
-    const parent = parentSession(db, comment.issueId);
+    const parent = yield* parentIssueSessionSteps(q, comment.issueId);
     if (parent !== null)
       return {
         kind: "settle",
@@ -149,14 +163,17 @@ export function routeLinearComment(
       };
     return settle("ignored", "not_delegated");
   }
-  const item = getWorkItem(db, open[0]!.id)!;
+  const item = (yield* getWorkItemSteps(q, open[0]!.id))!;
   if (comment.createdAtMs < open[0]!.createdAt) return settle("ignored", "before_delegation");
   if (item.cancelRequested) return settle("ignored", "ended");
   if (item.sessionKey === null) return settle("rejected", "no_session");
-  const session = getLinearSession(db, item.sessionKey);
+  const session = yield* getLinearSessionSteps(q, item.sessionKey);
   if (session === null || session.stoppedAt !== null) return settle("ignored", "session_stopped");
-  const installation = getLinearSessionInstallation(db, item.sessionKey);
-  if (getLinearSessionAccess(db, item.sessionKey) !== "allowed" || installation === null)
+  const installation = yield* getLinearSessionInstallationSteps(q, item.sessionKey);
+  if (
+    (yield* getLinearSessionAccessSteps(q, item.sessionKey)) !== "allowed" ||
+    installation === null
+  )
     return settle("rejected", "access");
   if (comment.organizationId !== null && comment.organizationId !== installation.organizationId)
     return settle("rejected", "workspace");
@@ -192,87 +209,101 @@ export async function authorizeLinearComment(
   return true;
 }
 
-export function commitLinearCommentRoute(
+export async function commitLinearCommentRoute(
   db: Database,
   commentId: string,
   route: LinearCommentRoute,
   options: { now: number; wait?: PullFeedbackWait; authorized: boolean },
-): LinearCommentRecord | null {
-  return immediate(db, () => {
-    const comment = getLinearComment(db, commentId);
-    if (comment === null || comment.state !== "received") return comment;
-    if (route.kind === "settle") {
-      settleLinearComments(db, [commentId], {
-        state: route.state,
-        reason: route.reason,
-        now: options.now,
-      });
-      if (route.notify)
-        enqueueOutboxOnce(db, {
-          target: "linear",
-          op: "activity",
-          orderingKey: route.notify.sessionId,
-          idempotencyKey: `linear-comment:${route.reason}:${commentId}`,
-          payload: {
-            sessionId: route.notify.sessionId,
-            kind: "thought",
-            body: route.notify.body,
-            id: crypto.randomUUID(),
-          },
-          now: options.now,
-        });
-      return getLinearComment(db, commentId);
-    }
-    if (!options.authorized) {
-      settleLinearComments(db, [commentId], {
-        state: "rejected",
-        reason: route.authority === "agent" ? "on_behalf_of" : "not_member",
-        now: options.now,
-      });
-      return getLinearComment(db, commentId);
-    }
-    const item = getWorkItem(db, route.item.id);
-    if (
-      item === null ||
-      isTerminalWorkItemState(item.state) ||
-      item.cancelRequested ||
-      item.sessionKey !== route.sessionId
-    ) {
-      settleLinearComments(db, [commentId], {
-        state: "ignored",
-        reason: "ended",
-        now: options.now,
-      });
-      return getLinearComment(db, commentId);
-    }
-    queueLinearComment(db, commentId, {
-      itemId: item.id,
-      sessionId: route.sessionId,
-      generation: route.generation,
-      authority: route.authority,
-    });
-    enqueueOutboxOnce(db, {
-      target: "linear",
-      op: "activity",
-      orderingKey: route.sessionId,
-      idempotencyKey: `linear-comment:received:${commentId}`,
-      payload: {
-        sessionId: route.sessionId,
-        kind: "thought",
-        body: receivedNote(item),
-        id: crypto.randomUUID(),
-      },
+): Promise<LinearCommentRecord | null> {
+  const store = sqliteDb(db);
+  const job = { ready: false };
+  const comment = await store.transaction((q) =>
+    commitLinearCommentRouteSteps(q, commentId, route, options, job),
+  );
+  if (job.ready) emitJobReady(store);
+  return comment;
+}
+
+function* commitLinearCommentRouteSteps(
+  q: Q,
+  commentId: string,
+  route: LinearCommentRoute,
+  options: { now: number; wait?: PullFeedbackWait; authorized: boolean },
+  job: { ready: boolean },
+): Steps<LinearCommentRecord | null> {
+  const comment = yield* getLinearCommentSteps(q, commentId);
+  if (comment === null || comment.state !== "received") return comment;
+  if (route.kind === "settle") {
+    yield* settleLinearCommentsSteps(q, [commentId], {
+      state: route.state,
+      reason: route.reason,
       now: options.now,
     });
-    gatherLinearComments(
-      db,
-      item.id,
-      options.now,
-      options.wait ?? DEFAULT_PULL_FEEDBACK_WAIT,
-      `linear-comments:${item.id}:${commentId}`,
-    );
-    return getLinearComment(db, commentId);
+    if (route.notify)
+      yield* enqueueOutboxOnceSteps(q, {
+        target: "linear",
+        op: "activity",
+        orderingKey: route.notify.sessionId,
+        idempotencyKey: `linear-comment:${route.reason}:${commentId}`,
+        payload: {
+          sessionId: route.notify.sessionId,
+          kind: "thought",
+          body: route.notify.body,
+          id: crypto.randomUUID(),
+        },
+        now: options.now,
+      });
+    return yield* getLinearCommentSteps(q, commentId);
+  }
+  if (!options.authorized) {
+    yield* settleLinearCommentsSteps(q, [commentId], {
+      state: "rejected",
+      reason: route.authority === "agent" ? "on_behalf_of" : "not_member",
+      now: options.now,
+    });
+    return yield* getLinearCommentSteps(q, commentId);
+  }
+  const item = yield* getWorkItemSteps(q, route.item.id);
+  if (
+    item === null ||
+    isTerminalWorkItemState(item.state) ||
+    item.cancelRequested ||
+    item.sessionKey !== route.sessionId
+  ) {
+    yield* settleLinearCommentsSteps(q, [commentId], {
+      state: "ignored",
+      reason: "ended",
+      now: options.now,
+    });
+    return yield* getLinearCommentSteps(q, commentId);
+  }
+  yield* queueLinearCommentSteps(q, commentId, {
+    itemId: item.id,
+    sessionId: route.sessionId,
+    generation: route.generation,
+    authority: route.authority,
   });
+  yield* enqueueOutboxOnceSteps(q, {
+    target: "linear",
+    op: "activity",
+    orderingKey: route.sessionId,
+    idempotencyKey: `linear-comment:received:${commentId}`,
+    payload: {
+      sessionId: route.sessionId,
+      kind: "thought",
+      body: receivedNote(item),
+      id: crypto.randomUUID(),
+    },
+    now: options.now,
+  });
+  job.ready = yield* gatherLinearCommentsSteps(
+    q,
+    item.id,
+    options.now,
+    options.wait ?? DEFAULT_PULL_FEEDBACK_WAIT,
+    `linear-comments:${item.id}:${commentId}`,
+  );
+  return yield* getLinearCommentSteps(q, commentId);
 }
 
 export function receivedNote(item: WorkItemRecord): string {
@@ -295,30 +326,35 @@ export async function deliverLinearComments(
   itemId: string,
   caps: LinearCommentCapabilities,
 ): Promise<LinearCommentStep> {
-  const item = getWorkItem(db, itemId);
+  const store = sqliteDb(db);
+  const item = await store.run((q) => getWorkItemSteps(q, itemId));
   const talk = (await caps.conversations?.()) ?? null;
   if (talk !== null) {
-    if (await postConversationReplies(db, itemId, talk, caps)) await caps.flush();
+    if (await postConversationReplies(store, itemId, talk, caps)) await caps.flush();
     if (talk.open(itemId).length > 0) return "wait";
   }
-  const all = pendingLinearComments(db, itemId);
+  const all = await store.run((q) => pendingLinearCommentsSteps(q, itemId));
   const idle = talk !== null && item !== null && canConverse(item) && !caps.busy(item);
-  const turns = idle ? listPendingLinearTurns(db, item.sessionKey!) : [];
+  const turns = idle
+    ? await store.run((q) => listPendingLinearTurnsSteps(q, item.sessionKey!))
+    : [];
   if (all.length === 0 && turns.length === 0) return "done";
   if (item === null || isTerminalWorkItemState(item.state) || item.cancelRequested) {
-    settleLinearComments(
-      db,
-      all.map((comment) => comment.commentId),
-      { state: "ignored", reason: "ended", now: caps.now() },
+    await store.transaction((q) =>
+      settleLinearCommentsSteps(
+        q,
+        all.map((comment) => comment.commentId),
+        { state: "ignored", reason: "ended", now: caps.now() },
+      ),
     );
     return "done";
   }
-  const { kept, unknown } = current(db, item, all, caps);
+  const { kept, unknown } = await store.run((q) => currentSteps(q, item, all, caps));
   if (idle) {
     const lane = talk!.lane(item.id);
     if (lane === "full") return "wait";
     if (lane === "free" && (kept.length > 0 || turns.length > 0)) {
-      startConversation(db, item, kept, turns, talk!, caps.now());
+      await startConversation(store, item, kept, turns, talk!, caps.now());
       return "wait";
     }
   }
@@ -327,19 +363,21 @@ export async function deliverLinearComments(
   if (item.state === "awaiting_input") {
     const question = findOpenQuestion(db, item.sessionKey!);
     if (question !== null) {
-      enqueueOutboxOnce(db, {
-        target: "linear",
-        op: "activity",
-        orderingKey: item.sessionKey!,
-        idempotencyKey: `linear-comment:question:${question.id}:${kept.at(-1)!.commentId}`,
-        payload: {
-          sessionId: item.sessionKey!,
-          kind: "thought",
-          body: "Paws keeps the comment on the issue as context for the agent. The open question here still needs an answer in this session.",
-          id: crypto.randomUUID(),
-        },
-        now: caps.now(),
-      });
+      await store.transaction((q) =>
+        enqueueOutboxOnceSteps(q, {
+          target: "linear",
+          op: "activity",
+          orderingKey: item.sessionKey!,
+          idempotencyKey: `linear-comment:question:${question.id}:${kept.at(-1)!.commentId}`,
+          payload: {
+            sessionId: item.sessionKey!,
+            kind: "thought",
+            body: "Paws keeps the comment on the issue as context for the agent. The open question here still needs an answer in this session.",
+            id: crypto.randomUUID(),
+          },
+          now: caps.now(),
+        }),
+      );
       await caps.flush();
     }
     return "done";
@@ -347,18 +385,18 @@ export async function deliverLinearComments(
   if (HELD_STATES.has(item.state) || item.state === "queued") return "done";
   if (ACTIVE_STATES.has(item.state)) return "wait";
   if (item.state !== "merge_queue" || caps.busy(item)) return "wait";
-  const pull = getItemPullRequest(db, item.id);
+  const pull = await store.run((q) => getItemPullRequestSteps(q, item.id));
   if (pull !== null) {
     const queue = await caps.leaveMergeQueue(item, pull.pullNumber);
     if (queue === "merged") return "wait";
     if (queue === "closed") {
-      immediate(db, () => {
-        settleLinearComments(
-          db,
-          pendingLinearComments(db, item.id).map((comment) => comment.commentId),
+      await store.transaction(function* (q) {
+        yield* settleLinearCommentsSteps(
+          q,
+          (yield* pendingLinearCommentsSteps(q, item.id)).map((comment) => comment.commentId),
           { state: "ignored", reason: "pull_closed", now: caps.now() },
         );
-        enqueueOutboxOnce(db, {
+        yield* enqueueOutboxOnceSteps(q, {
           target: "linear",
           op: "activity",
           orderingKey: item.sessionKey!,
@@ -377,28 +415,35 @@ export async function deliverLinearComments(
     }
   }
   if (
-    pendingPullComments(db, item.id).length > 0 ||
-    pendingPullCiFailures(db, item.id).length > 0 ||
-    pendingChangeRequests(db, item.id).length > 0
+    (await store.run((q) => pendingPullCommentsSteps(q, item.id))).length > 0 ||
+    (await store.run((q) => pendingPullCiFailuresSteps(q, item.id))).length > 0 ||
+    (await store.run((q) => pendingChangeRequestsSteps(q, item.id))).length > 0
   )
     return "wait";
-  const step = immediate(db, (): LinearCommentStep => {
-    const latest = getWorkItem(db, item.id);
+  const job = { ready: false };
+  const step = await store.transaction(function* (q): Steps<LinearCommentStep> {
+    const latest = yield* getWorkItemSteps(q, item.id);
     if (latest === null || latest.version !== item.version || latest.state !== "merge_queue")
       return "wait";
-    const ready = current(db, latest, pendingLinearComments(db, item.id), caps);
+    const ready = yield* currentSteps(
+      q,
+      latest,
+      yield* pendingLinearCommentsSteps(q, item.id),
+      caps,
+    );
     const batch = ready.kept;
     if (linearCommentSection(batch, latest.linearIdentifier) === null)
       return ready.unknown ? "wait" : "done";
     const jobKey = `linear-comment:${latest.id}:${batch[0]!.commentId}`;
-    const jobId = restart(db, latest, {
+    const restarted = yield* restartSteps(q, latest, {
       reason: "follow_up",
       body: LINEAR_COMMENT_RESTART,
       jobKey,
       now: caps.now(),
     });
-    if (jobId === null) return "wait";
-    enqueueOutboxOnce(db, {
+    if (restarted === null) return "wait";
+    job.ready = restarted.armed;
+    yield* enqueueOutboxOnceSteps(q, {
       target: "linear",
       op: "activity",
       orderingKey: latest.sessionKey!,
@@ -413,6 +458,7 @@ export async function deliverLinearComments(
     });
     return "restarted";
   });
+  if (job.ready) emitJobReady(store);
   if (step === "restarted") await caps.flush();
   return step;
 }
@@ -421,14 +467,14 @@ export function canConverse(item: WorkItemRecord): boolean {
   return item.sessionKey !== null && !item.cancelRequested && CONVERSATION_STATES.has(item.state);
 }
 
-function startConversation(
-  db: Database,
+async function startConversation(
+  store: Db,
   item: WorkItemRecord,
   comments: readonly LinearCommentRecord[],
   turns: readonly { eventKey: string; body: string }[],
   talk: LinearConversations,
   now: number,
-): void {
+): Promise<void> {
   const batch = fitLinearComments(comments);
   const section = linearCommentSection(batch, item.linearIdentifier);
   const parts = section === null ? [] : [section];
@@ -441,19 +487,19 @@ function startConversation(
   }
   const prompt = clip(parts.join("\n\n"), CONVERSATION_PROMPT_CHARS);
   if (prompt.trim() === "") return;
-  immediate(db, () => {
+  await store.transaction(function* (q) {
     if (!talk.start(item.id, item.sessionKey!, prompt)) return;
-    markLinearCommentsDelivered(
-      db,
+    yield* markLinearCommentsDeliveredSteps(
+      q,
       batch.map((comment) => comment.commentId),
       { via: "follow_up", itemVersion: item.version, now },
     );
-    if (sent.length > 0) applyLinearTurns(db, item.sessionKey!, sent, item.id);
+    if (sent.length > 0) yield* applyLinearTurnsSteps(q, item.sessionKey!, sent, item.id);
   });
 }
 
 async function postConversationReplies(
-  db: Database,
+  store: Db,
   itemId: string,
   talk: LinearConversations,
   caps: LinearCommentCapabilities,
@@ -463,28 +509,29 @@ async function postConversationReplies(
   for (const turn of talk.open(itemId)) {
     if (turn.result === null && !turn.expired) continue;
     const plan = turn.result?.startWork;
-    const left = plan ? await leftMergeQueue(db, itemId, caps) : true;
-    immediate(db, () => {
-      const item = getWorkItem(db, itemId);
-      const started =
-        plan !== undefined &&
-        left &&
-        item !== null &&
-        canConverse(item) &&
-        restart(db, item, {
-          reason: "follow_up",
-          body: `${START_WORK_HANDOFF}\n\n${plan}`,
-          jobKey: `start-work:${turn.commandId}`,
-          now,
-        }) !== null;
+    const left = plan ? await leftMergeQueue(store, itemId, caps) : true;
+    const job = { ready: false };
+    await store.transaction(function* (q) {
+      const item = yield* getWorkItemSteps(q, itemId);
+      const restarted =
+        plan !== undefined && left && item !== null && canConverse(item)
+          ? yield* restartSteps(q, item, {
+              reason: "follow_up",
+              body: `${START_WORK_HANDOFF}\n\n${plan}`,
+              jobKey: `start-work:${turn.commandId}`,
+              now,
+            })
+          : null;
+      job.ready = restarted?.armed === true;
+      const started = restarted !== null;
       const bodies = plan
         ? [
             ...(turn.result!.replies ?? []),
             started ? `${START_WORK_RESPONSE}${plan}` : START_WORK_REFUSED,
           ]
         : conversationReplies(turn.result);
-      bodies.forEach((body, index) =>
-        enqueueOutboxOnce(db, {
+      for (const [index, body] of bodies.entries())
+        yield* enqueueOutboxOnceSteps(q, {
           target: "linear",
           op: "activity",
           orderingKey: turn.sessionId,
@@ -496,10 +543,10 @@ async function postConversationReplies(
             id: crypto.randomUUID(),
           },
           now,
-        }),
-      );
+        });
       talk.finish(turn.commandId);
     });
+    if (job.ready) emitJobReady(store);
     posted = true;
   }
   return posted;
@@ -507,12 +554,15 @@ async function postConversationReplies(
 
 /** A plan's work turn needs the pull request out of GitHub's merge queue first, as a comment does. */
 async function leftMergeQueue(
-  db: Database,
+  store: Db,
   itemId: string,
   caps: LinearCommentCapabilities,
 ): Promise<boolean> {
-  const item = getWorkItem(db, itemId);
-  const pull = item?.state === "merge_queue" ? getItemPullRequest(db, itemId) : null;
+  const item = await store.run((q) => getWorkItemSteps(q, itemId));
+  const pull =
+    item?.state === "merge_queue"
+      ? await store.run((q) => getItemPullRequestSteps(q, itemId))
+      : null;
   if (item === null || pull === null) return true;
   const left = await caps.leaveMergeQueue(item, pull.pullNumber);
   return left === "left" || left === "not_queued";
@@ -530,53 +580,77 @@ export type LinearCommentBrief = {
   comments: { commentId: string; updatedAtMs: number }[];
 };
 
+/** Synchronous until `Orchestrator.linearCommentBrief` can await it. */
 export function linearCommentBrief(
   db: Database,
   item: WorkItemRecord,
   caps: Pick<LinearCommentCapabilities, "now" | "policy">,
 ): LinearCommentBrief | null {
-  return immediate(db, () => {
-    const batch = fitLinearComments(
-      current(db, item, pendingLinearComments(db, item.id), caps).kept,
-    );
-    const text = linearCommentSection(batch, item.linearIdentifier);
-    return text === null
-      ? null
-      : {
-          text,
-          comments: batch.map((comment) => ({
-            commentId: comment.commentId,
-            updatedAtMs: comment.updatedAtMs,
-          })),
-        };
-  });
+  return settled(sqliteDb(db).transaction((q) => linearCommentBriefSteps(q, item, caps)));
 }
 
+function* linearCommentBriefSteps(
+  q: Q,
+  item: WorkItemRecord,
+  caps: Pick<LinearCommentCapabilities, "now" | "policy">,
+): Steps<LinearCommentBrief | null> {
+  const batch = fitLinearComments(
+    (yield* currentSteps(q, item, yield* pendingLinearCommentsSteps(q, item.id), caps)).kept,
+  );
+  const text = linearCommentSection(batch, item.linearIdentifier);
+  return text === null
+    ? null
+    : {
+        text,
+        comments: batch.map((comment) => ({
+          commentId: comment.commentId,
+          updatedAtMs: comment.updatedAtMs,
+        })),
+      };
+}
+
+/** Synchronous until `Orchestrator.settleLinearCommentBrief` can await it. */
 export function settleLinearCommentBrief(
   db: Database,
   item: WorkItemRecord,
   brief: LinearCommentBrief,
   options: { now: number; wait?: PullFeedbackWait },
 ): void {
-  immediate(db, () => {
-    const seen = brief.comments
-      .filter((entry) => getLinearComment(db, entry.commentId)?.updatedAtMs === entry.updatedAtMs)
-      .map((entry) => entry.commentId);
-    markLinearCommentsDelivered(db, seen, {
-      via: "brief",
-      itemVersion: item.version,
-      now: options.now,
-    });
-    const left = pendingLinearComments(db, item.id);
-    if (left.length > 0 && !isTerminalWorkItemState(getWorkItem(db, item.id)?.state ?? "cancelled"))
-      gatherLinearComments(
-        db,
-        item.id,
-        options.now,
-        options.wait ?? DEFAULT_PULL_FEEDBACK_WAIT,
-        `linear-comments:${item.id}:${left[0]!.commentId}:${item.version}`,
-      );
+  const store = sqliteDb(db);
+  const gathered = settled(
+    store.transaction((q) => settleLinearCommentBriefSteps(q, item, brief, options)),
+  );
+  if (gathered) emitJobReady(store);
+}
+
+function* settleLinearCommentBriefSteps(
+  q: Q,
+  item: WorkItemRecord,
+  brief: LinearCommentBrief,
+  options: { now: number; wait?: PullFeedbackWait },
+): Steps<boolean> {
+  const seen: string[] = [];
+  for (const entry of brief.comments)
+    if ((yield* getLinearCommentSteps(q, entry.commentId))?.updatedAtMs === entry.updatedAtMs)
+      seen.push(entry.commentId);
+  yield* markLinearCommentsDeliveredSteps(q, seen, {
+    via: "brief",
+    itemVersion: item.version,
+    now: options.now,
   });
+  const left = yield* pendingLinearCommentsSteps(q, item.id);
+  if (
+    left.length === 0 ||
+    isTerminalWorkItemState((yield* getWorkItemSteps(q, item.id))?.state ?? "cancelled")
+  )
+    return false;
+  return yield* gatherLinearCommentsSteps(
+    q,
+    item.id,
+    options.now,
+    options.wait ?? DEFAULT_PULL_FEEDBACK_WAIT,
+    `linear-comments:${item.id}:${left[0]!.commentId}:${item.version}`,
+  );
 }
 
 export function fitLinearComments(
@@ -608,20 +682,20 @@ export function linearCommentSection(
   return lines.join("\n");
 }
 
-function current(
-  db: Database,
+function* currentSteps(
+  q: Q,
   item: WorkItemRecord,
   comments: readonly LinearCommentRecord[],
   caps: Pick<LinearCommentCapabilities, "now" | "policy">,
-): { kept: LinearCommentRecord[]; unknown: boolean } {
+): Steps<{ kept: LinearCommentRecord[]; unknown: boolean }> {
   const kept: LinearCommentRecord[] = [];
   let unknown = false;
   for (const comment of comments) {
-    const reason = staleReason(db, item, comment, caps.policy);
+    const reason = yield* staleReasonSteps(q, item, comment, caps.policy);
     if (reason === null) kept.push(comment);
     else if (reason === "unknown") unknown = true;
     else
-      settleLinearComments(db, [comment.commentId], {
+      yield* settleLinearCommentsSteps(q, [comment.commentId], {
         state: reason === "not_member" ? "rejected" : "ignored",
         reason,
         now: caps.now(),
@@ -630,19 +704,20 @@ function current(
   return { kept, unknown };
 }
 
-function staleReason(
-  db: Database,
+function* staleReasonSteps(
+  q: Q,
   item: WorkItemRecord,
   comment: LinearCommentRecord,
   policy: LinearCommentPolicy,
-): string | null {
+): Steps<string | null> {
   if (comment.sessionId === null || item.sessionKey !== comment.sessionId) return "superseded";
-  const session = getLinearSession(db, comment.sessionId);
+  const session = yield* getLinearSessionSteps(q, comment.sessionId);
   if (session === null || session.stoppedAt !== null) return "session_stopped";
-  if (linearStoppedAfter(db, comment.sessionId, comment.generation ?? 0)) return "session_stopped";
-  if (inAgentSession(db, comment, policy.appUserId)) return "agent_session";
+  if (yield* linearStoppedAfterSteps(q, comment.sessionId, comment.generation ?? 0))
+    return "session_stopped";
+  if (yield* inAgentSessionSteps(q, comment, policy.appUserId)) return "agent_session";
   if (policy.recheck && comment.authorId !== null) {
-    const teamId = getLinearSessionInstallation(db, comment.sessionId)?.teamId ?? null;
+    const teamId = (yield* getLinearSessionInstallationSteps(q, comment.sessionId))?.teamId ?? null;
     const actors =
       comment.authority === "agent"
         ? comment.onBehalfOf === null
@@ -658,25 +733,22 @@ function staleReason(
   return null;
 }
 
-function inAgentSession(
-  db: Database,
+function* inAgentSessionSteps(
+  q: Q,
   comment: LinearCommentRecord,
   appUserId: string | null,
-): boolean {
+): Steps<boolean> {
   if (
     comment.parentId !== null &&
     appUserId !== null &&
-    linearCommentAuthor(db, comment.parentId) === appUserId
+    (yield* linearCommentAuthorSteps(q, comment.parentId)) === appUserId
   )
     return true;
   const ids =
     comment.parentId === null ? [comment.commentId] : [comment.commentId, comment.parentId];
-  for (const id of ids) if (commentOpenedAgentSession(db, comment.issueId, id)) return true;
+  for (const id of ids)
+    if (yield* commentOpenedAgentSessionSteps(q, comment.issueId, id)) return true;
   return false;
-}
-
-function parentSession(db: Database, issueId: string): string | null {
-  return parentIssueSession(db, issueId);
 }
 
 function who(comment: LinearCommentRecord): string {
