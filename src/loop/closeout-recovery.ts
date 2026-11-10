@@ -12,6 +12,13 @@ import { getQuestion, type StoredQuestion } from "../questions";
 
 export const RETRY_CLOSEOUT = "Retry Closeout";
 
+/** Why Closeout cannot run: the candidate's run recorded no agent session model. */
+export const NO_SESSION_MODEL =
+  "Candidate has no recorded ACP session model; restart implementation";
+
+/** The option on a {@link NO_SESSION_MODEL} ask. Retrying Closeout cannot help there. */
+export const RESTART_IMPLEMENTATION = "Restart implementation";
+
 export const POLICY_LOADS_ANSWER = "Answered by Paws: the policy on main loads again at";
 
 export function retriesCloseout(question: Pick<StoredQuestion, "options" | "answer">): boolean {

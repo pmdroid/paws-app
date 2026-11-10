@@ -2268,6 +2268,8 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
       const question = findOpenQuestion(db, "ses_1")!;
       expect(question.body).toContain("no recorded ACP session model");
       expect(question.body).not.toContain("Checks you can bypass");
+      expect(question.options).toEqual(["Restart implementation"]);
+      expect(question.body).not.toContain("Retry Closeout");
       writeFileSync(
         path.join(layout.pawsRoot, "config.toml"),
         `[agents.defaults.implementer]\nagent = "codex"\nmodel = "test-new-implementer"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "test-codex-model"\n`,
@@ -2289,6 +2291,102 @@ for (const savedState of ["verifying", "merge_queue"] as const) {
     }
   }, 30_000);
 }
+
+test("a verifying candidate with no commit and no session model restarts implementation once, then asks", async () => {
+  const layout = await repoLayout("paws-e2e-");
+  const tracker = createFakeTracker([
+    {
+      linearIssueId: "empty-item",
+      identifier: "ENG-32",
+      title: "Empty candidate",
+      description: null,
+      subIssues: [],
+    },
+  ]);
+  const db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
+  migrate(db);
+  const jobs = new JobLoop(db, systemClock);
+  const outbox = new OutboxDispatcher(db, systemClock);
+  const github = createFakeGitHub();
+  const launched: string[] = [];
+  let sequence = 0;
+  const orchestrator = attachOrchestrator({
+    db,
+    admission: workspaceAdmission(db),
+    jobs,
+    outbox,
+    pawsRoot: layout.pawsRoot,
+    home: layout.home,
+    tracker,
+    repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
+    githubForRepository: () => ({
+      appId: "1",
+      installationId: "2",
+      privateKeyPem: PRIVATE_KEY,
+      client: githubClient(layout.bare, github),
+    }),
+    launch(input) {
+      launched.push(input.purpose);
+      const scriptPath = path.join(layout.root, `empty-${++sequence}.json`);
+      writeFileSync(
+        scriptPath,
+        JSON.stringify({
+          model: input.role === "reviewer" ? "test-codex-model" : "test-claude-model",
+          steps:
+            input.purpose === "review"
+              ? emptyReview().steps
+              : [writeOk(input.worktree), { type: "end" }],
+        }),
+      );
+      return { command: process.execPath, args: [fakeAgent, "", scriptPath], env: process.env };
+    },
+  });
+  try {
+    await orchestrator.onLinearEvent(linearEvent("created", null, null, "empty-item"));
+    await tickWithRestarts(jobs, orchestrator, db);
+    const item = db
+      .query<{ id: string; current_run_id: string }, []>("SELECT id, current_run_id FROM work_item")
+      .get()!;
+    // The implementation run died before it committed: the candidate is main, with no session model.
+    const emptyCandidate = async () => {
+      await rm(path.join(layout.pawsRoot, "runs", item.current_run_id, "agent-profile.json"), {
+        force: true,
+      });
+      const worktree = worktreePath(layout.pawsRoot, taskPath(db, "ENG-32"));
+      const base = Bun.spawnSync(["git", "-C", worktree, "merge-base", "HEAD", "origin/main"])
+        .stdout.toString()
+        .trim();
+      Bun.spawnSync(["git", "-C", worktree, "reset", "--hard", base]);
+      db.run("UPDATE job SET status = 'cancelled' WHERE status = 'pending'");
+      db.run("UPDATE work_item SET state = 'verifying' WHERE id = ?", [item.id]);
+      saveCheckpoint(db, item.id, { phase: "verifying", baseSha: base, wipCommit: base });
+      enqueueJob(db, {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: item.id },
+        now: systemClock.now(),
+      });
+      await jobs.tick([JOB_KIND.reverify]);
+    };
+    await emptyCandidate();
+    expect(tracker.questions).toHaveLength(0);
+    expect(stateOf(db, "ENG-32"), debug(layout, db)).toBe("queued");
+    const resume = listJobs(db).find((job) => job.jobKey?.startsWith("restart:no-implementation:"));
+    const payload = resume?.payload as { reason?: string; handoff?: string; fixRounds?: number };
+    expect(payload.reason).toBe("follow_up");
+    expect(payload.handoff).toContain("ended before it committed anything");
+    expect(payload.fixRounds).toBeUndefined();
+
+    await emptyCandidate();
+    expect(stateOf(db, "ENG-32"), debug(layout, db)).toBe("awaiting_input");
+    const question = findOpenQuestion(db, "ses_1")!;
+    expect(question.body).toContain("no recorded ACP session model");
+    expect(question.options).toEqual(["Restart implementation"]);
+    expect(question.body).not.toContain("Retry Closeout");
+  } finally {
+    db.close();
+    await layout.cleanup();
+  }
+}, 30_000);
 
 for (const movedHead of [false, true]) {
   test(`a merge waiting across a restart keeps its job after ${movedHead ? "repeated head movement" : "startup"} and merges exactly once`, async () => {

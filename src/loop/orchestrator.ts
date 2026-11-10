@@ -48,6 +48,8 @@ import {
   pausedStoppedSessionItemSteps,
   recentRepositoryNamesSteps,
   recordAgentCloseoutSteps,
+  jobStatusByKey,
+  latestHumanTurn,
   restartAsync,
   reviewerAlertedSinceSteps,
   saveConversationSteps,
@@ -644,7 +646,7 @@ import {
   publicToolText,
   type ActivityOrigin,
 } from "./activity";
-import { PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
+import { NO_SESSION_MODEL, PREPARATION_FAILED, recoveryOptions } from "./closeout-recovery";
 import { askCloseoutHelp, type CloseoutHelp } from "./closeout-help";
 import { askReviewRounds, reviewRoundLimit } from "./review-rounds";
 import { createDbCloseoutProgress, publishingCloseoutProgress } from "./closeout-progress";
@@ -5532,7 +5534,7 @@ export class Orchestrator {
       );
       return;
     }
-    const candidate = await this.candidateForItem(item);
+    const candidate = await this.candidateForItem(item, { base, head });
     if (!candidate) return;
     await this.evaluateHead(item, worktree, base, head, candidate, {
       decide: readBoolean(payload, "decide") === true,
@@ -9842,7 +9844,10 @@ export class Orchestrator {
     return null;
   }
 
-  private async candidateForItem(item: WorkItemRecord): Promise<CandidateIdentity | null> {
+  private async candidateForItem(
+    item: WorkItemRecord,
+    commits?: { base: string; head: string },
+  ): Promise<CandidateIdentity | null> {
     const runId = item.currentRunId ?? item.id;
     try {
       return this.candidateFor(runId);
@@ -9857,6 +9862,24 @@ export class Orchestrator {
       const summary = error instanceof Error ? error.message : String(error);
       closeActiveRun(this.db, runId, this.now());
       this.post(item, "thought", summary, `${runId}:missing-candidate-identity`);
+      const base = commits?.base ?? item.checkpoint?.baseSha ?? "";
+      const head = commits?.head ?? item.checkpoint?.wipCommit ?? "";
+      // Nothing was committed: a fresh implementation turn, once per human turn, not a question.
+      const jobKey = `restart:no-implementation:${item.id}:${latestHumanTurn(this.db, item.id)}`;
+      if (
+        summary === NO_SESSION_MODEL &&
+        base !== "" &&
+        base === head &&
+        jobStatusByKey(this.db, jobKey) === null
+      ) {
+        restart(this.db, item, {
+          reason: "follow_up",
+          body: "The earlier implementation run ended before it committed anything. Implement the task from the start.",
+          jobKey,
+          now: this.now(),
+        });
+        return null;
+      }
       await this.askCloseoutHelp(item, undefined, summary);
       return null;
     }
@@ -9864,8 +9887,7 @@ export class Orchestrator {
 
   private candidateFor(runId: string): CandidateIdentity {
     const saved = this.readProfileSnapshot(runId);
-    if (!saved?.candidate)
-      throw new Error("Candidate has no recorded ACP session model; restart implementation");
+    if (!saved?.candidate) throw new Error(NO_SESSION_MODEL);
     return saved.candidate;
   }
 
