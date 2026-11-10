@@ -102,7 +102,7 @@ function killRecorded(pid: number): void {
   }
 }
 
-/** The rootless Docker daemon's socket that `paws-docker.service` (deploy/linux/install.py) runs for runner work as paws-runner. */
+/** The rootless Docker daemon's socket that `paws-docker.service` (deploy/linux/install.py) runs for agents as paws-runner (`agentUser: "runner"`). */
 export const RUNNER_DOCKER_SOCKET = "/run/paws-docker/docker.sock";
 
 /** `DOCKER_HOST` for runner work when the rootless Docker daemon's socket exists. */
@@ -113,6 +113,25 @@ export function runnerDockerEnv(socket = RUNNER_DOCKER_SOCKET): Record<string, s
       : {};
   } catch (caught) {
     journalCaught(caught, "supervisor.runnerDockerEnv.lstatSync", null, "socket not reachable");
+    return {};
+  }
+}
+
+/** The socket of `paws-agent-docker.service`, the rootless daemon for agents that run as paws-agent. */
+export const AGENT_DOCKER_SOCKET = "/run/paws-agent-docker/docker.sock";
+
+/**
+ * `DOCKER_HOST` for a paws-agent execution while its own daemon runs, and never paws-runner's: a
+ * container could mount the runner's files. Only paws-agent can enter the socket's directory, so
+ * the directory, which systemd removes when the daemon stops, stands for the socket.
+ */
+export function agentDockerEnv(socket = AGENT_DOCKER_SOCKET): Record<string, string> {
+  try {
+    return lstatSync(dirname(socket), { throwIfNoEntry: false })?.isDirectory()
+      ? { DOCKER_HOST: `unix://${socket}` }
+      : {};
+  } catch (caught) {
+    journalCaught(caught, "supervisor.agentDockerEnv.lstatSync", null, "socket not reachable");
     return {};
   }
 }
@@ -364,7 +383,7 @@ export function createDirectWorkerSupervisor(options: {
         PAWS_RESUME: resume ? "--resume" : "",
         ...(skills ? { [RUNNER_SKILLS_ENV]: skills } : {}),
         ...executionTag(scope, executionId),
-        ...runnerDockerEnv(),
+        ...agentDockerEnv(),
       },
       options.spool?.agentGid,
     );

@@ -2,7 +2,7 @@
 
 Create VM on the Runners page makes a VM on [exe.dev](https://exe.dev), installs the Paws runner on it, enrolls it for the member who clicked, and waits for its first heartbeat. It is a shortcut for the manual steps in [Enroll a remote Linux runner](runner-enrollment.md), so prepare Paws the same way first: HTTPS workspace access, the runner authority, and the runner listener on port 8788.
 
-A runner Paws creates always gets Docker for agent jobs. The install step adds Docker Engine (the distro's `docker.io` package) when the image has none, runs the installer with `PAWS_RUNNER_DOCKER_ACCESS=grant`, then checks as `paws-runner` that `docker info` answers on `/run/paws-docker/docker.sock`. If it doesn't within 30 seconds, the install fails with that reason instead of finishing a runner without Docker.
+A runner Paws creates always gets Docker for agent jobs. The install step adds Docker Engine (the distro's `docker.io` package) when the image has none, runs the installer with `PAWS_RUNNER_DOCKER_ACCESS=grant`, then checks as `paws-agent`, the account agents run as, that `docker info` answers on `/run/paws-agent-docker/docker.sock`. If it doesn't within 30 seconds, the install fails with that reason instead of finishing a runner without Docker.
 
 ## Give Paws an exe.dev token
 

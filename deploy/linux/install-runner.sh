@@ -181,17 +181,18 @@ if [ "$checksum_line" != "$expected" ]; then
 fi
 sha256sum --strict --check "${name}.sha256" || die "Checksum verification failed for ${name}"
 
-# Docker access for agent jobs: a rootless Docker daemon that runs as paws-runner. The package never
+# Docker access for agent jobs: a rootless Docker daemon that runs as the account agents run as. The package never
 # prompts; this script asks only on a terminal, when Docker Engine is installed and the daemon isn't set up.
 docker_engine=""
 if command -v dockerd >/dev/null 2>&1; then
   docker_engine=1
 fi
 if [ -z "$docker_access" ] && [ -n "$docker_engine" ] && [ ! -e /etc/systemd/system/paws-docker.service ] \
+  && [ ! -e /etc/systemd/system/paws-agent-docker.service ] \
   && ( : < /dev/tty ) 2>/dev/null; then
   printf '%s\n' \
     "Docker Engine is installed on this host. Agent jobs can get rootless Docker: a separate Docker" \
-    "daemon that runs as the paws-runner account, not as root, without the docker group. It needs" \
+    "daemon that runs as the account agents run as (paws-agent by default), not as root, without the docker group. It needs" \
     "the rootlesskit, uidmap and slirp4netns packages, which this installer adds." > /dev/tty
   printf '%s' "Set up rootless Docker for agent jobs? [y/N] " > /dev/tty
   answer=""
