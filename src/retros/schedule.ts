@@ -2,38 +2,43 @@ import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
   closeRetro,
-  collectingRetroIds,
+  closeRetroSteps,
+  collectingRetroIdsSteps,
   getRetro,
-  immediate,
-  latestPublishedRetro,
-  latestRetro,
-  listRetroItems,
-  listRetroSettingsRevisions,
-  listWorkspaceMembers,
-  listWorkspaceRepositoryNames,
+  getRetroSteps,
+  latestPublishedRetroSteps,
+  latestRetroSteps,
+  listRetroItemsSteps,
+  listRetroSettingsRevisionsSteps,
+  listWorkspaceMembersSteps,
+  listWorkspaceRepositoryNamesSteps,
   newRetroId,
-  readRetroArtifact,
+  readRetroArtifactSteps,
   recordRetroGeneration,
-  recordRetroOccurrence,
-  recordRetroScheduleRun,
-  recordRetroScheduleState,
-  retroHasUnfinishedDispatch,
-  retroOccurrence,
-  retroScheduleRuntime,
-  retroSettingsWorkspaces,
-  retroWatermarks,
+  recordRetroGenerationSteps,
+  recordRetroOccurrenceSteps,
+  recordRetroScheduleRunSteps,
+  recordRetroScheduleStateSteps,
+  retroHasUnfinishedDispatchSteps,
+  retroOccurrenceSteps,
+  retroScheduleRuntimeSteps,
+  retroSettingsWorkspacesSteps,
+  retroWatermarksSteps,
+  sqliteDb,
+  type Q,
   type Retro,
   type RetroOrigin,
   type RetroState,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { AgentModelCatalog } from "../runner-models";
 import { isWorkspaceAdmin } from "../workspace";
 import { collectRetroDigest, type RetroDigest } from "./digest";
-import { retroGenerationView, type RetroGenerationView } from "./dispatch";
+import { retroGenerationViewSteps, type RetroGenerationView } from "./dispatch";
 import { retroNeedsGeneration } from "./result";
 import {
-  freezeRetroRun,
+  freezeRetroRunSteps,
   proposedRetroSettings,
   RETRO_WEEKDAYS,
   retroRunRepositories,
@@ -191,8 +196,8 @@ type SchedulePlan =
       next: RetroOccurrence | null;
     };
 
-function schedulePlan(db: Database, workspaceId: string, now: number): SchedulePlan {
-  const rows = listRetroSettingsRevisions(db, workspaceId);
+function* schedulePlanSteps(q: Q, workspaceId: string, now: number): Steps<SchedulePlan> {
+  const rows = yield* listRetroSettingsRevisionsSteps(q, workspaceId);
   const latest = rows[0];
   if (latest === undefined) return { saved: false, schedule: proposedRetroSettings([]).schedule };
   const read = (stored: Record<string, unknown>) => stored as RetroSchedule;
@@ -205,7 +210,10 @@ function schedulePlan(db: Database, workspaceId: string, now: number): ScheduleP
     since = row.createdAt;
   }
   const active = schedule.cadence === "weekly" && validRetroTimeZone(schedule.timeZone);
-  const base = Math.max(retroScheduleRuntime(db, workspaceId)?.lastOccurrenceAt ?? since, since);
+  const base = Math.max(
+    (yield* retroScheduleRuntimeSteps(q, workspaceId))?.lastOccurrenceAt ?? since,
+    since,
+  );
   const { due, next } = active
     ? dueRetroOccurrence(schedule, base, now)
     : { due: null, next: null };
@@ -223,19 +231,16 @@ function schedulePlan(db: Database, workspaceId: string, now: number): ScheduleP
   };
 }
 
-function openRetro(db: Database, workspaceId: string): Retro | null {
-  return latestRetro(db, workspaceId, OPEN_STATES);
+function* openRetroSteps(q: Q, workspaceId: string): Steps<Retro | null> {
+  return yield* latestRetroSteps(q, workspaceId, OPEN_STATES);
 }
 
-function retriesSpent(db: Database, retro: Retro): boolean {
+function* retriesSpentSteps(q: Q, retro: Retro): Steps<boolean> {
   if (retro.state !== "failed") return false;
   return (
-    !retroHasUnfinishedDispatch(db, retro.id) && retroGenerationView(db, retro.id)?.retry === null
+    !(yield* retroHasUnfinishedDispatchSteps(q, retro.id)) &&
+    (yield* retroGenerationViewSteps(q, retro.id))?.retry === null
   );
-}
-
-function latestPublished(db: Database, workspaceId: string): Retro | null {
-  return latestPublishedRetro(db, workspaceId);
 }
 
 export type RetroCatalogSource = (principal: {
@@ -301,8 +306,8 @@ type StoredOccurrence = {
   requestedBy: string | null;
 };
 
-function storedOccurrence(db: Database, retroId: string): StoredOccurrence | null {
-  return retroOccurrence(db, retroId) as StoredOccurrence | null;
+function* storedOccurrenceSteps(q: Q, retroId: string) {
+  return (yield* retroOccurrenceSteps(q, retroId)) as StoredOccurrence | null;
 }
 
 export function createRetroScheduler(options: {
@@ -313,14 +318,16 @@ export function createRetroScheduler(options: {
   secrets?: () => readonly string[];
 }) {
   const { db, artifactRoot } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
 
-  function catalogsFor(
+  function* catalogsForSteps(
+    q: Q,
     workspaceId: string,
     agent: string,
     author: string,
-  ): readonly AgentModelCatalog[] | null {
-    const admins = listWorkspaceMembers(db, workspaceId)
+  ): Steps<readonly AgentModelCatalog[] | null> {
+    const admins = (yield* listWorkspaceMembersSteps(q, workspaceId))
       .filter((member) => workspaceMemberUsable(member) && isWorkspaceAdmin(member.role))
       .map((member) => member.id);
     let fallback: readonly AgentModelCatalog[] | null = null;
@@ -339,8 +346,13 @@ export function createRetroScheduler(options: {
     return fallback;
   }
 
-  function windowStart(workspaceId: string, repositories: readonly string[], end: number): number {
-    const marks = retroWatermarks(db, workspaceId);
+  function* windowStartSteps(
+    q: Q,
+    workspaceId: string,
+    repositories: readonly string[],
+    end: number,
+  ): Steps<number> {
+    const marks = yield* retroWatermarksSteps(q, workspaceId);
     const cursor = (repository: string) =>
       marks.find((mark) => mark.repository.toLowerCase() === repository.toLowerCase())?.cursor ??
       end - FIRST_RETRO_WINDOW_MS;
@@ -352,17 +364,17 @@ export function createRetroScheduler(options: {
     origin: RetroOrigin;
     occurrence: RetroOccurrence;
     requestedBy: string | null;
-  }): RetroRequest {
+  }): Promise<RetroRequest> {
     const at = now();
-    return immediate(db, (): RetroRequest => {
-      const plan = schedulePlan(db, input.workspaceId, at);
+    return store.transaction(function* (q): Steps<RetroRequest> {
+      const plan = yield* schedulePlanSteps(q, input.workspaceId, at);
       if (!plan.saved)
         return { ok: false, reason: "no_settings", message: "Save retro settings first." };
       if (input.origin === "scheduled" && plan.due?.at !== input.occurrence.at)
         return { ok: false, reason: "stale", message: "Another tick claimed this occurrence." };
-      const open = openRetro(db, input.workspaceId);
+      const open = yield* openRetroSteps(q, input.workspaceId);
       if (open !== null) {
-        if (!retriesSpent(db, open)) {
+        if (!(yield* retriesSpentSteps(q, open))) {
           if (input.origin === "manual") return { ok: true, retro: open, created: false };
           return {
             ok: false,
@@ -371,15 +383,15 @@ export function createRetroScheduler(options: {
           };
         }
         const reason = "Retries are spent. A new retro collects the same activity again.";
-        closeRetro(db, { retroId: open.id, state: "abandoned", error: reason, now: at });
-        recordRetroGeneration(db, {
+        yield* closeRetroSteps(q, { retroId: open.id, state: "abandoned", error: reason, now: at });
+        yield* recordRetroGenerationSteps(q, {
           retroId: open.id,
           diagnostic: "failed",
           detail: reason,
           now: at,
         });
       }
-      const accessible = listWorkspaceRepositoryNames(db, input.workspaceId);
+      const accessible = yield* listWorkspaceRepositoryNamesSteps(q, input.workspaceId);
       const repositories = retroRunRepositories(plan.repositories, accessible);
       if (repositories.length === 0)
         return {
@@ -388,23 +400,24 @@ export function createRetroScheduler(options: {
           message: "None of the selected repositories is accessible.",
         };
       const end = input.occurrence.at;
-      const start = windowStart(input.workspaceId, repositories, end);
-      const consume = (retroId: string) => {
-        const covered =
-          input.origin === "scheduled"
-            ? input.occurrence
-            : plan.active
-              ? dueRetroOccurrence(plan.schedule, plan.base, end).due
-              : null;
+      const start = yield* windowStartSteps(q, input.workspaceId, repositories, end);
+      const covered =
+        input.origin === "scheduled"
+          ? input.occurrence
+          : plan.active
+            ? dueRetroOccurrence(plan.schedule, plan.base, end).due
+            : null;
+      const schedule = plan.schedule;
+      function* consumeSteps(retroId: string) {
         if (covered !== null)
-          recordRetroScheduleRun(db, {
+          yield* recordRetroScheduleRunSteps(q, {
             workspaceId: input.workspaceId,
             occurrenceAt: covered.at,
             retroId,
-            nextDueAt: nextRetroOccurrence(plan.schedule, Math.max(covered.at, at)),
+            nextDueAt: nextRetroOccurrence(schedule, Math.max(covered.at, at)),
             now: at,
           });
-      };
+      }
       if (end <= start) {
         if (input.origin === "manual")
           return {
@@ -412,28 +425,28 @@ export function createRetroScheduler(options: {
             reason: "clock_behind",
             message: "The clock is behind the last retro cutoff. Try again later.",
           };
-        const last = latestPublished(db, input.workspaceId);
-        if (last !== null) consume(last.id);
+        const last = yield* latestPublishedRetroSteps(q, input.workspaceId);
+        if (last !== null) yield* consumeSteps(last.id);
         return {
           ok: false,
           reason: "stale",
           message: "A published retro already covers this occurrence.",
         };
       }
-      const frozen = freezeRetroRun(db, {
+      const frozen = yield* freezeRetroRunSteps(q, {
         id: newRetroId(at),
         workspaceId: input.workspaceId,
         windowStart: start,
         windowEnd: end,
         origin: input.origin,
         ...(input.origin === "scheduled" ? { scheduledFor: end } : {}),
-        catalogs: catalogsFor(input.workspaceId, plan.agent, plan.createdBy),
+        catalogs: yield* catalogsForSteps(q, input.workspaceId, plan.agent, plan.createdBy),
         accessibleRepositories: accessible,
         now: at,
       });
       if (!frozen.ok) return frozen;
       if (frozen.created)
-        recordRetroOccurrence(db, {
+        yield* recordRetroOccurrenceSteps(q, {
           retroId: frozen.retro.id,
           workspaceId: input.workspaceId,
           origin: input.origin,
@@ -449,7 +462,7 @@ export function createRetroScheduler(options: {
           requestedBy: input.requestedBy,
           createdAt: at,
         });
-      consume(frozen.retro.id);
+      yield* consumeSteps(frozen.retro.id);
       return { ok: true, retro: frozen.retro, created: frozen.created };
     });
   }
@@ -490,44 +503,43 @@ export function createRetroScheduler(options: {
     }
   }
 
-  function advance(workspaceId: string) {
-    for (const id of collectingRetroIds(db, workspaceId)) collect(getRetro(db, id)!);
-    const plan = schedulePlan(db, workspaceId, now());
+  async function advance(workspaceId: string) {
+    for (const id of await store.run((q) => collectingRetroIdsSteps(q, workspaceId)))
+      collect((await store.run((q) => getRetroSteps(q, id)))!);
+    const plan = await store.run((q) => schedulePlanSteps(q, workspaceId, now()));
     if (!plan.saved) return;
     const state = (nextDueAt: number | null, blockedReason: string | null) =>
-      recordRetroScheduleState(db, { workspaceId, nextDueAt, blockedReason, now: now() });
+      store.run((q) =>
+        recordRetroScheduleStateSteps(q, { workspaceId, nextDueAt, blockedReason, now: now() }),
+      );
     if (plan.due === null) return state(plan.next?.at ?? null, null);
-    const claimed = claim({
+    const claimed = await claim({
       workspaceId,
       origin: "scheduled",
       occurrence: plan.due,
       requestedBy: null,
     });
-    if (claimed.ok) {
-      if (claimed.created) collect(claimed.retro);
-      const after = schedulePlan(db, workspaceId, now());
+    if (claimed.ok || claimed.reason === "stale") {
+      if (claimed.ok && claimed.created) collect(claimed.retro);
+      const after = await store.run((q) => schedulePlanSteps(q, workspaceId, now()));
       return state(after.saved ? ((after.due ?? after.next)?.at ?? null) : null, null);
     }
-    if (claimed.reason === "stale") {
-      const after = schedulePlan(db, workspaceId, now());
-      return state(after.saved ? ((after.due ?? after.next)?.at ?? null) : null, null);
-    }
-    state(plan.due.at, claimed.message);
+    return state(plan.due.at, claimed.message);
   }
 
-  function status(workspaceId: string): RetroScheduleStatus {
+  function* statusSteps(q: Q, workspaceId: string): Steps<RetroScheduleStatus> {
     const at = now();
-    const plan = schedulePlan(db, workspaceId, at);
-    const runtime = retroScheduleRuntime(db, workspaceId);
-    const published = latestPublished(db, workspaceId);
-    const emptyPublished = (retro: Retro) => {
-      if (listRetroItems(db, retro.id).length > 0) return false;
-      const digest = readRetroArtifact(db, artifactRoot, retro.id, "digest");
+    const plan = yield* schedulePlanSteps(q, workspaceId, at);
+    const runtime = yield* retroScheduleRuntimeSteps(q, workspaceId);
+    const published = yield* latestPublishedRetroSteps(q, workspaceId);
+    function* emptyPublishedSteps(retro: Retro) {
+      if ((yield* listRetroItemsSteps(q, retro.id)).length > 0) return false;
+      const digest = yield* readRetroArtifactSteps(q, artifactRoot, retro.id, "digest");
       if (!digest.ok) return false;
       return !retroNeedsGeneration(
         JSON.parse(new TextDecoder().decode(digest.bytes)) as RetroDigest,
       );
-    };
+    }
     const lastSuccess =
       published === null
         ? null
@@ -536,10 +548,10 @@ export function createRetroScheduler(options: {
             cutoff: published.windowEnd,
             windowStart: published.windowStart,
             publishedAt: published.publishedAt,
-            empty: emptyPublished(published),
+            empty: yield* emptyPublishedSteps(published),
           };
-    const open = openRetro(db, workspaceId);
-    const latest = latestRetro(db, workspaceId);
+    const open = yield* openRetroSteps(q, workspaceId);
+    const latest = yield* latestRetroSteps(q, workspaceId);
     const closedFailure =
       latest !== null &&
       (latest.state === "abandoned" || latest.state === "coverage_failed") &&
@@ -547,7 +559,7 @@ export function createRetroScheduler(options: {
         ? latest
         : null;
     const shown = open ?? closedFailure;
-    const generation = shown === null ? null : retroGenerationView(db, shown.id);
+    const generation = shown === null ? null : yield* retroGenerationViewSteps(q, shown.id);
     const nextRun =
       plan.saved && plan.active
         ? plan.due !== null
@@ -607,7 +619,7 @@ export function createRetroScheduler(options: {
               state: shown.state,
               windowStart: shown.windowStart,
               windowEnd: shown.windowEnd,
-              occurrence: storedOccurrence(db, shown.id),
+              occurrence: yield* storedOccurrenceSteps(q, shown.id),
               error: shown.error,
               generation,
             },
@@ -615,28 +627,32 @@ export function createRetroScheduler(options: {
   }
 
   return {
-    tick() {
-      for (const workspaceId of retroSettingsWorkspaces(db)) {
+    async tick() {
+      for (const workspaceId of await store.run((q) => retroSettingsWorkspacesSteps(q))) {
         try {
-          advance(workspaceId);
+          await advance(workspaceId);
         } catch (error) {
           journalCaught(error, "retros.schedule.tick", null);
         }
       }
     },
-    request(workspaceId: string, userId: string): RetroRequest {
-      const plan = schedulePlan(db, workspaceId, now());
+    async request(workspaceId: string, userId: string): Promise<RetroRequest> {
+      const plan = await store.run((q) => schedulePlanSteps(q, workspaceId, now()));
       const timeZone = validRetroTimeZone(plan.schedule.timeZone) ? plan.schedule.timeZone : "UTC";
-      const claimed = claim({
+      const claimed = await claim({
         workspaceId,
         origin: "manual",
         occurrence: describe(now(), timeZone, "exact"),
         requestedBy: userId,
       });
       if (claimed.ok && claimed.retro.state === "collecting") collect(claimed.retro);
-      return claimed.ok ? { ...claimed, retro: getRetro(db, claimed.retro.id)! } : claimed;
+      if (!claimed.ok) return claimed;
+      const retro = (await store.run((q) => getRetroSteps(q, claimed.retro.id)))!;
+      return { ...claimed, retro };
     },
-    status,
+    status(workspaceId: string): Promise<RetroScheduleStatus> {
+      return store.run((q) => statusSteps(q, workspaceId));
+    },
   };
 }
 

@@ -159,15 +159,15 @@ describe("weekly schedule", () => {
     const { db, path, clock, open } = world();
     const scheduler = open();
     clock.now = MONDAY - 1;
-    scheduler.tick();
+    await scheduler.tick();
     expect(await listRetros(sqliteDb(db), "ws")).toHaveLength(0);
     expect(retroScheduleRuntime(db, "ws")?.nextDueAt).toBe(MONDAY);
 
     clock.now = MONDAY + 3 * WEEK + HOUR;
     const other = openDatabase(path);
-    scheduler.tick();
-    open(other).tick();
-    scheduler.tick();
+    await scheduler.tick();
+    await open(other).tick();
+    await scheduler.tick();
     const retros = await listRetros(sqliteDb(db), "ws");
     expect(retros).toHaveLength(1);
     expect(retros[0]).toMatchObject({
@@ -197,7 +197,7 @@ describe("weekly schedule", () => {
       },
     ]);
 
-    const restarted = open(openDatabase(path)).status("ws");
+    const restarted = await open(openDatabase(path)).status("ws");
     expect(restarted.nextRun).toMatchObject({ local: "2026-11-30T09:00+01:00", due: false });
     expect(restarted.state).toBe("waiting");
     other.close();
@@ -207,10 +207,10 @@ describe("weekly schedule", () => {
     const { db, clock, open } = world();
     const scheduler = open();
     clock.now = MONDAY + HOUR;
-    scheduler.tick();
+    await scheduler.tick();
     const before = retroScheduleRuntime(db, "ws");
     clock.now = MONDAY - 2 * WEEK;
-    scheduler.tick();
+    await scheduler.tick();
     expect(await listRetros(sqliteDb(db), "ws")).toHaveLength(1);
     expect(retroScheduleRuntime(db, "ws")?.lastOccurrenceAt).toBe(before!.lastOccurrenceAt);
   });
@@ -219,16 +219,16 @@ describe("weekly schedule", () => {
     const { db, clock, open, dispatcher } = world({ activity: false });
     const scheduler = open();
     clock.now = MONDAY + 60_000;
-    scheduler.tick();
+    await scheduler.tick();
     await dispatcher().tick();
-    const status = scheduler.status("ws");
+    const status = await scheduler.status("ws");
     expect(status.state).toBe("empty");
     expect(status.lastSuccess).toMatchObject({ cutoff: MONDAY, empty: true });
     expect(retroWatermarks(db, "ws")[0]!.cursor).toBe(MONDAY);
     expect(db.query("SELECT count(*) AS n FROM retro_dispatch").get()).toEqual({ n: 0 });
 
     clock.now = MONDAY + WEEK + 60_000;
-    scheduler.tick();
+    await scheduler.tick();
     const next = (await listRetros(sqliteDb(db), "ws"))[0]!;
     expect([next.windowStart, next.windowEnd]).toEqual([MONDAY, MONDAY + WEEK]);
   });
@@ -237,23 +237,23 @@ describe("weekly schedule", () => {
     const { db, clock, open } = world();
     const scheduler = open();
     clock.now = MONDAY + HOUR;
-    scheduler.tick();
+    await scheduler.tick();
     const running = (await listRetros(sqliteDb(db), "ws"))[0]!;
     save(db, MONDAY + 2 * HOUR, { paused: true });
     clock.now = MONDAY + 3 * WEEK;
-    scheduler.tick();
+    await scheduler.tick();
     expect((await listRetros(sqliteDb(db), "ws")).map((retro) => retro.id)).toEqual([running.id]);
     expect(getRetro(db, running.id)!.state).toBe("queued");
-    const paused = scheduler.status("ws");
+    const paused = await scheduler.status("ws");
     expect(paused.nextRun).toBeNull();
     expect(retroScheduleRuntime(db, "ws")?.nextDueAt).toBeNull();
 
     const resumedAt = Date.UTC(2026, 11, 1, 10);
     save(db, resumedAt);
     clock.now = resumedAt + HOUR;
-    scheduler.tick();
+    await scheduler.tick();
     expect(await listRetros(sqliteDb(db), "ws")).toHaveLength(1);
-    expect(scheduler.status("ws").nextRun).toMatchObject({
+    expect((await scheduler.status("ws")).nextRun).toMatchObject({
       local: "2026-12-07T09:00+01:00",
       due: false,
     });
@@ -264,17 +264,17 @@ describe("weekly schedule", () => {
     const scheduler = open();
     catalog.value = null;
     clock.now = MONDAY + HOUR;
-    scheduler.tick();
+    await scheduler.tick();
     expect(await listRetros(sqliteDb(db), "ws")).toHaveLength(0);
-    const held = scheduler.status("ws");
+    const held = await scheduler.status("ws");
     expect(held.state).toBe("waiting");
     expect(held.blocked?.reason).toContain("codex");
     expect(held.nextRun).toMatchObject({ at: MONDAY, due: true });
 
     catalog.value = CATALOGS;
-    scheduler.tick();
+    await scheduler.tick();
     expect(await listRetros(sqliteDb(db), "ws")).toHaveLength(1);
-    expect(scheduler.status("ws").blocked).toBeNull();
+    expect((await scheduler.status("ws")).blocked).toBeNull();
   });
 });
 
@@ -282,18 +282,18 @@ describe("manual runs share the scheduled window", () => {
   test("a manual run and a due occurrence create one retro whichever comes first", async () => {
     const first = world();
     first.clock.now = MONDAY + HOUR;
-    const manual = first.open().request("ws", "member");
+    const manual = await first.open().request("ws", "member");
     expect(manual).toMatchObject({ ok: true, created: true });
-    first.open().tick();
+    await first.open().tick();
     expect(await listRetros(sqliteDb(first.db), "ws")).toHaveLength(1);
     expect(retroScheduleRuntime(first.db, "ws")?.lastOccurrenceAt).toBe(MONDAY);
 
     const second = world();
     second.clock.now = MONDAY + HOUR;
     const scheduler = second.open();
-    scheduler.tick();
+    await scheduler.tick();
     const scheduled = (await listRetros(sqliteDb(second.db), "ws"))[0]!;
-    const again = second.open(openDatabase(second.path)).request("ws", "admin");
+    const again = await second.open(openDatabase(second.path)).request("ws", "admin");
     expect(again).toMatchObject({ ok: true, created: false, retro: { id: scheduled.id } });
   });
 
@@ -301,15 +301,15 @@ describe("manual runs share the scheduled window", () => {
     const { db, clock, open, dispatcher } = world({ activity: false });
     const scheduler = open();
     clock.now = MONDAY - HOUR;
-    const manual = scheduler.request("ws", "member");
+    const manual = await scheduler.request("ws", "member");
     expect(manual.ok).toBe(true);
     clock.now = MONDAY + HOUR;
-    scheduler.tick();
+    await scheduler.tick();
     expect(await listRetros(sqliteDb(db), "ws")).toHaveLength(1);
-    expect(scheduler.status("ws").state).toBe("waiting");
+    expect((await scheduler.status("ws")).state).toBe("waiting");
 
     await dispatcher().tick();
-    scheduler.tick();
+    await scheduler.tick();
     const retros = await listRetros(sqliteDb(db), "ws");
     expect(retros).toHaveLength(2);
     expect([retros[0]!.windowStart, retros[0]!.windowEnd]).toEqual([MONDAY - HOUR, MONDAY]);
@@ -332,14 +332,14 @@ describe("failure keeps its window", () => {
     const { db, clock, open } = world({ retries: 1 });
     const scheduler = open();
     clock.now = MONDAY + HOUR;
-    scheduler.tick();
+    await scheduler.tick();
     const retro = (await listRetros(sqliteDb(db), "ws"))[0]!;
     await fail(db, retro.id, clock.now);
-    const status = scheduler.status("ws");
+    const status = await scheduler.status("ws");
     expect(status.state).toBe("failed");
     expect(status.reason).toBe("runner crashed");
     expect(status.retry?.at).toBeGreaterThan(clock.now);
-    const requested = scheduler.request("ws", "member");
+    const requested = await scheduler.request("ws", "member");
     expect(requested).toMatchObject({ ok: true, created: false, retro: { id: retro.id } });
     expect(getRetro(db, retro.id)!.digestSha256).toBe(retro.digestSha256);
   });
@@ -348,17 +348,17 @@ describe("failure keeps its window", () => {
     const { db, clock, open } = world({ retries: 0 });
     const scheduler = open();
     clock.now = MONDAY + HOUR;
-    scheduler.tick();
+    await scheduler.tick();
     const failed = (await listRetros(sqliteDb(db), "ws"))[0]!;
     await fail(db, failed.id, clock.now);
     expect(retroWatermarks(db, "ws")).toEqual([]);
-    const status = scheduler.status("ws");
+    const status = await scheduler.status("ws");
     expect(status.state).toBe("failed");
     expect(status.retry).toBeNull();
     expect(status.lastSuccess).toBeNull();
 
     clock.now = MONDAY + WEEK + HOUR;
-    scheduler.tick();
+    await scheduler.tick();
     const [replacement, old] = await listRetros(sqliteDb(db), "ws");
     expect(old!.state).toBe("abandoned");
     expect(replacement!.windowStart).toBe(MONDAY);
@@ -382,14 +382,14 @@ describe("the first window", () => {
     const manual = world();
     const at = MONDAY + 2 * DAY;
     manual.clock.now = at;
-    expect(manual.open().request("ws", "member")).toMatchObject({
+    expect(await manual.open().request("ws", "member")).toMatchObject({
       ok: true,
       retro: { windowStart: at - WEEK, windowEnd: at },
     });
 
     const scheduled = world();
     scheduled.clock.now = MONDAY + HOUR;
-    scheduled.open().tick();
+    await scheduled.open().tick();
     expect((await listRetros(sqliteDb(scheduled.db), "ws"))[0]).toMatchObject({
       origin: "scheduled",
       windowStart: MONDAY - WEEK,
@@ -397,25 +397,25 @@ describe("the first window", () => {
     });
   });
 
-  test("a watermark older than a week keeps its longer window", () => {
+  test("a watermark older than a week keeps its longer window", async () => {
     const { db, clock, open } = world();
     const at = MONDAY + 2 * DAY;
     watermark(db, FIXTURE_REPO, at - 10 * DAY);
     clock.now = at;
-    expect(open().request("ws", "member")).toMatchObject({
+    expect(await open().request("ws", "member")).toMatchObject({
       ok: true,
       retro: { windowStart: at - 10 * DAY, windowEnd: at },
     });
   });
 
-  test("with one repository three days in and one never covered, the window starts a week back", () => {
+  test("with one repository three days in and one never covered, the window starts a week back", async () => {
     const { db, clock, open } = world();
     db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team')", [OTHER_REPO]);
     save(db, SAVED + 1, { repositories: [FIXTURE_REPO, OTHER_REPO] });
     const at = MONDAY + 2 * DAY;
     watermark(db, FIXTURE_REPO, at - 3 * DAY);
     clock.now = at;
-    const requested = open().request("ws", "member");
+    const requested = await open().request("ws", "member");
     expect(requested).toMatchObject({ ok: true, retro: { windowStart: at - WEEK, windowEnd: at } });
   });
 });
