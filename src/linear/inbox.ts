@@ -1,12 +1,19 @@
-import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   claimInboxEvent,
   claimNextInboxEvent,
   clearSyncCursor,
+  inboxEventByDelivery,
+  inboxEventByKey,
   incrementSyncCounter,
+  insertInboxEvent,
+  markInboxEventFailed,
+  markInboxEventHandled,
   releaseInboxClaim,
   renewInboxClaim,
+  setSyncCursor,
+  syncCursor,
+  unhandledInboxEvents,
   type ClaimedInboxRow,
 } from "../db";
 import { promptMetadata, type AcceptedLinearEvent } from "./events";
@@ -65,53 +72,29 @@ type InboxRow = {
 export function createInboxStore(db: Database): InboxStore {
   return {
     commit(event) {
-      try {
-        const insert = db.transaction(() => {
-          db.run(
-            `INSERT INTO inbox_event (
-               dedupe_key, delivery_id, source, action, session_id, issue_id, activity_id,
-               body, signal, updated_at_ms, payload, received_at, handled
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-            [
-              event.dedupeKey,
-              event.deliveryId,
-              event.source,
-              event.action,
-              event.sessionId,
-              event.issueId,
-              event.activityId,
-              event.body,
-              event.signal,
-              event.updatedAtMs,
-              event.payload,
-              Date.now(),
-            ],
-          );
-        });
-        insert.immediate();
-        return { inserted: true, handled: false };
-      } catch (error) {
-        if (!isUniqueViolation(error)) throw error;
-        journalCaught(error, "inbox.commit.transaction", null, "duplicate inbox delivery");
-        const existing = findExisting(db, event);
-        return { inserted: false, handled: existing?.handled === 1 };
-      }
+      const inserted = insertInboxEvent(db, {
+        dedupeKey: event.dedupeKey,
+        deliveryId: event.deliveryId,
+        source: event.source,
+        action: event.action,
+        sessionId: event.sessionId,
+        issueId: event.issueId,
+        activityId: event.activityId,
+        body: event.body,
+        signal: event.signal,
+        updatedAtMs: event.updatedAtMs,
+        payload: event.payload,
+        receivedAt: Date.now(),
+      });
+      if (inserted) return { inserted: true, handled: false };
+      const existing = findExisting(db, event);
+      return { inserted: false, handled: existing?.handled === 1 };
     },
     markHandled(dedupeKey) {
-      db.run(
-        "UPDATE inbox_event SET handled = 1, locked_by = NULL, locked_until = NULL WHERE dedupe_key = ?",
-        [dedupeKey],
-      );
+      markInboxEventHandled(db, dedupeKey);
     },
     listUnhandled() {
-      const rows = db
-        .query<InboxRow, []>(
-          `SELECT dedupe_key, delivery_id, source, action, session_id, issue_id, activity_id,
-                  body, signal, updated_at_ms, payload, handled
-           FROM inbox_event WHERE handled = 0 ORDER BY received_at, dedupe_key`,
-        )
-        .all();
-      return rows.map(mapRow);
+      return (unhandledInboxEvents(db) as InboxRow[]).map(mapRow);
     },
     claimNext(claim) {
       return queuedRow(claimNextInboxEvent(db, claim));
@@ -126,26 +109,13 @@ export function createInboxStore(db: Database): InboxStore {
       releaseInboxClaim(db, dedupeKey, owner);
     },
     markFailed(dedupeKey, failure) {
-      db.run(
-        `UPDATE inbox_event
-         SET attempts = attempts + ?, next_attempt_at = ?, last_error = ?,
-             locked_by = NULL, locked_until = NULL
-         WHERE dedupe_key = ?`,
-        [failure.counted ? 1 : 0, failure.nextAttemptAt, failure.error.slice(0, 2000), dedupeKey],
-      );
+      markInboxEventFailed(db, dedupeKey, failure);
     },
     getCursor(name) {
-      const row = db
-        .query<{ cursor_ms: number }, [string]>("SELECT cursor_ms FROM sync_cursor WHERE name = ?")
-        .get(name);
-      return row?.cursor_ms ?? null;
+      return syncCursor(db, name);
     },
     setCursor(name, cursorMs) {
-      db.run(
-        `INSERT INTO sync_cursor (name, cursor_ms) VALUES (?, ?)
-         ON CONFLICT(name) DO UPDATE SET cursor_ms = excluded.cursor_ms`,
-        [name, cursorMs],
-      );
+      setSyncCursor(db, name, cursorMs);
     },
     countCursor(name) {
       return incrementSyncCounter(db, name);
@@ -154,37 +124,17 @@ export function createInboxStore(db: Database): InboxStore {
       clearSyncCursor(db, name);
     },
     get(dedupeKey) {
-      const row = db
-        .query<InboxRow, [string]>(
-          `SELECT dedupe_key, delivery_id, source, action, session_id, issue_id, activity_id,
-                  body, signal, updated_at_ms, payload, handled
-           FROM inbox_event WHERE dedupe_key = ?`,
-        )
-        .get(dedupeKey);
+      const row = inboxEventByKey(db, dedupeKey) as InboxRow | null;
       return row === null ? null : mapRow(row);
     },
   };
 }
 
 function findExisting(db: Database, event: AcceptedLinearEvent): InboxRow | null {
-  const byKey = db
-    .query<InboxRow, [string]>(
-      `SELECT dedupe_key, delivery_id, source, action, session_id, issue_id, activity_id,
-              body, signal, updated_at_ms, payload, handled
-       FROM inbox_event WHERE dedupe_key = ?`,
-    )
-    .get(event.dedupeKey);
+  const byKey = inboxEventByKey(db, event.dedupeKey) as InboxRow | null;
   if (byKey !== null) return byKey;
   if (event.deliveryId === null) return null;
-  return (
-    db
-      .query<InboxRow, [string]>(
-        `SELECT dedupe_key, delivery_id, source, action, session_id, issue_id, activity_id,
-                body, signal, updated_at_ms, payload, handled
-         FROM inbox_event WHERE delivery_id = ?`,
-      )
-      .get(event.deliveryId) ?? null
-  );
+  return inboxEventByDelivery(db, event.deliveryId) as InboxRow | null;
 }
 
 function queuedRow(row: ClaimedInboxRow | null): QueuedLinearEvent | null {
@@ -225,10 +175,4 @@ function mapRow(row: InboxRow): AcceptedLinearEvent {
     updatedAtMs: row.updated_at_ms,
     payload: row.payload,
   };
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const code = "code" in error ? String(error.code) : "";
-  return code.includes("SQLITE_CONSTRAINT") || error.message.includes("UNIQUE constraint");
 }
