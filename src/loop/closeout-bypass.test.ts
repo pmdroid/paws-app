@@ -31,7 +31,7 @@ const NOW = 1_700_000_000_000;
 const HEAD = "7f65200aa1b2c3d4e5f6";
 const LINK = "https://paws.example/dashboard/issues/PAS-633#closeout";
 
-function blocked(publicUrl: string | null = "https://paws.example") {
+async function blocked(publicUrl: string | null = "https://paws.example") {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1", title: "Signed URLs" });
@@ -52,7 +52,7 @@ function blocked(publicUrl: string | null = "https://paws.example") {
     "Lea Lead",
     "lea@example.com",
   ]);
-  askCloseoutHelp(
+  await askCloseoutHelp(
     db,
     "ses_1",
     {
@@ -88,8 +88,8 @@ function blocked(publicUrl: string | null = "https://paws.example") {
 const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea Lead" };
 const effects: LinkAskEffects = { bypass: reverifyBypassedSteps };
 
-test("Closeout help is a bypass link ask with the failed checks of the head", () => {
-  const { db, itemId, question } = blocked();
+test("Closeout help is a bypass link ask with the failed checks of the head", async () => {
+  const { db, itemId, question } = await blocked();
   expect(question.kind).toBe("link");
   expect(getLinkAsk(db, question.id)).toMatchObject({
     kind: "bypass",
@@ -116,7 +116,7 @@ test("Closeout help is a bypass link ask with the failed checks of the head", ()
 });
 
 test("bypassing from the page writes the rows and verifies the same head again", async () => {
-  const { db, itemId, question } = blocked();
+  const { db, itemId, question } = await blocked();
   expect(
     await decideLinkAsk(
       db,
@@ -180,7 +180,7 @@ test("bypassing from the page writes the rows and verifies the same head again",
 });
 
 test("a bypass needs offered checks, each once, each with a reason", async () => {
-  const { db, itemId, question } = blocked();
+  const { db, itemId, question } = await blocked();
   for (const bypasses of [
     [],
     [{ checkId: "lint", reason: "Passed anyway" }],
@@ -211,7 +211,7 @@ test("a bypass needs offered checks, each once, each with a reason", async () =>
 });
 
 test("someone who did not delegate and does not lead the project cannot bypass", async () => {
-  const { db, itemId, question } = blocked();
+  const { db, itemId, question } = await blocked();
   expect(
     await decideLinkAsk(
       db,
@@ -233,7 +233,7 @@ test("someone who did not delegate and does not lead the project cannot bypass",
 });
 
 test("a /paws bypass reply in Linear is guidance and gets the link back once", async () => {
-  const { db, itemId, question } = blocked();
+  const { db, itemId, question } = await blocked();
   expect(
     await guideLinkAsk(db, {
       questionId: question.id,
@@ -254,7 +254,7 @@ test("a /paws bypass reply in Linear is guidance and gets the link back once", a
 });
 
 test("guidance from the page restarts the agent and authorizes a new round", async () => {
-  const { db, itemId, question } = blocked();
+  const { db, itemId, question } = await blocked();
   expect(
     await decideLinkAsk(
       db,
@@ -277,8 +277,8 @@ test("guidance from the page restarts the agent and authorizes a new round", asy
   expect(recoveryOptions(db, itemId)).toEqual({ retryBaseline: ["test:1"], bypasses: [] });
 });
 
-test("without a public link, Closeout help is a Linear question that cannot bypass", () => {
-  const { db, question } = blocked(null);
+test("without a public link, Closeout help is a Linear question that cannot bypass", async () => {
+  const { db, question } = await blocked(null);
   expect(question.kind).toBe("closeout-help");
   expect(getLinkAsk(db, question.id)).toBeNull();
   expect(question.body).toContain("A reply here cannot bypass a check.");

@@ -34,6 +34,25 @@ type Row = {
   approved_at: number | null;
 };
 
+export function* saveCloseoutBypassChecksSteps(
+  q: Q,
+  questionId: string,
+  checks: readonly { id: string; kind: string; state: string; attempt?: number; message: string }[],
+) {
+  for (const [ordinal, check] of checks.entries())
+    yield* q.exec(
+      q.orm.insert(q.t.closeoutBypassCheck).values({
+        questionId,
+        checkId: check.id,
+        kind: check.kind,
+        state: check.state,
+        attempt: check.attempt ?? null,
+        message: check.message,
+        ordinal,
+      }),
+    );
+}
+
 export function saveCloseoutBypassChecks(
   db: Database,
   questionId: string,

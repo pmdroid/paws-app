@@ -4990,7 +4990,7 @@ export class Orchestrator {
             unreadable,
           )
         : null;
-    askCloseoutHelp(this.db, sessionId, context, {
+    await askCloseoutHelp(this.db, sessionId, context, {
       now: this.now(),
       ...(brokenMain ? { error: brokenMain } : {}),
       ...(repositoryName && unreadable
@@ -6301,7 +6301,7 @@ export class Orchestrator {
       return null;
     });
     if (remote === null) return false;
-    return settleRejectedPush(this.db, item.id, {
+    return await settleRejectedPush(this.db, item.id, {
       remoteHead: remote.head,
       containsAccepted: remote.contains,
       now: this.now(),
