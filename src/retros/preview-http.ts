@@ -49,7 +49,7 @@ export function createRetroPreviewHttp(options: {
       typeof body.outputLimits === "object" && body.outputLimits !== null
         ? (body.outputLimits as Record<string, unknown>)
         : {};
-    const result = previewRetroPrompt(db, root, {
+    const result = await previewRetroPrompt(db, root, {
       principal,
       sessionIds,
       prompt: typeof body.prompt === "string" ? body.prompt : "",

@@ -4,9 +4,13 @@ import {
   getRetro,
   immediate,
   latestRetroSettingsRevision,
+  latestRetroSettingsRevisionSteps,
   retroIdForWindow,
-  saveRetroSettingsRevision,
+  saveRetroSettingsRevisionSteps,
+  sqliteDb,
+  type Q,
   type Retro,
+  type Steps,
   type RetroOrigin,
   type RetroSettingsRevision,
 } from "../db";
@@ -297,8 +301,15 @@ function draftFromRevision(revision: RetroSettingsRevision): RetroSettingsDraft 
 export function readRetroSettings(
   db: Database,
   input: { workspaceId: string; accessibleRepositories: readonly string[] },
-): RetroSettingsView {
-  const latest = latestRetroSettingsRevision(db, input.workspaceId);
+): Promise<RetroSettingsView> {
+  return sqliteDb(db).run((q) => readRetroSettingsSteps(q, input));
+}
+
+function* readRetroSettingsSteps(
+  q: Q,
+  input: { workspaceId: string; accessibleRepositories: readonly string[] },
+): Steps<RetroSettingsView> {
+  const latest = yield* latestRetroSettingsRevisionSteps(q, input.workspaceId);
   const settings = latest
     ? draftFromRevision(latest)
     : proposedRetroSettings(input.accessibleRepositories);
@@ -328,7 +339,7 @@ export type RetroSettingsSave =
       draft: unknown;
     };
 
-export function saveRetroSettings(
+export async function saveRetroSettings(
   db: Database,
   input: {
     workspaceId: string;
@@ -340,8 +351,8 @@ export function saveRetroSettings(
     now: number;
     keepSavedProfile?: boolean;
   },
-): RetroSettingsSave {
-  const read = () => readRetroSettings(db, input);
+): Promise<RetroSettingsSave> {
+  const read = (q: Q) => readRetroSettingsSteps(q, input);
   const parsed = parseRetroSettingsDraft(input.draft);
   if (!parsed.ok)
     return { ok: false, reason: "invalid", problems: parsed.problems, draft: input.draft };
@@ -360,10 +371,10 @@ export function saveRetroSettings(
       draft: input.draft,
     };
   draft.repositories = draft.repositories.map((name) => accessible.get(name.toLowerCase())!);
-  return immediate(db, (): RetroSettingsSave => {
-    const latest = latestRetroSettingsRevision(db, input.workspaceId);
+  return sqliteDb(db).transaction(function* (q): Steps<RetroSettingsSave> {
+    const latest = yield* latestRetroSettingsRevisionSteps(q, input.workspaceId);
     if ((latest?.revision ?? 0) !== input.expectedRevision)
-      return { ok: false, reason: "conflict", current: read(), draft: input.draft };
+      return { ok: false, reason: "conflict", current: yield* read(q), draft: input.draft };
     const saved = latest?.agentProfile as RetroAgentProfile | undefined;
     const unchanged =
       input.keepSavedProfile === true &&
@@ -376,14 +387,14 @@ export function saveRetroSettings(
       : checkRetroProfile(draft.agentProfile, input.catalogs, saved?.agent);
     if (!profile.ok)
       return { ok: false, reason: profile.reason, problems: [profile.problem], draft: input.draft };
-    saveRetroSettingsRevision(db, {
+    yield* saveRetroSettingsRevisionSteps(q, {
       ...draft,
       agentProfile: profile.profile,
       workspaceId: input.workspaceId,
       createdBy: input.actorId,
       now: input.now,
     });
-    return { ok: true, view: read() };
+    return { ok: true, view: yield* read(q) };
   });
 }
 
