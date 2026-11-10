@@ -1,11 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { statfsSync } from "node:fs";
 import {
-  actionableDue,
+  actionableDueSteps,
   JOB_PROGRESS_STALE_MS,
   journal,
   LINEAR_WEBHOOK_SILENCE_MS,
-  liveInstances,
+  liveInstancesSteps,
+  sqliteDb,
   type JobLoopLiveness,
 } from "../db";
 import { RUNNER_ONLINE_MS } from "../runner-placement";
@@ -51,8 +52,9 @@ function diskSpace(path: string, statfs: StatFs = statfsSync) {
 /** Local reads only. Log changes so a failed probe and recovery appear in the journal. */
 export function createHealthReport(options: HealthOptions) {
   let previous: string | undefined;
-  return () => {
+  return async () => {
     const db = options.db;
+    const store = db && sqliteDb(db);
     const now = options.now?.() ?? Date.now();
     const checks: Record<string, Check> = {};
     try {
@@ -62,13 +64,13 @@ export function createHealthReport(options: HealthOptions) {
     } catch {
       checks.database = { status: "failed", reason: "unavailable" };
     }
-    const read = (name: string, query: () => Check) => {
+    const read = async (name: string, query: () => Check | Promise<Check>) => {
       if (checks.database!.status !== "ok") {
         checks[name] = { status: "skipped", reason: "database_unavailable" };
         return;
       }
       try {
-        checks[name] = query();
+        checks[name] = await query();
       } catch {
         // Do not expose SQL errors, file paths, or delivery contents on this public route.
         checks[name] = { status: "failed", reason: "read_failed" };
@@ -79,7 +81,7 @@ export function createHealthReport(options: HealthOptions) {
         const value = db!.query<{ count: number }, number[]>(sql).get(...params)!.count;
         return { status: value === 0 ? "ok" : "failed", count: value };
       });
-    count(
+    await count(
       "jobLeases",
       "SELECT count(*) AS count FROM job WHERE status='running' AND (locked_until IS NULL OR locked_until<=?)",
       now,
@@ -87,10 +89,10 @@ export function createHealthReport(options: HealthOptions) {
     if (options.jobLoop === undefined) {
       checks.jobProgress = { status: "skipped", reason: "not_observed" };
     } else {
-      read("jobProgress", () => {
+      await read("jobProgress", async () => {
         const live = options.jobLoop?.() ?? null;
         if (live === null || !live.polling) return { status: "skipped", reason: "starting" };
-        const due = actionableDue(db!, now);
+        const due = await store!.run((q) => actionableDueSteps(q, now));
         if (due.count === 0 || due.oldestRunAt === null) return { status: "ok", count: 0 };
         const ageMs = Math.max(0, now - due.oldestRunAt);
         const tickAge = live.lastTickAt === null ? null : Math.max(0, now - live.lastTickAt);
@@ -109,9 +111,9 @@ export function createHealthReport(options: HealthOptions) {
         };
       });
     }
-    count("deadJobs", "SELECT count(*) AS count FROM job WHERE status='dead'");
-    count("deadOutbox", "SELECT count(*) AS count FROM outbox WHERE status='dead'");
-    read("runnerHeartbeats", () => {
+    await count("deadJobs", "SELECT count(*) AS count FROM job WHERE status='dead'");
+    await count("deadOutbox", "SELECT count(*) AS count FROM outbox WHERE status='dead'");
+    await read("runnerHeartbeats", () => {
       const maxAgeMs = RUNNER_ONLINE_MS + RUNNER_LEASE_GRACE_MS;
       const row = db!
         .query<{ total: number; stale: number; oldest: number | null }, [number]>(
@@ -129,12 +131,12 @@ export function createHealthReport(options: HealthOptions) {
         maxAgeMs,
       };
     });
-    const webhook = (name: string, configured: boolean, sql: string) => {
+    const webhook = async (name: string, configured: boolean, sql: string) => {
       if (!configured) {
         checks[name] = { status: "skipped", reason: "not_configured" };
         return;
       }
-      read(name, () => {
+      await read(name, () => {
         const at = db!.query<{ at: number | null }, []>(sql).get()?.at ?? null;
         const ageMs = at === null ? null : Math.max(0, now - at);
         const maxAgeMs = LINEAR_WEBHOOK_SILENCE_MS;
@@ -146,12 +148,12 @@ export function createHealthReport(options: HealthOptions) {
         };
       });
     };
-    webhook(
+    await webhook(
       "linearWebhook",
       options.linearWebhook,
       "SELECT cursor_ms AS at FROM sync_cursor WHERE name='linear:webhook'",
     );
-    webhook(
+    await webhook(
       "githubWebhook",
       options.githubWebhook,
       "SELECT max(received_at) AS at FROM github_delivery",
@@ -179,12 +181,14 @@ export function createHealthReport(options: HealthOptions) {
     let instances: LiveInstance[] = [];
     if (checks.database!.status === "ok") {
       try {
-        instances = liveInstances(db!, now).map(({ id, role, version, heartbeatAt }) => ({
-          id,
-          role,
-          version,
-          heartbeatAt,
-        }));
+        instances = (await store!.run((q) => liveInstancesSteps(q, now))).map(
+          ({ id, role, version, heartbeatAt }) => ({
+            id,
+            role,
+            version,
+            heartbeatAt,
+          }),
+        );
       } catch {
         instances = [];
       }
@@ -207,4 +211,4 @@ export function createHealthReport(options: HealthOptions) {
   };
 }
 
-export type HealthReport = ReturnType<ReturnType<typeof createHealthReport>>;
+export type HealthReport = Awaited<ReturnType<ReturnType<typeof createHealthReport>>>;

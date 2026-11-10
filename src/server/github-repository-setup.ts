@@ -11,11 +11,13 @@ import {
   type ActiveGitHubApp,
 } from "../auth";
 import {
-  auditWorkspaceAccess,
-  enqueueJob,
-  immediate,
-  listWorkspaceRepositories,
-  replaceWorkspaceRepositories,
+  auditWorkspaceAccessSteps,
+  emitJobReady,
+  enqueueJobSteps,
+  listWorkspaceRepositoriesSteps,
+  replaceWorkspaceRepositoriesSteps,
+  sqliteDb,
+  type Q,
 } from "../db";
 import { readWorkspaceJson, requestWorkspaceSession, validWorkspaceCsrf } from "../workspace";
 import { discoverGitHubInstallation } from "./github-connect-status";
@@ -52,6 +54,7 @@ export function createGitHubRepositorySetup(options: {
   now?: () => number;
 }) {
   const { db } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const http = options.fetch ?? fetch;
   const activation = createWorkspaceGitHubActivation(db, options.home, options.env);
@@ -114,7 +117,11 @@ export function createGitHubRepositorySetup(options: {
     const workspaceId = access!.principal.workspaceId;
     const userId = access!.principal.userId;
     const sessionHash = access!.session.tokenHash;
-    const scope = () => JSON.stringify(listWorkspaceRepositories(db, workspaceId));
+    function* scopeSteps(q: Q) {
+      return JSON.stringify(yield* listWorkspaceRepositoriesSteps(q, workspaceId));
+    }
+    const scope = () => store.run(scopeSteps);
+    const listed = () => store.run((q) => listWorkspaceRepositoriesSteps(q, workspaceId));
     const generation = () =>
       db
         .query<{ generation: number }, [string]>(
@@ -127,9 +134,9 @@ export function createGitHubRepositorySetup(options: {
           "SELECT * FROM workspace_github_oauth WHERE workspace_id=? AND user_id=? AND session_hash=? AND json_extract(intent,'$.kind')=? AND status='complete' AND expires_at>? ORDER BY expires_at DESC LIMIT 1",
         )
         .get(workspaceId, userId, sessionHash, KIND, now());
-    const unchanged = (pending: Pending, secret: Secret) => {
+    function* unchangedSteps(q: Q, pending: Pending, secret: Secret) {
       const row = find();
-      return (
+      return Boolean(
         permitted() &&
         row?.state_hash === pending.state_hash &&
         row.secret_id === pending.secret_id &&
@@ -137,10 +144,12 @@ export function createGitHubRepositorySetup(options: {
         row.intent === pending.intent &&
         pending.expires_at > now() &&
         generation() === pending.expected_generation &&
-        JSON.parse(pending.intent).scope === scope() &&
-        JSON.stringify(activation.template()) === JSON.stringify(secret.app)
+        JSON.parse(pending.intent).scope === (yield* scopeSteps(q)) &&
+        JSON.stringify(activation.template()) === JSON.stringify(secret.app),
       );
-    };
+    }
+    const unchanged = (pending: Pending, secret: Secret) =>
+      store.run((q) => unchangedSteps(q, pending, secret));
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]);
     try {
       for (const expired of db
@@ -176,7 +185,7 @@ export function createGitHubRepositorySetup(options: {
             !permitted() ||
             pending.expires_at <= now() ||
             generation() !== pending.expected_generation ||
-            JSON.parse(pending.intent).scope !== scope() ||
+            JSON.parse(pending.intent).scope !== (await scope()) ||
             JSON.stringify(activation.template()) !== JSON.stringify(secret.app)
           )
             return denied();
@@ -212,7 +221,7 @@ export function createGitHubRepositorySetup(options: {
         const secret = newGitHubOAuthSecret();
         activation.save(secret.id, { app, verifier: secret.verifier });
         try {
-          immediate(db, () => {
+          await store.transaction(function* (q) {
             if (!permitted()) throw new Error("Workspace access changed. Sign in again.");
             db.run(
               "INSERT INTO workspace_github_oauth(state_hash,workspace_id,user_id,session_hash,secret_id,expected_generation,intent,expires_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -223,7 +232,7 @@ export function createGitHubRepositorySetup(options: {
                 sessionHash,
                 secret.id,
                 generation(),
-                JSON.stringify({ kind: KIND, scope: scope() }),
+                JSON.stringify({ kind: KIND, scope: yield* scopeSteps(q) }),
                 now() + 600_000,
               ],
             );
@@ -251,9 +260,9 @@ export function createGitHubRepositorySetup(options: {
               },
               409,
             )
-          : reply({ signedIn: false, mappings: listWorkspaceRepositories(db, workspaceId) });
+          : reply({ signedIn: false, mappings: await listed() });
       const secret = activation.read<Secret>(pending.secret_id);
-      if (!secret.user || !unchanged(pending, secret))
+      if (!secret.user || !(await unchanged(pending, secret)))
         return reply(
           {
             error: "Workspace access changed. Sign in with GitHub again.",
@@ -278,7 +287,7 @@ export function createGitHubRepositorySetup(options: {
         ),
         options.teams(request, signal),
       ]);
-      if (!unchanged(pending, secret)) return denied();
+      if (!(await unchanged(pending, secret))) return denied();
       if (request.method === "GET")
         return reply({
           signedIn: true,
@@ -286,7 +295,7 @@ export function createGitHubRepositorySetup(options: {
           login: secret.user.login,
           ...choices,
           teams,
-          mappings: listWorkspaceRepositories(db, workspaceId),
+          mappings: await listed(),
         });
       if (choices.missingPermissions.length)
         return reply(
@@ -340,14 +349,17 @@ export function createGitHubRepositorySetup(options: {
       activation.save(activeId, { ...secret.app, installationId: choices.installationId });
       let committed = false;
       try {
-        const result = immediate(db, () => {
-          if (!unchanged(pending, secret)) return denied();
-          replaceWorkspaceRepositories(db, {
-            workspaceId,
-            actorId: userId,
-            repositories: mappings,
-            now: now(),
-          });
+        const job = { ready: false };
+        const result = await store.transaction(function* (q) {
+          if (!(yield* unchangedSteps(q, pending, secret))) return denied();
+          yield* q.transaction((savepoint) =>
+            replaceWorkspaceRepositoriesSteps(savepoint, {
+              workspaceId,
+              actorId: userId,
+              repositories: mappings,
+              now: now(),
+            }),
+          );
           db.run(
             "INSERT INTO workspace_github_connection(workspace_id) VALUES(?) ON CONFLICT DO NOTHING",
             [workspaceId],
@@ -369,20 +381,22 @@ export function createGitHubRepositorySetup(options: {
             "UPDATE workspace_github_oauth SET expected_generation=?,intent=? WHERE state_hash=?",
             [
               pending.expected_generation + 1,
-              JSON.stringify({ kind: KIND, scope: scope() }),
+              JSON.stringify({ kind: KIND, scope: yield* scopeSteps(q) }),
               pending.state_hash,
             ],
           );
-          auditWorkspaceAccess(db, {
+          yield* auditWorkspaceAccessSteps(q, {
             workspaceId,
             userId,
             action: "github.connect.activated",
             subject: `${secret.app.appId}:${choices.installationId}:${secret.user!.id}`,
             now: now(),
           });
-          enqueueJob(db, { queue: "github.auth.recover", now: now() });
+          yield* enqueueJobSteps(q, { queue: "github.auth.recover", now: now() });
+          job.ready = true;
           return reply({ ok: true });
         });
+        if (job.ready) emitJobReady(store);
         committed = result.status === 200;
         return result;
       } finally {
