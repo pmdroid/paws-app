@@ -717,6 +717,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
           .length,
       },
     );
+    await until(() => getWorkItem(db, allowed.item.id)?.state === "failed");
     const permittedStop = task("new-member", "stop");
     // A real item has its Linear snapshot, so the scheduler's sweep does not reconcile it mid-stop.
     saveDependencySnapshot(db, {
