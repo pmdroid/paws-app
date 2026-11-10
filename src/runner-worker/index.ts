@@ -46,6 +46,7 @@ import {
 import { join, isAbsolute } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { executeRetroCommand, type RetroWorkerResult } from "./retro";
+import { missingToolchainQuestion } from "./toolchain";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   appBotCommitIdentity,
@@ -2447,53 +2448,6 @@ export async function executeRunnerCommand(
       openRunnerCheckoutToGroup(checkout);
     closeSync(eventJournal);
   }
-}
-
-// Keep discovery bounded: root projects, direct children, and conventional workspace apps.
-function missingToolchainQuestion(worktree: string, path: string): string | undefined {
-  const directories = [""];
-  for (const entry of readdirSync(worktree, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name === ".git") continue;
-    directories.push(entry.name);
-    if (entry.name === "apps" || entry.name === "packages")
-      for (const child of readdirSync(join(worktree, entry.name), { withFileTypes: true }))
-        if (child.isDirectory()) directories.push(`${entry.name}/${child.name}`);
-  }
-  const tools = [
-    ["Cargo.toml", "cargo", 'rust = "stable"'],
-    ["go.mod", "go", 'go = "latest"'],
-    ["pyproject.toml", "python3", 'python = "3.12"'],
-    ["Gemfile", "ruby", 'ruby = "3.3"'],
-    ["bun.lock", "bun", 'bun = "latest"'],
-    ["bun.lockb", "bun", 'bun = "latest"'],
-    ["package.json", "node", 'node = "lts"'],
-  ] as const;
-  const missing = new Map<string, { manifest: string; count: number }>();
-  const lines = new Set<string>();
-  for (const directory of directories.sort()) {
-    const root = join(worktree, directory);
-    for (const [manifest, tool, line] of tools) {
-      if (
-        manifest === "package.json" &&
-        (existsSync(join(root, "bun.lock")) || existsSync(join(root, "bun.lockb")))
-      )
-        continue;
-      if (!existsSync(join(root, manifest)) || Bun.which(tool, { PATH: path, cwd: worktree }))
-        continue;
-      const found = missing.get(tool);
-      if (found) found.count++;
-      else
-        missing.set(tool, { manifest: `${directory ? `${directory}/` : ""}${manifest}`, count: 1 });
-      lines.add(line);
-    }
-  }
-  if (!missing.size) return;
-  // One representative manifest per tool keeps large repositories within the protocol limit.
-  const descriptions = [...missing].map(
-    ([tool, { manifest, count }]) =>
-      `${manifest.slice(0, 1_000)}${count > 1 ? ` (and ${count - 1} other manifests)` : ""} needs ${tool}, which isn't installed on the runner.`,
-  );
-  return `${descriptions.join("\n")} Add these entries to the existing [tools] table in mise.toml at the repository root, or create that table if absent. Commit the configuration to main, then answer to retry (do not add a second [tools] header):\n\n[tools]\n${[...lines].join("\n")}`;
 }
 
 /**
