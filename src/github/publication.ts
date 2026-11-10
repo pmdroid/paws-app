@@ -285,22 +285,25 @@ async function partialCandidate(run: Run, candidate: string): Promise<boolean> {
   );
 }
 
-/**
- * The `origin` of a blob-less destination. An unfiltered fetch into it gets a thin pack whose blob
- * deltas need bases the destination lacks, and `GIT_NO_LAZY_FETCH` rightly refuses to download them.
- * `git fetch` has no `--no-thin`, so the fetch asks for no blobs at all. It goes through `origin`
- * with the URL rewritten to the local publication repository: Git records `--filter` against the
- * remote it fetches from, and a path would add a second promisor to the destination's config.
- */
 async function promisorRemote(
   run: Run,
   destination: string,
 ): Promise<{ url: string; filter: string } | undefined> {
-  const config = (await run(["config", "--list"], destination)).stdout;
-  const url = /^remote\.origin\.url=(.+)$/m.exec(config)?.[1];
-  if (!url || !/^remote\.origin\.promisor=true$/im.test(config)) return undefined;
-  const filter = /^remote\.origin\.partialclonefilter=(.+)$/m.exec(config)?.[1];
-  return { url, filter: filter ?? "blob:none" };
+  const config = async (...query: string[]) => {
+    try {
+      return (await run(["config", ...query], destination)).stdout.trim();
+    } catch (error) {
+      if (!(error instanceof GitCommandError)) throw error;
+      return "";
+    }
+  };
+  if ((await config("--bool", "--get", "remote.origin.promisor")) !== "true") return undefined;
+  const [url] = (await config("--get-all", "remote.origin.url")).split("\n");
+  if (!url) return undefined;
+  return {
+    url,
+    filter: (await config("--get", "remote.origin.partialclonefilter")) || "blob:none",
+  };
 }
 
 async function stagePersistent(
@@ -474,24 +477,19 @@ async function publish(
       if (!promisor) await run(["fetch", "--prune", repository, `+${ref}:${ref}`], options.cwd);
       else {
         await run(["--git-dir", repository, "config", "uploadpack.allowFilter", "true"]);
-        const fetch = [
-          "fetch",
-          `--filter=${promisor.filter}`,
-          "--upload-pack=git-upload-pack",
-          "--prune",
-          "origin",
-          `+${ref}:${ref}`,
-        ];
-        await gitExec(fetch, {
-          cwd: options.cwd,
-          signal: options.signal,
-          env: {
-            ...env,
-            GIT_CONFIG_COUNT: "1",
-            GIT_CONFIG_KEY_0: `url.${repository}.insteadOf`,
-            GIT_CONFIG_VALUE_0: promisor.url,
-          },
-        });
+        await run(
+          [
+            "-c",
+            `url.${repository}.insteadOf=${promisor.url}`,
+            "fetch",
+            `--filter=${promisor.filter}`,
+            "--upload-pack=git-upload-pack",
+            "--prune",
+            "origin",
+            `+${ref}:${ref}`,
+          ],
+          options.cwd,
+        );
       }
     }
     if (persistent && command === "push")
