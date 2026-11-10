@@ -432,11 +432,16 @@ function shellQuote(value: string): string {
  * The one command a member runs on a fresh Linux host: install the runner, write its config for
  * this Paws, stage the token in a root-owned mode 0600 file, enroll and start the daemon. The
  * token reaches the file through the shell's printf builtin, never through a process's argv.
+ * Docker for agent jobs is granted or denied explicitly, so the installer never needs a terminal
+ * to ask.
  */
-export function hostEnrollmentCommand(enrollment: HostEnrollment & { config: object }): string {
+export function hostEnrollmentCommand(
+  enrollment: HostEnrollment & { config: object },
+  docker: boolean,
+): string {
   const config = JSON.stringify({ ...enrollment.config, concurrency: 2 });
   return [
-    "curl -fsSL https://get.paws.boo | sudo sh",
+    `curl -fsSL https://get.paws.boo | sudo env PAWS_RUNNER_DOCKER_ACCESS=${docker ? "grant" : "deny"} sh`,
     `printf '%s\\n' ${shellQuote(enrollment.token)} | sudo install -o root -g root -m 0600 /dev/stdin /etc/paws-runner/enrollment-token`,
     `printf '%s\\n' ${shellQuote(config)} | sudo install -o root -g paws-runner -m 0640 /dev/stdin /etc/paws-runner/config.json`,
     `sudo /opt/paws-runner/bin/paws-runner runner enroll --config /etc/paws-runner/config.json --name ${shellQuote(enrollment.name)} --token-file /etc/paws-runner/enrollment-token`,
@@ -1371,6 +1376,7 @@ export function createRunners() {
   let usageRunner: string | null = null;
   let addingHost = false;
   let hostName = "";
+  let dockerAccess = true;
   let enrollment: HostEnrollment | null = null;
   let memberVm: MemberVmState = { available: false };
   let pools: PoolList = { state: "loading" };
@@ -1597,14 +1603,14 @@ export function createRunners() {
     const expired = enrollment !== null && enrollment.expiresAt <= now;
     const command =
       enrollment?.config && !expired
-        ? `<p>Run this on the Linux runner. It installs the runner, writes its config for this Paws and enrolls with a single-use token. The runner appears here, owned by you.</p><pre class="mono" id="runner-enroll-command">${esc(hostEnrollmentCommand({ ...enrollment, config: enrollment.config }))}</pre><div class="between"><p class="muted">The token expires at ${esc(new Date(enrollment.expiresAt).toLocaleTimeString())} and works once.</p><button class="btn" data-runner-enroll-copy data-focus="enroll-copy">Copy command</button></div>`
+        ? `<p>Run this on the Linux runner. It installs the runner, writes its config for this Paws and enrolls with a single-use token. The runner appears here, owned by you.</p><pre class="mono" id="runner-enroll-command">${esc(hostEnrollmentCommand({ ...enrollment, config: enrollment.config }, dockerAccess))}</pre><div class="between"><p class="muted">The token expires at ${esc(new Date(enrollment.expiresAt).toLocaleTimeString())} and works once.</p><button class="btn" data-runner-enroll-copy data-focus="enroll-copy">Copy command</button></div>`
         : enrollment && !expired
           ? '<p role="alert" class="err">Paws has no public HTTPS address for runners. Set PAWS_PUBLIC_URL and restart Paws.</p>'
           : expired
             ? '<p class="muted">The token expired. Create a new command.</p>'
             : "";
     const dialog = adding
-      ? `<dialog id="runner-add-dialog" aria-labelledby="runner-add-heading"><div class="dialog-body"><div class="between"><h2 id="runner-add-heading">Add a runner</h2><button class="btn" data-runner-add-close data-focus="add-close">Close</button></div>${alert}<form id="runner-enrollment"><label class="field"><span>Runner name</span><input name="host-name" data-focus="host-name" required maxlength="80" autocomplete="off" spellcheck="false" value="${esc(hostName)}"${disabled}></label><button class="btn primary" type="submit" data-focus="enroll"${disabled}>${enrollment ? "Create a new command" : "Create command"}</button></form>${command}</div></dialog>`
+      ? `<dialog id="runner-add-dialog" aria-labelledby="runner-add-heading"><div class="dialog-body"><div class="between"><h2 id="runner-add-heading">Add a runner</h2><button class="btn" data-runner-add-close data-focus="add-close">Close</button></div>${alert}<form id="runner-enrollment"><label class="field"><span>Runner name</span><input name="host-name" data-focus="host-name" required maxlength="80" autocomplete="off" spellcheck="false" value="${esc(hostName)}"${disabled}></label><label class="runner-consent"><input type="checkbox" name="docker-access" data-focus="docker-access"${dockerAccess ? " checked" : ""}${disabled}><span>Docker for agent jobs: a rootless Docker daemon of their own, when Docker Engine is installed on the runner</span></label><button class="btn primary" type="submit" data-focus="enroll"${disabled}>${enrollment ? "Create a new command" : "Create command"}</button></form>${command}</div></dialog>`
       : "";
     const empty = addsHosts()
       ? "<p>No runners are enrolled. Select <b>Add a runner</b> to connect a Linux runner.</p>"
@@ -1859,6 +1865,12 @@ export function createRunners() {
       ?.addEventListener("input", (event) => {
         hostName = (event.target as HTMLInputElement).value;
       });
+    root!
+      .querySelector<HTMLInputElement>('input[name="docker-access"]')
+      ?.addEventListener("change", (event) => {
+        dockerAccess = (event.target as HTMLInputElement).checked;
+        paint();
+      });
     root!.querySelector("#runner-enrollment")?.addEventListener("submit", (event) => {
       event.preventDefault();
       void change(async () => {
@@ -1872,7 +1884,10 @@ export function createRunners() {
     });
     root!.querySelector("[data-runner-enroll-copy]")?.addEventListener("click", () => {
       if (!enrollment?.config) return;
-      const value = hostEnrollmentCommand({ ...enrollment, config: enrollment.config });
+      const value = hostEnrollmentCommand(
+        { ...enrollment, config: enrollment.config },
+        dockerAccess,
+      );
       void Promise.resolve()
         .then(() => navigator.clipboard.writeText(value))
         .then(
