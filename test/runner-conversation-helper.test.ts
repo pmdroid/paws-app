@@ -339,6 +339,15 @@ test(
     withFixture(async (fixture) => {
       const { published, calls } = await converse(fixture, command(), {
         steps: [
+          {
+            type: "permission",
+            toolCall: {
+              toolCallId: "long-plan",
+              name: "mcp__paws__start_work",
+              kind: "other",
+              rawInput: { plan: "x".repeat(4001) },
+            },
+          },
           { type: "start_work", plan: "x".repeat(4001) },
           { type: "reply", text: "The plan was too long; here is the short answer instead." },
           { type: "end" },
@@ -348,6 +357,10 @@ test(
       expect(calls.updates[0]).toEqual({
         ok: true,
         text: expect.stringContaining("Not started: plan needs 1 to 4000 characters"),
+      });
+      // Claude's call under the paws server name is allowed, so the refusal names the limit.
+      expect(calls.permissions[0].outcome).toEqual({
+        outcome: { outcome: "selected", optionId: "allow" },
       });
       expect(published.startWork).toBeUndefined();
       expect(published.replies).toEqual([

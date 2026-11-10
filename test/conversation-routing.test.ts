@@ -446,6 +446,9 @@ test("start_work in a conversation on a 0.1.77 runner restarts the item with the
   await f.say("acme-1", "c-1", "Please add a test for the card retry.");
   expect(await f.deliver("acme-1")).toBe("wait");
   const [started] = await f.conversations();
+  // The person's message goes to the agent session that the work turn resumes.
+  expect(started!.command.prompt).toContain("Please add a test for the card retry.");
+  expect(started!.command.conversation!.resumeSessionId).toBe("claude-acme-1");
 
   const plan = "Add a test that checkout retries a card once on a gateway timeout.";
   await f.answer(started!.id, { text: "", replies: ["I will add that test."], startWork: plan });
