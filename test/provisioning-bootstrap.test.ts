@@ -52,14 +52,27 @@ const PROBE = `sudo sh -c ${q(
   "systemctl show --property=LoadState,ActiveState,SubState,Result paws-bootstrap-install.service 2>/dev/null; " +
     "printf 'Version=%s\\n' \"$(dpkg-query -W -f='${db:Status-Status} ${Version}' paws-runner 2>/dev/null)\"; " +
     "printf 'Config=%s\\n' \"$(sha256sum /etc/paws-runner/config.json 2>/dev/null | cut -d' ' -f1)\"; " +
-    "printf 'Mise=%s\\n' \"$(sha256sum /usr/local/bin/mise 2>/dev/null | cut -d' ' -f1)\"",
+    "printf 'Mise=%s\\n' \"$(sha256sum /usr/local/bin/mise 2>/dev/null | cut -d' ' -f1)\"; " +
+    "printf 'Error=%s\\n' \"$(head -c 400 /var/lib/paws-bootstrap/install-error 2>/dev/null)\"",
 )}`;
 
 const RUN_SCRIPT = [
   "#!/bin/sh",
   "set -eu",
   "stage=/var/lib/paws-bootstrap",
-  `sh "$stage/install-runner.sh" '1.4.0'`,
+  `rm -f "$stage/install-error"`,
+  `fail() { printf '%s\\n' "$1" | tr '\\n' ' ' > "$stage/install-error"; printf '%s\\n' "$1" >&2; exit 1; }`,
+  "if ! command -v dockerd >/dev/null 2>&1; then",
+  "  export DEBIAN_FRONTEND=noninteractive",
+  "  { apt-get update && apt-get install -y docker.io; } || fail 'Could not install Docker Engine (the docker.io package), which agent jobs on this runner need.'",
+  "fi",
+  `PAWS_RUNNER_DOCKER_ACCESS=grant sh "$stage/install-runner.sh" '1.4.0'`,
+  "tries=0",
+  "until detail=$(runuser -u paws-runner -- docker --host unix:///run/paws-docker/docker.sock info 2>&1 >/dev/null); do",
+  "  tries=$((tries + 1))",
+  `  [ "$tries" -lt 30 ] || fail "Docker for agent jobs is not working: paws-runner could not reach its rootless Docker daemon at /run/paws-docker/docker.sock ($(printf '%s' "$detail" | tail -c 200)). Check journalctl -u paws-docker.service on the VM."`,
+  "  sleep 1",
+  "done",
   "mise=$(mktemp)",
   `trap 'rm -f "$mise"' EXIT`,
   `curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 1 -o "$mise" 'https://github.com/jdx/mise/releases/download/v2026.10.18/mise-v2026.10.18-linux-x64'`,
@@ -143,6 +156,7 @@ function probe(state: {
   version?: string;
   config?: string;
   mise?: string;
+  error?: string;
 }): string {
   return [
     `LoadState=${state.active ? "loaded" : "not-found"}`,
@@ -152,6 +166,7 @@ function probe(state: {
     `Version=${state.version ?? ""}`,
     `Config=${state.config ?? ""}`,
     `Mise=${state.mise ?? ""}`,
+    `Error=${state.error ?? ""}`,
     "",
   ].join("\n");
 }
@@ -357,6 +372,20 @@ test("installStatus reports running, succeeded or failed from the unit and the i
     expect(await createExeDevBootstrap(options(exe)).installStatus(VM)).toBe(expected as never);
     expect(exe.calls).toEqual([{ operation: "execVm", vm: VM, command: PROBE, timeoutMs: 25_000 }]);
   }
+
+  const docker = setup();
+  docker.scriptExec(VM, PROBE, {
+    stdout: probe({
+      active: "failed",
+      sub: "failed",
+      error: "Docker for agent jobs is not working.",
+    }),
+  });
+  const reason = await bootstrapError(createExeDevBootstrap(options(docker)).installStatus(VM));
+  expect([reason.step, reason.message]).toEqual([
+    "status",
+    `${VM}: the runner install failed: Docker for agent jobs is not working.`,
+  ]);
 
   const broken = setup();
   broken.scriptExec(VM, PROBE, { exitCode: 255 });
@@ -612,6 +641,70 @@ test("the staged files land with the right modes and the commands are valid shel
   ]) {
     expect(Bun.spawnSync(["/bin/sh", "-n", "-c", script]).exitCode).toBe(0);
   }
+});
+
+/** Run the staged run.sh with stub host commands; `host` names which ones the VM has and how they behave. */
+function runInstall(host: { dockerd: boolean; aptGet: number; runuser: number }) {
+  const vm = localVm();
+  expect(vm.run(STAGE).exitCode).toBe(0);
+  const bin = mkdtempSync(join(tmpdir(), "paws-run-script-"));
+  const log = join(bin, "calls");
+  const stub = (name: string, exit: number, echo = "") => {
+    const line = `printf '%s\\n' "${name}${echo} $*" >> ${q(log)}`;
+    writeFileSync(join(bin, name), `#!/bin/sh\n${line}\nexit ${exit}\n`, { mode: 0o755 });
+  };
+  if (host.dockerd) stub("dockerd", 0);
+  stub("apt-get", host.aptGet);
+  stub("sh", 0, " access=$PAWS_RUNNER_DOCKER_ACCESS");
+  stub("runuser", host.runuser);
+  stub("sleep", 0);
+  stub("curl", 1);
+  for (const tool of ["rm", "tr", "tail", "mktemp"])
+    writeFileSync(
+      join(bin, tool),
+      `#!/bin/sh
+exec ${Bun.which(tool)} "$@"
+`,
+      { mode: 0o755 },
+    );
+  const result = Bun.spawnSync(["/bin/sh", join(vm.stage, "run.sh")], { env: { PATH: bin } });
+  const read = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : "");
+  return {
+    exitCode: result.exitCode,
+    calls: read(log).replaceAll(vm.stage, "<stage>").trim().split("\n"),
+    error: read(join(vm.stage, "install-error")),
+  };
+}
+
+test("the run script installs docker.io when the image has no Docker Engine and grants Docker to the runner", () => {
+  const run = runInstall({ dockerd: false, aptGet: 0, runuser: 0 });
+  expect(run.calls.slice(0, 4)).toEqual([
+    "apt-get update",
+    "apt-get install -y docker.io",
+    "sh access=grant <stage>/install-runner.sh 1.4.0",
+    "runuser -u paws-runner -- docker --host unix:///run/paws-docker/docker.sock info",
+  ]);
+  // It goes on to mise, which this stub refuses.
+  expect(run.calls[4]).toStartWith("curl ");
+  expect(run.error).toBe("");
+});
+
+test("the run script keeps an installed Docker Engine and fails clearly when the runner's daemon never answers", () => {
+  const run = runInstall({ dockerd: true, aptGet: 0, runuser: 1 });
+  expect(run.exitCode).toBe(1);
+  expect(run.calls[0]).toBe("sh access=grant <stage>/install-runner.sh 1.4.0");
+  expect(run.calls.filter((call) => call.startsWith("runuser ")).length).toBe(30);
+  expect(run.calls.some((call) => call.startsWith("curl ") || call.startsWith("apt-get "))).toBe(
+    false,
+  );
+  expect(run.error).toStartWith(
+    "Docker for agent jobs is not working: paws-runner could not reach its rootless Docker daemon at /run/paws-docker/docker.sock",
+  );
+
+  const apt = runInstall({ dockerd: false, aptGet: 100, runuser: 0 });
+  expect(apt.exitCode).toBe(1);
+  expect(apt.calls).toEqual(["apt-get update"]);
+  expect(apt.error).toStartWith("Could not install Docker Engine (the docker.io package)");
 });
 
 test("the VM's own openssl key receives the token, and a failed enroll still removes it", async () => {
