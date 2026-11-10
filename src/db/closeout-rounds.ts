@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
-import { desc, eq } from "drizzle-orm";
-import type { Q } from "./db";
-import { jsonText } from "./json-text";
+import { asc, desc, eq, sql } from "drizzle-orm";
+import type { Q, Steps } from "./db";
+import { jsonText, jsonValue } from "./json-text";
 
 /**
  * A fresh Closeout retry budget for one rebased head. Evidence recorded before
@@ -31,6 +31,23 @@ export function startCloseoutRound(db: Database, input: CloseoutRound): boolean 
   );
 }
 
+export function* startCloseoutRoundSteps(q: Q, input: CloseoutRound): Steps<boolean> {
+  const { closeoutRound } = q.t;
+  const inserted = yield* q.all(
+    q.orm
+      .insert(closeoutRound)
+      .values({
+        itemId: input.itemId,
+        head: input.head,
+        retryBaseline: jsonValue(q, input.retryBaseline),
+        startedAt: input.startedAt,
+      })
+      .onConflictDoNothing()
+      .returning({ itemId: closeoutRound.itemId }),
+  );
+  return inserted.length > 0;
+}
+
 /** Rounds after the first, oldest first. */
 export function listCloseoutRounds(db: Database, itemId?: string): CloseoutRound[] {
   const rows =
@@ -46,6 +63,29 @@ export function listCloseoutRounds(db: Database, itemId?: string): CloseoutRound
     head: row.head,
     retryBaseline: JSON.parse(row.retry_baseline) as string[],
     startedAt: row.started_at,
+  }));
+}
+
+export function* listCloseoutRoundsSteps(q: Q, itemId?: string): Steps<CloseoutRound[]> {
+  const { closeoutRound } = q.t;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        itemId: closeoutRound.itemId,
+        head: closeoutRound.head,
+        retryBaseline: jsonText(q, closeoutRound.retryBaseline),
+        startedAt: closeoutRound.startedAt,
+      })
+      .from(closeoutRound)
+      .where(itemId === undefined ? undefined : eq(closeoutRound.itemId, itemId))
+      .orderBy(
+        asc(closeoutRound.startedAt),
+        q.dialect === "sqlite" ? sql`rowid` : asc(closeoutRound.head),
+      ),
+  );
+  return rows.map((row) => ({
+    ...row,
+    retryBaseline: JSON.parse(row.retryBaseline) as string[],
   }));
 }
 
