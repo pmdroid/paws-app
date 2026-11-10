@@ -356,7 +356,12 @@ function* evidenceOfSteps(q: Q, access: ImprovementAccess, item: InboxItem) {
         new Map((yield* listRetroEvidenceSteps(q, retroId)).map((e) => [e.evidenceId, e])),
       );
     const entry = byRetro.get(retroId)!.get(evidenceId);
-    if (!entry || access.retroEvidence?.(retroId)?.has(evidenceId) === false) continue;
+    if (
+      !entry ||
+      (access.retroEvidence !== undefined &&
+        (yield* access.retroEvidence(q, retroId))?.has(evidenceId) === false)
+    )
+      continue;
     evidence.push({
       kind: "retro_evidence" as const,
       ref,

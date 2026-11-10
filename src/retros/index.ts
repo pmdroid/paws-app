@@ -34,7 +34,7 @@ export {
   RETRO_SETTINGS_PATH,
   type RetroCatalog,
 } from "./http";
-export { retroReaderAccess, type RetroReaderAccess } from "./access";
+export { retroReaderAccess, retroReaderAccessSteps, type RetroReaderAccess } from "./access";
 export {
   boundRetroDigest,
   buildRetroDigest,
