@@ -59,6 +59,7 @@ import {
   mergeThroughGitHubQueue,
   reviewHold,
   sendBack,
+  waitConflict,
   type MergeContext,
   type MergePull,
   type OrderCapabilities,
@@ -389,8 +390,16 @@ export async function advanceMerge(
         now: caps.now(),
       }),
     );
-  if (step.kind === "wait" && step.reason === "ci")
-    return caps.stopped() ? { kind: "obsolete" } : step;
+  if (step.kind === "wait" && step.reason === "ci") {
+    if (caps.stopped()) return { kind: "obsolete" };
+    if (turn.kind !== "blocked" || turn.block !== "ci_pending") return step;
+    // GitHub runs no CI on a conflicting pull request: send it back instead of waiting forever.
+    const returned = await waitConflict(merge, pull.number, { for: "CI", main: turn.pull.base });
+    if (returned === null) return step;
+    await store.run((q) => leaveMergeQueueSteps(q, item.id));
+    await store.run((q) => wakeMergesBehindSteps(q, caps.now()));
+    return returned;
+  }
   if (turn.kind === "merged") {
     await checkQueueBehind(store, {
       repository: queueName(repository),

@@ -89,7 +89,8 @@ export default {
     proof.expect("the rebase turn's plan shows Fix merge conflicts", fixing());
     proof.expect(
       "the rebase turn is told to squash the branch to one commit first",
-      rebasePrompts.length === 1 && rebasePrompts[0]!.includes(SQUASH),
+      // The scripted rebase turn commits nothing, so the head may go back more than once.
+      rebasePrompts.length > 0 && rebasePrompts.every((prompt) => prompt.includes(SQUASH)),
       rebasePrompts.length,
     );
   },
