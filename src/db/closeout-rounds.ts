@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { asc, desc, eq, sql } from "drizzle-orm";
-import type { Q, Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 /**
@@ -90,16 +90,33 @@ export function* listCloseoutRoundsSteps(q: Q, itemId?: string): Steps<CloseoutR
 }
 
 /** Capture evidence only at admission of a human turn, never on redispatch. */
+export function* saveHumanRetryWindowSteps(
+  q: Q,
+  itemId: string,
+  jobId: number,
+  baseline: readonly string[],
+) {
+  const { closeoutRetryWindow: window, job } = q.t;
+  yield* q.exec(
+    q.orm
+      .insert(window)
+      .values({
+        jobId,
+        activationId: sql`(SELECT ${job.activationId} FROM ${job} WHERE ${job.id} = ${jobId})`,
+        itemId,
+        retryBaseline: jsonValue(q, baseline),
+      })
+      .onConflictDoNothing(),
+  );
+}
+
 export function saveHumanRetryWindow(
   db: Database,
   itemId: string,
   jobId: number,
   baseline: readonly string[],
 ): void {
-  db.run(
-    "INSERT OR IGNORE INTO closeout_retry_window(job_id,activation_id,item_id,retry_baseline) VALUES (?1,(SELECT activation_id FROM job WHERE id=?1),?2,?3)",
-    [jobId, itemId, JSON.stringify(baseline)],
-  );
+  settled(sqliteDb(db).run((q) => saveHumanRetryWindowSteps(q, itemId, jobId, baseline)));
 }
 
 export function* humanRetryBaselineSteps(q: Q, itemId: string) {
