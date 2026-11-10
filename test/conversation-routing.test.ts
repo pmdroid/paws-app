@@ -188,7 +188,7 @@ function setup(options: { version?: string; conversations?: number } = {}) {
       expect(await orchestrator.onLinearEvent(comment(itemId, id, body))).toBe(true);
     },
     deliver: (itemId: string) => deliverLinearComments(db, itemId, caps()),
-    turn: (session: string, key: string, body: string) =>
+    turn: async (session: string, key: string, body: string) =>
       recordLinearTurn(db, {
         eventKey: key,
         activityId: null,
@@ -420,8 +420,8 @@ test("a queued item's start job waits while a conversation runs on its session",
 test("session replies past the prompt budget wait for the next conversation", async () => {
   const f = setup();
   const acme = f.item("acme-1");
-  f.turn(acme.session, "turn-1", `First: ${"a".repeat(40_000)}`);
-  f.turn(acme.session, "turn-2", `Second: ${"b".repeat(40_000)}`);
+  await f.turn(acme.session, "turn-1", `First: ${"a".repeat(40_000)}`);
+  await f.turn(acme.session, "turn-2", `Second: ${"b".repeat(40_000)}`);
   expect(await f.deliver("acme-1")).toBe("wait");
   const [first] = await f.conversations();
   expect(first!.command.prompt).toContain("First:");
