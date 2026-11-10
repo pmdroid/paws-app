@@ -14,27 +14,28 @@ import {
   openDatabase,
   restart,
   saveCheckpoint,
+  sqliteDb,
 } from "../db";
 import { acceptedResumeNeedsTurn, mergeAcceptedWork, settleRejectedPush } from "./accepted-work";
 
 const ACCEPTED = "672c580b";
 
 /** An item Closeout accepted at ACCEPTED, sent back to the agent from the merge queue. */
-function acceptedItem() {
+async function acceptedItem() {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "pas-814", sessionKey: "ses", now: 1_000 });
   const { run } = beginImplementRun(db, item.id, 1_000);
   applyWorkItemEvent(db, item.id, "turn_ended");
   applyWorkItemEvent(db, item.id, "closeout_accepted");
-  markCloseoutAccepted(db, item.id, ACCEPTED);
+  await markCloseoutAccepted(sqliteDb(db), item.id, ACCEPTED);
   saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: ACCEPTED });
   applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
   applyWorkItemEvent(db, item.id, "dispatched");
   return { db, itemId: item.id, runId: run.id };
 }
 
-function implementTurns(db: ReturnType<typeof acceptedItem>["db"]) {
+function implementTurns(db: Awaited<ReturnType<typeof acceptedItem>>["db"]) {
   return listJobs(db).filter(
     (job) =>
       (job.queue === JOB_KIND.resume || job.queue === JOB_KIND.start) &&
@@ -42,12 +43,12 @@ function implementTurns(db: ReturnType<typeof acceptedItem>["db"]) {
   );
 }
 
-function mergeJobs(db: ReturnType<typeof acceptedItem>["db"]) {
+function mergeJobs(db: Awaited<ReturnType<typeof acceptedItem>>["db"]) {
   return listJobs(db).filter((job) => job.queue === JOB_KIND.merge && job.status === "pending");
 }
 
-test("an accepted head that is the pull request head goes to the merge queue without an implement turn", () => {
-  const { db, itemId, runId } = acceptedItem();
+test("an accepted head that is the pull request head goes to the merge queue without an implement turn", async () => {
+  const { db, itemId, runId } = await acceptedItem();
   const resume = enqueueJob(db, {
     queue: JOB_KIND.resume,
     payload: { itemId, reason: "transient_failure" },
@@ -94,7 +95,7 @@ test("new input or a different pull request head still gets an implement turn", 
 });
 
 test("a rejected push whose remote is the accepted head goes to the merge queue without a question", async () => {
-  const { db, itemId } = acceptedItem();
+  const { db, itemId } = await acceptedItem();
   expect(getWorkItem(db, itemId)?.state).toBe("running");
 
   expect(
@@ -112,7 +113,7 @@ test("a rejected push whose remote is the accepted head goes to the merge queue 
 });
 
 test("a rejected push whose remote contains the accepted head goes to the merge queue", async () => {
-  const { db, itemId } = acceptedItem();
+  const { db, itemId } = await acceptedItem();
   expect(
     await settleRejectedPush(db, itemId, {
       remoteHead: "ahead",
@@ -124,7 +125,7 @@ test("a rejected push whose remote contains the accepted head goes to the merge 
 });
 
 test("a rejected push whose remote diverged from the accepted head is left to conflict handling", async () => {
-  const { db, itemId } = acceptedItem();
+  const { db, itemId } = await acceptedItem();
   expect(
     await settleRejectedPush(db, itemId, {
       remoteHead: "diverged",
@@ -155,8 +156,8 @@ test("an item without accepted work is not sent to the merge queue", async () =>
   expect(getWorkItem(db, "fresh")?.state).toBe("running");
 });
 
-test("an accepted item queued again by a restart leaves that restart for the merge queue", () => {
-  const { db, itemId } = acceptedItem();
+test("an accepted item queued again by a restart leaves that restart for the merge queue", async () => {
+  const { db, itemId } = await acceptedItem();
   const item = getWorkItem(db, itemId)!;
   const job = restart(db, item, { reason: "follow_up", body: "go on", now: 2_000 })!;
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
@@ -167,7 +168,7 @@ test("an accepted item queued again by a restart leaves that restart for the mer
 
 for (const reason of ["ci", "review"] as const) {
   test(`a rejected push of a turn carrying ${reason} input goes to the question, not the merge queue`, async () => {
-    const { db, itemId } = acceptedItem();
+    const { db, itemId } = await acceptedItem();
     const job = restart(db, getWorkItem(db, itemId)!, {
       reason,
       body: `fix ${reason}`,
@@ -188,8 +189,8 @@ for (const reason of ["ci", "review"] as const) {
 }
 
 for (const decision of ["rejected", "blocked"] as const) {
-  test(`accepted work whose latest Closeout run on that head is ${decision} is not merged`, () => {
-    const { db, itemId } = acceptedItem();
+  test(`accepted work whose latest Closeout run on that head is ${decision} is not merged`, async () => {
+    const { db, itemId } = await acceptedItem();
     const identity = {
       taskId: itemId,
       base: "base",
@@ -200,7 +201,7 @@ for (const decision of ["rejected", "blocked"] as const) {
     finishCloseoutProgress(db, itemId, identity, "accepted", 1_500);
     finishCloseoutProgress(db, itemId, { ...identity, base: "newer" }, decision, 1_600);
     // A database written before rejection retired accepted_head can still carry it.
-    markCloseoutAccepted(db, itemId, ACCEPTED);
+    await markCloseoutAccepted(sqliteDb(db), itemId, ACCEPTED);
     expect(mergeAcceptedWork(db, itemId, { now: 2_000 })).toBe(false);
     expect(mergeJobs(db)).toEqual([]);
   });

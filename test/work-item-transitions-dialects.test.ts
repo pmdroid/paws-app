@@ -3,12 +3,11 @@ import { eq } from "drizzle-orm";
 import { JOB_KIND, type Checkpoint } from "../src/core";
 import {
   accrueAtJobBoundarySteps,
-  accrueAwakeAsync,
+  accrueAwake,
   accrueAwakeSteps,
   applyWorkItemEventSteps,
   completeMergedItemSteps,
   deferWorkItem,
-  deferWorkItemAsync,
   deferWorkItemSteps,
   endAgentWaitSteps,
   enqueueOutboxOnceSteps,
@@ -27,6 +26,7 @@ import {
   type Db,
   type Job,
   type WorkItemRecord,
+  sqliteDb,
 } from "../src/db";
 import { forEachDialect, insertWorkItem, json, withoutForeignKeys } from "./dialects";
 import { tempDb } from "./helpers";
@@ -594,14 +594,14 @@ forEachDialect((open) => {
     const stop = onJobReady((source) => ready.push(source));
     try {
       await item(db, "cap", { lastMonoMs: 1000, maxAwakeMs: 100, sessionKey: "s" });
-      await accrueAwakeAsync(db, "cap", 1500, 5000, undefined, true);
+      await accrueAwake(db, "cap", 1500, 5000, undefined, true);
       expect(ready).toEqual([db]);
-      await accrueAwakeAsync(db, "cap", 1600, 5000, undefined, true);
+      await accrueAwake(db, "cap", 1600, 5000, undefined, true);
       expect(ready).toHaveLength(1);
 
       const running = await item(db, "d");
       const input = { retry: 1, delayMs: 1, handoff: null, message: null, now: 1 };
-      await deferWorkItemAsync(db, running, input);
+      await deferWorkItem(db, running, input);
       expect(ready).toHaveLength(2);
     } finally {
       stop();
@@ -610,7 +610,7 @@ forEachDialect((open) => {
   });
 });
 
-test("the sync wrapper announces a new job after its transaction commits", () => {
+test("the sync wrapper announces a new job after its transaction commits", async () => {
   const database = tempDb();
   try {
     database.run(
@@ -620,7 +620,7 @@ test("the sync wrapper announces a new job after its transaction commits", () =>
     const during: boolean[] = [];
     const stop = onJobReady(() => during.push(database.inTransaction));
     try {
-      deferWorkItem(database, getWorkItem(database, "i")!, {
+      await deferWorkItem(sqliteDb(database), getWorkItem(database, "i")!, {
         retry: 1,
         delayMs: 1,
         handoff: null,

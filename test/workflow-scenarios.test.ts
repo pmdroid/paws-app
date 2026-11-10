@@ -62,7 +62,7 @@ function liveExecution(w: World, id: string): Job[] {
 
 describe("combined recovery scenarios", () => {
   test("PAS-959: the same head failing CI twice around a crash reaches the agent and counts both rounds", async () => {
-    const w = new World().seed(["merge_queue"]);
+    const w = await new World().seed(["merge_queue"]);
     try {
       const id = "merge_queue";
       const jobKey = `ci-failed:${id}:recheck:head`;
@@ -88,7 +88,7 @@ describe("combined recovery scenarios", () => {
       applyWorkItemEvent(w.db, id, "recovered", { now: w.now });
       applyWorkItemEvent(w.db, id, "turn_ended", { now: w.now });
       applyWorkItemEvent(w.db, id, "closeout_accepted", { now: w.now });
-      markCloseoutAccepted(w.db, id, "head");
+      await markCloseoutAccepted(sqliteDb(w.db), id, "head");
 
       const second = () =>
         restart(w.db, getWorkItem(w.db, id)!, {
@@ -118,11 +118,11 @@ describe("combined recovery scenarios", () => {
     }
   });
 
-  test("PAS-950: a rejected head stays out of the merge queue through a transient retry and restarts", () => {
-    const w = new World().seed(["verifying_rejected"]);
+  test("PAS-950: a rejected head stays out of the merge queue through a transient retry and restarts", async () => {
+    const w = await new World().seed(["verifying_rejected"]);
     try {
       const id = "verifying_rejected";
-      deferWorkItem(w.db, getWorkItem(w.db, id)!, {
+      await deferWorkItem(sqliteDb(w.db), getWorkItem(w.db, id)!, {
         retry: 1,
         delayMs: MINUTE,
         handoff: null,
@@ -133,9 +133,9 @@ describe("combined recovery scenarios", () => {
         w.crash();
         w.start();
         expect(mergeAcceptedWork(w.db, id, { now: w.now })).toBe(false);
-        markCloseoutAccepted(w.db, id, "head");
+        await markCloseoutAccepted(sqliteDb(w.db), id, "head");
         expect(mergeAcceptedWork(w.db, id, { now: w.now })).toBe(false);
-        markCloseoutAccepted(w.db, id, null as unknown as string);
+        await markCloseoutAccepted(sqliteDb(w.db), id, null as unknown as string);
       }
       w.settle();
       expect(factsOf(w.db, id).state).not.toBe("merge_queue");
@@ -146,8 +146,8 @@ describe("combined recovery scenarios", () => {
     }
   });
 
-  test("PAS-956: an unknown merge outcome keeps the lane's claim, then stale events cannot revive the merged item", () => {
-    const w = new World().seed(["merge_inflight"]);
+  test("PAS-956: an unknown merge outcome keeps the lane's claim, then stale events cannot revive the merged item", async () => {
+    const w = await new World().seed(["merge_inflight"]);
     try {
       const id = "merge_inflight";
       recordItemPullRequest(w.db, { itemId: id, pullNumber: 7, pullUrl: null, openedAt: w.now });
@@ -179,7 +179,9 @@ describe("combined recovery scenarios", () => {
         mergeSha: "merged-sha",
         confirmedAt: w.now,
       });
-      expect(completeMergedItem(w.db, { itemId: id, now: w.now })?.state).toBe("merged");
+      expect((await completeMergedItem(sqliteDb(w.db), { itemId: id, now: w.now }))?.state).toBe(
+        "merged",
+      );
       const merged = factsOf(w.db, id);
       expect(merged.mergeCall).toBe(false);
 
@@ -189,7 +191,7 @@ describe("combined recovery scenarios", () => {
       expect(() =>
         restart(w.db, getWorkItem(w.db, id)!, { reason: "ci", body: "late", now: w.now }),
       ).toThrow("illegal_transition");
-      expect(completeMergedItem(w.db, { itemId: id, now: w.now })).toBeNull();
+      expect(await completeMergedItem(sqliteDb(w.db), { itemId: id, now: w.now })).toBeNull();
       w.settle();
       expect(factsOf(w.db, id)).toMatchObject({ state: "merged", version: merged.version });
       expect(liveExecution(w, id)).toEqual([]);
@@ -199,8 +201,8 @@ describe("combined recovery scenarios", () => {
     }
   });
 
-  test("PAS-942/953: a GitHub review delivered before a crash is applied once, and startup keeps the merge place", () => {
-    const w = new World().seed(["merge_queue", "merge_active_run"]);
+  test("PAS-942/953: a GitHub review delivered before a crash is applied once, and startup keeps the merge place", async () => {
+    const w = await new World().seed(["merge_queue", "merge_active_run"]);
     try {
       const id = "merge_queue";
       recordItemPullRequest(w.db, { itemId: id, pullNumber: 7, pullUrl: null, openedAt: w.now });
@@ -248,8 +250,8 @@ describe("combined recovery scenarios", () => {
     }
   });
 
-  test("PAS-965: lapsed runner leases get one follow-up each before the orphan grace, and restarts add none", () => {
-    const w = new World().seed(["running_leased", "verifying_leased", "merge_active_run"]);
+  test("PAS-965: lapsed runner leases get one follow-up each before the orphan grace, and restarts add none", async () => {
+    const w = await new World().seed(["running_leased", "verifying_leased", "merge_active_run"]);
     try {
       const merging = getWorkItem(w.db, "merge_active_run")!;
       leaseRunnerWork(w.db, merging.currentRunId!, w.now);
@@ -289,8 +291,8 @@ describe("combined recovery scenarios", () => {
     }
   });
 
-  test("clock discontinuity: a dead job's lease that looks live after the clock steps back never runs a second agent", () => {
-    const w = new World().seed(["running"]);
+  test("clock discontinuity: a dead job's lease that looks live after the clock steps back never runs a second agent", async () => {
+    const w = await new World().seed(["running"]);
     try {
       w.crash();
       w.advance(-HOUR);
