@@ -55,9 +55,9 @@ function paws(path: string, root: string, name: string, poll = true) {
     db,
     id: self.id,
     orchestrator,
-    startTurn(itemId: string, key = `operation:${itemId}`): LiveTurn {
-      const turn = (
-        orchestrator as unknown as { beginLive(itemId: string, key: string): LiveTurn }
+    async startTurn(itemId: string, key = `operation:${itemId}`): Promise<LiveTurn> {
+      const turn = await (
+        orchestrator as unknown as { beginLive(itemId: string, key: string): Promise<LiveTurn> }
       ).beginLive(itemId, key);
       turn.controller.signal.addEventListener("abort", () => turn.finish(), { once: true });
       return turn;
@@ -102,7 +102,7 @@ test("a stop received by instance B aborts the turn on instance A, which owns th
   const { a, b } = twoInstances();
   try {
     runningItem(a.db, "acme-1", a.id);
-    const turn = a.startTurn("acme-1");
+    const turn = await a.startTurn("acme-1");
     const started = performance.now();
 
     expect(stop(b.db, b.orchestrator, "acme-1")).toEqual({ applied: true });
@@ -122,11 +122,11 @@ test("a stop received by instance B aborts the turn on instance A, which owns th
   }
 });
 
-test("a stop for a run on the receiving instance aborts its turn at once and addresses no one else", () => {
+test("a stop for a run on the receiving instance aborts its turn at once and addresses no one else", async () => {
   const { a, b } = twoInstances();
   try {
     runningItem(a.db, "acme-2", a.id);
-    const turn = a.startTurn("acme-2");
+    const turn = await a.startTurn("acme-2");
 
     expect(stop(a.db, a.orchestrator, "acme-2")).toEqual({ applied: true });
     expect(turn.controller.signal.aborted).toBe(true);
@@ -165,15 +165,15 @@ test("the owner's delivery row commits with the stop itself, before any bus emit
   }
 });
 
-test("a delayed stop aborts the turn it stopped and leaves a turn started after a resume", () => {
+test("a delayed stop aborts the turn it stopped and leaves a turn started after a resume", async () => {
   const { a, b } = twoInstances(false);
   try {
     runningItem(a.db, "acme-4", a.id);
-    const stopped = a.startTurn("acme-4", "acme-4-old");
+    const stopped = await a.startTurn("acme-4", "acme-4-old");
     expect(stop(b.db, b.orchestrator, "acme-4", "linear")).toEqual({ applied: true });
     expect(getWorkItem(b.db, "acme-4")?.state).toBe("paused");
     applyWorkItemEvent(b.db, "acme-4", "resume");
-    const replacement = a.startTurn("acme-4", "acme-4-new");
+    const replacement = await a.startTurn("acme-4", "acme-4-new");
 
     expect(a.orchestrator.deliverInstanceCommands()).toBe(1);
     expect(stopped.controller.signal.aborted).toBe(true);
