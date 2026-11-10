@@ -25,7 +25,13 @@ import {
   type RetroEvidence,
   type Steps,
 } from "../db";
-import { inboxCounts, listInboxItems, type ImprovementAccess, type InboxItem } from "./inbox";
+import {
+  inboxCounts,
+  listInboxItems,
+  listInboxItemsSteps,
+  type ImprovementAccess,
+  type InboxItem,
+} from "./inbox";
 
 export type ImprovementReviewer = ImprovementAccess & {
   userId: string;
@@ -226,12 +232,23 @@ function* improvementViewSteps(q: Q, item: InboxItem): Steps<ImprovementView> {
   };
 }
 
+export function* findInboxItemSteps(
+  q: Q,
+  access: ImprovementAccess,
+  improvementId: string,
+): Steps<InboxItem | null> {
+  return (
+    (yield* listInboxItemsSteps(q, access)).find((item) => item.improvement.id === improvementId) ??
+    null
+  );
+}
+
 export function findInboxItem(
   db: Database,
   access: ImprovementAccess,
   improvementId: string,
 ): InboxItem | null {
-  return listInboxItems(db, access).find((item) => item.improvement.id === improvementId) ?? null;
+  return settled(sqliteDb(db).run((q) => findInboxItemSteps(q, access, improvementId)));
 }
 
 export type InboxFilter = {
