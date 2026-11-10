@@ -3,7 +3,6 @@ import type { Database } from "bun:sqlite";
 import { and, eq, sql } from "drizzle-orm";
 import type { RepositoryBinding } from "../core";
 import { settled, sqliteDb, type Q, type Steps } from "./db";
-import { immediate } from "./tx";
 
 export type CatalogEntry = {
   owner: string;
@@ -36,6 +35,38 @@ export function* listRepositoryCatalogSteps(q: Q): Steps<CatalogEntry[]> {
   );
 }
 
+export function* replaceRepositoryCatalogSteps(
+  q: Q,
+  entries: readonly CatalogEntry[],
+  now: number,
+) {
+  const { repositoryCatalog: c } = q.t;
+  yield* q.exec(q.orm.delete(c));
+  for (const entry of entries)
+    yield* q.exec(
+      q.orm
+        .insert(c)
+        .values({
+          repository: `${entry.owner}/${entry.repo}`.toLowerCase(),
+          owner: entry.owner,
+          repo: entry.repo,
+          remoteUrl: entry.remoteUrl,
+          defaultBranch: entry.defaultBranch,
+          refreshedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: c.repository,
+          set: {
+            owner: entry.owner,
+            repo: entry.repo,
+            remoteUrl: entry.remoteUrl,
+            defaultBranch: entry.defaultBranch,
+            refreshedAt: now,
+          },
+        }),
+    );
+}
+
 export async function refreshRepositoryCatalog(
   db: Database,
   list: () => Promise<readonly CatalogEntry[]>,
@@ -49,22 +80,7 @@ export async function refreshRepositoryCatalog(
 
     return false;
   }
-  immediate(db, () => {
-    db.run("DELETE FROM repository_catalog");
-    for (const entry of entries)
-      db.run(
-        `INSERT OR REPLACE INTO repository_catalog(repository, owner, repo, remote_url, default_branch, refreshed_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          `${entry.owner}/${entry.repo}`.toLowerCase(),
-          entry.owner,
-          entry.repo,
-          entry.remoteUrl,
-          entry.defaultBranch,
-          now,
-        ],
-      );
-  });
+  await sqliteDb(db).transaction((q) => replaceRepositoryCatalogSteps(q, entries, now));
   return true;
 }
 

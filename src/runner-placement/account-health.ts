@@ -3,7 +3,10 @@ import {
   accountAttemptsInFlight,
   accountSlotsInUse,
   bindingAccountHealth,
+  bindingReadinessRowSteps,
   runnerHasCapacity,
+  settled,
+  sqliteDb,
   RUNNER_FULL,
   type AccountHealth,
 } from "../db";
@@ -95,32 +98,7 @@ export function bindingReadiness(
   db: Database,
   input: { bindingId: string; model?: string | null; now: number },
 ): BindingReadiness {
-  const binding = db
-    .query<
-      {
-        runnerId: string;
-        accountId: string;
-        bindingRemoved: number | null;
-        accountRemoved: number | null;
-        enabled: number;
-        concurrency: number | null;
-        status: string;
-        revokedAt: number | null;
-        lastSeenAt: number | null;
-        legacy: number;
-        authExpired: number | null;
-      },
-      [string]
-    >(
-      `SELECT b.runner_id AS runnerId,b.account_id AS accountId,b.removed_at AS bindingRemoved,
-       a.removed_at AS accountRemoved,a.enabled,a.concurrency,r.status,r.revoked_at AS revokedAt,
-       r.last_seen_at AS lastSeenAt,b.legacy,p.auth_expired AS authExpired
-       FROM agent_account_binding b JOIN agent_account a ON a.id=b.account_id
-       JOIN runner r ON r.id=b.runner_id
-       LEFT JOIN runner_agent_policy p ON p.runner_id=b.runner_id AND p.agent=b.agent
-       WHERE b.id=?`,
-    )
-    .get(input.bindingId);
+  const binding = settled(sqliteDb(db).run((q) => bindingReadinessRowSteps(q, input.bindingId)));
   const unavailable = (reason: BindingUnavailableReason, until: number | null = null) =>
     ({ ready: false, reason, until }) as const;
   if (!binding) return unavailable("removed");
