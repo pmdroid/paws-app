@@ -300,6 +300,40 @@ test(
 );
 
 test(
+  "Claude's permission requests for mcp__paws__reply and mcp__paws__start_work are allowed in the read-only turn",
+  () =>
+    withFixture(async (fixture) => {
+      // The Claude adapter names an MCP tool `mcp__<server>__<tool>` and asks before each call.
+      const ask = (toolCallId: string, name: string, rawInput: Record<string, string>) => ({
+        type: "permission" as const,
+        toolCall: { toolCallId, name, title: name, kind: "other", rawInput },
+      });
+      const { published, calls } = await converse(fixture, command(), {
+        steps: [
+          ask("reply", "mcp__paws__reply", { text: "I will add the retry test." }),
+          { type: "reply", text: "I will add the retry test." },
+          ask("start", "mcp__paws__start_work", { plan: PLAN }),
+          { type: "start_work", plan: PLAN },
+          { type: "hang" },
+        ],
+      });
+
+      expect(hostTools(calls)).toEqual(expect.arrayContaining(["reply", "start_work"]));
+      expect(calls.permissions.map((entry: { outcome: unknown }) => entry.outcome)).toEqual([
+        { outcome: { outcome: "selected", optionId: "allow" } },
+        { outcome: { outcome: "selected", optionId: "allow" } },
+      ]);
+      expect(JSON.stringify(calls.prompts)).toContain("at most 4,000 characters");
+      expect(published).toMatchObject({
+        startWork: PLAN,
+        replies: ["I will add the retry test."],
+        stopReason: "end_turn",
+      });
+    }),
+  15_000,
+);
+
+test(
   "a plan over 4000 characters is refused with a message and the conversation turn goes on",
   () =>
     withFixture(async (fixture) => {

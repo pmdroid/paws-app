@@ -52,6 +52,16 @@ const HOOK_TOOLS = new Set([
   "run_closeout",
 ]);
 const READ_ONLY_KINDS = new Set(["read", "search", "think", "switch_mode"]);
+/** Claude names a tool of the `paws` MCP server `mcp__paws__<tool>` in its permission requests. */
+const PAWS_MCP_PREFIX = "mcp__paws__";
+
+/** The Paws host tool `subject` calls, by its bare name or its `paws` MCP server name. */
+function hookTool(subject: PermissionSubject): string | undefined {
+  const name = subject.name?.startsWith(PAWS_MCP_PREFIX)
+    ? subject.name.slice(PAWS_MCP_PREFIX.length)
+    : subject.name;
+  return name && HOOK_TOOLS.has(name) ? name : undefined;
+}
 
 export function isInside(parent: string, child: string): boolean {
   const root = resolve(parent);
@@ -66,7 +76,7 @@ export function decideReadOnlyPermission(
 ): GuardDecision {
   const decision = decidePermission(subject, ctx);
   if (!decision.allow) return decision;
-  if (subject.name && HOOK_TOOLS.has(subject.name)) return decision;
+  if (hookTool(subject)) return decision;
   if (subject.kind && READ_ONLY_KINDS.has(subject.kind)) return decision;
   return { allow: false, reason: "this session is read-only" };
 }
@@ -76,9 +86,8 @@ export function decidePermission(subject: PermissionSubject, ctx: GuardContext):
   if (subject.kind === "think" || subject.kind === "switch_mode") {
     return { allow: true, reason: "no filesystem or command side effects" };
   }
-  if (subject.name && HOOK_TOOLS.has(subject.name)) {
-    return { allow: true, reason: `${subject.name} is handled by the injected hook` };
-  }
+  const hook = hookTool(subject);
+  if (hook) return { allow: true, reason: `${hook} is handled by the injected hook` };
 
   const command = commandText(subject);
   const paths = collectPaths(subject, command);

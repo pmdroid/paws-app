@@ -117,3 +117,5 @@ export const INTERRUPT_RECOVERY_RUNNER_VERSION: RunnerVersion = [0, 1, 75];
 export const WORK_ROOT_CLEANUP_RUNNER_VERSION: RunnerVersion = [0, 1, 75];
 export const SQUASH_REBASE_RUNNER_VERSION: RunnerVersion = [0, 1, 76];
 export const CONTROL_PLANE_LEVEL_RUNNER_VERSION: RunnerVersion = [0, 1, 76];
+/** First runner whose read-only guard allows Claude's `mcp__paws__reply` and `mcp__paws__start_work`. */
+export const CONVERSATION_TOOLS_RUNNER_VERSION: RunnerVersion = [0, 1, 77];

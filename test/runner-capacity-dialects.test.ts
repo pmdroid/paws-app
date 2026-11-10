@@ -516,7 +516,9 @@ forEachDialect((connect) => {
     expect(await lane()).toBe("closed");
     await seedCapacity(db, "box", { conversation: 1 });
     expect(await lane()).toBe("closed");
-    await report("0.1.74");
+    await report("0.1.76");
+    expect(await lane()).toBe("closed");
+    await seed(db, (q) => q.orm.update(q.t.runnerHostStatus).set({ runnerVersion: "0.1.77" }));
     expect(await lane()).toBe("free");
     expect(await db.run((q) => runnerHelperAvailabilitySteps(q, "box", NOW, true, true))).toEqual({
       available: true,

@@ -303,7 +303,7 @@ test("a pending helper goes out before a queued login check, which waits until t
 test("a helper that expired unserved, or a conversation in its own lane, holds no check back", () => {
   const f = fixture();
   const runnerId = f.runner();
-  f.db.run("UPDATE runner_host_status SET runner_version='0.1.74' WHERE runner_id=?", [runnerId]);
+  f.db.run("UPDATE runner_host_status SET runner_version='0.1.77' WHERE runner_id=?", [runnerId]);
   recordRunnerCapacity(f.db, runnerId, 1, 1, 2);
   f.health.refresh();
   f.helper(runnerId, "conversation");
