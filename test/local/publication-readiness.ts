@@ -376,7 +376,7 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("new-blocker", true);
     try {
-      const job = f.claim();
+      let job = f.claim();
       const manual = f.db
         .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_issue_id='manual'")
         .get()!.id;
@@ -408,9 +408,13 @@ export async function probePublicationReadiness(root: string) {
       f.lifecycle.issues.get("manual")!.stateType = "completed";
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
       assert(completeJob(f.db, job, f.clock.now()));
-      f.claim();
-      f.lifecycle.issues.get("manual")!.stateType = "canceled";
+      job = f.claim();
+      f.lifecycle.issues.get("manual")!.stateType = "started";
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
+      f.lifecycle.issues.get("manual")!.stateType = "canceled";
+      assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
+      assert(completeJob(f.db, job, f.clock.now()));
+      job = f.claim();
       f.lifecycle.issues.get("manual")!.stateType = "completed";
       f.tracker.deps.set("parent", [
         ...f.tracker.deps.get("parent")!,
@@ -422,7 +426,7 @@ export async function probePublicationReadiness(root: string) {
         [independent],
       );
       observe(
-        "Fresh unfinished, canceled or cyclic blockers hold a verified candidate while exact completed manual and external blockers release it and unrelated work stays ready",
+        "Fresh unfinished or cyclic blockers hold a verified candidate while exact completed or canceled manual and external blockers release it and unrelated work stays ready",
         {
           loads: f.loads(),
           state: getWorkItem(f.db, f.itemId)!.state,

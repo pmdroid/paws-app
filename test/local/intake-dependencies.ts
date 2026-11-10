@@ -114,14 +114,14 @@ export async function probeDependencySnapshots(
       ["completed", "code", "completed", false],
       ["cancelled", "code", "completed", false],
       ["merged", "code", "started", true],
-      ["merged", "code", "canceled", false],
+      ["merged", "code", "canceled", true],
       ["manual", "code", "completed", true],
-      ["manual", "code", "canceled", false],
+      ["manual", "code", "canceled", true],
       ["manual", "code", "started", false],
       ["completed", "answer", "started", true],
-      ["completed", "answer", "canceled", false],
+      ["completed", "answer", "canceled", true],
       ["completed", "artifact", "started", true],
-      ["completed", "artifact", "canceled", false],
+      ["completed", "artifact", "canceled", true],
     ] as const;
     confirmFakeMerge(db, ids.get("a")!);
     for (const [state, mode, linearState, expected] of cases) {
@@ -135,20 +135,21 @@ export async function probeDependencySnapshots(
       "Readiness distinguishes merged code, delivered tasks, manual completion and cancellation",
       cases,
     );
+    lifecycle.issue.stateType = "started";
     db.run("UPDATE work_item SET state='merged',cancel_requested=1 WHERE id=?", [ids.get("a")!]);
+    await refresh();
     assert(!readyItems(db, target).readyItemIds.includes(ids.get("b")!));
     db.run("UPDATE work_item SET cancel_requested=0 WHERE id=?", [ids.get("a")!]);
-    lifecycle.issue.stateType = "started";
     for (const state of ["started", "canceled", "Completed", "completed ", "completed"]) {
       lifecycle.issues.get("outside")!.stateType = state;
       await refresh();
       assert.equal(
         readyItems(db, target).readyItemIds.includes(ids.get("b")!),
-        state === "completed",
+        state === "completed" || state === "canceled",
       );
     }
     observed(
-      "Cancellation flags and non-completed external states never satisfy blockers",
+      "Cancellation flags and open external states never satisfy blockers",
       readyItems(db, target),
     );
     tracker.deps.clear();
