@@ -879,7 +879,7 @@ export async function openRunnerRuntime(options: {
           journalCaught(caughtError2, "runner-runtime.fail.readRunnerResultFile", command.itemId);
         }
 
-        journal.ingest(execution.id, raw);
+        await journal.ingest(execution.id, raw);
         let { offset, consumed } = journal.transcriptCursor(execution.id);
         while (offset < consumed) {
           const bytes = raw.subarray(
@@ -1471,7 +1471,7 @@ export async function openRunnerRuntime(options: {
       }
       throw error;
     }
-    journal.ingest(entry.execution.id, raw);
+    await journal.ingest(entry.execution.id, raw);
     let { offset, consumed } = journal.transcriptCursor(entry.execution.id);
     if (offset > consumed || (final && consumed !== raw.length))
       throw new Error("Runner transcript is incomplete");
@@ -1787,7 +1787,7 @@ export async function openRunnerRuntime(options: {
     await deliver(entry);
     const publication =
       journal.publication(entry.execution.id) ??
-      journal.beginPublication(entry.execution.id, workerOutcome(entry.execution));
+      (await journal.beginPublication(entry.execution.id, workerOutcome(entry.execution)));
     entry.execution.phase = "publishing";
     const result: RunnerResult = { ...publication.result };
     try {
