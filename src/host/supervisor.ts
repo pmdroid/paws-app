@@ -72,7 +72,9 @@ export class HostSupervisor {
           lastObservedMono.get(item.id) ?? -Infinity,
         );
         if (mono <= since && !awakeCapReached(item)) continue;
-        const accrued = yield* q.transaction((q) => accrueAwakeSteps(q, item.id, mono, now, since));
+        const accrued = yield* q.transaction((tx) =>
+          accrueAwakeSteps(tx, item.id, mono, now, since),
+        );
         ready ||= accrued.jobReady;
         if (accrued.outcome.stopAgent) stops.push(item.id);
       }

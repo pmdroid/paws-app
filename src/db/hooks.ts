@@ -7,9 +7,10 @@ import { orm } from "./orm";
 import { agentHook } from "./schema";
 
 export function* listHooksSteps(q: Q) {
-  const { agentHook } = q.t;
-  const order = q.dialect === "sqlite" ? sql`rowid` : agentHook.id;
-  const rows = yield* q.all(q.orm.select().from(agentHook).orderBy(agentHook.createdAt, order));
+  const order = q.dialect === "sqlite" ? sql`rowid` : q.t.agentHook.id;
+  const rows = yield* q.all(
+    q.orm.select().from(q.t.agentHook).orderBy(q.t.agentHook.createdAt, order),
+  );
   return rows.map((row): WorkspaceHook => ({
     id: row.id,
     event: row.event as HookEvent,
