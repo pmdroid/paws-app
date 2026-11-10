@@ -46,6 +46,7 @@ export {
   followThrough,
   improvementAttention,
   improvementFollowThrough,
+  improvementFollowThroughSteps,
   IMPROVEMENT_OUTCOME_LIMITS,
   reconcileImprovement,
   recordCriterion,
