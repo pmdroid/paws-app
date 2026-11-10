@@ -126,5 +126,5 @@ export async function saveWorkspaceIdentityLink(
   store: Db,
   input: IdentityLinkInput,
 ): Promise<void> {
-  await store.run((q) => saveWorkspaceIdentityLinkSteps(q, input));
+  await store.transaction((q) => saveWorkspaceIdentityLinkSteps(q, input));
 }

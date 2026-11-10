@@ -11,6 +11,8 @@ import {
   syncWorkspaceMember,
   workspaceForOrganization,
   workspaceOrganizationIds,
+  workspaceOrganizationIdsSteps,
+  settled,
   sqliteDb,
 } from "../db";
 import {
@@ -62,8 +64,7 @@ export function createBrowserOnboarding(options: {
   const fetchImpl = options.fetch ?? fetch;
   const secretsDir = join(home, "secrets");
   const configuredOrganization = options.expectedOrganizationId?.trim() || null;
-  async function installationOrganization(): Promise<string | null> {
-    const workspaces = await workspaceOrganizationIds(sqliteDb(db), 2);
+  function organizationFor(workspaces: string[]): string | null {
     if (workspaces.length === 0) return configuredOrganization;
     if (
       workspaces.length !== 1 ||
@@ -71,6 +72,13 @@ export function createBrowserOnboarding(options: {
     )
       return null;
     return workspaces[0]!;
+  }
+  async function installationOrganization(): Promise<string | null> {
+    return organizationFor(await workspaceOrganizationIds(sqliteDb(db), 2));
+  }
+  /** Read without yielding, so the check and the secret write after it share one turn. */
+  function installationOrganizationNow(): string | null {
+    return organizationFor(settled(sqliteDb(db).run((q) => workspaceOrganizationIdsSteps(q, 2))));
   }
   let installing = false;
   return async (request: Request, peer: WorkspaceClient = {}): Promise<Response> => {
@@ -228,8 +236,7 @@ export function createBrowserOnboarding(options: {
         return retry("admin-required");
       await options.prepare?.();
       signal.throwIfAborted();
-      if ((await installationOrganization()) !== organization.id)
-        return retry("workspace-mismatch");
+      if (installationOrganizationNow() !== organization.id) return retry("workspace-mismatch");
       writeSecretFile(
         join(home, "secrets", "linear-client.json"),
         JSON.stringify({ clientId: options.clientId, clientSecret: options.clientSecret }),
