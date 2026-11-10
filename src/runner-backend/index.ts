@@ -2472,7 +2472,7 @@ export function createRemoteAgentRunner(options: {
             assigned.type === "run" &&
             !(asked && waitsOnQuestion(db, selected.runId))
           ) {
-            work.finish(assigned.runId, assigned.generation);
+            await work.finish(assigned.runId, assigned.generation);
             command = undefined;
             move.from = selected.id;
             move.repository = `${assigned.repository.owner}/${assigned.repository.repo}`;
@@ -2526,7 +2526,7 @@ export function createRemoteAgentRunner(options: {
             journal(
               `item ${itemId} run ${assigned.runId} interrupt source=unsolicited_agent; restarting once from stop checkpoint`,
             );
-            work.finish(assigned.runId, assigned.generation);
+            await work.finish(assigned.runId, assigned.generation);
             command = undefined;
             throw new RetryableRunnerError(
               selected.id,
@@ -2580,7 +2580,7 @@ export function createRemoteAgentRunner(options: {
             const { lostCommits: _sent, ...rest } = delivered;
             saveCheckpoint(db, itemId, rest);
           }
-          work.finish(assigned.runId, assigned.generation);
+          await work.finish(assigned.runId, assigned.generation);
           command = undefined;
           await emit({ type: "prompt_complete", stopReason: complete.stopReason });
           return { ...scrub(complete), transcriptPath: transcript };

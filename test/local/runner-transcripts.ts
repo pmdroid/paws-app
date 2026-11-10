@@ -331,7 +331,7 @@ export async function probeRunnerTranscripts(
       },
     );
     assert.equal((await transcripts.download(run.id, 2)).length, 0);
-    work.finish(run.id, 2);
+    await work.finish(run.id, 2);
     observe("an empty transcript produces a complete retrievable zero-byte object", true, {
       transcriptBytes: 0,
     });

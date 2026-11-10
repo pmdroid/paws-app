@@ -528,7 +528,7 @@ export async function probeRunnerWork(
     const replacement = { ...third, id: workspaceId(), runnerId: firstRunner, generation: 4 };
     work.assign(replacement);
     assert.equal(work.current(run.id, 4).command.id, replacement.id);
-    work.finish(run.id, 4);
+    await work.finish(run.id, 4);
     for (let index = 0; index < 64; index++) {
       const blocked = insertQueuedItem(db, {
         id: `blocked-${index}`,
@@ -544,7 +544,7 @@ export async function probeRunnerWork(
         runId: started.run.id,
         generation: 1,
       });
-      work.finish(started.run.id, 1);
+      await work.finish(started.run.id, 1);
       db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [blocked.id]);
     }
     const probeId = workspaceId();
@@ -669,7 +669,7 @@ export async function probeRunnerWork(
         prompt: "Classify this request.",
       };
       assert.throws(() => helpers.dispatch(helperInput), /busy/);
-      work.finish(winner.runId, 1);
+      await work.finish(winner.runId, 1);
       work.assign(waiting);
       // The runner keeps the slot through the lease grace, so the next assignment waits it out.
       now += 60_000 + RUNNER_LEASE_GRACE_MS;
@@ -736,7 +736,7 @@ export async function probeRunnerWork(
       confirmStopped(firstRunner, released);
       confirmStopped(firstRunner, waiting);
       work.assign(afterCancel);
-      work.finish(waiting.runId, 2);
+      await work.finish(waiting.runId, 2);
       control.setStatus(principal, firstRunner, "paused");
       assert.throws(
         () => work.assign({ ...afterCancel, id: workspaceId(), generation: 3 }),
@@ -750,7 +750,7 @@ export async function probeRunnerWork(
       work.assign({ ...released, id: workspaceId(), generation: 3 });
       assert.throws(() => work.assign(review), /occupied/);
       assert.throws(() => helpers.dispatch(helperInput), /busy/);
-      work.finish(released.runId, 3);
+      await work.finish(released.runId, 3);
       work.heartbeat(firstRunner, 1);
       helpers.finish(helper.command.id);
       work.assign(review);
@@ -766,9 +766,9 @@ export async function probeRunnerWork(
           .count,
         commandCount,
       );
-      work.finish(waiting.runId, 3);
+      await work.finish(waiting.runId, 3);
       work.assign({ ...review, id: workspaceId(), generation: 4 });
-      work.finish(waiting.runId, 4);
+      await work.finish(waiting.runId, 4);
       work.assign({ ...review, id: workspaceId(), generation: 5 });
       const backend = createRemoteAgentRunner({
         db,
@@ -826,7 +826,7 @@ export async function probeRunnerWork(
       }
       assert.equal(cancellationJoined, true);
       work.assign({ ...review, id: workspaceId(), generation: 6 });
-      work.finish(waiting.runId, 6);
+      await work.finish(waiting.runId, 6);
       work.assign({ ...review, id: workspaceId(), generation: 7 });
       const unacknowledged = backend.cancelItem(waiting.itemId);
       const rejected = assert.rejects(unacknowledged, /free slot/);
@@ -875,7 +875,7 @@ export async function probeRunnerWork(
         issuedAt: now,
         expiresAt: now + 60_000,
       });
-      work.finish(waiting.runId, 8);
+      await work.finish(waiting.runId, 8);
       const recoveredHelper = helpers.dispatch(helperInput);
       helpers.finish(recoveredHelper.command.id);
       observe(

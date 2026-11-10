@@ -389,7 +389,7 @@ describe("agent session snapshots", () => {
 
   test("the run's new runner reads after the grant moves, and the old runner cannot", async () => {
     const { sessions, access, run } = await sealed();
-    work.finish(run.runId, 1);
+    await work.finish(run.runId, 1);
     const runnerC = await f.enroll("c");
     const moved = f.assign(run, runnerC, 2);
     expect(await collect(sessions.read({ ...moved, generation: 2 }, 1))).toEqual(snapshot);
@@ -419,7 +419,7 @@ describe("agent session snapshots", () => {
     const { sessions, access, run } = await sealed();
     const chunks = sessions.read({ ...access, generation: 1 }, 1);
     expect((await chunks.next()).value).toEqual(full);
-    work.finish(run.runId, 1);
+    await work.finish(run.runId, 1);
     await expect(chunks.next()).rejects.toThrow(RunnerWorkFencedError);
   });
 
@@ -473,7 +473,7 @@ describe("agent session snapshots", () => {
     expect((await post("read", { generation: 1, snapshotGeneration: 1 }))!.status).toBe(503);
     failRead = false;
 
-    work.finish(run.runId, 1);
+    await work.finish(run.runId, 1);
     expect((await post("read", { generation: 1, snapshotGeneration: 1 }))!.status).toBe(409);
   });
 
@@ -501,7 +501,7 @@ describe("agent session snapshots", () => {
   test("a second sealed snapshot discards the first and deletes its chunks", async () => {
     const { sessions, access, run, runnerA } = await sealed();
     expect(objectsOf(run.runId, 1)).toHaveLength(3);
-    work.finish(run.runId, 1);
+    await work.finish(run.runId, 1);
     const next = f.assign(run, runnerA, 2);
     const second = Buffer.concat([full, tail, MARKER]);
     await sessions.upload(next, chunk(2, 0, full));
@@ -536,7 +536,7 @@ describe("agent session snapshots", () => {
     };
     for (const run of Object.values(runs)) {
       await seal(sessions, f.assign(run, runnerA, 1), 1);
-      work.finish(run.runId, 1);
+      await work.finish(run.runId, 1);
     }
     db.run("UPDATE run SET status='lost' WHERE id=?", [runs.lost.runId]);
     db.run("UPDATE run SET status='ended' WHERE id IN (?,?)", [
@@ -626,7 +626,7 @@ describe("agent session snapshots", () => {
       }),
     ).toEqual({ eligible: false, failure: "other_account" });
 
-    work.finish(run.runId, 1);
+    await work.finish(run.runId, 1);
     await seal(sessions, f.assign(run, runnerA, 2), 2);
     expect(plan()).toMatchObject({ eligible: true, restoreSession: { generation: 2 } });
 

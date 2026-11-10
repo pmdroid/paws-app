@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { loadSecretKey } from "../credentials";
-import { immediate } from "../db";
+import { plaintextRunnerEventsSteps, sealRunnerEventSteps, sqliteDb } from "../db";
 import { RunnerEventSchema, type RunnerEvent } from "../runner-protocol";
 import { incrementalVacuum } from "./prune";
 
@@ -97,15 +97,7 @@ export async function encryptRunnerEvents(options: {
   signal?: AbortSignal;
 }) {
   const { db, key, signal } = options;
-  const next = db.query<StoredRunnerEvent, [string, number, number]>(
-    `SELECT ${RUNNER_EVENT_COLUMNS} FROM runner_event
-     WHERE (run_id,generation,sequence)>(?,?,?) AND key_id IS NULL
-     ORDER BY run_id,generation,sequence LIMIT ${BATCH}`,
-  );
-  const update = db.query(
-    `UPDATE runner_event SET payload=?,key_id=?,payload_sha256=?,type=?,handed_over=?,reason=?
-     WHERE run_id=? AND generation=? AND sequence=? AND key_id IS NULL`,
-  );
+  const store = sqliteDb(db);
   let after: [string, number, number] = ["", 0, 0];
   let sealed = 0;
   // Zero the plaintext that sealing frees, without rebuilding the file. Bytes left in the slack of
@@ -116,22 +108,11 @@ export async function encryptRunnerEvents(options: {
   try {
     for (;;) {
       signal?.throwIfAborted();
-      const rows = immediate(db, () => {
-        const batch = next.all(...after);
-        for (const row of batch) {
-          const columns = sealRunnerEvent(key, row, row.payload);
-          update.run(
-            columns.payload,
-            columns.keyId,
-            columns.payloadSha256,
-            columns.type,
-            columns.handedOver,
-            columns.reason,
-            row.runId,
-            row.generation,
-            row.sequence,
-          );
-        }
+      const from = after;
+      const rows = await store.transaction(function* (q) {
+        const batch = yield* plaintextRunnerEventsSteps(q, from, BATCH);
+        for (const row of batch)
+          yield* sealRunnerEventSteps(q, row, sealRunnerEvent(key, row, row.payload));
         return batch;
       });
       const last = rows.at(-1);

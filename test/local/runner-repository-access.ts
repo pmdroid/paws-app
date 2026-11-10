@@ -113,12 +113,12 @@ export async function probeRunnerRepositoryAccess(
   });
   const github = createFakeGitHub();
   const originalMint = github.mintInstallationToken;
-  let beforeMint: (() => void) | undefined;
+  let beforeMint: (() => void | Promise<void>) | undefined;
   let returnedRepository = "fixture/repository";
   let tokenLifetime = 60_000;
   github.mintInstallationToken = async (input) => {
     const minted = await originalMint(input);
-    beforeMint?.();
+    await beforeMint?.();
     return { ...minted, repository: returnedRepository, expiresAt: now + tokenLifetime };
   };
   let installation: string | null = "fixture-installation";
@@ -313,7 +313,7 @@ export async function probeRunnerRepositoryAccess(
     );
     await assert.rejects(exchange(first, "read", { certificate: false }));
     assert.equal(github.minted.length, mintedBefore);
-    work.finish(review.command.runId, review.command.generation);
+    await work.finish(review.command.runId, review.command.generation);
     observe(
       "certificate, separate grant, generation and strict body fences run before minting; review is read-only",
       true,
@@ -391,11 +391,11 @@ export async function probeRunnerRepositoryAccess(
         missingInstallationDenied: true,
       },
     );
-    work.finish(first.command.runId, first.command.generation);
+    await work.finish(first.command.runId, first.command.generation);
     const unbound = assigned("run", runnerId, false);
     assert.equal((await exchange(unbound, "read")).status, 200);
     assert.equal((await exchange(unbound, "write")).status, 403);
-    work.finish(unbound.command.runId, unbound.command.generation);
+    await work.finish(unbound.command.runId, unbound.command.generation);
     const changedInstallation = assigned();
     beforeMint = () => {
       installation = "different-installation";
@@ -403,8 +403,8 @@ export async function probeRunnerRepositoryAccess(
     assert.equal((await exchange(changedInstallation, "write")).status, 403);
     beforeMint = undefined;
     installation = "fixture-installation";
-    work.finish(changedInstallation.command.runId, changedInstallation.command.generation);
-    const scenarios: [string, (entry: ReturnType<typeof assigned>) => void][] = [
+    await work.finish(changedInstallation.command.runId, changedInstallation.command.generation);
+    const scenarios: [string, (entry: ReturnType<typeof assigned>) => void | Promise<void>][] = [
       [
         "cancelled",
         ({ item }) => {
@@ -433,8 +433,8 @@ export async function probeRunnerRepositoryAccess(
       ],
       [
         "replaced generation",
-        ({ command }) => {
-          work.finish(command.runId, command.generation);
+        async ({ command }) => {
+          await work.finish(command.runId, command.generation);
           work.assign({ ...command, id: workspaceId(), generation: 2 });
         },
       ],
@@ -449,8 +449,8 @@ export async function probeRunnerRepositoryAccess(
     for (const [name, change] of scenarios) {
       const entry = assigned();
       let changed = false;
-      beforeMint = () => {
-        change(entry);
+      beforeMint = async () => {
+        await change(entry);
         changed = true;
       };
       const response = await exchange(entry, "read");
@@ -464,7 +464,7 @@ export async function probeRunnerRepositoryAccess(
           "SELECT generation FROM runner_work WHERE run_id=?",
         )
         .get(entry.command.runId)!;
-      work.finish(entry.command.runId, current.generation);
+      await work.finish(entry.command.runId, current.generation);
     }
     observe(
       "authorization is rechecked after asynchronous token minting without releasing stale credentials",
