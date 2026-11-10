@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { aliasedTable, and, asc, desc, eq, inArray, lt, max, ne, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
 import { jsonField } from "./json-text";
 
 /**
@@ -249,6 +249,14 @@ export function listMergeQueues(
   held: (itemId: string) => boolean = () => false,
 ): MergeQueuePosition[] {
   return settled(sqliteDb(db).run((q) => listMergeQueuesSteps(q, held)));
+}
+
+export function* mergeQueuePositionSteps(
+  q: Q,
+  itemId: string,
+  held?: (itemId: string) => boolean,
+): Steps<MergeQueuePosition | null> {
+  return (yield* listMergeQueuesSteps(q, held)).find((entry) => entry.itemId === itemId) ?? null;
 }
 
 export function mergeQueuePosition(

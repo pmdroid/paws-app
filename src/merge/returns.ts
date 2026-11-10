@@ -5,14 +5,18 @@ import {
   getLinearSessionGeneration,
   restart,
   latestHumanTurn,
+  latestHumanTurnSteps,
   fixRounds,
   countRebaseReturns,
   listRebaseReturns,
+  listRebaseReturnsSteps,
   getWorkItem,
   immediate,
   recordReviewEscape,
   keepMergeQueuePlace,
+  type Q,
   type RestartHandoff,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import type { ask } from "../questions";
@@ -39,6 +43,17 @@ export function rebaseBudgetFor(
   now: number,
 ): RebaseBudget {
   return rebaseBudget(listRebaseReturns(db, itemId, latestUserTurn(db, itemId)), conflict, now);
+}
+
+/** {@link rebaseBudgetFor} as Steps, for a caller that runs them on the store. */
+export function* rebaseBudgetForSteps(
+  q: Q,
+  itemId: string,
+  conflict: RebaseConflict,
+  now: number,
+): Steps<RebaseBudget> {
+  const turn = yield* latestHumanTurnSteps(q, itemId);
+  return rebaseBudget(yield* listRebaseReturnsSteps(q, itemId, turn), conflict, now);
 }
 
 const RESTART_REASONS = {

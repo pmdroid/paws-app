@@ -8,20 +8,22 @@ import { promisify } from "node:util";
 import { FakeClock } from "../core";
 import {
   applyWorkItemEvent,
+  applyWorkItemEventSteps,
   beginImplementRun,
   enterMergeQueue,
-  finishCloseoutProgress,
+  finishCloseoutProgressSteps,
   getConfirmedRemoteMerge,
   getWorkItem,
+  getWorkItemSteps,
   hasCiRerun,
   insertQueuedItem,
-  markCloseoutAccepted,
-  markRun,
+  markCloseoutAcceptedSteps,
+  markRunSteps,
   migrate,
   openDatabase,
-  recordCiRerun,
-  recordItemPullRequest,
-  saveCheckpoint,
+  recordCiRerunSteps,
+  recordItemPullRequestSteps,
+  saveCheckpointSteps,
   DEFAULT_PULL_FEEDBACK_WAIT,
   type PullFeedbackWait,
   type TaskMergeSettings,
@@ -137,6 +139,7 @@ export async function mergeHarness(
 
   const db: Database = openDatabase(":memory:");
   migrate(db);
+  const store = sqliteDb(db);
   const clock = new FakeClock(1_000_000);
   const github = createFakeGitHub();
   const items = new Map<string, HarnessItem>();
@@ -381,38 +384,42 @@ export async function mergeHarness(
     const { run } = beginImplementRun(db, id, clock.now());
     enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
     // The implementer run ends once Closeout accepts, as it does in the loop.
-    markRun(db, run.id, "ended", clock.now());
-    acceptHead(id, base, head);
+    await store.run((q) => markRunSteps(q, run.id, "ended", clock.now()));
+    await acceptHead(id, base, head);
     const item = { id, worktree, pull: items.size + 1, accepted: head, base };
     await adopt(item);
     items.set(id, item);
-    recordItemPullRequest(db, {
-      itemId: id,
-      pullNumber: item.pull,
-      pullUrl: `https://github.com/acme/app/pull/${item.pull}`,
-      openedAt: clock.now(),
-    });
+    await store.run((q) =>
+      recordItemPullRequestSteps(q, {
+        itemId: id,
+        pullNumber: item.pull,
+        pullUrl: `https://github.com/acme/app/pull/${item.pull}`,
+        openedAt: clock.now(),
+      }),
+    );
     payloads.set(id, { itemId: id, head, summary: "Closeout accepted." });
     return item;
   }
 
   /** Closeout's accept row: the accepted head and a finished run on it under the policy digest. */
-  function acceptHead(id: string, base: string, head: string): void {
-    finishCloseoutProgress(
-      db,
-      id,
-      {
-        taskId: id,
-        base,
-        head,
-        policyDigest: CLOSEOUT_DIGEST,
-        policyPath: null,
-        recheckDigest: CLOSEOUT_RECHECK_DIGEST,
-      },
-      "accepted",
-      clock.now(),
+  async function acceptHead(id: string, base: string, head: string): Promise<void> {
+    await store.transaction((q) =>
+      finishCloseoutProgressSteps(
+        q,
+        id,
+        {
+          taskId: id,
+          base,
+          head,
+          policyDigest: CLOSEOUT_DIGEST,
+          policyPath: null,
+          recheckDigest: CLOSEOUT_RECHECK_DIGEST,
+        },
+        "accepted",
+        clock.now(),
+      ),
     );
-    markCloseoutAccepted(db, id, head);
+    await store.run((q) => markCloseoutAcceptedSteps(q, id, head));
   }
 
   async function requeue(id: string, fix?: string): Promise<string> {
@@ -424,12 +431,16 @@ export async function mergeHarness(
       await adopt(item);
     }
     const head = await laneHead(item);
-    const current = getWorkItem(db, id)!;
-    if (current.state === "queued") applyWorkItemEvent(db, id, "dispatched");
-    applyWorkItemEvent(db, id, "turn_ended");
-    applyWorkItemEvent(db, id, "closeout_accepted");
-    saveCheckpoint(db, id, { ...current.checkpoint!, phase: "merge_queue", wipCommit: head });
-    acceptHead(id, current.checkpoint?.baseSha ?? "", head);
+    const current = (await store.run((q) => getWorkItemSteps(q, id)))!;
+    const event = (name: "dispatched" | "turn_ended" | "closeout_accepted") =>
+      store.transaction((q) => applyWorkItemEventSteps(q, id, name));
+    if (current.state === "queued") await event("dispatched");
+    await event("turn_ended");
+    await event("closeout_accepted");
+    await store.run((q) =>
+      saveCheckpointSteps(q, id, { ...current.checkpoint!, phase: "merge_queue", wipCommit: head }),
+    );
+    await acceptHead(id, current.checkpoint?.baseSha ?? "", head);
     payloads.set(id, { itemId: id, head, summary: "Closeout accepted." });
     return head;
   }
@@ -440,9 +451,12 @@ export async function mergeHarness(
     const head = await laneHead(item);
     const base = await git(mirror ?? item.worktree, "rev-parse", "refs/paws/upstream-main");
     verified.push(head);
-    if (getWorkItem(db, id)?.state === "verifying") applyWorkItemEvent(db, id, "closeout_accepted");
-    saveCheckpoint(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
-    acceptHead(id, base, head);
+    if ((await store.run((q) => getWorkItemSteps(q, id)))?.state === "verifying")
+      await store.transaction((q) => applyWorkItemEventSteps(q, id, "closeout_accepted"));
+    await store.run((q) =>
+      saveCheckpointSteps(q, id, { phase: "merge_queue", baseSha: base, wipCommit: head }),
+    );
+    await acceptHead(id, base, head);
     payloads.set(id, { itemId: id, head, summary: "Closeout accepted." });
     return head;
   }
@@ -590,8 +604,11 @@ export async function mergeHarness(
           alreadyRerun: (head) => hasCiRerun(db, current.id, head),
           tokenProvider: { mode: "app", tokenFor: async () => "ghs_test" },
         });
-        if (result.rerun)
-          recordCiRerun(db, { itemId: current.id, ...result.rerun, reason, at: clock.now() });
+        const { rerun } = result;
+        if (rerun)
+          await store.run((q) =>
+            recordCiRerunSteps(q, { itemId: current.id, ...rerun, reason, at: clock.now() }),
+          );
         return result.answer;
       },
       completed: () => completed.push(id),
@@ -611,12 +628,7 @@ export async function mergeHarness(
   async function pass(id: string, jobPayload?: Record<string, unknown>): Promise<MergeStep> {
     jobId += 1;
     const payload = jobPayload ?? payloads.get(id)!;
-    const step = await advanceMerge(
-      db,
-      sqliteDb(db),
-      { itemId: id, payload, jobId },
-      capabilities(id),
-    );
+    const step = await advanceMerge(db, store, { itemId: id, payload, jobId }, capabilities(id));
     if (step.kind === "wait")
       payloads.set(id, {
         ...payload,
@@ -633,7 +645,7 @@ export async function mergeHarness(
   function sweep(main: string | null): Promise<string[]> {
     return returnQueuedConflicts(
       db,
-      sqliteDb(db),
+      store,
       { repository: "acme/app", main },
       {
         ask,
