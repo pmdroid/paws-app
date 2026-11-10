@@ -18,6 +18,6 @@ test("the test script and CI kill child processes a test leaves behind", () => {
 test("CI gives each test shard 20 minutes", () => {
   const ci = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
   const shard = ci.slice(ci.indexOf("  test:\n"), ci.indexOf("  check:\n"));
-  expect(shard).toContain("name: test (${{ matrix.shard }}/4)");
+  expect(shard).toContain("name: test (${{ matrix.shard }}/6)");
   expect(shard).toContain("timeout-minutes: 20");
 });
