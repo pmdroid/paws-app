@@ -787,14 +787,18 @@ export async function probeRunnerWork(
       });
       const repeatedCancelTask = backend.cancelItem(waiting.itemId);
       let retriedAfterReceipt: Promise<void> | undefined;
-      assert.equal(
+      const until = async (ready: () => boolean) => {
+        for (let tick = 0; tick < 100 && !ready(); tick++) await delay(1);
+      };
+      const cancels = () =>
         db
           .query<{ count: number }, [string]>(
             "SELECT COUNT(*) AS count FROM runner_command WHERE run_id=? AND generation=5 AND kind='cancel'",
           )
-          .get(waiting.runId)!.count,
-        1,
-      );
+          .get(waiting.runId)!.count;
+      // Cancellation reads the store before it sends the command.
+      await until(() => cancels() > 0);
+      assert.equal(cancels(), 1);
       const pendingCancellation = db
         .query<{ id: string }, [string]>(
           "SELECT id FROM runner_command WHERE run_id=? AND kind='cancel' AND acknowledged_at IS NULL ORDER BY ordinal DESC LIMIT 1",
@@ -830,11 +834,14 @@ export async function probeRunnerWork(
       work.assign({ ...review, id: workspaceId(), generation: 7 });
       const unacknowledged = backend.cancelItem(waiting.itemId);
       const rejected = assert.rejects(unacknowledged, /free slot/);
-      const expiredCancel = db
-        .query<{ id: string; expiresAt: number }, [string]>(
-          "SELECT id,expires_at AS expiresAt FROM runner_command WHERE run_id=? AND generation=7 AND kind='cancel' ORDER BY ordinal DESC LIMIT 1",
-        )
-        .get(waiting.runId)!;
+      const latestCancel = () =>
+        db
+          .query<{ id: string; expiresAt: number }, [string]>(
+            "SELECT id,expires_at AS expiresAt FROM runner_command WHERE run_id=? AND generation=7 AND kind='cancel' ORDER BY ordinal DESC LIMIT 1",
+          )
+          .get(waiting.runId);
+      await until(() => latestCancel() !== null);
+      const expiredCancel = latestCancel()!;
       now = expiredCancel.expiresAt + 1;
       await rejected;
       assert.throws(
@@ -850,11 +857,8 @@ export async function probeRunnerWork(
       );
       assert.throws(() => helpers.dispatch(helperInput), /(?:cancellation|free slot|busy)/);
       const retriedCancel = backend.cancelItem(waiting.itemId);
-      const replacementCancellation = db
-        .query<{ id: string }, [string]>(
-          "SELECT id FROM runner_command WHERE run_id=? AND generation=7 AND kind='cancel' ORDER BY ordinal DESC LIMIT 1",
-        )
-        .get(waiting.runId)!;
+      await until(() => latestCancel()?.id !== expiredCancel.id);
+      const replacementCancellation = latestCancel()!;
       assert.notEqual(replacementCancellation.id, expiredCancel.id);
       work.acknowledge(firstRunner, replacementCancellation.id);
       confirmStopped(firstRunner, { ...review, id: replacementCancellation.id, generation: 7 });
