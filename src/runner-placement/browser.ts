@@ -1,4 +1,13 @@
-import { workspaceMemberUsable, auditWorkspaceAccess, immediate, workspaceMember } from "../db";
+import {
+  auditWorkspaceAccessSteps,
+  setRunnerAgentExtraUsageSteps,
+  setRunnerSharingSteps,
+  sqliteDb,
+  workspaceMemberSteps,
+  workspaceMemberUsable,
+  workspaceRunnerHostSteps,
+  type Q,
+} from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
@@ -21,11 +30,12 @@ const PREFERRED_BECAUSE: Record<string, string> = {
 
 export function createRunnerPlacementBrowser(options: { db: Database; now?: () => number }) {
   const { db } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const json = (value: unknown, status = 200) =>
     Response.json(value, { status, headers: { "cache-control": "no-store" } });
-  function member(principal: WorkspacePrincipal) {
-    const current = workspaceMember(db, principal.workspaceId, principal.userId);
+  function* memberSteps(q: Q, principal: WorkspacePrincipal) {
+    const current = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);
     if (!workspaceMemberUsable(current)) throw new Error("Workspace access is unavailable.");
     return current;
   }
@@ -79,7 +89,7 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
       );
     if (!match && !extra && path !== "/api/runners/usage") return null;
     try {
-      const current = member(principal);
+      const current = await store.run((q) => memberSteps(q, principal));
       if (path === "/api/runners/usage") {
         if (request.method !== "GET") return json({ error: "Use GET." }, 405);
         const all = isWorkspaceAdmin(current.role);
@@ -124,13 +134,9 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
         if (request.method !== "POST") return json({ error: "Use POST." }, 405);
         const [, runnerId, agent] = extra;
         const input = extraUsageInput.parse(await body(request));
-        immediate(db, () => {
-          const changer = member(principal);
-          const host = db
-            .query<{ ownerId: string; revokedAt: number | null }, [string, string]>(
-              "SELECT owner_user_id AS ownerId,revoked_at AS revokedAt FROM runner WHERE id=? AND workspace_id=?",
-            )
-            .get(runnerId!, principal.workspaceId);
+        await store.transaction(function* (q) {
+          const changer = yield* memberSteps(q, principal);
+          const host = yield* workspaceRunnerHostSteps(q, runnerId!, principal.workspaceId);
           if (
             !host ||
             host.revokedAt !== null ||
@@ -138,20 +144,14 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
           )
             throw new Error("Only the host owner or a workspace admin can change extra usage.");
           const at = now();
-          const changed = db.run(
-            `UPDATE runner_agent_policy SET extra_usage=?1,
-             quota_state=CASE
-               WHEN ?1=1 AND quota_state='exhausted' AND cooldown_until>?2 THEN 'spent_extra'
-               WHEN ?1=0 AND quota_state='spent_extra' THEN 'exhausted' ELSE quota_state END,
-             cooldown_until=CASE
-               WHEN ?1=1 AND quota_state='exhausted' AND cooldown_until>?2 THEN 0
-               WHEN ?1=0 AND quota_state='spent_extra' THEN COALESCE(resets_at,?2+900000)
-               ELSE cooldown_until END
-             WHERE runner_id=?3 AND agent=?4`,
-            [input.extraUsage ? 1 : 0, at, runnerId!, agent!],
-          );
-          if (changed.changes === 0) throw new Error("Sign the agent in on this runner first.");
-          auditWorkspaceAccess(db, {
+          const changed = yield* setRunnerAgentExtraUsageSteps(q, {
+            runnerId: runnerId!,
+            agent: agent!,
+            extraUsage: input.extraUsage,
+            at,
+          });
+          if (!changed) throw new Error("Sign the agent in on this runner first.");
+          yield* auditWorkspaceAccessSteps(q, {
             workspaceId: principal.workspaceId,
             userId: principal.userId,
             action: "runner.extra_usage.updated",
@@ -162,16 +162,12 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
         return json({ ok: true });
       }
       const runnerId = match![1]!;
-      function runner() {
-        const row = db
-          .query<{ ownerId: string; revokedAt: number | null }, [string, string]>(
-            "SELECT owner_user_id AS ownerId,revoked_at AS revokedAt FROM runner WHERE id=? AND workspace_id=?",
-          )
-          .get(runnerId, principal.workspaceId);
+      function* runnerSteps(q: Q) {
+        const row = yield* workspaceRunnerHostSteps(q, runnerId, principal.workspaceId);
         if (!row) throw new Error("Runner is unavailable.");
         return row;
       }
-      const identity = runner();
+      const identity = await store.run(runnerSteps);
       if (request.method === "GET")
         return json({
           ownerUserId: identity.ownerId,
@@ -192,17 +188,13 @@ export function createRunnerPlacementBrowser(options: { db: Database; now?: () =
         });
       if (request.method !== "POST") return json({ error: "Use GET or POST." }, 405);
       const input = policyInput.parse(await body(request));
-      immediate(db, () => {
-        member(principal);
-        const host = runner();
+      await store.transaction(function* (q) {
+        yield* memberSteps(q, principal);
+        const host = yield* runnerSteps(q);
         if (host.ownerId !== principal.userId || host.revokedAt !== null)
           throw new Error("Only the active host owner can change its sharing settings.");
-        db.run(
-          `INSERT INTO runner_policy(runner_id,sharing) VALUES(?,?) ON CONFLICT(runner_id)
-          DO UPDATE SET sharing=excluded.sharing`,
-          [runnerId, input.sharing ? 1 : 0],
-        );
-        auditWorkspaceAccess(db, {
+        yield* setRunnerSharingSteps(q, runnerId, input.sharing);
+        yield* auditWorkspaceAccessSteps(q, {
           workspaceId: principal.workspaceId,
           userId: principal.userId,
           action: "runner.policy.updated",
