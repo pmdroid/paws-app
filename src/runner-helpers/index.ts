@@ -1,23 +1,33 @@
 import {
-  acknowledgeRunnerHelper,
+  acknowledgeRunnerHelperSteps,
   endRunnerHelper,
   workspaceMemberUsable,
   getLinearSession,
+  getLinearSessionSteps,
   immediate,
   insertRunnerHelper,
   linearSessionClientId,
+  linearSessionClientIdSteps,
   openSessionHelper,
   recordCommandAccount,
-  runnerHelperAcknowledged,
+  runnerHelperAcknowledgedSteps,
   runnerHelperAvailability,
-  runnerHelperResultMatches,
+  runnerHelperResultMatchesSteps,
   runnerHelperRow,
-  storeRunnerHelperResult,
-  unacknowledgedRunnerHelpers,
+  runnerHelperRowSteps,
+  sqliteDb,
+  storeRunnerHelperResultSteps,
+  unacknowledgedRunnerHelpersSteps,
   usableRunner,
+  usableRunnerSteps,
   yieldFindingGroupHelpers,
   workspaceSessionIds,
+  workspaceSessionIdsSteps,
   workspaceMember,
+  workspaceMemberSteps,
+  type Q,
+  type RunnerHelperRow,
+  type UsableRunner,
 } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID, type KeyObject } from "node:crypto";
@@ -55,11 +65,13 @@ export function createRunnerHelpers(options: {
   now?: () => number;
 }) {
   const { db } = options;
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   function identity(runnerId: string) {
-    const row = usableRunner(db, runnerId);
-    if (!row) throw new HelperFencedError("Runner helper identity is unavailable");
-    return row;
+    return identified(usableRunner(db, runnerId));
+  }
+  function* identitySteps(q: Q, runnerId: string) {
+    return identified(yield* usableRunnerSteps(q, runnerId));
   }
   function scope(
     runnerId: string,
@@ -73,18 +85,57 @@ export function createRunnerHelpers(options: {
     const grouping = purpose === "finding_groups";
     const member = grouping ? workspaceMember(db, runner.workspaceId, runner.userId) : null;
     if (
-      (grouping && (!workspaceMemberUsable(member) || !["admin", "owner"].includes(member.role))) ||
-      !session ||
-      (!grouping && session.stoppedAt !== null) ||
-      session.generation !== generation ||
-      !clientId ||
+      !sessionHeld(grouping, member, session, generation, clientId) ||
       !workspaceSessionIds(db, runner.workspaceId, runner.userId, clientId).includes(sessionId)
     )
       throw new HelperFencedError("Linear helper session authority changed");
     return runner;
   }
+  function* scopeSteps(
+    q: Q,
+    runnerId: string,
+    sessionId: string,
+    generation: number,
+    purpose?: HelperCommand["purpose"],
+  ) {
+    const runner = yield* identitySteps(q, runnerId);
+    const session = yield* getLinearSessionSteps(q, sessionId);
+    const clientId = yield* linearSessionClientIdSteps(q, sessionId);
+    const grouping = purpose === "finding_groups";
+    const member = grouping
+      ? yield* workspaceMemberSteps(q, runner.workspaceId, runner.userId)
+      : null;
+    if (
+      !sessionHeld(grouping, member, session, generation, clientId) ||
+      !(yield* workspaceSessionIdsSteps(q, runner.workspaceId, runner.userId, clientId)).includes(
+        sessionId,
+      )
+    )
+      throw new HelperFencedError("Linear helper session authority changed");
+    return runner;
+  }
   function current(id: string, runnerId?: string) {
-    const row = runnerHelperRow(db, id);
+    const { row, command, envelope } = assigned(runnerHelperRow(db, id), id, runnerId);
+    const runner = scope(
+      row.runnerId,
+      command.sessionId,
+      command.sessionGeneration,
+      command.purpose,
+    );
+    return { row: unchangedIdentity(runner, row), command, envelope };
+  }
+  function* currentSteps(q: Q, id: string, runnerId?: string) {
+    const { row, command, envelope } = assigned(yield* runnerHelperRowSteps(q, id), id, runnerId);
+    const runner = yield* scopeSteps(
+      q,
+      row.runnerId,
+      command.sessionId,
+      command.sessionGeneration,
+      command.purpose,
+    );
+    return { row: unchangedIdentity(runner, row), command, envelope };
+  }
+  function assigned(row: RunnerHelperRow | null, id: string, runnerId?: string) {
     if (!row || (runnerId !== undefined && row.runnerId !== runnerId) || row.endedAt !== null)
       throw new HelperFencedError("Runner helper assignment is unavailable");
     const envelope = JSON.parse(row.envelope) as SignedRunnerCommand;
@@ -100,14 +151,6 @@ export function createRunnerHelpers(options: {
       command.expiresAt <= now()
     )
       throw new HelperFencedError("Runner helper command is obsolete");
-    const runner = scope(
-      row.runnerId,
-      command.sessionId,
-      command.sessionGeneration,
-      command.purpose,
-    );
-    if (runner.fence !== row.runnerFence || runner.workspaceId !== row.workspaceId)
-      throw new HelperFencedError("Runner helper identity changed");
     return { row, command, envelope };
   }
   const api = {
@@ -172,22 +215,24 @@ export function createRunnerHelpers(options: {
         return { command, envelope };
       });
     },
-    commands(runnerId: string) {
-      identity(runnerId);
-      const result: SignedRunnerCommand[] = [];
-      const ids = unacknowledgedRunnerHelpers(db, runnerId, now());
-      for (const id of ids) {
-        try {
-          result.push(current(id, runnerId).envelope);
-        } catch (error) {
-          if (!(error instanceof HelperFencedError)) throw error;
-          journalCaught(error, "runner-helpers.commands.push", null);
+    commands(runnerId: string): Promise<SignedRunnerCommand[]> {
+      return store.run(function* (q) {
+        yield* identitySteps(q, runnerId);
+        const result: SignedRunnerCommand[] = [];
+        const ids = yield* unacknowledgedRunnerHelpersSteps(q, runnerId, now());
+        for (const id of ids) {
+          try {
+            result.push((yield* currentSteps(q, id, runnerId)).envelope);
+          } catch (error) {
+            if (!(error instanceof HelperFencedError)) throw error;
+            journalCaught(error, "runner-helpers.commands.push", null);
+          }
+          if (result.length === 16) break;
         }
-        if (result.length === 16) break;
-      }
-      return result;
+        return result;
+      });
     },
-    current,
+    current: (id: string, runnerId?: string) => store.run((q) => currentSteps(q, id, runnerId)),
     open(sessionId: string): HelperCommand | null {
       const session = getLinearSession(db, sessionId);
       const row = session && openSessionHelper(db, sessionId, session.generation, now());
@@ -199,31 +244,31 @@ export function createRunnerHelpers(options: {
         throw error;
       }
     },
-    acknowledged: (id: string) => runnerHelperAcknowledged(db, id),
-    acknowledge(runnerId: string, id: string) {
-      immediate(db, () => {
-        current(id, runnerId);
-        acknowledgeRunnerHelper(db, id, now());
+    acknowledged: (id: string) => store.run((q) => runnerHelperAcknowledgedSteps(q, id)),
+    async acknowledge(runnerId: string, id: string): Promise<void> {
+      await store.transaction(function* (q) {
+        yield* currentSteps(q, id, runnerId);
+        yield* acknowledgeRunnerHelperSteps(q, id, now());
       });
     },
-    submit(runnerId: string, result: RunnerHelperResult) {
+    async submit(runnerId: string, result: RunnerHelperResult) {
       const parsed = RunnerHelperResultSchema.parse(result);
-      return immediate(db, () => {
-        const { row, command } = current(parsed.commandId, runnerId);
+      return store.transaction(function* (q) {
+        const { row, command } = yield* currentSteps(q, parsed.commandId, runnerId);
         if (!runnerAccountEchoed(command, parsed))
           throw new Error("Runner helper result account does not match its command");
         const payload = JSON.stringify(parsed);
         if (row.result !== null) {
-          if (!runnerHelperResultMatches(db, parsed.commandId, payload))
+          if (!(yield* runnerHelperResultMatchesSteps(q, parsed.commandId, payload)))
             throw new Error("Runner helper result is immutable");
           return { duplicate: true };
         }
-        storeRunnerHelperResult(db, parsed.commandId, payload);
+        yield* storeRunnerHelperResultSteps(q, parsed.commandId, payload);
         return { duplicate: false };
       });
     },
-    result(id: string): RunnerHelperResult | null {
-      const { row } = current(id);
+    async result(id: string): Promise<RunnerHelperResult | null> {
+      const { row } = await store.run((q) => currentSteps(q, id));
       return row.result === null ? null : RunnerHelperResultSchema.parse(JSON.parse(row.result));
     },
     finish(id: string) {
@@ -235,7 +280,7 @@ export function createRunnerHelpers(options: {
         Response.json(value, { status, headers: { "cache-control": "no-store" } });
       try {
         if (path === "/v1/helper-commands" && request.method === "GET")
-          return json({ commands: api.commands(runnerId) });
+          return json({ commands: await api.commands(runnerId) });
         const match = /^\/v1\/helper-commands\/([^/]+)\/(ack|lease|result)$/.exec(path);
         if (!match || request.method !== "POST") return null;
         const id = z
@@ -246,14 +291,14 @@ export function createRunnerHelpers(options: {
         if (match[2] === "result") {
           const result = RunnerHelperResultSchema.parse(input);
           if (result.commandId !== id) throw new Error("Runner helper result command changed");
-          return json(api.submit(runnerId, result));
+          return json(await api.submit(runnerId, result));
         }
         z.strictObject({}).parse(input);
         if (match[2] === "ack") {
-          api.acknowledge(runnerId, id);
+          await api.acknowledge(runnerId, id);
           return json({ ok: true });
         }
-        return json({ expiresAt: current(id, runnerId).command.expiresAt });
+        return json({ expiresAt: (await api.current(id, runnerId)).command.expiresAt });
       } catch (error) {
         journalCaught(error, "runner-helpers.fetch.json", null);
         if (error instanceof HelperFencedError)
@@ -266,6 +311,34 @@ export function createRunnerHelpers(options: {
     },
   };
   return api;
+}
+
+function identified(row: UsableRunner | null): UsableRunner {
+  if (!row) throw new HelperFencedError("Runner helper identity is unavailable");
+  return row;
+}
+
+/** Whether the session still admits a helper, short of the workspace's session list. */
+function sessionHeld(
+  grouping: boolean,
+  member: { active: boolean | number; revokedAt: number | null; role: string } | null,
+  session: { stoppedAt: number | null; generation: number } | null,
+  generation: number,
+  clientId: string | null,
+): clientId is string {
+  return !(
+    (grouping && (!workspaceMemberUsable(member) || !["admin", "owner"].includes(member.role))) ||
+    !session ||
+    (!grouping && session.stoppedAt !== null) ||
+    session.generation !== generation ||
+    !clientId
+  );
+}
+
+function unchangedIdentity(runner: UsableRunner, row: RunnerHelperRow): RunnerHelperRow {
+  if (runner.fence !== row.runnerFence || runner.workspaceId !== row.workspaceId)
+    throw new HelperFencedError("Runner helper identity changed");
+  return row;
 }
 
 async function body(request: Request) {
