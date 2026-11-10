@@ -1,15 +1,15 @@
 import type { Database } from "bun:sqlite";
 import type { IssueBrief } from "../core";
-import { issueHasUnfinishedItem } from "../db";
+import { issueHasUnfinishedItemSteps, sqliteDb, type Q, type Steps } from "../db";
 import { LinearIntakeRefusedError, type TrackerAdapter } from "../linear";
 import type { DependencyEdge, EpicSnapshot } from "../linear";
 import { orderByBlocks, type OrderNode } from "./order";
 import {
   findAcceptedIntake,
-  insertRunningQueue,
-  readAdoptedParent,
-  readEarlierAttempt,
-  retireEmptyFailedAttempt,
+  insertRunningQueueSteps,
+  readAdoptedParentSteps,
+  readEarlierAttemptSteps,
+  retireEmptyFailedAttemptSteps,
 } from "./store";
 import type { EarlierAttempt, StoredDelegation, StoredWorkItem } from "./store";
 import { ulid } from "./ulid";
@@ -87,9 +87,10 @@ export async function intakeDelegatedIssue(
     ) => boolean;
   },
 ): Promise<IntakeResult> {
+  const store = sqliteDb(db);
   const now = input.now ?? Date.now();
   const taskKey = input.taskKey ?? `initial:${input.linearIssueId}`;
-  const existing = findAcceptedIntake(db, input.linearIssueId, taskKey);
+  const existing = await findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (existing !== null) {
     const result = { ok: true as const, ...existing, alreadyExisted: true as const };
     input.onAccepted?.(result);
@@ -112,7 +113,7 @@ export async function intakeDelegatedIssue(
   if (ordered.ok && (delegatedAlone || !input.adoptParent))
     await input.reconcileSessions?.(ordered.ordered.map((node) => node.linearIssueId));
   if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
-  const accepted = findAcceptedIntake(db, input.linearIssueId, taskKey);
+  const accepted = await findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (accepted !== null) {
     const result = { ok: true as const, ...accepted, alreadyExisted: true as const };
     input.onAccepted?.(result);
@@ -147,63 +148,61 @@ export async function intakeDelegatedIssue(
   let adopted = false;
   let result: IntakeResult;
   try {
-    result = db
-      .transaction(() => {
-        input.beforeAdmit?.();
-        if (
-          snapshot.subIssues.length > 0 &&
-          sessionId.length > 0 &&
-          input.adoptParent?.(sessionId, snapshot, edges)
-        ) {
-          adopted = true;
-          const delegation = readAdoptedParent(db, snapshot.linearIssueId);
-          if (delegation === null) throw new Error("Adopted parent was not recorded");
-          const admitted = {
-            ok: true,
-            delegation,
-            items: [],
-            alreadyExisted: false,
-          } as const;
-          input.onAccepted?.(admitted);
-          return admitted;
-        }
-        if (delegatedAlone && sessionId.length > 0)
-          retireEmptyFailedAttempt(db, snapshot.linearIssueId, sessionId);
-        const conflict = activeElsewhere(db, ordered.ordered);
-        if (conflict) throw new ActiveIssueError(conflict.identifier);
-        const saved = insertRunningQueue(db, {
-          taskKey,
-          linearIssueId: snapshot.linearIssueId,
-          identifier: snapshot.identifier,
-          title: snapshot.title,
-          ordered: ordered.ordered,
-          briefs: new Map(
-            (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
-              issue.linearIssueId,
-              { issue: issueBrief(issue), epic: delegatedAlone ? null : issueBrief(snapshot) },
-            ]),
-          ),
-          projects: new Map(
-            (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
-              issue.linearIssueId,
-              snapshotProject(issue) ?? null,
-            ]),
-          ),
-          edges,
-          now,
-          sessionKey: sessionId.length > 0 ? sessionId : null,
-          continuations,
-        });
+    result = await store.transaction(function* (q) {
+      input.beforeAdmit?.();
+      if (
+        snapshot.subIssues.length > 0 &&
+        sessionId.length > 0 &&
+        input.adoptParent?.(sessionId, snapshot, edges)
+      ) {
+        adopted = true;
+        const delegation = yield* readAdoptedParentSteps(q, snapshot.linearIssueId);
+        if (delegation === null) throw new Error("Adopted parent was not recorded");
         const admitted = {
           ok: true,
-          delegation: saved.delegation,
-          items: saved.items,
+          delegation,
+          items: [],
           alreadyExisted: false,
         } as const;
         input.onAccepted?.(admitted);
         return admitted;
-      })
-      .immediate();
+      }
+      if (delegatedAlone && sessionId.length > 0)
+        yield* retireEmptyFailedAttemptSteps(q, snapshot.linearIssueId, sessionId);
+      const conflict = yield* activeElsewhereSteps(q, ordered.ordered);
+      if (conflict) throw new ActiveIssueError(conflict.identifier);
+      const saved = yield* insertRunningQueueSteps(q, {
+        taskKey,
+        linearIssueId: snapshot.linearIssueId,
+        identifier: snapshot.identifier,
+        title: snapshot.title,
+        ordered: ordered.ordered,
+        briefs: new Map(
+          (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
+            issue.linearIssueId,
+            { issue: issueBrief(issue), epic: delegatedAlone ? null : issueBrief(snapshot) },
+          ]),
+        ),
+        projects: new Map(
+          (delegatedAlone ? [snapshot] : snapshot.subIssues).map((issue) => [
+            issue.linearIssueId,
+            snapshotProject(issue) ?? null,
+          ]),
+        ),
+        edges,
+        now,
+        sessionKey: sessionId.length > 0 ? sessionId : null,
+        continuations,
+      });
+      const admitted = {
+        ok: true,
+        delegation: saved.delegation,
+        items: saved.items,
+        alreadyExisted: false,
+      } as const;
+      input.onAccepted?.(admitted);
+      return admitted;
+    });
   } catch (error) {
     if (error instanceof ActiveIssueError) {
       await announce(tracker, input.sessionId, "error", error.message);
@@ -233,8 +232,10 @@ export class ActiveIssueError extends LinearIntakeRefusedError {
   }
 }
 
-function activeElsewhere(db: Database, nodes: readonly OrderNode[]): OrderNode | undefined {
-  return nodes.find((node) => issueHasUnfinishedItem(db, node.linearIssueId));
+function* activeElsewhereSteps(q: Q, nodes: readonly OrderNode[]): Steps<OrderNode | undefined> {
+  for (const node of nodes)
+    if (yield* issueHasUnfinishedItemSteps(q, node.linearIssueId)) return node;
+  return undefined;
 }
 
 /**
@@ -247,10 +248,11 @@ async function continuedBranches(
   nodes: readonly OrderNode[],
   inspect: (earlier: EarlierAttempt) => Promise<EarlierBranch>,
 ): Promise<Map<string, EarlierAttempt>> {
+  const store = sqliteDb(db);
   const continued = new Map<string, EarlierAttempt>();
-  if (activeElsewhere(db, nodes)) return continued;
+  if (await store.run((q) => activeElsewhereSteps(q, nodes))) return continued;
   for (const node of nodes) {
-    const earlier = readEarlierAttempt(db, node.linearIssueId);
+    const earlier = await store.run((q) => readEarlierAttemptSteps(q, node.linearIssueId));
     if (earlier === null) continue;
     const branch = await inspect(earlier);
     // A squash merge leaves the branch's own commits outside main; merged work is not continued.
