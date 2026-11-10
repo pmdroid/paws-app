@@ -1,5 +1,12 @@
 import type { Database } from "bun:sqlite";
-import { listImprovementProposals, listImprovements, type ImprovementSource } from "./improvements";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { settled, sqliteDb, type Q, type Steps } from "./db";
+import {
+  listImprovementProposalsSteps,
+  listImprovementsSteps,
+  type ImprovementSource,
+} from "./improvements";
+import { jsonText } from "./json-text";
 import { appliedMigrations } from "./migrate";
 import { teamRepositoryAllowedSql } from "./repository-catalog";
 
@@ -168,212 +175,337 @@ export type RetroActivitySnapshot = {
   improvements: RetroActivityImprovement[];
 };
 
-type ItemRow = {
-  id: string;
-  linear_identifier: string;
-  title: string;
-  repository: string;
-  state: string;
-  version: number;
-  created_at: number;
-  pull_number: number | null;
-  opened_at: number | null;
-  agent_ms: number;
-  closeout_ms: number;
-  waiting_ms: number;
-  recheck_ms: number;
-  awake_ms: number;
-  turn_count: number;
-  recovery_attempts: number;
-  allowed: number;
-};
+type RetroActivityInput = { workspaceId: string; repositories: readonly string[]; before: number };
 
-const SCOPE = "SELECT value FROM json_each(?)";
-
-export function readRetroActivity(
-  db: Database,
-  input: { workspaceId: string; repositories: readonly string[]; before: number },
-): RetroActivitySnapshot {
-  return db
-    .transaction(() => {
-      const repositories = JSON.stringify(input.repositories.map((name) => name.toLowerCase()));
-      const rows = db
-        .query<ItemRow, [string, string, number]>(
-          `SELECT i.id, i.linear_identifier, i.title, lower(r.owner || '/' || r.repo) AS repository,
-             i.state, i.version, i.created_at, p.pull_number, p.opened_at, i.agent_ms, i.closeout_ms,
-             i.waiting_ms, i.recheck_ms, i.awake_ms, i.turn_count, i.recovery_attempts,
-             (s.team_id IS NOT NULL AND ${teamRepositoryAllowedSql("w.id", "s.team_id", "lower(r.owner || '/' || r.repo)")}) AS allowed
-           FROM work_item i
-           JOIN work_item_repository r ON r.item_id = i.id
-           JOIN linear_session s ON s.session_id = i.session_key
-           JOIN workspace w ON w.linear_organization_id = s.organization_id
-           LEFT JOIN item_pull_request p ON p.item_id = i.id
-           WHERE w.id = ? AND lower(r.owner || '/' || r.repo) IN (${SCOPE}) AND i.created_at < ?
-           ORDER BY i.created_at, i.id`,
-        )
-        .all(input.workspaceId, repositories, input.before);
-      const allowed = rows.filter((row) => row.allowed === 1);
-      const items = allowed.map((row): RetroActivityItem => ({
-        id: row.id,
-        identifier: row.linear_identifier,
-        title: row.title,
-        repository: row.repository,
-        state: row.state,
-        version: row.version,
-        createdAt: row.created_at,
-        pullNumber: row.pull_number,
-        pullOpenedAt: row.opened_at,
-        counters: {
-          agentMs: row.agent_ms,
-          closeoutMs: row.closeout_ms,
-          waitingMs: row.waiting_ms,
-          recheckMs: row.recheck_ms,
-          awakeMs: row.awake_ms,
-          turnCount: row.turn_count,
-          recoveryAttempts: row.recovery_attempts,
-        },
-      }));
-      const ids = JSON.stringify(items.map((item) => item.id));
-      const before = input.before;
-      const scopedRepositories = new Set(items.map((item) => item.repository));
-      const findingRows = db
-        .query<
-          Omit<RetroActivityFinding, "itemId" | "seenAt"> & { itemId: string; seenAt: number },
-          [string, number]
-        >(
-          `SELECT f.id AS findingId, f.dedupe_key AS key, m.item_id AS itemId,
-             lower(f.repository) AS repository, f.path, f.severity, f.bug_class AS bugClass, f.why,
-             f.text, f.status, f.filed_issue AS filedIssue, m.seen_at AS seenAt
-           FROM review_finding_item m JOIN review_finding f ON f.id = m.finding_id
-           WHERE m.item_id IN (${SCOPE}) AND m.seen_at < ? ORDER BY m.seen_at, f.id, m.item_id`,
-        )
-        .all(ids, before);
-      const findingIds = new Set(findingRows.map((row) => row.findingId));
-      return {
-        workspaceId: input.workspaceId,
-        schema: appliedMigrations(db),
-        items,
-        unauthorizedItems: rows.length - allowed.length,
-        runs: db
-          .query<RetroActivityRun, [string, number]>(
-            `SELECT id, item_id AS itemId, kind, agent, status, created_at AS createdAt,
-               updated_at AS updatedAt FROM run WHERE item_id IN (${SCOPE}) AND created_at < ?
-             ORDER BY created_at, id`,
-          )
-          .all(ids, before),
-        transitions: db
-          .query<RetroActivityTransition, [string]>(
-            `SELECT id, item_id AS itemId, version, at, from_state AS fromState, to_state AS toState,
-               event, kind, reason FROM work_item_event WHERE item_id IN (${SCOPE})
-             ORDER BY item_id, version`,
-          )
-          .all(ids),
-        questions: db
-          .query<RetroActivityQuestion, [string, number]>(
-            `SELECT id, item_id AS itemId, run_id AS runId, kind, reason, body, answer, status,
-               created_at AS createdAt, answered_at AS answeredAt, cancelled_at AS cancelledAt,
-               answer_event_key AS answerEventKey
-             FROM question WHERE item_id IN (${SCOPE}) AND created_at < ? ORDER BY created_at, id`,
-          )
-          .all(ids, before),
-        messages: db
-          .query<RetroActivityMessage, [string, number]>(
-            `SELECT ordinal, event_key AS eventKey, activity_id AS activityId, item_id AS itemId,
-               body, created_at_ms AS createdAt
-             FROM linear_turn WHERE item_id IN (${SCOPE}) AND created_at_ms < ? AND state <> 'cancelled'
-             ORDER BY created_at_ms, ordinal`,
-          )
-          .all(ids, before),
-        checks: db
-          .query<Omit<RetroActivityCheck, "timedOut"> & { timedOut: number }, [string, number]>(
-            `SELECT s.progress_id AS progressId, s.step_id AS stepId, p.item_id AS itemId, p.head,
-               s.kind, s.state, s.command, s.detail, s.exit_code AS exitCode, s.timed_out AS timedOut,
-               s.finished_at AS finishedAt
-             FROM closeout_step s JOIN closeout_progress p ON p.id = s.progress_id
-             WHERE p.item_id IN (${SCOPE}) AND s.state IN ('failed','exhausted')
-               AND s.finished_at IS NOT NULL AND s.finished_at < ?
-             ORDER BY s.finished_at, s.progress_id, s.step_id`,
-          )
-          .all(ids, before)
-          .map((row) => ({ ...row, timedOut: row.timedOut === 1 })),
-        findings: findingRows,
-        findingGroups: db
-          .query<
-            Omit<RetroActivityFindingGroup, "memberIds"> & { memberIds: string },
-            [string, number]
-          >(
-            `SELECT id, lower(repository) AS repository, status, filed_issue AS filedIssue,
-               member_ids AS memberIds, created_at AS createdAt
-             FROM finding_group WHERE workspace_id = ? AND created_at < ?
-             ORDER BY created_at DESC, id`,
-          )
-          .all(input.workspaceId, before)
-          .map((row) => ({ ...row, memberIds: JSON.parse(row.memberIds) as number[] }))
-          .filter(
-            (group) =>
-              scopedRepositories.has(group.repository) &&
-              group.memberIds.some((id) => findingIds.has(id)),
+export function* readRetroActivitySteps(
+  q: Q,
+  input: RetroActivityInput,
+  schema: RetroActivitySnapshot["schema"],
+): Steps<RetroActivitySnapshot> {
+  const t = q.t;
+  const before = input.before;
+  const repositoryOf = sql<string>`lower(${t.workItemRepository.owner} || '/' || ${t.workItemRepository.repo})`;
+  const rows = yield* q.all(
+    q.orm
+      .select({
+        id: t.workItem.id,
+        identifier: t.workItem.linearIdentifier,
+        title: t.workItem.title,
+        repository: repositoryOf,
+        state: t.workItem.state,
+        version: t.workItem.version,
+        createdAt: t.workItem.createdAt,
+        pullNumber: t.itemPullRequest.pullNumber,
+        pullOpenedAt: t.itemPullRequest.openedAt,
+        agentMs: t.workItem.agentMs,
+        closeoutMs: t.workItem.closeoutMs,
+        waitingMs: t.workItem.waitingMs,
+        recheckMs: t.workItem.recheckMs,
+        awakeMs: t.workItem.awakeMs,
+        turnCount: t.workItem.turnCount,
+        recoveryAttempts: t.workItem.recoveryAttempts,
+        allowed: sql<unknown>`(${t.linearSession.teamId} IS NOT NULL AND ${sql.raw(
+          teamRepositoryAllowedSql(
+            "workspace.id",
+            "linear_session.team_id",
+            "lower(work_item_repository.owner || '/' || work_item_repository.repo)",
           ),
-        escapes: db
-          .query<
-            Omit<RetroActivityEscape, "isEscape"> & { isEscape: number | null },
-            [string, number]
-          >(
-            `SELECT id, item_id AS itemId, trigger, pull_number AS pullNumber,
-               recorded_at AS recordedAt, is_escape AS isEscape,
-               not_escape_reason AS notEscapeReason, settled_at AS settledAt
-             FROM review_escape WHERE item_id IN (${SCOPE}) AND recorded_at < ? ORDER BY recorded_at, id`,
-          )
-          .all(ids, before)
-          .map((row) => ({ ...row, isEscape: row.isEscape === null ? null : row.isEscape === 1 })),
-        rebaseReturns: db
-          .query<RetroActivityRebaseReturn, [string, number]>(
-            `SELECT job_id AS jobId, activation_id AS activationId, item_id AS itemId, reason,
-               recorded_at AS recordedAt
-             FROM rebase_return WHERE item_id IN (${SCOPE}) AND (recorded_at IS NULL OR recorded_at < ?)
-             ORDER BY recorded_at, job_id, activation_id`,
-          )
-          .all(ids, before),
-        ciRounds: db
-          .query<Omit<RetroActivityCiRound, "failedChecks"> & { checks: string }, [string, number]>(
-            `SELECT item_id AS itemId, head, next, fix, fix_limit AS fixLimit, checks,
-               recorded_at AS recordedAt
-             FROM ci_round WHERE item_id IN (${SCOPE}) AND recorded_at < ? ORDER BY recorded_at, item_id, head`,
-          )
-          .all(ids, before)
-          .map(({ checks, ...row }) => ({
-            ...row,
-            failedChecks: (JSON.parse(checks) as { name: string; state: string }[])
-              .filter((check) => check.state === "failed")
-              .map((check) => check.name)
-              .sort(),
-          })),
-        improvements: listImprovements(db, input.workspaceId)
-          .filter(
-            (improvement) =>
-              improvement.createdAt < before &&
-              input.repositories.some(
-                (name) => name.toLowerCase() === improvement.repository.toLowerCase(),
-              ),
-          )
-          .map((improvement) => {
-            const proposals = listImprovementProposals(db, improvement.id).filter(
-              (proposal) => proposal.createdAt < before,
-            );
-            return {
-              id: improvement.id,
-              repository: improvement.repository.toLowerCase(),
-              reviewState: improvement.reviewState,
-              issueIdentifier: improvement.issue?.identifier ?? null,
-              implementationState: improvement.implementationState,
-              implementationAt: improvement.implementationAt,
-              verificationState: improvement.verificationState,
-              verificationAt: improvement.verificationAt,
-              sources: proposals.map((proposal) => proposal.source),
-              evidence: [...new Set(proposals.flatMap((proposal) => proposal.evidence))].sort(),
-            };
-          }),
-      };
-    })
-    .deferred();
+        )})`,
+      })
+      .from(t.workItem)
+      .innerJoin(t.workItemRepository, eq(t.workItemRepository.itemId, t.workItem.id))
+      .innerJoin(t.linearSession, eq(t.linearSession.sessionId, t.workItem.sessionKey))
+      .innerJoin(t.workspace, eq(t.workspace.linearOrganizationId, t.linearSession.organizationId))
+      .leftJoin(t.itemPullRequest, eq(t.itemPullRequest.itemId, t.workItem.id))
+      .where(
+        and(
+          eq(t.workspace.id, input.workspaceId),
+          inArray(
+            repositoryOf,
+            input.repositories.map((name) => name.toLowerCase()),
+          ),
+          lt(t.workItem.createdAt, before),
+        ),
+      )
+      .orderBy(asc(t.workItem.createdAt), asc(t.workItem.id)),
+  );
+  const allowed = rows.filter((row) => truthy(row.allowed));
+  const items = allowed.map((row): RetroActivityItem => ({
+    id: row.id,
+    identifier: row.identifier!,
+    title: row.title,
+    repository: row.repository,
+    state: row.state,
+    version: row.version,
+    createdAt: row.createdAt,
+    pullNumber: row.pullNumber,
+    pullOpenedAt: row.pullOpenedAt,
+    counters: {
+      agentMs: row.agentMs,
+      closeoutMs: row.closeoutMs,
+      waitingMs: row.waitingMs,
+      recheckMs: row.recheckMs,
+      awakeMs: row.awakeMs,
+      turnCount: row.turnCount,
+      recoveryAttempts: row.recoveryAttempts,
+    },
+  }));
+  const ids = items.map((item) => item.id);
+  const scopedRepositories = new Set(items.map((item) => item.repository));
+  const { reviewFindingItem: m, reviewFinding: f } = t;
+  const findings = yield* q.all(
+    q.orm
+      .select({
+        findingId: f.id,
+        key: f.dedupeKey,
+        itemId: m.itemId,
+        repository: sql<string>`lower(${f.repository})`,
+        path: f.path,
+        severity: f.severity,
+        bugClass: f.bugClass,
+        why: f.why,
+        text: f.text,
+        status: f.status,
+        filedIssue: f.filedIssue,
+        seenAt: m.seenAt,
+      })
+      .from(m)
+      .innerJoin(f, eq(f.id, m.findingId))
+      .where(and(inArray(m.itemId, ids), lt(m.seenAt, before)))
+      .orderBy(asc(m.seenAt), asc(f.id), asc(m.itemId)),
+  );
+  const findingIds = new Set(findings.map((row) => row.findingId));
+  const r = t.run;
+  const runs = yield* q.all(
+    q.orm
+      .select({
+        id: r.id,
+        itemId: r.itemId,
+        kind: r.kind,
+        agent: r.agent,
+        status: r.status,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      })
+      .from(r)
+      .where(and(inArray(r.itemId, ids), lt(r.createdAt, before)))
+      .orderBy(asc(r.createdAt), asc(r.id)),
+  );
+  const e = t.workItemEvent;
+  const transitions = yield* q.all(
+    q.orm
+      .select({
+        id: e.id,
+        itemId: e.itemId,
+        version: e.version,
+        at: e.at,
+        fromState: e.fromState,
+        toState: e.toState,
+        event: e.event,
+        kind: e.kind,
+        reason: e.reason,
+      })
+      .from(e)
+      .where(inArray(e.itemId, ids))
+      .orderBy(asc(e.itemId), asc(e.version)),
+  );
+  const question = t.question;
+  const questions = yield* q.all(
+    q.orm
+      .select({
+        id: question.id,
+        itemId: question.itemId,
+        runId: question.runId,
+        kind: question.kind,
+        reason: question.reason,
+        body: question.body,
+        answer: question.answer,
+        status: question.status,
+        createdAt: question.createdAt,
+        answeredAt: question.answeredAt,
+        cancelledAt: question.cancelledAt,
+        answerEventKey: question.answerEventKey,
+      })
+      .from(question)
+      .where(and(inArray(question.itemId, ids), lt(question.createdAt, before)))
+      .orderBy(asc(question.createdAt), asc(question.id)),
+  );
+  const turn = t.linearTurn;
+  const messages = yield* q.all(
+    q.orm
+      .select({
+        ordinal: turn.ordinal,
+        eventKey: turn.eventKey,
+        activityId: turn.activityId,
+        itemId: turn.itemId,
+        body: turn.body,
+        createdAt: turn.createdAtMs,
+      })
+      .from(turn)
+      .where(
+        and(inArray(turn.itemId, ids), lt(turn.createdAtMs, before), ne(turn.state, "cancelled")),
+      )
+      .orderBy(asc(turn.createdAtMs), asc(turn.ordinal)),
+  );
+  const { closeoutStep: s, closeoutProgress: p } = t;
+  const checks = yield* q.all(
+    q.orm
+      .select({
+        progressId: s.progressId,
+        stepId: s.stepId,
+        itemId: p.itemId,
+        head: p.head,
+        kind: s.kind,
+        state: s.state,
+        command: s.command,
+        detail: s.detail,
+        exitCode: s.exitCode,
+        timedOut: s.timedOut,
+        finishedAt: s.finishedAt,
+      })
+      .from(s)
+      .innerJoin(p, eq(p.id, s.progressId))
+      .where(
+        and(
+          inArray(p.itemId, ids),
+          inArray(s.state, ["failed", "exhausted"]),
+          isNotNull(s.finishedAt),
+          lt(s.finishedAt, before),
+        ),
+      )
+      .orderBy(asc(s.finishedAt), asc(s.progressId), asc(s.stepId)),
+  );
+  const g = t.findingGroup;
+  const groups = yield* q.all(
+    q.orm
+      .select({
+        id: g.id,
+        repository: sql<string>`lower(${g.repository})`,
+        status: g.status,
+        filedIssue: g.filedIssue,
+        memberIds: jsonText(q, g.memberIds),
+        createdAt: g.createdAt,
+      })
+      .from(g)
+      .where(and(eq(g.workspaceId, input.workspaceId), lt(g.createdAt, before)))
+      .orderBy(desc(g.createdAt), asc(g.id)),
+  );
+  const x = t.reviewEscape;
+  const escapes = yield* q.all(
+    q.orm
+      .select({
+        id: x.id,
+        itemId: x.itemId,
+        trigger: x.trigger,
+        pullNumber: x.pullNumber,
+        recordedAt: x.recordedAt,
+        isEscape: x.isEscape,
+        notEscapeReason: x.notEscapeReason,
+        settledAt: x.settledAt,
+      })
+      .from(x)
+      .where(and(inArray(x.itemId, ids), lt(x.recordedAt, before)))
+      .orderBy(asc(x.recordedAt), asc(x.id)),
+  );
+  const b = t.rebaseReturn;
+  const rebaseReturns = yield* q.all(
+    q.orm
+      .select({
+        jobId: b.jobId,
+        activationId: b.activationId,
+        itemId: b.itemId,
+        reason: b.reason,
+        recordedAt: b.recordedAt,
+      })
+      .from(b)
+      .where(and(inArray(b.itemId, ids), or(isNull(b.recordedAt), lt(b.recordedAt, before))))
+      .orderBy(sql`${b.recordedAt} ASC NULLS FIRST`, asc(b.jobId), asc(b.activationId)),
+  );
+  const c = t.ciRound;
+  const ciRounds = yield* q.all(
+    q.orm
+      .select({
+        itemId: c.itemId,
+        head: c.head,
+        next: c.next,
+        fix: c.fix,
+        fixLimit: c.fixLimit,
+        checks: jsonText(q, c.checks),
+        recordedAt: c.recordedAt,
+      })
+      .from(c)
+      .where(and(inArray(c.itemId, ids), lt(c.recordedAt, before)))
+      .orderBy(asc(c.recordedAt), asc(c.itemId), asc(c.head)),
+  );
+  const improvements: RetroActivityImprovement[] = [];
+  for (const improvement of yield* listImprovementsSteps(q, input.workspaceId)) {
+    if (
+      improvement.createdAt >= before ||
+      !input.repositories.some(
+        (name) => name.toLowerCase() === improvement.repository.toLowerCase(),
+      )
+    )
+      continue;
+    const proposals = (yield* listImprovementProposalsSteps(q, improvement.id)).filter(
+      (proposal) => proposal.createdAt < before,
+    );
+    improvements.push({
+      id: improvement.id,
+      repository: improvement.repository.toLowerCase(),
+      reviewState: improvement.reviewState,
+      issueIdentifier: improvement.issue?.identifier ?? null,
+      implementationState: improvement.implementationState,
+      implementationAt: improvement.implementationAt,
+      verificationState: improvement.verificationState,
+      verificationAt: improvement.verificationAt,
+      sources: proposals.map((proposal) => proposal.source),
+      evidence: [...new Set(proposals.flatMap((proposal) => proposal.evidence))].sort(),
+    });
+  }
+  return {
+    workspaceId: input.workspaceId,
+    schema,
+    items,
+    unauthorizedItems: rows.length - allowed.length,
+    runs,
+    transitions: transitions as RetroActivityTransition[],
+    questions,
+    messages: messages as RetroActivityMessage[],
+    checks: checks.map((row) => ({
+      ...row,
+      state: row.state as RetroActivityCheck["state"],
+      finishedAt: row.finishedAt!,
+      timedOut: row.timedOut === 1,
+    })),
+    findings,
+    findingGroups: groups
+      .map((row) => ({ ...row, memberIds: JSON.parse(row.memberIds) as number[] }))
+      .filter(
+        (group) =>
+          scopedRepositories.has(group.repository) &&
+          group.memberIds.some((id) => findingIds.has(id)),
+      ),
+    escapes: escapes.map((row) => ({
+      ...row,
+      isEscape: row.isEscape === null ? null : row.isEscape === 1,
+    })),
+    rebaseReturns,
+    ciRounds: ciRounds.map(({ checks: checkJson, ...row }) => ({
+      ...row,
+      failedChecks: (JSON.parse(checkJson) as { name: string; state: string }[])
+        .filter((check) => check.state === "failed")
+        .map((check) => check.name)
+        .sort(),
+    })),
+    improvements,
+  };
+}
+
+function truthy(value: unknown): boolean {
+  return value === true || value === 1 || value === "1";
+}
+
+export function readRetroActivity(db: Database, input: RetroActivityInput): RetroActivitySnapshot {
+  const schema = appliedMigrations(db);
+  return settled(sqliteDb(db).transaction((q) => readRetroActivitySteps(q, input, schema)));
 }
