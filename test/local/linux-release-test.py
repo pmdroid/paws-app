@@ -1578,6 +1578,26 @@ class RunnerUpgrade(unittest.TestCase):
         deploy = pathlib.Path(sys.argv[1]).parent
         for name in ("deb-control.py", "install.py", "release.py"):
             self.assertEqual(built[name], (deploy / name).read_text())
+        self.assertEqual((built["prerm"], built["postinst"]), (package.prerm(), package.postinst()))
+
+    def test_dpkg_reconfigure_runs_the_installed_deb_control_from_the_dpkg_info_folder(self):
+        """dpkg-reconfigure runs prerm upgrade, preinst upgrade and postinst configure from /var/lib/dpkg/info,
+        where dpkg keeps no control file with a dot in its name."""
+        package = load("deb-package")
+        host = self.root / "host"
+        installed = host / "usr/lib/paws-runner-package"
+        info = self.root / "info"
+        for folder in (installed, host / "var/lib/paws-runner-install", info):
+            folder.mkdir(parents=True)
+        (host / "var/lib/paws-runner-install/release.json").write_text("{}")
+        calls = self.root / "calls"
+        (installed / "deb-control.py").write_text(f"import sys\nopen({str(calls)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n")
+        for script, arguments in ((package.prerm, ("upgrade", "0.1.76")), (package.preinst, ("upgrade", "0.1.76")), (package.postinst, ("configure", "0.1.76"))):
+            path = info / f"paws-runner.{script.__name__}"
+            path.write_text(script(str(host)))
+            result = subprocess.run(["/bin/sh", str(path), *arguments], env={"PATH": "/usr/bin:/bin", "LANG": "C"}, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(calls.read_text().splitlines(), ["stop --next-version 0.1.76", "admit", "configure"])
 
     def switch(self, unpacked, destination, pointers):
         self.order.append("switch")
