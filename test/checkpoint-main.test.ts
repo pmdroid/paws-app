@@ -2,7 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beginImplementRun, getWorkItem, insertQueuedItem, saveCheckpoint } from "../src/db";
+import {
+  beginImplementRun,
+  getWorkItem,
+  insertQueuedItem,
+  saveCheckpoint,
+  sqliteDb,
+} from "../src/db";
 import { recordRunnerCheckpoint } from "../src/runner-backend";
 import { migratedDatabase } from "./helpers";
 
@@ -16,7 +22,7 @@ const MAIN = "b".repeat(40);
 const FIRST = "c".repeat(40);
 const SECOND = "d".repeat(40);
 
-test("a runner checkpoint records the main its run was given, and only for that checkpoint", () => {
+test("a runner checkpoint records the main its run was given, and only for that checkpoint", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-checkpoint-main-"));
   roots.push(root);
   const db = migratedDatabase(join(root, "paws.db"));
@@ -24,7 +30,7 @@ test("a runner checkpoint records the main its run was given, and only for that 
   const { run } = beginImplementRun(db, item.id, 1);
   saveCheckpoint(db, item.id, { phase: "running", baseSha: BASE, wipCommit: BASE });
   const record = (sha: string, mainSha?: string) =>
-    recordRunnerCheckpoint(db, {
+    recordRunnerCheckpoint(sqliteDb(db), {
       itemId: item.id,
       runId: run.id,
       baseSha: BASE,
@@ -33,12 +39,12 @@ test("a runner checkpoint records the main its run was given, and only for that 
       now: 2,
     });
 
-  record(FIRST, MAIN);
+  await record(FIRST, MAIN);
   expect(getWorkItem(db, item.id)?.checkpoint).toMatchObject({
     wipCommit: FIRST,
     checkpointMain: { sha: FIRST, main: MAIN },
   });
-  record(SECOND);
+  await record(SECOND);
   const checkpoint = getWorkItem(db, item.id)?.checkpoint;
   expect(checkpoint?.wipCommit).toBe(SECOND);
   expect(checkpoint?.checkpointMain).toBeUndefined();

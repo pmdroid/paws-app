@@ -3,17 +3,18 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Database } from "bun:sqlite";
 import {
-  enqueueOutboxOnce,
-  getLinearSessionGeneration,
-  getWorkItem,
-  immediate,
-  lastRunnerEventSequence,
-  openRunnerWorkCommand,
-  pullRequestReadyQueued,
-  runnerEventsAfter,
-  runnerHandoverSent,
-  runnerResultPayload,
-  saveCheckpoint,
+  enqueueOutboxOnceSteps,
+  getLinearSessionGenerationSteps,
+  getWorkItemSteps,
+  lastRunnerEventSequenceSteps,
+  openRunnerWorkCommandSteps,
+  pullRequestReadyQueuedSteps,
+  runnerEventsAfterSteps,
+  runnerHandoverSentSteps,
+  runnerResultPayloadSteps,
+  saveCheckpointSteps,
+  sqliteDb,
+  type Db,
 } from "../db";
 import { OUTBOX_ACTIVITY } from "../core";
 import {
@@ -36,8 +37,8 @@ const STOPPED = new Set(["failed", "paused", "awaiting_input", "cancelled", "man
  * A runner's published WIP commit becomes the item's checkpoint, so the next turn starts from it.
  * A stop that saved one says so once in the item's session.
  */
-export function recordRunnerCheckpoint(
-  db: Database,
+export async function recordRunnerCheckpoint(
+  store: Db,
   input: {
     itemId: string;
     runId: string;
@@ -46,18 +47,18 @@ export function recordRunnerCheckpoint(
     event: Extract<RunnerEvent, { type: "checkpoint" }>;
     now: number;
   },
-): void {
+): Promise<void> {
   const { event } = input;
   if (!event.sha || event.dropped !== undefined) return;
   const sha = event.sha;
-  immediate(db, () => {
-    const item = getWorkItem(db, input.itemId);
+  await store.transaction(function* (q) {
+    const item = yield* getWorkItemSteps(q, input.itemId);
     if (!item || item.currentRunId !== input.runId) return;
     const { checkpointMain: _, ...checkpoint } = item.checkpoint ?? {
       phase: "running" as const,
       baseSha: input.baseSha,
     };
-    saveCheckpoint(db, item.id, {
+    yield* saveCheckpointSteps(q, item.id, {
       ...checkpoint,
       wipCommit: sha,
       ...(input.mainSha ? { checkpointMain: { sha, main: input.mainSha } } : {}),
@@ -65,8 +66,9 @@ export function recordRunnerCheckpoint(
     if (event.reason !== "stop" || !STOPPED.has(item.state)) return;
     const sessionId = item.sessionKey ?? item.id;
     // After the pull request response, only the final line goes to the session.
-    if (pullRequestReadyQueued(db, sessionId, getLinearSessionGeneration(db, sessionId))) return;
-    enqueueOutboxOnce(db, {
+    const generation = yield* getLinearSessionGenerationSteps(q, sessionId);
+    if (yield* pullRequestReadyQueuedSteps(q, sessionId, generation)) return;
+    yield* enqueueOutboxOnceSteps(q, {
       target: OUTBOX_ACTIVITY.target,
       op: OUTBOX_ACTIVITY.op,
       orderingKey: sessionId,
@@ -88,17 +90,19 @@ export function recordRunnerCheckpoint(
  */
 export function createRemoteCheckpoint(options: {
   db: Database;
+  store?: Db;
   work: RunnerWork;
   now?: () => number;
   pollIntervalMs?: number;
 }) {
   const { db, work } = options;
+  const store = options.store ?? sqliteDb(db);
   const now = options.now ?? Date.now;
   const pending = new Map<string, Promise<string | null>>();
   /** Sends the checkpoint command, or returns null when the run cannot answer one. */
   function ask(runId: string) {
-    return immediate(db, () => {
-      const row = openRunnerWorkCommand(db, runId);
+    return store.transaction(function* (q) {
+      const row = yield* openRunnerWorkCommandSteps(q, runId);
       if (!row) return null;
       const command = JSON.parse(
         Buffer.from(
@@ -108,7 +112,7 @@ export function createRemoteCheckpoint(options: {
       ) as RunnerCommand;
       if (command.type !== "run" || command.checkpoint === false) return null;
       // A handover publishes its own WIP commit; a stop of the same run keeps that checkpoint.
-      if (runnerHandoverSent(db, runId, row.generation)) return null;
+      if (yield* runnerHandoverSentSteps(q, runId, row.generation)) return null;
       // A runner that is gone or too old never answers; the stop does not wait for it.
       if ((row.lastSeen ?? 0) <= now() - RUNNER_ONLINE_MS) return null;
       if (!versionAtLeast(row.version, CHECKPOINT_RUNNER_VERSION)) return null;
@@ -123,7 +127,7 @@ export function createRemoteCheckpoint(options: {
         issuedAt: at,
         expiresAt: at + RUNNER_CHECKPOINT_LIMIT_MS,
       });
-      const after = lastRunnerEventSequence(db, runId, row.generation);
+      const after = yield* lastRunnerEventSequenceSteps(q, runId, row.generation);
       return {
         command,
         after,
@@ -133,22 +137,25 @@ export function createRemoteCheckpoint(options: {
   }
   async function wait(
     runId: string,
-    request: NonNullable<ReturnType<typeof ask>>,
+    request: NonNullable<Awaited<ReturnType<typeof ask>>>,
   ): Promise<string | null> {
     const { command } = request;
     let cursor = request.after;
     while (now() < request.deadline) {
-      const rows = runnerEventsAfter(db, {
-        runId,
-        generation: command.generation,
-        after: cursor,
-        types: ["checkpoint"],
-      });
+      const after = cursor;
+      const rows = await store.run((q) =>
+        runnerEventsAfterSteps(q, {
+          runId,
+          generation: command.generation,
+          after,
+          types: ["checkpoint"],
+        }),
+      );
       for (const row of rows) {
         cursor = row.sequence;
         const event = work.openEvent(row);
         if (event.type !== "checkpoint") continue;
-        recordRunnerCheckpoint(db, {
+        await recordRunnerCheckpoint(store, {
           itemId: command.itemId,
           runId,
           baseSha: command.repository.baseSha,
@@ -160,29 +167,30 @@ export function createRemoteCheckpoint(options: {
           return event.sha && event.dropped === undefined ? event.sha : null;
       }
       // The turn ended first: its own result carries the work.
-      if (runnerResultPayload(db, runId, command.generation) !== null) return null;
+      if ((await store.run((q) => runnerResultPayloadSteps(q, runId, command.generation))) !== null)
+        return null;
       await delay(options.pollIntervalMs ?? 250);
     }
     return null;
   }
-  /** Null, at once, when nothing was asked of the runner; the stop need not wait then. */
-  return function checkpointBeforeStop(runId: string): Promise<string | null> | null {
+  /** Null as soon as nothing was asked of the runner; the stop need not wait then. */
+  return function checkpointBeforeStop(runId: string): Promise<string | null> {
     const running = pending.get(runId);
     if (running) return running;
-    let request: ReturnType<typeof ask>;
-    try {
-      request = ask(runId);
-    } catch (error) {
-      journalCaught(error, "runner-backend.checkpointBeforeStop", null);
-      return null;
-    }
-    if (!request) return null;
-    const waiting = wait(runId, request)
-      .catch((error: unknown) => {
+    const waiting = (async () => {
+      let request: Awaited<ReturnType<typeof ask>>;
+      try {
+        request = await ask(runId);
+      } catch (error) {
         journalCaught(error, "runner-backend.checkpointBeforeStop", null);
         return null;
-      })
-      .finally(() => pending.delete(runId));
+      }
+      if (!request) return null;
+      return wait(runId, request).catch((error: unknown) => {
+        journalCaught(error, "runner-backend.checkpointBeforeStop", null);
+        return null;
+      });
+    })().finally(() => pending.delete(runId));
     pending.set(runId, waiting);
     return waiting;
   };
