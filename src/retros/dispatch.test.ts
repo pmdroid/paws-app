@@ -151,7 +151,7 @@ describe("retro dispatch, composed with a fake runner", () => {
     occupyWithHelper(db, "R1", clock.now + 600_000);
     let dispatcher = open(db);
 
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "waiting_for_runner",
       diagnostic: "capacity_wait",
@@ -162,12 +162,12 @@ describe("retro dispatch, composed with a fake runner", () => {
     expect(await runner.poll(dispatcher)).toEqual([]);
     clock.now += 60_000;
     runner.seen(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(dispatcher.generation("r1")).toMatchObject({ state: "waiting_for_runner", attempt: 0 });
     expect(dispatcher.generation("r1")!.waitMs).toBe(60_000);
 
     db.run("UPDATE runner_helper SET ended_at=? WHERE id='helper-1'", [clock.now]);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [dispatch] = listRetroDispatches(db, "r1");
     expect(dispatch).toMatchObject({ runnerId: "R1", attempt: 1, fetchedAt: null });
     expect(getRetro(db, "r1")).toMatchObject({ state: "generating", attempt: 1 });
@@ -197,8 +197,8 @@ describe("retro dispatch, composed with a fake runner", () => {
     const reopened = openDatabase(path);
     dispatcher = open(reopened);
     runner.seen(reopened);
-    dispatcher.tick();
-    dispatcher.tick();
+    await dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(reopened, "r1")).toHaveLength(1);
     expect(getRetro(reopened, "r1")).toMatchObject({ state: "generating", attempt: 1 });
     expect(dispatcher.generation("r1")).toMatchObject({
@@ -218,7 +218,7 @@ describe("retro dispatch, composed with a fake runner", () => {
     });
     const other = runner.result(command!, JSON.stringify({ patterns: [], workedWell: [] }));
     expect((await runner.submit(dispatcher, command!, other)).status).toBe(409);
-    dispatcher.tick();
+    await dispatcher.tick();
 
     const retro = getRetro(reopened, "r1")!;
     expect(retro.state).toBe("published");
@@ -247,7 +247,7 @@ describe("placement", () => {
     addRunner(db, { id: "SIGNED_OUT", ready: false });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "waiting_for_runner",
       diagnostic: "no_runner",
@@ -259,7 +259,7 @@ describe("placement", () => {
     expect(listRetroDispatches(db, "r1")).toEqual([]);
   });
 
-  test("a quota cooldown on the selected agent is a wait that spends no attempt", () => {
+  test("a quota cooldown on the selected agent is a wait that spends no attempt", async () => {
     const { db, clock, open } = world();
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
@@ -267,7 +267,7 @@ describe("placement", () => {
       clock.now + 900_000,
     ]);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "waiting_for_runner",
       diagnostic: "quota_cooldown",
@@ -276,28 +276,28 @@ describe("placement", () => {
     });
     clock.now += 900_001;
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(dispatcher.generation("r1")).toMatchObject({ state: "generating", attempt: 1 });
   });
 
-  test("a dispatched retro holds a shared slot that implementation work also counts", () => {
+  test("a dispatched retro holds a shared slot that implementation work also counts", async () => {
     const { db, clock, open } = world();
     addRunner(db, { id: "R1", capacity: 2 });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
-    open(db).tick();
+    await open(db).tick();
     expect(runnerOccupancy(db, "R1", clock.now)).toEqual({ capacity: 2, occupied: 1 });
   });
 
-  test("an empty window publishes an empty report without a runner", () => {
+  test("an empty window publishes an empty report without a runner", async () => {
     const { db, open } = world({ activity: false });
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(getRetro(db, "r1")!.state).toBe("published");
     expect(listRetroDispatches(db, "r1")).toEqual([]);
     expect(dispatcher.generation("r1")!.state).toBe("ready");
   });
 
-  test("a digest over the runner limit abandons the retro and names its size and the limit", () => {
+  test("a digest over the runner limit abandons the retro and names its size and the limit", async () => {
     const { db, root, clock, open } = world();
     const first = getRetro(db, "r1")!;
     const read = (kind: "digest" | "manifest") => {
@@ -333,7 +333,7 @@ describe("placement", () => {
     });
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
-    open(db).tick();
+    await open(db).tick();
     expect(getRetro(db, "r2")).toMatchObject({
       state: "abandoned",
       error:
@@ -350,13 +350,13 @@ describe("recovery", () => {
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [command] = await runner.poll(dispatcher);
     await runner.start(dispatcher, command!);
     clock.now += 15 * 60_000 + 300_001;
     runner.seen(db);
-    dispatcher.tick();
-    dispatcher.tick();
+    await dispatcher.tick();
+    await dispatcher.tick();
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "generating",
       diagnostic: "unknown_outcome",
@@ -387,7 +387,7 @@ describe("recovery", () => {
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [first] = await runner.poll(dispatcher);
     await runner.start(dispatcher, first!);
     await runner.submit(dispatcher, first!, runner.result(first!, '{"not":"a retro"}'));
@@ -402,11 +402,11 @@ describe("recovery", () => {
     expect(failed.retry!.at).toBe(clock.now + retroRetryDelayMs(1));
     expect(getRetro(db, "r1")!.error).toContain(`against digest ${digestSha256.slice(0, 12)}`);
 
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(db, "r1")).toHaveLength(1);
     clock.now += retroRetryDelayMs(1);
     runner.seen(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [second] = await runner.poll(dispatcher);
     expect(second).toMatchObject({
       attempt: 2,
@@ -427,7 +427,7 @@ describe("recovery", () => {
     });
     clock.now += 86_400_000;
     runner.seen(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(db, "r1")).toHaveLength(2);
   });
 
@@ -437,7 +437,7 @@ describe("recovery", () => {
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [first] = await runner.poll(dispatcher);
     const firstInputs = await runner.start(dispatcher, first!);
     expect(firstInputs.prompt).not.toContain("<previous_result_problems>");
@@ -457,7 +457,7 @@ describe("recovery", () => {
 
     clock.now += retroRetryDelayMs(1);
     runner.seen(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [second] = await runner.poll(dispatcher);
     expect(second!.attempt).toBe(2);
     expect(second!.prompt.sha256).not.toBe(first!.prompt.sha256);
@@ -485,7 +485,7 @@ describe("recovery", () => {
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [first] = await runner.poll(dispatcher);
     await runner.start(dispatcher, first!);
     const invalid = JSON.stringify({
@@ -503,7 +503,7 @@ describe("recovery", () => {
     expect(getRetro(db, "r1")!.error).toContain("patterns[0].existingIssues[0] unknown_issue");
     clock.now += 86_400_000;
     runner.seen(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(db, "r1")).toHaveLength(1);
   });
 
@@ -513,7 +513,7 @@ describe("recovery", () => {
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [dispatch] = listRetroDispatches(db, "r1");
     clock.now += 290_000;
     runner.seen(db);
@@ -523,14 +523,14 @@ describe("recovery", () => {
 
     clock.now += 300_000 + 60_001;
     runner.seen(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(db, "r1")[0]).toMatchObject({ releaseReason: "not_started" });
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(db, "r1")).toHaveLength(1);
     expect(dispatcher.generation("r1")).toMatchObject({ diagnostic: "retry_backoff" });
     clock.now += retroRetryDelayMs(1);
     runner.seen(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const dispatches = listRetroDispatches(db, "r1");
     expect(dispatches).toHaveLength(2);
     expect(dispatcher.generation("r1")).toMatchObject({
@@ -541,35 +541,35 @@ describe("recovery", () => {
     });
   });
 
-  test("an online runner that never fetches does not hold its slot after the command expires", () => {
+  test("an online runner that never fetches does not hold its slot after the command expires", async () => {
     const { db, clock, open } = world({ retries: 0 });
     addRunner(db, { id: "R1" });
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [dispatch] = listRetroDispatches(db, "r1");
     clock.now = dispatch!.expiresAt;
     runner.seen(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(getRetroDispatch(db, dispatch!.commandId)).toMatchObject({
       releaseReason: "not_started",
     });
     expect(retroSlotsHeld(db, "R1")).toBe(0);
-    expect(dispatcher.commands("R1")).toEqual([]);
+    expect(await dispatcher.commands("R1")).toEqual([]);
     for (let round = 1; round <= 3; round += 1) {
       clock.now += retroRetryDelayMs(round) - 1;
       runner.seen(db);
-      dispatcher.tick();
+      await dispatcher.tick();
       expect(listRetroDispatches(db, "r1")).toHaveLength(round);
       clock.now += 1;
       runner.seen(db);
-      dispatcher.tick();
+      await dispatcher.tick();
       const latest = listRetroDispatches(db, "r1").at(-1)!;
       expect(latest.attempt).toBe(round + 1);
       clock.now = latest.expiresAt;
       runner.seen(db);
-      dispatcher.tick();
+      await dispatcher.tick();
     }
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "failed",
@@ -586,14 +586,14 @@ describe("recovery", () => {
     db.run("UPDATE runner SET last_seen_at=? WHERE id='R2'", [clock.now - 1]);
     runner.seen(db);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [command] = await runner.poll(dispatcher);
     await runner.start(dispatcher, command!);
     db.run("UPDATE runner SET status='revoked', revoked_at=? WHERE id='R1'", [clock.now]);
     for (let tick = 0; tick < 3; tick += 1) {
       clock.now += retroRetryDelayMs(3);
       db.run("UPDATE runner SET last_seen_at=? WHERE id='R2'", [clock.now]);
-      dispatcher.tick();
+      await dispatcher.tick();
     }
     expect(listRetroDispatches(db, "r1")).toHaveLength(1);
     expect(listRetroDispatches(db, "r1")[0]!.releasedAt).toBeNull();
@@ -608,14 +608,14 @@ describe("recovery", () => {
     expect(await fakeRunner("R2", clock).poll(dispatcher)).toEqual([]);
   });
 
-  test("an unfetched command on a revoked runner was never started and is released", () => {
+  test("an unfetched command on a revoked runner was never started and is released", async () => {
     const { db, clock, open } = world();
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     db.run("UPDATE runner SET status='revoked', revoked_at=? WHERE id='R1'", [clock.now]);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(db, "r1")[0]).toMatchObject({ releaseReason: "not_started" });
     expect(dispatcher.generation("r1")).toMatchObject({ attemptsUsed: 0 });
   });
@@ -626,7 +626,7 @@ describe("recovery", () => {
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [command] = await runner.poll(dispatcher);
     await runner.start(dispatcher, command!);
     db.run("UPDATE workspace_member SET role='member' WHERE user_id='admin'");
@@ -641,7 +641,7 @@ describe("recovery", () => {
       length: 1,
     });
     expect(input.status).toBe(409);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(1);
     expect(
       (await runner.submit(dispatcher, command!, runner.result(command!, VALID_OUTPUT))).status,
@@ -652,14 +652,14 @@ describe("recovery", () => {
     expect(listRetroItems(db, "r1")).toEqual([]);
   });
 
-  test("an unfetched command is released when the owner loses workspace authority", () => {
+  test("an unfetched command is released when the owner loses workspace authority", async () => {
     const { db, clock, open } = world();
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     db.run("UPDATE workspace_member SET role='member' WHERE user_id='admin'");
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(db, "r1")[0]).toMatchObject({ releaseReason: "not_started" });
     expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
   });
@@ -670,12 +670,12 @@ describe("recovery", () => {
     const runner = fakeRunner("R1", clock);
     runner.seen(db);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     const [command] = await runner.poll(dispatcher);
     await runner.start(dispatcher, command!);
     await runner.submit(dispatcher, command!, runner.result(command!, VALID_OUTPUT));
     db.run("UPDATE retro_dispatch SET settled_at = NULL");
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "ready",
       diagnostic: "ready",
@@ -686,7 +686,7 @@ describe("recovery", () => {
 });
 
 describe("agent account admission", () => {
-  test("a disabled default account dispatches nothing", () => {
+  test("a disabled default account dispatches nothing", async () => {
     const { db, clock, open } = world();
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
@@ -694,7 +694,7 @@ describe("agent account admission", () => {
     ensureLegacyAgentBinding(db, "R1", "codex", clock.now);
     db.run("UPDATE agent_account SET enabled=0 WHERE id=?", [accountId]);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(db, "r1")).toEqual([]);
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "waiting_for_runner",
@@ -703,7 +703,7 @@ describe("agent account admission", () => {
     });
   });
 
-  test("a persisted provider or model hold blocks dispatch while the runner has no cooldown", () => {
+  test("a persisted provider or model hold blocks dispatch while the runner has no cooldown", async () => {
     const { db, clock, open } = world();
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
@@ -718,7 +718,7 @@ describe("agent account admission", () => {
       model: "gpt-x",
     });
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(db, "r1")).toEqual([]);
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "waiting_for_runner",
@@ -737,7 +737,7 @@ describe("agent account admission", () => {
     });
     clock.now += 60_000;
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(db, "r1")).toEqual([]);
     expect(dispatcher.generation("r1")).toMatchObject({ diagnostic: "no_runner", attempt: 0 });
 
@@ -751,11 +751,11 @@ describe("agent account admission", () => {
       model: "gpt-x",
       clears: ["provider", "model"],
     });
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(listRetroDispatches(db, "r1")).toHaveLength(1);
   });
 
-  test("an open retro reservation fences quota revalidation for further attempts", () => {
+  test("an open retro reservation fences quota revalidation for further attempts", async () => {
     const { db, clock, open } = world();
     addRunner(db, { id: "R1", capacity: 4 });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
@@ -792,7 +792,7 @@ describe("agent account admission", () => {
       [accountId, binding.id, clock.now],
     );
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "waiting_for_runner",
       diagnostic: "quota_cooldown",
@@ -803,11 +803,11 @@ describe("agent account admission", () => {
       "UPDATE retro_dispatch SET released_at=?, release_reason='teardown' WHERE command_id='probe'",
       [clock.now],
     );
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(dispatcher.generation("r1")).toMatchObject({ state: "generating", attempt: 1 });
   });
 
-  test("the account concurrency limit counts retro turns and holds further work", () => {
+  test("the account concurrency limit counts retro turns and holds further work", async () => {
     const { db, clock, open } = world();
     addRunner(db, { id: "R1", capacity: 4 });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
@@ -836,7 +836,7 @@ describe("agent account admission", () => {
     );
     expect(accountSlotsInUse(db, accountId, clock.now)).toBe(1);
     const dispatcher = open(db);
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(dispatcher.generation("r1")).toMatchObject({
       state: "waiting_for_runner",
       diagnostic: "capacity_wait",
@@ -847,7 +847,7 @@ describe("agent account admission", () => {
       "UPDATE retro_dispatch SET released_at=?, release_reason='teardown' WHERE command_id='other'",
       [clock.now],
     );
-    dispatcher.tick();
+    await dispatcher.tick();
     expect(dispatcher.generation("r1")).toMatchObject({ state: "generating", attempt: 1 });
     expect(accountSlotsInUse(db, accountId, clock.now)).toBe(1);
   });
