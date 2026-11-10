@@ -2,6 +2,7 @@ import { journalCaught } from "../journal";
 import type { Database } from "bun:sqlite";
 import {
   auditWorkspaceAccessSteps,
+  memberVmByIdSteps,
   parkLeasedJobSteps,
   sqliteDb,
   updateRunnerStatusAsync,
@@ -14,7 +15,6 @@ import {
 import { isProvisioningError, type ExeDev } from "../provisioning";
 import { redact } from "./job";
 import {
-  getMemberVm,
   MEMBER_VM_DELETE_QUEUE,
   MEMBER_VM_QUEUE,
   type MemberVm,
@@ -51,7 +51,7 @@ export function createMemberVmDeleteHandler(db: Database, options: MemberVmDelet
   const pollMs = options.pollMs ?? MEMBER_VM_DELETE_POLL_MS;
   return async (job: Job, context: JobContext): Promise<void> => {
     const id = memberVmId(job.payload);
-    const row = id === null ? null : await getMemberVm(db, id);
+    const row = id === null ? null : await store.run((q) => memberVmByIdSteps(q, id));
     if (row === null || row.deleteStep === null || row.deleteFailure !== null) return;
     let outcome: Outcome;
     try {
