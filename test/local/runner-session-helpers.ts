@@ -314,12 +314,18 @@ export async function probeRunnerSessionHelpers(
       workspace.id,
       userId,
     ]);
-    await assert.rejects(coordinator.helpers.current(removed.command.id), /identity is unavailable/);
+    await assert.rejects(
+      coordinator.helpers.current(removed.command.id),
+      /identity is unavailable/,
+    );
     db.run("UPDATE workspace_member SET active=1 WHERE workspace_id=? AND user_id=?", [
       workspace.id,
       userId,
     ]);
-    await assert.rejects(coordinator.helpers.current(removed.command.id), /identity is unavailable/);
+    await assert.rejects(
+      coordinator.helpers.current(removed.command.id),
+      /identity is unavailable/,
+    );
     observe(
       "workspace membership, organization and runner fences are rechecked for helper work",
       true,
@@ -334,7 +340,10 @@ export async function probeRunnerSessionHelpers(
     const replacement = await pair("Revoked helper runner", RUNNER_IDENTITIES[1]);
     const pending = coordinator.helpers.dispatch({ ...input, runnerId: replacement });
     await coordinator.control.setStatus(principal, replacement, "revoked");
-    await assert.rejects(coordinator.helpers.current(pending.command.id), /identity is unavailable/);
+    await assert.rejects(
+      coordinator.helpers.current(pending.command.id),
+      /identity is unavailable/,
+    );
     await assert.rejects(coordinator.helpers.commands(replacement), /identity is unavailable/);
     observe("administrative runner revocation prevents helper result acceptance", true, {
       revoked: true,

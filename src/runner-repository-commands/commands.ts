@@ -154,15 +154,17 @@ export async function enqueueRepositoryCommand(
     waiter(db, command.id);
     setTimeout(
       () =>
-        void store.run((later) => expireRepositoryCommandSteps(later, command.id)).then(
-          (state) => {
-            if (state !== "done") settle(db, command.id, { outcome: "expired" });
-          },
-          (error: unknown) => {
-            journalCaught(error, "runner-repository-commands.enqueue.expire", null);
-            settle(db, command.id, { outcome: "expired" });
-          },
-        ),
+        void store
+          .run((later) => expireRepositoryCommandSteps(later, command.id))
+          .then(
+            (state) => {
+              if (state !== "done") settle(db, command.id, { outcome: "expired" });
+            },
+            (error: unknown) => {
+              journalCaught(error, "runner-repository-commands.enqueue.expire", null);
+              settle(db, command.id, { outcome: "expired" });
+            },
+          ),
       Math.max(0, command.expiresAt - at),
     ).unref();
     return command.id;

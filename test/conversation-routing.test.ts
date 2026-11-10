@@ -280,7 +280,7 @@ test("with every work slot busy, a message on an idle item starts a conversation
   expect(f.responses(acme.session)).toEqual([
     "The gateway retries once on a network timeout; Paws does not retry.",
   ]);
-  expect((await f.conversations())).toEqual([]);
+  expect(await f.conversations()).toEqual([]);
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
 });
 
@@ -364,7 +364,7 @@ test("a message while a work turn runs is delivered at the turn boundary, as tod
   f.item("acme-1", "running");
   await f.say("acme-1", "c-1", "Also cover the empty cart.");
   expect(await f.deliver("acme-1")).toBe("wait");
-  expect((await f.conversations())).toEqual([]);
+  expect(await f.conversations()).toEqual([]);
   expect(f.brief("acme-1")?.text).toContain("Also cover the empty cart.");
 });
 
@@ -373,7 +373,7 @@ test("an older runner gets today's restart", async () => {
   f.item("acme-1");
   await f.say("acme-1", "c-1", "Use the v2 endpoint.");
   expect(await f.deliver("acme-1")).toBe("restarted");
-  expect((await f.conversations())).toEqual([]);
+  expect(await f.conversations()).toEqual([]);
   expect(f.resumes()).toHaveLength(1);
   expect((f.resumes()[0]!.payload as { reason: string }).reason).toBe("follow_up");
 });
@@ -458,7 +458,7 @@ test("start_work in a conversation restarts the item with the plan and posts it,
   expect((resume!.payload as { handoff: string }).handoff).toContain(plan);
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("queued");
   // Waiting in line holds neither a conversation nor a work slot: only acme-busy holds one.
-  expect((await f.conversations())).toEqual([]);
+  expect(await f.conversations()).toEqual([]);
   expect(f.taskSlots()[0]).toMatchObject({ used: 1, capacity: 1 });
 });
 

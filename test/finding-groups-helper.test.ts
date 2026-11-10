@@ -304,7 +304,9 @@ test("one-runner foreground placement preempts grouping and fences its old lease
       purpose: "helper",
     });
     expect(candidates.map((row) => row.id)).toContain("runner");
-    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe("finding_groups");
+    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
+      "finding_groups",
+    );
     // Invalid dispatch must not fence maintenance either.
     expect(() =>
       f.helpers.dispatch({
@@ -315,7 +317,9 @@ test("one-runner foreground placement preempts grouping and fences its old lease
         prompt: "x".repeat(65537),
       }),
     ).toThrow();
-    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe("finding_groups");
+    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
+      "finding_groups",
+    );
     // A failure after fencing must roll back the fence and usage changes as well.
     f.db.exec(
       "CREATE TEMP TRIGGER refuse_helper BEFORE INSERT ON runner_helper BEGIN SELECT RAISE(ABORT, 'Admission failed'); END",
@@ -329,7 +333,9 @@ test("one-runner foreground placement preempts grouping and fences its old lease
         prompt: "Classify",
       }),
     ).toThrow("Admission failed");
-    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe("finding_groups");
+    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
+      "finding_groups",
+    );
     f.db.exec("DROP TRIGGER refuse_helper");
     const foreground = f.helpers.dispatch({
       runnerId: "runner",
@@ -442,11 +448,15 @@ test("ranking idle and excluded runners never fences maintenance on another runn
       profile,
       prompt: "Classify",
     });
-    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe("finding_groups");
+    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
+      "finding_groups",
+    );
     expect(
       await placement.candidates({ ...request, excludeRunnerIds: ["runner", "idle"] }),
     ).toEqual([]);
-    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe("finding_groups");
+    expect((await f.helpers.current(maintenance.command.id)).command.purpose).toBe(
+      "finding_groups",
+    );
   } finally {
     f.db.close();
   }
