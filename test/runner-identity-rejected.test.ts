@@ -114,10 +114,12 @@ test("enroll on an accepted identity changes nothing and leaves the token unused
   expect(state()).toBe(before);
 }, 30_000);
 
-test("enroll keeps the identity with no verdict from Paws or no token", async () => {
+test("enroll keeps the identity on another answer from Paws or without a token", async () => {
   const { p, daemon, replaced } = await paws();
-  p.probeStatus = 503;
-  expect(await daemon.enroll("host", TOKEN)).toMatchObject({ runnerId: "runner-1" });
+  for (const status of [503, 403]) {
+    p.probeStatus = status;
+    expect(await daemon.enroll("host", TOKEN)).toMatchObject({ runnerId: "runner-1" });
+  }
   p.active.clear();
   expect(await daemon.enroll("host", "")).toMatchObject({ runnerId: "runner-1" });
   expect([p.tokens.length, replaced()]).toEqual([1, []]);

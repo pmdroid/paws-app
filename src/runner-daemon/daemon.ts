@@ -315,7 +315,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
             `This runner's identity is no longer known to ${origins.controlPlaneUrl}. Add it again from Runners and run the command there.`,
           );
         rejection = { error, attemptAt: rejection?.attemptAt ?? now() };
-      } else if (error instanceof RunnerRequestError) rejection = null;
+      } else if (error instanceof RunnerRequestError && error.status < 500) rejection = null;
       throw error;
     }
   }
@@ -538,7 +538,7 @@ export function openRunnerDaemon(options: RunnerDaemonOptions) {
     try {
       await send("/v1/certificate", "GET");
     } catch (error) {
-      if (error instanceof RunnerRequestError && error.status === 403) return true;
+      if (isIdentityRejected(error)) return true;
       journalCaught(error, "daemon.identityRefused", null, "only a 403 replaces the identity");
     }
     ensureOpen();
