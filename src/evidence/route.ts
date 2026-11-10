@@ -1,5 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { getEvidence, getVisualReviewMark, getWorkItem } from "../db";
+import {
+  getEvidenceSteps,
+  getVisualReviewMarkSteps,
+  getWorkItemSteps,
+  sqliteDb,
+  type Q,
+} from "../db";
 import { openEvidenceFile, type EvidenceObjects } from "./objects";
 import { ULID_PATTERN } from "./ulid";
 
@@ -33,9 +39,12 @@ export async function handleEvidenceRequest(
     return new Response(null, { status: 405, headers: { ...PRIVATE, allow: "GET, HEAD" } });
   const id = path.slice(EVIDENCE_API_PATH.length);
   if (!ULID_PATTERN.test(id)) return notFound();
-  const evidence = getEvidence(options.db, id) ?? markedEvidence(options.db, id);
+  const store = sqliteDb(options.db);
+  const evidence = await store.run(function* (q) {
+    return (yield* getEvidenceSteps(q, id)) ?? (yield* markedEvidenceSteps(q, id));
+  });
   if (evidence === null) return notFound();
-  const item = getWorkItem(options.db, evidence.itemId);
+  const item = await store.run((q) => getWorkItemSteps(q, evidence.itemId));
   if (item?.sessionKey == null || !options.sessionIds.includes(item.sessionKey)) return notFound();
   const size = evidence.sizeBytes;
   const headers: Record<string, string> = {
@@ -70,14 +79,15 @@ export async function handleEvidenceRequest(
   });
 }
 
-function markedEvidence(db: Database, id: string) {
-  const mark = getVisualReviewMark(db, id);
+function* markedEvidenceSteps(q: Q, id: string) {
+  const mark = yield* getVisualReviewMarkSteps(q, id);
   if (mark === null) return null;
+  const marked = yield* getEvidenceSteps(q, mark.evidenceId);
   return {
     itemId: mark.itemId,
     sizeBytes: mark.sizeBytes,
     mediaType: "image/png",
-    displayName: `marked-${getEvidence(db, mark.evidenceId)?.displayName ?? "screenshot.png"}`,
+    displayName: `marked-${marked?.displayName ?? "screenshot.png"}`,
   };
 }
 

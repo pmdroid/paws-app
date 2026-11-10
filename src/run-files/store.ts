@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
-  immediate,
-  listRunFileChunks,
-  recordRunFileChunk,
-  runFileChunk,
-  setRunFileChunkKey,
+  listRunFileChunksSteps,
+  recordRunFileChunkSteps,
+  runFileChunkSteps,
+  setRunFileChunkKeySteps,
+  sqliteDb,
+  type Q,
   type RunFileChunkRow,
 } from "../db";
 import { journalCaught } from "../journal";
@@ -41,7 +42,8 @@ export function createRunFileChunks(options: {
   /** Whether a chunk stored before encryption (no key ID) still reads. Defaults to never. */
   plaintext?: () => boolean;
 }) {
-  const { db, kind, objects, key, refused } = options;
+  const { kind, objects, key, refused } = options;
+  const store = sqliteDb(options.db);
   const { title } = RUN_FILE_KINDS[kind];
   if (key.length !== 32) throw new Error(`${title} key is invalid.`);
   const keyId = runFileKeyId(kind, key);
@@ -51,9 +53,6 @@ export function createRunFileChunks(options: {
   }
   function objectKey(prefix: string, chunk: { offset: number; sha256: string }) {
     return `${prefix}/${chunk.offset}-${chunk.sha256}`;
-  }
-  function existing(runId: string, generation: number, offset: number) {
-    return runFileChunk(db, { kind, runId, generation }, offset);
   }
 
   function matches(bytes: Uint8Array, chunk: Chunk) {
@@ -74,7 +73,8 @@ export function createRunFileChunks(options: {
 
   /** Plaintext chunks in order, each checked against its recorded offset, size and sha256. */
   async function* chunks(file: RunFile, before?: () => void) {
-    const rows = listRunFileChunks(db, { kind, runId: file.runId, generation: file.generation });
+    const address = { kind, runId: file.runId, generation: file.generation };
+    const rows = await store.run((q) => listRunFileChunksSteps(q, address));
     let total = 0;
     let plaintext: boolean | undefined;
     for (const chunk of rows) {
@@ -127,15 +127,16 @@ export function createRunFileChunks(options: {
       )
         refused();
       const end = chunk.offset + bytes.length;
-      const check = () => {
+      const address = { kind, runId, generation: chunk.generation };
+      const check = function* (q: Q) {
         const file = state();
-        const previous = existing(runId, chunk.generation, chunk.offset);
+        const previous = yield* runFileChunkSteps(q, address, chunk.offset);
         if (previous) {
           if (previous.sha256 !== chunk.sha256 || previous.sizeBytes !== bytes.length) refused();
         } else if (!file.open || file.sizeBytes !== chunk.offset) refused();
         return { file, previous };
       };
-      const initial = immediate(db, check);
+      const initial = await store.transaction(check);
       if (initial.previous) return { offset: end, duplicate: true };
       const name = objectKey(initial.file.prefix, chunk);
       try {
@@ -144,12 +145,12 @@ export function createRunFileChunks(options: {
         unavailable();
       }
       try {
-        return immediate(db, () => {
-          const current = check();
+        return await store.transaction(function* (q) {
+          const current = yield* check(q);
           if (!current.previous) {
-            recordRunFileChunk(
-              db,
-              { kind, runId, generation: chunk.generation },
+            yield* recordRunFileChunkSteps(
+              q,
+              address,
               { offset: chunk.offset, sizeBytes: bytes.length, sha256: chunk.sha256, keyId },
               end,
             );
@@ -174,28 +175,22 @@ export function createRunFileChunks(options: {
       const row = { ...chunk, keyId: null };
       const name = objectKey(file.prefix, chunk);
       let found = false;
-      for (const store of stores) {
+      for (const objects of stores) {
         let stored: Uint8Array;
         try {
-          stored = await store.read(name);
+          stored = await objects.read(name);
         } catch (error) {
           if (missingRunFileObject(error)) continue;
           throw error;
         }
         if (matches(stored, row)) {
-          await store.write(name, sealRunFileChunk(key, binding(file, row), stored));
+          await objects.write(name, sealRunFileChunk(key, binding(file, row), stored));
           found = true;
         } else if (opened(file, row, stored)) found = true;
       }
       if (!found) return false;
-      immediate(db, () =>
-        setRunFileChunkKey(
-          db,
-          { kind, runId: file.runId, generation: file.generation },
-          chunk,
-          keyId,
-        ),
-      );
+      const address = { kind, runId: file.runId, generation: file.generation };
+      await store.transaction((q) => setRunFileChunkKeySteps(q, address, chunk, keyId));
       return true;
     },
     /** Reads every chunk and refuses the seal unless they add up to `sizeBytes` and `sha256`. */

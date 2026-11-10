@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
-import { immediate, saveEvidence, saveEvidenceObject, type StoredEvidence } from "../db";
+import { saveEvidenceObjectSteps, saveEvidenceSteps, sqliteDb, type StoredEvidence } from "../db";
 import { mediaKind, sniffMedia, SNIFF_BYTES } from "./media";
 import {
   evidenceObjectPrefix,
@@ -57,6 +57,7 @@ export function evidencePath(root: string, id: string): string {
 }
 
 export function createEvidenceStore(options: EvidenceStoreOptions): EvidenceStore {
+  const store = sqliteDb(options.db);
   const limits = options.limits ?? EVIDENCE_LIMITS;
   const now = options.now ?? Date.now;
   const largest = Math.max(limits.video, limits.image);
@@ -114,9 +115,9 @@ export function createEvidenceStore(options: EvidenceStoreOptions): EvidenceStor
         const sizeBytes = await writeEvidenceChunks(objects, prefix, checked());
         try {
           const evidence = verified();
-          immediate(options.db, () => {
-            saveEvidence(options.db, evidence);
-            saveEvidenceObject(options.db, { id, prefix, sizeBytes, storedAt: createdAt });
+          await store.transaction(function* (q) {
+            yield* saveEvidenceSteps(q, evidence);
+            yield* saveEvidenceObjectSteps(q, { id, prefix, sizeBytes, storedAt: createdAt });
           });
           return evidence;
         } catch (error) {
@@ -140,7 +141,7 @@ export function createEvidenceStore(options: EvidenceStoreOptions): EvidenceStor
         await chmod(partial, 0o600);
         await rename(partial, target);
         try {
-          saveEvidence(options.db, evidence);
+          await store.run((q) => saveEvidenceSteps(q, evidence));
         } catch (error) {
           await rm(target, { force: true });
           throw error;

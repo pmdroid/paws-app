@@ -3,11 +3,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
-  closeoutTasksOfItem,
-  getCloseoutEvidenceObject,
-  insertCloseoutEvidenceObject,
-  listCloseoutEvidenceObjects,
-  saveCloseoutEvidenceObject,
+  closeoutTasksOfItemSteps,
+  getCloseoutEvidenceObjectSteps,
+  insertCloseoutEvidenceObjectSteps,
+  listCloseoutEvidenceObjectsSteps,
+  saveCloseoutEvidenceObjectSteps,
+  sqliteDb,
   type CloseoutEvidenceObject,
 } from "../db";
 import { journalCaught } from "../journal";
@@ -60,6 +61,7 @@ export async function publishCloseoutEvidence(
   taskId: string,
   options: { now?: () => number; keepStored?: boolean } = {},
 ): Promise<number> {
+  const store = sqliteDb(db);
   const now = options.now ?? Date.now;
   const objects = storage.objects?.();
   const task = closeoutTaskDirectory(taskId);
@@ -72,11 +74,11 @@ export async function publishCloseoutEvidence(
     const file = Bun.file(join(directory, ...parts));
     const info = await stat(join(directory, ...parts));
     const modifiedAt = Math.floor(info.mtimeMs);
-    const previous = getCloseoutEvidenceObject(db, task, path);
+    const previous = await store.run((q) => getCloseoutEvidenceObjectSteps(q, task, path));
     if (previous && options.keepStored) continue;
     if (previous?.sizeBytes === info.size && previous.modifiedAt === modifiedAt) continue;
     if (previous?.sha256 === (await sha256Of(file.stream()))) {
-      saveCloseoutEvidenceObject(db, { ...previous, modifiedAt });
+      await store.run((q) => saveCloseoutEvidenceObjectSteps(q, { ...previous, modifiedAt }));
       continue;
     }
     const prefix = ["closeout-evidence", task, ...parts, randomUUID()].join("/");
@@ -98,11 +100,11 @@ export async function publishCloseoutEvidence(
       storedAt: now(),
     };
     if (options.keepStored) {
-      if (!insertCloseoutEvidenceObject(db, row)) {
+      if (!(await store.run((q) => insertCloseoutEvidenceObjectSteps(q, row)))) {
         await removeEvidenceChunks(objects, prefix, sizeBytes);
         continue;
       }
-    } else saveCloseoutEvidenceObject(db, row);
+    } else await store.run((q) => saveCloseoutEvidenceObjectSteps(q, row));
     if (previous) await removeEvidenceChunks(objects, previous.prefix, previous.sizeBytes);
     published++;
   }
@@ -115,12 +117,13 @@ export async function hydrateCloseoutEvidence(
   taskIds: readonly string[],
   options: { strict?: boolean } = {},
 ): Promise<number> {
+  const store = sqliteDb(db);
   const objects = storage.objects?.();
   if (!objects) return 0;
   const tasks = taskIds.map(closeoutTaskDirectory).filter(safeTask);
   let restored = 0;
   let unrestored: { error: unknown } | null = null;
-  for (const row of listCloseoutEvidenceObjects(db, tasks)) {
+  for (const row of await store.run((q) => listCloseoutEvidenceObjectsSteps(q, tasks))) {
     if (!safeTask(row.task) || !safePath(row.path)) continue;
     const target = join(storage.root, row.task, ...row.path.split("/"));
     const local = await lstat(target).catch(() => null);
@@ -130,7 +133,9 @@ export async function hydrateCloseoutEvidence(
     }
     try {
       await restoreCloseoutFile(objects, row, target).catch(async (error: unknown) => {
-        const current = getCloseoutEvidenceObject(db, row.task, row.path);
+        const current = await store.run((q) =>
+          getCloseoutEvidenceObjectSteps(q, row.task, row.path),
+        );
         if (current === null || current.prefix === row.prefix) throw error;
         await restoreCloseoutFile(objects, current, target);
       });
@@ -168,13 +173,14 @@ async function restoreCloseoutFile(
   }
 }
 
-export function hydrateItemCloseoutEvidence(
+export async function hydrateItemCloseoutEvidence(
   db: Database,
   storage: EvidenceStorage,
   ref: string,
   sessionIds?: readonly string[],
 ): Promise<number> {
-  return hydrateCloseoutEvidence(db, storage, closeoutTasksOfItem(db, ref, sessionIds));
+  const tasks = await sqliteDb(db).run((q) => closeoutTasksOfItemSteps(q, ref, sessionIds));
+  return hydrateCloseoutEvidence(db, storage, tasks);
 }
 
 export function closeoutEvidenceItemOf(request: Request): string | null {

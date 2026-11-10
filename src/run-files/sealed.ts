@@ -1,10 +1,10 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
-  forgetRunnerFileObject,
-  immediate,
-  prunableRunnerFileObjects,
-  recordRunnerFileObject,
+  forgetRunnerFileObjectSteps,
+  prunableRunnerFileObjectsSteps,
+  recordRunnerFileObjectSteps,
+  sqliteDb,
   type RunnerFileObject,
 } from "../db";
 import { journalCaught } from "../journal";
@@ -27,17 +27,19 @@ export function createSealedRunnerFiles(options: {
   key: Buffer;
   now?: () => number;
 }) {
-  const { db, objects, key } = options;
+  const { objects, key } = options;
+  const store = sqliteDb(options.db);
   const now = options.now ?? Date.now;
   if (key.length !== 32) throw new Error("Runner file key is invalid.");
   return {
     async write(objectKey: string, file: SealedRunnerFile, bytes: Uint8Array, admit?: () => void) {
       if (bytes.byteLength > RUN_FILE_CHUNK_BYTES)
         throw new Error("Runner file chunk is too large");
-      immediate(db, () => {
+      await store.transaction(function* (q) {
         admit?.();
         const sha256 = createHmac("sha256", key).update(bytes).digest("hex");
-        if (!recordRunnerFileObject(db, { ...file, key: objectKey, sha256, createdAt: now() }))
+        const row = { ...file, key: objectKey, sha256, createdAt: now() };
+        if (!(yield* recordRunnerFileObjectSteps(q, row)))
           throw new SealedRunnerFileConflictError("Runner file is immutable");
       });
       const nonce = randomBytes(12);
@@ -56,10 +58,11 @@ export function createSealedRunnerFiles(options: {
     },
     async prune() {
       let pruned = 0;
-      for (const objectKey of prunableRunnerFileObjects(db, now() - RUNNER_FILE_RETENTION_MS)) {
+      const before = now() - RUNNER_FILE_RETENTION_MS;
+      for (const objectKey of await store.run((q) => prunableRunnerFileObjectsSteps(q, before))) {
         try {
           await objects.delete(objectKey);
-          forgetRunnerFileObject(db, objectKey);
+          await store.run((q) => forgetRunnerFileObjectSteps(q, objectKey));
           pruned++;
         } catch (error) {
           journalCaught(error, "run-files.sealed.prune", null);
