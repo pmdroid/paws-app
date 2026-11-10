@@ -44,63 +44,65 @@ import type {
   WorkItemRecord,
 } from "../../../db";
 import {
-  getCandidateRisk,
-  openQuestionKind,
-  runnerWorkActive,
-  getRiskFix,
-  latestCandidateRisk,
-  latestRiskFix,
-  getCloseoutRecovery,
-  getConversation,
-  getLinkAsk,
-  listCloseoutBypassChecks,
-  listDeadDeliveries,
+  blockerCheckedAtSteps,
   describeLinearWebhookWarning,
-  getConfirmedRemoteMerge,
+  getCandidateRiskSteps,
+  getCloseoutRecovery,
+  getConfirmedRemoteMergeSteps,
+  getConversationSteps,
+  getEvidenceSteps,
+  getLinkAskSteps,
+  getRiskFixSteps,
+  getRunSteps,
+  getTaskMergeSettingsSteps,
+  getTaskModeSteps,
+  getWorkItemRepositorySteps,
+  getWorkItemSteps,
+  itemActivityFactsSteps,
+  latestCandidateRiskSteps,
+  latestRiskFixSteps,
   LINEAR_WEBHOOK_FIX,
-  linearWebhookWarning,
-  linearConversationUrl,
-  listVisualReviewMarks,
-  listVisualReviews,
-  getTaskMergeSettings,
-  getTaskMode,
-  getWorkItemRepository,
-  getRun,
-  listAgentCloseout,
-  listCloseoutProgress,
-  listCiRounds,
+  linearConversationUrlAsync,
+  linearRequestsByItemSteps,
+  linearWebhookWarningSteps,
+  listAgentCloseoutSteps,
+  listCiRerunsSteps,
+  listCiRoundsSteps,
+  listCloseoutBypassChecks,
+  listCloseoutProgressSteps,
   listCloseoutRounds,
-  getEvidence,
-  getWorkItem,
-  listEvidence,
-  linearRequestsByItem,
-  listIntakeQueue,
-  listItemHolds,
-  itemActivityFacts,
-  listJobs,
-  listLinearTurnsForItem,
-  listOpenQuestions,
-  sessionRepositoriesAllowed,
-  listOutbox,
-  listMergeQueues,
-  runnerCapacityWait,
-  listQueuePositions,
-  settled,
-  sqliteDb,
-  listRuns,
-  runAgentSetup,
-  runRunnerName,
-  usagePause,
+  listDeadDeliveriesSteps,
+  listEvidenceSteps,
+  listIntakeQueueSteps,
+  listItemHoldsSteps,
+  listJobsSteps,
+  listLastWorkItemEventTimesSteps,
+  listLinearTurnsForItemSteps,
+  listMergeQueuesSteps,
+  listOpenQuestionsSteps,
+  listOutboxSteps,
   listPolicyRunnerWarnings,
+  listPolicyRunnerWarningsSteps,
   listPushOutages,
-  listTaskBlockers,
-  blockerCheckedAt,
-  listWorkItemFacts,
-  listWorkItemsByStates,
-  listWorkItemEventRows,
-  listLastWorkItemEventTimes,
-  listCiReruns,
-  resolveDashboardAlias,
+  listPushOutagesSteps,
+  listQueuePositions,
+  listRunsSteps,
+  listTaskBlockersSteps,
+  listVisualReviewMarksSteps,
+  listVisualReviewsSteps,
+  listWorkItemEventRowsSteps,
+  listWorkItemFactsSteps,
+  listWorkItemsByStatesSteps,
+  openQuestionKindSteps,
+  resolveDashboardAliasSteps,
+  runAgentSetupSteps,
+  runnerCapacityWait,
+  runnerWorkActiveSteps,
+  runRunnerNameSteps,
+  sessionRepositoriesAllowed,
+  sessionRepositoriesAllowedSteps,
+  sqliteDb,
+  usagePauseSteps,
   type CloseoutProgressRecord,
   type CloseoutProgressState,
   type CloseoutRound,
@@ -235,16 +237,16 @@ export function createLiveStatusProvider(
   db: Database,
   options: LiveStatusOptions = {},
 ): {
-  checkLog(request: CheckLogRequest): CheckOutput | null;
-  issues(): IssueListResponse;
-  issue(id: string): IssueDetailResponse | null;
-  overview(): OverviewResponse;
-  mergeQueue(): MergeQueueResponse;
-  questions(): QuestionListResponse;
-  question(id: string): QuestionDetailResponse | null;
-  alias(kind: AliasKind, id: string): string | null;
-  evidence(): EvidenceListResponse;
-  evidenceMetadata(id: string): EvidenceMetadataResponse | null;
+  checkLog(request: CheckLogRequest): Promise<CheckOutput | null>;
+  issues(): Promise<IssueListResponse>;
+  issue(id: string): Promise<IssueDetailResponse | null>;
+  overview(): Promise<OverviewResponse>;
+  mergeQueue(): Promise<MergeQueueResponse>;
+  questions(): Promise<QuestionListResponse>;
+  question(id: string): Promise<QuestionDetailResponse | null>;
+  alias(kind: AliasKind, id: string): Promise<string | null>;
+  evidence(): Promise<EvidenceListResponse>;
+  evidenceMetadata(id: string): Promise<EvidenceMetadataResponse | null>;
 } {
   return {
     overview() {
@@ -256,8 +258,8 @@ export function createLiveStatusProvider(
     questions() {
       return readQuestionList(db, options);
     },
-    question(id) {
-      const list = readQuestionList(db, options);
+    async question(id) {
+      const list = await readQuestionList(db, options);
       const question = list.questions.find((entry) => entry.id === id);
       return question === undefined
         ? null
@@ -272,12 +274,12 @@ export function createLiveStatusProvider(
     issues() {
       return readIssueList(db, options);
     },
-    issue(id) {
-      const detail = readItemDetail(db, id, options);
+    async issue(id) {
+      const detail = await readItemDetail(db, id, options);
       return detail === null ? null : toIssueDetail(detail);
     },
     alias(kind, id) {
-      return resolveDashboardAlias(db, kind, id, options.sessionIds);
+      return sqliteDb(db).run((q) => resolveDashboardAliasSteps(q, kind, id, options.sessionIds));
     },
     checkLog(request) {
       return readCheckLog(db, request, options);
@@ -328,8 +330,8 @@ type ItemDetail = IssueScope & { id: string; blocks: string[]; risk: StatusItemR
  * The issue list: one Closeout summary per item and each run's latest agent Closeout state.
  * Attempts, check output and findings are only in the issue detail.
  */
-function readIssueList(db: Database, options: LiveStatusOptions): IssueListResponse {
-  const { scope } = readIssueScope(db, options);
+async function readIssueList(db: Database, options: LiveStatusOptions): Promise<IssueListResponse> {
+  const { scope } = await readIssueScope(db, options);
   return {
     source: scope.source,
     generatedAt: scope.generatedAt,
@@ -342,20 +344,26 @@ function readIssueList(db: Database, options: LiveStatusOptions): IssueListRespo
   };
 }
 
-function readQuestionList(db: Database, options: LiveStatusOptions): QuestionListResponse {
+async function readQuestionList(
+  db: Database,
+  options: LiveStatusOptions,
+): Promise<QuestionListResponse> {
+  const store = sqliteDb(db);
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
-  const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
-  const visible = listWorkItemsByStates(db, WORK_ITEM_STATES)
+  const facts = new Map(
+    (await store.run(listWorkItemFactsSteps)).map((fact) => [fact.itemId, fact]),
+  );
+  const visible = (await store.run((q) => listWorkItemsByStatesSteps(q, WORK_ITEM_STATES)))
     .filter(
       (record) =>
         options.sessionIds === undefined ||
         (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey)),
     )
     .sort((left, right) => compareNewest(left, right, facts));
-  const openQuestions = listOpenQuestions(db);
+  const openQuestions = await store.run(listOpenQuestionsSteps);
   const asked = new Set(openQuestions.map((question) => question.itemId));
-  const records = listedRecords(db, visible, facts, now.getTime()).filter(
+  const records = (await listedRecords(db, visible, facts, now.getTime())).filter(
     (record) => asked.has(record.id) || record.state === "awaiting_input",
   );
   if (records.length === 0) return { source: "live", generatedAt, questions: [] };
@@ -363,7 +371,7 @@ function readQuestionList(db: Database, options: LiveStatusOptions): QuestionLis
     (record) => record.state === "awaiting_input" && !asked.has(record.id),
   );
   const rows = unasked
-    ? listOutbox(db).filter(
+    ? (await store.run((q) => listOutboxSteps(q))).filter(
         (row) =>
           options.sessionIds === undefined ||
           (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
@@ -371,7 +379,7 @@ function readQuestionList(db: Database, options: LiveStatusOptions): QuestionLis
     : [];
   const relevant = new Set(records.map((record) => record.id));
   const stored = new Map<string, StoredRun[]>();
-  for (const run of listRuns(db))
+  for (const run of await store.run((q) => listRunsSteps(q)))
     if (relevant.has(run.itemId)) stored.set(run.itemId, [...(stored.get(run.itemId) ?? []), run]);
   const runIdOf = (runId: string | null) => {
     if (runId === null) return null;
@@ -397,7 +405,7 @@ function readQuestionList(db: Database, options: LiveStatusOptions): QuestionLis
   return {
     source: "live",
     generatedAt,
-    questions: questionsFor(db, records, rows, runIdOf, openQuestions).map((question) => ({
+    questions: (await questionsFor(db, records, rows, runIdOf, openQuestions)).map((question) => ({
       ...question,
       issue: issues.get(question.itemId)!,
     })),
@@ -408,20 +416,26 @@ export function emptyQuestionList(now = new Date()): QuestionListResponse {
   return { source: "live", generatedAt: now.toISOString(), questions: [] };
 }
 
-function readMergeQueue(db: Database, options: LiveStatusOptions): MergeQueueResponse {
+async function readMergeQueue(
+  db: Database,
+  options: LiveStatusOptions,
+): Promise<MergeQueueResponse> {
+  const store = sqliteDb(db);
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
-  const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
-  const visible = listWorkItemsByStates(db, WORK_ITEM_STATES)
+  const facts = new Map(
+    (await store.run(listWorkItemFactsSteps)).map((fact) => [fact.itemId, fact]),
+  );
+  const visible = (await store.run((q) => listWorkItemsByStatesSteps(q, WORK_ITEM_STATES)))
     .filter(
       (record) =>
         options.sessionIds === undefined ||
         (record.sessionKey !== null && options.sessionIds.includes(record.sessionKey)),
     )
     .sort((left, right) => compareNewest(left, right, facts));
-  const records = listedRecords(db, visible, facts, now.getTime());
+  const records = await listedRecords(db, visible, facts, now.getTime());
   const rows = records.length
-    ? listOutbox(db).filter(
+    ? (await store.run((q) => listOutboxSteps(q))).filter(
         (row) =>
           options.sessionIds === undefined ||
           (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
@@ -435,11 +449,11 @@ function readMergeQueue(db: Database, options: LiveStatusOptions): MergeQueueRes
     pr: pullRequest(record, rows, options.project?.repo),
   }));
   const merge = records.length
-    ? mergeQueueFor(db, {
+    ? await mergeQueueFor(db, {
         records: visible,
         items: issues,
-        jobs: listJobs(db),
-        queues: listMergeQueues(db),
+        jobs: await store.run(listJobsSteps),
+        queues: await store.run((q) => listMergeQueuesSteps(q)),
         generatedAt,
         now: now.getTime(),
         repo: options.project?.repo,
@@ -456,8 +470,8 @@ function readMergeQueue(db: Database, options: LiveStatusOptions): MergeQueueRes
     entries,
     history,
     issues: issues.filter((issue) => shown.has(issue.id)),
-    pushOutages: readPushOutages(db, options).pushOutages ?? [],
-    policyRunnerWarnings: readPolicyRunnerWarnings(db, options).policyRunnerWarnings ?? [],
+    pushOutages: (await readPushOutages(db, options)).pushOutages ?? [],
+    policyRunnerWarnings: (await readPolicyRunnerWarnings(db, options)).policyRunnerWarnings ?? [],
   };
 }
 
@@ -468,34 +482,41 @@ function visibleTo(options: LiveStatusOptions, record: WorkItemRecord): boolean 
   );
 }
 
-function readEvidenceList(db: Database, options: LiveStatusOptions): EvidenceListResponse {
+async function readEvidenceList(
+  db: Database,
+  options: LiveStatusOptions,
+): Promise<EvidenceListResponse> {
+  const store = sqliteDb(db);
   const now = options.now?.() ?? new Date();
-  const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
-  const visible = listWorkItemsByStates(db, WORK_ITEM_STATES)
+  const facts = new Map(
+    (await store.run(listWorkItemFactsSteps)).map((fact) => [fact.itemId, fact]),
+  );
+  const visible = (await store.run((q) => listWorkItemsByStatesSteps(q, WORK_ITEM_STATES)))
     .filter((record) => visibleTo(options, record))
     .sort((left, right) => compareNewest(left, right, facts));
-  const records = listedRecords(db, visible, facts, now.getTime());
+  const records = await listedRecords(db, visible, facts, now.getTime());
   return {
     source: "live",
     generatedAt: now.toISOString(),
     project: projectOf(records, options.project),
-    evidence: evidenceFor(db, records),
+    evidence: await evidenceFor(db, records),
   };
 }
 
-function readEvidenceMetadata(
+async function readEvidenceMetadata(
   db: Database,
   id: string,
   options: LiveStatusOptions,
-): EvidenceMetadataResponse | null {
-  const stored = getEvidence(db, id);
-  const owner = stored === null ? null : getWorkItem(db, stored.itemId);
+): Promise<EvidenceMetadataResponse | null> {
+  const store = sqliteDb(db);
+  const stored = await store.run((q) => getEvidenceSteps(q, id));
+  const owner = stored === null ? null : await store.run((q) => getWorkItemSteps(q, stored.itemId));
   if (owner === null || !visibleTo(options, owner)) return null;
   const issue = publicId(owner);
-  const records = listWorkItemsByStates(db, WORK_ITEM_STATES).filter(
+  const records = (await store.run((q) => listWorkItemsByStatesSteps(q, WORK_ITEM_STATES))).filter(
     (record) => publicId(record) === issue && visibleTo(options, record),
   );
-  const related = evidenceFor(db, records);
+  const related = await evidenceFor(db, records);
   const evidence = related.find((entry) => entry.id === id);
   if (evidence === undefined) return null;
   return {
@@ -547,13 +568,13 @@ function toIssueDetail(detail: ItemDetail): IssueDetailResponse {
  * An item finished when it last changed state; one from before `work_item_event` counts from
  * its creation.
  */
-export function listedRecords(
+export async function listedRecords(
   db: Database,
   visible: readonly WorkItemRecord[],
   facts: ReadonlyMap<string, WorkItemFact>,
   nowMs: number,
-): WorkItemRecord[] {
-  const changed = listLastWorkItemEventTimes(db);
+): Promise<WorkItemRecord[]> {
+  const changed = await sqliteDb(db).run(listLastWorkItemEventTimesSteps);
   const recent = new Set(
     visible
       .filter((record) => isTerminalWorkItemState(record.state))
@@ -575,12 +596,16 @@ export function listedRecords(
  * visible item has that id. Check `stdout` and `stderr` are left out; the issue page loads
  * logs separately.
  */
-function readItemDetail(db: Database, id: string, options: LiveStatusOptions): ItemDetail | null {
-  const { scope, blocks, records, current } = readIssueScope(db, options, id);
+async function readItemDetail(
+  db: Database,
+  id: string,
+  options: LiveStatusOptions,
+): Promise<ItemDetail | null> {
+  const { scope, blocks, records, current } = await readIssueScope(db, options, id);
   if (scope.items.length === 0 || current === null) return null;
   let risk: StatusItemRisk | null;
   try {
-    risk = itemRisk(db, current, options);
+    risk = await itemRisk(db, current, options);
   } catch (error) {
     journalCaught(error, "provider.itemRisk", current.record.id);
     risk = {
@@ -597,7 +622,7 @@ function readItemDetail(db: Database, id: string, options: LiveStatusOptions): I
   const env = options.env ?? process.env;
   const pawsHome = options.pawsHome ?? env.PAWS_HOME;
   if (!pawsHome || detail.verdicts.length === 0) return { ...detail, id, blocks, risk };
-  const progress = listCloseoutProgress(db);
+  const progress = await sqliteDb(db).run(listCloseoutProgressSteps);
   return {
     ...detail,
     verdicts: detail.verdicts.map((verdict) => {
@@ -620,15 +645,16 @@ const SECURITY_REVIEW_CHECK = "security-review";
  * and lists that matched, and the `security-review` step of its latest Closeout run. The step
  * comes from Closeout's progress because the verdict leaves out skipped checks.
  */
-function itemRisk(
+async function itemRisk(
   db: Database,
   current: CurrentItem,
   options: LiveStatusOptions,
-): StatusItemRisk | null {
+): Promise<StatusItemRisk | null> {
+  const store = sqliteDb(db);
   const display = options.riskApproval?.(current.record.id);
   const stored = display
-    ? getCandidateRisk(db, current.record.id, display.head)
-    : latestCandidateRisk(db, current.record.id);
+    ? await store.run((q) => getCandidateRiskSteps(q, current.record.id, display.head))
+    : await store.run((q) => latestCandidateRiskSteps(q, current.record.id));
   const step = current.progress?.steps.find((entry) => entry.id === SECURITY_REVIEW_CHECK);
   const check = current.verdict?.checks.find((entry) => entry.id === SECURITY_REVIEW_CHECK);
   const securityReview: StatusItemRisk["securityReview"] = step
@@ -661,12 +687,13 @@ function itemRisk(
  * The whole output of one check, for `GET /api/issues/:id/attempts/:n/checks/:check/log`.
  * Null when the issue is not visible or that attempt of its Closeout has no such check.
  */
-function readCheckLog(
+async function readCheckLog(
   db: Database,
   request: CheckLogRequest,
   options: LiveStatusOptions,
-): CheckOutput | null {
-  const { scope } = readIssueScope(db, options, request.itemId);
+): Promise<CheckOutput | null> {
+  const { scope } = await readIssueScope(db, options, request.itemId);
+
   if (scope.items.length === 0) return null;
   // A verdict without recorded attempts is one attempt, as the issue page shows it.
   let attempts: Array<Pick<StatusCloseoutAttempt, "number" | "checks">>;
@@ -761,11 +788,12 @@ function emptyScope(now: Date, project: LiveStatusOptions["project"]): IssueScop
 }
 
 /** Repositories GitHub refuses pushes from the Paws App for (PAS-867). */
-export function readPushOutages(
+export async function readPushOutages(
   db: Database,
   options: Pick<LiveStatusOptions, "sessionIds"> = {},
-): { pushOutages?: StatusPushOutage[] } {
-  const outages = visibleDiagnostics(db, options, listPushOutages(db));
+): Promise<{ pushOutages?: StatusPushOutage[] }> {
+  const store = sqliteDb(db);
+  const outages = await visibleDiagnosticsAsync(db, options, await store.run(listPushOutagesSteps));
   if (!outages.length) return {};
   return {
     pushOutages: outages.map((outage) => ({
@@ -779,13 +807,18 @@ export function readPushOutages(
 }
 
 /** Repositories whose Closeout policy uses keys the lowest online runner does not know (PAS-888). */
-export function readPolicyRunnerWarnings(
+export async function readPolicyRunnerWarnings(
   db: Database,
   options: Pick<LiveStatusOptions, "sessionIds"> = {},
-): {
+): Promise<{
   policyRunnerWarnings?: StatusPolicyRunnerWarning[];
-} {
-  const warnings = visibleDiagnostics(db, options, listPolicyRunnerWarnings(db));
+}> {
+  const store = sqliteDb(db);
+  const warnings = await visibleDiagnosticsAsync(
+    db,
+    options,
+    await store.run(listPolicyRunnerWarningsSteps),
+  );
   if (!warnings.length) return {};
   return {
     policyRunnerWarnings: warnings.map((warning) => ({
@@ -820,16 +853,32 @@ function visibleDiagnostics<T extends { repository: string }>(
   return rows.filter((row) => allowed.has(row.repository));
 }
 
-export function readIntake(
+async function visibleDiagnosticsAsync<T extends { repository: string }>(
+  db: Database,
+  options: Pick<LiveStatusOptions, "sessionIds">,
+  rows: T[],
+): Promise<T[]> {
+  const { sessionIds } = options;
+  if (sessionIds === undefined) return rows;
+  const repositories = rows.map((row) => row.repository);
+  const allowed = await sqliteDb(db).run((q) =>
+    sessionRepositoriesAllowedSteps(q, sessionIds, repositories),
+  );
+  return rows.filter((row) => allowed.has(row.repository));
+}
+
+export async function readIntake(
   db: Database,
   options: LiveStatusOptions,
-): {
+): Promise<{
   intake: StatusIntakeEntry[];
   linearBudget?: StatusLinearBudget;
   linearWebhook?: StatusLinearWebhook;
-} {
+}> {
+  const store = sqliteDb(db);
   const at = (ms: number | null) => (ms === null ? null : iso(ms));
-  const warning = linearWebhookWarning(db, (options.now?.() ?? new Date()).getTime());
+  const nowMs = (options.now?.() ?? new Date()).getTime();
+  const warning = await store.run((q) => linearWebhookWarningSteps(q, nowMs));
   const webhook =
     warning === null
       ? {}
@@ -840,7 +889,7 @@ export function readIntake(
             lastVerifiedAt: iso(warning.lastVerifiedMs),
           },
         };
-  const intake = listIntakeQueue(db)
+  const intake = (await store.run(listIntakeQueueSteps))
     .filter(
       (entry) =>
         options.sessionIds === undefined ||
@@ -868,12 +917,12 @@ export function readIntake(
   };
 }
 
-export function visibleRecords(
+export async function visibleRecords(
   db: Database,
   options: LiveStatusOptions,
   facts: ReadonlyMap<string, WorkItemFact>,
-): WorkItemRecord[] {
-  return listWorkItemsByStates(db, WORK_ITEM_STATES)
+): Promise<WorkItemRecord[]> {
+  return (await sqliteDb(db).run((q) => listWorkItemsByStatesSteps(q, WORK_ITEM_STATES)))
     .filter(
       (record) =>
         options.sessionIds === undefined ||
@@ -882,8 +931,8 @@ export function visibleRecords(
     .sort((left, right) => compareNewest(left, right, facts));
 }
 
-export function readerOutbox(db: Database, options: LiveStatusOptions): OutboxRow[] {
-  return listOutbox(db).filter(
+export async function readerOutbox(db: Database, options: LiveStatusOptions): Promise<OutboxRow[]> {
+  return (await sqliteDb(db).run((q) => listOutboxSteps(q))).filter(
     (row) =>
       options.sessionIds === undefined ||
       (row.orderingKey !== null && options.sessionIds.includes(row.orderingKey)),
@@ -931,16 +980,23 @@ type CurrentItem = {
  * Blockers, shared sessions and merge places still read every visible item; `blocks` lists
  * the issues `only` blocks.
  */
-function readIssueScope(db: Database, options: LiveStatusOptions, only?: string): ScopedIssues {
+async function readIssueScope(
+  db: Database,
+  options: LiveStatusOptions,
+  only?: string,
+): Promise<ScopedIssues> {
+  const store = sqliteDb(db);
   // The list reads summaries only: no merge queue, questions, evidence, CI rounds or deliveries.
   const issuesOnly = only === undefined;
   const now = options.now?.() ?? new Date();
   const generatedAt = now.toISOString();
-  const facts = new Map(listWorkItemFacts(db).map((fact) => [fact.itemId, fact]));
-  const visible = visibleRecords(db, options, facts);
+  const facts = new Map(
+    (await store.run(listWorkItemFactsSteps)).map((fact) => [fact.itemId, fact]),
+  );
+  const visible = await visibleRecords(db, options, facts);
   const records =
     only === undefined
-      ? listedRecords(db, visible, facts, now.getTime())
+      ? await listedRecords(db, visible, facts, now.getTime())
       : visible.filter((record) => publicId(record) === only);
   if (records.length === 0)
     return {
@@ -949,28 +1005,29 @@ function readIssueScope(db: Database, options: LiveStatusOptions, only?: string)
       records: [],
       current: null,
     };
-  const rows = readerOutbox(db, options);
-  const jobs = listJobs(db);
+  const rows = await readerOutbox(db, options);
+  const jobs = await store.run(listJobsSteps);
   const itemsByIssue = latestByLinearIssue(visible, facts);
-  const openQuestions = listOpenQuestions(db);
+  const openQuestions = await store.run(listOpenQuestionsSteps);
   const env = options.env ?? process.env;
-  const runs = runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
-  const queue = new Map(
-    settled(listQueuePositions(sqliteDb(db))).map((entry) => [entry.itemId, entry]),
-  );
-  const queues = listMergeQueues(db);
+  const runs = await runsFor(records, rows, generatedAt, db, options.pawsHome ?? env.PAWS_HOME);
+  const queue = new Map((await listQueuePositions(store)).map((entry) => [entry.itemId, entry]));
+  const queues = await store.run((q) => listMergeQueuesSteps(q));
   const merging = mergePlaces(queues, visible);
-  const linearRequests = linearRequestsByItem(db);
-  const holds = new Map(listItemHolds(db).map((hold) => [hold.itemId, hold]));
-  const changed = listLastWorkItemEventTimes(db);
+  const linearRequests = await store.run(linearRequestsByItemSteps);
+  const holds = new Map(
+    (await store.run((q) => listItemHoldsSteps(q))).map((hold) => [hold.itemId, hold]),
+  );
+  const changed = await store.run(listLastWorkItemEventTimesSteps);
   const asked = new Map<string, string>();
   for (const question of openQuestions)
     if (!asked.has(question.itemId)) asked.set(question.itemId, questionLine(question.body));
   const storedRuns = new Map<string, StoredRun[]>();
-  for (const run of listRuns(db))
+  for (const run of await store.run((q) => listRunsSteps(q)))
     storedRuns.set(run.itemId, [...(storedRuns.get(run.itemId) ?? []), run]);
-  const items = records.map((record) => ({
-    ...toItem(
+  const items: StatusItem[] = [];
+  for (const record of records) {
+    const item = await toItem(
       db,
       record,
       rows,
@@ -982,24 +1039,31 @@ function readIssueScope(db: Database, options: LiveStatusOptions, only?: string)
       merging,
       jobs,
       storedRuns.get(record.id)?.length ?? 0,
-    ),
-    linearRequests: linearRequests.get(record.id) ?? 0,
-    ...heldOf(record, holds, db),
-    ...sessionAttempt(db, record, visible, itemsByIssue, storedRuns, facts),
-    ...historyOf(db, record, facts, now.getTime()),
-    ...doingFor(db, record, {
+    );
+    const held = await heldOf(record, holds, db);
+    const session = await sessionAttempt(db, record, visible, itemsByIssue, storedRuns, facts);
+    const history = await historyOf(db, record, facts, now.getTime());
+    const doing = await doingFor(db, record, {
       hold: holds.get(record.id),
       question: asked.get(record.id) ?? null,
       lastChange: changed.get(record.id) ?? facts.get(record.id)?.createdAt ?? now.getTime(),
       now: now.getTime(),
-    }),
-    stageTimes: stageTimesOf(record),
-  }));
-  const progress = listCloseoutProgress(db);
+    });
+    items.push({
+      ...item,
+      linearRequests: linearRequests.get(record.id) ?? 0,
+      ...held,
+      ...session,
+      ...history,
+      ...doing,
+      stageTimes: stageTimesOf(record),
+    });
+  }
+  const progress = await store.run(listCloseoutProgressSteps);
   const rounds = listCloseoutRounds(db);
   const merge: Pick<IssueScope, "mergeQueue" | "mergeHistory"> = issuesOnly
     ? { mergeQueue: [] }
-    : mergeQueueFor(db, {
+    : await mergeQueueFor(db, {
         records: visible,
         items,
         jobs,
@@ -1009,21 +1073,21 @@ function readIssueScope(db: Database, options: LiveStatusOptions, only?: string)
         repo: options.project?.repo,
       });
   const listed = new Set(items.map((item) => item.id));
-  const recordVerdicts = new Map(
-    records.map((record) => {
-      const runId = storedRuns.get(record.id)?.[0]?.id;
-      return [
-        record.id,
-        verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env).map((found) => {
-          const verdict = runId === undefined ? found : { ...found, runId };
-          // Only the item detail reads each rule's evidence record and bypass decisions.
-          return only === undefined
-            ? verdict
-            : withRuleDetail(db, record.id, verdict, progress, evidenceRoot(options, env));
-        }),
-      ];
-    }),
-  );
+  const recordVerdicts = new Map<string, StatusVerdict[]>();
+  for (const record of records) {
+    const runId = storedRuns.get(record.id)?.[0]?.id;
+    const verdicts: StatusVerdict[] = [];
+    for (const found of verdictFor(record, rows, jobs, progress, rounds, now.getTime(), env)) {
+      const verdict = runId === undefined ? found : { ...found, runId };
+      // Only the item detail reads each rule's evidence record and bypass decisions.
+      verdicts.push(
+        only === undefined
+          ? verdict
+          : await withRuleDetail(db, record.id, verdict, progress, evidenceRoot(options, env)),
+      );
+    }
+    recordVerdicts.set(record.id, verdicts);
+  }
   const scope: IssueScope = {
     source: "live",
     generatedAt,
@@ -1036,35 +1100,39 @@ function readIssueScope(db: Database, options: LiveStatusOptions, only?: string)
     ...(merge.mergeHistory === undefined
       ? {}
       : { mergeHistory: merge.mergeHistory.filter((entry) => listed.has(entry.itemId)) }),
-    evidence: issuesOnly ? [] : evidenceFor(db, records),
-    agentCloseout: agentCloseoutFor(db, records, now.getTime(), env),
-    ciRounds: issuesOnly ? [] : ciRoundsFor(db, records, env),
-    dead: issuesOnly ? [] : deadFor(db, records),
-    ...(only === undefined ? mergedTimesFor(db, visible, facts, now.getTime()) : {}),
+    evidence: issuesOnly ? [] : await evidenceFor(db, records),
+    agentCloseout: await agentCloseoutFor(db, records, now.getTime(), env),
+    ciRounds: issuesOnly ? [] : await ciRoundsFor(db, records, env),
+    dead: issuesOnly ? [] : await deadFor(db, records),
+    ...(only === undefined ? await mergedTimesFor(db, visible, facts, now.getTime()) : {}),
   };
-  if (!issuesOnly)
-    scope.questions = questionsFor(
+  if (!issuesOnly) {
+    const questions = await questionsFor(
       db,
       records,
       rows,
       (runId) => sessionRunId(runId, runs),
       openQuestions,
-    ).map((question) =>
-      withRiskDetail(db, withBypassChecks(db, question, scope.verdicts, env), scope.verdicts),
     );
-  const blocks =
-    only === undefined
-      ? []
-      : [
-          ...new Set(
-            visible
-              .filter(
-                (record) =>
-                  publicId(record) !== only && blockersFor(db, record, itemsByIssue).includes(only),
-              )
-              .map(publicId),
-          ),
-        ];
+    scope.questions = [];
+    for (const question of questions)
+      scope.questions.push(
+        await withRiskDetail(
+          db,
+          await withBypassChecks(db, question, scope.verdicts, env),
+          scope.verdicts,
+        ),
+      );
+  }
+  const blocks: string[] = [];
+  if (only !== undefined)
+    for (const record of visible)
+      if (
+        publicId(record) !== only &&
+        (await blockersFor(db, record, itemsByIssue)).includes(only) &&
+        !blocks.includes(publicId(record))
+      )
+        blocks.push(publicId(record));
   const current = records[0]!;
   return {
     scope,
@@ -1079,10 +1147,15 @@ function readIssueScope(db: Database, options: LiveStatusOptions, only?: string)
 }
 
 /** Dead outbox rows and dead jobs of the visible items, so none blocks a session unseen. */
-function deadFor(db: Database, records: readonly WorkItemRecord[]): StatusDeadDelivery[] {
-  return records
-    .flatMap((record) =>
-      listDeadDeliveries(db, record.id).map((dead) => ({
+async function deadFor(
+  db: Database,
+  records: readonly WorkItemRecord[],
+): Promise<StatusDeadDelivery[]> {
+  const store = sqliteDb(db);
+  const found: StatusDeadDelivery[] = [];
+  for (const record of records)
+    for (const dead of await store.run((q) => listDeadDeliveriesSteps(q, record.id)))
+      found.push({
         itemId: publicId(record),
         kind: dead.kind,
         target: `${dead.kind}:${dead.id}`,
@@ -1091,23 +1164,22 @@ function deadFor(db: Database, records: readonly WorkItemRecord[]): StatusDeadDe
         lastError: dead.error,
         at: iso(dead.at),
         retryable: dead.retryable,
-      })),
-    )
-    .sort((left, right) => left.at.localeCompare(right.at));
+      });
+  return found.sort((left, right) => left.at.localeCompare(right.at));
 }
 
 /**
  * The item's Linear session and, for an attempt a newer session on the same issue replaced,
  * when it ended. The issue page shows that attempt as an earlier section.
  */
-function sessionAttempt(
+async function sessionAttempt(
   db: Database,
   record: WorkItemRecord,
   records: readonly WorkItemRecord[],
   itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
   storedRuns: ReadonlyMap<string, readonly StoredRun[]>,
   facts: ReadonlyMap<string, WorkItemFact>,
-): Pick<StatusItem, "session" | "endedAt"> {
+): Promise<Pick<StatusItem, "session" | "endedAt">> {
   const sessionId = record.sessionKey;
   const session =
     sessionId === null
@@ -1115,7 +1187,7 @@ function sessionAttempt(
       : {
           session: {
             id: sessionId,
-            url: linearConversationUrl(db, sessionId, publicId(record)),
+            url: await linearConversationUrlAsync(sqliteDb(db), sessionId, publicId(record)),
             shared: [
               ...new Set(
                 records
@@ -1135,14 +1207,16 @@ function sessionAttempt(
   return endedAt === undefined ? session : { ...session, endedAt: iso(endedAt) };
 }
 
-function agentCloseoutFor(
+async function agentCloseoutFor(
   db: Database,
   records: readonly WorkItemRecord[],
   nowMs: number,
   env: NodeJS.ProcessEnv,
-): StatusAgentCloseout[] {
+): Promise<StatusAgentCloseout[]> {
+  const store = sqliteDb(db);
   const stored = new Map<string, StoredRun[]>();
-  for (const run of listRuns(db)) stored.set(run.itemId, [...(stored.get(run.itemId) ?? []), run]);
+  for (const run of await store.run((q) => listRunsSteps(q)))
+    stored.set(run.itemId, [...(stored.get(run.itemId) ?? []), run]);
   const shown = records.flatMap((record) => {
     const runs = stored.get(record.id) ?? [];
     const current = runs.find((run) => run.id === record.currentRunId);
@@ -1150,10 +1224,8 @@ function agentCloseoutFor(
     return [...new Set([runs[0]!, current])].map((run) => ({ record, run, current }));
   });
   const byRun = new Map<string, AgentCloseoutEvent[]>();
-  for (const event of listAgentCloseout(
-    db,
-    shown.map(({ run }) => run.id),
-  )) {
+  const runIds = shown.map(({ run }) => run.id);
+  for (const event of await store.run((q) => listAgentCloseoutSteps(q, runIds))) {
     const events = byRun.get(event.runId) ?? [];
     events.push(event);
     byRun.set(event.runId, events);
@@ -1181,34 +1253,43 @@ function agentCloseoutFor(
 }
 
 /** CI rounds of the visible items, numbered per item. Log tails are redacted like Closeout output. */
-function ciRoundsFor(
+async function ciRoundsFor(
   db: Database,
   records: readonly WorkItemRecord[],
   env: NodeJS.ProcessEnv,
-): StatusCiRound[] {
-  return records.flatMap((record) =>
-    listCiRounds(db, record.id).map((round, index) => ({
-      itemId: publicId(record),
-      runId: round.runId,
-      round: index + 1,
-      head: round.head,
-      next: round.next,
-      fix: round.fix,
-      fixLimit: round.fixLimit,
-      recordedAt: new Date(round.recordedAt).toISOString(),
-      checks: round.checks.map((check) => ({
-        ...check,
-        logTail: check.logTail === null ? null : redactCloseoutText(check.logTail, env),
+): Promise<StatusCiRound[]> {
+  const store = sqliteDb(db);
+  const rounds: StatusCiRound[] = [];
+  for (const record of records)
+    rounds.push(
+      ...(await store.run((q) => listCiRoundsSteps(q, record.id))).map((round, index) => ({
+        itemId: publicId(record),
+        runId: round.runId,
+        round: index + 1,
+        head: round.head,
+        next: round.next,
+        fix: round.fix,
+        fixLimit: round.fixLimit,
+        recordedAt: new Date(round.recordedAt).toISOString(),
+        checks: round.checks.map((check) => ({
+          ...check,
+          logTail: check.logTail === null ? null : redactCloseoutText(check.logTail, env),
+        })),
       })),
-    })),
-  );
+    );
+  return rounds;
 }
 
 /** Evidence of the visible items only, so a reader without the item's session sees none of it. */
-function evidenceFor(db: Database, records: readonly WorkItemRecord[]): StatusEvidence[] {
-  return records
-    .flatMap((record) =>
-      listEvidence(db, record.id).map((stored) => ({
+async function evidenceFor(
+  db: Database,
+  records: readonly WorkItemRecord[],
+): Promise<StatusEvidence[]> {
+  const store = sqliteDb(db);
+  const evidence: StatusEvidence[] = [];
+  for (const record of records)
+    for (const stored of await store.run((q) => listEvidenceSteps(q, record.id)))
+      evidence.push({
         id: stored.id,
         itemId: publicId(record),
         runId: stored.runId,
@@ -1220,15 +1301,16 @@ function evidenceFor(db: Database, records: readonly WorkItemRecord[]): StatusEv
         sizeBytes: stored.sizeBytes,
         headCommit: stored.headCommit,
         publishedAt: new Date(stored.createdAt).toISOString(),
-        publisher: agentName(getRun(db, stored.runId)?.agent ?? "paws"),
-      })),
-    )
-    .sort(
-      (left, right) =>
-        left.publishedAt.localeCompare(right.publishedAt) ||
-        left.attempt - right.attempt ||
-        left.id.localeCompare(right.id),
-    );
+        publisher: agentName(
+          (await store.run((q) => getRunSteps(q, stored.runId)))?.agent ?? "paws",
+        ),
+      });
+  return evidence.sort(
+    (left, right) =>
+      left.publishedAt.localeCompare(right.publishedAt) ||
+      left.attempt - right.attempt ||
+      left.id.localeCompare(right.id),
+  );
 }
 
 /** Finished items offer no Pause, Stop or take over; only a stuck agent can still be cleared. */
@@ -1239,7 +1321,7 @@ const NO_CONTROL_STATES: readonly WorkItemRecord["state"][] = [
   "failed",
 ];
 
-function toItem(
+async function toItem(
   db: Database,
   record: WorkItemRecord,
   rows: readonly OutboxRow[],
@@ -1251,7 +1333,8 @@ function toItem(
   merging: ReadonlyMap<string, StatusMergeQueue>,
   jobs: readonly Job[],
   attempts: number,
-): StatusItem {
+): Promise<StatusItem> {
+  const store = sqliteDb(db);
   const id = publicId(record);
   const runId = linkedRunId(record, runs);
   const pr = pullRequest(record, rows, repo);
@@ -1262,6 +1345,12 @@ function toItem(
       : undefined;
   const githubQueue =
     record.state === "merge_queue" ? githubQueueOf(mergeJob(record.id, jobs)) : undefined;
+  const blockers = await blockersFor(db, record, itemsByIssue);
+  const noControls =
+    NO_CONTROL_STATES.includes(record.state) &&
+    !(await store.run((q) => getConversationSteps(q, record.id))).blocked;
+  const visualReviews = await visualReviewsOf(db, record);
+  const riskCarryOver = await riskCarryOverOf(db, record);
   return {
     id,
     title: textOr(record.title, id),
@@ -1270,21 +1359,20 @@ function toItem(
     assignee: "Unassigned",
     owner: ownerName(fact),
     project: itemProject(fact),
-    blockers: blockersFor(db, record, itemsByIssue),
+    blockers,
     attempts,
     branch: record.branchName.trim() ? record.branchName : null,
     runId,
     pr,
     links: pr === null ? [] : [{ label: `PR #${pr.number}`, href: pr.url }],
     version: record.version,
-    ...(NO_CONTROL_STATES.includes(record.state) && !getConversation(db, record.id).blocked
-      ? { noControls: true }
-      : {}),
+    ...(noControls ? { noControls: true } : {}),
     ...queueOf(record, queue),
     ...(mergeQueue ? { mergeQueue } : {}),
     ...(githubQueue ? { githubQueue } : {}),
-    ...visualReviewsOf(db, record),
-    ...riskCarryOverOf(db, record),
+    ...visualReviews,
+    ...riskCarryOver,
+
     ...hostDiskFullOf(record, jobs),
   };
 }
@@ -1320,13 +1408,15 @@ export function queueOf(
  * The approval a fix kept: the item's latest classified head carried over a person's approval of
  * an earlier head because the fix changed no high-risk path.
  */
-function riskCarryOverOf(
+async function riskCarryOverOf(
   db: Database,
   record: WorkItemRecord,
-): { riskCarryOver?: StatusRiskCarryOver } {
-  const fix = latestRiskFix(db, record.id);
+): Promise<{ riskCarryOver?: StatusRiskCarryOver }> {
+  const store = sqliteDb(db);
+  const fix = await store.run((q) => latestRiskFixSteps(q, record.id));
   if (fix === null || fix.paths.length > 0) return {};
-  if (latestCandidateRisk(db, record.id)?.head !== fix.head) return {};
+  if ((await store.run((q) => latestCandidateRiskSteps(q, record.id)))?.head !== fix.head)
+    return {};
   return {
     riskCarryOver: {
       head: fix.head,
@@ -1347,17 +1437,18 @@ const HISTORY_LIMIT = 100_000;
  * omitted while it has none, and the time it spent in each state since it was created, up to
  * `now` while it is open. A re-run shows the state the item was in when it was requested.
  */
-export function historyOf(
+export async function historyOf(
   db: Database,
   record: WorkItemRecord,
   facts: ReadonlyMap<string, WorkItemFact>,
   now: number,
-): { timeline?: StatusItemEvent[]; stateTimes?: StatusStateTimes } {
-  const rows = listWorkItemEventRows(db, record.id, HISTORY_LIMIT);
+): Promise<{ timeline?: StatusItemEvent[]; stateTimes?: StatusStateTimes }> {
+  const store = sqliteDb(db);
+  const rows = await store.run((q) => listWorkItemEventRowsSteps(q, record.id, HISTORY_LIMIT));
   const created = facts.get(record.id)?.createdAt;
   const stateTimes =
     created === undefined ? {} : { stateTimes: toStateTimes(totalsOf(record, created, rows, now)) };
-  const reruns = listCiReruns(db, record.id);
+  const reruns = await store.run((q) => listCiRerunsSteps(q, record.id));
   if (rows.length === 0 && reruns.length === 0) return stateTimes;
   const events: StatusItemEvent[] = [];
   const pending = [...reruns];
@@ -1408,36 +1499,36 @@ function totalsOf(
  * The visible items that merged in the last `STATUS_RECENT_MS`: their median and p90 time from
  * creation to merge and their average time in each state. Omitted when none merged.
  */
-export function mergedTimesFor(
+export async function mergedTimesFor(
   db: Database,
   visible: readonly WorkItemRecord[],
   facts: ReadonlyMap<string, WorkItemFact>,
   now: number,
-): { mergedTimes?: StatusMergedTimes } {
+): Promise<{ mergedTimes?: StatusMergedTimes }> {
+  const store = sqliteDb(db);
   const since = now - STATUS_RECENT_MS;
-  const changed = listLastWorkItemEventTimes(db);
-  const merged = visible.flatMap((record) => {
+  const changed = await store.run(listLastWorkItemEventTimesSteps);
+  const merged: StateTotals[] = [];
+  for (const record of visible) {
     const created = facts.get(record.id)?.createdAt;
     const last = changed.get(record.id);
     if (record.state !== "merged" || created === undefined || last === undefined || last < since)
-      return [];
-    return [totalsOf(record, created, listWorkItemEventRows(db, record.id, HISTORY_LIMIT), now)];
-  });
+      continue;
+    const rows = await store.run((q) => listWorkItemEventRowsSteps(q, record.id, HISTORY_LIMIT));
+    merged.push(totalsOf(record, created, rows, now));
+  }
   const times = mergedTimes(merged, since);
   return times === null ? {} : { mergedTimes: times };
 }
 
-export function doingFor(
+export async function doingFor(
   db: Database,
   record: WorkItemRecord,
   input: { hold: ItemHold | undefined; question: string | null; lastChange: number; now: number },
-): Pick<StatusItem, "doing" | "activeMs"> {
-  const doing = doingOf({
-    ...input,
-    state: record.state,
-    facts: itemActivityFacts(db, record, input.now),
-    phase: record.state === "running" ? runnerPhase(db, record.currentRunId) : null,
-  });
+): Promise<Pick<StatusItem, "doing" | "activeMs">> {
+  const facts = await sqliteDb(db).run((q) => itemActivityFactsSteps(q, record, input.now));
+  const phase = record.state === "running" ? await runnerPhase(db, record.currentRunId) : null;
+  const doing = doingOf({ ...input, state: record.state, facts, phase });
   return doing === undefined ? { activeMs: record.awakeMs } : { doing, activeMs: record.awakeMs };
 }
 
@@ -1453,9 +1544,9 @@ function stageTimesOf(record: WorkItemRecord): StatusStageTimes {
  * Runner work is preparing (checkout, mise installs) until its current generation reports an
  * `activity` event. Reads only the plain `type` column; a run without runner work has no phase.
  */
-function runnerPhase(db: Database, runId: string | null): DoingPhase | null {
+async function runnerPhase(db: Database, runId: string | null): Promise<DoingPhase | null> {
   if (runId === null) return null;
-  const active = runnerWorkActive(db, runId);
+  const active = await sqliteDb(db).run((q) => runnerWorkActiveSteps(q, runId));
   if (active === null) return null;
   return active ? "agent" : "preparing";
 }
@@ -1465,13 +1556,16 @@ export function questionLine(body: string): string {
   return line.length > 120 ? `${line.slice(0, 119)}…` : line;
 }
 
-export function heldOf(
+export async function heldOf(
   record: WorkItemRecord,
   holds: ReadonlyMap<string, ItemHold>,
   db?: Database,
-): { held?: StatusHeld } {
+): Promise<{ held?: StatusHeld }> {
   const hold = record.state === "queued" ? holds.get(record.id) : undefined;
-  const checkedAt = hold?.reason === "blocked" && db ? blockerCheckedAt(db, record.id) : null;
+  const checkedAt =
+    hold?.reason === "blocked" && db
+      ? await sqliteDb(db).run((q) => blockerCheckedAtSteps(q, record.id))
+      : null;
   return hold
     ? {
         held: {
@@ -1484,47 +1578,52 @@ export function heldOf(
     : {};
 }
 
-function visualReviewsOf(
+async function visualReviewsOf(
   db: Database,
   record: WorkItemRecord,
-): { visualReviews?: StatusVisualReview[] } {
-  const reviews = listVisualReviews(db, record.id);
+): Promise<{ visualReviews?: StatusVisualReview[] }> {
+  const store = sqliteDb(db);
+  const reviews = await store.run((q) => listVisualReviewsSteps(q, record.id));
   if (reviews.length === 0) return {};
-  const commits = new Map(listEvidence(db, record.id).map((row) => [row.id, row.headCommit]));
+  const commits = new Map(
+    (await store.run((q) => listEvidenceSteps(q, record.id))).map((row) => [
+      row.id,
+      row.headCommit,
+    ]),
+  );
   const rounds = visualReviewRounds(reviews);
-  return {
-    visualReviews: reviews.map((review, index) => {
-      const round = rounds[index]!;
-      const marks = listVisualReviewMarks(db, review.questionId).map((mark) => ({
-        id: mark.id,
-        evidenceId: mark.evidenceId,
-      }));
-      return {
-        questionId: review.questionId,
-        checkId: review.checkId,
-        round,
-        state: review.outcome ?? "waiting",
-        evidenceIds: review.evidenceIds,
-        commit:
-          review.headCommit ||
-          review.evidenceIds.map((id) => commits.get(id)).findLast(Boolean) ||
-          null,
-        askedAt: iso(review.createdAt),
-        answeredBy: review.answeredBy || null,
-        answeredAt: review.answeredAt === null ? null : iso(review.answeredAt),
-        feedback: review.feedback?.trim() || null,
-        ...(marks.length ? { marks } : {}),
-        ...(review.carried.length
-          ? {
-              carried: review.carried.map((entry) => ({
-                ...entry,
-                approvedAt: iso(entry.approvedAt),
-              })),
-            }
-          : {}),
-      };
-    }),
-  };
+  const visualReviews: StatusVisualReview[] = [];
+  for (const [index, review] of reviews.entries()) {
+    const round = rounds[index]!;
+    const marks = (await store.run((q) => listVisualReviewMarksSteps(q, review.questionId))).map(
+      (mark) => ({ id: mark.id, evidenceId: mark.evidenceId }),
+    );
+    visualReviews.push({
+      questionId: review.questionId,
+      checkId: review.checkId,
+      round,
+      state: review.outcome ?? "waiting",
+      evidenceIds: review.evidenceIds,
+      commit:
+        review.headCommit ||
+        review.evidenceIds.map((id) => commits.get(id)).findLast(Boolean) ||
+        null,
+      askedAt: iso(review.createdAt),
+      answeredBy: review.answeredBy || null,
+      answeredAt: review.answeredAt === null ? null : iso(review.answeredAt),
+      feedback: review.feedback?.trim() || null,
+      ...(marks.length ? { marks } : {}),
+      ...(review.carried.length
+        ? {
+            carried: review.carried.map((entry) => ({
+              ...entry,
+              approvedAt: iso(entry.approvedAt),
+            })),
+          }
+        : {}),
+    });
+  }
+  return { visualReviews };
 }
 
 export function visualReviewRounds(reviews: readonly VisualReviewRecord[]): number[] {
@@ -1557,16 +1656,17 @@ function githubQueueOf(job: Job | undefined): StatusGitHubQueue | undefined {
   return { position, state: watch.state, line: watch.line };
 }
 
-function runsFor(
+async function runsFor(
   records: readonly WorkItemRecord[],
   rows: readonly OutboxRow[],
   generatedAt: string,
   db: Database,
   pawsHome: string | undefined,
-): StatusRun[] {
+): Promise<StatusRun[]> {
+  const store = sqliteDb(db);
   const byItem = new Map(records.map((record) => [record.id, record]));
   const attempts = new Map<string, StoredRun[]>();
-  for (const stored of listRuns(db))
+  for (const stored of await store.run((q) => listRunsSteps(q)))
     if (byItem.has(stored.itemId))
       attempts.set(stored.itemId, [...(attempts.get(stored.itemId) ?? []), stored]);
   const activityRows = indexActivityRows(rows);
@@ -1575,11 +1675,19 @@ function runsFor(
     const record = byItem.get(itemId)!;
     const first = stored[0]!;
     const current = stored.find((run) => run.id === record.currentRunId) ?? stored.at(-1)!;
-    const activity = activityFor(db, record, stored, activityRows.for(record, stored), generatedAt);
+    const activity = await activityFor(
+      db,
+      record,
+      stored,
+      activityRows.for(record, stored),
+      generatedAt,
+    );
     const recent = activity.at(-1);
     const pause =
-      record.currentRunId === current.id ? runUsagePause(db, current.id, generatedAt) : null;
-    const setup = runAgentSetup(db, current.id);
+      record.currentRunId === current.id ? await runUsagePause(db, current.id, generatedAt) : null;
+    const setup = await store.run((q) => runAgentSetupSteps(q, current.id));
+    const reviewer = runReviewer(pawsHome, current.id);
+    const runner = await store.run((q) => runRunnerNameSteps(q, current.id));
     runs.push({
       id: first.id,
       attempts: stored.map((run) => run.id),
@@ -1588,8 +1696,8 @@ function runsFor(
         ? runState(record, current.status)
         : "done",
       agent: agentName(current.agent),
-      reviewer: runReviewer(pawsHome, current.id),
-      runner: runRunnerName(db, current.id),
+      reviewer,
+      runner,
       startedAt: iso(first.createdAt, generatedAt),
       attempt: record.checkpoint?.turn ?? 0,
       summary: recent?.text ?? textOr(record.title, publicId(record)),
@@ -1613,12 +1721,12 @@ function runsFor(
   return runs;
 }
 
-export function runUsagePause(
+export async function runUsagePause(
   db: Database,
   runId: string,
   generatedAt: string,
-): StatusUsagePause | null {
-  const pause = usagePause(db, runId);
+): Promise<StatusUsagePause | null> {
+  const pause = await sqliteDb(db).run((q) => usagePauseSteps(q, runId));
   return pause === null
     ? null
     : { agent: agentName(pause.agent), resumeAt: iso(pause.resumeAt, generatedAt) };
@@ -1640,22 +1748,19 @@ function runReviewer(pawsHome: string | undefined, runId: string): string {
   }
 }
 
-export function blockersFor(
+export async function blockersFor(
   db: Database,
   record: WorkItemRecord,
   itemsByIssue: ReadonlyMap<string, WorkItemRecord>,
-): string[] {
+): Promise<string[]> {
+  const store = sqliteDb(db);
   const ids: string[] = [];
-  for (const issueId of listTaskBlockers(db, record.linearIssueId)) {
+  for (const issueId of await store.run((q) => listTaskBlockersSteps(q, record.linearIssueId))) {
     const blocker = itemsByIssue.get(issueId);
     if (blocker === undefined) continue;
-    if (
-      isBlockerSatisfied({
-        state: blocker.state,
-        mode: getTaskMode(db, blocker.id),
-        mergeSha: getConfirmedRemoteMerge(db, blocker.id)?.mergeSha ?? null,
-      })
-    )
+    const mode = await store.run((q) => getTaskModeSteps(q, blocker.id));
+    const merge = await store.run((q) => getConfirmedRemoteMergeSteps(q, blocker.id));
+    if (isBlockerSatisfied({ state: blocker.state, mode, mergeSha: merge?.mergeSha ?? null }))
       continue;
     const id = publicId(blocker);
     if (!ids.includes(id)) ids.push(id);
@@ -1718,12 +1823,12 @@ const BYPASS_OUTPUT_LINES = 8;
  * A bypass ask carries the failed checks of its head for the "Closeout needs
  * your help" card: state, attempt, and the finding or the end of the output.
  */
-function withBypassChecks(
+async function withBypassChecks(
   db: Database,
   question: StatusQuestion,
   verdicts: readonly StatusVerdict[],
   env: NodeJS.ProcessEnv,
-): StatusQuestion {
+): Promise<StatusQuestion> {
   const ask = question.linkAsk;
   if (ask?.kind !== "bypass" && ask?.kind !== "rule") return question;
   const recovery = getCloseoutRecovery(db, question.id);
@@ -1766,17 +1871,18 @@ function withBypassChecks(
  * A risk ask carries what the Risk card shows: the head's high-risk paths, Closeout's summary of
  * the head and the findings of its review checks.
  */
-function withRiskDetail(
+async function withRiskDetail(
   db: Database,
   question: StatusQuestion,
   verdicts: readonly StatusVerdict[],
-): StatusQuestion {
+): Promise<StatusQuestion> {
+  const store = sqliteDb(db);
   const ask = question.linkAsk;
   if (ask?.kind !== "risk") return question;
-  const itemId = getLinkAsk(db, question.id)?.itemId;
-  const risk = itemId ? getCandidateRisk(db, itemId, ask.head) : null;
+  const itemId = (await store.run((q) => getLinkAskSteps(q, question.id)))?.itemId;
+  const risk = itemId ? await store.run((q) => getCandidateRiskSteps(q, itemId, ask.head)) : null;
   // After an approval the ask lists only what the fix changed since the approved head.
-  const fix = itemId ? getRiskFix(db, itemId, ask.head) : null;
+  const fix = itemId ? await store.run((q) => getRiskFixSteps(q, itemId, ask.head)) : null;
   const since = fix !== null && fix.paths.length > 0 ? fix : null;
   const verdict = verdicts.findLast(
     (entry) => entry.itemId === question.itemId && entry.headSha === ask.head,
@@ -1799,13 +1905,14 @@ function withRiskDetail(
   };
 }
 
-export function questionsFor(
+export async function questionsFor(
   db: Database,
   records: readonly WorkItemRecord[],
   rows: readonly OutboxRow[],
   runIdOf: (runId: string | null) => string | null,
   openQuestions: readonly OpenQuestionRecord[],
-): StatusQuestion[] {
+): Promise<StatusQuestion[]> {
+  const store = sqliteDb(db);
   const questions: StatusQuestion[] = [];
   const seen = new Set<string>();
   const coveredItems = new Set<string>();
@@ -1815,7 +1922,9 @@ export function questionsFor(
     seen.add(question.id);
     coveredItems.add(record.id);
     const parsed = parseQuestion(question.body);
-    const linkAsk = getLinkAsk(db, question.id);
+    const linkAsk = await store.run((q) => getLinkAskSteps(q, question.id));
+    const links = await questionLinks(db, question.sessionId, record.linearIdentifier);
+    const answerable = await answerableInPaws(db, question.id);
     questions.push({
       id: question.id,
       itemId: publicId(record),
@@ -1850,8 +1959,8 @@ export function questionsFor(
       recommendedOption: null,
       askedAt: iso(question.createdAt),
       claimedBy: null,
-      links: questionLinks(db, question.sessionId, record.linearIdentifier),
-      answerable: answerableInPaws(db, question.id),
+      links,
+      answerable,
     });
   }
   const waiting = records.filter((record) => record.state === "awaiting_input");
@@ -1875,6 +1984,7 @@ export function questionsFor(
     const parsed = parseQuestion(readString(row.payload, "body") ?? "");
     if (parsed.title.length === 0) continue;
     const runId = runIdOf(record.currentRunId);
+    const links = await questionLinks(db, session, record.linearIdentifier);
     questions.push({
       id,
       itemId: publicId(record),
@@ -1888,7 +1998,7 @@ export function questionsFor(
       recommendedOption: null,
       askedAt: iso(row.createdAt),
       claimedBy: null,
-      links: questionLinks(db, session, record.linearIdentifier),
+      links,
       answerable: false,
     });
   }
@@ -1908,17 +2018,18 @@ const PAWS_ANSWER_KINDS: ReadonlySet<string> = new Set([
   "policy-outage",
 ]);
 
-function answerableInPaws(db: Database, id: string): boolean {
-  const kind = openQuestionKind(db, id);
+async function answerableInPaws(db: Database, id: string): Promise<boolean> {
+  const kind = await sqliteDb(db).run((q) => openQuestionKindSteps(q, id));
   return kind !== null && PAWS_ANSWER_KINDS.has(kind);
 }
 
-function questionLinks(
+async function questionLinks(
   db: Database,
   sessionId: string,
   identifier: string,
-): StatusQuestion["links"] {
-  return [{ label: "Answer in Linear", href: linearConversationUrl(db, sessionId, identifier) }];
+): Promise<StatusQuestion["links"]> {
+  const href = await linearConversationUrlAsync(sqliteDb(db), sessionId, identifier);
+  return [{ label: "Answer in Linear", href }];
 }
 
 function verdictFor(
@@ -2280,17 +2391,18 @@ type MergeQueueInput = {
  * merged or went back to the agent in the last 24 hours. A task waiting for a review is listed
  * without a place: it holds none until it is approved.
  */
-function mergeQueueFor(
+async function mergeQueueFor(
   db: Database,
   input: MergeQueueInput,
-): Pick<IssueScope, "mergeQueue" | "mergeHistory"> {
+): Promise<Pick<IssueScope, "mergeQueue" | "mergeHistory">> {
+  const store = sqliteDb(db);
   const { records, jobs, generatedAt } = input;
   const items = new Map(input.items.map((item) => [item.id, item]));
   const places = new Map(input.queues.map((entry) => [entry.itemId, entry]));
   // The repository Paws bound the item to names it. `config.repo` only names items from before
   // repository binding, and an item with none of these is under "Repository not known".
-  const repositoryOf = (record: WorkItemRecord): string | null => {
-    const bound = getWorkItemRepository(db, record.id);
+  const repositoryOf = async (record: WorkItemRecord): Promise<string | null> => {
+    const bound = await store.run((q) => getWorkItemRepositorySteps(q, record.id));
     return (
       (bound ? `${bound.owner}/${bound.repo}` : null) ??
       places.get(record.id)?.repository ??
@@ -2299,60 +2411,62 @@ function mergeQueueFor(
       null
     );
   };
-  const waiting = records
-    .filter(
-      (record) =>
-        record.state === "merge_queue" || (record.state === "verifying" && places.has(record.id)),
-    )
-    .map((record): StatusMergeEntry => {
-      const job = mergeJob(record.id, jobs);
-      const place = places.get(record.id);
-      const wait = mergeWait(job);
-      const reason =
-        record.state === "verifying"
-          ? "closeout"
-          : place?.nextItemId
-            ? "ahead"
-            : (wait?.reason ?? "ci");
-      const ahead = place?.nextItemId
-        ? records.find((candidate) => candidate.id === place.nextItemId)
-        : undefined;
-      return {
-        position: place?.position ?? null,
-        itemId: publicId(record),
-        repository: repositoryOf(record),
-        enqueuedAt: place
-          ? iso(place.readyAt, generatedAt)
-          : enqueuedAt(record.id, jobs, generatedAt),
-        acceptedAt: acceptedAt(record.id, jobs, generatedAt),
-        waitingFor: reason,
-        detail:
-          hostDiskFullReason(job?.lastError ?? null) ??
-          (waitsForRunnerSlot(record.id, jobs)
-            ? SLOT_WAIT_DETAIL
-            : reason === "ahead"
-              ? ahead
-                ? `Starts when ${aheadLabel(ahead, items)} merges`
-                : null
-              : reason === "closeout"
-                ? "Re-checking, keeps its place."
-                : (wait?.message ?? null)),
-        settings: mergeSettings(db, record.id),
-        steps: mergeSteps(job),
-      };
-    })
-    .sort(
-      (left, right) =>
-        compareRepositories(left.repository, right.repository) ||
-        (left.position ?? Number.MAX_SAFE_INTEGER) - (right.position ?? Number.MAX_SAFE_INTEGER) ||
-        left.acceptedAt.localeCompare(right.acceptedAt) ||
-        left.itemId.localeCompare(right.itemId),
-    );
+  const waiting: StatusMergeEntry[] = [];
+  for (const record of records) {
+    if (record.state !== "merge_queue" && !(record.state === "verifying" && places.has(record.id)))
+      continue;
+    const job = mergeJob(record.id, jobs);
+    const place = places.get(record.id);
+    const wait = mergeWait(job);
+    const reason =
+      record.state === "verifying"
+        ? "closeout"
+        : place?.nextItemId
+          ? "ahead"
+          : (wait?.reason ?? "ci");
+    const ahead = place?.nextItemId
+      ? records.find((candidate) => candidate.id === place.nextItemId)
+      : undefined;
+    const repository = await repositoryOf(record);
+    const enqueued = place
+      ? iso(place.readyAt, generatedAt)
+      : enqueuedAt(record.id, jobs, generatedAt);
+    const accepted = acceptedAt(record.id, jobs, generatedAt);
+    const detail =
+      hostDiskFullReason(job?.lastError ?? null) ??
+      (waitsForRunnerSlot(record.id, jobs)
+        ? SLOT_WAIT_DETAIL
+        : reason === "ahead"
+          ? ahead
+            ? `Starts when ${aheadLabel(ahead, items)} merges`
+            : null
+          : reason === "closeout"
+            ? "Re-checking, keeps its place."
+            : (wait?.message ?? null));
+    waiting.push({
+      position: place?.position ?? null,
+      itemId: publicId(record),
+      repository,
+      enqueuedAt: enqueued,
+      acceptedAt: accepted,
+      waitingFor: reason,
+      detail,
+      settings: await mergeSettings(db, record.id),
+      steps: mergeSteps(job),
+    });
+  }
+  waiting.sort(
+    (left, right) =>
+      compareRepositories(left.repository, right.repository) ||
+      (left.position ?? Number.MAX_SAFE_INTEGER) - (right.position ?? Number.MAX_SAFE_INTEGER) ||
+      left.acceptedAt.localeCompare(right.acceptedAt) ||
+      left.itemId.localeCompare(right.itemId),
+  );
   const since = input.now - DAY_MS;
   const history: StatusMergeOutcome[] = [];
   for (const record of records) {
     if (record.state === "merged" || record.state === "completed") {
-      const merge = getConfirmedRemoteMerge(db, record.id);
+      const merge = await store.run((q) => getConfirmedRemoteMergeSteps(q, record.id));
       if (!merge || merge.confirmedAt < since) continue;
       history.push({
         itemId: publicId(record),
@@ -2360,20 +2474,21 @@ function mergeQueueFor(
         outcome: "merged",
         reason: null,
         at: iso(merge.confirmedAt, generatedAt),
-        settings: mergeSettings(db, record.id),
+        settings: await mergeSettings(db, record.id),
       });
       continue;
     }
     if (!BACK_WITH_AGENT_STATES.has(record.state) || places.has(record.id)) continue;
     const back = backWithAgent(record.id, jobs);
     if (!back || back.at < since) continue;
+    const repository = await repositoryOf(record);
     history.push({
       itemId: publicId(record),
-      repository: repositoryOf(record),
+      repository,
       outcome: "back_with_agent",
       reason: back.reason,
       at: iso(back.at, generatedAt),
-      settings: mergeSettings(db, record.id),
+      settings: await mergeSettings(db, record.id),
     });
   }
   history.sort((left, right) => right.at.localeCompare(left.at));
@@ -2403,8 +2518,8 @@ function pullRepository(url: string | undefined): string | null {
 }
 
 /** The settings the task resolved when its merge started. The workspace default until then. */
-function mergeSettings(db: Database, itemId: string): StatusMergeSettings {
-  const kept = getTaskMergeSettings(db, itemId);
+async function mergeSettings(db: Database, itemId: string): Promise<StatusMergeSettings> {
+  const kept = await sqliteDb(db).run((q) => getTaskMergeSettingsSteps(q, itemId));
   if (!kept) return { order: "queue", mainMoved: "ci", rule: null };
   const sources = isRecord(kept.resolved.sources) ? kept.resolved.sources : {};
   const rule = isRecord(kept.resolved.rule) ? readString(kept.resolved.rule, "label") : null;
@@ -2557,13 +2672,13 @@ function indexActivityRows(rows: readonly OutboxRow[]) {
   };
 }
 
-function activityFor(
+async function activityFor(
   db: Database,
   record: WorkItemRecord,
   stored: readonly StoredRun[],
   rows: readonly OutboxRow[],
   generatedAt: string,
-): StatusActivity[] {
+): Promise<StatusActivity[]> {
   const lines: Array<{ at: number; line: StatusActivity }> = [];
   for (const row of rows) {
     if (!stored.some((run) => concerns(row, record, run.id))) continue;
@@ -2574,7 +2689,7 @@ function activityFor(
     );
     lines.push({ at: row.createdAt, line: { at: iso(row.createdAt), kind, text: body } });
   }
-  for (const turn of listLinearTurnsForItem(db, record.id))
+  for (const turn of await sqliteDb(db).run((q) => listLinearTurnsForItemSteps(q, record.id)))
     lines.push({
       at: turn.createdAtMs,
       line: {
