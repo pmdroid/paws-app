@@ -8,12 +8,15 @@ import {
   openDatabase,
   setAsideLegacyDatabase,
 } from "../src/db";
+import { startPaws, useSavedSettings } from "../src/index";
 import { setJournalSink } from "../src/journal";
+import { shutdownPaws } from "../src/shutdown";
 import { migrateDryRun } from "../scripts/migrate-dry-run";
 import { tempHome } from "./helpers";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 const NOW = new Date("2026-11-07T03:04:05.678Z");
+const RESET = { PAWS_RESET_LEGACY_DATABASE: "1" };
 const SHIPPED = readdirSync(MIGRATIONS_FOLDER)
   .filter((name) => name.endsWith(".sql"))
   .sort();
@@ -26,6 +29,19 @@ function legacyDatabase(home: string) {
   db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('legacy', 1)");
   expect(existsSync(`${path}-shm`)).toBe(true);
   return { path, db, file: readFileSync(path), wal: readFileSync(`${path}-wal`) };
+}
+
+function closedLegacyDatabase(home: string) {
+  const path = join(home, "paws.db");
+  const db = openDatabase(path);
+  legacyMigrate(db);
+  db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+  db.close();
+  return path;
+}
+
+function refusal(path: string) {
+  return `${path} is from before drizzle-kit migrations and cannot be carried over. Paws would start on an empty database, and the workspace, members, runners and items in this one would be lost. Paws changed nothing. To set this database aside and start empty, set PAWS_RESET_LEGACY_DATABASE=1 and start Paws again.`;
 }
 
 function drizzleKit(home: string, ...args: string[]) {
@@ -103,7 +119,7 @@ describe("a database from the legacy migrations", () => {
     const restore = setJournalSink((line) => lines.push(line));
     let moved: string | null;
     try {
-      moved = setAsideLegacyDatabase(path, NOW);
+      moved = setAsideLegacyDatabase(path, RESET, NOW);
     } finally {
       restore();
     }
@@ -129,20 +145,62 @@ describe("a database from the legacy migrations", () => {
     });
     fresh.close();
 
-    expect(setAsideLegacyDatabase(path, new Date(NOW.getTime() + 60_000))).toBe(null);
+    expect(setAsideLegacyDatabase(path, RESET, new Date(NOW.getTime() + 60_000))).toBe(null);
     expect(readdirSync(home).filter((name) => name.includes("pre-drizzle"))).toHaveLength(3);
   });
 
-  test("leaves a missing or new database alone", () => {
+  test("stops startup without the opt-in and changes nothing on disk", () => {
     const home = tempHome();
-    const path = join(home, "paws.db");
-    expect(setAsideLegacyDatabase(path, NOW)).toBe(null);
-    const db = openDatabase(path);
-    migrate(db);
-    db.close();
-    expect(setAsideLegacyDatabase(path, NOW)).toBe(null);
-    expect(readdirSync(home).filter((name) => name.includes("pre-drizzle"))).toEqual([]);
+    const path = closedLegacyDatabase(home);
+    writeFileSync(join(home, "config.toml"), "");
+    const before = readFileSync(path);
+    const release = useSavedSettings();
+    try {
+      for (const flag of [undefined, "", "0", "true"])
+        expect(() =>
+          startPaws({ PAWS_HOME: home, PAWS_PORT: "0", PAWS_RESET_LEGACY_DATABASE: flag }),
+        ).toThrow(refusal(path));
+    } finally {
+      release();
+    }
+    expect(readdirSync(home).sort()).toEqual(["config.toml", "paws.db"]);
+    expect(readFileSync(path)).toEqual(before);
   });
+
+  test("refuses one with a live WAL and leaves its files as they were", () => {
+    const legacy = legacyDatabase(tempHome());
+    expect(() => setAsideLegacyDatabase(legacy.path, {}, NOW)).toThrow(refusal(legacy.path));
+    expect(readFileSync(legacy.path)).toEqual(legacy.file);
+    expect(readFileSync(`${legacy.path}-wal`)).toEqual(legacy.wal);
+    legacy.db.close();
+  });
+
+  test("is renamed at startup with the opt-in", async () => {
+    const home = tempHome();
+    const path = closedLegacyDatabase(home);
+    const before = readFileSync(path);
+    const paws = startPaws({ PAWS_HOME: home, PAWS_PORT: "0", ...RESET });
+    await shutdownPaws(paws, 0, () => {});
+    const renamed = readdirSync(home).filter((name) => /pre-drizzle-\d+T\d+Z$/.test(name));
+    expect(renamed).toHaveLength(1);
+    expect(readFileSync(join(home, renamed[0]!))).toEqual(before);
+    expect(existsSync(path)).toBe(true);
+  });
+
+  for (const [optIn, source] of [
+    ["without", {}],
+    ["with", RESET],
+  ] as const)
+    test(`leaves a missing or new database alone ${optIn} the opt-in`, () => {
+      const home = tempHome();
+      const path = join(home, "paws.db");
+      expect(setAsideLegacyDatabase(path, source, NOW)).toBe(null);
+      const db = openDatabase(path);
+      migrate(db);
+      db.close();
+      expect(setAsideLegacyDatabase(path, source, NOW)).toBe(null);
+      expect(readdirSync(home).filter((name) => name.includes("pre-drizzle"))).toEqual([]);
+    });
 
   test("never overwrites an earlier set-aside file", () => {
     const home = tempHome();
@@ -151,7 +209,7 @@ describe("a database from the legacy migrations", () => {
     legacyMigrate(db);
     db.close();
     writeFileSync(`${path}.pre-drizzle-20261107T030405Z`, "earlier");
-    expect(() => setAsideLegacyDatabase(path, NOW)).toThrow("already exists");
+    expect(() => setAsideLegacyDatabase(path, RESET, NOW)).toThrow("already exists");
     expect(readFileSync(`${path}.pre-drizzle-20261107T030405Z`, "utf8")).toBe("earlier");
     expect(existsSync(path)).toBe(true);
   });

@@ -1,16 +1,18 @@
 # Database reset for drizzle-kit migrations
 
-Paws's database schema is now created and changed by drizzle-kit migrations, starting from one baseline, `0000_baseline`. A database built by the earlier migrations is not carried over. The first start after the upgrade sets it aside and starts on an empty database.
+Paws's database schema is now created and changed by drizzle-kit migrations, starting from one baseline, `0000_baseline`. A database built by the earlier migrations is not carried over. Paws refuses to start on one until you opt in to setting it aside and starting on an empty database.
 
 ## What happens at the first start
 
-If `~/.paws/paws.db` has the earlier migration table (`schema_migration`) and no drizzle-kit history (`__drizzle_migrations`), Paws:
+If `~/.paws/paws.db` has the earlier migration table (`schema_migration`) and no drizzle-kit history (`__drizzle_migrations`), startup fails with an error that names the database, says Paws would start on an empty one, and lists what would be lost. The refused start changes nothing on disk.
+
+Before you opt in, read [What to set up again](#what-to-set-up-again). To go ahead, set `PAWS_RESET_LEGACY_DATABASE=1` in the environment Paws starts with (for the systemd service, the env file `paws install` wrote) and start it again. Any other value is refused. Remove the variable afterwards. With it set, Paws:
 
 1. Renames it to `paws.db.pre-drizzle-<UTC time>` beside it, for example `paws.db.pre-drizzle-20261107T030405Z`, with its `-wal` and `-shm` files. It never deletes or writes to the old file.
 2. Journals one line naming the renamed file.
 3. Creates a new `paws.db` from `0000_baseline` and starts on it.
 
-Later starts find the drizzle-kit history and rename nothing. `paws review-score` does the same when it is the first command to open the database. A new install starts from `0000_baseline` directly.
+Later starts find the drizzle-kit history and rename nothing. `paws review-score` and `paws login slack` refuse or set aside a legacy database the same way when they are the first command to open it. A new install starts from `0000_baseline` directly.
 
 To see what an upgrade would do to a database first, run `bun run migrate:dry-run [path]`; it works on a copy and reports that an earlier database would be set aside.
 

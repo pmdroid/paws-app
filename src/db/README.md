@@ -32,7 +32,7 @@ A shipped migration, its snapshot and its journal entry are never edited, rename
 
 ### The legacy migrations
 
-The hand-written migrations (`src/db/migrations.ts` and the files in `src/db/migrations/`, run by `legacyMigrate()`) no longer build Paws's database; only older tests use them, and they take no new files. A database they built is set aside at startup by `setAsideLegacyDatabase()`, and Paws starts on a fresh one ([database reset](../../docs/database-reset.md)).
+The hand-written migrations (`src/db/migrations.ts` and the files in `src/db/migrations/`, run by `legacyMigrate()`) no longer build Paws's database; only older tests use them, and they take no new files. `setAsideLegacyDatabase()` refuses to start on a database they built unless `PAWS_RESET_LEGACY_DATABASE=1` is set; then it sets the database aside and Paws starts on a fresh one ([database reset](../../docs/database-reset.md)).
 
 ## Postgres
 

@@ -2,6 +2,12 @@
 
 Changes that need action on upgrade come first in each entry. Terms are in [GLOSSARY.md](GLOSSARY.md); settings are in the [configuration reference](docs/configuration.md).
 
+## 2026-11-09: Paws no longer resets a pre-drizzle database without asking
+
+### Changed
+
+- **Paws refuses to start on a `paws.db` built by the earlier migrations.** The error names the database and lists what a reset loses, and the refused start changes nothing on disk. To set the database aside and start on an empty one as before, set `PAWS_RESET_LEGACY_DATABASE=1`. See [Database reset](docs/database-reset.md).
+
 ## 2026-11-09: Paws and runners run on Bun 1.4.4
 
 ### Changed
