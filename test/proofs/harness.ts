@@ -101,7 +101,8 @@ function fixtureGitHub(input: {
   noCi?: boolean;
 }): {
   client: GitHubClient;
-  ci: { pending: boolean; failed: boolean };
+  /** `dirty`: GitHub reports the pull request conflicting with main and runs no checks on it. */
+  ci: { pending: boolean; failed: boolean; dirty: boolean };
   calls: GitHubCall[];
   closed: Set<number>;
   merged: Map<number, string>;
@@ -111,7 +112,7 @@ function fixtureGitHub(input: {
   const calls: GitHubCall[] = [];
   const closed = new Set<number>();
   const merged = new Map<number, string>();
-  const ci = { pending: input.ciPending ?? false, failed: false };
+  const ci = { pending: input.ciPending ?? false, failed: false, dirty: false };
   const comments = new Map<number, { body: string; html_url: string }[]>();
   const pullJson = (number: number) => ({
     number,
@@ -126,7 +127,7 @@ function fixtureGitHub(input: {
     if (path === "/graphql") {
       const { head } = (request.body as { variables: { head: string } }).variables;
       const body = fakeMergeReadiness(head);
-      if (input.noCi) {
+      if (input.noCi || ci.dirty) {
         body.data.repository.object.statusCheckRollup.contexts.nodes = [];
       }
       if (ci.pending) {
@@ -173,7 +174,10 @@ function fixtureGitHub(input: {
     if (method === "GET" && /\/pulls\/\d+$/.test(path)) {
       const pull = pullJson(number);
       const sha = await git("-C", input.origin, "rev-parse", `refs/heads/${pull.head.ref}`);
-      return { status: 200, body: { ...pull, head: { ...pull.head, sha }, mergeable: true } };
+      const merges = ci.dirty
+        ? { mergeable: false, mergeable_state: "dirty" }
+        : { mergeable: true, mergeable_state: "clean" };
+      return { status: 200, body: { ...pull, head: { ...pull.head, sha }, ...merges } };
     }
     if (method === "PATCH" && /\/pulls\/\d+$/.test(path)) {
       if ((request.body as { state?: string }).state === "closed") closed.add(number);

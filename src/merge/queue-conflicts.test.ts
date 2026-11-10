@@ -74,6 +74,8 @@ describe("queued pull requests that conflict with main", () => {
     const front: Promise<MergeStep> = h.pass("ENG-1");
     await until(() => h.state.squashing);
     expect(queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3"]);
+    // The front's own CI wait reads its pull request; the sweep does not.
+    const frontReads = h.state.pullReads.get(1);
 
     const main = await h.moveMain("ok.txt", "main moved\n");
     h.state.lazyMergeable.set(3, 2);
@@ -92,7 +94,7 @@ describe("queued pull requests that conflict with main", () => {
     expect(h.state.pullReads.get(3)).toBe(3);
     expect(getWorkItem(h.db, "ENG-2")?.state).toBe("merge_queue");
     expect(h.state.pullReads.get(2)).toBe(1);
-    expect(h.state.pullReads.has(1)).toBe(false);
+    expect(h.state.pullReads.get(1)).toBe(frontReads);
     expect(h.bodies("thought")).toEqual([REBASE_CONFLICT_THOUGHT]);
     expect(h.github.merged).toEqual([]);
 

@@ -10,6 +10,8 @@ import {
   getConfirmedRemoteMerge,
   getWorkItem,
   listJobs,
+  listMergeQueues,
+  listOutbox,
   listRebaseReturns,
   recordPullReview,
 } from "../db";
@@ -517,3 +519,50 @@ for (const changedIdentity of [false, true]) {
     expect(getWorkItem(h.db, item.id)?.state).toBe("verifying");
   });
 }
+
+describe("advanceMerge on a conflicting pull request waiting for CI", () => {
+  async function queued() {
+    const h = await start({ settings: { order: "queue" } });
+    for (const id of ["ENG-1", "ENG-2"]) {
+      await h.addItem(id);
+      enqueueJob(h.db, {
+        queue: JOB_KIND.merge,
+        jobKey: `merge:${id}`,
+        payload: { itemId: id, head: getWorkItem(h.db, id)!.checkpoint!.wipCommit },
+        now: h.clock.now(),
+      });
+    }
+    return h;
+  }
+
+  test("a DIRTY pull request with no checks goes back to rebase and the next item moves up", async () => {
+    const h = await queued();
+    h.state.ci = pendingCi;
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    expect(await h.pass("ENG-2")).toMatchObject({ kind: "wait", reason: "ahead" });
+    // GitHub reports the front conflicting with its base and runs no CI on it.
+    h.state.mergeState = "dirty";
+    h.state.ci = () => [];
+    expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
+    expect(resumes(h)).toEqual([
+      expect.objectContaining({ handoff: REBASE_CONFLICT_INSTRUCTION, reason: "conflict" }),
+    ]);
+    expect(
+      listOutbox(h.db).filter((row) => row.idempotencyKey.startsWith("merge-conflict:")),
+    ).toHaveLength(1);
+    expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(["ENG-2"]);
+    h.state.mergeState = null;
+    h.state.ci = () => undefined;
+    expect(await h.pass("ENG-2")).toEqual({ kind: "merged" });
+  });
+
+  test("a CLEAN pull request still waits for CI", async () => {
+    const h = await queued();
+    h.state.ci = pendingCi;
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    expect(await h.pass("ENG-2")).toMatchObject({ kind: "wait", reason: "ahead" });
+    expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
+    expect(resumes(h)).toEqual([]);
+    expect(listMergeQueues(h.db).map((entry) => entry.itemId)).toEqual(["ENG-1", "ENG-2"]);
+  });
+});

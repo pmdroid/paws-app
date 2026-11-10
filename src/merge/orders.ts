@@ -435,7 +435,9 @@ export async function mergeQueueTurn(
   if (review === "required" || review === "changes_requested") {
     await store.run((q) => leaveMergeQueueSteps(q, item.id));
     // Reviewers do not approve a conflicting pull request, so the rebase does not wait for them.
-    const conflict = await reviewWaitConflict({ db, store, item, caps }, pull.number);
+    const conflict = await waitConflict({ db, store, item, caps }, pull.number, {
+      for: "a review",
+    });
     if (caps.stopped()) return undefined;
     if (conflict) return conflict;
     const body =
@@ -477,25 +479,29 @@ export async function mergeQueueTurn(
 }
 
 /**
- * A pull request waiting for a review that no longer merges into main goes back to rebase, through
- * the lane's conflict return and rebase budget; with the budget spent Paws asks. Null when it
+ * A pull request waiting for a review or for CI that no longer merges into main goes back to
+ * rebase, through the lane's conflict return and rebase budget; with the budget spent Paws asks.
+ * GitHub runs no CI on a conflicting pull request, so a CI wait would never end. Null when it
  * merges cleanly, GitHub has not computed `mergeable`, or this head already went back once.
  */
-async function reviewWaitConflict(
+export async function waitConflict(
   merge: MergeContext,
   prNumber: number,
+  waiting: { for: "a review" | "CI"; main?: string },
 ): Promise<Extract<MergeStep, { kind: "returned" | "asked" }> | null> {
   const { db, store, item, caps } = merge;
   const read = await caps.readPull(item, prNumber);
   if (caps.stopped() || read === null || !read.open || read.merges !== "conflict") return null;
   if (await store.run((q) => rebaseReturnedForSteps(q, item.id, read.head))) return null;
-  const base = await caps.fetchMain(item).catch((error: unknown) => {
-    journalCaught(error, "orders.reviewWaitConflict.fetchMain", item.id);
-    return null;
-  });
+  const base =
+    waiting.main ??
+    (await caps.fetchMain(item).catch((error: unknown) => {
+      journalCaught(error, "orders.waitConflict.fetchMain", item.id);
+      return null;
+    }));
   if (caps.stopped() || base === null) return null;
   const conflict: RebaseConflict = { base, files: null };
-  const found = `item ${item.linearIdentifier} pull request #${prNumber} at ${read.head.slice(0, 7)} conflicts with main while it waits for a review`;
+  const found = `item ${item.linearIdentifier} pull request #${prNumber} at ${read.head.slice(0, 7)} conflicts with main while it waits for ${waiting.for}`;
   if (
     sendBack(
       merge,
