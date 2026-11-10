@@ -219,8 +219,8 @@ function transitionFailure(
   return null;
 }
 
-function failure(sequence: Sequence): string | null {
-  const w = new World().seed(sequence.fixtures);
+async function failure(sequence: Sequence): Promise<string | null> {
+  const w = await new World().seed(sequence.fixtures);
   const ids = sequence.fixtures;
   try {
     for (const [step, action] of sequence.actions.entries()) {
@@ -248,14 +248,14 @@ function failure(sequence: Sequence): string | null {
   }
 }
 
-function shrink(sequence: Sequence): Sequence {
+async function shrink(sequence: Sequence): Promise<Sequence> {
   let current = sequence;
   for (let changed = true; changed;) {
     changed = false;
     for (let index = 0; index < current.actions.length; index++) {
       const actions = current.actions.filter((_, other) => other !== index);
       const candidate = { ...current, actions };
-      if (failure(candidate) !== null) {
+      if ((await failure(candidate)) !== null) {
         current = candidate;
         changed = true;
         break;
@@ -265,7 +265,7 @@ function shrink(sequence: Sequence): Sequence {
       if (current.fixtures.length === 1) break;
       const fixtures = current.fixtures.filter((_, other) => other !== index);
       const candidate = { ...current, fixtures };
-      if (failure(candidate) !== null) {
+      if ((await failure(candidate)) !== null) {
         current = candidate;
         changed = true;
       }
@@ -274,14 +274,14 @@ function shrink(sequence: Sequence): Sequence {
   return current;
 }
 
-function check(sequence: Sequence): void {
-  const found = failure(sequence);
+async function check(sequence: Sequence): Promise<void> {
+  const found = await failure(sequence);
   if (found === null) return;
-  const minimal = shrink(sequence);
+  const minimal = await shrink(sequence);
   throw new Error(
     `seed ${sequence.seed}: ${found}\nminimal reproducer (add to REPRODUCERS):\n${JSON.stringify({
       ...minimal,
-      failure: failure(minimal),
+      failure: await failure(minimal),
     })}`,
   );
 }
@@ -361,11 +361,11 @@ const REPRODUCERS: { name: string; sequence: Sequence }[] = [
 
 describe("seeded workflow sequences", () => {
   for (let seed = FIRST_SEED; seed < FIRST_SEED + SEEDS; seed++)
-    test(`seed ${seed}`, () => check(generate(seed)));
+    test(`seed ${seed}`, async () => await check(generate(seed)));
 });
 
 describe("preserved reproducers", () => {
-  for (const { name, sequence } of REPRODUCERS) test(name, () => check(sequence));
+  for (const { name, sequence } of REPRODUCERS) test(name, async () => await check(sequence));
 
   test("a generated sequence is the same for the same seed", () => {
     expect(generate(7)).toEqual(generate(7));

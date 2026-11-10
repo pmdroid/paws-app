@@ -34,6 +34,7 @@ import {
   saveCheckpoint,
   type Job,
   type WorkItemRecord,
+  sqliteDb,
 } from "../src/db";
 import { ask } from "../src/loop";
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
@@ -134,12 +135,17 @@ function identity(itemId: string, head: string, base = "base") {
   return { taskId: itemId, base, head, policyDigest: "policy", policyPath: null };
 }
 
-function accept(db: Database, id: string, now: number, head = "head"): void {
+async function accept(db: Database, id: string, now: number, head = "head"): Promise<void> {
   finishCloseoutProgress(db, id, identity(id, head), "accepted", now);
-  markCloseoutAccepted(db, id, head);
+  await markCloseoutAccepted(sqliteDb(db), id, head);
 }
 
-export function seedFixture(db: Database, fixture: Fixture, now: number, id = fixture): void {
+export async function seedFixture(
+  db: Database,
+  fixture: Fixture,
+  now: number,
+  id = fixture,
+): Promise<void> {
   insertQueuedItem(db, { id, sessionKey: `session-${id}`, now });
   bindWorkItemRepository(db, id, {
     owner: "owner",
@@ -154,9 +160,9 @@ export function seedFixture(db: Database, fixture: Fixture, now: number, id = fi
     applyWorkItemEvent(db, id, "turn_ended", { now });
     saveCheckpoint(db, id, CANDIDATE);
   };
-  const toMergeQueue = (runEnded = true) => {
+  const toMergeQueue = async (runEnded = true) => {
     toVerifying();
-    accept(db, id, now);
+    await accept(db, id, now);
     applyWorkItemEvent(db, id, "closeout_accepted", { now });
     saveCheckpoint(db, id, MERGING);
     joinMergeQueue(db, { itemId: id, repository: "owner/repo", now });
@@ -189,7 +195,7 @@ export function seedFixture(db: Database, fixture: Fixture, now: number, id = fi
       return;
     case "verifying_rejected":
       toVerifying();
-      accept(db, id, now);
+      await accept(db, id, now);
       finishCloseoutProgress(db, id, identity(id, "head", "newer"), "rejected", now + 1);
       return;
     case "recovering":
@@ -203,7 +209,7 @@ export function seedFixture(db: Database, fixture: Fixture, now: number, id = fi
       });
       return;
     case "parked_wait":
-      deferWorkItem(db, getWorkItem(db, id)!, {
+      await deferWorkItem(sqliteDb(db), getWorkItem(db, id)!, {
         retry: 0,
         delayMs: 5 * MINUTE,
         handoff: null,
@@ -213,7 +219,7 @@ export function seedFixture(db: Database, fixture: Fixture, now: number, id = fi
       });
       return;
     case "transient_retry":
-      deferWorkItem(db, getWorkItem(db, id)!, {
+      await deferWorkItem(sqliteDb(db), getWorkItem(db, id)!, {
         retry: 2,
         delayMs: 5 * MINUTE,
         handoff: null,
@@ -222,14 +228,14 @@ export function seedFixture(db: Database, fixture: Fixture, now: number, id = fi
       });
       return;
     case "merge_queue":
-      toMergeQueue();
+      await toMergeQueue();
       return;
     case "merge_inflight":
-      toMergeQueue();
+      await toMergeQueue();
       beginMergeCall(db, id, "head", now);
       return;
     case "merge_active_run":
-      toMergeQueue(false);
+      await toMergeQueue(false);
       return;
     case "paused":
       applyWorkItemEvent(db, id, "pause", { now });
@@ -240,7 +246,7 @@ export function seedFixture(db: Database, fixture: Fixture, now: number, id = fi
       });
       return;
     case "awaiting_merge_help":
-      toMergeQueue();
+      await toMergeQueue();
       finishItemJobs(db, id, now);
       ask(db, { itemId: id, runId: null, sessionId: `session-${id}` }, "ci-help", "CI failed.", {
         now,
@@ -259,7 +265,7 @@ export function seedFixture(db: Database, fixture: Fixture, now: number, id = fi
       markRun(db, run.id, "ended", now);
       return;
     case "merged":
-      toMergeQueue();
+      await toMergeQueue();
       applyWorkItemEvent(db, id, "merge_accepted", { now });
       finishItemJobs(db, id, now);
       return;
@@ -286,8 +292,8 @@ export class World {
     this.db = migratedDatabase(this.path);
   }
 
-  seed(fixtures: readonly Fixture[]): this {
-    for (const fixture of fixtures) seedFixture(this.db, fixture, this.now);
+  async seed(fixtures: readonly Fixture[]): Promise<this> {
+    for (const fixture of fixtures) await seedFixture(this.db, fixture, this.now);
     return this;
   }
 

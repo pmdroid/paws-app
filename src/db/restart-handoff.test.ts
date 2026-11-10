@@ -39,7 +39,7 @@ for (const reason of ["findings", "review", "ci"] as const) {
         policyPath: null,
       };
       finishCloseoutProgress(db, "item", identity, "accepted", 2);
-      markCloseoutAccepted(db, "item", "s");
+      await markCloseoutAccepted(sqliteDb(db), "item", "s");
       if (reason === "findings") finishCloseoutProgress(db, "item", identity, "rejected", 3);
       const body = `Address pending ${reason}`;
       const jobId = restart(db, getWorkItem(db, "item")!, { reason, body, limit: 4, now: 4 })!;
@@ -47,7 +47,13 @@ for (const reason of ["findings", "review", "ci"] as const) {
       db.run("UPDATE job SET status='dead', finished_at=5 WHERE id=?", [jobId]);
       const item = getWorkItem(db, "item")!;
       if (recovery === "transient") {
-        deferWorkItem(db, item, { retry: 1, delayMs: 1, handoff: null, message: null, now: 10 });
+        await deferWorkItem(sqliteDb(db), item, {
+          retry: 1,
+          delayMs: 1,
+          handoff: null,
+          message: null,
+          now: 10,
+        });
       } else if (recovery === "startup") {
         recoverOnStartup(db, 10);
       } else {
@@ -108,14 +114,14 @@ test("pending input follows activation order when an older job row is reused", a
   db.close();
 });
 
-function acceptedFollowUp() {
+async function acceptedFollowUp() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item" });
   beginImplementRun(db, "item", 1, checkpoint);
   applyWorkItemEvent(db, "item", "turn_ended");
   applyWorkItemEvent(db, "item", "closeout_accepted");
-  markCloseoutAccepted(db, "item", "s");
+  await markCloseoutAccepted(sqliteDb(db), "item", "s");
   const body = "Fix the failing CI checks on acme/widgets";
   const jobId = restart(db, getWorkItem(db, "item")!, {
     reason: "follow_up",
@@ -127,7 +133,7 @@ function acceptedFollowUp() {
 }
 
 test("a follow-up whose turn a clean stop aborted is carried into the recovery resume", async () => {
-  const { db, body, jobId } = acceptedFollowUp();
+  const { db, body, jobId } = await acceptedFollowUp();
   db.run("UPDATE job SET status='done', finished_at=6 WHERE id=?", [jobId]);
   recoverOnStartup(db, 10);
   expect(listJobs(db).at(-1)!.payload).toMatchObject({ handoff: body });
@@ -135,8 +141,8 @@ test("a follow-up whose turn a clean stop aborted is carried into the recovery r
   db.close();
 });
 
-test("a follow-up whose turn a crash cut off is carried into the recovery resume", () => {
-  const { db, body, jobId } = acceptedFollowUp();
+test("a follow-up whose turn a crash cut off is carried into the recovery resume", async () => {
+  const { db, body, jobId } = await acceptedFollowUp();
   db.run("UPDATE job SET status='running', locked_until=5 WHERE id=?", [jobId]);
   recoverOnStartup(db, 10);
   expect(listJobs(db).at(-1)!.payload).toMatchObject({ handoff: body });
@@ -144,7 +150,7 @@ test("a follow-up whose turn a crash cut off is carried into the recovery resume
 });
 
 test("a follow-up whose turn finished is not repeated after a restart", async () => {
-  const { db, jobId } = acceptedFollowUp();
+  const { db, jobId } = await acceptedFollowUp();
   db.run("UPDATE job SET status='done', finished_at=6 WHERE id=?", [jobId]);
   applyWorkItemEvent(db, "item", "turn_ended");
   applyWorkItemEvent(db, "item", "closeout_accepted");

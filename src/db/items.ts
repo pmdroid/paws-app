@@ -342,8 +342,8 @@ export function* listLastWorkItemEventTimesSteps(q: Q) {
   return new Map(rows.map((row) => [row.itemId, row.at!]));
 }
 
-export function listLastWorkItemEventTimes(db: Database): Map<string, number> {
-  return settled(sqliteDb(db).run(listLastWorkItemEventTimesSteps));
+export async function listLastWorkItemEventTimes(store: Db): Promise<Map<string, number>> {
+  return store.run((q) => listLastWorkItemEventTimesSteps(q));
 }
 
 /** An item's history, oldest first. `limit` keeps the newest rows. */
@@ -448,16 +448,16 @@ export function* setRecoveryAttemptsSteps(q: Q, id: string, attempts: number) {
   yield* setItemSteps(q, id, { recoveryAttempts: attempts });
 }
 
-export function setRecoveryAttempts(db: Database, id: string, attempts: number): void {
-  settled(sqliteDb(db).run((q) => setRecoveryAttemptsSteps(q, id, attempts)));
+export async function setRecoveryAttempts(store: Db, id: string, attempts: number): Promise<void> {
+  await store.run((q) => setRecoveryAttemptsSteps(q, id, attempts));
 }
 
 export function* markResumedSteps(q: Q, id: string, now: number) {
   yield* setItemSteps(q, id, { recoveryAttempts: 1, resumedAt: now });
 }
 
-export function markResumed(db: Database, id: string, now: number): void {
-  settled(sqliteDb(db).run((q) => markResumedSteps(q, id, now)));
+export async function markResumed(store: Db, id: string, now: number): Promise<void> {
+  await store.run((q) => markResumedSteps(q, id, now));
 }
 
 export function* setCurrentRunSteps(q: Q, id: string, runId: string | null) {
@@ -472,8 +472,8 @@ export function* syncClockSteps(q: Q, id: string, mono: number) {
   yield* setItemSteps(q, id, { lastMonoMs: mono });
 }
 
-export function syncClock(db: Database, id: string, mono: number): void {
-  settled(sqliteDb(db).run((q) => syncClockSteps(q, id, mono)));
+export async function syncClock(store: Db, id: string, mono: number): Promise<void> {
+  await store.run((q) => syncClockSteps(q, id, mono));
 }
 
 export type CapOutcome = {
@@ -554,8 +554,8 @@ export function* accrueAwakeSteps(
   return yield* enforceCapsSteps(q, id, stage!, now);
 }
 
-export function accrueAwake(
-  db: Database,
+export async function accrueAwake(
+  store: Db,
   id: string,
   mono: number,
   now = Date.now(),
@@ -567,24 +567,6 @@ export function accrueAwake(
    * Classifies this interval as a wait even when the job was just claimed. A slot-wait claim
    * settles the parked interval before the attempt runs.
    */
-  forcedHold?: "slot" | "ci",
-): CapOutcome {
-  const { outcome, jobReady } = settled(
-    sqliteDb(db).transaction((q) =>
-      accrueAwakeSteps(q, id, mono, now, sinceMono, liveJob, forcedHold),
-    ),
-  );
-  if (jobReady) emitJobReady(db);
-  return outcome;
-}
-
-export async function accrueAwakeAsync(
-  store: Db,
-  id: string,
-  mono: number,
-  now = Date.now(),
-  sinceMono?: number,
-  liveJob?: boolean,
   forcedHold?: "slot" | "ci",
 ): Promise<CapOutcome> {
   const { outcome, jobReady } = await store.transaction((q) =>
@@ -667,21 +649,7 @@ export function* accrueAtJobBoundarySteps(
  * Settle active time at every execution claim and end. The interval before a claim
  * stays waiting; the final stretch before an execution job ends still counts as work.
  */
-export function accrueAtJobBoundary(
-  db: Database,
-  job: BoundaryJob,
-  boundary: "claimed" | "ending",
-  mono: number,
-  now: number,
-): void {
-  if (boundaryItemId(job) === null) return;
-  const jobReady = settled(
-    sqliteDb(db).transaction((q) => accrueAtJobBoundarySteps(q, job, boundary, mono, now)),
-  );
-  if (jobReady) emitJobReady(db);
-}
-
-export async function accrueAtJobBoundaryAsync(
+export async function accrueAtJobBoundary(
   store: Db,
   job: BoundaryJob,
   boundary: "claimed" | "ending",
@@ -759,22 +727,7 @@ export function* markJobAwakeWaitSteps(
 }
 
 /** Wait bookkeeping belongs to one claim. A stale finally may clear only its own mark. */
-export function markJobAwakeWait(
-  db: Database,
-  job: Job,
-  waiting: boolean,
-  mono: number,
-  now: number,
-  reason: "ci" | "runner" | "backoff" = "ci",
-): void {
-  if (!awakeWaitItemId(job)) return;
-  const jobReady = settled(
-    sqliteDb(db).transaction((q) => markJobAwakeWaitSteps(q, job, waiting, mono, now, reason)),
-  );
-  if (jobReady) emitJobReady(db);
-}
-
-export async function markJobAwakeWaitAsync(
+export async function markJobAwakeWait(
   store: Db,
   job: Job,
   waiting: boolean,
@@ -811,12 +764,7 @@ export function* startAgentWaitSteps(
   return jobReady;
 }
 
-export function startAgentWait(db: Database, run: AgentWaitRun, mono: number, now: number): void {
-  const jobReady = settled(sqliteDb(db).transaction((q) => startAgentWaitSteps(q, run, mono, now)));
-  if (jobReady) emitJobReady(db);
-}
-
-export async function startAgentWaitAsync(
+export async function startAgentWait(
   store: Db,
   run: AgentWaitRun,
   mono: number,
@@ -861,20 +809,7 @@ export function* endAgentWaitSteps(
   return jobReady;
 }
 
-export function endAgentWait(
-  db: Database,
-  run: AgentWaitRun,
-  mono: number,
-  now: number,
-  waitedMs?: number,
-): void {
-  const jobReady = settled(
-    sqliteDb(db).transaction((q) => endAgentWaitSteps(q, run, mono, now, waitedMs)),
-  );
-  if (jobReady) emitJobReady(db);
-}
-
-export async function endAgentWaitAsync(
+export async function endAgentWait(
   store: Db,
   run: AgentWaitRun,
   mono: number,
@@ -1025,8 +960,8 @@ export function* markCloseoutAcceptedSteps(q: Q, id: string, head: string) {
   yield* setItemSteps(q, id, { acceptedHead: head });
 }
 
-export function markCloseoutAccepted(db: Database, id: string, head: string): void {
-  settled(sqliteDb(db).run((q) => markCloseoutAcceptedSteps(q, id, head)));
+export async function markCloseoutAccepted(store: Db, id: string, head: string): Promise<void> {
+  await store.run((q) => markCloseoutAcceptedSteps(q, id, head));
 }
 
 function* extendAwakeCapSteps(q: Q, id: string, stage: TimeStage, extraMs: number) {
@@ -1314,15 +1249,15 @@ export function* completeMergedItemSteps(
   return merged;
 }
 
-export function completeMergedItem(
-  db: Database,
+export async function completeMergedItem(
+  store: Db,
   input: {
     itemId: string;
     now: number;
     announce?: (item: WorkItemRecord) => void;
   },
-): WorkItemRecord | null {
-  return settled(sqliteDb(db).transaction((q) => completeMergedItemSteps(q, input)));
+): Promise<WorkItemRecord | null> {
+  return store.transaction((q) => completeMergedItemSteps(q, input));
 }
 
 function* endActiveRunSteps(q: Q, runId: string | null, now: number) {
@@ -1461,12 +1396,7 @@ export function* deferWorkItemSteps(q: Q, item: WorkItemRecord, input: DeferInpu
   return inserted;
 }
 
-export function deferWorkItem(db: Database, item: WorkItemRecord, input: DeferInput): void {
-  if (settled(sqliteDb(db).transaction((q) => deferWorkItemSteps(q, item, input))))
-    emitJobReady(db);
-}
-
-export async function deferWorkItemAsync(
+export async function deferWorkItem(
   store: Db,
   item: WorkItemRecord,
   input: DeferInput,
@@ -1503,8 +1433,8 @@ export function* reviewerFaultHoldsSteps(q: Q, reviewer: string) {
   return items;
 }
 
-export function reviewerFaultHolds(db: Database, reviewer: string): WorkItemRecord[] {
-  return settled(sqliteDb(db).run((q) => reviewerFaultHoldsSteps(q, reviewer)));
+export async function reviewerFaultHolds(store: Db, reviewer: string): Promise<WorkItemRecord[]> {
+  return store.run((q) => reviewerFaultHoldsSteps(q, reviewer));
 }
 
 export function* reviewerAlertedSinceSteps(q: Q, reviewer: string, since: number) {
@@ -1524,8 +1454,12 @@ export function* reviewerAlertedSinceSteps(q: Q, reviewer: string, since: number
   return row !== undefined;
 }
 
-export function reviewerAlertedSince(db: Database, reviewer: string, since: number): boolean {
-  return settled(sqliteDb(db).run((q) => reviewerAlertedSinceSteps(q, reviewer, since)));
+export async function reviewerAlertedSince(
+  store: Db,
+  reviewer: string,
+  since: number,
+): Promise<boolean> {
+  return store.run((q) => reviewerAlertedSinceSteps(q, reviewer, since));
 }
 
 export function* releaseReviewerFaultHoldsSteps(q: Q, itemId: string, now: number) {
@@ -1744,8 +1678,8 @@ export function* itemDelegationIdSteps(q: Q, itemId: string) {
   return row?.id ?? null;
 }
 
-export function itemDelegationId(db: Database, itemId: string): string | null {
-  return settled(sqliteDb(db).run((q) => itemDelegationIdSteps(q, itemId)));
+export async function itemDelegationId(store: Db, itemId: string): Promise<string | null> {
+  return store.run((q) => itemDelegationIdSteps(q, itemId));
 }
 
 export function* itemLinearIdentifierSteps(q: Q, itemId: string) {
@@ -1756,8 +1690,8 @@ export function* itemLinearIdentifierSteps(q: Q, itemId: string) {
   return row?.name ?? null;
 }
 
-export function itemLinearIdentifier(db: Database, itemId: string): string | null {
-  return settled(sqliteDb(db).run((q) => itemLinearIdentifierSteps(q, itemId)));
+export async function itemLinearIdentifier(store: Db, itemId: string): Promise<string | null> {
+  return store.run((q) => itemLinearIdentifierSteps(q, itemId));
 }
 
 export function* lastItemEventSteps(q: Q, itemId: string) {
@@ -1773,11 +1707,11 @@ export function* lastItemEventSteps(q: Q, itemId: string) {
   return row ?? null;
 }
 
-export function lastItemEvent(
-  db: Database,
+export async function lastItemEvent(
+  store: Db,
   itemId: string,
-): { kind: string; reason: string | null } | null {
-  return settled(sqliteDb(db).run((q) => lastItemEventSteps(q, itemId)));
+): Promise<{ kind: string; reason: string | null } | null> {
+  return store.run((q) => lastItemEventSteps(q, itemId));
 }
 
 /** The Linear session key of each of these work items that exists. */
@@ -1818,6 +1752,6 @@ export function* recordWakeSteps(q: Q, input: WakeRecord) {
   return inserted.length > 0;
 }
 
-export function recordWake(db: Database, input: WakeRecord): boolean {
-  return settled(sqliteDb(db).run((q) => recordWakeSteps(q, input)));
+export async function recordWake(store: Db, input: WakeRecord): Promise<boolean> {
+  return store.run((q) => recordWakeSteps(q, input));
 }
