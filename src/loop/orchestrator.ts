@@ -442,6 +442,7 @@ import {
   mergedPullHeads,
   readPullMerge,
   branchContains,
+  hasOpenPullOnPrefix,
   readOpenPullHead,
   readBranchWork,
   UPSTREAM_MAIN_REF,
@@ -3032,6 +3033,57 @@ export class Orchestrator {
     return this.options.remoteExecution.agentForSession(sessionId, purpose);
   }
 
+  private async repositoryBeforeSelection(item: WorkItemRecord): Promise<RepositoryBinding | null> {
+    const bound = this.repositoryForItem(item);
+    if (bound) return bound;
+    const candidates = listRepositoryCandidates(
+      this.db,
+      item.sessionKey,
+      this.options.repositories ?? [],
+    );
+    if (candidates.length === 1) return candidates[0]!;
+    if (candidates.length === 0 || !this.tracker?.issueRepositoryHints) return null;
+    const kept = getTaskLinearRead(this.db, item.id, "repository_hints") as
+      | RepositoryHints
+      | undefined;
+    const hints =
+      kept ??
+      (await linearCaller("repository-hints", () =>
+        this.tracker!.issueRepositoryHints!(item.linearIssueId, {
+          signal: this.authRecoveryController.signal,
+        }),
+      ));
+    if (kept === undefined)
+      keepTaskLinearRead(this.db, item.id, "repository_hints", hints, this.now());
+    const hinted = hintedRepository(candidates, hints);
+    return hinted && "bind" in hinted ? hinted.bind : null;
+  }
+
+  private async hasOpenPawsPull(item: WorkItemRecord): Promise<boolean> {
+    try {
+      const repository = await this.repositoryBeforeSelection(item);
+      const github = repository ? this.githubForRepository(repository) : null;
+      if (!repository || !github) return false;
+      return await hasOpenPullOnPrefix({
+        client: github.client,
+        owner: repository.owner,
+        repo: repository.repo,
+        prefix: `paws/${item.linearIdentifier.toLowerCase()}-`,
+        ...this.gitHubCredentials(github),
+        signal: AbortSignal.any([this.authRecoveryController.signal, AbortSignal.timeout(10_000)]),
+      });
+    } catch (error) {
+      journalCaught(
+        error,
+        "orchestrator.hasOpenPawsPull",
+        item.id,
+        undefined,
+        this.options.journal,
+      );
+      return false;
+    }
+  }
+
   private async resolveTaskMode(item: WorkItemRecord, handoff?: string): Promise<boolean> {
     if (getConversation(this.db, item.id).blocked)
       throw new Error("ACP process cleanup could not be verified");
@@ -3041,7 +3093,13 @@ export class Orchestrator {
     let classification = taskKey ? getTaskClassification(this.db, taskKey) : null;
     const sessionKey = item.sessionKey;
     const delegatedIssueId = this.delegationIssueId(item);
-    if (!saved && !classification && taskKey && sessionKey && delegatedIssueId)
+    if (!saved && !classification && taskKey && sessionKey && delegatedIssueId) {
+      if (await this.hasOpenPawsPull(item)) {
+        if (this.stopped(item.id) || getLinearSessionGeneration(this.db, sessionKey) !== generation)
+          return false;
+        saveTaskMode(this.db, item.id, "code", generation, false);
+        return true;
+      }
       classification = await this.taskPlanner.plan({
         taskKey,
         sessionId: sessionKey,
@@ -3061,6 +3119,7 @@ export class Orchestrator {
             signal,
           ),
       });
+    }
     if (taskKey && classification?.mode === "code" && classification.redirect) {
       await this.intakeLinearTask(this.delegationIssueId(item)!, item.sessionKey, taskKey);
       await this.dispatch();
