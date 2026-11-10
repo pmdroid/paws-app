@@ -218,6 +218,10 @@ export function listInFlightItems(db: Database): WorkItemRecord[] {
   return listWorkItemsByStates(db, IN_FLIGHT_ITEM_STATES);
 }
 
+export function* listInFlightItemsSteps(q: Q): Steps<WorkItemRecord[]> {
+  return yield* listWorkItemsByStatesSteps(q, IN_FLIGHT_ITEM_STATES);
+}
+
 /**
  * What the `work_item_event` row of a transition records beyond the edge itself. A plain
  * transition passes nothing. `restart()` passes kind `restart` with its reason and `ask()` passes
