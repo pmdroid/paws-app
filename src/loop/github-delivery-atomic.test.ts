@@ -185,11 +185,17 @@ for (const kind of ["review", "comment", "main"]) {
         import { openDatabase } from ${JSON.stringify(new URL("../db/index.ts", import.meta.url).pathname)};
         import { acceptGitHubDelivery } from ${JSON.stringify(new URL("./merge-jobs.ts", import.meta.url).pathname)};
         const db = openDatabase(${JSON.stringify(file)});
-        const run = db.run.bind(db);
-        db.run = (sql, ...args) => {
-          const result = run(sql, ...args);
-          if (sql.includes("UPDATE job SET run_at = CASE")) process.kill(process.pid, "SIGKILL");
-          return result;
+        const prepare = db.prepare.bind(db);
+        db.prepare = (sql, ...args) => {
+          const statement = prepare(sql, ...args);
+          if (!/update "job" set "run_at" = CASE/i.test(sql)) return statement;
+          const run = statement.run.bind(statement);
+          statement.run = (...values) => {
+            const result = run(...values);
+            process.kill(process.pid, "SIGKILL");
+            return result;
+          };
+          return statement;
         };
         acceptGitHubDelivery(db, ${JSON.stringify(input)}, 1000);
         process.exit(99);

@@ -7,6 +7,7 @@ import {
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { IN_FLIGHT_ITEM_STATES, type LinearCommand } from "../core";
+import { sessionHasItemInStates } from "../db";
 import type { TrackerAdapter, TrackerRequestOptions } from "./adapter";
 import { createIntakePollSource } from "./catchup";
 import type { AcceptedLinearEvent } from "./events";
@@ -244,12 +245,5 @@ function startPoller(options: {
 
 /** The session already has an item running, verifying, waiting for an answer or merging. */
 export function sessionHasItemInFlight(db: Database, sessionId: string): boolean {
-  return (
-    db
-      .query(
-        `SELECT 1 FROM work_item WHERE session_key = ?
-         AND state IN (SELECT value FROM json_each(?)) LIMIT 1`,
-      )
-      .get(sessionId, JSON.stringify(IN_FLIGHT_ITEM_STATES)) !== null
-  );
+  return sessionHasItemInStates(db, sessionId, IN_FLIGHT_ITEM_STATES);
 }
