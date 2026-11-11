@@ -115,7 +115,7 @@ export async function probeSchedulerRuntime(
         getLinearSession(db, "session")?.activeItemId === null,
       { tick: tick?.id, fireCount: getJob(db, firstTick.id)?.fireCount, events, admission },
     );
-    jobs.register(JOB_KIND.start, (job) => {
+    jobs.register(JOB_KIND.start, async (job) => {
       const itemId = (job.payload as { itemId: string }).itemId;
       activateLinearItem(db, "session", itemId);
       applyWorkItemEvent(db, itemId, "dispatched");

@@ -168,7 +168,7 @@ async function fixture({
     }),
   };
   ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
-  const install = () =>
+  const install = async () =>
     recordLinearInstallation(db, {
       sessionId: "session",
       organizationId: "org",
@@ -177,7 +177,7 @@ async function fixture({
       teamId: "team",
       observedAtMs: clock.now(),
     });
-  if (installed) install();
+  if (installed) await install();
   let failedSessionReads = 0;
   let sessionReads = 0;
   let issueReads = 0;
@@ -781,7 +781,7 @@ test("a delegation that arrives before its installation is recorded is accepted 
   try {
     linkMember(f);
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "retry" });
-    f.install();
+    await f.install();
     expect(await f.assignments.authorize(f.event)).toEqual({ outcome: "accepted" });
   } finally {
     await f.close();

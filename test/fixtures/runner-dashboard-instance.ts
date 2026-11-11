@@ -113,20 +113,19 @@ syncWorkspaceMember(paws.db, {
   teamIds: ["team"],
   now,
 });
-const sessions = Object.fromEntries(
-  [
-    ["owner", owner, now],
-    ["member", member, now],
-    ["stale", owner, now - 2 * 24 * 60 * 60_000],
-  ].map(([name, userId, authenticatedAt]) => {
-    const issued = issueWorkspaceSession(paws.db, {
-      userId: String(userId),
-      workspaceId: workspace.id,
-      now: Number(authenticatedAt),
-    });
-    return [name, issued.token];
-  }),
-);
+const sessions: Record<string, string> = {};
+for (const [name, userId, authenticatedAt] of [
+  ["owner", owner, now],
+  ["member", member, now],
+  ["stale", owner, now - 2 * 24 * 60 * 60_000],
+] as const) {
+  const issued = issueWorkspaceSession(paws.db, {
+    userId,
+    workspaceId: workspace.id,
+    now: authenticatedAt,
+  });
+  sessions[name] = issued.token;
+}
 const key = await createRunnerKey(join(root, "client"));
 console.log(
   JSON.stringify({

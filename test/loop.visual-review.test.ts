@@ -377,7 +377,7 @@ test("Request changes from the run page hands the marked screenshot and note to 
       await f.orchestrator.requestVisualReviewChanges({
         ...request,
         answeredBy: "someone-else",
-        actor: f.actor("someone-else"),
+        actor: await f.actor("someone-else"),
       }),
     ).toBe("forbidden");
     expect((await getQuestion(sqliteDb(f.db), open.id))?.status).toBe("open");
@@ -387,7 +387,7 @@ test("Request changes from the run page hands the marked screenshot and note to 
       await f.orchestrator.requestVisualReviewChanges({
         ...request,
         answeredBy: "delegator-1",
-        actor: f.actor("delegator-1"),
+        actor: await f.actor("delegator-1"),
       }),
     ).toBe("answered");
     expect(await getVisualReview(sqliteDb(f.db), open.id)).toMatchObject({
@@ -400,7 +400,7 @@ test("Request changes from the run page hands the marked screenshot and note to 
       await f.orchestrator.requestVisualReviewChanges({
         ...request,
         answeredBy: "delegator-1",
-        actor: f.actor("delegator-1"),
+        actor: await f.actor("delegator-1"),
       }),
     ).toBe("rejected");
 
@@ -1307,7 +1307,7 @@ async function pausedForReview(
       return tracker.questions.filter((question) => question.body.startsWith(REMINDED)).length;
     },
     /** The signed-in Paws account of Linear user `by`, for the Audit history row. */
-    actor(by: string) {
+    async actor(by: string) {
       const userId =
         db
           .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id = ?")
@@ -1329,7 +1329,7 @@ async function pausedForReview(
         decision: "approve",
         note: null,
         answeredBy: by,
-        actor: this.actor(by),
+        actor: await this.actor(by),
       });
     },
     notes(body: string) {

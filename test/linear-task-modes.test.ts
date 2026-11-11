@@ -135,30 +135,41 @@ test("answer mode and full prepared response survive reopen as a terminal comple
   }
 });
 
-test.each(["code", "artifact"] as const)("%s cannot complete at the answer boundary", (mode) => {
-  const db = tempDb();
-  try {
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    applyWorkItemEvent(db, item.id, "dispatched");
-    saveTaskMode(db, item.id, mode);
-    expect(() => completeAnswerTask(db, item.id, "Done")).toThrow("Only answer tasks");
-    expect(getWorkItem(db, item.id)?.state).toBe("running");
-    expect(listOutbox(db)).toEqual([]);
-    expect(() => saveTaskMode(db, item.id, "answer")).toThrow("already selected");
-  } finally {
-    db.close();
-  }
-});
+test.each(["code", "artifact"] as const)(
+  "%s cannot complete at the answer boundary",
+  async (mode) => {
+    const db = tempDb();
+    try {
+      const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+      applyWorkItemEvent(db, item.id, "dispatched");
+      saveTaskMode(db, item.id, mode);
+      await expect((async () => completeAnswerTask(db, item.id, "Done"))()).rejects.toThrow(
+        "Only answer tasks",
+      );
+      expect(getWorkItem(db, item.id)?.state).toBe("running");
+      expect(listOutbox(db)).toEqual([]);
+      await expect((async () => saveTaskMode(db, item.id, "answer"))()).rejects.toThrow(
+        "already selected",
+      );
+    } finally {
+      db.close();
+    }
+  },
+);
 
-test("Stop and empty responses cannot complete an answer task", () => {
+test("Stop and empty responses cannot complete an answer task", async () => {
   const db = tempDb();
   try {
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     applyWorkItemEvent(db, item.id, "dispatched");
     saveTaskMode(db, item.id, "answer");
-    expect(() => completeAnswerTask(db, item.id, " ")).toThrow("prepared response");
+    await expect((async () => completeAnswerTask(db, item.id, " "))()).rejects.toThrow(
+      "prepared response",
+    );
     applyWorkItemEvent(db, item.id, "cancel");
-    expect(() => completeAnswerTask(db, item.id, "Done")).toThrow("no longer running");
+    await expect((async () => completeAnswerTask(db, item.id, "Done"))()).rejects.toThrow(
+      "no longer running",
+    );
     expect(listOutbox(db)).toEqual([]);
   } finally {
     db.close();

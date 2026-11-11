@@ -121,13 +121,15 @@ test("session ownership is immutable and old team observations cannot move the p
     { organizationId: "different" },
     { appUserId: "different" },
   ])
-    expect(() => session(db, "session", extra)).toThrow("ownership changed");
+    await expect((async () => session(db, "session", extra))()).rejects.toThrow(
+      "ownership changed",
+    );
   await teams(db, "remove", 20, [], ["team"]);
   session(db, "session", { teamId: "new-team", observedAtMs: 9 });
   expect(getLinearSessionAccess(db, "session")).toBe("team_removed");
-  expect(() => session(db, "session", { teamId: "new-team", observedAtMs: 10 })).toThrow(
-    "observations conflict",
-  );
+  await expect(
+    (async () => session(db, "session", { teamId: "new-team", observedAtMs: 10 }))(),
+  ).rejects.toThrow("observations conflict");
   session(db, "session", { teamId: "new-team", observedAtMs: 21 });
   expect(getLinearSessionAccess(db, "session")).toBe("allowed");
 });
@@ -144,8 +146,12 @@ test("incomplete installation provenance fails closed and invalid changes roll b
   expect(await teams(db, "invalid", 20, [], ["team"])).toEqual([]);
   session(db);
   expect(getLinearSessionAccess(db, "session")).toBe("team_removed");
-  expect(() => session(db, "broken", { observedAtMs: NaN })).toThrow("timestamp");
-  expect(() => session(db, "broken", { appUserId: " " })).toThrow("identity");
+  await expect((async () => session(db, "broken", { observedAtMs: NaN }))()).rejects.toThrow(
+    "timestamp",
+  );
+  await expect((async () => session(db, "broken", { appUserId: " " }))()).rejects.toThrow(
+    "identity",
+  );
 });
 
 test("reopening SQLite preserves removal, revocation and processed event identities", async () => {

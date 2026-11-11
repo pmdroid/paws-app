@@ -91,7 +91,9 @@ test("identity migration preserves existing rows, run foreign keys and original 
     expect(getLinearSession(db, "session")?.delegationId).toBe("epic");
     expect(getLinearSession(db, "session")?.activeItemId).toBe("running");
     activateLinearItem(db, "session", "running");
-    expect(() => activateLinearItem(db, "session", "queued")).toThrow("still active");
+    await expect((async () => activateLinearItem(db, "session", "queued"))()).rejects.toThrow(
+      "still active",
+    );
     db.run("UPDATE work_item SET state = 'failed' WHERE id = 'running'");
     activateLinearItem(db, "session", "queued");
     expect(getLinearSession(db, "session")?.activeItemId).toBe("queued");
@@ -155,11 +157,15 @@ test("session ownership and active child routing remain separate from shared iss
     activateLinearItem(db, "second", second.items[0]!.id);
     expect(await delegatedLinearUserId(sqliteDb(db), first.items[0]!.id)).toBe("human");
     expect(await delegatedLinearUserId(sqliteDb(db), second.items[0]!.id)).toBeNull();
-    expect(() => ensureLinearSession(db, { sessionId: "first", organizationId: "other" })).toThrow(
-      "ownership changed",
-    );
-    expect(() => bindLinearSessionTask(db, "second", first.delegation.id)).toThrow();
-    expect(() => activateLinearItem(db, "second", first.items[0]!.id)).toThrow("route changed");
+    await expect(
+      (async () => ensureLinearSession(db, { sessionId: "first", organizationId: "other" }))(),
+    ).rejects.toThrow("ownership changed");
+    await expect(
+      (async () => bindLinearSessionTask(db, "second", first.delegation.id))(),
+    ).rejects.toThrow();
+    await expect(
+      (async () => activateLinearItem(db, "second", first.items[0]!.id))(),
+    ).rejects.toThrow("route changed");
     expect(getWorkItem(db, first.items[0]!.id)?.sessionKey).toBe("first");
   } finally {
     db.close();

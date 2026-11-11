@@ -118,7 +118,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
       lifecycle: opened.issueLifecycle,
       oauthClientId: "client",
       appUserId: "app",
-      stopSession: () => {
+      stopSession: async () => {
         expect(getLinearSession(db, "session")?.stoppedAt).not.toBeNull();
       },
       interruptSession: async (sessionId) => {

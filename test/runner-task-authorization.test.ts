@@ -56,17 +56,14 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     administrator: ["team-a", "team-b"],
     nobody: [],
   };
-  const users = Object.fromEntries(
-    Object.keys(teams).map((name) => [
+  const users = {} as Record<keyof typeof teams, string>;
+  for (const name of Object.keys(teams))
+    users[name] = putWorkspaceUser(db, {
+      id: workspaceId(),
+      linearUserId: name,
       name,
-      putWorkspaceUser(db, {
-        id: workspaceId(),
-        linearUserId: name,
-        name,
-        email: `${name}@example.invalid`,
-      }),
-    ]),
-  ) as Record<keyof typeof teams, string>;
+      email: `${name}@example.invalid`,
+    });
   const workspace = { id: workspaceId(), organizationId: "org", name: "Workspace" };
   await consumeWorkspaceBootstrap(sqliteDb(db), {
     ...workspace,
@@ -180,9 +177,8 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
   const cookie = (name: string) => ({
     cookie: `${WORKSPACE_COOKIE}=${issueWorkspaceSession(db, { workspaceId: workspace.id, userId: users[name]!, now }).token}`,
   });
-  const sessions = Object.fromEntries(
-    ["member", "administrator", "nobody"].map((name) => [name, cookie(name)]),
-  );
+  const sessions: Record<string, { cookie: string }> = {};
+  for (const name of ["member", "administrator", "nobody"]) sessions[name] = cookie(name);
   const list = async (name: string) => {
     const response = await fetch(`${origin}/api/runners`, { headers: sessions[name] });
     const text = await response.text();

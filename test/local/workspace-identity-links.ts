@@ -33,14 +33,16 @@ export async function probeWorkspaceIdentityLinks(
   const db = openDatabase(join(root, "identity-links.sqlite"));
   migrate(db);
   const now = Date.now();
-  const ids = Array.from({ length: 10 }, (_, i) =>
-    putWorkspaceUser(db, {
-      id: workspaceId(now + i),
-      linearUserId: `linear-${i}`,
-      name: `Member ${i}`,
-      email: `member${i}@example.invalid`,
-    }),
-  );
+  const ids: string[] = [];
+  for (let i = 0; i < 10; i++)
+    ids.push(
+      putWorkspaceUser(db, {
+        id: workspaceId(now + i),
+        linearUserId: `linear-${i}`,
+        name: `Member ${i}`,
+        email: `member${i}@example.invalid`,
+      }),
+    );
   const workspace = { id: workspaceId(), organizationId: "org", name: "Workspace" };
   await consumeWorkspaceBootstrap(sqliteDb(db), {
     ...workspace,
@@ -282,13 +284,14 @@ export async function probeWorkspaceIdentityLinks(
       configurable: true,
       get() {
         restore();
-        changeWorkspaceRole(concurrent, {
-          workspaceId: workspace.id,
-          actorId: ids[0]!,
-          userId: ids[1]!,
-          role: "member",
-          now: Date.now(),
-        });
+        void (async () =>
+          changeWorkspaceRole(concurrent, {
+            workspaceId: workspace.id,
+            actorId: ids[0]!,
+            userId: ids[1]!,
+            role: "member",
+            now: Date.now(),
+          }))();
         return db.inTransaction;
       },
     });

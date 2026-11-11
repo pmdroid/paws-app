@@ -79,12 +79,9 @@ async function fixture() {
     PAWS_GITHUB_CLIENT_SECRET: "scripted-client-secret",
     GITHUB_APP_PRIVATE_KEY_PATH: join(home, "key.pem"),
   };
-  const sessions = Object.fromEntries(
-    ["owner", "admin", "member"].map((role) => [
-      role,
-      issueWorkspaceSession(db, { workspaceId: "ws", userId: role, now }),
-    ]),
-  );
+  const sessions: Record<string, ReturnType<typeof issueWorkspaceSession>> = {};
+  for (const role of ["owner", "admin", "member"])
+    sessions[role] = issueWorkspaceSession(db, { workspaceId: "ws", userId: role, now });
   const calls: { path: string; body: string }[] = [];
   let hold: Promise<void> | undefined;
   let beforeInstallation: (() => Promise<void>) | undefined;

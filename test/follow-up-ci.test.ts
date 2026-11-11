@@ -277,7 +277,7 @@ test("a follow-up whose failing check has no readable log names the check and sa
 test("a head that moves during the CI read attaches no stale CI facts", async () => {
   const f = await waitingTask({
     ci: "failed",
-    onCiRead: (db, itemId) =>
+    onCiRead: async (db, itemId) =>
       recordItemBranchState(db, {
         itemId,
         runId: getWorkItem(db, itemId)!.currentRunId!,

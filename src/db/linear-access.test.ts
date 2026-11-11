@@ -25,13 +25,14 @@ test("a session read naming the team fills a teamless webhook observed in the sa
   }
 });
 
-test("two different teams observed in the same millisecond still conflict", () => {
+test("two different teams observed in the same millisecond still conflict", async () => {
   const db = database();
   try {
     recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: "a", observedAtMs: 5 });
-    expect(() =>
-      recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: "b", observedAtMs: 5 }),
-    ).toThrow("Linear session team observations conflict");
+    await expect(
+      (async () =>
+        recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: "b", observedAtMs: 5 }))(),
+    ).rejects.toThrow("Linear session team observations conflict");
   } finally {
     db.close();
   }

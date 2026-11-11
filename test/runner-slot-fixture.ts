@@ -47,7 +47,7 @@ export async function workspaceWithRunners(db: Database) {
     await recordRunnerRepositories(sqliteDb(db), id, repositories, NOW);
     return id;
   };
-  const queue = (id: string) => {
+  const queue = async (id: string) => {
     const [owner, repo] = REPOSITORY.split("/") as [string, string];
     const sessionKey = `session-${id}`;
     insertQueuedItem(db, { id, now: NOW, sessionKey });

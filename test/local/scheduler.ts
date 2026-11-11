@@ -504,8 +504,8 @@ export async function probeScheduler(
       assert.equal(selected.length, ids.length);
       activateLinearItem(db, sessionId, selected[0]!);
       applyWorkItemEvent(db, selected[0]!, "dispatched");
-      assert.throws(
-        () => activateLinearItem(db, sessionId, selected[1]!),
+      await assert.rejects(
+        (async () => activateLinearItem(db, sessionId, selected[1]!))(),
         /Previous Linear task is still active/,
       );
     }

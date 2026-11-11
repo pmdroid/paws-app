@@ -85,7 +85,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
     authenticatedAt: clock.now(),
     teamIds: [],
   });
-  const person = (name: string, email: string, active = true) => {
+  const person = async (name: string, email: string, active = true) => {
     const userId = putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `vm-${email}`,
@@ -102,7 +102,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
     });
     return principal(userId, "member");
   };
-  const member = person("Ada Lovelace", "ada@example.invalid");
+  const member = await person("Ada Lovelace", "ada@example.invalid");
   const admin = principal(ownerUserId, "admin");
   const control = createRunnerControl({
     db,
@@ -171,11 +171,11 @@ describe("member VM", () => {
     const again = await startMemberVm(sqliteDb(f.db), { ...f.member, now: f.clock.now() });
     expect(again.id).toBe(first.id);
     expect(openJobs(f.db)).toHaveLength(1);
-    const inactive = f.person("Watcher", "watch@example.invalid", false);
+    const inactive = await f.person("Watcher", "watch@example.invalid", false);
     await expect(startMemberVm(sqliteDb(f.db), inactive)).rejects.toThrow(
       /Active workspace membership/,
     );
-    const namesake = f.person("Ada Lovelace", "ada2@example.invalid");
+    const namesake = await f.person("Ada Lovelace", "ada2@example.invalid");
     expect((await startMemberVm(sqliteDb(f.db), namesake)).vmName).toBe("ada-lovelace-paws-2");
   });
 

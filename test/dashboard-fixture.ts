@@ -146,9 +146,9 @@ export async function startDashboardFixture(options: { linearUsage?: () => Linea
         .replaceAll("{run}", runs["PAS-1"]!)
         .replaceAll("{evidence}", evidence["PAS-1"]!)
         .replaceAll("{hidden-evidence}", evidence["PAS-2"]!),
-    revoke() {
+    async revoke() {
       teamIds = ["other-team"];
-      sync();
+      await sync();
     },
     async close() {
       await server.stop(true);

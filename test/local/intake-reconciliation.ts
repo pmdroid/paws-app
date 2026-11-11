@@ -9,7 +9,7 @@ import {
   migrate,
   openDatabase,
   recordLinearInstallation,
-  saveTaskMode,
+  saveTaskModeSteps,
   sqliteDb,
 } from "../../src/db";
 import {
@@ -100,11 +100,11 @@ export async function probeEpicReconciliation(root: string) {
       db,
       tracker,
       lifecycle,
-      *onChanges(_q, changes) {
+      *onChanges(q, changes) {
         yield* [];
         assert(db.inTransaction);
         if (fail) throw new Error("Injected canonical effect failure");
-        for (const id of changes.addedItemIds) saveTaskMode(db, id, "code", 0, true);
+        for (const id of changes.addedItemIds) yield* saveTaskModeSteps(q, id, "code", 0, true);
         for (const id of [...changes.removedItemIds, ...changes.canceledItemIds]) {
           const row = db
             .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id=?")
@@ -168,7 +168,7 @@ export async function probeEpicReconciliation(root: string) {
       db,
       tracker,
       lifecycle,
-      *onChanges(_q, changes) {
+      *onChanges(q, changes) {
         yield* [];
         interruptedEffects = structuredClone(changes);
       },
@@ -189,7 +189,7 @@ export async function probeEpicReconciliation(root: string) {
         db: recoveredDb,
         tracker,
         lifecycle,
-        *onChanges(_q, changes) {
+        *onChanges(q, changes) {
           yield* [];
           recoveredEffects = structuredClone(changes);
         },
@@ -389,7 +389,7 @@ export async function probeEpicReconciliation(root: string) {
       db,
       tracker,
       lifecycle,
-      *onChanges(_q, changes) {
+      *onChanges(q, changes) {
         yield* [];
         for (const id of changes.removedItemIds) applyWorkItemEvent(db, id, "cancel");
       },

@@ -112,7 +112,7 @@ async function replicas() {
   await first.work.heartbeat(runnerId, 1);
 
   let sequence = 0;
-  const item = () => {
+  const item = async () => {
     const id = `acme-${++sequence}`;
     const sessionId = `acme-session-${sequence}`;
     const record = insertQueuedItem(db, { id, now: clock, sessionKey: sessionId });
@@ -136,7 +136,7 @@ async function replicas() {
   };
   const prepare = (
     on: ReturnType<typeof instance>,
-    target: ReturnType<typeof item>,
+    target: Awaited<ReturnType<typeof item>>,
     signal: AbortSignal,
   ) => {
     const worktreePath = join(root, target.id);
@@ -188,11 +188,11 @@ test("two instances placing on a one-slot runner at once: only one wins", async 
   try {
     const outcomes = await Promise.allSettled([
       Promise.race([
-        fixture.prepare(fixture.first, fixture.item(), stop.signal),
+        fixture.prepare(fixture.first, await fixture.item(), stop.signal),
         Bun.sleep(500).then(() => "placed"),
       ]),
       Promise.race([
-        fixture.prepare(fixture.second, fixture.item(), stop.signal),
+        fixture.prepare(fixture.second, await fixture.item(), stop.signal),
         Bun.sleep(500).then(() => "placed"),
       ]),
     ]);
@@ -220,12 +220,12 @@ test("a crashed instance's reservation expires after two minutes and frees the s
   const fixture = await replicas();
   const stop = new AbortController();
   try {
-    const crashed = fixture.item();
+    const crashed = await fixture.item();
     fixture.db.run(
       "INSERT INTO runner_reservation(run_id,runner_id,instance_id,expires_at) VALUES(?,?,'acme-crashed',?)",
       [crashed.runId, fixture.runnerId, fixture.now() + RUNNER_RESERVATION_MS],
     );
-    const waiting = fixture.item();
+    const waiting = await fixture.item();
     await expect(fixture.prepare(fixture.second, waiting, stop.signal)).rejects.toBeInstanceOf(
       RunnerCapacityWait,
     );

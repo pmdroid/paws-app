@@ -154,17 +154,12 @@ const person = (name: string, role: "member" | "admin") => {
 };
 const member = person("Ada Lovelace", "member");
 const admin = person("Alan Turing", "admin");
-const sessions = Object.fromEntries(
-  (
-    [
-      ["member", member],
-      ["admin", admin],
-    ] as const
-  ).map(([name, userId]) => [
-    name,
-    issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now }).token,
-  ]),
-);
+const sessions: Record<string, string> = {};
+for (const [name, userId] of [
+  ["member", member],
+  ["admin", admin],
+] as const)
+  sessions[name] = issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now }).token;
 console.log(JSON.stringify({ origin, cookie: WORKSPACE_COOKIE, sessions, member }));
 
 const lines = createInterface({ input: process.stdin });

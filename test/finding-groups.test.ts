@@ -12,6 +12,7 @@ import {
   JobLoop,
   sqliteDb,
   recoverFindingGroupRuns,
+  recordLinearInstallation,
 } from "../src/db";
 import {
   createFindingGrouping,
@@ -22,6 +23,7 @@ import {
 } from "../src/finding-groups";
 import { createFakeFindingIssueAdapter } from "../src/linear";
 import { handleFindingGroupsRequest } from "../src/dashboard";
+import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 import { tempDb } from "./helpers";
 
 const epoch = Date.parse("2026-10-28T06:00:00Z");
@@ -342,8 +344,6 @@ test("dismissal requires a reason, observers are denied and only admins can run 
 
 test("group actions require the workspace CSRF token and same origin", async () => {
   const { startServer } = await import("../src/server");
-  const { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } =
-    await import("../src/workspace");
   const f = await seed();
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;
@@ -718,7 +718,6 @@ test("unchanged runs record why they skipped without reading Linear or spending 
 });
 
 test("admin grouping covers findings reported by teams outside that admin's membership list", async () => {
-  const { recordLinearInstallation } = await import("../src/db");
   const { workspaceGroupingSources } = await import("../src/finding-groups");
   const f = await seed();
   try {
@@ -774,7 +773,6 @@ test("admin grouping covers findings reported by teams outside that admin's memb
 });
 
 test("grouping authority is an admin who owns a runner, not an earlier admin without one", async () => {
-  const { recordLinearInstallation } = await import("../src/db");
   const { groupingAuthorityUser, workspaceGroupingSources } = await import("../src/finding-groups");
   const f = await seed();
   try {

@@ -55,18 +55,18 @@ test.each(["cancelled", "merged"] as const)(
   },
 );
 
-test("replayed confirmation preserves its original observation and rejects conflicting PR history", () => {
+test("replayed confirmation preserves its original observation and rejects conflicting PR history", async () => {
   const db = tempDb();
   try {
     insertQueuedItem(db, { id: "item" });
     recordConfirmedRemoteMerge(db, fact());
     expect(recordConfirmedRemoteMerge(db, { ...fact(), confirmedAt: 300 })).toEqual(fact());
-    expect(() => recordConfirmedRemoteMerge(db, { ...fact(), pullNumber: 43 })).toThrow(
-      "conflicts",
-    );
-    expect(() => recordConfirmedRemoteMerge(db, { ...fact(), mergeSha: "b".repeat(40) })).toThrow(
-      "conflicts",
-    );
+    await expect(
+      (async () => recordConfirmedRemoteMerge(db, { ...fact(), pullNumber: 43 }))(),
+    ).rejects.toThrow("conflicts");
+    await expect(
+      (async () => recordConfirmedRemoteMerge(db, { ...fact(), mergeSha: "b".repeat(40) }))(),
+    ).rejects.toThrow("conflicts");
     expect(getConfirmedRemoteMerge(db, "item")).toEqual(fact());
     expect(getWorkItem(db, "item")?.state).toBe("queued");
   } finally {
@@ -88,7 +88,7 @@ test("confirmed success without a reported merge SHA retains the PR identity wit
   }
 });
 
-test("a failed fact write leaves terminal task history and earlier confirmed merges untouched", () => {
+test("a failed fact write leaves terminal task history and earlier confirmed merges untouched", async () => {
   const db = tempDb();
   try {
     insertQueuedItem(db, { id: "item" });
@@ -97,7 +97,9 @@ test("a failed fact write leaves terminal task history and earlier confirmed mer
     applyWorkItemEvent(db, "second", "cancel");
     db.exec(`CREATE TRIGGER deny_fact BEFORE INSERT ON remote_merge_fact
              WHEN NEW.item_id = 'second' BEGIN SELECT RAISE(ABORT, 'storage failure'); END`);
-    expect(() => recordConfirmedRemoteMerge(db, fact("second"))).toThrow("storage failure");
+    await expect((async () => recordConfirmedRemoteMerge(db, fact("second")))()).rejects.toThrow(
+      "storage failure",
+    );
     expect(getWorkItem(db, "second")?.state).toBe("cancelled");
     expect(getConfirmedRemoteMerge(db, "second")).toBeNull();
     expect(getConfirmedRemoteMerge(db, "item")).toEqual(fact());

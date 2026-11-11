@@ -27,22 +27,32 @@ test("only a newer accepted turn can change a non-code task outcome and code sta
     ensureLinearSession(db, { sessionId: "session" });
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     applyWorkItemEvent(db, item.id, "dispatched");
-    expect(() => selectTaskModeForTurn(db, item.id, "answer", 1)).toThrow("changed");
+    await expect((async () => selectTaskModeForTurn(db, item.id, "answer", 1))()).rejects.toThrow(
+      "changed",
+    );
     const first = await advanceLinearSessionGeneration(sqliteDb(db), "session");
-    expect(() => selectTaskModeForTurn(db, item.id, "answer", first)).toThrow("not been selected");
+    await expect(
+      (async () => selectTaskModeForTurn(db, item.id, "answer", first))(),
+    ).rejects.toThrow("not been selected");
     saveTaskMode(db, item.id, "answer", first);
-    expect(() => selectTaskModeForTurn(db, item.id, "artifact", first)).toThrow("newer accepted");
+    await expect(
+      (async () => selectTaskModeForTurn(db, item.id, "artifact", first))(),
+    ).rejects.toThrow("newer accepted");
     const second = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     expect(selectTaskModeForTurn(db, item.id, "artifact", second)).toBe("artifact");
     expect(await getTaskModeGeneration(sqliteDb(db), item.id)).toBe(second);
-    expect(() => selectTaskModeForTurn(db, item.id, "answer", first)).toThrow("changed");
+    await expect(
+      (async () => selectTaskModeForTurn(db, item.id, "answer", first))(),
+    ).rejects.toThrow("changed");
     const third = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     expect(selectTaskModeForTurn(db, item.id, "code", third)).toBe("code");
     const fourth = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     expect(selectTaskModeForTurn(db, item.id, "answer", fourth)).toBe("code");
     expect(getTaskMode(db, item.id)).toBe("code");
     applyWorkItemEvent(db, item.id, "cancel");
-    expect(() => selectTaskModeForTurn(db, item.id, "answer", fourth)).toThrow("changed");
+    await expect(
+      (async () => selectTaskModeForTurn(db, item.id, "answer", fourth))(),
+    ).rejects.toThrow("changed");
   } finally {
     db.close();
   }
@@ -55,7 +65,9 @@ test("artifact completion requires uploaded deliverables and survives database r
   const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
   const run = beginImplementRun(db, item.id, 1).run;
   saveTaskMode(db, item.id, "artifact");
-  expect(() => completeArtifactTask(db, item.id, "Done")).toThrow("uploaded deliverable");
+  await expect((async () => completeArtifactTask(db, item.id, "Done"))()).rejects.toThrow(
+    "uploaded deliverable",
+  );
   await saveArtifact(
     sqliteDb(db),
     {
@@ -72,9 +84,13 @@ test("artifact completion requires uploaded deliverables and survives database r
     },
     2,
   );
-  expect(() => completeArtifactTask(db, item.id, "Done")).toThrow("uploaded deliverable");
+  await expect((async () => completeArtifactTask(db, item.id, "Done"))()).rejects.toThrow(
+    "uploaded deliverable",
+  );
   await markArtifact(sqliteDb(db), "artifact", null);
-  expect(() => completeArtifactTask(db, item.id, "Done")).toThrow("uploaded deliverable");
+  await expect((async () => completeArtifactTask(db, item.id, "Done"))()).rejects.toThrow(
+    "uploaded deliverable",
+  );
   await markArtifact(sqliteDb(db), "artifact", "https://uploads.linear.app/report.txt");
   completeArtifactTask(db, item.id, "Here is the complete report.", 3);
   db.close();
@@ -85,7 +101,9 @@ test("artifact completion requires uploaded deliverables and survives database r
       { sessionId: "session", kind: "response", body: "Here is the complete report." },
       { itemId: item.id, linearIssueId: item.linearIssueId, stateType: "completed" },
     ]);
-    expect(() => completeArtifactTask(restored, item.id, "Duplicate")).toThrow("no longer running");
+    await expect(
+      (async () => completeArtifactTask(restored, item.id, "Duplicate"))(),
+    ).rejects.toThrow("no longer running");
     expect(listOutbox(restored, "session")).toHaveLength(2);
   } finally {
     restored.close();

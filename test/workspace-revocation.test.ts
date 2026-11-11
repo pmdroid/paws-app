@@ -132,9 +132,10 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     });
     expect(workspaceMemberUsable(workspaceMember(db, "workspace", "member"))).toBe(false);
     expect(await listUserWorkspaces(sqliteDb(db), "member")).toEqual([]);
-    expect(() =>
-      issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }),
-    ).toThrow(WORKSPACE_REVOKED_SIGN_IN);
+    await expect(
+      (async () =>
+        issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }))(),
+    ).rejects.toThrow(WORKSPACE_REVOKED_SIGN_IN);
     expect(
       requestWorkspaceSession(
         db,

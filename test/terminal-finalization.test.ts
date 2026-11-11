@@ -203,16 +203,16 @@ test("a merge result for a cancelled, superseded or unconfirmed task changes not
   expect(announced).toEqual([]);
 });
 
-test("an answer from a superseded run cannot complete the task", () => {
+test("an answer from a superseded run cannot complete the task", async () => {
   const db = tempDb();
   databases.push(db);
   const { item, run, jobId } = runningTask(db);
   saveTaskMode(db, item.id, "answer");
   const next = insertRun(db, { itemId: item.id, now: 2 });
   setCurrentRun(db, item.id, next.id);
-  expect(() => completeAnswerTask(db, item.id, "Stale answer.", 3, { runId: run.id })).toThrow(
-    "no longer running",
-  );
+  await expect(
+    (async () => completeAnswerTask(db, item.id, "Stale answer.", 3, { runId: run.id }))(),
+  ).rejects.toThrow("no longer running");
   expect(getWorkItem(db, item.id)?.state).toBe("running");
   let announced = 0;
   completeAnswerTask(db, item.id, "The total is 42.", 4, {
@@ -225,19 +225,20 @@ test("an answer from a superseded run cannot complete the task", () => {
   expect(announced).toBe(1);
 });
 
-test("a fault in the answer's session update rolls the completion back", () => {
+test("a fault in the answer's session update rolls the completion back", async () => {
   const db = tempDb();
   databases.push(db);
   const { item, run } = runningTask(db);
   saveTaskMode(db, item.id, "answer");
-  expect(() =>
-    completeAnswerTask(db, item.id, "The total is 42.", 2, {
-      runId: run.id,
-      announce: () => {
-        throw new Error("session update failed");
-      },
-    }),
-  ).toThrow("session update failed");
+  await expect(
+    (async () =>
+      completeAnswerTask(db, item.id, "The total is 42.", 2, {
+        runId: run.id,
+        announce: () => {
+          throw new Error("session update failed");
+        },
+      }))(),
+  ).rejects.toThrow("session update failed");
   expect(getWorkItem(db, item.id)?.state).toBe("running");
   expect(getRun(db, run.id)?.status).toBe("active");
   expect(listOutbox(db, "session")).toEqual([]);

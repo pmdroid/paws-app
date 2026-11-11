@@ -232,7 +232,7 @@ async function fixture({
     throw new Error("member VM did not settle");
   };
   /** A queued item Ada delegated, which the scheduler starts once she has an eligible runner. */
-  const heldItem = () => {
+  const heldItem = async () => {
     const item = insertQueuedItem(db, { id: "held", now: clock.now(), sessionKey: "session" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id='held'", [userId]);
     ensureLinearSession(db, {
@@ -383,7 +383,7 @@ test("a missing agent sign-in links to the sign-in on the member's own runner", 
 
 test("Create VM creates the member's VM, its steps update without a reload, and readiness lets the held item start", async () => {
   const f = await fixture();
-  const ready = f.heldItem();
+  const ready = await f.heldItem();
   expect(await ready()).toBe(false);
   const page = await f.open();
   expect(page.buttons()).toEqual(["create-vm", "add-host"]);

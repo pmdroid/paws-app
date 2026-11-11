@@ -176,7 +176,7 @@ async function setup() {
     throw new Error("No dispatched runner command");
   }
   let sequence = 0;
-  function item() {
+  async function item() {
     run(["-C", source, "reset", "-q", "--hard", base]);
     db.run(
       "UPDATE run SET status='ended' WHERE status='active' AND id IN (SELECT run_id FROM runner_work WHERE ended_at IS NOT NULL)",
@@ -328,7 +328,7 @@ async function setup() {
     // A and B tie on rank and load, and ULIDs minted in one millisecond order at random, so B
     // stays offline until A has run the first turn.
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, runners.b]);
-    const record = item();
+    const record = await item();
     const notices: string[] = [];
     const turn = () =>
       backend.forItem(record.id)({
@@ -652,7 +652,7 @@ async function mergeQueueItemOnFullRunner() {
   const { db, runners, backend, root } = context;
   await context.reset();
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
-  const record = context.item();
+  const record = await context.item();
   const turn = (options: { checkpoint?: false } = {}) =>
     backend.forItem(record.id)({
       profile: { agent: "claude", model: "model" },

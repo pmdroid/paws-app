@@ -510,7 +510,7 @@ describe("review fixes", () => {
     const version = await t.version();
     let sent = false;
     const body = new ReadableStream<Uint8Array>({
-      pull(controller) {
+      async pull(controller) {
         if (sent) return controller.close();
         sent = true;
         syncWorkspaceMember(t.w.db, {

@@ -33,13 +33,14 @@ function fixture() {
     at,
   ]);
   // The runner's owner is an admin too, so the other admin is refused only for not owning it.
-  const members = (
+  const members: WorkspacePrincipal[] = [];
+  for (const [index, [name, role]] of (
     [
       ["owner", "admin"],
       ["admin", "admin"],
       ["member", "member"],
     ] as const
-  ).map(([name, role], index) => {
+  ).entries()) {
     const userId = putWorkspaceUser(db, {
       id: workspaceId(),
       linearUserId: `login-user-${index}`,
@@ -54,14 +55,14 @@ function fixture() {
       teamIds: [],
       now: at,
     });
-    return {
+    members.push({
       workspaceId: workspace,
       userId,
       role: role as WorkspacePrincipal["role"],
       teamIds: [],
       authenticatedAt: at,
-    };
-  });
+    });
+  }
   const [owner, admin, member] = [members[0]!, members[1]!, members[2]!];
   const runnerId = workspaceId();
   db.run(

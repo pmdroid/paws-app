@@ -435,10 +435,13 @@ describe("improvement decisions", () => {
   test("access revoked during the Linear lookup refuses the link", async () => {
     const w = await world();
     const id = w.retro.a;
-    const decideWhile = async (revoke: () => void) => {
+    const decideWhile = async (revoke: () => unknown) => {
       const http = createImprovementsHttp({
         db: w.db,
-        lookup: async (issue) => (revoke(), w.lookup.lookup(issue)),
+        lookup: async (issue) => {
+          await revoke();
+          return w.lookup.lookup(issue);
+        },
         now: w.now,
       });
       const response = await http(
@@ -461,14 +464,14 @@ describe("improvement decisions", () => {
         teamIds,
         now: at++,
       });
-    const lostTeam = await decideWhile(() => member(true, []));
+    const lostTeam = await decideWhile(async () => member(true, []));
     expect([lostTeam.status, lostTeam.body.reason]).toEqual([404, "not_found"]);
     expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
-    member(true, ["team-a"]);
-    const revoked = await decideWhile(() => member(false, ["team-a"]));
+    await member(true, ["team-a"]);
+    const revoked = await decideWhile(async () => member(false, ["team-a"]));
     expect([revoked.status, revoked.body.reason]).toEqual([404, "not_found"]);
     expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
-    member(true, ["team-a"]);
+    await member(true, ["team-a"]);
     const kept = await decideWhile(() => {});
     expect(kept.body.status).toBe("decided");
   });

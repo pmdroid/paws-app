@@ -71,12 +71,9 @@ export async function createExecutionControlsFixture(
     putWorkspaceUser(db, { id, linearUserId: id, name: id, email: `${id}@example.invalid` });
     syncWorkspaceMember(db, { workspaceId, userId: id, role, active: true, teamIds, now });
   }
-  const sessions = Object.fromEntries(
-    ["admin", "member", "inactive", "outside"].map((userId) => [
-      userId,
-      issueWorkspaceSession(db, { workspaceId, userId, now }),
-    ]),
-  );
+  const sessions: Record<string, ReturnType<typeof issueWorkspaceSession>> = {};
+  for (const userId of ["admin", "member", "inactive", "outside"])
+    sessions[userId] = issueWorkspaceSession(db, { workspaceId, userId, now });
   db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id='inactive'", [
     workspaceId,
   ]);
