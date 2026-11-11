@@ -36,6 +36,7 @@ import {
   type CloseoutStepWrite,
   saveCandidateRisk,
   saveRiskFix,
+  sqliteDb,
 } from "../../../db";
 import {
   parseIssueDetailResponse,
@@ -1194,7 +1195,7 @@ describe("live status provider", () => {
       repo: "widgets",
       remoteUrl: "https://github.com/acme/widgets.git",
     });
-    saveReviewFindingIssue(db, {
+    await saveReviewFindingIssue(sqliteDb(db), {
       key: reviewFindingKey({
         repository: "acme/widgets",
         location: "src/legacy.ts:3",
