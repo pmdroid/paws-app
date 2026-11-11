@@ -15,3 +15,5 @@ export function sqliteDb(_database: Database): SqliteDb {
 export function settled<T>(_promise: Promise<T>): T {
   throw new Error("fixture");
 }
+
+export function emitJobReady(_db: Database | Db): void {}

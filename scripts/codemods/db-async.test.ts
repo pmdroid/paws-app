@@ -45,7 +45,7 @@ test.each([
   ["a transaction body stays synchronous", "transaction.ts"],
   ["callers of a folded fooAsync sibling use the final name", "fold.ts"],
   ["an export used outside the globs stays synchronous", "outside.ts"],
-  ["wrappers become async over Db and fooAsync siblings fold in", "db/items.ts"],
+  ["wrappers become async over Db, fooAsync siblings fold in, side effects stay", "db/items.ts"],
 ])("%s", (_name, file) => {
   expect(read(dir, file)).toBe(read(join(fixtures, "after"), file));
 });
@@ -57,10 +57,10 @@ test("boundaries and exports without a Steps form are reported", () => {
     [7, "inside a transaction(...) body"],
   ]);
   expect(boundary("outside.ts")).toEqual([[5, "used outside the given files"]]);
-  expect(boundary("db/items.ts")).toEqual([[70, "body does more than run its Steps"]]);
+  expect(boundary("db/items.ts")).toEqual([]);
   expect(first.withoutSteps.map((s) => s.name)).toEqual(["itemFile"]);
   expect(first).toMatchObject({
-    wrappers: 3,
+    wrappers: 5,
     folded: 1,
     calls: 12,
     wrapped: 8,

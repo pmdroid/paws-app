@@ -64,6 +64,7 @@ type Wrapper = {
   fn: FunctionDeclaration;
   steps: FunctionDeclaration;
   sibling?: FunctionDeclaration;
+  body?: string;
 };
 type Plan = { wrapper: Wrapper; awaits: Map<CallExpression, boolean>; asyncs: Set<Fn> };
 
@@ -135,7 +136,8 @@ function findWrappers(files: SourceFile[], dbDir: string, report: Report): Wrapp
         report.withoutSteps.push({ ...site(fn), name });
         continue;
       }
-      if (!onlyRunsSteps(fn, steps)) {
+      const body = onlyRunsSteps(fn, steps) ? undefined : awaitedBody(fn);
+      if (body === null) {
         report.boundaries.push({
           ...site(fn),
           reason: "body does more than run its Steps",
@@ -144,7 +146,7 @@ function findWrappers(files: SourceFile[], dbDir: string, report: Report): Wrapp
         continue;
       }
       const sibling = sf.getFunction(`${name}Async`);
-      wrappers.push({ fn, steps, sibling: sibling?.isAsync() ? sibling : undefined });
+      wrappers.push({ fn, steps, sibling: sibling?.isAsync() ? sibling : undefined, body });
     }
   }
   return wrappers;
@@ -341,7 +343,47 @@ function localHelpers(fn: FunctionDeclaration, seen = new Set<FunctionDeclaratio
   return seen;
 }
 
-function rewriteWrapper({ fn, steps }: Wrapper) {
+function awaitedBody(fn: FunctionDeclaration): string | null {
+  const name = fn.getParameters()[0]!.getName();
+  const body = fn.getBody()!;
+  const edits: { start: number; end: number; text: string }[] = [];
+  for (const id of body.getDescendantsOfKind(SyntaxKind.Identifier)) {
+    if (id.getText() !== name) continue;
+    const call = id.getParent();
+    if (!Node.isCallExpression(call) || call.getArguments()[0] !== id) return null;
+    if (calleeName(call) === "emitJobReady") {
+      edits.push({ start: id.getStart(), end: id.getEnd(), text: "store" });
+      continue;
+    }
+    const access = call.getParent();
+    const runner = access?.getParent();
+    const outer = runner?.getParent();
+    if (
+      calleeName(call) !== "sqliteDb" ||
+      !Node.isPropertyAccessExpression(access) ||
+      !["run", "transaction"].includes(access.getName()) ||
+      !Node.isCallExpression(runner) ||
+      runner.getExpression() !== access ||
+      !Node.isCallExpression(outer) ||
+      calleeName(outer) !== "settled"
+    )
+      return null;
+    const args = runner.getArguments().map((a) => a.getText());
+    edits.push({
+      start: outer.getStart(),
+      end: outer.getEnd(),
+      text: `(await store.${access.getName()}(${args.join(", ")}))`,
+    });
+  }
+  if (edits.length === 0) return null;
+  let text = body.getText();
+  const offset = body.getStart();
+  for (const edit of edits.sort((a, b) => b.start - a.start))
+    text = text.slice(0, edit.start - offset) + edit.text + text.slice(edit.end - offset);
+  return text;
+}
+
+function rewriteWrapper({ fn, steps, body }: Wrapper) {
   const transaction = [fn, ...localHelpers(fn)].some((f) =>
     f.getDescendantsOfKind(SyntaxKind.CallExpression).some((c) => calleeName(c) === "transaction"),
   );
@@ -354,7 +396,7 @@ function rewriteWrapper({ fn, steps }: Wrapper) {
   const docs = fn.getJsDocs().map((doc) => `${doc.getText()}\n`);
   fn.replaceWithText(
     `${docs.join("")}export async function ${fn.getName()}${typeParams.length ? `<${typeParams.join(", ")}>` : ""}(${params})` +
-      `${ret ? `: Promise<${ret}>` : ""} {\n  ${ret === "void" ? `await ${invoke};` : `return ${invoke};`}\n}`,
+      `${ret ? `: Promise<${ret}>` : ""} ${body ?? `{\n  ${ret === "void" ? `await ${invoke};` : `return ${invoke};`}\n}`}`,
   );
 }
 
