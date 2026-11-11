@@ -112,7 +112,7 @@ test("answer mode and full prepared response survive reopen as a terminal comple
   const db = openDatabase(file);
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-  beginImplementRun(db, item.id, 1);
+  await beginImplementRun(sqliteDb(db), item.id, 1);
   await saveTaskMode(sqliteDb(db), item.id, "answer");
   const response = "Full public answer. ".repeat(1_000);
   await completeAnswerTask(sqliteDb(db), item.id, response);

@@ -73,7 +73,7 @@ async function holdMergeQueuePlace(
   id: string,
   lane = "",
 ) {
-  beginImplementRun(db, id, clock.now());
+  await beginImplementRun(sqliteDb(db), id, clock.now());
   applyWorkItemEvent(db, id, "turn_ended");
   applyWorkItemEvent(db, id, "closeout_accepted");
   await joinMergeQueue(sqliteDb(db), {
@@ -329,10 +329,10 @@ describe("job queue", () => {
     db.close();
   });
 
-  test("a start parked for a runner slot is claimed again after the item is running", () => {
+  test("a start parked for a runner slot is claimed again after the item is running", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    beginImplementRun(db, "eng-1", clock.now());
+    await beginImplementRun(sqliteDb(db), "eng-1", clock.now());
     const parked = enqueueJob(db, {
       queue: JOB_KIND.start,
       payload: {
@@ -344,11 +344,11 @@ describe("job queue", () => {
     expect(claim(db, clock, [JOB_KIND.start])?.id).toBe(parked);
   });
 
-  test("the in-flight item can resume while another start waits", () => {
+  test("the in-flight item can resume while another start waits", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     insertQueuedItem(db, { id: "eng-2", now: clock.now() });
-    beginImplementRun(db, "eng-1", clock.now());
+    await beginImplementRun(sqliteDb(db), "eng-1", clock.now());
     applyWorkItemEvent(db, "eng-1", "lease_expired");
     enqueueJob(db, {
       queue: JOB_KIND.start,

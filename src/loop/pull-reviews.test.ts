@@ -62,8 +62,12 @@ async function setup(threads = THREADS, options: { commentsPerPage?: number } = 
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  beginImplementRun(db, "eng-1", 1);
-  enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+  await beginImplementRun(sqliteDb(db), "eng-1", 1);
+  await enterMergeQueue(sqliteDb(db), "eng-1", {
+    phase: "merge_queue",
+    baseSha: "b",
+    wipCommit: "h",
+  });
   const github = createFakeReviewThreads(threads, options);
   const queue = createFakeMergeQueue();
   const client: GitHubClient = {

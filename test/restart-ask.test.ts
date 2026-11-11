@@ -48,7 +48,7 @@ async function fixture() {
     repo: "repo",
     remoteUrl: "https://example.invalid/repo.git",
   });
-  beginImplementRun(db, "item", 1);
+  await beginImplementRun(sqliteDb(db), "item", 1);
   saveCheckpoint(db, "item", { phase: "running", baseSha: "base", wipCommit: "head" });
   return { db, item: getWorkItem(db, "item")! };
 }
@@ -138,7 +138,7 @@ describe("restart and ask", () => {
     expect(restart(db, item, { reason: "ci", body: "first failure", jobKey, now: 2 })).toBeNull();
     expect(fixRounds(db, item.id)).toBe(1);
     db.run("UPDATE job SET status='done', attempts=4, finished_at=3 WHERE id=?", [first]);
-    beginImplementRun(db, item.id, 4);
+    await beginImplementRun(sqliteDb(db), item.id, 4);
     const secondItem = getWorkItem(db, item.id)!;
     const second = restart(db, secondItem, {
       reason: "ci",
@@ -164,7 +164,7 @@ describe("restart and ask", () => {
 
     restart(db, getWorkItem(db, item.id)!, { reason: "answer", body: "try again", now: 6 });
     expect(fixRounds(db, item.id)).toBe(0);
-    beginImplementRun(db, item.id, 7);
+    await beginImplementRun(sqliteDb(db), item.id, 7);
     restart(db, getWorkItem(db, item.id)!, { reason: "ci", body: "third failure", jobKey, now: 8 });
     expect(fixRounds(db, item.id)).toBe(1);
     db.close();

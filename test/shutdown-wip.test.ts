@@ -42,11 +42,13 @@ describe("shutdown WIP", () => {
     });
     await saveRunCommitPolicy(
       sqliteDb(paws.db),
-      beginImplementRun(paws.db, "ENG-21", Date.now(), {
-        phase: "running",
-        wipCommit: "wip",
-        turn: 1,
-      }).run.id,
+      (
+        await beginImplementRun(sqliteDb(paws.db), "ENG-21", Date.now(), {
+          phase: "running",
+          wipCommit: "wip",
+          turn: 1,
+        })
+      ).run.id,
       APP_POLICY,
     );
     await paws.stop();
@@ -196,7 +198,12 @@ describe("shutdown WIP", () => {
       insertQueuedItem(paws.db, { id: "ENG-21", branchName: "paws/eng-21" });
       await saveRunCommitPolicy(
         sqliteDb(paws.db),
-        beginImplementRun(paws.db, "ENG-21", Date.now(), { phase: "running", turn: 1 }).run.id,
+        (
+          await beginImplementRun(sqliteDb(paws.db), "ENG-21", Date.now(), {
+            phase: "running",
+            turn: 1,
+          })
+        ).run.id,
         APP_POLICY,
       );
       const stopping = paws.stop();
@@ -242,7 +249,8 @@ describe("shutdown WIP", () => {
       });
       await saveRunCommitPolicy(
         sqliteDb(db),
-        beginImplementRun(db, "ENG-21", Date.now(), { phase: "running", turn: 1 }).run.id,
+        (await beginImplementRun(sqliteDb(db), "ENG-21", Date.now(), { phase: "running", turn: 1 }))
+          .run.id,
         APP_POLICY,
       );
       db.close();

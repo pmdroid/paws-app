@@ -49,11 +49,11 @@ function lease(db: Database, runId: string, generation: number, until: number) {
   );
 }
 
-function leased(path = ":memory:") {
+async function leased(path = ":memory:") {
   const db = openDatabase(path);
   migrate(db);
   const item = insertQueuedItem(db, { id: "item", sessionKey: "session", now: START });
-  const { run } = beginImplementRun(db, item.id, START, running);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, START, running);
   lease(db, run.id, 1, START + LEASE_MS);
   return { db, item, run };
 }
@@ -68,7 +68,7 @@ const runnerWork = (db: Database, runId: string) =>
 
 describe("follow-up after an expired runner lease", () => {
   test("running work resumes on the transient retry budget before the orphan grace", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     const at = START + PAST;
     expect(await closeExpiredRunnerLeases(sqliteDb(db), at)).toEqual([run.id]);
     const current = getWorkItem(db, item.id)!;
@@ -92,7 +92,7 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("a verifying candidate re-verifies without an implementer turn", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     applyWorkItemEvent(db, item.id, "turn_ended");
     saveCheckpoint(db, item.id, candidate);
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
@@ -106,7 +106,7 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("verifying work without a candidate resumes execution", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     applyWorkItemEvent(db, item.id, "turn_ended");
     saveCheckpoint(db, item.id, null);
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
@@ -115,7 +115,7 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("a merge-queue run re-verifies its head and leaves the merge phase", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     applyWorkItemEvent(db, item.id, "turn_ended");
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     saveCheckpoint(db, item.id, { ...candidate, phase: "merge_queue" });
@@ -131,7 +131,7 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("a valid pending job keeps ownership of the progress", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     applyWorkItemEvent(db, item.id, "turn_ended");
     saveCheckpoint(db, item.id, candidate);
     enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id }, now: START });
@@ -140,7 +140,7 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("a live job owner keeps the run and gets no follow-up", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: START });
     claimNextJob(db, { now: START, leaseMs: PAST + 60_000, queues: [JOB_KIND.resume] });
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([]);
@@ -149,7 +149,7 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("a claimed job whose lock lapsed before the transition does not block the follow-up", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: START });
     expect(
       claimNextJob(db, { now: START, leaseMs: 1_000, queues: [JOB_KIND.resume] }),
@@ -161,7 +161,7 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("a delivered result is left for import", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     db.run(
       "INSERT INTO runner_result(run_id,generation,command_id,payload,received_at) VALUES(?,1,'command','{}',?)",
       [run.id, START],
@@ -172,7 +172,7 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("a stale run is closed without resuming the item", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     setCurrentRun(db, item.id, "newer-run");
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
     expect(getRun(db, run.id)?.status).toBe("lost");
@@ -181,14 +181,14 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("a stopped item is not resumed", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [item.id]);
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
     expect(pending(db)).toEqual([]);
   });
 
   test("a paused item is not resumed", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     applyWorkItemEvent(db, item.id, "pause");
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
     expect(getWorkItem(db, item.id)?.state).toBe("paused");
@@ -196,7 +196,7 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("a pending restart decision is kept instead of resuming", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     db.run("INSERT INTO restart_hold(item_id,session_id,requested_at) VALUES(?,?,?)", [
       item.id,
       "session",
@@ -209,7 +209,7 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("repeated expiry spends the retry budget and then asks once", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     let at = START + PAST;
     for (let generation = 1; generation <= MAX_TRANSIENT_RETRIES; generation++) {
       expect(await closeExpiredRunnerLeases(sqliteDb(db), at)).toEqual([run.id]);
@@ -234,7 +234,7 @@ describe("follow-up after an expired runner lease", () => {
   });
 
   test("a start after expiry keeps the follow-up and spends no resume", async () => {
-    const { db, item, run } = leased();
+    const { db, item, run } = await leased();
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
     expect(await recoverOnStartup(sqliteDb(db), START + PAST + 1)).toEqual([]);
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(0);
@@ -245,7 +245,7 @@ describe("follow-up after an expired runner lease", () => {
     const dir = mkdtempSync(join(tmpdir(), "paws-lease-follow-up-"));
     dirs.push(dir);
     const path = join(dir, "paws.db");
-    const first = leased(path);
+    const first = await leased(path);
     first.db.run(
       `CREATE TRIGGER fail_follow_up BEFORE INSERT ON job BEGIN
          SELECT RAISE(ABORT, 'follow-up refused'); END`,

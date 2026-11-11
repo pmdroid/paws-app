@@ -131,7 +131,7 @@ test("a continuation two steps on that still runs keeps the shared checkpoint", 
 
 test("a stop whose runner is still publishing its checkpoint waits for the next sweep", async () => {
   const { db, item, removed, remove, ended } = await setup();
-  const { run } = beginImplementRun(db, item.id, 2);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 2);
   db.run("PRAGMA foreign_keys=OFF");
   db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",

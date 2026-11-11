@@ -57,7 +57,7 @@ async function seed() {
   );
   const item = async (id = "PAS-677", team: string | null = "Pascal"): Promise<WorkItemRecord> => {
     insertQueuedItem(db, { id, sessionKey: `session-${id}`, title: id });
-    beginImplementRun(db, id, 1000);
+    await beginImplementRun(sqliteDb(db), id, 1000);
     if (team !== null)
       db.run(
         `INSERT INTO inbox_event(dedupe_key,source,action,session_id,issue_id,updated_at_ms,payload,received_at)

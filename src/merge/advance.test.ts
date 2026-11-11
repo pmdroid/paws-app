@@ -18,12 +18,16 @@ import {
 } from "../db";
 import { advanceMerge, type MergeCapabilities } from "./advance";
 
-function queued() {
+async function queued() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  beginImplementRun(db, "eng-1", 1);
-  enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+  await beginImplementRun(sqliteDb(db), "eng-1", 1);
+  await enterMergeQueue(sqliteDb(db), "eng-1", {
+    phase: "merge_queue",
+    baseSha: "b",
+    wipCommit: "h",
+  });
   return db;
 }
 
@@ -77,7 +81,7 @@ describe("advanceMerge", () => {
   });
 
   test("a recorded remote merge completes the item before anything is published", async () => {
-    const db = queued();
+    const db = await queued();
     await recordConfirmedRemoteMerge(sqliteDb(db), {
       itemId: "eng-1",
       repositoryOwner: "acme",
@@ -100,7 +104,7 @@ describe("advanceMerge", () => {
   });
 
   test("a durable marker without a payload flag fences publication after a confirmed negative read", async () => {
-    const db = queued();
+    const db = await queued();
     try {
       beginMergeCall(db, "eng-1", "h", 1);
       const { caps } = capabilities();
@@ -117,7 +121,7 @@ describe("advanceMerge", () => {
   });
 
   test("an unknown read without a durable merge marker follows normal publication handling", async () => {
-    const db = queued();
+    const db = await queued();
     try {
       const { caps } = capabilities({
         mergedOutsideLane: async () => "unknown",
@@ -140,7 +144,7 @@ describe("advanceMerge", () => {
   });
 
   test("a publication that cannot go ahead is the step", async () => {
-    const db = queued();
+    const db = await queued();
     const { caps } = capabilities({
       publish: async () => ({ kind: "failed", reason: "publish", message: "no pull request" }),
     });

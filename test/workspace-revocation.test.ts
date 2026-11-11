@@ -436,7 +436,7 @@ test("revocation stops explicit owners and delegators without session metadata",
           appUserId: "app",
           observedAtMs: now,
         });
-      if (running) beginImplementRun(db, id, now);
+      if (running) await beginImplementRun(sqliteDb(db), id, now);
     }
     const stopped = await changeWorkspaceRevocation(sqliteDb(db), {
       workspaceId: "workspace",

@@ -167,8 +167,8 @@ test("removeWorktree failure is journaled once after the confirmed merge", async
   const f = await fixture();
   try {
     const repository = { owner: "test", repo: "repo", remoteUrl: "unused" };
-    beginImplementRun(f.db, f.item.id, 1_000);
-    enterMergeQueue(f.db, f.item.id, { phase: "merge_queue" });
+    await beginImplementRun(sqliteDb(f.db), f.item.id, 1_000);
+    await enterMergeQueue(sqliteDb(f.db), f.item.id, { phase: "merge_queue" });
     await recordConfirmedRemoteMerge(sqliteDb(f.db), {
       itemId: f.item.id,
       repositoryOwner: repository.owner,

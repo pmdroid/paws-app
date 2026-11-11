@@ -110,7 +110,7 @@ export async function probeLinearActivityBudget(
   }
   try {
     const item = insertQueuedItem(db, { id: "chatty", sessionKey: "chatty" });
-    const original = beginImplementRun(db, item.id, clock.now());
+    const original = await beginImplementRun(sqliteDb(db), item.id, clock.now());
     const reporter = createAcpActivityReporter((payload) =>
       enqueueOutbox(db, {
         target: "linear",
@@ -254,7 +254,7 @@ export async function probeLinearActivityBudget(
       },
     );
     const reserve = insertQueuedItem(db, { id: "reservation" });
-    beginImplementRun(db, reserve.id, clock.now());
+    await beginImplementRun(sqliteDb(db), reserve.id, clock.now());
     for (let n = 0; n < 80; n++) activity(`parallel-${n}`, "thought", reserve.id);
     const second = openDatabase(path);
     try {

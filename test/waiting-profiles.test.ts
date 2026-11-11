@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tempDb, tempHome } from "./helpers";
 import { FakeClock } from "../src/core";
 import {
+  sqliteDb,
   JobLoop,
   OutboxDispatcher,
   beginImplementRun,
@@ -74,7 +75,7 @@ function fixture() {
   let n = 0;
   const seed = async (state: string, snapshot = true) => {
     const queued = insertQueuedItem(db, { id: `item-${++n}`, now: 1000 });
-    const { item, run } = beginImplementRun(db, queued.id, 1000);
+    const { item, run } = await beginImplementRun(sqliteDb(db), queued.id, 1000);
     db.run("UPDATE work_item SET state=? WHERE id=?", [state, item.id]);
     const file = join(runDir(root, run.id), "agent-profile.json");
     mkdirSync(runDir(root, run.id), { recursive: true });

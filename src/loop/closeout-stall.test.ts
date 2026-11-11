@@ -33,7 +33,7 @@ test("quiet verification retries once across restart, then asks a person", async
     migrate(db);
     const clock = new FakeClock(Date.now() + 1000);
     insertQueuedItem(db, { id: "stalled", sessionKey: "ses", now: clock.now() });
-    beginImplementRun(db, "stalled", clock.now());
+    await beginImplementRun(sqliteDb(db), "stalled", clock.now());
     applyWorkItemEvent(db, "stalled", "turn_ended", { now: clock.now() });
     saveCheckpoint(db, "stalled", { phase: "verifying", baseSha: "base", wipCommit: "head" });
     const lines: string[] = [];
@@ -127,9 +127,9 @@ test("quiet verification retries once across restart, then asks a person", async
   }
 });
 
-function verifyingItem(id: string, db: ReturnType<typeof openDatabase>, now: number) {
+async function verifyingItem(id: string, db: ReturnType<typeof openDatabase>, now: number) {
   insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now });
-  beginImplementRun(db, id, now);
+  await beginImplementRun(sqliteDb(db), id, now);
   applyWorkItemEvent(db, id, "turn_ended", { now });
   saveCheckpoint(db, id, { phase: "verifying", baseSha: "base", wipCommit: "head" });
 }
@@ -139,7 +139,7 @@ test("a usage pause is not a stall, and one failed cancel leaves the other items
   try {
     migrate(db);
     const clock = new FakeClock(Date.now() + 1000);
-    for (const id of ["paused", "broken", "quiet"]) verifyingItem(id, db, clock.now());
+    for (const id of ["paused", "broken", "quiet"]) await verifyingItem(id, db, clock.now());
     await startUsagePause(sqliteDb(db), {
       runId: getWorkItem(db, "paused")!.currentRunId!,
       itemId: "paused",

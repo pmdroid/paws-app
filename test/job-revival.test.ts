@@ -36,7 +36,7 @@ async function fixture() {
     repo: "repo",
     remoteUrl: "https://example.invalid/repo.git",
   });
-  beginImplementRun(db, "item", 1);
+  await beginImplementRun(sqliteDb(db), "item", 1);
   return db;
 }
 

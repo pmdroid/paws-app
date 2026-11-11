@@ -34,8 +34,12 @@ afterEach(() => {
   for (const db of databases.splice(0)) db.close();
 });
 
-function runningTask(db: Database) {
-  const { item, run } = beginImplementRun(db, insertQueuedItem(db, { id: "ENG-1" }).id, 1);
+async function runningTask(db: Database) {
+  const { item, run } = await beginImplementRun(
+    sqliteDb(db),
+    insertQueuedItem(db, { id: "ENG-1" }).id,
+    1,
+  );
   const jobId = enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: 1 });
   return { item, run, jobId };
 }
@@ -46,10 +50,10 @@ function breakOutbox(db: Database): void {
   );
 }
 
-test("a fault after the failed state is written rolls the whole failure back", () => {
+test("a fault after the failed state is written rolls the whole failure back", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run, jobId } = runningTask(db);
+  const { item, run, jobId } = await runningTask(db);
   breakOutbox(db);
   expect(() => failWorkItem(db, item, "run_error", "The agent crashed.", 2)).toThrow(
     "injected fault",
@@ -59,10 +63,10 @@ test("a fault after the failed state is written rolls the whole failure back", (
   expect(getJob(db, jobId)?.status).toBe("pending");
 });
 
-test("a failure inside a caller's transaction rolls back with the caller", () => {
+test("a failure inside a caller's transaction rolls back with the caller", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run, jobId } = runningTask(db);
+  const { item, run, jobId } = await runningTask(db);
   expect(() =>
     immediate(db, () => {
       failWorkItem(db, item, "run_error", "The agent crashed.", 2);
@@ -75,10 +79,10 @@ test("a failure inside a caller's transaction rolls back with the caller", () =>
   expect(listOutbox(db, "session")).toEqual([]);
 });
 
-test("a delayed failure cannot fail the run that superseded it", () => {
+test("a delayed failure cannot fail the run that superseded it", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run } = runningTask(db);
+  const { item, run } = await runningTask(db);
   applyWorkItemEvent(db, item.id, "restart");
   applyWorkItemEvent(db, item.id, "dispatched");
   const next = insertRun(db, { itemId: item.id, now: 3 });
@@ -90,20 +94,20 @@ test("a delayed failure cannot fail the run that superseded it", () => {
   expect(listOutbox(db, "session")).toEqual([]);
 });
 
-test("a delayed failure leaves a cancelled task cancelled", () => {
+test("a delayed failure leaves a cancelled task cancelled", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item } = runningTask(db);
+  const { item } = await runningTask(db);
   applyWorkItemEvent(db, item.id, "cancel");
   expect(failWorkItem(db, item, "run_error", "The agent crashed.", 2)).toBe(false);
   expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
   expect(listOutbox(db, "session")).toEqual([]);
 });
 
-test("a committed failure survives a restart and is not repeated", () => {
+test("a committed failure survives a restart and is not repeated", async () => {
   const file = join(tempHome(), "paws.db");
   const db = migratedDatabase(file);
-  const { item, run, jobId } = runningTask(db);
+  const { item, run, jobId } = await runningTask(db);
   expect(failWorkItem(db, item, "run_error", "The agent crashed.", 2)).toBe(true);
   db.close();
   const restored = openDatabase(file);
@@ -120,8 +124,8 @@ test("a committed failure survives a restart and is not repeated", () => {
 });
 
 async function mergingTask(db: Database) {
-  const { item, run } = runningTask(db);
-  enterMergeQueue(db, item.id, { phase: "merge_queue" });
+  const { item, run } = await runningTask(db);
+  await enterMergeQueue(sqliteDb(db), item.id, { phase: "merge_queue" });
   const jobId = enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id }, now: 2 });
   await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId: item.id,
@@ -198,8 +202,8 @@ test("a merge result for a cancelled, superseded or unconfirmed task changes not
   applyWorkItemEvent(db, item.id, "cancel");
   expect(await completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce })).toBeNull();
   const other = insertQueuedItem(db, { id: "ENG-2" });
-  beginImplementRun(db, other.id, 5);
-  enterMergeQueue(db, other.id, { phase: "merge_queue" });
+  await beginImplementRun(sqliteDb(db), other.id, 5);
+  await enterMergeQueue(sqliteDb(db), other.id, { phase: "merge_queue" });
   expect(await completeMergedItem(sqliteDb(db), { itemId: other.id, now: 6, announce })).toBeNull();
   expect(getWorkItem(db, item.id)?.state).toBe("cancelled");
   expect(getWorkItem(db, other.id)?.state).toBe("merge_queue");
@@ -209,7 +213,7 @@ test("a merge result for a cancelled, superseded or unconfirmed task changes not
 test("an answer from a superseded run cannot complete the task", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run, jobId } = runningTask(db);
+  const { item, run, jobId } = await runningTask(db);
   await saveTaskMode(sqliteDb(db), item.id, "answer");
   const next = insertRun(db, { itemId: item.id, now: 2 });
   setCurrentRun(db, item.id, next.id);
@@ -234,7 +238,7 @@ test("an answer from a superseded run cannot complete the task", async () => {
 test("a fault in the answer's session update rolls the completion back", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run } = runningTask(db);
+  const { item, run } = await runningTask(db);
   await saveTaskMode(sqliteDb(db), item.id, "answer");
   await expect(
     completeAnswerTask(sqliteDb(db), item.id, "The total is 42.", 2, {
@@ -249,10 +253,10 @@ test("a fault in the answer's session update rolls the completion back", async (
   expect(listOutbox(db, "session")).toEqual([]);
 });
 
-test("a terminal failure after PR publication commits one ordered closed response", () => {
+test("a terminal failure after PR publication commits one ordered closed response", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item } = runningTask(db);
+  const { item } = await runningTask(db);
   enqueueOutboxOnce(db, {
     target: "linear",
     op: "activity",

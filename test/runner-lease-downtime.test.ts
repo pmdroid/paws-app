@@ -100,7 +100,7 @@ async function fixture() {
     [runnerId, now()],
   );
   const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
-  const { run } = beginImplementRun(db, item.id, now());
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, now());
   const start = async () =>
     await registerInstance(sqliteDb(db), { role: "all", host: "acme", version: null, now: now() });
   let instance = await start();

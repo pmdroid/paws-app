@@ -61,7 +61,7 @@ async function askedAtTimeLimit() {
     limits: { fixes: 30 * MINUTE },
     now: clock.now(),
   });
-  beginImplementRun(db, item.id, clock.now());
+  await beginImplementRun(sqliteDb(db), item.id, clock.now());
   const now = clock.now();
   applyWorkItemEvent(db, item.id, "turn_ended", { now });
   applyWorkItemEvent(db, item.id, "closeout_accepted", { now });
@@ -117,7 +117,7 @@ test("Stop at the time limit records answer_stopped from the wait, not a run fai
 test("an answered runner wait re-verifies without passing through running", async () => {
   const db = database();
   const item = insertQueuedItem(db, { id: "eng-8", sessionKey: "ses", now: 1_000 });
-  const { run } = beginImplementRun(db, item.id, 1_000);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
   applyWorkItemEvent(db, item.id, "turn_ended");
   await loopAsk(
     db,
@@ -136,7 +136,7 @@ test("Discarding a plan completes it from the wait with one answer_completed", a
   const db = database();
   const item = insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: 1_000 });
   await saveTaskMode(sqliteDb(db), item.id, "plan");
-  const { run } = beginImplementRun(db, item.id, 1_000);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
   const asked = await loopAsk(
     db,
     { itemId: item.id, runId: run.id, sessionId: "ses" },
@@ -159,11 +159,15 @@ test("Discarding a plan completes it from the wait with one answer_completed", a
   expect(history(db, item.id, askedAt)).toEqual(["awaiting_input -answer_completed-> completed"]);
 });
 
-test("a failure in the merge queue records work_failed, not a lease expiry", () => {
+test("a failure in the merge queue records work_failed, not a lease expiry", async () => {
   const db = database();
   const item = insertQueuedItem(db, { id: "eng-10", sessionKey: "ses", now: 1_000 });
-  beginImplementRun(db, item.id, 1_000);
-  enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
+  await beginImplementRun(sqliteDb(db), item.id, 1_000);
+  await enterMergeQueue(sqliteDb(db), item.id, {
+    phase: "merge_queue",
+    baseSha: "base",
+    wipCommit: "head",
+  });
   const queued = getWorkItem(db, item.id)!;
   expect(failWorkItem(db, queued, "merge_error", "The merge failed.", 2_000)).toBe(true);
   expect(history(db, item.id, queued.version)).toEqual(["merge_queue -work_failed-> failed"]);

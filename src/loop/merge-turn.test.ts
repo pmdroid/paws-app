@@ -46,7 +46,7 @@ async function hungTurn() {
     journal: (line) => lines.push(line),
   });
   insertQueuedItem(db, { id: ITEM, sessionKey: "", now: clock.now() });
-  beginImplementRun(db, ITEM, clock.now());
+  await beginImplementRun(sqliteDb(db), ITEM, clock.now());
   await markCloseoutAccepted(sqliteDb(db), ITEM, HEAD);
   const read = tracker.issueMergeContext.bind(tracker);
   let entered!: () => void;

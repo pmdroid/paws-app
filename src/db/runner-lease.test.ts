@@ -30,12 +30,12 @@ const RENEWAL_MS = 60_000;
 const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 2, baseSha: "base" };
 
 /** One running item whose runner renewed its lease at the start time, as `renew()` does. */
-function leased() {
+async function leased() {
   const clock = new FakeClock(1_000_000);
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { now: clock.now() });
-  const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
   db.run("PRAGMA foreign_keys=OFF");
   const leaseUntil = clock.now() + RENEWAL_MS;
   db.run(
@@ -62,7 +62,7 @@ describe("the runner lease grace", () => {
 
   for (const [label, away] of INSIDE) {
     test(`recovery keeps the run ${label}`, async () => {
-      const { clock, db, item, run } = leased();
+      const { clock, db, item, run } = await leased();
       clock.advance(away);
       expect(await recoverOnStartup(sqliteDb(db), clock.now())).toMatchObject([
         { type: "resume", reattach: true },
@@ -72,7 +72,7 @@ describe("the runner lease grace", () => {
     });
 
     test(`capacity counts the slot ${label}`, async () => {
-      const { clock, db, run } = leased();
+      const { clock, db, run } = await leased();
       clock.advance(away);
       expect(await runnerOccupancy(sqliteDb(db), "runner", clock.now())).toEqual({
         capacity: 1,
@@ -84,14 +84,14 @@ describe("the runner lease grace", () => {
     });
 
     test(`the halt core waits ${label}`, async () => {
-      const { clock, db, run } = leased();
+      const { clock, db, run } = await leased();
       clock.advance(away);
       expect(await runnerWorkSettled(sqliteDb(db), run.id, clock.now())).toBe(false);
     });
   }
 
   test("recovery fences the run past the grace", async () => {
-    const { clock, db, item } = leased();
+    const { clock, db, item } = await leased();
     clock.advance(PAST);
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "resume", freshSession: true, checkpoint },
@@ -100,7 +100,7 @@ describe("the runner lease grace", () => {
   });
 
   test("capacity frees the lease past the grace and closes the run that never ended", async () => {
-    const { clock, db, run, item } = leased();
+    const { clock, db, run, item } = await leased();
     clock.advance(PAST);
     expect(await runnerOccupancy(sqliteDb(db), "runner", clock.now())).toEqual({
       capacity: 1,
@@ -125,7 +125,7 @@ describe("the runner lease grace", () => {
   });
 
   test("the sweep leaves expired work to its live placement owner", async () => {
-    const { db, clock, run } = leased();
+    const { db, clock, run } = await leased();
     const item = getRun(db, run.id)!;
     enqueueJob(db, { queue: "run.resume", payload: { itemId: item.itemId }, now: clock.now() });
     const job = claimNextJob(db, {
@@ -148,7 +148,7 @@ describe("the runner lease grace", () => {
 
   for (const state of ["verifying", "merge_queue"] as const) {
     test(`expired abandoned ${state} work transitions with its lost run`, async () => {
-      const { db, clock, run, item } = leased();
+      const { db, clock, run, item } = await leased();
       applyWorkItemEvent(db, item.id, "turn_ended");
       if (state === "merge_queue") applyWorkItemEvent(db, item.id, "closeout_accepted");
       clock.advance(PAST);
@@ -164,7 +164,7 @@ describe("the runner lease grace", () => {
   }
 
   test("a finished command still holds its slot after the lease grace", async () => {
-    const { clock, db, run } = leased();
+    const { clock, db, run } = await leased();
     db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
       clock.now(),
       clock.now(),
@@ -176,7 +176,7 @@ describe("the runner lease grace", () => {
   });
 
   test("halt keeps an unsettled runner occupied through the grace", async () => {
-    const { clock, db, item, run } = leased();
+    const { clock, db, item, run } = await leased();
     clock.advance(RENEWAL_MS + 59_000);
     await halt(sqliteDb(db), getWorkItem(db, item.id)!, clock.now());
     expect(getRun(db, run.id)?.status).toBe("ended");
@@ -186,13 +186,13 @@ describe("the runner lease grace", () => {
   });
 
   test("the halt core may release past the grace", async () => {
-    const { clock, db, run } = leased();
+    const { clock, db, run } = await leased();
     clock.advance(PAST);
     expect(await runnerWorkSettled(sqliteDb(db), run.id, clock.now())).toBe(true);
   });
 
   test("the halt core may release inside the grace once the runner sent its result", async () => {
-    const { clock, db, run } = leased();
+    const { clock, db, run } = await leased();
     clock.advance(RENEWAL_MS + 59_000);
     db.run(
       "INSERT INTO runner_result(run_id,generation,command_id,payload,received_at) VALUES(?,1,'command','{}',?)",
@@ -202,7 +202,7 @@ describe("the runner lease grace", () => {
   });
 
   test("recovery retains a delivered current-command result after lease grace", async () => {
-    const { clock, db, item, run } = leased();
+    const { clock, db, item, run } = await leased();
     clock.advance(PAST);
     expect(await runnerHoldsRunWork(sqliteDb(db), run.id, clock.now())).toBe(false);
     db.run(
@@ -228,7 +228,7 @@ describe("the runner lease grace", () => {
   });
 
   test("the halt core may release inside the grace once the runner acknowledged a cancel", async () => {
-    const { clock, db, run } = leased();
+    const { clock, db, run } = await leased();
     clock.advance(RENEWAL_MS + 59_000);
     db.run(
       "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at) VALUES('cancel','runner',?,1,'cancel','{}',?,NULL)",
@@ -250,7 +250,7 @@ describe("slots held between commands", () => {
     const runs = [];
     for (const index of [1, 2, 3, 4]) {
       const item = insertQueuedItem(db, { id: `item-${index}`, now: clock.now() });
-      const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
+      const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
       db.run(
         "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at,teardown_confirmed_at) VALUES(?,?,?,?,?,?,?,?,?)",
         [
@@ -301,11 +301,13 @@ describe("slots held between commands", () => {
     const started = [];
     for (const id of ["busy", "fresh", "tied"])
       started.push(
-        beginImplementRun(
-          db,
-          insertQueuedItem(db, { id, now: clock.now() }).id,
-          clock.now(),
-          checkpoint,
+        (
+          await beginImplementRun(
+            sqliteDb(db),
+            insertQueuedItem(db, { id, now: clock.now() }).id,
+            clock.now(),
+            checkpoint,
+          )
         ).run,
       );
     const [busy, fresh, tied] = started;

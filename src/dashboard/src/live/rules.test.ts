@@ -50,7 +50,7 @@ async function seed(): Promise<{ db: Database; home: string }> {
   const home = mkdtempSync(join(tmpdir(), "paws-rules-"));
   homes.push(home);
   const item = insertQueuedItem(db, { id: "ENG-7", title: "Rules", sessionKey: "ses_7", now: NOW });
-  beginImplementRun(db, item.id, NOW);
+  await beginImplementRun(sqliteDb(db), item.id, NOW);
   applyWorkItemEvent(db, item.id, "blocking_question");
   const identity = {
     taskId: item.id,

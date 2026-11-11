@@ -40,7 +40,7 @@ export async function probeCurrentRunStartup(root: string) {
         mode: "clarify",
         question: "Which page?",
       });
-      const previous = beginImplementRun(db, item.id, clock.now());
+      const previous = await beginImplementRun(sqliteDb(db), item.id, clock.now());
       markRun(db, previous.run.id, "ended", clock.now());
     } else await saveTaskMode(sqliteDb(db), item.id, mode, 0, mode === "artifact");
     const repository = {

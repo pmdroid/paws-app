@@ -38,7 +38,7 @@ function sharedDatabase(): { path: string; open: () => Database } {
 
 async function runningItem(db: Database, id: string, owner: string, now: number): Promise<string> {
   insertQueuedItem(db, { id, sessionKey: `${id}-session`, now });
-  const { run } = beginImplementRun(db, id, now, checkpoint);
+  const { run } = await beginImplementRun(sqliteDb(db), id, now, checkpoint);
   await claimRun(sqliteDb(db), run.id, owner);
   return run.id;
 }
@@ -64,7 +64,7 @@ describe("run ownership", () => {
       });
       const ownedRun = await runningItem(a, "acme-1", acme.id, 0);
       insertQueuedItem(a, { id: "acme-2", sessionKey: "acme-2-session", now: 0 });
-      beginImplementRun(a, "acme-2", 0, checkpoint);
+      await beginImplementRun(sqliteDb(a), "acme-2", 0, checkpoint);
 
       const other = await registerInstance(sqliteDb(b), {
         role: "all",

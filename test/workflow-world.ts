@@ -158,7 +158,7 @@ export async function seedFixture(
     ),
   );
   if (fixture === "queued") return;
-  const { run } = beginImplementRun(db, id, now, RUNNING);
+  const { run } = await beginImplementRun(sqliteDb(db), id, now, RUNNING);
   if (fixture.startsWith("running") || fixture.startsWith("verifying"))
     claimedJob(db, JOB_KIND.start, { itemId: id, runId: run.id }, now);
   const toVerifying = () => {

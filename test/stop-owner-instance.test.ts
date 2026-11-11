@@ -81,7 +81,7 @@ async function twoInstances(poll = true) {
 
 async function runningItem(db: Database, id: string, owner: string): Promise<void> {
   insertQueuedItem(db, { id, sessionKey: `${id}-session`, now: Date.now() });
-  const { run } = beginImplementRun(db, id, Date.now());
+  const { run } = await beginImplementRun(sqliteDb(db), id, Date.now());
   await claimRun(sqliteDb(db), run.id, owner);
 }
 

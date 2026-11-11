@@ -29,13 +29,13 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function setup() {
+async function setup() {
   const root = mkdtempSync(path.join(tmpdir(), "paws-pull-screenshots-"));
   roots.push(root);
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-1129", sessionKey: "ses_1", title: "Screens" });
-  const { run } = beginImplementRun(db, item.id, NOW - 10);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   let created = 0;
   const add = async (
     displayName: string,
@@ -64,7 +64,7 @@ function setup() {
 }
 
 function publish(
-  s: ReturnType<typeof setup>,
+  s: Awaited<ReturnType<typeof setup>>,
   git: FakeGitData,
   journal: string[] = [],
 ): Promise<string> {
@@ -91,7 +91,7 @@ function publish(
 }
 
 test("two images commit once on top of the evidence ref and link in publication order", async () => {
-  const s = setup();
+  const s = await setup();
   const wide = await s.add("Settings 1440px", "wide");
   const narrow = await s.add("Settings 390px", "narrow");
   const git = createFakeGitData({ files: ["old.png"] });
@@ -120,7 +120,7 @@ test("two images commit once on top of the evidence ref and link in publication 
 });
 
 test("the same images again make no commit and link the commit that holds them", async () => {
-  const s = setup();
+  const s = await setup();
   const sha = await s.add("Settings", "same bytes");
   const git = createFakeGitData();
   await publish(s, git);
@@ -133,7 +133,7 @@ test("the same images again make no commit and link the commit that holds them",
 });
 
 test("the first publication creates the ref with a parentless commit", async () => {
-  const s = setup();
+  const s = await setup();
   await s.add("Settings", "first");
   const git = createFakeGitData();
   await publish(s, git);
@@ -144,7 +144,7 @@ test("the first publication creates the ref with a parentless commit", async () 
 });
 
 test("a moved ref is re-read and retried, and three moves leave the section out", async () => {
-  const s = setup();
+  const s = await setup();
   await s.add("Settings", "raced");
   const git = createFakeGitData({ files: [] });
   git.rejectRefWrites = 1;
@@ -154,7 +154,7 @@ test("a moved ref is re-read and retried, and three moves leave the section out"
   expect(git.commits.get(tip.parents[0]!)!.message).toBe("another publication");
   expect(body).toContain("## Screenshots");
 
-  const again = setup();
+  const again = await setup();
   await again.add("Other", "never stored");
   const busy = createFakeGitData({ files: [] });
   busy.rejectRefWrites = 3;
@@ -166,7 +166,7 @@ test("a moved ref is re-read and retried, and three moves leave the section out"
 });
 
 test("videos, large images and rejected evidence are not uploaded, and only 20 images are", async () => {
-  const s = setup();
+  const s = await setup();
   await s.add("Recording", "video", { mediaType: "video/webm" });
   await s.add("Huge", "huge", { sizeBytes: EVIDENCE_INLINE_LIMITS.image + 1 });
   await s.add("Rejected", "rejected", { id: "ev-rejected" });
@@ -193,7 +193,7 @@ test("videos, large images and rejected evidence are not uploaded, and only 20 i
 });
 
 test("a GitHub error while storing leaves the section out with one journal line", async () => {
-  const s = setup();
+  const s = await setup();
   await s.add("Settings", "error");
   const git = createFakeGitData();
   git.failPath = "trees";
@@ -204,7 +204,7 @@ test("a GitHub error while storing leaves the section out with one journal line"
 });
 
 test("an unreadable evidence file leaves the section out", async () => {
-  const s = setup();
+  const s = await setup();
   await s.add("Settings", "gone");
   rmSync(path.join(s.root, "ev-1"));
   const journal: string[] = [];
@@ -213,7 +213,7 @@ test("an unreadable evidence file leaves the section out", async () => {
 });
 
 test("brackets in the display name are escaped", async () => {
-  const s = setup();
+  const s = await setup();
   await s.add("Settings [dark] \\ wide", "brackets");
   const body = await publish(s, createFakeGitData());
   expect(body).toContain("![Settings \\[dark\\] \\\\ wide](");

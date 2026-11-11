@@ -34,8 +34,12 @@ async function setup(file = ":memory:") {
       repo: "one",
       remoteUrl: "https://github.com/acme/one.git",
     });
-    beginImplementRun(db, id, 1);
-    enterMergeQueue(db, id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
+    await beginImplementRun(sqliteDb(db), id, 1);
+    await enterMergeQueue(sqliteDb(db), id, {
+      phase: "merge_queue",
+      baseSha: "base",
+      wipCommit: "head",
+    });
     await joinMergeQueue(sqliteDb(db), {
       itemId: id,
       repository: "acme/one",

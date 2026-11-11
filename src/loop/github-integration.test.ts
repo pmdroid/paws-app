@@ -42,7 +42,7 @@ function fixture(path = ":memory:") {
   );
   const item = async (id: string) => {
     insertQueuedItem(db, { id, sessionKey: `session-${id}`, title: id });
-    beginImplementRun(db, id, 1000);
+    await beginImplementRun(sqliteDb(db), id, 1000);
     return getWorkItem(db, id)!;
   };
   return {

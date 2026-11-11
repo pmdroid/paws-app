@@ -15,16 +15,16 @@ import {
 } from "../db";
 import { restartForPushConflict } from "./push-conflict";
 
-function runningItem() {
+async function runningItem() {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "pas-886", sessionKey: "ses", now: 1_000 });
-  const { run } = beginImplementRun(db, item.id, 1_000);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
   return { db, itemId: item.id, runId: run.id };
 }
 
 test("a candidate that conflicts with its moved branch restarts with reason conflict and no question", async () => {
-  const { db, itemId, runId } = runningItem();
+  const { db, itemId, runId } = await runningItem();
   expect(getWorkItem(db, itemId)?.state).toBe("running");
 
   expect(
@@ -49,7 +49,7 @@ test("a candidate that conflicts with its moved branch restarts with reason conf
 });
 
 test("an item that is no longer running is not restarted for a push conflict", async () => {
-  const { db, itemId } = runningItem();
+  const { db, itemId } = await runningItem();
   applyWorkItemEvent(db, itemId, "turn_ended");
   expect(
     await restartForPushConflict(db, itemId, { branch: "paws/pas-886", files: ["a"], now: 2_000 }),
@@ -58,7 +58,7 @@ test("an item that is no longer running is not restarted for a push conflict", a
 });
 
 test("three genuine push conflicts spend the shared budget, then ask for guidance", async () => {
-  const { db, itemId } = runningItem();
+  const { db, itemId } = await runningItem();
   for (let attempt = 0; attempt < 3; attempt++) {
     expect(
       await restartForPushConflict(db, itemId, {
@@ -88,7 +88,7 @@ test("three genuine push conflicts spend the shared budget, then ask for guidanc
 });
 
 test("push conflicts also respect the six-return rolling hour budget", async () => {
-  const { db, itemId } = runningItem();
+  const { db, itemId } = await runningItem();
   for (let n = 0; n < 6; n++) {
     const jobId = enqueueJob(db, {
       queue: JOB_KIND.resume,
@@ -114,7 +114,7 @@ test("push conflicts also respect the six-return rolling hour budget", async () 
 });
 
 test("a person's answer refills the consecutive push-conflict budget", async () => {
-  const { db, itemId } = runningItem();
+  const { db, itemId } = await runningItem();
   for (let n = 0; n < 3; n++) {
     await restartForPushConflict(db, itemId, {
       branch: "paws/topic",

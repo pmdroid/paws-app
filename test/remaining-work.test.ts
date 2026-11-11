@@ -28,9 +28,13 @@ const PULL_URL = "https://github.com/acme/app/pull/7";
 async function itemWithReport(report: Record<string, unknown>) {
   const db = tempDb();
   databases.push(db);
-  const { item } = beginImplementRun(db, insertQueuedItem(db, { id: "ACME-1" }).id, 1);
+  const { item } = await beginImplementRun(
+    sqliteDb(db),
+    insertQueuedItem(db, { id: "ACME-1" }).id,
+    1,
+  );
   enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: 1 });
-  enterMergeQueue(db, item.id, { phase: "merge_queue" });
+  await enterMergeQueue(sqliteDb(db), item.id, { phase: "merge_queue" });
   await savePullRequestDraft(sqliteDb(db), item.id, parsePullRequest(report), 2);
   const tracker = createFakeTracker([
     {

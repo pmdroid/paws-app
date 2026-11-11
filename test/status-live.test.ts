@@ -77,10 +77,14 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       ],
     );
 
-    const parked = beginImplementRun(db, waiting.id, NOW);
+    const parked = await beginImplementRun(sqliteDb(db), waiting.id, NOW);
     applyWorkItemEvent(db, waiting.id, "blocking_question");
-    beginImplementRun(db, merging.id, NOW);
-    enterMergeQueue(db, merging.id, { phase: "merge_queue", baseSha: BASE, wipCommit: HEAD });
+    await beginImplementRun(sqliteDb(db), merging.id, NOW);
+    await enterMergeQueue(sqliteDb(db), merging.id, {
+      phase: "merge_queue",
+      baseSha: BASE,
+      wipCommit: HEAD,
+    });
     await joinMergeQueue(sqliteDb(db), {
       itemId: merging.id,
       repository: "pmdroid/paws-demo",
@@ -300,8 +304,12 @@ test("a merge-queue item whose re-verify waits for a runner slot says it is next
     migrate(db);
     const merging = insertQueuedItem(db, { id: "01MERGINGITEM", sessionKey: "ses_1", now: NOW });
     db.run("UPDATE work_item SET linear_identifier = ? WHERE id = ?", ["ENG-3", merging.id]);
-    beginImplementRun(db, merging.id, NOW);
-    enterMergeQueue(db, merging.id, { phase: "merge_queue", baseSha: BASE, wipCommit: HEAD });
+    await beginImplementRun(sqliteDb(db), merging.id, NOW);
+    await enterMergeQueue(sqliteDb(db), merging.id, {
+      phase: "merge_queue",
+      baseSha: BASE,
+      wipCommit: HEAD,
+    });
     await joinMergeQueue(sqliteDb(db), {
       itemId: merging.id,
       repository: "pmdroid/paws-demo",

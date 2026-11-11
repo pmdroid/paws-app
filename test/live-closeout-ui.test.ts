@@ -128,8 +128,8 @@ function portable(
   return `${kind}/${hex}/${head}/${checkId}/1.${ext}`;
 }
 
-function seedVerifying(db: Database, id: string, head: string, now: number): void {
-  const started = beginImplementRun(db, id, now, {
+async function seedVerifying(db: Database, id: string, head: string, now: number): Promise<void> {
+  const started = await beginImplementRun(sqliteDb(db), id, now, {
     phase: "verifying",
     baseSha: sha("c"),
     wipCommit: head,
@@ -218,7 +218,7 @@ describe("live closeout ui", () => {
     const db = database();
     const id = "ENG-302";
     insertQueuedItem(db, { id });
-    const { run } = beginImplementRun(db, id, 1);
+    const { run } = await beginImplementRun(sqliteDb(db), id, 1);
     applyWorkItemEvent(db, id, "pause");
     markRun(db, run.id, "lost", 2);
     expect((await snapshotOf(db, 3)).runs.find((entry) => entry.itemId === id)?.state).toBe(
@@ -232,7 +232,7 @@ describe("live closeout ui", () => {
     const id = "ENG-302";
     insertQueuedItem(db, { id, title: "Capped repair", limits: { closeout: 1_000 }, now });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [id]);
-    seedVerifying(db, id, sha("b"), now);
+    await seedVerifying(db, id, sha("b"), now);
     // Closeout time counts while a job verifies the item.
     enqueueJob(db, { queue: "run.reverify", payload: { itemId: id }, now });
     claimNextJob(db, { now, leaseMs: 60_000, queues: ["run.reverify"] });
@@ -252,7 +252,7 @@ describe("live closeout ui", () => {
     const id = "ENG-74";
     const head = sha("b");
     insertQueuedItem(db, { id, title: "Live closeout", now });
-    seedVerifying(db, id, head, now);
+    await seedVerifying(db, id, head, now);
     enqueueOutbox(db, {
       target: "linear",
       op: "activity",
@@ -317,12 +317,16 @@ describe("live closeout ui", () => {
     const oldHead = sha("a");
     const newHead = sha("d");
     insertQueuedItem(db, { id, title: "Recheck", now });
-    beginImplementRun(db, id, now, {
+    await beginImplementRun(sqliteDb(db), id, now, {
       phase: "merge_queue",
       baseSha: sha("c"),
       wipCommit: oldHead,
     });
-    enterMergeQueue(db, id, { phase: "merge_queue", baseSha: sha("c"), wipCommit: oldHead });
+    await enterMergeQueue(sqliteDb(db), id, {
+      phase: "merge_queue",
+      baseSha: sha("c"),
+      wipCommit: oldHead,
+    });
     const accepted = [
       "Closeout: accepted",
       `Task: ${id}`,
@@ -380,7 +384,7 @@ describe("live closeout ui", () => {
     const firstHead = sha("a");
     const secondHead = sha("e");
     insertQueuedItem(db, { id, title: "Fix loop", now });
-    seedVerifying(db, id, secondHead, now);
+    await seedVerifying(db, id, secondHead, now);
     const first = identity(id, firstHead, policy("a"));
     await ensureCloseoutProgress(sqliteDb(db), id, first, now + 1, true);
     await upsertCloseoutStep(sqliteDb(db), id, first, step("unit", "running"), now + 2);
@@ -450,7 +454,7 @@ describe("live closeout ui", () => {
     const oldHead = sha("a");
     const newHead = sha("e");
     insertQueuedItem(db, { id, title: "Fixer", now });
-    seedVerifying(db, id, oldHead, now);
+    await seedVerifying(db, id, oldHead, now);
     const accepted = [
       "Closeout: accepted",
       `Head: ${oldHead}`,
@@ -510,8 +514,8 @@ describe("live closeout ui", () => {
     const ghp = `ghp_${"g".repeat(24)}`;
     insertQueuedItem(db, { id, title: "Artifacts", now });
     insertQueuedItem(db, { id: other, title: "Other", now: now + 1 });
-    seedVerifying(db, id, head, now);
-    seedVerifying(db, other, head, now);
+    await seedVerifying(db, id, head, now);
+    await seedVerifying(db, other, head, now);
     const current = identity(id, head, digest);
     const logRel = portable("logs", digest, head, "typecheck");
     const evidenceRel = portable("evidence", digest, head, "typecheck");
@@ -705,7 +709,7 @@ describe("live closeout ui", () => {
     const head = sha("1");
     const first = database(file);
     insertQueuedItem(first, { id, title: "Persisted", now });
-    seedVerifying(first, id, head, now);
+    await seedVerifying(first, id, head, now);
     const current = identity(id, head, policy("1"));
     await ensureCloseoutProgress(sqliteDb(first), id, current, now, true);
     await upsertCloseoutStep(sqliteDb(first), id, current, step("typecheck", "passed"), now + 1);

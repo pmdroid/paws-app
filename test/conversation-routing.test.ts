@@ -116,7 +116,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
       teamId: TEAM,
       observedAtMs: T0,
     });
-    const { run } = beginImplementRun(db, id, T0);
+    const { run } = await beginImplementRun(sqliteDb(db), id, T0);
     const command = `command-${id}`;
     const payload = Buffer.from(
       JSON.stringify({
@@ -145,7 +145,11 @@ async function setup(options: { version?: string; conversations?: number } = {})
       [run.id, command, JSON.stringify({ stopReason: "end_turn", sessionId: `claude-${id}` }), T0],
     );
     if (state === "merge_queue")
-      enterMergeQueue(db, id, { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+      await enterMergeQueue(sqliteDb(db), id, {
+        phase: "merge_queue",
+        baseSha: "b",
+        wipCommit: "h",
+      });
     if (state === "queued") db.run("UPDATE work_item SET state='queued' WHERE id=?", [id]);
     return { id, session, runId: run.id };
   }

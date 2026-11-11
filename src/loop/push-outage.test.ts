@@ -36,14 +36,14 @@ afterEach(() => {
 });
 
 /** Three items waiting to merge, each with a merge job in queue order. */
-function lane() {
+async function lane() {
   const db = openDatabase(":memory:");
   migrate(db);
   open.push(db);
   const jobs = [];
   for (const [index, name] of ["a", "b", "c"].entries()) {
     insertQueuedItem(db, { id: `item-${name}`, sessionKey: `ses-${name}`, now: 0 });
-    beginImplementRun(db, `item-${name}`, 1);
+    await beginImplementRun(sqliteDb(db), `item-${name}`, 1);
     jobs.push(
       enqueueJob(db, {
         queue: JOB_KIND.merge,
@@ -90,7 +90,7 @@ async function attempt(
 
 describe("a push outage", () => {
   test("a denied push holds every merge push, fails nothing and asks nothing", async () => {
-    const { db, jobs } = lane();
+    const { db, jobs } = await lane();
     const first = await attempt(db, 100, () => "refused");
     expect(first).toEqual({ id: jobs[0], pushed: false, held: false });
     // The jobs behind it reach their push and wait without trying it.
@@ -129,7 +129,7 @@ describe("a push outage", () => {
   });
 
   test("one probe retries after 1, 2 and 5 minutes, then every 10 minutes", async () => {
-    const { db, jobs } = lane();
+    const { db, jobs } = await lane();
     await attempt(db, 100, () => "refused");
     await attempt(db, 101, () => "works");
     await attempt(db, 102, () => "works");
@@ -148,7 +148,7 @@ describe("a push outage", () => {
   });
 
   test("the first push that works ends it and the held pushes run in queue order", async () => {
-    const { db, jobs } = lane();
+    const { db, jobs } = await lane();
     await attempt(db, 100, () => "refused");
     await attempt(db, 101, () => "works");
     await attempt(db, 102, () => "works");
@@ -166,7 +166,7 @@ describe("a push outage", () => {
   });
 
   test("a held job takes the probe over when the probe's item stopped", async () => {
-    const { db, jobs } = lane();
+    const { db, jobs } = await lane();
     await attempt(db, 100, () => "refused");
     await attempt(db, 101, () => "works");
     db.run("UPDATE job SET status = 'cancelled' WHERE id = ?", [jobs[0]]);
@@ -176,7 +176,7 @@ describe("a push outage", () => {
   });
 
   test("the workspace question opens after an hour and closes when pushes work again", async () => {
-    const { db, jobs } = lane();
+    const { db, jobs } = await lane();
     const hour = 100 + PUSH_OUTAGE_QUESTION_MS;
     await attempt(db, 100, () => "refused");
     await attempt(db, 101, () => "works");

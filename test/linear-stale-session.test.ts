@@ -99,7 +99,7 @@ async function fixture() {
   let orchestrator = makeOrchestrator();
   await orchestrator.onLinearEvent(created("old"));
   const oldId = (await getLinearSession(sqliteDb(db), "old"))!.activeItemId!;
-  beginImplementRun(db, oldId, 11);
+  await beginImplementRun(sqliteDb(db), oldId, 11);
   applyWorkItemEvent(db, oldId, "blocking_question");
   const snapshot: LinearSessionSnapshot = {
     id: "old",

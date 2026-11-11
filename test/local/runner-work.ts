@@ -123,7 +123,7 @@ export async function probeRunnerWork(
       [{ runId: command.runId, generation: command.generation, commandId: command.id }],
     );
   const item = insertQueuedItem(db, { id: "fixture-item", now, sessionKey: "fixture-session" });
-  const { run } = beginImplementRun(db, item.id, now);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "fixture-work",
     oauthClientId: "fixture-app",
@@ -565,7 +565,7 @@ export async function probeRunnerWork(
         now,
         sessionKey: "fixture-session",
       });
-      const started = beginImplementRun(db, blocked.id, now);
+      const started = await beginImplementRun(sqliteDb(db), blocked.id, now);
       await bindWorkItemRepository(sqliteDb(db), blocked.id, repository);
       await work.assign({
         ...replacement,
@@ -605,7 +605,7 @@ export async function probeRunnerWork(
         now,
         sessionKey: "fixture-session",
       });
-      const started = beginImplementRun(db, queued.id, now);
+      const started = await beginImplementRun(sqliteDb(db), queued.id, now);
       await bindWorkItemRepository(sqliteDb(db), queued.id, repository);
       contenders.push({
         ...replacement,

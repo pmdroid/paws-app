@@ -90,15 +90,19 @@ describe("status payload budget", () => {
     for (let index = 0; index < 100; index += 1) {
       const id = `PAS-${1000 + index}`;
       insertQueuedItem(db, { id, title: `Finished item ${index}`, now: now + index });
-      beginImplementRun(db, id, now + index);
+      await beginImplementRun(sqliteDb(db), id, now + index);
       await closeout(db, id, 1, 2, now + index);
       applyWorkItemEvent(db, id, "cancel", { now: now + index + 10 });
     }
     for (let index = 0; index < 10; index += 1) {
       const id = `PAS-${2000 + index}`;
       insertQueuedItem(db, { id, title: `Open item ${index}`, now: now + index });
-      beginImplementRun(db, id, now + index);
-      enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: "c".repeat(40) });
+      await beginImplementRun(sqliteDb(db), id, now + index);
+      await enterMergeQueue(sqliteDb(db), id, {
+        phase: "merge_queue",
+        baseSha: base,
+        wipCommit: "c".repeat(40),
+      });
       await closeout(db, id, 3, CHECKS.length, now + index);
       db.run(
         "INSERT INTO question (id, item_id, session_id, body, status, created_at) VALUES (?, ?, ?, ?, 'open', ?)",

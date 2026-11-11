@@ -51,7 +51,7 @@ export async function probeLinearSessionStop(root: string) {
   try {
     for (const field of ["dismissedAt", "archivedAt", "stopping"] as const) {
       const old = insertQueuedItem(db, { id: `old-${field}`, sessionKey: `old-${field}` });
-      beginImplementRun(db, old.id, clock.now());
+      await beginImplementRun(sqliteDb(db), old.id, clock.now());
       applyWorkItemEvent(db, old.id, "blocking_question");
       const replacement = insertQueuedItem(db, { id: `new-${field}`, sessionKey: `new-${field}` });
       await ensureLinearSession(sqliteDb(db), {

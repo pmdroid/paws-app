@@ -195,7 +195,7 @@ async function setup() {
     git(["--git-dir", paws, "update-ref", head(id), base]);
     const sessionKey = `session-${sequence}`;
     const record = insertQueuedItem(db, { id, now: now(), sessionKey });
-    const { run } = beginImplementRun(db, id, now());
+    const { run } = await beginImplementRun(sqliteDb(db), id, now());
     await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",

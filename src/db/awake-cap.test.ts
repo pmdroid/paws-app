@@ -57,7 +57,7 @@ async function acceptedItem(maxAwakeMs: number) {
     maxAwakeMs,
     now: clock.now(),
   });
-  const { run } = beginImplementRun(db, item.id, clock.now());
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
   clock.advance(10 * MINUTE);
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
@@ -84,7 +84,7 @@ test("the job loop bills only active agent and Closeout work across every waitin
   clock.advance(60 * MINUTE);
   expect((await accrue()).awakeMs).toBe(0); // queued
   jobs.register(JOB_KIND.start, async (job) => {
-    const { run } = beginImplementRun(db, item.id, clock.now());
+    const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
     expect((await accrue()).awakeMs).toBe(0);
     clock.advance(5 * MINUTE);
     expect((await accrue()).awakeMs).toBe(5 * MINUTE);
@@ -158,7 +158,7 @@ test("a live remote turn still counts without a local execution job", async () =
   legacyMigrate(db);
   const clock = new FakeClock(20_000);
   const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
-  const { run } = beginImplementRun(db, item.id, clock.now());
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
   db.run("PRAGMA foreign_keys=OFF");
   db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'runner','workspace',1,0,'command',?)",
@@ -182,7 +182,7 @@ test("an idle running item and a control job do not spend the awake budget", asy
   legacyMigrate(db);
   const clock = new FakeClock(20_000);
   const item = insertQueuedItem(db, { maxAwakeMs: MINUTE, now: clock.now() });
-  beginImplementRun(db, item.id, clock.now());
+  await beginImplementRun(sqliteDb(db), item.id, clock.now());
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
   clock.advance(60 * MINUTE);
   expect((await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now())).item.awakeMs).toBe(
@@ -203,7 +203,7 @@ test("a job retry backoff in running counts nothing and work resumes at the next
   legacyMigrate(db);
   const clock = new FakeClock(20_000);
   const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
-  beginImplementRun(db, item.id, clock.now());
+  await beginImplementRun(sqliteDb(db), item.id, clock.now());
   const jobs = new JobLoop(db, clock, { leaseMs: 24 * 60 * MINUTE, backoffBaseMs: 60 * MINUTE });
   let attempts = 0;
   jobs.register(JOB_KIND.resume, () => {
@@ -314,7 +314,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     legacyMigrate(db);
     const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: 0 });
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [item.id]);
-    beginImplementRun(db, item.id, clock.now());
+    await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     applyWorkItemEvent(db, item.id, "blocking_question");
     clock.advance(90 * MINUTE);
@@ -368,7 +368,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
         undefined,
         getWorkItem(db, item.id)?.state === "running" ? true : undefined,
       );
-    beginImplementRun(db, item.id, clock.now());
+    await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrue();
     clock.advance(41 * MINUTE);
     await accrue();
@@ -412,7 +412,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       const db = openDatabase(":memory:");
       legacyMigrate(db);
       const item = insertQueuedItem(db, { maxAwakeMs: 30 * MINUTE, now: clock.now() });
-      const { run } = beginImplementRun(db, item.id, clock.now());
+      const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
       if (state === "recovering") applyWorkItemEvent(db, item.id, "lease_expired");
       await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
       enqueueJob(db, {
@@ -465,7 +465,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     expect(
       claimNextJob(db, { now: clock.now(), leaseMs: 24 * 60 * MINUTE, queues: [JOB_KIND.start] }),
     ).not.toBeNull();
-    const { run } = beginImplementRun(db, item.id, clock.now());
+    const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
     db.run("PRAGMA foreign_keys=OFF");
     db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'runner','workspace',1,0,'command',?)",
@@ -534,7 +534,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     const db = openDatabase(":memory:");
     legacyMigrate(db);
     const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 60 * MINUTE, now: 0 });
-    beginImplementRun(db, item.id, clock.now());
+    await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(6 * MINUTE);
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
@@ -566,7 +566,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     const db = openDatabase(":memory:");
     legacyMigrate(db);
     const item = insertQueuedItem(db, { now: clock.now() });
-    beginImplementRun(db, item.id, clock.now());
+    await beginImplementRun(sqliteDb(db), item.id, clock.now());
     applyWorkItemEvent(db, item.id, "turn_ended");
     const job = verifyingJob(db, item.id, clock.now());
     await markJobAwakeWait(sqliteDb(db), job, true, clock.mono(), clock.now());
@@ -606,7 +606,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     const db = openDatabase(":memory:");
     legacyMigrate(db);
     const item = insertQueuedItem(db, { now: clock.now() });
-    beginImplementRun(db, item.id, clock.now());
+    await beginImplementRun(sqliteDb(db), item.id, clock.now());
     applyWorkItemEvent(db, item.id, "turn_ended");
     const job = verifyingJob(db, item.id, clock.now());
     const other = enqueueJob(db, {
@@ -645,7 +645,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
     const db = openDatabase(":memory:");
     legacyMigrate(db);
     const item = insertQueuedItem(db, { sessionKey: "ses", maxAwakeMs: 30 * MINUTE, now: 0 });
-    beginImplementRun(db, item.id, clock.now());
+    await beginImplementRun(sqliteDb(db), item.id, clock.now());
     applyWorkItemEvent(db, item.id, "turn_ended");
     applyWorkItemEvent(db, item.id, "closeout_accepted");
     saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "accepted" });
@@ -676,7 +676,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       maxAwakeMs: 30 * MINUTE,
       now: 0,
     });
-    beginImplementRun(db, accepted.id, clock.now());
+    await beginImplementRun(sqliteDb(db), accepted.id, clock.now());
     applyWorkItemEvent(db, accepted.id, "turn_ended");
     applyWorkItemEvent(db, accepted.id, "closeout_accepted");
     saveCheckpoint(db, accepted.id, {
@@ -697,7 +697,7 @@ describe("awake-time cap after Closeout accepted the work", () => {
       maxAwakeMs: 30 * MINUTE,
       now: 0,
     });
-    beginImplementRun(db, fresh.id, clock.now());
+    await beginImplementRun(sqliteDb(db), fresh.id, clock.now());
     applyWorkItemEvent(db, fresh.id, "turn_ended");
     saveCheckpoint(db, fresh.id, { phase: "verifying", baseSha: "base", wipCommit: "unchecked" });
     for (const column of ["accepted_head", "agent_ms", "closeout_ms", "waiting_ms", "recheck_ms"])

@@ -21,17 +21,17 @@ import { tempDb } from "./helpers";
 
 const NOW = 1_700_000_000_000;
 
-function parked() {
+async function parked() {
   const db = tempDb();
   const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
-  const { run } = beginImplementRun(db, item.id, NOW - 10);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   applyWorkItemEvent(db, item.id, "blocking_question");
   saveCheckpoint(db, item.id, { phase: "awaiting_input", baseSha: "base", wipCommit: "head" });
   return { db, asker: { itemId: item.id, runId: run.id, sessionId: "ses_1" } };
 }
 
 async function closeoutHelp() {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   const { question } = await ask(db, asker, "closeout-help", "Closeout needs your help.", {
     now: NOW,
   });
@@ -118,7 +118,7 @@ const delivered = (db: ReturnType<typeof tempDb>) =>
     .map((row) => row.payload as { questionId: string; body: string });
 
 test("a Closeout stall asked while another question is open is delivered after its answer", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   const open = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
   await askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: stalled"), { now: NOW + 1 });
   const queued = (await listCloseoutRecoveries(sqliteDb(db), asker.itemId))[0]!;
@@ -135,7 +135,7 @@ test("a Closeout stall asked while another question is open is delivered after i
 });
 
 test("a policy field this Paws does not know asks for a Paws update", async () => {
-  const { db } = parked();
+  const { db } = await parked();
   await askCloseoutHelp(
     db,
     "ses_1",
@@ -150,7 +150,7 @@ test("a policy field this Paws does not know asks for a Paws update", async () =
 });
 
 test("other blocked policies keep the usual Closeout question", async () => {
-  const { db } = parked();
+  const { db } = await parked();
   await askCloseoutHelp(db, "ses_1", help("Closeout: blocked\nMessage: invalid YAML"), {
     now: NOW,
   });
@@ -159,7 +159,7 @@ test("other blocked policies keep the usual Closeout question", async () => {
 });
 
 test("the Closeout help question names the task as its Linear identifier", async () => {
-  const { db } = parked();
+  const { db } = await parked();
   const pathId = "PAS-367-01M5NDWPQZ0JQ91E1MFMVEY6EP";
   const summary = formatEvidenceSummary({
     outcome: "exhausted",
@@ -179,7 +179,7 @@ test("the Closeout help question names the task as its Linear identifier", async
 });
 
 test("a CI help answer resumes the agent with the handoff", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   const { question } = await ask(db, asker, "ci-help", "CI failed on the pull request.", {
     now: NOW,
   });
@@ -197,7 +197,7 @@ async function askedAbout(
   checks: { id: string; kind: string; state: string; message: string }[],
   reason = "blocked_check",
 ) {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   await askCloseoutHelp(db, "ses_1", blocked, { now: NOW, reason, checks });
   const question = (await getQuestion(
     sqliteDb(db),

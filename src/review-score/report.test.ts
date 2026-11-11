@@ -21,12 +21,16 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function candidates() {
+async function candidates() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  beginImplementRun(db, "eng-1", 1);
-  enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+  await beginImplementRun(sqliteDb(db), "eng-1", 1);
+  await enterMergeQueue(sqliteDb(db), "eng-1", {
+    phase: "merge_queue",
+    baseSha: "b",
+    wipCommit: "h",
+  });
   let key = 0;
   const add = async (
     trigger: ReviewEscapeTrigger,
@@ -55,7 +59,7 @@ function candidates() {
 
 describe("the reviewer score report", () => {
   test("lists found after the PR with counts per trigger, beside the escapes after merge", async () => {
-    const { db, add } = candidates();
+    const { db, add } = await candidates();
     await add("ci", { escape: true });
     await add("ci", { escape: true });
     await add("ci", { escape: false, reason: "flake" });

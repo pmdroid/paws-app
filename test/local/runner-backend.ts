@@ -294,7 +294,7 @@ export async function probeRunnerBackend(
       sessionId = `session-${sequence}`;
     await finishRuns();
     const record = insertQueuedItem(db, { id, now, sessionKey: sessionId });
-    const { run } = beginImplementRun(db, id, now);
+    const { run } = await beginImplementRun(sqliteDb(db), id, now);
     const linked = Bun.spawnSync([
       "/usr/bin/git",
       "--git-dir",

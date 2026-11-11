@@ -203,8 +203,12 @@ describe("Settings › Merging › Ignored PR comments", () => {
       repo: "monorepo",
       remoteUrl: "https://github.com/acme/monorepo.git",
     });
-    beginImplementRun(db, "eng-1", 1);
-    enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+    await beginImplementRun(sqliteDb(db), "eng-1", 1);
+    await enterMergeQueue(sqliteDb(db), "eng-1", {
+      phase: "merge_queue",
+      baseSha: "b",
+      wipCommit: "h",
+    });
     await recordItemPullRequest(sqliteDb(db), {
       itemId: "eng-1",
       pullNumber: 7,

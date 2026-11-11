@@ -1,5 +1,6 @@
 import { FakeClock, JOB_KIND } from "../../src/core";
 import {
+  sqliteDb,
   applyWorkItemEvent,
   beginImplementRun,
   claimNextJob,
@@ -31,7 +32,7 @@ export default {
       migrate(db);
       const clock = new FakeClock(Date.now() + 1000);
       insertQueuedItem(db, { id: "quiet", sessionKey: "quiet-session", now: clock.now() });
-      beginImplementRun(db, "quiet", clock.now());
+      await beginImplementRun(sqliteDb(db), "quiet", clock.now());
       applyWorkItemEvent(db, "quiet", "turn_ended", { now: clock.now() });
       saveCheckpoint(db, "quiet", { phase: "verifying", baseSha: "base", wipCommit: "head" });
       const oldJob = enqueueJob(db, {

@@ -496,7 +496,7 @@ async function addItem(id: string, answer = false) {
       repo: "paws-demo",
       remoteUrl,
     });
-  const { run } = beginImplementRun(paws.db, id, Date.now());
+  const { run } = await beginImplementRun(sqliteDb(paws.db), id, Date.now());
   enqueueJob(paws.db, {
     queue: JOB_KIND.resume,
     payload: { itemId: id, runId: run.id, freshSession: true },

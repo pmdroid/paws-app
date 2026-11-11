@@ -135,8 +135,8 @@ export async function probeBoundaries(
       wipCommit: "b".repeat(40),
     };
     const recovering = insertQueuedItem(db, { id: "recovering-item", now: clock.now() });
-    beginImplementRun(db, recovering.id, clock.now());
-    enterMergeQueue(db, recovering.id, checkpoint);
+    await beginImplementRun(sqliteDb(db), recovering.id, clock.now());
+    await enterMergeQueue(sqliteDb(db), recovering.id, checkpoint);
     const original = await enqueueVerifiedMerge(db, {
       itemId: recovering.id,
       head: checkpoint.wipCommit,

@@ -78,7 +78,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       );
       migrate(db);
       const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-      beginImplementRun(db, item.id, 1);
+      await beginImplementRun(sqliteDb(db), item.id, 1);
       await bindWorkItemRepository(sqliteDb(db), item.id, {
         owner: "acme",
         repo: "app",

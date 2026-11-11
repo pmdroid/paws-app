@@ -36,7 +36,7 @@ export async function probeResponseTaskRecovery(root: string) {
     migrate(db);
     const clock = new FakeClock(1000);
     const item = insertQueuedItem(db, { id: `item-${mode}`, sessionKey: `session-${mode}` });
-    const { run } = beginImplementRun(db, item.id, clock.now());
+    const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await saveTaskMode(sqliteDb(db), item.id, mode);
     await saveConversation(
       sqliteDb(db),

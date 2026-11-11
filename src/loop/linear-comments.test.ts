@@ -252,9 +252,13 @@ async function setup(options: { members?: string[]; agents?: string[] } = {}) {
   };
 }
 
-function toMergeQueue(db: Awaited<ReturnType<typeof setup>>["db"]) {
-  beginImplementRun(db, "eng-1", T0);
-  enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+async function toMergeQueue(db: Awaited<ReturnType<typeof setup>>["db"]) {
+  await beginImplementRun(sqliteDb(db), "eng-1", T0);
+  await enterMergeQueue(sqliteDb(db), "eng-1", {
+    phase: "merge_queue",
+    baseSha: "b",
+    wipCommit: "h",
+  });
 }
 
 describe("receiving ordinary Linear comments", () => {
@@ -289,7 +293,7 @@ describe("receiving ordinary Linear comments", () => {
   test("an authorized comment is recorded once, acknowledged once and gathered by one job", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       const raw = webhookComment({ id: "c-1", body: "Rename the flag to `strict`." });
       expect(await f.receive(fromWebhook(raw, "d-1"))).toBe(true);
       expect(await f.receive(fromWebhook(raw, "d-1"))).toBe(true);
@@ -316,7 +320,7 @@ describe("receiving ordinary Linear comments", () => {
   test("idle merge-queue work wakes once and the comment is in the resumed brief", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use the v2 endpoint." })));
       const before = latestHumanTurn(f.db, "eng-1");
       expect(await f.deliver()).toBe("restarted");
@@ -346,7 +350,7 @@ describe("receiving ordinary Linear comments", () => {
   test("an edit, deletion or revocation after the wake still applies before the agent reads it", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use red." })));
       await f.receive(
         fromWebhook(webhookComment({ id: "c-2", body: "Drop this.", createdAt: T0 + 2_000 })),
@@ -399,7 +403,7 @@ describe("receiving ordinary Linear comments", () => {
   test("the loop's own capabilities wake idle work once for a webhook comment", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Ship it behind a flag." })));
       expect(await f.deliverWithLoop()).toBe("restarted");
       expect(await f.deliverWithLoop()).toBe("done");
@@ -438,7 +442,7 @@ describe("receiving ordinary Linear comments", () => {
   test("a running agent is not interrupted; the comment waits for the turn to end", async () => {
     const f = await setup();
     try {
-      beginImplementRun(f.db, "eng-1", T0);
+      await beginImplementRun(sqliteDb(f.db), "eng-1", T0);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Skip the migration." })));
       expect(f.thoughts()).toEqual([
         "Received a comment on eng-1. Paws hands it to the agent once its current turn ends.",
@@ -447,7 +451,11 @@ describe("receiving ordinary Linear comments", () => {
       expect((await f.comment("c-1")).state).toBe("queued");
       expect(getWorkItem(f.db, "eng-1")!.state).toBe("running");
       expect(f.resumeJobs()).toHaveLength(0);
-      enterMergeQueue(f.db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+      await enterMergeQueue(sqliteDb(f.db), "eng-1", {
+        phase: "merge_queue",
+        baseSha: "b",
+        wipCommit: "h",
+      });
       expect(await f.deliver()).toBe("restarted");
       expect(f.resumeJobs()).toHaveLength(1);
       expect(await f.resumedBrief()).toContain("Skip the migration.");
@@ -461,7 +469,7 @@ describe("who may comment", () => {
   test("an allowlisted external agent on behalf of a member is authorized as an agent", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       const raw = webhookComment({
         id: "c-1",
         body: "Cyrus here: the flaky test is in rank.test.ts.",
@@ -637,7 +645,7 @@ describe("routing to the right work", () => {
   test("a stop or a new session after receipt keeps the comment from the old generation", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "First." })));
       await acceptLinearStop(sqliteDb(f.db), SESSION, "stop-1", T0 + 2_000);
       expect(await f.deliver()).toBe("done");
@@ -651,7 +659,7 @@ describe("routing to the right work", () => {
   test("a comment queued for a session the item no longer belongs to is superseded", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "First." })));
       f.db.run("UPDATE work_item SET session_key = 'ses-new' WHERE id = 'eng-1'");
       expect(await f.deliver()).toBe("done");
@@ -666,7 +674,7 @@ describe("edits, deletions and restarts", () => {
   test("an edit before delivery replaces the body; an older update is ignored", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use red." })));
       await f.receive(
         fromWebhook(
@@ -702,7 +710,7 @@ describe("edits, deletions and restarts", () => {
   test("a deletion before delivery retires the comment and catch-up cannot revive it", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Oops." })));
       await f.receive(
         fromWebhook(
@@ -736,7 +744,7 @@ describe("edits, deletions and restarts", () => {
   test("a restart between receipt and routing routes the comment on redelivery", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       f.db.run(
         `INSERT INTO linear_comment (comment_id, issue_id, organization_id, team_id, author_id,
            actor_type, body, created_at_ms, updated_at_ms, received_at, source)
@@ -757,7 +765,7 @@ describe("holds, questions and gates", () => {
     for (const hold of ["paused", "manual", "failed"] as const) {
       const f = await setup();
       try {
-        beginImplementRun(f.db, "eng-1", T0);
+        await beginImplementRun(sqliteDb(f.db), "eng-1", T0);
         f.db.run("UPDATE work_item SET state = ? WHERE id = 'eng-1'", [hold]);
         await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Carry on." })));
         expect(await f.deliver()).toBe("done");
@@ -789,7 +797,7 @@ describe("holds, questions and gates", () => {
   test("teardown uncertainty keeps a queued comment queued until the item settles", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Later." })));
       f.setBusy(true);
       expect(await f.deliver()).toBe("wait");
@@ -822,7 +830,7 @@ describe("holds, questions and gates", () => {
     for (const kind of gates) {
       const f = await setup();
       try {
-        const { run } = beginImplementRun(f.db, "eng-1", T0);
+        const { run } = await beginImplementRun(sqliteDb(f.db), "eng-1", T0);
         const item = getWorkItem(f.db, "eng-1")!;
         const asked = await sqliteDb(f.db).transaction((q) =>
           askSteps(
@@ -851,7 +859,7 @@ describe("holds, questions and gates", () => {
   test("two comments while a question is open are context, not an answer", async () => {
     const f = await setup();
     try {
-      const { run } = beginImplementRun(f.db, "eng-1", T0);
+      const { run } = await beginImplementRun(sqliteDb(f.db), "eng-1", T0);
       const item = getWorkItem(f.db, "eng-1")!;
       await sqliteDb(f.db).transaction((q) =>
         askSteps(
@@ -878,7 +886,7 @@ describe("batching with pull request feedback", () => {
   test("a burst of comments moves the one job inside the quiet window and maximum wait", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       for (let index = 0; index < 8; index++) {
         f.clock.advance(50_000);
         await f.receive(
@@ -906,7 +914,7 @@ describe("batching with pull request feedback", () => {
   test("pending pull request comments and CI keep their wait and carry the Linear comment in one restart", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await recordPullComment(sqliteDb(f.db), {
         source: "conversation",
         commentId: 99,
@@ -963,7 +971,7 @@ describe("review findings", () => {
   test("a batch takes only the comments that fit; the rest wait for the next handoff", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       for (let index = 0; index < 4; index++)
         await f.receive(
           fromWebhook(
@@ -995,7 +1003,7 @@ describe("review findings", () => {
   test("while the member checker is unavailable recovered comments wait instead of passing", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "After restart." })));
       f.setCheckerReady(false);
       expect(await f.deliver()).toBe("wait");
@@ -1014,7 +1022,7 @@ describe("review findings", () => {
   test("a session reply whose source comment was already handed off is not delivered again", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use tabs." })));
       expect(await f.deliver()).toBe("restarted");
       expect(await f.resumedBrief()).toContain("Use tabs.");
@@ -1048,7 +1056,7 @@ describe("review findings", () => {
   test("the restart leaves GitHub's merge queue first, and a merged pull request is not restarted", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await recordItemPullRequest(sqliteDb(f.db), {
         itemId: "eng-1",
         pullNumber: 7,
@@ -1095,7 +1103,7 @@ describe("review findings", () => {
   test("a comment takes the pull request out of GitHub's merge queue on receipt", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await recordItemPullRequest(sqliteDb(f.db), {
         itemId: "eng-1",
         pullNumber: 7,
@@ -1115,7 +1123,7 @@ describe("review findings", () => {
   test("a pull request closed without merging settles the comments so the item is not held", async () => {
     const f = await setup();
     try {
-      toMergeQueue(f.db);
+      await toMergeQueue(f.db);
       await recordItemPullRequest(sqliteDb(f.db), {
         itemId: "eng-1",
         pullNumber: 7,

@@ -58,10 +58,14 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  beginImplementRun(db, "eng-1", 1);
+  await beginImplementRun(sqliteDb(db), "eng-1", 1);
   if (state === "verifying") applyWorkItemEvent(db, "eng-1", "turn_ended");
   if (state === "merge_queue")
-    enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
+    await enterMergeQueue(sqliteDb(db), "eng-1", {
+      phase: "merge_queue",
+      baseSha: "b",
+      wipCommit: "h",
+    });
   await recordItemPullRequest(sqliteDb(db), {
     itemId: "eng-1",
     pullNumber: 7,

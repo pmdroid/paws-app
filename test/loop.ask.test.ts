@@ -33,7 +33,7 @@ test.each([
     "Which outcome?\n\nContext.\n\nReply with one of the options, or answer in your own words.",
   ],
 ])("only a question with options asks to reply with one of them", async (options, body) => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   await ask(db, asker, "clarification", "Which outcome?", {
     options,
     context: "Context.",
@@ -42,10 +42,10 @@ test.each([
   expect(listOutbox(db)[0]?.payload).toMatchObject({ body });
 });
 
-function parked() {
+async function parked() {
   const db = tempDb();
   const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
-  const { run } = beginImplementRun(db, item.id, NOW - 10);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   applyWorkItemEvent(db, item.id, "blocking_question");
   return { db, asker: { itemId: item.id, runId: run.id, sessionId: "ses_1" } };
 }
@@ -61,7 +61,7 @@ const reply = (body: string, deliveryId = "activity:ans") => ({
 const resumes = (db: Database) => listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
 
 test("an answered agent question restarts the same run with the handoff", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   const asked = await ask(db, asker, "agent", "Include archived rows?", {
     options: ["yes", "no"],
     now: NOW,
@@ -103,7 +103,7 @@ test("an answered agent question restarts the same run with the handoff", async 
 test.each(["clarification", "repository"] as const)(
   "an answered %s question resumes the task like an agent question",
   async (kind) => {
-    const { db, asker } = parked();
+    const { db, asker } = await parked();
     const asked = await ask(db, asker, kind, "Which outcome?", { now: NOW });
     await answer(db, reply("Change the code"), questionEffects(db, { now: NOW + 100 }));
     expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
@@ -112,7 +112,7 @@ test.each(["clarification", "repository"] as const)(
 );
 
 test("an answer while the asking run is still live leaves the resume to the end of that run", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
   const effects = questionEffects(db, { now: NOW + 100, asking: (runId) => runId === asker.runId });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
@@ -121,7 +121,7 @@ test("an answer while the asking run is still live leaves the resume to the end 
 });
 
 test("a redirecting answer resumes the task without a handoff job", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
   const effects = questionEffects(db, { now: NOW + 100, redirect: true });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
@@ -130,7 +130,7 @@ test("a redirecting answer resumes the task without a handoff job", async () => 
 });
 
 test("an agent question queued behind another is delivered once that one is answered", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   const waiting = await ask(
     db,
     { ...asker, itemId: "other", runId: null },
@@ -159,7 +159,7 @@ test("an agent question queued behind another is delivered once that one is answ
 });
 
 test("an amended question delivers and keeps the added context and options", async () => {
-  const { db, asker } = parked();
+  const { db, asker } = await parked();
   const asked = await ask(db, asker, "agent", "Include archived rows?", {
     options: ["yes"],
     now: NOW,

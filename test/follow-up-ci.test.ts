@@ -152,7 +152,7 @@ async function waitingTask(
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
-  const { run } = beginImplementRun(db, itemId, Date.now());
+  const { run } = await beginImplementRun(sqliteDb(db), itemId, Date.now());
   await recordItemBranchState(sqliteDb(db), {
     itemId,
     runId: run.id,
@@ -161,7 +161,11 @@ async function waitingTask(
     commits: 1,
     recordedAt: Date.now(),
   });
-  enterMergeQueue(db, itemId, { phase: "merge_queue", baseSha: "f".repeat(40), wipCommit: HEAD });
+  await enterMergeQueue(sqliteDb(db), itemId, {
+    phase: "merge_queue",
+    baseSha: "f".repeat(40),
+    wipCommit: HEAD,
+  });
   if (options.pull !== false)
     await recordItemPullRequest(sqliteDb(db), {
       itemId,

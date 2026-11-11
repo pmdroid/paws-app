@@ -63,7 +63,7 @@ test("artifact completion requires uploaded deliverables and survives database r
   const db = openDatabase(file);
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-  const run = beginImplementRun(db, item.id, 1).run;
+  const run = (await beginImplementRun(sqliteDb(db), item.id, 1)).run;
   await saveTaskMode(sqliteDb(db), item.id, "artifact");
   await expect(completeArtifactTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
     "uploaded deliverable",

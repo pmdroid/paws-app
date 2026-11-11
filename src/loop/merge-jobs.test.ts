@@ -159,8 +159,8 @@ describe("merge CI wait", () => {
       repo: "one",
       remoteUrl: "https://github.com/acme/one.git",
     });
-    beginImplementRun(db, "eng-2", clock.now());
-    enterMergeQueue(db, "eng-2", { phase: "merge_queue", wipCommit: "h" });
+    await beginImplementRun(sqliteDb(db), "eng-2", clock.now());
+    await enterMergeQueue(sqliteDb(db), "eng-2", { phase: "merge_queue", wipCommit: "h" });
     await joinMergeQueue(sqliteDb(db), {
       itemId: "eng-2",
       repository: "acme/one",
@@ -217,8 +217,8 @@ describe("merge CI wait", () => {
   test("CI pending past the wait limit parks at the backstop and does not fail", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    beginImplementRun(db, "eng-1", clock.now());
-    enterMergeQueue(db, "eng-1", { phase: "merge_queue", wipCommit: "h" });
+    await beginImplementRun(sqliteDb(db), "eng-1", clock.now());
+    await enterMergeQueue(sqliteDb(db), "eng-1", { phase: "merge_queue", wipCommit: "h" });
     enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-1" }, now: clock.now() });
     const first = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
     expect(await parkMerge(sqliteDb(db), first, clock.now(), { reason: "ci", head: "h" })).toBe(
@@ -495,8 +495,12 @@ describe("main moving", () => {
     const { db, clock } = queue();
     for (const id of ["eng-1", "eng-2"]) {
       insertQueuedItem(db, { id, now: clock.now() });
-      beginImplementRun(db, id, clock.now());
-      enterMergeQueue(db, id, { phase: "merge_queue", baseSha: "b".repeat(40), wipCommit: id });
+      await beginImplementRun(sqliteDb(db), id, clock.now());
+      await enterMergeQueue(sqliteDb(db), id, {
+        phase: "merge_queue",
+        baseSha: "b".repeat(40),
+        wipCommit: id,
+      });
       await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "acme/app", now: clock.now() });
       clock.advance(1_000);
     }
@@ -637,8 +641,8 @@ describe("slow CI question", () => {
   async function askedAboutSlowCi() {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", now: clock.now() });
-    beginImplementRun(db, "eng-1", clock.now());
-    enterMergeQueue(db, "eng-1", { phase: "merge_queue", wipCommit: "h" });
+    await beginImplementRun(sqliteDb(db), "eng-1", clock.now());
+    await enterMergeQueue(sqliteDb(db), "eng-1", { phase: "merge_queue", wipCommit: "h" });
     await markCloseoutAccepted(sqliteDb(db), "eng-1", "h");
     enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-1" }, now: clock.now() });
     const first = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;

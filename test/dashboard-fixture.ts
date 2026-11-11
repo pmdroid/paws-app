@@ -69,7 +69,7 @@ export async function startDashboardFixture(
       title: `Fixture ${item}`,
       now: Date.now(),
     });
-    runs[item] = beginImplementRun(db, item, Date.now()).run.id;
+    runs[item] = (await beginImplementRun(sqliteDb(db), item, Date.now())).run.id;
     applyWorkItemEvent(db, item, "blocking_question");
     db.run(
       "INSERT INTO question (id, item_id, session_id, body, status, created_at) VALUES (?, ?, ?, 'Which way?', 'open', 1)",
@@ -96,8 +96,14 @@ export async function startDashboardFixture(
       title: `Fixture ${item}`,
       now: Date.now(),
     });
-    const head = beginImplementRun(db, item, Date.now()).run.id.padEnd(40, "0").slice(0, 40);
-    enterMergeQueue(db, item, { phase: "merge_queue", baseSha: head, wipCommit: head });
+    const head = (await beginImplementRun(sqliteDb(db), item, Date.now())).run.id
+      .padEnd(40, "0")
+      .slice(0, 40);
+    await enterMergeQueue(sqliteDb(db), item, {
+      phase: "merge_queue",
+      baseSha: head,
+      wipCommit: head,
+    });
   }
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
   const port = reservation.port!;

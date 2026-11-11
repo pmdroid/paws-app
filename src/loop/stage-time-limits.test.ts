@@ -26,7 +26,7 @@ async function harness(toml: string, projectId: string | null = null) {
   const config = parseConfigToml(toml);
   const limits = resolveTimeLimits(config, projectId, config.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS);
   const item = insertQueuedItem(db, { id: "eng-1", sessionKey: "ses", limits, now: clock.now() });
-  beginImplementRun(db, item.id, clock.now());
+  await beginImplementRun(sqliteDb(db), item.id, clock.now());
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
   const work = async (ms: number, reason?: RestartReason) => {
     if (reason) {

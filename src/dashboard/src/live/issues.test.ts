@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import {
+  sqliteDb,
   applyWorkItemEvent,
   beginImplementRun,
   enterMergeQueue,
@@ -60,10 +61,10 @@ describe("issue resources", () => {
   test("the list carries the snapshot's issue rows, runs and summaries and nothing else", async () => {
     const db = database();
     insertQueuedItem(db, { id: "ENG-1", title: "Running", sessionKey: "s1", now: NOW - 9_000 });
-    beginImplementRun(db, "ENG-1", NOW - 8_000);
+    await beginImplementRun(sqliteDb(db), "ENG-1", NOW - 8_000);
     insertQueuedItem(db, { id: "ENG-2", title: "Merging", sessionKey: "s1", now: NOW - 7_000 });
-    beginImplementRun(db, "ENG-2", NOW - 6_000);
-    enterMergeQueue(db, "ENG-2", {
+    await beginImplementRun(sqliteDb(db), "ENG-2", NOW - 6_000);
+    await enterMergeQueue(sqliteDb(db), "ENG-2", {
       phase: "merge_queue",
       baseSha: "b".repeat(40),
       wipCommit: "c".repeat(40),
@@ -93,7 +94,7 @@ describe("issue resources", () => {
       );
     insertQueuedItem(db, { id: "OLD", title: "Keep runs", sessionKey: "earlier", now: 0 });
     identify("OLD");
-    beginImplementRun(db, "OLD", NOW - 7_200_000);
+    await beginImplementRun(sqliteDb(db), "OLD", NOW - 7_200_000);
     db.run("UPDATE work_item SET state = 'cancelled' WHERE id = 'OLD'");
     db.run("UPDATE run SET status = 'ended', updated_at = ? WHERE item_id = 'OLD'", [
       NOW - 3_600_000,

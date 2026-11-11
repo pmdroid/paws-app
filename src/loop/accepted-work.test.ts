@@ -25,7 +25,7 @@ async function acceptedItem() {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "pas-814", sessionKey: "ses", now: 1_000 });
-  const { run } = beginImplementRun(db, item.id, 1_000);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
   applyWorkItemEvent(db, item.id, "turn_ended");
   applyWorkItemEvent(db, item.id, "closeout_accepted");
   await markCloseoutAccepted(sqliteDb(db), item.id, ACCEPTED);
@@ -148,7 +148,7 @@ test("an item without accepted work is not sent to the merge queue", async () =>
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "fresh", sessionKey: "ses", now: 1_000 });
-  beginImplementRun(db, "fresh", 1_000);
+  await beginImplementRun(sqliteDb(db), "fresh", 1_000);
   expect(await mergeAcceptedWork(sqliteDb(db), "fresh", { now: 2_000 })).toBe(false);
   expect(
     await settleRejectedPush(sqliteDb(db), "fresh", {
@@ -180,7 +180,7 @@ for (const reason of ["ci", "review"] as const) {
       body: `fix ${reason}`,
       now: 2_000,
     })!;
-    beginImplementRun(db, itemId, 2_500);
+    await beginImplementRun(sqliteDb(db), itemId, 2_500);
     db.run("UPDATE job SET status = 'running' WHERE id = ?", [job]);
     expect(
       await settleRejectedPush(sqliteDb(db), itemId, {

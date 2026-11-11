@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { Checkpoint, StageLimits } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Db, type Q } from "./db";
 import {
   applyWorkItemEventSteps,
   configureWorkItemSteps,
@@ -75,15 +75,13 @@ export function* beginImplementRunSteps(
   return { item, run };
 }
 
-export function beginImplementRun(
-  db: Database,
+export async function beginImplementRun(
+  store: Db,
   itemId: string,
   now: number,
   checkpoint?: Checkpoint,
-): { item: WorkItemRecord; run: StoredRun } {
-  return settled(
-    sqliteDb(db).transaction((q) => beginImplementRunSteps(q, itemId, now, checkpoint)),
-  );
+): Promise<{ item: WorkItemRecord; run: StoredRun }> {
+  return store.transaction((q) => beginImplementRunSteps(q, itemId, now, checkpoint));
 }
 
 export function* enterMergeQueueSteps(q: Q, itemId: string, checkpoint: Checkpoint) {
@@ -92,6 +90,10 @@ export function* enterMergeQueueSteps(q: Q, itemId: string, checkpoint: Checkpoi
   yield* saveCheckpointSteps(q, itemId, { ...checkpoint, phase: "merge_queue" });
 }
 
-export function enterMergeQueue(db: Database, itemId: string, checkpoint: Checkpoint): void {
-  settled(sqliteDb(db).transaction((q) => enterMergeQueueSteps(q, itemId, checkpoint)));
+export async function enterMergeQueue(
+  store: Db,
+  itemId: string,
+  checkpoint: Checkpoint,
+): Promise<void> {
+  await store.transaction((q) => enterMergeQueueSteps(q, itemId, checkpoint));
 }

@@ -381,8 +381,12 @@ export async function mergeHarness(
     const head = await git(worktree, "rev-parse", "HEAD");
     const base = await git(worktree, "rev-parse", "origin/main");
     insertQueuedItem(db, { id, now: clock.now(), sessionKey: `ses-${id}` });
-    const { run } = beginImplementRun(db, id, clock.now());
-    enterMergeQueue(db, id, { phase: "merge_queue", baseSha: base, wipCommit: head });
+    const { run } = await beginImplementRun(sqliteDb(db), id, clock.now());
+    await enterMergeQueue(sqliteDb(db), id, {
+      phase: "merge_queue",
+      baseSha: base,
+      wipCommit: head,
+    });
     // The implementer run ends once Closeout accepts, as it does in the loop.
     await store.run((q) => markRunSteps(q, run.id, "ended", clock.now()));
     await acceptHead(id, base, head);

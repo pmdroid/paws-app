@@ -69,8 +69,12 @@ async function fixture(mergeable: boolean | null) {
     repo: "monorepo",
     remoteUrl: "https://github.com/acme/monorepo.git",
   });
-  beginImplementRun(db, "DEP-661", clock.now());
-  enterMergeQueue(db, "DEP-661", { phase: "merge_queue", baseSha: MAIN, wipCommit: HEAD });
+  await beginImplementRun(sqliteDb(db), "DEP-661", clock.now());
+  await enterMergeQueue(sqliteDb(db), "DEP-661", {
+    phase: "merge_queue",
+    baseSha: MAIN,
+    wipCommit: HEAD,
+  });
   await recordItemPullRequest(sqliteDb(db), {
     itemId: "DEP-661",
     pullNumber: 6496,

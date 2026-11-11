@@ -38,7 +38,7 @@ async function fixture(): Promise<Database> {
   const db = database();
   insertQueuedItem(db, { id: "ENG-1", title: "Queued", sessionKey: "s1", now: NOW - 9_000 });
   insertQueuedItem(db, { id: "ENG-2", title: "Running", sessionKey: "s1", now: NOW - 8_000 });
-  beginImplementRun(db, "ENG-2", NOW - 7_900);
+  await beginImplementRun(sqliteDb(db), "ENG-2", NOW - 7_900);
   const identity = { taskId: "ENG-2", base: "b".repeat(40), head: HEAD, policyDigest: "sha256:p" };
   await upsertCloseoutStep(
     sqliteDb(db),
@@ -76,14 +76,14 @@ async function fixture(): Promise<Database> {
     NOW - 6_900,
   );
   insertQueuedItem(db, { id: "ENG-3", title: "Merging", sessionKey: "s1", now: NOW - 7_000 });
-  beginImplementRun(db, "ENG-3", NOW - 6_900);
-  enterMergeQueue(db, "ENG-3", {
+  await beginImplementRun(sqliteDb(db), "ENG-3", NOW - 6_900);
+  await enterMergeQueue(sqliteDb(db), "ENG-3", {
     phase: "merge_queue",
     baseSha: "b".repeat(40),
     wipCommit: "c".repeat(40),
   });
   insertQueuedItem(db, { id: "ENG-4", title: "Risky", sessionKey: "s1", now: NOW - 6_000 });
-  beginImplementRun(db, "ENG-4", NOW - 5_900);
+  await beginImplementRun(sqliteDb(db), "ENG-4", NOW - 5_900);
   applyWorkItemEvent(db, "ENG-4", "blocking_question");
   db.run(
     "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', 'ENG-4', 's1', 'link', 'High-risk changes', 'open', ?)",
@@ -109,7 +109,7 @@ async function fixture(): Promise<Database> {
     classifiedAt: NOW - 5_000,
   });
   insertQueuedItem(db, { id: "ENG-5", title: "Held review", sessionKey: "s1", now: NOW - 4_000 });
-  beginImplementRun(db, "ENG-5", NOW - 3_900);
+  await beginImplementRun(sqliteDb(db), "ENG-5", NOW - 3_900);
   applyWorkItemEvent(db, "ENG-5", "turn_ended");
   enqueueJob(db, {
     queue: "run.reverify",

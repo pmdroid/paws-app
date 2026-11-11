@@ -86,7 +86,7 @@ async function fixture() {
   });
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
-  const { run } = beginImplementRun(db, item.id, now());
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, now());
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",

@@ -820,7 +820,7 @@ export async function probeRunnerOrchestration(
       }
       if (scenario === "resume-lease") {
         const pending = listWorkItems(db)[0]!;
-        beginImplementRun(db, pending.id, clock.now(), {
+        await beginImplementRun(sqliteDb(db), pending.id, clock.now(), {
           phase: "running",
           baseSha: await git(["-C", source, "rev-parse", "HEAD"]),
         });

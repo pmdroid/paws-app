@@ -43,7 +43,7 @@ test("question handoff preserves selection labels and their values for freeform 
 async function setup(tracker: TrackerAdapter | null = null) {
   const db = tempDb();
   const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
-  beginImplementRun(db, item.id, NOW - 10);
+  await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   applyWorkItemEvent(db, item.id, "blocking_question");
   const question = await openQuestion(db, {
     itemId: item.id,

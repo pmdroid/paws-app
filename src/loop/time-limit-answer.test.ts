@@ -32,7 +32,7 @@ async function askedAtTimeLimit(pendingHandoff?: string) {
     limits: { fixes: 30 * MINUTE },
     now: clock.now(),
   });
-  beginImplementRun(db, item.id, clock.now());
+  await beginImplementRun(sqliteDb(db), item.id, clock.now());
   applyWorkItemEvent(db, item.id, "turn_ended");
   applyWorkItemEvent(db, item.id, "closeout_accepted");
   await markCloseoutAccepted(sqliteDb(db), item.id, "accepted");
@@ -77,7 +77,7 @@ async function askedBeforeAcceptance(state: "running" | "verifying") {
     limits: { closeout: 30 * MINUTE },
     now: clock.now(),
   });
-  beginImplementRun(db, item.id, clock.now());
+  await beginImplementRun(sqliteDb(db), item.id, clock.now());
   saveCheckpoint(db, item.id, { phase: state, baseSha: "base", wipCommit: "head" });
   const queue = state === "verifying" ? JOB_KIND.reverify : JOB_KIND.resume;
   if (state === "verifying") applyWorkItemEvent(db, item.id, "turn_ended");

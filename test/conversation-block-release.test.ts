@@ -110,7 +110,7 @@ async function blockedAfterCleanupFailure() {
   });
   await orchestrator.onLinearEvent(linearEvent("created", null));
   const itemId = (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!;
-  const { run } = beginImplementRun(db, itemId, now);
+  const { run } = await beginImplementRun(sqliteDb(db), itemId, now);
   db.run(
     "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at) VALUES('command','agentbox',?,1,'run','{}',?,?)",
     [run.id, now + 600_000, now],

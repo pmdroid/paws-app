@@ -28,7 +28,7 @@ for (const reason of ["findings", "review", "ci"] as const) {
       const db = openDatabase(":memory:");
       migrate(db);
       insertQueuedItem(db, { id: "item" });
-      beginImplementRun(db, "item", 1, checkpoint);
+      await beginImplementRun(sqliteDb(db), "item", 1, checkpoint);
       applyWorkItemEvent(db, "item", "turn_ended");
       applyWorkItemEvent(db, "item", "closeout_accepted");
       const identity = {
@@ -73,7 +73,7 @@ test("completed input is not resurrected by recovery", async () => {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item" });
-  beginImplementRun(db, "item", 1, checkpoint);
+  await beginImplementRun(sqliteDb(db), "item", 1, checkpoint);
   const id = enqueueJob(db, {
     queue: JOB_KIND.resume,
     payload: { itemId: "item", handoff: "old review" },
@@ -119,7 +119,7 @@ async function acceptedFollowUp() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item" });
-  beginImplementRun(db, "item", 1, checkpoint);
+  await beginImplementRun(sqliteDb(db), "item", 1, checkpoint);
   applyWorkItemEvent(db, "item", "turn_ended");
   applyWorkItemEvent(db, "item", "closeout_accepted");
   await markCloseoutAccepted(sqliteDb(db), "item", "s");

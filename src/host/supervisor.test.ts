@@ -52,8 +52,13 @@ function endAgentJob(db: Database, itemId: string) {
     [itemId],
   );
 }
-function beginImplementRun(db: Database, itemId: string, now: number, checkpoint?: Checkpoint) {
-  const result = beginRun(db, itemId, now, checkpoint);
+async function beginImplementRun(
+  db: Database,
+  itemId: string,
+  now: number,
+  checkpoint?: Checkpoint,
+) {
+  const result = await beginRun(sqliteDb(db), itemId, now, checkpoint);
   agentJob(db, itemId, now);
   return result;
 }
@@ -69,9 +74,9 @@ function applyWorkItemEvent(
   if (before !== "running" && result.state === "running") agentJob(db, id, 1_000_000);
   return result;
 }
-function enterMergeQueue(db: Database, itemId: string, checkpoint: Checkpoint) {
+async function enterMergeQueue(db: Database, itemId: string, checkpoint: Checkpoint) {
   endAgentJob(db, itemId);
-  return enterQueue(db, itemId, checkpoint);
+  return await enterQueue(sqliteDb(db), itemId, checkpoint);
 }
 const listJobs = (db: Database) =>
   storedJobs(db).filter((job) => !job.jobKey?.startsWith("fixture-agent:"));
@@ -86,7 +91,7 @@ function boot() {
   return { clock, db, host };
 }
 
-function startRun(
+async function startRun(
   db: ReturnType<typeof boot>["db"],
   clock: FakeClock,
   overrides: { maxAwakeMs?: number } = {},
@@ -98,7 +103,7 @@ function startRun(
     maxAwakeMs: overrides.maxAwakeMs ?? DEFAULT_MAX_AWAKE_MS,
     now: clock.now(),
   });
-  return beginImplementRun(db, "eng-9", clock.now(), checkpoint);
+  return await beginImplementRun(db, "eng-9", clock.now(), checkpoint);
 }
 
 /** A job that holds the item's lease, as one does while Closeout verifies it. */
@@ -119,7 +124,7 @@ describe("supervisor accrual writes", () => {
   test("hours in the merge queue do not count as agent time after a review restart", async () => {
     const { clock, db, host } = boot();
     try {
-      startRun(db, clock);
+      await startRun(db, clock);
       await host.tick();
       clock.advance(10 * 60_000);
       await host.tick();
@@ -153,7 +158,7 @@ describe("supervisor accrual writes", () => {
     try {
       for (const id of ["awake", "paused", "idle"]) {
         insertQueuedItem(db, { id, now: clock.now() });
-        if (id !== "idle") beginImplementRun(db, id, clock.now());
+        if (id !== "idle") await beginImplementRun(db, id, clock.now());
       }
       applyWorkItemEvent(db, "paused", "pause");
       db.exec(`
@@ -198,7 +203,7 @@ describe("supervisor accrual writes", () => {
     try {
       for (const id of ["first", "second"]) {
         insertQueuedItem(db, { id, now: clock.now() });
-        beginImplementRun(db, id, clock.now());
+        await beginImplementRun(db, id, clock.now());
       }
       await host.tick();
       clock.advance(250);
@@ -221,11 +226,11 @@ describe("supervisor accrual writes", () => {
 });
 
 describe("host suspension and clock gaps", () => {
-  test("an active run does not acquire a system sleep inhibitor", () => {
+  test("an active run does not acquire a system sleep inhibitor", async () => {
     const db = openDatabase(":memory:");
     migrate(db);
     const clock = new FakeClock(1_000_000);
-    startRun(db, clock);
+    await startRun(db, clock);
     const spawn = spyOn(Bun, "spawn").mockImplementation(() => {
       throw new Error("The host must not spawn a sleep inhibitor");
     });
@@ -261,7 +266,7 @@ describe("host suspension and clock gaps", () => {
     clock: FakeClock,
     held: (typeof HELD)[number],
   ) {
-    const { run } = startRun(db, clock);
+    const { run } = await startRun(db, clock);
     if (held === "paused") applyWorkItemEvent(db, "eng-9", "pause");
     if (held === "awaiting_input") applyWorkItemEvent(db, "eng-9", "blocking_question");
     if (held === "accepted") {
@@ -271,7 +276,7 @@ describe("host suspension and clock gaps", () => {
     }
     if (held === "merge_queue" || held === "merge_call") {
       await markCloseoutAccepted(sqliteDb(db), "eng-9", "wip");
-      enterMergeQueue(db, "eng-9", { ...checkpoint, phase: "merge_queue" });
+      await enterMergeQueue(db, "eng-9", { ...checkpoint, phase: "merge_queue" });
       enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-9" }, now: clock.now() });
       claimNextJob(db, { workerId: "merger", now: clock.now(), queues: [JOB_KIND.merge] });
       if (held === "merge_call") beginMergeCall(db, "eng-9", "wip", clock.now());
@@ -332,7 +337,7 @@ describe("host suspension and clock gaps", () => {
     migrate(db);
     const host = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
     try {
-      const { run } = startRun(db, new FakeClock(wall.now));
+      const { run } = await startRun(db, new FakeClock(wall.now));
       await host.tick();
       const before = snapshot(db, run.id);
       // NTP steps the wall clock three hours ahead while monotonic time moves one second.
@@ -356,7 +361,7 @@ describe("host suspension and clock gaps", () => {
   test("a process restart is not a clock gap: a new supervisor records no wake", async () => {
     const { clock, db, host } = boot();
     try {
-      const { run } = startRun(db, clock);
+      const { run } = await startRun(db, clock);
       await host.tick();
       host.stop();
       const before = snapshot(db, run.id);
@@ -376,7 +381,7 @@ describe("host suspension and clock gaps", () => {
 
   test("awake time does not include the sleep, and the cap still trips on awake time", async () => {
     const { clock, db, host } = boot();
-    startRun(db, clock, { maxAwakeMs: 1_000 });
+    await startRun(db, clock, { maxAwakeMs: 1_000 });
     await host.tick();
     clock.sleep(30 * 60_000);
     clock.advance(10);
@@ -391,7 +396,7 @@ describe("host suspension and clock gaps", () => {
   test("the default budget counts implementation only: Closeout time never stops the task", async () => {
     const { clock, db, host } = boot();
     try {
-      startRun(db, clock);
+      await startRun(db, clock);
       await host.tick();
       clock.advance(45 * 60_000);
       await host.tick();
@@ -434,7 +439,7 @@ describe("host suspension and clock gaps", () => {
       return { running };
     };
     try {
-      startRun(db, clock);
+      await startRun(db, clock);
       await host.tick();
       clock.advance(40 * 60_000);
       await host.tick();
@@ -464,7 +469,7 @@ describe("host suspension and clock gaps", () => {
 
   test("parked time is not awake time", async () => {
     const { clock, db, host } = boot();
-    startRun(db, clock);
+    await startRun(db, clock);
     await host.tick();
     applyWorkItemEvent(db, "eng-9", "blocking_question");
     clock.advance(10_000);
@@ -486,7 +491,7 @@ describe("host suspension and clock gaps", () => {
 
   test("SIGTERM commits WIP on the item branch before the run is left recoverable", async () => {
     const { db, clock } = boot();
-    const { run } = startRun(db, clock);
+    const { run } = await startRun(db, clock);
     const commits: { branchName: string; sha: string }[] = [];
     await prepareShutdown(sqliteDb(db), clock.now(), (item) => {
       expect(getWorkItem(db, item.id)?.state).toBe("running");
@@ -499,7 +504,7 @@ describe("host suspension and clock gaps", () => {
 
   test("stop leaves the item resumable", async () => {
     const { db, clock, host } = boot();
-    startRun(db, clock);
+    await startRun(db, clock);
     await host.tick();
     host.stop();
     clock.advance(100);
@@ -520,7 +525,7 @@ test("the supervisor stops the live agent when the time limit asks instead of fa
     stopped.push(itemId),
   );
   insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", maxAwakeMs: 1_000, now: 0 });
-  const { run } = beginImplementRun(db, "eng-9", clock.now(), checkpoint);
+  const { run } = await beginImplementRun(db, "eng-9", clock.now(), checkpoint);
   await markCloseoutAccepted(sqliteDb(db), "eng-9", "wip");
   await host.tick();
   clock.advance(500);

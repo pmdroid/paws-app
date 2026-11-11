@@ -76,7 +76,7 @@ describe("combined recovery scenarios", () => {
       await workspaceDispatch(w.db, { now: w.now });
       const claimed = claimNextJob(w.db, { now: w.now, queues: [JOB_KIND.resume] });
       expect(claimed?.id).toBe(first);
-      beginImplementRun(w.db, id, w.now);
+      await beginImplementRun(sqliteDb(w.db), id, w.now);
 
       w.crash();
       await w.start();
@@ -363,7 +363,7 @@ async function runnerWorld() {
     "team",
   ]);
   const item = insertQueuedItem(w.db, { id: "item", now: w.now, sessionKey: "session" });
-  const { run } = beginImplementRun(w.db, item.id, w.now);
+  const { run } = await beginImplementRun(sqliteDb(w.db), item.id, w.now);
   await recordLinearInstallation(sqliteDb(w.db), {
     organizationId: "org",
     oauthClientId: "client",

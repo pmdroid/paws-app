@@ -48,9 +48,9 @@ function database() {
   return db;
 }
 
-function parked(db: Database, id: string) {
+async function parked(db: Database, id: string) {
   insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now: NOW });
-  beginImplementRun(db, id, NOW);
+  await beginImplementRun(sqliteDb(db), id, NOW);
   applyWorkItemEvent(db, id, "blocking_question");
   saveCheckpoint(db, id, { phase: "awaiting_input", baseSha: "base", wipCommit: "head" });
 }
@@ -69,7 +69,7 @@ function help(id: string): CloseoutHelp {
 }
 
 async function blockedOnMain(db: Database, id: string, repository = REPOSITORY) {
-  parked(db, id);
+  await parked(db, id);
   await askCloseoutHelp(db, `ses-${id}`, help(id), {
     now: NOW,
     reason: "blocked_check",
@@ -188,7 +188,7 @@ describe("a closeout-help question blocked by an unreadable policy on main", () 
 
   test("a closeout-help question with another cause is never answered by Paws", async () => {
     const db = database();
-    parked(db, "ENG-1");
+    await parked(db, "ENG-1");
     await askCloseoutHelp(db, "ses-ENG-1", help("ENG-1"), {
       now: NOW,
       reason: "blocked_check",

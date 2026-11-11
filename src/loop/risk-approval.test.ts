@@ -129,7 +129,7 @@ async function held(head = heads.s, base = heads.base) {
     sessionKey: "ses_1",
     title: "Token rotation",
   });
-  beginImplementRun(db, item.id, NOW - 10);
+  await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   applyWorkItemEvent(db, item.id, "turn_ended");
   applyWorkItemEvent(db, item.id, "closeout_accepted");
   saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: base, wipCommit: head });

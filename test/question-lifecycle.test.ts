@@ -21,10 +21,10 @@ import { tempDb } from "./helpers";
 
 const NOW = 1_700_000_000_000;
 
-function setup() {
+async function setup() {
   const db = tempDb();
   const item = insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", title: "Export rows" });
-  const { run } = beginImplementRun(db, item.id, NOW - 10);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   return { db, asker: { itemId: item.id, runId: run.id, sessionId: "ses_1" } };
 }
 
@@ -42,7 +42,7 @@ const reply = (deliveryId: string, body: string, now = NOW + 100) => ({
 });
 
 test("a question asks at once when the session waits on nothing", async () => {
-  const { db, asker } = setup();
+  const { db, asker } = await setup();
   const asked = await ask(db, asker, "runner-wait", "Move or keep waiting?", {
     options: ["Move to another runner", "Keep waiting"],
     context: "Waiting: runner goldbox is paused.",
@@ -56,7 +56,7 @@ test("a question asks at once when the session waits on nothing", async () => {
 });
 
 test("a second ask is queued and delivered in order once the open one is answered", async () => {
-  const { db, asker } = setup();
+  const { db, asker } = await setup();
   const first = await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const second = await ask(db, asker, "agent", "Which format?", { now: NOW + 1 });
   const third = await ask(db, asker, "agent", "Which delimiter?", { now: NOW + 2 });
@@ -76,7 +76,7 @@ test("a second ask is queued and delivered in order once the open one is answere
 });
 
 test("a newer runner wait replaces a queued one of the same kind", async () => {
-  const { db, asker } = setup();
+  const { db, asker } = await setup();
   await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const older = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
   const newer = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 2 });
@@ -85,7 +85,7 @@ test("a newer runner wait replaces a queued one of the same kind", async () => {
 });
 
 test("a newer CI help replaces only its own task's queued CI help", async () => {
-  const { db, asker } = setup();
+  const { db, asker } = await setup();
   const sibling = insertQueuedItem(db, { id: "ENG-8", sessionKey: "ses_1", title: "Import rows" });
   await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const older = await ask(db, asker, "ci-help", "CI failed.", { now: NOW + 1 });
@@ -105,7 +105,7 @@ test("a newer CI help replaces only its own task's queued CI help", async () => 
 });
 
 async function queuedCloseoutHelp() {
-  const { db, asker } = setup();
+  const { db, asker } = await setup();
   saveCheckpoint(db, asker.itemId, {
     phase: "awaiting_input",
     baseSha: "base",
@@ -178,7 +178,7 @@ test("a queued Closeout help is dropped once the Closeout policy changed", async
 });
 
 test("the answer is idempotent on the delivery id and runs its kind's effect once", async () => {
-  const { db, asker } = setup();
+  const { db, asker } = await setup();
   const asked = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW });
   const resumed: string[] = [];
   const effects = {
@@ -199,7 +199,7 @@ test("the answer is idempotent on the delivery id and runs its kind's effect onc
 });
 
 test("a queued question for a run that is no longer current is dropped with a journal entry", async () => {
-  const { db, asker } = setup();
+  const { db, asker } = await setup();
   await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const stale = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
   setCurrentRun(db, asker.itemId, null);
@@ -219,7 +219,7 @@ test("a queued question for a run that is no longer current is dropped with a jo
 });
 
 test("cancelling the task cancels its open and queued questions", async () => {
-  const { db, asker } = setup();
+  const { db, asker } = await setup();
   const open = await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const queued = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
   await cancelItemQuestions(db, asker.itemId, NOW + 2);

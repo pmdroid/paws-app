@@ -28,17 +28,17 @@ import { askForVisualReviewSteps, VISUAL_REVIEW_NEEDS_LINK } from "./visual-revi
 
 const NOW = 1_700_000_000_000;
 
-function verifying() {
+async function verifying() {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", title: "Hint" });
-  const { run } = beginImplementRun(db, item.id, NOW - 10);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   applyWorkItemEvent(db, item.id, "turn_ended");
   return { db, itemId: item.id, runId: run.id };
 }
 
 test("a Paws without an https dashboard link asks nothing in Linear and says why once", async () => {
-  const { db, itemId, runId } = verifying();
+  const { db, itemId, runId } = await verifying();
   const input = {
     item: getWorkItem(db, itemId)!,
     runId,
@@ -67,7 +67,7 @@ test("a Paws without an https dashboard link asks nothing in Linear and says why
 
 /** A review question Linear asked with options before the link ask, still open. */
 async function askedBefore() {
-  const { db, itemId, runId } = verifying();
+  const { db, itemId, runId } = await verifying();
   const { question } = await sqliteDb(db).transaction((q) =>
     openVisualReviewSteps(q, {
       ask: (reads, asker, ...rest) => askSteps(reads, { ...asker, pending: true }, ...rest),

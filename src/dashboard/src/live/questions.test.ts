@@ -26,9 +26,15 @@ function database(): Database {
   return db;
 }
 
-function asking(db: Database, id: string, session: string, question: string, kind = "ask"): void {
+async function asking(
+  db: Database,
+  id: string,
+  session: string,
+  question: string,
+  kind = "ask",
+): Promise<void> {
   insertQueuedItem(db, { id, title: `Title of ${id}`, sessionKey: session, now: NOW - 10_000 });
-  beginImplementRun(db, id, NOW - 9_000);
+  await beginImplementRun(sqliteDb(db), id, NOW - 9_000);
   applyWorkItemEvent(db, id, "blocking_question");
   db.run(
     "INSERT INTO question (id, item_id, session_id, kind, body, options, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)",
@@ -74,8 +80,8 @@ async function tablesRead(db: Database, read: () => Promise<unknown>): Promise<S
 describe("question resources", () => {
   test("the list carries the snapshot's open questions with the issue each card names", async () => {
     const db = database();
-    asking(db, "ENG-1", "s1", "q-1");
-    asking(db, "ENG-2", "s1b", "q-2", "link");
+    await asking(db, "ENG-1", "s1", "q-1");
+    await asking(db, "ENG-2", "s1b", "q-2", "link");
     await insertLinkAsk(sqliteDb(db), {
       questionId: "q-2",
       itemId: "ENG-2",
@@ -87,7 +93,7 @@ describe("question resources", () => {
       answerers: ["delegator"],
       createdAt: NOW - 8_000,
     });
-    asking(db, "ENG-3", "s2", "q-3");
+    await asking(db, "ENG-3", "s2", "q-3");
     const live = provider(db, ["s1", "s1b"]);
     const parsed = parseQuestionListResponse(JSON.parse(JSON.stringify(await live.questions())));
     if (!parsed.ok) throw new Error(parsed.error);
@@ -111,8 +117,8 @@ describe("question resources", () => {
 
   test("a question outside the reader's sessions reads like an unknown one", async () => {
     const db = database();
-    asking(db, "ENG-1", "s1", "q-1");
-    asking(db, "ENG-2", "s2", "q-2");
+    await asking(db, "ENG-1", "s1", "q-1");
+    await asking(db, "ENG-2", "s2", "q-2");
     const live = provider(db, ["s1"]);
     const parsed = parseQuestionDetailResponse(
       JSON.parse(JSON.stringify(await live.question("q-1"))),
@@ -131,7 +137,7 @@ describe("question resources", () => {
 
   test("the list reads no Closeout, evidence, merge, CI or delivery rows", async () => {
     const db = database();
-    asking(db, "ENG-1", "s1", "q-1");
+    await asking(db, "ENG-1", "s1", "q-1");
     const live = provider(db, ["s1"]);
     const unread = [
       "closeout_progress",

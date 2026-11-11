@@ -39,7 +39,7 @@ async function seed(db: Database): Promise<void> {
     repo: "repo",
     remoteUrl: "https://example.invalid/repo.git",
   });
-  beginImplementRun(db, "item", 1);
+  await beginImplementRun(sqliteDb(db), "item", 1);
   saveCheckpoint(db, "item", { phase: "running", baseSha: "base", wipCommit: "head" });
   db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=1 WHERE id='item'");
 }

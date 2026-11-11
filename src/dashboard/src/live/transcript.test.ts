@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { beginImplementRun, insertQueuedItem, openDatabase, migrate } from "../../../db";
+import { sqliteDb, beginImplementRun, insertQueuedItem, openDatabase, migrate } from "../../../db";
 import { createLiveStatusProvider } from "./provider";
 import { fullAgentTranscript } from "./transcript";
 import { render } from "../client/render";
@@ -39,7 +39,7 @@ test("full transcript reads unfinished ACP output, tools and classification whil
   const db = tempDb();
   const home = tempHome();
   const item = insertQueuedItem(db, { id: "transcript-item", sessionKey: "visible" });
-  const { run } = beginImplementRun(db, item.id, 1000);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
   const directory = join(home, "runs", run.id);
   mkdirSync(directory, { recursive: true });
   mkdirSync(`${directory}-classify`);
@@ -129,7 +129,7 @@ test("the transcript route answers JSON entries when the page asks for them", as
   const db = tempDb();
   const home = tempHome();
   const item = insertQueuedItem(db, { id: "json-item", sessionKey: "visible" });
-  const { run } = beginImplementRun(db, item.id, 1000);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
   mkdirSync(join(home, "runs", run.id), { recursive: true });
   writeFileSync(
     join(home, "runs", run.id, "acp.jsonl"),

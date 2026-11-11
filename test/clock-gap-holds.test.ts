@@ -49,7 +49,7 @@ async function seed(db: Database, now: number): Promise<void> {
 
 async function hold(db: Database, now: number, kind: Hold, merging: boolean): Promise<void> {
   await seed(db, now);
-  const { run } = beginImplementRun(db, "item", now, RUNNING);
+  const { run } = await beginImplementRun(sqliteDb(db), "item", now, RUNNING);
   if (kind === "paused") applyWorkItemEvent(db, "item", "pause", { now });
   if (kind === "manual") {
     applyWorkItemEvent(db, "item", "run_failed", { now });

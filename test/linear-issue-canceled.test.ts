@@ -25,7 +25,7 @@ async function itemIn(state: WorkItemState) {
   const db = openDatabase(join(tempHome(), "paws.db"));
   migrate(db);
   insertQueuedItem(db, { id: ITEM, sessionKey: "session", now: 0 });
-  const { run } = beginImplementRun(db, ITEM, 0);
+  const { run } = await beginImplementRun(sqliteDb(db), ITEM, 0);
   if (state !== "running") applyWorkItemEvent(db, ITEM, "turn_ended");
   if (state === "awaiting_input") applyWorkItemEvent(db, ITEM, "blocking_question");
   if (state === "merge_queue") applyWorkItemEvent(db, ITEM, "closeout_accepted");

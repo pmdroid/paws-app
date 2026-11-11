@@ -110,7 +110,7 @@ export async function probeRunnerInputs(
     now,
     sessionKey: "transcript-session",
   });
-  const { run } = beginImplementRun(db, item.id, now);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, now);
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "transcript-org",
     oauthClientId: "app",

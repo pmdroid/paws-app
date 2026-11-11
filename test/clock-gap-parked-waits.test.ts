@@ -55,7 +55,7 @@ async function park(
 ): Promise<number> {
   insertQueuedItem(db, { id: "eng-9", sessionKey: "linear-session", now });
   const saved = withCheckpoint ? checkpoint : undefined;
-  const { item } = beginImplementRun(db, "eng-9", now, saved);
+  const { item } = await beginImplementRun(sqliteDb(db), "eng-9", now, saved);
   if (wait === "transient backoff") {
     await deferWorkItem(sqliteDb(db), item, {
       retry: 2,
@@ -313,7 +313,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
     try {
       await park(db, clock.now(), "transient backoff", true);
       insertQueuedItem(db, { id: "eng-10", sessionKey: "session-10", now: clock.now() });
-      beginImplementRun(db, "eng-10", clock.now());
+      await beginImplementRun(sqliteDb(db), "eng-10", clock.now());
       enqueueJob(db, {
         queue: JOB_KIND.start,
         runAt: clock.now() + SLOT_POLL_MS,
@@ -331,7 +331,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
         now: clock.now(),
       });
       insertQueuedItem(db, { id: "eng-12", sessionKey: "session-12", now: clock.now() });
-      beginImplementRun(db, "eng-12", clock.now(), checkpoint);
+      await beginImplementRun(sqliteDb(db), "eng-12", clock.now(), checkpoint);
       applyWorkItemEvent(db, "eng-12", "blocking_question");
       db.run("UPDATE work_item SET recovery_attempts=1 WHERE id IN ('eng-9','eng-10')");
 

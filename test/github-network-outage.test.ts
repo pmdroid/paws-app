@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGitHubInstallationCheck } from "../src/auth";
 import {
+  sqliteDb,
   beginImplementRun,
   getWorkItem,
   insertQueuedItem,
@@ -27,7 +28,7 @@ afterEach(() => {
 
 const DNS = "getaddrinfo ENOTFOUND api.github.com";
 
-function scene() {
+async function scene() {
   const home = mkdtempSync(join(tmpdir(), "paws-github-outage-"));
   roots.push(home);
   const privateKeyPath = join(home, "app.pem");
@@ -84,7 +85,7 @@ function scene() {
   };
   const auth = new GitHubInstallationCheck(db, integration, () => clock.now);
   insertQueuedItem(db, { id: "PAS-1055", sessionKey: "session-1055", title: "PAS-1055" });
-  beginImplementRun(db, "PAS-1055", 1_000);
+  await beginImplementRun(sqliteDb(db), "PAS-1055", 1_000);
   return {
     db,
     auth,
@@ -104,7 +105,7 @@ function scene() {
 }
 
 test("a DNS failure posts no github-auth question, and the item proceeds once GitHub answers", async () => {
-  const s = scene();
+  const s = await scene();
   s.github.mode = "dns";
   let failed = 0;
   const check = s.integration.check;
@@ -123,7 +124,7 @@ test("a DNS failure posts no github-auth question, and the item proceeds once Gi
 });
 
 test("a 404 for the repository installation still posts the admin question", async () => {
-  const s = scene();
+  const s = await scene();
   s.github.mode = "missing";
   try {
     expect(await s.auth.ensure(s.item(), "initial", s.signal)).toBe(false);
@@ -136,7 +137,7 @@ test("a 404 for the repository installation still posts the admin question", asy
 });
 
 test("an open github-auth question closes on the recheck once access works, and its item resumes", async () => {
-  const s = scene();
+  const s = await scene();
   s.github.mode = "missing";
   try {
     await s.auth.ensure(s.item(), "initial", s.signal);
@@ -154,7 +155,7 @@ test("an open github-auth question closes on the recheck once access works, and 
 });
 
 test("an outage past ten minutes posts one network status line and no admin question", async () => {
-  const s = scene();
+  const s = await scene();
   s.github.mode = "dns";
   const check = s.integration.check;
   s.integration.check = async (item, signal) => {
@@ -175,7 +176,7 @@ test("an outage past ten minutes posts one network status line and no admin ques
 });
 
 test("a 5xx or 429 from GitHub is transient, not a repository the installation doesn't cover", async () => {
-  const s = scene();
+  const s = await scene();
   try {
     for (const mode of ["5xx", "429", "dns"] as const) {
       s.github.mode = mode;
@@ -191,7 +192,7 @@ test("a 5xx or 429 from GitHub is transient, not a repository the installation d
 });
 
 test("an authorization that can't reach Linear doesn't cancel the item; a definite denial does", async () => {
-  const s = scene();
+  const s = await scene();
   let unreachable = 2;
   s.integration.authorize = async () => {
     if (unreachable-- > 0) throw new Error(DNS);

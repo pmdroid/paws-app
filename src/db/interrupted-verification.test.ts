@@ -22,23 +22,23 @@ import {
 
 const NOW = 1_000_000;
 
-function verifying(candidate = true) {
+async function verifying(candidate = true) {
   const db = openDatabase(":memory:");
   migrate(db);
   const item = insertQueuedItem(db, { id: "item", sessionKey: "session", now: NOW });
-  const { run } = beginImplementRun(db, item.id, NOW);
+  const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW);
   applyWorkItemEvent(db, item.id, "turn_ended");
   if (candidate)
     saveCheckpoint(db, item.id, { phase: "verifying", baseSha: "base", wipCommit: "head" });
   return { db, item: getWorkItem(db, item.id)!, run };
 }
 
-const pending = (db: ReturnType<typeof verifying>["db"]) =>
+const pending = (db: Awaited<ReturnType<typeof verifying>>["db"]) =>
   listJobs(db).filter((job) => job.status === "pending");
 
 describe("interrupted verification", () => {
   test("a clean shutdown keeps the candidate in verifying and the next start re-verifies it", async () => {
-    const { db, item, run } = verifying();
+    const { db, item, run } = await verifying();
     await prepareShutdown(sqliteDb(db), NOW + 1);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
     expect(getRun(db, run.id)?.status).toBe("lost");
@@ -50,7 +50,7 @@ describe("interrupted verification", () => {
   });
 
   test("a crash start re-verifies the candidate once and then asks", async () => {
-    const { db, item } = verifying();
+    const { db, item } = await verifying();
     expect(await recoverOnStartup(sqliteDb(db), NOW + 1)).toEqual([
       { type: "reverify", resumed: true },
     ]);
@@ -62,7 +62,7 @@ describe("interrupted verification", () => {
   });
 
   test("a start leaves a backed-off re-verify of a deferred candidate where it is", async () => {
-    const { db, item } = verifying();
+    const { db, item } = await verifying();
     await deferWorkItem(sqliteDb(db), item, {
       retry: 1,
       delayMs: 60_000,
@@ -79,13 +79,13 @@ describe("interrupted verification", () => {
   });
 
   test("a verifying item without a recorded candidate still moves to recovering", async () => {
-    const { db, item } = verifying(false);
+    const { db, item } = await verifying(false);
     await prepareShutdown(sqliteDb(db), NOW + 1);
     expect(getWorkItem(db, item.id)?.state).toBe("recovering");
   });
 
   test("an expired runner lease keeps the candidate verifying, and re-verifies it without waiting for orphan recovery", async () => {
-    const { db, item, run } = verifying();
+    const { db, item, run } = await verifying();
     db.run("PRAGMA foreign_keys=OFF");
     db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
@@ -106,7 +106,7 @@ describe("interrupted verification", () => {
   });
 
   test("Stop wins over a kept candidate", async () => {
-    const { db, item } = verifying();
+    const { db, item } = await verifying();
     db.run("UPDATE work_item SET cancel_requested = 1 WHERE id = ?", [item.id]);
     await prepareShutdown(sqliteDb(db), NOW + 1);
     expect(await requeueOrphanedWork(sqliteDb(db), NOW + 60 * 60_000)).toEqual([]);

@@ -51,8 +51,12 @@ function recordQueries(db: Database): string[] {
 async function queued(db: Database, id: string, session: string, at: number) {
   const head = "c".repeat(40);
   const item = insertQueuedItem(db, { id, title: `Title ${id}`, sessionKey: session, now: at });
-  beginImplementRun(db, item.id, at);
-  enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
+  await beginImplementRun(sqliteDb(db), item.id, at);
+  await enterMergeQueue(sqliteDb(db), item.id, {
+    phase: "merge_queue",
+    baseSha: head,
+    wipCommit: head,
+  });
   enqueueOutbox(db, {
     target: "linear",
     op: "activity",

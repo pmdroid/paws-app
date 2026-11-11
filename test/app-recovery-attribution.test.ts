@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createWorktree, ensureBareMirror, git, worktreePath } from "../src/acp";
 import { FakeClock, JOB_KIND } from "../src/core";
 import {
+  sqliteDb,
   beginImplementRun,
   getRun,
   getWorkItem,
@@ -70,7 +71,7 @@ for (const state of [
     );
     try {
       insertQueuedItem(paws.db, { id: "legacy", branchName: "paws/legacy", now: clock.now() });
-      const { run } = beginImplementRun(paws.db, "legacy", clock.now(), {
+      const { run } = await beginImplementRun(sqliteDb(paws.db), "legacy", clock.now(), {
         phase: "running",
         wipCommit: before,
         baseSha: before,

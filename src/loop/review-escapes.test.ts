@@ -51,8 +51,12 @@ async function accepted() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  beginImplementRun(db, "eng-1", 1);
-  enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: base, wipCommit: head });
+  await beginImplementRun(sqliteDb(db), "eng-1", 1);
+  await enterMergeQueue(sqliteDb(db), "eng-1", {
+    phase: "merge_queue",
+    baseSha: base,
+    wipCommit: head,
+  });
   await markCloseoutAccepted(sqliteDb(db), "eng-1", head);
 
   const ciFailed = (checks: FailedCiCheck[]) =>

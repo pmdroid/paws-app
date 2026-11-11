@@ -142,7 +142,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       teamId: "team",
       observedAtMs: now,
     });
-    beginImplementRun(db, item.id, now - 10);
+    await beginImplementRun(sqliteDb(db), item.id, now - 10);
     applyWorkItemEvent(db, item.id, "blocking_question");
     const question = await openQuestion(db, {
       itemId: item.id,
@@ -595,7 +595,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       teamId: "team",
       observedAtMs: at,
     });
-    beginImplementRun(db, id, at - 10);
+    await beginImplementRun(sqliteDb(db), id, at - 10);
     applyWorkItemEvent(db, id, "blocking_question");
     const question = await openQuestion(db, {
       itemId: id,

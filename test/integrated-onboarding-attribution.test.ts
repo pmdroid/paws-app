@@ -238,7 +238,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
       db.query("SELECT 1 FROM workspace_access_audit WHERE action='assignment.resumed'").all(),
     ).toHaveLength(1);
     expect(await runtime.assignments.authorize(event)).toMatchObject({ outcome: "refused" });
-    dbApi.beginImplementRun(db, itemId, now());
+    await dbApi.beginImplementRun(sqliteDb(db), itemId, now());
     const current = () => dbApi.getWorkItem(db, itemId)!;
     const privateKeyPem = generateKeyPairSync("rsa", {
       modulusLength: 2048,

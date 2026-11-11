@@ -49,7 +49,7 @@ test("issue and question resources need a Paws session, show only the member's s
     ["PAS-2", "session-other"],
   ] as const) {
     insertQueuedItem(db, { id: item, sessionKey: session });
-    beginImplementRun(db, item, Date.now());
+    await beginImplementRun(sqliteDb(db), item, Date.now());
     applyWorkItemEvent(db, item, "blocking_question");
     db.run(
       "INSERT INTO question (id, item_id, session_id, body, status, created_at) VALUES (?, ?, ?, 'Which way?', 'open', 1)",
