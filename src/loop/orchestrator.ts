@@ -438,6 +438,7 @@ import {
   GitHubHttpError,
   type GitExec,
   type GitHubBinding,
+  type PullRequestMember,
   type GitHubTokenProvider,
   type PullMergeable,
 } from "../github";
@@ -783,6 +784,7 @@ export type OrchestratorOptions = {
   ) => Promise<string>;
   githubForRepository?: (repository: RepositoryBinding) => GitHubBinding | null;
   commitPolicyForItem?: (item: WorkItemRecord) => Promise<GitCommitPolicy | undefined>;
+  pullRequestMember?: (item: WorkItemRecord) => Promise<PullRequestMember | null>;
   launch?: AgentLaunch;
   remoteExecution?: {
     cancelItem?(itemId: string): Promise<void>;
@@ -6065,6 +6067,12 @@ export class Orchestrator {
       .filter(Boolean)
       .join("\n\n");
     const title = draft?.title ?? item.title;
+    const member = (await this.store.run((q) => getItemPullRequestSteps(q, item.id)))
+      ? null
+      : await this.options.pullRequestMember?.(item).catch((caught: unknown) => {
+          journalCaught(caught, "orchestrator.pullRequestMember", item.id, "opening as Paws");
+          return null;
+        });
     const published = await publishAccepted({
       accepted: true,
       evidence,
@@ -6078,11 +6086,20 @@ export class Orchestrator {
       ...(draft ? { description: draft.body } : {}),
       reviewer: (await this.store.run((q) => getItemRunCommitPolicySteps(q, item.id)))?.credit
         ?.login,
+      ...(member ? { member } : {}),
       client: github.client,
       gitExec: github.gitExec,
       remoteUrl: repository.remoteUrl,
       ...this.gitHubCredentials(github),
     });
+    const refused = published.published ? published.pull.memberRefused : undefined;
+    if (refused && published.published)
+      await this.post(
+        item,
+        "thought",
+        `Opened as Paws: GitHub refused ${refused.login}'s token (${refused.status}).`,
+        `${item.id}:pull-request-member-refused:${published.pull.number}`,
+      );
     await this.assertPublicationReady(
       item,
       "publish",
