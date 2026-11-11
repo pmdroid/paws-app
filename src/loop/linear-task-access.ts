@@ -3,26 +3,23 @@ import type { Database } from "bun:sqlite";
 import {
   advanceLinearSessionGeneration,
   ensureLinearSessionSteps,
-  getLinearSession,
-  getLinearSessionAccess,
   getLinearSessionAccessSteps,
-  getLinearSessionGeneration,
   getLinearSessionGenerationSteps,
   getLinearSessionInstallationSteps,
   getLinearSessionSteps,
-  getLinearTaskDelegation,
   getLinearTaskDelegationSteps,
-  getLinearTeamAccess,
   getLinearTeamAccessSteps,
   delegatedLinearUserIdSteps,
-  getWorkItem,
   getWorkItemSteps,
   workItemForSessionSteps,
   listWorkItemsSteps,
   recordLinearInstallationSteps,
-  requireLinearTaskDelegation,
+  requireLinearTaskDelegationSteps,
+  settled,
   sqliteDb,
   type Db,
+  type Q,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import { isTerminalWorkItemState, sleep } from "../core";
@@ -51,6 +48,23 @@ function verdictKey(item: WorkItemRecord, sessionId: string, generation: number)
   return JSON.stringify([item.id, sessionId, generation, item.linearIssueId]);
 }
 
+function* permitsSteps(
+  q: Q,
+  item: WorkItemRecord,
+  access: LinearSessionInstallation,
+  issue: LinearIssueOwnership,
+  allowTerminalIssue: boolean,
+): Steps<boolean> {
+  const required = yield* getLinearTaskDelegationSteps(q, item.id, issue.id);
+  return !(
+    (yield* getLinearTeamAccessSteps(q, { ...access, teamId: issue.teamId })) === "removed" ||
+    (!allowTerminalIssue && ["completed", "canceled", "duplicate"].includes(issue.stateType)) ||
+    (issue.delegateId !== null && issue.delegateId !== access.appUserId) ||
+    (required !== null &&
+      (required.appUserId !== access.appUserId || issue.delegateId !== access.appUserId))
+  );
+}
+
 export class LinearTaskAccess {
   private readonly verdicts = new Map<string, AccessVerdict>();
   private readonly teams = new Set<string>();
@@ -59,7 +73,7 @@ export class LinearTaskAccess {
   private readonly store: Db;
 
   constructor(
-    private readonly db: Database,
+    db: Database,
     private readonly options: {
       access: LinearAccessReads | null;
       lifecycle: LinearIssueLifecycle | null;
@@ -294,7 +308,7 @@ export class LinearTaskAccess {
       item &&
       verdict &&
       (!options.issueId || verdict.issues.some((issue) => issue.id === options.issueId)) &&
-      verdict.issues.every((issue) => this.permits(item, verdict.access, issue, true))
+      (await this.permitsAll(item, verdict.access, verdict.issues, true))
     )
       return;
     const stored = options.fresh ? null : await this.stored(sessionId);
@@ -344,30 +358,17 @@ export class LinearTaskAccess {
     const sessionId = item.sessionKey;
     if (sessionId === null) throw new Error("Linear task has no verified session.");
     const generation = await this.sessionGeneration(sessionId);
-    const current = (allowUnknown = false) => {
-      signal.throwIfAborted();
-      const stored = getWorkItem(this.db, item.id);
-      const session = getLinearSession(this.db, sessionId);
-      if (
-        stored === null ||
-        stored.cancelRequested ||
-        isTerminalWorkItemState(stored.state) ||
-        session?.stoppedAt != null ||
-        getLinearSessionGeneration(this.db, sessionId) !== generation
-      )
-        throw new Error("Linear task was stopped or superseded.");
-      if (allowUnknown && getLinearSessionAccess(this.db, sessionId) === "unknown") return;
-      if (!this.allowed(sessionId))
-        throw new LinearAccessRemovedError("Linear installation access is unavailable.");
-    };
-    current(true);
+    const currentSteps = (q: Q, allowUnknown = false) =>
+      this.currentSteps(q, { itemId: item.id, sessionId, generation, signal }, allowUnknown);
+    const current = (allowUnknown = false) => this.store.run((q) => currentSteps(q, allowUnknown));
+    await current(true);
     const key = verdictKey(item, sessionId, generation);
     const cached = fresh ? undefined : this.verdicts.get(key);
-    if (cached !== undefined) current();
+    if (cached !== undefined) await current();
     const invalidations = this.invalidations;
     const verdict =
       cached !== undefined &&
-      cached.issues.every((issue) => this.permits(item, cached.access, issue, allowTerminalIssue))
+      (await this.permitsAll(item, cached.access, cached.issues, allowTerminalIssue))
         ? cached
         : await this.read(item, sessionId, signal, allowTerminalIssue, fresh, current);
     if (this.invalidations === invalidations) this.verdicts.set(key, verdict);
@@ -376,28 +377,29 @@ export class LinearTaskAccess {
     const started = new Map<string, LinearIssueOwnership>();
     const eligible: string[] = [];
     for (const issue of [...verdict.issues].reverse()) {
-      current();
+      await current();
       const actorId = await this.store.run((q) => delegatedLinearUserIdSteps(q, item.id));
       const result = await this.options.lifecycle.startCodeIssue(
         { issueId: issue.id, appUserId: access.appUserId, actorId },
         {
           signal,
           issue,
-          beforeStart: (verifiedIssue) => {
-            current();
-            this.ownership(item, sessionId, access, verifiedIssue);
-            requireLinearTaskDelegation(this.db, {
-              itemId: item.id,
-              issueId: verifiedIssue.id,
-              teamId: verifiedIssue.teamId,
-              appUserId: access.appUserId,
-              humanActorId: actorId,
-            });
-          },
+          beforeStart: (verifiedIssue) =>
+            settled(
+              this.store.run((q) =>
+                this.beforeStartSteps(q, currentSteps, {
+                  item,
+                  sessionId,
+                  access,
+                  issue: verifiedIssue,
+                  actorId,
+                }),
+              ),
+            ),
         },
       );
-      current();
-      this.ownership(item, sessionId, access, result.issue);
+      await current();
+      await this.store.run((q) => this.ownershipSteps(q, item, sessionId, access, result.issue));
       if (this.invalidations === invalidations) this.issues.set(issue.id, result.issue);
       started.set(issue.id, result.issue);
       if (result.eligible) eligible.push(issue.id);
@@ -410,52 +412,100 @@ export class LinearTaskAccess {
     return eligible;
   }
 
+  private *currentSteps(
+    q: Q,
+    task: { itemId: string; sessionId: string; generation: number; signal: AbortSignal },
+    allowUnknown: boolean,
+  ): Steps<void> {
+    const { itemId, sessionId, generation, signal } = task;
+    signal.throwIfAborted();
+    const stored = yield* getWorkItemSteps(q, itemId);
+    const session = yield* getLinearSessionSteps(q, sessionId);
+    if (
+      stored === null ||
+      stored.cancelRequested ||
+      isTerminalWorkItemState(stored.state) ||
+      session?.stoppedAt != null ||
+      (yield* getLinearSessionGenerationSteps(q, sessionId)) !== generation
+    )
+      throw new Error("Linear task was stopped or superseded.");
+    if (allowUnknown && (yield* getLinearSessionAccessSteps(q, sessionId)) === "unknown") return;
+    if (!(yield* this.allowedSteps(q, sessionId)))
+      throw new LinearAccessRemovedError("Linear installation access is unavailable.");
+  }
+
+  private *beforeStartSteps(
+    q: Q,
+    currentSteps: (q: Q) => Steps<void>,
+    start: {
+      item: WorkItemRecord;
+      sessionId: string;
+      access: LinearSessionInstallation;
+      issue: LinearIssueOwnership;
+      actorId: string | null;
+    },
+  ): Steps<void> {
+    const { item, sessionId, access, issue, actorId } = start;
+    yield* currentSteps(q);
+    yield* this.ownershipSteps(q, item, sessionId, access, issue);
+    yield* requireLinearTaskDelegationSteps(q, {
+      itemId: item.id,
+      issueId: issue.id,
+      teamId: issue.teamId,
+      appUserId: access.appUserId,
+      humanActorId: actorId,
+    });
+  }
+
   private async read(
     item: WorkItemRecord,
     sessionId: string,
     signal: AbortSignal,
     allowTerminalIssue: boolean,
     fresh: boolean,
-    current: (allowUnknown?: boolean) => void,
+    current: (allowUnknown?: boolean) => Promise<void>,
   ): Promise<AccessVerdict> {
     if (this.options.access === null || this.options.lifecycle === null)
       throw new Error("Linear is not connected.");
     const stored = fresh ? null : await this.stored(sessionId);
     const access = stored ?? (await this.options.access.session(sessionId, { signal }));
-    current(true);
+    await current(true);
     if (stored === null) await this.record(access);
-    current();
+    await current();
     const issues: LinearIssueOwnership[] = [];
     for (const issueId of new Set([access.issueId, item.linearIssueId])) {
       const issue = await this.inspect(issueId, { signal }, fresh);
-      current();
+      await current();
       if (issue.id !== issueId) throw new Error("Linear returned another task issue.");
-      this.ownership(item, sessionId, access, issue, allowTerminalIssue);
+      await this.store.run((q) =>
+        this.ownershipSteps(q, item, sessionId, access, issue, allowTerminalIssue),
+      );
       if (!(await this.team(issue.teamId, { signal }, fresh))) {
         this.invalidate({ sessionId });
         this.options.stopSession(sessionId);
         throw new LinearAccessRemovedError("Linear task team access was removed.");
       }
-      current();
+      await current();
       issues.push(issue);
     }
     return { sessionId, access, issues };
   }
 
-  private ownership(
+  private *ownershipSteps(
+    q: Q,
     item: WorkItemRecord,
     sessionId: string,
     access: LinearSessionInstallation,
     issue: LinearIssueOwnership,
     allowTerminalIssue = false,
-  ): void {
-    if (!this.permits(item, access, issue, allowTerminalIssue)) {
+  ): Steps<void> {
+    if (!(yield* permitsSteps(q, item, access, issue, allowTerminalIssue))) {
       this.invalidate({ sessionId });
       this.options.stopSession(sessionId);
       throw new LinearAccessRemovedError("Linear task delegation or workflow access was removed.");
     }
     if (issue.delegateId === access.appUserId)
-      requireLinearTaskDelegation(this.db, {
+      yield* requireLinearTaskDelegationSteps(q, {
         itemId: item.id,
         issueId: issue.id,
         teamId: issue.teamId,
@@ -463,20 +513,17 @@ export class LinearTaskAccess {
       });
   }
 
-  private permits(
+  private permitsAll(
     item: WorkItemRecord,
     access: LinearSessionInstallation,
-    issue: LinearIssueOwnership,
+    issues: readonly LinearIssueOwnership[],
     allowTerminalIssue: boolean,
-  ): boolean {
-    const required = getLinearTaskDelegation(this.db, item.id, issue.id);
-    return !(
-      getLinearTeamAccess(this.db, { ...access, teamId: issue.teamId }) === "removed" ||
-      (!allowTerminalIssue && ["completed", "canceled", "duplicate"].includes(issue.stateType)) ||
-      (issue.delegateId !== null && issue.delegateId !== access.appUserId) ||
-      (required !== null &&
-        (required.appUserId !== access.appUserId || issue.delegateId !== access.appUserId))
-    );
+  ): Promise<boolean> {
+    return this.store.run(function* (q): Steps<boolean> {
+      for (const issue of issues)
+        if (!(yield* permitsSteps(q, item, access, issue, allowTerminalIssue))) return false;
+      return true;
+    });
   }
 
   private async stored(sessionId: string): Promise<LinearSessionInstallation | null> {
@@ -525,8 +572,12 @@ export class LinearTaskAccess {
     return allowed;
   }
 
-  private allowed(sessionId: string): boolean {
-    if (getLinearSessionAccess(this.db, sessionId) === "allowed") return true;
+  private allowed(sessionId: string): Promise<boolean> {
+    return this.store.run((q) => this.allowedSteps(q, sessionId));
+  }
+
+  private *allowedSteps(q: Q, sessionId: string): Steps<boolean> {
+    if ((yield* getLinearSessionAccessSteps(q, sessionId)) === "allowed") return true;
     this.options.stopSession(sessionId);
     return false;
   }
