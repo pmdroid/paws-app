@@ -21,6 +21,7 @@ export * from "./plan-proposals";
 export * from "./link-asks";
 export * from "./items";
 export * from "./jobs";
+export * from "./health";
 export * from "./loop";
 export * from "./instances";
 export * from "./loops";
@@ -32,6 +33,7 @@ export {
   migrate,
   migrationTags,
   setAsideLegacyDatabase,
+  setAsideSqliteDatabase,
 } from "./migrate";
 export * from "./repositories";
 export * from "./repository-catalog";
@@ -57,8 +59,10 @@ export type { Migration } from "./migration";
 export { incrementalVacuum, openDatabase, truncateWal, withSecureDelete } from "./open";
 export {
   connectPostgres,
+  openPawsStore,
   openPglite,
   openPostgres,
+  type PawsStore,
   type PgliteDb,
   type PostgresDb,
 } from "./postgres";

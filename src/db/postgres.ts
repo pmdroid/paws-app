@@ -8,6 +8,7 @@ import { migrate as migratePglite } from "drizzle-orm/pglite/migrator";
 import { PG_MIGRATIONS_FOLDER } from "./migrate";
 import * as pgSchema from "./schema-pg";
 import type { PostgresConnection } from "./db-check";
+import { postgresDb, type PgDb } from "./db";
 
 export type PostgresDb = BunSQLDatabase<typeof pgSchema> & { $client: SQL };
 
@@ -37,4 +38,24 @@ export async function openPglite(dir: string): Promise<PgliteDb> {
     throw error;
   }
   return db;
+}
+
+export type PawsStore = { store: PgDb; close(): Promise<void> };
+
+export async function openPawsStore(input: {
+  url: string | null;
+  pgliteDir: string;
+}): Promise<PawsStore> {
+  if (input.url === null) {
+    const pg = await openPglite(input.pgliteDir);
+    return { store: postgresDb(pg), close: () => pg.$client.close() };
+  }
+  const db = openPostgres(input.url);
+  try {
+    await migrate(db, { migrationsFolder: PG_MIGRATIONS_FOLDER });
+  } catch (error) {
+    await db.$client.close();
+    throw error;
+  }
+  return { store: postgresDb(db), close: () => db.$client.close() };
 }

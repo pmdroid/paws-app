@@ -68,6 +68,7 @@ Paws moves to Postgres: embedded PGlite on a single host, a Postgres server thro
 
 - `sqliteDb(database)` wraps today's database, one per connection.
 - `postgresDb(pg)` wraps a Drizzle Postgres database: `postgresDb(openPostgres(url))`, `postgresDb(await openPglite(dir))`, or in-memory PGlite in tests. `openPglite(dir)` opens a persistent PGlite directory and applies the Postgres migrations it has not applied yet.
+- `openPawsStore({ url, pgliteDir })` (`postgres.ts`) opens the store startup will run on: the Postgres at `url`, migrated, or PGlite in `pgliteDir` (`~/.paws/pglite`, `pgliteDir` in `pawsPaths()`) when `url` is null. `setAsideSqliteDatabase(path)` (`migrate.ts`) renames an existing SQLite `paws.db` and its `-wal` and `-shm` to `paws.db.pre-postgres-<UTC timestamp>`, writes one journal line naming it, and does nothing when there is no `paws.db`. Startup doesn't call either yet.
 
 A converted function is a generator that `db.run()` drives:
 

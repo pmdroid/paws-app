@@ -38,6 +38,7 @@
   },
   "devDependencies": {
     "@base-ui/react": "^1.9.0",
+    "@electric-sql/pglite-socket": "0.2.18",
     "@libsql/client": "0.18.0",
     "@octokit/graphql-schema": "15.26.1",
     "@playwright/test": "^1.64.0",
