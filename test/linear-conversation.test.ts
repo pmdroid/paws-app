@@ -19,6 +19,7 @@ import {
   listPendingLinearTurns,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { findOpenQuestion } from "../src/questions";
 import { worktreePath } from "../src/acp";
@@ -300,7 +301,9 @@ for (const phase of ["implement", "review"] as const) {
       ]);
       if (phase === "implement")
         expect(running(Number(readFileSync(f.evidence + ".descendant", "utf8")))).toBe(false);
-      expect(getConversation(f.db, original.id).entries).not.toContain("PRIVATE_HIDDEN");
+      expect((await getConversation(sqliteDb(f.db), original.id)).entries).not.toContain(
+        "PRIVATE_HIDDEN",
+      );
       f.reopen();
       await tickWithRestarts(f.jobs, f.orchestrator, f.db);
       expect(f.item().id).toBe(original.id);
@@ -338,7 +341,7 @@ test("new prompt after completion creates a new task and preserves the terminal 
     await tickWithRestarts(f.jobs, f.orchestrator, f.db);
     const original = f.item();
     applyWorkItemEvent(f.db, original.id, "merge_accepted");
-    expect(getConversation(f.db, original.id).entries).toContain(
+    expect((await getConversation(sqliteDb(f.db), original.id)).entries).toContain(
       "Append the required fixed suffix.",
     );
     await f.orchestrator.onLinearEvent(event("later", "ANOTHER_REQUEST", 4));
@@ -503,7 +506,7 @@ test("an accepted answer question redirects through classification before code e
     const implementation = f.prompts().find((row) => row.purpose === "implement")!.prompt;
     expect(implementation).toContain("ANSWER_OBSERVATION");
     expect(implementation).not.toContain("PRIVATE_ANSWER_HIDDEN");
-    expect(getConversation(f.db, task).entries).toContain("ANSWER_OBSERVATION");
+    expect((await getConversation(sqliteDb(f.db), task)).entries).toContain("ANSWER_OBSERVATION");
     expect(listPendingLinearTurns(f.db, "session")).toHaveLength(0);
   } finally {
     await f.close();
@@ -584,7 +587,9 @@ test.each(["answer", "artifact"] as const)(
       expect(implementation).toContain("ANSWER_OBSERVATION");
       expect(implementation).toContain("Also implement both child changes");
       expect(implementation).not.toContain("PRIVATE_ANSWER_HIDDEN");
-      expect(getConversation(f.db, children[0]!.id).entries).toContain("ANSWER_OBSERVATION");
+      expect((await getConversation(sqliteDb(f.db), children[0]!.id)).entries).toContain(
+        "ANSWER_OBSERVATION",
+      );
       expect(f.starts.filter((purpose) => purpose === "classify")).toHaveLength(2);
       expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(3);
     } finally {
@@ -693,7 +698,7 @@ test.each(["shutdown", "interrupt"] as const)(
           : f.orchestrator.interruptLinearSession("session");
       await expect(stopping).rejects.toThrow("ACP process cleanup could not be verified");
       expect(f.db.query("SELECT 1 AS open").get()).toEqual({ open: 1 });
-      expect(getConversation(f.db, f.item().id).blocked).toBe(true);
+      expect((await getConversation(sqliteDb(f.db), f.item().id)).blocked).toBe(true);
     } finally {
       f.db.run("DELETE FROM linear_conversation");
       await f.close();

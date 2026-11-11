@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { asc, desc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 /**
@@ -15,8 +15,8 @@ export type CloseoutRound = {
 };
 
 /** Records the round once per head. Returns false when the head already has one. */
-export function startCloseoutRound(db: Database, input: CloseoutRound): boolean {
-  return settled(sqliteDb(db).run((q) => startCloseoutRoundSteps(q, input)));
+export async function startCloseoutRound(store: Db, input: CloseoutRound): Promise<boolean> {
+  return store.run((q) => startCloseoutRoundSteps(q, input));
 }
 
 export function* startCloseoutRoundSteps(q: Q, input: CloseoutRound): Steps<boolean> {
@@ -37,8 +37,8 @@ export function* startCloseoutRoundSteps(q: Q, input: CloseoutRound): Steps<bool
 }
 
 /** Rounds after the first, oldest first. */
-export function listCloseoutRounds(db: Database, itemId?: string): CloseoutRound[] {
-  return settled(sqliteDb(db).run((q) => listCloseoutRoundsSteps(q, itemId)));
+export async function listCloseoutRounds(store: Db, itemId?: string): Promise<CloseoutRound[]> {
+  return store.run((q) => listCloseoutRoundsSteps(q, itemId));
 }
 
 export function* listCloseoutRoundsSteps(q: Q, itemId?: string): Steps<CloseoutRound[]> {

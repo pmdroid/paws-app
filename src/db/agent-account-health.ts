@@ -1,8 +1,7 @@
-import type { Database } from "bun:sqlite";
 import { and, count, eq, gt, gte, isNull, sql } from "drizzle-orm";
 import type { RunnerCodingAgent } from "../runner-protocol";
 import { legacyAgentBindingId } from "./agent-accounts";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 
 export type AccountHealthKind = "quota" | "auth" | "provider" | "model";
 export type AccountHealthState =
@@ -200,11 +199,11 @@ export function* recordAccountObservationSteps(q: Q, observation: AccountObserva
   return outcomes;
 }
 
-export function recordAccountObservation(
-  db: Database,
+export async function recordAccountObservation(
+  store: Db,
   observation: AccountObservation,
-): Partial<Record<AccountHealthKind, AccountObservationOutcome>> {
-  return settled(sqliteDb(db).transaction((q) => recordAccountObservationSteps(q, observation)));
+): Promise<Partial<Record<AccountHealthKind, AccountObservationOutcome>>> {
+  return store.transaction((q) => recordAccountObservationSteps(q, observation));
 }
 
 /** When to look again at the quota limit a command's result recorded. */
@@ -219,12 +218,12 @@ export function* quotaRecheckAtSteps(q: Q, commandId: string, workspaceId: strin
   return row?.at ?? null;
 }
 
-export function quotaRecheckAt(
-  db: Database,
+export async function quotaRecheckAt(
+  store: Db,
   commandId: string,
   workspaceId: string,
-): number | null {
-  return settled(sqliteDb(db).run((q) => quotaRecheckAtSteps(q, commandId, workspaceId)));
+): Promise<number | null> {
+  return store.run((q) => quotaRecheckAtSteps(q, commandId, workspaceId));
 }
 
 export function* bindingAccountHealthSteps(q: Q, bindingId: string, model?: string | null) {
@@ -244,12 +243,12 @@ export function* bindingAccountHealthSteps(q: Q, bindingId: string, model?: stri
   return found;
 }
 
-export function bindingAccountHealth(
-  db: Database,
+export async function bindingAccountHealth(
+  store: Db,
   bindingId: string,
   model?: string | null,
-): AccountHealth[] {
-  return settled(sqliteDb(db).run((q) => bindingAccountHealthSteps(q, bindingId, model)));
+): Promise<AccountHealth[]> {
+  return store.run((q) => bindingAccountHealthSteps(q, bindingId, model));
 }
 
 export function* legacyBindingAccountHealthSteps(
@@ -271,15 +270,13 @@ export function* legacyBindingAccountHealthSteps(
   return provider ? [provider] : [];
 }
 
-export function legacyBindingAccountHealth(
-  db: Database,
+export async function legacyBindingAccountHealth(
+  store: Db,
   runnerId: string,
   agent: string,
   model?: string | null,
-): AccountHealth[] {
-  return settled(
-    sqliteDb(db).run((q) => legacyBindingAccountHealthSteps(q, runnerId, agent, model)),
-  );
+): Promise<AccountHealth[]> {
+  return store.run((q) => legacyBindingAccountHealthSteps(q, runnerId, agent, model));
 }
 
 /** Attempts still running on the binding's account (or the binding itself) that began at or after `since`. */
@@ -311,13 +308,13 @@ export function* accountAttemptsInFlightSteps(
   return (usage?.count ?? 0) + (retros?.count ?? 0);
 }
 
-export function accountAttemptsInFlight(
-  db: Database,
+export async function accountAttemptsInFlight(
+  store: Db,
   bindingId: string,
   since: number,
   scope: "account" | "binding",
-): number {
-  return settled(sqliteDb(db).run((q) => accountAttemptsInFlightSteps(q, bindingId, since, scope)));
+): Promise<number> {
+  return store.run((q) => accountAttemptsInFlightSteps(q, bindingId, since, scope));
 }
 
 export function* resumeAccountHealthNowSteps(

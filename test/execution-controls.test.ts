@@ -118,9 +118,9 @@ test("Clear stuck agent clears a blocked conversation for an admin, refuses a me
     assert.equal(member.notice, CLEANUP_BLOCKED_NOTICE);
 
     assert.equal((await call("clear_stuck_agent")).status, 403);
-    assert.equal(getConversation(db, "controlled").blocked, true);
+    assert.equal((await getConversation(sqliteDb(db), "controlled")).blocked, true);
     assert.equal((await call("clear_stuck_agent", "admin")).status, 200);
-    assert.equal(getConversation(db, "controlled").blocked, false);
+    assert.equal((await getConversation(sqliteDb(db), "controlled")).blocked, false);
     const audit = db
       .query<{ userId: string; action: string; subject: string }, []>(
         "SELECT user_id AS userId,action,subject FROM workspace_access_audit WHERE action LIKE '%clear_stuck_agent%' OR subject LIKE '%clear_stuck_agent%' ORDER BY id",

@@ -1635,7 +1635,7 @@ describe("live status provider", () => {
     };
     attempt("a".repeat(40), now, "failed");
     attempt("b".repeat(40), now + 1, "passed");
-    startCloseoutRound(db, {
+    await startCloseoutRound(sqliteDb(db), {
       itemId: item.id,
       head: "c".repeat(40),
       retryBaseline: ["a", "b"],

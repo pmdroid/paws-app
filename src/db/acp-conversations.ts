@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
 /** What the item page and the Linear session say while a block holds a reply back. */
@@ -41,8 +41,8 @@ export function* getConversationSteps(q: Q, itemId: string) {
     : { entries: "[]", transcript: null, transcriptOffset: 0, blocked: false, blockedAt: null };
 }
 
-export function getConversation(db: Database, itemId: string): Conversation {
-  return settled(sqliteDb(db).run((q) => getConversationSteps(q, itemId)));
+export async function getConversation(store: Db, itemId: string): Promise<Conversation> {
+  return store.run((q) => getConversationSteps(q, itemId));
 }
 
 /** The block time a write keeps: the stored one while the conversation is already blocked. */
@@ -152,12 +152,12 @@ export function* clearConversationBlockSteps(q: Q, itemId: string, blockedAt?: n
   return rows.length === 1;
 }
 
-export function clearConversationBlock(
-  db: Database,
+export async function clearConversationBlock(
+  store: Db,
   itemId: string,
   blockedAt?: number | null,
-): boolean {
-  return settled(sqliteDb(db).run((q) => clearConversationBlockSteps(q, itemId, blockedAt)));
+): Promise<boolean> {
+  return store.run((q) => clearConversationBlockSteps(q, itemId, blockedAt));
 }
 
 /** Items whose conversation is blocked, with the time each block was set. */
@@ -173,6 +173,8 @@ export function* listBlockedConversationsSteps(q: Q) {
   return rows.map((row) => ({ itemId: row.itemId, blockedAt: row.blockedAt ?? 0 }));
 }
 
-export function listBlockedConversations(db: Database): { itemId: string; blockedAt: number }[] {
-  return settled(sqliteDb(db).run((q) => listBlockedConversationsSteps(q)));
+export async function listBlockedConversations(
+  store: Db,
+): Promise<{ itemId: string; blockedAt: number }[]> {
+  return store.run((q) => listBlockedConversationsSteps(q));
 }

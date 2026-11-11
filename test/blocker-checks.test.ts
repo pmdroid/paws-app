@@ -111,12 +111,12 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
 
 test("the fast relations poll unblocks an item whose blocker was removed in Linear", async () => {
   await using fixture = await blockedFixture();
-  expect(listTaskBlockers(fixture.db, "acme-child")).toEqual(["acme-b"]);
+  expect(await listTaskBlockers(sqliteDb(fixture.db), "acme-child")).toEqual(["acme-b"]);
   expect(await fixture.polls.intervalMs()).toBe(BLOCKED_RELATIONS_POLL_MS);
   fixture.tracker.deps.set("acme-child", []);
   fixture.advance(BLOCKED_RELATIONS_POLL_MS);
   expect(await fixture.polls.blocked()).toHaveLength(1);
-  expect(listTaskBlockers(fixture.db, "acme-child")).toEqual([]);
+  expect(await listTaskBlockers(sqliteDb(fixture.db), "acme-child")).toEqual([]);
   expect(fixture.executionReconciles()).toBe(1);
   expect(fixture.tracker.blockerReads).toEqual([["acme-child"]]);
   expect(await blockerCheckedAt(sqliteDb(fixture.db), fixture.child.id)).toBe(

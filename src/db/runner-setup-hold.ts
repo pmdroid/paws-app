@@ -1,8 +1,7 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
 import { emitJobReady, enqueueJobSteps } from "./jobs";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 /**
  * A queued item held because its delegator has no runner Paws may use. The scheduler skips it,
@@ -102,8 +101,8 @@ export function* holdForRunnerSetupSteps(q: Q, input: HoldInput): Steps<RunnerSe
  * Hold a queued item for runner setup. A hold that already exists keeps its `since` and
  * `notified_at` and takes the latest reason. Call inside the transaction that queues the item.
  */
-export function holdForRunnerSetup(db: Database, input: HoldInput): RunnerSetupHold {
-  return settled(sqliteDb(db).run((q) => holdForRunnerSetupSteps(q, input)));
+export async function holdForRunnerSetup(store: Db, input: HoldInput): Promise<RunnerSetupHold> {
+  return store.run((q) => holdForRunnerSetupSteps(q, input));
 }
 
 export function* markRunnerSetupNotifiedSteps(q: Q, itemId: string, now: number): Steps<void> {
@@ -116,8 +115,12 @@ export function* markRunnerSetupNotifiedSteps(q: Q, itemId: string, now: number)
   );
 }
 
-export function markRunnerSetupNotified(db: Database, itemId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => markRunnerSetupNotifiedSteps(q, itemId, now)));
+export async function markRunnerSetupNotified(
+  store: Db,
+  itemId: string,
+  now: number,
+): Promise<void> {
+  await store.run((q) => markRunnerSetupNotifiedSteps(q, itemId, now));
 }
 
 export function* releaseRunnerSetupHoldSteps(q: Q, itemId: string, now?: number): Steps<boolean> {
@@ -217,7 +220,11 @@ export function* enqueueRunnerSetupCheckSteps(
  * Queue one `runner_setup.check` job for `ownerUserId` unless one is already pending, the same
  * rule the triggers of migration 144 follow.
  */
-export function enqueueRunnerSetupCheck(db: Database, ownerUserId: string, now: number): void {
-  if (settled(sqliteDb(db).run((q) => enqueueRunnerSetupCheckSteps(q, ownerUserId, now))))
-    emitJobReady(db);
+export async function enqueueRunnerSetupCheck(
+  store: Db,
+  ownerUserId: string,
+  now: number,
+): Promise<void> {
+  if (await store.run((q) => enqueueRunnerSetupCheckSteps(q, ownerUserId, now)))
+    emitJobReady(store);
 }

@@ -12,6 +12,7 @@ import {
   migrate,
   openDatabase,
   taskRequiresRepository,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeTracker,
@@ -295,7 +296,7 @@ test.each(
       await f.jobs.tick();
       expect(getWorkItem(db, itemId)?.state).toBe("completed");
       expect(getWorkItemRepository(db, itemId)).toEqual(repository);
-      expect(taskRequiresRepository(db, itemId)).toBe(true);
+      expect(await taskRequiresRepository(sqliteDb(db), itemId)).toBe(true);
       expect(purposes).toEqual(
         scenario === "clarify"
           ? ["classify", "classify", mode]

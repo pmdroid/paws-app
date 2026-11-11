@@ -284,7 +284,7 @@ test("a redirect cancels the previous item before the replacement is inserted", 
     });
     const initial = await task(db, "original");
     const previousId = initial.items[0]!.id;
-    saveTaskClassification(db, "original", {
+    await saveTaskClassification(sqliteDb(db), "original", {
       mode: "code",
       redirect: { taskKey: "resolved:original", itemId: previousId },
     });

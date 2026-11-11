@@ -732,7 +732,7 @@ describe("agent account admission", () => {
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const binding = await ensureLegacyAgentBinding(sqliteDb(db), "R1", "codex", clock.now);
-    recordAccountObservation(db, {
+    await recordAccountObservation(sqliteDb(db), {
       bindingId: binding.id,
       source: "result",
       sourceId: "model-hold",
@@ -751,7 +751,7 @@ describe("agent account admission", () => {
     });
     expect((await dispatcher.generation("r1"))!.detail).toContain("model unavailable");
 
-    recordAccountObservation(db, {
+    await recordAccountObservation(sqliteDb(db), {
       bindingId: binding.id,
       source: "result",
       sourceId: "provider-hold",
@@ -768,7 +768,7 @@ describe("agent account admission", () => {
       attempt: 0,
     });
 
-    recordAccountObservation(db, {
+    await recordAccountObservation(sqliteDb(db), {
       bindingId: binding.id,
       source: "result",
       sourceId: "provider-ok",
@@ -788,7 +788,7 @@ describe("agent account admission", () => {
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const accountId = legacyAgentAccountId("ws", "codex");
     const binding = await ensureLegacyAgentBinding(sqliteDb(db), "R1", "codex", clock.now);
-    recordAccountObservation(db, {
+    await recordAccountObservation(sqliteDb(db), {
       bindingId: binding.id,
       source: "result",
       sourceId: "quota-hold",

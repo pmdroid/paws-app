@@ -534,7 +534,7 @@ test("sign-in host warnings persist while queued work is held for runner setup",
   const reports: RunnerHostRefusal[][] = [];
   await pass(reports);
   expect(reports.at(-1)).toHaveLength(1);
-  holdForRunnerSetup(db, {
+  await holdForRunnerSetup(sqliteDb(db), {
     itemId: "held",
     ownerUserId: userId,
     reason: "agent-not-signed-in",

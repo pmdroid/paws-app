@@ -4280,7 +4280,7 @@ async function runRebaseConflict(
       prompts,
       requeuedBases,
       merged: github.merged.length,
-      rounds: listCloseoutRounds(db).map((round) => round.head),
+      rounds: (await listCloseoutRounds(sqliteDb(db))).map((round) => round.head),
       ...(linearRequest ? { linearRequest } : {}),
       detail: debug(layout, db),
     };

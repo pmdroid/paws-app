@@ -11,6 +11,7 @@ import {
   recordRunnerAgentUsage,
   runnerAgentUsage,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerHealth } from "../src/runner-health";
@@ -652,7 +653,7 @@ test("a login check issued before a newer sign-in failure cannot mark the agent 
     "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',0,1) ON CONFLICT DO UPDATE SET ready=0,auth_expired=1",
     [runnerId],
   );
-  recordAccountObservation(f.db, {
+  await recordAccountObservation(sqliteDb(f.db), {
     bindingId: legacyAgentBindingId(runnerId, "claude"),
     source: "result",
     sourceId: "failed-run",

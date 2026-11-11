@@ -9,6 +9,7 @@ import {
   openDatabase,
   saveTaskBlocks,
   type TaskBlock,
+  sqliteDb,
 } from "../src/db";
 import { tempDb } from "./helpers";
 
@@ -17,49 +18,49 @@ function edge(blockerLinearIssueId: string, blockedLinearIssueId: string): TaskB
 }
 
 describe("task blocks", () => {
-  test("saves and lists blockers sorted", () => {
+  test("saves and lists blockers sorted", async () => {
     const db = tempDb();
     saveTaskBlocks(
       db,
       ["a", "b"],
       [edge("m", "a"), edge("a-blocker", "a"), edge("a-blocker", "a"), edge("z", "b")],
     );
-    expect(listTaskBlockers(db, "a")).toEqual(["a-blocker", "m"]);
-    expect(listTaskBlockers(db, "b")).toEqual(["z"]);
-    expect(listTaskBlockers(db, "missing")).toEqual([]);
+    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["a-blocker", "m"]);
+    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["z"]);
+    expect(await listTaskBlockers(sqliteDb(db), "missing")).toEqual([]);
     db.close();
   });
 
-  test("saving again replaces the old blockers", () => {
+  test("saving again replaces the old blockers", async () => {
     const db = tempDb();
     saveTaskBlocks(db, ["a", "b"], [edge("x", "a"), edge("y", "a"), edge("z", "b")]);
     saveTaskBlocks(db, ["a"], [edge("y", "a")]);
-    expect(listTaskBlockers(db, "a")).toEqual(["y"]);
-    expect(listTaskBlockers(db, "b")).toEqual(["z"]);
+    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["y"]);
+    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["z"]);
     saveTaskBlocks(db, ["a"], []);
-    expect(listTaskBlockers(db, "a")).toEqual([]);
-    expect(listTaskBlockers(db, "b")).toEqual(["z"]);
+    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual([]);
+    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["z"]);
     db.close();
   });
 
-  test("rejects an edge whose blocked issue is outside the set", () => {
+  test("rejects an edge whose blocked issue is outside the set", async () => {
     const db = tempDb();
     saveTaskBlocks(db, ["a"], [edge("x", "a")]);
     expect(() => saveTaskBlocks(db, ["a"], [edge("y", "a"), edge("z", "b")])).toThrow(Error);
-    expect(listTaskBlockers(db, "a")).toEqual(["x"]);
-    expect(listTaskBlockers(db, "b")).toEqual([]);
+    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["x"]);
+    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual([]);
     db.close();
   });
 
-  test("rejects a self block", () => {
+  test("rejects a self block", async () => {
     const db = tempDb();
     saveTaskBlocks(db, ["a"], [edge("x", "a")]);
     expect(() => saveTaskBlocks(db, ["a"], [edge("a", "a")])).toThrow(/CHECK/);
-    expect(listTaskBlockers(db, "a")).toEqual(["x"]);
+    expect(await listTaskBlockers(sqliteDb(db), "a")).toEqual(["x"]);
     db.close();
   });
 
-  test("migration 058 keeps the newer active item and rejects a second", () => {
+  test("migration 058 keeps the newer active item and rejects a second", async () => {
     const db = openDatabase(":memory:");
     db.run(
       "CREATE TABLE schema_migration (id TEXT PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT",
@@ -123,7 +124,10 @@ describe("task blocks", () => {
     );
     const job = enqueueJob(db, { queue: "item.start", payload: { itemId: "m-older" }, now: 1 });
     legacyMigrate(db, { until: "129_parent_delegation" });
-    expect(listTaskBlockers(db, "shared-issue")).toEqual(["inside-blocker", "outside-blocker"]);
+    expect(await listTaskBlockers(sqliteDb(db), "shared-issue")).toEqual([
+      "inside-blocker",
+      "outside-blocker",
+    ]);
     expect(
       db.query<{ status: string }, []>("SELECT status FROM run WHERE id='older-run'").get()?.status,
     ).toBe("ended");

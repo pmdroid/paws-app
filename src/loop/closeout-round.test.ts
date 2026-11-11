@@ -11,6 +11,7 @@ import {
   migrate,
   openDatabase,
   startCloseoutRound,
+  sqliteDb,
 } from "../db";
 import { recoveryOptions } from "./closeout-recovery";
 
@@ -77,7 +78,7 @@ test("a re-check of a rebased head retains the spent check budget", async () => 
 
     const baseline = await snapshotRetryBaseline(TASK, pawsHome);
     expect(
-      startCloseoutRound(db, {
+      await startCloseoutRound(sqliteDb(db), {
         itemId: "item-390",
         head: rebased,
         retryBaseline: baseline,
@@ -85,14 +86,14 @@ test("a re-check of a rebased head retains the spent check budget", async () => 
       }),
     ).toBe(true);
     expect(
-      startCloseoutRound(db, {
+      await startCloseoutRound(sqliteDb(db), {
         itemId: "item-390",
         head: rebased,
         retryBaseline: [],
         startedAt: 2,
       }),
     ).toBe(false);
-    expect(listCloseoutRounds(db, "item-390")).toEqual([
+    expect(await listCloseoutRounds(sqliteDb(db), "item-390")).toEqual([
       { itemId: "item-390", head: rebased, retryBaseline: baseline, startedAt: 1 },
     ]);
 

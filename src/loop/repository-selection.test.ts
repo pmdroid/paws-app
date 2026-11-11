@@ -2,7 +2,14 @@ import { journalCaught } from "../journal";
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { getConversation, insertQueuedItem, migrate, openDatabase, saveConversation } from "../db";
+import {
+  getConversation,
+  insertQueuedItem,
+  migrate,
+  openDatabase,
+  saveConversation,
+  sqliteDb,
+} from "../db";
 import { tmpdir } from "node:os";
 import { interpretRepositoryAnswer } from "./repository-selection";
 
@@ -64,10 +71,10 @@ test("lost repository interpreter ownership persists cleanup failure before abor
     process.kill(owner.anchor, "SIGKILL");
     controller.abort();
     expect(await pending).toMatchObject({ name: "AbortError" });
-    expect(getConversation(db, "item").blocked).toBe(true);
+    expect((await getConversation(sqliteDb(db), "item")).blocked).toBe(true);
     db.close();
     db = openDatabase(databasePath);
-    expect(getConversation(db, "item").blocked).toBe(true);
+    expect((await getConversation(sqliteDb(db), "item")).blocked).toBe(true);
   } finally {
     controller.abort();
     await pending;

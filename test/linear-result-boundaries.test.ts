@@ -34,7 +34,7 @@ test("only a newer accepted turn can change a non-code task outcome and code sta
     expect(() => selectTaskModeForTurn(db, item.id, "artifact", first)).toThrow("newer accepted");
     const second = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     expect(selectTaskModeForTurn(db, item.id, "artifact", second)).toBe("artifact");
-    expect(getTaskModeGeneration(db, item.id)).toBe(second);
+    expect(await getTaskModeGeneration(sqliteDb(db), item.id)).toBe(second);
     expect(() => selectTaskModeForTurn(db, item.id, "answer", first)).toThrow("changed");
     const third = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     expect(selectTaskModeForTurn(db, item.id, "code", third)).toBe("code");

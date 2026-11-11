@@ -47,7 +47,7 @@ test("recovery consumes only new public transcript observations once after an in
     db.close();
     db = openDatabase(dbPath);
     await durableConversation(sqliteDb(db), "item");
-    const recovered = getConversation(db, "item");
+    const recovered = await getConversation(sqliteDb(db), "item");
     expect(recovered.transcript).toBeNull();
     expect(recovered.entries).toContain("INITIAL_REQUEST");
     expect(recovered.entries).toContain("PUBLIC_OBSERVATION");
@@ -57,7 +57,7 @@ test("recovery consumes only new public transcript observations once after an in
     db.close();
     db = openDatabase(dbPath);
     await durableConversation(sqliteDb(db), "item");
-    expect(getConversation(db, "item").entries).toBe(recovered.entries);
+    expect((await getConversation(sqliteDb(db), "item")).entries).toBe(recovered.entries);
   } finally {
     db.close();
     rmSync(root, { recursive: true, force: true });
@@ -135,8 +135,8 @@ test("executor and Closeout fixer share the durable ACP conversation through rea
       .map((line) => JSON.parse(line) as { purpose: string; prompt: string });
     expect(prompts.map((row) => row.purpose)).toEqual(["implement", "fix"]);
     expect(prompts[1]!.prompt).toContain('"kind":"request","body":"Required output: `ALPHA`"');
-    expect(JSON.parse(getConversation(db, "item").entries)).toHaveLength(2);
-    expect(getConversation(db, "item").transcript).toBeNull();
+    expect(JSON.parse((await getConversation(sqliteDb(db), "item")).entries)).toHaveLength(2);
+    expect((await getConversation(sqliteDb(db), "item")).transcript).toBeNull();
   } finally {
     db.close();
     rmSync(root, { recursive: true, force: true });
@@ -226,16 +226,16 @@ test("a concurrent prompt rejects without replacing the active transcript snapsh
     };
     running = runner(options);
     await started;
-    const active = getConversation(db, "item");
+    const active = await getConversation(sqliteDb(db), "item");
     expect(active.transcript).toContain("/first/acp.jsonl");
     await expect(runner({ ...options, runId: "second", prompt: "SECOND_REQUEST" })).rejects.toThrow(
       "ACP prompt already running",
     );
-    expect(getConversation(db, "item")).toEqual(active);
+    expect(await getConversation(sqliteDb(db), "item")).toEqual(active);
     controller.abort(FOLLOW_UP_INTERRUPTION);
     await running;
-    expect(getConversation(db, "item").transcript).toBeNull();
-    expect(getConversation(db, "item").entries).not.toContain("SECOND_REQUEST");
+    expect((await getConversation(sqliteDb(db), "item")).transcript).toBeNull();
+    expect((await getConversation(sqliteDb(db), "item")).entries).not.toContain("SECOND_REQUEST");
   } finally {
     controller.abort();
     await running;

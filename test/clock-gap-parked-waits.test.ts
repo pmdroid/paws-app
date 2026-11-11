@@ -322,7 +322,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
         now: clock.now(),
       });
       insertQueuedItem(db, { id: "eng-11", sessionKey: "session-11", now: clock.now() });
-      holdForRunnerSetup(db, {
+      await holdForRunnerSetup(sqliteDb(db), {
         itemId: "eng-11",
         ownerUserId: null,
         reason: "no-runner",

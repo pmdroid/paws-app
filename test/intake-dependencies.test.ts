@@ -105,8 +105,8 @@ test("sync stores internal and external edges in task_block and readiness matche
     ]);
     await refresh();
     expect(count(db, "task_block")).toBe(2);
-    expect(listTaskBlockers(db, "b")).toEqual(["a", "outside"]);
-    expect(listTaskBlockers(db, "outside")).toEqual([]);
+    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["a", "outside"]);
+    expect(await listTaskBlockers(sqliteDb(db), "outside")).toEqual([]);
     expect(await readyIds()).not.toContain(ids.get("b")!);
     expect(await readyIds()).toContain(ids.get("a")!);
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [ids.get("a")!]);
@@ -116,7 +116,7 @@ test("sync stores internal and external edges in task_block and readiness matche
     lifecycle.issues.get("outside")!.stateType = "started";
     await refresh();
     expect(await readyIds()).not.toContain(ids.get("b")!);
-    expect(listTaskBlockers(db, "b")).toEqual(["a", "outside"]);
+    expect(await listTaskBlockers(sqliteDb(db), "b")).toEqual(["a", "outside"]);
   } finally {
     db.close();
   }
