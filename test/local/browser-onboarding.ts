@@ -154,7 +154,7 @@ process.on("SIGUSR1", async () => {
     oauthClientId: source.LINEAR_CLIENT_ID,
     appUserId: viewer.id,
   };
-  recordLinearInstallation(paws.db, {
+  await recordLinearInstallation(sqliteDb(paws.db), {
     ...scope,
     sessionId: "fixture-session",
     teamId: "fixture-team",

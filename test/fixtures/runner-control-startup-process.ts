@@ -161,7 +161,7 @@ if (mode === "remote") {
       startPaws(source, {
         runnerRepositoryAccess: {
           github: createFakeGitHub(),
-          installationForRepository: () => "fixture-installation",
+          installationForRepository: async () => "fixture-installation",
         },
       }),
     /configuration is missing or invalid/,
@@ -175,7 +175,7 @@ const paws = await startPaws(source, {
     ? {
         runnerRepositoryAccess: {
           github: createFakeGitHub(),
-          installationForRepository: () => "fixture-installation",
+          installationForRepository: async () => "fixture-installation",
         },
         ...(mode === "remote"
           ? {}
@@ -277,7 +277,7 @@ try {
   } else {
     await paws.ready;
     const now = Date.now();
-    const userId = putWorkspaceUser(paws.db, {
+    const userId = await putWorkspaceUser(sqliteDb(paws.db), {
       id: workspaceId(),
       linearUserId: "owner",
       name: "Owner",
@@ -291,7 +291,7 @@ try {
       tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
       now,
     });
-    const issued = issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now });
+    const issued = await issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now });
     const headers = {
       cookie: `${WORKSPACE_COOKIE}=${issued.token}`,
       origin: source.PAWS_PUBLIC_URL!,
@@ -376,13 +376,13 @@ try {
           approved: true,
         },
       );
-      const memberId = putWorkspaceUser(paws.db, {
+      const memberId = await putWorkspaceUser(sqliteDb(paws.db), {
         id: workspaceId(),
         linearUserId: "member",
         name: "Member",
         email: "member@example.invalid",
       });
-      syncWorkspaceMember(paws.db, {
+      await syncWorkspaceMember(sqliteDb(paws.db), {
         workspaceId: workspace.id,
         userId: memberId,
         role: "member",
@@ -390,7 +390,7 @@ try {
         teamIds: [],
         now,
       });
-      const memberSession = issueWorkspaceSession(paws.db, {
+      const memberSession = await issueWorkspaceSession(paws.db, {
         userId: memberId,
         workspaceId: workspace.id,
         now,
@@ -477,7 +477,7 @@ try {
           sessionKey: "startup-controlled-session",
           now,
         });
-        recordLinearInstallation(paws.db, {
+        await recordLinearInstallation(sqliteDb(paws.db), {
           sessionId: controlled.sessionKey!,
           organizationId: "org",
           teamId: "team",
@@ -485,7 +485,11 @@ try {
           appUserId: "app",
           observedAtMs: now,
         });
-        bindLinearSessionTask(paws.db, controlled.sessionKey!, controlled.delegationId);
+        await bindLinearSessionTask(
+          sqliteDb(paws.db),
+          controlled.sessionKey!,
+          controlled.delegationId,
+        );
         const available = await call<{ available: boolean; actions: string[] }>(
           browserPort,
           `/api/execution-controls?itemId=${controlled.id}`,

@@ -49,7 +49,7 @@ export async function createExecutionControlsFixture(
   migrate(db);
   const now = Date.now();
   const workspaceId = "workspace";
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "admin",
     linearUserId: "admin",
     name: "Admin",
@@ -68,15 +68,24 @@ export async function createExecutionControlsFixture(
     ["inactive", "member", ["team"]],
     ["outside", "member", ["outside"]],
   ] as const) {
-    putWorkspaceUser(db, { id, linearUserId: id, name: id, email: `${id}@example.invalid` });
-    syncWorkspaceMember(db, { workspaceId, userId: id, role, active: true, teamIds, now });
+    await putWorkspaceUser(sqliteDb(db), {
+      id,
+      linearUserId: id,
+      name: id,
+      email: `${id}@example.invalid`,
+    });
+    await syncWorkspaceMember(sqliteDb(db), {
+      workspaceId,
+      userId: id,
+      role,
+      active: true,
+      teamIds,
+      now,
+    });
   }
-  const sessions = Object.fromEntries(
-    ["admin", "member", "inactive", "outside"].map((userId) => [
-      userId,
-      issueWorkspaceSession(db, { workspaceId, userId, now }),
-    ]),
-  );
+  const sessions: Record<string, Awaited<ReturnType<typeof issueWorkspaceSession>>> = {};
+  for (const userId of ["admin", "member", "inactive", "outside"])
+    sessions[userId] = await issueWorkspaceSession(db, { workspaceId, userId, now });
   db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id='inactive'", [
     workspaceId,
   ]);
@@ -91,7 +100,7 @@ export async function createExecutionControlsFixture(
       title: `Control ${id}`,
       now,
     });
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: item.sessionKey!,
       organizationId: organizationId!,
       teamId: "team",
@@ -99,7 +108,7 @@ export async function createExecutionControlsFixture(
       appUserId: "app",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, item.sessionKey!, item.delegationId);
+    await bindLinearSessionTask(sqliteDb(db), item.sessionKey!, item.delegationId);
   }
   const item = getWorkItem(db, "controlled")!;
   db.run(
@@ -107,7 +116,7 @@ export async function createExecutionControlsFixture(
     VALUES('other',?,'other','other','Unrelated item','queued','paws/other',1,?,?)`,
     [item.delegationId, now, item.sessionKey],
   );
-  bindWorkItemRepository(db, "unmapped", {
+  await bindWorkItemRepository(sqliteDb(db), "unmapped", {
     owner: "fixture",
     repo: "unmapped",
     remoteUrl: "https://example.invalid/fixture/unmapped",
@@ -353,8 +362,8 @@ export async function probeExecutionControls(root: string) {
       body: JSON.stringify({ itemId: "controlled", action: "stop" }),
     });
     const verified = requestWorkspaceSession(db, stopRequest)!;
-    const allowed = workspaceSessionIds(
-      db,
+    const allowed = await workspaceSessionIds(
+      sqliteDb(db),
       verified.principal.workspaceId,
       verified.principal.userId,
       "client",

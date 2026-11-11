@@ -534,7 +534,7 @@ test("a persisted cleanup fence prevents another repository interpreter or selec
     const orchestrator = f.attach();
     await orchestrator.onLinearEvent(event());
     const item = f.db.query<{ id: string }, []>("SELECT id FROM work_item").get()!;
-    saveConversation(f.db, item.id, "[]", null, true);
+    await saveConversation(sqliteDb(f.db), item.id, "[]", null, true);
     await f.jobs.tick();
     expect(f.launches()).toBe(0);
     expect(findOpenQuestion(f.db, "session")).toBeNull();

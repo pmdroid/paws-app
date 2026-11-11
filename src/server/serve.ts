@@ -152,7 +152,7 @@ export type ServerOptions = {
   githubWebhook?: GitHubWebhook;
   slackSigningSecret?: string | null;
   linearWebhook?: LinearWebhookDeps;
-  linearUsage?: () => LinearUsage;
+  linearUsage?: () => Promise<LinearUsage>;
   riskApproval?: (itemId: string) => Promise<{ head: string; detail: string } | null>;
   riskSettingsChanged?: () => void;
   /**
@@ -332,7 +332,7 @@ type Secrets = {
   githubWebhookSecret: string | null;
   githubWebhook: GitHubWebhook | undefined;
   linearWebhook: LinearWebhookDeps | undefined;
-  linearUsage?: (() => LinearUsage) | undefined;
+  linearUsage?: (() => Promise<LinearUsage>) | undefined;
   riskApproval?: ServerOptions["riskApproval"];
   riskSettingsChanged?: ServerOptions["riskSettingsChanged"];
   webhooks: boolean;
@@ -464,7 +464,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
       if (path === "/api/workspaces/github-integration") {
         const env = secrets.statusEnv ?? process.env;
         const runtime = loadRuntime(env);
-        const activation = createWorkspaceGitHubActivation(secrets.db, runtime.env.home, env);
+        const activation = createWorkspaceGitHubActivation(store, runtime.env.home, env);
         const check = createGitHubInstallationCheck({
           home: runtime.env.home,
           env,

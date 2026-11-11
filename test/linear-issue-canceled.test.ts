@@ -113,7 +113,7 @@ test("a Duplicate issue arrives as canceled and closes the PR the same way", asy
 test("a Linear session stop of the same item still pauses it and keeps the PR", async () => {
   const { db } = await itemIn("running");
   const stop = { type: "stop", itemId: ITEM, source: "linear", requestedAt: 10 } as const;
-  expect(applyLinearCommand(db, stop).applied).toBe(true);
+  expect((await applyLinearCommand(sqliteDb(db), stop)).applied).toBe(true);
   expect(getWorkItem(db, ITEM)?.state).toBe("paused");
   expect(closeJobs(db)).toEqual([]);
   db.close();

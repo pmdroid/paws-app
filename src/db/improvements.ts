@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
@@ -14,7 +13,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import type * as pgSchema from "./schema-pg";
 import { ulid } from "./ulid";
 
@@ -189,8 +188,8 @@ function improvementFromRow(row: ImprovementRow): Improvement {
   };
 }
 
-export function getImprovement(db: Database, id: string): Improvement | null {
-  return settled(sqliteDb(db).run((q) => getImprovementSteps(q, id)));
+export async function getImprovement(store: Db, id: string): Promise<Improvement | null> {
+  return store.run((q) => getImprovementSteps(q, id));
 }
 
 export function* getImprovementSteps(q: Q, id: string) {
@@ -296,11 +295,11 @@ type ProposalRecord = {
   now: number;
 };
 
-export function recordImprovementProposal(
-  db: Database,
+export async function recordImprovementProposal(
+  store: Db,
   input: ProposalRecord,
-): { improvementId: string; version: number; created: boolean; changed: boolean } {
-  return settled(sqliteDb(db).transaction((q) => recordImprovementProposalSteps(q, input)));
+): Promise<{ improvementId: string; version: number; created: boolean; changed: boolean }> {
+  return store.transaction((q) => recordImprovementProposalSteps(q, input));
 }
 
 export function* recordImprovementProposalSteps(q: Q, input: ProposalRecord) {
@@ -403,11 +402,11 @@ export function* recordImprovementProposalSteps(q: Q, input: ProposalRecord) {
   };
 }
 
-export function listImprovementProposals(
-  db: Database,
+export async function listImprovementProposals(
+  store: Db,
   improvementId: string,
-): ImprovementProposal[] {
-  return settled(sqliteDb(db).run((q) => listImprovementProposalsSteps(q, improvementId)));
+): Promise<ImprovementProposal[]> {
+  return store.run((q) => listImprovementProposalsSteps(q, improvementId));
 }
 
 export function* listImprovementProposalsSteps(q: Q, improvementId: string) {
@@ -455,8 +454,11 @@ type DecisionInput = {
   criterion?: string;
 };
 
-export function decideImprovement(db: Database, input: DecisionInput): ImprovementDecisionResult {
-  return settled(sqliteDb(db).transaction((q) => decideImprovementSteps(q, input)));
+export async function decideImprovement(
+  store: Db,
+  input: DecisionInput,
+): Promise<ImprovementDecisionResult> {
+  return store.transaction((q) => decideImprovementSteps(q, input));
 }
 
 export function* decideImprovementSteps(
@@ -915,11 +917,11 @@ function deliveryFromRow(q: Q, row: DeliveryRow): ImprovementDelivery {
   };
 }
 
-export function listImprovementDeliveries(
-  db: Database,
+export async function listImprovementDeliveries(
+  store: Db,
   improvementId: string,
-): ImprovementDelivery[] {
-  return settled(sqliteDb(db).run((q) => listImprovementDeliveriesSteps(q, improvementId)));
+): Promise<ImprovementDelivery[]> {
+  return store.run((q) => listImprovementDeliveriesSteps(q, improvementId));
 }
 
 export function* listImprovementDeliveriesSteps(q: Q, improvementId: string) {
@@ -1134,11 +1136,11 @@ type OutcomeInput = ImprovementOutcome & {
   now: number;
 };
 
-export function recordImprovementOutcome(
-  db: Database,
+export async function recordImprovementOutcome(
+  store: Db,
   input: OutcomeInput,
-): ImprovementOutcomeRecord {
-  return settled(sqliteDb(db).transaction((q) => recordImprovementOutcomeSteps(q, input)));
+): Promise<ImprovementOutcomeRecord> {
+  return store.transaction((q) => recordImprovementOutcomeSteps(q, input));
 }
 
 export function* recordImprovementOutcomeSteps(q: Q, input: OutcomeInput) {

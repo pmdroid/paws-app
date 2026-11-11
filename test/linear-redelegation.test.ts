@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ensureLinearSession, insertQueuedItem, migrate, openDatabase } from "../src/db";
+import { ensureLinearSession, insertQueuedItem, migrate, openDatabase, sqliteDb } from "../src/db";
 import { checkRedelegation, createInboxStore } from "../src/linear";
 import type { AcceptedLinearEvent } from "../src/linear";
 
@@ -9,10 +9,10 @@ const DELEGATED_AT = 100 * MINUTE;
 function fixture(delegateId: string | null = "paws-app") {
   const db = openDatabase(":memory:");
   migrate(db);
-  const store = createInboxStore(db);
+  const store = createInboxStore(sqliteDb(db));
   const delivered: AcceptedLinearEvent[] = [];
-  const check = (issueId: string, delegatedAtMs = DELEGATED_AT) => {
-    store.setCursor(`delegated:${issueId}`, delegatedAtMs);
+  const check = async (issueId: string, delegatedAtMs = DELEGATED_AT) => {
+    await store.setCursor(`delegated:${issueId}`, delegatedAtMs);
     return checkRedelegation(
       {
         db,
@@ -32,14 +32,14 @@ function fixture(delegateId: string | null = "paws-app") {
       { issueId, delegatedAtMs },
     );
   };
-  const session = (sessionId: string, issueId: string, now: number) =>
-    ensureLinearSession(db, { sessionId, issueId, appUserId: "paws-app", now });
+  const session = async (sessionId: string, issueId: string, now: number) =>
+    await ensureLinearSession(sqliteDb(db), { sessionId, issueId, appUserId: "paws-app", now });
   return { db, store, delivered, check, session };
 }
 
 test("a re-delegation into an earlier idle session starts work in that session", async () => {
   const f = fixture();
-  f.session("old-session", "issue-1", 10 * MINUTE);
+  await f.session("old-session", "issue-1", 10 * MINUTE);
 
   expect(await f.check("issue-1")).toBe(true);
 
@@ -50,15 +50,15 @@ test("a re-delegation into an earlier idle session starts work in that session",
     sessionId: "old-session",
     issueId: "issue-1",
   });
-  expect(f.store.commit(f.delivered[0]!).handled).toBe(true);
+  expect((await f.store.commit(f.delivered[0]!)).handled).toBe(true);
   expect(await f.check("issue-1")).toBe(false);
   expect(f.delivered).toHaveLength(1);
 });
 
 test("a re-delegation that brought a new session leaves intake to that session", async () => {
   const f = fixture();
-  f.session("old-session", "issue-1", 10 * MINUTE);
-  f.session("new-session", "issue-1", DELEGATED_AT + 2_000);
+  await f.session("old-session", "issue-1", 10 * MINUTE);
+  await f.session("new-session", "issue-1", DELEGATED_AT + 2_000);
 
   expect(await f.check("issue-1")).toBe(false);
   expect(f.delivered).toHaveLength(0);
@@ -67,7 +67,7 @@ test("a re-delegation that brought a new session leaves intake to that session",
 test("an issue that already has an open task starts nothing", async () => {
   const f = fixture();
   insertQueuedItem(f.db, { id: "task", sessionKey: "new-session" });
-  f.session("old-session", "lin-item-task", 10 * MINUTE);
+  await f.session("old-session", "lin-item-task", 10 * MINUTE);
 
   expect(await f.check("lin-item-task")).toBe(false);
   expect(f.delivered).toHaveLength(0);
@@ -75,7 +75,7 @@ test("an issue that already has an open task starts nothing", async () => {
 
 test("an issue undelegated again before the check starts nothing", async () => {
   const f = fixture(null);
-  f.session("old-session", "issue-1", 10 * MINUTE);
+  await f.session("old-session", "issue-1", 10 * MINUTE);
 
   expect(await f.check("issue-1")).toBe(false);
   expect(f.delivered).toHaveLength(0);
@@ -83,8 +83,8 @@ test("an issue undelegated again before the check starts nothing", async () => {
 
 test("a check superseded by a later delegation leaves it to the later check", async () => {
   const f = fixture();
-  f.session("old-session", "issue-1", 10 * MINUTE);
-  f.store.setCursor("delegated:issue-1", DELEGATED_AT + MINUTE);
+  await f.session("old-session", "issue-1", 10 * MINUTE);
+  await f.store.setCursor("delegated:issue-1", DELEGATED_AT + MINUTE);
 
   expect(
     await checkRedelegation(

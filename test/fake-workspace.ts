@@ -1,11 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { isBlockerSatisfied, type WorkItemState } from "../src/core";
 import {
-  bindLinearSessionTask,
+  bindLinearSessionTaskSteps,
   getTaskMode,
   getConfirmedRemoteMerge,
   recordConfirmedRemoteMerge,
-  recordLinearInstallation,
+  recordLinearInstallationSteps,
   sqliteDb,
   type Q,
   type Steps,
@@ -105,8 +105,8 @@ function* joinFakeWorkspaceSteps(q: Q, db: Database, delegationId: string): Step
   if (items.length === 0) return;
   if (items.every((item) => item.sessionId === null)) {
     const sessionId = `session-${delegationId}`;
-    install(db, { sessionId, organizationId: fallback });
-    bindLinearSessionTask(db, sessionId, delegationId);
+    yield* installSteps(q, db, { sessionId, organizationId: fallback });
+    yield* bindLinearSessionTaskSteps(q, sessionId, delegationId);
   }
   const sessions = db
     .query<Session, [string]>(
@@ -120,7 +120,7 @@ function* joinFakeWorkspaceSteps(q: Q, db: Database, delegationId: string): Step
     const organizationId = session.organizationId ?? fallback;
     ensureWorkspace(db, organizationId);
     if (session.organizationId && session.clientId && session.appUserId && session.teamId) continue;
-    install(db, { ...session, organizationId });
+    yield* installSteps(q, db, { ...session, organizationId });
   }
   for (const item of items) {
     const workspaceId = db
@@ -158,12 +158,13 @@ function* joinFakeWorkspaceSteps(q: Q, db: Database, delegationId: string): Step
   }
 }
 
-function install(
+function* installSteps(
+  q: Q,
   db: Database,
   session: Partial<Session> & { sessionId: string; organizationId: string },
-) {
+): Steps<void> {
   ensureWorkspace(db, session.organizationId);
-  recordLinearInstallation(db, {
+  yield* recordLinearInstallationSteps(q, {
     sessionId: session.sessionId,
     organizationId: session.organizationId,
     oauthClientId: session.clientId ?? "client",
@@ -224,8 +225,8 @@ function reads(db: Database, itemId: string) {
 }
 
 /** Record the evidence a real merge writes before a fixture enters merged. */
-export function confirmFakeMerge(db: Database, itemId: string): void {
-  recordConfirmedRemoteMerge(db, {
+export async function confirmFakeMerge(db: Database, itemId: string): Promise<void> {
+  await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId,
     repositoryOwner: "owner",
     repositoryName: "repo",

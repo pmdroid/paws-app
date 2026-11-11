@@ -55,7 +55,7 @@ async function seed() {
       defaultBranch: "main",
     })),
   );
-  const item = (id = "PAS-677", team: string | null = "Pascal"): WorkItemRecord => {
+  const item = async (id = "PAS-677", team: string | null = "Pascal"): Promise<WorkItemRecord> => {
     insertQueuedItem(db, { id, sessionKey: `session-${id}`, title: id });
     beginImplementRun(db, id, 1000);
     if (team !== null)
@@ -89,7 +89,7 @@ function stopResponses(db: ReturnType<typeof tempDb>): string[] {
 test("a mapped team may use only its linked repositories, and is told which one is not", async () => {
   const { db, item } = await seed();
   try {
-    const current = item();
+    const current = await item();
     expect(
       await teamRepositoryDenial(db, current, MAPPED, { owner: "acme", repo: "linked" }),
     ).toBeNull();
@@ -110,7 +110,7 @@ test("a mapped team may use only its linked repositories, and is told which one 
 test("an unmapped team may use any catalog repository, as placement does", async () => {
   const { db, item } = await seed();
   try {
-    const current = item();
+    const current = await item();
     for (const repo of ["catalog", "linked"])
       expect(await teamRepositoryDenial(db, current, UNMAPPED, { owner: "acme", repo })).toBeNull();
     expect(
@@ -126,7 +126,7 @@ test("a workspace without active admins names the role instead of a person", asy
   try {
     db.run("UPDATE workspace_member SET active=0 WHERE role='admin'");
     expect(
-      (await teamRepositoryDenial(db, item(), UNMAPPED, { owner: "acme", repo: "elsewhere" }))
+      (await teamRepositoryDenial(db, await item(), UNMAPPED, { owner: "acme", repo: "elsewhere" }))
         ?.reason,
     ).toBe(
       "Pascal has no repository in Paws yet. Ask a Paws admin to map one in Integrations, then delegate again.",
@@ -140,9 +140,12 @@ test("the team name comes from the stored webhook, else the issue key, never fro
   const { db, item } = await seed();
   try {
     const store = sqliteDb(db);
-    expect(await store.run((q) => issueTeamNameSteps(q, item("PAS-1", "Pascal")))).toBe("Pascal");
-    expect(await store.run((q) => issueTeamNameSteps(q, item("ENG-2", null)))).toBe("ENG");
-    expect(await store.run((q) => teamMemberDenialSteps(q, item("PAS-3")))).toEqual({
+    const pascal = await item("PAS-1", "Pascal");
+    const eng = await item("ENG-2", null);
+    const unmapped = await item("PAS-3");
+    expect(await store.run((q) => issueTeamNameSteps(q, pascal))).toBe("Pascal");
+    expect(await store.run((q) => issueTeamNameSteps(q, eng))).toBe("ENG");
+    expect(await store.run((q) => teamMemberDenialSteps(q, unmapped))).toEqual({
       denied: true,
       reason: "You're not a member of Pascal in Paws.",
     });
@@ -173,7 +176,7 @@ for (const [name, decide, response] of [
 ] as const) {
   test(`${name} cancels the item once and ends the session with its reason`, async () => {
     const { db, item } = await seed();
-    const current = item();
+    const current = await item();
     const integration = new FakeGitHubIntegration();
     integration.permitted = await decide(db, current);
     const check = new GitHubInstallationCheck(db, integration, () => 1000);
@@ -197,7 +200,7 @@ for (const [name, decide, response] of [
 
 test("a denial without a reason still ends with the default response", async () => {
   const { db, item } = await seed();
-  const current = item();
+  const current = await item();
   const integration = new FakeGitHubIntegration();
   integration.permitted = false;
   const check = new GitHubInstallationCheck(db, integration, () => 1000);
@@ -215,7 +218,7 @@ test("a denial without a reason still ends with the default response", async () 
 
 test("a membership lost while held cancels on recovery with the member reason", async () => {
   const { db, item } = await seed();
-  const current = item();
+  const current = await item();
   const integration = new FakeGitHubIntegration();
   integration.installed = false;
   const check = new GitHubInstallationCheck(db, integration, () => 1000);
@@ -235,7 +238,7 @@ test("a membership lost while held cancels on recovery with the member reason", 
 
 test("a local membership check that fails explains without reading GitHub or Linear", async () => {
   const { db, item } = await seed();
-  const current = item();
+  const current = await item();
   const integration = new FakeGitHubIntegration({
     current: (q, subject) => teamMemberDenialSteps(q, subject),
   });

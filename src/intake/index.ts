@@ -2,7 +2,7 @@ export { asksForFreshStart, intakeDelegatedIssue, cycleMessage, queueMessage } f
 export type { EarlierBranch, IntakeResult } from "./intake";
 export { orderByBlocks } from "./order";
 export type { OrderNode, OrderResult } from "./order";
-export { listWorkItems, stopAdoptedParent } from "./store";
+export { listWorkItems } from "./store";
 export { createParentDelegations, PARENT_REFUSAL } from "./parent-delegation";
 export type { ParentSubIssueProgress } from "./parent-delegation";
 export { parentSummaryMessage } from "./parent-summary";

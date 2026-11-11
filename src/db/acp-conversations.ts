@@ -86,18 +86,16 @@ export function* saveConversationSteps(
   );
 }
 
-export function saveConversation(
-  db: Database,
+export async function saveConversation(
+  store: Db,
   itemId: string,
   entries: string,
   transcript: string | null,
   blocked = false,
   transcriptOffset = 0,
-): void {
-  settled(
-    sqliteDb(db).run((q) =>
-      saveConversationSteps(q, itemId, entries, transcript, blocked, transcriptOffset),
-    ),
+): Promise<void> {
+  await store.run((q) =>
+    saveConversationSteps(q, itemId, entries, transcript, blocked, transcriptOffset),
   );
 }
 

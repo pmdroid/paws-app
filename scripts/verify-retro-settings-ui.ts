@@ -54,9 +54,9 @@ const CATALOGS: AgentModelCatalog[] = [
   },
 ];
 
-const w = world();
+const w = await world();
 await seedDaily(w.db);
-saveRetroSettingsRevision(w.db, {
+await saveRetroSettingsRevision(sqliteDb(w.db), {
   ...proposedRetroSettings([A, B]),
   workspaceId: "ws",
   createdBy: "user-admin",
@@ -128,8 +128,8 @@ const server = startServer({
     );
   },
 });
-const cookieFor = (userId: string) =>
-  `${WORKSPACE_COOKIE}=${issueWorkspaceSession(w.db, { workspaceId: "ws", userId, now: Date.now() }).token}`;
+const cookieFor = async (userId: string) =>
+  `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(w.db, { workspaceId: "ws", userId, now: Date.now() })).token}`;
 
 const browser = await chromium.launch({
   headless: true,
@@ -143,7 +143,7 @@ let models: () => Response = () => Response.json({ catalogs: CATALOGS });
 
 async function open(width: number, theme: "light" | "dark", user = "user-admin") {
   const context = await browser.newContext({ viewport: { width, height: 900 } });
-  await context.setExtraHTTPHeaders({ cookie: cookieFor(user) });
+  await context.setExtraHTTPHeaders({ cookie: await cookieFor(user) });
   await context.addInitScript((value) => localStorage.setItem("paws.appearance", value), theme);
   await context.route("**/api/runners/models", async (route) => {
     const answer = models();

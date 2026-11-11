@@ -209,7 +209,7 @@ describe("live status provider", () => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
     const { run } = beginImplementRun(db, item.id, 1_000);
-    putWorkspaceUser(db, {
+    await putWorkspaceUser(sqliteDb(db), {
       id: "user-ada",
       linearUserId: "lin-ada",
       name: "Ada Reviewer",
@@ -219,7 +219,7 @@ describe("live status provider", () => {
       ["shot-1", "a".repeat(40)],
       ["shot-2", "b".repeat(40)],
     ] as const)
-      saveEvidence(db, {
+      await saveEvidence(sqliteDb(db), {
         id,
         itemId: item.id,
         runId: run.id,
@@ -273,14 +273,14 @@ describe("live status provider", () => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
     const { run } = beginImplementRun(db, item.id, 1_000);
-    putWorkspaceUser(db, {
+    await putWorkspaceUser(sqliteDb(db), {
       id: "user-ada",
       linearUserId: "lin-ada",
       name: "Ada Reviewer",
       email: "ada@example.invalid",
     });
     for (const id of ["shot-1", "shot-2"])
-      saveEvidence(db, {
+      await saveEvidence(sqliteDb(db), {
         id,
         itemId: item.id,
         runId: run.id,
@@ -326,7 +326,8 @@ describe("live status provider", () => {
     const home = mkdtempSync(join(tmpdir(), "paws-status-reviewer-"));
     homes.push(home);
     const profiles = ["grok", "claude", "codex"] as const;
-    const ids = profiles.map((reviewer, index) => {
+    const ids: string[] = [];
+    for (const [index, reviewer] of profiles.entries()) {
       const item = insertQueuedItem(db, { id: `ENG-${index + 1}`, title: "Review", now: 1 });
       const { run } = beginImplementRun(db, item.id, 2);
       db.run("UPDATE run SET agent = ? WHERE id = ?", ["codex", run.id]);
@@ -341,8 +342,8 @@ describe("live status provider", () => {
           },
         }),
       );
-      return run.id;
-    });
+      ids.push(run.id);
+    }
     writeFileSync(join(home, "config.toml"), '[agents.defaults.reviewer]\nagent = "codex"\n');
     const server = startStatusServer({
       port: 0,
@@ -664,7 +665,7 @@ describe("live status provider", () => {
       answerers: ["delegator"],
       createdAt: now,
     });
-    saveCandidateRisk(db, {
+    await saveCandidateRisk(sqliteDb(db), {
       itemId: item.id,
       head,
       base: "base",
@@ -709,7 +710,7 @@ describe("live status provider", () => {
       answerers: ["delegator"],
       createdAt: now,
     });
-    saveCandidateRisk(db, {
+    await saveCandidateRisk(sqliteDb(db), {
       itemId: item.id,
       head,
       base: "base",
@@ -741,8 +742,8 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const item = insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now });
-    const risk = (head: string, at: number) =>
-      saveCandidateRisk(db, {
+    const risk = async (head: string, at: number) =>
+      await saveCandidateRisk(sqliteDb(db), {
         itemId: item.id,
         head,
         base: "base",
@@ -750,7 +751,7 @@ describe("live status provider", () => {
         paths: ["src/auth/session.ts"],
         classifiedAt: at,
       });
-    risk("9c1d2e3ff0", now);
+    await risk("9c1d2e3ff0", now);
     await saveRiskFix(sqliteDb(db), {
       itemId: item.id,
       head: "9c1d2e3ff0",
@@ -772,7 +773,7 @@ describe("live status provider", () => {
     );
     expect(parsed.ok && parsed.response.issues[0]?.riskCarryOver).toEqual(carried);
     // A newer head has not been compared yet, so the old carry-over no longer shows.
-    risk("aaaa111122", now + 1);
+    await risk("aaaa111122", now + 1);
     expect((await createLiveStatusProvider(db).issues()).issues[0]?.riskCarryOver).toBeUndefined();
   });
 
@@ -829,7 +830,7 @@ describe("live status provider", () => {
     );
     const merged = await merging("ENG-14", "acme/platform", null, 5);
     applyWorkItemEvent(db, merged.id, "merge_accepted");
-    recordConfirmedRemoteMerge(db, {
+    await recordConfirmedRemoteMerge(sqliteDb(db), {
       itemId: merged.id,
       repositoryOwner: "acme",
       repositoryName: "platform",
@@ -970,9 +971,9 @@ describe("live status provider", () => {
     const db = database();
     const now = 1_700_000_000_000;
     const head = "c".repeat(40);
-    const bound = (id: string, at: number) => {
+    const bound = async (id: string, at: number) => {
       const item = insertQueuedItem(db, { id, title: id, sessionKey: "ses_b", now: at });
-      bindWorkItemRepository(db, item.id, {
+      await bindWorkItemRepository(sqliteDb(db), item.id, {
         owner: "pmdroid",
         repo: "paws-app",
         remoteUrl: "https://github.com/pmdroid/paws-app.git",
@@ -981,8 +982,8 @@ describe("live status provider", () => {
       enterMergeQueue(db, item.id, { phase: "merge_queue", baseSha: head, wipCommit: head });
       return item;
     };
-    bound("ENG-21", 1);
-    const back = bound("ENG-22", 2);
+    await bound("ENG-21", 1);
+    const back = await bound("ENG-22", 2);
     applyWorkItemEvent(db, back.id, "restart", { kind: "restart", reason: "ci" });
     applyWorkItemEvent(db, back.id, "dispatched");
     enqueueJob(db, {
@@ -1195,7 +1196,7 @@ describe("live status provider", () => {
       finishCloseoutProgress(db, item.id, { ...identity, policyPath: null }, "rejected", at);
     }
     // An issue was filed from the pre-existing finding, on this item or another one.
-    bindWorkItemRepository(db, item.id, {
+    await bindWorkItemRepository(sqliteDb(db), item.id, {
       owner: "acme",
       repo: "widgets",
       remoteUrl: "https://github.com/acme/widgets.git",
@@ -1376,7 +1377,7 @@ describe("live status provider", () => {
     });
     upsertCloseoutStep(db, item.id, identity(item.id), review("passed", null), now);
     finishCloseoutProgress(db, item.id, identity(item.id), "accepted", now);
-    saveCandidateRisk(db, {
+    await saveCandidateRisk(sqliteDb(db), {
       itemId: item.id,
       head,
       base,
@@ -1396,7 +1397,7 @@ describe("live status provider", () => {
       now,
     );
     finishCloseoutProgress(db, docs.id, identity(docs.id), "accepted", now);
-    saveCandidateRisk(db, {
+    await saveCandidateRisk(sqliteDb(db), {
       itemId: docs.id,
       head,
       base,
@@ -1750,9 +1751,9 @@ describe("live status provider", () => {
       const blocker = insertQueuedItem(db, { id: "PAS-709", now: 10 });
       const blocked = insertQueuedItem(db, { id: "PAS-710", now: 20 });
       db.run("UPDATE work_item SET state=? WHERE id=?", [state, blocker.id]);
-      saveTaskMode(db, blocker.id, mode);
+      await saveTaskMode(sqliteDb(db), blocker.id, mode);
       if (mergeSha)
-        recordConfirmedRemoteMerge(db, {
+        await recordConfirmedRemoteMerge(sqliteDb(db), {
           itemId: blocker.id,
           repositoryOwner: "pmdroid",
           repositoryName: "paws-app",
@@ -1858,7 +1859,7 @@ describe("live status provider", () => {
     db.run(
       "INSERT INTO inbox_event (dedupe_key, source, action, session_id, signal, updated_at_ms, payload, received_at) VALUES ('stop', 'webhook', 'prompted', 's1', 'stop', 1, '{}', 600)",
     );
-    const usage = () => ({
+    const usage = async () => ({
       budget: { requestsRemaining: 0, requestsLimit: 1500, requestsResetMs: 3_600_000 },
       holdUntilMs: 300_000,
     });

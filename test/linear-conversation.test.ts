@@ -227,8 +227,8 @@ function fixture(
     get orchestrator() {
       return orchestrator;
     },
-    item() {
-      return getWorkItem(db, getLinearSession(db, "session")!.activeItemId!)!;
+    async item() {
+      return getWorkItem(db, (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!)!;
     },
     prompts() {
       return existsSync(evidence)
@@ -293,7 +293,7 @@ for (const phase of ["implement", "review"] as const) {
         f.orchestrator.onLinearEvent(event("update-two", "SECOND_UPDATE", 3)),
       ]);
       await Promise.all([first, updates]);
-      const original = f.item();
+      const original = await f.item();
       expect(original.state).toBe("queued");
       expect(
         (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
@@ -305,8 +305,8 @@ for (const phase of ["implement", "review"] as const) {
       );
       f.reopen();
       await tickWithRestarts(f.jobs, f.orchestrator, f.db);
-      expect(f.item().id).toBe(original.id);
-      expect(f.item().state).toBe("merge_queue");
+      expect((await f.item()).id).toBe(original.id);
+      expect((await f.item()).state).toBe("merge_queue");
       const prompt = f
         .prompts()
         .filter((row) => row.purpose === "implement")
@@ -326,7 +326,7 @@ for (const phase of ["implement", "review"] as const) {
       const count = f.starts.length;
       await f.orchestrator.onLinearEvent(event("update-two", "SECOND_UPDATE", 3));
       expect(f.starts.length).toBe(count);
-      expect(f.item().state).toBe("merge_queue");
+      expect((await f.item()).state).toBe("merge_queue");
     } finally {
       await f.close();
     }
@@ -338,21 +338,21 @@ test("new prompt after completion creates a new task and preserves the terminal 
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     await tickWithRestarts(f.jobs, f.orchestrator, f.db);
-    const original = f.item();
+    const original = await f.item();
     applyWorkItemEvent(f.db, original.id, "merge_accepted");
     expect((await getConversation(sqliteDb(f.db), original.id)).entries).toContain(
       "Append the required fixed suffix.",
     );
     await f.orchestrator.onLinearEvent(event("later", "ANOTHER_REQUEST", 4));
-    const next = f.item();
+    const next = await f.item();
     expect(next.id).not.toBe(original.id);
     expect(next.linearIssueId).toBe(original.linearIssueId);
     expect(itemPathId(next)).not.toBe(itemPathId(original));
     expect(getWorkItem(f.db, original.id)?.state).toBe("merged");
     f.reopen();
-    for (let attempt = 0; attempt < 3 && f.item().state === "queued"; attempt++)
+    for (let attempt = 0; attempt < 3 && (await f.item()).state === "queued"; attempt++)
       await tickWithRestarts(f.jobs, f.orchestrator, f.db);
-    expect(f.item().state).toBe("merge_queue");
+    expect((await f.item()).state).toBe("merge_queue");
     expect(
       f
         .prompts()
@@ -385,12 +385,12 @@ test("Stop wins over an interrupted turn, quiesces descendants and keeps complet
     await Bun.sleep(10);
     expect(duplicateFinished).toBe(false);
     await Promise.all([tick, update, stop, duplicate]);
-    expect(f.item().state).toBe("paused");
+    expect((await f.item()).state).toBe("paused");
     expect(running(Number(readFileSync(f.evidence + ".descendant", "utf8")))).toBe(false);
     expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
     expect(await tickWithRestarts(f.jobs, f.orchestrator, f.db)).toBeNull();
     await f.orchestrator.onLinearEvent(event("after-stop", "NEW_REQUEST", 4));
-    expect(f.item().state).toBe("queued");
+    expect((await f.item()).state).toBe("queued");
   } finally {
     await f.close();
   }
@@ -405,7 +405,7 @@ test("shutdown joins active writers before the database can close", async () => 
     await f.orchestrator.shutdown();
     await tick;
     expect(running(Number(readFileSync(f.evidence + ".descendant", "utf8")))).toBe(false);
-    expect(f.item().state).toBe("running");
+    expect((await f.item()).state).toBe("running");
     expect(f.db.query("SELECT 1").get()).toBeDefined();
   } finally {
     await f.close();
@@ -439,13 +439,13 @@ test("prompt before creation recovers the authoritative issue and reuses its tas
       },
     });
     await f.orchestrator.onLinearEvent({ ...event("early", "EARLY_REQUEST", 2), issueId: null });
-    const original = f.item();
+    const original = await f.item();
     await f.orchestrator.onLinearEvent(event("created", null, 1));
-    expect(f.item().id).toBe(original.id);
+    expect((await f.item()).id).toBe(original.id);
     f.reopen();
-    for (let attempt = 0; attempt < 3 && f.item().state === "queued"; attempt++)
+    for (let attempt = 0; attempt < 3 && (await f.item()).state === "queued"; attempt++)
       await tickWithRestarts(f.jobs, f.orchestrator, f.db);
-    expect(f.item().state).toBe("merge_queue");
+    expect((await f.item()).state).toBe("merge_queue");
     expect(f.prompts().find((row) => row.purpose === "implement")?.prompt).toContain(
       "EARLY_REQUEST",
     );
@@ -467,7 +467,7 @@ test("unresolved early prompt remains durable until creation supplies its issue"
     f.reopen();
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     await tickWithRestarts(f.jobs, f.orchestrator, f.db);
-    expect(f.item().state).toBe("merge_queue");
+    expect((await f.item()).state).toBe("merge_queue");
     expect(f.prompts().find((row) => row.purpose === "implement")?.prompt).toContain(
       "PENDING_REQUEST",
     );
@@ -481,7 +481,7 @@ test("an accepted answer question redirects through classification before code e
   const f = fixture(null, true);
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
-    const task = f.item().id;
+    const task = (await f.item()).id;
     const original = tickWithRestarts(f.jobs, f.orchestrator, f.db);
     await until(() => Boolean(findOpenQuestion(f.db, "session")));
     expect(getTaskMode(f.db, task)).toBe("answer");
@@ -494,7 +494,7 @@ test("an accepted answer question redirects through classification before code e
     await f.orchestrator.onLinearEvent(reply);
     await original;
     expect(findOpenQuestion(f.db, "session")).toBeNull();
-    expect(f.item().id).toBe(task);
+    expect((await f.item()).id).toBe(task);
     expect(f.tracker.progress.filter((row) => row.kind === "response")).toHaveLength(0);
     await tickWithRestarts(f.jobs, f.orchestrator, f.db);
     expect(getTaskMode(f.db, task)).toBe("code");
@@ -524,7 +524,7 @@ test("a prompt interrupts intake classification and is routed once after the old
     await f.orchestrator.onLinearEvent(event("early-update", "Explain the updated request", 2));
     expect(await rejected).toBeNull();
     expect(f.starts).toEqual(["classify", "classify"]);
-    expect(getTaskMode(f.db, f.item().id)).toBe("answer");
+    expect(getTaskMode(f.db, (await f.item()).id)).toBe("answer");
     expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
     expect(
       (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
@@ -541,7 +541,7 @@ test("shutdown retains a queued start without allowing a new writer", async () =
     await f.orchestrator.shutdown();
     await tickWithRestarts(f.jobs, f.orchestrator, f.db);
     expect(f.starts).toEqual([]);
-    expect(f.item().state).toBe("queued");
+    expect((await f.item()).state).toBe("queued");
     expect(
       f.db.query<{ status: string }, []>("SELECT status FROM job WHERE queue='item.start'").get()
         ?.status,
@@ -557,7 +557,7 @@ test.each(["answer", "artifact"] as const)(
     const f = fixture(null, true, true, mode);
     try {
       await f.orchestrator.onLinearEvent(event("created", null, 1));
-      const discussion = f.item().id;
+      const discussion = (await f.item()).id;
       const original = tickWithRestarts(f.jobs, f.orchestrator, f.db);
       await until(() => Boolean(findOpenQuestion(f.db, "session")));
       const reply = {
@@ -580,8 +580,8 @@ test.each(["answer", "artifact"] as const)(
       f.reopen();
       await f.orchestrator.onLinearEvent(event("created", null, 1));
       await tickWithRestarts(f.jobs, f.orchestrator, f.db);
-      expect(f.item().id).toBe(children[0]!.id);
-      expect(f.item().state).toBe("merge_queue");
+      expect((await f.item()).id).toBe(children[0]!.id);
+      expect((await f.item()).state).toBe("merge_queue");
       const implementation = f.prompts().find((row) => row.purpose === "implement")!.prompt;
       expect(implementation).toContain("ANSWER_OBSERVATION");
       expect(implementation).toContain("Also implement both child changes");
@@ -603,29 +603,29 @@ test("an unhandled Stop replay after reopen preserves a newer explicit task", as
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     const stop = { ...event("durable-stop", null, 3, "stop"), activityId: "stop-activity" };
-    createInboxStore(f.db).commit(stop);
+    await createInboxStore(sqliteDb(f.db)).commit(stop);
     await f.orchestrator.onLinearEvent(stop);
     await f.orchestrator.onLinearEvent(event("later-request", "NEW_REQUEST", 4));
-    const current = f.item();
-    const session = getLinearSession(f.db, "session");
+    const current = await f.item();
+    const session = await getLinearSession(sqliteDb(f.db), "session");
     const outbox = listOutbox(f.db);
     expect(current.state).toBe("queued");
     f.reopen();
-    const store = createInboxStore(f.db);
-    store.commit({ ...stop, source: "poll", dedupeKey: "activity:stop-activity:stop" });
-    const pending = store.listUnhandled();
+    const store = createInboxStore(sqliteDb(f.db));
+    await store.commit({ ...stop, source: "poll", dedupeKey: "activity:stop-activity:stop" });
+    const pending = await store.listUnhandled();
     expect(pending.map((row) => row.dedupeKey).sort()).toEqual([
       "activity:stop-activity:stop",
       "durable-stop",
     ]);
     for (const row of pending) {
       await f.orchestrator.onLinearEvent(row);
-      store.markHandled(row.dedupeKey);
+      await store.markHandled(row.dedupeKey);
     }
-    expect(f.item()).toEqual(current);
-    expect(getLinearSession(f.db, "session")).toEqual(session);
+    expect(await f.item()).toEqual(current);
+    expect(await getLinearSession(sqliteDb(f.db), "session")).toEqual(session);
     expect(listOutbox(f.db)).toEqual(outbox);
-    expect(store.listUnhandled()).toEqual([]);
+    expect(await store.listUnhandled()).toEqual([]);
   } finally {
     await f.close();
   }
@@ -635,8 +635,8 @@ test("a failed Stop transaction leaves no receipt, generation or partial pause",
   const f = fixture(null, false, true);
   try {
     await f.orchestrator.onLinearEvent(event("created", null, 1));
-    const item = f.item();
-    const session = getLinearSession(f.db, "session");
+    const item = await f.item();
+    const session = await getLinearSession(sqliteDb(f.db), "session");
     const outbox = listOutbox(f.db);
     const originalItems = f.db.query("SELECT * FROM work_item ORDER BY position").all();
     let emitted = 0;
@@ -648,15 +648,15 @@ test("a failed Stop transaction leaves no receipt, generation or partial pause",
       BEGIN SELECT RAISE(ABORT, 'stop rejected'); END`);
     const stop = event("retry-stop", null, 2, "stop");
     await expect(f.orchestrator.onLinearEvent(stop)).rejects.toThrow("Could not stop Linear task");
-    expect(f.item()).toEqual(item);
+    expect(await f.item()).toEqual(item);
     expect(f.db.query("SELECT * FROM work_item ORDER BY position").all()).toEqual(originalItems);
     expect(emitted).toBe(0);
-    expect(getLinearSession(f.db, "session")).toEqual(session);
+    expect(await getLinearSession(sqliteDb(f.db), "session")).toEqual(session);
     expect(listOutbox(f.db)).toEqual(outbox);
     expect(f.db.query("SELECT * FROM linear_stop_receipt").all()).toEqual([]);
     f.db.exec("DROP TRIGGER reject_stop");
     await f.orchestrator.onLinearEvent(stop);
-    expect(f.item().state).toBe("paused");
+    expect((await f.item()).state).toBe("paused");
     expect(emitted).toBe(2);
     expect(f.db.query("SELECT * FROM linear_stop_receipt").all()).toHaveLength(1);
   } finally {
@@ -671,11 +671,11 @@ test("administrative interruption joins a zero-item classifier without a Linear 
       .onLinearEvent(event("created", null, 1))
       .catch((error: unknown) => error);
     await until(() => f.starts.includes("classify"));
-    const session = getLinearSession(f.db, "session");
+    const session = await getLinearSession(sqliteDb(f.db), "session");
     await f.orchestrator.interruptLinearSession("session");
     expect(await original).toMatchObject({ name: "AbortError" });
     expect(f.db.query("SELECT id FROM work_item").all()).toEqual([]);
-    expect(getLinearSession(f.db, "session")).toEqual(session);
+    expect(await getLinearSession(sqliteDb(f.db), "session")).toEqual(session);
     expect(f.tracker.progress.filter((row) => row.kind === "response")).toEqual([]);
     expect(f.db.query("SELECT * FROM linear_stop_receipt").all()).toEqual([]);
   } finally {
@@ -689,7 +689,7 @@ test.each(["shutdown", "interrupt"] as const)(
     const f = fixture(null);
     try {
       await f.orchestrator.onLinearEvent(event("created", null, 1));
-      saveConversation(f.db, f.item().id, "[]", null, true);
+      await saveConversation(sqliteDb(f.db), (await f.item()).id, "[]", null, true);
       f.reopen();
       const stopping =
         operation === "shutdown"
@@ -697,7 +697,7 @@ test.each(["shutdown", "interrupt"] as const)(
           : f.orchestrator.interruptLinearSession("session");
       await expect(stopping).rejects.toThrow("ACP process cleanup could not be verified");
       expect(f.db.query("SELECT 1 AS open").get()).toEqual({ open: 1 });
-      expect((await getConversation(sqliteDb(f.db), f.item().id)).blocked).toBe(true);
+      expect((await getConversation(sqliteDb(f.db), (await f.item()).id)).blocked).toBe(true);
     } finally {
       f.db.run("DELETE FROM linear_conversation");
       await f.close();

@@ -40,7 +40,7 @@ function fixture(path = ":memory:") {
     () => 1000,
     () => syncSteps(() => allowed),
   );
-  const item = (id: string) => {
+  const item = async (id: string) => {
     insertQueuedItem(db, { id, sessionKey: `session-${id}`, title: id });
     beginImplementRun(db, id, 1000);
     return getWorkItem(db, id)!;
@@ -68,8 +68,8 @@ test("ready: two members use one App installation and proceed without any questi
   try {
     f.ready();
     for (const id of ["member-a", "member-b"])
-      expect(await f.auth.ensure(f.item(id), "initial", f.signal)).toBe(true);
-    expect(await f.auth.ensure(f.item("publisher"), "publication", f.signal)).toBe(true);
+      expect(await f.auth.ensure(await f.item(id), "initial", f.signal)).toBe(true);
+    expect(await f.auth.ensure(await f.item("publisher"), "publication", f.signal)).toBe(true);
     expect(listJobs(f.db)).toHaveLength(0);
     expect(listOutbox(f.db)).toHaveLength(0);
     expect(f.db.query("SELECT * FROM question").all()).toHaveLength(0);
@@ -82,7 +82,7 @@ test("ready: two members use one App installation and proceed without any questi
 test("missing installation: the waiting message shows once and the item resumes by itself", async () => {
   const f = fixture();
   try {
-    const item = f.item("member");
+    const item = await f.item("member");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
     expect(await f.auth.ensure(getWorkItem(f.db, item.id)!, "initial", f.signal)).toBe(false);
     await f.auth.recover();
@@ -108,7 +108,7 @@ test("missing installation: the waiting message shows once and the item resumes 
 test("an App hold is asked as the github-auth kind and posts no question of its own", async () => {
   const f = fixture();
   try {
-    expect(await f.auth.ensure(f.item("member"), "initial", f.signal)).toBe(false);
+    expect(await f.auth.ensure(await f.item("member"), "initial", f.signal)).toBe(false);
     const hold = f.db
       .query<{ question_id: string }, []>("SELECT question_id FROM github_integration_hold")
       .get()!;
@@ -134,7 +134,7 @@ test("App hold survives restart, notifies only administrators and revalidates ex
   const root = mkdtempSync(join(tmpdir(), "paws-integration-"));
   const path = join(root, "db.sqlite");
   const f = fixture(path);
-  const item = f.item("member");
+  const item = await f.item("member");
   expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
   expect(await f.auth.ensure(getWorkItem(f.db, item.id)!, "initial", f.signal)).toBe(false);
   const prompts = listOutbox(f.db).filter((entry) => entry.op === "elicitation");
@@ -177,7 +177,7 @@ for (const invalidation of [
   test(`App recovery refuses obsolete ${invalidation}`, async () => {
     const f = fixture();
     try {
-      const item = f.item("member");
+      const item = await f.item("member");
       await f.auth.ensure(item, "initial", f.signal);
       if (invalidation === "membership") f.deny();
       if (invalidation === "stop")
@@ -208,7 +208,7 @@ for (const invalidation of [
 
 test("App preflight refuses a checkpoint changed during installation lookup", async () => {
   const f = fixture();
-  const item = f.item("member");
+  const item = await f.item("member");
   f.integration.check = async () => {
     saveCheckpoint(f.db, item.id, { phase: "running", wipCommit: "new" });
     return true;
@@ -231,7 +231,7 @@ test("unavailable: a failed check holds the item with the retry message and no a
     },
   });
   try {
-    const item = f.item("outage");
+    const item = await f.item("outage");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     expect(f.db.query<{ body: string }, []>("SELECT body FROM question").get()?.body).toContain(
@@ -247,7 +247,7 @@ test("unavailable: a failed check holds the item with the retry message and no a
 test("denied: a member who loses access while held is cancelled on recovery", async () => {
   const f = fixture();
   try {
-    const item = f.item("member");
+    const item = await f.item("member");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
     f.deny();
     f.ready();
@@ -262,7 +262,8 @@ test("denied: a member who loses access while held is cancelled on recovery", as
 
 test("one unavailable requester does not stop recovery of other held work", async () => {
   const f = fixture();
-  for (const id of ["unavailable", "ready"]) await f.auth.ensure(f.item(id), "initial", f.signal);
+  for (const id of ["unavailable", "ready"])
+    await f.auth.ensure(await f.item(id), "initial", f.signal);
   const original = f.integration.check;
   f.integration.check = async (item?: { id: string }) => {
     if (item?.id === "unavailable") throw new Error("Linear unavailable");
@@ -283,7 +284,7 @@ test("one unavailable requester does not stop recovery of other held work", asyn
 test("App publication recovery queues fresh verification, not publication", async () => {
   const f = fixture();
   try {
-    const item = f.item("member");
+    const item = await f.item("member");
     applyWorkItemEvent(f.db, item.id, "turn_ended");
     applyWorkItemEvent(f.db, item.id, "closeout_accepted");
     await f.auth.ensure(getWorkItem(f.db, item.id)!, "publication", f.signal);
@@ -300,7 +301,7 @@ test("App publication recovery queues fresh verification, not publication", asyn
 for (const source of ["local", "live"] as const) {
   test(`denied: ${source} loss of access before a hold cancels instead of stranding running work`, async () => {
     const f = fixture();
-    const item = f.item("denied");
+    const item = await f.item("denied");
     const auth = new GitHubInstallationCheck(
       f.db,
       {
@@ -337,7 +338,7 @@ test("recovery replaces an unavailable message with the current installation blo
   });
   const blocker = "restore the GitHub App installation";
   try {
-    const item = f.item("changed-blocker");
+    const item = await f.item("changed-blocker");
     await f.auth.ensure(item, "initial", f.signal);
     const question = () => f.db.query<{ body: string }, []>("SELECT body FROM question").get()!;
     expect(question().body).toContain("could not be checked");
@@ -372,7 +373,7 @@ test("a check that fails briefly is retried quietly before the task is held", as
     },
   });
   try {
-    const item = f.item("restarted");
+    const item = await f.item("restarted");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(true);
     expect(getWorkItem(f.db, item.id)?.state).toBe("running");
     expect(f.db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
@@ -403,7 +404,7 @@ test("a rate-limited check keeps retrying quietly and posts nothing in Linear", 
     },
   });
   try {
-    const item = f.item("limited");
+    const item = await f.item("limited");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(true);
     expect(getWorkItem(f.db, item.id)?.state).toBe("running");
     expect(f.db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
@@ -425,7 +426,7 @@ test("a check that keeps failing still holds the task after the quiet retries", 
     },
   });
   try {
-    const item = f.item("outage");
+    const item = await f.item("outage");
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
     expect(calls).toBe(3);
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");

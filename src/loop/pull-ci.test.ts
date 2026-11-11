@@ -73,7 +73,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  bindWorkItemRepository(db, "eng-1", {
+  await bindWorkItemRepository(sqliteDb(db), "eng-1", {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
@@ -131,7 +131,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
     leaveMergeQueue: (_, prNumber) =>
       leaveGitHubMergeQueue({ client, owner: "acme", repo: "one", prNumber, tokenProvider }),
     pullHead: async () => state.pullHead,
-    fixRoundLimit: () => state.limit,
+    fixRoundLimit: () => syncSteps(() => state.limit),
     closeoutFindings: async () => {
       const during = state.during;
       state.during = null;
@@ -147,13 +147,13 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
   const lane: MergeCapabilities = {
     ask,
     now: () => clock,
-    stopped: () => {
+    stopped: async () => {
       const item = getWorkItem(db, "eng-1");
       return item === null || item.state === "cancelled" || item.cancelRequested;
     },
     session: (item) => item.sessionKey,
     fetchMain: unused("fetchMain"),
-    ciFixAttempts: () => state.limit,
+    ciFixAttempts: async () => state.limit,
     feedbackWait: () => wait,
     readPullCi: (_, pull) =>
       readPullCi({
@@ -166,7 +166,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
       }),
     readPull: async () => null,
     dependencyHold: () => syncSteps(() => null),
-    mergeLane: () => "",
+    mergeLane: async () => "",
     voice: {
       thought: () => syncSteps(() => {}),
       status: () => syncSteps(() => {}),
@@ -309,7 +309,7 @@ async function setup(wait: PullFeedbackWait = { quietMs: 60_000, maxMs: 300_000 
 
 function FILTER(wait: PullFeedbackWait): PullCommentFilter {
   return {
-    appId: () => "42",
+    appId: async () => "42",
     appLogin: () => "paws-test[bot]",
     ignoredBots: () => [],
     ignoredMarkers: () => [],

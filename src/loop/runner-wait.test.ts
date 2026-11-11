@@ -58,7 +58,7 @@ function harness(
             },
           };
         },
-        ...(asked === undefined ? {} : { asked }),
+        ...(asked === undefined ? {} : { asked: async () => asked() }),
         askAfterMs: 30,
         pollMs: 10,
       }),

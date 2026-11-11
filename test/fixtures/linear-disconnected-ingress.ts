@@ -1,7 +1,7 @@
 import "../quiet-journal";
 import { createHmac } from "node:crypto";
 import { join } from "node:path";
-import { openDatabase } from "../../src/db";
+import { openDatabase, sqliteDb } from "../../src/db";
 import { startPaws } from "../../src/index";
 import { createInboxStore } from "../../src/linear";
 
@@ -44,8 +44,8 @@ const response = await nativeFetch(new URL("/webhooks/linear", paws.server.url),
 await new Promise<void>((resolve) => setImmediate(resolve));
 paws.stop();
 const reopened = openDatabase(join(home, "paws.db"));
-const pending = createInboxStore(reopened)
-  .listUnhandled()
-  .map((event) => event.sessionId);
+const pending = (await createInboxStore(sqliteDb(reopened)).listUnhandled()).map(
+  (event) => event.sessionId,
+);
 reopened.close();
 console.log(JSON.stringify({ status: response.status, requests, pending }));

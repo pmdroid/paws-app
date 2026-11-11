@@ -283,7 +283,7 @@ test("a conflict restart without files counts the files a merge before it shared
   const db = tempDb();
   try {
     await item(db, "merged", [PROVIDER, "src/a.ts"]);
-    recordConfirmedRemoteMerge(db, {
+    await recordConfirmedRemoteMerge(sqliteDb(db), {
       itemId: "merged",
       repositoryOwner: "owner",
       repositoryName: "repo",
@@ -313,7 +313,7 @@ test("a later candidate does not change the files of an earlier conflict", async
   const db = tempDb();
   try {
     await item(db, "merged", [PROVIDER, "src/a.ts", "src/c.ts"], NOW - 200_000);
-    recordConfirmedRemoteMerge(db, {
+    await recordConfirmedRemoteMerge(sqliteDb(db), {
       itemId: "merged",
       repositoryOwner: "owner",
       repositoryName: "repo",

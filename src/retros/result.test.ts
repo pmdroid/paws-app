@@ -352,7 +352,7 @@ describe("settling an attempt", () => {
       seed(db, "PAS-817", 4);
       seed(db, "PAS-843", 5);
     }
-    const { revision } = saveRetroSettingsRevision(db, {
+    const { revision } = await saveRetroSettingsRevision(sqliteDb(db), {
       workspaceId: "ws",
       prompt: "Review {{digest}}",
       agentProfile: { agent: "codex" },
@@ -363,7 +363,7 @@ describe("settling an attempt", () => {
       createdBy: "user-1",
       now: 1,
     });
-    createRetro(db, {
+    await createRetro(sqliteDb(db), {
       id: "r1",
       workspaceId: "ws",
       windowStart: FIXTURE_START,
@@ -381,8 +381,14 @@ describe("settling an attempt", () => {
     return { db, root, digest: collected.digest, sha: collected.digestSha256 };
   }
 
-  const start = (db: Database, now: number) =>
-    startRetroAttempt(db, { retroId: "r1", owner: "w", now, leaseMs: 60_000, maxAttempts: 2 });
+  const start = async (db: Database, now: number) =>
+    await startRetroAttempt(sqliteDb(db), {
+      retroId: "r1",
+      owner: "w",
+      now,
+      leaseMs: 60_000,
+      maxAttempts: 2,
+    });
   const settle = (db: Database, root: string, attempt: number, output: string | null) =>
     settleRetroAttempt(db, root, {
       retroId: "r1",
@@ -395,7 +401,7 @@ describe("settling an attempt", () => {
   test("empty input publishes a valid empty report without model output", async () => {
     const { db, root, digest: empty, sha } = await world(false);
     expect(retroNeedsGeneration(empty)).toBe(false);
-    const settled = await settle(db, root, start(db, FIXTURE_END + 1)!.attempt, null);
+    const settled = await settle(db, root, (await start(db, FIXTURE_END + 1))!.attempt, null);
     if (!settled.ok) throw new Error(settled.reason);
     expect(settled.report.generation).toBe("empty_input");
     expect(settled.report.digestSha256).toBe(sha);
@@ -405,7 +411,7 @@ describe("settling an attempt", () => {
 
   test("invalid output records a diagnostic and retries against the same digest", async () => {
     const { db, root, sha } = await world(true);
-    const failed = await settle(db, root, start(db, FIXTURE_END + 1)!.attempt, "not json");
+    const failed = await settle(db, root, (await start(db, FIXTURE_END + 1))!.attempt, "not json");
     expect(failed).toMatchObject({
       ok: false,
       reason: "invalid_result",
@@ -416,7 +422,7 @@ describe("settling an attempt", () => {
       `invalid_json against digest ${sha.slice(0, 12)}: result invalid_json`,
     );
     expect((await getRetro(sqliteDb(db), "r1"))!.state).toBe("failed");
-    const second = start(db, FIXTURE_END + 2)!;
+    const second = (await start(db, FIXTURE_END + 2))!;
     expect(second.attempt).toBe(2);
     expect(await settle(db, root, second.attempt, null)).toMatchObject({
       ok: false,
@@ -424,13 +430,13 @@ describe("settling an attempt", () => {
       retryable: false,
     });
     expect((await getRetro(sqliteDb(db), "r1"))!.digestSha256).toBe(sha);
-    expect(start(db, FIXTURE_END + 3)).toBeNull();
+    expect(await start(db, FIXTURE_END + 3)).toBeNull();
   });
 
   test("a valid result publishes items keyed to the frozen evidence", async () => {
     const { db, root } = await world(true);
     const output = JSON.stringify(one());
-    const settled = await settle(db, root, start(db, FIXTURE_END + 1)!.attempt, output);
+    const settled = await settle(db, root, (await start(db, FIXTURE_END + 1))!.attempt, output);
     if (!settled.ok) throw new Error(settled.reason);
     const [stored] = await listRetroItems(sqliteDb(db), "r1");
     expect(stored).toMatchObject({

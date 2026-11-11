@@ -39,7 +39,7 @@ async function replicas() {
   const db = openDatabase(path);
   migrate(db);
   let clock = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "acme-owner",
     name: "Acme Owner",
@@ -112,12 +112,12 @@ async function replicas() {
   await first.work.heartbeat(runnerId, 1);
 
   let sequence = 0;
-  const item = () => {
+  const item = async () => {
     const id = `acme-${++sequence}`;
     const sessionId = `acme-session-${sequence}`;
     const record = insertQueuedItem(db, { id, now: clock, sessionKey: sessionId });
     const { run } = beginImplementRun(db, id, clock);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "acme",
       oauthClientId: "acme-app",
       appUserId: "acme-app-user",
@@ -125,9 +125,11 @@ async function replicas() {
       teamId: "acme-team",
       observedAtMs: clock,
     });
-    bindLinearSessionTask(db, sessionId, record.delegationId, { actorId: "acme-owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionId, record.delegationId, {
+      actorId: "acme-owner",
+    });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-    bindWorkItemRepository(db, id, {
+    await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "acme",
       repo: "fixture",
       remoteUrl: "https://github.com/acme/fixture.git",
@@ -136,7 +138,7 @@ async function replicas() {
   };
   const prepare = (
     on: ReturnType<typeof instance>,
-    target: ReturnType<typeof item>,
+    target: Awaited<ReturnType<typeof item>>,
     signal: AbortSignal,
   ) => {
     const worktreePath = join(root, target.id);
@@ -186,13 +188,15 @@ test("two instances placing on a one-slot runner at once: only one wins", async 
   const fixture = await replicas();
   const stop = new AbortController();
   try {
+    const first = await fixture.item();
+    const second = await fixture.item();
     const outcomes = await Promise.allSettled([
       Promise.race([
-        fixture.prepare(fixture.first, fixture.item(), stop.signal),
+        fixture.prepare(fixture.first, first, stop.signal),
         Bun.sleep(500).then(() => "placed"),
       ]),
       Promise.race([
-        fixture.prepare(fixture.second, fixture.item(), stop.signal),
+        fixture.prepare(fixture.second, second, stop.signal),
         Bun.sleep(500).then(() => "placed"),
       ]),
     ]);
@@ -220,12 +224,12 @@ test("a crashed instance's reservation expires after two minutes and frees the s
   const fixture = await replicas();
   const stop = new AbortController();
   try {
-    const crashed = fixture.item();
+    const crashed = await fixture.item();
     fixture.db.run(
       "INSERT INTO runner_reservation(run_id,runner_id,instance_id,expires_at) VALUES(?,?,'acme-crashed',?)",
       [crashed.runId, fixture.runnerId, fixture.now() + RUNNER_RESERVATION_MS],
     );
-    const waiting = fixture.item();
+    const waiting = await fixture.item();
     await expect(fixture.prepare(fixture.second, waiting, stop.signal)).rejects.toBeInstanceOf(
       RunnerCapacityWait,
     );

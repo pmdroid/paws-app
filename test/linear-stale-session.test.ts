@@ -67,7 +67,7 @@ async function fixture() {
   ]);
   const tracker: TrackerAdapter = fake;
   for (const sessionId of ["old", "new", "other"])
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId,
       organizationId: "org",
       oauthClientId: "client",
@@ -98,7 +98,7 @@ async function fixture() {
     });
   let orchestrator = makeOrchestrator();
   await orchestrator.onLinearEvent(created("old"));
-  const oldId = getLinearSession(db, "old")!.activeItemId!;
+  const oldId = (await getLinearSession(sqliteDb(db), "old"))!.activeItemId!;
   beginImplementRun(db, oldId, 11);
   applyWorkItemEvent(db, oldId, "blocking_question");
   const snapshot: LinearSessionSnapshot = {
@@ -172,8 +172,8 @@ test.each(["dismissed", "ended", "complete", "error", "stopping"])(
     f.snapshot.status = ["dismissed", "ended"].includes(state) ? "awaitingInput" : state;
     try {
       await f.orchestrator.onLinearEvent(created("new"));
-      expect(getLinearSession(f.db, "old")?.stoppedAt).not.toBeNull();
-      expect(getLinearSession(f.db, "new")!.activeItemId).toBe(f.oldId);
+      expect((await getLinearSession(sqliteDb(f.db), "old"))?.stoppedAt).not.toBeNull();
+      expect((await getLinearSession(sqliteDb(f.db), "new"))!.activeItemId).toBe(f.oldId);
       expect(getWorkItem(f.db, f.oldId)).toMatchObject({ state: "queued", sessionKey: "new" });
       await f.orchestrator.onLinearEvent(created("new"));
       expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
@@ -197,7 +197,7 @@ test("re-delegating an issue a Linear Stop paused resumes the same item", async 
     await f.orchestrator.onLinearEvent(created("new"));
     expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
     expect(getWorkItem(f.db, f.oldId)).toMatchObject({ state: "queued", sessionKey: "new" });
-    expect(getLinearSession(f.db, "new")?.activeItemId).toBe(f.oldId);
+    expect((await getLinearSession(sqliteDb(f.db), "new"))?.activeItemId).toBe(f.oldId);
   } finally {
     await f.close();
   }
@@ -252,12 +252,12 @@ test.each(["unavailable", "issue", "app", "id", "generation", "authorization"])(
     };
     const linear = f.runtime();
     const event = created("new");
-    const store = createInboxStore(f.db);
-    store.commit(event);
+    const store = createInboxStore(sqliteDb(f.db));
+    await store.commit(event);
     try {
       await expect(linear.webhook.onEvent!(event)).rejects.toThrow("retry automatically");
       expect(getWorkItem(f.db, f.oldId)?.state).toBe("awaiting_input");
-      expect(store.listUnhandled()).toHaveLength(1);
+      expect(await store.listUnhandled()).toHaveLength(1);
       expect(
         f.fake.progress.filter((update) => update.sessionId === "new").map((update) => update.kind),
       ).toEqual(["thought", "thought"]);
@@ -315,7 +315,7 @@ test("failed cleanup remains fenced across SQLite reopen until teardown succeeds
 
 test("an unverified ACP cleanup cannot release the old issue", async () => {
   const f = await fixture();
-  saveConversation(f.db, f.oldId, "[]", null, true);
+  await saveConversation(sqliteDb(f.db), f.oldId, "[]", null, true);
   try {
     await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow(
       "retry automatically",

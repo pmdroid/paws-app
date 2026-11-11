@@ -18,16 +18,16 @@ import { workspaceDispatch } from "./fake-workspace";
 const NOW = 1_000;
 const READY = ["next-1", "next-2", "next-3", "next-4"];
 
-function fixture() {
+async function fixture() {
   const db = tempDb();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "user-1",
     linearUserId: "user-linear",
     name: "Owner",
     email: "owner@example.invalid",
   });
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 0]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws-1",
     userId,
     role: "admin",
@@ -67,13 +67,14 @@ function fixture() {
   }
   placed("placed-1");
   const second = placed("placed-2");
-  const stuck = ["stuck-1", "stuck-2", "stuck-3"].map((id) => running(id).job);
+  const stuck = [];
+  for (const id of ["stuck-1", "stuck-2", "stuck-3"]) stuck.push(running(id).job);
   for (const [index, id] of READY.entries()) insertQueuedItem(db, { id, now: index + 1 });
   return { db, second, stuck };
 }
 
 test("work running without a runner placement leaves its slot free for the next task", async () => {
-  const { db, second } = fixture();
+  const { db, second } = await fixture();
   try {
     expect(await workspaceDispatch(db, { now: NOW })).toEqual(["next-1", "next-2", "next-3"]);
     expect(await workspaceDispatch(db, { now: NOW + 1 })).toEqual([]);
@@ -90,7 +91,7 @@ test("work running without a runner placement leaves its slot free for the next 
 });
 
 test("a task between its run and Closeout keeps its runner slot until the run ends", async () => {
-  const { db, second } = fixture();
+  const { db, second } = await fixture();
   try {
     expect(await workspaceDispatch(db, { now: NOW })).toHaveLength(3);
     db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
@@ -109,7 +110,7 @@ test("a task between its run and Closeout keeps its runner slot until the run en
 });
 
 test("a task waiting for CI between its run and Closeout frees its runner slot", async () => {
-  const { db, second } = fixture();
+  const { db, second } = await fixture();
   try {
     expect(await workspaceDispatch(db, { now: NOW })).toHaveLength(3);
     db.run("UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE run_id=?", [
@@ -137,7 +138,7 @@ test("a task waiting for CI between its run and Closeout frees its runner slot",
 });
 
 test("a placement in progress holds a slot until its run reaches a runner", async () => {
-  const { db, stuck } = fixture();
+  const { db, stuck } = await fixture();
   try {
     db.run("UPDATE job SET status='running',locked_by='worker',locked_until=? WHERE id=?", [
       NOW + 60_000,
@@ -150,7 +151,7 @@ test("a placement in progress holds a slot until its run reaches a runner", asyn
 });
 
 test("the queue line reports the slots the scheduler counts as busy", async () => {
-  const { db } = fixture();
+  const { db } = await fixture();
   try {
     const admitted = await workspaceDispatch(db, { now: NOW });
     const position = settled(getQueuePosition(sqliteDb(db), "next-4"));
@@ -164,14 +165,14 @@ test("the queue line reports the slots the scheduler counts as busy", async () =
 test("twelve items ready at once on ten slots start ten and leave two queued", async () => {
   const db = tempDb();
   try {
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: "user-1",
       linearUserId: "user-linear",
       name: "Owner",
       email: "owner@example.invalid",
     });
     db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 0]);
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "ws-1",
       userId,
       role: "admin",

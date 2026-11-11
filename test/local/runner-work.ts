@@ -53,7 +53,7 @@ export async function probeRunnerWork(
   const db = openDatabase(path);
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -124,7 +124,7 @@ export async function probeRunnerWork(
     );
   const item = insertQueuedItem(db, { id: "fixture-item", now, sessionKey: "fixture-session" });
   const { run } = beginImplementRun(db, item.id, now);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "fixture-work",
     oauthClientId: "fixture-app",
     appUserId: "fixture-app-user",
@@ -132,14 +132,16 @@ export async function probeRunnerWork(
     teamId: "fixture-team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "fixture-session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "fixture-session", item.delegationId, {
+    actorId: "owner",
+  });
   const repository = {
     owner: "fixture",
     repo: "repository",
     remoteUrl: "https://github.com/fixture/repository.git",
     baseSha: "a".repeat(40),
   };
-  bindWorkItemRepository(db, item.id, repository);
+  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   const command: Extract<RunnerCommand, { type: "run" }> = {
     id: workspaceId(),
     runnerId: firstRunner,
@@ -564,7 +566,7 @@ export async function probeRunnerWork(
         sessionKey: "fixture-session",
       });
       const started = beginImplementRun(db, blocked.id, now);
-      bindWorkItemRepository(db, blocked.id, repository);
+      await bindWorkItemRepository(sqliteDb(db), blocked.id, repository);
       await work.assign({
         ...replacement,
         id: workspaceId(),
@@ -596,22 +598,23 @@ export async function probeRunnerWork(
       true,
       { revokedRunnerDenied: true, completionDenied: true, heartbeatDenied: true },
     );
-    const contenders = Array.from({ length: 2 }, (_, index) => {
+    const contenders = [];
+    for (let index = 0; index < 2; index++) {
       const queued = insertQueuedItem(db, {
         id: `capacity-${index}`,
         now,
         sessionKey: "fixture-session",
       });
       const started = beginImplementRun(db, queued.id, now);
-      bindWorkItemRepository(db, queued.id, repository);
-      return {
+      await bindWorkItemRepository(sqliteDb(db), queued.id, repository);
+      contenders.push({
         ...replacement,
         id: workspaceId(),
         itemId: queued.id,
         runId: started.run.id,
         generation: 1,
-      };
-    });
+      });
+    }
     const barrier = join(root, "capacity-start");
     const children = contenders.map((value, index) => {
       const commandPath = join(root, `capacity-${index}.json`);

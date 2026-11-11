@@ -239,16 +239,16 @@ export async function probeRunnerOrchestration(
     const waitReason = "Waiting: runner goldbox is paused. Resume it on the Runners page.";
     let runnerResumed = false;
     let runnerWatch: Promise<void> | undefined;
-    function pauseTaskRunner(runId: string) {
+    async function pauseTaskRunner(runId: string) {
       const now = clock.now();
-      const userId = putWorkspaceUser(db, {
+      const userId = await putWorkspaceUser(sqliteDb(db), {
         id: "user-1",
         linearUserId: "user-linear",
         name: "Owner",
         email: "owner@example.invalid",
       });
       db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", now]);
-      syncWorkspaceMember(db, {
+      await syncWorkspaceMember(sqliteDb(db), {
         workspaceId: "ws-1",
         userId,
         role: "admin",
@@ -401,8 +401,8 @@ export async function probeRunnerOrchestration(
       ...(mergeDependencyYield
         ? {
             scheduling: async () => ({}),
-            publicationReady(itemId: string) {
-              assert.equal(getLinearSession(db, "session")?.activeItemId, itemId);
+            async publicationReady(itemId: string) {
+              assert.equal((await getLinearSession(sqliteDb(db), "session"))?.activeItemId, itemId);
               assert.equal(getWorkItem(db, "new-blocker")?.state, "completed");
               return true;
             },
@@ -644,7 +644,7 @@ export async function probeRunnerOrchestration(
               const answer = mergeDependencyYield && itemId === "new-blocker";
               if (!reviewer && !options.prepareOnly) implementationCount++;
               if (runnerWait && !reviewer && !options.prepareOnly && implementationCount === 1) {
-                pauseTaskRunner(item.currentRunId!);
+                await pauseTaskRunner(item.currentRunId!);
                 runnerWatch = watchRunnerWait(item.id).catch((error: unknown) => {
                   watchFailed = { error };
                   parked?.reject(error);
@@ -780,8 +780,12 @@ export async function probeRunnerOrchestration(
           now: clock.now(),
         });
         assert(intake.ok);
-        ensureLinearSession(db, { sessionId: "session", issueId: "issue", now: clock.now() });
-        bindLinearSessionTask(db, "session", intake.delegation.id);
+        await ensureLinearSession(sqliteDb(db), {
+          sessionId: "session",
+          issueId: "issue",
+          now: clock.now(),
+        });
+        await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id);
       } else
         await orchestrator.onLinearEvent({
           dedupeKey: "created:issue",
@@ -799,8 +803,8 @@ export async function probeRunnerOrchestration(
         });
       if (mergeDependencyYield) {
         const queued = listWorkItems(db)[0]!;
-        saveTaskMode(db, queued.id, "code", 0, true);
-        bindWorkItemRepository(db, queued.id, {
+        await saveTaskMode(sqliteDb(db), queued.id, "code", 0, true);
+        await bindWorkItemRepository(sqliteDb(db), queued.id, {
           owner: "acme",
           repo: "fixture",
           remoteUrl: origin,
@@ -914,7 +918,7 @@ export async function probeRunnerOrchestration(
             });
             setCurrentRun(db, item.id, foreignRunId);
           } else markRun(db, originalRunId, "active", Date.now());
-          assert.deepEqual(recoverOnStartup(db), [{ type: "reverify" }]);
+          assert.deepEqual(await recoverOnStartup(sqliteDb(db)), [{ type: "reverify" }]);
           assert.equal(getWorkItem(db, item.id)?.state, "verifying");
           assert.equal(getRun(db, foreignRunId)?.status, "active");
         }
@@ -924,8 +928,8 @@ export async function probeRunnerOrchestration(
              VALUES('new-blocker',?,'new-blocker','ENG-43','New blocker','queued','paws/new-blocker',1,?,'session')`,
             [item.delegationId, clock.now()],
           );
-          saveTaskMode(db, "new-blocker", "answer");
-          bindWorkItemRepository(db, "new-blocker", {
+          await saveTaskMode(sqliteDb(db), "new-blocker", "answer");
+          await bindWorkItemRepository(sqliteDb(db), "new-blocker", {
             owner: "acme",
             repo: "fixture",
             remoteUrl: origin,
@@ -941,23 +945,26 @@ export async function probeRunnerOrchestration(
             "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES(?,?)",
             ["new-blocker", item.linearIssueId],
           );
-          const before = getLinearSession(db, "session")?.activeItemId;
+          const before = (await getLinearSession(sqliteDb(db), "session"))?.activeItemId;
           assert.equal(before, item.id);
           const deferred = await jobs.tick();
           assert.equal(deferred?.queue, JOB_KIND.merge);
           assert.equal(getWorkItem(db, item.id)?.state, "merge_queue");
-          assert.equal(getLinearSession(db, "session")?.activeItemId, item.id);
+          assert.equal((await getLinearSession(sqliteDb(db), "session"))?.activeItemId, item.id);
           observe("The owned merge defers and joins without releasing its session early", true, {
             job: deferred?.id,
             activeItemId: before,
           });
           await orchestrator.reconcileExecution();
-          assert.equal(getLinearSession(db, "session")?.activeItemId, null);
+          assert.equal((await getLinearSession(sqliteDb(db), "session"))?.activeItemId, null);
           const blocker = await jobs.tick();
           assert(blocker);
           assert.equal((blocker.payload as { itemId: string }).itemId, "new-blocker");
           assert.equal(getWorkItem(db, "new-blocker")?.state, "completed");
-          assert.equal(getLinearSession(db, "session")?.activeItemId, "new-blocker");
+          assert.equal(
+            (await getLinearSession(sqliteDb(db), "session"))?.activeItemId,
+            "new-blocker",
+          );
           observe(
             "The same-session blocker acquires the shared footprint and delivers through the selected remote port",
             true,
@@ -1098,7 +1105,7 @@ export async function probeRunnerOrchestration(
           assert.equal(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify).length, 0);
           assert.equal((await listRuns(sqliteDb(db), item.id)).length, 1);
           if (mergeDependencyYield) {
-            assert.equal(getLinearSession(db, "session")?.activeItemId, item.id);
+            assert.equal((await getLinearSession(sqliteDb(db), "session"))?.activeItemId, item.id);
             observe(
               "The original merge reacquires its canonical session and completes a verified local squash merge",
               true,
@@ -1191,7 +1198,7 @@ export async function probeRunnerOrchestration(
             }
           }
           if (mergeDependencyYield) {
-            assert.equal(getLinearSession(db, "session")?.activeItemId, item.id);
+            assert.equal((await getLinearSession(sqliteDb(db), "session"))?.activeItemId, item.id);
             observe(
               "The original merge reacquires its canonical session and completes a verified local squash merge",
               true,

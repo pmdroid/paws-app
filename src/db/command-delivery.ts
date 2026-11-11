@@ -19,14 +19,14 @@ export function commandDeliveryQueue(instanceId: string): string {
 
 export const COMMAND_DELIVERY_MS = 1_000;
 
-const boundInstances = new WeakMap<Database, string>();
+const boundInstances = new WeakMap<Db, string>();
 
-export function commandInstance(db: Database): string | undefined {
-  return boundInstances.get(db);
+export function commandInstance(source: Database | Db): string | undefined {
+  return boundInstances.get("dialect" in source ? source : sqliteDb(source));
 }
 
-export function bindInstance(db: Database, instanceId: string): void {
-  boundInstances.set(db, instanceId);
+export function bindInstance(store: Db, instanceId: string): void {
+  boundInstances.set(store, instanceId);
 }
 
 type DeliveredCommand = { command: LinearCommand; stoppedAtVersion: number };
@@ -67,16 +67,6 @@ export function* forwardCommandSteps(
     inserted ||= enqueued.inserted;
   }
   return { owners, inserted };
-}
-
-export function forwardCommand(db: Database, command: LinearCommand, now = Date.now()): string[] {
-  const self = boundInstances.get(db);
-  if (self === undefined) return [];
-  const { owners, inserted } = settled(
-    sqliteDb(db).transaction((q) => forwardCommandSteps(q, self, command, now)),
-  );
-  if (inserted) emitJobReady(db);
-  return owners;
 }
 
 export async function forwardCommandAsync(

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { FakeClock, JOB_KIND } from "../src/core";
-import { JobLoop, OutboxDispatcher, ensureLinearSession, listJobs } from "../src/db";
+import { JobLoop, OutboxDispatcher, ensureLinearSession, listJobs, sqliteDb } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
 import { tempDb, tempHome } from "./helpers";
@@ -26,7 +26,11 @@ test("orchestrator resumes the session item through session_key alone", async ()
     tracker,
   });
   try {
-    ensureLinearSession(db, { sessionId: "session", issueId: "issue", now: clock.now() });
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "session",
+      issueId: "issue",
+      now: clock.now(),
+    });
     for (const [id, state, createdAt] of [
       ["newer-terminal", "merged", 4_000],
       ["older-live", "queued", 2_000],

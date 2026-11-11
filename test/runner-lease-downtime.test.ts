@@ -57,7 +57,7 @@ async function fixture() {
   const clock = { at: Date.now() };
   const now = () => clock.at;
   let db = migratedDatabase(path);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -101,11 +101,11 @@ async function fixture() {
   );
   const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now());
-  const start = () =>
-    registerInstance(db, { role: "all", host: "acme", version: null, now: now() });
-  let instance = start();
+  const start = async () =>
+    await registerInstance(sqliteDb(db), { role: "all", host: "acme", version: null, now: now() });
+  let instance = await start();
   await claimRun(sqliteDb(db), run.id, instance.id);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -113,8 +113,8 @@ async function fixture() {
     teamId: "team",
     observedAtMs: now(),
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
-  bindWorkItemRepository(db, item.id, repository);
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
+  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
     const work = createRunnerWork({
@@ -185,8 +185,8 @@ async function fixture() {
       return instance;
     },
     /** Paws dies without a clean stop, and a new instance starts at the current time. */
-    crash() {
-      instance = start();
+    async crash() {
+      instance = await start();
     },
     leaseUntil(): number {
       return db
@@ -196,13 +196,13 @@ async function fixture() {
         .get(run.id)!.lease_until;
     },
     /** Shut Paws down now, stay down for `ms`, then open the database again. */
-    down(ms: number) {
-      prepareShutdown(db, clock.at, undefined, instance.id);
+    async down(ms: number) {
+      await prepareShutdown(sqliteDb(db), clock.at, undefined, instance.id);
       stopInstance(db, instance.id, clock.at);
       db.close();
       clock.at += ms;
       db = openDatabase(path);
-      instance = start();
+      instance = await start();
       services = open();
     },
     close() {
@@ -220,15 +220,15 @@ test("a runner that never returns retains only its remaining lease plus grace af
   try {
     await f.admit();
     const remaining = f.leaseUntil() - f.clock.at;
-    f.down(25 * MINUTE);
-    recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id);
+    await f.down(25 * MINUTE);
+    await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id);
     expect(f.leaseUntil() - f.clock.at).toBe(remaining);
     // No renewal arrives. The shifted deadline expires after the original remaining lease
     // and grace, rather than another offline budget after startup.
     f.clock.at = f.leaseUntil() + RUNNER_LEASE_GRACE_MS;
     stopInstance(f.db, f.instance.id, f.clock.at);
-    f.crash();
-    expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
+    await f.crash();
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
   } finally {
@@ -241,8 +241,8 @@ test("Paws down 20 minutes with a 30-minute budget: the runner still holds the w
   try {
     await f.admit();
     const before = f.leaseUntil();
-    f.down(20 * MINUTE);
-    expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
+    await f.down(20 * MINUTE);
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null, reattach: true },
     ]);
     expect(f.leaseUntil()).toBe(before + 20 * MINUTE);
@@ -255,7 +255,7 @@ test("Paws down 20 minutes with a 30-minute budget: the runner still holds the w
     expect(beat.aliveAt).toBe(f.clock.at);
     expect(f.leaseUntil()).toBe(f.clock.at + BUDGET - RUNNER_LEASE_GRACE_MS);
     const renewed = f.leaseUntil();
-    recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id);
+    await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id);
     expect(f.leaseUntil()).toBe(renewed);
   } finally {
     f.close();
@@ -269,9 +269,9 @@ test("Paws down 20 minutes with a 30-minute budget: the runner still holds the w
 async function serveUntilExpiry(
   f: Awaited<ReturnType<typeof fixture>>,
   b: Database,
-  step: ((at: number) => void) | null,
+  step: ((at: number) => Promise<void>) | null,
 ): Promise<number> {
-  const other = registerInstance(b, {
+  const other = await registerInstance(sqliteDb(b), {
     role: "all",
     host: "acme-b",
     version: null,
@@ -280,9 +280,10 @@ async function serveUntilExpiry(
   for (let i = 0; i < 20 * 12; i++) {
     f.clock.at += 5_000;
     await heartbeatInstance(sqliteDb(b), other.id, f.clock.at);
-    if (step) step(f.clock.at);
-    else if (i % 6 === 0) takeOverGoneRuns(b, other.id, f.clock.at);
-    if (closeExpiredRunnerLeases(b, f.clock.at).includes(f.run.id)) return f.clock.at;
+    if (step) await step(f.clock.at);
+    else if (i % 6 === 0) await takeOverGoneRuns(sqliteDb(b), other.id, f.clock.at);
+    if ((await closeExpiredRunnerLeases(sqliteDb(b), f.clock.at)).includes(f.run.id))
+      return f.clock.at;
   }
   throw new Error("The lease never expired.");
 }
@@ -294,16 +295,16 @@ test("with a second instance alive throughout, a restart gives no credit and the
     await f.admit();
     const before = f.leaseUntil();
     const acme = f.instance.id;
-    const expiredAt = await serveUntilExpiry(f, b, (at) => {
+    const expiredAt = await serveUntilExpiry(f, b, async (at) => {
       // The first instance stops cleanly, and its replacement starts four minutes later.
       if (at === before) {
-        prepareShutdown(f.db, at, undefined, acme);
+        await prepareShutdown(sqliteDb(f.db), at, undefined, acme);
         stopInstance(f.db, acme, at);
       }
       if (at === before + 4 * MINUTE) {
-        f.crash();
-        recoverOnStartup(f.db, at, BUDGET, f.instance.id);
-        expect(runOwner(f.db, f.run.id)).toBe(f.instance.id);
+        await f.crash();
+        await recoverOnStartup(sqliteDb(f.db), at, BUDGET, f.instance.id);
+        expect(await runOwner(sqliteDb(f.db), f.run.id)).toBe(f.instance.id);
         expect(f.leaseUntil()).toBe(before);
       }
     });
@@ -324,7 +325,7 @@ test("an instance alive throughout takes over a crashed instance's run without c
     const before = f.leaseUntil();
     const acme = f.instance.id;
     const expiredAt = await serveUntilExpiry(f, b, null);
-    expect(runOwner(b, f.run.id)).not.toBe(acme);
+    expect(await runOwner(sqliteDb(b), f.run.id)).not.toBe(acme);
     expect(f.leaseUntil()).toBe(before);
     expect(expiredAt).toBe(before + RUNNER_LEASE_GRACE_MS);
   } finally {
@@ -340,7 +341,7 @@ test("a second instance started during the outage credits only the time before i
     await f.admit();
     const before = f.leaseUntil();
     f.clock.at += 10 * MINUTE;
-    const other = registerInstance(b, {
+    const other = await registerInstance(sqliteDb(b), {
       role: "all",
       host: "acme-b",
       version: null,
@@ -348,8 +349,8 @@ test("a second instance started during the outage credits only the time before i
     });
     f.clock.at += 5 * MINUTE;
     await heartbeatInstance(sqliteDb(b), other.id, f.clock.at);
-    takeOverGoneRuns(b, other.id, f.clock.at);
-    expect(runOwner(b, f.run.id)).toBe(other.id);
+    await takeOverGoneRuns(sqliteDb(b), other.id, f.clock.at);
+    expect(await runOwner(sqliteDb(b), f.run.id)).toBe(other.id);
     expect(f.leaseUntil()).toBe(before + 10 * MINUTE);
   } finally {
     b.close();
@@ -363,7 +364,7 @@ test("an instance that outlived the owner and then stopped credits only the time
   try {
     await f.admit();
     const before = f.leaseUntil();
-    const other = registerInstance(b, {
+    const other = await registerInstance(sqliteDb(b), {
       role: "all",
       host: "acme-b",
       version: null,
@@ -374,9 +375,9 @@ test("an instance that outlived the owner and then stopped credits only the time
     stopInstance(b, other.id, f.clock.at);
     const stoppedAt = f.clock.at;
     f.clock.at += 20 * MINUTE;
-    f.crash();
-    recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id);
-    expect(runOwner(f.db, f.run.id)).toBe(f.instance.id);
+    await f.crash();
+    await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id);
+    expect(await runOwner(sqliteDb(f.db), f.run.id)).toBe(f.instance.id);
     expect(f.leaseUntil()).toBe(before + f.clock.at - stoppedAt);
   } finally {
     b.close();
@@ -392,7 +393,7 @@ test("an instance that came and went during the outage without taking over leave
     const before = f.leaseUntil();
     // The owner dies now; another instance runs from minute 5 to minute 6 and takes nothing over.
     f.clock.at += 5 * MINUTE;
-    const other = registerInstance(b, {
+    const other = await registerInstance(sqliteDb(b), {
       role: "web",
       host: "acme-b",
       version: null,
@@ -401,8 +402,8 @@ test("an instance that came and went during the outage without taking over leave
     f.clock.at += MINUTE;
     stopInstance(b, other.id, f.clock.at);
     f.clock.at += 14 * MINUTE;
-    f.crash();
-    recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id);
+    await f.crash();
+    await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id);
     expect(f.leaseUntil()).toBe(before + 19 * MINUTE);
   } finally {
     b.close();
@@ -415,8 +416,8 @@ test("Paws down longer than the budget: the run resumes as today", async () => {
   try {
     await f.admit();
     const before = f.leaseUntil();
-    f.down(40 * MINUTE);
-    expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
+    await f.down(40 * MINUTE);
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(f.leaseUntil()).toBe(before + BUDGET);
@@ -436,8 +437,8 @@ test("the shift stops at the command's expiresAt", async () => {
   const f = await fixture();
   try {
     const { command } = await f.admit(10 * MINUTE);
-    f.down(20 * MINUTE);
-    expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
+    await f.down(20 * MINUTE);
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(f.leaseUntil()).toBe(command.expiresAt);
@@ -452,8 +453,13 @@ test("work with a result or an acknowledged cancel is not extended", async () =>
     const { submit } = await withResult.admit();
     await submit();
     const before = withResult.leaseUntil();
-    withResult.down(20 * MINUTE);
-    recoverOnStartup(withResult.db, withResult.clock.at, BUDGET, withResult.instance.id);
+    await withResult.down(20 * MINUTE);
+    await recoverOnStartup(
+      sqliteDb(withResult.db),
+      withResult.clock.at,
+      BUDGET,
+      withResult.instance.id,
+    );
     expect(withResult.leaseUntil()).toBe(before);
   } finally {
     withResult.close();
@@ -467,9 +473,14 @@ test("work with a result or an acknowledged cancel is not extended", async () =>
       [cancelled.runnerId, cancelled.run.id, cancelled.clock.at + MINUTE, cancelled.clock.at],
     );
     const before = cancelled.leaseUntil();
-    cancelled.down(20 * MINUTE);
+    await cancelled.down(20 * MINUTE);
     expect(
-      recoverOnStartup(cancelled.db, cancelled.clock.at, BUDGET, cancelled.instance.id),
+      await recoverOnStartup(
+        sqliteDb(cancelled.db),
+        cancelled.clock.at,
+        BUDGET,
+        cancelled.instance.id,
+      ),
     ).toEqual([{ type: "resume", freshSession: true, checkpoint: null }]);
     expect(cancelled.leaseUntil()).toBe(before);
   } finally {
@@ -487,9 +498,9 @@ test("a runner silent past the grace while Paws is up is still fenced", async ()
       f.clock.at += 15_000;
       await heartbeatInstance(sqliteDb(f.db), f.instance.id, f.clock.at);
     }
-    f.down(1_000);
+    await f.down(1_000);
     expect(f.leaseUntil()).toBe(before);
-    expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(f.leaseUntil()).toBe(before);
@@ -504,7 +515,12 @@ test("a runner silent past the grace while Paws is up is still fenced", async ()
 test("heartbeats recover after the wall clock moves backward", async () => {
   const db = tempDb();
   try {
-    const { id } = registerInstance(db, { role: "all", host: "acme", version: null, now: 0 });
+    const { id } = await registerInstance(sqliteDb(db), {
+      role: "all",
+      host: "acme",
+      version: null,
+      now: 0,
+    });
     await heartbeatInstance(sqliteDb(db), id, 4 * 60 * MINUTE);
     await heartbeatInstance(sqliteDb(db), id, 3 * 60 * MINUTE);
     expect(await lastInstanceHeartbeat(sqliteDb(db))).toBe(3 * 60 * MINUTE);
@@ -521,8 +537,8 @@ test("a lease renewed within the alive skew still receives downtime credit", asy
     const aliveAt = before - PAWS_ALIVE_LEASE_SKEW_MS;
     await heartbeatInstance(sqliteDb(f.db), f.instance.id, aliveAt);
     f.clock.at += 20 * MINUTE;
-    f.crash();
-    expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
+    await f.crash();
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null, reattach: true },
     ]);
     expect(f.leaseUntil()).toBe(before + f.clock.at - aliveAt);
@@ -538,8 +554,8 @@ test("a lease renewed past the alive skew receives no downtime credit", async ()
     const before = f.leaseUntil();
     await heartbeatInstance(sqliteDb(f.db), f.instance.id, before - PAWS_ALIVE_LEASE_SKEW_MS - 1);
     f.clock.at += 20 * MINUTE;
-    f.crash();
-    expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
+    await f.crash();
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(f.leaseUntil()).toBe(before);
@@ -556,8 +572,8 @@ test("leases renewed after an obsolete alive mark receive no downtime credit", a
     const before = f.leaseUntil();
     // Model an older build renewing work without updating the heartbeat.
     f.clock.at += 20 * MINUTE;
-    f.crash();
-    expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
+    await f.crash();
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(f.leaseUntil()).toBe(before);
@@ -587,8 +603,8 @@ test("a runner older than the offline lease release is not extended", async () =
     expect(beat).not.toHaveProperty("aliveAt");
     expect(beat).not.toHaveProperty("protocolLevel");
     const before = f.leaseUntil();
-    f.down(20 * MINUTE);
-    expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
+    await f.down(20 * MINUTE);
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(f.leaseUntil()).toBe(before);
@@ -606,8 +622,8 @@ test("revoked runners receive no downtime credit", async () => {
       f.runnerId,
     ]);
     const before = f.leaseUntil();
-    f.down(20 * MINUTE);
-    expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
+    await f.down(20 * MINUTE);
+    expect(await recoverOnStartup(sqliteDb(f.db), f.clock.at, BUDGET, f.instance.id)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(f.leaseUntil()).toBe(before);

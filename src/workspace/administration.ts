@@ -119,7 +119,7 @@ export async function handleWorkspaceAdministration(
       const workspace = await store.run((q) => getWorkspaceSteps(q, workspaceId));
       if (member === null || workspace === null) throw new Error("Choose a workspace member.");
       if (typeof body["revoked"] === "boolean") {
-        const stopped = changeWorkspaceRevocation(options.db, {
+        const stopped = await changeWorkspaceRevocation(store, {
           workspaceId: principal.workspaceId,
           actorId: principal.userId,
           userId: member.userId,
@@ -147,7 +147,7 @@ export async function handleWorkspaceAdministration(
         verified.userId !== member.linearUserId
       )
         throw new Error("Linear membership could not be verified.");
-      changeWorkspaceRole(options.db, {
+      await changeWorkspaceRole(sqliteDb(options.db), {
         workspaceId: principal.workspaceId,
         actorId: principal.userId,
         userId: body["userId"],

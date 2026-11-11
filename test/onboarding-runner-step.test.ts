@@ -127,7 +127,7 @@ async function fixture({
   migrate(db);
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
-  const ownerId = putWorkspaceUser(db, {
+  const ownerId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Workspace Owner",
@@ -141,13 +141,13 @@ async function fixture({
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock.now())),
     now: clock.now(),
   });
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "ada",
     name: "Ada Lovelace",
     email: "ada@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -232,17 +232,17 @@ async function fixture({
     throw new Error("member VM did not settle");
   };
   /** A queued item Ada delegated, which the scheduler starts once she has an eligible runner. */
-  const heldItem = () => {
+  const heldItem = async () => {
     const item = insertQueuedItem(db, { id: "held", now: clock.now(), sessionKey: "session" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id='held'", [userId]);
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
       issueId: item.linearIssueId,
       organizationId: "org",
       creatorId: "ada",
       now: clock.now(),
     });
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: "session",
       organizationId: "org",
       oauthClientId: "client",
@@ -250,7 +250,7 @@ async function fixture({
       teamId: "team",
       observedAtMs: clock.now(),
     });
-    bindLinearSessionTask(db, "session", item.delegationId);
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
     return () =>
       sqliteDb(db).run((q) =>
         itemOwnerHasEligibleRunnerSteps(q, { itemId: "held", agent: "claude", now: clock.now() }),
@@ -383,7 +383,7 @@ test("a missing agent sign-in links to the sign-in on the member's own runner", 
 
 test("Create VM creates the member's VM, its steps update without a reload, and readiness lets the held item start", async () => {
   const f = await fixture();
-  const ready = f.heldItem();
+  const ready = await f.heldItem();
   expect(await ready()).toBe(false);
   const page = await f.open();
   expect(page.buttons()).toEqual(["create-vm", "add-host"]);
@@ -589,14 +589,14 @@ test("only active owners and workspace admins can turn on a member's runner", as
   const status = async () =>
     (await f.control.list(f.member, [])).find((runner) => runner.id === runnerId)?.status;
   expect(await status()).toBe("paused");
-  const otherId = putWorkspaceUser(f.db, {
+  const otherId = await putWorkspaceUser(sqliteDb(f.db), {
     id: workspaceId(),
     linearUserId: "other",
     name: "Other",
     email: "other@example.invalid",
   });
   const other = { ...f.member, userId: otherId };
-  syncWorkspaceMember(f.db, {
+  await syncWorkspaceMember(sqliteDb(f.db), {
     workspaceId: f.member.workspaceId,
     userId: otherId,
     role: "member",
@@ -614,7 +614,7 @@ test("only active owners and workspace admins can turn on a member's runner", as
   expect(response.status).toBe(200);
   expect(await status()).toBe("active");
   await f.control.setStatus(f.member, runnerId, "paused");
-  syncWorkspaceMember(f.db, {
+  await syncWorkspaceMember(sqliteDb(f.db), {
     workspaceId: f.member.workspaceId,
     userId: f.member.userId,
     role: "member",

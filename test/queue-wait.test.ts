@@ -31,15 +31,15 @@ import { workspaceAdmission } from "./fake-workspace";
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 
-function oneBusyRunnerSlot(db: ReturnType<typeof tempDb>): void {
-  const userId = putWorkspaceUser(db, {
+async function oneBusyRunnerSlot(db: ReturnType<typeof tempDb>): Promise<void> {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "runner-owner",
     linearUserId: "runner-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
   db.run("INSERT INTO workspace VALUES('runner-ws','runner-org','Runners',0)");
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "runner-ws",
     userId,
     role: "admin",
@@ -68,10 +68,14 @@ test("a ready item waiting for a runner slot is queued once in Linear and fails 
     scheduling: async () => ({}),
   });
   try {
-    oneBusyRunnerSlot(db);
+    await oneBusyRunnerSlot(db);
     const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
-    ensureLinearSession(db, { sessionId: "session", issueId: item.linearIssueId, now: 1_000 });
-    bindLinearSessionTask(db, "session", item.delegationId);
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "session",
+      issueId: item.linearIssueId,
+      now: 1_000,
+    });
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
     const bodies = (kind: string) =>
       listOutbox(db)
         .map((row) => row.payload as { kind?: string; body?: string })
@@ -111,12 +115,16 @@ test("the queued thought shows the place in line, and the start timeout comes fr
     scheduling: async () => ({}),
   });
   try {
-    oneBusyRunnerSlot(db);
+    await oneBusyRunnerSlot(db);
     insertQueuedItem(db, { id: "ahead", now: 0 });
     const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
     db.run("UPDATE work_item SET linear_identifier='PAS-1' WHERE id='waiting'");
-    ensureLinearSession(db, { sessionId: "session", issueId: item.linearIssueId, now: 1_000 });
-    bindLinearSessionTask(db, "session", item.delegationId);
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "session",
+      issueId: item.linearIssueId,
+      now: 1_000,
+    });
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
     const bodies = (kind: string) =>
       listOutbox(db)
         .map((row) => row.payload as { kind?: string; body?: string })
@@ -208,12 +216,16 @@ test("a runner-queued item names its place in the title and plan, and a restart 
     scheduling: async () => ({}),
   });
   try {
-    oneBusyRunnerSlot(db);
+    await oneBusyRunnerSlot(db);
     insertQueuedItem(db, { id: "ahead", now: 0, sessionKey: "ahead-session" });
     const item = insertQueuedItem(db, { id: "waiting", now: 1_000, sessionKey: "session" });
     db.run("UPDATE work_item SET linear_identifier='PAS-1' WHERE id='waiting'");
-    ensureLinearSession(db, { sessionId: "session", issueId: item.linearIssueId, now: 1_000 });
-    bindLinearSessionTask(db, "session", item.delegationId);
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "session",
+      issueId: item.linearIssueId,
+      now: 1_000,
+    });
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
     const latest = (op: string) =>
       listOutbox(db, "session").findLast((row) => row.op === op)?.payload as SessionUpdate;
 
@@ -277,11 +289,15 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
   try {
     const item = insertQueuedItem(db, { id: "paused", now: 1_000, sessionKey: "session" });
     db.run("UPDATE work_item SET linear_identifier='PAS-2' WHERE id='paused'");
-    ensureLinearSession(db, { sessionId: "session", issueId: item.linearIssueId, now: 1_000 });
-    bindLinearSessionTask(db, "session", item.delegationId);
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "session",
+      issueId: item.linearIssueId,
+      now: 1_000,
+    });
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
     applyWorkItemEvent(db, "paused", "dispatched");
     applyWorkItemEvent(db, "paused", "pause");
-    putWorkspaceUser(db, {
+    await putWorkspaceUser(sqliteDb(db), {
       id: "pascal",
       linearUserId: "pascal",
       name: "Pascal",

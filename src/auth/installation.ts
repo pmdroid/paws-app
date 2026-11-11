@@ -15,7 +15,7 @@ export function createGitHubInstallationCheck(options: {
   home: string;
   env: Record<string, string | undefined>;
   fetch?: GitHubFetch;
-  resolve?: (repository: string) => ActiveGitHubApp;
+  resolve?: (repository: string) => Promise<ActiveGitHubApp>;
 }) {
   return async (
     repository: string,
@@ -25,7 +25,8 @@ export function createGitHubInstallationCheck(options: {
     signal.throwIfAborted();
     try {
       const app =
-        options.resolve?.(repository) ?? loadGitHubAppCredentials(options.home, options.env);
+        (await options.resolve?.(repository)) ??
+        loadGitHubAppCredentials(options.home, options.env);
       if (!app?.installationId || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repository))
         return false;
       const [owner, repo] = repository.split("/") as [string, string];
@@ -69,7 +70,7 @@ export function createGitHubInstallationCheck(options: {
       if (
         options.resolve &&
         "generation" in app &&
-        JSON.stringify(options.resolve(repository)) !== JSON.stringify(app)
+        JSON.stringify(await options.resolve(repository)) !== JSON.stringify(app)
       )
         return false;
       return true;

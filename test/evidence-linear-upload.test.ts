@@ -85,7 +85,7 @@ function setup(reviewed = true) {
     itemId: "item",
     sessionId: "session",
     uploads: true,
-    reviewed: () => reviewed,
+    reviewed: async () => reviewed,
   });
   const context: PublishArtifactContext = {
     itemId: "item",

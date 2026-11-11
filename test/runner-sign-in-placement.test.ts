@@ -29,7 +29,7 @@ async function acme() {
   const db = openDatabase(join(tempHome(), "paws.sqlite"));
   migrate(db);
   const now = Date.now();
-  const ada = putWorkspaceUser(db, {
+  const ada = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "ada",
     name: "Ada",
@@ -43,7 +43,7 @@ async function acme() {
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "acme-org", now)),
     now,
   });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "acme-org",
     oauthClientId: "app-client",
     appUserId: "app",
@@ -52,7 +52,7 @@ async function acme() {
     observedAtMs: now,
   });
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "ada" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "ada" });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [ada, item.id]);
   for (const id of ["acme-1", "acme-2"]) {
     db.run(

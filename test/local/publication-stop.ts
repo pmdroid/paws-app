@@ -22,6 +22,8 @@ import {
   applyWorkItemEvent,
   immediate,
   sqliteDb,
+  settled,
+  applyLinearCommandSteps,
 } from "../../src/db";
 import { closeStoppedPull, createFetchGitHubClient } from "../../src/github";
 import { createFakeTracker, createFakeLinearIssueLifecycle } from "../../src/linear";
@@ -146,9 +148,13 @@ export async function probePublicationStop(
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('item','epic','issue','STOP-1','Stop','merge_queue','paws/stop-1',0,1,'session')",
     );
-    ensureLinearSession(db, { sessionId: "session", issueId: "issue", now: clock.now() });
-    bindLinearSessionTask(db, "session", "epic");
-    bindWorkItemRepository(db, "item", repository);
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "session",
+      issueId: "issue",
+      now: clock.now(),
+    });
+    await bindLinearSessionTask(sqliteDb(db), "session", "epic");
+    await bindWorkItemRepository(sqliteDb(db), "item", repository);
     branch = getWorkItem(db, "item")!.branchName;
     enqueueJob(db, {
       queue: JOB_KIND.merge,
@@ -158,12 +164,16 @@ export async function probePublicationStop(
     });
     assert.throws(() =>
       immediate(db, () => {
-        applyLinearCommand(db, {
-          type: "stop",
-          source: "dashboard",
-          itemId: "item",
-          requestedAt: clock.now(),
-        });
+        settled(
+          sqliteDb(db).transaction((q) =>
+            applyLinearCommandSteps(q, {
+              type: "stop",
+              source: "dashboard",
+              itemId: "item",
+              requestedAt: clock.now(),
+            }),
+          ),
+        );
         throw new Error("Rollback Stop");
       }),
     );
@@ -201,8 +211,8 @@ export async function probePublicationStop(
         calls.length === 0,
       { calls, joined },
     );
-    applyLinearCommand(
-      db,
+    await applyLinearCommand(
+      sqliteDb(db),
       { type: "stop", source: "dashboard", itemId: "item", requestedAt: clock.now() },
       clock.now(),
       undefined,
@@ -286,7 +296,7 @@ export async function probePublicationStop(
       repository,
       signal: new AbortController().signal,
       onCleanupFailure: () => {},
-      isCurrent: () => !pending,
+      isCurrent: async () => !pending,
       async assert() {
         if (pending) throw new Error("Refresh is pending");
       },
@@ -319,9 +329,9 @@ export async function probePublicationStop(
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('pending-item','pending','pending','PEND-1','Pending','merge_queue','paws/pending',0,1,'pending-session')",
     );
-    ensureLinearSession(db, { sessionId: "pending-session", issueId: "pending" });
-    bindLinearSessionTask(db, "pending-session", "pending");
-    bindWorkItemRepository(db, "pending-item", repository);
+    await ensureLinearSession(sqliteDb(db), { sessionId: "pending-session", issueId: "pending" });
+    await bindLinearSessionTask(sqliteDb(db), "pending-session", "pending");
+    await bindWorkItemRepository(sqliteDb(db), "pending-item", repository);
     pendingEpics.add("pending");
     const pendingJob = enqueueJob(db, {
       queue: JOB_KIND.merge,
@@ -384,20 +394,20 @@ export async function probePublicationStop(
           }),
         ],
       );
-      saveTaskMode(db, `cycle-${id}`, "code");
+      await saveTaskMode(sqliteDb(db), `cycle-${id}`, "code");
     }
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('cycle-workspace','cycle-org','Cycle workspace',1)",
     );
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "cycle-session",
       issueId: "cycle-parent",
       organizationId: "cycle-org",
       appUserId: "cycle-app",
       creatorId: "cycle-human",
     });
-    bindLinearSessionTask(db, "cycle-session", "cycle");
-    recordLinearInstallation(db, {
+    await bindLinearSessionTask(sqliteDb(db), "cycle-session", "cycle");
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: "cycle-session",
       organizationId: "cycle-org",
       oauthClientId: "cycle-client",
@@ -544,9 +554,12 @@ export async function probePublicationStop(
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('owned-refresh-item','owned-refresh','owned-refresh','OWN-1','Owned','merge_queue','paws/owned-refresh',0,1,'owned-refresh-session')",
     );
-    ensureLinearSession(db, { sessionId: "owned-refresh-session", issueId: "owned-refresh" });
-    bindLinearSessionTask(db, "owned-refresh-session", "owned-refresh");
-    bindWorkItemRepository(db, "owned-refresh-item", repository);
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "owned-refresh-session",
+      issueId: "owned-refresh",
+    });
+    await bindLinearSessionTask(sqliteDb(db), "owned-refresh-session", "owned-refresh");
+    await bindWorkItemRepository(sqliteDb(db), "owned-refresh-item", repository);
     const ownedRun = insertRun(db, {
       itemId: "owned-refresh-item",
       kind: "implement",
@@ -704,7 +717,7 @@ export async function probePublicationStop(
           [itemId, present],
         );
         if (state === "merged") {
-          confirmFakeMerge(db, itemId);
+          await confirmFakeMerge(db, itemId);
           const producer = insertRun(db, {
             itemId,
             kind: "implement",

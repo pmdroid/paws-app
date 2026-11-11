@@ -53,8 +53,8 @@ export function enqueueCommand(
   return id;
 }
 
-export function applyLinearCommand(
-  db: Database,
+export async function applyLinearCommand(
+  store: Db,
   command: LinearCommand,
   now = command.requestedAt,
   /** Replaces the default "Stopped." or "Cancelled from Linear." lead of the response. */
@@ -67,23 +67,8 @@ export function applyLinearCommand(
    * close job first posts `comment` on it, as an issue canceled in Linear does.
    */
   options: CommandOptions = {},
-): { applied: boolean; deferred?: boolean } {
-  const notifications = { ready: false };
-  const result = settled(
-    sqliteDb(db).transaction((q) =>
-      applyLinearCommandSteps(
-        q,
-        command,
-        now,
-        response,
-        options,
-        commandInstance(db),
-        notifications,
-      ),
-    ),
-  );
-  if (notifications.ready) emitJobReady(db);
-  return result;
+): Promise<{ applied: boolean; deferred?: boolean }> {
+  return applyLinearCommandAsync(store, command, now, response, options, commandInstance(store));
 }
 
 export function* applyLinearCommandSteps(
@@ -420,24 +405,11 @@ export function* drainCommandsSteps(
   return handled;
 }
 
-export function drainCommands(db: Database, bus: CommandBus, now = Date.now()): number {
-  return settled(
-    sqliteDb(db).run((q) =>
-      drainCommandsSteps(
-        q,
-        (command) => bus.emit(command),
-        now,
-        commandInstance(db),
-        () => emitJobReady(db),
-      ),
-    ),
-  );
-}
-export async function drainCommandsAsync(
+export async function drainCommands(
   store: Db,
   bus: CommandBus,
   now = Date.now(),
-  self?: string,
+  self = commandInstance(store),
 ): Promise<number> {
   return await store.run((q) =>
     drainCommandsSteps(
@@ -450,24 +422,6 @@ export async function drainCommandsAsync(
   );
 }
 
-/** Enqueue the command and apply it before returning, ahead of the main loop. */
-export function submitCommand(
-  db: Database,
-  bus: CommandBus,
-  command: LinearCommand,
-): { applied: boolean } {
-  return settled(
-    sqliteDb(db).run((q) =>
-      submitCommandSteps(
-        q,
-        command,
-        (c) => bus.emit(c),
-        () => emitJobReady(db),
-        commandInstance(db),
-      ),
-    ),
-  );
-}
 export function* submitCommandSteps(
   q: Q,
   command: LinearCommand,
@@ -486,12 +440,13 @@ export function* submitCommandSteps(
       (before !== "paused" && after?.state === "paused"),
   };
 }
-export async function submitCommandAsync(
+/** Enqueue the command and apply it before returning, ahead of the main loop. */
+export async function submitCommand(
   store: Db,
   bus: CommandBus,
   command: LinearCommand,
-  self?: string,
-) {
+  self = commandInstance(store),
+): Promise<{ applied: boolean }> {
   return await store.run((q) =>
     submitCommandSteps(
       q,

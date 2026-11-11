@@ -136,14 +136,14 @@ function freeze(
   );
 }
 
-function collectAndQueue(
+async function collectAndQueue(
   db: ReturnType<typeof harness>["db"],
   root: string,
   retroId: string,
   cursors: Record<string, number>,
 ) {
-  expect(beginRetroCollection(db, { retroId, now: 1 }).ok).toBe(true);
-  recordRetroEvidence(db, retroId, [
+  expect((await beginRetroCollection(sqliteDb(db), { retroId, now: 1 })).ok).toBe(true);
+  await recordRetroEvidence(sqliteDb(db), retroId, [
     {
       evidenceId: "e1",
       repository: APP,
@@ -154,13 +154,13 @@ function collectAndQueue(
     },
   ]);
   for (const kind of ["digest", "manifest"] as const)
-    writeRetroArtifact(db, root, {
+    await writeRetroArtifact(sqliteDb(db), root, {
       retroId,
       kind,
       bytes: new TextEncoder().encode(`${kind} ${retroId}`),
       now: 1,
     });
-  freezeRetroInput(db, { retroId, endCursors: cursors, now: 1 });
+  await freezeRetroInput(sqliteDb(db), { retroId, endCursors: cursors, now: 1 });
 }
 
 describe("saving retro settings", () => {
@@ -345,7 +345,7 @@ describe("frozen retro runs", () => {
     });
     const frozen = await freeze(db, { id: "r1", start: 0 });
     if (!frozen.ok) throw new Error(frozen.message);
-    collectAndQueue(db, root, "r1", { [APP]: 5 });
+    await collectAndQueue(db, root, "r1", { [APP]: 5 });
     await save(db, {
       expectedRevision: 1,
       draft: draft({
@@ -368,13 +368,13 @@ describe("frozen retro runs", () => {
 
     const limits = retroAttemptLimits((await getRetro(sqliteDb(db), "r1"))!.executionLimits);
     expect(limits).toEqual({ maxAttempts: 2, activeExecutionMs: 15 * 60_000 });
-    const attempt = startRetroAttempt(db, {
+    const attempt = (await startRetroAttempt(sqliteDb(db), {
       retroId: "r1",
       owner: "runner-a",
       now: 4,
       leaseMs: 1000,
       maxAttempts: limits.maxAttempts,
-    })!;
+    }))!;
     await failRetroAttempt(sqliteDb(db), {
       retroId: "r1",
       ...attempt,
@@ -383,7 +383,13 @@ describe("frozen retro runs", () => {
       now: 5,
     });
     expect(
-      startRetroAttempt(db, { retroId: "r1", owner: "runner-b", now: 6, leaseMs: 1000, ...limits }),
+      await startRetroAttempt(sqliteDb(db), {
+        retroId: "r1",
+        owner: "runner-b",
+        now: 6,
+        leaseMs: 1000,
+        ...limits,
+      }),
     ).toEqual({ attempt: 2 });
     const retry = await freezeRetroPrompt(db, root, { retroId: "r1", render, now: 7 });
     expect(retry).toEqual(prompt);
@@ -423,21 +429,35 @@ describe("frozen retro runs", () => {
 describe("repository selection", () => {
   test("a newly enabled repository starts with its retained history", async () => {
     const { db, root } = harness();
-    const publish = (retroId: string, owner: string) => {
-      const attempt = startRetroAttempt(db, { retroId, owner, now: 1, leaseMs: 1000 })!;
+    const publish = async (retroId: string, owner: string) => {
+      const attempt = (await startRetroAttempt(sqliteDb(db), {
+        retroId,
+        owner,
+        now: 1,
+        leaseMs: 1000,
+      }))!;
       expect(
-        publishRetro(db, { retroId, ...attempt, owner, result: {}, items: [], now: 2 }).ok,
+        (
+          await publishRetro(sqliteDb(db), {
+            retroId,
+            ...attempt,
+            owner,
+            result: {},
+            items: [],
+            now: 2,
+          })
+        ).ok,
       ).toBe(true);
     };
     await save(db, { expectedRevision: 0, draft: draft({ repositories: [APP] }) });
     const first = await freeze(db, { id: "r1", start: 0 });
     if (!first.ok) throw new Error(first.message);
-    collectAndQueue(db, root, "r1", { [APP]: 10 });
-    publish("r1", "a");
+    await collectAndQueue(db, root, "r1", { [APP]: 10 });
+    await publish("r1", "a");
 
     await save(db, { expectedRevision: 1, draft: draft({ repositories: [LANDING] }) });
     expect((await freeze(db, { id: "r2", start: 7 * DAY })).ok).toBe(true);
-    expect(beginRetroCollection(db, { retroId: "r2", now: 3 }).ok).toBe(true);
+    expect((await beginRetroCollection(sqliteDb(db), { retroId: "r2", now: 3 })).ok).toBe(true);
     expect(await retroRepositories(sqliteDb(db), "r2")).toEqual([
       { repository: LANDING, startCursor: 0, endCursor: null },
     ]);
@@ -447,13 +467,25 @@ describe("repository selection", () => {
     const { db, root } = harness();
     await save(db, { expectedRevision: 0, draft: draft({ repositories: [APP] }) });
     await freeze(db, { id: "r1", start: 0 });
-    collectAndQueue(db, root, "r1", { [APP]: 10 });
-    const attempt = startRetroAttempt(db, { retroId: "r1", owner: "a", now: 1, leaseMs: 1000 })!;
-    publishRetro(db, { retroId: "r1", ...attempt, owner: "a", result: {}, items: [], now: 2 });
+    await collectAndQueue(db, root, "r1", { [APP]: 10 });
+    const attempt = (await startRetroAttempt(sqliteDb(db), {
+      retroId: "r1",
+      owner: "a",
+      now: 1,
+      leaseMs: 1000,
+    }))!;
+    await publishRetro(sqliteDb(db), {
+      retroId: "r1",
+      ...attempt,
+      owner: "a",
+      result: {},
+      items: [],
+      now: 2,
+    });
     await save(db, { expectedRevision: 1, draft: draft({ repositories: [LANDING] }) });
     await save(db, { expectedRevision: 2, draft: draft({ repositories: [APP] }) });
     await freeze(db, { id: "r2", start: 21 * DAY });
-    expect(beginRetroCollection(db, { retroId: "r2", now: 3 }).ok).toBe(true);
+    expect((await beginRetroCollection(sqliteDb(db), { retroId: "r2", now: 3 })).ok).toBe(true);
     expect(await retroRepositories(sqliteDb(db), "r2")).toEqual([
       { repository: APP, startCursor: 10, endCursor: null },
     ]);

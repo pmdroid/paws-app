@@ -53,8 +53,13 @@ async function fixture(token = true, children = false) {
   ]);
   const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
   if (!task.ok) throw new Error("Unexpected issue cycle");
-  recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
-  bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
+  await recordLinearInstallation(sqliteDb(db), {
+    ...scope,
+    sessionId: "session",
+    teamId: "team",
+    observedAtMs: 1,
+  });
+  await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id, { actorId: "human" });
   const bus = new CommandBus();
   const owned = new AbortController();
   const notifications: string[] = [];
@@ -154,7 +159,7 @@ function revoked() {
 
 test("one session cleanup failure still interrupts every session and remains retryable", async () => {
   const f = await fixture(false);
-  recordLinearInstallation(f.db, {
+  await recordLinearInstallation(sqliteDb(f.db), {
     ...scope,
     sessionId: "session-two",
     teamId: "team",
@@ -165,16 +170,20 @@ test("one session cleanup failure still interrupts every session and remains ret
   expect((await f.post(event, "cleanup-revocation")).status).toBe(200);
   for (let i = 0; i < 100 && f.interrupted.length < 2; i++) await Bun.sleep(5);
   expect(f.interrupted).toEqual(["session", "session-two"]);
-  expect(createInboxStore(f.db).listUnhandled()).toHaveLength(1);
+  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toHaveLength(1);
   expect(getLinearSessionAccess(f.db, "session-two")).toBe("revoked");
-  expect(getLinearSession(f.db, "session-two")?.generation).toBe(1);
+  expect((await getLinearSession(sqliteDb(f.db), "session-two"))?.generation).toBe(1);
   f.cleanupFailure.sessionId = null;
   expect((await f.post(event, "cleanup-revocation")).status).toBe(200);
-  for (let i = 0; i < 100 && createInboxStore(f.db).listUnhandled().length > 0; i++)
+  for (
+    let i = 0;
+    i < 100 && (await createInboxStore(sqliteDb(f.db)).listUnhandled()).length > 0;
+    i++
+  )
     await Bun.sleep(5);
-  expect(createInboxStore(f.db).listUnhandled()).toEqual([]);
+  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toEqual([]);
   expect(f.interrupted).toEqual(["session", "session-two", "session", "session-two"]);
-  expect(getLinearSession(f.db, "session-two")?.generation).toBe(1);
+  expect((await getLinearSession(sqliteDb(f.db), "session-two"))?.generation).toBe(1);
 });
 
 test("a rejected second-child cancellation rolls back signed revocation before notifying owned writers", async () => {
@@ -188,10 +197,10 @@ test("a rejected second-child cancellation rolls back signed revocation before n
   const original = f.task.items.map((item) => getWorkItem(f.db, item.id)?.state);
   const event = revoked();
   expect((await f.post(event, "atomic-revocation")).status).toBe(200);
-  expect(createInboxStore(f.db).listUnhandled()).toHaveLength(1);
+  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toHaveLength(1);
   expect(f.task.items.map((item) => getWorkItem(f.db, item.id)?.state)).toEqual(original);
-  expect(getLinearSession(f.db, "session")?.generation).toBe(0);
-  expect(getLinearSession(f.db, "session")?.stoppedAt).toBeNull();
+  expect((await getLinearSession(sqliteDb(f.db), "session"))?.generation).toBe(0);
+  expect((await getLinearSession(sqliteDb(f.db), "session"))?.stoppedAt).toBeNull();
   expect(getLinearSessionAccess(f.db, "session")).toBe("allowed");
   expect(
     f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_access_event").get()?.n,
@@ -205,9 +214,13 @@ test("a rejected second-child cancellation rolls back signed revocation before n
   expect(f.owned.signal.aborted).toBe(false);
   f.db.run("DROP TRIGGER reject_second_cancel");
   expect((await f.post(event, "atomic-revocation")).status).toBe(200);
-  for (let i = 0; i < 100 && createInboxStore(f.db).listUnhandled().length > 0; i++)
+  for (
+    let i = 0;
+    i < 100 && (await createInboxStore(sqliteDb(f.db)).listUnhandled()).length > 0;
+    i++
+  )
     await Bun.sleep(5);
-  expect(createInboxStore(f.db).listUnhandled()).toEqual([]);
+  expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toEqual([]);
   expect(f.task.items.map((item) => getWorkItem(f.db, item.id)?.state)).toEqual([
     "cancelled",
     "cancelled",
@@ -343,7 +356,7 @@ test("undelegation cancels every queued task of the issue and stops its session 
   ]);
   expect(f.notifications).toEqual(f.task.items.map((item) => item.id));
   expect(f.interrupted).toEqual(["session"]);
-  expect(getLinearSession(f.db, "session")?.stoppedAt).not.toBeNull();
+  expect((await getLinearSession(sqliteDb(f.db), "session"))?.stoppedAt).not.toBeNull();
   expect(reconciled).toEqual(["issue"]);
 });
 

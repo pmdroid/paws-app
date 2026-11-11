@@ -218,7 +218,7 @@ export type LiveStatusOptions = {
     workspace?: string | null;
   };
   env?: NodeJS.ProcessEnv;
-  linearUsage?: () => LinearUsageView;
+  linearUsage?: () => Promise<LinearUsageView>;
 };
 
 export type LinearUsageView = {
@@ -892,7 +892,7 @@ export async function readIntake(
       nextAttemptAt: at(entry.nextAttemptAt),
       lastError: entry.lastError,
     }));
-  const usage = options.linearUsage?.();
+  const usage = await options.linearUsage?.();
   if (usage === undefined) return { intake, ...webhook };
   return {
     intake,

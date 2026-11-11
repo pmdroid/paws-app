@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq } from "drizzle-orm";
 import type { RiskClassification, RiskMatch, RiskTier } from "../core";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 import type { candidateRisk } from "./schema-pg";
 
@@ -36,8 +35,8 @@ export function* saveCandidateRiskSteps(q: Q, risk: CandidateRisk) {
 }
 
 /** Records the tier for a head. A head is classified once against its base; a repeat replaces it. */
-export function saveCandidateRisk(db: Database, risk: CandidateRisk): void {
-  settled(sqliteDb(db).run((q) => saveCandidateRiskSteps(q, risk)));
+export async function saveCandidateRisk(store: Db, risk: CandidateRisk): Promise<void> {
+  await store.run((q) => saveCandidateRiskSteps(q, risk));
 }
 
 type Row = typeof candidateRisk.$inferSelect;

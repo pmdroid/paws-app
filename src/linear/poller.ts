@@ -196,11 +196,11 @@ export function startCatchUpPoller(options: {
   }
 
   async function pollBody(): Promise<void> {
-    for (const event of options.store.listUnhandled()) {
+    for (const event of await options.store.listUnhandled()) {
       if (options.intake?.accepts(event)) continue;
       await deliverOrSkip(event);
     }
-    const saved = options.store.getCursor(CATCH_UP_CURSOR);
+    const saved = await options.store.getCursor(CATCH_UP_CURSOR);
     const since = saved === null ? now() - INITIAL_LOOKBACK_MS : Math.max(0, saved - OVERLAP_MS);
     cycleStartedMs ??= now();
     let sighting: IntakeSighting;
@@ -212,7 +212,7 @@ export function startCatchUpPoller(options: {
     } while (!sighting.caughtUp && !control.stopped);
     options.intake?.wake();
     if (sighting.caughtUp) {
-      options.store.setCursor(CATCH_UP_CURSOR, cycleStartedMs);
+      await options.store.setCursor(CATCH_UP_CURSOR, cycleStartedMs);
       cycleStartedMs = null;
       await rereadQuestionThreads();
     }
@@ -234,7 +234,7 @@ export function startCatchUpPoller(options: {
       }
       for (const reply of replies) {
         const event = activityEvent(reply);
-        if (event !== null && options.store.get(event.dedupeKey) === null)
+        if (event !== null && (await options.store.get(event.dedupeKey)) === null)
           journal(
             `poll re-read found reply ${reply.id} in question thread ${thread.session_id} that no webhook delivered`,
           );
@@ -253,33 +253,34 @@ export function startCatchUpPoller(options: {
     for (const session of sighting.sessions)
       if (!session.stoppedAtMs && !session.endedAtMs)
         sessionByIssue.set(session.issueId, session.id);
-    const sessionHasTask = (sessionId: string) =>
-      options.db !== undefined && sessionHasWorkItem(options.db, sessionId);
-    const issueEvents = sighting.issues
-      .map((issue) => issueEvent(issue, sessionByIssue, options.store, sessionHasTask))
-      .filter((event): event is AcceptedLinearEvent => event !== null);
-    const issueHasOpenTask = (issueId: string) =>
-      options.db !== undefined && issueHasItemOutside(options.db, issueId);
-    const closedEvents = sighting.issues
-      .filter((issue) => issue.closed && issueHasOpenTask(issue.id))
-      .map((issue) => closedIssueEvent(issue, sessionByIssue.get(issue.id) ?? null));
+    const db = options.db === undefined ? undefined : sqliteDb(options.db);
+    const sessionHasTask = async (sessionId: string) =>
+      db !== undefined && (await sessionHasWorkItem(db, sessionId));
+    const issueEvents: AcceptedLinearEvent[] = [];
+    for (const issue of sighting.issues) {
+      const event = await issueEvent(issue, sessionByIssue, options.store, sessionHasTask);
+      if (event !== null) issueEvents.push(event);
+    }
+    const closedEvents: AcceptedLinearEvent[] = [];
+    for (const issue of sighting.issues)
+      if (issue.closed && db !== undefined && (await issueHasItemOutside(db, issue.id)))
+        closedEvents.push(closedIssueEvent(issue, sessionByIssue.get(issue.id) ?? null));
+    const sessionEvents: (AcceptedLinearEvent | null)[] = [];
+    for (const session of sighting.sessions)
+      if (session.stoppedAtMs || !issueEvents.some((event) => event.sessionId === session.id))
+        sessionEvents.push(await sessionEvent(session, since, options.store, sessionHasTask));
     const events = [
       ...issueEvents,
       ...closedEvents,
-      ...sighting.sessions
-        .filter(
-          (session) =>
-            session.stoppedAtMs || !issueEvents.some((event) => event.sessionId === session.id),
-        )
-        .map((session) => sessionEvent(session, since, options.store, sessionHasTask)),
+      ...sessionEvents,
       ...sighting.comments.map((comment) => commentEvent(comment)),
       ...sighting.activities.map((activity) => activityEvent(activity)),
     ].filter((event): event is AcceptedLinearEvent => event !== null);
     events.sort((left, right) => left.updatedAtMs - right.updatedAtMs || rank(left) - rank(right));
     for (const event of events) {
-      const committed = options.store.commit(event);
-      if (committed.inserted && webhookMissed(event))
-        options.store.setCursor(WEBHOOK_MISSED_CURSOR, now());
+      const committed = await options.store.commit(event);
+      if (committed.inserted && (await webhookMissed(event)))
+        await options.store.setCursor(WEBHOOK_MISSED_CURSOR, now());
       if (!committed.inserted && committed.handled) continue;
       if (options.intake?.accepts(event)) {
         if (committed.inserted) options.intake.arrive(event);
@@ -289,8 +290,8 @@ export function startCatchUpPoller(options: {
     }
   }
 
-  function webhookMissed(event: AcceptedLinearEvent): boolean {
-    const lastWebhookMs = lastVerifiedWebhookMs(options.store);
+  async function webhookMissed(event: AcceptedLinearEvent): Promise<boolean> {
+    const lastWebhookMs = await lastVerifiedWebhookMs(options.store);
     if (lastWebhookMs === null || event.updatedAtMs <= lastWebhookMs) return false;
     if (event.updatedAtMs > now() - MISSED_DELIVERY_GRACE_MS || event.signal === "stop") {
       return false;
@@ -303,7 +304,7 @@ export function startCatchUpPoller(options: {
       event.sessionId !== null &&
       event.activityId !== null &&
       event.dedupeKey === activityKey(event.activityId) &&
-      options.store.get(sessionCreatedKey(event.sessionId)) !== null
+      (await options.store.get(sessionCreatedKey(event.sessionId))) !== null
     );
   }
 
@@ -330,17 +331,17 @@ export function startCatchUpPoller(options: {
         throw error;
       journalCaught(error, "poller.deliver.onEvent", null);
 
-      options.store.markHandled(event.dedupeKey);
+      await options.store.markHandled(event.dedupeKey);
       return;
     }
     if (accepted !== false && event.signal === "stop") await submitStops(event);
-    options.store.markHandled(event.dedupeKey);
+    await options.store.markHandled(event.dedupeKey);
   }
 
   async function submitStops(event: AcceptedLinearEvent): Promise<void> {
     const submit = options.submitCommand;
     if (submit === undefined) return;
-    const targets = stopTargets(options.db, event.issueId, event.sessionId);
+    const targets = await stopTargets(options.db, event.issueId, event.sessionId);
     const requestedAt = event.updatedAtMs > 0 ? event.updatedAtMs : now();
     for (const itemId of targets) {
       try {
@@ -359,9 +360,9 @@ export function startCatchUpPoller(options: {
       delay = Math.max(
         pollIntervalMs({
           now: now(),
-          lastWebhookMs: lastVerifiedWebhookMs(options.store),
-          webhookFailures: webhookVerificationFailures(options.store),
-          missedDeliveryMs: options.store.getCursor(WEBHOOK_MISSED_CURSOR),
+          lastWebhookMs: await lastVerifiedWebhookMs(options.store),
+          webhookFailures: await webhookVerificationFailures(options.store),
+          missedDeliveryMs: await options.store.getCursor(WEBHOOK_MISSED_CURSOR),
           budget: latestBudget,
         }),
         budgetHoldMs(latestBudget, now()),
@@ -384,10 +385,10 @@ export function startCatchUpPoller(options: {
   }
 
   async function pollDue(): Promise<void> {
-    const due = options.store.getCursor(POLL_DUE_CURSOR);
+    const due = await options.store.getCursor(POLL_DUE_CURSOR);
     if (control.stopped || (due !== null && now() < due)) return;
     const delay = await tick();
-    if (!control.stopped) options.store.setCursor(POLL_DUE_CURSOR, now() + delay);
+    if (!control.stopped) await options.store.setCursor(POLL_DUE_CURSOR, now() + delay);
   }
 
   const settled =
@@ -432,15 +433,16 @@ export function startCatchUpPoller(options: {
   };
 }
 
-function sessionEvent(
+async function sessionEvent(
   session: PolledSession,
   since: number,
   store: InboxStore,
-  sessionHasTask: (sessionId: string) => boolean,
-): AcceptedLinearEvent | null {
-  const prior = store.get(`issue:${session.issueId}:intake`);
+  sessionHasTask: (sessionId: string) => Promise<boolean>,
+): Promise<AcceptedLinearEvent | null> {
+  const prior = await store.get(`issue:${session.issueId}:intake`);
   if (session.stoppedAtMs != null) {
-    if (!store.get(`session:${session.id}:created`) && prior?.sessionId !== session.id) return null;
+    if (!(await store.get(`session:${session.id}:created`)) && prior?.sessionId !== session.id)
+      return null;
     return inboxEvent({
       dedupeKey: `session:${session.id}:stop:${session.stoppedAtMs}`,
       action: "prompted",
@@ -453,11 +455,11 @@ function sessionEvent(
     });
   }
   if (session.endedAtMs != null) return null;
-  const delegatedAt = store.getCursor(`delegated:${session.issueId}`);
+  const delegatedAt = await store.getCursor(`delegated:${session.issueId}`);
   const redelegated =
     delegatedAt !== null &&
     delegatedAt > session.createdAtMs + REDELEGATION_MARGIN_MS &&
-    !sessionHasTask(session.id);
+    !(await sessionHasTask(session.id));
   if (!redelegated && prior?.sessionId === session.id) return null;
   if (!redelegated && prior === null && session.updatedAtMs < since) return null;
   return inboxEvent({
@@ -481,24 +483,24 @@ export async function persistStopCommand(db: Database, command: LinearCommand): 
 
 const REDELEGATION_MARGIN_MS = 60_000;
 
-function issueEvent(
+async function issueEvent(
   issue: PolledIssue,
   sessionByIssue: ReadonlyMap<string, string>,
   store: InboxStore,
-  sessionHasTask: (sessionId: string) => boolean,
-): AcceptedLinearEvent | null {
+  sessionHasTask: (sessionId: string) => Promise<boolean>,
+): Promise<AcceptedLinearEvent | null> {
   const sessionId = sessionByIssue.get(issue.id) ?? null;
   if (issue.labeled || issue.delegated) {
-    const prior = store.get(`issue:${issue.id}:intake`);
+    const prior = await store.get(`issue:${issue.id}:intake`);
     const mode = issue.labeled && issue.delegated ? "both" : issue.labeled ? "label" : "delegate";
-    const delegatedAt = store.getCursor(`delegated:${issue.id}`);
+    const delegatedAt = await store.getCursor(`delegated:${issue.id}`);
     const redelegated =
       prior !== null &&
       sessionId !== null &&
       issue.delegated &&
       delegatedAt !== null &&
       delegatedAt > prior.updatedAtMs + REDELEGATION_MARGIN_MS &&
-      !sessionHasTask(sessionId);
+      !(await sessionHasTask(sessionId));
     return inboxEvent({
       dedupeKey:
         prior !== null && sessionId !== null && prior.sessionId !== sessionId
@@ -515,7 +517,7 @@ function issueEvent(
       payload: { kind: "intake", mode, identifier: issue.identifier },
     });
   }
-  const prior = store.get(`issue:${issue.id}:intake`);
+  const prior = await store.get(`issue:${issue.id}:intake`);
   const mode = prior === null ? null : intakeMode(prior.payload);
   if (mode === null) return null;
   const reason = mode === "delegate" ? "delegate" : "label";
@@ -650,15 +652,15 @@ function rank(eventRow: AcceptedLinearEvent): number {
   return eventRow.signal === "stop" ? 1 : 0;
 }
 
-function stopTargets(
+async function stopTargets(
   db: Database | undefined,
   linearIssueId: string | null,
   sessionId: string | null,
-): string[] {
+): Promise<string[]> {
   if (db === undefined) return linearIssueId === null ? [] : [linearIssueId];
   const ids: string[] = [];
   try {
-    ids.push(...openStopTargets(db, linearIssueId, sessionId));
+    ids.push(...(await openStopTargets(sqliteDb(db), linearIssueId, sessionId)));
   } catch (caughtError2) {
     journalCaught(caughtError2, "poller.stopTargets.all", null);
     return linearIssueId === null || sessionId !== null ? [] : [linearIssueId];

@@ -55,7 +55,7 @@ async function fixture() {
   const path = join(root, "paws.db");
   let db: Database = migratedDatabase(path);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -91,7 +91,7 @@ async function fixture() {
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -99,9 +99,9 @@ async function fixture() {
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
-  saveTaskMode(db, item.id, "answer");
+  await saveTaskMode(sqliteDb(db), item.id, "answer");
   const worktree = join(root, "task");
   mkdirSync(worktree);
 
@@ -303,11 +303,11 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
     expect(await first).not.toBeNull();
     expect(f.commandCount("cancel")).toBe(0);
 
-    prepareShutdown(f.db);
+    await prepareShutdown(sqliteDb(f.db));
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
     expect(getRun(f.db, f.run.id)?.status).toBe("active");
     f.restart();
-    expect(recoverOnStartup(f.db)).toEqual([
+    expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([
       { type: "resume", freshSession: true, checkpoint: null, reattach: true },
     ]);
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
@@ -375,10 +375,10 @@ test("an answer task whose runner lease ran past its grace resumes from the star
     expect(f.commandCount("cancel")).toBe(0);
 
     const later = Date.now() + 60_001 + RUNNER_LEASE_GRACE_MS;
-    prepareShutdown(f.db, later);
+    await prepareShutdown(sqliteDb(f.db), later);
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("recovering");
     f.restart();
-    expect(recoverOnStartup(f.db, later)).toEqual([
+    expect(await recoverOnStartup(sqliteDb(f.db), later)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ recoveryAttempts: 1 });

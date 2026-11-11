@@ -24,6 +24,8 @@ import {
   setCurrentRun,
   type WorkItemRecord,
   sqliteDb,
+  syncSteps,
+  type Q,
 } from "../src/db";
 import { migratedDatabase, tempDb, tempHome } from "./helpers";
 
@@ -117,11 +119,11 @@ test("a committed failure survives a restart and is not repeated", () => {
   expect(listOutbox(restored, "session")).toHaveLength(1);
 });
 
-function mergingTask(db: Database) {
+async function mergingTask(db: Database) {
   const { item, run } = runningTask(db);
   enterMergeQueue(db, item.id, { phase: "merge_queue" });
   const jobId = enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: item.id }, now: 2 });
-  recordConfirmedRemoteMerge(db, {
+  await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId: item.id,
     repositoryOwner: "acme",
     repositoryName: "app",
@@ -137,16 +139,17 @@ function announceMerge(_db: Database) {
   const announced: string[] = [];
   return {
     announced,
-    announce: (item: WorkItemRecord) => {
-      announced.push(item.id);
-    },
+    announce: (_q: Q, item: WorkItemRecord) =>
+      syncSteps(() => {
+        announced.push(item.id);
+      }),
   };
 }
 
 test("a confirmed merge commits its state, run, jobs and notice together and only once", async () => {
   const file = join(tempHome(), "paws.db");
   const db = migratedDatabase(file);
-  const { item, run, jobId } = mergingTask(db);
+  const { item, run, jobId } = await mergingTask(db);
   const { announced, announce } = announceMerge(db);
   expect(
     (await completeMergedItem(sqliteDb(db), { itemId: item.id, now: 4, announce }))?.state,
@@ -173,7 +176,7 @@ test("a confirmed merge commits its state, run, jobs and notice together and onl
 test("a fault in the merge notice leaves the task in the merge queue", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item, run, jobId } = mergingTask(db);
+  const { item, run, jobId } = await mergingTask(db);
   breakOutbox(db);
   const { announce } = announceMerge(db);
   await expect(
@@ -187,7 +190,7 @@ test("a fault in the merge notice leaves the task in the merge queue", async () 
 test("a merge result for a cancelled, superseded or unconfirmed task changes nothing", async () => {
   const db = tempDb();
   databases.push(db);
-  const { item } = mergingTask(db);
+  const { item } = await mergingTask(db);
   const { announced, announce } = announceMerge(db);
   applyWorkItemEvent(db, item.id, "restart");
   applyWorkItemEvent(db, item.id, "dispatched");
@@ -203,21 +206,24 @@ test("a merge result for a cancelled, superseded or unconfirmed task changes not
   expect(announced).toEqual([]);
 });
 
-test("an answer from a superseded run cannot complete the task", () => {
+test("an answer from a superseded run cannot complete the task", async () => {
   const db = tempDb();
   databases.push(db);
   const { item, run, jobId } = runningTask(db);
-  saveTaskMode(db, item.id, "answer");
+  await saveTaskMode(sqliteDb(db), item.id, "answer");
   const next = insertRun(db, { itemId: item.id, now: 2 });
   setCurrentRun(db, item.id, next.id);
-  expect(() => completeAnswerTask(db, item.id, "Stale answer.", 3, { runId: run.id })).toThrow(
-    "no longer running",
-  );
+  await expect(
+    completeAnswerTask(sqliteDb(db), item.id, "Stale answer.", 3, { runId: run.id }),
+  ).rejects.toThrow("no longer running");
   expect(getWorkItem(db, item.id)?.state).toBe("running");
   let announced = 0;
-  completeAnswerTask(db, item.id, "The total is 42.", 4, {
+  await completeAnswerTask(sqliteDb(db), item.id, "The total is 42.", 4, {
     runId: next.id,
-    announce: () => announced++,
+    announce: () =>
+      syncSteps(() => {
+        announced++;
+      }),
   });
   expect(getWorkItem(db, item.id)?.state).toBe("completed");
   expect(getRun(db, next.id)?.status).toBe("ended");
@@ -225,19 +231,19 @@ test("an answer from a superseded run cannot complete the task", () => {
   expect(announced).toBe(1);
 });
 
-test("a fault in the answer's session update rolls the completion back", () => {
+test("a fault in the answer's session update rolls the completion back", async () => {
   const db = tempDb();
   databases.push(db);
   const { item, run } = runningTask(db);
-  saveTaskMode(db, item.id, "answer");
-  expect(() =>
-    completeAnswerTask(db, item.id, "The total is 42.", 2, {
+  await saveTaskMode(sqliteDb(db), item.id, "answer");
+  await expect(
+    completeAnswerTask(sqliteDb(db), item.id, "The total is 42.", 2, {
       runId: run.id,
       announce: () => {
         throw new Error("session update failed");
       },
     }),
-  ).toThrow("session update failed");
+  ).rejects.toThrow("session update failed");
   expect(getWorkItem(db, item.id)?.state).toBe("running");
   expect(getRun(db, run.id)?.status).toBe("active");
   expect(listOutbox(db, "session")).toEqual([]);

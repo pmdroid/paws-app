@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { intakeDelegatedIssue } from "../src/intake";
-import { configureWorkItem, insertQueuedItem, setJournalSink } from "../src/db";
+import { configureWorkItem, insertQueuedItem, setJournalSink, sqliteDb } from "../src/db";
 import { RunnerSlotsBusyError } from "../src/core";
 import {
   POLL_INTERVAL_FAILING_MS,
@@ -43,7 +43,7 @@ describe("linear intake poll", () => {
     "%s holds the shared claim while the other delivery path sees the same event",
     async (first) => {
       const db = tempDb();
-      const store = createInboxStore(db);
+      const store = createInboxStore(sqliteDb(db));
       const body = JSON.stringify({
         type: "AgentSessionEvent",
         action: "created",
@@ -74,7 +74,7 @@ describe("linear intake poll", () => {
         );
       if (first === "webhook") await webhook();
       else
-        store.commit({
+        await store.commit({
           dedupeKey: "session:shared-session:created",
           deliveryId: null,
           source: "poll",
@@ -100,9 +100,9 @@ describe("linear intake poll", () => {
         if (first === "poller") expect((await webhook()).status).toBe(200);
         else await waitFor(() => waits.length > 0);
         expect(seen).toEqual(["session:shared-session:created"]);
-        expect(store.listUnhandled()).toHaveLength(1);
+        expect(await store.listUnhandled()).toHaveLength(1);
         release();
-        await waitFor(() => store.listUnhandled().length === 0);
+        await waitFor(async () => (await store.listUnhandled()).length === 0);
         await poller.pollNow();
         expect(seen).toHaveLength(1);
       } finally {
@@ -143,7 +143,7 @@ describe("linear intake poll", () => {
     }));
     const poller = startCatchUpPoller({
       source: createIntakePollSource(client, { teamId: TEAM }),
-      store: createInboxStore(db),
+      store: createInboxStore(sqliteDb(db)),
       onEvent: (event) => {
         seen.push(event);
       },
@@ -176,7 +176,7 @@ describe("linear intake poll", () => {
 
   test("a session deleted in Linear is skipped and does not block later sessions", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const seen: (string | null)[] = [];
     const attempts: (string | null)[] = [];
     const { client } = scripted(() => ({
@@ -211,7 +211,7 @@ describe("linear intake poll", () => {
 
   test("a session waiting for a runner slot does not block later sessions and is retried", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const seen: (string | null)[] = [];
     let busy = true;
     const { client } = scripted(() => ({
@@ -246,7 +246,7 @@ describe("linear intake poll", () => {
     "an issue delegated again into its earlier session is taken in again unless it has a task (task=%s)",
     async (withTask) => {
       const db = tempDb();
-      const store = createInboxStore(db);
+      const store = createInboxStore(sqliteDb(db));
       if (withTask) insertQueuedItem(db, { sessionKey: "session-reused" });
       const created: string[] = [];
       let polls = 0;
@@ -276,7 +276,7 @@ describe("linear intake poll", () => {
       });
       await waitFor(() => created.length > 0);
       await poller.pollNow();
-      store.setCursor("delegated:iss_back", NOW + 120_000);
+      await store.setCursor("delegated:iss_back", NOW + 120_000);
       await poller.pollNow();
       await poller.pollNow();
       await poller.stop();
@@ -290,7 +290,7 @@ describe("linear intake poll", () => {
     "a reused session delegated again starts work unless it already has a task (task=%s)",
     async (withTask) => {
       const db = tempDb();
-      const store = createInboxStore(db);
+      const store = createInboxStore(sqliteDb(db));
       if (withTask) insertQueuedItem(db, { sessionKey: "session-again" });
       const created: string[] = [];
       const { client } = scripted(() => ({
@@ -309,7 +309,7 @@ describe("linear intake poll", () => {
         now: () => NOW,
       });
       await waitFor(() => created.length > 0);
-      store.setCursor("delegated:iss_again", NOW + 60_000);
+      await store.setCursor("delegated:iss_again", NOW + 60_000);
       await poller.pollNow();
       await poller.pollNow();
       await poller.stop();
@@ -323,7 +323,7 @@ describe("linear intake poll", () => {
     "attaches a late session once with issue present=%s",
     async (issuePresent) => {
       const db = tempDb();
-      const store = createInboxStore(db);
+      const store = createInboxStore(sqliteDb(db));
       const seen: AcceptedLinearEvent[] = [];
       let polls = 0;
       const { client } = scripted(() => {
@@ -407,12 +407,14 @@ describe("linear intake poll", () => {
         return json(emptyData());
       },
     });
-    expect(linear.usage().lastCatchUpMs).toBeNull();
+    expect((await linear.usage()).lastCatchUpMs).toBeNull();
     const running = linear.start();
     await running.pollDue();
-    await waitFor(() => createInboxStore(db).getCursor("linear") !== null);
+    await waitFor(async () => (await createInboxStore(sqliteDb(db)).getCursor("linear")) !== null);
     expect(queries.some((body) => body.includes("IntakePoll"))).toBe(true);
-    expect(linear.usage().lastCatchUpMs).toBe(createInboxStore(db).getCursor("linear"));
+    expect((await linear.usage()).lastCatchUpMs).toBe(
+      await createInboxStore(sqliteDb(db)).getCursor("linear"),
+    );
     await running.stop();
     db.close();
   });
@@ -428,7 +430,7 @@ describe("linear intake poll", () => {
           throw new LinearRateLimitError(42_000, rateBudget({ requestsRemaining: 0 }));
         },
       },
-      store: createInboxStore(db),
+      store: createInboxStore(sqliteDb(db)),
       onEvent: () => {},
       sleeper: recordingSleeper(waits, hold()),
       now: () => NOW,
@@ -489,7 +491,7 @@ describe("linear intake poll", () => {
 
   test("waits out the backstop interval after a verified webhook and keeps it through a quiet hour", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const waits: number[] = [];
     const gate = hold();
     let clock = NOW;
@@ -524,7 +526,7 @@ describe("linear intake poll", () => {
       { store, now: () => NOW },
     );
     expect(response.status).toBe(200);
-    expect(lastVerifiedWebhookMs(store)).toBe(NOW);
+    expect(await lastVerifiedWebhookMs(store)).toBe(NOW);
     gate.release?.();
     await waitFor(() => waits.length > 1);
     expect(waits[1]).toBe(POLL_INTERVAL_WEBHOOK_MS);
@@ -540,7 +542,7 @@ describe("linear intake poll", () => {
 
   test("waits 5 minutes while the remembered request budget is under 20%", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const waits: number[] = [];
     const gate = hold();
     let clock = NOW;
@@ -584,7 +586,7 @@ describe("linear intake poll", () => {
 
   test("picks up a labeled issue and a delegated issue within one tick", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const seen: string[] = [];
     let polls = 0;
     const { client } = scripted(({ query }) => {
@@ -608,7 +610,7 @@ describe("linear intake poll", () => {
     await waitFor(() => seen.length === 2);
     expect(polls).toBe(1);
     expect(seen.sort()).toEqual(["iss_delegate", "iss_label"]);
-    expect(store.getCursor("linear")).toBe(NOW);
+    expect(await store.getCursor("linear")).toBe(NOW);
     await poller.stop();
     await poller.settled;
     db.close();
@@ -616,7 +618,7 @@ describe("linear intake poll", () => {
 
   test("a labeled parent with three sub-issues keeps blocks order", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const { client } = scripted(({ query }) => {
       if (query.includes("IntakePoll")) {
         return page([issue("parent", "ENG-1", ["paws"], null)]);
@@ -650,7 +652,7 @@ describe("linear intake poll", () => {
 
   test("a duplicate page is processed once and the cursor survives restart", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const seen: string[] = [];
     const sinces: string[] = [];
     const labeled = issue("iss_dup", "ENG-1", ["Paws"], null);
@@ -668,11 +670,11 @@ describe("linear intake poll", () => {
       sleeper: blockedSleeper(),
       now: () => NOW,
     });
-    await waitFor(() => seen.length === 1 && store.getCursor("linear") === NOW);
+    await waitFor(async () => seen.length === 1 && (await store.getCursor("linear")) === NOW);
     await poller.stop();
     await poller.settled;
 
-    const cursor = store.getCursor("linear");
+    const cursor = await store.getCursor("linear");
     const second = scripted(fetchPage);
     const again = startCatchUpPoller({
       source: createIntakePollSource(second.client, { teamId: TEAM }),
@@ -698,7 +700,7 @@ describe("linear intake poll", () => {
 
   test("RATELIMITED backs off, keeps the cursor, and resumes", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const seen: string[] = [];
     let calls = 0;
     let clock = NOW;
@@ -749,7 +751,7 @@ describe("linear intake poll", () => {
     });
     await waitFor(() => waits.length > 0);
     expect(seen).toEqual([]);
-    expect(store.getCursor("linear")).toBeNull();
+    expect(await store.getCursor("linear")).toBeNull();
     expect(waits[0]).toBeGreaterThanOrEqual(30_000);
     expect(poller.budget()).toMatchObject({
       complexity: 80,
@@ -762,7 +764,7 @@ describe("linear intake poll", () => {
     await waitFor(() => seen.length === 1);
     expect(seen).toEqual(["iss_later"]);
     expect(poller.budget()).toMatchObject({ complexity: 12, requestsRemaining: 1490 });
-    expect(store.getCursor("linear")).toBe(NOW);
+    expect(await store.getCursor("linear")).toBe(NOW);
     await poller.stop();
     await poller.settled;
     db.close();
@@ -770,7 +772,7 @@ describe("linear intake poll", () => {
 
   test("catch-up records an ordinary comment with its author, parent and team once", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const seen: AcceptedLinearEvent[] = [];
     const comment = {
       id: "c_plain",
@@ -821,7 +823,7 @@ describe("linear intake poll", () => {
 
   test("label removal, /paws stop, and an agent stop submit stop commands", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const commands: { type: string; itemId: string }[] = [];
     let tick = 0;
     const { client } = scripted(({ query }) => {
@@ -890,7 +892,7 @@ describe("linear intake poll", () => {
 
   test("a poll that finds a delegated issue undelegated stops its tasks", async () => {
     const db = tempDb();
-    const store = createInboxStore(db);
+    const store = createInboxStore(sqliteDb(db));
     const commands: { type: string; itemId: string }[] = [];
     let tick = 0;
     const { client } = scripted(({ query }) => {
@@ -1124,9 +1126,9 @@ function blockedSleeper(): Sleeper {
   };
 }
 
-async function waitFor(ready: () => boolean): Promise<void> {
+async function waitFor(ready: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 1_000;
-  while (!ready()) {
+  while (!(await ready())) {
     if (Date.now() > deadline) throw new Error("timed out waiting for the poller");
     await Bun.sleep(10);
   }
@@ -1137,7 +1139,7 @@ test("stopping joins a manual Linear poll before its final SQLite write", async 
   const ready = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let polls = 0;
-  const store = createInboxStore(db);
+  const store = createInboxStore(sqliteDb(db));
   const poller = startCatchUpPoller({
     db,
     store,
@@ -1162,7 +1164,7 @@ test("stopping joins a manual Linear poll before its final SQLite write", async 
     },
   });
   try {
-    await waitFor(() => polls === 1 && store.getCursor("linear") !== null);
+    await waitFor(async () => polls === 1 && (await store.getCursor("linear")) !== null);
     const manual = poller.pollNow();
     await ready.promise;
     let stopped = false;
@@ -1171,7 +1173,7 @@ test("stopping joins a manual Linear poll before its final SQLite write", async 
     });
     await Bun.sleep(5);
     expect(stopped).toBe(false);
-    expect(store.getCursor("linear")).toBeNumber();
+    expect(await store.getCursor("linear")).toBeNumber();
     release.resolve();
     await stopping;
     await manual;
@@ -1214,7 +1216,7 @@ test("Linear runtime stop joins interrupted events and rejects new handlers befo
     updatedAtMs: 1,
     payload: "{}",
   };
-  linear.webhook.store.commit(event);
+  await linear.webhook.store.commit(event);
   const accepted = Promise.resolve(linear.webhook.onEvent!(event)).then(
     () => null,
     (error: unknown) => error,
@@ -1234,7 +1236,7 @@ test("Linear runtime stop joins interrupted events and rejects new handlers befo
     expect(await accepted).toMatchObject({ name: "AbortError" });
     await stopping;
     expect(stopped).toBe(true);
-    expect(linear.webhook.store.listUnhandled()).toEqual([]);
+    expect(await linear.webhook.store.listUnhandled()).toEqual([]);
   } finally {
     release.resolve();
     await accepted;
@@ -1247,7 +1249,7 @@ test("a synchronous Linear adapter Stop joins the poll before SQLite can close",
   const db = tempDb();
   const ready = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const store = createInboxStore(db);
+  const store = createInboxStore(sqliteDb(db));
   let polls = 0;
   let stopped = false;
   let stopping: Promise<void> | undefined;
@@ -1279,7 +1281,7 @@ test("a synchronous Linear adapter Stop joins the poll before SQLite can close",
   });
   let manual: Promise<void> | undefined;
   try {
-    await waitFor(() => polls === 1 && store.getCursor("linear") !== null);
+    await waitFor(async () => polls === 1 && (await store.getCursor("linear")) !== null);
     manual = poller.pollNow();
     await ready.promise;
     await Bun.sleep(5);
@@ -1288,7 +1290,7 @@ test("a synchronous Linear adapter Stop joins the poll before SQLite can close",
     await stopping;
     await manual;
     expect(stopped).toBe(true);
-    expect(store.getCursor("linear")).toBeNumber();
+    expect(await store.getCursor("linear")).toBeNumber();
   } finally {
     release.resolve();
     await manual;

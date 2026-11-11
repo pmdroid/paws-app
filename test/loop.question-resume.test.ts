@@ -21,6 +21,7 @@ import {
   recoverOnStartup,
   runnerHasCapacity,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import type { Database } from "bun:sqlite";
 import { findOpenQuestion, handoffNote } from "../src/questions";
@@ -97,7 +98,7 @@ test("asking ends the run and an answer resumes through verification", async () 
         )
         .find((result) => result.askTeam)?.askTeam?.text,
     ).toBe(ASK_TURN_REPLY);
-    expect(runnerHasCapacity(fixture.db, fixture.runnerId, Date.now())).toBe(true);
+    expect(await runnerHasCapacity(sqliteDb(fixture.db), fixture.runnerId, Date.now())).toBe(true);
     expect(
       fixture.db
         .query<{ n: number }, [string]>(
@@ -161,7 +162,7 @@ test("startup leaves an open question parked and its answer resumes the run", as
     const open = findOpenQuestion(fixture.db, "ses_1");
     expect(open?.status).toBe("open");
     const jobsBefore = listJobs(fixture.db).filter((job) => job.queue === JOB_KIND.resume);
-    expect(recoverOnStartup(fixture.db)).toEqual([{ type: "none" }]);
+    expect(await recoverOnStartup(sqliteDb(fixture.db))).toEqual([{ type: "none" }]);
     expect(getWorkItem(fixture.db, item.id)?.state).toBe("awaiting_input");
     expect(listJobs(fixture.db).filter((job) => job.queue === JOB_KIND.resume)).toEqual(jobsBefore);
     expect(getRun(fixture.db, item.currentRunId!)?.status).toBe("ended");
@@ -231,7 +232,7 @@ test("a resume after a restart repeats no Linear read the first run already made
     const firstRun = [...fixture.reads];
     const restarted = await fixture.restart();
     orchestrator = restarted.orchestrator;
-    recoverOnStartup(fixture.db);
+    await recoverOnStartup(sqliteDb(fixture.db));
     await restarted.orchestrator.onLinearEvent(prompted("parquet"));
     await drive({ db: fixture.db, jobs: restarted.jobs }, ["verifying", "merge_queue", "merged"]);
     const resumed = fixture.prompts.find((prompt) => prompt.includes("Answer: parquet"));
@@ -447,23 +448,23 @@ function leaseActiveRun(db: Database): Promise<string> {
     for (let attempt = 0; attempt < 2000; attempt += 1) {
       const item = listWorkItems(db)[0];
       const run = item?.currentRunId ? getRun(db, item.currentRunId) : null;
-      if (run?.status === "active") return attachLease(db, run.id);
+      if (run?.status === "active") return await attachLease(db, run.id);
       await Bun.sleep(10);
     }
     throw new Error("implement run did not become active");
   })();
 }
 
-function attachLease(db: Database, runId: string): string {
+async function attachLease(db: Database, runId: string): Promise<string> {
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "user-1",
     linearUserId: "user-linear",
     name: "Owner",
     email: "owner@example.invalid",
   });
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", now]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws-1",
     userId,
     role: "admin",

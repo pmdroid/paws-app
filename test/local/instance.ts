@@ -11,6 +11,7 @@ import {
   migrate,
   openDatabase,
   submitCommand,
+  sqliteDb,
 } from "../../src/db";
 import { createFakeTracker } from "../../src/linear";
 import {
@@ -263,11 +264,11 @@ async function scenario(
     launch,
   });
   let interrupted = false;
-  const interrupt = () => {
+  const interrupt = async () => {
     interrupted = true;
     for (const item of listWorkItemsByStates(db, WORK_ITEM_STATES)) {
       if (["merged", "cancelled", "failed"].includes(item.state)) continue;
-      submitCommand(db, orchestrator.bus, {
+      await submitCommand(sqliteDb(db), orchestrator.bus, {
         type: "stop",
         itemId: item.id,
         source: "linear",

@@ -103,23 +103,28 @@ async function fixture(
   const journal: string[] = [];
   const controller = new AbortController();
   if (options.stored === false)
-    savePullRequestDraft(db, itemId, { title: "x", body: options.savedDescription ?? "Old" }, 1);
+    await savePullRequestDraft(
+      sqliteDb(db),
+      itemId,
+      { title: "x", body: options.savedDescription ?? "Old" },
+      1,
+    );
   if (options.savedDescription)
     enqueueJob(db, {
       queue: JOB_KIND.merge,
       payload: { itemId, summary: "## Closeout", head: "474f2d1b" },
       now: 1,
     });
-  const apply = (draft: { title: string; body: string }) => {
+  const apply = async (draft: { title: string; body: string }) => {
     const previous = getPullRequestDraft(db, itemId);
-    savePullRequestDraft(db, itemId, draft, 2);
+    await savePullRequestDraft(sqliteDb(db), itemId, draft, 2);
     return applyPullRequestDraft({
       store: sqliteDb(db),
       itemId,
       issue: "DEP-686",
       draft,
       previous,
-      stopped: () => controller.signal.aborted,
+      stopped: async () => controller.signal.aborted,
       signal: controller.signal,
       repository: { owner: "acme", repo: "monorepo" },
       github,

@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { createRetroPreviewHttp, DEFAULT_RETRO_PROMPT } from "../src/retros";
 import { ALL, ONLY_A, world } from "./improvement-fixtures";
 
-function fixture() {
-  const w = world();
+async function fixture() {
+  const w = await world();
   const handle = createRetroPreviewHttp({ db: w.db, artifactRoot: w.root, now: () => 9 });
   const call = async (
     who: string,
@@ -33,7 +33,7 @@ function fixture() {
 }
 
 test("an admin previews the unsaved draft against a sample when no digest is readable", async () => {
-  const { call } = fixture();
+  const { call } = await fixture();
   const answer = await call(
     "admin",
     "/api/retros/preview",
@@ -51,7 +51,7 @@ test("an admin previews the unsaved draft against a sample when no digest is rea
 });
 
 test("preview reports a malformed draft beside the editor and refuses members", async () => {
-  const { call, denials } = fixture();
+  const { call, denials } = await fixture();
   const invalid = await call("admin", "/api/retros/preview", {
     prompt: "No digest {{nope}}",
     outputLimits: { maxItems: 5, workedWell: 3 },
@@ -70,7 +70,7 @@ test("preview reports a malformed draft beside the editor and refuses members", 
 });
 
 test("a retro's frozen settings show the prompt and resolved profile it ran with", async () => {
-  const { call } = fixture();
+  const { call } = await fixture();
   const answer = await call("admin", "/api/retros/reports/r1/settings");
   expect(answer!.status).toBe(200);
   expect(answer!.body).toMatchObject({
@@ -84,7 +84,7 @@ test("a retro's frozen settings show the prompt and resolved profile it ran with
 });
 
 test("frozen settings need full access and stay hidden outside the workspace", async () => {
-  const { call, denials } = fixture();
+  const { call, denials } = await fixture();
   const partial = await call("ada", "/api/retros/reports/r1/settings");
   expect(partial!.status).toBe(403);
   expect(partial!.body.reason).toBe("partial_access");

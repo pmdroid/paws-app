@@ -21,8 +21,8 @@ import { createExecutionControlsFixture } from "./local/execution-controls";
 
 export async function decisionFixture(root: string) {
   const fixture = await createExecutionControlsFixture(root);
-  activateLinearItem(fixture.db, "session-controlled", "controlled");
-  bindWorkItemRepository(fixture.db, "controlled", {
+  await activateLinearItem(sqliteDb(fixture.db), "session-controlled", "controlled");
+  await bindWorkItemRepository(sqliteDb(fixture.db), "controlled", {
     owner: "fixture",
     repo: "allowed",
     remoteUrl: "https://example.invalid/fixture/allowed",

@@ -62,7 +62,7 @@ async function dependencyEpic() {
   const workspaceId = "workspace";
   const ids = new Map(intake.items.map((item) => [item.linearIssueId, item.id]));
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -70,7 +70,7 @@ async function dependencyEpic() {
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, { actorId: "owner" });
   const readyIds = async () => {
     const ready: string[] = [];
     for (const item of intake.items)
@@ -111,7 +111,7 @@ test("sync stores internal and external edges in task_block and readiness matche
     expect(await readyIds()).toContain(ids.get("a")!);
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [ids.get("a")!]);
     expect(await readyIds()).not.toContain(ids.get("b")!);
-    confirmFakeMerge(db, ids.get("a")!);
+    await confirmFakeMerge(db, ids.get("a")!);
     expect(await readyIds()).toContain(ids.get("b")!);
     lifecycle.issues.get("outside")!.stateType = "started";
     await refresh();
@@ -165,7 +165,7 @@ test("an item with a satisfied and an unsatisfied external blocker stays held", 
     const itemId = intake.items[0]!.id;
     const target = { itemId, workspaceId: "workspace" };
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -173,7 +173,9 @@ test("an item with a satisfied and an unsatisfied external blocker stays held", 
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "owner",
+    });
     tracker.deps.set("item", [
       { blockerLinearIssueId: "done", blockedLinearIssueId: "item" },
       { blockerLinearIssueId: "open", blockedLinearIssueId: "item" },
@@ -250,7 +252,7 @@ test("a held item tells Linear which blockers it waits for, once", async () => {
     if (!intake.ok) throw new Error("Intake failed");
     const target = { itemId: intake.items[0]!.id, workspaceId: "workspace" };
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -258,7 +260,9 @@ test("a held item tells Linear which blockers it waits for, once", async () => {
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "owner",
+    });
     tracker.deps.set("item", [
       { blockerLinearIssueId: "done", blockedLinearIssueId: "item" },
       { blockerLinearIssueId: "open", blockedLinearIssueId: "item" },

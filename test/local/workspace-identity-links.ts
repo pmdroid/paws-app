@@ -33,14 +33,16 @@ export async function probeWorkspaceIdentityLinks(
   const db = openDatabase(join(root, "identity-links.sqlite"));
   migrate(db);
   const now = Date.now();
-  const ids = Array.from({ length: 10 }, (_, i) =>
-    putWorkspaceUser(db, {
-      id: workspaceId(now + i),
-      linearUserId: `linear-${i}`,
-      name: `Member ${i}`,
-      email: `member${i}@example.invalid`,
-    }),
-  );
+  const ids: string[] = [];
+  for (let i = 0; i < 10; i++)
+    ids.push(
+      await putWorkspaceUser(sqliteDb(db), {
+        id: workspaceId(now + i),
+        linearUserId: `linear-${i}`,
+        name: `Member ${i}`,
+        email: `member${i}@example.invalid`,
+      }),
+    );
   const workspace = { id: workspaceId(), organizationId: "org", name: "Workspace" };
   await consumeWorkspaceBootstrap(sqliteDb(db), {
     ...workspace,
@@ -49,7 +51,7 @@ export async function probeWorkspaceIdentityLinks(
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
   });
   for (const userId of ids)
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace.id,
       userId,
       role: "member",
@@ -57,7 +59,7 @@ export async function probeWorkspaceIdentityLinks(
       teamIds: ["team"],
       now,
     });
-  changeWorkspaceRole(db, {
+  await changeWorkspaceRole(sqliteDb(db), {
     workspaceId: workspace.id,
     actorId: ids[0]!,
     userId: ids[1]!,
@@ -145,9 +147,21 @@ export async function probeWorkspaceIdentityLinks(
       },
     },
   });
-  const owner = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: ids[0]!, now });
-  const admin = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: ids[1]!, now });
-  const member = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: ids[2]!, now });
+  const owner = await issueWorkspaceSession(db, {
+    workspaceId: workspace.id,
+    userId: ids[0]!,
+    now,
+  });
+  const admin = await issueWorkspaceSession(db, {
+    workspaceId: workspace.id,
+    userId: ids[1]!,
+    now,
+  });
+  const member = await issueWorkspaceSession(db, {
+    workspaceId: workspace.id,
+    userId: ids[2]!,
+    now,
+  });
   const read = (session = owner) =>
     fetch(`${origin}/api/workspaces/identity-links`, {
       headers: { cookie: `${WORKSPACE_COOKIE}=${session.token}` },
@@ -245,7 +259,7 @@ export async function probeWorkspaceIdentityLinks(
       { ...context, origin, now: Date.now() },
     );
     await bodyStarted;
-    changeWorkspaceRole(db, {
+    await changeWorkspaceRole(sqliteDb(db), {
       workspaceId: workspace.id,
       actorId: ids[0]!,
       userId: ids[1]!,
@@ -268,7 +282,7 @@ export async function probeWorkspaceIdentityLinks(
         ),
       { status: demoted?.status, denials: denial },
     );
-    changeWorkspaceRole(db, {
+    await changeWorkspaceRole(sqliteDb(db), {
       workspaceId: workspace.id,
       actorId: ids[0]!,
       userId: ids[1]!,
@@ -282,7 +296,7 @@ export async function probeWorkspaceIdentityLinks(
       configurable: true,
       get() {
         restore();
-        changeWorkspaceRole(concurrent, {
+        void changeWorkspaceRole(sqliteDb(concurrent), {
           workspaceId: workspace.id,
           actorId: ids[0]!,
           userId: ids[1]!,
@@ -323,7 +337,7 @@ export async function probeWorkspaceIdentityLinks(
         ),
       { status: transactionDenial?.status },
     );
-    changeWorkspaceRole(db, {
+    await changeWorkspaceRole(sqliteDb(db), {
       workspaceId: workspace.id,
       actorId: ids[0]!,
       userId: ids[1]!,

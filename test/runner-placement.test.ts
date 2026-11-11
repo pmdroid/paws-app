@@ -52,19 +52,19 @@ async function placeItem(bindTask = true) {
   migrate(db);
   const now = Date.now();
   let clock = now;
-  const owner = putWorkspaceUser(db, {
+  const owner = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const colleague = putWorkspaceUser(db, {
+  const colleague = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "colleague",
     name: "Colleague",
     email: "colleague@example.invalid",
   });
-  const pool = putWorkspaceUser(db, {
+  const pool = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "pool",
     name: "Pool",
@@ -80,7 +80,7 @@ async function placeItem(bindTask = true) {
     now,
   });
   for (const userId of [colleague, pool])
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace.id,
       userId,
       role: "member",
@@ -89,7 +89,7 @@ async function placeItem(bindTask = true) {
       now,
     });
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app-client",
     appUserId: "app",
@@ -97,7 +97,8 @@ async function placeItem(bindTask = true) {
     teamId: "team",
     observedAtMs: now,
   });
-  if (bindTask) bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  if (bindTask)
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [owner, item.id]);
   for (const [id, userId, sharing] of [
     ["own", owner, 0],
@@ -169,7 +170,7 @@ test("a solo item runs on its owner's runners and not another member's shared ru
 test("work goes only to runners whose reported repositories include the item's repository", async () => {
   const placed = await placeItem();
   try {
-    bindWorkItemRepository(placed.db, "item", {
+    await bindWorkItemRepository(sqliteDb(placed.db), "item", {
       owner: "Acme",
       repo: "Looky",
       remoteUrl: "https://github.com/Acme/Looky.git",
@@ -447,7 +448,7 @@ async function ownerPool(capacities: Record<string, number> = { a: 2, b: 2, c: 2
   return {
     ...placed,
     /** Leases one slot on the runner for the next hour. */
-    occupy(runnerId: string) {
+    async occupy(runnerId: string) {
       const run = insertRun(db, { itemId: "item", now: placed.now(), status: "active" });
       db.run(
         "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,last_sequence) VALUES(?,?,?,1,0,?,?,0)",
@@ -484,7 +485,7 @@ test("simultaneous tasks spread across runners instead of filling one runner fir
     for (let task = 0; task < 6; task++) {
       const [first] = await pool.ids();
       placedOn.push(first!);
-      pool.occupy(first!);
+      await pool.occupy(first!);
     }
     expect(placedOn.slice(0, 3).toSorted()).toEqual(["a", "b", "c"]);
     expect(placedOn.slice(3).toSorted()).toEqual(["a", "b", "c"]);
@@ -493,12 +494,12 @@ test("simultaneous tasks spread across runners instead of filling one runner fir
 test("current load is a share of each runner's slots", () =>
   withPool(
     async (pool) => {
-      pool.occupy("big");
-      pool.occupy("small");
+      await pool.occupy("big");
+      await pool.occupy("small");
       // big holds 1 of 4 slots and small 1 of 2.
       expect(await pool.ids()).toEqual(["big", "small"]);
-      pool.occupy("big");
-      pool.occupy("big");
+      await pool.occupy("big");
+      await pool.occupy("big");
       expect(await pool.ids()).toEqual(["small", "big"]);
     },
     { big: 4, small: 2 },
@@ -529,7 +530,7 @@ test("an idle runner with history still precedes a busy runner without history",
       pool.worked("old", at - 3 * 60 * 60_000, at - 60_000);
       // A newly paired runner used to win every placement on its empty virtual_finish counter.
       pool.db.run("UPDATE runner_agent_policy SET virtual_finish=100 WHERE runner_id='old'");
-      pool.occupy("new");
+      await pool.occupy("new");
       expect(await pool.ids()).toEqual(["old", "new"]);
     },
     { old: 2, new: 2 },
@@ -554,8 +555,8 @@ test("a runner low on quota follows equally loaded runners", () =>
     pool.worked("b", at - 30 * 60_000, at);
     pool.db.run("UPDATE runner_agent_policy SET quota_state='low' WHERE runner_id='a'");
     expect(await pool.ids()).toEqual(["c", "b", "a"]);
-    pool.occupy("c");
-    pool.occupy("b");
+    await pool.occupy("c");
+    await pool.occupy("b");
     expect(await pool.ids()).toEqual(["a", "c", "b"]);
   }));
 
@@ -568,7 +569,7 @@ test("a runner with quota left goes before one running on extra usage, which nam
       pool.worked("b", pool.now() - 30 * 60_000, pool.now());
       expect(await pool.ids()).toEqual(["b", "a"]);
       // b is busy and no other runner is free: a, still last, is the only one with a slot.
-      pool.occupy("b");
+      await pool.occupy("b");
       expect(await pool.ids()).toEqual(["b", "a"]);
       const profile = { agent: "codex" as const, model: "implementation-model" };
       await sqliteDb(pool.db).transaction((q) =>

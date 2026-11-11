@@ -12,17 +12,17 @@ import { workspaceDispatch } from "./fake-workspace";
 
 const NOW = 1_000;
 
-function fixture(capacity: number) {
+async function fixture(capacity: number) {
   const db = tempDb();
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 0]);
   for (const name of ["ada", "ben"])
-    putWorkspaceUser(db, {
+    await putWorkspaceUser(sqliteDb(db), {
       id: name,
       linearUserId: `${name}-linear`,
       name,
       email: `${name}@example.invalid`,
     });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws-1",
     userId: "ada",
     role: "admin",
@@ -43,7 +43,7 @@ function fixture(capacity: number) {
 }
 
 test("a second person's single task starts in the first round beside a large batch", async () => {
-  const { db, queue } = fixture(2);
+  const { db, queue } = await fixture(2);
   try {
     for (let index = 1; index <= 20; index += 1) queue(`ada-${index}`, "ada", index);
     queue("ben-1", "ben", 100);
@@ -58,7 +58,7 @@ test("a second person's single task starts in the first round beside a large bat
 });
 
 test("two owners' tasks take turns", async () => {
-  const { db, queue } = fixture(4);
+  const { db, queue } = await fixture(4);
   try {
     for (let index = 1; index <= 3; index += 1) queue(`ada-${index}`, "ada", index);
     for (let index = 1; index <= 3; index += 1) queue(`ben-${index}`, "ben", 10 + index);
@@ -69,7 +69,7 @@ test("two owners' tasks take turns", async () => {
 });
 
 test("with a cap of 3 one owner never runs more than 3 tasks while others wait", async () => {
-  const { db, queue } = fixture(10);
+  const { db, queue } = await fixture(10);
   try {
     for (let index = 1; index <= 10; index += 1) queue(`ada-${index}`, "ada", index);
     queue("ben-1", "ben", 100);
@@ -92,7 +92,7 @@ test("with a cap of 3 one owner never runs more than 3 tasks while others wait",
 });
 
 test("without a cap one owner gets every free runner slot", async () => {
-  const { db, queue } = fixture(4);
+  const { db, queue } = await fixture(4);
   try {
     for (let index = 1; index <= 6; index += 1) queue(`ada-${index}`, "ada", index);
     expect(await workspaceDispatch(db, { now: NOW })).toEqual(["ada-1", "ada-2", "ada-3", "ada-4"]);

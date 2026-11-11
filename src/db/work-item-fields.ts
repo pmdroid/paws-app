@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, isNull, lte, ne, notExists, notInArray, sql } from "drizzle-orm";
 import { delegationIssueIdSql, parentTaskKeySql } from "../core";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { hasTableSteps } from "./linear-session-url";
 
 export function* itemOwnerUserIdSteps(q: Q, itemId: string) {
@@ -155,10 +154,6 @@ export function* listItemIdsSteps(q: Q, includeArchived: boolean) {
   return rows.map((row) => row.id);
 }
 
-export function listItemIds(db: Database, includeArchived: boolean): string[] {
-  return settled(sqliteDb(db).run((q) => listItemIdsSteps(q, includeArchived)));
-}
-
 export function* itemParentTaskKeySteps(q: Q, itemId: string) {
   const { workItem } = q.t;
   const row = yield* q.one(
@@ -168,10 +163,6 @@ export function* itemParentTaskKeySteps(q: Q, itemId: string) {
       .where(eq(workItem.id, itemId)),
   );
   return row?.taskKey ?? null;
-}
-
-export function itemParentTaskKey(db: Database, itemId: string): string | null {
-  return settled(sqliteDb(db).run((q) => itemParentTaskKeySteps(q, itemId)));
 }
 
 export function* itemDelegationIssueIdSteps(q: Q, itemId: string) {
@@ -221,13 +212,6 @@ export function* latestRestartEventSteps(q: Q, itemId: string) {
       .limit(1),
   );
   return row ? { reason: row.reason!, version: row.version } : null;
-}
-
-export function latestRestartEvent(
-  db: Database,
-  itemId: string,
-): { reason: string; version: number } | null {
-  return settled(sqliteDb(db).run((q) => latestRestartEventSteps(q, itemId)));
 }
 
 /** The parent task key of the delegation's first item. */

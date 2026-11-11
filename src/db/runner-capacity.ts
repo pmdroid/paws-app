@@ -1,6 +1,5 @@
 import type { RunnerCapacityWaitState } from "./items";
 import { CONVERSATION_TOOLS_RUNNER_VERSION, runnerReleaseAtLeast } from "../runner-protocol";
-import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
@@ -18,7 +17,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import type { Q, Steps, Db } from "./db";
 import { JOB_KIND } from "../core";
 import { runnerCapacityWait } from "./items";
 import { emitJobReady } from "./jobs";
@@ -74,17 +73,15 @@ export function* runnerHasCapacitySteps(
   return row.occupied + additionalReservations < row.capacity;
 }
 
-export function runnerHasCapacity(
-  db: Database,
+export async function runnerHasCapacity(
+  store: Db,
   runnerId: string,
   now: number,
   excludeRunId = "",
   additionalReservations = 0,
-): boolean {
-  return settled(
-    sqliteDb(db).run((q) =>
-      runnerHasCapacitySteps(q, runnerId, now, excludeRunId, additionalReservations),
-    ),
+): Promise<boolean> {
+  return store.run((q) =>
+    runnerHasCapacitySteps(q, runnerId, now, excludeRunId, additionalReservations),
   );
 }
 
@@ -109,13 +106,13 @@ export function* runnerOccupancySteps(q: Q, runnerId: string, now: number, exclu
   return row!;
 }
 
-export function runnerOccupancy(
-  db: Database,
+export async function runnerOccupancy(
+  store: Db,
   runnerId: string,
   now: number,
   excludeRunId = "",
-): { capacity: number; occupied: number } {
-  return settled(sqliteDb(db).run((q) => runnerOccupancySteps(q, runnerId, now, excludeRunId)));
+): Promise<{ capacity: number; occupied: number }> {
+  return store.run((q) => runnerOccupancySteps(q, runnerId, now, excludeRunId));
 }
 
 export function* runnerSlotsHeldBetweenCommandsSteps(
@@ -174,15 +171,13 @@ function* runnerOccupancyCapacitySteps(q: Q, runnerId: string) {
   return row ? Math.min(row.capacity, row.desired ?? 16) : 0;
 }
 
-export function runnerSlotsHeldBetweenCommands(
-  db: Database,
+export async function runnerSlotsHeldBetweenCommands(
+  store: Db,
   runnerId: string,
   now: number,
   excludeRunId = "",
-): number {
-  return settled(
-    sqliteDb(db).run((q) => runnerSlotsHeldBetweenCommandsSteps(q, runnerId, now, excludeRunId)),
-  );
+): Promise<number> {
+  return store.run((q) => runnerSlotsHeldBetweenCommandsSteps(q, runnerId, now, excludeRunId));
 }
 
 export function* activeRunnerIdsSteps(q: Q, now: number) {
@@ -296,9 +291,8 @@ export function* wakeRunnerSlotWaitsSteps(q: Q, runnerId: string, now: number): 
   return true;
 }
 
-export function wakeRunnerSlotWaits(db: Database, runnerId: string, now: number): void {
-  if (settled(sqliteDb(db).run((q) => wakeRunnerSlotWaitsSteps(q, runnerId, now))))
-    emitJobReady(db);
+export async function wakeRunnerSlotWaits(store: Db, runnerId: string, now: number): Promise<void> {
+  if (await store.run((q) => wakeRunnerSlotWaitsSteps(q, runnerId, now))) emitJobReady(store);
 }
 
 export async function runnerSlotFree(
@@ -389,22 +383,20 @@ export function* recordRunnerCapacityWakingSteps(
   return { concurrency, woke };
 }
 
-export function recordRunnerCapacity(
-  db: Database,
+export async function recordRunnerCapacity(
+  store: Db,
   runnerId: string,
   capacity: number,
   ceiling?: number,
   conversations?: number,
   now = Date.now(),
-): number | undefined {
-  const before = settled(sqliteDb(db).run((q) => runnerOccupancyCapacitySteps(q, runnerId)));
-  const result = settled(
-    sqliteDb(db).run((q) =>
-      recordRunnerCapacitySteps(q, runnerId, capacity, ceiling, conversations),
-    ),
+): Promise<number | undefined> {
+  const before = await store.run((q) => runnerOccupancyCapacitySteps(q, runnerId));
+  const result = await store.run((q) =>
+    recordRunnerCapacitySteps(q, runnerId, capacity, ceiling, conversations),
   );
-  if (settled(sqliteDb(db).run((q) => runnerOccupancyCapacitySteps(q, runnerId))) > before)
-    wakeRunnerSlotWaits(db, runnerId, now);
+  if ((await store.run((q) => runnerOccupancyCapacitySteps(q, runnerId))) > before)
+    await wakeRunnerSlotWaits(store, runnerId, now);
   return result;
 }
 

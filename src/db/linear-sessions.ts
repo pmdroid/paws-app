@@ -78,8 +78,11 @@ export function* getLinearSessionSteps(q: Q, sessionId: string): Steps<StoredLin
   };
 }
 
-export function getLinearSession(db: Database, sessionId: string): StoredLinearSession | null {
-  return settled(sqliteDb(db).run((q) => getLinearSessionSteps(q, sessionId)));
+export async function getLinearSession(
+  store: Db,
+  sessionId: string,
+): Promise<StoredLinearSession | null> {
+  return store.run((q) => getLinearSessionSteps(q, sessionId));
 }
 
 /** The Linear team and OAuth client a session was observed under, or null without a session. */
@@ -144,8 +147,11 @@ export function* ensureLinearSessionSteps(
   return (yield* getLinearSessionSteps(q, input.sessionId))!;
 }
 
-export function ensureLinearSession(db: Database, input: LinearSessionInput): StoredLinearSession {
-  return settled(sqliteDb(db).transaction((q) => ensureLinearSessionSteps(q, input)));
+export async function ensureLinearSession(
+  store: Db,
+  input: LinearSessionInput,
+): Promise<StoredLinearSession> {
+  return store.transaction((q) => ensureLinearSessionSteps(q, input));
 }
 
 export function* bindLinearSessionTaskSteps(
@@ -216,17 +222,13 @@ export function* bindLinearSessionTaskSteps(
     );
 }
 
-export function bindLinearSessionTask(
-  db: Database,
+export async function bindLinearSessionTask(
+  store: Db,
   sessionId: string,
   delegationId: string,
   options: { actorId?: string | null } = {},
-): void {
-  settled(
-    sqliteDb(db).transaction((q) =>
-      bindLinearSessionTaskSteps(q, sessionId, delegationId, options),
-    ),
-  );
+): Promise<void> {
+  await store.transaction((q) => bindLinearSessionTaskSteps(q, sessionId, delegationId, options));
 }
 
 export function* activateLinearItemSteps(q: Q, sessionId: string, itemId: string): Steps<void> {
@@ -271,8 +273,12 @@ export function* activateLinearItemSteps(q: Q, sessionId: string, itemId: string
   );
 }
 
-export function activateLinearItem(db: Database, sessionId: string, itemId: string): void {
-  settled(sqliteDb(db).transaction((q) => activateLinearItemSteps(q, sessionId, itemId)));
+export async function activateLinearItem(
+  store: Db,
+  sessionId: string,
+  itemId: string,
+): Promise<void> {
+  await store.transaction((q) => activateLinearItemSteps(q, sessionId, itemId));
 }
 
 type SessionWorkItem = { id: string; delegationId: string; state: string };

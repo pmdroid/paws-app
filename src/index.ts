@@ -152,7 +152,8 @@ import {
   getWorkspaceSteps,
   listSkillsSteps,
   openDelegationWorkspaceIdSteps,
-  submitCommandAsync,
+  submitCommandSteps,
+  settled,
   workItemForSessionSteps,
   workspaceForOrganizationSteps,
   workspaceLinearMemberSteps,
@@ -491,7 +492,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       pid: process.pid,
     }),
   );
-  bindInstance(db, instance.id);
+  bindInstance(store, instance.id);
   const savedSettings = await useSettingsStore(paths.configFile, {
     read: () => store.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
     update: (change) =>
@@ -521,7 +522,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         installed() {},
       })
     : null;
-  const appActivation = createWorkspaceGitHubActivation(db, runtime.env.home, envSource);
+  const appActivation = createWorkspaceGitHubActivation(store, runtime.env.home, envSource);
   const resolveApp = (repository: string) => appActivation.resolve(repository);
   repositoryAccess ??= runnerRepositoryAccess(runtime, resolveApp);
   const commentFilter = pullCommentFilter(runtime, paths.configFile, resolveApp);
@@ -543,7 +544,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   const listCatalog = async () => {
     const client = createFetchGitHubClient();
     const lists = await Promise.all(
-      appActivation.installations().map((app) =>
+      (await appActivation.installations()).map((app) =>
         listAppRepositories({
           client,
           appId: app.appId,
@@ -559,7 +560,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     queue: string;
     everyMs: number;
     atStartup?: boolean;
-    startup?: () => void;
+    startup?: () => Promise<void>;
     run: (signal: AbortSignal) => Promise<unknown>;
   }[] = [];
   if (options?.refreshRepositories)
@@ -597,7 +598,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     run: async () => skillUpdates.check(await store.run(listSkillsSteps)),
   });
   const webhooks = runtime.webhooks;
-  const inbox = createInboxStore(db);
+  const inbox = createInboxStore(store);
 
   const followUp = async (event: AcceptedLinearEvent): Promise<void | boolean> => {
     if (orchestrator === null) throw new Error("loop is not attached");
@@ -629,7 +630,18 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       enqueueCommand(db, command);
       return;
     }
-    submitCommand(db, orchestrator.bus, command);
+    const bus = orchestrator.bus;
+    settled(
+      store.run((q) =>
+        submitCommandSteps(
+          q,
+          command,
+          (c) => bus.emit(c),
+          () => emitJobReady(store),
+          commandInstance(store),
+        ),
+      ),
+    );
   };
   const submitAsync = async (command: LinearCommand): Promise<void> => {
     if (orchestrator === null) {
@@ -637,13 +649,15 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       if (inserted) emitJobReady(store);
       return;
     }
-    await submitCommandAsync(store, orchestrator.bus, command, commandInstance(db));
+    await submitCommand(store, orchestrator.bus, command);
   };
 
   let linearTaskAccess: LinearTaskAccess | null = null;
-  const invalidateAuthorization = (scope: { sessionId?: string; issueId?: string } = {}): void => {
+  const invalidateAuthorization = async (
+    scope: { sessionId?: string; issueId?: string } = {},
+  ): Promise<void> => {
     linearTaskAccess?.invalidate(scope);
-    orchestrator?.invalidateGitHubAuthorization(scope);
+    await orchestrator?.invalidateGitHubAuthorization(scope);
   };
   let workspace: ReturnType<typeof startWorkspaceAccess> | undefined;
   let assignments: ReturnType<typeof createWorkspaceAssignments> | undefined;
@@ -676,11 +690,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             applyLinearUserChangeSteps(q, { ...userChange, now: Date.now() }),
           )
         )
-          invalidateAuthorization();
+          await invalidateAuthorization();
         return false;
       }
       const issueEvent = acceptedIssueChange(event);
-      if (issueEvent) invalidateAuthorization({ issueId: issueEvent.issueId });
+      if (issueEvent) await invalidateAuthorization({ issueId: issueEvent.issueId });
       const projectChange = parseLinearIssueProjectChange(event);
       if (projectChange)
         await store.run((q) =>
@@ -727,13 +741,16 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           },
           revalidate: async (sessionIds) => {
             if (linearTaskAccess === null) throw new Error("Linear is not connected.");
-            for (const sessionId of sessionIds) invalidateAuthorization({ sessionId });
+            for (const sessionId of sessionIds) await invalidateAuthorization({ sessionId });
             await linearTaskAccess.revalidateSessions(sessionIds);
           },
           reconcile: (notification) =>
             linearCaller("notifications", async () => {
               if (notification.action === "issueAssignedToYou") {
-                inbox.setCursor(`delegated:${notification.issueId}`, notification.createdAtMs);
+                await inbox.setCursor(
+                  `delegated:${notification.issueId}`,
+                  notification.createdAtMs,
+                );
                 await enqueueJobOnceAsync(store, {
                   queue: "linear.redelegation",
                   jobKey: `linear.redelegation:${notification.issueId}:${notification.createdAtMs}`,
@@ -751,7 +768,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                   issueId: notification.issueId,
                   organizationId: notification.organizationId,
                 });
-              invalidateAuthorization({ issueId: notification.issueId });
+              await invalidateAuthorization({ issueId: notification.issueId });
               await linearTaskAccess.reconcile(notification.issueId);
               await orchestrator?.reconcileExecution();
               await refreshLinearNotificationContext(store, linear?.tracker ?? null, notification);
@@ -764,7 +781,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       ) {
         const administration = parseLinearAdministration(event);
         if (administration?.kind === "revoked" || administration?.kind === "teams")
-          invalidateAuthorization();
+          await invalidateAuthorization();
         if (
           workspace !== undefined &&
           administration?.kind === "teams" &&
@@ -838,7 +855,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       workspace = startWorkspaceAccess({
         onMemberRevoked: async () => {
           const coordinator = await runnerReady;
-          coordinator?.control.expireConnections();
+          await coordinator?.control.expireConnections();
         },
         interruptItem: async (itemId) => {
           await orchestrator?.interruptItem(itemId);
@@ -1070,7 +1087,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             ? { startSession: linear.startSession }
             : {}),
           resumeSession: async (sessionId) => {
-            const event = linear.webhook.store.get(sessionCreatedKey(sessionId));
+            const event = await linear.webhook.store.get(sessionCreatedKey(sessionId));
             if (!event || !linear.webhook.onEvent)
               throw new Error("Wait for Linear to refresh this sub-issue session.");
             if ((await linear.webhook.onEvent(event)) === false)
@@ -1121,7 +1138,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     journalCaught(caughtError4, "index.startPaws", null);
   });
   const findingGrouping = linear?.findingIssues
-    ? createFindingGrouping({
+    ? await createFindingGrouping({
         db,
         store,
         issues: linear.findingIssues,
@@ -1508,12 +1525,12 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         exeDev: options?.memberVm?.exeDev ?? memberVmExeDev,
         stopTask: async (itemId) => {
           if (orchestrator === null) throw new Error("Paws is still starting. Retry the delete.");
-          await submitCommandAsync(
-            store,
-            orchestrator.bus,
-            { type: "stop", source: "dashboard", itemId, requestedAt: Date.now() },
-            commandInstance(db),
-          );
+          await submitCommand(store, orchestrator.bus, {
+            type: "stop",
+            source: "dashboard",
+            itemId,
+            requestedAt: Date.now(),
+          });
           await Promise.race([
             orchestrator.interruptItem(itemId).catch((caughtError7) => {
               journalCaught(caughtError7, "index.stopTask.interruptItem", itemId);
@@ -1921,7 +1938,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         const relations = createRelationsPolls({
           db,
           reconciler,
-          lowBudget: () => linearBudgetIsLow(linear?.usage().budget ?? null, Date.now()),
+          lowBudget: async () =>
+            linearBudgetIsLow((await linear?.usage())?.budget ?? null, Date.now()),
           reconcileExecution: () => attached.reconcileExecution(),
           read: (run) => linearCaller("relations-poll", run),
         });
@@ -2091,7 +2109,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           now: Date.now(),
         });
         if (work.atStartup && alone && roleRunsJobs(runtime.role)) {
-          work.startup?.();
+          await work.startup?.();
           await store.run((q) => runPendingJobNowSteps(q, id, Date.now()));
         }
       }
@@ -2179,7 +2197,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         ],
         flush: () =>
           prepareShutdown(
-            db,
+            store,
             Date.now(),
             (item) => {
               const policy = getItemRunCommitPolicy(db, item.id);
@@ -2242,13 +2260,13 @@ export function unavailableRemoteExecution(): NonNullable<OrchestratorOptions["r
 function pullCommentFilter(
   runtime: RuntimeConfig,
   configFile: string,
-  resolveApp: (repository: string) => ActiveGitHubApp,
+  resolveApp: (repository: string) => Promise<ActiveGitHubApp>,
 ): PullCommentFilter {
   const logins = new Map<string, string | null>();
   return {
-    appId(repository) {
+    async appId(repository) {
       try {
-        return resolveApp(repository).appId;
+        return (await resolveApp(repository)).appId;
       } catch {
         return runtime.env.githubAppId;
       }
@@ -2339,12 +2357,12 @@ function githubBinding(auth: AuthTokenProvider | null): GitHubBinding | null {
 
 export function runnerRepositoryAccess(
   runtime: RuntimeConfig,
-  resolveApp?: (repository: string) => ActiveGitHubApp,
+  resolveApp?: (repository: string) => Promise<ActiveGitHubApp>,
 ): RunnerRepositoryAccessOptions | undefined {
   return cacheRepositoryCredentials({
     github: {
       async mintInstallationToken(input) {
-        const before = resolveApp?.(input.repository);
+        const before = await resolveApp?.(input.repository);
         if (!before || before.installationId !== input.installationId)
           throw new Error("GitHub integration unavailable.");
         const token = await createGitHubApp({
@@ -2352,14 +2370,14 @@ export function runnerRepositoryAccess(
           appId: before.appId,
           privateKeyPem: before.privateKeyPem,
         }).mintInstallationToken(input);
-        if (JSON.stringify(resolveApp?.(input.repository)) !== JSON.stringify(before))
+        if (JSON.stringify(await resolveApp?.(input.repository)) !== JSON.stringify(before))
           throw new Error("GitHub integration replaced.");
         return token;
       },
     },
-    installationForRepository: (repository) => {
+    installationForRepository: async (repository) => {
       try {
-        return resolveApp?.(repository).installationId ?? null;
+        return (await resolveApp?.(repository))?.installationId ?? null;
       } catch (caughtError13) {
         journalCaught(caughtError13, "index.installationForRepository.resolveApp", null);
         return null;
@@ -2384,12 +2402,12 @@ export function authProvider(
   runtime: RuntimeConfig,
   repository: RepositoryBinding,
   access: "read" | "write" = "write",
-  resolveApp?: (repository: string) => ActiveGitHubApp,
+  resolveApp?: (repository: string) => Promise<ActiveGitHubApp>,
 ): AuthTokenProvider | null {
   if (resolveApp) {
     const name = `${repository.owner}/${repository.repo}`;
-    const provider = () => {
-      const active = resolveApp(name);
+    const provider = async () => {
+      const active = await resolveApp(name);
       return {
         active,
         provider: createGitHubTokenProvider({
@@ -2403,9 +2421,9 @@ export function authProvider(
       };
     };
     const perform = async <T>(operation: (current: AuthTokenProvider) => Promise<T>) => {
-      const before = provider();
+      const before = await provider();
       const result = await operation(before.provider);
-      if (JSON.stringify(resolveApp(name)) !== JSON.stringify(before.active))
+      if (JSON.stringify(await resolveApp(name)) !== JSON.stringify(before.active))
         throw new Error("GitHub integration replaced.");
       return result;
     };
@@ -2448,7 +2466,7 @@ export function authProvider(
 export function createGitHubIntegration(input: {
   runtime: RuntimeConfig;
   env: EnvSource;
-  resolveApp?: (repository: string) => ActiveGitHubApp;
+  resolveApp?: (repository: string) => Promise<ActiveGitHubApp>;
   repositoryForItem: (item: WorkItemRecord) => Promise<RepositoryBinding | null>;
   /** False, or a `GitHubDenial` with the reason the session ends with, cancels the item. */
   authorizeItem?: (
@@ -2631,7 +2649,7 @@ async function probesMain(argv: string[]): Promise<number> {
     const db = existsSync(paths.db) ? openDatabase(paths.db) : null;
     if (db) process.once("exit", () => db.close());
     const appActivation = db
-      ? createWorkspaceGitHubActivation(db, runtime.env.home, process.env)
+      ? createWorkspaceGitHubActivation(sqliteDb(db), runtime.env.home, process.env)
       : null;
     const provider = authProvider(
       runtime,

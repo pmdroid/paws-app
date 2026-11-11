@@ -149,7 +149,7 @@ test("Resume restarts an item a Linear stop paused, and Stop cancels it", async 
     const { db, orchestrator, call } = fixture;
     const stop = async () => {
       await acceptLinearStop(sqliteDb(db), "session-controlled", `stop:${Date.now()}`, Date.now());
-      submitCommand(db, orchestrator.bus, {
+      await submitCommand(sqliteDb(db), orchestrator.bus, {
         type: "stop",
         source: "linear",
         itemId: "controlled",
@@ -162,7 +162,7 @@ test("Resume restarts an item a Linear stop paused, and Stop cancels it", async 
     assert.deepEqual(view.actions, ["stop", "resume"]);
     assert.equal((await call("resume")).status, 200);
     assert.equal(getWorkItem(db, "controlled")?.state, "queued");
-    assert.equal(getLinearSession(db, "session-controlled")?.stoppedAt, null);
+    assert.equal((await getLinearSession(sqliteDb(db), "session-controlled"))?.stoppedAt, null);
 
     await stop();
     assert.equal((await call("stop")).status, 200);

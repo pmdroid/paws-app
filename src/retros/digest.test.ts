@@ -162,18 +162,20 @@ function message(
   );
 }
 
-function settings(db: Database, repositories: string[], workspaceId = "ws") {
-  return saveRetroSettingsRevision(db, {
-    workspaceId,
-    prompt: "Review {{digest}}",
-    agentProfile: { agent: "codex" },
-    repositories,
-    outputLimits: { maxItems: 5, workedWell: 3 },
-    executionLimits: { timeoutMinutes: 15, retries: 1 },
-    schedule: {},
-    createdBy: "user-1",
-    now: 1,
-  }).revision;
+async function settings(db: Database, repositories: string[], workspaceId = "ws") {
+  return (
+    await saveRetroSettingsRevision(sqliteDb(db), {
+      workspaceId,
+      prompt: "Review {{digest}}",
+      agentProfile: { agent: "codex" },
+      repositories,
+      outputLimits: { maxItems: 5, workedWell: 3 },
+      executionLimits: { timeoutMinutes: 15, retries: 1 },
+      schedule: {},
+      createdBy: "user-1",
+      now: 1,
+    })
+  ).revision;
 }
 
 async function collect(
@@ -181,13 +183,13 @@ async function collect(
   root: string,
   input: { id: string; start: number; end: number; repositories?: string[]; secrets?: string[] },
 ) {
-  createRetro(db, {
+  await createRetro(sqliteDb(db), {
     id: input.id,
     workspaceId: "ws",
     windowStart: input.start,
     windowEnd: input.end,
     origin: "manual",
-    settingsRevision: settings(db, input.repositories ?? [REPO]),
+    settingsRevision: await settings(db, input.repositories ?? [REPO]),
     now: input.end,
   });
   const result = await collectRetroDigest(db, {
@@ -200,9 +202,14 @@ async function collect(
   return result.digest;
 }
 
-function publish(db: Database, retroId: string, now: number) {
-  const started = startRetroAttempt(db, { retroId, owner: "w", now, leaseMs: 60_000 })!;
-  const published = publishRetro(db, {
+async function publish(db: Database, retroId: string, now: number) {
+  const started = (await startRetroAttempt(sqliteDb(db), {
+    retroId,
+    owner: "w",
+    now,
+    leaseMs: 60_000,
+  }))!;
+  const published = await publishRetro(sqliteDb(db), {
     retroId,
     attempt: started.attempt,
     owner: "w",
@@ -225,7 +232,7 @@ describe("incremental retro windows", () => {
     expect(first_digest.windows).toEqual([{ repository: REPO, start: at(0), end: at(3) }]);
     expect(first_digest.counts.answeredQuestions.evidenceIds).toEqual([`question:${first}`]);
     expect(first_digest.counts.sessions.newWorkItems).toBe(1);
-    publish(db, "r1", at(3, 1));
+    await publish(db, "r1", at(3, 1));
 
     const second = question(db, old, { createdAt: at(4), answeredAt: at(5) });
     const fresh = item(db, "PAS-101", { createdAt: at(4) });
@@ -249,7 +256,7 @@ describe("incremental retro windows", () => {
     const { db, root } = world();
     const id = item(db, "PAS-1", { createdAt: at(0) });
     await collect(db, root, { id: "r1", start: at(0), end: at(2) });
-    publish(db, "r1", at(2));
+    await publish(db, "r1", at(2));
     const atStart = question(db, id, { createdAt: at(2), answeredAt: at(2) });
     const beforeCut = question(db, id, { createdAt: at(2), answeredAt: at(4) - 1 });
     const atCut = question(db, id, { createdAt: at(3), answeredAt: at(4) });
@@ -266,19 +273,19 @@ describe("incremental retro windows", () => {
     for (let day = 0; day < 6; day += 1)
       transition(db, id, { at: at(day, 1), from: "queued", to: "running" });
     await collect(db, root, { id: "r1", start: at(0), end: at(3) });
-    createRetro(db, {
+    await createRetro(sqliteDb(db), {
       id: "r-overlap",
       workspaceId: "ws",
       windowStart: at(1),
       windowEnd: at(4),
       origin: "manual",
-      settingsRevision: settings(db, [REPO]),
+      settingsRevision: await settings(db, [REPO]),
       now: at(4),
     });
     expect(
       await collectRetroDigest(db, { retroId: "r-overlap", artifactRoot: root, now: at(4) }),
     ).toEqual({ ok: false, reason: "busy", busy: [{ repository: REPO, retroId: "r1" }] });
-    publish(db, "r1", at(3));
+    await publish(db, "r1", at(3));
     const first = (await listRetroEvidence(sqliteDb(db), "r1")).map((entry) => entry.evidenceId);
     const digest = await collect(db, root, { id: "r2", start: at(3), end: at(7) });
     const both = new Set([
@@ -327,9 +334,9 @@ describe("incremental retro windows", () => {
     const { db, root } = world();
     item(db, "PAS-1", { createdAt: at(0) });
     await collect(db, root, { id: "r1", start: at(0), end: at(2), repositories: [REPO, OTHER] });
-    publish(db, "r1", at(2));
+    await publish(db, "r1", at(2));
     await collect(db, root, { id: "r2", start: at(2), end: at(4), repositories: [REPO] });
-    publish(db, "r2", at(4));
+    await publish(db, "r2", at(4));
     const digest = await collect(db, root, {
       id: "r3",
       start: at(4),
@@ -341,7 +348,7 @@ describe("incremental retro windows", () => {
       { repository: OTHER, start: at(2), end: at(6) },
     ]);
     db.run("INSERT INTO workspace_repository VALUES ('ws', 'pmdroid/new', 'team')");
-    publish(db, "r3", at(6));
+    await publish(db, "r3", at(6));
     const added = await collect(db, root, {
       id: "r4",
       start: at(6),
@@ -639,7 +646,7 @@ describe("October retro fixture", () => {
     );
     expect(push.evidenceIds.every((id) => id.startsWith("question:"))).toBe(true);
     expect(digest.counts.sessions.workItems).toBe(7);
-    const snapshot = readRetroActivity(db, {
+    const snapshot = await readRetroActivity(sqliteDb(db), {
       workspaceId: "ws",
       repositories: [REPO],
       before: at(28),

@@ -13,6 +13,7 @@ import {
   migrate,
   openDatabase,
   saveTaskMode,
+  sqliteDb,
 } from "../src/db";
 import { classifyTask, parseTaskClassification } from "../src/loop";
 import { createLiveStatusProvider } from "../src/dashboard";
@@ -112,9 +113,9 @@ test("answer mode and full prepared response survive reopen as a terminal comple
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
   beginImplementRun(db, item.id, 1);
-  saveTaskMode(db, item.id, "answer");
+  await saveTaskMode(sqliteDb(db), item.id, "answer");
   const response = "Full public answer. ".repeat(1_000);
-  completeAnswerTask(db, item.id, response);
+  await completeAnswerTask(sqliteDb(db), item.id, response);
   db.close();
   const restored = openDatabase(file);
   try {
@@ -135,30 +136,41 @@ test("answer mode and full prepared response survive reopen as a terminal comple
   }
 });
 
-test.each(["code", "artifact"] as const)("%s cannot complete at the answer boundary", (mode) => {
-  const db = tempDb();
-  try {
-    const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    applyWorkItemEvent(db, item.id, "dispatched");
-    saveTaskMode(db, item.id, mode);
-    expect(() => completeAnswerTask(db, item.id, "Done")).toThrow("Only answer tasks");
-    expect(getWorkItem(db, item.id)?.state).toBe("running");
-    expect(listOutbox(db)).toEqual([]);
-    expect(() => saveTaskMode(db, item.id, "answer")).toThrow("already selected");
-  } finally {
-    db.close();
-  }
-});
+test.each(["code", "artifact"] as const)(
+  "%s cannot complete at the answer boundary",
+  async (mode) => {
+    const db = tempDb();
+    try {
+      const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
+      applyWorkItemEvent(db, item.id, "dispatched");
+      await saveTaskMode(sqliteDb(db), item.id, mode);
+      await expect(completeAnswerTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
+        "Only answer tasks",
+      );
+      expect(getWorkItem(db, item.id)?.state).toBe("running");
+      expect(listOutbox(db)).toEqual([]);
+      await expect(saveTaskMode(sqliteDb(db), item.id, "answer")).rejects.toThrow(
+        "already selected",
+      );
+    } finally {
+      db.close();
+    }
+  },
+);
 
-test("Stop and empty responses cannot complete an answer task", () => {
+test("Stop and empty responses cannot complete an answer task", async () => {
   const db = tempDb();
   try {
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
     applyWorkItemEvent(db, item.id, "dispatched");
-    saveTaskMode(db, item.id, "answer");
-    expect(() => completeAnswerTask(db, item.id, " ")).toThrow("prepared response");
+    await saveTaskMode(sqliteDb(db), item.id, "answer");
+    await expect(completeAnswerTask(sqliteDb(db), item.id, " ")).rejects.toThrow(
+      "prepared response",
+    );
     applyWorkItemEvent(db, item.id, "cancel");
-    expect(() => completeAnswerTask(db, item.id, "Done")).toThrow("no longer running");
+    await expect(completeAnswerTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
+      "no longer running",
+    );
     expect(listOutbox(db)).toEqual([]);
   } finally {
     db.close();

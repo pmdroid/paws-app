@@ -37,7 +37,7 @@ export async function probeRunnerTranscripts(
   const db = openDatabase(path);
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -89,7 +89,7 @@ export async function probeRunnerTranscripts(
     sessionKey: "transcript-session",
   });
   const { run } = beginImplementRun(db, item.id, now);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "transcript-org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -97,14 +97,16 @@ export async function probeRunnerTranscripts(
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "transcript-session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "transcript-session", item.delegationId, {
+    actorId: "owner",
+  });
   const repository = {
     owner: "fixture",
     repo: "repository",
     remoteUrl: "https://github.com/fixture/repository.git",
     baseSha: "a".repeat(40),
   };
-  bindWorkItemRepository(db, item.id, repository);
+  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
     workspace.id,
     "fixture/repository",

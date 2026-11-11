@@ -216,13 +216,15 @@ test("a follow-up session turn routes by the item's task key without the epic ro
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     const parentId = intake.items[0]!.id;
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
       issueId: "parent",
       creatorId: "human",
       now: clock.now(),
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "human",
+    });
     await saveTaskClassification(sqliteDb(db), "session:session", {
       mode: "code",
       redirect: { taskKey: "resolved:session:session", itemId: parentId },

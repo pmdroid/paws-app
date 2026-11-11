@@ -40,7 +40,7 @@ import type { PullReviewCapabilities } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
 
 const FILTER: PullCommentFilter = {
-  appId: () => "42",
+  appId: async () => "42",
   appLogin: () => "paws-test[bot]",
   ignoredBots: () => DEFAULT_IGNORED_COMMENT_BOTS.map((login) => login.toLowerCase()),
   ignoredMarkers: () => [],
@@ -53,7 +53,7 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  bindWorkItemRepository(db, "eng-1", {
+  await bindWorkItemRepository(sqliteDb(db), "eng-1", {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
@@ -79,7 +79,7 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
     pullHead: async () => null,
     pullConflict: async () => conflict,
     leaveMergeQueue: async () => "not_queued",
-    fixRoundLimit: () => limit,
+    fixRoundLimit: () => syncSteps(() => limit),
     closeoutFindings: async () => [],
     session: (item) => item.sessionKey,
     flush: async () => {},

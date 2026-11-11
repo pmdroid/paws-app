@@ -42,13 +42,14 @@ export async function probeCurrentRunStartup(root: string) {
       });
       const previous = beginImplementRun(db, item.id, clock.now());
       markRun(db, previous.run.id, "ended", clock.now());
-    } else saveTaskMode(db, item.id, mode, 0, mode === "artifact");
+    } else await saveTaskMode(sqliteDb(db), item.id, mode, 0, mode === "artifact");
     const repository = {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "/unused-fixture-repository",
     };
-    if (mode !== "clarified-artifact") bindWorkItemRepository(db, item.id, repository);
+    if (mode !== "clarified-artifact")
+      await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     let probes = 0;
     let launches = 0;
     const host = {

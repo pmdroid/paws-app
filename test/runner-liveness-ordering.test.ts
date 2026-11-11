@@ -26,7 +26,7 @@ async function fixture() {
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   const clock = { now: Date.now() };
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "me",
     linearUserId: "owner",
     name: "Owner",
@@ -51,7 +51,7 @@ async function fixture() {
   ]);
   const item = insertQueuedItem(db, { id: "item", now: clock.now, sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, clock.now);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -59,14 +59,14 @@ async function fixture() {
     teamId: "team",
     observedAtMs: clock.now,
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   const repository = {
     owner: "fixture",
     repo: "repository",
     remoteUrl: "https://github.com/fixture/repository.git",
     baseSha: "a".repeat(40),
   };
-  bindWorkItemRepository(db, item.id, repository);
+  await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
     db,

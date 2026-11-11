@@ -37,7 +37,7 @@ export async function probeRunnerHealth(
   const db = openDatabase(path);
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "health-owner",
     name: "Owner",
@@ -59,13 +59,13 @@ export async function probeRunnerHealth(
     authenticatedAt: now,
     teamIds: [],
   };
-  const memberId = putWorkspaceUser(db, {
+  const memberId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "health-member",
     name: "Member",
     email: "member@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",

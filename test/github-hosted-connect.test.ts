@@ -36,7 +36,7 @@ async function fixture() {
   let db = openDatabase(path);
   migrate(db);
   let now = Date.now();
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "owner",
     linearUserId: "owner",
     name: "owner",
@@ -51,13 +51,13 @@ async function fixture() {
     now,
   });
   for (const role of ["admin", "member"] as const) {
-    putWorkspaceUser(db, {
+    await putWorkspaceUser(sqliteDb(db), {
       id: role,
       linearUserId: role,
       name: role,
       email: `${role}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "ws",
       userId: role,
       role,
@@ -79,12 +79,9 @@ async function fixture() {
     PAWS_GITHUB_CLIENT_SECRET: "scripted-client-secret",
     GITHUB_APP_PRIVATE_KEY_PATH: join(home, "key.pem"),
   };
-  const sessions = Object.fromEntries(
-    ["owner", "admin", "member"].map((role) => [
-      role,
-      issueWorkspaceSession(db, { workspaceId: "ws", userId: role, now }),
-    ]),
-  );
+  const sessions: Record<string, Awaited<ReturnType<typeof issueWorkspaceSession>>> = {};
+  for (const role of ["owner", "admin", "member"])
+    sessions[role] = await issueWorkspaceSession(db, { workspaceId: "ws", userId: role, now });
   const calls: { path: string; body: string }[] = [];
   let hold: Promise<void> | undefined;
   let beforeInstallation: (() => Promise<void>) | undefined;
@@ -267,13 +264,16 @@ test("hosted App OAuth survives restart, verifies real scripted HTTP, encrypts a
     f.restart();
     const callback = await f.handler()(f.request("admin", flow.callback.href));
     expect(callback?.status).toBe(303);
-    const active = createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve("acme/widgets");
+    const active = await createWorkspaceGitHubActivation(sqliteDb(f.db), f.home, f.env).resolve(
+      "acme/widgets",
+    );
     expect(active.installationId).toBe("22");
     expect(active.generation).toBe(1);
     f.db.run("UPDATE workspace_repository SET repository='Acme/Widgets'");
     f.db.run("UPDATE workspace_github_connection SET repositories='[\"Acme/Widgets\"]'");
     expect(
-      createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve("acme/widgets").generation,
+      (await createWorkspaceGitHubActivation(sqliteDb(f.db), f.home, f.env).resolve("acme/widgets"))
+        .generation,
     ).toBe(1);
     expect((await f.handler()(f.request("admin", flow.callback.href)))?.status).toBe(403);
     const row = f.db
@@ -653,7 +653,8 @@ test("GitHub sign-in precedes repository approval and activates selected matches
       f.db.query("SELECT repository,team_id AS teamId FROM workspace_repository").all(),
     ).toEqual([{ repository: "acme/widgets", teamId: "team" }]);
     expect(
-      createWorkspaceGitHubActivation(f.db, f.home, f.env).resolve("acme/widgets").installationId,
+      (await createWorkspaceGitHubActivation(sqliteDb(f.db), f.home, f.env).resolve("acme/widgets"))
+        .installationId,
     ).toBe("22");
     expect(
       (await f.setup()(f.request("owner", "https://paws.example/api/workspaces/github-setup")))

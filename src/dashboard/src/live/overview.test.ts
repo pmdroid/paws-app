@@ -100,7 +100,7 @@ async function fixture(): Promise<Database> {
     answerers: ["delegator"],
     createdAt: NOW - 5_000,
   });
-  saveCandidateRisk(db, {
+  await saveCandidateRisk(sqliteDb(db), {
     itemId: "ENG-4",
     head: HEAD,
     base: "base",

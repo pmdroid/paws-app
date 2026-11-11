@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { recordLinearInstallation, saveTaskMode } from "../src/db";
+import { recordLinearInstallation, saveTaskMode, sqliteDb } from "../src/db";
 import { createAdmission } from "../src/scheduler";
 import { confirmFakeMerge, joinFakeWorkspace, workspaceAdmission } from "./fake-workspace";
 import { tempDb } from "./helpers";
@@ -45,7 +45,7 @@ test("an Item starts once its blocker in the delegation merged", async () => {
     assert.deepEqual(await admission.canStart("blocked"), { ok: false, held: "blocked" });
     setState(db, "blocker", "merged");
     assert.deepEqual(await admission.canStart("blocked"), { ok: false, held: "blocked" });
-    confirmFakeMerge(db, "blocker");
+    await confirmFakeMerge(db, "blocker");
     assert.deepEqual(await admission.canStart("blocked"), { ok: true });
   } finally {
     db.close();
@@ -60,7 +60,7 @@ test("a completed blocker satisfies the Block only for answer and artifact work"
     block(db, "blocker", "blocked");
     const admission = workspaceAdmission(db);
     assert.deepEqual(await admission.canStart("blocked"), { ok: false, held: "blocked" });
-    saveTaskMode(db, "blocker", "answer");
+    await saveTaskMode(sqliteDb(db), "blocker", "answer");
     assert.deepEqual(await admission.canStart("blocked"), { ok: true });
   } finally {
     db.close();
@@ -76,7 +76,7 @@ test("a merge waits for an unmerged blocker and passes once it merged", async ()
     const admission = workspaceAdmission(db);
     assert.deepEqual(await admission.canMerge("blocked"), { ok: false, held: "blocked" });
     setState(db, "blocker", "merged");
-    confirmFakeMerge(db, "blocker");
+    await confirmFakeMerge(db, "blocker");
     assert.deepEqual(await admission.canMerge("blocked"), { ok: true });
   } finally {
     db.close();
@@ -115,7 +115,7 @@ test("admission holds a delegation until its snapshots exist and changes are app
   const db = tempDb();
   try {
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',0)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",

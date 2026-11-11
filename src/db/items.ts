@@ -1188,7 +1188,7 @@ export function failWorkItem(
 type CompleteMergedInput = {
   itemId: string;
   now: number;
-  announce?: (item: WorkItemRecord) => void;
+  announce?: (q: Q, item: WorkItemRecord) => Steps<void>;
 };
 
 export function* completeMergedItemSteps(
@@ -1239,7 +1239,7 @@ export function* completeMergedItemSteps(
       },
       now: input.now,
     });
-  input.announce?.(current);
+  if (input.announce) yield* input.announce(q, current);
   const merged = yield* applyWorkItemEventSteps(q, current.id, "merge_accepted", {
     now: input.now,
   });
@@ -1251,11 +1251,7 @@ export function* completeMergedItemSteps(
 
 export async function completeMergedItem(
   store: Db,
-  input: {
-    itemId: string;
-    now: number;
-    announce?: (item: WorkItemRecord) => void;
-  },
+  input: CompleteMergedInput,
 ): Promise<WorkItemRecord | null> {
   return store.transaction((q) => completeMergedItemSteps(q, input));
 }

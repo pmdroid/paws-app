@@ -1,6 +1,12 @@
 import { syncSteps } from "../src/runner-backend";
 import { expect, test } from "bun:test";
-import { bindLinearSessionTask, migrate, openDatabase, recordLinearInstallation } from "../src/db";
+import {
+  bindLinearSessionTask,
+  migrate,
+  openDatabase,
+  recordLinearInstallation,
+  sqliteDb,
+} from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue, SWEEP_FULL_REFRESH_MS } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
 
@@ -27,7 +33,7 @@ async function sweepFixture() {
   const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
   if (!intake.ok) throw new Error("intake failed");
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -35,7 +41,7 @@ async function sweepFixture() {
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
+  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, { actorId: "human" });
   let clock = 10_000;
   let reads = 0;
   let failNext = false;

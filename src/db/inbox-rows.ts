@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { asc, eq, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
 export type InboxEventRow = {
@@ -70,8 +69,8 @@ export function* insertInboxEventSteps(q: Q, row: NewInboxEvent): Steps<boolean>
   return inserted.length === 1;
 }
 
-export function insertInboxEvent(db: Database, row: NewInboxEvent): boolean {
-  return settled(sqliteDb(db).transaction((q) => insertInboxEventSteps(q, row)));
+export async function insertInboxEvent(store: Db, row: NewInboxEvent): Promise<boolean> {
+  return store.transaction((q) => insertInboxEventSteps(q, row));
 }
 
 export function* markInboxEventHandledSteps(q: Q, dedupeKey: string) {
@@ -84,16 +83,16 @@ export function* markInboxEventHandledSteps(q: Q, dedupeKey: string) {
   );
 }
 
-export function markInboxEventHandled(db: Database, dedupeKey: string): void {
-  settled(sqliteDb(db).run((q) => markInboxEventHandledSteps(q, dedupeKey)));
+export async function markInboxEventHandled(store: Db, dedupeKey: string): Promise<void> {
+  return store.run((q) => markInboxEventHandledSteps(q, dedupeKey));
 }
 
 export function* unhandledInboxEventsSteps(q: Q) {
   return yield* inboxEventRowsSteps(q, eq(q.t.inboxEvent.handled, 0));
 }
 
-export function unhandledInboxEvents(db: Database): InboxEventRow[] {
-  return settled(sqliteDb(db).run((q) => unhandledInboxEventsSteps(q)));
+export async function unhandledInboxEvents(store: Db): Promise<InboxEventRow[]> {
+  return store.run((q) => unhandledInboxEventsSteps(q));
 }
 
 export function* inboxEventByKeySteps(q: Q, dedupeKey: string) {
@@ -101,8 +100,8 @@ export function* inboxEventByKeySteps(q: Q, dedupeKey: string) {
   return row ?? null;
 }
 
-export function inboxEventByKey(db: Database, dedupeKey: string): InboxEventRow | null {
-  return settled(sqliteDb(db).run((q) => inboxEventByKeySteps(q, dedupeKey)));
+export async function inboxEventByKey(store: Db, dedupeKey: string): Promise<InboxEventRow | null> {
+  return store.run((q) => inboxEventByKeySteps(q, dedupeKey));
 }
 
 export function* inboxEventByDeliverySteps(q: Q, deliveryId: string) {
@@ -110,8 +109,11 @@ export function* inboxEventByDeliverySteps(q: Q, deliveryId: string) {
   return row ?? null;
 }
 
-export function inboxEventByDelivery(db: Database, deliveryId: string): InboxEventRow | null {
-  return settled(sqliteDb(db).run((q) => inboxEventByDeliverySteps(q, deliveryId)));
+export async function inboxEventByDelivery(
+  store: Db,
+  deliveryId: string,
+): Promise<InboxEventRow | null> {
+  return store.run((q) => inboxEventByDeliverySteps(q, deliveryId));
 }
 
 type InboxFailure = { error: string; nextAttemptAt: number; counted: boolean };
@@ -132,8 +134,12 @@ export function* markInboxEventFailedSteps(q: Q, dedupeKey: string, failure: Inb
   );
 }
 
-export function markInboxEventFailed(db: Database, dedupeKey: string, failure: InboxFailure) {
-  settled(sqliteDb(db).run((q) => markInboxEventFailedSteps(q, dedupeKey, failure)));
+export async function markInboxEventFailed(
+  store: Db,
+  dedupeKey: string,
+  failure: InboxFailure,
+): Promise<void> {
+  return store.run((q) => markInboxEventFailedSteps(q, dedupeKey, failure));
 }
 
 export function* syncCursorSteps(q: Q, name: string): Steps<number | null> {
@@ -142,8 +148,8 @@ export function* syncCursorSteps(q: Q, name: string): Steps<number | null> {
   return row?.cursorMs ?? null;
 }
 
-export function syncCursor(db: Database, name: string): number | null {
-  return settled(sqliteDb(db).run((q) => syncCursorSteps(q, name)));
+export async function syncCursor(store: Db, name: string): Promise<number | null> {
+  return store.run((q) => syncCursorSteps(q, name));
 }
 
 export function* setSyncCursorSteps(q: Q, name: string, cursorMs: number) {
@@ -156,6 +162,6 @@ export function* setSyncCursorSteps(q: Q, name: string, cursorMs: number) {
   );
 }
 
-export function setSyncCursor(db: Database, name: string, cursorMs: number): void {
-  settled(sqliteDb(db).run((q) => setSyncCursorSteps(q, name, cursorMs)));
+export async function setSyncCursor(store: Db, name: string, cursorMs: number): Promise<void> {
+  return store.run((q) => setSyncCursorSteps(q, name, cursorMs));
 }

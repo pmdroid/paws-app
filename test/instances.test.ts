@@ -108,8 +108,18 @@ describe("instances", () => {
     migrate(acme);
     const other = openDatabase(path);
     try {
-      const a = registerInstance(acme, { role: "all", host: "acme-a", version: null, now: 0 });
-      const b = registerInstance(other, { role: "all", host: "acme-b", version: "0.1.2", now: 0 });
+      const a = await registerInstance(sqliteDb(acme), {
+        role: "all",
+        host: "acme-a",
+        version: null,
+        now: 0,
+      });
+      const b = await registerInstance(sqliteDb(other), {
+        role: "all",
+        host: "acme-b",
+        version: "0.1.2",
+        now: 0,
+      });
       expect(await heartbeatInstance(sqliteDb(acme), a.id, 50_000)).toBe(true);
       expect((await liveInstances(sqliteDb(other), 59_999)).map((row) => row.id)).toEqual([
         a.id,
@@ -128,7 +138,7 @@ describe("instances", () => {
   test("job and outbox claims record the instance id", async () => {
     const db = openDatabase(":memory:");
     migrate(db);
-    const instance = registerInstance(db, {
+    const instance = await registerInstance(sqliteDb(db), {
       role: "all",
       host: "acme",
       version: null,

@@ -31,7 +31,7 @@ export async function probeRunnerHttp(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "fixture-owner",
     name: "Owner",
@@ -53,13 +53,13 @@ export async function probeRunnerHttp(
     authenticatedAt: now,
     teamIds: [],
   };
-  const memberId = putWorkspaceUser(db, {
+  const memberId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "fixture-member",
     name: "Member",
     email: "member@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",

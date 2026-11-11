@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 export type QuestionRow = {
@@ -127,10 +126,6 @@ export function* askedQuestionRowSteps(
       .limit(1),
   );
   return row ?? null;
-}
-
-export function askedQuestionRow(db: Database, runId: string, kind: string): QuestionRow | null {
-  return settled(sqliteDb(db).run((q) => askedQuestionRowSteps(q, runId, kind)));
 }
 
 export function* nextQueuedQuestionRowSteps(q: Q, sessionId: string): Steps<QuestionRow | null> {

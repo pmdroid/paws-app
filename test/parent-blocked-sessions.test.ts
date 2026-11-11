@@ -1,10 +1,10 @@
 import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
-import { ensureLinearSession } from "../src/db";
+import { ensureLinearSession, sqliteDb } from "../src/db";
 import type { EpicSnapshot } from "../src/linear";
 import { createParentFixture } from "./local/parent-fixture";
 
-type Fixture = ReturnType<typeof createParentFixture>;
+type Fixture = Awaited<ReturnType<typeof createParentFixture>>;
 
 function child(linearIssueId: string, identifier: string) {
   return {
@@ -32,7 +32,7 @@ async function delegate(f: Fixture, subIssues: EpicSnapshot["subIssues"]) {
       description: issue.description ?? null,
       subIssues: [],
     });
-  ensureLinearSession(f.db, {
+  await ensureLinearSession(sqliteDb(f.db), {
     sessionId: "parent-session",
     issueId: "parent",
     organizationId: "org",
@@ -50,11 +50,11 @@ async function pass(f: Fixture) {
   await f.jobs.tick();
 }
 
-function merge(f: Fixture, issueId: string) {
+async function merge(f: Fixture, issueId: string) {
   const item = f.db
     .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_issue_id=?")
     .get(issueId)!;
-  confirmFakeMerge(f.db, item.id);
+  await confirmFakeMerge(f.db, item.id);
   f.db.run("UPDATE work_item SET state='merged' WHERE linear_issue_id=?", [issueId]);
 }
 
@@ -84,7 +84,7 @@ async function waiting(f: Fixture, parent: string) {
 }
 
 test("a chain of sub-issues opens each Linear session only after its blocker merges", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     f.tracker.deps.set("b", [{ blockerLinearIssueId: "a", blockedLinearIssueId: "b" }]);
     f.tracker.deps.set("c", [{ blockerLinearIssueId: "b", blockedLinearIssueId: "c" }]);
@@ -96,7 +96,7 @@ test("a chain of sub-issues opens each Linear session only after its blocker mer
     await pass(f);
     expect(f.started).toEqual(["a"]);
 
-    merge(f, "a");
+    await merge(f, "a");
     await pass(f);
     expect(f.started).toEqual(["a", "b"]);
     expect(await waiting(f, parent)).toEqual({ a: [], b: [], c: ["CH-2"] });
@@ -104,7 +104,7 @@ test("a chain of sub-issues opens each Linear session only after its blocker mer
     await pass(f);
     expect(f.started).toEqual(["a", "b"]);
 
-    merge(f, "b");
+    await merge(f, "b");
     await pass(f);
     expect(f.started).toEqual(["a", "b", "c"]);
   } finally {
@@ -113,7 +113,7 @@ test("a chain of sub-issues opens each Linear session only after its blocker mer
 });
 
 test("a sub-issue blocked by an issue Paws does not manage opens once Linear says it is Done", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     f.tracker.deps.set("a", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "a" }]);
     deliverIssue(f, "outside", "OUT-1", "started");
@@ -132,7 +132,7 @@ test("a sub-issue blocked by an issue Paws does not manage opens once Linear say
 });
 
 test("the recurring job opens no session for a sub-issue that is still blocked", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     f.tracker.deps.set("a", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "a" }]);
     deliverIssue(f, "outside", "OUT-1", "started");
@@ -165,7 +165,7 @@ test("the recurring job opens no session for a sub-issue that is still blocked",
 });
 
 test("the parent summary never says started for a sub-issue whose session is held", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     f.tracker.deps.set("a", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "a" }]);
     deliverIssue(f, "outside", "OUT-1", "canceled");

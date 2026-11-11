@@ -56,8 +56,13 @@ if (!task.ok) throw new Error("Unexpected cycle");
 const itemId = task.items[0]!.id;
 db.run("UPDATE work_item SET state = 'awaiting_input' WHERE id = ?", [itemId]);
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
-bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
+await recordLinearInstallation(sqliteDb(db), {
+  ...scope,
+  sessionId: "session",
+  teamId: "team",
+  observedAtMs: 1,
+});
+await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id, { actorId: "human" });
 await requireLinearTaskDelegation(sqliteDb(db), {
   itemId,
   issueId: "issue",
@@ -226,7 +231,7 @@ for (const delivery of deliveries) {
   );
   for (
     let attempt = 0;
-    createInboxStore(paws.db).listUnhandled().length > 0 && attempt < 100;
+    (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length > 0 && attempt < 100;
     attempt++
   )
     await Bun.sleep(5);
@@ -235,7 +240,7 @@ const state = paws.db
   .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE id = ?")
   .get(itemId)?.state;
 await paws.catchUp();
-const pending = createInboxStore(paws.db).listUnhandled().length;
+const pending = (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length;
 const context = getLinearSessionContext(paws.db, "session");
 await paws.stop();
 const reopened = openDatabase(join(home, "paws.db"));

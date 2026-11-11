@@ -88,15 +88,17 @@ test("identity migration preserves existing rows, run foreign keys and original 
     expect(db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
     expect(getWorkItem(db, "item")?.state).toBe("merged");
-    expect(getLinearSession(db, "session")?.delegationId).toBe("epic");
-    expect(getLinearSession(db, "session")?.activeItemId).toBe("running");
-    activateLinearItem(db, "session", "running");
-    expect(() => activateLinearItem(db, "session", "queued")).toThrow("still active");
+    expect((await getLinearSession(sqliteDb(db), "session"))?.delegationId).toBe("epic");
+    expect((await getLinearSession(sqliteDb(db), "session"))?.activeItemId).toBe("running");
+    await activateLinearItem(sqliteDb(db), "session", "running");
+    await expect(activateLinearItem(sqliteDb(db), "session", "queued")).rejects.toThrow(
+      "still active",
+    );
     db.run("UPDATE work_item SET state = 'failed' WHERE id = 'running'");
-    activateLinearItem(db, "session", "queued");
-    expect(getLinearSession(db, "session")?.activeItemId).toBe("queued");
-    expect(getLinearSession(db, "github:owner/repo#1")).toBeNull();
-    expect(getLinearSession(db, "comment-issue")).toBeNull();
+    await activateLinearItem(sqliteDb(db), "session", "queued");
+    expect((await getLinearSession(sqliteDb(db), "session"))?.activeItemId).toBe("queued");
+    expect(await getLinearSession(sqliteDb(db), "github:owner/repo#1")).toBeNull();
+    expect(await getLinearSession(sqliteDb(db), "comment-issue")).toBeNull();
     expect((await task(db)).alreadyExisted).toBe(true);
     expect((await task(db, "turn:correction")).alreadyExisted).toBe(false);
     expect(
@@ -141,25 +143,29 @@ test("session ownership and active child routing remain separate from shared iss
     const first = await task(db);
     db.run("UPDATE work_item SET state = 'merged' WHERE id = ?", [first.items[0]!.id]);
     const second = await task(db, "session:second");
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "first",
       issueId: "issue",
       organizationId: "org",
       appUserId: "app",
       creatorId: "human",
     });
-    bindLinearSessionTask(db, "first", first.delegation.id);
-    activateLinearItem(db, "first", first.items[0]!.id);
-    ensureLinearSession(db, { sessionId: "second", issueId: "issue" });
-    bindLinearSessionTask(db, "second", second.delegation.id);
-    activateLinearItem(db, "second", second.items[0]!.id);
+    await bindLinearSessionTask(sqliteDb(db), "first", first.delegation.id);
+    await activateLinearItem(sqliteDb(db), "first", first.items[0]!.id);
+    await ensureLinearSession(sqliteDb(db), { sessionId: "second", issueId: "issue" });
+    await bindLinearSessionTask(sqliteDb(db), "second", second.delegation.id);
+    await activateLinearItem(sqliteDb(db), "second", second.items[0]!.id);
     expect(await delegatedLinearUserId(sqliteDb(db), first.items[0]!.id)).toBe("human");
     expect(await delegatedLinearUserId(sqliteDb(db), second.items[0]!.id)).toBeNull();
-    expect(() => ensureLinearSession(db, { sessionId: "first", organizationId: "other" })).toThrow(
-      "ownership changed",
+    await expect(
+      ensureLinearSession(sqliteDb(db), { sessionId: "first", organizationId: "other" }),
+    ).rejects.toThrow("ownership changed");
+    await expect(
+      bindLinearSessionTask(sqliteDb(db), "second", first.delegation.id),
+    ).rejects.toThrow();
+    await expect(activateLinearItem(sqliteDb(db), "second", first.items[0]!.id)).rejects.toThrow(
+      "route changed",
     );
-    expect(() => bindLinearSessionTask(db, "second", first.delegation.id)).toThrow();
-    expect(() => activateLinearItem(db, "second", first.items[0]!.id)).toThrow("route changed");
     expect(getWorkItem(db, first.items[0]!.id)?.sessionKey).toBe("first");
   } finally {
     db.close();
@@ -181,14 +187,16 @@ test("prompt before hydration persists, ordered duplicates apply once and Stop f
     await recordLinearTurn(sqliteDb(db), turn("later", 20));
     await recordLinearTurn(sqliteDb(db), turn("earlier", 10));
     await recordLinearTurn(sqliteDb(db), { ...turn("later", 20), body: "Edited comment" });
-    expect(getLinearSession(db, "session")?.delegationId).toBeNull();
+    expect((await getLinearSession(sqliteDb(db), "session"))?.delegationId).toBeNull();
     expect(
       (await listPendingLinearTurns(sqliteDb(db), "session")).map((entry) => entry.body),
     ).toEqual(["earlier", "later"]);
     const result = await task(db);
-    bindLinearSessionTask(db, "session", result.delegation.id, { actorId: "human" });
+    await bindLinearSessionTask(sqliteDb(db), "session", result.delegation.id, {
+      actorId: "human",
+    });
     const itemId = result.items[0]!.id;
-    activateLinearItem(db, "session", itemId);
+    await activateLinearItem(sqliteDb(db), "session", itemId);
     await applyLinearTurns(sqliteDb(db), "session", ["earlier"], itemId);
     await applyLinearTurns(sqliteDb(db), "session", ["earlier"], itemId);
     expect(
@@ -236,7 +244,7 @@ test("a second session for an active issue is rejected and a prompt still hydrat
       }),
     });
     await orchestrator.onLinearEvent(created("first"));
-    const first = getLinearSession(db, "first")!;
+    const first = (await getLinearSession(sqliteDb(db), "first"))!;
     expect(first.activeItemId).not.toBeNull();
     expect(
       db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'").get(),
@@ -244,7 +252,7 @@ test("a second session for an active issue is rejected and a prompt still hydrat
     await expect(orchestrator.onLinearEvent(created("second"))).rejects.toThrow(
       "ENG-1 has an unfinished attempt in another Paws session. Reply in that session to continue, or stop it before starting a new one.",
     );
-    expect(getLinearSession(db, "second")?.delegationId ?? null).toBeNull();
+    expect((await getLinearSession(sqliteDb(db), "second"))?.delegationId ?? null).toBeNull();
     expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
     db.run("UPDATE work_item SET state = 'cancelled' WHERE id = ?", [first.activeItemId]);
     await orchestrator.onLinearEvent({
@@ -258,12 +266,12 @@ test("a second session for an active issue is rejected and a prompt still hydrat
       "Do this after hydration",
     );
     await orchestrator.onLinearEvent(created("before-created"));
-    expect(getLinearSession(db, "before-created")?.activeItemId).not.toBeNull();
+    expect((await getLinearSession(sqliteDb(db), "before-created"))?.activeItemId).not.toBeNull();
     expect(await listPendingLinearTurns(sqliteDb(db), "before-created")).toHaveLength(1);
     expect(
       await delegatedLinearUserId(
         sqliteDb(db),
-        getLinearSession(db, "before-created")!.activeItemId!,
+        (await getLinearSession(sqliteDb(db), "before-created"))!.activeItemId!,
       ),
     ).toBe("human");
   } finally {
@@ -282,7 +290,7 @@ test("a redirect cancels the previous item before the replacement is inserted", 
     pawsRoot: "/tmp/unused-redirect-fixture",
   });
   try {
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "session",
       issueId: "issue",
       organizationId: "org",
@@ -317,13 +325,13 @@ test("a redirect cancels the previous item before the replacement is inserted", 
 
 test("intake sets the session owner's workspace user on each new solo item and leaves an unknown actor unset", async () => {
   const db = legacyTempDb();
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "delegate-user",
     linearUserId: "delegate",
     name: "Delegate",
     email: "delegate@example.test",
   });
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "human-user",
     linearUserId: "human",
     name: "Human",
@@ -365,19 +373,19 @@ test("intake sets the session owner's workspace user on each new solo item and l
       syncSteps(() => (sessionId === "delegated" ? "delegate" : undefined)),
   });
   try {
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "delegated",
       issueId: "parent",
       organizationId: "org",
       creatorId: "human",
     });
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "ghost-session",
       issueId: "ghost-issue",
       organizationId: "org",
       creatorId: "ghost",
     });
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "human-session",
       issueId: "human-issue",
       organizationId: "org",

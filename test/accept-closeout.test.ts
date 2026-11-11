@@ -96,7 +96,7 @@ test.each([
   ],
   [
     "a superseding run",
-    (db: Database) =>
+    async (db: Database) =>
       setCurrentRun(db, "item", insertRun(db, { itemId: "item", status: "active", now: 2 }).id),
   ],
   [
@@ -106,7 +106,7 @@ test.each([
 ])("%s prevents an obsolete acceptance from committing", async (_, change) => {
   const db = tempDb();
   const expected = await verifying(db);
-  change(db);
+  await change(db);
   const before = getWorkItem(db, "item");
   expect(await accept(db, expected)).toBeNull();
   expect(getWorkItem(db, "item")).toEqual(before);
@@ -180,7 +180,7 @@ test("a confirmed merge cannot be revived while the merged item edge is still pe
   const db = tempDb();
   const id = (await accept(db, await verifying(db)))!;
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
-  recordConfirmedRemoteMerge(db, {
+  await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId: "item",
     repositoryOwner: "acme",
     repositoryName: "platform",

@@ -79,7 +79,10 @@ async function coordinator(port: number) {
     hostname: "127.0.0.1",
     port,
     transcripts: { objects, key: Buffer.alloc(32, 7) },
-    repositoryAccess: { github: createFakeGitHub(), installationForRepository: () => "fixture" },
+    repositoryAccess: {
+      github: createFakeGitHub(),
+      installationForRepository: async () => "fixture",
+    },
     onError: () => {},
   });
   return { db, service };
@@ -160,7 +163,7 @@ if (mode === "agent") {
   git(["clone", "--bare", "origin", "origin.git"]);
   const { db, service } = await coordinator(0);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -213,7 +216,7 @@ if (mode === "agent") {
         sessionKey: sessionId,
       });
       const { run } = beginImplementRun(db, item.id, now);
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "fixture",
         appUserId: "app",
@@ -221,15 +224,15 @@ if (mode === "agent") {
         teamId: "team",
         observedAtMs: now,
       });
-      bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "owner" });
-      saveTaskMode(db, item.id, purpose, 0, repository);
+      await bindLinearSessionTask(sqliteDb(db), sessionId, item.delegationId, { actorId: "owner" });
+      await saveTaskMode(sqliteDb(db), item.id, purpose, 0, repository);
       const binding = {
         owner: "fixture",
         repo: "repository",
         remoteUrl: "https://github.com/fixture/repository.git",
         baseSha,
       };
-      if (repository) bindWorkItemRepository(db, item.id, binding);
+      if (repository) await bindWorkItemRepository(sqliteDb(db), item.id, binding);
       const scope = await service.work.scopeTask(run.id, workspace.id);
       const command: Task = {
         type: "task",

@@ -85,7 +85,7 @@ test("a membership change applies through warm caches and stored ETags", async (
       tags.has(path) ? 304 : 200,
     );
   }
-  f.revoke();
+  await f.revoke();
   for (const path of LISTS) {
     const response = await get(path, { "if-none-match": tags.get(path)! });
     expect([path, response.status]).toEqual([path, 200]);

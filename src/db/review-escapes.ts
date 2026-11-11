@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, gte, isNull } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 /** What started a fix round after the pull request: failed CI, a changes-requested review, or comments. */
 export type ReviewEscapeTrigger = "ci" | "review" | "comment";
@@ -102,8 +101,11 @@ export function* recordReviewEscapeSteps(q: Q, candidate: ReviewEscapeCandidate)
   return inserted.length > 0;
 }
 
-export function recordReviewEscape(db: Database, candidate: ReviewEscapeCandidate): boolean {
-  return settled(sqliteDb(db).run((q) => recordReviewEscapeSteps(q, candidate)));
+export async function recordReviewEscape(
+  store: Db,
+  candidate: ReviewEscapeCandidate,
+): Promise<boolean> {
+  return store.run((q) => recordReviewEscapeSteps(q, candidate));
 }
 
 /** This item's candidates whose fix Closeout has not accepted yet, oldest first. */
@@ -154,12 +156,12 @@ export function* settleReviewEscapeSteps(
   return changed.length > 0;
 }
 
-export function settleReviewEscape(
-  db: Database,
+export async function settleReviewEscape(
+  store: Db,
   id: number,
   settlement: ReviewEscapeSettlement,
-): boolean {
-  return settled(sqliteDb(db).run((q) => settleReviewEscapeSteps(q, id, settlement)));
+): Promise<boolean> {
+  return store.run((q) => settleReviewEscapeSteps(q, id, settlement));
 }
 
 /** Every candidate recorded at or after `since`, oldest first. */

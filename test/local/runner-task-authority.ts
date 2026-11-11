@@ -66,7 +66,7 @@ export async function probeRunnerTaskAuthority(
   );
   applyMigration(migrations.find((value) => value.id === "20261101T1430_runner_teardown")!);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "task-owner",
     name: "Owner",
@@ -134,7 +134,7 @@ export async function probeRunnerTaskAuthority(
           };
         },
       },
-      installationForRepository: () => "fixture-installation",
+      installationForRepository: async () => "fixture-installation",
     },
     onError(error) {
       throw error;
@@ -270,7 +270,7 @@ export async function probeRunnerTaskAuthority(
           sessionKey: sessionId,
         });
         const { run } = beginImplementRun(db, item.id, now);
-        recordLinearInstallation(db, {
+        await recordLinearInstallation(sqliteDb(db), {
           organizationId: "task-org",
           oauthClientId: "fixture",
           appUserId: "app",
@@ -278,9 +278,11 @@ export async function probeRunnerTaskAuthority(
           teamId: "team",
           observedAtMs: now,
         });
-        bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "task-owner" });
-        saveTaskMode(db, item.id, purpose, 0, withRepository);
-        if (withRepository) bindWorkItemRepository(db, item.id, repository);
+        await bindLinearSessionTask(sqliteDb(db), sessionId, item.delegationId, {
+          actorId: "task-owner",
+        });
+        await saveTaskMode(sqliteDb(db), item.id, purpose, 0, withRepository);
+        if (withRepository) await bindWorkItemRepository(sqliteDb(db), item.id, repository);
         const scope = await coordinator.work.scopeTask(run.id, workspace.id);
         const command: Extract<RunnerCommand, { type: "task" }> = {
           id: workspaceId(),

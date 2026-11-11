@@ -57,7 +57,7 @@ const repository = {
 async function fixture(root: string) {
   const db = tempDb();
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -108,10 +108,10 @@ async function fixture(root: string) {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  function startRun(name: string) {
+  async function startRun(name: string) {
     const item = insertQueuedItem(db, { id: `${name}-item`, now, sessionKey: `${name}-session` });
     const { run } = beginImplementRun(db, item.id, now);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "session-org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -119,8 +119,10 @@ async function fixture(root: string) {
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, `${name}-session`, item.delegationId, { actorId: "owner" });
-    bindWorkItemRepository(db, item.id, repository);
+    await bindLinearSessionTask(sqliteDb(db), `${name}-session`, item.delegationId, {
+      actorId: "owner",
+    });
+    await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     return { itemId: item.id, runId: run.id };
   }
   async function assign(
@@ -210,7 +212,7 @@ describe("agent session snapshots", () => {
 
   async function sealed() {
     const runnerA = await f.enroll("a");
-    const run = f.startRun("first");
+    const run = await f.startRun("first");
     const access = await f.assign(run, runnerA, 1);
     const sessions = createAgentSessions({ db, work, objects, key });
     await sessions.upload(access, chunk(1, 0, full));
@@ -222,7 +224,7 @@ describe("agent session snapshots", () => {
 
   test("uploads in order, retries idempotently, refuses gaps, bad hashes and sealed appends", async () => {
     const runnerA = await f.enroll("a");
-    const run = f.startRun("first");
+    const run = await f.startRun("first");
     const access = await f.assign(run, runnerA, 1);
     const sessions = createAgentSessions({ db, work, objects, key });
 
@@ -295,7 +297,7 @@ describe("agent session snapshots", () => {
 
   test("refuses a snapshot over the size cap", async () => {
     const runnerA = await f.enroll("a");
-    const access = await f.assign(f.startRun("first"), runnerA, 1);
+    const access = await f.assign(await f.startRun("first"), runnerA, 1);
     const sessions = createAgentSessions({
       db,
       work,
@@ -346,7 +348,7 @@ describe("agent session snapshots", () => {
 
     // The same plaintext at the same offset in another run's snapshot does not decrypt here.
     const runnerB = await f.enroll("b");
-    const second = f.startRun("second");
+    const second = await f.startRun("second");
     const secondAccess = await f.assign(second, runnerB, 1);
     await sessions.upload(secondAccess, chunk(1, 0, full));
     const secondKey = `paws/agent-sessions/${f.workspaceId}/${second.runId}/1/0-${sha(full)}`;
@@ -361,7 +363,7 @@ describe("agent session snapshots", () => {
   test("refuses a stale grant, another run's grant and non-run commands", async () => {
     const { sessions, access, run } = await sealed();
     const runnerB = await f.enroll("b");
-    const second = f.startRun("second");
+    const second = await f.startRun("second");
     const secondAccess = await f.assign(second, runnerB, 1);
     const fresh = (
       await work.issueGrant({
@@ -391,7 +393,7 @@ describe("agent session snapshots", () => {
       sessions.upload({ ...access, token: fresh, runnerId: runnerB }, chunk(1, 0, full)),
     ).rejects.toThrow();
 
-    const third = f.startRun("third");
+    const third = await f.startRun("third");
     const runnerC = await f.enroll("c");
     const review = await f.assign(third, runnerC, 1, "review");
     await expect(sessions.upload(review, chunk(1, 0, full))).rejects.toThrow(
@@ -418,7 +420,7 @@ describe("agent session snapshots", () => {
 
     // A runner owned by another member never reads the owner's session.
     db.run("UPDATE agent_session_snapshot SET owner_user_id=? WHERE run_id=?", [
-      putWorkspaceUser(db, {
+      await putWorkspaceUser(sqliteDb(db), {
         id: workspaceId(),
         linearUserId: "other",
         name: "Other",
@@ -441,7 +443,7 @@ describe("agent session snapshots", () => {
 
   test("HTTP routes map fences to 409, storage to 503 and everything else to 403", async () => {
     const runnerA = await f.enroll("a");
-    const run = f.startRun("first");
+    const run = await f.startRun("first");
     const access = await f.assign(run, runnerA, 1);
     let failRead = false;
     const faulty: AgentSessionObjects = {
@@ -543,12 +545,12 @@ describe("agent session snapshots", () => {
     const runnerA = await f.enroll("a");
     const sessions = createAgentSessions({ db, work, objects, key });
     const runs = {
-      lost: f.startRun("lost"),
-      replaced: f.startRun("replaced"),
-      merged: f.startRun("merged"),
-      failed: f.startRun("failed"),
-      cancelled: f.startRun("cancelled"),
-      between: f.startRun("between"),
+      lost: await f.startRun("lost"),
+      replaced: await f.startRun("replaced"),
+      merged: await f.startRun("merged"),
+      failed: await f.startRun("failed"),
+      cancelled: await f.startRun("cancelled"),
+      between: await f.startRun("between"),
     };
     for (const run of Object.values(runs)) {
       await seal(sessions, await f.assign(run, runnerA, 1), 1);
@@ -596,7 +598,7 @@ describe("agent session snapshots", () => {
 
   test("an upload that loses the race with a prune deletes its object", async () => {
     const runnerA = await f.enroll("a");
-    const run = f.startRun("first");
+    const run = await f.startRun("first");
     const access = await f.assign(run, runnerA, 1);
     let sessions: Sessions;
     const racing: AgentSessionObjects = {
@@ -815,7 +817,7 @@ describe("agent session storage in S3", () => {
         objects,
         key: randomBytes(32),
       });
-      const access = await f.assign(f.startRun("first"), await f.enroll("a"), 1);
+      const access = await f.assign(await f.startRun("first"), await f.enroll("a"), 1);
       await sessions.upload(access, chunk(1, 0, full));
       await sessions.upload(access, chunk(1, AGENT_SESSION_CHUNK_BYTES, full));
       await sessions.upload(access, chunk(1, 2 * AGENT_SESSION_CHUNK_BYTES, tail));

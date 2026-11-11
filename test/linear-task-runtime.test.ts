@@ -222,7 +222,7 @@ test("a parent discussion classifies before fanout and completes without Git, is
   const f = setup("answer");
   try {
     await f.orchestrator.onLinearEvent(event());
-    const session = getLinearSession(f.db, "session")!;
+    const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
     const item = getWorkItem(f.db, session.activeItemId!)!;
     expect(item.linearIssueId).toBe("parent");
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(1);
@@ -255,7 +255,7 @@ test("code classification persists before child work is dispatched", async () =>
   const f = setup("code");
   try {
     await f.orchestrator.onLinearEvent(event());
-    const session = getLinearSession(f.db, "session")!;
+    const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
     const item = getWorkItem(f.db, session.activeItemId!)!;
     expect(item.linearIssueId).toBe("child");
     expect(getTaskMode(f.db, item.id)).toBe("code");
@@ -272,7 +272,7 @@ test("ambiguous outcomes ask for clarification before repository access", async 
   try {
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const session = getLinearSession(f.db, "session")!;
+    const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
     expect(getWorkItem(f.db, session.activeItemId!)?.state).toBe("awaiting_input");
     expect(f.tracker.questions[0]?.body).toBe(
       elicitationBody("Explain it, create a file, or change the code?"),
@@ -303,7 +303,7 @@ test("a clarification asked while the session waits on another question queues b
     waitOnAnotherQuestion(f.db);
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const itemId = getLinearSession(f.db, "session")!.activeItemId!;
+    const itemId = (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!;
     expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
     expect(await questionOf(f.db, itemId)).toMatchObject({
       kind: "clarification",
@@ -345,7 +345,7 @@ test("ask_team while the session waits on another question queues the agent's qu
     waitOnAnotherQuestion(f.db);
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const itemId = getLinearSession(f.db, "session")!.activeItemId!;
+    const itemId = (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!;
     expect(getWorkItem(f.db, itemId)?.state).toBe("awaiting_input");
     expect(await questionOf(f.db, itemId)).toMatchObject({
       kind: "agent",
@@ -380,14 +380,14 @@ test.each([null, "", " \n "])(
     const sleeping = Promise.withResolvers<void>();
     let running: Promise<unknown> | undefined;
     let poller: ReturnType<typeof startCatchUpPoller> | undefined;
-    const waitFor = async (condition: () => boolean) => {
+    const waitFor = async (condition: () => boolean | Promise<boolean>) => {
       const deadline = Date.now() + 10_000;
-      while (Date.now() < deadline && !condition()) await Bun.sleep(5);
-      expect(condition()).toBe(true);
+      while (Date.now() < deadline && !(await condition())) await Bun.sleep(5);
+      expect(await condition()).toBe(true);
     };
     try {
       await f.orchestrator.onLinearEvent(event());
-      const itemId = getLinearSession(f.db, "session")!.activeItemId!;
+      const itemId = (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!;
       f.tracker.listSessionActivities = async () => {
         ready.resolve();
         await release.promise;
@@ -397,8 +397,8 @@ test.each([null, "", " \n "])(
       await ready.promise;
       expect(f.orchestrator.agentAlive(getWorkItem(f.db, itemId)!.currentRunId!)).toBe(true);
       expect(findOpenQuestion(f.db, "session")).toBeNull();
-      const store = createInboxStore(f.db);
-      store.commit({
+      const store = createInboxStore(sqliteDb(f.db));
+      await store.commit({
         ...event(),
         source: "poll",
         action: "prompted",
@@ -427,7 +427,7 @@ test.each([null, "", " \n "])(
         onEvent: (incoming) => f.orchestrator.onLinearEvent(incoming),
         sleeper: { wait: () => sleeping.promise, wake: () => sleeping.resolve() },
       });
-      await waitFor(() => store.listUnhandled().length === 0);
+      await waitFor(async () => (await store.listUnhandled()).length === 0);
       expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM linear_turn").get()?.n).toBe(
         0,
       );
@@ -456,7 +456,7 @@ test.each([null, "", " \n "])(
       await answering;
       await running;
       expect((await getQuestion(sqliteDb(f.db), question.id))?.answer).toBe(reply.body);
-      expect(store.listUnhandled()).toHaveLength(0);
+      expect(await store.listUnhandled()).toHaveLength(0);
       await f.jobs.tick();
       expect(getWorkItem(f.db, itemId)?.state).toBe("completed");
       expect(f.tracker.progress.filter((update) => update.kind === "response")).toHaveLength(1);
@@ -496,7 +496,10 @@ test("clarified parent code requests recover the ordered child queue and every c
     ]);
     await f.orchestrator.onLinearEvent(event());
     await f.jobs.tick();
-    const previous = getWorkItem(db, getLinearSession(db, "session")!.activeItemId!)!;
+    const previous = getWorkItem(
+      db,
+      (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!,
+    )!;
     const answer = "Implement both child issues with the corrected chart layout.";
     await f.orchestrator.onLinearEvent({
       ...event(),
@@ -506,7 +509,7 @@ test("clarified parent code requests recover the ordered child queue and every c
       body: answer,
     });
     await f.jobs.tick();
-    const session = getLinearSession(db, "session")!;
+    const session = (await getLinearSession(sqliteDb(db), "session"))!;
     expect(session.delegationId).not.toBe(previous.delegationId);
     expect(getWorkItem(db, previous.id)?.state).toBe("cancelled");
     expect(f.launches).toEqual(["classify", "classify"]);
@@ -548,7 +551,9 @@ test("clarified parent code requests recover the ordered child queue and every c
     });
     await recovery.intakeLinearTask("parent", "session", originalKey);
     await recovery.onLinearEvent(event());
-    expect(getLinearSession(reopened, "session")!.delegationId).toBe(session.delegationId);
+    expect((await getLinearSession(sqliteDb(reopened), "session"))!.delegationId).toBe(
+      session.delegationId,
+    );
     expect(reopened.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()!.n).toBe(
       3,
     );
@@ -576,9 +581,9 @@ test("clarifying a parent discussion as an answer keeps its children undispatche
     await f.jobs.tick();
     expect(f.launches).toEqual(["classify", "classify", "answer"]);
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()!.n).toBe(1);
-    expect(getWorkItem(f.db, getLinearSession(f.db, "session")!.activeItemId!)?.state).toBe(
-      "completed",
-    );
+    expect(
+      getWorkItem(f.db, (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!)?.state,
+    ).toBe("completed");
     expect(f.tracker.statuses).toEqual([]);
   } finally {
     f.db.close();
@@ -632,7 +637,7 @@ test("a question reply resumes through history containing an action with an empt
       "Capture a fresh screenshot of an empty instance.",
     );
     await f.jobs.tick();
-    const itemId = getLinearSession(f.db, "session")!.activeItemId!;
+    const itemId = (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!;
     expect(getWorkItem(f.db, itemId)?.state).toBe("completed");
     expect(f.launches).toEqual(["classify", "classify", "artifact"]);
     expect(f.uploads()).toBe(1);
@@ -662,7 +667,7 @@ test("Stop cancels and joins classification before any task can be created", asy
       signal: "stop",
     });
     expect(await started).toBeNull();
-    expect(getLinearSession(f.db, "session")?.stoppedAt).not.toBeNull();
+    expect((await getLinearSession(sqliteDb(f.db), "session"))?.stoppedAt).not.toBeNull();
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(0);
     expect(f.tracker.progress.filter((update) => update.kind === "response")).toMatchObject([
       { body: "Stopped from Linear." },
@@ -687,7 +692,7 @@ test.each(["ok", "fail", "omit"] as const)(
     const f = setup("artifact", "unused", false, upload);
     try {
       await f.orchestrator.onLinearEvent(event());
-      const session = getLinearSession(f.db, "session")!;
+      const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
       const itemId = session.activeItemId!;
       expect(getTaskMode(f.db, itemId)).toBe("artifact");
       await f.jobs.tick();
@@ -741,7 +746,7 @@ test.each(["answer", "artifact"] as const)(
         ],
       });
       await f.orchestrator.onLinearEvent(incoming);
-      const session = getLinearSession(f.db, "session")!;
+      const session = (await getLinearSession(sqliteDb(f.db), "session"))!;
       await f.jobs.tick();
       expect(getWorkItem(f.db, session.activeItemId!)?.state).toBe("completed");
       expect(f.downloads()).toBe(2);
@@ -795,7 +800,7 @@ test("Stop during dependency loading cannot commit or queue the classified task"
     });
     release.resolve([]);
     await intake;
-    expect(getLinearSession(f.db, "session")?.stoppedAt).not.toBeNull();
+    expect((await getLinearSession(sqliteDb(f.db), "session"))?.stoppedAt).not.toBeNull();
     expect(f.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM work_item").get()?.n).toBe(0);
     expect(f.launches).toEqual(["classify"]);
     expect(f.tracker.progress.some((update) => update.kind === "error")).toBe(false);
@@ -809,7 +814,7 @@ test("a lone issue's intake adds no announcement to the first activity", async (
   const f = setup("answer");
   try {
     await f.orchestrator.onLinearEvent(event());
-    expect(getLinearSession(f.db, "session")?.activeItemId).toBeString();
+    expect((await getLinearSession(sqliteDb(f.db), "session"))?.activeItemId).toBeString();
     expect(f.tracker.progress).toEqual([]);
   } finally {
     f.db.close();
@@ -840,9 +845,10 @@ test.each(["answer", "artifact"] as const)(
           (update) => !("mode" in update) && !("identifier" in update),
         ),
       ).toBe(true);
-      expect(getWorkItem(f.db, getLinearSession(f.db, "session")!.activeItemId!)?.state).toBe(
-        "completed",
-      );
+      expect(
+        getWorkItem(f.db, (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!)
+          ?.state,
+      ).toBe("completed");
     } finally {
       f.db.close();
     }
@@ -885,9 +891,9 @@ test("Stop fences pending answer plans and prevents completed session metadata",
     expect(f.tracker.sessionUpdates.some((update) => update.summary === "ENG-1: completed")).toBe(
       false,
     );
-    expect(getWorkItem(f.db, getLinearSession(f.db, "session")!.activeItemId!)?.state).toBe(
-      "paused",
-    );
+    expect(
+      getWorkItem(f.db, (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!)?.state,
+    ).toBe("paused");
   } finally {
     f.db.close();
   }

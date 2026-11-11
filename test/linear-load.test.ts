@@ -57,7 +57,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
     log: () => {},
     countItem: async (itemId, caller) => await countLinearRequest(sqliteDb(db), itemId, caller),
   });
-  const runner = seedRunner(db, clock.now());
+  const runner = await seedRunner(db, clock.now());
   let requests = 0;
   const tracker = new Proxy(
     createFakeTracker(
@@ -177,7 +177,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
         await orchestrator.onLinearEvent(event(index, "created"));
       await settle(() => count("completed") + count("awaiting_input") === end);
     }
-    runner.fill(clock.now());
+    await runner.fill(clock.now());
     for (let index = STARTED; index < TASKS; index++)
       await orchestrator.onLinearEvent(event(index, "created"));
     await step();
@@ -224,15 +224,15 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
   }
 }, 60_000);
 
-function seedRunner(db: Database, now: number) {
-  const userId = putWorkspaceUser(db, {
+async function seedRunner(db: Database, now: number) {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "user-1",
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 0]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws-1",
     userId,
     role: "admin",
@@ -252,7 +252,7 @@ function seedRunner(db: Database, now: number) {
   return {
     full: () => busy() >= SLOTS,
     seen: (at: number) => db.run("UPDATE runner SET last_seen_at=?", [at]),
-    fill(at: number) {
+    async fill(at: number) {
       for (let slot = 0; slot < SLOTS; slot++) {
         const item = insertQueuedItem(db, { id: `other-${slot}`, now: at });
         const run = insertRun(db, { itemId: item.id, now: at, status: "active" });

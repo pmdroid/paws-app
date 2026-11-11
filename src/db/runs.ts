@@ -104,8 +104,8 @@ export function* runOwnerSteps(q: Q, runId: string): Steps<string | null> {
   return row?.owner ?? null;
 }
 
-export function runOwner(db: Database, runId: string): string | null {
-  return settled(sqliteDb(db).run((q) => runOwnerSteps(q, runId)));
+export async function runOwner(store: Db, runId: string): Promise<string | null> {
+  return store.run((q) => runOwnerSteps(q, runId));
 }
 
 export function* claimRunSteps(q: Q, runId: string, ownerInstance: string): Steps<void> {
@@ -255,18 +255,6 @@ export function* pinRunCheckoutSteps(
   const checkout = resolve();
   yield* saveCheckpointSteps(q, id, { ...(stored.checkpoint ?? { phase: "running" }), checkout });
   return checkout;
-}
-
-/**
- * The run's checkout exclusions. The first call stores `resolve()` on the run; every later call
- * returns that, so a settings change never alters a checkout a run already started with.
- */
-export function pinRunCheckout(
-  db: Database,
-  id: string,
-  resolve: () => NonNullable<Checkpoint["checkout"]>,
-): NonNullable<Checkpoint["checkout"]> {
-  return settled(sqliteDb(db).run((q) => pinRunCheckoutSteps(q, id, resolve)));
 }
 
 export function* getItemRunCommitPolicySteps(

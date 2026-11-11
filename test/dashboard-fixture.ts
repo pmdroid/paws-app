@@ -10,6 +10,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import type { LinearUsage } from "../src/linear";
@@ -22,17 +23,24 @@ const PNG = screenshotPng(320, 200, [{ x: 40, y: 40, width: 240, height: 120, rg
 
 export type DashboardFixture = Awaited<ReturnType<typeof startDashboardFixture>>;
 
-export async function startDashboardFixture(options: { linearUsage?: () => LinearUsage } = {}) {
+export async function startDashboardFixture(
+  options: { linearUsage?: () => Promise<LinearUsage> } = {},
+) {
   const home = mkdtempSync(join(tmpdir(), "paws-dashboard-fixture-"));
   const db = openDatabase(join(home, "paws.sqlite"));
   migrate(db);
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
   );
-  putWorkspaceUser(db, { id: "member", linearUserId: "member", name: "Member", email: "m@x.test" });
+  await putWorkspaceUser(sqliteDb(db), {
+    id: "member",
+    linearUserId: "member",
+    name: "Member",
+    email: "m@x.test",
+  });
   let teamIds = ["team"];
-  const sync = () =>
-    syncWorkspaceMember(db, {
+  const sync = async () =>
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -40,7 +48,7 @@ export async function startDashboardFixture(options: { linearUsage?: () => Linea
       teamIds,
       now: Date.now(),
     });
-  sync();
+  await sync();
   const evidenceDir = join(home, "evidence");
   const store = createEvidenceStore({ db, root: evidenceDir });
   const answers: Parameters<QuestionAnswer>[0][] = [];
@@ -127,7 +135,7 @@ export async function startDashboardFixture(options: { linearUsage?: () => Linea
       }),
     ...options,
   });
-  const session = issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),
@@ -146,9 +154,9 @@ export async function startDashboardFixture(options: { linearUsage?: () => Linea
         .replaceAll("{run}", runs["PAS-1"]!)
         .replaceAll("{evidence}", evidence["PAS-1"]!)
         .replaceAll("{hidden-evidence}", evidence["PAS-2"]!),
-    revoke() {
+    async revoke() {
       teamIds = ["other-team"];
-      sync();
+      await sync();
     },
     async close() {
       await server.stop(true);

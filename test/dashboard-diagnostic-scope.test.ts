@@ -94,8 +94,13 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
     ["member", "member", ["team-a"]],
     ["admin", "admin", []],
   ] as const) {
-    putWorkspaceUser(db, { id: user, linearUserId: user, name: user, email: `${user}@x.test` });
-    syncWorkspaceMember(db, {
+    await putWorkspaceUser(sqliteDb(db), {
+      id: user,
+      linearUserId: user,
+      name: user,
+      email: `${user}@x.test`,
+    });
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: user,
       role,
@@ -125,13 +130,13 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const cookie = (userId: string) => ({
+  const cookie = async (userId: string) => ({
     headers: {
-      cookie: `${WORKSPACE_COOKIE}=${issueWorkspaceSession(db, { workspaceId: "workspace", userId, now: Date.now() }).token}`,
+      cookie: `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(db, { workspaceId: "workspace", userId, now: Date.now() })).token}`,
     },
   });
-  const member = cookie("member");
-  const admin = cookie("admin");
+  const member = await cookie("member");
+  const admin = await cookie("admin");
   const read = async (path: string, init: RequestInit) => {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, init);
     expect(response.status).toBe(200);
@@ -158,12 +163,12 @@ test("a member's overview, merge queue and issue list hold only their teams' dia
           expect(text).not.toContain(hidden);
       }
     }
-    expect(workspaceSessionIds(db, "workspace", "admin", "fixture")).toEqual([
+    expect(await workspaceSessionIds(sqliteDb(db), "workspace", "admin", "fixture")).toEqual([
       "session-a",
       "session-b",
       "session-c",
     ]);
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: "member",
       role: "member",

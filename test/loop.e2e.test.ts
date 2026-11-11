@@ -591,7 +591,7 @@ test("a frontend change without visual proof gets a fix round, publishes 16 scre
     expect(prompts.get("fix")).toContain("visual-proof (evidence): failed");
     expect(prompts.get("fix")).toContain('publish_artifact with checkId "visual-proof"');
     const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-303")!;
-    expect(listEvidence(db, item.id)).toHaveLength(16);
+    expect(await listEvidence(sqliteDb(db), item.id)).toHaveLength(16);
     // One thought for the check, with the count and the Paws link; the images stay in Paws.
     const link = "https://paws.example/dashboard/issues/ENG-303#evidence-gallery";
     const evidence = tracker.progress.filter((update) => update.body.includes("Closeout evidence"));
@@ -760,7 +760,8 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
 
   try {
     await orchestrator.onLinearEvent(linearEvent("created", null, null, "parent"));
-    for (const item of listWorkItems(db)) bindWorkItemRepository(db, item.id, repository);
+    for (const item of listWorkItems(db))
+      await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     const deadline = Date.now() + 80_000;
     let idle = 0;
     while (Date.now() < deadline && !delegationMerged(db)) {
@@ -2462,7 +2463,7 @@ for (const movedHead of [false, true]) {
       expect(github.merged).toHaveLength(0);
       db.close();
       db = openDatabase(path.join(layout.pawsRoot, "paws.db"));
-      recoverOnStartup(db);
+      await recoverOnStartup(sqliteDb(db));
       db.run("CREATE TEMP TABLE title_write (summary TEXT)");
       for (const event of ["INSERT", "UPDATE OF payload"])
         db.run(`CREATE TEMP TRIGGER "title_${event}" AFTER ${event} ON outbox

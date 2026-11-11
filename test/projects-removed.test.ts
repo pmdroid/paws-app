@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
+import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember, sqliteDb } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 
@@ -9,8 +9,13 @@ test("the Projects page and /api/projects are gone for a signed-in member", asyn
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
   );
-  putWorkspaceUser(db, { id: "member", linearUserId: "member", name: "member", email: "m@x.test" });
-  syncWorkspaceMember(db, {
+  await putWorkspaceUser(sqliteDb(db), {
+    id: "member",
+    linearUserId: "member",
+    name: "member",
+    email: "m@x.test",
+  });
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "workspace",
     userId: "member",
     role: "member",
@@ -39,7 +44,7 @@ test("the Projects page and /api/projects are gone for a signed-in member", asyn
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const session = issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),

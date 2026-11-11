@@ -29,7 +29,7 @@ async function setup(file = ":memory:") {
   migrate(db);
   for (const id of ["first", "second"]) {
     insertQueuedItem(db, { id, now: 1 });
-    bindWorkItemRepository(db, id, {
+    await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "acme",
       repo: "one",
       remoteUrl: "https://github.com/acme/one.git",
@@ -245,7 +245,7 @@ test("filter and identity refresh callbacks run outside the write transaction, n
     calls.push(name);
   };
   const filter = {
-    appId: () => {
+    appId: async () => {
       check("id");
       return null;
     },

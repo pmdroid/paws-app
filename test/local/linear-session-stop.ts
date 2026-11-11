@@ -54,7 +54,7 @@ export async function probeLinearSessionStop(root: string) {
       beginImplementRun(db, old.id, clock.now());
       applyWorkItemEvent(db, old.id, "blocking_question");
       const replacement = insertQueuedItem(db, { id: `new-${field}`, sessionKey: `new-${field}` });
-      ensureLinearSession(db, {
+      await ensureLinearSession(sqliteDb(db), {
         sessionId: old.sessionKey!,
         issueId: old.linearIssueId,
         organizationId: "organization",
@@ -62,8 +62,8 @@ export async function probeLinearSessionStop(root: string) {
         creatorId: "user",
         now: 1,
       });
-      const store = createInboxStore(db);
-      store.commit({
+      const store = createInboxStore(sqliteDb(db));
+      await store.commit({
         dedupeKey: `session:${old.sessionKey}:created`,
         deliveryId: null,
         source: "poll",
@@ -76,7 +76,7 @@ export async function probeLinearSessionStop(root: string) {
         updatedAtMs: 1,
         payload: "{}",
       });
-      store.markHandled(`session:${old.sessionKey}:created`);
+      await store.markHandled(`session:${old.sessionKey}:created`);
       let slept!: () => void;
       const sleeping = new Promise<void>((resolve) => {
         slept = resolve;
@@ -135,7 +135,7 @@ export async function probeLinearSessionStop(root: string) {
       await poller.pollNow();
       await poller.stop();
       assert.equal(getWorkItem(db, old.id)?.state, "paused");
-      assert.equal(getLinearSession(db, old.sessionKey!)?.stoppedAt, 9_000);
+      assert.equal((await getLinearSession(sqliteDb(db), old.sessionKey!))?.stoppedAt, 9_000);
       assert.equal(getWorkItem(db, replacement.id)?.state, "queued");
       observations.push({
         case: field,
@@ -171,7 +171,7 @@ export async function probeLinearSessionStop(root: string) {
         id: `webhook-new-${field}`,
         sessionKey: `webhook-new-${field}`,
       });
-      ensureLinearSession(db, {
+      await ensureLinearSession(sqliteDb(db), {
         sessionId: old.sessionKey!,
         issueId: old.linearIssueId,
         organizationId: "organization",
@@ -201,7 +201,7 @@ export async function probeLinearSessionStop(root: string) {
         port: 0,
         fetch: (request) =>
           handleLinearWebhook(request, "test-webhook-secret", {
-            store: createInboxStore(db),
+            store: createInboxStore(sqliteDb(db)),
             now: () => clock.now(),
             onEvent: (event) => {
               done = orchestrator.onLinearEvent(event);

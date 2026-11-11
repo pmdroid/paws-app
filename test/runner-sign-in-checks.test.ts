@@ -26,7 +26,7 @@ afterEach(() => {
   for (const db of databases.splice(0)) db.close();
 });
 
-function fixture() {
+async function fixture() {
   const db = new Database(":memory:");
   databases.push(db);
   db.run("PRAGMA foreign_keys=ON");
@@ -39,13 +39,13 @@ function fixture() {
     "Sign-in",
     at,
   ]);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "sign-in-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace,
     userId,
     role: "admin",
@@ -145,7 +145,7 @@ function fixture() {
   });
   const helper = async (runnerId: string, purpose: "classify" | "conversation" = "classify") => {
     const sessionId = crypto.randomUUID();
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "sign-in-org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -200,7 +200,7 @@ function fixture() {
 }
 
 test("background sign-in checks run once per agent per interval and never while one is in flight", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   await f.health.refresh();
   expect(f.checks().map((check) => check.agent)).toEqual(["claude", "codex", "grok", "opencode"]);
@@ -261,7 +261,7 @@ test("background sign-in checks run once per agent per interval and never while 
 });
 
 test("four signed-in agents get at most one passing check each in 30 minutes", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   await f.health.refresh();
   for (const check of f.checks()) await f.answer(check);
@@ -283,7 +283,7 @@ test("four signed-in agents get at most one passing check each in 30 minutes", a
 });
 
 test("a pending helper goes out before a queued login check, which waits until the helper finishes", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   await f.health.refresh();
   expect((await f.delivered(runnerId)).map(({ type }) => type)).toEqual(["login_check"]);
@@ -303,15 +303,15 @@ test("a pending helper goes out before a queued login check, which waits until t
 });
 
 test("a helper that expired unserved, or a conversation in its own lane, holds no check back", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.77' WHERE runner_id=?", [runnerId]);
-  recordRunnerCapacity(f.db, runnerId, 1, 1, 2);
+  await recordRunnerCapacity(sqliteDb(f.db), runnerId, 1, 1, 2);
   await f.health.refresh();
   await f.helper(runnerId, "conversation");
   expect((await f.delivered(runnerId)).map(({ type }) => type)).toEqual(["login_check"]);
 
-  const g = fixture();
+  const g = await fixture();
   const other = g.runner();
   await g.health.refresh();
   await g.helper(other);
@@ -321,7 +321,7 @@ test("a helper that expired unserved, or a conversation in its own lane, holds n
 });
 
 test("no check is queued while a helper waits for the lane", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   await f.helper(runnerId);
   await f.health.refresh();
@@ -329,7 +329,7 @@ test("no check is queued while a helper waits for the lane", async () => {
 });
 
 test("a signed-out agent, and one whose check failed, is still checked every 5 minutes", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   await f.health.refresh();
   const [claude, codex] = f.checks();
@@ -357,7 +357,7 @@ test("a signed-out agent, and one whose check failed, is still checked every 5 m
 });
 
 test("a signed-out agent not used for a day is left alone, and one signed in is still checked", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   await f.health.refresh();
   const [claude, codex] = f.checks();
@@ -376,7 +376,7 @@ test("a signed-out agent not used for a day is left alone, and one signed in is 
 });
 
 test("paused, draining, revoked and unseen runners are skipped", async () => {
-  const f = fixture();
+  const f = await fixture();
   const active = f.runner();
   for (const status of ["paused", "draining", "revoked"] as const) f.runner(status);
   f.runner("active", null);
@@ -386,7 +386,7 @@ test("paused, draining, revoked and unseen runners are skipped", async () => {
 });
 
 test("runner list reports signed in, signed out, checking, usage limit and unknown per agent", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   const statuses = async () =>
     Object.fromEntries(
@@ -448,7 +448,7 @@ test("runner list reports signed in, signed out, checking, usage limit and unkno
 
 test("a spent usage window cools the agent down unless the runner keeps it on extra usage", async () => {
   for (const extra of [0, 1]) {
-    const f = fixture();
+    const f = await fixture();
     const runnerId = f.runner();
     f.db.run("INSERT INTO runner_agent_policy(runner_id,agent,extra_usage) VALUES(?,'claude',?)", [
       runnerId,
@@ -476,7 +476,7 @@ test("a spent usage window cools the agent down unless the runner keeps it on ex
 });
 
 test("the latest usage windows reach the runner list with when they were read", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   await f.health.refresh();
   const [claude] = f.checks();
@@ -519,7 +519,7 @@ test("the latest usage windows reach the runner list with when they were read", 
 });
 
 test("an older usage reading never replaces a newer one", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   const reading = (usedPercent: number) => [{ window: "Weekly", usedPercent, resetsAt: null }];
   const record = async (usedPercent: number, observedAt: number) =>
@@ -541,7 +541,7 @@ test("an older usage reading never replaces a newer one", async () => {
 });
 
 test("a completed sign-in queues one login check for that agent", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   const login = createRunnerLogin({
     db: f.db,
@@ -572,7 +572,7 @@ test("a completed sign-in queues one login check for that agent", async () => {
 });
 
 test("a sign-in goes to the runner before sign-in checks queued ahead of it", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   const login = createRunnerLogin({ db: f.db, work: f.work, now: f.now });
   for (const agent of ["codex", "grok"] as const)
@@ -616,7 +616,7 @@ test("a sign-in goes to the runner before sign-in checks queued ahead of it", as
 });
 
 test("a login check readies the runner's agent or marks it signed out", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   const policy = () =>
     f.db
@@ -638,7 +638,7 @@ test("a login check readies the runner's agent or marks it signed out", async ()
 });
 
 test("a login check issued before a newer sign-in failure cannot mark the agent ready", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   const policy = () =>
     f.db
@@ -674,7 +674,7 @@ test("a login check issued before a newer sign-in failure cannot mark the agent 
 });
 
 test("a sign-in check's usage reading replaces a stale usage limit", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   const reset = f.now() + 3 * 86_400_000;
   f.db.run(
@@ -712,7 +712,7 @@ test("a sign-in check's usage reading replaces a stale usage limit", async () =>
 });
 
 test("older runners keep their three login checks and reject OpenCode before dispatch", async () => {
-  const f = fixture();
+  const f = await fixture();
   const runnerId = f.runner();
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.52' WHERE runner_id=?", [runnerId]);
   await f.health.refresh();

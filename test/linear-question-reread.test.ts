@@ -115,7 +115,7 @@ function setup(
     clock,
   });
   const world = linearWorld();
-  const store = createInboxStore(db);
+  const store = createInboxStore(sqliteDb(db));
   const delivered: AcceptedLinearEvent[] = [];
   let now = NOW + 1_000;
   let wake = () => {};
@@ -191,7 +191,7 @@ function setup(
         { store, onEvent: (event) => orchestrator.onLinearEvent(event), now: () => now },
       );
       expect(response.status).toBe(200);
-      await waitFor(() => store.listUnhandled().length === 0);
+      await waitFor(async () => (await store.listUnhandled()).length === 0);
     },
     advance(ms: number) {
       now += ms;
@@ -205,9 +205,9 @@ function setup(
   };
 }
 
-async function waitFor(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 200 && !check(); attempt += 1) await Bun.sleep(5);
-  expect(check()).toBe(true);
+async function waitFor(check: () => boolean | Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 200 && !(await check()); attempt += 1) await Bun.sleep(5);
+  expect(await check()).toBe(true);
 }
 
 test("the poll cursor starts where the cycle read activities, so a reply during a long cycle is read next", async () => {
@@ -244,7 +244,7 @@ test("a reply behind the poll cursor with no webhook answers the open question o
   try {
     await t.poller.pollNow();
     t.reply({ at: t.at() + 1_000 });
-    t.store.setCursor("linear", t.at() + 60_000);
+    await t.store.setCursor("linear", t.at() + 60_000);
     t.advance(60_000);
     await t.poller.pollNow();
     expect(await getQuestion(sqliteDb(t.db), t.question.id)).toMatchObject({
@@ -282,7 +282,7 @@ test("a reply in another issue's thread does not touch the open question", async
   try {
     await t.poller.pollNow();
     t.reply({ id: "other-reply", sessionId: "ses_other", issueId: "iss_other", at: t.at() + 1 });
-    t.store.setCursor("linear", t.at() + 60_000);
+    await t.store.setCursor("linear", t.at() + 60_000);
     t.advance(60_000);
     await t.poller.pollNow();
     expect((await getQuestion(sqliteDb(t.db), t.question.id))?.status).toBe("open");

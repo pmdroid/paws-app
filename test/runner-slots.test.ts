@@ -13,16 +13,16 @@ import {
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { tempDb } from "./helpers";
 
-function fixture(now: number) {
+async function fixture(now: number) {
   const db = tempDb();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "user-1",
     linearUserId: "user-linear",
     name: "Owner",
     email: "owner@example.invalid",
   });
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", now]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws-1",
     userId,
     role: "admin",
@@ -34,7 +34,7 @@ function fixture(now: number) {
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,?,'active',?,?)",
     ["runner-1", "ws-1", userId, "Runner", now, now],
   );
-  function work(
+  async function work(
     index: number,
     lease: number,
     options: { state?: string; startedAt?: number; title?: string } = {},
@@ -68,19 +68,19 @@ function fixture(now: number) {
 
 test("the runner overview reports used and total slots like placement counts them", async () => {
   const now = Date.now();
-  const { db, work } = fixture(now);
+  const { db, work } = await fixture(now);
   expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.slots).toEqual({
     used: 0,
     total: 1,
   });
   db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,3)", ["runner-1"]);
-  work(0, now + 60_000);
-  markRun(db, work(1, now - RUNNER_LEASE_GRACE_MS - 1), "ended", now);
+  await work(0, now + 60_000);
+  markRun(db, await work(1, now - RUNNER_LEASE_GRACE_MS - 1), "ended", now);
   expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.slots).toEqual({
     used: 1,
     total: 3,
   });
-  work(2, now - 1);
+  await work(2, now - 1);
   expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.slots).toEqual({
     used: 2,
     total: 3,
@@ -89,19 +89,24 @@ test("the runner overview reports used and total slots like placement counts the
 
 test("the runner overview lists each live session with its issue and phase", async () => {
   const now = Date.now();
-  const { db, work } = fixture(now);
+  const { db, work } = await fixture(now);
   expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.running).toEqual([]);
   const lease = now + 60_000;
-  const working = work(0, lease, { startedAt: now - 50_000, title: "Write the parser" });
-  const closeout = work(1, lease, { state: "verifying", startedAt: now - 40_000 });
-  const fixing = work(2, lease, { startedAt: now - 30_000 });
+  const working = await work(0, lease, { startedAt: now - 50_000, title: "Write the parser" });
+  const closeout = await work(1, lease, { state: "verifying", startedAt: now - 40_000 });
+  const fixing = await work(2, lease, { startedAt: now - 30_000 });
   db.run(
     "INSERT INTO closeout_progress(id,item_id,task_id,base,head,policy_digest,decision,started_at,updated_at,finished_at) VALUES('p-2','item-2','task','a','b','d','rejected',?,?,?)",
     [now - 20_000, now - 20_000, now - 20_000],
   );
-  const merging = work(3, lease, { state: "merge_queue", startedAt: now - 20_000 });
-  markRun(db, work(4, now - RUNNER_LEASE_GRACE_MS - 1, { startedAt: now - 10_000 }), "ended", now);
-  await releaseRunCapacity(sqliteDb(db), work(5, lease, { startedAt: now - 5_000 }), now);
+  const merging = await work(3, lease, { state: "merge_queue", startedAt: now - 20_000 });
+  markRun(
+    db,
+    await work(4, now - RUNNER_LEASE_GRACE_MS - 1, { startedAt: now - 10_000 }),
+    "ended",
+    now,
+  );
+  await releaseRunCapacity(sqliteDb(db), await work(5, lease, { startedAt: now - 5_000 }), now);
 
   expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.running).toEqual([
     {
@@ -145,8 +150,8 @@ test("the runner overview lists each live session with its issue and phase", asy
 
 test("a run placed on a runner stays in its list through Closeout and leaves when it ends", async () => {
   const now = Date.now();
-  const { db, work } = fixture(now);
-  const runId = work(0, now + 60_000, { startedAt: now - 30_000, title: "Write the parser" });
+  const { db, work } = await fixture(now);
+  const runId = await work(0, now + 60_000, { startedAt: now - 30_000, title: "Write the parser" });
   const session = {
     runId,
     identifier: "ENG-0",
@@ -172,8 +177,8 @@ test("a run placed on a runner stays in its list through Closeout and leaves whe
 
 test("a session moving off a runner shows its move there, and not once it landed elsewhere", async () => {
   const now = Date.now();
-  const { db, work } = fixture(now);
-  const runId = work(0, now + 60_000);
+  const { db, work } = await fixture(now);
+  const runId = await work(0, now + 60_000);
   await requestRunnerSessionMove(sqliteDb(db), {
     runId,
     runnerId: "runner-1",

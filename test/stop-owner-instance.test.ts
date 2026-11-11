@@ -28,15 +28,15 @@ type LiveTurn = { controller: AbortController; finish(): void };
 
 const clock: Clock = { now: () => Date.now(), mono: () => performance.now() };
 
-function paws(path: string, root: string, name: string, poll = true) {
+async function paws(path: string, root: string, name: string, poll = true) {
   const db = openDatabase(path);
-  const self = registerInstance(db, {
+  const self = await registerInstance(sqliteDb(db), {
     role: "all",
     host: `acme-${name}`,
     version: null,
     now: Date.now(),
   });
-  bindInstance(db, self.id);
+  bindInstance(sqliteDb(db), self.id);
   const orchestrator = new Orchestrator({
     db,
     jobs: new JobLoop(db, clock),
@@ -70,13 +70,13 @@ function paws(path: string, root: string, name: string, poll = true) {
   };
 }
 
-function twoInstances(poll = true) {
+async function twoInstances(poll = true) {
   const root = tempHome();
   const path = join(root, "paws.db");
   const setup = openDatabase(path);
   migrate(setup);
   setup.close();
-  return { a: paws(path, root, "a", poll), b: paws(path, root, "b", poll) };
+  return { a: await paws(path, root, "a", poll), b: await paws(path, root, "b", poll) };
 }
 
 async function runningItem(db: Database, id: string, owner: string): Promise<void> {
@@ -85,13 +85,13 @@ async function runningItem(db: Database, id: string, owner: string): Promise<voi
   await claimRun(sqliteDb(db), run.id, owner);
 }
 
-function stop(
+async function stop(
   db: Database,
   orchestrator: Orchestrator,
   itemId: string,
   source: "dashboard" | "linear" = "dashboard",
 ) {
-  return submitCommand(db, orchestrator.bus, {
+  return submitCommand(sqliteDb(db), orchestrator.bus, {
     type: "stop",
     source,
     itemId,
@@ -100,13 +100,13 @@ function stop(
 }
 
 test("a stop received by instance B aborts the turn on instance A, which owns the run, within 2 s", async () => {
-  const { a, b } = twoInstances();
+  const { a, b } = await twoInstances();
   try {
     await runningItem(a.db, "acme-1", a.id);
     const turn = await a.startTurn("acme-1");
     const started = performance.now();
 
-    expect(stop(b.db, b.orchestrator, "acme-1")).toEqual({ applied: true });
+    expect(await stop(b.db, b.orchestrator, "acme-1")).toEqual({ applied: true });
     expect(getWorkItem(b.db, "acme-1")?.state).toBe("cancelled");
     expect(turn.controller.signal.aborted).toBe(false);
 
@@ -124,12 +124,12 @@ test("a stop received by instance B aborts the turn on instance A, which owns th
 });
 
 test("a stop for a run on the receiving instance aborts its turn at once and addresses no one else", async () => {
-  const { a, b } = twoInstances();
+  const { a, b } = await twoInstances();
   try {
     await runningItem(a.db, "acme-2", a.id);
     const turn = await a.startTurn("acme-2");
 
-    expect(stop(a.db, a.orchestrator, "acme-2")).toEqual({ applied: true });
+    expect(await stop(a.db, a.orchestrator, "acme-2")).toEqual({ applied: true });
     expect(turn.controller.signal.aborted).toBe(true);
     expect(
       listJobs(a.db).filter(
@@ -144,7 +144,7 @@ test("a stop for a run on the receiving instance aborts its turn at once and add
 });
 
 test("the owner's delivery row commits with the stop itself, before any bus emits", async () => {
-  const { a, b } = twoInstances(false);
+  const { a, b } = await twoInstances(false);
   try {
     await runningItem(a.db, "acme-3", a.id);
     const command = {
@@ -153,7 +153,7 @@ test("the owner's delivery row commits with the stop itself, before any bus emit
       itemId: "acme-3",
       requestedAt: Date.now(),
     };
-    expect(applyLinearCommand(b.db, command)).toEqual({ applied: true });
+    expect(await applyLinearCommand(sqliteDb(b.db), command)).toEqual({ applied: true });
     const delivery = listJobs(a.db).filter((job) => job.queue === commandDeliveryQueue(a.id));
     expect(delivery.map((job) => job.status)).toEqual(["pending"]);
     expect(delivery[0]?.payload).toEqual({
@@ -167,11 +167,11 @@ test("the owner's delivery row commits with the stop itself, before any bus emit
 });
 
 test("a delayed stop aborts the turn it stopped and leaves a turn started after a resume", async () => {
-  const { a, b } = twoInstances(false);
+  const { a, b } = await twoInstances(false);
   try {
     await runningItem(a.db, "acme-4", a.id);
     const stopped = await a.startTurn("acme-4", "acme-4-old");
-    expect(stop(b.db, b.orchestrator, "acme-4", "linear")).toEqual({ applied: true });
+    expect(await stop(b.db, b.orchestrator, "acme-4", "linear")).toEqual({ applied: true });
     expect(getWorkItem(b.db, "acme-4")?.state).toBe("paused");
     applyWorkItemEvent(b.db, "acme-4", "resume");
     const replacement = await a.startTurn("acme-4", "acme-4-new");

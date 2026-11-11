@@ -55,9 +55,9 @@ for (const reason of ["findings", "review", "ci"] as const) {
           now: 10,
         });
       } else if (recovery === "startup") {
-        recoverOnStartup(db, 10);
+        await recoverOnStartup(sqliteDb(db), 10);
       } else {
-        expect(requeueOrphanedWork(db, 400_000)).toEqual(["item"]);
+        expect(await requeueOrphanedWork(sqliteDb(db), 400_000)).toEqual(["item"]);
       }
       const job = listJobs(db).at(-1)!;
       expect(job.payload).toMatchObject({ handoff: body, limit: 4 });
@@ -80,7 +80,7 @@ test("completed input is not resurrected by recovery", async () => {
   });
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
   applyWorkItemEvent(db, "item", "turn_ended");
-  recoverOnStartup(db, 10);
+  await recoverOnStartup(sqliteDb(db), 10);
   expect(listJobs(db).at(-1)!.payload).not.toHaveProperty("handoff");
   expect(await pendingRestartHandoff(sqliteDb(db), "item")).toEqual({});
   db.close();
@@ -135,7 +135,7 @@ async function acceptedFollowUp() {
 test("a follow-up whose turn a clean stop aborted is carried into the recovery resume", async () => {
   const { db, body, jobId } = await acceptedFollowUp();
   db.run("UPDATE job SET status='done', finished_at=6 WHERE id=?", [jobId]);
-  recoverOnStartup(db, 10);
+  await recoverOnStartup(sqliteDb(db), 10);
   expect(listJobs(db).at(-1)!.payload).toMatchObject({ handoff: body });
   expect((await pendingRestartHandoff(sqliteDb(db), "item")).handoff).toBe(body);
   db.close();
@@ -144,7 +144,7 @@ test("a follow-up whose turn a clean stop aborted is carried into the recovery r
 test("a follow-up whose turn a crash cut off is carried into the recovery resume", async () => {
   const { db, body, jobId } = await acceptedFollowUp();
   db.run("UPDATE job SET status='running', locked_until=5 WHERE id=?", [jobId]);
-  recoverOnStartup(db, 10);
+  await recoverOnStartup(sqliteDb(db), 10);
   expect(listJobs(db).at(-1)!.payload).toMatchObject({ handoff: body });
   db.close();
 });
@@ -154,7 +154,7 @@ test("a follow-up whose turn finished is not repeated after a restart", async ()
   db.run("UPDATE job SET status='done', finished_at=6 WHERE id=?", [jobId]);
   applyWorkItemEvent(db, "item", "turn_ended");
   applyWorkItemEvent(db, "item", "closeout_accepted");
-  recoverOnStartup(db, 10);
+  await recoverOnStartup(sqliteDb(db), 10);
   expect(await pendingRestartHandoff(sqliteDb(db), "item")).toEqual({});
   db.close();
 });

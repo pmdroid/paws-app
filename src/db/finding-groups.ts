@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { workspaceMemberUsableWhere } from "./workspace";
 import { jsonValue, parsedJson } from "./json-text";
 
@@ -267,8 +266,8 @@ export function* recoverFindingGroupRunsSteps(q: Q, now: number): Steps<void> {
   );
 }
 
-export function recoverFindingGroupRuns(db: Database, now: number): void {
-  settled(sqliteDb(db).run((q) => recoverFindingGroupRunsSteps(q, now)));
+export async function recoverFindingGroupRuns(store: Db, now: number): Promise<void> {
+  await store.run((q) => recoverFindingGroupRunsSteps(q, now));
 }
 
 export function* findingGroupingEnabledSteps(q: Q, workspaceId: string): Steps<boolean> {

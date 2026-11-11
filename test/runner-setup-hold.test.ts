@@ -93,7 +93,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
 
   const db = migratedDatabase(join(root, "paws.db"));
   const now = Date.now();
-  const ownerId = putWorkspaceUser(db, {
+  const ownerId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -107,13 +107,13 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  const memberId = putWorkspaceUser(db, {
+  const memberId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "member",
     name: "Member",
     email: "member@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",
@@ -272,7 +272,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     payload: "{}",
   });
   const item = listWorkItems(db).find((row) => row.sessionKey === "session-1")!;
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -280,7 +280,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session-1", item.delegationId, { actorId: "member" });
+  await bindLinearSessionTask(sqliteDb(db), "session-1", item.delegationId, { actorId: "member" });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [memberId, item.id]);
   await syncItemDependencies(db, {
     itemId: item.id,
@@ -477,7 +477,7 @@ test("Stop ends the hold", async () => {
     const { db, itemId } = fixture;
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).not.toBeNull();
     const stop: LinearCommand = { type: "stop", itemId, source: "linear", requestedAt: Date.now() };
-    expect(applyLinearCommand(db, stop).applied).toBe(true);
+    expect((await applyLinearCommand(sqliteDb(db), stop)).applied).toBe(true);
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
     expect(getWorkItem(db, itemId)!.state).toBe("paused");
   } finally {

@@ -482,7 +482,7 @@ export async function mergeHarness(
       ask,
       now: () => clock.now(),
       // Like the orchestrator, a stop that cancelled or paused the item stops the lane as well as the flag.
-      stopped: () => {
+      stopped: async () => {
         const current = getWorkItem(db, id);
         return (
           state.stopped ||
@@ -498,7 +498,7 @@ export async function mergeHarness(
         await git(repo, "fetch", "-q", bare, "+refs/heads/main:refs/paws/upstream-main");
         return git(repo, "rev-parse", "refs/paws/upstream-main");
       },
-      ciFixAttempts: () => state.ciFixAttempts,
+      ciFixAttempts: async () => state.ciFixAttempts,
       feedbackWait: () => state.feedbackWait,
       readPullCi: async (_, pull) => {
         state.ciReads.push(pull.head);
@@ -512,7 +512,7 @@ export async function mergeHarness(
         });
       },
       readPull: (_, prNumber) => readPull(prNumber),
-      mergeLane: (current) => state.lanes.get(current.id) ?? "",
+      mergeLane: async (current) => state.lanes.get(current.id) ?? "",
       dependencyHold: (_q, itemId) =>
         syncSteps(() => {
           const open = (state.blockedBy.get(itemId) ?? []).filter(
@@ -562,7 +562,7 @@ export async function mergeHarness(
         order: state.orders.get(id) ?? settings.order,
         resolved: {},
       }),
-      policyDigests: () =>
+      policyDigests: async () =>
         state.mainPolicy ??
         (state.policyDigest === null
           ? null

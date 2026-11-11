@@ -18,6 +18,7 @@ import {
   startRetroAttempt,
   syncWorkspaceMember,
   writeRetroArtifact,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeIssueLookup,
@@ -36,7 +37,7 @@ export const END = Date.UTC(2026, 9, 29);
 export const ALL = ["session-a", "session-b"];
 export const ONLY_A = ["session-a"];
 
-export function world(extra: Partial<Parameters<typeof createImprovementsHttp>[0]> = {}) {
+export async function world(extra: Partial<Parameters<typeof createImprovementsHttp>[0]> = {}) {
   const root = mkdtempSync(join(tmpdir(), "paws-improvement-review-"));
   const db = openDatabase(join(root, "paws.db"));
   migrate(db);
@@ -50,13 +51,13 @@ export function world(extra: Partial<Parameters<typeof createImprovementsHttp>[0
     ["ada", "member", ["team-a"]],
     ["bea", "member", ["team-a"]],
   ] as const) {
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: `user-${name}`,
       linearUserId: `linear-${name}`,
       name,
       email: `${name}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "ws",
       userId,
       role,
@@ -83,7 +84,7 @@ export function world(extra: Partial<Parameters<typeof createImprovementsHttp>[0
       repo!,
     ]);
   }
-  const retro = publishTwoRepositoryRetro(db, root);
+  const retro = await publishTwoRepositoryRetro(db, root);
   const lookup = createFakeIssueLookup([
     { id: "issue-open", identifier: "PAS-60", url: null, teamId: "team-a", state: "open" },
     { id: "issue-closed", identifier: "PAS-61", url: null, teamId: "team-a", state: "closed" },
@@ -129,8 +130,8 @@ export function world(extra: Partial<Parameters<typeof createImprovementsHttp>[0
   return { db, root, people, lookup, api, retroApi, retro, now, improvements };
 }
 
-function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, root: string) {
-  const { revision } = saveRetroSettingsRevision(db, {
+async function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, root: string) {
+  const { revision } = await saveRetroSettingsRevision(sqliteDb(db), {
     workspaceId: "ws",
     prompt: "Review {{period}}.\n\n{{digest}}",
     agentProfile: { agent: "codex" },
@@ -141,7 +142,7 @@ function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, root: st
     createdBy: "user-admin",
     now: 1,
   });
-  createRetro(db, {
+  await createRetro(sqliteDb(db), {
     id: "r1",
     workspaceId: "ws",
     windowStart: START,
@@ -150,15 +151,15 @@ function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, root: st
     settingsRevision: revision,
     now: END,
   });
-  beginRetroCollection(db, { retroId: "r1", now: END });
+  await beginRetroCollection(sqliteDb(db), { retroId: "r1", now: END });
   const records = [
     ["ev-a1", "item-a", "PAS-1", A],
     ["ev-a2", "item-a", "PAS-1", A],
     ["ev-b1", "item-b", "OPS-1", B],
     ["ev-b2", "item-b", "OPS-1", B],
   ] as const;
-  recordRetroEvidence(
-    db,
+  await recordRetroEvidence(
+    sqliteDb(db),
     "r1",
     records.map(([evidenceId, itemId, , repository]) => ({
       evidenceId,
@@ -181,26 +182,35 @@ function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, root: st
     })),
   };
   const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
-  const digestRecord = writeRetroArtifact(db, root, {
+  const digestRecord = await writeRetroArtifact(sqliteDb(db), root, {
     retroId: "r1",
     kind: "digest",
     bytes: encode(digest),
     now: END,
   });
-  writeRetroArtifact(db, root, { retroId: "r1", kind: "manifest", bytes: encode({}), now: END });
-  writeRetroArtifact(db, root, {
+  await writeRetroArtifact(sqliteDb(db), root, {
+    retroId: "r1",
+    kind: "manifest",
+    bytes: encode({}),
+    now: END,
+  });
+  await writeRetroArtifact(sqliteDb(db), root, {
     retroId: "r1",
     kind: "prompt",
     bytes: new TextEncoder().encode(`Review.\n${JSON.stringify(digest)}`),
     now: END,
   });
-  freezeRetroInput(db, { retroId: "r1", endCursors: { [A]: 10, [B]: 10 }, now: END });
-  const { attempt } = startRetroAttempt(db, {
+  await freezeRetroInput(sqliteDb(db), {
+    retroId: "r1",
+    endCursors: { [A]: 10, [B]: 10 },
+    now: END,
+  });
+  const { attempt } = (await startRetroAttempt(sqliteDb(db), {
     retroId: "r1",
     owner: "o",
     now: END,
     leaseMs: 60_000,
-  })!;
+  }))!;
   const counts = (identifier: string) => ({
     sessions: 1,
     events: 2,
@@ -248,7 +258,7 @@ function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, root: st
     ],
     notes: [],
   };
-  const published = publishRetro(db, {
+  const published = await publishRetro(sqliteDb(db), {
     retroId: "r1",
     attempt,
     owner: "o",
@@ -274,7 +284,7 @@ function publishTwoRepositoryRetro(db: ReturnType<typeof openDatabase>, root: st
 }
 
 export async function seedDaily(db: ReturnType<typeof openDatabase>) {
-  recordReviewFindings(db, {
+  await recordReviewFindings(sqliteDb(db), {
     itemId: "item-a",
     repository: A,
     head: "a".repeat(40),
@@ -289,7 +299,7 @@ export async function seedDaily(db: ReturnType<typeof openDatabase>) {
       why: "pre-existing" as const,
     })),
   });
-  const findings = listReviewFindings(db).sort((x, y) => x.id - y.id);
+  const findings = (await listReviewFindings(sqliteDb(db))).sort((x, y) => x.id - y.id);
   const run = randomUUID();
   db.run(
     "INSERT INTO finding_group_run(id,workspace_id,day,started_at,fingerprint,status) VALUES(?,?,?,?,?,'completed')",

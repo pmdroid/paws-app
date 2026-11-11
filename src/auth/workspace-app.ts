@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { readSecretFile, writeSecretFile } from "../credentials";
@@ -8,6 +7,7 @@ import {
   anyWorkspace,
   repositoryCatalogued,
   repositoryGithubConnections,
+  type Db,
 } from "../db";
 
 export type ActiveGitHubApp = {
@@ -20,7 +20,7 @@ export type ActiveGitHubApp = {
 };
 
 export function createWorkspaceGitHubActivation(
-  db: Database,
+  db: Db,
   home: string,
   env: Record<string, string | undefined>,
 ) {
@@ -45,9 +45,9 @@ export function createWorkspaceGitHubActivation(
       if (!value) throw new Error("GitHub activation secret unavailable.");
       return JSON.parse(value) as T;
     },
-    installations(): ActiveGitHubApp[] {
-      const rows = activeGithubConnections(db);
-      if (rows.length === 0 && !anyWorkspace(db)) {
+    async installations(): Promise<ActiveGitHubApp[]> {
+      const rows = await activeGithubConnections(db);
+      if (rows.length === 0 && !(await anyWorkspace(db))) {
         const app = loadGitHubAppCredentials(home, env);
         return app?.installationId ? [template()] : [];
       }
@@ -56,11 +56,11 @@ export function createWorkspaceGitHubActivation(
         generation: row.generation,
       }));
     },
-    resolve(repository: string): ActiveGitHubApp {
-      const rows = repositoryGithubConnections(db, repository);
-      const catalogued = repositoryCatalogued(db, repository);
+    async resolve(repository: string): Promise<ActiveGitHubApp> {
+      const rows = await repositoryGithubConnections(db, repository);
+      const catalogued = await repositoryCatalogued(db, repository);
       if (rows.length === 0) {
-        if (anyWorkspace(db)) throw new Error("Connect the workspace GitHub App first.");
+        if (await anyWorkspace(db)) throw new Error("Connect the workspace GitHub App first.");
         return template();
       }
       if (

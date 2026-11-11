@@ -10,6 +10,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import {
   createFakeTracker,
@@ -20,7 +21,7 @@ import { createParentDelegations } from "../../src/intake";
 import { Orchestrator } from "../../src/loop";
 
 /** A workspace, a fake Linear tracker and an orchestrator that adopts delegated parents. */
-export function createParentFixture(
+export async function createParentFixture(
   filename = ":memory:",
   { authorizeEvents = false, startSessions = true } = {},
 ) {
@@ -32,8 +33,13 @@ export function createParentFixture(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
     );
     for (const id of ["actor", "lead"]) {
-      putWorkspaceUser(db, { id, linearUserId: id, name: id, email: `${id}@example.test` });
-      syncWorkspaceMember(db, {
+      await putWorkspaceUser(sqliteDb(db), {
+        id,
+        linearUserId: id,
+        name: id,
+        email: `${id}@example.test`,
+      });
+      await syncWorkspaceMember(sqliteDb(db), {
         workspaceId: "workspace",
         userId: id,
         role: "member",
@@ -97,8 +103,8 @@ export function createParentFixture(
       payload: "{}",
     };
     await accept!(event);
-    ensureLinearSession(db, { sessionId, issueId: target.id, creatorId: "app" });
-    recordLinearInstallation(db, {
+    await ensureLinearSession(sqliteDb(db), { sessionId, issueId: target.id, creatorId: "app" });
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId,
       organizationId: "org",
       teamId: "team",

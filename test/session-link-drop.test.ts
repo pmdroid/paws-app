@@ -71,8 +71,14 @@ test("binding a session keeps an actor that has no workspace user", async () => 
   const db = legacyTempDb();
   try {
     const item = insertQueuedItem(db, { id: "bound-item", sessionKey: "bound-session", now: 1 });
-    ensureLinearSession(db, { sessionId: "bound-session", creatorId: "linear-creator", now: 1 });
-    bindLinearSessionTask(db, "bound-session", item.delegationId, { actorId: "linear-actor" });
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "bound-session",
+      creatorId: "linear-creator",
+      now: 1,
+    });
+    await bindLinearSessionTask(sqliteDb(db), "bound-session", item.delegationId, {
+      actorId: "linear-actor",
+    });
     expect(await delegatedLinearUserId(sqliteDb(db), item.id)).toBe("linear-actor");
   } finally {
     db.close();
@@ -101,17 +107,19 @@ test("migration 061 drops the old session link table and columns", () => {
   }
 });
 
-test("a stop command resolves the session through session_key alone", () => {
+test("a stop command resolves the session through session_key alone", async () => {
   const db = legacyTempDb();
   try {
     const item = insertQueuedItem(db, { id: "stop-item", sessionKey: "stop-session", now: 1 });
     expect(
-      applyLinearCommand(db, {
-        type: "stop",
-        source: "linear",
-        itemId: item.id,
-        requestedAt: 5,
-      }).applied,
+      (
+        await applyLinearCommand(sqliteDb(db), {
+          type: "stop",
+          source: "linear",
+          itemId: item.id,
+          requestedAt: 5,
+        })
+      ).applied,
     ).toBe(true);
     expect(
       db
@@ -152,7 +160,11 @@ test("the scheduler resolves a session item through session_key alone", async ()
   const db = legacyTempDb();
   try {
     const item = insertQueuedItem(db, { id: "sched-item", sessionKey: "sched-session", now: 1 });
-    ensureLinearSession(db, { sessionId: "sched-session", issueId: item.linearIssueId, now: 1 });
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "sched-session",
+      issueId: item.linearIssueId,
+      now: 1,
+    });
     expect(await workspaceDispatch(db, { now: 2 })).toEqual([item.id]);
     expect(
       db

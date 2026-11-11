@@ -182,7 +182,7 @@ describe("retro dispatch, composed with a fake runner", () => {
       commandId: dispatch!.commandId,
       attemptsUsed: 1,
     });
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(1);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(1);
 
     const [command] = await runner.poll(dispatcher);
     expect(command).toMatchObject({
@@ -243,7 +243,7 @@ describe("retro dispatch, composed with a fake runner", () => {
       activeMs: 42_000,
       waitMs: 60_000,
     });
-    expect(runnerOccupancy(reopened, "R1", clock.now).occupied).toBe(0);
+    expect((await runnerOccupancy(sqliteDb(reopened), "R1", clock.now)).occupied).toBe(0);
     reopened.close();
   });
 });
@@ -294,7 +294,10 @@ describe("placement", () => {
     addRunner(db, { id: "R1", capacity: 2 });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     await open(db).tick();
-    expect(runnerOccupancy(db, "R1", clock.now)).toEqual({ capacity: 2, occupied: 1 });
+    expect(await runnerOccupancy(sqliteDb(db), "R1", clock.now)).toEqual({
+      capacity: 2,
+      occupied: 1,
+    });
   });
 
   test("an empty window publishes an empty report without a runner", async () => {
@@ -323,7 +326,7 @@ describe("placement", () => {
       now: clock.now,
     });
     db.run("DELETE FROM retro_collection_lock WHERE retro_id = 'r1'");
-    createRetro(db, {
+    await createRetro(sqliteDb(db), {
       id: "r2",
       workspaceId: "ws",
       windowStart: FIXTURE_START,
@@ -333,14 +336,16 @@ describe("placement", () => {
       agentProfile: first.agentProfile,
       now: clock.now,
     });
-    expect(beginRetroCollection(db, { retroId: "r2", now: clock.now }).ok).toBe(true);
+    expect((await beginRetroCollection(sqliteDb(db), { retroId: "r2", now: clock.now })).ok).toBe(
+      true,
+    );
     const padded = Buffer.concat([digest, Buffer.alloc(8_718_484 - digest.length, " ")]);
     for (const [kind, bytes] of [
       ["digest", padded],
       ["manifest", manifest],
     ] as const)
-      writeRetroArtifact(db, root, { retroId: "r2", kind, bytes, now: clock.now });
-    freezeRetroInput(db, {
+      await writeRetroArtifact(sqliteDb(db), root, { retroId: "r2", kind, bytes, now: clock.now });
+    await freezeRetroInput(sqliteDb(db), {
       retroId: "r2",
       endCursors: { [FIXTURE_REPO]: FIXTURE_END },
       now: clock.now,
@@ -377,7 +382,7 @@ describe("recovery", () => {
       attempt: 1,
     });
     expect(await listRetroDispatches(sqliteDb(db), "r1")).toHaveLength(1);
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(1);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(1);
 
     expect(
       (
@@ -386,7 +391,7 @@ describe("recovery", () => {
         })
       ).status,
     ).toBe(200);
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(0);
     expect(await dispatcher.generation("r1")).toMatchObject({
       state: "failed",
       diagnostic: "retry_backoff",
@@ -664,11 +669,11 @@ describe("recovery", () => {
     });
     expect(input.status).toBe(409);
     await dispatcher.tick();
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(1);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(1);
     expect(
       (await runner.submit(dispatcher, command!, runner.result(command!, VALID_OUTPUT))).status,
     ).toBe(200);
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(0);
     expect(await getRetro(sqliteDb(db), "r1")).toMatchObject({ state: "failed" });
     expect((await getRetro(sqliteDb(db), "r1"))!.error).toContain("lost workspace authority");
     expect(await listRetroItems(sqliteDb(db), "r1")).toEqual([]);
@@ -685,7 +690,7 @@ describe("recovery", () => {
     expect((await listRetroDispatches(sqliteDb(db), "r1"))[0]).toMatchObject({
       releaseReason: "not_started",
     });
-    expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
+    expect((await runnerOccupancy(sqliteDb(db), "R1", clock.now)).occupied).toBe(0);
   });
 
   test("replaying settlement after publication keeps the ready report and its accounting", async () => {
@@ -798,7 +803,7 @@ describe("agent account admission", () => {
       resetsAt: clock.now,
     });
     db.run("UPDATE agent_account_health SET next_check_at=? WHERE kind='quota'", [clock.now]);
-    createRetro(db, {
+    await createRetro(sqliteDb(db), {
       id: "r0",
       workspaceId: "ws",
       windowStart: FIXTURE_START - 7 * 86_400_000,
@@ -841,7 +846,7 @@ describe("agent account admission", () => {
     const accountId = legacyAgentAccountId("ws", "codex");
     const binding = await ensureLegacyAgentBinding(sqliteDb(db), "R1", "codex", clock.now);
     db.run("UPDATE agent_account SET concurrency=1 WHERE id=?", [accountId]);
-    createRetro(db, {
+    await createRetro(sqliteDb(db), {
       id: "r0",
       workspaceId: "ws",
       windowStart: FIXTURE_START - 7 * 86_400_000,

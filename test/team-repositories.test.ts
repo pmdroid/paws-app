@@ -77,7 +77,7 @@ test("the workspace GitHub App resolves a repository found in the access catalog
   const home = tempHome();
   try {
     mkdirSync(join(home, "secrets"), { recursive: true, mode: 0o700 });
-    const activation = createWorkspaceGitHubActivation(db, home, {});
+    const activation = createWorkspaceGitHubActivation(sqliteDb(db), home, {});
     activation.save("secret-1", {
       appId: "1",
       clientId: "client",
@@ -98,9 +98,9 @@ test("the workspace GitHub App resolves a repository found in the access catalog
         defaultBranch: "main",
       },
     ]);
-    expect(activation.resolve("acme/paws-app")).toMatchObject({ installationId: "42" });
-    expect(activation.resolve("acme/linked")).toMatchObject({ installationId: "42" });
-    expect(() => activation.resolve("acme/unknown")).toThrow();
+    expect(await activation.resolve("acme/paws-app")).toMatchObject({ installationId: "42" });
+    expect(await activation.resolve("acme/linked")).toMatchObject({ installationId: "42" });
+    await expect(activation.resolve("acme/unknown")).rejects.toThrow();
   } finally {
     db.close();
   }

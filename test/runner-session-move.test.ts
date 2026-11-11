@@ -37,13 +37,13 @@ async function setup() {
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const otherUserId = putWorkspaceUser(db, {
+  const otherUserId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "other",
     name: "Other",
@@ -176,7 +176,7 @@ async function setup() {
     throw new Error("No dispatched runner command");
   }
   let sequence = 0;
-  function item() {
+  async function item() {
     run(["-C", source, "reset", "-q", "--hard", base]);
     db.run(
       "UPDATE run SET status='ended' WHERE status='active' AND id IN (SELECT run_id FROM runner_work WHERE ended_at IS NOT NULL)",
@@ -186,7 +186,7 @@ async function setup() {
     const sessionKey = `session-${sequence}`;
     const record = insertQueuedItem(db, { id, now, sessionKey });
     const { run: started } = beginImplementRun(db, id, now);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
       appUserId: "app-user",
@@ -194,9 +194,11 @@ async function setup() {
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, sessionKey, record.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionKey, record.delegationId, {
+      actorId: "owner",
+    });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-    bindWorkItemRepository(db, id, {
+    await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",
@@ -328,7 +330,7 @@ async function setup() {
     // A and B tie on rank and load, and ULIDs minted in one millisecond order at random, so B
     // stays offline until A has run the first turn.
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [now - 60_001, runners.b]);
-    const record = item();
+    const record = await item();
     const notices: string[] = [];
     const turn = () =>
       backend.forItem(record.id)({
@@ -652,7 +654,7 @@ async function mergeQueueItemOnFullRunner() {
   const { db, runners, backend, root } = context;
   await context.reset();
   db.run("UPDATE runner SET status='paused' WHERE id=?", [runners.b]);
-  const record = context.item();
+  const record = await context.item();
   const turn = (options: { checkpoint?: false } = {}) =>
     backend.forItem(record.id)({
       profile: { agent: "claude", model: "model" },

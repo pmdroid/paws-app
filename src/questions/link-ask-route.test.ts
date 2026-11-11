@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { insertQueuedItem, migrate, openDatabase, syncWorkspaceMember } from "../db";
+import { insertQueuedItem, migrate, openDatabase, syncWorkspaceMember, sqliteDb } from "../db";
 import { openLinkAsk } from "./link-ask";
 import { handleLinkAskAnswer, LINK_ASK_ANSWER_PATH, type LinkAskAnswer } from "./link-ask-route";
 
@@ -21,7 +21,7 @@ async function setup(active = true, kind: "risk" | "bypass" | "rule" = "risk") {
     "Sam",
     "sam@example.com",
   ]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws",
     userId: "user-1",
     role: "member",

@@ -118,9 +118,9 @@ function accept(
   );
 }
 
-function item(db: Database, id: string): void {
+async function item(db: Database, id: string): Promise<void> {
   insertQueuedItem(db, { id, sessionKey: `session-${id}`, now: 1 });
-  bindWorkItemRepository(db, id, REPOSITORY);
+  await bindWorkItemRepository(sqliteDb(db), id, REPOSITORY);
 }
 
 const STALE: Raw = {
@@ -143,7 +143,7 @@ test("an accepted head stores its two non-blocking findings and not the waived b
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-a");
+    await item(db, "item-a");
     accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
@@ -158,7 +158,7 @@ test("an accepted head stores its two non-blocking findings and not the waived b
       now: 1000,
     });
     expect(result).toEqual({ recorded: 2, gone: 0 });
-    const rows = listReviewFindings(db);
+    const rows = await listReviewFindings(sqliteDb(db));
     expect(rows.map((row) => [row.path, row.lines, row.severity, row.why, row.bugClass])).toEqual([
       ["src/new.ts", "10-12", "P2", "below failOn", "naming"],
       ["src/legacy.ts", "4", "P1", "pre-existing", "unchecked null"],
@@ -180,8 +180,8 @@ test("the same finding on another item updates its count and last seen instead o
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-a");
-    item(db, "item-b");
+    await item(db, "item-a");
+    await item(db, "item-b");
     accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
@@ -227,7 +227,7 @@ test("the same finding on another item updates its count and last seen instead o
       pawsRoot: home,
       now: 3000,
     });
-    const rows = listReviewFindings(db);
+    const rows = await listReviewFindings(sqliteDb(db));
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       itemCount: 2,
@@ -248,8 +248,8 @@ test("a finding a later accepted review of its path no longer reports is gone, a
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-a");
-    item(db, "item-b");
+    await item(db, "item-a");
+    await item(db, "item-b");
     accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
@@ -272,7 +272,7 @@ test("a finding a later accepted review of its path no longer reports is gone, a
       now: 2000,
       changedPaths: ["src/other.ts"],
     });
-    expect(listReviewFindings(db)[0]!.status).toBe("open");
+    expect((await listReviewFindings(sqliteDb(db)))[0]!.status).toBe("open");
     await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-b",
       head: "c".repeat(40),
@@ -280,7 +280,7 @@ test("a finding a later accepted review of its path no longer reports is gone, a
       now: 2500,
       changedPaths: ["src/legacy.ts"],
     });
-    expect(listReviewFindings(db)[0]).toMatchObject({
+    expect((await listReviewFindings(sqliteDb(db)))[0]).toMatchObject({
       status: "gone",
       statusBy: null,
       statusAt: 2500,
@@ -298,7 +298,10 @@ test("a finding a later accepted review of its path no longer reports is gone, a
       pawsRoot: home,
       now: 3000,
     });
-    expect(listReviewFindings(db)[0]).toMatchObject({ status: "open", itemCount: 2 });
+    expect((await listReviewFindings(sqliteDb(db)))[0]).toMatchObject({
+      status: "open",
+      itemCount: 2,
+    });
   } finally {
     db.close();
   }
@@ -308,7 +311,7 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-a");
+    await item(db, "item-a");
     accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
@@ -322,7 +325,7 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
       pawsRoot: home,
       now: 1000,
     });
-    const [row] = listReviewFindings(db);
+    const [row] = await listReviewFindings(sqliteDb(db));
     expect(
       await setReviewFindingStatus(sqliteDb(db), {
         id: row!.id,
@@ -345,7 +348,7 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
       statusAt: 2000,
       statusReason: "Legacy module, removed next quarter.",
     });
-    expect(listReviewFindings(db, { status: "open" })).toEqual([]);
+    expect(await listReviewFindings(sqliteDb(db), { status: "open" })).toEqual([]);
     // A dismissed finding reported again keeps its status.
     await recordAcceptedFindings(sqliteDb(db), {
       itemId: "item-a",
@@ -353,7 +356,7 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
       pawsRoot: home,
       now: 2500,
     });
-    expect(listReviewFindings(db)[0]!.status).toBe("dismissed");
+    expect((await listReviewFindings(sqliteDb(db)))[0]!.status).toBe("dismissed");
     expect(
       await setReviewFindingStatus(sqliteDb(db), {
         id: row!.id,
@@ -398,8 +401,8 @@ test("the backfill reads each task's evidence once and running it again changes 
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-a");
-    item(db, "item-b");
+    await item(db, "item-a");
+    await item(db, "item-b");
     accept(db, home, {
       itemId: "item-a",
       head: "a".repeat(40),
@@ -435,7 +438,7 @@ test("the backfill reads each task's evidence once and running it again changes 
       gone: 1,
     });
     expect(reads).toEqual(["item-a", "item-b"]);
-    const once = listReviewFindings(db);
+    const once = await listReviewFindings(sqliteDb(db));
     expect(
       once.map((row) => [row.path, row.status, row.itemCount, row.first.at, row.last.at]),
     ).toEqual([
@@ -443,7 +446,7 @@ test("the backfill reads each task's evidence once and running it again changes 
       ["src/new.ts", "gone", 1, 100, 150],
     ]);
     await backfillReviewFindings({ store: sqliteDb(db), pawsRoot: home });
-    expect(listReviewFindings(db)).toEqual(once);
+    expect(await listReviewFindings(sqliteDb(db))).toEqual(once);
   } finally {
     db.close();
   }
@@ -460,15 +463,15 @@ test("the migration enqueues the backfill job only where Closeout accepted somet
   }
 });
 
-test("finding report filters work by head alone and item", () => {
+test("finding report filters work by head alone and item", async () => {
   const db = tempDb();
   try {
     for (const [id, head, at] of [
       ["item-a", "head-a", 10],
       ["item-b", "head-b", 20],
     ] as const) {
-      item(db, id);
-      recordReviewFindings(db, {
+      await item(db, id);
+      await recordReviewFindings(sqliteDb(db), {
         itemId: id,
         repository: "acme/platform",
         head,
@@ -486,9 +489,15 @@ test("finding report filters work by head alone and item", () => {
         reviewed: [],
       });
     }
-    expect(listReviewFindings(db, { head: "head-a" }).map((f) => f.text)).toEqual(["item-a"]);
-    expect(listReviewFindings(db, { itemId: "item-b" }).map((f) => f.text)).toEqual(["item-b"]);
-    expect(listReviewFindings(db, { itemId: "item-a", head: "head-b" })).toEqual([]);
+    expect((await listReviewFindings(sqliteDb(db), { head: "head-a" })).map((f) => f.text)).toEqual(
+      ["item-a"],
+    );
+    expect(
+      (await listReviewFindings(sqliteDb(db), { itemId: "item-b" })).map((f) => f.text),
+    ).toEqual(["item-b"]);
+    expect(await listReviewFindings(sqliteDb(db), { itemId: "item-a", head: "head-b" })).toEqual(
+      [],
+    );
   } finally {
     db.close();
   }
@@ -498,7 +507,7 @@ test("a review that fails with a P1 hands the agent its location and explanation
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-r");
+    await item(db, "item-r");
     accept(db, home, {
       itemId: "item-r",
       head: "d".repeat(40),
@@ -526,7 +535,7 @@ test("an accepted head hands the agent no failed findings", async () => {
   const db = tempDb();
   const home = tempHome();
   try {
-    item(db, "item-s");
+    await item(db, "item-s");
     accept(db, home, { itemId: "item-s", head: "e".repeat(40), at: 100, findings: [BLOCKING] });
     expect(await failedReviewFindings(sqliteDb(db), "item-s", home)).toEqual([]);
   } finally {

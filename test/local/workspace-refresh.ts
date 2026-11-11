@@ -23,7 +23,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   mkdirSync(root, { recursive: true });
   const db = openDatabase(join(root, "lifecycle.sqlite"));
   migrate(db);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "member",
     name: "Member",
@@ -43,7 +43,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
   let maxActiveReads = 0;
   const secondGate = Promise.withResolvers<void>();
   const secondStarted = Promise.withResolvers<void>();
-  const sessionBeforeRefresh = issueWorkspaceSession(db, {
+  const sessionBeforeRefresh = await issueWorkspaceSession(db, {
     userId,
     workspaceId: workspace.id,
     now: Date.now(),
@@ -150,7 +150,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
 
   const draining = openDatabase(join(root, "request-drain.sqlite"));
   migrate(draining);
-  const memberId = putWorkspaceUser(draining, {
+  const memberId = await putWorkspaceUser(sqliteDb(draining), {
     id: workspaceId(),
     linearUserId: "request-member",
     name: "Member",
@@ -164,7 +164,7 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(draining, "org", 0)),
     now: 0,
   });
-  const session = issueWorkspaceSession(draining, {
+  const session = await issueWorkspaceSession(draining, {
     userId: memberId,
     workspaceId: selected.id,
     now: Date.now(),

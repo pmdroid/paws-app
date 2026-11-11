@@ -288,7 +288,7 @@ async function firstDelegation(
   const clock = new FakeClock(Date.now());
   const now = () => clock.now();
   const server = countingLinear();
-  const owner = putWorkspaceUser(db, {
+  const owner = await putWorkspaceUser(sqliteDb(db), {
     id: "owner",
     linearUserId: "owner",
     name: "Owner",
@@ -556,7 +556,7 @@ async function firstDelegation(
         waitingForRunner,
         run: server.total - resumed - waitingForRunner,
       },
-      usage: linear.usage().items,
+      usage: (await linear.usage()).items,
       pullRequest: github.opened.length,
     };
   } finally {

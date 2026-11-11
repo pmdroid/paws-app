@@ -23,14 +23,14 @@ const BACKOFF = NOW + 4 * 60_000;
 // backoff; Y is queued with a lower priority and no dependents.
 async function fixture() {
   const db = tempDb();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "user-1",
     linearUserId: "user-linear",
     name: "Owner",
     email: "owner@example.invalid",
   });
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 0]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws-1",
     userId,
     role: "admin",
@@ -163,7 +163,7 @@ test("with another runner free, the waiting item's slot stays off limits to the 
     // Placement keeps Y off A while X holds A's slot, and gives X its own slot.
     const reserved = await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW + 2);
     expect(reserved).toBe(1);
-    expect(runnerHasCapacity(db, "A", NOW + 2, "", reserved)).toBe(false);
+    expect(await runnerHasCapacity(sqliteDb(db), "A", NOW + 2, "", reserved)).toBe(false);
     expect(await pinnedSlotsReserved(sqliteDb(db), "B", "Y", NOW + 2)).toBe(0);
     expect(await pinnedSlotsReserved(sqliteDb(db), "A", "X", NOW + 2)).toBe(0);
     // Once X is placed the reservation is gone.

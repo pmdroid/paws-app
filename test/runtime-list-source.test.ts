@@ -16,6 +16,7 @@ import {
   openDatabase,
   saveTaskMode,
   type WorkItemRecord,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { Orchestrator } from "../src/loop";
@@ -83,8 +84,8 @@ async function runtimesFor(
   });
   try {
     insertQueuedItem(db, { id: "task", sessionKey: "session", now: 1_000 });
-    bindWorkItemRepository(db, "task", fixture.repository);
-    saveTaskMode(db, "task", options.mode);
+    await bindWorkItemRepository(sqliteDb(db), "task", fixture.repository);
+    await saveTaskMode(sqliteDb(db), "task", options.mode);
     const inputs = await (
       orchestrator as unknown as {
         trustedRunInputs(

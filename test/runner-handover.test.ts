@@ -51,7 +51,7 @@ async function setup() {
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   const now = () => Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -196,7 +196,7 @@ async function setup() {
     const sessionKey = `session-${sequence}`;
     const record = insertQueuedItem(db, { id, now: now(), sessionKey });
     const { run } = beginImplementRun(db, id, now());
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
       appUserId: "app-user",
@@ -204,9 +204,11 @@ async function setup() {
       teamId: "fixture-team",
       observedAtMs: now(),
     });
-    bindLinearSessionTask(db, sessionKey, record.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionKey, record.delegationId, {
+      actorId: "owner",
+    });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-    bindWorkItemRepository(db, id, {
+    await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "fixture",
       repo: "repository",
       remoteUrl: "https://github.com/fixture/repository.git",

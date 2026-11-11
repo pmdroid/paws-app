@@ -355,7 +355,7 @@ describe("shared Linear budget", () => {
       webhooks: false,
       db,
       statusEnv: {},
-      linearUsage: () => ledger.usage(),
+      linearUsage: async () => ledger.usage(),
     });
     try {
       const response = await fetch(`http://127.0.0.1:${server.port}/api/overview`);

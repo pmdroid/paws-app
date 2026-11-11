@@ -20,6 +20,7 @@ import {
   recordItemPullRequest,
   PULL_COMMENT_SETTLE_MS,
   sqliteDb,
+  syncSteps,
 } from "../db";
 import {
   createFakeCheckRuns,
@@ -87,7 +88,7 @@ const CLOSEOUT_FINDINGS: StoredReviewFinding[] = [
 ];
 
 const FILTER: PullCommentFilter = {
-  appId: () => "42",
+  appId: async () => "42",
   appLogin: () => "paws-test[bot]",
   ignoredBots: () => DEFAULT_IGNORED_COMMENT_BOTS.map((login) => login.toLowerCase()),
   ignoredMarkers: (repository) =>
@@ -100,7 +101,7 @@ async function setup(threads = THREADS) {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  bindWorkItemRepository(db, "eng-1", {
+  await bindWorkItemRepository(sqliteDb(db), "eng-1", {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
@@ -149,7 +150,7 @@ async function setup(threads = THREADS) {
         prNumber: pullNumber,
         tokenProvider,
       }),
-    fixRoundLimit: () => limit,
+    fixRoundLimit: () => syncSteps(() => limit),
     closeoutFindings: async () => findings,
     session: (item) => item.sessionKey,
     flush: async () => {},
@@ -769,7 +770,7 @@ describe("review apps still checking the head", () => {
 function laneCapabilities(): MergeCapabilities {
   const caps: Partial<MergeCapabilities> = {
     now: () => 10,
-    stopped: () => false,
+    stopped: async () => false,
     mergedOutsideLane: async () => null,
     feedbackWait: () => ({ quietMs: 60_000, maxMs: 300_000 }),
     readPullCi: async () => ({ state: "unknown", message: "not read" }),

@@ -39,7 +39,7 @@ export async function classifyTask(options: {
   signal: AbortSignal;
   launch: AgentLaunch;
   agentRunner?: typeof runAgent;
-  onCleanupFailure?: () => void;
+  onCleanupFailure?: () => void | Promise<void>;
 }): Promise<TaskClassification> {
   assertSafeSegment(options.itemId, "item id");
   options.signal.throwIfAborted();
@@ -96,7 +96,7 @@ export async function classifyTask(options: {
         text += event.update.content.text;
     },
   });
-  if (!result.agentExited) options.onCleanupFailure?.();
+  if (!result.agentExited) await options.onCleanupFailure?.();
   options.signal.throwIfAborted();
   if (
     result.stopReason !== "end_turn" ||

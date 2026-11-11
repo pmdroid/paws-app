@@ -85,7 +85,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   const now = Date.now();
   // Keep capacity retries in the future while Git and runner setup use real time.
   const clock = new FakeClock(now);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -278,7 +278,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         payload: "{}",
       });
       const item = listWorkItems(db).find((row) => row.sessionKey === `session-${index}`)!;
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "app",
         appUserId: "app-user",
@@ -286,7 +286,9 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         teamId: "team",
         observedAtMs: now,
       });
-      bindLinearSessionTask(db, `session-${index}`, item.delegationId, { actorId: "owner" });
+      await bindLinearSessionTask(sqliteDb(db), `session-${index}`, item.delegationId, {
+        actorId: "owner",
+      });
       db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
       await syncItemDependencies(db, {
         itemId: item.id,

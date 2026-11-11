@@ -27,7 +27,7 @@ export default {
   async run(proof) {
     const db = proof.database;
     const { pair, queue, pass } = await workspaceWithRunners(db);
-    queue("stopped");
+    await queue("stopped");
     db.run("UPDATE linear_session SET stopped_at=? WHERE session_id=?", [NOW, "session-stopped"]);
     proof.expect(
       "unavailable authority returns an item verdict without aborting admission",
@@ -36,7 +36,7 @@ export default {
       )) === null,
     );
     const goldbox = await pair("goldbox", 6, ["other/repo"]);
-    for (const id of ["a", "b", "c"]) queue(id);
+    for (const id of ["a", "b", "c"]) await queue(id);
     proof.expect("a repository refused everywhere stays queued", (await pass()).length === 0);
     proof.expect(
       "no refused start can be claimed",

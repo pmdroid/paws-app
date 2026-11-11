@@ -108,7 +108,12 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
   const item = insertQueuedItem(db, { id: "task", sessionKey: "session", title: "task" });
   beginImplementRun(db, item.id, 1000);
-  recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
+  await recordLinearInstallation(sqliteDb(db), {
+    ...scope,
+    sessionId: "session",
+    teamId: "team",
+    observedAtMs: 1,
+  });
   const reads = createFakeLinearAccessReads({
     installation: scope,
     sessions: [{ ...scope, sessionId: "session", teamId: "team", issueId: item.linearIssueId }],
@@ -270,7 +275,7 @@ test("a denied authorization after an issue change still stops the task", async 
   try {
     expect(await auth.ensure(getWorkItem(db, "revoked")!, "initial", signal)).toBe(true);
     allowed = false;
-    auth.invalidate({ issueId: "lin-item-revoked" });
+    await auth.invalidate({ issueId: "lin-item-revoked" });
     expect(await auth.ensure(getWorkItem(db, "revoked")!, "initial", signal)).toBe(false);
     expect(getWorkItem(db, "revoked")?.state).not.toBe("running");
   } finally {
@@ -358,11 +363,11 @@ for (const scope of [{ issueId: "lin-item-task" }, { sessionId: "session" }, {}]
     const f = cachedAuthorization();
     try {
       await f.ensure();
-      f.auth.invalidate({ issueId: "another-issue" });
-      f.auth.invalidate({ sessionId: "another-session" });
+      await f.auth.invalidate({ issueId: "another-issue" });
+      await f.auth.invalidate({ sessionId: "another-session" });
       await f.ensure();
       expect(f.reads.membership).toBe(1);
-      f.auth.invalidate(scope);
+      await f.auth.invalidate(scope);
       await f.ensure();
       expect(f.reads).toEqual({ membership: 2, installation: 2 });
     } finally {
@@ -401,7 +406,7 @@ test("an invalidation still keeps the recent ready check as a fallback for a tra
   const f = cachedAuthorization();
   try {
     await f.ensure();
-    f.auth.invalidate();
+    await f.auth.invalidate();
     f.host.check = async () => {
       throw new Error("GitHub API request failed with 502");
     };

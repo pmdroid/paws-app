@@ -244,7 +244,7 @@ export function createBrowserOnboarding(options: {
         if (!restored) return retry("workspace-mismatch");
       } else if (!writeStoredToken(db, secretsDir, token, true)) return retry("already-connected");
       const timestamp = now();
-      const userId = putWorkspaceUser(db, {
+      const userId = await putWorkspaceUser(sqliteDb(db), {
         id: workspaceId(),
         linearUserId: identity.userId,
         name: identity.name,
@@ -262,7 +262,7 @@ export function createBrowserOnboarding(options: {
           now: timestamp,
         });
       }
-      syncWorkspaceMember(db, {
+      await syncWorkspaceMember(sqliteDb(db), {
         workspaceId: workspace.id,
         userId,
         active: true,
@@ -270,7 +270,7 @@ export function createBrowserOnboarding(options: {
         teamIds: member.teamIds,
         now: timestamp + 1,
       });
-      const session = issueWorkspaceSession(db, {
+      const session = await issueWorkspaceSession(db, {
         workspaceId: workspace.id,
         userId,
         now: timestamp + 1,

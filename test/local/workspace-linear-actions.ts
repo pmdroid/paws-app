@@ -47,7 +47,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
   const db = openDatabase(join(root, "actions.sqlite"));
   migrate(db);
   let now = Date.now();
-  const ownerId = putWorkspaceUser(db, {
+  const ownerId = await putWorkspaceUser(sqliteDb(db), {
     id: "owner",
     linearUserId: "owner",
     name: "Owner",
@@ -66,8 +66,13 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     ["member", "member", true, ["team"]],
     ["owner", "member", true, ["team"]],
   ] as const) {
-    putWorkspaceUser(db, { id, linearUserId: id, name: id, email: `${id}@example.invalid` });
-    syncWorkspaceMember(db, {
+    await putWorkspaceUser(sqliteDb(db), {
+      id,
+      linearUserId: id,
+      name: id,
+      email: `${id}@example.invalid`,
+    });
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: id,
       active,
@@ -128,8 +133,8 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     const id = `item-${++serial}`,
       sessionId = `session-${serial}`;
     const item = insertQueuedItem(db, { id, sessionKey: sessionId, title: "Export rows" });
-    ensureLinearSession(db, { sessionId, issueId: id, now });
-    recordLinearInstallation(db, {
+    await ensureLinearSession(sqliteDb(db), { sessionId, issueId: id, now });
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId,
       organizationId: "org",
       oauthClientId: "client",
@@ -241,7 +246,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       pending = loop.onLinearEvent(changed.event);
     await entered.promise;
     now++;
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: "member",
       active: false,
@@ -283,9 +288,9 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
         resumes() === 2,
       { resumes: resumes() },
     );
-    const removeOwnerTeam = () => {
+    const removeOwnerTeam = async () => {
       now++;
-      syncWorkspaceMember(db, {
+      await syncWorkspaceMember(sqliteDb(db), {
         workspaceId: "workspace",
         userId: "owner",
         active: true,
@@ -294,8 +299,8 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
         now,
       });
     };
-    const restoreOwnerTeam = () =>
-      syncWorkspaceMember(db, {
+    const restoreOwnerTeam = async () =>
+      await syncWorkspaceMember(sqliteDb(db), {
         workspaceId: "workspace",
         userId: "owner",
         active: true,
@@ -315,7 +320,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       authorizeLinearEvent: async (event) => {
         calls++;
         const decision = await decide(access.authorizeLinearEvent)(event);
-        removeOwnerTeam();
+        await removeOwnerTeam();
         return decision;
       },
       recheckLinearEvent: access.recheckLinearEvent,
@@ -334,7 +339,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       },
     );
     await queueLoop.shutdown();
-    restoreOwnerTeam();
+    await restoreOwnerTeam();
     const followup = await task("owner");
     await answerQuestion(db, followup.question.id, {
       answer: "Earlier answer",
@@ -353,7 +358,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
       authorizeLinearEvent: async (event) => {
         followupCalls++;
         const decision = await decide(access.authorizeLinearEvent)(event);
-        removeOwnerTeam();
+        await removeOwnerTeam();
         return decision;
       },
       recheckLinearEvent: access.recheckLinearEvent,
@@ -548,7 +553,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
   });
   const db = paws.db,
     now = Date.now();
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "owner",
     linearUserId: "owner",
     name: "Owner",
@@ -562,13 +567,13 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "inactive",
     linearUserId: "inactive",
     name: "Inactive",
     email: "inactive@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "workspace",
     userId: "inactive",
     active: false,
@@ -581,8 +586,8 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     const id = `native-${++sequence}`,
       at = Date.now();
     const item = insertQueuedItem(db, { id, sessionKey: id, title: "Export rows" });
-    ensureLinearSession(db, { sessionId: id, issueId: id, now: at });
-    recordLinearInstallation(db, {
+    await ensureLinearSession(sqliteDb(db), { sessionId: id, issueId: id, now: at });
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: id,
       organizationId: "org",
       oauthClientId: "client",

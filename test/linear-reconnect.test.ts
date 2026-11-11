@@ -34,7 +34,7 @@ async function fixture(known = true) {
   cleanup.push(() => db.close());
   migrate(db);
   if (known)
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       ...scope,
       sessionId: "session",
       teamId: "team",

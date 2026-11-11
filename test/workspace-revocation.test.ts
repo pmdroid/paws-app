@@ -1,3 +1,4 @@
+import type { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { JOB_KIND } from "../src/core";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -48,7 +49,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     const { db } = f;
     const now = Date.now();
     db.run("UPDATE linear_session SET creator_id='member' WHERE session_id='session-unmapped'");
-    recordItemBranchState(db, {
+    await recordItemBranchState(sqliteDb(db), {
       itemId: "controlled",
       runId: f.runId,
       head: "head",
@@ -122,7 +123,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
         )
         .all(),
     ).toEqual([{ user_id: "admin", subject: "member" }]);
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -132,9 +133,9 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     });
     expect(workspaceMemberUsable(workspaceMember(db, "workspace", "member"))).toBe(false);
     expect(await listUserWorkspaces(sqliteDb(db), "member")).toEqual([]);
-    expect(() =>
+    await expect(
       issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }),
-    ).toThrow(WORKSPACE_REVOKED_SIGN_IN);
+    ).rejects.toThrow(WORKSPACE_REVOKED_SIGN_IN);
     expect(
       requestWorkspaceSession(
         db,
@@ -151,7 +152,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     });
     expect(restored.status).toBe(200);
     expect(
-      issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }).token,
+      (await issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now })).token,
     ).toBeTruthy();
     expect(db.query("SELECT status,fence FROM runner WHERE id='box'").get()).toEqual({
       status: "revoked",
@@ -185,25 +186,25 @@ test("revoke and restore require admin, origin and CSRF; self and last admin sta
     expect(await invalid.json()).toEqual({
       error: "Choose a workspace member and set revoked to true or false.",
     });
-    expect(() =>
-      changeWorkspaceRevocation(f.db, {
+    await expect(
+      changeWorkspaceRevocation(sqliteDb(f.db), {
         workspaceId: "workspace",
         actorId: "admin",
         userId: "admin",
         revoked: true,
         now: Date.now(),
       }),
-    ).toThrow("You cannot revoke your own access.");
+    ).rejects.toThrow("You cannot revoke your own access.");
     expect(workspaceMemberUsable(workspaceMember(f.db, "workspace", "admin"))).toBe(true);
-    expect(() =>
-      changeWorkspaceRevocation(f.db, {
+    await expect(
+      changeWorkspaceRevocation(sqliteDb(f.db), {
         workspaceId: "workspace",
         actorId: "member",
         userId: "admin",
         revoked: true,
         now: Date.now(),
       }),
-    ).toThrow("Workspace administration is required.");
+    ).rejects.toThrow("Workspace administration is required.");
   });
 });
 
@@ -213,15 +214,15 @@ test("a failed Stop rolls back the whole revocation", async () => {
     f.db.run(
       "CREATE TRIGGER fail_stop BEFORE UPDATE ON work_item BEGIN SELECT RAISE(ABORT,'fixture Stop failure'); END",
     );
-    expect(() =>
-      changeWorkspaceRevocation(f.db, {
+    await expect(
+      changeWorkspaceRevocation(sqliteDb(f.db), {
         workspaceId: "workspace",
         actorId: "admin",
         userId: "member",
         revoked: true,
         now: Date.now(),
       }),
-    ).toThrow("Work changed before access could be revoked.");
+    ).rejects.toThrow("Work changed before access could be revoked.");
     expect(workspaceMember(f.db, "workspace", "member")?.revokedAt).toBeNull();
     expect(
       f.db.query("SELECT 1 FROM workspace_session WHERE user_id='member'").get(),
@@ -249,7 +250,7 @@ test("revocation uses resolved delegator ownership, not the session creator", as
     ] as const;
     for (const [id, owner, delegated, creator] of cases) {
       insertQueuedItem(db, { id, sessionKey: `ownership-${id}`, now });
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         sessionId: `ownership-${id}`,
         organizationId: id === "other-organization" ? "foreign" : "org",
         teamId: "team",
@@ -267,7 +268,7 @@ test("revocation uses resolved delegator ownership, not the session creator", as
         id,
       ]);
     }
-    const stopped = changeWorkspaceRevocation(db, {
+    const stopped = await changeWorkspaceRevocation(sqliteDb(db), {
       workspaceId: "workspace",
       actorId: "admin",
       userId: "member",
@@ -298,7 +299,7 @@ test("revocation stops accepted work without closing its pull request", async ()
       pullUrl: "https://example.invalid/pull/87",
       openedAt: Date.now(),
     });
-    changeWorkspaceRevocation(db, {
+    await changeWorkspaceRevocation(sqliteDb(db), {
       workspaceId: "workspace",
       actorId: "admin",
       userId: "member",
@@ -427,7 +428,7 @@ test("revocation stops explicit owners and delegators without session metadata",
         id,
       ]);
       if (session === "foreign-owned")
-        recordLinearInstallation(db, {
+        await recordLinearInstallation(sqliteDb(db), {
           sessionId: session,
           organizationId: "foreign",
           teamId: "team",
@@ -437,7 +438,7 @@ test("revocation stops explicit owners and delegators without session metadata",
         });
       if (running) beginImplementRun(db, id, now);
     }
-    const stopped = changeWorkspaceRevocation(db, {
+    const stopped = await changeWorkspaceRevocation(sqliteDb(db), {
       workspaceId: "workspace",
       actorId: "admin",
       userId: "member",
@@ -460,7 +461,7 @@ test("revocation stops explicit owners and delegators without session metadata",
 test("revoking an idle member detaches their VM runner and notifies the connection owner after commit", async () => {
   let calls = 0;
   let committed = false;
-  let database: Parameters<typeof changeWorkspaceRevocation>[0];
+  let database!: Database;
   await fixtureTest(
     async (f) => {
       database = f.db;

@@ -19,6 +19,7 @@ import {
   unreportedReviewReplies,
   type PullFeedbackWait,
   sqliteDb,
+  syncSteps,
 } from "../db";
 import {
   commentOnPullRequest,
@@ -79,7 +80,7 @@ const THREADS: FakeReviewThread[] = [
 ];
 
 const FILTER: PullCommentFilter = {
-  appId: () => "42",
+  appId: async () => "42",
   appLogin: () => "paws-test[bot]",
   ignoredBots: () => [],
   ignoredMarkers: () => [],
@@ -89,7 +90,7 @@ async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
-  bindWorkItemRepository(db, "eng-1", {
+  await bindWorkItemRepository(sqliteDb(db), "eng-1", {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
@@ -121,7 +122,7 @@ async function setup() {
     pullHead: async () => null,
     leaveMergeQueue: (_, prNumber) =>
       leaveGitHubMergeQueue({ client, owner: "acme", repo: "one", prNumber, tokenProvider }),
-    fixRoundLimit: () => 3,
+    fixRoundLimit: () => syncSteps(() => 3),
     closeoutFindings: async () => [],
     session: (item) => item.sessionKey,
     flush: async () => {},

@@ -121,7 +121,7 @@ export async function probeExecutionLifecycle(
       { state: state("failed"), notices: notices("failed"), stallQuestions },
     );
     seed("handoff", ["merged", "queued"]);
-    confirmFakeMerge(db, "handoff-0");
+    await confirmFakeMerge(db, "handoff-0");
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('handoff-0','handoff-1')",
     );
@@ -164,15 +164,15 @@ export async function probeExecutionLifecycle(
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('external-workspace','external-org','External workspace',1)",
     );
-    ensureLinearSession(db, {
+    await ensureLinearSession(sqliteDb(db), {
       sessionId: "external-session",
       issueId: "external-parent",
       organizationId: "external-org",
       appUserId: "external-app",
       creatorId: "external-human",
     });
-    bindLinearSessionTask(db, "external-session", "external");
-    recordLinearInstallation(db, {
+    await bindLinearSessionTask(sqliteDb(db), "external-session", "external");
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: "external-session",
       organizationId: "external-org",
       oauthClientId: "external-client",

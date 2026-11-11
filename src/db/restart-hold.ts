@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import type { Db, Q, Steps } from "./db";
 import type { WorkItemRecord } from "./items";
 import { emitJobReady, reenqueueJobSteps } from "./jobs";
 import type { restartHold as restartHoldTable } from "./schema";
@@ -29,8 +28,8 @@ export function* restartHoldSteps(q: Q, item: WorkItemRecord): Steps<RestartHold
   return row ?? null;
 }
 
-export function restartHold(db: Database, item: WorkItemRecord): RestartHold | null {
-  return settled(sqliteDb(db).run((q) => restartHoldSteps(q, item)));
+export async function restartHold(store: Db, item: WorkItemRecord): Promise<RestartHold | null> {
+  return store.run((q) => restartHoldSteps(q, item));
 }
 
 export function* holdRestartSteps(q: Q, item: WorkItemRecord, now: number): Steps<void> {

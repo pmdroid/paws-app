@@ -31,15 +31,15 @@ import { workspaceAdmission } from "./fake-workspace";
 const START = 1_000;
 const RUNNERS_URL = "https://paws.example/dashboard/runners";
 
-function workspace(db: Database) {
+async function workspace(db: Database) {
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',0)");
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "me",
     linearUserId: "linear-me",
     name: "me",
     email: "me@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws",
     userId: "me",
     role: "admin",
@@ -50,14 +50,14 @@ function workspace(db: Database) {
   addRunner(db, "runner-1", START);
   const item = insertQueuedItem(db, { id: "cli", now: START, sessionKey: "session" });
   db.run("UPDATE work_item SET linear_identifier='DEP-12',owner_user_id='me' WHERE id='cli'");
-  ensureLinearSession(db, {
+  await ensureLinearSession(sqliteDb(db), {
     sessionId: "session",
     issueId: item.linearIssueId,
     organizationId: "org",
     creatorId: "linear-me",
     now: START,
   });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",
@@ -65,8 +65,8 @@ function workspace(db: Database) {
     teamId: "team",
     observedAtMs: 0,
   });
-  bindLinearSessionTask(db, "session", item.delegationId);
-  bindWorkItemRepository(db, "cli", {
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
+  await bindWorkItemRepository(sqliteDb(db), "cli", {
     owner: "acme",
     repo: "cli",
     remoteUrl: "https://github.com/acme/cli.git",
@@ -147,7 +147,7 @@ async function withPaws(
   const jobs = new JobLoop(db, clock);
   const paws = orchestrator(db, clock, jobs);
   try {
-    workspace(db);
+    await workspace(db);
     await run({ db, clock, jobs, paws });
   } finally {
     await paws.shutdown();
@@ -203,7 +203,7 @@ test("the runner page's list refuses: the question names the runner page", async
 test("a runner that allows the repository is only offline: no question, and the wait says it is offline", async () => {
   const db = tempDb();
   try {
-    workspace(db);
+    await workspace(db);
     await recordRunnerRepositories(sqliteDb(db), "runner-1", ["acme/monorepo"], START);
     addRunner(db, "runner-2", 0);
     await recordRunnerRepositories(sqliteDb(db), "runner-2", ["acme/cli"], 0);

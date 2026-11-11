@@ -20,7 +20,7 @@ export function relationsPollIntervalMs(input: { blocked: boolean; lowBudget: bo
 export function createRelationsPolls(input: {
   db: Database;
   reconciler: Reconciler;
-  lowBudget: () => boolean;
+  lowBudget: () => Promise<boolean>;
   reconcileExecution: () => unknown;
   read?: <T>(run: () => Promise<T>) => Promise<T>;
   now?: () => number;
@@ -38,7 +38,7 @@ export function createRelationsPolls(input: {
   async function intervalMs(): Promise<number> {
     return relationsPollIntervalMs({
       blocked: (await input.reconciler.blockedItemIds()).length > 0,
-      lowBudget: input.lowBudget(),
+      lowBudget: await input.lowBudget(),
     });
   }
 

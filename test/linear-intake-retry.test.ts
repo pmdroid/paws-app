@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { migrate, openDatabase } from "../src/db";
+import { migrate, openDatabase, sqliteDb } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import {
   acknowledgeNewSession,
@@ -41,8 +41,8 @@ test.each(["session", null])(
         subIssues: [],
       },
     ]);
-    let store = createInboxStore(db);
-    store.commit(event);
+    let store = createInboxStore(sqliteDb(db));
+    await store.commit(event);
     let attempts = 0;
     async function tick(fail: boolean) {
       let release: (() => void) | undefined;
@@ -87,15 +87,17 @@ test.each(["session", null])(
     try {
       await tick(true);
       expect(attempts).toBe(1);
-      expect(store.listUnhandled().map((pending) => pending.dedupeKey)).toEqual([event.dedupeKey]);
+      expect((await store.listUnhandled()).map((pending) => pending.dedupeKey)).toEqual([
+        event.dedupeKey,
+      ]);
       expect(db.query("SELECT id FROM work_item").all()).toHaveLength(0);
       if (sessionId) expect(tracker.progress.at(-1)?.kind).toBe("error");
       db.close();
       db = openDatabase(path);
-      store = createInboxStore(db);
+      store = createInboxStore(sqliteDb(db));
       await tick(false);
       expect(attempts).toBe(2);
-      expect(store.listUnhandled()).toHaveLength(0);
+      expect(await store.listUnhandled()).toHaveLength(0);
       expect(db.query("SELECT id FROM work_item").all()).toHaveLength(1);
       await tick(false);
       expect(attempts).toBe(2);

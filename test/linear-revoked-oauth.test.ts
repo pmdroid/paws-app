@@ -21,10 +21,15 @@ afterEach(() => {
   for (const close of cleanup.splice(0).reverse()) close();
 });
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-function fixture() {
+async function fixture() {
   const db = tempDb();
   cleanup.push(() => db.close());
-  recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
+  await recordLinearInstallation(sqliteDb(db), {
+    ...scope,
+    sessionId: "session",
+    teamId: "team",
+    observedAtMs: 1,
+  });
   const home = tempHome();
   const secretsDir = join(home, "secrets");
   const token: StoredLinearToken = {
@@ -41,7 +46,7 @@ function fixture() {
 }
 
 test("known revocation blocks fresh credentials and refresh without a network request", async () => {
-  const f = fixture();
+  const f = await fixture();
   let requests = 0;
   const auth = createLinearAuth({
     db: f.db,
@@ -65,7 +70,7 @@ test("known revocation blocks fresh credentials and refresh without a network re
 test.each([false, true])(
   "revocation fences a pending refresh and preserves operator replacement=%s",
   async (replace) => {
-    const f = fixture();
+    const f = await fixture();
     writeStoredToken(f.db, f.secretsDir, { ...f.token, expiresAtMs: 0 });
     const started = Promise.withResolvers<void>();
     const released = Promise.withResolvers<Response>();
@@ -104,7 +109,7 @@ test.each([false, true])(
 );
 
 test("revocation after token load fences the GraphQL request before transport dispatch", async () => {
-  const f = fixture();
+  const f = await fixture();
   const auth = createLinearAuth({
     db: f.db,
     secretsDir: f.secretsDir,
@@ -127,7 +132,7 @@ test("revocation after token load fences the GraphQL request before transport di
 });
 
 test("a revoked installation leaves webhook dispatch available but starts no catch-up polling", async () => {
-  const f = fixture();
+  const f = await fixture();
   await f.revoke();
   let requests = 0;
   const opened = openLinear({
@@ -149,8 +154,8 @@ test("a revoked installation leaves webhook dispatch available but starts no cat
 });
 
 test("revocation for another client or app user does not block the configured installation", async () => {
-  const f = fixture();
-  recordLinearInstallation(f.db, {
+  const f = await fixture();
+  await recordLinearInstallation(sqliteDb(f.db), {
     ...scope,
     organizationId: "other-org",
     oauthClientId: "other-client",
@@ -179,7 +184,7 @@ test("revocation for another client or app user does not block the configured in
 });
 
 test("incomplete configured identity cannot bypass a possibly matching revocation", async () => {
-  const f = fixture();
+  const f = await fixture();
   await f.revoke();
   expect(isLinearAppRevoked(f.db, { oauthClientId: "client", appUserId: null })).toBe(true);
   expect(isLinearAppRevoked(f.db, { oauthClientId: null, appUserId: "app" })).toBe(true);

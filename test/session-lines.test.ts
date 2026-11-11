@@ -155,7 +155,7 @@ describe("acknowledgeNewSession on a session with a running item", () => {
     const db = database();
     insertQueuedItem(db, { id: "item-1", sessionKey: "ses-1", now: 0 });
     beginImplementRun(db, "item-1", 1_000);
-    expect(sessionHasItemInFlight(db, "ses-1")).toBe(true);
+    expect(await sessionHasItemInFlight(sqliteDb(db), "ses-1")).toBe(true);
     const tracker = createFakeTracker();
     await expect(
       acknowledgeNewSession(
@@ -165,7 +165,7 @@ describe("acknowledgeNewSession on a session with a running item", () => {
           throw new Error("Linear refused the follow-up read");
         },
         undefined,
-        { sessionBusy: (sessionId) => sessionHasItemInFlight(db, sessionId) },
+        { sessionBusy: (sessionId) => sessionHasItemInFlight(sqliteDb(db), sessionId) },
       ),
     ).rejects.toThrow("Linear refused the follow-up read");
     expect(tracker.progress).toEqual([]);
@@ -182,7 +182,7 @@ describe("acknowledgeNewSession on a session with a running item", () => {
           throw new Error("Linear refused the follow-up read");
         },
         undefined,
-        { sessionBusy: (sessionId) => sessionHasItemInFlight(db, sessionId) },
+        { sessionBusy: (sessionId) => sessionHasItemInFlight(sqliteDb(db), sessionId) },
       ),
     ).rejects.toThrow();
     expect(tracker.progress.map((update) => [update.kind, update.body])).toEqual([

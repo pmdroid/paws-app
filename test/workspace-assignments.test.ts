@@ -74,7 +74,7 @@ async function fixture({
   migrate(db);
   const clock = new FakeClock(Date.now());
   const origin = "https://paws.example.invalid";
-  const ownerId = putWorkspaceUser(db, {
+  const ownerId = await putWorkspaceUser(sqliteDb(db), {
     id: "owner",
     linearUserId: "owner",
     name: "Owner",
@@ -167,9 +167,9 @@ async function fixture({
       },
     }),
   };
-  ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
-  const install = () =>
-    recordLinearInstallation(db, {
+  await ensureLinearSession(sqliteDb(db), { sessionId: "session", issueId: "issue" });
+  const install = async () =>
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: "session",
       organizationId: "org",
       oauthClientId: "client",
@@ -177,7 +177,7 @@ async function fixture({
       teamId: "team",
       observedAtMs: clock.now(),
     });
-  if (installed) install();
+  if (installed) await install();
   let failedSessionReads = 0;
   let sessionReads = 0;
   let issueReads = 0;
@@ -228,7 +228,7 @@ async function fixture({
         await beforeContinuationIntake?.(value);
         beforeContinuationIntake = undefined;
         await orchestrator.onLinearEvent(value);
-        const delegationId = getLinearSession(db, "session")!.delegationId!;
+        const delegationId = (await getLinearSession(sqliteDb(db), "session"))!.delegationId!;
         const itemIds = db
           .query<{ id: string }, [string]>(
             "SELECT id FROM work_item WHERE delegation_id=? ORDER BY position,id",
@@ -616,13 +616,13 @@ test("held prompts cannot become initial delegation; waiting writes nothing; Sto
 test("linked members avoid a new-issue sign-in hold while removed members do not", async () => {
   const f = await fixture();
   try {
-    const userId = putWorkspaceUser(f.db, {
+    const userId = await putWorkspaceUser(sqliteDb(f.db), {
       id: "member",
       linearUserId: "member",
       name: "Member",
       email: "member@example.invalid",
     });
-    syncWorkspaceMember(f.db, {
+    await syncWorkspaceMember(sqliteDb(f.db), {
       workspaceId: "workspace",
       userId,
       active: true,
@@ -634,20 +634,20 @@ test("linked members avoid a new-issue sign-in hold while removed members do not
     expect(listOutbox(f.db)).toHaveLength(0);
     f.db.run("UPDATE workspace_member SET active=0 WHERE user_id='member'");
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
-    expect(getLinearSession(f.db, "session")!.creatorId).toBe("member");
+    expect((await getLinearSession(sqliteDb(f.db), "session"))!.creatorId).toBe("member");
   } finally {
     await f.close();
   }
 });
 
-function linkMember(f: Awaited<ReturnType<typeof fixture>>) {
-  const userId = putWorkspaceUser(f.db, {
+async function linkMember(f: Awaited<ReturnType<typeof fixture>>) {
+  const userId = await putWorkspaceUser(sqliteDb(f.db), {
     id: "member",
     linearUserId: "member",
     name: "Member",
     email: "member@example.invalid",
   });
-  syncWorkspaceMember(f.db, {
+  await syncWorkspaceMember(sqliteDb(f.db), {
     workspaceId: "workspace",
     userId,
     active: true,
@@ -705,7 +705,7 @@ for (const [rule, reason, apply] of rules)
   test(`a delegation refused for ${rule} says so`, async () => {
     const f = await fixture();
     try {
-      linkMember(f);
+      await linkMember(f);
       await apply(f);
       expect(await f.assignments.authorize(f.event)).toEqual({ outcome: "refused", reason });
     } finally {
@@ -716,7 +716,7 @@ for (const [rule, reason, apply] of rules)
 test("a Linear guest's delegation is ignored, and the session's response says guests can't use Paws", async () => {
   const f = await fixture();
   try {
-    linkMember(f);
+    await linkMember(f);
     f.setGuest(true);
     expect(await f.assignments.authorize(f.event)).toEqual({
       outcome: "refused",
@@ -738,7 +738,7 @@ test("a Linear guest's delegation is ignored, and the session's response says gu
 test("a member's delegation whose first Linear read fails is retried and accepted", async () => {
   const f = await fixture();
   try {
-    linkMember(f);
+    await linkMember(f);
     f.failSessionRead();
     const acknowledged = new Set<string>();
     const deliver = (attempt: number) =>
@@ -762,7 +762,7 @@ test("a member's delegation whose first Linear read fails is retried and accepte
 test("one delegation event reads each Linear source once", async () => {
   const f = await fixture();
   try {
-    linkMember(f);
+    await linkMember(f);
     let reads = 0;
     f.onMemberRead(async () => {
       reads++;
@@ -779,9 +779,9 @@ test("one delegation event reads each Linear source once", async () => {
 test("a delegation that arrives before its installation is recorded is accepted once it is", async () => {
   const f = await fixture({ installed: false });
   try {
-    linkMember(f);
+    await linkMember(f);
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "retry" });
-    f.install();
+    await f.install();
     expect(await f.assignments.authorize(f.event)).toEqual({ outcome: "accepted" });
   } finally {
     await f.close();
@@ -791,7 +791,7 @@ test("a delegation that arrives before its installation is recorded is accepted 
 test("concurrent delegations from the same member are all accepted", async () => {
   const f = await fixture();
   try {
-    linkMember(f);
+    await linkMember(f);
     let release!: () => void;
     const held = new Promise<void>((resolve) => (release = resolve));
     let reads = 0;
@@ -1111,13 +1111,13 @@ test("the runner step uses the issue's project lead's shared runner, never anoth
   const f = await fixture({ projectLeadId: "lead" });
   try {
     for (const id of ["lead", "colleague"]) {
-      putWorkspaceUser(f.db, {
+      await putWorkspaceUser(sqliteDb(f.db), {
         id,
         linearUserId: id,
         name: id === "lead" ? "Lena Lead" : "Colin",
         email: `${id}@example.invalid`,
       });
-      syncWorkspaceMember(f.db, {
+      await syncWorkspaceMember(sqliteDb(f.db), {
         workspaceId: "workspace",
         userId: id,
         role: "member",
@@ -1314,7 +1314,7 @@ test("a member row for the creator lets the hold continue on the next sweep with
     const jobs = f.jobs();
     await jobs.tick();
     expect(f.continuations).toEqual([]);
-    linkMember(f);
+    await linkMember(f);
     f.clock.advance(60_000);
     await jobs.tick();
     await jobs.tick();
@@ -1572,7 +1572,7 @@ test("a pending hold past one day posts one final response, ends the session and
     const responses = f.tracker.progress.filter((update) => update.kind === "response");
     expect(responses.map((update) => update.body)).toEqual([ONBOARDING_EXPIRED_BODY]);
     expect(f.tracker.questions).toHaveLength(1);
-    expect(getLinearSession(f.db, "session")!.stoppedAt).not.toBeNull();
+    expect((await getLinearSession(sqliteDb(f.db), "session"))!.stoppedAt).not.toBeNull();
     expect(holdStatus(f)).toBe("invalid");
     expect(listWorkItems(f.db)).toHaveLength(0);
 
@@ -1922,8 +1922,8 @@ test("Stop before sign-in discards the creator's held replies", async () => {
 test("revoked members cannot sign in or delegate while Linear still considers them active; restore permits sign-in", async () => {
   const f = await fixture();
   try {
-    linkMember(f);
-    changeWorkspaceRevocation(f.db, {
+    await linkMember(f);
+    await changeWorkspaceRevocation(sqliteDb(f.db), {
       workspaceId: "workspace",
       actorId: "owner",
       userId: "member",
@@ -1956,7 +1956,7 @@ test("revoked members cannot sign in or delegate while Linear still considers th
       ["response", WORKSPACE_REVOKED_RESPONSE],
     ]);
     expect(workspaceLinearMember(f.db, "workspace", "member")?.revokedAt).not.toBeNull();
-    changeWorkspaceRevocation(f.db, {
+    await changeWorkspaceRevocation(sqliteDb(f.db), {
       workspaceId: "workspace",
       actorId: "owner",
       userId: "member",
@@ -1975,7 +1975,7 @@ test("a held delegation revoked during continuation retains its final response",
     await f.assignments.authorize(f.event);
     expect((await f.callback(await f.begin())).status).toBe(303);
     f.beforeContinuationIntake(async (event) => {
-      changeWorkspaceRevocation(f.db, {
+      await changeWorkspaceRevocation(sqliteDb(f.db), {
         workspaceId: "workspace",
         actorId: "owner",
         userId: workspaceLinearMember(f.db, "workspace", "member")!.userId,

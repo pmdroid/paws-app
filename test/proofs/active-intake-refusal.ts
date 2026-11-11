@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, openDatabase } from "../../src/db";
+import { migrate, openDatabase, sqliteDb } from "../../src/db";
 import { intakeDelegatedIssue } from "../../src/intake";
 import {
   createFakeTracker,
@@ -66,7 +66,7 @@ export default {
       const refused = event("refused", "new", "created");
       const later = event("later", "new", "prompted");
       const independent = event("independent", "other", "prompted");
-      const store = createInboxStore(db);
+      const store = createInboxStore(sqliteDb(db));
       const delivered: string[] = [];
       const intake = createLinearIntake({
         store,
@@ -85,10 +85,10 @@ export default {
         },
       });
       try {
-        for (const input of [refused, later, independent]) store.commit(input);
+        for (const input of [refused, later, independent]) await store.commit(input);
         intake.queue.wake();
         await intake.queue.idle();
-        const pending = () => store.listUnhandled().map((input) => input.dedupeKey);
+        const pending = async () => (await store.listUnhandled()).map((input) => input.dedupeKey);
         proof.expect(
           `independent session progresses (transport failure: ${failTransport})`,
           delivered.includes("independent"),
@@ -97,10 +97,10 @@ export default {
         if (failTransport) {
           proof.expect(
             "failed explanation retains refusal and blocks its later event",
-            pending().includes("refused") &&
-              pending().includes("later") &&
+            (await pending()).includes("refused") &&
+              (await pending()).includes("later") &&
               !delivered.includes("later"),
-            pending(),
+            await pending(),
           );
           now += INTAKE_RETRY_MS[0];
           intake.queue.wake();
@@ -108,8 +108,8 @@ export default {
         }
         proof.expect(
           "refusal and next same-session event settle",
-          pending().length === 0 && delivered.includes("later"),
-          { pending: pending(), delivered },
+          (await pending()).length === 0 && delivered.includes("later"),
+          { pending: await pending(), delivered },
         );
         proof.expect(
           "one conflict explanation is delivered",

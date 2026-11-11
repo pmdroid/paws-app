@@ -85,7 +85,7 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
     };
     expect(await acceptGitHubDelivery(db, delivery, clock.now())).toBe(true);
     expect(await acceptGitHubDelivery(db, delivery, clock.now())).toBe(false);
-    expect(mergeCallInFlight(db, "eng-1")).toBe(true);
+    expect(await mergeCallInFlight(sqliteDb(db), "eng-1")).toBe(true);
     reason = "ci";
     await loop.tick();
     expect(backstop).toBe(true);
@@ -149,12 +149,12 @@ describe("merge CI wait", () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     insertQueuedItem(db, { id: "eng-2", now: clock.now() });
-    bindWorkItemRepository(db, "eng-1", {
+    await bindWorkItemRepository(sqliteDb(db), "eng-1", {
       owner: "acme",
       repo: "one",
       remoteUrl: "https://github.com/acme/one.git",
     });
-    bindWorkItemRepository(db, "eng-2", {
+    await bindWorkItemRepository(sqliteDb(db), "eng-2", {
       owner: "acme",
       repo: "one",
       remoteUrl: "https://github.com/acme/one.git",
@@ -269,7 +269,7 @@ describe("merge CI wait", () => {
   test("a reclaimed merge job keeps the verified base, head, and summary", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    bindWorkItemRepository(db, "eng-1", {
+    await bindWorkItemRepository(sqliteDb(db), "eng-1", {
       owner: "acme",
       repo: "one",
       remoteUrl: "https://github.com/acme/one.git",

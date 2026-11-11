@@ -17,7 +17,6 @@ import {
   saveTaskBlocksSteps,
   saveWorkItemLinearProjectSteps,
   sqliteDb,
-  stopSessionParentDelegation,
   type Q,
   type Steps,
   type WorkItemLinearProject,
@@ -77,11 +76,6 @@ export function* findAcceptedIntakeSteps(
   }
   const adopted = yield* readAdoptedParentSteps(q, linearIssueId);
   return adopted === null ? null : { delegation: adopted, items: [] };
-}
-
-/** Stop the parent delegation a session adopted and release its sub-issues. */
-export function stopAdoptedParent(db: Database, sessionId: string, now: number): void {
-  stopSessionParentDelegation(db, sessionId, now);
 }
 
 /** The active delegation of a parent issue whose sub-issues each run in their own session. */

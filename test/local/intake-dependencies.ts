@@ -64,7 +64,7 @@ export async function probeDependencySnapshots(
     const cycleIds = async () => (await readiness()).flatMap((entry) => entry.cycleHeldItemIds);
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
     db.run("INSERT INTO workspace VALUES('other','outside-org','Other',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -72,8 +72,10 @@ export async function probeDependencySnapshots(
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
-    saveTaskMode(db, ids.get("a")!, "code");
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "owner",
+    });
+    await saveTaskMode(sqliteDb(db), ids.get("a")!, "code");
     const refresh = async () => {
       for (const itemId of ids.values())
         await syncItemDependencies(db, {
@@ -137,7 +139,7 @@ export async function probeDependencySnapshots(
       ["completed", "artifact", "started", true],
       ["completed", "artifact", "canceled", true],
     ] as const;
-    confirmFakeMerge(db, ids.get("a")!);
+    await confirmFakeMerge(db, ids.get("a")!);
     for (const [state, mode, linearState, expected] of cases) {
       db.run("UPDATE work_item SET state=? WHERE id=?", [state, ids.get("a")!]);
       db.run("UPDATE work_item_task SET mode=? WHERE item_id=?", [mode, ids.get("a")!]);

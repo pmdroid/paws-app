@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import type { TaskMode } from "../core";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { settled, sqliteDb, type Q, type Db, type Steps } from "./db";
 import { workItemTask } from "./schema";
 import { applyWorkItemEventSteps, cancelAdvancingJobsSteps, getWorkItemSteps } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
@@ -50,16 +50,14 @@ export function* saveTaskModeSteps(
   return saved;
 }
 
-export function saveTaskMode(
-  db: Database,
+export async function saveTaskMode(
+  store: Db,
   itemId: string,
   mode: TaskMode,
   generation = 0,
   repository = false,
-): TaskMode {
-  return settled(
-    sqliteDb(db).transaction((q) => saveTaskModeSteps(q, itemId, mode, generation, repository)),
-  );
+): Promise<TaskMode> {
+  return store.transaction((q) => saveTaskModeSteps(q, itemId, mode, generation, repository));
 }
 
 export function* taskRequiresRepositorySteps(q: Q, itemId: string) {
@@ -108,21 +106,19 @@ export function* selectTaskModeForTurnSteps(
   return mode;
 }
 
-export function selectTaskModeForTurn(
-  db: Database,
+export async function selectTaskModeForTurn(
+  store: Db,
   itemId: string,
   mode: TaskMode,
   generation: number,
   repository = false,
-): TaskMode {
-  return settled(
-    sqliteDb(db).transaction((q) =>
-      selectTaskModeForTurnSteps(q, itemId, mode, generation, repository),
-    ),
+): Promise<TaskMode> {
+  return store.transaction((q) =>
+    selectTaskModeForTurnSteps(q, itemId, mode, generation, repository),
   );
 }
 
-export type ResultFinish = { runId?: string; announce?: () => void };
+export type ResultFinish = { runId?: string; announce?: (q: Q) => Steps<void> };
 
 export function* completeAnswerTaskSteps(
   q: Q,
@@ -134,16 +130,14 @@ export function* completeAnswerTaskSteps(
   yield* completeResultTaskSteps(q, itemId, response, "answer", now, finish);
 }
 
-export function completeAnswerTask(
-  db: Database,
+export async function completeAnswerTask(
+  store: Db,
   itemId: string,
   response: string,
   now = Date.now(),
   finish: ResultFinish = {},
-): void {
-  settled(
-    sqliteDb(db).transaction((q) => completeAnswerTaskSteps(q, itemId, response, now, finish)),
-  );
+): Promise<void> {
+  await store.transaction((q) => completeAnswerTaskSteps(q, itemId, response, now, finish));
 }
 
 export function* completeArtifactTaskSteps(
@@ -161,16 +155,14 @@ export function* completeArtifactTaskSteps(
   yield* completeResultTaskSteps(q, itemId, response, "artifact", now, finish);
 }
 
-export function completeArtifactTask(
-  db: Database,
+export async function completeArtifactTask(
+  store: Db,
   itemId: string,
   response: string,
   now = Date.now(),
   finish: ResultFinish = {},
-): void {
-  settled(
-    sqliteDb(db).transaction((q) => completeArtifactTaskSteps(q, itemId, response, now, finish)),
-  );
+): Promise<void> {
+  await store.transaction((q) => completeArtifactTaskSteps(q, itemId, response, now, finish));
 }
 
 function* completeResultTaskSteps(
@@ -213,5 +205,5 @@ function* completeResultTaskSteps(
   // An answer does not finish the issue; a delivered artifact does.
   if (mode === "artifact")
     yield* enqueueIssueStatusSteps(q, (yield* getWorkItemSteps(q, itemId))!, "completed", now);
-  finish.announce?.();
+  if (finish.announce) yield* finish.announce(q);
 }

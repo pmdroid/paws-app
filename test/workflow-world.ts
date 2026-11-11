@@ -10,8 +10,8 @@ import {
   applyWorkItemEvent,
   beginImplementRun,
   beginMergeCall,
-  bindWorkItemRepository,
-  closeExpiredRunnerLeases,
+  bindWorkItemRepositorySteps,
+  closeExpiredRunnerLeasesSteps,
   closeoutPolicyDigests,
   deferWorkItem,
   enqueueJob,
@@ -27,11 +27,12 @@ import {
   mergeCallInFlight,
   migrate,
   openDatabase,
-  prepareShutdown,
-  recoverOnStartup,
-  requeueOrphanedWork,
+  prepareShutdownSteps,
+  recoverOnStartupSteps,
+  requeueOrphanedWorkSteps,
   restartHold,
   saveCheckpoint,
+  settled,
   type Job,
   type WorkItemRecord,
   sqliteDb,
@@ -147,11 +148,15 @@ export async function seedFixture(
   id = fixture,
 ): Promise<void> {
   insertQueuedItem(db, { id, sessionKey: `session-${id}`, now });
-  bindWorkItemRepository(db, id, {
-    owner: "owner",
-    repo: "repo",
-    remoteUrl: "https://example.invalid/repo.git",
-  });
+  settled(
+    sqliteDb(db).transaction((q) =>
+      bindWorkItemRepositorySteps(q, id, {
+        owner: "owner",
+        repo: "repo",
+        remoteUrl: "https://example.invalid/repo.git",
+      }),
+    ),
+  );
   if (fixture === "queued") return;
   const { run } = beginImplementRun(db, id, now, RUNNING);
   if (fixture.startsWith("running") || fixture.startsWith("verifying"))
@@ -322,7 +327,7 @@ export class World {
 
   stop(): void {
     this.trace.push("stop");
-    prepareShutdown(this.db, this.now);
+    settled(sqliteDb(this.db).transaction((q) => prepareShutdownSteps(q, this.now, undefined)));
     this.db.close();
     this.db = openDatabase(this.path);
     migrate(this.db);
@@ -330,21 +335,26 @@ export class World {
 
   start(): void {
     this.trace.push(`start@${this.now - T0}`);
-    recoverOnStartup(this.db, this.now);
+    const wake = { armed: false };
+    settled(
+      sqliteDb(this.db).transaction((q) =>
+        recoverOnStartupSteps(q, this.now, undefined, undefined, wake),
+      ),
+    );
   }
 
-  sweep(): void {
+  async sweep(): Promise<void> {
     this.trace.push(`sweep@${this.now - T0}`);
     reapFencedJobs(this.db, this.now);
-    closeExpiredRunnerLeases(this.db, this.now);
-    requeueOrphanedWork(this.db, this.now);
+    settled(sqliteDb(this.db).transaction((q) => closeExpiredRunnerLeasesSteps(q, this.now)));
+    settled(sqliteDb(this.db).run((q) => requeueOrphanedWorkSteps(q, this.now)));
   }
 
-  settle(): void {
+  async settle(): Promise<void> {
     let quiet = 0;
     for (let round = 0; round < 24 && quiet < 3; round++) {
       const before = JSON.stringify(dump(this.db, ["work_item", "job", "runner_work"]));
-      this.sweep();
+      await this.sweep();
       this.advance(ORPHAN_GRACE_MS + 1);
       quiet =
         JSON.stringify(dump(this.db, ["work_item", "job", "runner_work"])) === before
@@ -433,7 +443,7 @@ function liveRunnerWork(db: Database, item: WorkItemRecord, now: number): boolea
   );
 }
 
-export function factsOf(db: Database, id: string): ItemFacts {
+export async function factsOf(db: Database, id: string): Promise<ItemFacts> {
   const item = getWorkItem(db, id)!;
   return {
     state: item.state,
@@ -447,8 +457,8 @@ export function factsOf(db: Database, id: string): ItemFacts {
       .map((job) => `${job.queue}:${job.status}`)
       .sort(),
     questions: actionableQuestions(db, id),
-    restartHold: restartHold(db, item) !== null,
-    mergeCall: mergeCallInFlight(db, id),
+    restartHold: (await restartHold(sqliteDb(db), item)) !== null,
+    mergeCall: await mergeCallInFlight(sqliteDb(db), id),
   };
 }
 
@@ -460,8 +470,12 @@ export const STARTUP_RESUME_DUPLICATE =
 
 export type Checks = { liveness?: boolean };
 
-export function unexpectedViolations(db: Database, now: number, checks: Checks = {}): string[] {
-  return violations(db, now, checks).filter((message) => !message.includes(KNOWN_GAP));
+export async function unexpectedViolations(
+  db: Database,
+  now: number,
+  checks: Checks = {},
+): Promise<string[]> {
+  return (await violations(db, now, checks)).filter((message) => !message.includes(KNOWN_GAP));
 }
 
 const DUMPED_TABLES = [
@@ -504,7 +518,11 @@ export function allowWrites(db: Database): void {
   db.run("DROP TRIGGER IF EXISTS injected_write_failure");
 }
 
-export function violations(db: Database, now: number, { liveness = true }: Checks = {}): string[] {
+export async function violations(
+  db: Database,
+  now: number,
+  { liveness = true }: Checks = {},
+): Promise<string[]> {
   const found: string[] = [];
   for (const item of listWorkItems(db)) {
     const say = (message: string) => found.push(`${item.id} (${item.state}): ${message}`);
@@ -514,8 +532,8 @@ export function violations(db: Database, now: number, { liveness = true }: Check
       EXECUTION_QUEUES.includes(job.queue),
     );
     const questions = actionableQuestions(db, item.id);
-    const hold = restartHold(db, item) !== null;
-    const merging = mergeCallInFlight(db, item.id);
+    const hold = (await restartHold(sqliteDb(db), item)) !== null;
+    const merging = await mergeCallInFlight(sqliteDb(db), item.id);
 
     for (const queues of [AGENT_QUEUES, [JOB_KIND.reverify], [JOB_KIND.merge]]) {
       const open = progress.filter((job) => job.status === "pending" && queues.includes(job.queue));

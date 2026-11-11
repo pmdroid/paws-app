@@ -34,22 +34,27 @@ async function workspace() {
   roots.push(root);
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
-  const user = (id: string) => {
-    putWorkspaceUser(db, { id, linearUserId: id, name: id, email: `${id}@example.invalid` });
+  const user = async (id: string) => {
+    await putWorkspaceUser(sqliteDb(db), {
+      id,
+      linearUserId: id,
+      name: id,
+      email: `${id}@example.invalid`,
+    });
     return id;
   };
   await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "ws",
     organizationId: "org",
     name: "Test",
-    userId: user("owner"),
+    userId: await user("owner"),
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", NOW)),
     now: NOW,
   });
   for (const id of ["me", "colleague", "lead"])
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "ws",
-      userId: user(id),
+      userId: await user(id),
       role: "member",
       active: true,
       teamIds: ["team"],

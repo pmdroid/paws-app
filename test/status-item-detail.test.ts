@@ -4,6 +4,7 @@ import {
   migrate,
   openDatabase,
   putWorkspaceUser,
+  sqliteDb,
   syncWorkspaceMember,
   workspaceSessionIds,
 } from "../src/db";
@@ -16,8 +17,13 @@ test("the issue endpoint needs a Paws session and shows only the member's sessio
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
   );
-  putWorkspaceUser(db, { id: "member", linearUserId: "member", name: "member", email: "m@x.test" });
-  syncWorkspaceMember(db, {
+  await putWorkspaceUser(sqliteDb(db), {
+    id: "member",
+    linearUserId: "member",
+    name: "member",
+    email: "m@x.test",
+  });
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "workspace",
     userId: "member",
     role: "member",
@@ -34,7 +40,9 @@ test("the issue endpoint needs a Paws session and shows only the member's sessio
         installation_observed_at, created_at) VALUES (?, 'org', 'fixture', 'app', ?, 1, 0)`,
       [session!, team!],
     );
-  expect(workspaceSessionIds(db, "workspace", "member", "fixture")).toEqual(["session-mine"]);
+  expect(await workspaceSessionIds(sqliteDb(db), "workspace", "member", "fixture")).toEqual([
+    "session-mine",
+  ]);
   insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine" });
   insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other" });
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
@@ -58,7 +66,7 @@ test("the issue endpoint needs a Paws session and shows only the member's sessio
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const session = issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),

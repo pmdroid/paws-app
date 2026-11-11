@@ -44,7 +44,7 @@ async function workspace(runners: Record<string, Runner>) {
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   const now = Date.now();
-  const founder = putWorkspaceUser(db, {
+  const founder = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "founder",
     name: "Founder",
@@ -60,13 +60,18 @@ async function workspace(runners: Record<string, Runner>) {
   });
   const users: Record<string, string> = {};
   for (const [name, member] of Object.entries(MEMBERS)) {
-    users[name] = putWorkspaceUser(db, {
+    users[name] = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: name,
       name,
       email: `${name}@example.invalid`,
     });
-    syncWorkspaceMember(db, { workspaceId: ws.id, userId: users[name]!, ...member, now });
+    await syncWorkspaceMember(sqliteDb(db), {
+      workspaceId: ws.id,
+      userId: users[name]!,
+      ...member,
+      now,
+    });
   }
   for (const [id, runner] of Object.entries(runners)) {
     db.run(

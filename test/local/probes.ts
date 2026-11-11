@@ -42,6 +42,7 @@ import {
   migrate,
   openDatabase,
   recoverOnStartup,
+  sqliteDb,
 } from "../../src/db";
 import { enqueueVerifiedMerge } from "../../src/loop";
 import { probeHostAcp } from "./host-acp";
@@ -142,7 +143,7 @@ export async function probeBoundaries(
       summary: "Accepted synthetic candidate",
       now: clock.now(),
     });
-    recoverOnStartup(db, clock.now());
+    await recoverOnStartup(sqliteDb(db), clock.now());
     if (getWorkItem(db, recovering.id)?.state === "verifying")
       applyWorkItemEvent(db, recovering.id, "closeout_accepted");
     const reverification = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.reverify] });
