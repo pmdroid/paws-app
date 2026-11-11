@@ -10,7 +10,7 @@ import { parentIssueIdSql } from "../src/core";
 import type { AcceptedLinearEvent, EpicSnapshot } from "../src/linear";
 import { createParentFixture } from "./local/parent-fixture";
 
-type Fixture = ReturnType<typeof createParentFixture>;
+type Fixture = Awaited<ReturnType<typeof createParentFixture>>;
 
 async function delegate(f: Fixture, blocked = false) {
   const parent: EpicSnapshot = {
@@ -85,7 +85,7 @@ async function created(f: Fixture, sessionId: string): Promise<AcceptedLinearEve
 }
 
 test("a second session on a running sub-issue is refused and the first keeps it", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     await delegate(f);
     expect(f.started).toEqual(["a"]);
@@ -106,7 +106,7 @@ test("a second session on a running sub-issue is refused and the first keeps it"
 });
 
 test("a failed sub-issue starts again in a new session", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     await delegate(f);
     f.db.run("UPDATE work_item SET state='failed' WHERE linear_issue_id='a'");
@@ -128,7 +128,7 @@ test("a failed sub-issue starts again in a new session", async () => {
 });
 
 test("a sub-issue still waiting for its blockers refuses a session of its own", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     await delegate(f, true);
     expect(f.started).toEqual([]);

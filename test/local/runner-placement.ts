@@ -29,7 +29,7 @@ export async function probeRunnerPlacement(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
-  const owner = putWorkspaceUser(db, {
+  const owner = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -75,14 +75,14 @@ export async function probeRunnerPlacement(
     const userId =
       user === "owner"
         ? owner
-        : putWorkspaceUser(db, {
+        : await putWorkspaceUser(sqliteDb(db), {
             id: workspaceId(),
             linearUserId: user!,
             name: user!,
             email: `${user}@example.invalid`,
           });
     if (user !== "owner")
-      syncWorkspaceMember(db, {
+      await syncWorkspaceMember(sqliteDb(db), {
         workspaceId: workspace.id,
         userId,
         role: "member",

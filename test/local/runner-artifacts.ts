@@ -44,7 +44,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
   migrate(db);
   try {
     const now = Date.now();
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: "owner",
       name: "Owner",

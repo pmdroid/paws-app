@@ -13,16 +13,16 @@ import {
 import { RUNNER_LEASE_GRACE_MS } from "../src/runner-protocol";
 import { tempDb } from "./helpers";
 
-function fixture(now: number) {
+async function fixture(now: number) {
   const db = tempDb();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "user-1",
     linearUserId: "user-linear",
     name: "Owner",
     email: "owner@example.invalid",
   });
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", now]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws-1",
     userId,
     role: "admin",
@@ -68,7 +68,7 @@ function fixture(now: number) {
 
 test("the runner overview reports used and total slots like placement counts them", async () => {
   const now = Date.now();
-  const { db, work } = fixture(now);
+  const { db, work } = await fixture(now);
   expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.slots).toEqual({
     used: 0,
     total: 1,
@@ -89,7 +89,7 @@ test("the runner overview reports used and total slots like placement counts the
 
 test("the runner overview lists each live session with its issue and phase", async () => {
   const now = Date.now();
-  const { db, work } = fixture(now);
+  const { db, work } = await fixture(now);
   expect((await listRunnerOverview(sqliteDb(db), "ws-1", now))[0]?.running).toEqual([]);
   const lease = now + 60_000;
   const working = work(0, lease, { startedAt: now - 50_000, title: "Write the parser" });
@@ -145,7 +145,7 @@ test("the runner overview lists each live session with its issue and phase", asy
 
 test("a run placed on a runner stays in its list through Closeout and leaves when it ends", async () => {
   const now = Date.now();
-  const { db, work } = fixture(now);
+  const { db, work } = await fixture(now);
   const runId = work(0, now + 60_000, { startedAt: now - 30_000, title: "Write the parser" });
   const session = {
     runId,
@@ -172,7 +172,7 @@ test("a run placed on a runner stays in its list through Closeout and leaves whe
 
 test("a session moving off a runner shows its move there, and not once it landed elsewhere", async () => {
   const now = Date.now();
-  const { db, work } = fixture(now);
+  const { db, work } = await fixture(now);
   const runId = work(0, now + 60_000);
   await requestRunnerSessionMove(sqliteDb(db), {
     runId,

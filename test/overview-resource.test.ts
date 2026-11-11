@@ -5,6 +5,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
@@ -15,10 +16,15 @@ test("the overview needs a Paws session, shows only the member's sessions and fo
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
   );
-  putWorkspaceUser(db, { id: "member", linearUserId: "member", name: "member", email: "m@x.test" });
+  await putWorkspaceUser(sqliteDb(db), {
+    id: "member",
+    linearUserId: "member",
+    name: "member",
+    email: "m@x.test",
+  });
   let teamIds = ["team"];
-  const member = () =>
-    syncWorkspaceMember(db, {
+  const member = async () =>
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -26,7 +32,7 @@ test("the overview needs a Paws session, shows only the member's sessions and fo
       teamIds,
       now: Date.now(),
     });
-  member();
+  await member();
   for (const [session, team] of [
     ["session-mine", "team"],
     ["session-other", "other-team"],
@@ -59,7 +65,7 @@ test("the overview needs a Paws session, shows only the member's sessions and fo
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const session = issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),
@@ -82,7 +88,7 @@ test("the overview needs a Paws session, shows only the member's sessions and fo
     expect((await fetch(url, { headers: { "If-None-Match": etag } })).status).toBe(401);
 
     teamIds = ["other-team"];
-    member();
+    await member();
     const revoked = await fetch(url, signedIn({ "If-None-Match": etag }));
     expect(revoked.status).toBe(200);
     expect(await shown(revoked)).toEqual(["PAS-2"]);

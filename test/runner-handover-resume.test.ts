@@ -46,7 +46,7 @@ async function setup() {
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -793,13 +793,13 @@ test("a member's or inactive admin's move request is refused and the runner is n
     ["member", "member", true],
     ["inactive", "admin", false],
   ] as const) {
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: `${name}-${record.id}`,
       name,
       email: `${name}-${record.id}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: context.workspaceId,
       userId,
       role,
@@ -971,13 +971,13 @@ test("Move running work needs a draining runner and an admin", async () => {
     error: "Drain this runner before moving all of its running work.",
   });
   db.run("UPDATE runner SET status='draining' WHERE id=?", [runners.a]);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: `inactive-all-${record.id}`,
     name: "inactive",
     email: `inactive-all-${record.id}@example.invalid`,
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: context.workspaceId,
     userId,
     role: "admin",

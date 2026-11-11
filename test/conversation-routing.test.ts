@@ -54,7 +54,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
   const db = openDatabase(":memory:");
   migrate(db);
   const clock = new FakeClock(T0);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",

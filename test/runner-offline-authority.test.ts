@@ -58,7 +58,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   const clock = { at: Date.now(), monotonic: 0 };
   const pawsNow = () => clock.at;
   let db = migratedDatabase(path);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",

@@ -209,7 +209,7 @@ describe("live status provider", () => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
     const { run } = beginImplementRun(db, item.id, 1_000);
-    putWorkspaceUser(db, {
+    await putWorkspaceUser(sqliteDb(db), {
       id: "user-ada",
       linearUserId: "lin-ada",
       name: "Ada Reviewer",
@@ -273,7 +273,7 @@ describe("live status provider", () => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-9", sessionKey: "session", now: 1_000 });
     const { run } = beginImplementRun(db, item.id, 1_000);
-    putWorkspaceUser(db, {
+    await putWorkspaceUser(sqliteDb(db), {
       id: "user-ada",
       linearUserId: "lin-ada",
       name: "Ada Reviewer",

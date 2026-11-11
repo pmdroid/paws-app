@@ -6,7 +6,7 @@ import {
   handleAgentSettingsRequest,
   type AgentSettingsOptions,
 } from "../src/settings";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
+import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember, sqliteDb } from "../src/db";
 import { workspaceId } from "../src/workspace";
 import { loadConfigFile, readAgentSettings, type AgentSettings } from "../src/config";
 import { startServer } from "../src/server";
@@ -507,7 +507,7 @@ describe("reviewer profile validation", () => {
     const db = openDatabase(join(tempHome(), "paws.db"));
     migrate(db);
     const now = Date.now();
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: "reviewer-owner",
       name: "Owner",
@@ -515,7 +515,7 @@ describe("reviewer profile validation", () => {
     });
     const workspace = workspaceId();
     db.run("INSERT INTO workspace VALUES(?,?,?,?)", [workspace, workspace, "Review", now]);
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace,
       userId,
       role: "admin",

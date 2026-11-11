@@ -325,13 +325,13 @@ test("a redirect cancels the previous item before the replacement is inserted", 
 
 test("intake sets the session owner's workspace user on each new solo item and leaves an unknown actor unset", async () => {
   const db = legacyTempDb();
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "delegate-user",
     linearUserId: "delegate",
     name: "Delegate",
     email: "delegate@example.test",
   });
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "human-user",
     linearUserId: "human",
     name: "Human",

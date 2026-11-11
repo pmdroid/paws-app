@@ -71,10 +71,10 @@ export class WorkspaceAccessRevoked extends Error {
   }
 }
 
-export function issueWorkspaceSession(
+export async function issueWorkspaceSession(
   db: Database,
   input: { userId: string; workspaceId: string; now: number },
-): { token: string; session: WorkspaceSession } {
+): Promise<{ token: string; session: WorkspaceSession }> {
   const member = workspaceMember(db, input.workspaceId, input.userId);
   if (member?.revokedAt != null) throw new WorkspaceAccessRevoked();
   if (!workspaceMemberUsable(member)) throw new Error("Workspace membership is required.");
@@ -88,7 +88,7 @@ export function issueWorkspaceSession(
     lastSeenAt: input.now,
     expiresAt: input.now + WORKSPACE_SESSION_MS,
   };
-  saveWorkspaceSession(db, session);
+  await saveWorkspaceSession(sqliteDb(db), session);
   auditWorkspaceAccess(db, {
     ...input,
     action: "session.created",

@@ -277,7 +277,7 @@ try {
   } else {
     await paws.ready;
     const now = Date.now();
-    const userId = putWorkspaceUser(paws.db, {
+    const userId = await putWorkspaceUser(sqliteDb(paws.db), {
       id: workspaceId(),
       linearUserId: "owner",
       name: "Owner",
@@ -291,7 +291,7 @@ try {
       tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
       now,
     });
-    const issued = issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now });
+    const issued = await issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now });
     const headers = {
       cookie: `${WORKSPACE_COOKIE}=${issued.token}`,
       origin: source.PAWS_PUBLIC_URL!,
@@ -376,13 +376,13 @@ try {
           approved: true,
         },
       );
-      const memberId = putWorkspaceUser(paws.db, {
+      const memberId = await putWorkspaceUser(sqliteDb(paws.db), {
         id: workspaceId(),
         linearUserId: "member",
         name: "Member",
         email: "member@example.invalid",
       });
-      syncWorkspaceMember(paws.db, {
+      await syncWorkspaceMember(sqliteDb(paws.db), {
         workspaceId: workspace.id,
         userId: memberId,
         role: "member",
@@ -390,7 +390,7 @@ try {
         teamIds: [],
         now,
       });
-      const memberSession = issueWorkspaceSession(paws.db, {
+      const memberSession = await issueWorkspaceSession(paws.db, {
         userId: memberId,
         workspaceId: workspace.id,
         now,

@@ -123,10 +123,10 @@ const server = startServer({
     return reviews(request, principal, sessionIds);
   },
 });
-const cookieFor = (userId: string) =>
-  `${WORKSPACE_COOKIE}=${issueWorkspaceSession(w.db, { workspaceId: "ws", userId, now: Date.now() }).token}`;
-const ada = cookieFor("user-ada");
-const admin = cookieFor("user-admin");
+const cookieFor = async (userId: string) =>
+  `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(w.db, { workspaceId: "ws", userId, now: Date.now() })).token}`;
+const ada = await cookieFor("user-ada");
+const admin = await cookieFor("user-admin");
 
 const browser = await chromium.launch({
   headless: true,
@@ -281,7 +281,7 @@ try {
   await desk.locator(`[data-improvement-row="${retro}"]`).focus();
   await desk.keyboard.press("Enter");
   await expect(desk.locator("#improvement-heading")).toBeFocused();
-  const other = await open(1440, "light", cookieFor("user-bea"));
+  const other = await open(1440, "light", await cookieFor("user-bea"));
   await other.goto(`${origin}/dashboard/improvements/${retro}`);
   await other.getByRole("button", { name: "Reject" }).click();
   await other.getByLabel("Why reject it?").fill("Covered by the recovery runbook");

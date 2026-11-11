@@ -57,7 +57,7 @@ const repository = {
 async function fixture(root: string) {
   const db = tempDb();
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -420,7 +420,7 @@ describe("agent session snapshots", () => {
 
     // A runner owned by another member never reads the owner's session.
     db.run("UPDATE agent_session_snapshot SET owner_user_id=? WHERE run_id=?", [
-      putWorkspaceUser(db, {
+      await putWorkspaceUser(sqliteDb(db), {
         id: workspaceId(),
         linearUserId: "other",
         name: "Other",

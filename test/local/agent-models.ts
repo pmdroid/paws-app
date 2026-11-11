@@ -3,7 +3,13 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember } from "../../src/db";
+import {
+  migrate,
+  openDatabase,
+  putWorkspaceUser,
+  syncWorkspaceMember,
+  sqliteDb,
+} from "../../src/db";
 import { runAgent } from "../../src/acp";
 import { createRunnerWork } from "../../src/runner-work";
 import { createRunnerHealth } from "../../src/runner-health";
@@ -20,13 +26,13 @@ export async function probeAgentModels(
   let db = openDatabase(path);
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "models-owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const otherUser = putWorkspaceUser(db, {
+  const otherUser = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "models-other",
     name: "Other",
@@ -42,7 +48,7 @@ export async function probeAgentModels(
     [workspace, otherUser],
     [otherWorkspace, userId],
   ])
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspaceKey!,
       userId: user!,
       role: "admin",

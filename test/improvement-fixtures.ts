@@ -51,13 +51,13 @@ export async function world(extra: Partial<Parameters<typeof createImprovementsH
     ["ada", "member", ["team-a"]],
     ["bea", "member", ["team-a"]],
   ] as const) {
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: `user-${name}`,
       linearUserId: `linear-${name}`,
       name,
       email: `${name}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "ws",
       userId,
       role,

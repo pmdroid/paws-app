@@ -127,7 +127,7 @@ async function fixture({
   migrate(db);
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
-  const ownerId = putWorkspaceUser(db, {
+  const ownerId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Workspace Owner",
@@ -141,13 +141,13 @@ async function fixture({
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock.now())),
     now: clock.now(),
   });
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "ada",
     name: "Ada Lovelace",
     email: "ada@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -589,14 +589,14 @@ test("only active owners and workspace admins can turn on a member's runner", as
   const status = async () =>
     (await f.control.list(f.member, [])).find((runner) => runner.id === runnerId)?.status;
   expect(await status()).toBe("paused");
-  const otherId = putWorkspaceUser(f.db, {
+  const otherId = await putWorkspaceUser(sqliteDb(f.db), {
     id: workspaceId(),
     linearUserId: "other",
     name: "Other",
     email: "other@example.invalid",
   });
   const other = { ...f.member, userId: otherId };
-  syncWorkspaceMember(f.db, {
+  await syncWorkspaceMember(sqliteDb(f.db), {
     workspaceId: f.member.workspaceId,
     userId: otherId,
     role: "member",
@@ -614,7 +614,7 @@ test("only active owners and workspace admins can turn on a member's runner", as
   expect(response.status).toBe(200);
   expect(await status()).toBe("active");
   await f.control.setStatus(f.member, runnerId, "paused");
-  syncWorkspaceMember(f.db, {
+  await syncWorkspaceMember(sqliteDb(f.db), {
     workspaceId: f.member.workspaceId,
     userId: f.member.userId,
     role: "member",

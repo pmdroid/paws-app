@@ -39,13 +39,13 @@ async function workspace(db: Database) {
     ["other", "admin"],
     ["me", "member"],
   ] as const) {
-    users[name] = putWorkspaceUser(db, {
+    users[name] = await putWorkspaceUser(sqliteDb(db), {
       id: name,
       linearUserId: `linear-${name}`,
       name,
       email: `${name}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "ws",
       userId: users[name]!,
       role,

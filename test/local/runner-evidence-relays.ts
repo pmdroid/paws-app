@@ -37,7 +37,7 @@ export async function probeRunnerEvidenceRelays(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "relay-owner",
     name: "Owner",

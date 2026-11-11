@@ -29,7 +29,7 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
   const now = Date.now();
   try {
     migrate(db);
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: "me",
       linearUserId: "owner",
       name: "Owner",

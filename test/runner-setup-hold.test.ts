@@ -93,7 +93,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
 
   const db = migratedDatabase(join(root, "paws.db"));
   const now = Date.now();
-  const ownerId = putWorkspaceUser(db, {
+  const ownerId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -107,13 +107,13 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  const memberId = putWorkspaceUser(db, {
+  const memberId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "member",
     name: "Member",
     email: "member@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",

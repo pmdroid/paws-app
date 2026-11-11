@@ -29,7 +29,7 @@ async function acme() {
   const db = openDatabase(join(tempHome(), "paws.sqlite"));
   migrate(db);
   const now = Date.now();
-  const ada = putWorkspaceUser(db, {
+  const ada = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "ada",
     name: "Ada",

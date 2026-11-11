@@ -334,7 +334,7 @@ async function runnerWorld() {
       eventKey: Buffer.alloc(32, 7),
       now: () => w.now,
     });
-  const userId = putWorkspaceUser(w.db, {
+  const userId = await putWorkspaceUser(sqliteDb(w.db), {
     id: "me",
     linearUserId: "owner",
     name: "Owner",

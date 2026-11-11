@@ -49,7 +49,7 @@ export async function createExecutionControlsFixture(
   migrate(db);
   const now = Date.now();
   const workspaceId = "workspace";
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "admin",
     linearUserId: "admin",
     name: "Admin",
@@ -68,12 +68,24 @@ export async function createExecutionControlsFixture(
     ["inactive", "member", ["team"]],
     ["outside", "member", ["outside"]],
   ] as const) {
-    putWorkspaceUser(db, { id, linearUserId: id, name: id, email: `${id}@example.invalid` });
-    syncWorkspaceMember(db, { workspaceId, userId: id, role, active: true, teamIds, now });
+    await putWorkspaceUser(sqliteDb(db), {
+      id,
+      linearUserId: id,
+      name: id,
+      email: `${id}@example.invalid`,
+    });
+    await syncWorkspaceMember(sqliteDb(db), {
+      workspaceId,
+      userId: id,
+      role,
+      active: true,
+      teamIds,
+      now,
+    });
   }
-  const sessions: Record<string, ReturnType<typeof issueWorkspaceSession>> = {};
+  const sessions: Record<string, Awaited<ReturnType<typeof issueWorkspaceSession>>> = {};
   for (const userId of ["admin", "member", "inactive", "outside"])
-    sessions[userId] = issueWorkspaceSession(db, { workspaceId, userId, now });
+    sessions[userId] = await issueWorkspaceSession(db, { workspaceId, userId, now });
   db.run("UPDATE workspace_member SET active=0 WHERE workspace_id=? AND user_id='inactive'", [
     workspaceId,
   ]);

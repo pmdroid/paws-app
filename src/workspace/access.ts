@@ -493,7 +493,7 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
       await links.syncUser(workspace.id, userId);
       const previous = requestWorkspaceSession(options.db, request, now());
       if (previous !== null) await deleteSession(previous.session.tokenHash);
-      const issued = issueWorkspaceSession(options.db, {
+      const issued = await issueWorkspaceSession(options.db, {
         userId,
         workspaceId: workspace.id,
         now: now(),

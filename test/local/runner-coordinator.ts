@@ -48,7 +48,7 @@ export async function probeRunnerCoordinator(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "coordinator-owner",
     name: "Owner",
@@ -106,13 +106,13 @@ export async function probeRunnerCoordinator(
   assert.equal(await openssl.exited, 0);
   const tls = { key: readFileSync(serverKey, "utf8"), cert: readFileSync(serverCert, "utf8") };
   const errors: unknown[] = [];
-  const memberId = putWorkspaceUser(db, {
+  const memberId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "member",
     name: "Member",
     email: "member@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",

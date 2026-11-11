@@ -40,7 +40,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     });
   try {
     migrate(db);
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: "me",
       linearUserId: "owner",
       name: "Owner",

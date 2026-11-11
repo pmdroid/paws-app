@@ -464,7 +464,7 @@ async function startScenario(input: {
 
   const db = migratedDatabase(join(root, "paws.db"));
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",

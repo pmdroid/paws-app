@@ -40,7 +40,7 @@ async function fixture() {
   const db = openDatabase(join(tempHome(), "paws.sqlite"));
   legacyMigrate(db);
   let clock = Date.now();
-  const owner = putWorkspaceUser(db, {
+  const owner = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",

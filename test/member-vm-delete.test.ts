@@ -66,7 +66,7 @@ async function fixture() {
   migrate(db);
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
-  const ownerUserId = putWorkspaceUser(db, {
+  const ownerUserId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "vm-owner",
     name: "Workspace Owner",
@@ -87,14 +87,14 @@ async function fixture() {
     authenticatedAt: clock.now(),
     teamIds: [],
   });
-  const person = (name: string, role: Role, active = true): WorkspacePrincipal => {
-    const userId = putWorkspaceUser(db, {
+  const person = async (name: string, role: Role, active = true): Promise<WorkspacePrincipal> => {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: `vm-${name}`,
       name,
       email: `${name.toLowerCase().replaceAll(" ", ".")}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace.id,
       userId,
       role,
@@ -104,10 +104,10 @@ async function fixture() {
     });
     return principal(userId, role);
   };
-  const member = person("Ada Lovelace", "member");
-  const colleague = person("Grace Hopper", "member");
-  const admin = person("Alan Turing", "admin");
-  const inactive = person("Watcher", "member", false);
+  const member = await person("Ada Lovelace", "member");
+  const colleague = await person("Grace Hopper", "member");
+  const admin = await person("Alan Turing", "admin");
+  const inactive = await person("Watcher", "member", false);
   const disconnected: string[] = [];
   const control = createRunnerControl({
     db,

@@ -66,7 +66,7 @@ export async function probeRunnerTaskAuthority(
   );
   applyMigration(migrations.find((value) => value.id === "20261101T1430_runner_teardown")!);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "task-owner",
     name: "Owner",

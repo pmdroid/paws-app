@@ -56,7 +56,12 @@ async function blockedAfterCleanupFailure() {
   const db = openDatabase(join(home, "paws.db"));
   migrate(db);
   let now = Date.now();
-  putWorkspaceUser(db, { id: "owner", linearUserId: "owner", name: "Owner", email: "o@x.invalid" });
+  await putWorkspaceUser(sqliteDb(db), {
+    id: "owner",
+    linearUserId: "owner",
+    name: "Owner",
+    email: "o@x.invalid",
+  });
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "workspace",
     organizationId: "org",

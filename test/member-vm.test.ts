@@ -63,7 +63,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
   migrate(db);
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
-  const ownerUserId = putWorkspaceUser(db, {
+  const ownerUserId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "vm-owner",
     name: "Workspace Owner",
@@ -86,13 +86,13 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
     teamIds: [],
   });
   const person = async (name: string, email: string, active = true) => {
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: `vm-${email}`,
       name,
       email,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace.id,
       userId,
       role: "member",

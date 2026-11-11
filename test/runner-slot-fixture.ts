@@ -20,7 +20,7 @@ export const REPOSITORY = "pmdroid/paws-app";
 export const NOW = 1_800_000_000_000;
 
 export async function workspaceWithRunners(db: Database) {
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",

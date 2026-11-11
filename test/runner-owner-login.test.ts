@@ -8,6 +8,7 @@ import {
   migrations,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerLogin } from "../src/runner-login";
@@ -19,7 +20,7 @@ afterEach(() => {
   for (const db of databases.splice(0)) db.close();
 });
 
-function fixture() {
+async function fixture() {
   const db = new Database(":memory:");
   databases.push(db);
   db.run("PRAGMA foreign_keys=ON");
@@ -41,13 +42,13 @@ function fixture() {
       ["member", "member"],
     ] as const
   ).entries()) {
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: `login-user-${index}`,
       name,
       email: `${name}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace,
       userId,
       role,
@@ -123,7 +124,7 @@ function fixture() {
 }
 
 test("the owner's sign-in carries no member and readies the runner's own agent", async () => {
-  const f = fixture();
+  const f = await fixture();
   const session = await f.login.start(f.owner, f.runnerId, "codex");
   expect((await f.login.start(f.owner, f.runnerId, "codex")).id).toBe(session.id);
   const [envelope] = await f.work.commands(f.runnerId);
@@ -140,7 +141,7 @@ test("the owner's sign-in carries no member and readies the runner's own agent",
 });
 
 test("only the runner owner can start, read, answer or list a sign-in", async () => {
-  const f = fixture();
+  const f = await fixture();
   for (const principal of [f.admin, f.member]) {
     await expect(f.login.start(principal, f.runnerId, "claude")).rejects.toThrow();
     await expect(f.login.list(principal, f.runnerId)).rejects.toThrow();
@@ -174,7 +175,7 @@ test("only the runner owner can start, read, answer or list a sign-in", async ()
 
 test("revocation, expiry and cancellation fence provider completion", async () => {
   for (const condition of ["revoked", "expired", "cancelled", "shutdown", "transferred"] as const) {
-    const f = fixture();
+    const f = await fixture();
     const session = await f.login.start(f.owner, f.runnerId, "codex");
     if (condition === "revoked")
       f.db.run("UPDATE workspace_member SET active=0 WHERE user_id=?", [f.owner.userId]);
@@ -190,7 +191,7 @@ test("revocation, expiry and cancellation fence provider completion", async () =
 });
 
 test("login rejects foreign runners and provider URL substitution", async () => {
-  const f = fixture();
+  const f = await fixture();
   const session = await f.login.start({ ...f.owner, authenticatedAt: 0 }, f.runnerId, "codex");
   await expect(f.login.exchange(workspaceId(), session.id, f.waiting)).rejects.toThrow();
   await expect(
@@ -203,7 +204,7 @@ test("login rejects foreign runners and provider URL substitution", async () => 
 
 test("delayed login input is rejected after cancellation, revocation, expiry or prompt changes", async () => {
   for (const change of ["cancelled", "revoked", "expired", "prompt"] as const) {
-    const f = fixture();
+    const f = await fixture();
     const session = await f.login.start(f.owner, f.runnerId, "codex");
     await f.login.exchange(f.runnerId, session.id, f.waiting);
     let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -235,7 +236,7 @@ test("delayed login input is rejected after cancellation, revocation, expiry or 
 });
 
 test("Grok device login rejects foreign authorization hosts and connects the runner", async () => {
-  const f = fixture();
+  const f = await fixture();
   const endpoint = `https://paws.example.invalid/api/runners/${f.runnerId}/accounts/grok/login`;
   const response = await f.login.browser(new Request(endpoint, { method: "POST" }), f.owner);
   expect(response?.status).toBe(200);
@@ -284,7 +285,7 @@ test("Grok device login rejects foreign authorization hosts and connects the run
 });
 
 test("starting another sign-in keeps an agent that is already connected", async () => {
-  const f = fixture();
+  const f = await fixture();
   const session = await f.login.start(f.owner, f.runnerId, "grok");
   await f.login.exchange(f.runnerId, session.id, f.connected);
   f.advance(1_000);
@@ -366,7 +367,7 @@ test("migration 091 drops member accounts and asks their runners to sign in agai
   expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
 });
 
-function busy(f: ReturnType<typeof fixture>, agent: string) {
+function busy(f: Awaited<ReturnType<typeof fixture>>, agent: string) {
   insertQueuedItem(f.db, { id: `busy-item-${agent}`, now: 0 });
   f.db.run(
     "INSERT INTO run(id,item_id,kind,agent,status,created_at,updated_at) VALUES(?,?,'implement',?,'active',0,0)",
@@ -387,7 +388,7 @@ function busy(f: ReturnType<typeof fixture>, agent: string) {
 
 for (const agent of ["claude", "grok"] as const) {
   test(`a sign-in to ${agent} starts while the runner runs a Claude task`, async () => {
-    const f = fixture();
+    const f = await fixture();
     busy(f, "claude");
     const response = (await f.login.browser(
       new Request(
@@ -414,7 +415,7 @@ for (const agent of ["claude", "grok"] as const) {
 }
 
 test("a runner with four sign-ins waiting refuses another, even while it works", async () => {
-  const f = fixture();
+  const f = await fixture();
   busy(f, "codex");
   for (const agent of ["claude", "codex", "grok"] as const)
     await f.login.start(f.owner, f.runnerId, agent);
@@ -440,7 +441,7 @@ test("a runner with four sign-ins waiting refuses another, even while it works",
 });
 
 test("a sign-in that succeeds during a live turn of its agent clears auth_expired and leaves the turn", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.db.run(
     "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',0,1)",
     [f.runnerId],
@@ -460,7 +461,7 @@ test("a sign-in that succeeds during a live turn of its agent clears auth_expire
 });
 
 test("the owner can sign in agents on a paused runner, not on a draining or revoked one", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.db.run("UPDATE runner SET status='paused' WHERE id=?", [f.runnerId]);
   const session = await f.login.start(f.owner, f.runnerId, "claude");
   expect(session.state).toBe("starting");

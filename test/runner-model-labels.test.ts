@@ -4,16 +4,16 @@ import { generateKeyPairSync } from "node:crypto";
 import { createRunnerWork } from "../src/runner-work";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
+import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember, sqliteDb } from "../src/db";
 import { createRunnerModels } from "../src/runner-models";
 import { createRunnerPlacementBrowser } from "../src/runner-placement";
 import { workspaceId } from "../src/workspace";
 
-function fixture() {
+async function fixture() {
   const db = openDatabase(join(mkdtempSync(join(tmpdir(), "paws-model-labels-")), "paws.db"));
   migrate(db);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "labels-owner",
     name: "Owner",
@@ -22,7 +22,7 @@ function fixture() {
   const workspace = workspaceId(),
     runnerId = workspaceId();
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", [workspace, workspace, "Labels", now]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace,
     userId,
     role: "admin",
@@ -60,7 +60,7 @@ function fixture() {
 }
 
 test("the catalog lists the 1M entry next to its standard model", async () => {
-  const { db, principal } = fixture();
+  const { db, principal } = await fixture();
   const work = createRunnerWork({
     db,
     keyId: "labels",
@@ -75,7 +75,7 @@ test("the catalog lists the 1M entry next to its standard model", async () => {
 });
 
 test("a runner's run history labels the model it ran", async () => {
-  const { db, now, runnerId, userId, principal } = fixture();
+  const { db, now, runnerId, userId, principal } = await fixture();
   db.run(
     "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,agent,model,resolved_model,role,purpose,started_at,ended_at,outcome) VALUES('run-1',?,?,'claude','opus[1m]','opus[1m]','implementer','work',?,?,'success')",
     [runnerId, userId, now - 1000, now],
@@ -93,7 +93,7 @@ test("a runner's run history labels the model it ran", async () => {
 });
 
 test("a runner's history names the issue each execution worked on", async () => {
-  const { db, now, runnerId, userId, principal } = fixture();
+  const { db, now, runnerId, userId, principal } = await fixture();
   db.run(
     "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at) VALUES('item-1','del-1','issue-1','PAS-367','Parse config files','running','paws/pas-367',0,1)",
   );
@@ -117,7 +117,7 @@ test("a runner's history names the issue each execution worked on", async () => 
 });
 
 test("the catalog reports the agent's default model and effort", async () => {
-  const { db, runnerId, principal } = fixture();
+  const { db, runnerId, principal } = await fixture();
   const result = (model: string, effort: string) =>
     JSON.stringify({
       executionId: "01M5GCQ27RE0YMKT767K0P3451",

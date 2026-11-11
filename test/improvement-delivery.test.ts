@@ -37,7 +37,7 @@ import { createFakeImprovementLinear } from "../src/linear";
 const REPO = "acme/app";
 const MINUTE = 60_000;
 
-function world() {
+async function world() {
   const db = openDatabase(join(mkdtempSync(join(tmpdir(), "paws-improvement-delivery-")), "db"));
   migrate(db);
   db.run("INSERT INTO workspace VALUES ('ws', 'org', 'Kyku', 0)");
@@ -45,13 +45,13 @@ function world() {
   db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-a')", [REPO]);
   db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-b')", [REPO]);
   db.run("INSERT INTO workspace_repository VALUES ('other', ?, 'team-x')", [REPO]);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "user-ada",
     linearUserId: "linear-ada",
     name: "Ada",
     email: "ada@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws",
     userId,
     role: "admin",
@@ -98,7 +98,7 @@ function world() {
   return { db, linear, now, advance, run };
 }
 
-type World = ReturnType<typeof world>;
+type World = Awaited<ReturnType<typeof world>>;
 
 function proposal(step: ImprovementActionStep, title = `Fix ${step}`) {
   return {
@@ -204,7 +204,7 @@ const reopen = async (w: World, improvementId: string) =>
 
 describe("improvement delivery", () => {
   test("every action step creates one undelegated issue with its frozen evidence", async () => {
-    const w = world();
+    const w = await world();
     const steps: ImprovementActionStep[] = ["automatic", "rule", "convention", "decision", "issue"];
     const ids: string[] = [];
     for (const step of steps) ids.push(await acceptRetro(w, { step }));
@@ -240,7 +240,7 @@ describe("improvement delivery", () => {
   });
 
   test("a daily finding files as a review finding and its source findings carry the issue", async () => {
-    const w = world();
+    const w = await world();
     insertQueuedItem(w.db, { id: "item-a", sessionKey: "s", now: 1 });
     await recordReviewFindings(sqliteDb(w.db), {
       itemId: "item-a",
@@ -331,7 +331,7 @@ describe("improvement delivery", () => {
   });
 
   test("the issue UUID is reserved before the request and a lost response reconciles it", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w);
     w.linear.fail("createIssue", "lose");
     await w.run();
@@ -353,7 +353,7 @@ describe("improvement delivery", () => {
   });
 
   test("a double click, a crashed worker and duplicate dispatch leave one issue", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w);
     const again = await decideImprovement(sqliteDb(w.db), {
       improvementId: id,
@@ -396,7 +396,7 @@ describe("improvement delivery", () => {
   });
 
   test("rate limiting keeps the decision and waits for Linear's retry time", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w);
     w.linear.fail("findIssue", {
       ok: false,
@@ -420,7 +420,7 @@ describe("improvement delivery", () => {
   });
 
   test("revoked access blocks until a person retries; transient outages are bounded", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w);
     w.linear.fail("findIssue", { ok: false, failure: "unauthorized", message: "401" });
     await w.run();
@@ -451,7 +451,7 @@ describe("improvement delivery", () => {
   });
 
   test("a removed destination mapping is accepted but unfiled until a person repairs it", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w);
     w.db.run("DELETE FROM workspace_repository WHERE team_id = 'team-a'");
     await w.run();
@@ -477,7 +477,7 @@ describe("improvement delivery", () => {
   });
 
   test("an unknown outcome never reroutes, even after its mapping is removed", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w);
     w.linear.fail("createIssue", { ok: false, failure: "unknown", message: "timeout" });
     await w.run();
@@ -500,7 +500,7 @@ describe("improvement delivery", () => {
   });
 
   test("a pre-existing issue id in another team is not linked", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w);
     w.linear.issues.set(improvementIssueUuid("ws", id), {
       id: improvementIssueUuid("ws", id),
@@ -516,7 +516,7 @@ describe("improvement delivery", () => {
   });
 
   test("an issue under this improvement's id without its Paws reference is not linked", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w);
     const other = await acceptRetro(w, { key: "r2/issue" });
     w.linear.issues.set(improvementIssueUuid("ws", id), {
@@ -538,7 +538,7 @@ describe("improvement delivery", () => {
   });
 
   test("each workspace delivers only through its own Linear connection", async () => {
-    const w = world();
+    const w = await world();
     const mine = await acceptRetro(w);
     const theirs = await acceptRetro(w, {
       workspaceId: "other",
@@ -553,7 +553,7 @@ describe("improvement delivery", () => {
   });
 
   test("link only records the association and writes nothing to Linear", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w, { intent: { kind: "link", issueId: "issue-open" } });
     await w.run();
     await w.run();
@@ -568,7 +568,7 @@ describe("improvement delivery", () => {
   });
 
   test("a link to an unavailable or unmapped issue never falls back to creating one", async () => {
-    const w = world();
+    const w = await world();
     const gone = await acceptRetro(w, {
       key: "r1/gone",
       intent: { kind: "link", issueId: "missing" },
@@ -593,7 +593,7 @@ describe("improvement delivery", () => {
   });
 
   test("a linked issue that moved to another mapped team is not followed", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w, {
       intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
     });
@@ -634,7 +634,7 @@ describe("improvement delivery", () => {
   });
 
   test("a legacy link without a frozen team can be reopened and linked again", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w, { intent: { kind: "link", issueId: "issue-open" } });
     w.db.run("DROP TRIGGER improvement_delivery_intent_frozen");
     w.db.run("UPDATE improvement_delivery SET target_team_id = NULL, content = '{}'");
@@ -649,7 +649,7 @@ describe("improvement delivery", () => {
   });
 
   test("reopen is refused once anything may have reached Linear", async () => {
-    const w = world();
+    const w = await world();
     const created = await acceptRetro(w, { key: "r1/create" });
     w.linear.fail("createIssue", { ok: false, failure: "unauthorized", message: "401" });
     await w.run();
@@ -674,7 +674,7 @@ describe("improvement delivery", () => {
   });
 
   test("a target closed after acceptance needs a new review choice before link or evidence", async () => {
-    const w = world();
+    const w = await world();
     const withComment = await acceptRetro(w, {
       key: "r1/a",
       intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
@@ -723,7 +723,7 @@ describe("improvement delivery", () => {
   });
 
   test("link and add evidence posts one comment, reconciling an uncertain post", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w, {
       intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
     });
@@ -747,7 +747,7 @@ describe("improvement delivery", () => {
   });
 
   test("the evidence comment waits for its link and a refused post is retried, not duplicated", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w, {
       intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
     });
@@ -769,7 +769,7 @@ describe("improvement delivery", () => {
   });
 
   test("recurring evidence reuses the confirmed issue instead of filing another", async () => {
-    const w = world();
+    const w = await world();
     const id = await acceptRetro(w);
     await w.run();
     await recordImprovementProposal(sqliteDb(w.db), {

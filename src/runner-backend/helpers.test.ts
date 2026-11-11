@@ -45,7 +45,7 @@ async function fixture(
   const db = openDatabase(join(root, "paws.db"));
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",

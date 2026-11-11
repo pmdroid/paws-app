@@ -22,7 +22,7 @@ async function fixture() {
   const db = openDatabase(":memory:");
   migrate(db);
   const now = 1000000;
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "owner",
     linearUserId: "linear-owner",
     name: "Owner",
@@ -37,13 +37,13 @@ async function fixture() {
     now,
   });
   for (const role of ["admin", "member"] as const) {
-    putWorkspaceUser(db, {
+    await putWorkspaceUser(sqliteDb(db), {
       id: role,
       linearUserId: `linear-${role}`,
       name: role,
       email: `${role}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: role,
       role,
@@ -70,7 +70,7 @@ async function fixture() {
         check?: () => Promise<boolean>;
       } = {},
     ) {
-      const issued = issueWorkspaceSession(db, {
+      const issued = await issueWorkspaceSession(db, {
         workspaceId: "workspace",
         userId: role,
         now: options.stale ? now - 16 * 60000 : now,

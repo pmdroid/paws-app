@@ -28,7 +28,7 @@ const parent: EpicSnapshot = {
   ],
 };
 
-function parentResponses(db: ReturnType<typeof createParentFixture>["db"]): string[] {
+function parentResponses(db: Awaited<ReturnType<typeof createParentFixture>>["db"]): string[] {
   return db
     .query<{ body: string }, []>(
       `SELECT json_extract(payload,'$.body') AS body FROM outbox
@@ -39,7 +39,7 @@ function parentResponses(db: ReturnType<typeof createParentFixture>["db"]): stri
 }
 
 function publish(
-  tracker: ReturnType<typeof createParentFixture>["tracker"],
+  tracker: Awaited<ReturnType<typeof createParentFixture>>["tracker"],
   snapshot: EpicSnapshot,
 ) {
   tracker.epics.set(snapshot.linearIssueId, snapshot);
@@ -57,7 +57,7 @@ function publish(
 }
 
 test("a delegated parent records its sub-issues and each sub-issue runs alone in its own session", async () => {
-  const fixture = createParentFixture();
+  const fixture = await createParentFixture();
   const { db, parents, orchestrator, jobs, tracker, started } = fixture;
   try {
     publish(tracker, parent);
@@ -212,7 +212,7 @@ test("a delegated parent records its sub-issues and each sub-issue runs alone in
 });
 
 test("a cycle between sub-issues reports the cycle and adopts nothing", async () => {
-  const fixture = createParentFixture();
+  const fixture = await createParentFixture();
   try {
     const snapshot: EpicSnapshot = {
       linearIssueId: "cycle-parent",
@@ -260,7 +260,7 @@ test("a cycle between sub-issues reports the cycle and adopts nothing", async ()
 });
 
 test("a reserved sub-issue keeps the multi-item delegation", async () => {
-  const fixture = createParentFixture();
+  const fixture = await createParentFixture();
   try {
     publish(fixture.tracker, parent);
     fixture.db.run(
@@ -299,7 +299,7 @@ test("a reserved sub-issue keeps the multi-item delegation", async () => {
 });
 
 test("a follow-up on an adopted parent session does not queue its sub-issues again", async () => {
-  const fixture = createParentFixture();
+  const fixture = await createParentFixture();
   try {
     publish(fixture.tracker, parent);
     await ensureLinearSession(sqliteDb(fixture.db), {
@@ -326,7 +326,7 @@ test("a follow-up on an adopted parent session does not queue its sub-issues aga
 });
 
 test("stopping the parent session stops its adoption so the parent can be delegated again", async () => {
-  const fixture = createParentFixture();
+  const fixture = await createParentFixture();
   try {
     publish(fixture.tracker, parent);
     await ensureLinearSession(sqliteDb(fixture.db), {
@@ -368,7 +368,7 @@ test("stopping the parent session stops its adoption so the parent can be delega
 });
 
 test("a message on an adopted parent session is answered instead of failing intake", async () => {
-  const fixture = createParentFixture();
+  const fixture = await createParentFixture();
   try {
     publish(fixture.tracker, parent);
     await ensureLinearSession(sqliteDb(fixture.db), {
@@ -415,7 +415,7 @@ test("a message on an adopted parent session is answered instead of failing inta
 });
 
 test("a sub-issue already managed in another session is rejected", async () => {
-  const fixture = createParentFixture();
+  const fixture = await createParentFixture();
   try {
     publish(fixture.tracker, parent);
     await ensureLinearSession(sqliteDb(fixture.db), {
@@ -456,7 +456,7 @@ test("a sub-issue already managed in another session is rejected", async () => {
 });
 
 test("without Linear session starts a delegated parent runs its sub-issues in its own session", async () => {
-  const fixture = createParentFixture(":memory:", { startSessions: false });
+  const fixture = await createParentFixture(":memory:", { startSessions: false });
   try {
     publish(fixture.tracker, parent);
     await ensureLinearSession(sqliteDb(fixture.db), {
@@ -487,7 +487,7 @@ test("without Linear session starts a delegated parent runs its sub-issues in it
 });
 
 test("a delegated parent leaves its finished sub-issues out and still starts the issues they block", async () => {
-  const fixture = createParentFixture();
+  const fixture = await createParentFixture();
   const { db, parents, orchestrator, jobs, tracker, started, issues } = fixture;
   try {
     issues.set("child-a", {
@@ -550,7 +550,7 @@ test("a delegated parent leaves its finished sub-issues out and still starts the
 });
 
 test("a delegated parent with a chain of sub-issues ends its session with one summary", async () => {
-  const fixture = createParentFixture();
+  const fixture = await createParentFixture();
   const { db, parents, orchestrator, jobs, tracker, started, outbox, issues } = fixture;
   try {
     const url = (identifier: string) => `https://linear.app/team/issue/${identifier}`;

@@ -22,7 +22,7 @@ mkdirSync(root, { recursive: true });
 const db = openDatabase(join(root, "ui.sqlite"));
 migrate(db);
 const now = Date.now();
-const owner = putWorkspaceUser(db, {
+const owner = await putWorkspaceUser(sqliteDb(db), {
   id: workspaceId(),
   linearUserId: "owner",
   name: "Owner",
@@ -37,13 +37,13 @@ const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
   tokenHash: workspaceTokenHash(token),
   now,
 });
-const member = putWorkspaceUser(db, {
+const member = await putWorkspaceUser(sqliteDb(db), {
   id: workspaceId(),
   linearUserId: "member",
   name: "Member",
   email: "member@example.invalid",
 });
-syncWorkspaceMember(db, {
+await syncWorkspaceMember(sqliteDb(db), {
   workspaceId: workspace.id,
   userId: member,
   role: "member",

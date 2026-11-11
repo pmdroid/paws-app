@@ -38,19 +38,19 @@ export async function probeWorkspaceAuthorization(
   const db = openDatabase(join(root, "authorization.sqlite"));
   migrate(db);
   const now = Date.now();
-  const ownerId = putWorkspaceUser(db, {
+  const ownerId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const memberId = putWorkspaceUser(db, {
+  const memberId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "member",
     name: "Member",
     email: "member@example.invalid",
   });
-  const adminId = putWorkspaceUser(db, {
+  const adminId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "administrator",
     name: "Workspace administrator",
@@ -63,7 +63,7 @@ export async function probeWorkspaceAuthorization(
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",
@@ -71,7 +71,7 @@ export async function probeWorkspaceAuthorization(
     teamIds: ["team-a"],
     now,
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: adminId,
     role: "admin",
@@ -79,10 +79,22 @@ export async function probeWorkspaceAuthorization(
     teamIds: ["team-a"],
     now,
   });
-  const owner = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: ownerId, now });
-  let member = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: memberId, now });
-  const admin = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: adminId, now });
-  const oldOwner = issueWorkspaceSession(db, {
+  const owner = await issueWorkspaceSession(db, {
+    workspaceId: workspace.id,
+    userId: ownerId,
+    now,
+  });
+  let member = await issueWorkspaceSession(db, {
+    workspaceId: workspace.id,
+    userId: memberId,
+    now,
+  });
+  const admin = await issueWorkspaceSession(db, {
+    workspaceId: workspace.id,
+    userId: adminId,
+    now,
+  });
+  const oldOwner = await issueWorkspaceSession(db, {
     workspaceId: workspace.id,
     userId: ownerId,
     now: now - 2 * 24 * 60 * 60_000,
@@ -548,7 +560,7 @@ export async function probeWorkspaceAuthorization(
         status: pageAction.status,
       },
     );
-    const outageSession = issueWorkspaceSession(db, {
+    const outageSession = await issueWorkspaceSession(db, {
       workspaceId: workspace.id,
       userId: ownerId,
       now,
@@ -621,7 +633,7 @@ export async function probeWorkspaceAuthorization(
     guest = false;
     memberTeams = [];
     await access.refreshMemberships();
-    member = issueWorkspaceSession(db, { workspaceId: workspace.id, userId: memberId, now });
+    member = await issueWorkspaceSession(db, { workspaceId: workspace.id, userId: memberId, now });
     const refreshed = (await (
       await fetch(`${origin}/api/issues`, { headers: headers(member) })
     ).json()) as typeof ownerIssues;
@@ -674,7 +686,7 @@ export async function probeWorkspaceAuthorization(
     });
     await pendingMembership.promise;
     guest = true;
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace.id,
       userId: memberId,
       role: "member",
@@ -718,7 +730,7 @@ export async function probeWorkspaceAuthorization(
         after: afterDemotion.checkedAt,
       },
     );
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace.id,
       userId: ownerId,
       active: true,

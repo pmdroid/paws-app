@@ -25,7 +25,7 @@ export async function probeRunnerPolicyBrowser(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
-  const admin = putWorkspaceUser(db, {
+  const admin = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "admin",
     name: "Admin",
@@ -40,13 +40,13 @@ export async function probeRunnerPolicyBrowser(
     tokenHash: workspaceTokenHash(token),
     now,
   });
-  const member = putWorkspaceUser(db, {
+  const member = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "member",
     name: "Member",
     email: "member@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: member,
     role: "member",

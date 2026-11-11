@@ -121,7 +121,7 @@ const paws = await startPaws(
 );
 await paws.ready;
 const now = Date.now();
-const owner = putWorkspaceUser(paws.db, {
+const owner = await putWorkspaceUser(sqliteDb(paws.db), {
   id: workspaceId(),
   linearUserId: "owner",
   name: "Owner",
@@ -135,14 +135,14 @@ const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
   tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
   now,
 });
-const person = (name: string, role: "member" | "admin") => {
-  const userId = putWorkspaceUser(paws.db, {
+const person = async (name: string, role: "member" | "admin") => {
+  const userId = await putWorkspaceUser(sqliteDb(paws.db), {
     id: workspaceId(),
     linearUserId: name.toLowerCase(),
     name,
     email: `${name.toLowerCase().replaceAll(" ", ".")}@example.invalid`,
   });
-  syncWorkspaceMember(paws.db, {
+  await syncWorkspaceMember(sqliteDb(paws.db), {
     workspaceId: workspace.id,
     userId,
     role,
@@ -152,14 +152,16 @@ const person = (name: string, role: "member" | "admin") => {
   });
   return userId;
 };
-const member = person("Ada Lovelace", "member");
-const admin = person("Alan Turing", "admin");
+const member = await person("Ada Lovelace", "member");
+const admin = await person("Alan Turing", "admin");
 const sessions: Record<string, string> = {};
 for (const [name, userId] of [
   ["member", member],
   ["admin", admin],
 ] as const)
-  sessions[name] = issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now }).token;
+  sessions[name] = (
+    await issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now })
+  ).token;
 console.log(JSON.stringify({ origin, cookie: WORKSPACE_COOKIE, sessions, member }));
 
 const lines = createInterface({ input: process.stdin });

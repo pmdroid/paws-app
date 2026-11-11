@@ -122,7 +122,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
         )
         .all(),
     ).toEqual([{ user_id: "admin", subject: "member" }]);
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -133,8 +133,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     expect(workspaceMemberUsable(workspaceMember(db, "workspace", "member"))).toBe(false);
     expect(await listUserWorkspaces(sqliteDb(db), "member")).toEqual([]);
     await expect(
-      (async () =>
-        issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }))(),
+      issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }),
     ).rejects.toThrow(WORKSPACE_REVOKED_SIGN_IN);
     expect(
       requestWorkspaceSession(
@@ -152,7 +151,7 @@ test("admin revoke atomically ends sessions, runners, queued and running work; s
     });
     expect(restored.status).toBe(200);
     expect(
-      issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now }).token,
+      (await issueWorkspaceSession(db, { workspaceId: "workspace", userId: "member", now })).token,
     ).toBeTruthy();
     expect(db.query("SELECT status,fence FROM runner WHERE id='box'").get()).toEqual({
       status: "revoked",

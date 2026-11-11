@@ -261,7 +261,7 @@ test("Approve on the page records the approval, passes the check and opens the p
     const item = listWorkItems(f.db)[0]!;
     const wip = item.checkpoint?.wipCommit;
     expect(wip).toMatch(/^[0-9a-f]{40}$/);
-    putWorkspaceUser(f.db, {
+    await putWorkspaceUser(sqliteDb(f.db), {
       id: "user-ada",
       linearUserId: "delegator-1",
       name: "Ada Reviewer",
@@ -659,7 +659,7 @@ async function republishedAfterAcceptance(again: Record<string, Buffer>) {
       return n === 3 ? publishScreens(worktree, n, again) : [];
     },
   });
-  putWorkspaceUser(f.db, {
+  await putWorkspaceUser(sqliteDb(f.db), {
     id: "user-ada",
     linearUserId: "delegator-1",
     name: "Ada Reviewer",
@@ -1312,12 +1312,12 @@ async function pausedForReview(
         db
           .query<{ id: string }, [string]>("SELECT id FROM workspace_user WHERE linear_user_id = ?")
           .get(by)?.id ??
-        putWorkspaceUser(db, {
+        (await putWorkspaceUser(sqliteDb(db), {
           id: `user-${by}`,
           linearUserId: by,
           name: by,
           email: `${by}@example.invalid`,
-        });
+        }));
       const workspaceId = db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
       return { workspaceId, userId, name: by };
     },
@@ -1362,23 +1362,23 @@ function leaseActiveRun(db: Database): Promise<string> {
     for (let attempt = 0; attempt < 2000; attempt += 1) {
       const item = listWorkItems(db)[0];
       const run = item?.currentRunId ? getRun(db, item.currentRunId) : null;
-      if (run?.status === "active") return attachLease(db, run.id);
+      if (run?.status === "active") return await attachLease(db, run.id);
       await Bun.sleep(10);
     }
     throw new Error("implement run did not become active");
   })();
 }
 
-function attachLease(db: Database, runId: string): string {
+async function attachLease(db: Database, runId: string): Promise<string> {
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "user-1",
     linearUserId: "user-linear",
     name: "Owner",
     email: "owner@example.invalid",
   });
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", now]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws-1",
     userId,
     role: "admin",

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember } from "../db";
+import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember, sqliteDb } from "../db";
 import type { AgentModelCatalog } from "../runner-models";
 import type { WorkspacePrincipal } from "../workspace";
 import {
@@ -35,13 +35,20 @@ function fixture(catalogs: AgentModelCatalog[] | null = CATALOGS) {
   db.run("INSERT INTO workspace VALUES ('ws', 'org', 'Kyku', 0)");
   db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-1')", [APP]);
   const member = async (linearUserId: string, role: "admin" | "member", active = true) => {
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: `user-${linearUserId}`,
       linearUserId,
       name: linearUserId,
       email: `${linearUserId}@example.invalid`,
     });
-    syncWorkspaceMember(db, { workspaceId: "ws", userId, role, active, teamIds: [], now: 1 });
+    await syncWorkspaceMember(sqliteDb(db), {
+      workspaceId: "ws",
+      userId,
+      role,
+      active,
+      teamIds: [],
+      now: 1,
+    });
     const principal: WorkspacePrincipal = {
       workspaceId: "ws",
       userId,

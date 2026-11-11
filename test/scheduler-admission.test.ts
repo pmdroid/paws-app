@@ -225,7 +225,7 @@ test("task_block depth stays on the active item when a merged row shares its iss
 });
 
 async function runnerWithSlots(db: ReturnType<typeof tempDb>, capacity: number): Promise<void> {
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",

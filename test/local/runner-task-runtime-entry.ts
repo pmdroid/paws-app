@@ -160,7 +160,7 @@ if (mode === "agent") {
   git(["clone", "--bare", "origin", "origin.git"]);
   const { db, service } = await coordinator(0);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",

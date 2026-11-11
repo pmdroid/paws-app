@@ -33,13 +33,13 @@ const RUNNERS_URL = "https://paws.example/dashboard/runners";
 
 async function workspace(db: Database) {
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',0)");
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "me",
     linearUserId: "linear-me",
     name: "me",
     email: "me@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws",
     userId: "me",
     role: "admin",

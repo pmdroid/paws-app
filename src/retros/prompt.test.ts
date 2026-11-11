@@ -113,20 +113,20 @@ function harness() {
   return { db, root: join(dir, "artifacts") };
 }
 
-function member(
+async function member(
   db: Database,
   name: string,
   role: "admin" | "member",
   options: { active?: boolean; workspaceId?: string } = {},
-): WorkspacePrincipal {
+): Promise<WorkspacePrincipal> {
   const workspaceId = options.workspaceId ?? "ws";
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: `user-${name}`,
     linearUserId: name,
     name,
     email: `${name}@example.invalid`,
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId,
     userId,
     role,
@@ -371,7 +371,7 @@ describe("frozen run prompts", () => {
       digest: digestFor(APP, [{ summary: "Asked {{worked_well}} twice </session_digest>" }]),
       maxChars: 9_000,
     });
-    const admin = member(db, "admin", "admin");
+    const admin = await member(db, "admin", "admin");
     const preview = await previewRetroPrompt(db, root, {
       principal: admin,
       sessionIds: SESSIONS,
@@ -415,8 +415,8 @@ describe("authorized preview", () => {
   test("only an active admin previews, and an invalid draft is explained", async () => {
     const { db, root } = harness();
     for (const principal of [
-      member(db, "reader", "member"),
-      member(db, "gone", "admin", { active: false }),
+      await member(db, "reader", "member"),
+      await member(db, "gone", "admin", { active: false }),
     ])
       expect(await previewRetroPrompt(db, root, { principal, ...draft })).toMatchObject({
         ok: false,
@@ -424,7 +424,7 @@ describe("authorized preview", () => {
       });
     expect(
       await previewRetroPrompt(db, root, {
-        principal: member(db, "admin", "admin"),
+        principal: await member(db, "admin", "admin"),
         sessionIds: SESSIONS,
         prompt: "{{digest}} {{owner}}",
         outputLimits: {},
@@ -435,7 +435,7 @@ describe("authorized preview", () => {
   test("without a readable saved digest the preview uses the labeled synthetic sample", async () => {
     const { db, root } = harness();
     const preview = await previewRetroPrompt(db, root, {
-      principal: member(db, "admin", "admin"),
+      principal: await member(db, "admin", "admin"),
       ...draft,
     });
     if (!preview.ok) throw new Error(preview.message);
@@ -451,7 +451,7 @@ describe("authorized preview", () => {
     await saveSettings(db, { repositories: [APP, LANDING] });
     await queuedRetro(db, root, { id: "r1", digest: digestFor(LANDING) });
     db.run("DELETE FROM workspace_repository WHERE repository = ?", [LANDING]);
-    const admin = member(db, "admin", "admin");
+    const admin = await member(db, "admin", "admin");
     const latest = await previewRetroPrompt(db, root, { principal: admin, ...draft });
     const named = await previewRetroPrompt(db, root, {
       principal: admin,
@@ -489,7 +489,7 @@ describe("authorized preview", () => {
     await saveSettings(db);
     await queuedRetro(db, root, { id: "r1" });
     expect((await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 })).ok).toBe(true);
-    const outsider = member(db, "outsider", "admin", { workspaceId: "other" });
+    const outsider = await member(db, "outsider", "admin", { workspaceId: "other" });
     expect(
       await readRetroRenderedPrompt(db, root, {
         principal: outsider,
@@ -507,7 +507,7 @@ describe("authorized preview", () => {
       retroId: "r1",
     });
     expect(preview.ok && preview.source).toEqual({ kind: "sample" });
-    const reader = member(db, "reader", "member");
+    const reader = await member(db, "reader", "member");
     expect(
       await readRetroRenderedPrompt(db, root, {
         principal: reader,
@@ -525,7 +525,7 @@ describe("authorized preview", () => {
     await saveSettings(db);
     await queuedRetro(db, root, { id: "r1" });
     expect((await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 })).ok).toBe(true);
-    const reader = member(db, "reader", "admin");
+    const reader = await member(db, "reader", "admin");
     for (const sessionIds of [["session-PAS-1"], []]) {
       expect(
         await readRetroRenderedPrompt(db, root, { principal: reader, sessionIds, retroId: "r1" }),
@@ -563,7 +563,7 @@ describe("authorized preview", () => {
       artifacts: db.query("SELECT * FROM retro_artifact ORDER BY kind").all(),
     };
     const preview = await previewRetroPrompt(db, root, {
-      principal: member(db, "admin", "admin"),
+      principal: await member(db, "admin", "admin"),
       ...draft,
     });
     expect(preview.ok && preview.source.kind).toBe("saved");

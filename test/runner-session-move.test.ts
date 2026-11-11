@@ -37,13 +37,13 @@ async function setup() {
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const otherUserId = putWorkspaceUser(db, {
+  const otherUserId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "other",
     name: "Other",

@@ -8,7 +8,7 @@ import {
   type HTMLSelectElement as SelectEl,
   type HTMLTextAreaElement as TextAreaEl,
 } from "happy-dom";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember } from "../src/db";
+import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember, sqliteDb } from "../src/db";
 import type { AgentModelCatalog } from "../src/runner-models";
 import {
   createFakeRetroCatalog,
@@ -94,7 +94,7 @@ const settle = async () => {
   for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
+async function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
   const db = openDatabase(":memory:");
   migrate(db);
   db.run("INSERT INTO workspace VALUES ('ws', 'org', 'Kyku', 0)");
@@ -105,13 +105,20 @@ function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
     ["other", "admin"],
     ["member", "member"],
   ] as const) {
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: `user-${name}`,
       linearUserId: name,
       name,
       email: `${name}@example.invalid`,
     });
-    syncWorkspaceMember(db, { workspaceId: "ws", userId, role, active: true, teamIds: [], now: 1 });
+    await syncWorkspaceMember(sqliteDb(db), {
+      workspaceId: "ws",
+      userId,
+      role,
+      active: true,
+      teamIds: [],
+      now: 1,
+    });
     people[name] = { workspaceId: "ws", userId, role, authenticatedAt: 1, teamIds: [] };
   }
   const catalog = createFakeRetroCatalog(catalogs);
@@ -201,7 +208,7 @@ function harness(catalogs: AgentModelCatalog[] | null = CATALOGS) {
 }
 
 test("the form shows proposed values from the API and the signed-in runner catalog", async () => {
-  const t = harness();
+  const t = await harness();
   await t.open();
   expect(t.text()).toContain("Proposed defaults, not saved yet");
   expect(t.$<TextAreaEl>("#retro-prompt").value).toBe(DEFAULT_RETRO_PROMPT);
@@ -217,7 +224,7 @@ test("the form shows proposed values from the API and the signed-in runner catal
 });
 
 test("changing agent or model resets incompatible choices", async () => {
-  const t = harness();
+  const t = await harness();
   await t.open();
   await t.pick("#retro-model", "gpt-6-astra");
   await t.pick("#retro-effort", "high");
@@ -240,13 +247,13 @@ test("changing agent or model resets incompatible choices", async () => {
 });
 
 test("a saved model no runner offers is shown as unavailable, and kept while catalogs load", async () => {
-  const t = harness();
+  const t = await harness();
   await t.open();
   await t.pick("#retro-model", "gpt-6-mini");
   await t.submit();
   expect(t.text()).toContain("Saved revision 1");
 
-  const loading = harness();
+  const loading = await harness();
   loading.setHold(/\/api\/runners\/models/);
   await loading.open();
   await loading.pick("#retro-model", "");
@@ -256,7 +263,7 @@ test("a saved model no runner offers is shown as unavailable, and kept while cat
   await settle();
   expect(loading.text()).toContain("Choices come from your signed-in");
 
-  const gone = harness([{ ...CATALOGS[0]!, models: [CATALOGS[0]!.models[0]!] }]);
+  const gone = await harness([{ ...CATALOGS[0]!, models: [CATALOGS[0]!.models[0]!] }]);
   await gone.open();
   gone.controller.state().draft!.agentProfile.model = "gpt-6-mini";
   await gone.open();
@@ -266,7 +273,7 @@ test("a saved model no runner offers is shown as unavailable, and kept while cat
 });
 
 test("variables insert at the cursor and focus stays in the editor", async () => {
-  const t = harness();
+  const t = await harness();
   await t.open();
   await t.type("#retro-prompt", "Look at  please.\n\n{{digest}}");
   const editor = t.$<TextAreaEl>("#retro-prompt");
@@ -281,7 +288,7 @@ test("variables insert at the cursor and focus stays in the editor", async () =>
 });
 
 test("prompt errors appear beside the editor and block saving", async () => {
-  const t = harness();
+  const t = await harness();
   await t.open();
   await t.type("#retro-prompt", "Use {{nope}}.\n\n{{digest}}");
   expect(t.$("#retro-prompt-error").textContent).toBe("Unknown variable: nope.");
@@ -297,7 +304,7 @@ test("prompt errors appear beside the editor and block saving", async () => {
 });
 
 test("restore default changes the draft only, and preview renders the draft", async () => {
-  const t = harness();
+  const t = await harness();
   await t.open();
   await t.type("#retro-prompt", "Custom for {{period}}.\n\n{{digest}}");
   await t.submit();
@@ -318,7 +325,7 @@ test("restore default changes the draft only, and preview renders the draft", as
 });
 
 test("a preview answer for an older draft never replaces the current one", async () => {
-  const t = harness();
+  const t = await harness();
   await t.open();
   t.setHold(/\/api\/retros\/preview/);
   await t.click('[data-retro="preview"]');
@@ -329,7 +336,7 @@ test("a preview answer for an older draft never replaces the current one", async
 });
 
 test("save is atomic with the expected revision; drafts survive tab changes and cancel restores", async () => {
-  const t = harness();
+  const t = await harness();
   await t.open();
   await t.pick("#retro-cadence", "paused");
   expect(t.text()).toContain("Automatic retros are paused");
@@ -355,7 +362,7 @@ test("save is atomic with the expected revision; drafts survive tab changes and 
 });
 
 test("a revision conflict or a failed save keeps the draft", async () => {
-  const t = harness();
+  const t = await harness();
   await t.open();
   await t.type("#retro-max-items", "4");
   await t.settings(
@@ -390,7 +397,7 @@ test("a revision conflict or a failed save keeps the draft", async () => {
 });
 
 test("invalid limits and provider unavailability are reported separately", async () => {
-  const t = harness(null);
+  const t = await harness(null);
   await t.open();
   await t.type("#retro-active-minutes", "500");
   await t.submit();
@@ -408,7 +415,7 @@ test("invalid limits and provider unavailability are reported separately", async
 });
 
 test("a repository Paws can no longer access is denied beside the list", async () => {
-  const t = harness();
+  const t = await harness();
   t.db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-1')", [OLD]);
   await t.open();
   await t.submit();
@@ -428,7 +435,7 @@ test("a repository Paws can no longer access is denied beside the list", async (
 });
 
 test("members read the saved settings without editing", async () => {
-  const t = harness();
+  const t = await harness();
   t.as("member");
   await t.open("ws:user-member");
   expect(t.text()).toContain("Only workspace admins can change retro settings");
@@ -437,7 +444,7 @@ test("members read the saved settings without editing", async () => {
 });
 
 test("a workspace switch or lost permission clears the draft and preview", async () => {
-  const t = harness();
+  const t = await harness();
   await t.open();
   await t.type("#retro-prompt", "Secret draft {{period}}\n\n{{digest}}");
   await t.click('[data-retro="preview"]');

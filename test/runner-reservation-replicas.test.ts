@@ -39,7 +39,7 @@ async function replicas() {
   const db = openDatabase(path);
   migrate(db);
   let clock = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "acme-owner",
     name: "Acme Owner",

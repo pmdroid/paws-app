@@ -513,7 +513,7 @@ describe("review fixes", () => {
       async pull(controller) {
         if (sent) return controller.close();
         sent = true;
-        syncWorkspaceMember(t.w.db, {
+        await syncWorkspaceMember(sqliteDb(t.w.db), {
           workspaceId: "ws",
           userId: "user-ada",
           role: "member",
@@ -1017,7 +1017,7 @@ describe("access", () => {
 
   test("revoked membership and other repositories cannot delegate or verify", async () => {
     const t = await linked();
-    syncWorkspaceMember(t.w.db, {
+    await syncWorkspaceMember(sqliteDb(t.w.db), {
       workspaceId: "ws",
       userId: "user-ada",
       role: "member",
@@ -1027,7 +1027,7 @@ describe("access", () => {
     });
     const lost = await t.post("delegate", { expectedVersion: await t.version() });
     expect(lost.status).toBe(404);
-    syncWorkspaceMember(t.w.db, {
+    await syncWorkspaceMember(sqliteDb(t.w.db), {
       workspaceId: "ws",
       userId: "user-ada",
       role: "member",

@@ -45,7 +45,7 @@ export async function probeRunnerRepositoryAccess(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "fixture-owner",
     name: "Owner",

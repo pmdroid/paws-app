@@ -58,7 +58,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
   };
   const users = {} as Record<keyof typeof teams, string>;
   for (const name of Object.keys(teams))
-    users[name] = putWorkspaceUser(db, {
+    users[name] = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: name,
       name,
@@ -72,7 +72,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     now,
   });
   for (const name of ["member", "administrator", "nobody"])
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace.id,
       userId: users[name]!,
       role: name === "administrator" ? "admin" : "member",
@@ -174,11 +174,11 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
       }),
     }),
   );
-  const cookie = (name: string) => ({
-    cookie: `${WORKSPACE_COOKIE}=${issueWorkspaceSession(db, { workspaceId: workspace.id, userId: users[name]!, now }).token}`,
+  const cookie = async (name: string) => ({
+    cookie: `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(db, { workspaceId: workspace.id, userId: users[name]!, now })).token}`,
   });
   const sessions: Record<string, { cookie: string }> = {};
-  for (const name of ["member", "administrator", "nobody"]) sessions[name] = cookie(name);
+  for (const name of ["member", "administrator", "nobody"]) sessions[name] = await cookie(name);
   const list = async (name: string) => {
     const response = await fetch(`${origin}/api/runners`, { headers: sessions[name] });
     const text = await response.text();
@@ -231,7 +231,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     expect(identifiers((await list("administrator")).body)).toEqual([]);
 
     expect((await fetch(`${origin}/api/runners`)).status).toBe(401);
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace.id,
       userId: users["member"]!,
       role: "member",

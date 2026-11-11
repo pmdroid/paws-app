@@ -52,19 +52,19 @@ async function placeItem(bindTask = true) {
   migrate(db);
   const now = Date.now();
   let clock = now;
-  const owner = putWorkspaceUser(db, {
+  const owner = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const colleague = putWorkspaceUser(db, {
+  const colleague = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "colleague",
     name: "Colleague",
     email: "colleague@example.invalid",
   });
-  const pool = putWorkspaceUser(db, {
+  const pool = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "pool",
     name: "Pool",
@@ -80,7 +80,7 @@ async function placeItem(bindTask = true) {
     now,
   });
   for (const userId of [colleague, pool])
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace.id,
       userId,
       role: "member",

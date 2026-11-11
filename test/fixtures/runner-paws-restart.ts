@@ -196,7 +196,7 @@ const start = () =>
   );
 let paws = await start();
 await paws.ready;
-const userId = putWorkspaceUser(paws.db, {
+const userId = await putWorkspaceUser(sqliteDb(paws.db), {
   id: workspaceId(),
   linearUserId: "owner",
   name: "Owner",

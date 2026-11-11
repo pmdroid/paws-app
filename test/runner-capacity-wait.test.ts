@@ -85,7 +85,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   const now = Date.now();
   // Keep capacity retries in the future while Git and runner setup use real time.
   const clock = new FakeClock(now);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",

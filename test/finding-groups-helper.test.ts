@@ -16,13 +16,13 @@ async function seed() {
   const db = tempDb();
   let now = Date.now();
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',1)");
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "admin",
     linearUserId: "linear-admin",
     name: "Admin",
     email: "admin@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws",
     userId: "admin",
     role: "admin",
@@ -525,13 +525,13 @@ test("a failed receipt completion is retried by cleanup before the original erro
 test("grouping runs on a later admin's runner when the earlier admin has none", async () => {
   const f = await seed();
   try {
-    putWorkspaceUser(f.db, {
+    await putWorkspaceUser(sqliteDb(f.db), {
       id: "aaa",
       linearUserId: "linear-aaa",
       name: "Aaa",
       email: "aaa@example.invalid",
     });
-    syncWorkspaceMember(f.db, {
+    await syncWorkspaceMember(sqliteDb(f.db), {
       workspaceId: "ws",
       userId: "aaa",
       role: "admin",

@@ -56,13 +56,13 @@ async function seed() {
       },
     ],
   });
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "ada",
     linearUserId: "linear-ada",
     name: "Ada",
     email: "ada@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws",
     userId,
     role: "admin",
@@ -375,7 +375,7 @@ test("group actions require the workspace CSRF token and same origin", async () 
     findingGroups: { issues: f.issues },
   });
   try {
-    const session = issueWorkspaceSession(f.db, {
+    const session = await issueWorkspaceSession(f.db, {
       workspaceId: "ws",
       userId: "ada",
       now: Date.now(),
@@ -626,7 +626,7 @@ test("untouched groups follow individual dismissals immediately and locks are wo
     f.db.run("UPDATE finding_group SET status='open',action='file'");
     f.db.run("UPDATE review_finding SET status='open'");
     f.db.run("INSERT INTO workspace VALUES('other','other-org','Other',1)");
-    syncWorkspaceMember(f.db, {
+    await syncWorkspaceMember(sqliteDb(f.db), {
       workspaceId: "other",
       userId: "ada",
       role: "admin",
@@ -721,7 +721,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
   const { workspaceGroupingSources } = await import("../src/finding-groups");
   const f = await seed();
   try {
-    syncWorkspaceMember(f.db, {
+    await syncWorkspaceMember(sqliteDb(f.db), {
       workspaceId: "ws",
       userId: "ada",
       role: "admin",
@@ -776,13 +776,13 @@ test("grouping authority is an admin who owns a runner, not an earlier admin wit
   const { groupingAuthorityUser, workspaceGroupingSources } = await import("../src/finding-groups");
   const f = await seed();
   try {
-    putWorkspaceUser(f.db, {
+    await putWorkspaceUser(sqliteDb(f.db), {
       id: "aaa",
       linearUserId: "linear-aaa",
       name: "Aaa",
       email: "aaa@example.invalid",
     });
-    syncWorkspaceMember(f.db, {
+    await syncWorkspaceMember(sqliteDb(f.db), {
       workspaceId: "ws",
       userId: "aaa",
       role: "admin",

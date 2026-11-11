@@ -239,16 +239,16 @@ export async function probeRunnerOrchestration(
     const waitReason = "Waiting: runner goldbox is paused. Resume it on the Runners page.";
     let runnerResumed = false;
     let runnerWatch: Promise<void> | undefined;
-    function pauseTaskRunner(runId: string) {
+    async function pauseTaskRunner(runId: string) {
       const now = clock.now();
-      const userId = putWorkspaceUser(db, {
+      const userId = await putWorkspaceUser(sqliteDb(db), {
         id: "user-1",
         linearUserId: "user-linear",
         name: "Owner",
         email: "owner@example.invalid",
       });
       db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", now]);
-      syncWorkspaceMember(db, {
+      await syncWorkspaceMember(sqliteDb(db), {
         workspaceId: "ws-1",
         userId,
         role: "admin",
@@ -644,7 +644,7 @@ export async function probeRunnerOrchestration(
               const answer = mergeDependencyYield && itemId === "new-blocker";
               if (!reviewer && !options.prepareOnly) implementationCount++;
               if (runnerWait && !reviewer && !options.prepareOnly && implementationCount === 1) {
-                pauseTaskRunner(item.currentRunId!);
+                await pauseTaskRunner(item.currentRunId!);
                 runnerWatch = watchRunnerWait(item.id).catch((error: unknown) => {
                   watchFailed = { error };
                   parked?.reject(error);

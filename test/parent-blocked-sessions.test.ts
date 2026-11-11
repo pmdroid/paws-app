@@ -4,7 +4,7 @@ import { ensureLinearSession, sqliteDb } from "../src/db";
 import type { EpicSnapshot } from "../src/linear";
 import { createParentFixture } from "./local/parent-fixture";
 
-type Fixture = ReturnType<typeof createParentFixture>;
+type Fixture = Awaited<ReturnType<typeof createParentFixture>>;
 
 function child(linearIssueId: string, identifier: string) {
   return {
@@ -84,7 +84,7 @@ async function waiting(f: Fixture, parent: string) {
 }
 
 test("a chain of sub-issues opens each Linear session only after its blocker merges", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     f.tracker.deps.set("b", [{ blockerLinearIssueId: "a", blockedLinearIssueId: "b" }]);
     f.tracker.deps.set("c", [{ blockerLinearIssueId: "b", blockedLinearIssueId: "c" }]);
@@ -113,7 +113,7 @@ test("a chain of sub-issues opens each Linear session only after its blocker mer
 });
 
 test("a sub-issue blocked by an issue Paws does not manage opens once Linear says it is Done", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     f.tracker.deps.set("a", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "a" }]);
     deliverIssue(f, "outside", "OUT-1", "started");
@@ -132,7 +132,7 @@ test("a sub-issue blocked by an issue Paws does not manage opens once Linear say
 });
 
 test("the recurring job opens no session for a sub-issue that is still blocked", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     f.tracker.deps.set("a", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "a" }]);
     deliverIssue(f, "outside", "OUT-1", "started");
@@ -165,7 +165,7 @@ test("the recurring job opens no session for a sub-issue that is still blocked",
 });
 
 test("the parent summary never says started for a sub-issue whose session is held", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     f.tracker.deps.set("a", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "a" }]);
     deliverIssue(f, "outside", "OUT-1", "canceled");

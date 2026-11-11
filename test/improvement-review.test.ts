@@ -455,8 +455,8 @@ describe("improvement decisions", () => {
       return { status: response!.status, body: (await response!.json()) as Json };
     };
     let at = 2;
-    const member = (active: boolean, teamIds: string[]) =>
-      syncWorkspaceMember(w.db, {
+    const member = async (active: boolean, teamIds: string[]) =>
+      await syncWorkspaceMember(sqliteDb(w.db), {
         workspaceId: "ws",
         userId: "user-ada",
         role: "member",
@@ -464,11 +464,11 @@ describe("improvement decisions", () => {
         teamIds,
         now: at++,
       });
-    const lostTeam = await decideWhile(async () => member(true, []));
+    const lostTeam = await decideWhile(async () => await member(true, []));
     expect([lostTeam.status, lostTeam.body.reason]).toEqual([404, "not_found"]);
     expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
     await member(true, ["team-a"]);
-    const revoked = await decideWhile(async () => member(false, ["team-a"]));
+    const revoked = await decideWhile(async () => await member(false, ["team-a"]));
     expect([revoked.status, revoked.body.reason]).toEqual([404, "not_found"]);
     expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
     await member(true, ["team-a"]);
@@ -479,7 +479,7 @@ describe("improvement decisions", () => {
   test("revoked membership loses reads and decisions; another workspace sees nothing", async () => {
     const w = await world();
     const id = w.retro.a;
-    syncWorkspaceMember(w.db, {
+    await syncWorkspaceMember(sqliteDb(w.db), {
       workspaceId: "ws",
       userId: "user-bea",
       role: "member",
@@ -646,7 +646,10 @@ describe("legacy dismissal after an inbox accept", () => {
 
 describe("individual finding issues share the inbox claim", () => {
   const ORIGIN = "https://paws.example";
-  function route(w: Awaited<ReturnType<typeof world>>, file: () => Promise<void> = async () => {}) {
+  async function route(
+    w: Awaited<ReturnType<typeof world>>,
+    file: () => Promise<void> = async () => {},
+  ) {
     const filed: string[] = [];
     const handle = createFindingIssueRoute({
       db: w.db,
@@ -682,7 +685,7 @@ describe("individual finding issues share the inbox claim", () => {
       },
       now: () => END + 50,
     });
-    const { session } = issueWorkspaceSession(w.db, {
+    const { session } = await issueWorkspaceSession(w.db, {
       workspaceId: "ws",
       userId: "user-bea",
       now: END,
@@ -728,7 +731,7 @@ describe("individual finding issues share the inbox claim", () => {
     const w = await world();
     await seedDaily(w.db);
     expect((await acceptDaily(w)).body.status).toBe("decided");
-    const { post, filed } = route(w);
+    const { post, filed } = await route(w);
     const refused = await post();
     expect(refused!.status).toBe(409);
     expect(filed).toEqual([]);
@@ -739,7 +742,7 @@ describe("individual finding issues share the inbox claim", () => {
     await seedDaily(w.db);
     let release = () => {};
     const gate = new Promise<void>((resolve) => (release = resolve));
-    const { post, filed } = route(w, () => gate);
+    const { post, filed } = await route(w, () => gate);
     const pending = post();
     await Bun.sleep(0);
     expect(filed).toHaveLength(1);
@@ -767,7 +770,7 @@ describe("individual finding issues share the inbox claim", () => {
       { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
     );
     expect(dismissed!.status).toBe(200);
-    const { post } = route(w);
+    const { post } = await route(w);
     expect((await post())!.status).toBe(200);
     const after = await acceptDaily(w);
     expect([after.status, after.body.reason]).toEqual([409, "known_issue"]);

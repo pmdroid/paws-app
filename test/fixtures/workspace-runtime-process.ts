@@ -157,7 +157,7 @@ function permissionPayload() {
 
 async function createOwner() {
   const now = Date.now();
-  const userId = putWorkspaceUser(paws.db, {
+  const userId = await putWorkspaceUser(sqliteDb(paws.db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -171,7 +171,7 @@ async function createOwner() {
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
     now,
   });
-  const issued = issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now });
+  const issued = await issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now });
   return { userId, workspace, issued };
 }
 

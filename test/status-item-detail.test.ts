@@ -6,6 +6,7 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
   workspaceSessionIds,
+  sqliteDb,
 } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
@@ -16,8 +17,13 @@ test("the issue endpoint needs a Paws session and shows only the member's sessio
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
   );
-  putWorkspaceUser(db, { id: "member", linearUserId: "member", name: "member", email: "m@x.test" });
-  syncWorkspaceMember(db, {
+  await putWorkspaceUser(sqliteDb(db), {
+    id: "member",
+    linearUserId: "member",
+    name: "member",
+    email: "m@x.test",
+  });
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "workspace",
     userId: "member",
     role: "member",
@@ -58,7 +64,7 @@ test("the issue endpoint needs a Paws session and shows only the member's sessio
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const session = issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),

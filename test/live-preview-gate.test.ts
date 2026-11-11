@@ -32,7 +32,7 @@ async function assignedPreview(runnerVersion: string) {
   const now = () => 1_800_000_000_000;
   const db = migratedDatabase(join(root, "paws.db"));
   try {
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: "owner",
       name: "Owner",

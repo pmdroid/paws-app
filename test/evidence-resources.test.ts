@@ -54,10 +54,15 @@ async function fixture() {
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
   );
-  putWorkspaceUser(db, { id: "member", linearUserId: "member", name: "member", email: "m@x.test" });
+  await putWorkspaceUser(sqliteDb(db), {
+    id: "member",
+    linearUserId: "member",
+    name: "member",
+    email: "m@x.test",
+  });
   let teamIds = ["team"];
-  const member = () =>
-    syncWorkspaceMember(db, {
+  const member = async () =>
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -65,7 +70,7 @@ async function fixture() {
       teamIds,
       now: Date.now(),
     });
-  member();
+  await member();
   for (const [session, team] of [
     ["session-mine", "team"],
     ["session-other", "other-team"],
@@ -146,7 +151,7 @@ async function fixture() {
     workspaceAccess: access,
     evidenceDir,
   });
-  const session = issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),

@@ -57,7 +57,7 @@ async function fixture(child = false, actorId: string | null = "human") {
   const ownerId =
     actorId === null
       ? null
-      : putWorkspaceUser(db, {
+      : await putWorkspaceUser(sqliteDb(db), {
           id: `user-${actorId}`,
           linearUserId: actorId,
           name: actorId,
