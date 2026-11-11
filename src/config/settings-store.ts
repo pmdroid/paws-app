@@ -24,15 +24,6 @@ type Snapshot = { store: SettingsStore; stored: string | null; ticket: number };
 
 const snapshots = new Map<string, Snapshot>();
 let tickets = 0;
-let fallback: ((configPath: string) => string | null) | null = null;
-
-export function useSavedSettingsReader(read: (configPath: string) => string | null): () => void {
-  fallback = read;
-  return () => {
-    if (fallback === read) fallback = null;
-  };
-}
-
 export async function useSettingsStore(
   configPath: string,
   store: SettingsStore,
@@ -115,9 +106,7 @@ function replaceConfigText(path: string, next: string): void {
 }
 
 function storedSettings(configPath: string): string | null {
-  const snapshot = snapshots.get(configPath);
-  if (snapshot !== undefined) return snapshot.stored;
-  return fallback?.(configPath) ?? null;
+  return snapshots.get(configPath)?.stored ?? null;
 }
 
 function readFileText(configPath: string): string {

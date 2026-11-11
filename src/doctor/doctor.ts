@@ -16,6 +16,7 @@ import { describeLinearWebhookWarning, LINEAR_WEBHOOK_FIX, type LinearWebhookWar
 import { doctorAgentProfiles, type DoctorAgentConfig } from "./agents";
 import type { GrokLoginStatus } from "../install";
 import { realProbeFacts, type GitHubDoctorFacts, type ProbeFacts } from "./probe";
+import { DATABASE_HELD, withSavedStore } from "./store";
 
 export type DoctorCheck = {
   name: string;
@@ -115,6 +116,7 @@ export function doctorChecks(probe: DoctorProbe, context: DoctorContext = {}): D
       FIX.repo,
     ),
   );
+  if (facts.databaseHeld) checks.push(note("database", DATABASE_HELD));
   const overridden = facts.overriddenSections ?? [];
   if (overridden.length > 0) checks.push(overriddenSectionsNote(overridden));
   if (facts.exeDevToken !== undefined) checks.push(exeDevCheck(facts.exeDevToken));
@@ -167,7 +169,7 @@ export function formatDoctor(checks: readonly DoctorCheck[]): string {
 }
 
 export async function realProbe(env: EnvSource = process.env): Promise<DoctorProbe> {
-  const facts = await realProbeFacts(env);
+  const facts = await withSavedStore(env, (saved) => realProbeFacts(env, saved));
   return {
     env,
     facts,

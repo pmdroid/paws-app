@@ -8,6 +8,7 @@ import type { AgentsConfig } from "../src/config";
 import { emptyConfigFile } from "../src/config";
 import {
   appEventsFact,
+  DATABASE_HELD,
   doctorChecks,
   formatDoctor,
   GITHUB_APP_EVENTS,
@@ -16,9 +17,35 @@ import {
   type GitHubDoctorFacts,
   type ProbeFacts,
 } from "../src/doctor";
-import { LINEAR_WEBHOOK_FIX } from "../src/db";
+import { LINEAR_WEBHOOK_FIX, openPawsStore, type Db } from "../src/db";
 import { grokLoginStatus } from "../src/install";
-import { migratedDatabase } from "./helpers";
+import { copyMigratedPglite, pgliteServer } from "./pglite";
+
+async function seedWorkspace(store: Db): Promise<void> {
+  await store.run(function* (q) {
+    yield* q.exec(
+      q.orm.insert(q.t.syncCursor).values([
+        { name: "linear:webhook", cursorMs: 1000 },
+        { name: "linear:webhook-missed", cursorMs: 2000 },
+      ]),
+    );
+    yield* q.exec(
+      q.orm.insert(q.t.workspace).values({
+        id: "workspace",
+        linearOrganizationId: "org",
+        name: "Workspace",
+        createdAt: 1000,
+      }),
+    );
+    yield* q.exec(
+      q.orm.insert(q.t.workspaceRepository).values([
+        { workspaceId: "workspace", repository: "acme/widgets", teamId: "team_a" },
+        { workspaceId: "workspace", repository: "acme/widgets", teamId: "team_b" },
+        { workspaceId: "workspace", repository: "acme/api", teamId: "team_a" },
+      ]),
+    );
+  });
+}
 
 const NAMES = [
   "git",
@@ -195,14 +222,10 @@ test("doctor shows whether GitHub webhook deliveries arrive", () => {
 
 test("doctor passes Closeout without a checkout and loads configured local policies", async () => {
   const home = mkdtempSync(join(tmpdir(), "paws-doctor-policy-"));
-  const db = migratedDatabase(join(home, "paws.db"));
-  db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook', 1000)");
-  db.run("INSERT INTO sync_cursor (name, cursor_ms) VALUES ('linear:webhook-missed', 2000)");
-  db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-  db.run("INSERT INTO workspace_repository VALUES('workspace','acme/widgets','team_a')");
-  db.run("INSERT INTO workspace_repository VALUES('workspace','acme/widgets','team_b')");
-  db.run("INSERT INTO workspace_repository VALUES('workspace','acme/api','team_a')");
-  db.close();
+  await copyMigratedPglite(join(home, "pglite"));
+  const database = await openPawsStore({ url: null, pgliteDir: join(home, "pglite") });
+  await seedWorkspace(database.store);
+  await database.close();
   const env = { HOME: home, PAWS_HOME: home, PATH: process.env.PATH ?? "" };
   const ready = await realProbe(env);
   expect(ready.facts.linearWebhook).toEqual({
@@ -242,6 +265,36 @@ test("doctor passes Closeout without a checkout and loads configured local polic
     "missing closeout: configured local Closeout policy for acme/widgets is invalid",
   );
   expect(lines[index + 1]).toBe(`  fix: ${broken.facts.closeout.fix}`);
+}, 30_000);
+
+test("doctor reads the workspace from the Postgres at [database] url", async () => {
+  const server = await pgliteServer();
+  const home = mkdtempSync(join(tmpdir(), "paws-doctor-url-"));
+  try {
+    await seedWorkspace(server.store);
+    const env = { HOME: home, PAWS_HOME: home, PATH: "", PAWS_DATABASE_URL: server.url };
+    const facts = (await realProbe(env)).facts;
+    expect(facts.repos).toEqual(["acme/api", "acme/widgets"]);
+    expect(facts.workspace).toBe("Workspace");
+    expect(facts.databaseHeld).toBe(false);
+  } finally {
+    await server.close();
+  }
+}, 30_000);
+
+test("while Paws holds PGlite doctor uses config.toml and prints one note", async () => {
+  const home = mkdtempSync(join(tmpdir(), "paws-doctor-held-"));
+  await copyMigratedPglite(join(home, "pglite"));
+  writeFileSync(join(home, "pglite.lock"), String(process.ppid));
+  writeFileSync(join(home, "config.toml"), '[github]\nrepos = ["acme/from-file"]\n');
+  const held = await realProbe({ HOME: home, PAWS_HOME: home, PATH: "" });
+  expect(held.facts.databaseHeld).toBe(true);
+  expect(held.facts.workspace).toBe(null);
+  expect(held.facts.repos).toEqual(["acme/from-file"]);
+  const notes = formatDoctor(doctorChecks(held))
+    .split("\n")
+    .filter((line) => line.includes(DATABASE_HELD));
+  expect(notes).toEqual([`note database: ${DATABASE_HELD}`]);
 }, 30_000);
 
 test("doctor names the chosen repositories and fails when none is chosen", () => {
