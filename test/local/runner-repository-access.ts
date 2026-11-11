@@ -147,7 +147,7 @@ export async function probeRunnerRepositoryAccess(
       sessionKey: sessionId,
     });
     const { run } = beginImplementRun(db, item.id, now);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-repository",
       oauthClientId: "fixture-app",
       appUserId: "fixture-app-user",

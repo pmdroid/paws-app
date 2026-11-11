@@ -108,7 +108,12 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
   const item = insertQueuedItem(db, { id: "task", sessionKey: "session", title: "task" });
   beginImplementRun(db, item.id, 1000);
-  recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
+  await recordLinearInstallation(sqliteDb(db), {
+    ...scope,
+    sessionId: "session",
+    teamId: "team",
+    observedAtMs: 1,
+  });
   const reads = createFakeLinearAccessReads({
     installation: scope,
     sessions: [{ ...scope, sessionId: "session", teamId: "team", issueId: item.linearIssueId }],

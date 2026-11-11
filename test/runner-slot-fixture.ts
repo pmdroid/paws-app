@@ -56,7 +56,7 @@ export async function workspaceWithRunners(db: Database) {
       repo,
       remoteUrl: `https://github.com/${REPOSITORY}.git`,
     });
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",

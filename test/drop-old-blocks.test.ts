@@ -146,7 +146,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     db.run("INSERT OR IGNORE INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",

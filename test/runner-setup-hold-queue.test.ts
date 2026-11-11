@@ -32,7 +32,7 @@ const START = 1_000;
 const RUNNERS_URL = "https://paws.example/dashboard/runners";
 
 /** A workspace where `other` owns one online, free runner and `me` delegates PAS-1. */
-function workspace(db: Database) {
+async function workspace(db: Database) {
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',0)");
   const users: Record<string, string> = {};
   for (const [name, role] of [
@@ -66,7 +66,7 @@ function workspace(db: Database) {
     creatorId: "linear-me",
     now: START,
   });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",
@@ -139,7 +139,7 @@ test("a delegator without a runner, beside another member's free runner, is held
   const jobs = new JobLoop(db, clock);
   const paws = orchestrator(db, clock, jobs);
   try {
-    const users = workspace(db);
+    const users = await workspace(db);
     await paws.reconcileExecution();
     await paws.reconcileExecution();
     expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({
@@ -182,7 +182,7 @@ test("a delegator whose own runner needs its agent signed in hears the runner an
   const clock = new FakeClock(START);
   const paws = orchestrator(db, clock);
   try {
-    const users = workspace(db);
+    const users = await workspace(db);
     addRunner(db, "member-vm", users.me!, START, 0);
     await paws.reconcileExecution();
     expect(await getRunnerSetupHold(sqliteDb(db), "mine")).toMatchObject({
@@ -224,7 +224,7 @@ async function held(prepare: (db: Database, users: Record<string, string>, now: 
   const clock = new FakeClock(START);
   const jobs = new JobLoop(db, clock);
   const paws = orchestrator(db, clock, jobs);
-  const users = workspace(db);
+  const users = await workspace(db);
   await paws.reconcileExecution();
   expect(await getRunnerSetupHold(sqliteDb(db), "mine")).not.toBeNull();
   prepare(db, users, clock.now());
@@ -358,10 +358,10 @@ test("a runner that becomes usable for another member leaves this member's hold 
   }
 });
 
-test("a runner write without a held item queues no check", () => {
+test("a runner write without a held item queues no check", async () => {
   const db = tempDb();
   try {
-    const users = workspace(db);
+    const users = await workspace(db);
     addRunner(db, "own", users.me!, START, 0);
     db.run("UPDATE runner SET last_seen_at=? WHERE id='own'", [START + 10 * 60_000]);
     db.run("UPDATE runner_agent_policy SET ready=1 WHERE runner_id='own'");
@@ -439,7 +439,7 @@ test("an Acme issue labelled Codex starts on its owner's Codex-only runner", asy
   const jobs = new JobLoop(db, clock);
   const { paws, label, counted } = labelled(db, clock, jobs);
   try {
-    const users = workspace(db);
+    const users = await workspace(db);
     addRunner(db, "own", users.me!, START, 1);
     onlyCodex(db, "own");
     label("Codex");
@@ -461,7 +461,7 @@ test("a labelled Acme issue is held for its labelled agent and resumes when that
   const jobs = new JobLoop(db, clock);
   const { paws, label, counted } = labelled(db, clock, jobs);
   try {
-    const users = workspace(db);
+    const users = await workspace(db);
     addRunner(db, "own", users.me!, START, 0);
     label("Codex");
     await paws.reconcileExecution();
@@ -493,7 +493,7 @@ test("without presets a label can't change the agent, so a hold costs no Linear 
   const jobs = new JobLoop(db, clock);
   const { paws, counted } = labelled(db, clock, jobs, false);
   try {
-    workspace(db);
+    await workspace(db);
     await paws.reconcileExecution();
     await Bun.sleep(0);
     expect(counted.reads).toBe(0);

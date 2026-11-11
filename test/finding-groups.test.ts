@@ -733,7 +733,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
       ["session", "team-x"],
       ["session-y", "team-y"],
     ])
-      recordLinearInstallation(f.db, {
+      await recordLinearInstallation(sqliteDb(f.db), {
         sessionId: sessionId!,
         organizationId: "org",
         oauthClientId: "client",
@@ -790,7 +790,7 @@ test("grouping authority is an admin who owns a runner, not an earlier admin wit
       teamIds: [],
       now: 2,
     });
-    recordLinearInstallation(f.db, {
+    await recordLinearInstallation(sqliteDb(f.db), {
       sessionId: "session",
       organizationId: "org",
       oauthClientId: "client",

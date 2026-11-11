@@ -49,7 +49,7 @@ async function fixture(version: string | null, conversations?: number) {
     ["runner", workspace.id, userId, now, now],
   );
   for (const sessionId of ["session-1", "session-2", "session-3", "session-4"])
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",

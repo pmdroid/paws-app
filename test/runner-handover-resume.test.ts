@@ -297,7 +297,7 @@ async function setup() {
     const sessionKey = `session-${sequence}`;
     const record = insertQueuedItem(db, { id, now, sessionKey });
     const { run } = beginImplementRun(db, id, now);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
       appUserId: "app-user",

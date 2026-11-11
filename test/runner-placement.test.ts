@@ -89,7 +89,7 @@ async function placeItem(bindTask = true) {
       now,
     });
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app-client",
     appUserId: "app",

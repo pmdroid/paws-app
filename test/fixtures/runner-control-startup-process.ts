@@ -477,7 +477,7 @@ try {
           sessionKey: "startup-controlled-session",
           now,
         });
-        recordLinearInstallation(paws.db, {
+        await recordLinearInstallation(sqliteDb(paws.db), {
           sessionId: controlled.sessionKey!,
           organizationId: "org",
           teamId: "team",

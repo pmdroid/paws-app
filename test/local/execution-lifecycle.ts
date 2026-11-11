@@ -172,7 +172,7 @@ export async function probeExecutionLifecycle(
       creatorId: "external-human",
     });
     bindLinearSessionTask(db, "external-session", "external");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: "external-session",
       organizationId: "external-org",
       oauthClientId: "external-client",

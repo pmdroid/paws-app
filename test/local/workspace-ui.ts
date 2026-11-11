@@ -1,6 +1,12 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { insertQueuedItem, migrate, openDatabase, recordLinearInstallation } from "../../src/db";
+import {
+  insertQueuedItem,
+  migrate,
+  openDatabase,
+  recordLinearInstallation,
+  sqliteDb,
+} from "../../src/db";
 import { createLinearMembershipReads } from "../../src/linear";
 import { startServer } from "../../src/server";
 import { createWorkspaceAccess, type WorkspaceAccess } from "../../src/workspace";
@@ -14,7 +20,7 @@ insertQueuedItem(db, {
   sessionKey: "fixture-session",
   title: "Verify workspace access",
 });
-recordLinearInstallation(db, {
+await recordLinearInstallation(sqliteDb(db), {
   sessionId: "fixture-session",
   organizationId: "fixture-org",
   teamId: "fixture-team",

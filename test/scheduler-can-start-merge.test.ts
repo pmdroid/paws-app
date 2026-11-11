@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { recordLinearInstallation, saveTaskMode } from "../src/db";
+import { recordLinearInstallation, saveTaskMode, sqliteDb } from "../src/db";
 import { createAdmission } from "../src/scheduler";
 import { confirmFakeMerge, joinFakeWorkspace, workspaceAdmission } from "./fake-workspace";
 import { tempDb } from "./helpers";
@@ -115,7 +115,7 @@ test("admission holds a delegation until its snapshots exist and changes are app
   const db = tempDb();
   try {
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',0)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",

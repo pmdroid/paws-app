@@ -27,7 +27,7 @@ afterEach(() => {
   for (const db of databases.splice(0)) db.close();
 });
 
-function fixture() {
+async function fixture() {
   const db = tempDb();
   databases.push(db);
   const tracker = createFakeTracker([
@@ -40,7 +40,7 @@ function fixture() {
     },
   ]);
   for (const sessionId of ["old", "new", "other"])
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId,
       organizationId: "org",
       oauthClientId: "client",
@@ -63,7 +63,7 @@ function fixture() {
 }
 
 async function failedAttempt() {
-  const { db, tracker, admit } = fixture();
+  const { db, tracker, admit } = await fixture();
   const first = await admit("old");
   if (!first.ok) throw new Error("Expected admission");
   const id = first.items[0]!.id;
@@ -203,7 +203,7 @@ test("session conflicts report one actionable error without suggesting another r
 });
 
 test("created events replace a failed start, bind the new session and fence replies in the old one", async () => {
-  const { db, tracker } = fixture();
+  const { db, tracker } = await fixture();
   const orchestrator = attachOrchestrator({
     db,
     tracker,
@@ -258,7 +258,7 @@ test("created events replace a failed start, bind the new session and fence repl
 });
 
 test("concurrent deliveries of the same task share admission after session reconciliation", async () => {
-  const { db, tracker } = fixture();
+  const { db, tracker } = await fixture();
   const ready = Promise.withResolvers<void>();
   let arrivals = 0;
   const admit = () =>

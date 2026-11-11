@@ -112,7 +112,7 @@ async function fixture(agentRead?: AgentRead) {
   );
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",

@@ -91,7 +91,7 @@ async function fixture() {
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",

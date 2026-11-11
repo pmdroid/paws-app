@@ -507,7 +507,7 @@ async function startScenario(input: {
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session", branchName: BRANCH });
   const { run } = beginImplementRun(db, item.id, now);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",

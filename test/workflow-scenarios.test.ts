@@ -359,7 +359,7 @@ async function runnerWorld() {
   ]);
   const item = insertQueuedItem(w.db, { id: "item", now: w.now, sessionKey: "session" });
   const { run } = beginImplementRun(w.db, item.id, w.now);
-  recordLinearInstallation(w.db, {
+  await recordLinearInstallation(sqliteDb(w.db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",

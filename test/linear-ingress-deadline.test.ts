@@ -9,6 +9,7 @@ import {
   ensureLinearSession,
   enqueueOutbox,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeLinearIssueLifecycle,
@@ -225,7 +226,7 @@ function fixture() {
     },
     async blockOtherSession() {
       ensureLinearSession(db, { sessionId: "other", issueId: "issue" });
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         ...scope,
         sessionId: "other",
         teamId: "team",

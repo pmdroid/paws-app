@@ -84,7 +84,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",

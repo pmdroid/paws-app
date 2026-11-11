@@ -62,7 +62,7 @@ async function dependencyEpic() {
   const workspaceId = "workspace";
   const ids = new Map(intake.items.map((item) => [item.linearIssueId, item.id]));
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -165,7 +165,7 @@ test("an item with a satisfied and an unsatisfied external blocker stays held", 
     const itemId = intake.items[0]!.id;
     const target = { itemId, workspaceId: "workspace" };
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -250,7 +250,7 @@ test("a held item tells Linear which blockers it waits for, once", async () => {
     if (!intake.ok) throw new Error("Intake failed");
     const target = { itemId: intake.items[0]!.id, workspaceId: "workspace" };
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",

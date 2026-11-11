@@ -213,7 +213,7 @@ if (mode === "agent") {
         sessionKey: sessionId,
       });
       const { run } = beginImplementRun(db, item.id, now);
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "fixture",
         appUserId: "app",

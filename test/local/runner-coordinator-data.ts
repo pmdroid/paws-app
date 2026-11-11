@@ -202,7 +202,7 @@ export async function probeRunnerCoordinatorData(
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     const item = insertQueuedItem(db, { id: "relay-item", now, sessionKey: "relay-session" });
     const { run } = beginImplementRun(db, item.id, now);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "relay-org",
       oauthClientId: "fixture",
       appUserId: "app",

@@ -27,8 +27,8 @@ function database(): Database {
   databases.push(db);
   return db;
 }
-function session(db: Database, sessionId = "session", extra = {}) {
-  recordLinearInstallation(db, {
+async function session(db: Database, sessionId = "session", extra = {}) {
+  await recordLinearInstallation(sqliteDb(db), {
     ...scope,
     sessionId,
     teamId: "team",
@@ -57,11 +57,11 @@ async function teams(
 
 test("revocation is installation-wide while team removal has exact app-user and team scope", async () => {
   const db = database();
-  session(db);
-  session(db, "other-user", { appUserId: "other" });
-  session(db, "other-team", { teamId: "other" });
-  session(db, "other-client", { oauthClientId: "other" });
-  session(db, "other-org", { organizationId: "other" });
+  await session(db);
+  await session(db, "other-user", { appUserId: "other" });
+  await session(db, "other-team", { teamId: "other" });
+  await session(db, "other-client", { oauthClientId: "other" });
+  await session(db, "other-org", { organizationId: "other" });
   expect(await teams(db, "remove", 20, [], ["team"])).toEqual(["session"]);
   expect(getLinearSessionAccess(db, "session")).toBe("team_removed");
   for (const id of ["other-user", "other-team", "other-client", "other-org"])
@@ -77,7 +77,7 @@ test("revocation is installation-wide while team removal has exact app-user and 
 
 test("team event ordering and deduplication cannot revive a newer removal", async () => {
   const db = database();
-  session(db);
+  await session(db);
   expect(await teams(db, "remove", 30, [], ["team", "team"])).toEqual(["session"]);
   expect(await teams(db, "remove", 30, [], ["team"])).toEqual([]);
   expect(await teams(db, "old-add", 20, ["team"], [])).toEqual([]);
@@ -92,13 +92,13 @@ test("team event ordering and deduplication cannot revive a newer removal", asyn
 
 test("revocation remains after prompts, stop recovery, newer session observations and team grants", async () => {
   const db = database();
-  session(db);
+  await session(db);
   await revokeLinearInstallation(sqliteDb(db), { ...scope, eventKey: "revoke", createdAtMs: 20 });
   await advanceLinearSessionGeneration(sqliteDb(db), "session", { stop: true, now: 21 });
   await advanceLinearSessionGeneration(sqliteDb(db), "session", { now: 22 });
-  session(db, "session", { observedAtMs: 23 });
+  await session(db, "session", { observedAtMs: 23 });
   await teams(db, "grant", 24, ["team"], []);
-  session(db, "new-session", { observedAtMs: 25 });
+  await session(db, "new-session", { observedAtMs: 25 });
   expect(getLinearSessionAccess(db, "session")).toBe("revoked");
   expect(getLinearSessionAccess(db, "new-session")).toBe("revoked");
 });
@@ -106,31 +106,29 @@ test("revocation remains after prompts, stop recovery, newer session observation
 test("permission events arriving before session discovery fence later sessions", async () => {
   const db = database();
   expect(await teams(db, "remove", 20, [], ["team"])).toEqual([]);
-  session(db);
+  await session(db);
   expect(getLinearSessionAccess(db, "session")).toBe("team_removed");
   await revokeLinearInstallation(sqliteDb(db), { ...scope, eventKey: "revoke", createdAtMs: 30 });
-  session(db, "later", { teamId: "different" });
+  await session(db, "later", { teamId: "different" });
   expect(getLinearSessionAccess(db, "later")).toBe("revoked");
 });
 
 test("session ownership is immutable and old team observations cannot move the permission fence", async () => {
   const db = database();
-  session(db);
+  await session(db);
   for (const extra of [
     { oauthClientId: "different" },
     { organizationId: "different" },
     { appUserId: "different" },
   ])
-    await expect((async () => session(db, "session", extra))()).rejects.toThrow(
-      "ownership changed",
-    );
+    await expect(session(db, "session", extra)).rejects.toThrow("ownership changed");
   await teams(db, "remove", 20, [], ["team"]);
-  session(db, "session", { teamId: "new-team", observedAtMs: 9 });
+  await session(db, "session", { teamId: "new-team", observedAtMs: 9 });
   expect(getLinearSessionAccess(db, "session")).toBe("team_removed");
-  await expect(
-    (async () => session(db, "session", { teamId: "new-team", observedAtMs: 10 }))(),
-  ).rejects.toThrow("observations conflict");
-  session(db, "session", { teamId: "new-team", observedAtMs: 21 });
+  await expect(session(db, "session", { teamId: "new-team", observedAtMs: 10 })).rejects.toThrow(
+    "observations conflict",
+  );
+  await session(db, "session", { teamId: "new-team", observedAtMs: 21 });
   expect(getLinearSessionAccess(db, "session")).toBe("allowed");
 });
 
@@ -140,26 +138,22 @@ test("incomplete installation provenance fails closed and invalid changes roll b
   expect(getLinearSessionAccess(db, "missing")).toBe("unknown");
   expect(getLinearSessionAccess(db, "legacy")).toBe("unknown");
   expect(await getLinearSessionInstallation(sqliteDb(db), "legacy")).toBeNull();
-  session(db, "no-team", { teamId: null });
+  await session(db, "no-team", { teamId: null });
   expect(getLinearSessionAccess(db, "no-team")).toBe("unknown");
   await expect(teams(db, "invalid", 20, ["team"], ["team"])).rejects.toThrow("contradicts");
   expect(await teams(db, "invalid", 20, [], ["team"])).toEqual([]);
-  session(db);
+  await session(db);
   expect(getLinearSessionAccess(db, "session")).toBe("team_removed");
-  await expect((async () => session(db, "broken", { observedAtMs: NaN }))()).rejects.toThrow(
-    "timestamp",
-  );
-  await expect((async () => session(db, "broken", { appUserId: " " }))()).rejects.toThrow(
-    "identity",
-  );
+  await expect(session(db, "broken", { observedAtMs: NaN })).rejects.toThrow("timestamp");
+  await expect(session(db, "broken", { appUserId: " " })).rejects.toThrow("identity");
 });
 
 test("reopening SQLite preserves removal, revocation and processed event identities", async () => {
   const path = join(tempHome(), "access.db");
   let db = openDatabase(path);
   migrate(db);
-  session(db);
-  session(db, "revoked", { oauthClientId: "revoked-client" });
+  await session(db);
+  await session(db, "revoked", { oauthClientId: "revoked-client" });
   await teams(db, "remove", 20, [], ["team"]);
   await revokeLinearInstallation(sqliteDb(db), {
     ...scope,
@@ -193,8 +187,8 @@ test("a public-team permission drop with empty team lists remains visible after 
   const path = join(tempHome(), "public-access.db");
   let db = openDatabase(path);
   migrate(db);
-  session(db);
-  session(db, "other-team", { teamId: "other" });
+  await session(db);
+  await session(db, "other-team", { teamId: "other" });
   await teams(db, "public-on", 20, [], []);
   expect(await teams(db, "public-off", 30, [], [], { canAccessAllPublicTeams: false })).toEqual([
     "other-team",
@@ -214,7 +208,7 @@ test("a public-team permission drop with empty team lists remains visible after 
     (await getLinearInstallationPermissions(sqliteDb(db), scope))?.canAccessAllPublicTeams,
   ).toBe(false);
   expect(await teams(db, "public-off", 30, [], [], { canAccessAllPublicTeams: false })).toEqual([]);
-  session(db, "new-scope", { teamId: "new", observedAtMs: 31 });
+  await session(db, "new-scope", { teamId: "new", observedAtMs: 31 });
   expect(
     (await getLinearInstallationPermissions(sqliteDb(db), scope))?.canAccessAllPublicTeams,
   ).toBe(false);

@@ -42,7 +42,7 @@ async function fixture() {
   );
   db.run("INSERT INTO workspace_user_team VALUES('workspace','person','team')");
   db.run("INSERT INTO workspace_repository VALUES('workspace','owner/repo','team')");
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -111,7 +111,7 @@ test("Managed blockers in another delegation require canonical delivery", async 
     });
     const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
     if (!intake.ok) throw new Error("Intake failed");
-    recordLinearInstallation(f.db, {
+    await recordLinearInstallation(sqliteDb(f.db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -154,7 +154,7 @@ test("A blocker whose Paws tasks were all cancelled follows its Linear state", a
     });
     const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
     if (!intake.ok) throw new Error("Intake failed");
-    recordLinearInstallation(f.db, {
+    await recordLinearInstallation(sqliteDb(f.db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -188,7 +188,7 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
     });
     const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
     if (!intake.ok) throw new Error("Intake failed");
-    recordLinearInstallation(f.db, {
+    await recordLinearInstallation(sqliteDb(f.db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",

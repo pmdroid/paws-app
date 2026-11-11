@@ -108,7 +108,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   );
   const item = insertQueuedItem(db, { id: "item", now: pawsNow(), sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, pawsNow());
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",

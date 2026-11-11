@@ -57,7 +57,7 @@ async function fixture() {
     );
   }
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",

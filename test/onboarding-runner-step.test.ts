@@ -242,7 +242,7 @@ async function fixture({
       creatorId: "ada",
       now: clock.now(),
     });
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: "session",
       organizationId: "org",
       oauthClientId: "client",

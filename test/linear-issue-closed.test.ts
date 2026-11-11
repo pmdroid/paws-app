@@ -63,7 +63,12 @@ async function fixture() {
   ]);
   const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
   if (!task.ok) throw new Error("Unexpected issue cycle");
-  recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
+  await recordLinearInstallation(sqliteDb(db), {
+    ...scope,
+    sessionId: "session",
+    teamId: "team",
+    observedAtMs: 1,
+  });
   bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
   const journal: string[] = [];
   const restore = setJournalSink((line) => journal.push(line));

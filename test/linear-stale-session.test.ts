@@ -67,7 +67,7 @@ async function fixture() {
   ]);
   const tracker: TrackerAdapter = fake;
   for (const sessionId of ["old", "new", "other"])
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId,
       organizationId: "org",
       oauthClientId: "client",

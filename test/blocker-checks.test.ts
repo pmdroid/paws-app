@@ -52,7 +52,7 @@ async function blockedFixture(options: { blocked?: boolean; lowBudget?: boolean 
   });
   if (!intake.ok) throw new Error("intake failed");
   db.run("INSERT INTO workspace VALUES('acme-workspace','acme-org','Acme',1000)");
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "acme-org",
     oauthClientId: "acme-client",
     appUserId: "acme-app",

@@ -145,7 +145,7 @@ function fixture() {
   });
   const helper = async (runnerId: string, purpose: "classify" | "conversation" = "classify") => {
     const sessionId = crypto.randomUUID();
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "sign-in-org",
       oauthClientId: "app",
       appUserId: "app-user",

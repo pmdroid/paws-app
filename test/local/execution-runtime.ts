@@ -179,7 +179,7 @@ export async function probeExecutionRuntime(input: {
   const target = { delegationId: accepted.delegation.id, workspaceId: input.workspaceId };
   const itemTarget = { itemId, workspaceId: input.workspaceId };
   const sessionId = "runtime-execution-session";
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     sessionId,
     organizationId: "org",
     teamId: "team",
@@ -372,7 +372,7 @@ export async function probeExecutionRuntime(input: {
     sessionKey: "runtime-terminal-session",
   });
   for (const nextSession of ["runtime-terminal-session", "runtime-fresh-session"])
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: nextSession,
       organizationId: "org",
       teamId: "team",

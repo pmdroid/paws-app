@@ -31,6 +31,7 @@ import {
   OutboxDispatcher,
   saveTaskMode,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
 import { workspaceAdmission, workspaceDispatch } from "./fake-workspace";
@@ -221,7 +222,7 @@ test("host credentials reach real host clone and fetch without reaching reposito
     bindLinearSessionTask(db, item.sessionKey!, item.delegationId, { actorId: "human" });
     saveTaskMode(db, item.id, "answer", 0, true);
     const installation = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       ...installation,
       sessionId: item.sessionKey!,
       teamId: "team",

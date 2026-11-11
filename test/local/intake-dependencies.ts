@@ -64,7 +64,7 @@ export async function probeDependencySnapshots(
     const cycleIds = async () => (await readiness()).flatMap((entry) => entry.cycleHeldItemIds);
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
     db.run("INSERT INTO workspace VALUES('other','outside-org','Other',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",

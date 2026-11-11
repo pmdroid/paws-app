@@ -169,7 +169,7 @@ async function fixture({
   };
   ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
   const install = async () =>
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: "session",
       organizationId: "org",
       oauthClientId: "client",

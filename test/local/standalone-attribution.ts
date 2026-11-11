@@ -87,7 +87,7 @@ export async function probeStandaloneAttribution(root: string) {
     );
   };
   const item = insertQueuedItem(db, { id: "item", sessionKey: "session", now });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",

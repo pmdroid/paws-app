@@ -272,7 +272,7 @@ export async function probeScheduler(
   {
     const { db, ids } = await setup("idle-merge", 2, () => ["src/shared"]);
     db.run("UPDATE work_item SET delegation_id=? WHERE id=?", [`epic-${ids[0]!}`, ids[1]!]);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "merge-org",
       oauthClientId: "merge-client",
       appUserId: "app",
@@ -391,7 +391,7 @@ export async function probeScheduler(
     const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
     assert(intake.ok);
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -463,7 +463,7 @@ export async function probeScheduler(
       const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: parent, now: 1000 });
       assert(intake.ok);
       const sessionId = `session-${parent}`;
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "client",
         appUserId: "app",

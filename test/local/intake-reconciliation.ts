@@ -82,7 +82,7 @@ export async function probeEpicReconciliation(root: string) {
     const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
     assert(intake.ok);
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",

@@ -145,7 +145,7 @@ test("a task_block dependency is admitted only after its blocker item is merged"
     assert(intake.ok);
     const ids = new Map(intake.items.map((item) => [item.linearIssueId, item.id]));
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",

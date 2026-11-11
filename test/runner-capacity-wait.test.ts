@@ -278,7 +278,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
         payload: "{}",
       });
       const item = listWorkItems(db).find((row) => row.sessionKey === `session-${index}`)!;
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "app",
         appUserId: "app-user",

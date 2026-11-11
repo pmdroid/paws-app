@@ -303,7 +303,7 @@ export async function probeRunnerBackend(
       "refs/heads/main",
     ]);
     assert.equal(linked.exitCode, 0, linked.stderr.toString());
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
       appUserId: "app-user",

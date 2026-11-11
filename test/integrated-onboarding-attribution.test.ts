@@ -46,7 +46,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     now: now(),
   });
   dbApi.ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
-  dbApi.recordLinearInstallation(db, {
+  await dbApi.recordLinearInstallation(sqliteDb(db), {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",

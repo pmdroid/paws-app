@@ -112,7 +112,7 @@ test("a reconcile after the issue moved in Linear stores the new project", async
     issue({ id: "runtimes", name: "Runner runtimes" }),
   );
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",

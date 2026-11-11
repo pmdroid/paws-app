@@ -234,7 +234,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
       payload: "{}",
     });
     const item = listWorkItems(db).find((row) => row.sessionKey === "session-1")!;
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",

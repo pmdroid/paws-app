@@ -33,7 +33,7 @@ async function fixture() {
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
   ensureLinearSession(db, { sessionId: "session", issueId: item.linearIssueId });
   bindLinearSessionTask(db, "session", item.delegationId, { actorId: "human" });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     ...scope,
     sessionId: "session",
     teamId: "team",

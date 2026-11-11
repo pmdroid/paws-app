@@ -188,7 +188,7 @@ if (mode === "prepare") {
       const session = `session-${index}`;
       const item = insertQueuedItem(db, { id: `item-${index}`, now, sessionKey: session });
       const { run } = beginImplementRun(db, item.id, now);
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "fixture",
         appUserId: "app",

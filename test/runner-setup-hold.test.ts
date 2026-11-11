@@ -272,7 +272,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     payload: "{}",
   });
   const item = listWorkItems(db).find((row) => row.sessionKey === "session-1")!;
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",

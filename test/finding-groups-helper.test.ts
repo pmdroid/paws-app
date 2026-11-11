@@ -30,7 +30,7 @@ async function seed() {
     teamIds: [],
     now,
   });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     sessionId: "reporting-session",
     organizationId: "org",
     oauthClientId: "client",
@@ -133,7 +133,7 @@ test("daily helper refuses older runners and cannot read a session from another 
       }),
     ).rejects.toThrow("No paired runner");
     expect(f.db.query("SELECT 1 FROM runner_helper").get()).toBeNull();
-    recordLinearInstallation(f.db, {
+    await recordLinearInstallation(sqliteDb(f.db), {
       sessionId: "other-session",
       organizationId: "other-org",
       oauthClientId: "client",
@@ -290,7 +290,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
         startedAt: f.now,
       }),
     );
-    recordLinearInstallation(f.db, {
+    await recordLinearInstallation(sqliteDb(f.db), {
       sessionId: "interactive",
       organizationId: "org",
       oauthClientId: "client",

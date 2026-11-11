@@ -124,7 +124,7 @@ export async function probeRunnerWork(
     );
   const item = insertQueuedItem(db, { id: "fixture-item", now, sessionKey: "fixture-session" });
   const { run } = beginImplementRun(db, item.id, now);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "fixture-work",
     oauthClientId: "fixture-app",
     appUserId: "fixture-app-user",

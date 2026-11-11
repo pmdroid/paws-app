@@ -54,7 +54,7 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
     ]);
     const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
     const { run } = beginImplementRun(db, item.id, now);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",

@@ -133,7 +133,7 @@ export async function probeRunnerSessionHelpers(
         },
       );
     }
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -294,7 +294,7 @@ export async function probeRunnerSessionHelpers(
       expiryStatus: 409,
       durationMs: 60_000,
     });
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "other-org",
       oauthClientId: "app",
       appUserId: "app-user",

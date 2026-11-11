@@ -9,6 +9,7 @@ import {
   openDatabase,
   recordLinearInstallation,
   setJournalSink,
+  sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import { createFakeTracker } from "../src/linear";
@@ -35,7 +36,7 @@ async function fixture() {
   ]);
   const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
   if (!task.ok) throw new Error("Unexpected issue cycle");
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",

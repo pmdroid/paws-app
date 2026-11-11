@@ -54,7 +54,7 @@ async function fixture() {
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock)),
     now: clock,
   });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app-client",
     appUserId: "app",

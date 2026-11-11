@@ -130,7 +130,7 @@ if (mode === "prepare") {
     if (process.argv[4] === "helpers") {
       config.helpers = true;
       config.runnerId = paired.runnerId;
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "app",
         appUserId: "app-user",

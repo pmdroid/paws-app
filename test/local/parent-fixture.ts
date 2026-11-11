@@ -10,6 +10,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import {
   createFakeTracker,
@@ -98,7 +99,7 @@ export function createParentFixture(
     };
     await accept!(event);
     ensureLinearSession(db, { sessionId, issueId: target.id, creatorId: "app" });
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId,
       organizationId: "org",
       teamId: "team",

@@ -117,7 +117,7 @@ async function replicas() {
     const sessionId = `acme-session-${sequence}`;
     const record = insertQueuedItem(db, { id, now: clock, sessionKey: sessionId });
     const { run } = beginImplementRun(db, id, clock);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "acme",
       oauthClientId: "acme-app",
       appUserId: "acme-app-user",

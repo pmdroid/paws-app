@@ -88,7 +88,7 @@ export async function createExecutionControlsFixture(
       title: `Control ${id}`,
       now,
     });
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: item.sessionKey!,
       organizationId: organizationId!,
       teamId: "team",

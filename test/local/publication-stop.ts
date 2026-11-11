@@ -397,7 +397,7 @@ export async function probePublicationStop(
       creatorId: "cycle-human",
     });
     bindLinearSessionTask(db, "cycle-session", "cycle");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: "cycle-session",
       organizationId: "cycle-org",
       oauthClientId: "cycle-client",

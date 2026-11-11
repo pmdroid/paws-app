@@ -93,7 +93,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
   ] as const) {
     insertQueuedItem(db, { id, title, ...(teamId ? { sessionKey: `session-${id}` } : {}) });
     if (teamId && repo) {
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         sessionId: `session-${id}`,
         organizationId: "org",
         teamId,

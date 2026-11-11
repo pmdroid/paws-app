@@ -12,6 +12,7 @@ import {
   migrate,
   openDatabase,
   recordLinearInstallation,
+  sqliteDb,
 } from "../../src/db";
 import { Orchestrator } from "../../src/loop";
 import { createAdmission } from "../../src/scheduler";
@@ -32,7 +33,7 @@ export async function probeMergeDependencyYield(
     db.run(
       "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES('item','epic','issue','WS-2','Guarded','merge_queue','paws/ws-2',0,1000,'session')",
     );
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",

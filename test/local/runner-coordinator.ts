@@ -186,7 +186,7 @@ export async function probeRunnerCoordinator(
       sessionKey: "coordinator-session",
     });
     const { run } = beginImplementRun(db, item.id, now);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "coordinator-org",
       oauthClientId: "fixture-app",
       appUserId: "fixture-app-user",

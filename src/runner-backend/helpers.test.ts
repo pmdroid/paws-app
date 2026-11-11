@@ -63,7 +63,7 @@ async function fixture(
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,'Fixture','active',?,?)",
     ["runner", workspace.id, userId, now, now],
   );
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -834,8 +834,8 @@ function secondRunner(f: Awaited<ReturnType<typeof fixture>>) {
   );
 }
 
-function linearSession(f: Awaited<ReturnType<typeof fixture>>, sessionId: string) {
-  recordLinearInstallation(f.db, {
+async function linearSession(f: Awaited<ReturnType<typeof fixture>>, sessionId: string) {
+  await recordLinearInstallation(sqliteDb(f.db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -861,7 +861,7 @@ test("twelve resuming items keep one unacknowledged helper per runner and none f
   const f = await fixture();
   secondRunner(f);
   const sessions = Array.from({ length: 12 }, (_, index) => `session-${index}`);
-  for (const session of sessions) linearSession(f, session);
+  for (const session of sessions) await linearSession(f, session);
   const openHelpers = () =>
     f.db
       .query<{ id: string; runnerId: string; acked: number | null }, [number]>(
@@ -1020,7 +1020,7 @@ test("a second attempt on one helper keeps it open until the last attempt finish
 
 test("held-back helpers journal one line per runner at most every five minutes", async () => {
   const f = await fixture();
-  linearSession(f, "waiting");
+  await linearSession(f, "waiting");
   const holdOnce = async () => {
     const out = await f.helpers.dispatch({
       runnerId: "runner",

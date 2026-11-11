@@ -432,7 +432,7 @@ for (const concurrentRevocation of [false, true]) {
       );
       const workspace = workspaceForOrganization(scene.db, "org")!;
       const scope = { organizationId: "org", oauthClientId: "fixture-client", appUserId: "app" };
-      recordLinearInstallation(scene.db, {
+      await recordLinearInstallation(sqliteDb(scene.db), {
         ...scope,
         sessionId: "session",
         teamId: "team",

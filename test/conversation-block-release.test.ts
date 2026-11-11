@@ -69,7 +69,7 @@ async function blockedAfterCleanupFailure() {
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES('agentbox',?,'owner','agentbox','active',?)",
     [workspace.id, now],
   );
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",

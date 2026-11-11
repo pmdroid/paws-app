@@ -101,7 +101,7 @@ export async function probeWorkspaceAuthorization(
       title: `${id} private content`,
     });
     if (organizationId !== null)
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         sessionId: item.sessionKey!,
         organizationId: organizationId!,
         teamId: teamId!,

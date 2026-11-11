@@ -771,7 +771,7 @@ async function runRemoteFault(fault: Fault) {
       payload: "{}",
     });
     const item = listWorkItems(db)[0]!;
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
