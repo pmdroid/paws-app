@@ -7,7 +7,6 @@ import { sqliteDb } from "../src/db";
 import { openQuestion } from "../src/questions";
 import { answer, ask, confirmDecision, suggestDecisions } from "./questions";
 import { decisionFixture, probeDecisionMemory } from "./decision-memory-fixture";
-import { sqliteDb } from "../src/db";
 
 test("decision memory requires accessible confirmed human answers and never resumes on a search match", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-decisions-"));
