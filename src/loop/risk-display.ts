@@ -12,18 +12,20 @@ import {
 import { createHash } from "node:crypto";
 import type { MergeSettings } from "../config";
 import {
-  getCandidateRisk,
   getCandidateRiskSteps,
-  latestCandidateRisk,
-  getRiskAutoContext,
+  latestCandidateRiskSteps,
+  getRiskAutoContextSteps,
   saveRiskAutoContextSteps,
   listRiskAutoContexts,
+  settled,
   sqliteDb,
+  type Q,
   type RiskAutoContext,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
-import { automaticRiskApproval } from "./automatic-risk-approval";
-import { riskApprovals, riskGateOn } from "./risk-approval";
+import { automaticRiskApprovalSteps } from "./automatic-risk-approval";
+import { riskApprovalsSteps, riskGateOn } from "./risk-approval";
 
 export type RiskDisplay = { head: string; detail: string };
 
@@ -222,44 +224,48 @@ export class RiskDisplayReader {
   /** Reads only cached settings and stored rows; never grants or persists approval. */
   read(itemId: string, head?: string): RiskDisplay | null {
     try {
-      const saved = getRiskAutoContext(this.options.db, itemId);
-      const currentHead =
-        head ??
-        this.heads.get(itemId) ??
-        saved?.head ??
-        latestCandidateRisk(this.options.db, itemId)?.head;
-      if (!currentHead) return null;
-      const risk = getCandidateRisk(this.options.db, itemId, currentHead);
-      if (risk?.tier === "normal") return null;
-      if (!riskGateOn(this.options.publicUrl))
-        return { head: currentHead, detail: "Risk gate is off: approval is not required" };
-      const approvals = riskApprovals(this.options.db, itemId);
-      if (approvals.some((ask) => ask.headCommit === currentHead))
-        return { head: currentHead, detail: "Approved: a person approved this commit" };
-      const context = saved?.head === currentHead ? saved.context : null;
-      const watched = this.policyWatches.get(itemId);
-      const validContext =
-        this.settings !== null &&
-        context?.settingsKey === this.settings.key &&
-        (!context?.policyFiles?.length || (watched?.head === currentHead && !watched.stale));
-      const approvedHead =
-        validContext || context?.approvalKind === "same_patch" ? context?.approvedHead : null;
-      if (approvedHead && approvals.some((ask) => ask.headCommit === approvedHead))
-        return { head: currentHead, detail: "Approved: an earlier human approval carries over" };
-      if (!risk || this.settings === null)
-        return { head: currentHead, detail: "Manual approval required" };
-      return {
-        head: currentHead,
-        detail: automaticRiskApproval(this.options.db, risk, {
-          autoApproveHighRisk: this.settings.enabled,
-          policyDigest: validContext ? context?.policyDigest : null,
-          policyPaths: validContext ? context?.policyPaths : null,
-        }).detail,
-      };
+      return settled(sqliteDb(this.options.db).run((q) => this.readSteps(q, itemId, head)));
     } catch (error) {
       this.caught(error, "read", itemId);
       return head ? { head, detail: "Manual approval required" } : null;
     }
+  }
+
+  *readSteps(q: Q, itemId: string, head?: string): Steps<RiskDisplay | null> {
+    const saved = yield* getRiskAutoContextSteps(q, itemId);
+    const currentHead =
+      head ??
+      this.heads.get(itemId) ??
+      saved?.head ??
+      (yield* latestCandidateRiskSteps(q, itemId))?.head;
+    if (!currentHead) return null;
+    const risk = yield* getCandidateRiskSteps(q, itemId, currentHead);
+    if (risk?.tier === "normal") return null;
+    if (!riskGateOn(this.options.publicUrl))
+      return { head: currentHead, detail: "Risk gate is off: approval is not required" };
+    const approvals = yield* riskApprovalsSteps(q, itemId);
+    if (approvals.some((ask) => ask.headCommit === currentHead))
+      return { head: currentHead, detail: "Approved: a person approved this commit" };
+    const context = saved?.head === currentHead ? saved.context : null;
+    const watched = this.policyWatches.get(itemId);
+    const validContext =
+      this.settings !== null &&
+      context?.settingsKey === this.settings.key &&
+      (!context?.policyFiles?.length || (watched?.head === currentHead && !watched.stale));
+    const approvedHead =
+      validContext || context?.approvalKind === "same_patch" ? context?.approvedHead : null;
+    if (approvedHead && approvals.some((ask) => ask.headCommit === approvedHead))
+      return { head: currentHead, detail: "Approved: an earlier human approval carries over" };
+    if (!risk || this.settings === null)
+      return { head: currentHead, detail: "Manual approval required" };
+    return {
+      head: currentHead,
+      detail: (yield* automaticRiskApprovalSteps(q, risk, {
+        autoApproveHighRisk: this.settings.enabled,
+        policyDigest: validContext ? context?.policyDigest : null,
+        policyPaths: validContext ? context?.policyPaths : null,
+      })).detail,
+    };
   }
 
   private caught(error: unknown, operation: string, itemId: string | null): void {
