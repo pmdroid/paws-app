@@ -3,6 +3,12 @@ import { join } from "node:path";
 import { rmSync } from "node:fs";
 import { readSecretFile, writeSecretFile } from "../credentials";
 import { loadGitHubAppCredentials } from "../config";
+import {
+  activeGithubConnections,
+  anyWorkspace,
+  repositoryCatalogued,
+  repositoryGithubConnections,
+} from "../db";
 
 export type ActiveGitHubApp = {
   appId: string;
@@ -40,12 +46,8 @@ export function createWorkspaceGitHubActivation(
       return JSON.parse(value) as T;
     },
     installations(): ActiveGitHubApp[] {
-      const rows = db
-        .query<{ secret_id: string; generation: number }, []>(
-          "SELECT secret_id,generation FROM workspace_github_connection WHERE secret_id IS NOT NULL AND installation_id IS NOT NULL",
-        )
-        .all();
-      if (rows.length === 0 && !db.query("SELECT 1 FROM workspace LIMIT 1").get()) {
+      const rows = activeGithubConnections(db);
+      if (rows.length === 0 && !anyWorkspace(db)) {
         const app = loadGitHubAppCredentials(home, env);
         return app?.installationId ? [template()] : [];
       }
@@ -55,19 +57,10 @@ export function createWorkspaceGitHubActivation(
       }));
     },
     resolve(repository: string): ActiveGitHubApp {
-      const rows = db
-        .query<{ secret_id: string | null; generation: number; repositories: string }, [string]>(
-          `SELECT DISTINCT c.secret_id,c.generation,c.repositories FROM workspace_github_connection c
-           WHERE EXISTS(SELECT 1 FROM workspace_repository r WHERE r.workspace_id=c.workspace_id AND lower(r.repository)=lower(?1))
-           OR EXISTS(SELECT 1 FROM repository_catalog k WHERE k.repository=lower(?1))`,
-        )
-        .all(repository);
-      const catalogued =
-        db.query("SELECT 1 FROM repository_catalog WHERE repository=lower(?)").get(repository) !==
-        null;
+      const rows = repositoryGithubConnections(db, repository);
+      const catalogued = repositoryCatalogued(db, repository);
       if (rows.length === 0) {
-        if (db.query("SELECT 1 FROM workspace LIMIT 1").get())
-          throw new Error("Connect the workspace GitHub App first.");
+        if (anyWorkspace(db)) throw new Error("Connect the workspace GitHub App first.");
         return template();
       }
       if (

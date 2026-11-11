@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import {
-  workspaceMemberUsableSql,
+  certificateRunnerRevoked,
+  expiredRunnerCertificates,
   workspaceMemberUsable,
   agentCatalogSummarySteps,
   auditWorkspaceAccessSteps,
@@ -132,28 +133,14 @@ export function createRunnerControl(options: {
       };
     },
     expireConnections() {
-      const fingerprints = db
-        .query<{ fingerprint: string }, [number]>(
-          `SELECT c.fingerprint FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
-        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
-        WHERE c.revoked_at IS NOT NULL OR c.accepted_until<=? OR r.revoked_at IS NOT NULL
-        OR r.status='revoked' OR NOT (${workspaceMemberUsableSql("m")})`,
-        )
-        .all(now());
-      for (const { fingerprint } of fingerprints) options.disconnect(fingerprint);
+      const fingerprints = expiredRunnerCertificates(db, now());
+      for (const fingerprint of fingerprints) options.disconnect(fingerprint);
     },
     authenticate(peer: RunnerPeer) {
       return authorized(peer);
     },
     revoked(peer: RunnerPeer): boolean {
-      return (
-        db
-          .query(
-            `SELECT 1 FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
-            WHERE c.fingerprint=? AND (r.revoked_at IS NOT NULL OR r.status='revoked')`,
-          )
-          .get(peer.fingerprint) !== null
-      );
+      return certificateRunnerRevoked(db, peer.fingerprint);
     },
     async list(principal: WorkspacePrincipal, sessionIds: readonly string[]) {
       if (

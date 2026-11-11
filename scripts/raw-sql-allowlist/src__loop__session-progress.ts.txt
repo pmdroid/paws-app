@@ -1,8 +1,0 @@
-src/loop/session-progress.ts | db .query<{ generation: number }, [string]>( | not yet converted to Drizzle
-src/loop/session-progress.ts | const pending = db .query<{ id: number }, [string, number, string, number]>( | not yet converted to Drizzle
-src/loop/session-progress.ts | const delivered = db .query<{ payload: string }, [string, number, string, number]>( | not yet converted to Drizzle
-src/loop/session-progress.ts | db.run( | not yet converted to Drizzle
-src/loop/session-progress.ts | db.run( | not yet converted to Drizzle
-src/loop/session-progress.ts | const last = db .query<{ at: number | null }, [number, string, number, number]>( | not yet converted to Drizzle
-src/loop/session-progress.ts | db.run( | not yet converted to Drizzle
-src/loop/session-progress.ts | const added = db .query<{ id: number }, [string, number, string]>( | not yet converted to Drizzle
