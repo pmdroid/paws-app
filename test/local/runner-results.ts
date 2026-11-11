@@ -12,6 +12,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  sqliteDb,
 } from "../../src/db";
 import { createRunnerControl } from "../../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../../src/runner-identity";
@@ -38,8 +39,8 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const bootstrap = issueWorkspaceBootstrap(db, "fixture-org", now);
-    const workspace = consumeWorkspaceBootstrap(db, {
+    const bootstrap = await issueWorkspaceBootstrap(db, "fixture-org", now);
+    const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
       id: workspaceId(),
       organizationId: "fixture-org",
       name: "Fixture",

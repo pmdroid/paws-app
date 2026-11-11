@@ -60,12 +60,12 @@ async function setup(options: { version?: string; conversations?: number } = {})
     name: "Owner",
     email: "owner@acme.test",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org-acme",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org-acme", T0)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org-acme", T0)),
     now: T0,
   });
   db.run(

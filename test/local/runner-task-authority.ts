@@ -16,6 +16,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   saveTaskMode,
+  sqliteDb,
 } from "../../src/db";
 import { initializeRunnerCoordinator, openRunnerCoordinator } from "../../src/runner-coordinator";
 import { openRunnerDaemon, RunnerRequestError } from "../../src/runner-daemon";
@@ -71,12 +72,12 @@ export async function probeRunnerTaskAuthority(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "task-org",
     name: "Tasks",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "task-org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "task-org", now)),
     now,
   });
   const identity = join(root, "identity");

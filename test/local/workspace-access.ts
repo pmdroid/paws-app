@@ -7,6 +7,7 @@ import {
   putWorkspaceUser,
   syncWorkspaceMember,
   workspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import {
   issueWorkspaceBootstrap,
@@ -38,10 +39,10 @@ export async function probeWorkspaceAccess(
     organizationId: "verified-linear-org",
     name: "Fixture workspace",
   };
-  const grant = issueWorkspaceBootstrap(db, workspace.organizationId, now);
+  const grant = await issueWorkspaceBootstrap(db, workspace.organizationId, now);
   let mismatchRejected = false;
   try {
-    consumeWorkspaceBootstrap(db, {
+    await consumeWorkspaceBootstrap(sqliteDb(db), {
       ...workspace,
       organizationId: "unrelated-org",
       tokenHash: workspaceTokenHash(grant),
@@ -51,7 +52,7 @@ export async function probeWorkspaceAccess(
   } catch {
     mismatchRejected = true;
   }
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     ...workspace,
     tokenHash: workspaceTokenHash(grant),
     userId,
@@ -59,7 +60,7 @@ export async function probeWorkspaceAccess(
   });
   let replayError = "";
   try {
-    consumeWorkspaceBootstrap(db, {
+    await consumeWorkspaceBootstrap(sqliteDb(db), {
       ...workspace,
       tokenHash: workspaceTokenHash(grant),
       userId,

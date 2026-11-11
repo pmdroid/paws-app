@@ -277,7 +277,7 @@ test("revocation uses resolved delegator ownership, not the session creator", as
     expect(new Set(stopped)).toEqual(new Set(["owner", "delegated", "creator"]));
     for (const [id, , , , stop] of cases) {
       expect(getWorkItem(db, id)?.state).toBe(stop ? "cancelled" : "queued");
-      if (stop) expect(delegatedLinearUserId(db, id)).toBe("linear-member");
+      if (stop) expect(await delegatedLinearUserId(sqliteDb(db), id)).toBe("linear-member");
     }
     const responses = listOutbox(db)
       .map((row) => row.payload as { body?: string; sessionId?: string })

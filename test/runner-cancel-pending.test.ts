@@ -46,12 +46,12 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const workspace = consumeWorkspaceBootstrap(db, {
+    const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
       id: "ws",
       organizationId: "org",
       name: "Test",
       userId,
-      tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
       now,
     });
     db.run(

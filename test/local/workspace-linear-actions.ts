@@ -53,12 +53,12 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     name: "Owner",
     email: "owner@example.invalid",
   });
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "workspace",
     organizationId: "org",
     name: "Workspace",
     userId: ownerId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const [id, role, active, teams] of [
@@ -544,12 +544,12 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "workspace",
     organizationId: "org",
     name: "Workspace",
     userId: "owner",
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   putWorkspaceUser(db, {

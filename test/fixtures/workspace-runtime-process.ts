@@ -155,7 +155,7 @@ function permissionPayload() {
   });
 }
 
-function createOwner() {
+async function createOwner() {
   const now = Date.now();
   const userId = putWorkspaceUser(paws.db, {
     id: workspaceId(),
@@ -163,12 +163,12 @@ function createOwner() {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(paws.db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Local workspace",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(paws.db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
     now,
   });
   const issued = issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now });
@@ -179,7 +179,7 @@ try {
   const health = await read("/health");
   const healthReport = JSON.parse(health.body) as HealthReport;
   if (mode === "pending-stop") {
-    const { userId, workspace } = createOwner();
+    const { userId, workspace } = await createOwner();
     runtimeLinear.active = false;
     const payload = permissionPayload();
     const accepted = await read(
@@ -278,7 +278,7 @@ try {
     },
   );
   if (mode === "public") {
-    const { userId, workspace, issued } = createOwner();
+    const { userId, workspace, issued } = await createOwner();
     const begin = await read("/auth/linear");
     const redirect = new URL(begin.location!);
     const callback = await read(

@@ -444,7 +444,11 @@ export function createWorkspaceAccess(options: WorkspaceAccessOptions) {
             { error: "A Linear workspace admin must connect this workspace first." },
             403,
           );
-        const grant = issueWorkspaceBootstrap(options.db, result.identity.organizationId, now());
+        const grant = await issueWorkspaceBootstrap(
+          options.db,
+          result.identity.organizationId,
+          now(),
+        );
         const claim = {
           id: workspaceId(now()),
           organizationId: result.identity.organizationId,

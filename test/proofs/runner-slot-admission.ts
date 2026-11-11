@@ -26,7 +26,7 @@ export default {
   agent: () => [],
   async run(proof) {
     const db = proof.database;
-    const { pair, queue, pass } = workspaceWithRunners(db);
+    const { pair, queue, pass } = await workspaceWithRunners(db);
     queue("stopped");
     db.run("UPDATE linear_session SET stopped_at=? WHERE session_id=?", [NOW, "session-stopped"]);
     proof.expect(

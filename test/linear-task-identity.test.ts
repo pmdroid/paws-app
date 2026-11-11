@@ -153,8 +153,8 @@ test("session ownership and active child routing remain separate from shared iss
     ensureLinearSession(db, { sessionId: "second", issueId: "issue" });
     bindLinearSessionTask(db, "second", second.delegation.id);
     activateLinearItem(db, "second", second.items[0]!.id);
-    expect(delegatedLinearUserId(db, first.items[0]!.id)).toBe("human");
-    expect(delegatedLinearUserId(db, second.items[0]!.id)).toBeNull();
+    expect(await delegatedLinearUserId(sqliteDb(db), first.items[0]!.id)).toBe("human");
+    expect(await delegatedLinearUserId(sqliteDb(db), second.items[0]!.id)).toBeNull();
     expect(() => ensureLinearSession(db, { sessionId: "first", organizationId: "other" })).toThrow(
       "ownership changed",
     );
@@ -260,9 +260,12 @@ test("a second session for an active issue is rejected and a prompt still hydrat
     await orchestrator.onLinearEvent(created("before-created"));
     expect(getLinearSession(db, "before-created")?.activeItemId).not.toBeNull();
     expect(await listPendingLinearTurns(sqliteDb(db), "before-created")).toHaveLength(1);
-    expect(delegatedLinearUserId(db, getLinearSession(db, "before-created")!.activeItemId!)).toBe(
-      "human",
-    );
+    expect(
+      await delegatedLinearUserId(
+        sqliteDb(db),
+        getLinearSession(db, "before-created")!.activeItemId!,
+      ),
+    ).toBe("human");
   } finally {
     await orchestrator.shutdown();
     db.close();

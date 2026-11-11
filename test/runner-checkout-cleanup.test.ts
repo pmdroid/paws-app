@@ -13,6 +13,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerWorkCleaner } from "../src/runner-execution";
 import { WORK_ROOT_CLEANUP_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
@@ -34,12 +35,12 @@ async function tornDownRun(state: string, runnerVersion = CURRENT) {
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const workspace = consumeWorkspaceBootstrap(db, {
+    const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
       id: "ws",
       organizationId: "org",
       name: "Test",
       userId,
-      tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
       now,
     });
     db.run(

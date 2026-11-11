@@ -43,12 +43,12 @@ async function fixture() {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-host",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "fixture-host", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "fixture-host", now)),
     now,
   });
   const principal = (id: string, role: WorkspacePrincipal["role"]): WorkspacePrincipal => ({

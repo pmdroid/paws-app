@@ -35,12 +35,14 @@ test("onboarded authoritative creator resumes once with current App and no perso
     name: "Owner",
     email: "owner@example.invalid",
   });
-  dbApi.consumeWorkspaceBootstrap(db, {
+  await dbApi.consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "workspace",
     organizationId: "org",
     name: "Workspace",
     userId: owner,
-    tokenHash: workspace.workspaceTokenHash(workspace.issueWorkspaceBootstrap(db, "org", now())),
+    tokenHash: workspace.workspaceTokenHash(
+      await workspace.issueWorkspaceBootstrap(db, "org", now()),
+    ),
     now: now(),
   });
   dbApi.ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
@@ -231,7 +233,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(continuations).toBe(1);
     expect(dbApi.listWorkItems(db)).toHaveLength(1);
     const itemId = dbApi.listWorkItems(db)[0]!.id;
-    expect(dbApi.delegatedLinearUserId(db, itemId)).toBe("creator");
+    expect(await dbApi.delegatedLinearUserId(sqliteDb(db), itemId)).toBe("creator");
     expect(
       db.query("SELECT 1 FROM workspace_access_audit WHERE action='assignment.resumed'").all(),
     ).toHaveLength(1);

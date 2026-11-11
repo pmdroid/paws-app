@@ -55,12 +55,12 @@ export async function createExecutionControlsFixture(
     name: "Admin",
     email: "admin@example.invalid",
   });
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId,
     organizationId: "org",
     name: "Controls verification",
     userId: "admin",
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const [id, role, teamIds] of [

@@ -12,6 +12,7 @@ import {
   insertRun,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import { startPaws } from "../../src/index";
 import { createFakeBootstrap, createFakeExeDev } from "../../src/provisioning";
@@ -126,12 +127,12 @@ const owner = putWorkspaceUser(paws.db, {
   name: "Owner",
   email: "owner@example.invalid",
 });
-const workspace = consumeWorkspaceBootstrap(paws.db, {
+const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
   id: workspaceId(),
   organizationId: "org",
   name: "Create VM proof",
   userId: owner,
-  tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(paws.db, "org", now)),
+  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
   now,
 });
 const person = (name: string, role: "member" | "admin") => {

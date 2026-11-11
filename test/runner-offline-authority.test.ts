@@ -64,12 +64,12 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", pawsNow())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", pawsNow())),
     now: pawsNow(),
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [

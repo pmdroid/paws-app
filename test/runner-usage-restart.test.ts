@@ -187,12 +187,12 @@ async function usageLimitScenario(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
@@ -233,12 +233,12 @@ async function usageLimitScenario(
     });
     const otherWorkspace =
       wake === "foreign-workspace"
-        ? consumeWorkspaceBootstrap(db, {
+        ? await consumeWorkspaceBootstrap(sqliteDb(db), {
             id: workspaceId(),
             organizationId: "other-org",
             name: "Other",
             userId: otherUser,
-            tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "other-org", now)),
+            tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "other-org", now)),
             now,
           })
         : workspace;

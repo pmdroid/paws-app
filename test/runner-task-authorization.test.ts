@@ -68,10 +68,10 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     ]),
   ) as Record<keyof typeof teams, string>;
   const workspace = { id: workspaceId(), organizationId: "org", name: "Workspace" };
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     ...workspace,
     userId: users["owner"]!,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const name of ["member", "administrator", "nobody"])

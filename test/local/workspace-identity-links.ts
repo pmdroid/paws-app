@@ -42,11 +42,11 @@ export async function probeWorkspaceIdentityLinks(
     }),
   );
   const workspace = { id: workspaceId(), organizationId: "org", name: "Workspace" };
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     ...workspace,
     userId: ids[0]!,
     now,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
   });
   for (const userId of ids)
     syncWorkspaceMember(db, {

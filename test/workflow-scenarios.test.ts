@@ -340,12 +340,12 @@ async function runnerWorld() {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(w.db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(w.db), {
     id: "ws",
     organizationId: "org",
     name: "Test",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(w.db, "org", w.now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(w.db, "org", w.now)),
     now: w.now,
   });
   w.db.run(

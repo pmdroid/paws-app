@@ -9,7 +9,7 @@ export default {
   agent: () => [],
   async run(proof) {
     const db = proof.database;
-    const { pair, queue, pass, workspace } = workspaceWithRunners(db);
+    const { pair, queue, pass, workspace } = await workspaceWithRunners(db);
     const pinned = await pair("pinned", 1, [REPOSITORY]);
     queue("a-unrelated");
     queue("b-resume");

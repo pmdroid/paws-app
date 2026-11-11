@@ -11,6 +11,7 @@ import {
   legacyMigrate,
   migrations,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { handleStatusRequest } from "../src/dashboard";
 import { legacyTempDb } from "./helpers";
@@ -43,7 +44,7 @@ function applyMigrationsUntil(db: Database, lastId: string): void {
   }
 }
 
-test("migration 061 keeps the task actor that has no workspace user", () => {
+test("migration 061 keeps the task actor that has no workspace user", async () => {
   const db = openDatabase(":memory:");
   try {
     applyMigrationsUntil(db, "060_session_link_on_item");
@@ -60,19 +61,19 @@ test("migration 061 keeps the task actor that has no workspace user", () => {
       "INSERT INTO linear_session_task(session_id,epic_id,owner_actor_id) VALUES('session','epic','linear-actor')",
     );
     legacyMigrate(db);
-    expect(delegatedLinearUserId(db, "item")).toBe("linear-actor");
+    expect(await delegatedLinearUserId(sqliteDb(db), "item")).toBe("linear-actor");
   } finally {
     db.close();
   }
 });
 
-test("binding a session keeps an actor that has no workspace user", () => {
+test("binding a session keeps an actor that has no workspace user", async () => {
   const db = legacyTempDb();
   try {
     const item = insertQueuedItem(db, { id: "bound-item", sessionKey: "bound-session", now: 1 });
     ensureLinearSession(db, { sessionId: "bound-session", creatorId: "linear-creator", now: 1 });
     bindLinearSessionTask(db, "bound-session", item.delegationId, { actorId: "linear-actor" });
-    expect(delegatedLinearUserId(db, item.id)).toBe("linear-actor");
+    expect(await delegatedLinearUserId(sqliteDb(db), item.id)).toBe("linear-actor");
   } finally {
     db.close();
   }

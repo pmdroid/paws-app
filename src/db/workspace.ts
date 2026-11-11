@@ -299,8 +299,11 @@ export function* createWorkspaceBootstrapSteps(q: Q, input: WorkspaceBootstrapIn
   yield* q.exec(q.orm.insert(q.t.workspaceBootstrap).values(input));
 }
 
-export function createWorkspaceBootstrap(db: Database, input: WorkspaceBootstrapInput): void {
-  settled(sqliteDb(db).run((q) => createWorkspaceBootstrapSteps(q, input)));
+export async function createWorkspaceBootstrap(
+  store: Db,
+  input: WorkspaceBootstrapInput,
+): Promise<void> {
+  await store.run((q) => createWorkspaceBootstrapSteps(q, input));
 }
 
 type WorkspaceBootstrapClaim = WorkspaceRecord & { tokenHash: string; userId: string; now: number };
@@ -352,11 +355,11 @@ export function* consumeWorkspaceBootstrapSteps(q: Q, input: WorkspaceBootstrapC
   return { id: input.id, organizationId: input.organizationId, name: input.name };
 }
 
-export function consumeWorkspaceBootstrap(
-  db: Database,
+export async function consumeWorkspaceBootstrap(
+  store: Db,
   input: WorkspaceBootstrapClaim,
-): WorkspaceRecord {
-  return settled(sqliteDb(db).transaction((q) => consumeWorkspaceBootstrapSteps(q, input)));
+): Promise<WorkspaceRecord> {
+  return store.transaction((q) => consumeWorkspaceBootstrapSteps(q, input));
 }
 
 export function* saveWorkspaceSessionSteps(q: Q, session: WorkspaceSession) {

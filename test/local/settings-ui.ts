@@ -232,7 +232,7 @@ writeFileSync(
   JSON.stringify({
     origin,
     control: `http://127.0.0.1:${provider.port}/__fixture`,
-    bootstrap: issueWorkspaceBootstrap(db, "fixture-org"),
+    bootstrap: await issueWorkspaceBootstrap(db, "fixture-org"),
   }),
 );
 console.log(`Workspace browser fixture: ${origin}/dashboard/`);

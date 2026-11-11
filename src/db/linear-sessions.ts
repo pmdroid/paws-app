@@ -327,8 +327,8 @@ export function* delegatedLinearUserIdSteps(q: Q, itemId: string): Steps<string 
   return row?.actorId ?? null;
 }
 
-export function delegatedLinearUserId(db: Database, itemId: string): string | null {
-  return settled(sqliteDb(db).run((q) => delegatedLinearUserIdSteps(q, itemId)));
+export async function delegatedLinearUserId(store: Db, itemId: string): Promise<string | null> {
+  return store.run((q) => delegatedLinearUserIdSteps(q, itemId));
 }
 
 type LinearTurnInput = {

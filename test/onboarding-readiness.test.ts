@@ -9,6 +9,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createOnboardingReadiness } from "../src/onboarding-readiness";
 import {
@@ -28,7 +29,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function workspace() {
+async function workspace() {
   const root = mkdtempSync(join(tmpdir(), "paws-onboarding-readiness-"));
   roots.push(root);
   const db = openDatabase(join(root, "paws.sqlite"));
@@ -37,12 +38,12 @@ function workspace() {
     putWorkspaceUser(db, { id, linearUserId: id, name: id, email: `${id}@example.invalid` });
     return id;
   };
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "ws",
     organizationId: "org",
     name: "Test",
     userId: user("owner"),
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", NOW)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", NOW)),
     now: NOW,
   });
   for (const id of ["me", "colleague", "lead"])
@@ -117,13 +118,13 @@ const VM_STEPS = (states: OnboardingVmStep["state"][]): OnboardingVmStep[] =>
   }));
 
 test("a member with no runner needs one, and another member's runner does not count", async () => {
-  const w = workspace();
+  const w = await workspace();
   runner(w.db, "theirs", { owner: "colleague", agents: { claude: { ready: 1 } } });
   expect(await w.read()).toEqual(NEEDED);
 });
 
 test("another member's runner never counts, shared or not, unless they lead the issue's project", async () => {
-  const w = workspace();
+  const w = await workspace();
   runner(w.db, "theirs", { owner: "colleague", sharing: 1, agents: { claude: { ready: 1 } } });
   runner(w.db, "private", { owner: "lead", agents: { claude: { ready: 1 } } });
   runner(w.db, "stopped", { owner: "colleague", seenAgoMs: 10 * 60_000 });
@@ -138,7 +139,7 @@ test("another member's runner never counts, shared or not, unless they lead the 
 });
 
 test("a runner the issue's project lead shares makes the step ready, naming who shares it", async () => {
-  const w = workspace();
+  const w = await workspace();
   runner(w.db, "shared", {
     owner: "lead",
     sharing: 1,
@@ -159,7 +160,7 @@ test("a runner the issue's project lead shares makes the step ready, naming who 
 });
 
 test("the lead's shared runner that is offline says so", async () => {
-  const w = workspace();
+  const w = await workspace();
   runner(w.db, "shared", { owner: "lead", sharing: 1, seenAgoMs: 10 * 60_000 });
   expect(await w.read(["lead"])).toEqual({
     ...NEEDED,
@@ -168,7 +169,7 @@ test("the lead's shared runner that is offline says so", async () => {
 });
 
 test("the step turns ready when the member's runner enrolls, with no restart", async () => {
-  const w = workspace();
+  const w = await workspace();
   vm(w.db, "enroll");
   expect(await w.read()).toEqual({
     runner: {
@@ -189,7 +190,7 @@ test("the step turns ready when the member's runner enrolls, with no restart", a
 });
 
 test("a VM being set up or failed shows as the runner step, with each setup step", async () => {
-  const w = workspace();
+  const w = await workspace();
   vm(w.db, "install");
   expect(await w.read()).toEqual({
     runner: {
@@ -214,7 +215,7 @@ test("a VM being set up or failed shows as the runner step, with each setup step
 });
 
 test("an offline or paused own runner says so", async () => {
-  const w = workspace();
+  const w = await workspace();
   runner(w.db, "old", { seenAgoMs: 10 * 60_000 });
   expect(await w.read()).toEqual({
     ...NEEDED,
@@ -228,7 +229,7 @@ test("an offline or paused own runner says so", async () => {
 });
 
 test("a ready runner reports each coding agent's sign-in, preferring the most connected", async () => {
-  const w = workspace();
+  const w = await workspace();
   runner(w.db, "a", { agents: { claude: { ready: 1 }, codex: { ready: 0, authExpired: 1 } } });
   expect(await w.read()).toEqual({
     runner: { state: "ready", id: "a", name: "a-host" },

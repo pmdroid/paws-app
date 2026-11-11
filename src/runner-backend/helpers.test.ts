@@ -38,8 +38,8 @@ afterEach(() => {
   for (const close of cleanup.splice(0)) close();
 });
 
-function fixture(
-  placement?: (db: ReturnType<typeof openDatabase>, now: () => number) => RunnerPlacement,
+async function fixture(
+  placement?: (db: Awaited<ReturnType<typeof openDatabase>>, now: () => number) => RunnerPlacement,
 ) {
   const root = mkdtempSync(join(tmpdir(), "paws-helper-backend-"));
   const db = openDatabase(join(root, "paws.db"));
@@ -51,12 +51,12 @@ function fixture(
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   db.run(
@@ -146,7 +146,7 @@ function fixture(
 test.each(["classify", "select_repository"] as const)(
   "session backend dispatches %s before item/repository selection and restores its result",
   async (purpose) => {
-    const f = fixture();
+    const f = await fixture();
     let text = "";
     const pending = f.backend.forSession(
       "session",
@@ -179,7 +179,7 @@ test.each(["classify", "select_repository"] as const)(
 );
 
 test("session replacement fences a pending helper and releases its canonical assignment", async () => {
-  const f = fixture();
+  const f = await fixture();
   const pending = f.backend.forSession("session", "classify")(f.input);
   await f.dispatched();
   await advanceLinearSessionGeneration(sqliteDb(f.db), "session");
@@ -192,7 +192,7 @@ test("session replacement fences a pending helper and releases its canonical ass
 });
 
 test("cancelling a helper fences later output without invoking a local agent", async () => {
-  const f = fixture();
+  const f = await fixture();
   const controller = new AbortController();
   const pending = f.backend.forSession(
     "session",
@@ -205,7 +205,7 @@ test("cancelling a helper fences later output without invoking a local agent", a
 });
 
 test("a replacement during the event callback cannot return stale classification", async () => {
-  const f = fixture();
+  const f = await fixture();
   let events = 0;
   const pending = f.backend.forSession(
     "session",
@@ -224,7 +224,7 @@ test("a replacement during the event callback cannot return stale classification
 });
 
 test("no active runner fails closed and a deadline cannot retain capacity", async () => {
-  const f = fixture();
+  const f = await fixture();
   f.db.run("UPDATE runner SET status='paused'");
   await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
     /No paired runner can run/,
@@ -241,7 +241,7 @@ test("no active runner fails closed and a deadline cannot retain capacity", asyn
   ).toBe(0);
 });
 
-function fillRunner(f: ReturnType<typeof fixture>) {
+function fillRunner(f: Awaited<ReturnType<typeof fixture>>) {
   insertQueuedItem(f.db, { id: "busy", now: Date.now(), sessionKey: "busy-session" });
   const { run } = beginImplementRun(f.db, "busy", Date.now());
   f.db.run(
@@ -251,7 +251,7 @@ function fillRunner(f: ReturnType<typeof fixture>) {
 }
 
 test("a helper waits while task work fills the runner and starts once a slot frees", async () => {
-  const f = fixture();
+  const f = await fixture();
   fillRunner(f);
   let settled = false;
   const pending = f.backend.forSession("session", "classify")(f.input);
@@ -276,7 +276,7 @@ test("a helper waits while task work fills the runner and starts once a slot fre
 });
 
 test("a helper still blocked by task work at its deadline reports the runner slots as busy", async () => {
-  const f = fixture();
+  const f = await fixture();
   fillRunner(f);
   const pending = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
@@ -289,7 +289,7 @@ test("a helper still blocked by task work at its deadline reports the runner slo
 const HELPER_SLOT_TAKEN = "helper already running or no free capacity";
 
 test("a helper slot still busy at the deadline is a wait, not a failure", async () => {
-  const f = fixture(() => ({
+  const f = await fixture(() => ({
     async candidates(input) {
       input.onRejected?.("runner", HELPER_SLOT_TAKEN);
       return [];
@@ -311,7 +311,7 @@ test("a helper slot still busy at the deadline is a wait, not a failure", async 
 
 test("a helper that times out while other starts queue on its slot is a wait", async () => {
   let held = false;
-  const f = fixture(() => ({
+  const f = await fixture(() => ({
     async candidates(input) {
       if (held) {
         input.onRejected?.("runner", HELPER_SLOT_TAKEN);
@@ -344,7 +344,7 @@ test.each([
   ["auth-expired", "auth expired"],
   ["revoked", "revoked"],
 ])("a runner refused for %s fails at once and names the cause", async (reason, named) => {
-  const f = fixture(() => ({
+  const f = await fixture(() => ({
     async candidates(input) {
       input.onRejected?.("runner", reason);
       return [];
@@ -370,7 +370,7 @@ test.each([
 });
 
 test("session helpers reject executable-work and file/tool contracts before dispatch", async () => {
-  const f = fixture();
+  const f = await fixture();
   for (const override of [
     { readOnly: false },
     { role: "reviewer" as const },
@@ -385,7 +385,7 @@ test("session helpers reject executable-work and file/tool contracts before disp
 
 test("Placement selects a real helper host and records admission and outcome atomically", async () => {
   const calls: string[] = [];
-  const f = fixture((db, now) => ({
+  const f = await fixture((db, now) => ({
     async candidates(input) {
       expect(input.sessionId).toBe("session");
       expect(input.purpose).toBe("helper");
@@ -429,7 +429,7 @@ test("Placement selects a real helper host and records admission and outcome ato
 });
 
 test("Rejected placement admission rolls back the signed helper command", async () => {
-  const f = fixture((db) => ({
+  const f = await fixture((db) => ({
     async candidates() {
       return [
         {
@@ -454,7 +454,7 @@ test("Rejected placement admission rolls back the signed helper command", async 
 });
 
 test("An empty placement decision cannot fall back to another paired host", async () => {
-  const f = fixture(() => ({
+  const f = await fixture(() => ({
     async candidates() {
       return [];
     },
@@ -475,7 +475,7 @@ test("An empty placement decision cannot fall back to another paired host", asyn
 
 test("Three real helper assignments fail over after expired authentication and observed quota", async () => {
   const attempts: string[] = [];
-  const f = fixture((db, now) => ({
+  const f = await fixture((db, now) => ({
     async candidates(request) {
       const owner = db
         .query<{ workspaceId: string; userId: string }, []>(
@@ -559,7 +559,7 @@ test("Human continuation time does not exhaust the remote execution retry budget
   let attempts = 0;
   const result = await runWithFailover(
     {
-      ...fixture().input,
+      ...(await fixture()).input,
       timeoutMs: 100,
       askTeam: {
         async ask() {
@@ -590,7 +590,7 @@ test("Human continuation time does not exhaust the remote execution retry budget
 });
 
 test("A remote run without a timeout gets the item's awake budget, not 45 minutes", async () => {
-  const { timeoutMs, ...input } = fixture().input;
+  const { timeoutMs, ...input } = (await fixture()).input;
   let granted = 0;
   await runWithFailover(
     input,
@@ -613,7 +613,7 @@ test("A remote run without a timeout gets the item's awake budget, not 45 minute
 });
 
 test("a helper waits for the runner's busy helper slot instead of failing", async () => {
-  const f = fixture();
+  const f = await fixture();
   const helperCount = () =>
     f.db.query<{ n: number }, []>("SELECT count(*) AS n FROM runner_helper").get()!.n;
   const first = f.backend.forSession("session", "classify")(f.input);
@@ -629,7 +629,7 @@ test("a helper waits for the runner's busy helper slot instead of failing", asyn
 });
 
 function coolingRunner(rejection = "agent quota cooldown") {
-  return (db: ReturnType<typeof openDatabase>, now: () => number): RunnerPlacement => ({
+  return (db: Awaited<ReturnType<typeof openDatabase>>, now: () => number): RunnerPlacement => ({
     async candidates(request) {
       const cooldown =
         db
@@ -651,7 +651,7 @@ function coolingRunner(rejection = "agent quota cooldown") {
   });
 }
 
-function coolDown(f: ReturnType<typeof fixture>, until: number) {
+function coolDown(f: Awaited<ReturnType<typeof fixture>>, until: number) {
   f.db.run(
     "INSERT INTO runner_agent_policy(runner_id,agent,quota_state,cooldown_until) VALUES('runner','codex','exhausted',?)",
     [until],
@@ -659,7 +659,7 @@ function coolDown(f: ReturnType<typeof fixture>, until: number) {
 }
 
 test("a runner only in its quota cooldown pauses the helper until the reset", async () => {
-  const f = fixture(coolingRunner());
+  const f = await fixture(coolingRunner());
   const resetsAt = Date.now() + 30 * 60_000;
   coolDown(f, resetsAt);
   const pause = await f.backend
@@ -679,7 +679,7 @@ test("a runner only in its quota cooldown pauses the helper until the reset", as
 });
 
 test("a session item waits in a usage pause and places the helper once the cooldown passes", async () => {
-  const f = fixture(coolingRunner());
+  const f = await fixture(coolingRunner());
   const resetsAt = Date.now() + 30 * 60_000;
   coolDown(f, resetsAt);
   insertQueuedItem(f.db, { id: "item", now: Date.now(), sessionKey: "session" });
@@ -717,7 +717,7 @@ test("a session item waits in a usage pause and places the helper once the coold
 });
 
 test("a helper with no runner in a cooldown keeps the unavailable-runner error", async () => {
-  const f = fixture(coolingRunner("offline"));
+  const f = await fixture(coolingRunner("offline"));
   coolDown(f, Date.now() + 30 * 60_000);
   const error = await f.backend
     .forSession(
@@ -733,7 +733,7 @@ test("a helper whose named account hits its quota retries with the next account 
   const requests: (readonly string[] | undefined)[] = [];
   let exhausted = "";
   const bindings: { accountId: string; bindingId: string }[] = [];
-  const f = fixture((db) => ({
+  const f = await fixture((db) => ({
     async candidates(request) {
       requests.push(request.excludeRunnerIds);
       if (bindings.length === 0) {
@@ -828,13 +828,13 @@ test("a helper whose named account hits its quota retries with the next account 
   expect((await pending).stopReason).toBe("end_turn");
 });
 
-function secondRunner(f: ReturnType<typeof fixture>) {
+function secondRunner(f: Awaited<ReturnType<typeof fixture>>) {
   f.db.run(
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'second',workspace_id,owner_user_id,'Second','active',created_at,last_seen_at FROM runner WHERE id='runner'",
   );
 }
 
-function linearSession(f: ReturnType<typeof fixture>, sessionId: string) {
+function linearSession(f: Awaited<ReturnType<typeof fixture>>, sessionId: string) {
   recordLinearInstallation(f.db, {
     organizationId: "org",
     oauthClientId: "app",
@@ -858,7 +858,7 @@ const helperResult = (commandId: string) => ({
 });
 
 test("twelve resuming items keep one unacknowledged helper per runner and none fails", async () => {
-  const f = fixture();
+  const f = await fixture();
   secondRunner(f);
   const sessions = Array.from({ length: 12 }, (_, index) => `session-${index}`);
   for (const session of sessions) linearSession(f, session);
@@ -918,7 +918,7 @@ test("twelve resuming items keep one unacknowledged helper per runner and none f
 });
 
 test("a helper the runner never picked up waits for the lane, one it ran and failed does not", async () => {
-  const f = fixture();
+  const f = await fixture();
   const unpicked = f.backend.forSession("session", "classify")(f.input);
   await f.dispatched();
   f.db.run("UPDATE runner SET last_seen_at=?", [f.advance(60_000)]);
@@ -932,7 +932,7 @@ test("a helper the runner never picked up waits for the lane, one it ran and fai
 });
 
 test("a retry reuses the item's open helper instead of sending a second", async () => {
-  const f = fixture();
+  const f = await fixture();
   const out = await f.helpers.dispatch({
     runnerId: "runner",
     sessionId: "session",
@@ -950,7 +950,7 @@ test("a retry reuses the item's open helper instead of sending a second", async 
 
 test("a reused helper's sign-in failure excludes its named account, not the runner", async () => {
   const excluded: (readonly string[] | undefined)[] = [];
-  const f = fixture(() => ({
+  const f = await fixture(() => ({
     async candidates(request) {
       excluded.push(request.excludeRunnerIds);
       return [];
@@ -1006,7 +1006,7 @@ test("a reused helper's sign-in failure excludes its named account, not the runn
 });
 
 test("a second attempt on one helper keeps it open until the last attempt finishes", async () => {
-  const f = fixture();
+  const f = await fixture();
   const first = f.backend.forSession("session", "classify")(f.input);
   const command = await f.dispatched();
   const second = f.backend.forSession("session", "classify")(f.input);
@@ -1019,7 +1019,7 @@ test("a second attempt on one helper keeps it open until the last attempt finish
 });
 
 test("held-back helpers journal one line per runner at most every five minutes", async () => {
-  const f = fixture();
+  const f = await fixture();
   linearSession(f, "waiting");
   const holdOnce = async () => {
     const out = await f.helpers.dispatch({
@@ -1051,7 +1051,7 @@ test("held-back helpers journal one line per runner at most every five minutes",
 });
 
 test("a sign-in goes first: no new helper goes out while one waits", async () => {
-  const f = fixture();
+  const f = await fixture();
   const dispatch = () =>
     f.helpers.dispatch({
       runnerId: "runner",
@@ -1082,8 +1082,8 @@ test("a sign-in goes first: no new helper goes out while one waits", async () =>
 const HELPER_LANE_BUSY = "Queued: the runner's helper lane is busy. Paws retries when it frees.";
 
 /** The answer task's own placement over two runners: agentbox and goldbox, two slots each. */
-function answerTask() {
-  const f = fixture((db, now) => {
+async function answerTask() {
+  const f = await fixture((db, now) => {
     db.run("UPDATE linear_session SET issue_id='issue',creator_id='owner'");
     db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'goldbox',workspace_id,owner_user_id,'goldbox','active',created_at,last_seen_at FROM runner WHERE id='runner'",
@@ -1106,7 +1106,7 @@ function answerTask() {
 }
 
 test("an answer task's helper goes to the idle runner while the other runner is full", async () => {
-  const f = answerTask();
+  const f = await answerTask();
   f.fill("goldbox");
   expect(f.db.query("SELECT 1 FROM runner_helper WHERE ended_at IS NULL").get()).toBeNull();
   const pending = f.backend.forSession("session", "classify")(f.input);
@@ -1116,7 +1116,7 @@ test("an answer task's helper goes to the idle runner while the other runner is 
 });
 
 test("capacity-only rejections wait in the helper lane instead of failing", async () => {
-  const f = answerTask();
+  const f = await answerTask();
   f.fill("runner");
   f.fill("goldbox");
   const pending = f.backend
@@ -1135,7 +1135,7 @@ test("capacity-only rejections wait in the helper lane instead of failing", asyn
 });
 
 test("a helper no runner can take names each runner's reason", async () => {
-  const f = fixture((db) => ({
+  const f = await fixture((db) => ({
     async candidates(input) {
       db.run(
         "INSERT OR IGNORE INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) SELECT 'goldbox',workspace_id,owner_user_id,'goldbox','active',created_at,last_seen_at FROM runner WHERE id='runner'",
@@ -1167,7 +1167,7 @@ test("a helper no runner can take names each runner's reason", async () => {
 });
 
 test("a dispatch the runner refuses is named in the failure", async () => {
-  const f = fixture((db) => ({
+  const f = await fixture((db) => ({
     async candidates() {
       return [
         {

@@ -9,6 +9,7 @@ import {
   workspaceMember,
   type WorkspaceRole,
   type WorkspaceSession,
+  sqliteDb,
 } from "../db";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
@@ -49,13 +50,13 @@ export function workspaceId(now = Date.now()): string {
   return id + suffix;
 }
 
-export function issueWorkspaceBootstrap(
+export async function issueWorkspaceBootstrap(
   db: Database,
   organizationId: string,
   now = Date.now(),
-): string {
+): Promise<string> {
   const token = workspaceSecret();
-  createWorkspaceBootstrap(db, {
+  await createWorkspaceBootstrap(sqliteDb(db), {
     tokenHash: workspaceTokenHash(token),
     organizationId,
     expiresAt: now + 10 * 60_000,

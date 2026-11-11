@@ -57,10 +57,10 @@ export async function probeWorkspaceAuthorization(
     email: "administrator@example.invalid",
   });
   const workspace = { id: workspaceId(), organizationId: "org", name: "Workspace" };
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     ...workspace,
     userId: ownerId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   syncWorkspaceMember(db, {

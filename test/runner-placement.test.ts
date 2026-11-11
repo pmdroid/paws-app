@@ -70,8 +70,8 @@ async function placeItem(bindTask = true) {
     name: "Pool",
     email: "pool@example.invalid",
   });
-  const token = issueWorkspaceBootstrap(db, "org", now);
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const token = await issueWorkspaceBootstrap(db, "org", now);
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Test",

@@ -57,12 +57,12 @@ async function blockedAfterCleanupFailure() {
   migrate(db);
   let now = Date.now();
   putWorkspaceUser(db, { id: "owner", linearUserId: "owner", name: "Owner", email: "o@x.invalid" });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "workspace",
     organizationId: "org",
     name: "Fixture",
     userId: "owner",
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   db.run(
