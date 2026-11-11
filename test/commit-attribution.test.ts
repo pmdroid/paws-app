@@ -14,7 +14,11 @@ import {
   syncWorkspaceMember,
   sqliteDb,
 } from "../src/db";
-import { delegatorCommitCredit, issueWorkspaceSession } from "../src/workspace";
+import {
+  delegatorCommitCredit,
+  delegatorPullRequestToken,
+  issueWorkspaceSession,
+} from "../src/workspace";
 
 const fetchSpy = spyOn(globalThis, "fetch");
 afterEach(() => fetchSpy.mockClear());
@@ -131,3 +135,28 @@ for (const scenario of ["no-actor", "unknown-actor", "inactive", "no-workspace"]
       f.db.close();
     }
   });
+
+test("the pull request token is the delegator's, only with the setting on and a linked account", async () => {
+  const f = await fixture();
+  const asked: string[] = [];
+  const tokens = new Map([["steerer", "ghu_steerer"]]);
+  const userToken = async (workspaceId: string, userId: string) => {
+    asked.push(`${workspaceId}/${userId}`);
+    return tokens.get(userId) ?? null;
+  };
+  try {
+    expect(await delegatorPullRequestToken(sqliteDb(f.db), f.item.id, userToken)).toEqual({
+      login: "steerer",
+      token: "ghu_steerer",
+    });
+    expect(asked).toEqual(["workspace/steerer"]);
+    tokens.clear();
+    expect(await delegatorPullRequestToken(sqliteDb(f.db), f.item.id, userToken)).toBeNull();
+    tokens.set("steerer", "ghu_steerer");
+    await revokeGitHubAttribution(sqliteDb(f.db), f.bindings.get("steerer")!, f.now);
+    expect(await delegatorPullRequestToken(sqliteDb(f.db), f.item.id, userToken)).toBeNull();
+    expect(asked).toHaveLength(2);
+  } finally {
+    f.db.close();
+  }
+});

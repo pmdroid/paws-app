@@ -111,20 +111,3 @@ export function setAsideSqliteDatabase(path: string, now: Date = new Date()): st
   );
   return target;
 }
-
-export function recordedMigrationHashes(path: string): string[] | null {
-  if (!existsSync(path)) return null;
-  const db = new Database(path, { readonly: true });
-  try {
-    const recorded = db
-      .query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '__drizzle_migrations'")
-      .get();
-    if (!recorded) return [];
-    return db
-      .query<{ hash: string }, []>("SELECT hash FROM __drizzle_migrations ORDER BY created_at")
-      .all()
-      .map((row) => row.hash);
-  } finally {
-    db.close();
-  }
-}

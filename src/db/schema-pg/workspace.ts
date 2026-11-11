@@ -3,13 +3,13 @@ import {
   check,
   foreignKey,
   integer,
-  jsonb,
   pgTable,
   primaryKey,
   text,
   unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
 import { linearSession } from "./linear";
 

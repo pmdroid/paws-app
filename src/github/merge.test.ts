@@ -139,6 +139,61 @@ describe("pull requests", () => {
     });
   });
 
+  test.each([
+    [201, "octocat", undefined],
+    [403, "steerer", { login: "steerer", status: 403 }],
+  ] as const)(
+    "creates with the member's token only, and with the App after a refusal (%i)",
+    async (answer, reviewer, refused) => {
+      const requests: { method: string; path: string; token: string }[] = [];
+      const client: GitHubClient = {
+        async request(req) {
+          requests.push({ method: req.method, path: req.path, token: req.token });
+          if (req.token === "ghu_member") return { status: answer, body: { number: 4 } };
+          return { status: 201, body: { number: 4 } };
+        },
+      };
+      const pull = await openPullRequest({
+        issue: "ENG-123",
+        owner: "pmdroid",
+        repo: "paws-demo",
+        evidence: "Closeout: accepted",
+        reviewer,
+        member: { login: "steerer", token: "ghu_member" },
+        tokenProvider: { mode: "token", tokenFor: async () => "ghs_app" },
+        client,
+      });
+      expect(pull.memberRefused).toEqual(refused);
+      const pulls = "/repos/pmdroid/paws-demo/pulls";
+      expect(requests).toEqual([
+        { method: "POST", path: pulls, token: "ghu_member" },
+        ...(refused ? [{ method: "POST", path: pulls, token: "ghs_app" }] : []),
+        { method: "POST", path: `${pulls}/4/requested_reviewers`, token: "ghs_app" },
+      ]);
+    },
+  );
+
+  test("does not ask the member to review the pull request they opened", async () => {
+    const paths: string[] = [];
+    const client: GitHubClient = {
+      async request(req) {
+        paths.push(req.path);
+        return { status: 201, body: { number: 4 } };
+      },
+    };
+    await openPullRequest({
+      issue: "ENG-123",
+      owner: "pmdroid",
+      repo: "paws-demo",
+      evidence: "Closeout: accepted",
+      reviewer: "Steerer",
+      member: { login: "steerer", token: "ghu_member" },
+      tokenProvider: { mode: "token", tokenFor: async () => "ghs_app" },
+      client,
+    });
+    expect(paths).toEqual(["/repos/pmdroid/paws-demo/pulls"]);
+  });
+
   test("puts the agent's description before the evidence and updates an existing pull request", async () => {
     const requests: { method: string; body: unknown }[] = [];
     const client: GitHubClient = {

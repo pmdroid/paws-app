@@ -68,12 +68,43 @@ export function* fixRoundNoticeSteps(
   });
   for (const target of targets) {
     if (target.commentId === null || target.target === "review") continue;
-    yield* enqueue(`${key}:eyes:${target.target}:${target.commentId}`, GITHUB_OUTBOX_OP.reaction, {
+    // The same key as the 👀 queued when the comment arrived, so a comment gets it once.
+    yield* enqueue(seenReactionKey(target.target, target.commentId), GITHUB_OUTBOX_OP.reaction, {
       commentId: target.commentId,
       on: target.target === "thread" ? "review" : "conversation",
     });
   }
   return queued;
+}
+
+function seenReactionKey(target: "thread" | "conversation", commentId: number): string {
+  return `github-seen:${target}:${commentId}`;
+}
+
+/**
+ * Queue 👀 on an inline or conversation comment Paws recorded, in the receipt transaction, so the
+ * person sees it arrived before the collection window ends. A review body gets none.
+ */
+export function* seenReactionSteps(
+  q: Q,
+  comment: { source: string; commentId: number; itemId: string; pullNumber: number },
+  now: number,
+): Steps<void> {
+  if (comment.source !== "inline" && comment.source !== "conversation") return;
+  const inline = comment.source === "inline";
+  yield* enqueueOutboxOnceSteps(q, {
+    target: "github",
+    op: GITHUB_OUTBOX_OP.reaction,
+    idempotencyKey: seenReactionKey(inline ? "thread" : "conversation", comment.commentId),
+    payload: {
+      itemId: comment.itemId,
+      pullNumber: comment.pullNumber,
+      commentId: comment.commentId,
+      on: inline ? "review" : "conversation",
+    },
+    maxAttempts: 3,
+    now,
+  });
 }
 
 export const GITHUB_OUTBOX_OP = { comment: "pull.comment", reaction: "comment.reaction" } as const;

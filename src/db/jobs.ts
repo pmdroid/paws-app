@@ -94,7 +94,7 @@ function jobItemId(q: Q): SQL<string | null> {
 
 /** The JSON text bound as a parameter, cast to jsonb on Postgres. */
 function jsonParam(q: Q, text: string): SQL {
-  return q.dialect === "sqlite" ? drizzleSql`${text}` : drizzleSql`${text}::jsonb`;
+  return q.dialect === "sqlite" ? drizzleSql`${text}` : drizzleSql`${text}::text::jsonb`;
 }
 
 /** A payload as the column stores it: JSON text on SQLite, jsonb on Postgres. */

@@ -25,6 +25,7 @@ import { deliverGitHubOutbox, fixRoundNoticeSteps } from "./fix-round-notice";
 import { acceptGitHubDelivery } from "./merge-jobs";
 import { restart } from "./operations";
 import { recordReplyTargets } from "./review-replies";
+import { worktreeBranch } from "./sources";
 
 async function setup() {
   const db = openDatabase(":memory:");
@@ -76,9 +77,12 @@ async function setup() {
   const turnStarts = async () => {
     const job = (await listJobs(sqliteDb(db))).find((entry) => entry.queue === JOB_KIND.resume)!;
     await sqliteDb(db).transaction((q) => fixRoundNoticeSteps(q, job, clock.now()));
+    await drain();
+  };
+  const drain = async () => {
     while ((await outbox.tick()).length > 0) await outbox.idle();
   };
-  return { db, github, clock, startRestart, turnStarts };
+  return { db, github, clock, startRestart, turnStarts, drain };
 }
 
 const target = (number: number, kind: "thread" | "conversation", commentId: number) => ({
@@ -162,4 +166,81 @@ test("Paws does not read its own working-on-it comment back as a new comment", a
   expect(
     (await pendingPullComments(sqliteDb(db), "eng-1")).map((entry) => entry.commentId),
   ).toEqual([6002]);
+});
+
+const FILTER = {
+  appId: async () => "42",
+  appLogin: () => "paws-test[bot]",
+  ignoredBots: () => ["linter[bot]"],
+  ignoredMarkers: () => ["<!-- status -->"],
+};
+
+async function inlineComment(
+  db: Parameters<typeof sqliteDb>[0],
+  now: number,
+  input: { id: number; author: string; body: string; app?: number },
+) {
+  const branch = worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!);
+  return acceptGitHubDelivery(
+    sqliteDb(db),
+    {
+      deliveryId: `inline-${input.id}`,
+      event: "pull_request_review_comment",
+      payload: JSON.stringify({
+        action: "created",
+        repository: { id: 11, name: "one", owner: { login: "acme" } },
+        comment: {
+          id: input.id,
+          pull_request_review_id: 601,
+          body: input.body,
+          path: "src/rank.ts",
+          line: 12,
+          user: { login: input.author },
+          ...(input.app === undefined ? {} : { performed_via_github_app: { id: input.app } }),
+        },
+        pull_request: { number: 7, head: { ref: branch, sha: "h", repo: { id: 11 } } },
+      }),
+    },
+    now,
+    FILTER,
+  );
+}
+
+test("an inline comment gets 👀 when it arrives, and the fix round adds no second one", async () => {
+  const { db, github, clock, startRestart, turnStarts, drain } = await setup();
+  expect(await inlineComment(db, clock.now(), { id: 9001, author: "pascal", body: "Fix." })).toBe(
+    true,
+  );
+  await drain();
+
+  expect(github.reactions).toEqual([{ on: "review", commentId: 9001, content: "eyes" }]);
+  expect(github.comments).toEqual([]);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+
+  await startRestart("review", "Fix the review.", "review:eng-1:601");
+  await recordReplyTargets(
+    sqliteDb(db),
+    "eng-1",
+    "review:eng-1:601",
+    [target(1, "thread", 9001)],
+    clock.now(),
+  );
+  await turnStarts();
+
+  expect(github.comments.map((comment) => comment.body.split("\n")[0])).toEqual([
+    "🐾 Paws is working on this: 1 review comment.",
+  ]);
+  expect(github.reactions).toHaveLength(1);
+});
+
+test("comments Paws ignores get no 👀", async () => {
+  const { db, github, clock, drain } = await setup();
+  await inlineComment(db, clock.now(), { id: 1, author: "someone", body: "Mine.", app: 42 });
+  await inlineComment(db, clock.now(), { id: 2, author: "paws-test[bot]", body: "Mine." });
+  await inlineComment(db, clock.now(), { id: 3, author: "linter[bot]", body: "Lint." });
+  await inlineComment(db, clock.now(), { id: 4, author: "pascal", body: "<!-- status --> ok" });
+  await drain();
+
+  expect(await pendingPullComments(sqliteDb(db), "eng-1")).toEqual([]);
+  expect(github.reactions).toEqual([]);
 });
