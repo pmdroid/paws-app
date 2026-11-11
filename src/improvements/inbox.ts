@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   findingGroupingEnabledSteps,
   lastFindingGroupRunSteps,
@@ -11,7 +10,6 @@ import {
   retroScheduleRuntimeSteps,
   reviewFindingIssueClaimsSteps,
   reviewFindingItemsSteps,
-  sqliteDb,
   type FindingGroupRun,
   type Improvement,
   type ImprovementProposal,
@@ -20,6 +18,7 @@ import {
   type Q,
   type RetroState,
   type Steps,
+  type Db,
 } from "../db";
 import { improvementFindingsSteps, legacyActions, type LegacyAction } from "./daily";
 
@@ -279,10 +278,10 @@ export type ImprovementSourceStatus = {
 };
 
 export function improvementSourceStatus(
-  db: Database,
+  store: Db,
   workspaceId: string,
 ): Promise<ImprovementSourceStatus> {
-  return sqliteDb(db).run(function* (q) {
+  return store.run(function* (q) {
     const retro = (yield* listRetrosSteps(q, workspaceId))[0] ?? null;
     const enabled = yield* findingGroupingEnabledSteps(q, workspaceId);
     const lastRun = yield* lastFindingGroupRunSteps(q, workspaceId);

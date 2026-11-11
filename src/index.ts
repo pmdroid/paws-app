@@ -1254,7 +1254,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         blockerChecks?.(request, sessionIds) ??
         Response.json({ error: "Blocker checks are starting." }, { status: 503 }),
       improvements: createImprovementsHttp({
-        db,
+        store,
         ...(linear?.improvementIssues ? { lookup: linear.improvementIssues } : {}),
         ...(linear?.improvementDelivery ? { linear: linear.improvementDelivery } : {}),
         ...(linear?.startSession ? { startSession: linear.startSession } : {}),
@@ -1461,7 +1461,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   if (improvementDelivery && workspace) {
     const access = workspace.access;
     startImprovementDeliveries({
-      db,
+      store,
       owner: `paws:${process.pid}:${crypto.randomUUID()}`,
       signal: abort.signal,
       linearFor: async (workspaceId) =>
@@ -1476,7 +1476,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         ),
     });
     startImprovementOutcomeSync({
-      db,
+      store,
       signal: abort.signal,
       linearFor: async (workspaceId) =>
         (await store.run((q) => getWorkspaceSteps(q, workspaceId)))?.organizationId ===

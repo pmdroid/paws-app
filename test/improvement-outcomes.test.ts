@@ -79,7 +79,7 @@ async function linked(options: { delegated?: boolean; stateType?: string } = {})
     delegated: options.delegated ?? false,
   });
   const sync = () =>
-    syncImprovementOutcomes({ db: w.db, linearFor: async () => linear, now: w.now });
+    syncImprovementOutcomes({ store: sqliteDb(w.db), linearFor: async () => linear, now: w.now });
   const follow = async (who = "ada") => {
     const response = await w.api(who, `/api/improvements/${id}/follow-through`);
     return response.body.followThrough;
@@ -230,7 +230,12 @@ describe("lost, duplicate and out-of-order events", () => {
     expect(await write("canceled", at)).toBe(true);
     expect(await write("unstarted", at - 1)).toBe(false);
     expect(await write("canceled", at)).toBe(false);
-    const view = (await improvementFollowThrough(t.w.db, { workspaceId: "ws" }, t.id, at))!;
+    const view = (await improvementFollowThrough(
+      sqliteDb(t.w.db),
+      { workspaceId: "ws" },
+      t.id,
+      at,
+    ))!;
     expect(view.followThrough).toMatchObject({
       attention: "canceled",
       implementation: { state: "canceled", source: "linear" },
@@ -367,7 +372,7 @@ describe("daily findings", () => {
       delegated: false,
     });
     const sync = () =>
-      syncImprovementOutcomes({ db: w.db, linearFor: async () => linear, now: w.now });
+      syncImprovementOutcomes({ store: sqliteDb(w.db), linearFor: async () => linear, now: w.now });
     const follow = async () =>
       (await w.api("ada", `/api/improvements/${id}/follow-through`)).body.followThrough;
     await sync();
@@ -629,7 +634,11 @@ describe("second review fixes", () => {
 
   test("a workspace without a Linear connection still advances and shows unavailable", async () => {
     const t = await linked();
-    await syncImprovementOutcomes({ db: t.w.db, linearFor: async () => null, now: t.w.now });
+    await syncImprovementOutcomes({
+      store: sqliteDb(t.w.db),
+      linearFor: async () => null,
+      now: t.w.now,
+    });
     expect(await t.follow()).toMatchObject({
       attention: "unavailable",
       issue: { sync: { status: "unavailable" } },
@@ -714,7 +723,7 @@ describe("one bound work item", () => {
     const post = (action: string, body: unknown) =>
       w.api("ada", `/api/improvements/${id}/${action}`, body);
     const sync = () =>
-      syncImprovementOutcomes({ db: w.db, linearFor: async () => linear, now: w.now });
+      syncImprovementOutcomes({ store: sqliteDb(w.db), linearFor: async () => linear, now: w.now });
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
     await settle(END + 2_000);
     linear.issues.set(ISSUE, {
@@ -823,7 +832,7 @@ describe("one bound work item", () => {
       leaseMs: 1,
     });
     await syncImprovementOutcomes({
-      db: t.w.db,
+      store: sqliteDb(t.w.db),
       linearFor: async () => t.linear,
       now: () => END + 10_000,
     });
@@ -953,7 +962,7 @@ describe("settled before every mutation", () => {
     };
     for (let i = 0; i < 2; i++)
       await syncImprovementOutcomes({
-        db: t.w.db,
+        store: sqliteDb(t.w.db),
         linearFor: async () => reader,
         now: t.w.now,
         limit: 1,
@@ -1046,7 +1055,12 @@ describe("access", () => {
     const t = await linked();
     await t.sync();
     const later = END + 2 * IMPROVEMENT_OUTCOME_LIMITS.staleSyncMs;
-    const view = (await improvementFollowThrough(t.w.db, { workspaceId: "ws" }, t.id, later))!;
+    const view = (await improvementFollowThrough(
+      sqliteDb(t.w.db),
+      { workspaceId: "ws" },
+      t.id,
+      later,
+    ))!;
     expect(view.followThrough).toMatchObject({ attention: "stale_sync", issue: { fresh: false } });
   });
 });

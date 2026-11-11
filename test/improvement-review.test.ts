@@ -367,7 +367,7 @@ describe("improvement decisions", () => {
     const w = await world();
     const id = w.retro.a;
     const ada = w.people["ada"]!;
-    const outcome = await decideInboxItem(w.db, {
+    const outcome = await decideInboxItem(sqliteDb(w.db), {
       reviewer: { ...ada, repositories: [A, B], sessionIds: ONLY_A },
       improvementId: id,
       expectedVersion: 1,
@@ -437,7 +437,7 @@ describe("improvement decisions", () => {
     const id = w.retro.a;
     const decideWhile = async (revoke: () => unknown) => {
       const http = createImprovementsHttp({
-        db: w.db,
+        store: sqliteDb(w.db),
         lookup: async (issue) => {
           await revoke();
           return w.lookup.lookup(issue);

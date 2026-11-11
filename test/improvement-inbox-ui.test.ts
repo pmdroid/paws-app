@@ -216,14 +216,14 @@ async function harness() {
   };
   const deliver = (now = END + 60 * 60_000) =>
     deliverImprovements({
-      db: w.db,
+      store: sqliteDb(w.db),
       owner: "test",
       linearFor: async () => linear,
       sourceUrl: (id) => `https://paws.test/dashboard/improvements/${id}`,
       now: () => now,
     });
   const sync = () =>
-    syncImprovementOutcomes({ db: w.db, linearFor: async () => linear, now: w.now });
+    syncImprovementOutcomes({ store: sqliteDb(w.db), linearFor: async () => linear, now: w.now });
   return {
     w,
     linear,

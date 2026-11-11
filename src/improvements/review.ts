@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   cancelImprovementEvidenceCommentSteps,
   decideImprovementSteps,
@@ -13,7 +12,6 @@ import {
   listWorkspaceRepositoryNamesSteps,
   repairImprovementDestinationSteps,
   requeueImprovementDeliverySteps,
-  sqliteDb,
   workspaceMemberSteps,
   workspaceMemberUsable,
   type ImprovementDelivery,
@@ -22,6 +20,7 @@ import {
   type Q,
   type RetroEvidence,
   type Steps,
+  type Db,
 } from "../db";
 import { inboxCounts, listInboxItemsSteps, type ImprovementAccess, type InboxItem } from "./inbox";
 
@@ -168,8 +167,8 @@ function deliveryRecovery(
   return null;
 }
 
-export function improvementView(db: Database, item: InboxItem): Promise<ImprovementView> {
-  return sqliteDb(db).run((q) => improvementViewSteps(q, item));
+export function improvementView(store: Db, item: InboxItem): Promise<ImprovementView> {
+  return store.run((q) => improvementViewSteps(q, item));
 }
 
 function* improvementViewSteps(q: Q, item: InboxItem): Steps<ImprovementView> {
@@ -244,11 +243,10 @@ export type InboxFilter = {
 };
 
 export async function listImprovementPage(
-  db: Database,
+  store: Db,
   access: ImprovementAccess,
   filter: InboxFilter,
 ) {
-  const store = sqliteDb(db);
   const all = await store.run((q) => listInboxItemsSteps(q, access));
   const kind =
     filter.source === undefined
@@ -361,11 +359,11 @@ function* evidenceOfSteps(q: Q, access: ImprovementAccess, item: InboxItem) {
 }
 
 export async function improvementDetail(
-  db: Database,
+  store: Db,
   reviewer: ImprovementReviewer,
   improvementId: string,
 ) {
-  const items = await sqliteDb(db).run((q) => listInboxItemsSteps(q, reviewer));
+  const items = await store.run((q) => listInboxItemsSteps(q, reviewer));
   const item = items.find((entry) => entry.improvement.id === improvementId);
   if (!item) return null;
   const known = new Map<
@@ -383,7 +381,7 @@ export async function improvementDetail(
     entry.improvements.push(other.improvement.id);
     known.set(key, entry);
   }
-  return sqliteDb(db).run(function* (q) {
+  return store.run(function* (q) {
     const evidence = yield* evidenceOfSteps(q, reviewer, item);
     const visibleRefs = new Set(
       item.sourceKind === "daily_finding"
@@ -543,7 +541,7 @@ function* linkRefusalSteps(
 }
 
 export async function decideInboxItem(
-  db: Database,
+  store: Db,
   input: {
     reviewer: ImprovementReviewer;
     reauthorize?: (q: Q) => Steps<ImprovementReviewer | null>;
@@ -555,7 +553,6 @@ export async function decideInboxItem(
     now: () => number;
   },
 ): Promise<ImprovementDecisionOutcome> {
-  const store = sqliteDb(db);
   const { reviewer, request } = input;
   const notFound = {
     status: "not_found",
@@ -724,10 +721,10 @@ export type DeliveryRetryOutcome =
   | { status: "not_found" | "conflict"; reason: string; message: string; item?: ImprovementView };
 
 export function retryInboxDelivery(
-  db: Database,
+  store: Db,
   input: { access: ImprovementAccess; improvementId: string; deliveryId: string; now: number },
 ): Promise<DeliveryRetryOutcome> {
-  return sqliteDb(db).transaction(function* (q): Steps<DeliveryRetryOutcome> {
+  return store.transaction(function* (q): Steps<DeliveryRetryOutcome> {
     const item = yield* findInboxItemSteps(q, input.access, input.improvementId);
     const delivery = item
       ? (yield* listImprovementDeliveriesSteps(q, item.improvement.id)).find(
@@ -761,7 +758,7 @@ export function retryInboxDelivery(
 }
 
 export function repairInboxDestination(
-  db: Database,
+  store: Db,
   input: {
     reviewer: ImprovementReviewer;
     improvementId: string;
@@ -770,9 +767,7 @@ export function repairInboxDestination(
     now: number;
   },
 ): Promise<DeliveryRetryOutcome | ImprovementDecisionOutcome> {
-  return sqliteDb(db).transaction(function* (q): Steps<
-    DeliveryRetryOutcome | ImprovementDecisionOutcome
-  > {
+  return store.transaction(function* (q): Steps<DeliveryRetryOutcome | ImprovementDecisionOutcome> {
     const item = yield* findInboxItemSteps(q, input.reviewer, input.improvementId);
     const delivery = item
       ? (yield* listImprovementDeliveriesSteps(q, item.improvement.id)).find(
@@ -805,10 +800,10 @@ export function repairInboxDestination(
 }
 
 export function cancelInboxEvidenceComment(
-  db: Database,
+  store: Db,
   input: { access: ImprovementAccess; improvementId: string; deliveryId: string },
 ): Promise<DeliveryRetryOutcome> {
-  return sqliteDb(db).transaction(function* (q): Steps<DeliveryRetryOutcome> {
+  return store.transaction(function* (q): Steps<DeliveryRetryOutcome> {
     const item = yield* findInboxItemSteps(q, input.access, input.improvementId);
     const deliveries = item ? yield* listImprovementDeliveriesSteps(q, item.improvement.id) : [];
     const delivery = deliveries.find((d) => d.id === input.deliveryId);

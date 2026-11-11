@@ -88,7 +88,7 @@ async function world() {
     options: { owner?: string; linearFor?: (workspaceId: string) => typeof linear | null } = {},
   ) =>
     deliverImprovements({
-      db,
+      store: sqliteDb(db),
       owner: options.owner ?? "worker-1",
       now,
       sourceUrl: (id) => `https://paws.test/dashboard/improvements/${id}`,
@@ -171,7 +171,7 @@ async function acceptRetro(
 }
 
 const view = async (w: World, id: string) =>
-  improvementView(w.db, {
+  improvementView(sqliteDb(w.db), {
     improvement: (await getImprovement(sqliteDb(w.db), id))!,
     sourceKind: "retro_item",
     sourceKeys: [],
