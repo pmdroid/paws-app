@@ -7,7 +7,8 @@ import {
   jobStatusByKeySteps,
   plaintextRunnerEventsSteps,
   sealRunnerEventSteps,
-  sqliteDb,
+  storeOf,
+  type Db,
   truncateWal,
   withSecureDelete,
   type Q,
@@ -103,17 +104,17 @@ export function* openRunnerEventSteps(
 const BATCH = 500;
 
 export async function encryptRunnerEvents(options: {
-  db: Database;
+  db: Database | Db;
   key: Buffer;
   signal?: AbortSignal;
 }) {
   const { db, key, signal } = options;
-  const store = sqliteDb(db);
+  const store = storeOf(db);
   let after: [string, number, number] = ["", 0, 0];
   let sealed = 0;
   // Zero the plaintext that sealing frees, without rebuilding the file. Bytes left in the slack of
   // pages that split stay until the offline rebuild in the README.
-  await withSecureDelete(db, async () => {
+  const seal = async () => {
     for (;;) {
       signal?.throwIfAborted();
       const from = after;
@@ -129,6 +130,13 @@ export async function encryptRunnerEvents(options: {
       sealed += rows.length;
       await yieldToLoop();
     }
+  };
+  if ("dialect" in db) {
+    await seal();
+    return { sealed };
+  }
+  await withSecureDelete(db, async () => {
+    await seal();
     incrementalVacuum(db);
     truncateWal(db);
   });

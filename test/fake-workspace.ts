@@ -7,9 +7,12 @@ import {
   recordConfirmedRemoteMerge,
   recordLinearInstallationSteps,
   sqliteDb,
+  storeOf,
+  type Db,
   type Q,
   type Steps,
 } from "../src/db";
+import { and, asc, desc, eq, inArray, isNotNull, notExists, notInArray, sql } from "drizzle-orm";
 import { itemDependenciesCurrentSteps, recordItemDependenciesSteps } from "../src/intake";
 import { createAdmission, dispatch, type ItemAdmission } from "../src/scheduler";
 
@@ -22,9 +25,6 @@ type Session = {
   teamId: string | null;
 };
 
-const OPEN = "i.state NOT IN ('completed','merged','cancelled')";
-const PRESENT =
-  "NOT EXISTS(SELECT 1 FROM work_item_specification p WHERE p.item_id=i.id AND p.present=0)";
 const DEPENDENCY_INPUTS = `SELECT json_array(
   (SELECT json_group_array(json_array(i.id,i.linear_issue_id,i.linear_identifier,i.title,i.state,
     i.version,i.position,i.created_at,i.cancel_requested,i.session_key,i.brief,i.owner_user_id,
@@ -44,36 +44,32 @@ const DEPENDENCY_INPUTS = `SELECT json_array(
   FROM work_item d WHERE d.id=?`;
 const currentInputs = new WeakMap<Database, Map<string, string>>();
 
-export function workspaceAdmission(db: Database, options: AdmissionOptions = {}): ItemAdmission {
-  const admission = createAdmission({ db: sqliteDb(db), ...options });
-  const ofItem = (itemId: string) =>
-    db
-      .query<{ id: string }, [string]>("SELECT delegation_id AS id FROM work_item WHERE id=?")
-      .get(itemId)?.id;
+export function workspaceAdmission(
+  source: Database | Db,
+  options: AdmissionOptions = {},
+): ItemAdmission {
+  const store = storeOf(source);
+  const raw = "dialect" in source ? null : source;
+  const admission = createAdmission({ db: store, ...options });
   const joined =
-    (delegationOf: (id: string) => string | undefined) =>
-    <R>(check: (id: string) => Promise<R>) =>
+    <R>(check: (id: string) => Promise<R>, byItem: boolean) =>
     async (id: string): Promise<R> => {
-      const delegationId = delegationOf(id);
-      if (delegationId !== undefined) await joinFakeWorkspace(db, delegationId);
+      await store.run((q) => joinFakeWorkspaceSteps(q, raw, id, byItem));
       return check(id);
     };
-  const joinedSteps =
-    (delegationOf: (id: string) => string | undefined) =>
-    <R>(check: (q: Q, id: string) => Steps<R>) =>
-      function* (q: Q, id: string): Steps<R> {
-        const delegationId = delegationOf(id);
-        if (delegationId !== undefined) yield* joinFakeWorkspaceSteps(q, db, delegationId);
-        return yield* check(q, id);
-      };
+  const joinedSteps = <R>(check: (q: Q, id: string) => Steps<R>, byItem: boolean) =>
+    function* (q: Q, id: string): Steps<R> {
+      yield* joinFakeWorkspaceSteps(q, raw, id, byItem);
+      return yield* check(q, id);
+    };
   return {
-    canDispatchDelegation: joined((id) => id)(admission.canDispatchDelegation),
-    canStart: joined(ofItem)(admission.canStart),
-    canMerge: joined(ofItem)(admission.canMerge),
+    canDispatchDelegation: joined(admission.canDispatchDelegation, false),
+    canStart: joined(admission.canStart, true),
+    canMerge: joined(admission.canMerge, true),
     steps: {
-      canDispatchDelegation: joinedSteps((id) => id)(admission.steps.canDispatchDelegation),
-      canStart: joinedSteps(ofItem)(admission.steps.canStart),
-      canMerge: joinedSteps(ofItem)(admission.steps.canMerge),
+      canDispatchDelegation: joinedSteps(admission.steps.canDispatchDelegation, false),
+      canStart: joinedSteps(admission.steps.canStart, true),
+      canMerge: joinedSteps(admission.steps.canMerge, true),
     },
   };
 }
@@ -86,64 +82,111 @@ export function workspaceDispatch(
 }
 
 export function joinFakeWorkspace(db: Database, delegationId: string): Promise<void> {
-  return sqliteDb(db).run((q) => joinFakeWorkspaceSteps(q, db, delegationId));
+  return sqliteDb(db).run((q) => joinFakeWorkspaceSteps(q, db, delegationId, false));
 }
 
-function* joinFakeWorkspaceSteps(q: Q, db: Database, delegationId: string): Steps<void> {
+const open = (q: Q) => notInArray(q.t.workItem.state, ["completed", "merged", "cancelled"]);
+
+const present = (q: Q) =>
+  notExists(
+    q.orm
+      .select({ one: sql`1` })
+      .from(q.t.workItemSpecification)
+      .where(
+        and(
+          eq(q.t.workItemSpecification.itemId, q.t.workItem.id),
+          eq(q.t.workItemSpecification.present, 0),
+        ),
+      ),
+  );
+
+function* joinFakeWorkspaceSteps(
+  q: Q,
+  raw: Database | null,
+  id: string,
+  byItem: boolean,
+): Steps<void> {
+  const item = q.t.workItem;
+  const delegationId = byItem
+    ? (yield* q.one(q.orm.select({ id: item.delegationId }).from(item).where(eq(item.id, id))))?.id
+    : id;
+  if (delegationId === undefined) return;
   const fallback =
-    db
-      .query<{ org: string }, []>(
-        "SELECT linear_organization_id AS org FROM workspace ORDER BY created_at,id LIMIT 1",
-      )
-      .get()?.org ?? "org";
-  const items = db
-    .query<{ id: string; sessionId: string | null }, [string]>(
-      `SELECT i.id,i.session_key AS sessionId FROM work_item i
-       WHERE i.delegation_id=? AND ${OPEN} AND ${PRESENT}`,
-    )
-    .all(delegationId);
+    (yield* q.one(
+      q.orm
+        .select({ org: q.t.workspace.linearOrganizationId })
+        .from(q.t.workspace)
+        .orderBy(asc(q.t.workspace.createdAt), asc(q.t.workspace.id))
+        .limit(1),
+    ))?.org ?? "org";
+  const items = yield* q.all(
+    q.orm
+      .select({ id: item.id, sessionId: item.sessionKey })
+      .from(item)
+      .where(and(eq(item.delegationId, delegationId), open(q), present(q))),
+  );
   if (items.length === 0) return;
-  if (items.every((item) => item.sessionId === null)) {
+  if (items.every((row) => row.sessionId === null)) {
     const sessionId = `session-${delegationId}`;
-    yield* installSteps(q, db, { sessionId, organizationId: fallback });
+    yield* installSteps(q, { sessionId, organizationId: fallback });
     yield* bindLinearSessionTaskSteps(q, sessionId, delegationId);
   }
-  const sessions = db
-    .query<Session, [string]>(
-      `SELECT DISTINCT i.session_key AS sessionId,s.organization_id AS organizationId,
-       s.oauth_client_id AS clientId,s.app_user_id AS appUserId,s.team_id AS teamId
-       FROM work_item i LEFT JOIN linear_session s ON s.session_id=i.session_key
-       WHERE i.delegation_id=? AND i.session_key IS NOT NULL AND ${OPEN}`,
-    )
-    .all(delegationId);
-  for (const session of sessions) {
-    const organizationId = session.organizationId ?? fallback;
-    ensureWorkspace(db, organizationId);
-    if (session.organizationId && session.clientId && session.appUserId && session.teamId) continue;
-    yield* installSteps(q, db, { ...session, organizationId });
+  const session = q.t.linearSession;
+  const sessions: Session[] = yield* q.all(
+    q.orm
+      .selectDistinct({
+        sessionId: sql<string>`${item.sessionKey}`,
+        organizationId: session.organizationId,
+        clientId: session.oauthClientId,
+        appUserId: session.appUserId,
+        teamId: session.teamId,
+      })
+      .from(item)
+      .leftJoin(session, eq(session.sessionId, item.sessionKey))
+      .where(and(eq(item.delegationId, delegationId), isNotNull(item.sessionKey), open(q))),
+  );
+  for (const row of sessions) {
+    const organizationId = row.organizationId ?? fallback;
+    yield* ensureWorkspaceSteps(q, organizationId);
+    if (row.organizationId && row.clientId && row.appUserId && row.teamId) continue;
+    yield* installSteps(q, { ...row, organizationId });
   }
-  for (const item of items) {
-    const workspaceId = db
-      .query<{ id: string }, [string]>(
-        `SELECT w.id FROM work_item i JOIN linear_session s ON s.session_id=i.session_key
-         JOIN workspace w ON w.linear_organization_id=s.organization_id WHERE i.id=?`,
-      )
-      .get(item.id)?.id;
+  for (const { id: itemId } of items) {
+    const workspaceId = (yield* q.one(
+      q.orm
+        .select({ id: q.t.workspace.id })
+        .from(item)
+        .innerJoin(session, eq(session.sessionId, item.sessionKey))
+        .innerJoin(q.t.workspace, eq(q.t.workspace.linearOrganizationId, session.organizationId))
+        .where(eq(item.id, itemId)),
+    ))?.id;
     if (workspaceId === undefined) continue;
-    const target = { itemId: item.id, workspaceId };
-    const fresh = yield* readsSteps(q, db, item.id);
-    const saved = snapshot(db, item.id);
-    const inputs = db
-      .query<{ inputs: string }, [string]>(DEPENDENCY_INPUTS)
-      .get(item.id)
+    const target = { itemId, workspaceId };
+    const fresh = yield* readsSteps(q, itemId);
+    const snapshot = q.t.itemDependencySnapshot;
+    const saved = yield* q.one(
+      q.orm
+        .select({ generation: snapshot.generation, linearStates: snapshot.linearStates })
+        .from(snapshot)
+        .where(eq(snapshot.itemId, itemId)),
+    );
+    const savedStates =
+      typeof saved?.linearStates === "string"
+        ? saved.linearStates
+        : JSON.stringify(saved?.linearStates);
+    const inputs = raw
+      ?.query<{ inputs: string }, [string]>(DEPENDENCY_INPUTS)
+      .get(itemId)
       ?.inputs.concat(workspaceId);
-    const current = currentInputs.get(db) ?? new Map<string, string>();
-    currentInputs.set(db, current);
+    const cache = raw ? (currentInputs.get(raw) ?? new Map<string, string>()) : null;
+    if (raw && cache) currentInputs.set(raw, cache);
     if (
-      saved?.linearStates === JSON.stringify([...fresh.states]) &&
-      (current.get(item.id) === inputs || (yield* itemDependenciesCurrentSteps(q, target)))
+      saved !== undefined &&
+      savedStates === JSON.stringify([...fresh.states]) &&
+      ((inputs !== undefined && cache?.get(itemId) === inputs) ||
+        (yield* itemDependenciesCurrentSteps(q, target)))
     ) {
-      if (inputs !== undefined) current.set(item.id, inputs);
+      if (inputs !== undefined) cache?.set(itemId, inputs);
       continue;
     }
     try {
@@ -160,10 +203,9 @@ function* joinFakeWorkspaceSteps(q: Q, db: Database, delegationId: string): Step
 
 function* installSteps(
   q: Q,
-  db: Database,
   session: Partial<Session> & { sessionId: string; organizationId: string },
 ): Steps<void> {
-  ensureWorkspace(db, session.organizationId);
+  yield* ensureWorkspaceSteps(q, session.organizationId);
   yield* recordLinearInstallationSteps(q, {
     sessionId: session.sessionId,
     organizationId: session.organizationId,
@@ -174,43 +216,49 @@ function* installSteps(
   });
 }
 
-function ensureWorkspace(db: Database, organizationId: string) {
-  db.run(
-    `INSERT INTO workspace(id,linear_organization_id,name,created_at) SELECT ?,?,'Workspace',0
-     WHERE NOT EXISTS(SELECT 1 FROM workspace WHERE linear_organization_id=?)`,
-    [
-      organizationId === "org" ? "workspace" : `workspace-${organizationId}`,
-      organizationId,
-      organizationId,
-    ],
+function* ensureWorkspaceSteps(q: Q, organizationId: string): Steps<void> {
+  yield* q.exec(
+    q.orm
+      .insert(q.t.workspace)
+      .values({
+        id: organizationId === "org" ? "workspace" : `workspace-${organizationId}`,
+        linearOrganizationId: organizationId,
+        name: "Workspace",
+        createdAt: 0,
+      })
+      .onConflictDoNothing({ target: q.t.workspace.linearOrganizationId }),
   );
 }
 
-function snapshot(db: Database, itemId: string) {
-  return db
-    .query<{ generation: number; linearStates: string }, [string]>(
-      "SELECT generation,linear_states AS linearStates FROM item_dependency_snapshot WHERE item_id=?",
-    )
-    .get(itemId);
-}
-
-function* readsSteps(q: Q, db: Database, itemId: string) {
-  const edges = db
-    .query<{ blockerLinearIssueId: string; blockedLinearIssueId: string }, [string]>(
-      `SELECT b.blocker_linear_issue_id AS blockerLinearIssueId,b.blocked_linear_issue_id AS blockedLinearIssueId
-       FROM task_block b JOIN work_item i ON i.linear_issue_id=b.blocked_linear_issue_id WHERE i.id=?`,
-    )
-    .all(itemId);
+function* readsSteps(q: Q, itemId: string) {
+  const item = q.t.workItem;
+  const block = q.t.taskBlock;
+  const edges = yield* q.all(
+    q.orm
+      .select({
+        blockerLinearIssueId: block.blockerLinearIssueId,
+        blockedLinearIssueId: block.blockedLinearIssueId,
+      })
+      .from(block)
+      .innerJoin(item, eq(item.linearIssueId, block.blockedLinearIssueId))
+      .where(eq(item.id, itemId)),
+  );
+  const delegationId = q.orm
+    .select({ id: item.delegationId })
+    .from(item)
+    .where(eq(item.id, itemId));
   const states = new Map<string, "completed" | "started">();
   for (const { blockerLinearIssueId: id } of edges) {
-    const blocker = db
-      .query<{ id: string; state: WorkItemState }, [string, string]>(
-        `SELECT i.id,i.state FROM work_item i
-         WHERE i.linear_issue_id=? AND ${PRESENT}
-         AND i.delegation_id=(SELECT delegation_id FROM work_item WHERE id=?)
-         ORDER BY i.position DESC,i.rowid DESC LIMIT 1`,
-      )
-      .get(id, itemId);
+    const blocker = yield* q.one(
+      q.orm
+        .select({ id: item.id, state: sql<WorkItemState>`${item.state}` })
+        .from(item)
+        .where(
+          and(eq(item.linearIssueId, id), present(q), inArray(item.delegationId, delegationId)),
+        )
+        .orderBy(desc(item.position), desc(item.createdAt), desc(item.id))
+        .limit(1),
+    );
     const satisfied =
       !blocker ||
       isBlockerSatisfied({

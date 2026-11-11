@@ -1,3 +1,5 @@
+import { migratedHome } from "../helpers";
+import { eq } from "drizzle-orm";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
@@ -537,6 +539,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     },
     { preconnect: () => undefined },
   );
+  await migratedHome(root);
   const paws = await startPaws({
     PAWS_HOME: root,
     PAWS_HOST: "127.0.0.1",
@@ -553,29 +556,29 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     LINEAR_WEBHOOKS: "true",
     LINEAR_WEBHOOK_SECRET: "fixture-signing",
   });
-  const db = paws.db,
+  const db = paws.store,
     now = Date.now();
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "owner",
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  await consumeWorkspaceBootstrap(sqliteDb(db), {
+  await consumeWorkspaceBootstrap(db, {
     id: "workspace",
     organizationId: "org",
     name: "Workspace",
     userId: "owner",
-    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(sqliteDb(db), "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  await putWorkspaceUser(sqliteDb(db), {
+  await putWorkspaceUser(db, {
     id: "inactive",
     linearUserId: "inactive",
     name: "Inactive",
     email: "inactive@example.invalid",
   });
-  await syncWorkspaceMember(sqliteDb(db), {
+  await syncWorkspaceMember(db, {
     workspaceId: "workspace",
     userId: "inactive",
     active: false,
@@ -588,8 +591,8 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     const id = `native-${++sequence}`,
       at = Date.now();
     const item = await insertQueuedItem(db, { id, sessionKey: id, title: "Export rows" });
-    await ensureLinearSession(sqliteDb(db), { sessionId: id, issueId: id, now: at });
-    await recordLinearInstallation(sqliteDb(db), {
+    await ensureLinearSession(db, { sessionId: id, issueId: id, now: at });
+    await recordLinearInstallation(db, {
       sessionId: id,
       organizationId: "org",
       oauthClientId: "client",
@@ -597,9 +600,9 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       teamId: "team",
       observedAtMs: at,
     });
-    await beginImplementRun(sqliteDb(db), id, at - 10);
-    await applyWorkItemEvent(sqliteDb(db), id, "blocking_question");
-    const question = await openQuestion(sqliteDb(db), {
+    await beginImplementRun(db, id, at - 10);
+    await applyWorkItemEvent(db, id, "blocking_question");
+    const question = await openQuestion(db, {
       itemId: id,
       sessionId: id,
       body: "Include archived rows?",
@@ -660,18 +663,23 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
   };
-  const denied = () =>
-    db
-      .query<{ count: number }, []>(
-        "SELECT count(*) AS count FROM workspace_access_audit WHERE action='access.denied'",
+  const denied = async () =>
+    (
+      await db.run((q) =>
+        q.all(
+          q.orm
+            .select({ id: q.t.workspaceAccessAudit.id })
+            .from(q.t.workspaceAccessAudit)
+            .where(eq(q.t.workspaceAccessAudit.action, "access.denied")),
+        ),
       )
-      .get()!.count;
+    ).length;
   const startup = Date.now() + 3000;
   while (
     ((jobs) =>
       ["scheduler.tick", "linear.epics.reconcile"].some(
         (queue) => !jobs.some((job) => job.queue === queue && job.fireCount >= 1),
-      ))(await listJobs(sqliteDb(db)))
+      ))(await listJobs(db))
   ) {
     if (Date.now() > startup) throw new Error("Startup reconcile did not settle");
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -681,8 +689,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     const invalidStatus = await send(invalid.payload, false);
     observe(
       "normal protected HTTPS rejects an unsigned human action",
-      invalidStatus === 401 &&
-        (await getQuestion(sqliteDb(db), invalid.question.id))?.status === "open",
+      invalidStatus === 401 && (await getQuestion(db, invalid.question.id))?.status === "open",
       { status: invalidStatus },
     );
     for (const [actor, signal] of [
@@ -690,62 +697,59 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
       ["outside", "stop"],
     ] as const) {
       const t = await task(actor, signal),
-        before = denied();
+        before = await denied();
       const status = await send(t.payload);
-      await until(() => denied() > before);
+      await until(async () => (await denied()) > before);
       observe(
         `normal signed HTTPS denies ${actor} ${signal ?? "answer"} semantically without retrying delivery`,
         status === 200 &&
-          (await getQuestion(sqliteDb(db), t.question.id))?.status === "open" &&
-          (await listJobs(sqliteDb(db))).filter((j) => j.queue === JOB_KIND.resume).length === 0,
+          (await getQuestion(db, t.question.id))?.status === "open" &&
+          (await listJobs(db)).filter((j) => j.queue === JOB_KIND.resume).length === 0,
         {
           status,
-          question: (await getQuestion(sqliteDb(db), t.question.id))?.status,
-          denialAudits: denied() - before,
+          question: (await getQuestion(db, t.question.id))?.status,
+          denialAudits: (await denied()) - before,
         },
       );
     }
     const stopped = await task("inactive", "stop"),
-      before = denied();
+      before = await denied();
     polled = [stopped.activity];
     await paws.catchUp();
     observe(
       "normal catch-up denial cannot reach the poller stop fallback",
-      denied() === before + 1 &&
-        (await getQuestion(sqliteDb(db), stopped.question.id))?.status === "open" &&
-        (await listJobs(sqliteDb(db))).filter((j) => j.queue === JOB_KIND.command).length === 0,
+      (await denied()) === before + 1 &&
+        (await getQuestion(db, stopped.question.id))?.status === "open" &&
+        (await listJobs(db)).filter((j) => j.queue === JOB_KIND.command).length === 0,
       {
-        question: (await getQuestion(sqliteDb(db), stopped.question.id))?.status,
-        denials: denied() - before,
-        commands: (await listJobs(sqliteDb(db))).filter((j) => j.queue === JOB_KIND.command).length,
+        question: (await getQuestion(db, stopped.question.id))?.status,
+        denials: (await denied()) - before,
+        commands: (await listJobs(db)).filter((j) => j.queue === JOB_KIND.command).length,
       },
     );
     const allowed = await task("new-member");
     polled = [allowed.activity];
     await paws.catchUp();
-    await until(
-      async () => (await getQuestion(sqliteDb(db), allowed.question.id))?.status === "answered",
-    );
+    await until(async () => (await getQuestion(db, allowed.question.id))?.status === "answered");
     polled = [allowed.activity];
     await paws.catchUp();
     observe(
       "normal catch-up permits a verified teammate without a browser identity exactly once",
-      (await getQuestion(sqliteDb(db), allowed.question.id))?.answeredBy === "new-member" &&
-        (await listJobs(sqliteDb(db))).filter(
-          (j) => j.jobKey === `resume:answer:${allowed.question.id}`,
-        ).length === 1 &&
-        (await workspaceMember(sqliteDb(db), "workspace", "new-member")) === null,
+      (await getQuestion(db, allowed.question.id))?.answeredBy === "new-member" &&
+        (await listJobs(db)).filter((j) => j.jobKey === `resume:answer:${allowed.question.id}`)
+          .length === 1 &&
+        (await workspaceMember(db, "workspace", "new-member")) === null,
       {
-        answeredBy: (await getQuestion(sqliteDb(db), allowed.question.id))?.answeredBy,
-        resumes: (await listJobs(sqliteDb(db))).filter(
+        answeredBy: (await getQuestion(db, allowed.question.id))?.answeredBy,
+        resumes: (await listJobs(db)).filter(
           (j) => j.jobKey === `resume:answer:${allowed.question.id}`,
         ).length,
       },
     );
-    await until(async () => (await getWorkItem(sqliteDb(db), allowed.item.id))?.state === "failed");
+    await until(async () => (await getWorkItem(db, allowed.item.id))?.state === "failed");
     const permittedStop = await task("new-member", "stop");
     // A real item has its Linear snapshot, so the scheduler's sweep does not reconcile it mid-stop.
-    await saveDependencySnapshot(sqliteDb(db), {
+    await saveDependencySnapshot(db, {
       itemId: permittedStop.item.id,
       workspaceId: "workspace",
       generation: 1,
@@ -757,11 +761,11 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     await paws.catchUp();
     observe(
       "normal catch-up retains canonical Stop for an authorized teammate",
-      (await getQuestion(sqliteDb(db), permittedStop.question.id))?.status === "open" &&
-        (await getWorkItem(sqliteDb(db), permittedStop.item.id))?.state === "paused",
+      (await getQuestion(db, permittedStop.question.id))?.status === "open" &&
+        (await getWorkItem(db, permittedStop.item.id))?.state === "paused",
       {
-        question: (await getQuestion(sqliteDb(db), permittedStop.question.id))?.status,
-        state: (await getWorkItem(sqliteDb(db), permittedStop.item.id))?.state,
+        question: (await getQuestion(db, permittedStop.question.id))?.status,
+        state: (await getWorkItem(db, permittedStop.item.id))?.state,
       },
     );
   } finally {

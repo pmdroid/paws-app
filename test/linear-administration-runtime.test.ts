@@ -23,7 +23,7 @@ import { createLinearReconnect } from "../src/onboarding";
 import { createFakeTracker, createInboxStore, openLinear, parseAgentEvent } from "../src/linear";
 import { deliverLinearOutbox, handleLinearAdministration } from "../src/loop";
 import { startServer } from "../src/server";
-import { tempHome, storeLinearToken } from "./helpers";
+import { tempHome, storeLinearToken, migratedHome } from "./helpers";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -275,7 +275,7 @@ test("signed revocation stops owned work and fences active, queued and delayed r
     now: () => Date.now() + 1000,
     fetch: async () =>
       Response.json({ data: { viewer: { id: "app", app: true, organization: { id: "org" } } } }),
-  })(f.home);
+  })(sqliteDb(f.db), f.home);
   expect(
     await reconnect.complete({
       clientId: "client",
@@ -430,7 +430,7 @@ test("notification dedupe follows successful reconciliation and serializes overl
 
 test("production disconnected ingress preserves a signed created session across database reopen", async () => {
   const child = Bun.spawn(
-    [process.execPath, "test/fixtures/linear-disconnected-ingress.ts", tempHome()],
+    [process.execPath, "test/fixtures/linear-disconnected-ingress.ts", await migratedHome()],
     {
       cwd: new URL("..", import.meta.url).pathname,
       env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },
@@ -454,7 +454,7 @@ test("production disconnected ingress preserves a signed created session across 
 
 test("production notification ingress reconciles delegation once without workflow mutation", async () => {
   const child = Bun.spawn(
-    [process.execPath, "test/fixtures/linear-notification-ingress.ts", tempHome()],
+    [process.execPath, "test/fixtures/linear-notification-ingress.ts", await migratedHome()],
     {
       cwd: new URL("..", import.meta.url).pathname,
       env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },
@@ -481,7 +481,12 @@ test.each(["token", "disconnected"])(
   "production signed Stop before created prevents delayed work with %s",
   async (connection) => {
     const child = Bun.spawn(
-      [process.execPath, "test/fixtures/linear-early-stop-ingress.ts", tempHome(), connection],
+      [
+        process.execPath,
+        "test/fixtures/linear-early-stop-ingress.ts",
+        await migratedHome(),
+        connection,
+      ],
       {
         cwd: new URL("..", import.meta.url).pathname,
         env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },
@@ -511,7 +516,12 @@ test.each(["allowed", "denied", "retry"])(
   "production public-team drop revalidates authoritative access: %s",
   async (mode) => {
     const child = Bun.spawn(
-      [process.execPath, "test/fixtures/linear-notification-ingress.ts", tempHome(), mode],
+      [
+        process.execPath,
+        "test/fixtures/linear-notification-ingress.ts",
+        await migratedHome(),
+        mode,
+      ],
       {
         cwd: new URL("..", import.meta.url).pathname,
         env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },
@@ -540,7 +550,7 @@ test.each(["allowed", "denied", "retry"])(
 
 test("production revocation fences zero-item intake across immediate verified reconnect", async () => {
   const child = Bun.spawn(
-    [process.execPath, "test/fixtures/linear-revoked-intake-ingress.ts", tempHome()],
+    [process.execPath, "test/fixtures/linear-revoked-intake-ingress.ts", await migratedHome()],
     {
       cwd: new URL("..", import.meta.url).pathname,
       env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },

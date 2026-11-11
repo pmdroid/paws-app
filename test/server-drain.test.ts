@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { openDatabase } from "../src/db";
+import { databaseProbeSteps, openDatabase } from "../src/db";
 import { startPaws } from "../src/index";
-import { tempHome } from "./helpers";
+import { migratedHome } from "./helpers";
 import { startServer } from "../src/server";
 
 test("HTTP shutdown drains an accepted artifact read before SQLite closes", async () => {
@@ -65,7 +65,7 @@ test("HTTP shutdown drains an accepted artifact read before SQLite closes", asyn
 });
 
 test("Paws shutdown joins an accepted HTTP operation before closing SQLite", async () => {
-  const home = tempHome();
+  const home = await migratedHome();
   writeFileSync(join(home, "config.toml"), "[linear]\n");
   const entered = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();
@@ -110,13 +110,14 @@ test("Paws shutdown joins an accepted HTTP operation before closing SQLite", asy
     await Bun.sleep(10);
     let databaseOpen = false;
     try {
-      databaseOpen = paws.db.query<{ alive: number }, []>("SELECT 1 AS alive").get()?.alive === 1;
+      await paws.store.run(databaseProbeSteps);
+      databaseOpen = true;
     } catch {}
     const waited = !stopped;
     gate.resolve();
     await Promise.all([stopping, request]);
     expect({ waited, databaseOpen }).toEqual({ waited: true, databaseOpen: true });
-    expect(() => paws.db.query("SELECT 1").get()).toThrow();
+    await expect(paws.store.run(databaseProbeSteps)).rejects.toThrow();
   } finally {
     gate.resolve();
     await paws.stop();

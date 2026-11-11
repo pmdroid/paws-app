@@ -24,7 +24,6 @@ import {
   type RunnerArtifactChunk,
 } from "../runner-protocol";
 import { runnerFailureStatus, type RunnerWork } from "../runner-work";
-import type { Database } from "bun:sqlite";
 import { runnerFileObjectNamesSteps, type Q } from "../db";
 import {
   missingRunFileObject,
@@ -88,7 +87,7 @@ function immutable(path: string, bytes: Buffer) {
 export function createRunnerArtifactStore(options: {
   root: string;
   work: RunnerWork;
-  remote?: { files: SealedRunnerFiles; db: Database };
+  remote?: { files: SealedRunnerFiles };
 }) {
   if (!isAbsolute(options.root)) throw new Error("Runner artifact root must be absolute");
   mkdirSync(options.root, { recursive: true, mode: 0o700 });

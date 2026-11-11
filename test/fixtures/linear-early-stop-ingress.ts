@@ -1,6 +1,6 @@
-import { sqliteDb } from "../../src/db";
+import { eq } from "drizzle-orm";
 import "../quiet-journal";
-import { storeLinearToken } from "../helpers";
+import { storeHomeLinearToken } from "../helpers";
 import { createHmac } from "node:crypto";
 import { startPaws } from "../../src/index";
 import { createInboxStore } from "../../src/linear";
@@ -8,7 +8,7 @@ import { createInboxStore } from "../../src/linear";
 const home = process.argv[2]!;
 const token = process.argv[3] === "token";
 if (token)
-  await storeLinearToken(home, {
+  await storeHomeLinearToken(home, {
     accessToken: "fake-access",
     refreshToken: "fake-refresh",
     expiresAtMs: Date.now() + 600_000,
@@ -73,20 +73,22 @@ for (const action of ["prompted", "created"]) {
   );
   for (
     let attempt = 0;
-    (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length > 0 && attempt < 100;
+    (await createInboxStore(paws.store).listUnhandled()).length > 0 && attempt < 100;
     attempt++
   )
     await Bun.sleep(5);
 }
-const session = paws.db
-  .query<{ generation: number; stopped_at: number | null }, [string]>(
-    "SELECT generation, stopped_at FROM linear_session WHERE session_id = ?",
-  )
-  .get("early-stop");
-const items = paws.db
-  .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_item")
-  .get()!.count;
-const pending = (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length;
+const session = await paws.store.run(function* (q) {
+  const row = yield* q.one(
+    q.orm
+      .select({ generation: q.t.linearSession.generation, stopped_at: q.t.linearSession.stoppedAt })
+      .from(q.t.linearSession)
+      .where(eq(q.t.linearSession.sessionId, "early-stop")),
+  );
+  return row ?? null;
+});
+const items = (await paws.store.run((q) => q.all(q.orm.select().from(q.t.workItem)))).length;
+const pending = (await createInboxStore(paws.store).listUnhandled()).length;
 await paws.catchUp();
 paws.stop();
 console.log(

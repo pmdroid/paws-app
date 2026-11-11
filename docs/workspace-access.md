@@ -70,7 +70,7 @@ A runner is eligible when it is the delegator's own, or when it is shared and be
 
 ### Automatic start
 
-The resume never waits on a clock. A runner heartbeat, an agent sign-in becoming ready, a runner being shared, or a member VM reaching `ready` queues one `runner_setup.check` for the delegator, which reads SQLite only. If an eligible runner now has the agent ready, the item leaves its hold and the scheduler places it by the normal checks.
+The resume never waits on a clock. A runner heartbeat, an agent sign-in becoming ready, a runner being shared, or a member VM reaching `ready` queues one `runner_setup.check` for the delegator, which reads the database only. If an eligible runner now has the agent ready, the item leaves its hold and the scheduler places it by the normal checks.
 
 ### Repository access
 

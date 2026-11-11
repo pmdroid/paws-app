@@ -10,7 +10,7 @@ import {
   sessionCreatedKey,
 } from "../src/linear";
 import { createInboxStore } from "../src/linear";
-import { tempDb, tempHome } from "./helpers";
+import { migratedHome, tempDb } from "./helpers";
 
 const SECRET = "webhook-secret";
 
@@ -134,7 +134,7 @@ describe("linear webhooks", () => {
   });
 
   test("startPaws leaves webhook routes off unless LINEAR_WEBHOOKS is set", async () => {
-    const home = tempHome();
+    const home = await migratedHome();
     const paws = await startPaws({
       PAWS_HOME: home,
       PAWS_PORT: "0",
@@ -149,15 +149,14 @@ describe("linear webhooks", () => {
       expect(hidden.status).toBe(404);
       const github = await fetch(`${base}/webhooks/github`, { method: "POST" });
       expect(github.status).toBe(404);
-      const count = paws.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox_event").get();
-      expect(count?.n).toBe(0);
+      expect(await paws.store.run((q) => q.all(q.orm.select().from(q.t.inboxEvent)))).toEqual([]);
     } finally {
       await paws.stop();
     }
   });
 
   test("startPaws persists a signed webhook when LINEAR_WEBHOOKS is on", async () => {
-    const home = tempHome();
+    const home = await migratedHome();
     const paws = await startPaws({
       PAWS_HOME: home,
       PAWS_PORT: "0",
@@ -176,8 +175,9 @@ describe("linear webhooks", () => {
         signedInit(body, "other-secret", "del-bad"),
       );
       expect(bad.status).toBe(401);
-      const count = paws.db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox_event").get();
-      expect(count?.n).toBe(1);
+      expect(await paws.store.run((q) => q.all(q.orm.select().from(q.t.inboxEvent)))).toHaveLength(
+        1,
+      );
     } finally {
       await paws.stop();
     }

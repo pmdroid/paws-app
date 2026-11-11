@@ -1,6 +1,3 @@
-export const POSTGRES_NOT_YET =
-  "Postgres is configured but Paws can't run on it yet; use `paws db check` to test the connection";
-
 export function checkDatabaseUrl(value: string, field: string): string {
   let url: URL;
   try {

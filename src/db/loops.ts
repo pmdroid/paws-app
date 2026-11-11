@@ -12,7 +12,7 @@ export const JOB_WORKERS = 64;
 
 /** Poll the job queue and the outbox until `signal` aborts. `prepare` registers handlers first. */
 export async function startLoops(input: {
-  db: Database;
+  db: Database | Db;
   /** The async `Db` over `db`, handed to the job loop and the outbox. */
   store?: Db;
   instanceId: string;

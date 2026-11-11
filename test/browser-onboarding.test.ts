@@ -1,3 +1,4 @@
+import { migratedHome } from "./helpers";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +14,7 @@ afterEach(async () => {
 });
 
 async function freshInstance(expectedOrganizationId?: string) {
-  const home = mkdtempSync(join(tmpdir(), "paws-browser-onboarding-"));
+  const home = await migratedHome(mkdtempSync(join(tmpdir(), "paws-browser-onboarding-")));
   roots.push(home);
   const cert = join(home, "server.crt");
   const key = join(home, "server.key");
@@ -98,8 +99,10 @@ test("a fresh HTTPS instance refuses sign-in until its organization is configure
   const login = await paws.server.fetch(new Request("https://localhost:8787/auth/linear"));
   expect(login.status).toBe(503);
   expect(await login.text()).toContain("LINEAR_ORGANIZATION_ID");
-  expect(paws.db.query("SELECT 1 FROM workspace_oauth_request").get()).toBeNull();
-  expect(paws.db.query("SELECT 1 FROM workspace").get()).toBeNull();
+  expect(
+    await paws.store.run((q) => q.all(q.orm.select().from(q.t.workspaceOauthRequest))),
+  ).toEqual([]);
+  expect(await paws.store.run((q) => q.all(q.orm.select().from(q.t.workspace)))).toEqual([]);
 });
 
 import { existsSync } from "node:fs";

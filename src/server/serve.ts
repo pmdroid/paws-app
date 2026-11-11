@@ -70,7 +70,7 @@ import {
   getWorkItemSteps,
   hotFilesSteps,
   listWorkspaceRepositoryNamesSteps,
-  sqliteDb,
+  storeOf,
   workspaceSessionIdsSteps,
   type Db,
 } from "../db";
@@ -161,7 +161,7 @@ export type ServerOptions = {
    */
   webhooks?: boolean;
   /** Engine database. The dashboard resources read it. Omit it for empty live resources. */
-  db?: Database;
+  db?: Database | Db;
   /** The async `Db` over `db` for converted routes. Defaults to `sqliteDb(db)`. */
   store?: Db;
   /** Clock for local health checks. */
@@ -204,7 +204,7 @@ export type ServerOptions = {
 
 /** The `Db` the routes reach: the one startup passes, or `sqliteDb(db)`. */
 export function serverStore(options: Pick<ServerOptions, "db" | "store">): Db | undefined {
-  return options.store ?? (options.db ? sqliteDb(options.db) : undefined);
+  return options.store ?? (options.db ? storeOf(options.db) : undefined);
 }
 
 export function startServer(options: ServerOptions = {}): Bun.Server<undefined> {
@@ -341,7 +341,7 @@ type Secrets = {
   startLinearSession?: StartLinearSession;
   agentSettings?: ServerOptions["agentSettings"] & { csrfToken: string };
   skillSettings?: ServerOptions["skillSettings"];
-  db?: Database;
+  db?: Database | Db;
   store?: Db;
   statusEnv?: Record<string, string | undefined>;
   closeoutHome?: string;
@@ -473,7 +473,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
           resolve: (repository) => activation.resolve(repository),
         });
         return (await handleWorkspaceGitHubIntegration(request, {
-          store: sqliteDb(secrets.db),
+          store: storeOf(secrets.db),
           principal: access.principal,
           session: access.session,
           origin: workspace.origin,
@@ -533,7 +533,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     if (!secrets.db || !secrets.evidenceDir || !secrets.visualReviewChanges)
       return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleVisualReviewChanges(request, {
-      store: secrets.store ?? sqliteDb(secrets.db),
+      store: secrets.store ?? storeOf(secrets.db),
       root: secrets.evidenceDir,
       objects: secrets.evidenceObjects,
       principal,
@@ -562,7 +562,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     if (secrets.db === undefined || secrets.evidenceDir === undefined)
       return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleEvidenceRequest(request, {
-      store: secrets.store ?? sqliteDb(secrets.db),
+      store: secrets.store ?? storeOf(secrets.db),
       root: secrets.evidenceDir,
       objects: secrets.evidenceObjects,
       sessionIds,
@@ -721,7 +721,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
   const closeoutItem = secrets.closeoutEvidence ? closeoutEvidenceItemOf(request) : null;
   if (closeoutItem !== null && secrets.db)
     await hydrateItemCloseoutEvidence(
-      secrets.store ?? sqliteDb(secrets.db),
+      secrets.store ?? storeOf(secrets.db),
       secrets.closeoutEvidence!,
       closeoutItem,
       sessionIds,

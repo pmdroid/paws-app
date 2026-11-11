@@ -11,15 +11,19 @@ import {
   startLoops,
   type InstanceRole,
   sqliteDb,
+  type Db,
 } from "../src/db";
+import { asc, eq, isNotNull } from "drizzle-orm";
+import { pgliteServer } from "./pglite";
 import { createInboxStore, createIntakePollSource, startCatchUpPoller } from "../src/linear";
 import { tempHome } from "./helpers";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
-function spawnPaws(home: string, role: InstanceRole) {
+function spawnPaws(home: string, role: InstanceRole, url: string) {
   const env: Record<string, string | undefined> = {
     ...process.env,
+    PAWS_DATABASE_URL: url,
     PAWS_HOME: home,
     PAWS_PORT: "0",
     PAWS_HOST: "127.0.0.1",
@@ -65,8 +69,21 @@ function recurringQueues(db: ReturnType<typeof openDatabase>): string[] {
     .map((row) => row.queue);
 }
 
-async function waitFor(done: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 400 && !done(); attempt++) await Bun.sleep(5);
+async function waitFor(done: () => boolean | Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 400 && !(await done()); attempt++) await Bun.sleep(5);
+}
+
+async function storeRecurringQueues(store: Db): Promise<string[]> {
+  const rows = await store.run((q) =>
+    q.all(
+      q.orm
+        .select({ queue: q.t.job.queue })
+        .from(q.t.job)
+        .where(isNotNull(q.t.job.recurringEveryMs))
+        .orderBy(asc(q.t.job.queue)),
+    ),
+  );
+  return rows.map((row) => row.queue);
 }
 
 describe("roles", () => {
@@ -181,19 +198,26 @@ describe("roles", () => {
 
   test("a web process beside a worker claims nothing and keeps the worker's recurring jobs", async () => {
     const home = tempHome();
-    const worker = spawnPaws(home, "worker");
+    const server = await pgliteServer();
+    const worker = spawnPaws(home, "worker", server.url);
     let web: ReturnType<typeof spawnPaws> | undefined;
     try {
       const workerUrl = await readyUrl(worker);
-      const db = openDatabase(join(home, "paws.db"));
-      try {
-        await enqueueJobOnce(sqliteDb(db), {
+      await waitFor(async () => {
+        const health = (await (await fetch(`${workerUrl}/health`)).json()) as {
+          checks: { jobProgress?: { reason?: string } };
+        };
+        return health.checks.jobProgress?.reason !== "starting";
+      });
+      const db = server.store;
+      {
+        await enqueueJobOnce(db, {
           queue: "acme.worker-only",
           jobKey: "acme.worker-only",
           recurringEveryMs: 600_000,
           now: Date.now() + 600_000,
         });
-        web = spawnPaws(home, "web");
+        web = spawnPaws(home, "web", server.url);
         const webUrl = await readyUrl(web);
         const health = (await (await fetch(`${webUrl}/health`)).json()) as {
           instances: { role: string }[];
@@ -203,7 +227,7 @@ describe("roles", () => {
         expect(health.checks.jobProgress).toEqual({ status: "skipped", reason: "not_observed" });
         expect((await fetch(`${workerUrl}/health`)).ok).toBe(true);
 
-        const queues = recurringQueues(db);
+        const queues = await storeRecurringQueues(db);
         expect(queues).toContain("acme.worker-only");
         for (const queue of [
           "repository.catalog.refresh",
@@ -211,21 +235,29 @@ describe("roles", () => {
           "skills.updates.check",
         ])
           expect(queues.filter((name) => name === queue)).toEqual([queue]);
-        const claims = db
-          .query<{ locked_by: string }, []>(
-            "SELECT DISTINCT locked_by FROM job WHERE locked_by IS NOT NULL",
-          )
-          .all();
-        const webId = db
-          .query<{ id: string }, []>("SELECT id FROM instance WHERE role = 'web'")
-          .get()!.id;
-        expect(claims.filter((claim) => claim.locked_by.startsWith(webId))).toEqual([]);
-      } finally {
-        db.close();
+        const claims = await db.run((q) =>
+          q.all(
+            q.orm
+              .selectDistinct({ locked_by: q.t.job.lockedBy })
+              .from(q.t.job)
+              .where(isNotNull(q.t.job.lockedBy)),
+          ),
+        );
+        const webId = (await db.run((q) =>
+          q.one(
+            q.orm
+              .select({ id: q.t.instance.id })
+              .from(q.t.instance)
+              .where(eq(q.t.instance.role, "web")),
+          ),
+        ))!.id;
+        expect(claims.filter((claim) => claim.locked_by!.startsWith(webId))).toEqual([]);
       }
     } finally {
       worker.kill("SIGKILL");
       web?.kill("SIGKILL");
+      await Promise.all([worker.exited, web?.exited]);
+      await server.close();
     }
   }, 40_000);
   test("two instances' catch-up pollers share one due time and poll once per interval", async () => {
@@ -270,28 +302,32 @@ describe("roles", () => {
 
   test("a second worker leaves a refresh that already ran for its next interval", async () => {
     const home = tempHome();
-    const first = spawnPaws(home, "worker");
+    const server = await pgliteServer();
+    const first = spawnPaws(home, "worker", server.url);
     let second: ReturnType<typeof spawnPaws> | undefined;
-    const db = openDatabase(join(home, "paws.db"));
     const runAt = () =>
-      db
-        .query<{ run_at: number; status: string }, []>(
-          "SELECT run_at, status FROM job WHERE queue = 'repository.catalog.refresh'",
-        )
-        .get();
+      server.store.run((q) =>
+        q.one(
+          q.orm
+            .select({ run_at: q.t.job.runAt, status: q.t.job.status })
+            .from(q.t.job)
+            .where(eq(q.t.job.queue, "repository.catalog.refresh")),
+        ),
+      );
     try {
       await readyUrl(first);
-      await waitFor(() => (runAt()?.run_at ?? 0) > Date.now() + 60_000);
-      const scheduled = runAt();
+      await waitFor(async () => ((await runAt())?.run_at ?? 0) > Date.now() + 60_000);
+      const scheduled = await runAt();
       expect(scheduled?.status).toBe("pending");
-      second = spawnPaws(home, "worker");
+      second = spawnPaws(home, "worker", server.url);
       await readyUrl(second);
       await Bun.sleep(1_500);
-      expect(runAt()).toEqual(scheduled);
+      expect(await runAt()).toEqual(scheduled);
     } finally {
-      db.close();
       first.kill("SIGKILL");
       second?.kill("SIGKILL");
+      await Promise.all([first.exited, second?.exited]);
+      await server.close();
     }
   }, 40_000);
   test("a web instance's outbox claims nothing, even on a direct tick", async () => {

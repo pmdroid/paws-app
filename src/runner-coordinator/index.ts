@@ -40,7 +40,7 @@ import {
   type RunnerTranscriptObjects,
 } from "../runner-transcripts";
 import { createSealedRunnerFiles, type RunFileObjects } from "../run-files";
-import { runnerCommandRuns, sqliteDb } from "../db";
+import { runnerCommandRuns, storeOf, type Db } from "../db";
 import {
   createAgentSessions,
   createAgentSessionsHttp,
@@ -75,7 +75,7 @@ export async function initializeRunnerCoordinator(root: string) {
 }
 
 export async function openRunnerCoordinator(options: {
-  db: Database;
+  db: Database | Db;
   root: string;
   tls: { key: string; cert: string };
   hostname?: string;
@@ -106,14 +106,14 @@ export async function openRunnerCoordinator(options: {
   const signing = signingIdentity(options.root);
   let listener: RunnerListener | undefined;
   const control = createRunnerControl({
-    store: sqliteDb(options.db),
+    store: storeOf(options.db),
     authority,
     certificateRoot: options.root,
     disconnect: (fingerprint) => listener?.revoke(fingerprint),
     now: options.now,
   });
   const work = createRunnerWork({
-    store: sqliteDb(options.db),
+    store: storeOf(options.db),
     keyId: signing.signingKeys[0].keyId,
     privateKey: signing.privateKey,
     eventKey: options.eventKey,
@@ -122,7 +122,7 @@ export async function openRunnerCoordinator(options: {
   const workHttp = createRunnerWorkHttp(work, { skillsRoot: options.skillsRoot });
   const runnerFiles = options.runnerFiles
     ? createSealedRunnerFiles({
-        store: sqliteDb(options.db),
+        store: storeOf(options.db),
         now: options.now,
         ...options.runnerFiles,
       })
@@ -133,15 +133,15 @@ export async function openRunnerCoordinator(options: {
     remote: runnerFiles,
   });
   const helpers = createRunnerHelpers({
-    store: sqliteDb(options.db),
+    store: storeOf(options.db),
     keyId: signing.signingKeys[0].keyId,
     privateKey: signing.privateKey,
     now: options.now,
   });
-  const results = createRunnerResults({ store: sqliteDb(options.db), work, now: options.now });
-  const health = createRunnerHealth({ store: sqliteDb(options.db), work, now: options.now });
+  const results = createRunnerResults({ store: storeOf(options.db), work, now: options.now });
+  const health = createRunnerHealth({ store: storeOf(options.db), work, now: options.now });
   const login = createRunnerLogin({
-    store: sqliteDb(options.db),
+    store: storeOf(options.db),
     work,
     now: options.now,
     onSignedIn: ({ runnerId, agent }) => {
@@ -165,15 +165,15 @@ export async function openRunnerCoordinator(options: {
       };
     },
   });
-  const models = createRunnerModels({ store: sqliteDb(options.db), work, now: options.now });
+  const models = createRunnerModels({ store: storeOf(options.db), work, now: options.now });
   const artifacts = createRunnerArtifactStore({
     root: join(options.root, "artifacts"),
     work,
-    remote: runnerFiles && { files: runnerFiles, db: options.db },
+    remote: runnerFiles && { files: runnerFiles },
   });
   if (runnerFiles) {
     try {
-      const commands = await runnerCommandRuns(sqliteDb(options.db));
+      const commands = await runnerCommandRuns(storeOf(options.db));
       await inputs.migrateLocal(commands);
       await artifacts.migrateLocal(commands);
     } catch (error) {
@@ -196,18 +196,18 @@ export async function openRunnerCoordinator(options: {
   void agentRead?.recover();
   const agentReadAccess = agentRead ? createAgentReadAccess({ work, agentRead }) : undefined;
   const repositoryCommands = createRepositoryCommandsHttp({
-    store: sqliteDb(options.db),
+    store: storeOf(options.db),
     now: options.now,
   });
   const repositoryCommandAccess = options.repositoryAccess
     ? createRepositoryCommandAccess({
         ...options.repositoryAccess,
-        store: sqliteDb(options.db),
+        store: storeOf(options.db),
         now: options.now,
       })
     : undefined;
   const transcripts = options.transcripts
-    ? createRunnerTranscripts({ store: sqliteDb(options.db), work, ...options.transcripts })
+    ? createRunnerTranscripts({ store: storeOf(options.db), work, ...options.transcripts })
     : undefined;
   const transcriptsHttp = transcripts ? createRunnerTranscriptsHttp(transcripts) : undefined;
   const agentSessions = options.agentSessions

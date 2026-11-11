@@ -34,24 +34,36 @@ function* configureQueuedItemSteps(q: Q, id: string, input: QueuedItemInput) {
 
 /** Insert a queued work item. New columns keep their defaults so intake inserts stay valid. */
 export async function insertQueuedItem(
-  db: Database,
+  db: Database | Db,
   input: QueuedItemInput = {},
 ): Promise<WorkItemRecord> {
   const id = input.id ?? "item-1";
-  const now = input.now ?? 0;
-  const delegationId = `epic-${id}`;
+  const row = {
+    id,
+    delegationId: `epic-${id}`,
+    linearIssueId: `lin-item-${id}`,
+    linearIdentifier: id,
+    title: input.title ?? "Work item",
+    branchName: input.branchName ?? `paws/${id}`,
+    createdAt: input.now ?? 0,
+  };
+  if ("dialect" in db)
+    return await db.transaction(function* (q) {
+      yield* q.exec(q.orm.insert(q.t.workItem).values({ ...row, state: "queued", position: 0 }));
+      return yield* configureQueuedItemSteps(q, id, input);
+    });
   db.run(
     `INSERT INTO work_item (
        id, delegation_id, linear_issue_id, linear_identifier, title, state, branch_name, position, created_at
      ) VALUES (?, ?, ?, ?, ?, 'queued', ?, 0, ?)`,
     [
-      id,
-      delegationId,
-      `lin-item-${id}`,
-      id,
-      input.title ?? "Work item",
-      input.branchName ?? `paws/${id}`,
-      now,
+      row.id,
+      row.delegationId,
+      row.linearIssueId,
+      row.linearIdentifier,
+      row.title,
+      row.branchName,
+      row.createdAt,
     ],
   );
   return await sqliteDb(db).run((q) => configureQueuedItemSteps(q, id, input));

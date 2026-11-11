@@ -2,10 +2,8 @@ import { createHash } from "node:crypto";
 import { pawsPaths } from "../config";
 import {
   listLinearInstallationRevocationsSteps,
-  migrate,
-  openDatabase,
   restoreLinearInstallationSteps,
-  sqliteDb,
+  type Db,
   type LinearInstallationRevocation,
 } from "../db";
 import {
@@ -20,7 +18,10 @@ export type LinearReconnectSnapshot = {
   grantStartedAtMs: number;
   revocations: LinearInstallationRevocation[];
 };
-type LinearReconnect = (home: string) => Promise<{
+type LinearReconnect = (
+  store: Db,
+  home: string,
+) => Promise<{
   snapshot: LinearReconnectSnapshot;
   complete(input: { clientId: string; token: StoredLinearToken }): Promise<boolean>;
 }>;
@@ -30,20 +31,13 @@ export function createLinearReconnect(options?: {
   now?: () => number;
   snapshot?: LinearReconnectSnapshot;
 }): LinearReconnect {
-  return async (home) => {
+  return async (store, home) => {
     const paths = pawsPaths(home);
-    const db = openDatabase(paths.db);
-    let snapshot;
-    try {
-      migrate(db);
-      snapshot = options?.snapshot ?? {
-        previous: fingerprint(await readStoredToken(sqliteDb(db), paths.secretsDir)),
-        grantStartedAtMs: (options?.now ?? Date.now)(),
-        revocations: await sqliteDb(db).run((q) => listLinearInstallationRevocationsSteps(q)),
-      };
-    } finally {
-      db.close();
-    }
+    const snapshot = options?.snapshot ?? {
+      previous: fingerprint(await readStoredToken(store, paths.secretsDir)),
+      grantStartedAtMs: (options?.now ?? Date.now)(),
+      revocations: await store.run((q) => listLinearInstallationRevocationsSteps(q)),
+    };
     const { previous, grantStartedAtMs, revocations } = snapshot;
     return {
       snapshot,
@@ -84,29 +78,23 @@ export function createLinearReconnect(options?: {
           throw new Error(
             "The Linear app user must match a verified installation before reconnection.",
           );
-        const current = openDatabase(paths.db);
-        try {
-          migrate(current);
-          await sqliteDb(current).transaction(function* (q) {
-            if (fingerprint(yield* readStoredTokenSteps(q, paths.secretsDir)) !== previous)
-              throw new Error("The stored Linear authorization changed during reconnection.");
-            if (
-              !(yield* restoreLinearInstallationSteps(q, {
-                organizationId: revoked.organizationId,
-                oauthClientId: input.clientId,
-                appUserId: viewer.id as string,
-                generation: revoked.generation,
-                grantStartedAtMs,
-                credentialFingerprint: next,
-              }))
-            )
-              throw new Error("Linear access changed during reconnection. Reconnect again.");
-            yield* writeStoredTokenSteps(q, paths.secretsDir, input.token);
-          });
-          return true;
-        } finally {
-          current.close();
-        }
+        await store.transaction(function* (q) {
+          if (fingerprint(yield* readStoredTokenSteps(q, paths.secretsDir)) !== previous)
+            throw new Error("The stored Linear authorization changed during reconnection.");
+          if (
+            !(yield* restoreLinearInstallationSteps(q, {
+              organizationId: revoked.organizationId,
+              oauthClientId: input.clientId,
+              appUserId: viewer.id as string,
+              generation: revoked.generation,
+              grantStartedAtMs,
+              credentialFingerprint: next,
+            }))
+          )
+            throw new Error("Linear access changed during reconnection. Reconnect again.");
+          yield* writeStoredTokenSteps(q, paths.secretsDir, input.token);
+        });
+        return true;
       },
     };
   };

@@ -46,7 +46,7 @@ async function fixture() {
       artifacts: createRunnerArtifactStore({
         root: join(root, "artifacts"),
         work,
-        remote: { files, db },
+        remote: { files },
       }),
     };
   };
@@ -339,7 +339,7 @@ describe("runner inputs and artifacts in the shared store", () => {
     const artifacts = createRunnerArtifactStore({
       root: join(root, "artifacts"),
       work,
-      remote: { files: createSealedRunnerFiles({ store: sqliteDb(db), objects, key: KEY }), db },
+      remote: { files: createSealedRunnerFiles({ store: sqliteDb(db), objects, key: KEY }) },
     });
     const bytes = Buffer.from("acme evidence");
     const artifact: RunnerArtifact = {

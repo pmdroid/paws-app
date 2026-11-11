@@ -105,6 +105,10 @@ function* scopeSteps(q: Q, target: Target): Steps<Scope | null> {
   };
 }
 
+function sameScope(saved: string, token: string): boolean {
+  return saved === token || Bun.deepEquals(JSON.parse(saved), JSON.parse(token), true);
+}
+
 function* snapshotSteps(q: Q, target: Target): Steps<Snapshot | null> {
   const saved = yield* readDependencySnapshotSteps(q, target.itemId);
   if (saved && saved.workspaceId !== target.workspaceId)
@@ -164,7 +168,7 @@ function* readReadyItemsSteps(
   });
   if (
     !saved ||
-    saved.scope !== current.token ||
+    !sameScope(saved.scope, current.token) ||
     (yield* delegationHasReconciliationWorkSteps(q, item.delegationId))
   )
     return held();
@@ -309,7 +313,8 @@ export function* recordItemDependenciesSteps(
 export function* itemDependenciesCurrentSteps(q: Q, target: Target): Steps<boolean> {
   try {
     const current = yield* scopeSteps(q, target);
-    return current !== null && (yield* snapshotSteps(q, target))?.scope === current.token;
+    const saved = yield* snapshotSteps(q, target);
+    return current !== null && saved !== null && sameScope(saved.scope, current.token);
   } catch (caughtError1) {
     journalCaught(caughtError1, "dependencies.itemDependenciesCurrent.scope", target.itemId);
     return false;

@@ -14,7 +14,7 @@ import {
   writeStoredToken,
   type StoredLinearToken,
 } from "../src/linear";
-import { tempDb, tempHome } from "./helpers";
+import { tempDb, tempHome, migratedHome } from "./helpers";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -223,7 +223,7 @@ test("incomplete configured identity cannot bypass a possibly matching revocatio
 
 test("the production startup guard uses persisted revocation when the configured app user is absent", async () => {
   const child = Bun.spawn(
-    [process.execPath, "test/fixtures/linear-revoked-startup.ts", tempHome()],
+    [process.execPath, "test/fixtures/linear-revoked-startup.ts", await migratedHome()],
     {
       cwd: new URL("..", import.meta.url).pathname,
       env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },

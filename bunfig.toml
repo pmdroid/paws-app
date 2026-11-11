@@ -4,4 +4,5 @@ preload = [
   "./test/quiet-journal.ts",
   "./test/sync-process-timeout.ts",
   "./test/test-progress.ts",
+  "./test/pglite-template.ts",
 ]

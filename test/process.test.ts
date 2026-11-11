@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { writeConfigFile, pawsPaths, ensureLayout } from "../src/config";
 import { startPaws } from "../src/index";
 import { EXECUTION_TAG_ENV } from "../src/process";
-import { tempHome } from "./helpers";
+import { migratedHome } from "./helpers";
 
 describe("process", () => {
   test("startPaws migrates and serves health", async () => {
-    const home = tempHome();
+    const home = await migratedHome();
     const paws = await startPaws({ PAWS_HOME: home, PAWS_PORT: "0", PAWS_HOST: "127.0.0.1" });
     try {
       const health = await fetch(`http://${paws.server.hostname}:${paws.server.port}/health`);
@@ -24,7 +24,7 @@ describe("process", () => {
       { [EXECUTION_TAG_ENV]: "0123456789abcdef/01M5K8188B83E8PASBBBTXAF2S" },
     ],
   ])("bun src/index.ts prints ready%s", async (_name, tag: Record<string, string>) => {
-    const home = tempHome();
+    const home = await migratedHome();
     const env: Record<string, string | undefined> = {
       ...process.env,
       PAWS_HOME: home,
@@ -57,7 +57,7 @@ describe("process", () => {
   });
 
   test("a setup-written config listens on loopback and serves live status", async () => {
-    const home = tempHome();
+    const home = await migratedHome();
     const paths = pawsPaths(home);
     ensureLayout(paths);
     writeConfigFile(paths.configFile, {

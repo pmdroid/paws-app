@@ -85,7 +85,7 @@ export default {
         final.body.startsWith("Merged #1"),
       { issue: proof.linear.issueStateTypes.get(ACME.issueId), final },
     );
-    const held = proof.heldWork();
+    const held = await proof.heldWork();
     proof.expect(
       "no run is left active and no slot is held",
       held.activeRuns === 0 && held.reservations === 0 && held.runningJobs === 0,

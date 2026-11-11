@@ -125,7 +125,7 @@ items:
     );
     proof.expect(
       "the rejected finding was stored before restart",
-      proof.storedReviewFindings() > 0,
+      (await proof.storedReviewFindings()) > 0,
     );
     const log = await proof.originMainLog();
     proof.expect(

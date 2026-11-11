@@ -1,6 +1,6 @@
-import { sqliteDb } from "../../src/db";
+import { eq } from "drizzle-orm";
 import "../quiet-journal";
-import { storeLinearToken } from "../helpers";
+import { storeHomeLinearToken } from "../helpers";
 import { createHmac } from "node:crypto";
 import { createInboxStore } from "../../src/linear";
 import { createLinearReconnect } from "../../src/onboarding";
@@ -14,7 +14,7 @@ const previous = {
   actor: "app" as const,
   scope: "read,write",
 };
-await storeLinearToken(home, previous);
+await storeHomeLinearToken(home, previous);
 const nativeFetch = fetch;
 const started = Promise.withResolvers<void>();
 const released = Promise.withResolvers<Response>();
@@ -82,7 +82,7 @@ const reconnect = await createLinearReconnect({
   now: () => Date.now() + 1000,
   fetch: async () =>
     Response.json({ data: { viewer: { id: "app", app: true, organization: { id: "org" } } } }),
-})(home);
+})(paws.store, home);
 const restored = await reconnect.complete({
   clientId: "client",
   token: { ...previous, accessToken: "fake-new-access", refreshToken: "fake-new-refresh" },
@@ -90,19 +90,21 @@ const restored = await reconnect.complete({
 released.resolve(Response.json({ data: { team: { id: "team" } } }));
 for (
   let attempt = 0;
-  (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length > 0 && attempt < 100;
+  (await createInboxStore(paws.store).listUnhandled()).length > 0 && attempt < 100;
   attempt++
 )
   await Bun.sleep(5);
-const session = paws.db
-  .query<{ generation: number; stopped_at: number | null }, [string]>(
-    "SELECT generation, stopped_at FROM linear_session WHERE session_id = ?",
-  )
-  .get("session");
-const items = paws.db
-  .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM work_item")
-  .get()!.count;
-const pending = (await createInboxStore(sqliteDb(paws.db)).listUnhandled()).length;
+const session = await paws.store.run(function* (q) {
+  const row = yield* q.one(
+    q.orm
+      .select({ generation: q.t.linearSession.generation, stopped_at: q.t.linearSession.stoppedAt })
+      .from(q.t.linearSession)
+      .where(eq(q.t.linearSession.sessionId, "session")),
+  );
+  return row ?? null;
+});
+const items = (await paws.store.run((q) => q.all(q.orm.select().from(q.t.workItem)))).length;
+const pending = (await createInboxStore(paws.store).listUnhandled()).length;
 await paws.catchUp();
 paws.stop();
 console.log(

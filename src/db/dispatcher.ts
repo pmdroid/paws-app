@@ -1,7 +1,7 @@
 import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_POLL_MS, sleep, type Clock } from "../core";
-import { sqliteDb, type Db } from "./db";
+import { storeOf, type Db } from "./db";
 import {
   claimOutboxHeadsSteps,
   coalesceOutbox,
@@ -32,7 +32,7 @@ export class OutboxDispatcher {
   readonly store: Db;
 
   constructor(
-    readonly db: Database,
+    readonly db: Database | Db,
     readonly clock: Clock,
     readonly options: {
       store?: Db;
@@ -44,7 +44,7 @@ export class OutboxDispatcher {
       progressIntervalMs?: number;
     } = {},
   ) {
-    this.store = options.store ?? sqliteDb(db);
+    this.store = options.store ?? storeOf(db);
   }
 
   get pollMs(): number {

@@ -71,7 +71,7 @@ export function linearTokenPath(secretsDir: string): string {
  * Build the inbox and tracker. Call `start` to poll Linear.
  */
 export async function openLinear(options: {
-  db: Database;
+  db: Database | Db;
   store: Db;
   secretsDir: string;
   env: EnvSource;
