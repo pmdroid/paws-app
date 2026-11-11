@@ -27,6 +27,7 @@ import {
   runOwner,
   stopInstance,
   takeOverGoneRuns,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerControl } from "../src/runner-control";
 import { createRunnerKey, initializeRunnerAuthority } from "../src/runner-identity";
@@ -62,12 +63,12 @@ async function fixture() {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now())),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now())),
     now: now(),
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
@@ -103,7 +104,7 @@ async function fixture() {
   const start = () =>
     registerInstance(db, { role: "all", host: "acme", version: null, now: now() });
   let instance = start();
-  claimRun(db, run.id, instance.id);
+  await claimRun(sqliteDb(db), run.id, instance.id);
   recordLinearInstallation(db, {
     organizationId: "org",
     oauthClientId: "app",
@@ -265,11 +266,11 @@ test("Paws down 20 minutes with a 30-minute budget: the runner still holds the w
  * Run a second instance in 5-second steps until it closes the run's expired lease. It takes over
  * gone instances' runs every 30 seconds unless `step` scripts the first instance instead.
  */
-function serveUntilExpiry(
+async function serveUntilExpiry(
   f: Awaited<ReturnType<typeof fixture>>,
   b: Database,
   step: ((at: number) => void) | null,
-): number {
+): Promise<number> {
   const other = registerInstance(b, {
     role: "all",
     host: "acme-b",
@@ -278,7 +279,7 @@ function serveUntilExpiry(
   });
   for (let i = 0; i < 20 * 12; i++) {
     f.clock.at += 5_000;
-    heartbeatInstance(b, other.id, f.clock.at);
+    await heartbeatInstance(sqliteDb(b), other.id, f.clock.at);
     if (step) step(f.clock.at);
     else if (i % 6 === 0) takeOverGoneRuns(b, other.id, f.clock.at);
     if (closeExpiredRunnerLeases(b, f.clock.at).includes(f.run.id)) return f.clock.at;
@@ -293,7 +294,7 @@ test("with a second instance alive throughout, a restart gives no credit and the
     await f.admit();
     const before = f.leaseUntil();
     const acme = f.instance.id;
-    const expiredAt = serveUntilExpiry(f, b, (at) => {
+    const expiredAt = await serveUntilExpiry(f, b, (at) => {
       // The first instance stops cleanly, and its replacement starts four minutes later.
       if (at === before) {
         prepareShutdown(f.db, at, undefined, acme);
@@ -322,7 +323,7 @@ test("an instance alive throughout takes over a crashed instance's run without c
     await f.admit();
     const before = f.leaseUntil();
     const acme = f.instance.id;
-    const expiredAt = serveUntilExpiry(f, b, null);
+    const expiredAt = await serveUntilExpiry(f, b, null);
     expect(runOwner(b, f.run.id)).not.toBe(acme);
     expect(f.leaseUntil()).toBe(before);
     expect(expiredAt).toBe(before + RUNNER_LEASE_GRACE_MS);
@@ -346,7 +347,7 @@ test("a second instance started during the outage credits only the time before i
       now: f.clock.at,
     });
     f.clock.at += 5 * MINUTE;
-    heartbeatInstance(b, other.id, f.clock.at);
+    await heartbeatInstance(sqliteDb(b), other.id, f.clock.at);
     takeOverGoneRuns(b, other.id, f.clock.at);
     expect(runOwner(b, f.run.id)).toBe(other.id);
     expect(f.leaseUntil()).toBe(before + 10 * MINUTE);
@@ -484,7 +485,7 @@ test("a runner silent past the grace while Paws is up is still fenced", async ()
     // Paws stays up and keeps recording that it is alive while the runner is silent.
     while (f.clock.at <= before + RUNNER_LEASE_GRACE_MS) {
       f.clock.at += 15_000;
-      heartbeatInstance(f.db, f.instance.id, f.clock.at);
+      await heartbeatInstance(sqliteDb(f.db), f.instance.id, f.clock.at);
     }
     f.down(1_000);
     expect(f.leaseUntil()).toBe(before);
@@ -500,13 +501,13 @@ test("a runner silent past the grace while Paws is up is still fenced", async ()
   }
 }, 30_000);
 
-test("heartbeats recover after the wall clock moves backward", () => {
+test("heartbeats recover after the wall clock moves backward", async () => {
   const db = tempDb();
   try {
     const { id } = registerInstance(db, { role: "all", host: "acme", version: null, now: 0 });
-    heartbeatInstance(db, id, 4 * 60 * MINUTE);
-    heartbeatInstance(db, id, 3 * 60 * MINUTE);
-    expect(lastInstanceHeartbeat(db)).toBe(3 * 60 * MINUTE);
+    await heartbeatInstance(sqliteDb(db), id, 4 * 60 * MINUTE);
+    await heartbeatInstance(sqliteDb(db), id, 3 * 60 * MINUTE);
+    expect(await lastInstanceHeartbeat(sqliteDb(db))).toBe(3 * 60 * MINUTE);
   } finally {
     db.close();
   }
@@ -518,7 +519,7 @@ test("a lease renewed within the alive skew still receives downtime credit", asy
     await f.admit();
     const before = f.leaseUntil();
     const aliveAt = before - PAWS_ALIVE_LEASE_SKEW_MS;
-    heartbeatInstance(f.db, f.instance.id, aliveAt);
+    await heartbeatInstance(sqliteDb(f.db), f.instance.id, aliveAt);
     f.clock.at += 20 * MINUTE;
     f.crash();
     expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
@@ -535,7 +536,7 @@ test("a lease renewed past the alive skew receives no downtime credit", async ()
   try {
     await f.admit();
     const before = f.leaseUntil();
-    heartbeatInstance(f.db, f.instance.id, before - PAWS_ALIVE_LEASE_SKEW_MS - 1);
+    await heartbeatInstance(sqliteDb(f.db), f.instance.id, before - PAWS_ALIVE_LEASE_SKEW_MS - 1);
     f.clock.at += 20 * MINUTE;
     f.crash();
     expect(recoverOnStartup(f.db, f.clock.at, BUDGET, f.instance.id)).toEqual([
@@ -551,7 +552,7 @@ test("leases renewed after an obsolete alive mark receive no downtime credit", a
   const f = await fixture();
   try {
     await f.admit();
-    heartbeatInstance(f.db, f.instance.id, f.clock.at - 24 * 60 * MINUTE);
+    await heartbeatInstance(sqliteDb(f.db), f.instance.id, f.clock.at - 24 * 60 * MINUTE);
     const before = f.leaseUntil();
     // Model an older build renewing work without updating the heartbeat.
     f.clock.at += 20 * MINUTE;

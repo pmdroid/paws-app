@@ -12,7 +12,7 @@ import {
   getConversation,
   getJob,
   getLinearSession,
-  getOutbox,
+  getOutboxSteps,
   getWorkItem,
   submitCommand,
   sqliteDb,
@@ -32,7 +32,7 @@ test("Workspace execution controls reach canonical Stop, Pause and Resume with c
 
 test("Retry puts a dead job of an authorized item back to pending and refuses everything else", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-controls-retry-"));
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   try {
     const { db, origin } = fixture;
     const retry = (target: unknown, identity = "member") =>
@@ -94,7 +94,7 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     assert.equal(getJob(db, late)!.status, "dead");
     assert.equal((await retry(`outbox:${stop}`, "inactive")).status, 401);
     assert.equal((await retry(`outbox:${stop}`)).status, 200);
-    assert.equal(getOutbox(db, stop)!.status, "pending");
+    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, stop)))!.status, "pending");
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });
@@ -103,7 +103,7 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
 
 test("Clear stuck agent clears a blocked conversation for an admin, refuses a member and is audited", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-controls-stuck-"));
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   try {
     const { db, call } = fixture;
     blockConversation(db, "controlled", Date.now());
@@ -118,9 +118,9 @@ test("Clear stuck agent clears a blocked conversation for an admin, refuses a me
     assert.equal(member.notice, CLEANUP_BLOCKED_NOTICE);
 
     assert.equal((await call("clear_stuck_agent")).status, 403);
-    assert.equal(getConversation(db, "controlled").blocked, true);
+    assert.equal((await getConversation(sqliteDb(db), "controlled")).blocked, true);
     assert.equal((await call("clear_stuck_agent", "admin")).status, 200);
-    assert.equal(getConversation(db, "controlled").blocked, false);
+    assert.equal((await getConversation(sqliteDb(db), "controlled")).blocked, false);
     const audit = db
       .query<{ userId: string; action: string; subject: string }, []>(
         "SELECT user_id AS userId,action,subject FROM workspace_access_audit WHERE action LIKE '%clear_stuck_agent%' OR subject LIKE '%clear_stuck_agent%' ORDER BY id",
@@ -144,7 +144,7 @@ test("Clear stuck agent clears a blocked conversation for an admin, refuses a me
 
 test("Resume restarts an item a Linear stop paused, and Stop cancels it", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-controls-linear-stop-"));
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   try {
     const { db, orchestrator, call } = fixture;
     const stop = async () => {
@@ -175,7 +175,7 @@ test("Resume restarts an item a Linear stop paused, and Stop cancels it", async 
 
 test("Asking which controls an item has is not a denial; a refused action still is", async () => {
   const root = mkdtempSync(join(tmpdir(), "paws-controls-audit-"));
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   try {
     const { db, call } = fixture;
     const denials = () =>

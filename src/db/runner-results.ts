@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, gt, inArray, isNull, notExists, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
 export type StoredRunnerEventRow = {
@@ -45,8 +44,12 @@ export function* runnerResultMatchesSteps(
   return row === undefined ? null : row.same === 1;
 }
 
-export function runnerResultMatches(db: Database, key: RunKey, payload: string): boolean | null {
-  return settled(sqliteDb(db).run((q) => runnerResultMatchesSteps(q, key, payload)));
+export async function runnerResultMatches(
+  store: Db,
+  key: RunKey,
+  payload: string,
+): Promise<boolean | null> {
+  return store.run((q) => runnerResultMatchesSteps(q, key, payload));
 }
 
 type NewRunnerResult = RunKey & { commandId: string; payload: string; receivedAt: number };
@@ -57,8 +60,8 @@ export function* insertRunnerResultSteps(q: Q, row: NewRunnerResult) {
   );
 }
 
-export function insertRunnerResult(db: Database, row: NewRunnerResult): void {
-  settled(sqliteDb(db).run((q) => insertRunnerResultSteps(q, row)));
+export async function insertRunnerResult(store: Db, row: NewRunnerResult): Promise<void> {
+  await store.run((q) => insertRunnerResultSteps(q, row));
 }
 
 export function* runnerResultForCommandSteps(
@@ -82,12 +85,12 @@ export function* runnerResultForCommandSteps(
   return row?.payload ?? null;
 }
 
-export function runnerResultForCommand(
-  db: Database,
+export async function runnerResultForCommand(
+  store: Db,
   key: RunKey,
   commandId: string,
-): string | null {
-  return settled(sqliteDb(db).run((q) => runnerResultForCommandSteps(q, key, commandId)));
+): Promise<string | null> {
+  return store.run((q) => runnerResultForCommandSteps(q, key, commandId));
 }
 
 export function* runnerEventPageSteps(
@@ -112,8 +115,12 @@ export function* runnerEventPageSteps(
   );
 }
 
-export function runnerEventPage(db: Database, key: RunKey, after: number): StoredRunnerEventRow[] {
-  return settled(sqliteDb(db).run((q) => runnerEventPageSteps(q, key, after)));
+export async function runnerEventPage(
+  store: Db,
+  key: RunKey,
+  after: number,
+): Promise<StoredRunnerEventRow[]> {
+  return store.run((q) => runnerEventPageSteps(q, key, after));
 }
 
 export function* storedRunnerEventSteps(
@@ -137,12 +144,12 @@ export function* storedRunnerEventSteps(
   return row ?? null;
 }
 
-export function storedRunnerEvent(
-  db: Database,
+export async function storedRunnerEvent(
+  store: Db,
   key: RunKey,
   sequence: number,
-): StoredRunnerEventRow | null {
-  return settled(sqliteDb(db).run((q) => storedRunnerEventSteps(q, key, sequence)));
+): Promise<StoredRunnerEventRow | null> {
+  return store.run((q) => storedRunnerEventSteps(q, key, sequence));
 }
 
 export function* storedRunnerAnswerSteps(
@@ -166,8 +173,12 @@ export function* storedRunnerAnswerSteps(
   return row?.answer ?? null;
 }
 
-export function storedRunnerAnswer(db: Database, key: RunKey, sequence: number): string | null {
-  return settled(sqliteDb(db).run((q) => storedRunnerAnswerSteps(q, key, sequence)));
+export async function storedRunnerAnswer(
+  store: Db,
+  key: RunKey,
+  sequence: number,
+): Promise<string | null> {
+  return store.run((q) => storedRunnerAnswerSteps(q, key, sequence));
 }
 
 type NewRunnerAnswer = RunKey & { sequence: number; answer: string; createdAt: number };
@@ -176,8 +187,8 @@ export function* insertRunnerQuestionAnswerSteps(q: Q, row: NewRunnerAnswer) {
   yield* q.exec(q.orm.insert(q.t.runnerQuestionAnswer).values(row));
 }
 
-export function insertRunnerQuestionAnswer(db: Database, row: NewRunnerAnswer): void {
-  settled(sqliteDb(db).run((q) => insertRunnerQuestionAnswerSteps(q, row)));
+export async function insertRunnerQuestionAnswer(store: Db, row: NewRunnerAnswer): Promise<void> {
+  await store.run((q) => insertRunnerQuestionAnswerSteps(q, row));
 }
 
 export function* unansweredRunnerQuestionsSteps(
@@ -216,12 +227,12 @@ export function* unansweredRunnerQuestionsSteps(
   );
 }
 
-export function unansweredRunnerQuestions(
-  db: Database,
+export async function unansweredRunnerQuestions(
+  store: Db,
   key: RunKey,
   types: readonly string[],
-): StoredRunnerEventRow[] {
-  return settled(sqliteDb(db).run((q) => unansweredRunnerQuestionsSteps(q, key, types)));
+): Promise<StoredRunnerEventRow[]> {
+  return store.run((q) => unansweredRunnerQuestionsSteps(q, key, types));
 }
 
 export function* runnerQuestionAnswersAfterSteps(
@@ -246,12 +257,12 @@ export function* runnerQuestionAnswersAfterSteps(
   );
 }
 
-export function runnerQuestionAnswersAfter(
-  db: Database,
+export async function runnerQuestionAnswersAfter(
+  store: Db,
   key: RunKey,
   after: number,
-): { sequence: number; answer: string }[] {
-  return settled(sqliteDb(db).run((q) => runnerQuestionAnswersAfterSteps(q, key, after)));
+): Promise<{ sequence: number; answer: string }[]> {
+  return store.run((q) => runnerQuestionAnswersAfterSteps(q, key, after));
 }
 
 type FollowUpTarget = { runId: string; generation: number; version: string | null };
@@ -283,12 +294,12 @@ export function* itemRunnerFollowUpTargetSteps(
   return row ?? null;
 }
 
-export function itemRunnerFollowUpTarget(
-  db: Database,
+export async function itemRunnerFollowUpTarget(
+  store: Db,
   itemId: string,
   leaseCutoff: number,
-): FollowUpTarget | null {
-  return settled(sqliteDb(db).run((q) => itemRunnerFollowUpTargetSteps(q, itemId, leaseCutoff)));
+): Promise<FollowUpTarget | null> {
+  return store.run((q) => itemRunnerFollowUpTargetSteps(q, itemId, leaseCutoff));
 }
 
 export function* insertRunnerFollowUpSteps(
@@ -309,11 +320,11 @@ export function* insertRunnerFollowUpSteps(
   yield* q.exec(q.orm.insert(runnerFollowUp).values({ ...row, sequence: next!.sequence }));
 }
 
-export function insertRunnerFollowUp(
-  db: Database,
+export async function insertRunnerFollowUp(
+  store: Db,
   row: RunKey & { body: string; createdAt: number },
-): void {
-  settled(sqliteDb(db).run((q) => insertRunnerFollowUpSteps(q, row)));
+): Promise<void> {
+  await store.run((q) => insertRunnerFollowUpSteps(q, row));
 }
 
 export function* runnerFollowUpsAfterSteps(
@@ -338,12 +349,12 @@ export function* runnerFollowUpsAfterSteps(
   );
 }
 
-export function runnerFollowUpsAfter(
-  db: Database,
+export async function runnerFollowUpsAfter(
+  store: Db,
   key: RunKey,
   after: number,
-): { sequence: number; body: string }[] {
-  return settled(sqliteDb(db).run((q) => runnerFollowUpsAfterSteps(q, key, after)));
+): Promise<{ sequence: number; body: string }[]> {
+  return store.run((q) => runnerFollowUpsAfterSteps(q, key, after));
 }
 
 /** Runner events still stored as plaintext, after `after` in key order. */

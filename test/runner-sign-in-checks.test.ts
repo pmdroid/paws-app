@@ -11,6 +11,7 @@ import {
   recordRunnerAgentUsage,
   runnerAgentUsage,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerWork } from "../src/runner-work";
 import { createRunnerHealth } from "../src/runner-health";
@@ -517,26 +518,26 @@ test("the latest usage windows reach the runner list with when they were read", 
     expect(schema.safeParse([bad]).success).toBe(false);
 });
 
-test("an older usage reading never replaces a newer one", () => {
+test("an older usage reading never replaces a newer one", async () => {
   const f = fixture();
   const runnerId = f.runner();
   const reading = (usedPercent: number) => [{ window: "Weekly", usedPercent, resetsAt: null }];
-  const record = (usedPercent: number, observedAt: number) =>
-    recordRunnerAgentUsage(f.db, {
+  const record = async (usedPercent: number, observedAt: number) =>
+    await recordRunnerAgentUsage(sqliteDb(f.db), {
       runnerId,
       agent: "codex",
       limits: reading(usedPercent),
       observedAt,
     });
-  record(40, 2_000);
-  record(10, 1_000);
-  expect(runnerAgentUsage(f.db, runnerId, "codex")).toEqual({
+  await record(40, 2_000);
+  await record(10, 1_000);
+  expect(await runnerAgentUsage(sqliteDb(f.db), runnerId, "codex")).toEqual({
     limits: reading(40),
     observedAt: 2_000,
   });
-  record(55, 3_000);
-  expect(runnerAgentUsage(f.db, runnerId, "codex")!.limits).toEqual(reading(55));
-  expect(runnerAgentUsage(f.db, runnerId, "claude")).toBeNull();
+  await record(55, 3_000);
+  expect((await runnerAgentUsage(sqliteDb(f.db), runnerId, "codex"))!.limits).toEqual(reading(55));
+  expect(await runnerAgentUsage(sqliteDb(f.db), runnerId, "claude")).toBeNull();
 });
 
 test("a completed sign-in queues one login check for that agent", async () => {
@@ -652,7 +653,7 @@ test("a login check issued before a newer sign-in failure cannot mark the agent 
     "INSERT INTO runner_agent_policy(runner_id,agent,ready,auth_expired) VALUES(?,'claude',0,1) ON CONFLICT DO UPDATE SET ready=0,auth_expired=1",
     [runnerId],
   );
-  recordAccountObservation(f.db, {
+  await recordAccountObservation(sqliteDb(f.db), {
     bindingId: legacyAgentBindingId(runnerId, "claude"),
     source: "result",
     sourceId: "failed-run",

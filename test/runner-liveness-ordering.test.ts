@@ -13,6 +13,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { createRunnerWork, createRunnerWorkHttp, RUNNER_LIVE_GRACE_MS } from "../src/runner-work";
 import { CONFIRMED_TEARDOWN_RUNNER_VERSION, type RunnerCommand } from "../src/runner-protocol";
@@ -20,7 +21,7 @@ import { issueWorkspaceBootstrap, workspaceTokenHash } from "../src/workspace";
 
 type Live = { runId: string; generation: number }[];
 
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "paws-liveness-"));
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -31,12 +32,12 @@ function fixture() {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "ws",
     organizationId: "org",
     name: "Test",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", clock.now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock.now)),
     now: clock.now,
   });
   db.run(
@@ -138,7 +139,7 @@ function fixture() {
 }
 
 test("a delayed heartbeat sampled before the acknowledgement cannot fence the work as lost", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const before = await f.heartbeat([], 0);
     expect(before.observedAt).toBe(f.clock.now);
@@ -177,7 +178,7 @@ test("a delayed heartbeat sampled before the acknowledgement cannot fence the wo
 });
 
 test("a sample that names the work confirms it, and out-of-order older samples never fence it", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const first = await f.heartbeat([], 0);
     f.clock.now += 1_000;
@@ -199,7 +200,7 @@ test("a sample that names the work confirms it, and out-of-order older samples n
 });
 
 test("a runner without a cursor keeps the grace rule", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.work.assign(f.command(1));
     await f.work.acknowledge("box", "work-1");
@@ -215,7 +216,7 @@ test("a runner without a cursor keeps the grace rule", async () => {
 });
 
 test("a new generation inherits neither confirmation nor loss, and an old report cannot confirm it", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const first = await f.heartbeat([], 0);
     f.clock.now += 1_000;

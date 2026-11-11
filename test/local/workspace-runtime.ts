@@ -1,7 +1,13 @@
 import { fileURLToPath } from "node:url";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { consumeWorkspaceBootstrap, migrate, openDatabase, putWorkspaceUser } from "../../src/db";
+import {
+  consumeWorkspaceBootstrap,
+  migrate,
+  openDatabase,
+  putWorkspaceUser,
+  sqliteDb,
+} from "../../src/db";
 import { startServer } from "../../src/server";
 import {
   createWorkspaceAccess,
@@ -112,12 +118,12 @@ async function probeWorkspaceHttpDrain(path: string, observe: Observe) {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Workspace",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const session = issueWorkspaceSession(db, { userId, workspaceId: workspace.id, now });

@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 type OpenFindings = { itemId: string; head: string; line: string; now: number };
 
@@ -20,8 +19,8 @@ export function* saveOpenFindingsSteps(q: Q, input: OpenFindings): Steps<void> {
   );
 }
 
-export function saveOpenFindings(db: Database, input: OpenFindings): void {
-  settled(sqliteDb(db).run((q) => saveOpenFindingsSteps(q, input)));
+export async function saveOpenFindings(store: Db, input: OpenFindings): Promise<void> {
+  await store.run((q) => saveOpenFindingsSteps(q, input));
 }
 
 export function* getPublishedHeadSteps(q: Q, itemId: string): Steps<string | null> {
@@ -35,8 +34,8 @@ export function* getPublishedHeadSteps(q: Q, itemId: string): Steps<string | nul
   return row?.head ?? null;
 }
 
-export function getPublishedHead(db: Database, itemId: string): string | null {
-  return settled(sqliteDb(db).run((q) => getPublishedHeadSteps(q, itemId)));
+export async function getPublishedHead(store: Db, itemId: string): Promise<string | null> {
+  return store.run((q) => getPublishedHeadSteps(q, itemId));
 }
 
 /** The open-findings line of the item's last published head, or null when nothing was open. */
@@ -57,6 +56,6 @@ export function* withOpenFindingsSteps(q: Q, itemId: string, body: string): Step
   return line === null ? body : `${body}\n\n${line}`;
 }
 
-export function withOpenFindings(db: Database, itemId: string, body: string): string {
-  return settled(sqliteDb(db).run((q) => withOpenFindingsSteps(q, itemId, body)));
+export async function withOpenFindings(store: Db, itemId: string, body: string): Promise<string> {
+  return store.run((q) => withOpenFindingsSteps(q, itemId, body));
 }

@@ -7,6 +7,7 @@ import {
   openStopTargets,
   persistStopJob,
   sessionHasWorkItem,
+  sqliteDb,
 } from "../db";
 import { CLOSED_ISSUE_EVENT } from "./administration";
 import { budgetHoldMs, LinearRateLimitError, type LinearRateBudget } from "./budget";
@@ -220,7 +221,7 @@ export function startCatchUpPoller(options: {
   async function rereadQuestionThreads(): Promise<void> {
     const read = options.source.questionReplies;
     if (read === undefined || options.db === undefined) return;
-    const threads = openQuestionThreads(options.db);
+    const threads = await openQuestionThreads(sqliteDb(options.db));
     for (const thread of threads) {
       if (control.stopped) return;
       let replies: readonly PolledActivity[];
@@ -474,8 +475,8 @@ function sessionEvent(
 }
 
 /** Queue a stop in the same shape `submitCommand` drains, without applying it here. */
-export function persistStopCommand(db: Database, command: LinearCommand): void {
-  persistStopJob(db, command);
+export async function persistStopCommand(db: Database, command: LinearCommand): Promise<void> {
+  await persistStopJob(sqliteDb(db), command);
 }
 
 const REDELEGATION_MARGIN_MS = 60_000;

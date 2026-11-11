@@ -58,7 +58,7 @@ type AgentFixture = {
   };
 };
 
-function fixture({
+async function fixture({
   installed = true,
   projectLeadId,
   createVm,
@@ -80,8 +80,8 @@ function fixture({
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = issueWorkspaceBootstrap(db, "org", clock.now());
-  consumeWorkspaceBootstrap(db, {
+  const bootstrap = await issueWorkspaceBootstrap(db, "org", clock.now());
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "workspace",
     organizationId: "org",
     name: "Workspace",
@@ -474,7 +474,7 @@ function fixture({
 }
 
 test("first assignment holds without manufacturing membership and resumes once after browser OAuth and restart", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
     expect(await f.assignments.authorize({ ...f.event, deliveryId: "duplicate" })).toMatchObject({
@@ -513,7 +513,7 @@ test("first assignment holds without manufacturing membership and resumes once a
 
 for (const identity of ["wrong", "outsider"])
   test(`assignment OAuth rejects ${identity} identity`, async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       await f.assignments.authorize(f.event);
       const start = await f.begin();
@@ -545,7 +545,7 @@ for (const change of [
   "inactive member",
 ])
   test(`assignment continuation fails closed after ${change} changes`, async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       await f.assignments.authorize(f.event);
       expect((await f.callback(await f.begin())).status).toBe(303);
@@ -581,7 +581,7 @@ for (const change of [
   });
 
 test("held prompts cannot become initial delegation; waiting writes nothing; Stop invalidates hold", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const original = f.link();
@@ -614,7 +614,7 @@ test("held prompts cannot become initial delegation; waiting writes nothing; Sto
 });
 
 test("linked members avoid a new-issue sign-in hold while removed members do not", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const userId = putWorkspaceUser(f.db, {
       id: "member",
@@ -640,7 +640,7 @@ test("linked members avoid a new-issue sign-in hold while removed members do not
   }
 });
 
-function linkMember(f: ReturnType<typeof fixture>) {
+function linkMember(f: Awaited<ReturnType<typeof fixture>>) {
   const userId = putWorkspaceUser(f.db, {
     id: "member",
     linearUserId: "member",
@@ -657,7 +657,7 @@ function linkMember(f: ReturnType<typeof fixture>) {
   });
 }
 
-const rules: [string, string, (f: ReturnType<typeof fixture>) => unknown][] = [
+const rules: [string, string, (f: Awaited<ReturnType<typeof fixture>>) => unknown][] = [
   [
     "delegated elsewhere",
     "This issue is delegated to another agent.",
@@ -703,7 +703,7 @@ const rules: [string, string, (f: ReturnType<typeof fixture>) => unknown][] = [
 
 for (const [rule, reason, apply] of rules)
   test(`a delegation refused for ${rule} says so`, async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       linkMember(f);
       await apply(f);
@@ -714,7 +714,7 @@ for (const [rule, reason, apply] of rules)
   });
 
 test("a Linear guest's delegation is ignored, and the session's response says guests can't use Paws", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     linkMember(f);
     f.setGuest(true);
@@ -736,7 +736,7 @@ test("a Linear guest's delegation is ignored, and the session's response says gu
 });
 
 test("a member's delegation whose first Linear read fails is retried and accepted", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     linkMember(f);
     f.failSessionRead();
@@ -760,7 +760,7 @@ test("a member's delegation whose first Linear read fails is retried and accepte
 });
 
 test("one delegation event reads each Linear source once", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     linkMember(f);
     let reads = 0;
@@ -777,7 +777,7 @@ test("one delegation event reads each Linear source once", async () => {
 });
 
 test("a delegation that arrives before its installation is recorded is accepted once it is", async () => {
-  const f = fixture({ installed: false });
+  const f = await fixture({ installed: false });
   try {
     linkMember(f);
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "retry" });
@@ -789,7 +789,7 @@ test("a delegation that arrives before its installation is recorded is accepted 
 });
 
 test("concurrent delegations from the same member are all accepted", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     linkMember(f);
     let release!: () => void;
@@ -809,7 +809,7 @@ test("concurrent delegations from the same member are all accepted", async () =>
 });
 
 test("an interrupted canonical continuation retries from durable acceptance without repeating the decision", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     await f.callback(await f.begin());
@@ -832,7 +832,7 @@ test("an interrupted canonical continuation retries from durable acceptance with
 });
 
 test("two workers cannot claim the same durable continuation", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     await f.callback(await f.begin());
@@ -845,7 +845,7 @@ test("two workers cannot claim the same durable continuation", async () => {
 });
 
 test("the resume reuses the stored snapshot and reads only the issue and the membership", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     expect(f.decisionReads).toEqual({ session: 1, issue: 1, epic: 1 });
@@ -863,7 +863,7 @@ test("the resume reuses the stored snapshot and reads only the issue and the mem
   }
 });
 
-const errors = (f: ReturnType<typeof fixture>) =>
+const errors = (f: Awaited<ReturnType<typeof fixture>>) =>
   listOutbox(f.db)
     .map((row) => row.payload as { kind?: string; body?: string })
     .filter((payload) => payload.kind === "error")
@@ -873,26 +873,26 @@ for (const [change, reason, apply] of [
   [
     "the issue's delegate",
     "This issue changed while Paws waited for you to sign in.",
-    (f: ReturnType<typeof fixture>) => (f.ownership.delegateId = "another-app"),
+    (f: Awaited<ReturnType<typeof fixture>>) => (f.ownership.delegateId = "another-app"),
   ],
   [
     "the issue's state",
     "This issue changed while Paws waited for you to sign in.",
-    (f: ReturnType<typeof fixture>) => (f.ownership.stateType = "completed"),
+    (f: Awaited<ReturnType<typeof fixture>>) => (f.ownership.stateType = "completed"),
   ],
   [
     "the Linear account",
     "Your Linear account is not active.",
-    (f: ReturnType<typeof fixture>) => f.setActive(false),
+    (f: Awaited<ReturnType<typeof fixture>>) => f.setActive(false),
   ],
   [
     "the issue's team membership",
     "You are not a member of this issue's Linear team.",
-    (f: ReturnType<typeof fixture>) => f.setTeams([]),
+    (f: Awaited<ReturnType<typeof fixture>>) => f.setTeams([]),
   ],
 ] as const)
   test(`a change to ${change} between sign-in and resume refuses once with its reason`, async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       await f.assignments.authorize(f.event);
       expect((await f.callback(await f.begin())).status).toBe(303);
@@ -916,7 +916,7 @@ for (const [change, reason, apply] of [
 
 for (const change of ["spec", "repository", "membership"])
   test(`intake refuses ${change} changing after continuation checks`, async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       await f.assignments.authorize(f.event);
       await f.callback(await f.begin());
@@ -938,7 +938,7 @@ for (const change of ["spec", "repository", "membership"])
   });
 
 test("a new canonical generation does not reuse an obsolete onboarding hold", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const previous = f.link();
@@ -956,7 +956,7 @@ test("a new canonical generation does not reuse an obsolete onboarding hold", as
 });
 
 test("browser callback cannot accept a hold after losing the issue team", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const start = await f.begin();
@@ -971,11 +971,11 @@ test("browser callback cannot accept a hold after losing the issue team", async 
 const SIGN_IN_BODY =
   "Welcome to Paws. Sign in with Linear so I can start TEST-1. I'll start on my own once you're set up. You can Stop this anytime.\n\nOptional: link GitHub on the next page so your commits credit you.";
 
-const elicitations = (f: ReturnType<typeof fixture>) =>
+const elicitations = (f: Awaited<ReturnType<typeof fixture>>) =>
   listOutbox(f.db).filter((row) => row.op === "elicitation");
 
 test("an unknown delegator sees the first thought, then one sign-in action, and waiting writes nothing", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const acknowledged = new Set<string>();
     const deliver = () =>
@@ -1039,7 +1039,7 @@ function sessionCookie(response: Response): string {
 const onboardPath = (link: string) => new URL(link).pathname;
 
 test("the creator's link sign-in resumes the held session and lands on its onboarding page", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
@@ -1108,7 +1108,7 @@ test("the creator's link sign-in resumes the held session and lands on its onboa
 });
 
 test("the runner step uses the issue's project lead's shared runner, never another member's", async () => {
-  const f = fixture({ projectLeadId: "lead" });
+  const f = await fixture({ projectLeadId: "lead" });
   try {
     for (const id of ["lead", "colleague"]) {
       putWorkspaceUser(f.db, {
@@ -1161,7 +1161,7 @@ test("the runner step uses the issue's project lead's shared runner, never anoth
 });
 
 test("the runner step offers Create VM when Paws can create one", async () => {
-  const f = fixture({ createVm: true });
+  const f = await fixture({ createVm: true });
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
@@ -1182,7 +1182,7 @@ test("the runner step offers Create VM when Paws can create one", async () => {
 });
 
 test("the onboarding page reads no Linear data and is gone once the member loses access", async () => {
-  const f = fixture({ createVm: true });
+  const f = await fixture({ createVm: true });
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
@@ -1216,7 +1216,7 @@ test("the onboarding page reads no Linear data and is gone once the member loses
 });
 
 test("a finished link opened without a Paws session is 404, even for its creator", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
@@ -1240,7 +1240,7 @@ test("a finished link opened without a Paws session is 404, even for its creator
 });
 
 test("another member opening the onboarding link sees nothing about the issue", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
@@ -1269,7 +1269,7 @@ test("another member opening the onboarding link sees nothing about the issue", 
 });
 
 test("a stopped session closes its onboarding page", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
@@ -1290,7 +1290,7 @@ test("a stopped session closes its onboarding page", async () => {
 });
 
 test("signing in from the dashboard instead of the link releases the hold", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const start = await fetch(`${f.local}/auth/linear`, { redirect: "manual" });
@@ -1308,7 +1308,7 @@ test("signing in from the dashboard instead of the link releases the hold", asyn
 });
 
 test("a member row for the creator lets the hold continue on the next sweep with no new action", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const jobs = f.jobs();
@@ -1327,7 +1327,7 @@ test("a member row for the creator lets the hold continue on the next sweep with
 });
 
 test("old secret sign-in links answer 410 and unknown onboarding links 404", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const old = await fetch(`${f.local}/auth/linear?assignment=${"a".repeat(43)}`, {
@@ -1346,7 +1346,7 @@ test("old secret sign-in links answer 410 and unknown onboarding links 404", asy
 });
 
 test("at deploy a pending hold without a link gets one link and one new-form action", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     f.db.run(
@@ -1378,7 +1378,7 @@ test("at deploy a pending hold without a link gets one link and one new-form act
 });
 
 /** Signs the creator in through their link and lets the held session resume. */
-async function onboarded(f: ReturnType<typeof fixture>) {
+async function onboarded(f: Awaited<ReturnType<typeof fixture>>) {
   await f.assignments.authorize(f.event);
   const link = f.link();
   const done = await f.callback(await f.begin(link));
@@ -1399,7 +1399,7 @@ function formFields(html: string) {
 }
 
 function postCredit(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   path: string,
   cookie: string,
   body: Record<string, string>,
@@ -1418,7 +1418,7 @@ function postCredit(
 }
 
 test("an onboarding without a GitHub link resumes and starts with no commit credit", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const { path, cookie, itemId } = await onboarded(f);
     const html = await (await fetch(`${f.local}${path}`, { headers: { cookie } })).text();
@@ -1434,7 +1434,7 @@ test("an onboarding without a GitHub link resumes and starts with no commit cred
 });
 
 test("linking GitHub from the onboarding page returns to it and credits that run's commits", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const { path, cookie, itemId } = await onboarded(f);
     const html = await (await fetch(`${f.local}${path}`, { headers: { cookie } })).text();
@@ -1479,7 +1479,7 @@ test("linking GitHub from the onboarding page returns to it and credits that run
 });
 
 test("a forged return_path in the request cannot move where the GitHub credit callback returns", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const { path, cookie } = await onboarded(f);
     const { csrf } = formFields(
@@ -1512,7 +1512,7 @@ test("a forged return_path in the request cannot move where the GitHub credit ca
 });
 
 test("the onboarding credit form needs the creator, CSRF and consent, and calls GitHub for none", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const { path, cookie } = await onboarded(f);
     const { csrf } = formFields(
@@ -1546,11 +1546,11 @@ test("the onboarding credit form needs the creator, CSRF and consent, and calls 
   }
 });
 
-const holdStatus = (f: ReturnType<typeof fixture>) =>
+const holdStatus = (f: Awaited<ReturnType<typeof fixture>>) =>
   f.db.query<{ status: string }, []>("SELECT status FROM workspace_assignment").get()!.status;
 
 test("a pending hold past one day posts one final response, ends the session and cancels the hold", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
@@ -1592,7 +1592,7 @@ test("a pending hold past one day posts one final response, ends the session and
 });
 
 test("a completed link shows the task only to its creator and is 404 for anyone else", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
@@ -1629,7 +1629,7 @@ test("a completed link shows the task only to its creator and is 404 for anyone 
 });
 
 test("onboarding starts are limited per client IP and per link, and a 429 writes nothing", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
@@ -1675,7 +1675,7 @@ test("onboarding starts are limited per client IP and per link, and a 429 writes
 });
 
 test("five failed callbacks from one IP in ten minutes block the sixth without a Linear request", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const ip = { "x-test-ip": "203.0.113.9" };
@@ -1719,7 +1719,7 @@ test("no log line contains the link path, an OAuth code or state, or a cookie va
         args.map((arg) => (typeof arg === "string" ? arg : Bun.inspect(arg))).join(" "),
       );
     };
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
@@ -1773,7 +1773,12 @@ test("no log line contains the link path, an OAuth code or state, or a cookie va
   }
 });
 
-function heldReply(f: ReturnType<typeof fixture>, id: string, actorId: string, body: string) {
+function heldReply(
+  f: Awaited<ReturnType<typeof fixture>>,
+  id: string,
+  actorId: string,
+  body: string,
+) {
   f.clock.advance(1_000);
   return {
     ...f.event,
@@ -1829,7 +1834,7 @@ function promptRecorder() {
 
 test("the creator's replies before sign-in reach the first agent prompt in order; others' do not", async () => {
   const recorder = promptRecorder();
-  const f = fixture({ agent: recorder.agent });
+  const f = await fixture({ agent: recorder.agent });
   try {
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
     const outbox = listOutbox(f.db).length;
@@ -1848,10 +1853,9 @@ test("the creator's replies before sign-in reach the first agent prompt in order
         heldReply(f, "second", "member", "HELD_REPLY_TWO and keep the footer"),
       ),
     ).toBe(false);
-    expect(listPendingLinearTurns(f.db, "session").map((turn) => turn.body)).toEqual([
-      "HELD_REPLY_ONE use the blue button",
-      "HELD_REPLY_TWO and keep the footer",
-    ]);
+    expect(
+      (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
+    ).toEqual(["HELD_REPLY_ONE use the blue button", "HELD_REPLY_TWO and keep the footer"]);
     expect(f.db.query("SELECT 1 FROM linear_turn WHERE actor_id='someone-else'").get()).toBeNull();
     expect(listOutbox(f.db)).toHaveLength(outbox);
     expect(f.tracker.progress).toEqual([]);
@@ -1875,7 +1879,7 @@ test("the creator's replies before sign-in reach the first agent prompt in order
       first!.prompt.indexOf("HELD_REPLY_TWO"),
     );
     expect(first?.prompt).not.toContain("HELD_REPLY_INTRUDER");
-    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
     await f.orchestrator.shutdown();
     await running.catch(() => undefined);
   } finally {
@@ -1885,14 +1889,14 @@ test("the creator's replies before sign-in reach the first agent prompt in order
 });
 
 test("Stop before sign-in discards the creator's held replies", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     const link = f.link();
     expect(await f.orchestrator.onLinearEvent(heldReply(f, "first", "member", "Held reply"))).toBe(
       false,
     );
-    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(1);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(1);
     f.clock.advance(1_000);
     await f.orchestrator.onLinearEvent({
       ...f.event,
@@ -1904,7 +1908,7 @@ test("Stop before sign-in discards the creator's held replies", async () => {
       signal: "stop",
       updatedAtMs: f.clock.now(),
     });
-    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
     expect(
       f.db.query("SELECT state FROM linear_turn WHERE event_key='activity:first'").get(),
     ).toEqual({ state: "cancelled" });
@@ -1916,7 +1920,7 @@ test("Stop before sign-in discards the creator's held replies", async () => {
 });
 
 test("revoked members cannot sign in or delegate while Linear still considers them active; restore permits sign-in", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     linkMember(f);
     changeWorkspaceRevocation(f.db, {
@@ -1966,7 +1970,7 @@ test("revoked members cannot sign in or delegate while Linear still considers th
 });
 
 test("a held delegation revoked during continuation retains its final response", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.assignments.authorize(f.event);
     expect((await f.callback(await f.begin())).status).toBe(303);

@@ -20,7 +20,7 @@ import { answerQuestion } from "./questions";
 import { createExecutionControlsFixture } from "./local/execution-controls";
 
 export async function decisionFixture(root: string) {
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   activateLinearItem(fixture.db, "session-controlled", "controlled");
   bindWorkItemRepository(fixture.db, "controlled", {
     owner: "fixture",
@@ -37,7 +37,7 @@ export async function decisionFixture(root: string) {
     answer: "Use cursor pagination and the existing response format.",
     answeredBy: "member",
   });
-  return { ...fixture, question: getQuestion(fixture.db, question.id)! };
+  return { ...fixture, question: (await getQuestion(sqliteDb(fixture.db), question.id))! };
 }
 
 export async function probeDecisionMemory(root: string) {
@@ -87,7 +87,7 @@ export async function probeDecisionMemory(root: string) {
       );
     const options = await suggest(pending.id, pending.body);
     assert.equal(options.length, 1);
-    assert.equal(getQuestion(f.db, pending.id)?.status, "open");
+    assert.equal((await getQuestion(sqliteDb(f.db), pending.id))?.status, "open");
     assert.equal(getWorkItem(f.db, "controlled")?.state, "awaiting_input");
     assert.equal(f.db.query("SELECT * FROM job WHERE queue='run.resume'").all().length, 0);
     observations.push("Search and persisted suggestions leave work awaiting human input");
@@ -130,7 +130,7 @@ export async function probeDecisionMemory(root: string) {
         .get()?.kind,
       "error",
     );
-    assert.equal(getQuestion(f.db, pending.id)?.status, "open");
+    assert.equal((await getQuestion(sqliteDb(f.db), pending.id))?.status, "open");
     observations.push(
       "Corrected decisions invalidate old choices without changing the waiting answer",
     );
@@ -185,7 +185,7 @@ export async function probeDecisionMemory(root: string) {
     };
     await f.orchestrator.onLinearEvent(event);
     await f.orchestrator.onLinearEvent(event);
-    assert.equal(getQuestion(f.db, next.id)?.answer, "Use cursor pagination.");
+    assert.equal((await getQuestion(sqliteDb(f.db), next.id))?.answer, "Use cursor pagination.");
     assert.equal((await listDecisions(f.db, actor))[0]?.accepted, 1);
     assert.equal(f.db.query("SELECT * FROM job WHERE queue='run.resume'").all().length, 1);
     observations.push(

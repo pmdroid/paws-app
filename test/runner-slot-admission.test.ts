@@ -39,7 +39,7 @@ import { workspaceWithRunners, REPOSITORY, NOW } from "./runner-slot-fixture";
 
 test("only as many items leave queued as the runner that allows their repository has slots", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   await pair("goldbox", 6, ["other/repo"]);
   await pair("agentbox", 2, [REPOSITORY]);
   for (const id of ["a", "b", "c", "d"]) queue(id);
@@ -49,7 +49,7 @@ test("only as many items leave queued as the runner that allows their repository
 
 test("a held item's reason names each runner and placement's rejection", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   await pair("goldbox", 6, ["other/repo"]);
   await pair("agentbox", 1, [REPOSITORY]);
   for (const id of ["a", "b"]) queue(id);
@@ -68,7 +68,7 @@ test("a held item's reason names each runner and placement's rejection", async (
 
 test("every in-scope runner refusing the repository leaves the item queued", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   await pair("goldbox", 6, ["other/repo"]);
   queue("a");
 
@@ -80,7 +80,7 @@ test("every in-scope runner refusing the repository leaves the item queued", asy
 
 test("a runner refusing every item is reported once per runner and journaled every 10 minutes", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   const goldbox = await pair("goldbox", 6, ["other/repo"]);
   await pair("agentbox", 2, [REPOSITORY]);
   for (const id of ["a", "b", "c"]) queue(id);
@@ -114,7 +114,7 @@ test("a runner refusing every item is reported once per runner and journaled eve
 
 test("a runner that accepts some of the items is not reported", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   const agentbox = await pair("agentbox", 2, [REPOSITORY]);
   queue("a");
 
@@ -141,7 +141,7 @@ function parkedRun(db: Database, id: string, runnerIds: string[], online: string
 
 test("a parked item is placed on a runner as soon as it reports the repository allowed", async () => {
   const db = tempDb();
-  const { pair, queue } = workspaceWithRunners(db);
+  const { pair, queue } = await workspaceWithRunners(db);
   const goldbox = await pair("goldbox", 6, ["other/repo"]);
   const agentbox = await pair("agentbox", 1, [REPOSITORY]);
   const occupant = insertRun(db, { itemId: (queue("busy"), "busy"), now: NOW, status: "active" });
@@ -204,7 +204,7 @@ test("a parked item is placed on a runner as soon as it reports the repository a
 
 test("a raised capacity and a resumed runner wake parked items; an unchanged report does not", async () => {
   const db = tempDb();
-  const { pair, queue, workspace, userId } = workspaceWithRunners(db);
+  const { pair, queue, workspace, userId } = await workspaceWithRunners(db);
   const agentbox = await pair("agentbox", 1, [REPOSITORY]);
   queue("parked");
   const { jobId } = parkedRun(db, "parked", [agentbox], [agentbox]);
@@ -231,7 +231,7 @@ test("a raised capacity and a resumed runner wake parked items; an unchanged rep
 
 test("an admission reserves only its chosen runner and placement honors that choice", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   await pair("owner", 1, null);
   const other = await pair("shared", 6, [REPOSITORY]);
   db.run("UPDATE runner_agent_policy SET virtual_finish=100 WHERE runner_id<>?", [other]);
@@ -257,9 +257,10 @@ test("an admission reserves only its chosen runner and placement honors that cho
   ).not.toBeNull();
   expect(await pass()).toEqual(["a-flexible", "b-exclusive"]);
   expect(await pass()).toEqual([]);
-  expect(schedulerRunnerSlots(db, NOW).find((row) => row.itemId === "a-flexible")?.runnerId).toBe(
-    other,
-  );
+  expect(
+    (await schedulerRunnerSlots(sqliteDb(db), NOW)).find((row) => row.itemId === "a-flexible")
+      ?.runnerId,
+  ).toBe(other);
   const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => NOW });
   const offered = await placement.candidates({
     itemId: "a-flexible",
@@ -272,7 +273,7 @@ test("an admission reserves only its chosen runner and placement honors that cho
 
 test("an admin repository policy refusal is not a host-config warning", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   const id = await pair("admin-limited", 2, [REPOSITORY]);
   db.run("UPDATE runner_repositories SET admin_repositories='[]' WHERE runner_id=?", [id]);
   queue("a");
@@ -288,7 +289,7 @@ test("an admin repository policy refusal is not a host-config warning", async ()
 
 test("a reconnect with unchanged reports wakes parked work once, without waking on every heartbeat", async () => {
   const db = tempDb();
-  const { pair, queue } = workspaceWithRunners(db);
+  const { pair, queue } = await workspaceWithRunners(db);
   const id = await pair("reconnecting", 2, [REPOSITORY]);
   queue("parked");
   const { jobId } = parkedRun(db, "parked", [id], [id]);
@@ -313,7 +314,7 @@ test("a reconnect with unchanged reports wakes parked work once, without waking 
 
 test("offline runners never give admission an unlimited slot budget", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   const id = await pair("offline-box", 6, [REPOSITORY]);
   db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [NOW - 60_000, id]);
   queue("a");
@@ -323,7 +324,7 @@ test("offline runners never give admission an unlimited slot budget", async () =
 
 test("a successful background sign-in check wakes parked work", async () => {
   const db = tempDb();
-  const { pair, queue } = workspaceWithRunners(db);
+  const { pair, queue } = await workspaceWithRunners(db);
   const id = await pair("agentbox", 1, [REPOSITORY]);
   db.run("UPDATE runner_agent_policy SET ready=0,auth_expired=1 WHERE runner_id=?", [id]);
   queue("parked");
@@ -363,7 +364,7 @@ test("a successful background sign-in check wakes parked work", async () => {
 
 test("admission includes teardown occupancy that placement still considers full", async () => {
   const db = tempDb();
-  const { pair, queue, pass, workspace } = workspaceWithRunners(db);
+  const { pair, queue, pass, workspace } = await workspaceWithRunners(db);
   const id = await pair("agentbox", 1, [REPOSITORY]);
   queue("old");
   const run = insertRun(db, { itemId: "old", now: NOW, status: "ended" });
@@ -382,7 +383,7 @@ test("admission includes teardown occupancy that placement still considers full"
 
 test("an enabled but unavailable placement scope stays queued while disabled checks allow legacy dispatch", async () => {
   const db = tempDb();
-  const { pair, queue } = workspaceWithRunners(db);
+  const { pair, queue } = await workspaceWithRunners(db);
   await pair("agentbox", 1, [REPOSITORY]);
   queue("unknown");
   const options = { now: NOW, admission: workspaceAdmission(db) };
@@ -394,13 +395,13 @@ test("an enabled but unavailable placement scope stays queued while disabled che
 
 test("two flexible slow starts reserve different runner slots", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   await pair("one", 1, [REPOSITORY]);
   await pair("two", 1, [REPOSITORY]);
   queue("a");
   queue("b");
   expect(await pass()).toEqual(["a", "b"]);
-  const slots = schedulerRunnerSlots(db, NOW);
+  const slots = await schedulerRunnerSlots(sqliteDb(db), NOW);
   expect(new Set(slots.map((row) => row.runnerId)).size).toBe(2);
   expect(await pass()).toEqual([]);
   const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => NOW });
@@ -420,13 +421,13 @@ test("two flexible slow starts reserve different runner slots", async () => {
 for (const failure of ["offline", "repository", "excluded"] as const)
   test(`an unusable admission choice permits failover: ${failure}`, async () => {
     const db = tempDb();
-    const { pair, queue, pass } = workspaceWithRunners(db);
+    const { pair, queue, pass } = await workspaceWithRunners(db);
     const first = await pair("first", 1, [REPOSITORY]);
     const second = await pair("second", 1, [REPOSITORY]);
     db.run("UPDATE runner_agent_policy SET virtual_finish=100 WHERE runner_id=?", [second]);
     queue("item");
     expect(await pass()).toEqual(["item"]);
-    expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(first);
+    expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(first);
     if (failure === "offline") db.run("UPDATE runner SET status='paused' WHERE id=?", [first]);
     if (failure === "repository")
       await recordRunnerRepositories(sqliteDb(db), first, ["other/repo"], NOW);
@@ -440,23 +441,23 @@ for (const failure of ["offline", "repository", "excluded"] as const)
       },
     );
     expect(offered.map((r) => r.id)).toEqual([second]);
-    expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(second);
+    expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(second);
   });
 
 test("admission preserves placement quota ranking over free slot count", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   const normal = await pair("normal", 1, [REPOSITORY]);
   const extra = await pair("extra", 6, [REPOSITORY]);
   db.run("UPDATE runner_agent_policy SET quota_state='spent_extra' WHERE runner_id=?", [extra]);
   queue("item");
   expect(await pass()).toEqual(["item"]);
-  expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(normal);
+  expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(normal);
 });
 
 test("a queued resume keeps its online pin and reservation past historical ended work", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   const pinned = await pair("pinned", 1, [REPOSITORY]);
   await pair("other", 6, [REPOSITORY]);
   queue("resume");
@@ -469,9 +470,9 @@ test("a queued resume keeps its online pin and reservation past historical ended
   // An ended implementation run has no live occupancy, but the next turn retains its pin.
   db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
   expect(await pass()).toEqual(["resume"]);
-  expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(pinned);
+  expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(pinned);
   applyWorkItemEvent(db, "resume", "dispatched");
-  expect(schedulerRunnerSlots(db, NOW)[0]!.runnerId).toBe(pinned);
+  expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(pinned);
   const offered = await createRunnerPlacement({ store: sqliteDb(db), now: () => NOW }).candidates({
     itemId: "resume",
     role: "implementer",
@@ -484,7 +485,7 @@ test("a queued resume keeps its online pin and reservation past historical ended
 
 test("unavailable session authority holds only its item and does not abort unrelated admission", async () => {
   const db = tempDb();
-  const { pair, queue, pass } = workspaceWithRunners(db);
+  const { pair, queue, pass } = await workspaceWithRunners(db);
   await pair("agentbox", 2, [REPOSITORY]);
   queue("a-stopped");
   queue("b-ready");
@@ -500,7 +501,7 @@ test("unavailable session authority holds only its item and does not abort unrel
 
 test("a queued restart reuses its active run's held slot without admitting unrelated work", async () => {
   const db = tempDb();
-  const { pair, queue, pass, workspace } = workspaceWithRunners(db);
+  const { pair, queue, pass, workspace } = await workspaceWithRunners(db);
   const pinned = await pair("pinned", 1, [REPOSITORY]);
   queue("a-unrelated");
   queue("b-resume");
@@ -512,9 +513,10 @@ test("a queued restart reuses its active run's held slot without admitting unrel
   );
   expect(await pass()).toEqual(["b-resume"]);
   expect(getWorkItem(db, "a-unrelated")?.state).toBe("queued");
-  expect(schedulerRunnerSlots(db, NOW).find((row) => row.itemId === "b-resume")?.runnerId).toBe(
-    pinned,
-  );
+  expect(
+    (await schedulerRunnerSlots(sqliteDb(db), NOW)).find((row) => row.itemId === "b-resume")
+      ?.runnerId,
+  ).toBe(pinned);
   const offered = await createRunnerPlacement({ store: sqliteDb(db), now: () => NOW }).candidates({
     itemId: "b-resume",
     role: "implementer",
@@ -527,14 +529,14 @@ test("a queued restart reuses its active run's held slot without admitting unrel
 
 test("sign-in host warnings persist while queued work is held for runner setup", async () => {
   const db = tempDb();
-  const { pair, queue, pass, userId } = workspaceWithRunners(db);
+  const { pair, queue, pass, userId } = await workspaceWithRunners(db);
   const runnerId = await pair("unsigned", 1, [REPOSITORY]);
   db.run("UPDATE runner_agent_policy SET ready=0 WHERE runner_id=?", [runnerId]);
   queue("held");
   const reports: RunnerHostRefusal[][] = [];
   await pass(reports);
   expect(reports.at(-1)).toHaveLength(1);
-  holdForRunnerSetup(db, {
+  await holdForRunnerSetup(sqliteDb(db), {
     itemId: "held",
     ownerUserId: userId,
     reason: "agent-not-signed-in",
@@ -552,7 +554,7 @@ test("sign-in host warnings persist while queued work is held for runner setup",
 
 test("admission fails over from a busy session runner once session grace ends", async () => {
   const db = tempDb();
-  const { pair, queue, workspace } = workspaceWithRunners(db);
+  const { pair, queue, workspace } = await workspaceWithRunners(db);
   const holder = await pair("holder", 1, [REPOSITORY]);
   const other = await pair("other", 1, [REPOSITORY]);
   queue("busy");
@@ -594,7 +596,7 @@ test("admission fails over from a busy session runner once session grace ends", 
     expect(await pass(NOW + waited)).toEqual([]);
 
   expect(await pass(NOW + SESSION_GRACE_MS)).toEqual(["resumes"]);
-  expect(schedulerRunnerSlots(db, NOW + SESSION_GRACE_MS)).toContainEqual(
+  expect(await schedulerRunnerSlots(sqliteDb(db), NOW + SESSION_GRACE_MS)).toContainEqual(
     expect.objectContaining({ itemId: "resumes", runnerId: other }),
   );
 });

@@ -57,10 +57,10 @@ export async function probeWorkspaceAuthorization(
     email: "administrator@example.invalid",
   });
   const workspace = { id: workspaceId(), organizationId: "org", name: "Workspace" };
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     ...workspace,
     userId: ownerId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   syncWorkspaceMember(db, {
@@ -119,7 +119,7 @@ export async function probeWorkspaceAuthorization(
       repo: repo!,
       remoteUrl: `https://example.invalid/fixture/${repo}`,
     });
-  replaceWorkspaceRepositories(db, {
+  await replaceWorkspaceRepositories(sqliteDb(db), {
     workspaceId: workspace.id,
     actorId: ownerId,
     repositories: [{ repository: "fixture/allowed", teamId: "team-a" }],
@@ -127,8 +127,8 @@ export async function probeWorkspaceAuthorization(
   });
   const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
   for (const [index, itemId] of ["own", "foreign"].entries())
-    saveArtifact(
-      db,
+    await saveArtifact(
+      sqliteDb(db),
       {
         id: ids[index]!,
         itemId,

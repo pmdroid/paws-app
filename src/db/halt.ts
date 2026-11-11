@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { cancelOpenJobsSteps } from "./jobs";
 import { getWorkItemSteps, type WorkItemRecord } from "./items";
 import { releaseMergeQueuePlaceSteps } from "./merge-queue";
@@ -29,6 +28,10 @@ export function* haltSteps(q: Q, item: WorkItemRecord, now: number) {
 }
 
 /** Fence old work and release all execution capacity. The caller applies its edge in this transaction. */
-export function halt(db: Database, item: WorkItemRecord, now: number): WorkItemRecord | null {
-  return settled(sqliteDb(db).transaction((q) => haltSteps(q, item, now)));
+export async function halt(
+  store: Db,
+  item: WorkItemRecord,
+  now: number,
+): Promise<WorkItemRecord | null> {
+  return store.transaction((q) => haltSteps(q, item, now));
 }

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { enqueueJob, enqueueOutbox, getJob, getOutbox } from "../src/db";
+import { enqueueJob, enqueueOutbox, getJob, getOutboxSteps, sqliteDb } from "../src/db";
 import { migration } from "../src/db/migrations/20261027T2209_dead_code_cleanup";
 import { tempDb } from "./helpers";
 
@@ -22,7 +22,7 @@ test("migrating drops the tables no code reads or writes", () => {
   }
 });
 
-test("the cleanup renames linear.activity rows and cancels linear.epic.reconcile jobs", () => {
+test("the cleanup renames linear.activity rows and cancels linear.epic.reconcile jobs", async () => {
   const db = tempDb();
   try {
     const legacy = enqueueOutbox(db, {
@@ -40,8 +40,8 @@ test("the cleanup renames linear.activity rows and cancels linear.epic.reconcile
     const epic = enqueueJob(db, { queue: "linear.epic.reconcile", payload: {}, now: 1 });
     const sweep = enqueueJob(db, { queue: "linear.epics.reconcile", payload: {}, now: 1 });
     db.run(migration.sql);
-    expect(getOutbox(db, legacy)?.op).toBe("activity");
-    expect(getOutbox(db, elicitation)?.op).toBe("elicitation");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, legacy)))?.op).toBe("activity");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, elicitation)))?.op).toBe("elicitation");
     expect(getJob(db, epic)?.status).toBe("cancelled");
     expect(getJob(db, sweep)?.status).toBe("pending");
   } finally {

@@ -97,7 +97,10 @@ test("the limit comes from the exhausted review check", () => {
 test("one elicitation without options names the recurring bug class and links to the item", async () => {
   const { db, itemId, question } = await asked();
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-  expect(getLinkAsk(db, question.id)).toMatchObject({ kind: "rounds", rounds: ROUNDS });
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+    kind: "rounds",
+    rounds: ROUNDS,
+  });
   const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(1);
   const payload = elicitations[0]!.payload as { body: string; options: unknown[] };
@@ -133,7 +136,7 @@ test("the question lists the open findings' text without changing the dashboard 
     .body;
   expect(body).toContain(findings);
   expect(body.indexOf(findings)).toBeLessThan(body.indexOf("Decide in Paws:"));
-  expect(getLinkAsk(db, question.id)?.detail).not.toContain(findings);
+  expect((await getLinkAsk(sqliteDb(db), question.id))?.detail).not.toContain(findings);
 });
 
 test("Rethink the approach restarts the item with the findings, the note and a new round budget", async () => {
@@ -148,7 +151,7 @@ test("Rethink the approach restarts the item with the findings, the note and a n
       now: NOW + 100,
     }),
   ).toBe("answered");
-  expect(getLinkAsk(db, question.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     decision: "rethink",
     decidedBy: "lead",
     closedReason: "decided",
@@ -269,13 +272,13 @@ test("a reply in Linear is Rethink the approach with the reply as the note", asy
       now: NOW + 100,
     }),
   ).toBe(true);
-  expect(getLinkAsk(db, question.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     decision: "rethink",
     note: "Stop patching; move the check into the middleware.",
     decidedBy: "delegator",
     closedReason: "decided",
   });
-  expect(getQuestion(db, question.id)?.answer).toBe(
+  expect((await getQuestion(sqliteDb(db), question.id))?.answer).toBe(
     "rethink: Stop patching; move the check into the middleware.",
   );
   expect(getWorkItem(db, itemId)?.state).toBe("queued");

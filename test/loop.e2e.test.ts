@@ -247,7 +247,8 @@ test.each([false, true, "cap"] as const)(
         status: "inProgress",
       });
       for (const heartbeat of heartbeats) heartbeat();
-      await outbox.idle();
+      await orchestrator.flushPosts();
+      while ((await outbox.tick()).length > 0) await outbox.idle();
       // The keepalive names the agent's current step ahead of the fix-round line.
       expect(tracker.progress.at(-1)?.body).toBe("Step 1 of 1: Repair missing output.");
       const response = await handleStatusRequest(
@@ -842,8 +843,8 @@ test("a bound two-item delegation asks, verifies and merges in its repository af
     const artifactItem = db
       .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_issue_id = ?")
       .get("iss-2")!;
-    expect(listArtifacts(db, artifactItem.id)).toHaveLength(1);
-    expect(listArtifacts(db, artifactItem.id)[0]?.state).toBe("uploaded");
+    expect(await listArtifacts(sqliteDb(db), artifactItem.id)).toHaveLength(1);
+    expect((await listArtifacts(sqliteDb(db), artifactItem.id))[0]?.state).toBe("uploaded");
     const artifactIndex = tracker.progress.findIndex((update) =>
       update.body.includes("https://uploads.linear.app/workspace/result"),
     );
@@ -1516,7 +1517,7 @@ for (const recovery of [
       expect(launches).toEqual(["implement", "fix"]);
       expect(github.merged).toHaveLength(0);
       const question = findOpenQuestion(db, "ses_1")!;
-      const context = listCloseoutRecoveries(db, question.itemId)[0]!;
+      const context = (await listCloseoutRecoveries(sqliteDb(db), question.itemId))[0]!;
       expect(context.failedChecks).toEqual(["test"]);
       expect(context.retryBaseline).toHaveLength(2);
       expect(question.body).toContain(
@@ -1555,7 +1556,7 @@ for (const recovery of [
         };
         await runtime.orchestrator.onLinearEvent(event);
         await runtime.orchestrator.onLinearEvent(event);
-        expect(getQuestion(db, question.id)?.answeredBy).toBe("pascal");
+        expect((await getQuestion(sqliteDb(db), question.id))?.answeredBy).toBe("pascal");
       } else if (recovery === "refused bypass") {
         expect(await decide("someone-else", [{ checkId: "test", reason }])).toBe("forbidden");
       } else if (recovery === "missing bypass reason") {
@@ -1589,7 +1590,7 @@ for (const recovery of [
         recovery === "unfailed bypass check"
       ) {
         expect(stateOf(db, "ENG-8"), debug(layout, db)).toBe("awaiting_input");
-        expect(getQuestion(db, question.id)?.status).toBe("open");
+        expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
         expect(
           listJobs(db).filter(
             (job) =>
@@ -1622,9 +1623,9 @@ for (const recovery of [
         expect(launches).toEqual(
           recovery === "guidance" ? ["implement", "fix", "implement"] : ["implement", "fix"],
         );
-        expect(listCloseoutRecoveries(db, question.itemId)[0]?.retryBaseline).toEqual(
-          context.retryBaseline,
-        );
+        expect(
+          (await listCloseoutRecoveries(sqliteDb(db), question.itemId))[0]?.retryBaseline,
+        ).toEqual(context.retryBaseline);
         if (recovery === "guidance") expect(prompts.at(-1)).toContain(answer);
         if (recovery === "bypass") {
           expect(github.opened[0]?.body).toContain("Bypassed checks:");
@@ -3248,7 +3249,7 @@ test("a repository without a Closeout policy merges without Closeout checks or a
     expect(github.merged).toHaveLength(1);
     while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(tracker.questions).toHaveLength(0);
-    expect(listCloseoutRecoveries(db, listWorkItems(db)[0]!.id)).toHaveLength(0);
+    expect(await listCloseoutRecoveries(sqliteDb(db), listWorkItems(db)[0]!.id)).toHaveLength(0);
   } finally {
     await orchestrator.shutdown();
     db.close();
@@ -4280,7 +4281,7 @@ async function runRebaseConflict(
       prompts,
       requeuedBases,
       merged: github.merged.length,
-      rounds: listCloseoutRounds(db).map((round) => round.head),
+      rounds: (await listCloseoutRounds(sqliteDb(db))).map((round) => round.head),
       ...(linearRequest ? { linearRequest } : {}),
       detail: debug(layout, db),
     };
@@ -4984,11 +4985,11 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       earlyAnswer = sendEvent("color-answer", "blue");
       for (
         let attempt = 0;
-        attempt < 100 && getQuestion(db, earlyQuestionId)?.status !== "answered";
+        attempt < 100 && (await getQuestion(sqliteDb(db), earlyQuestionId))?.status !== "answered";
         attempt++
       )
         await Bun.sleep(1);
-      earlyAnswerState = getQuestion(db, earlyQuestionId)?.status;
+      earlyAnswerState = (await getQuestion(sqliteDb(db), earlyQuestionId))?.status;
     }
   };
   const waitFor = async (condition: () => boolean) => {
@@ -5014,7 +5015,7 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     await waitFor(() => tracker.questions.length === 2);
     await earlyAnswer;
     expect(earlyAnswerState).toBe("answered");
-    expect(getQuestion(db, earlyQuestionId!)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), earlyQuestionId!)).toMatchObject({
       answer: "blue",
       answeredBy: "pascal",
     });
@@ -5037,14 +5038,14 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       { label: "Compact labels", value: "compact" },
     ]);
     const recoveredQuestionId = findOpenQuestion(db, "ses_1")!.id;
-    expect(getQuestion(db, earlyQuestionId!)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), earlyQuestionId!)).toMatchObject({
       answer: "blue",
       answeredBy: "pascal",
     });
     await sendEvent("color-answer", "blue");
     expect(findOpenQuestion(db, "ses_1")?.id).toBe(recoveredQuestionId);
     await sendEvent("label-answer", "Use larger labels and keep the blue color.");
-    expect(getQuestion(db, recoveredQuestionId)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), recoveredQuestionId)).toMatchObject({
       answer: "Use larger labels and keep the blue color.",
       answeredBy: "pascal",
       status: "answered",
@@ -5092,15 +5093,15 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
     );
     expect(artifactIndex).toBeGreaterThanOrEqual(0);
     expect(tracker.progress[artifactIndex]?.kind).toBe("thought");
-    expect(listArtifacts(db, task.id)).toHaveLength(1);
-    expect(listArtifacts(db, task.id)[0]).toMatchObject({
+    expect(await listArtifacts(sqliteDb(db), task.id)).toHaveLength(1);
+    expect((await listArtifacts(sqliteDb(db), task.id))[0]).toMatchObject({
       state: "uploaded",
       mimeType: "image/png",
       displayName: "chart.png",
       sizeBytes: Buffer.from(png, "base64").byteLength,
       assetUrl: "https://uploads.linear.app/chart.png",
     });
-    expect(getQuestion(db, earlyQuestionId!)).toMatchObject({
+    expect(await getQuestion(sqliteDb(db), earlyQuestionId!)).toMatchObject({
       status: "answered",
       answer: "blue",
     });

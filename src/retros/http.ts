@@ -72,7 +72,10 @@ export function createRetroSettingsHttp(options: {
     if (new URL(request.url).pathname !== RETRO_SETTINGS_PATH) return null;
     if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
       return json({ error: "Workspace access is unavailable." }, 403);
-    const accessibleRepositories = listWorkspaceRepositoryNames(db, principal.workspaceId);
+    const accessibleRepositories = await listWorkspaceRepositoryNames(
+      sqliteDb(db),
+      principal.workspaceId,
+    );
     const view = () =>
       readRetroSettings(db, { workspaceId: principal.workspaceId, accessibleRepositories });
     if (request.method === "GET")
@@ -513,14 +516,16 @@ export function createRetroReviewHttp(options: {
       );
     }
     if (itemId !== undefined) {
-      const item = listRetroItems(db, retroId!).find((entry) => entry.itemId === itemId);
+      const item = (await listRetroItems(sqliteDb(db), retroId!)).find(
+        (entry) => entry.itemId === itemId,
+      );
       if (!item || (!access.full && !visibleItem(access, item.evidenceIds)))
         return json(
           { error: "This retro item is not available to you.", reason: "not_found" },
           404,
         );
       const saved = new Map(
-        listRetroEvidence(db, retroId!).map((entry) => [entry.evidenceId, entry]),
+        (await listRetroEvidence(sqliteDb(db), retroId!)).map((entry) => [entry.evidenceId, entry]),
       );
       return json({
         retroId,

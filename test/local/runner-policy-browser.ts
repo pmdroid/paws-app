@@ -7,6 +7,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import { createRunnerPlacementBrowser } from "../../src/runner-placement";
 import {
@@ -30,8 +31,8 @@ export async function probeRunnerPolicyBrowser(
     name: "Admin",
     email: "admin@example.invalid",
   });
-  const token = issueWorkspaceBootstrap(db, "org", now);
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const token = await issueWorkspaceBootstrap(db, "org", now);
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Test",

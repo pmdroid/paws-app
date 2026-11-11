@@ -21,6 +21,7 @@ import {
   type RestartHandoff,
   type Steps,
   type WorkItemRecord,
+  sqliteDb,
 } from "../db";
 import type { askSteps } from "../questions";
 import { rebaseBudget, type RebaseBudget, type RebaseConflict } from "./budget";
@@ -38,8 +39,8 @@ export function latestUserTurn(db: Database, itemId: string): number {
   return latestHumanTurn(db, itemId);
 }
 
-export function rebaseReturns(db: Database, itemId: string): number {
-  return countRebaseReturns(db, itemId, latestUserTurn(db, itemId));
+export async function rebaseReturns(db: Database, itemId: string): Promise<number> {
+  return await countRebaseReturns(sqliteDb(db), itemId, latestUserTurn(db, itemId));
 }
 
 /** Whether a conflict on this main may go back to the agent; see {@link rebaseBudget}. */

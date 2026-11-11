@@ -71,7 +71,7 @@ test("startCloseoutRound journals a failed retry baseline and preserves the fall
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, "evidence"), "not a directory");
     await f.operations.startCloseoutRound(f.item, "new-head");
-    expect(listCloseoutRounds(f.db, f.item.id)).toEqual([]);
+    expect(await listCloseoutRounds(sqliteDb(f.db), f.item.id)).toEqual([]);
     expect(f.lines).toHaveLength(1);
     expect(f.lines[0]).toContain("item=item-715");
     expect(f.lines[0]).toContain("operation=orchestrator.startCloseoutRound");

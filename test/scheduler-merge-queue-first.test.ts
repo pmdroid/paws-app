@@ -72,7 +72,7 @@ async function fixture() {
     work(runId, "A", NOW - 1);
     applyWorkItemEvent(db, id, "turn_ended");
     applyWorkItemEvent(db, id, "closeout_accepted");
-    joinMergeQueue(db, { itemId: id, repository: "acme/app", now: readyAt });
+    await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "acme/app", now: readyAt });
     return runId;
   };
   /** The item re-verifies; its job waits for a slot on `runnerIds`, all busy. */
@@ -113,8 +113,8 @@ test("a freed slot goes to the merge-queue re-verify, not to a queued item with 
     free("B", NOW + 1);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual([]);
     expect(runAt(job)).toBe(NOW + 2);
-    expect(pinnedSlotsReserved(db, "B", "N", NOW + 2)).toBe(1);
-    expect(pinnedSlotsReserved(db, "A", "N", NOW + 2)).toBe(0);
+    expect(await pinnedSlotsReserved(sqliteDb(db), "B", "N", NOW + 2)).toBe(1);
+    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "N", NOW + 2)).toBe(0);
     expect(await workspaceDispatch(db, { now: NOW + 3 })).toEqual([]);
   } finally {
     db.close();
@@ -149,7 +149,7 @@ test("a pinned merge-queue wait keeps to its runner, ahead of a queued item with
     free("B", NOW + 1);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["N"]);
     expect(runAt(job)).toBe(BACKOFF);
-    expect(pinnedSlotsReserved(db, "A", "N", NOW + 2)).toBe(1);
+    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "N", NOW + 2)).toBe(1);
   } finally {
     db.close();
   }

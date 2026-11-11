@@ -87,7 +87,7 @@ describe("hook settings", () => {
       ),
     );
     expect(added.status).toBe(200);
-    const [hook] = listHooks(db);
+    const [hook] = await listHooks(sqliteDb(db));
     expect(hook).toMatchObject({
       event: "after_edit",
       matcher: null,
@@ -103,7 +103,7 @@ describe("hook settings", () => {
       await handleHookSettingsRequest(post({ action: "remove", id: hook!.id }), options("admin")),
     );
     expect(removed.status).toBe(200);
-    expect(listHooks(db)).toEqual([]);
+    expect(await listHooks(sqliteDb(db))).toEqual([]);
     expect(audits[1]?.[0]).toBe("settings.hook.remove");
   });
 
@@ -119,7 +119,10 @@ describe("hook settings", () => {
       id: "session_start",
       label: "When a session starts",
     });
-    expect(listHooks(db)[0]).toMatchObject({ event: "session_start", matcher: null });
+    expect((await listHooks(sqliteDb(db)))[0]).toMatchObject({
+      event: "session_start",
+      matcher: null,
+    });
     expect(audits[0]?.[1]).toBe("Added hook when a session starts: setup-tools for Claude, Codex");
   });
 
@@ -134,7 +137,7 @@ describe("hook settings", () => {
       options("member"),
     );
     expect(added!.status).toBe(403);
-    expect(listHooks(db)).toEqual([]);
+    expect(await listHooks(sqliteDb(db))).toEqual([]);
   });
 
   test("a change needs the CSRF token", async () => {
@@ -167,11 +170,11 @@ describe("hook settings", () => {
       expect(response.status).toBe(400);
       expect(String(response.body.error)).toContain(error);
     }
-    expect(listHooks(db)).toEqual([]);
+    expect(await listHooks(sqliteDb(db))).toEqual([]);
   });
 
   test("a hook can run a script from a registered skill installed for its agents", async () => {
-    saveSkill(db, {
+    await saveSkill(sqliteDb(db), {
       name: "guard",
       source: { kind: "npm", package: "guard" },
       version: "1.0.0",
@@ -207,7 +210,7 @@ describe("hook settings", () => {
     );
     expect(claude.status).toBe(200);
     expect(claude.body.skills).toEqual([{ name: "guard", agents: ["claude"] }]);
-    expect(listHooks(db)[0]?.skill).toBe("guard");
+    expect((await listHooks(sqliteDb(db)))[0]?.skill).toBe("guard");
   });
 
   test("an uploaded script is executable and prefills its skill, path and command", async () => {
@@ -228,7 +231,7 @@ describe("hook settings", () => {
     });
     expect(uploaded.body.uploaded).toEqual({ skill: skill.name, path, command });
     expect(uploaded.body.skills).toContainEqual({ name: skill.name, agents: ["claude"] });
-    expect(listHooks(db)).toEqual([]);
+    expect(await listHooks(sqliteDb(db))).toEqual([]);
     const bundle = join(root, "skills", skill.name, skill.version, SKILL_BUNDLE_FILE);
     expect(tarModes(readFileSync(bundle))).toEqual(
       new Map([
@@ -253,7 +256,11 @@ describe("hook settings", () => {
       ),
     );
     expect(added.status).toBe(200);
-    expect(listHooks(db)[0]).toMatchObject({ command, skill: skill.name, agents: ["claude"] });
+    expect((await listHooks(sqliteDb(db)))[0]).toMatchObject({
+      command,
+      skill: skill.name,
+      agents: ["claude"],
+    });
   });
 
   test("a hook upload takes one script and only hook agents", async () => {
@@ -275,7 +282,7 @@ describe("hook settings", () => {
     expect((await read(unsupported)).body.error).toBe(
       "Hook scripts run only for Claude and Codex.",
     );
-    expect(listHooks(db)).toEqual([]);
+    expect(await listHooks(sqliteDb(db))).toEqual([]);
     expect(audits).toEqual([]);
   });
 });

@@ -13,6 +13,7 @@ import {
   recordPushOutage,
   savePolicyRunnerWarning,
   upsertCloseoutStep,
+  sqliteDb,
 } from "../../../db";
 import { parseMergeQueueResponse } from "../contract";
 import { createLiveStatusProvider } from "./provider";
@@ -47,7 +48,7 @@ function recordQueries(db: Database): string[] {
   return seen;
 }
 
-function queued(db: Database, id: string, session: string, at: number) {
+async function queued(db: Database, id: string, session: string, at: number) {
   const head = "c".repeat(40);
   const item = insertQueuedItem(db, { id, title: `Title ${id}`, sessionKey: session, now: at });
   beginImplementRun(db, item.id, at);
@@ -64,7 +65,11 @@ function queued(db: Database, id: string, session: string, at: number) {
     },
     now: at,
   });
-  joinMergeQueue(db, { itemId: item.id, repository: "acme/platform", now: at * 10 });
+  await joinMergeQueue(sqliteDb(db), {
+    itemId: item.id,
+    repository: "acme/platform",
+    now: at * 10,
+  });
   const identity = {
     taskId: item.id,
     base: head,
@@ -106,11 +111,11 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
   open.push(db);
   migrate(db);
   const now = Date.now();
-  queued(db, "ENG-1", "ses_mine", 1);
-  queued(db, "ENG-2", "ses_mine", 2);
-  queued(db, "ENG-3", "ses_other", 3);
+  await queued(db, "ENG-1", "ses_mine", 1);
+  await queued(db, "ENG-2", "ses_mine", 2);
+  await queued(db, "ENG-3", "ses_other", 3);
   insertQueuedItem(db, { id: "ENG-4", title: "Not merging", sessionKey: "ses_mine", now: 4 });
-  recordPushOutage(db, {
+  await recordPushOutage(sqliteDb(db), {
     repository: "acme/platform",
     error: "denied",
     jobId: null,
@@ -118,7 +123,7 @@ test("the merge queue reads queue facts, issue summaries and banners for the rea
     now,
     delayMs: () => 60_000,
   });
-  savePolicyRunnerWarning(db, {
+  await savePolicyRunnerWarning(sqliteDb(db), {
     repository: "acme/platform",
     policyDigest: `sha256:${"a".repeat(64)}`,
     runnerVersion: "0.1.48",

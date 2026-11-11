@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import type { TaskMode } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 
 export type StoredTaskClassification =
   | {
@@ -52,12 +52,12 @@ export function* saveTaskClassificationSteps(
   );
 }
 
-export function saveTaskClassification(
-  db: Database,
+export async function saveTaskClassification(
+  store: Db,
   taskKey: string,
   classification: StoredTaskClassification,
-): void {
-  settled(sqliteDb(db).run((q) => saveTaskClassificationSteps(q, taskKey, classification)));
+): Promise<void> {
+  await store.run((q) => saveTaskClassificationSteps(q, taskKey, classification));
 }
 
 export function* resolveTaskClassificationSteps(
@@ -81,9 +81,9 @@ export function* resolveTaskClassificationSteps(
   );
 }
 
-export function resolveTaskClassification(
-  db: Database,
+export async function resolveTaskClassification(
+  store: Db,
   input: { taskKey: string; itemId: string; context: string },
-): void {
-  settled(sqliteDb(db).transaction((q) => resolveTaskClassificationSteps(q, input)));
+): Promise<void> {
+  await store.transaction((q) => resolveTaskClassificationSteps(q, input));
 }

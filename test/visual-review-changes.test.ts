@@ -258,7 +258,7 @@ test("a stored mark is served like evidence to members who can see the task", as
   const h = await harness();
   await h.send(h.form({ questionId: h.questionId, [`mark:${h.first.id}`]: MARKED }));
   const [mark] = h.calls[0]!.marks;
-  saveVisualReviewMarks(h.db, [mark!]);
+  await saveVisualReviewMarks(sqliteDb(h.db), [mark!]);
   const get = (sessionIds: string[]) =>
     handleEvidenceRequest(new Request(`https://paws.example/api/evidence/${mark!.id}`), {
       db: h.db,

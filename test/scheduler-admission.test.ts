@@ -222,19 +222,19 @@ test("task_block depth stays on the active item when a merged row shares its iss
   }
 });
 
-function runnerWithSlots(db: ReturnType<typeof tempDb>, capacity: number): void {
+async function runnerWithSlots(db: ReturnType<typeof tempDb>, capacity: number): Promise<void> {
   const userId = putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", 0)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", 0)),
     now: 0,
   });
   db.run(
@@ -264,7 +264,7 @@ function leaveRunner(db: ReturnType<typeof tempDb>, itemId: string): void {
 test("a waiting item's place in line moves up as items ahead start or leave", async () => {
   const db = tempDb();
   try {
-    runnerWithSlots(db, 2);
+    await runnerWithSlots(db, 2);
     for (const id of ["busy-1", "busy-2"]) {
       insertQueuedItem(db, { id, now: 0 });
       applyWorkItemEvent(db, id, "dispatched");
@@ -327,7 +327,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
 test("queued items wait for a free runner slot, and work in flight keeps its slot", async () => {
   const db = tempDb();
   try {
-    runnerWithSlots(db, 2);
+    await runnerWithSlots(db, 2);
     insertQueuedItem(db, { id: "busy", now: 0 });
     applyWorkItemEvent(db, "busy", "dispatched");
     placeOnRunner(db, "busy");

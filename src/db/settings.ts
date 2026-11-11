@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { isLegacyDatabase } from "./migrate";
 
 export const CONFIG_SETTINGS_KEY = "config.toml";
@@ -34,13 +34,13 @@ export function* updateSettingSteps(
   );
 }
 
-export function updateSetting(
-  db: Database,
+export async function updateSetting(
+  store: Db,
   key: string,
   change: (stored: string | null) => string,
   now = Date.now(),
-): void {
-  settled(sqliteDb(db).transaction((q) => updateSettingSteps(q, key, change, now)));
+): Promise<void> {
+  await store.transaction((q) => updateSettingSteps(q, key, change, now));
 }
 
 export function readSavedSettings(path: string): string | null {

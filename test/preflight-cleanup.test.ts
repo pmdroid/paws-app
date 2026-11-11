@@ -16,6 +16,7 @@ import {
   migrate,
   openDatabase,
   type WorkItemRecord,
+  sqliteDb,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { attachOrchestrator, type Orchestrator } from "../src/loop";
@@ -110,11 +111,11 @@ for await (const line of createInterface({ input: process.stdin })) {
         await Bun.sleep(5);
       }
       expect(readFileSync(writes, "utf8").length).toBeGreaterThan(before);
-      expect(getConversation(db, item.id).blocked).toBe(true);
+      expect((await getConversation(sqliteDb(db), item.id)).blocked).toBe(true);
       await expect(orchestrator.shutdown()).rejects.toThrow("cleanup could not be verified");
       db.close();
       db = openDatabase(databasePath);
-      expect(getConversation(db, item.id).blocked).toBe(true);
+      expect((await getConversation(sqliteDb(db), item.id)).blocked).toBe(true);
       await answerQuestion(db, question!.id, { answer: "Retry", answeredBy: "human" });
       applyWorkItemEvent(db, item.id, "answer_received");
       orchestrator = create();
@@ -124,7 +125,7 @@ for await (const line of createInterface({ input: process.stdin })) {
         "Retry",
       );
       expect(launches).toBe(priorLaunches);
-      expect(getConversation(db, item.id).blocked).toBe(true);
+      expect((await getConversation(sqliteDb(db), item.id)).blocked).toBe(true);
       expect(readFileSync(families, "utf8").trim().split("\n")).toHaveLength(1);
       await expect(orchestrator.shutdown()).rejects.toThrow("cleanup could not be verified");
     } finally {

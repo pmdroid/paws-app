@@ -140,14 +140,17 @@ test.each([false, true])(
   15000,
 );
 
-test("a clarification resolution preserves its child-task redirect and guidance across restart", () => {
+test("a clarification resolution preserves its child-task redirect and guidance across restart", async () => {
   const path = join(tempHome(), "planning.db");
   const db = openDatabase(path);
   migrate(db);
-  saveTaskClassification(db, "request", { mode: "clarify", question: "Which outcome?" });
-  saveTaskClassification(db, "request", { mode: "artifact" });
+  await saveTaskClassification(sqliteDb(db), "request", {
+    mode: "clarify",
+    question: "Which outcome?",
+  });
+  await saveTaskClassification(sqliteDb(db), "request", { mode: "artifact" });
   expect(getTaskClassification(db, "request")?.mode).toBe("clarify");
-  resolveTaskClassification(db, {
+  await resolveTaskClassification(sqliteDb(db), {
     taskKey: "request",
     itemId: "placeholder",
     context: "Change both children.",

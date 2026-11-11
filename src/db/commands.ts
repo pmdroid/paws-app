@@ -503,15 +503,7 @@ export async function submitCommandAsync(
   );
 }
 
-export function takeOverItem(
-  db: Database,
-  itemId: string,
-  who: string,
-  now = Date.now(),
-): { applied: boolean } {
-  return settled(sqliteDb(db).transaction((q) => takeOverItemSteps(q, itemId, who, now)));
-}
-export async function takeOverItemAsync(
+export async function takeOverItem(
   store: Db,
   itemId: string,
   who: string,

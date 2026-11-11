@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, sql, type AnyColumn, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonItemId } from "./jobs";
 import { journal } from "./journal";
 import {
@@ -49,8 +48,8 @@ function outboxItem(q: Q): SQL<string | null> {
 }
 
 /** Dead outbox rows and dead jobs of one work item, oldest first. */
-export function listDeadDeliveries(db: Database, itemId: string): DeadDelivery[] {
-  return settled(sqliteDb(db).run((q) => listDeadDeliveriesSteps(q, itemId)));
+export async function listDeadDeliveries(store: Db, itemId: string): Promise<DeadDelivery[]> {
+  return store.run((q) => listDeadDeliveriesSteps(q, itemId));
 }
 
 export function* listDeadDeliveriesSteps(q: Q, itemId: string) {
@@ -101,8 +100,8 @@ export function* listDeadDeliveriesSteps(q: Q, itemId: string) {
 }
 
 /** The work item a dead row or job belongs to, or null when it is not dead or has no item. */
-export function deadDeliveryItemId(db: Database, ref: DeadDeliveryRef): string | null {
-  return settled(sqliteDb(db).run((q) => deadDeliveryItemIdSteps(q, ref)));
+export async function deadDeliveryItemId(store: Db, ref: DeadDeliveryRef): Promise<string | null> {
+  return store.run((q) => deadDeliveryItemIdSteps(q, ref));
 }
 
 export function* deadDeliveryItemIdSteps(q: Q, ref: DeadDeliveryRef) {
@@ -138,13 +137,13 @@ export function parseDeadDeliveryRef(value: unknown): DeadDeliveryRef | null {
  * Returns false when it is not dead, belongs to another item, or is a job captured at an
  * older item version: that job's work is obsolete and retrying it would revive it.
  */
-export function retryDeadDelivery(
-  db: Database,
+export async function retryDeadDelivery(
+  store: Db,
   itemId: string,
   ref: DeadDeliveryRef,
   now = Date.now(),
-): boolean {
-  return settled(sqliteDb(db).transaction((q) => retryDeadDeliverySteps(q, itemId, ref, now)));
+): Promise<boolean> {
+  return store.transaction((q) => retryDeadDeliverySteps(q, itemId, ref, now));
 }
 
 export function* retryDeadDeliverySteps(
@@ -202,8 +201,12 @@ export function* retryDeadDeliverySteps(
 }
 
 /** Drop the dead elicitation rows of a question that was asked again, so the page stops listing them. */
-export function dropDeadElicitations(db: Database, questionId: string, note: string): number {
-  return settled(sqliteDb(db).run((q) => dropDeadElicitationsSteps(q, questionId, note)));
+export async function dropDeadElicitations(
+  store: Db,
+  questionId: string,
+  note: string,
+): Promise<number> {
+  return store.run((q) => dropDeadElicitationsSteps(q, questionId, note));
 }
 
 export function* dropDeadElicitationsSteps(q: Q, questionId: string, note: string) {
@@ -248,8 +251,8 @@ export const QUESTION_LINKS = [
 ] as const;
 
 /** True when another record is tied to this question's id. */
-export function questionHasLinkedRecords(db: Database, questionId: string): boolean {
-  return settled(sqliteDb(db).run((q) => questionHasLinkedRecordsSteps(q, questionId)));
+export async function questionHasLinkedRecords(store: Db, questionId: string): Promise<boolean> {
+  return store.run((q) => questionHasLinkedRecordsSteps(q, questionId));
 }
 
 export function* questionHasLinkedRecordsSteps(q: Q, questionId: string) {
@@ -274,8 +277,12 @@ export function* questionHasLinkedRecordsSteps(q: Q, questionId: string) {
  * elicitation, or the session fence rejected the delivery. Its dead rows then stay listed on
  * the issue page with a retry, so the item is never left waiting on nothing visible.
  */
-export function redeliverQuestion(db: Database, questionId: string, now: number): number | null {
-  return settled(sqliteDb(db).transaction((q) => redeliverQuestionSteps(q, questionId, now)));
+export async function redeliverQuestion(
+  store: Db,
+  questionId: string,
+  now: number,
+): Promise<number | null> {
+  return store.transaction((q) => redeliverQuestionSteps(q, questionId, now));
 }
 
 export function* redeliverQuestionSteps(q: Q, questionId: string, now: number) {
@@ -337,8 +344,8 @@ export function* redeliverQuestionSteps(q: Q, questionId: string, now: number) {
  * True for a dead final Stop delivery. Its session is stopped by design, so retrying it must
  * not require a running session, unlike every other retry.
  */
-export function deadDeliveryIsFinalStop(db: Database, ref: DeadDeliveryRef): boolean {
-  return settled(sqliteDb(db).run((q) => deadDeliveryIsFinalStopSteps(q, ref)));
+export async function deadDeliveryIsFinalStop(store: Db, ref: DeadDeliveryRef): Promise<boolean> {
+  return store.run((q) => deadDeliveryIsFinalStopSteps(q, ref));
 }
 
 export function* deadDeliveryIsFinalStopSteps(q: Q, ref: DeadDeliveryRef) {
@@ -359,8 +366,12 @@ export function* deadDeliveryIsFinalStopSteps(q: Q, ref: DeadDeliveryRef) {
  * Remember which question a re-ask job produced, so a death of that question counts against
  * the same lineage instead of starting a new allowance.
  */
-export function recordQuestionReask(db: Database, jobId: number, questionId: string): void {
-  settled(sqliteDb(db).run((q) => recordQuestionReaskSteps(q, jobId, questionId)));
+export async function recordQuestionReask(
+  store: Db,
+  jobId: number,
+  questionId: string,
+): Promise<void> {
+  await store.run((q) => recordQuestionReaskSteps(q, jobId, questionId));
 }
 
 export function* recordQuestionReaskSteps(q: Q, jobId: number, questionId: string) {

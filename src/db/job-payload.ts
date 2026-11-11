@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, gt, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { itemVersionOf, jsonItemId, type Job } from "./jobs";
 
 function leased(q: Q, job: Job, now: number) {
@@ -26,13 +25,13 @@ export function* replaceLeasedJobPayloadSteps(q: Q, job: Job, payload: unknown, 
 }
 
 /** Replace transient payload bookkeeping without refreshing the job's item-version fence. */
-export function replaceLeasedJobPayload(
-  db: Database,
+export async function replaceLeasedJobPayload(
+  store: Db,
   job: Job,
   payload: unknown,
   now: number,
-): boolean {
-  return settled(sqliteDb(db).run((q) => replaceLeasedJobPayloadSteps(q, job, payload, now)));
+): Promise<boolean> {
+  return store.run((q) => replaceLeasedJobPayloadSteps(q, job, payload, now));
 }
 
 export function* refreshVerificationJobVersionSteps(q: Q, job: Job, runId: string, now: number) {
@@ -55,11 +54,11 @@ export function* refreshVerificationJobVersionSteps(q: Q, job: Job, runId: strin
 }
 
 /** A parked verification request survives version changes within the same run, but not a restart. */
-export function refreshVerificationJobVersion(
-  db: Database,
+export async function refreshVerificationJobVersion(
+  store: Db,
   job: Job,
   runId: string,
   now: number,
-): boolean {
-  return settled(sqliteDb(db).run((q) => refreshVerificationJobVersionSteps(q, job, runId, now)));
+): Promise<boolean> {
+  return store.run((q) => refreshVerificationJobVersionSteps(q, job, runId, now));
 }

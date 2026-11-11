@@ -161,14 +161,14 @@ test("with another runner free, the waiting item's slot stays off limits to the 
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
     expect(runAt()).toBe(NOW + 2);
     // Placement keeps Y off A while X holds A's slot, and gives X its own slot.
-    const reserved = pinnedSlotsReserved(db, "A", "Y", NOW + 2);
+    const reserved = await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW + 2);
     expect(reserved).toBe(1);
     expect(runnerHasCapacity(db, "A", NOW + 2, "", reserved)).toBe(false);
-    expect(pinnedSlotsReserved(db, "B", "Y", NOW + 2)).toBe(0);
-    expect(pinnedSlotsReserved(db, "A", "X", NOW + 2)).toBe(0);
+    expect(await pinnedSlotsReserved(sqliteDb(db), "B", "Y", NOW + 2)).toBe(0);
+    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "X", NOW + 2)).toBe(0);
     // Once X is placed the reservation is gone.
     await releasePinnedSlot(sqliteDb(db), "X");
-    expect(pinnedSlotsReserved(db, "A", "Y", NOW + 2)).toBe(0);
+    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW + 2)).toBe(0);
   } finally {
     db.close();
   }
@@ -181,7 +181,7 @@ test("a waiting item ranked behind a queued item that took the last slot reserve
     await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "X", priority: 4 }));
     free(NOW + 1);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["Y"]);
-    expect(pinnedSlotsReserved(db, "A", "Y", NOW + 2)).toBe(0);
+    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW + 2)).toBe(0);
     expect(runAt()).toBe(BACKOFF);
   } finally {
     db.close();
@@ -192,7 +192,7 @@ test("a waiting item on a full runner holds the slot that frees next", async () 
   const { db } = await fixture();
   try {
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
-    expect(pinnedSlotsReserved(db, "A", "Y", NOW)).toBe(1);
+    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW)).toBe(1);
   } finally {
     db.close();
   }
@@ -202,10 +202,10 @@ test("a reservation is released when its runner goes offline", async () => {
   const { db } = await fixture();
   try {
     expect(await workspaceDispatch(db, { now: NOW })).toEqual([]);
-    expect(pinnedSlotsReserved(db, "A", "Y", NOW)).toBe(1);
+    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW)).toBe(1);
     db.run("UPDATE runner SET last_seen_at=0 WHERE id='A'");
     await workspaceDispatch(db, { now: NOW + 120_000 });
-    expect(pinnedSlotsReserved(db, "A", "Y", NOW + 120_000)).toBe(0);
+    expect(await pinnedSlotsReserved(sqliteDb(db), "A", "Y", NOW + 120_000)).toBe(0);
   } finally {
     db.close();
   }

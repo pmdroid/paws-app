@@ -17,6 +17,7 @@ import {
   openDatabase,
   recordItemPullRequest,
   recordRebaseReturn,
+  sqliteDb,
 } from "../db";
 import { GitHubHttpError, type GitHubClient } from "../github";
 import { REBASE_CONFLICT_INSTRUCTION } from "../merge";
@@ -70,7 +71,7 @@ async function fixture(mergeable: boolean | null) {
   });
   beginImplementRun(db, "DEP-661", clock.now());
   enterMergeQueue(db, "DEP-661", { phase: "merge_queue", baseSha: MAIN, wipCommit: HEAD });
-  recordItemPullRequest(db, {
+  await recordItemPullRequest(sqliteDb(db), {
     itemId: "DEP-661",
     pullNumber: 6496,
     pullUrl: "https://github.com/acme/monorepo/pull/6496",
@@ -124,7 +125,7 @@ test("an HTTP 500 on a conflicting pull request with the rebase budget spent ask
   const f = await fixture(false);
   try {
     for (let spent = 0; spent < 3; spent++)
-      recordRebaseReturn(f.db, {
+      await recordRebaseReturn(sqliteDb(f.db), {
         itemId: "DEP-661",
         jobId: 900 + spent,
         candidate: `earlier-${spent}`,

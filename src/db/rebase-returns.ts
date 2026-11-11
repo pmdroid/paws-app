@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, count, eq, gte, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 export type RebaseReturn = {
@@ -44,8 +44,8 @@ export function* recordRebaseReturnSteps(q: Q, row: RebaseReturn) {
   );
 }
 
-export function recordRebaseReturn(db: Database, row: RebaseReturn): void {
-  settled(sqliteDb(db).run((q) => recordRebaseReturnSteps(q, row)));
+export async function recordRebaseReturn(store: Db, row: RebaseReturn): Promise<void> {
+  await store.run((q) => recordRebaseReturnSteps(q, row));
 }
 
 export function* countRebaseReturnsSteps(q: Q, itemId: string, sinceActivationId: number) {
@@ -61,12 +61,12 @@ export function* countRebaseReturnsSteps(q: Q, itemId: string, sinceActivationId
   return Number(row?.n ?? 0);
 }
 
-export function countRebaseReturns(
-  db: Database,
+export async function countRebaseReturns(
+  store: Db,
   itemId: string,
   sinceActivationId: number,
-): number {
-  return settled(sqliteDb(db).run((q) => countRebaseReturnsSteps(q, itemId, sinceActivationId)));
+): Promise<number> {
+  return store.run((q) => countRebaseReturnsSteps(q, itemId, sinceActivationId));
 }
 
 export function* listRebaseReturnsSteps(
@@ -118,6 +118,10 @@ export function* rebaseReturnedForSteps(q: Q, itemId: string, candidate: string)
 }
 
 /** Whether the item already went back to the agent for a rebase of `candidate`. */
-export function rebaseReturnedFor(db: Database, itemId: string, candidate: string): boolean {
-  return settled(sqliteDb(db).run((q) => rebaseReturnedForSteps(q, itemId, candidate)));
+export async function rebaseReturnedFor(
+  store: Db,
+  itemId: string,
+  candidate: string,
+): Promise<boolean> {
+  return store.run((q) => rebaseReturnedForSteps(q, itemId, candidate));
 }

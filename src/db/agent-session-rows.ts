@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, exists, gt, inArray, ne, not, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 export type AgentSessionSnapshotRow = {
   runId: string;
@@ -54,12 +53,12 @@ export function* agentSessionSnapshotSteps(q: Q, runId: string, generation: numb
   return (row as AgentSessionSnapshotRow | undefined) ?? null;
 }
 
-export function agentSessionSnapshot(
-  db: Database,
+export async function agentSessionSnapshot(
+  store: Db,
   runId: string,
   generation: number,
-): AgentSessionSnapshotRow | null {
-  return settled(sqliteDb(db).run((q) => agentSessionSnapshotSteps(q, runId, generation)));
+): Promise<AgentSessionSnapshotRow | null> {
+  return store.run((q) => agentSessionSnapshotSteps(q, runId, generation));
 }
 
 type NewSnapshot = {
@@ -75,8 +74,8 @@ export function* insertAgentSessionSnapshotSteps(q: Q, row: NewSnapshot) {
   yield* q.exec(q.orm.insert(q.t.agentSessionSnapshot).values(row));
 }
 
-export function insertAgentSessionSnapshot(db: Database, row: NewSnapshot): void {
-  settled(sqliteDb(db).run((q) => insertAgentSessionSnapshotSteps(q, row)));
+export async function insertAgentSessionSnapshot(store: Db, row: NewSnapshot): Promise<void> {
+  await store.run((q) => insertAgentSessionSnapshotSteps(q, row));
 }
 
 export function* discardStaleAgentSessionsSteps(q: Q) {
@@ -144,8 +143,8 @@ export function* discardStaleAgentSessionsSteps(q: Q) {
   );
 }
 
-export function discardStaleAgentSessions(db: Database): void {
-  settled(sqliteDb(db).transaction((q) => discardStaleAgentSessionsSteps(q)));
+export async function discardStaleAgentSessions(store: Db): Promise<void> {
+  await store.transaction((q) => discardStaleAgentSessionsSteps(q));
 }
 
 export function* discardedAgentSessionChunksSteps(q: Q, limit: number) {
@@ -166,11 +165,13 @@ export function* discardedAgentSessionChunksSteps(q: Q, limit: number) {
   );
 }
 
-export function discardedAgentSessionChunks(
-  db: Database,
+export async function discardedAgentSessionChunks(
+  store: Db,
   limit: number,
-): { runId: string; generation: number; workspaceId: string; offset: number; sha256: string }[] {
-  return settled(sqliteDb(db).run((q) => discardedAgentSessionChunksSteps(q, limit)));
+): Promise<
+  { runId: string; generation: number; workspaceId: string; offset: number; sha256: string }[]
+> {
+  return store.run((q) => discardedAgentSessionChunksSteps(q, limit));
 }
 
 type ChunkKey = { runId: string; generation: number; offset: number };
@@ -191,8 +192,11 @@ export function* deleteAgentSessionChunksSteps(q: Q, chunks: readonly ChunkKey[]
     );
 }
 
-export function deleteAgentSessionChunks(db: Database, chunks: readonly ChunkKey[]): void {
-  settled(sqliteDb(db).transaction((q) => deleteAgentSessionChunksSteps(q, chunks)));
+export async function deleteAgentSessionChunks(
+  store: Db,
+  chunks: readonly ChunkKey[],
+): Promise<void> {
+  await store.transaction((q) => deleteAgentSessionChunksSteps(q, chunks));
 }
 
 export type AgentSessionSeal = {
@@ -221,6 +225,6 @@ export function* sealAgentSessionSnapshotSteps(q: Q, seal: AgentSessionSeal) {
   );
 }
 
-export function sealAgentSessionSnapshot(db: Database, seal: AgentSessionSeal): void {
-  settled(sqliteDb(db).run((q) => sealAgentSessionSnapshotSteps(q, seal)));
+export async function sealAgentSessionSnapshot(store: Db, seal: AgentSessionSeal): Promise<void> {
+  await store.run((q) => sealAgentSessionSnapshotSteps(q, seal));
 }

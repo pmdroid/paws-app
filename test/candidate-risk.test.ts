@@ -5,6 +5,7 @@ import {
   migrate,
   openDatabase,
   saveCandidateRisk,
+  sqliteDb,
 } from "../src/db";
 
 function seeded() {
@@ -18,7 +19,7 @@ function seeded() {
 }
 
 describe("candidate risk", () => {
-  test("stores the tier and matched paths for each candidate head", () => {
+  test("stores the tier and matched paths for each candidate head", async () => {
     const db = seeded();
     saveCandidateRisk(db, {
       itemId: "item",
@@ -37,7 +38,7 @@ describe("candidate risk", () => {
       paths: [],
       classifiedAt: 20,
     });
-    expect(getCandidateRisk(db, "item", "aaa")).toEqual({
+    expect(await getCandidateRisk(sqliteDb(db), "item", "aaa")).toEqual({
       itemId: "item",
       head: "aaa",
       base: "base",
@@ -46,9 +47,9 @@ describe("candidate risk", () => {
       matches: [{ path: "src/auth/session.ts", lists: ["settings", "file"] }],
       classifiedAt: 10,
     });
-    expect(getCandidateRisk(db, "item", "bbb")).not.toHaveProperty("matches");
-    expect(latestCandidateRisk(db, "item")?.head).toBe("bbb");
-    expect(getCandidateRisk(db, "item", "ccc")).toBeNull();
+    expect(await getCandidateRisk(sqliteDb(db), "item", "bbb")).not.toHaveProperty("matches");
+    expect((await latestCandidateRisk(sqliteDb(db), "item"))?.head).toBe("bbb");
+    expect(await getCandidateRisk(sqliteDb(db), "item", "ccc")).toBeNull();
     expect(() =>
       db.run(
         "INSERT INTO candidate_risk (item_id, head_sha, base_sha, tier, paths, classified_at) VALUES ('item','x','b','low','[]',1)",

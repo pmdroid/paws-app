@@ -1,7 +1,6 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { aliasedTable, and, asc, desc, eq, isNull, notExists, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonText } from "./json-text";
 
 export type WorkItemBlockRecord = {
@@ -66,8 +65,11 @@ export function* listWorkItemBlocksSteps(q: Q, delegationId?: string) {
 }
 
 /** `blocks` edges. Pass `epicId` to read one epic. */
-export function listWorkItemBlocks(db: Database, delegationId?: string): WorkItemBlockRecord[] {
-  return settled(sqliteDb(db).run((q) => listWorkItemBlocksSteps(q, delegationId)));
+export async function listWorkItemBlocks(
+  store: Db,
+  delegationId?: string,
+): Promise<WorkItemBlockRecord[]> {
+  return store.run((q) => listWorkItemBlocksSteps(q, delegationId));
 }
 
 export type WorkItemFact = {
@@ -99,8 +101,8 @@ export function* listWorkItemFactsSteps(q: Q) {
   }));
 }
 
-export function listWorkItemFacts(db: Database): WorkItemFact[] {
-  return settled(sqliteDb(db).run(listWorkItemFactsSteps));
+export async function listWorkItemFacts(store: Db): Promise<WorkItemFact[]> {
+  return store.run((q) => listWorkItemFactsSteps(q));
 }
 
 export function* listOpenQuestionsSteps(q: Q) {
@@ -127,8 +129,8 @@ export function* listOpenQuestionsSteps(q: Q) {
 }
 
 /** Unanswered questions, oldest first. */
-export function listOpenQuestions(db: Database): OpenQuestionRecord[] {
-  return settled(sqliteDb(db).run(listOpenQuestionsSteps));
+export async function listOpenQuestions(store: Db): Promise<OpenQuestionRecord[]> {
+  return store.run((q) => listOpenQuestionsSteps(q));
 }
 
 export type DeliveredLinearIssueState = {
@@ -164,14 +166,12 @@ export function* deliveredLinearIssueStateSteps(q: Q, organizationId: string, is
   return (row ?? null) satisfies DeliveredLinearIssueState | null;
 }
 
-export function deliveredLinearIssueState(
-  db: Database,
+export async function deliveredLinearIssueState(
+  store: Db,
   organizationId: string,
   issueId: string,
-): DeliveredLinearIssueState | null {
-  return settled(
-    sqliteDb(db).run((q) => deliveredLinearIssueStateSteps(q, organizationId, issueId)),
-  );
+): Promise<DeliveredLinearIssueState | null> {
+  return store.run((q) => deliveredLinearIssueStateSteps(q, organizationId, issueId));
 }
 
 function stringList(value: string): string[] {
@@ -201,6 +201,6 @@ export function* openQuestionKindSteps(q: Q, id: string) {
   return row?.kind ?? null;
 }
 
-export function openQuestionKind(db: Database, id: string): string | null {
-  return settled(sqliteDb(db).run((q) => openQuestionKindSteps(q, id)));
+export async function openQuestionKind(store: Db, id: string): Promise<string | null> {
+  return store.run((q) => openQuestionKindSteps(q, id));
 }

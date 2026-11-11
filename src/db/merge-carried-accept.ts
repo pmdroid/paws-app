@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 type CarriedAccept = {
   itemId: string;
@@ -29,8 +28,8 @@ export function* recordCarriedAcceptSteps(q: Q, input: CarriedAccept) {
  * Closeout accepted, onto main `base` and pushed `head`. Closeout's acceptance carries to `head`
  * only while the item's accepted head is still `acceptedHead`.
  */
-export function recordCarriedAccept(db: Database, input: CarriedAccept): void {
-  settled(sqliteDb(db).run((q) => recordCarriedAcceptSteps(q, input)));
+export async function recordCarriedAccept(store: Db, input: CarriedAccept): Promise<void> {
+  await store.run((q) => recordCarriedAcceptSteps(q, input));
 }
 
 export function* carriedAcceptForSteps(q: Q, itemId: string, head: string) {
@@ -45,6 +44,10 @@ export function* carriedAcceptForSteps(q: Q, itemId: string, head: string) {
 }
 
 /** The accepted head the lane rebased into `head`, or null when `head` is not a carried rebase. */
-export function carriedAcceptFor(db: Database, itemId: string, head: string): string | null {
-  return settled(sqliteDb(db).run((q) => carriedAcceptForSteps(q, itemId, head)));
+export async function carriedAcceptFor(
+  store: Db,
+  itemId: string,
+  head: string,
+): Promise<string | null> {
+  return store.run((q) => carriedAcceptForSteps(q, itemId, head));
 }

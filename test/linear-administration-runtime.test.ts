@@ -7,7 +7,7 @@ import {
   enqueueOutbox,
   getLinearSession,
   getLinearSessionAccess,
-  getOutbox,
+  getOutboxSteps,
   getWorkItem,
   hasLinearNotification,
   isLinearAppRevoked,
@@ -237,7 +237,7 @@ test("signed revocation stops owned work and fences active, queued and delayed r
   expect(listOutbox(f.db, "session").every((row) => row.status === "dropped")).toBe(true);
   await f.dispatcher.tick();
   await f.dispatcher.idle();
-  expect(getOutbox(f.db, progress)?.status).toBe("dropped");
+  expect((await sqliteDb(f.db).run((q) => getOutboxSteps(q, progress)))?.status).toBe("dropped");
   const late = enqueueOutbox(f.db, {
     target: "linear",
     op: "activity",
@@ -263,7 +263,7 @@ test("signed revocation stops owned work and fences active, queued and delayed r
       },
     }),
   ).toBe(true);
-  expect(getOutbox(f.db, late)?.status).toBe("dropped");
+  expect((await sqliteDb(f.db).run((q) => getOutboxSteps(q, late)))?.status).toBe("dropped");
   const reopened = openDatabase(join(f.home, "paws.db"));
   cleanup.push(() => reopened.close());
   const recovered = new OutboxDispatcher(reopened, new FakeClock(Date.now() + 10_000));

@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 export type PolicyOutage = {
   repository: string;
@@ -36,8 +35,8 @@ export function* getPolicyOutageSteps(q: Q, repository: string): Steps<PolicyOut
   );
 }
 
-export function getPolicyOutage(db: Database, repository: string): PolicyOutage | null {
-  return settled(sqliteDb(db).run((q) => getPolicyOutageSteps(q, repository)));
+export async function getPolicyOutage(store: Db, repository: string): Promise<PolicyOutage | null> {
+  return store.run((q) => getPolicyOutageSteps(q, repository));
 }
 
 type PolicyOutageInput = {
@@ -77,8 +76,11 @@ export function* recordPolicyOutageSteps(q: Q, input: PolicyOutageInput): Steps<
   return (yield* getPolicyOutageSteps(q, input.repository))!;
 }
 
-export function recordPolicyOutage(db: Database, input: PolicyOutageInput): PolicyOutage {
-  return settled(sqliteDb(db).run((q) => recordPolicyOutageSteps(q, input)));
+export async function recordPolicyOutage(
+  store: Db,
+  input: PolicyOutageInput,
+): Promise<PolicyOutage> {
+  return store.run((q) => recordPolicyOutageSteps(q, input));
 }
 
 export function* setPolicyOutageQuestionSteps(
@@ -95,12 +97,12 @@ export function* setPolicyOutageQuestionSteps(
   );
 }
 
-export function setPolicyOutageQuestion(
-  db: Database,
+export async function setPolicyOutageQuestion(
+  store: Db,
   repository: string,
   question: { id: string; itemId: string } | null,
-): void {
-  settled(sqliteDb(db).run((q) => setPolicyOutageQuestionSteps(q, repository, question)));
+): Promise<void> {
+  await store.run((q) => setPolicyOutageQuestionSteps(q, repository, question));
 }
 
 export function* endPolicyOutageSteps(q: Q, repository: string): Steps<PolicyOutage | null> {
@@ -110,6 +112,6 @@ export function* endPolicyOutageSteps(q: Q, repository: string): Steps<PolicyOut
   return current;
 }
 
-export function endPolicyOutage(db: Database, repository: string): PolicyOutage | null {
-  return settled(sqliteDb(db).run((q) => endPolicyOutageSteps(q, repository)));
+export async function endPolicyOutage(store: Db, repository: string): Promise<PolicyOutage | null> {
+  return store.run((q) => endPolicyOutageSteps(q, repository));
 }

@@ -345,8 +345,11 @@ test("commands without an account record the runner's legacy identity", async ()
     recordedAt: NOW,
   });
   recordCommandAccount(db, probe("C2", "R2", "W1"), NOW);
-  expect(commandAccount(db, "C2")).toMatchObject({ bindingId: "legacy_claude_R2", named: false });
-  expect(commandAccount(db, "unknown")).toBeNull();
+  expect(await commandAccount(sqliteDb(db), "C2")).toMatchObject({
+    bindingId: "legacy_claude_R2",
+    named: false,
+  });
+  expect(await commandAccount(sqliteDb(db), "unknown")).toBeNull();
   expect(
     recordCommandAccount(
       db,
@@ -410,7 +413,7 @@ test("a named account is refused unless the runner reports the binding", async (
     NOW,
   );
   expect(await attempt("N6")).toBeNull();
-  expect(commandAccount(db, "N6")).toMatchObject({
+  expect(await commandAccount(sqliteDb(db), "N6")).toMatchObject({
     accountId: a.id,
     bindingId: bound.id,
     named: true,
@@ -468,7 +471,10 @@ test("identity stays attached after an account is disabled or removed", async ()
     await code(async () => recordCommandAccount(db, probe("GONE", "R1", "W1", named), NOW)),
   ).toBe("removed");
   expect((await listAgentBindings(sqliteDb(db), "W1", a.id))[0]?.removedAt).toBe(NOW + 1);
-  expect(commandAccount(db, "BEFORE")).toMatchObject({ accountId: a.id, bindingId: bound.id });
+  expect(await commandAccount(sqliteDb(db), "BEFORE")).toMatchObject({
+    accountId: a.id,
+    bindingId: bound.id,
+  });
   expect(() => db.run("DELETE FROM runner_command_account")).toThrow(/retained/);
   expect(
     await code(

@@ -8,7 +8,7 @@ import {
   claimOutboxHeads,
   enqueueOutbox,
   enqueueOutboxOnce,
-  getOutbox,
+  getOutboxSteps,
   immediate,
   listOutbox,
   migrate,
@@ -65,22 +65,26 @@ describe("critical Linear delivery", () => {
         delivered.push(row.idempotencyKey);
       });
       await flush(dispatcher);
-      expect(getOutbox(db, progress)?.status).toBe(maxAttempts === 1 ? "dead" : "pending");
+      expect((await sqliteDb(db).run((q) => getOutboxSteps(q, progress)))?.status).toBe(
+        maxAttempts === 1 ? "dead" : "pending",
+      );
       enqueue("other", { orderingKey: "B" });
       const final = enqueue("final", {
         payload: { sessionId: "A", kind: "response", body: "Done" },
       });
       await flush(dispatcher);
-      expect(getOutbox(db, progress)?.status).toBe("dropped");
-      expect(getOutbox(db, final)?.status).toBe("sent");
+      expect((await sqliteDb(db).run((q) => getOutboxSteps(q, progress)))?.status).toBe("dropped");
+      expect((await sqliteDb(db).run((q) => getOutboxSteps(q, final)))?.status).toBe("sent");
       expect(delivered).toContain("final");
       expect(delivered).toContain("other");
       const stale = enqueue("late-progress");
       await flush(dispatcher);
-      expect(getOutbox(db, stale)?.status).toBe("dropped");
+      expect((await sqliteDb(db).run((q) => getOutboxSteps(q, stale)))?.status).toBe("dropped");
       expect(delivered).not.toContain("late-progress");
       const lateCritical = enqueue("late-ack", { delivery: "critical" });
-      expect(getOutbox(db, lateCritical)?.status).toBe("dropped");
+      expect((await sqliteDb(db).run((q) => getOutboxSteps(q, lateCritical)))?.status).toBe(
+        "dropped",
+      );
       db.close();
     },
   );
@@ -92,16 +96,16 @@ describe("critical Linear delivery", () => {
       op: "elicitation",
       payload: { sessionId: "A", body: "Which?" },
     });
-    expect(getOutbox(db, progress)?.status).toBe("dropped");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, progress)))?.status).toBe("dropped");
     const final = enqueue("final", { payload: { sessionId: "A", kind: "error", body: "Halted" } });
     dispatcher.setHandler(() => {});
     await flush(dispatcher);
-    expect(getOutbox(db, question)?.status).toBe("dropped");
-    expect(getOutbox(db, final)?.status).toBe("sent");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, question)))?.status).toBe("dropped");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, final)))?.status).toBe("sent");
     db.close();
   });
 
-  test("supersession rolls back with its critical enqueue", () => {
+  test("supersession rolls back with its critical enqueue", async () => {
     const { db, enqueue } = setup();
     const progress = enqueue("progress");
     expect(() =>
@@ -110,7 +114,7 @@ describe("critical Linear delivery", () => {
         throw new Error("rollback");
       }),
     ).toThrow("rollback");
-    expect(getOutbox(db, progress)?.status).toBe("pending");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, progress)))?.status).toBe("pending");
     expect(listOutbox(db)).toHaveLength(1);
     db.close();
   });
@@ -128,14 +132,19 @@ describe("critical Linear delivery", () => {
     const later = enqueue("later-final", { payload: { kind: "response", body: "Another result" } });
     dispatcher.setHandler(() => {});
     expect(await dispatcher.tick()).toHaveLength(0);
-    expect(getOutbox(db, failed)?.status).toBe("dead");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, failed)))?.status).toBe("dead");
     await advanceOutboxSession(sqliteDb(db), "linear", "A");
-    expect(getOutbox(db, failed)?.error).toContain("accepted newer session generation");
-    expect(getOutbox(db, failed)?.payload).toEqual({ kind: "response", body: "Previous result" });
-    expect(getOutbox(db, later)?.status).toBe("dropped");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, failed)))?.error).toContain(
+      "accepted newer session generation",
+    );
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, failed)))?.payload).toEqual({
+      kind: "response",
+      body: "Previous result",
+    });
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, later)))?.status).toBe("dropped");
     const next = enqueue("next-final", { payload: { kind: "response", body: "Next turn" } });
     await flush(dispatcher);
-    expect(getOutbox(db, next)?.status).toBe("sent");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, next)))?.status).toBe("sent");
     db.close();
   });
 
@@ -178,7 +187,9 @@ describe("critical Linear delivery", () => {
     expect(events.indexOf("aborted")).toBeLessThan(events.indexOf("final"));
     expect(events).toContain("other");
     expect(maximum).toBe(1);
-    expect(getOutbox(db, progress)?.error).toContain("external effect may have occurred");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, progress)))?.error).toContain(
+      "external effect may have occurred",
+    );
     db.close();
   });
 
@@ -200,8 +211,13 @@ describe("critical Linear delivery", () => {
     await dispatcher.idle();
     await flush(dispatcher);
     expect(delivered).toEqual(["progress", "final"]);
-    expect(getOutbox(db, progress)).toMatchObject({ status: "dropped", sentAt: clock.now() });
-    expect(getOutbox(db, progress)?.error).toContain("external effect may have occurred");
+    expect(await sqliteDb(db).run((q) => getOutboxSteps(q, progress))).toMatchObject({
+      status: "dropped",
+      sentAt: clock.now(),
+    });
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, progress)))?.error).toContain(
+      "external effect may have occurred",
+    );
     db.close();
   });
 });
@@ -227,10 +243,10 @@ describe("ephemeral progress coalescing", () => {
       delivered.push(row.idempotencyKey);
     });
     await flush(dispatcher);
-    expect(getOutbox(db, first)?.status).toBe("dropped");
-    expect(getOutbox(db, milestone)?.status).toBe("sent");
-    expect(getOutbox(db, other)?.status).toBe("sent");
-    expect(getOutbox(db, latest)?.status).toBe("sent");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, first)))?.status).toBe("dropped");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, milestone)))?.status).toBe("sent");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, other)))?.status).toBe("sent");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, latest)))?.status).toBe("sent");
     expect(delivered).toEqual(["milestone", "other", "latest"]);
     db.close();
   });
@@ -245,23 +261,23 @@ describe("ephemeral progress coalescing", () => {
     const later = enqueue("later", {
       payload: { kind: "action", body: "Testing", ephemeral: true },
     });
-    expect(getOutbox(db, first)?.status).toBe("pending");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, first)))?.status).toBe("pending");
     const question = enqueue("question", {
       op: "elicitation",
       payload: { sessionId: "A", body: "Which?" },
     });
-    expect(getOutbox(db, later)?.status).toBe("dropped");
-    expect(getOutbox(db, question)?.status).toBe("pending");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, later)))?.status).toBe("dropped");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, question)))?.status).toBe("pending");
     const final = enqueue("final", { payload: { kind: "response", body: "Done" } });
-    expect(getOutbox(db, question)?.status).toBe("dropped");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, question)))?.status).toBe("dropped");
     const stale = enqueue("stale", { payload: { kind: "thought", body: "Late", ephemeral: true } });
-    expect(getOutbox(db, stale)?.status).toBe("dropped");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, stale)))?.status).toBe("dropped");
     dispatcher.setHandler(() => {});
-    expect(getOutbox(db, final)?.status).toBe("pending");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, final)))?.status).toBe("pending");
     db.close();
   });
 
-  test("duplicate insertion cannot supersede a newer transient update", () => {
+  test("duplicate insertion cannot supersede a newer transient update", async () => {
     const { db, enqueue } = setup();
     enqueue("first", { payload: { kind: "thought", body: "Starting", ephemeral: true } });
     const latest = enqueue("latest", {
@@ -274,7 +290,7 @@ describe("ephemeral progress coalescing", () => {
       idempotencyKey: "first",
       payload: { kind: "thought", body: "Starting", ephemeral: true },
     });
-    expect(getOutbox(db, latest)?.status).toBe("pending");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, latest)))?.status).toBe("pending");
     db.close();
   });
 });
@@ -314,12 +330,12 @@ describe("persisted Stop fences", () => {
     await dispatcher.idle();
     await flush(dispatcher);
     expect(calls).toEqual(["other", `stop:A:${generation}`]);
-    expect(getOutbox(db, stale)?.status).toBe("dropped");
-    expect(getOutbox(db, completed)?.payload).toEqual({
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, stale)))?.status).toBe("dropped");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, completed)))?.payload).toEqual({
       linearIssueId: "done",
       stateType: "completed",
     });
-    expect(getOutbox(db, completed)?.status).toBe("dropped");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, completed)))?.status).toBe("dropped");
     db.close();
   });
 
@@ -342,14 +358,20 @@ describe("persisted Stop fences", () => {
       });
       const late = second.enqueue("late");
       await flush(second.dispatcher);
-      expect(getOutbox(second.db, late)?.status).toBe("dropped");
+      expect((await sqliteDb(second.db).run((q) => getOutboxSteps(q, late)))?.status).toBe(
+        "dropped",
+      );
       expect(calls).toEqual(["stop"]);
       const next = await advanceOutboxSession(sqliteDb(second.db), "linear", "A");
       const old = second.enqueue("old-callback", { generation });
       const current = second.enqueue("current", { generation: next });
       await flush(second.dispatcher);
-      expect(getOutbox(second.db, old)?.status).toBe("dropped");
-      expect(getOutbox(second.db, current)?.status).toBe("sent");
+      expect((await sqliteDb(second.db).run((q) => getOutboxSteps(q, old)))?.status).toBe(
+        "dropped",
+      );
+      expect((await sqliteDb(second.db).run((q) => getOutboxSteps(q, current)))?.status).toBe(
+        "sent",
+      );
       expect(calls).toEqual(["stop", "current"]);
     } finally {
       second.db.close();

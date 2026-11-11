@@ -12,21 +12,22 @@ import {
   mergeQueuePosition,
   restart,
   restartedFromMergeQueue,
+  sqliteDb,
 } from "../src/db";
 import { tempDb } from "./helpers";
 
-function ready(db: ReturnType<typeof tempDb>, id: string, repository: string, now: number) {
+async function ready(db: ReturnType<typeof tempDb>, id: string, repository: string, now: number) {
   insertQueuedItem(db, { id, now });
   db.run("UPDATE work_item SET state='merge_queue' WHERE id=?", [id]);
-  joinMergeQueue(db, { itemId: id, repository, now });
+  await joinMergeQueue(sqliteDb(db), { itemId: id, repository, now });
 }
 
-test("each repository has its own queue, in the order tasks became ready", () => {
+test("each repository has its own queue, in the order tasks became ready", async () => {
   const db = tempDb();
-  ready(db, "b", "acme/platform", 2);
-  ready(db, "a", "acme/platform", 1);
-  ready(db, "web", "acme/web", 3);
-  ready(db, "c", "acme/platform", 3);
+  await ready(db, "b", "acme/platform", 2);
+  await ready(db, "a", "acme/platform", 1);
+  await ready(db, "web", "acme/web", 3);
+  await ready(db, "c", "acme/platform", 3);
   expect(
     listMergeQueues(db).map(({ itemId, repository, position, total, aheadItemId }) => ({
       itemId,
@@ -43,23 +44,23 @@ test("each repository has its own queue, in the order tasks became ready", () =>
   ]);
 });
 
-test("joining again keeps the place; leaving and joining again goes to the end", () => {
+test("joining again keeps the place; leaving and joining again goes to the end", async () => {
   const db = tempDb();
-  ready(db, "a", "acme/platform", 1);
-  ready(db, "b", "acme/platform", 2);
-  joinMergeQueue(db, { itemId: "a", repository: "acme/platform", now: 5 });
+  await ready(db, "a", "acme/platform", 1);
+  await ready(db, "b", "acme/platform", 2);
+  await joinMergeQueue(sqliteDb(db), { itemId: "a", repository: "acme/platform", now: 5 });
   expect(mergeQueuePosition(db, "a")?.position).toBe(1);
-  leaveMergeQueue(db, "a");
+  await leaveMergeQueue(sqliteDb(db), "a");
   expect(mergeQueuePosition(db, "a")).toBeNull();
   expect(mergeQueuePosition(db, "b")?.position).toBe(1);
-  joinMergeQueue(db, { itemId: "a", repository: "acme/platform", now: 6 });
+  await joinMergeQueue(sqliteDb(db), { itemId: "a", repository: "acme/platform", now: 6 });
   expect(mergeQueuePosition(db, "a")).toMatchObject({ position: 2, aheadItemId: "b" });
 });
 
-test("a task back with the agent or waiting for an answer holds no place", () => {
+test("a task back with the agent or waiting for an answer holds no place", async () => {
   const db = tempDb();
-  ready(db, "a", "acme/platform", 1);
-  ready(db, "b", "acme/platform", 2);
+  await ready(db, "a", "acme/platform", 1);
+  await ready(db, "b", "acme/platform", 2);
   db.run("UPDATE work_item SET state='running' WHERE id='a'");
   expect(mergeQueuePosition(db, "b")?.position).toBe(1);
   db.run("UPDATE work_item SET state='awaiting_input' WHERE id='a'");
@@ -69,10 +70,10 @@ test("a task back with the agent or waiting for an answer holds no place", () =>
   expect(mergeQueuePosition(db, "b")?.position).toBe(2);
 });
 
-test("the notified position is kept with the entry", () => {
+test("the notified position is kept with the entry", async () => {
   const db = tempDb();
-  ready(db, "a", "acme/platform", 1);
-  markMergeQueueNotified(db, "a", 2);
+  await ready(db, "a", "acme/platform", 1);
+  await markMergeQueueNotified(sqliteDb(db), "a", 2);
   expect(mergeQueuePosition(db, "a")?.notifiedPosition).toBe(2);
 });
 
@@ -85,7 +86,7 @@ test("the position reads like the run page", () => {
   );
 });
 
-test("a fix sent back from the merge queue or its re-verify counts as merge-queue work", () => {
+test("a fix sent back from the merge queue or its re-verify counts as merge-queue work", async () => {
   const db = tempDb();
   try {
     const accepted = (id: string) => {
@@ -95,32 +96,32 @@ test("a fix sent back from the merge queue or its re-verify counts as merge-queu
     };
     accepted("conflict");
     applyWorkItemEvent(db, "conflict", "closeout_accepted");
-    joinMergeQueue(db, { itemId: "conflict", repository: "acme/app", now: 2 });
-    expect(inMergeQueue(db, "conflict")).toBe(true);
+    await joinMergeQueue(sqliteDb(db), { itemId: "conflict", repository: "acme/app", now: 2 });
+    expect(await inMergeQueue(sqliteDb(db), "conflict")).toBe(true);
     restart(db, getWorkItem(db, "conflict")!, { reason: "conflict", body: "Rebase", now: 3 });
-    expect(inMergeQueue(db, "conflict")).toBe(false);
+    expect(await inMergeQueue(sqliteDb(db), "conflict")).toBe(false);
     applyWorkItemEvent(db, "conflict", "dispatched");
-    expect(restartedFromMergeQueue(db, "conflict")).toBe(true);
+    expect(await restartedFromMergeQueue(sqliteDb(db), "conflict")).toBe(true);
 
     accepted("reverify");
     applyWorkItemEvent(db, "reverify", "closeout_accepted");
     applyWorkItemEvent(db, "reverify", "reverify_requested");
     restart(db, getWorkItem(db, "reverify")!, { reason: "findings", body: "Fix", now: 4 });
-    expect(restartedFromMergeQueue(db, "reverify")).toBe(true);
+    expect(await restartedFromMergeQueue(sqliteDb(db), "reverify")).toBe(true);
 
     accepted("first");
     restart(db, getWorkItem(db, "first")!, { reason: "findings", body: "Fix", now: 5 });
-    expect(restartedFromMergeQueue(db, "first")).toBe(false);
+    expect(await restartedFromMergeQueue(sqliteDb(db), "first")).toBe(false);
   } finally {
     db.close();
   }
 });
 
-test("mixed-case bindings join one ordered queue and keep their places", () => {
+test("mixed-case bindings join one ordered queue and keep their places", async () => {
   const db = tempDb();
-  ready(db, "first", "Acme/APP", 1);
-  ready(db, "second", "acme/app", 2);
-  joinMergeQueue(db, { itemId: "first", repository: "ACME/App", now: 3 });
+  await ready(db, "first", "Acme/APP", 1);
+  await ready(db, "second", "acme/app", 2);
+  await joinMergeQueue(sqliteDb(db), { itemId: "first", repository: "ACME/App", now: 3 });
   expect(listMergeQueues(db).map((e) => [e.itemId, e.repository, e.position])).toEqual([
     ["first", "acme/app", 1],
     ["second", "acme/app", 2],

@@ -1,9 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { asc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
-import { orm } from "./orm";
-import { closeoutRecovery, question } from "./schema";
 
 export type CloseoutRecovery = {
   questionId: string;
@@ -32,18 +29,11 @@ export function* saveCloseoutRecoverySteps(
   );
 }
 
-export function saveCloseoutRecovery(
-  db: Database,
+export async function saveCloseoutRecovery(
+  store: Db,
   input: Omit<CloseoutRecovery, "answer" | "answeredBy">,
-): void {
-  orm(db)
-    .insert(closeoutRecovery)
-    .values({
-      ...input,
-      failedChecks: JSON.stringify(input.failedChecks),
-      retryBaseline: JSON.stringify(input.retryBaseline),
-    })
-    .run();
+): Promise<void> {
+  await store.run((q) => saveCloseoutRecoverySteps(q, input));
 }
 
 export function* listCloseoutRecoveriesSteps(q: Q, itemId: string): Steps<CloseoutRecovery[]> {
@@ -75,27 +65,11 @@ export function* listCloseoutRecoveriesSteps(q: Q, itemId: string): Steps<Closeo
   }));
 }
 
-export function listCloseoutRecoveries(db: Database, itemId: string): CloseoutRecovery[] {
-  return orm(db)
-    .select({ row: closeoutRecovery, answer: question.answer, answeredBy: question.answeredBy })
-    .from(closeoutRecovery)
-    .innerJoin(question, eq(question.id, closeoutRecovery.questionId))
-    .where(eq(closeoutRecovery.itemId, itemId))
-    .orderBy(question.createdAt, sql`question.rowid`)
-    .all()
-    .map(({ row, answer, answeredBy }) => ({
-      questionId: row.questionId,
-      taskId: row.taskId,
-      itemId: row.itemId,
-      base: row.base,
-      head: row.head,
-      policyDigest: row.policyDigest,
-      failedChecks: JSON.parse(row.failedChecks) as string[],
-      retryBaseline: JSON.parse(row.retryBaseline) as string[],
-      summary: row.summary,
-      answer,
-      answeredBy,
-    }));
+export async function listCloseoutRecoveries(
+  store: Db,
+  itemId: string,
+): Promise<CloseoutRecovery[]> {
+  return store.run((q) => listCloseoutRecoveriesSteps(q, itemId));
 }
 
 /** The candidate a Closeout help question was asked about, by its question. */
@@ -116,9 +90,9 @@ export function* getCloseoutRecoverySteps(q: Q, questionId: string) {
     : { ...row, failedChecks: JSON.parse(row.failedChecks) as string[] };
 }
 
-export function getCloseoutRecovery(
-  db: Database,
+export async function getCloseoutRecovery(
+  store: Db,
   questionId: string,
-): Pick<CloseoutRecovery, "head" | "policyDigest" | "failedChecks"> | null {
-  return settled(sqliteDb(db).run((q) => getCloseoutRecoverySteps(q, questionId)));
+): Promise<Pick<CloseoutRecovery, "head" | "policyDigest" | "failedChecks"> | null> {
+  return store.run((q) => getCloseoutRecoverySteps(q, questionId));
 }

@@ -136,7 +136,7 @@ export function createBrowserOnboarding(options: {
           return retry("workspace-mismatch");
         const state = workspaceSecret();
         const browser = workspaceSecret();
-        saveBrowserInstallation(db, {
+        await saveBrowserInstallation(sqliteDb(db), {
           stateHash: workspaceTokenHash(state),
           browserHash: workspaceTokenHash(browser),
           identity: JSON.stringify({
@@ -178,8 +178,8 @@ export function createBrowserOnboarding(options: {
       const browser = cookieValue(request, INSTALL_COOKIE) ?? "";
       if (![state, browser].every((value) => /^[A-Za-z0-9_-]{43}$/.test(value)))
         return retry("failed");
-      const saved = consumeBrowserInstallation(
-        db,
+      const saved = await consumeBrowserInstallation(
+        sqliteDb(db),
         workspaceTokenHash(state),
         workspaceTokenHash(browser),
         now(),
@@ -252,8 +252,8 @@ export function createBrowserOnboarding(options: {
       });
       let workspace = workspaceForOrganization(db, organization.id);
       if (workspace === null) {
-        const grant = issueWorkspaceBootstrap(db, organization.id, timestamp);
-        workspace = consumeWorkspaceBootstrap(db, {
+        const grant = await issueWorkspaceBootstrap(db, organization.id, timestamp);
+        workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
           id: workspaceId(),
           organizationId: organization.id,
           name: organization.name,

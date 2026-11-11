@@ -367,8 +367,12 @@ export function* runnerLaneHelperWaitingSteps(q: Q, runnerId: string, now: numbe
   return helper !== undefined;
 }
 
-export function runnerLaneHelperWaiting(db: Database, runnerId: string, now: number): boolean {
-  return settled(sqliteDb(db).run((q) => runnerLaneHelperWaitingSteps(q, runnerId, now)));
+export async function runnerLaneHelperWaiting(
+  store: Db,
+  runnerId: string,
+  now: number,
+): Promise<boolean> {
+  return store.run((q) => runnerLaneHelperWaitingSteps(q, runnerId, now));
 }
 
 /** What the routine sign-in checks need to know about each agent on a runner. */
@@ -386,8 +390,8 @@ export function* runnerAgentCheckStatesSteps(q: Q, runnerId: string) {
   );
 }
 
-export function runnerAgentCheckStates(db: Database, runnerId: string) {
-  return settled(sqliteDb(db).run((q) => runnerAgentCheckStatesSteps(q, runnerId)));
+export async function runnerAgentCheckStates(store: Db, runnerId: string) {
+  return store.run((q) => runnerAgentCheckStatesSteps(q, runnerId));
 }
 
 /**
@@ -476,8 +480,8 @@ export function* runnerHasOpenWorkSteps(q: Q, runnerId: string, at: number) {
   return helper !== undefined;
 }
 
-export function runnerHasOpenWork(db: Database, runnerId: string, at: number): boolean {
-  return settled(sqliteDb(db).run((q) => runnerHasOpenWorkSteps(q, runnerId, at)));
+export async function runnerHasOpenWork(store: Db, runnerId: string, at: number): Promise<boolean> {
+  return store.run((q) => runnerHasOpenWorkSteps(q, runnerId, at));
 }
 
 export type RunnerAgentPolicyState = {
@@ -1188,8 +1192,8 @@ export function* itemSessionResultsSteps(q: Q, itemId: string) {
   );
 }
 
-export function itemSessionResults(db: Database, itemId: string) {
-  return settled(sqliteDb(db).run((q) => itemSessionResultsSteps(q, itemId)));
+export async function itemSessionResults(store: Db, itemId: string) {
+  return store.run((q) => itemSessionResultsSteps(q, itemId));
 }
 export function* runPlacementCommandSteps(q: Q, runId: string) {
   const { runnerWork: work, runnerCommand: command } = q.t;
@@ -1206,6 +1210,6 @@ export function* runPlacementCommandSteps(q: Q, runId: string) {
   );
 }
 
-export function runPlacementCommand(db: Database, runId: string) {
-  return settled(sqliteDb(db).run((q) => runPlacementCommandSteps(q, runId)));
+export async function runPlacementCommand(store: Db, runId: string) {
+  return store.run((q) => runPlacementCommandSteps(q, runId));
 }

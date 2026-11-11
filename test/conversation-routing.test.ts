@@ -60,12 +60,12 @@ async function setup(options: { version?: string; conversations?: number } = {})
     name: "Owner",
     email: "owner@acme.test",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org-acme",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org-acme", T0)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org-acme", T0)),
     now: T0,
   });
   db.run(
@@ -301,7 +301,7 @@ test("a reply in the Linear session of an idle item goes to a conversation, not 
   expect(await f.deliver("acme-1")).toBe("wait");
   const [started] = await f.conversations();
   expect(started!.command.prompt).toContain("Is the retry covered by a test?");
-  expect(listPendingLinearTurns(f.db, acme.session)).toEqual([]);
+  expect(await listPendingLinearTurns(sqliteDb(f.db), acme.session)).toEqual([]);
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
 });
 
@@ -403,7 +403,7 @@ test("a queued item's start job waits while a conversation runs on its session",
     now: f.clock.now(),
   });
   f.db.run("UPDATE run SET status='ended' WHERE item_id='acme-1'");
-  saveSchedulerAdmission(f.db, {
+  await saveSchedulerAdmission(sqliteDb(f.db), {
     itemId: "acme-1",
     jobId,
     repositoryKey: "acme/web",
@@ -435,15 +435,15 @@ test("session replies past the prompt budget wait for the next conversation", as
   const [first] = await f.conversations();
   expect(first!.command.prompt).toContain("First:");
   expect(first!.command.prompt).not.toContain("Second:");
-  expect(listPendingLinearTurns(f.db, acme.session).map((turn) => turn.eventKey)).toEqual([
-    "turn-2",
-  ]);
+  expect(
+    (await listPendingLinearTurns(sqliteDb(f.db), acme.session)).map((turn) => turn.eventKey),
+  ).toEqual(["turn-2"]);
 
   await f.answer(first!.id, { text: "Read the first one." });
   expect(await f.deliver("acme-1")).toBe("wait");
   const [second] = await f.conversations();
   expect(second!.command.prompt).toContain("Second:");
-  expect(listPendingLinearTurns(f.db, acme.session)).toEqual([]);
+  expect(await listPendingLinearTurns(sqliteDb(f.db), acme.session)).toEqual([]);
 });
 
 test("start_work in a conversation on a 0.1.77 runner restarts the item with the plan and posts it, holding no slot while it waits", async () => {

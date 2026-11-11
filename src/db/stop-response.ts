@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, ilike, like, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import type { WorkItemRecord } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
 import type { itemBranchState, itemPullRequest } from "./schema";
@@ -33,8 +33,11 @@ export function* getItemBranchStateSteps(q: Q, itemId: string): Steps<ItemBranch
   return row ?? null;
 }
 
-export function getItemBranchState(db: Database, itemId: string): ItemBranchState | null {
-  return settled(sqliteDb(db).run((q) => getItemBranchStateSteps(q, itemId)));
+export async function getItemBranchState(
+  store: Db,
+  itemId: string,
+): Promise<ItemBranchState | null> {
+  return store.run((q) => getItemBranchStateSteps(q, itemId));
 }
 
 export function* recordItemPullRequestSteps(q: Q, pull: ItemPullRequest): Steps<void> {
@@ -54,8 +57,8 @@ export function* recordItemPullRequestSteps(q: Q, pull: ItemPullRequest): Steps<
 }
 
 /** The pull request Paws opened for the item. Republishing keeps the same number. */
-export function recordItemPullRequest(db: Database, pull: ItemPullRequest): void {
-  settled(sqliteDb(db).run((q) => recordItemPullRequestSteps(q, pull)));
+export async function recordItemPullRequest(store: Db, pull: ItemPullRequest): Promise<void> {
+  await store.run((q) => recordItemPullRequestSteps(q, pull));
 }
 
 export function* getItemPullRequestSteps(q: Q, itemId: string): Steps<ItemPullRequest | null> {
@@ -66,8 +69,11 @@ export function* getItemPullRequestSteps(q: Q, itemId: string): Steps<ItemPullRe
   return row ?? null;
 }
 
-export function getItemPullRequest(db: Database, itemId: string): ItemPullRequest | null {
-  return settled(sqliteDb(db).run((q) => getItemPullRequestSteps(q, itemId)));
+export async function getItemPullRequest(
+  store: Db,
+  itemId: string,
+): Promise<ItemPullRequest | null> {
+  return store.run((q) => getItemPullRequestSteps(q, itemId));
 }
 
 type StopOptions = { reason?: boolean; pullClosing?: boolean };
@@ -105,13 +111,13 @@ export function* stoppedResponseSteps(
  * A `reason` from elsewhere (issue closed, access denied) replaces the lead, drops the
  * re-delegate hint and names the branch only when something is left on it.
  */
-export function stoppedResponse(
-  db: Database,
+export async function stoppedResponse(
+  store: Db,
   item: WorkItemRecord,
   lead: string,
   options: StopOptions = {},
-): string {
-  return settled(sqliteDb(db).run((q) => stoppedResponseSteps(q, item, lead, options)));
+): Promise<string> {
+  return store.run((q) => stoppedResponseSteps(q, item, lead, options));
 }
 
 type EndedSession = {
@@ -180,6 +186,6 @@ export function* enqueueEndedSessionFaceSteps(q: Q, input: EndedSession): Steps<
  * Title and plan for a session that ended without merging: unfinished plan steps become
  * canceled and the title reads "<identifier>: <outcome>". Delivered with the stop response.
  */
-export function enqueueEndedSessionFace(db: Database, input: EndedSession): void {
-  settled(sqliteDb(db).transaction((q) => enqueueEndedSessionFaceSteps(q, input)));
+export async function enqueueEndedSessionFace(store: Db, input: EndedSession): Promise<void> {
+  await store.transaction((q) => enqueueEndedSessionFaceSteps(q, input));
 }

@@ -13,6 +13,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 
@@ -215,7 +216,7 @@ test("self-link persists verified consent over HTTP and SQLite restart with sing
         .update(pending.target.searchParams.get("state")!)
         .digest("base64url"),
     );
-    expect(githubAttribution(f.db, "workspace", "alice")).toEqual({
+    expect(await githubAttribution(sqliteDb(f.db), "workspace", "alice")).toEqual({
       id: 12345,
       login: "verified-human",
       name: "Human Injected",
@@ -224,9 +225,9 @@ test("self-link persists verified consent over HTTP and SQLite restart with sing
     expect((await f.callback(pending)).status).toBe(403);
     expect(f.calls).toBe(2);
     await f.restart();
-    expect(githubAttribution(f.db, "workspace", "alice")?.id).toBe(12345);
+    expect((await githubAttribution(sqliteDb(f.db), "workspace", "alice"))?.id).toBe(12345);
     expect((await f.request("DELETE")).status).toBe(200);
-    expect(githubAttribution(f.db, "workspace", "alice")).toBeNull();
+    expect(await githubAttribution(sqliteDb(f.db), "workspace", "alice")).toBeNull();
     const audit = f.db
       .query<{ action: string }, []>(
         "SELECT action FROM workspace_access_audit WHERE action LIKE 'github.%'",
@@ -300,7 +301,7 @@ for (const scenario of [
         };
       if (scenario === "wrong-state") pending.target.searchParams.set("state", "a".repeat(43));
       expect([401, 403]).toContain((await f.callback(pending, session, overrides)).status);
-      expect(githubAttribution(f.db, "workspace", "alice")).toBeNull();
+      expect(await githubAttribution(sqliteDb(f.db), "workspace", "alice")).toBeNull();
       if (
         ["wrong-user", "wrong-workspace", "wrong-state", "logout", "demotion", "removed"].includes(
           scenario,
@@ -349,7 +350,7 @@ test("missing App credentials keep attribution readable and revocable without st
       identity: { login: "verified-human" },
     });
     expect((await f.request("DELETE")).status).toBe(200);
-    expect(githubAttribution(f.db, "workspace", "alice")).toBeNull();
+    expect(await githubAttribution(sqliteDb(f.db), "workspace", "alice")).toBeNull();
     expect((await f.callback(pending)).status).toBe(403);
   } finally {
     await f.close();
@@ -368,7 +369,7 @@ test("an older sign-in can still change its own attribution while the session is
     expect(body).toMatchObject({ configured: true, identity: { login: "verified-human" } });
     expect(body).not.toHaveProperty("requiresSignIn");
     expect((await f.request("DELETE")).status).toBe(200);
-    expect(githubAttribution(f.db, "workspace", "alice")).toBeNull();
+    expect(await githubAttribution(sqliteDb(f.db), "workspace", "alice")).toBeNull();
     expect((await f.request("GET", f.other)).status).toBe(403);
     f.guest = true;
     expect((await f.request("GET")).status).toBe(403);
@@ -434,11 +435,13 @@ test("the Settings link returns to Settings, and a forged return_path never leav
       f.db.run("UPDATE github_attribution_request SET return_path='https://evil.example/'"),
     ).toThrow();
     expect(
-      consumeGitHubAttributionRequest(f.db, binding(f), {
-        stateHash: "s".repeat(43),
-        browserHash: "b".repeat(43),
-        now: f.now,
-      }).returnPath,
+      (
+        await consumeGitHubAttributionRequest(sqliteDb(f.db), binding(f), {
+          stateHash: "s".repeat(43),
+          browserHash: "b".repeat(43),
+          now: f.now,
+        })
+      ).returnPath,
     ).toBe(onboarding);
   } finally {
     await f.close();

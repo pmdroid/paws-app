@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { eq, sql } from "drizzle-orm";
 import { parseRemainingParts, type RemainingPart } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 
 export type PullRequestDraft = {
   title: string;
@@ -58,8 +58,8 @@ export function* pullRequestDraftSavedAtSteps(q: Q, itemId: string) {
   return row?.updatedAt ?? null;
 }
 
-export function pullRequestDraftSavedAt(db: Database, itemId: string): number | null {
-  return settled(sqliteDb(db).run((q) => pullRequestDraftSavedAtSteps(q, itemId)));
+export async function pullRequestDraftSavedAt(store: Db, itemId: string): Promise<number | null> {
+  return store.run((q) => pullRequestDraftSavedAtSteps(q, itemId));
 }
 
 export function* getPullRequestDraftSteps(q: Q, itemId: string) {
@@ -116,13 +116,13 @@ export function* savePullRequestTextSteps(
   );
 }
 
-export function savePullRequestText(
-  db: Database,
+export async function savePullRequestText(
+  store: Db,
   itemId: string,
   text: PullRequestText,
   now: number,
-): void {
-  settled(sqliteDb(db).run((q) => savePullRequestTextSteps(q, itemId, text, now)));
+): Promise<void> {
+  await store.run((q) => savePullRequestTextSteps(q, itemId, text, now));
 }
 
 export function* getPullRequestTextSteps(q: Q, itemId: string) {
@@ -140,6 +140,9 @@ export function* getPullRequestTextSteps(q: Q, itemId: string) {
   return row ?? null;
 }
 
-export function getPullRequestText(db: Database, itemId: string): PullRequestText | null {
-  return settled(sqliteDb(db).run((q) => getPullRequestTextSteps(q, itemId)));
+export async function getPullRequestText(
+  store: Db,
+  itemId: string,
+): Promise<PullRequestText | null> {
+  return store.run((q) => getPullRequestTextSteps(q, itemId));
 }

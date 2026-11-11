@@ -19,6 +19,7 @@ import {
   listOutbox,
   OutboxDispatcher,
   recordItemPullRequest,
+  sqliteDb,
 } from "../../src/db";
 import {
   createInboxStore,
@@ -159,7 +160,12 @@ export async function probeLinearSessionStop(root: string) {
       // The item waits in the merge queue with an open pull request.
       for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
         applyWorkItemEvent(db, old.id, step);
-      recordItemPullRequest(db, { itemId: old.id, pullNumber: 42, pullUrl: null, openedAt: 1 });
+      await recordItemPullRequest(sqliteDb(db), {
+        itemId: old.id,
+        pullNumber: 42,
+        pullUrl: null,
+        openedAt: 1,
+      });
       enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: old.id }, now: clock.now() });
       const replacement = insertQueuedItem(db, {
         id: `webhook-new-${field}`,

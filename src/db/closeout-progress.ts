@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, isNotNull, min, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import type * as pgSchema from "./schema-pg";
 
 export const CLOSEOUT_OUTPUT_CAP_BYTES = 64 * 1024;
@@ -368,11 +368,11 @@ function latestOf(q: Q, itemId: string, head?: string) {
   };
 }
 
-export function latestCloseoutIdentity(
-  db: Database,
+export async function latestCloseoutIdentity(
+  store: Db,
   itemId: string,
-): { head: string; policyDigest: string } | null {
-  return settled(sqliteDb(db).run((q) => latestCloseoutIdentitySteps(q, itemId)));
+): Promise<{ head: string; policyDigest: string } | null> {
+  return store.run((q) => latestCloseoutIdentitySteps(q, itemId));
 }
 
 export function* latestCloseoutIdentitySteps(q: Q, itemId: string) {
@@ -430,12 +430,12 @@ export type AcceptedCloseoutReviews = {
  * The latest applicable Closeout run, only if accepted. Prefer `head` when recorded;
  * otherwise a head rebased after acceptance can carry the latest run.
  */
-export function acceptedCloseoutReviews(
-  db: Database,
+export async function acceptedCloseoutReviews(
+  store: Db,
   itemId: string,
   head: string | null,
-): AcceptedCloseoutReviews | null {
-  return settled(sqliteDb(db).run((q) => acceptedCloseoutReviewsSteps(q, itemId, head)));
+): Promise<AcceptedCloseoutReviews | null> {
+  return store.run((q) => acceptedCloseoutReviewsSteps(q, itemId, head));
 }
 
 export function* acceptedCloseoutReviewsSteps(
@@ -467,8 +467,8 @@ export function* acceptedCloseoutReviewsSteps(
 export type AcceptedCloseoutRun = AcceptedCloseoutReviews & { itemId: string; at: number };
 
 /** Every accepted Closeout run, oldest first. */
-export function acceptedCloseoutRuns(db: Database): AcceptedCloseoutRun[] {
-  return settled(sqliteDb(db).run(acceptedCloseoutRunsSteps));
+export async function acceptedCloseoutRuns(store: Db): Promise<AcceptedCloseoutRun[]> {
+  return store.run((q) => acceptedCloseoutRunsSteps(q));
 }
 
 export function* acceptedCloseoutRunsSteps(q: Q): Steps<AcceptedCloseoutRun[]> {
@@ -522,8 +522,11 @@ function* reviewStepsSteps(q: Q, progressId: string): Steps<AcceptedCloseoutRevi
 }
 
 /** When Closeout first evaluated each head of the item, by head. */
-export function closeoutHeadsStarted(db: Database, itemId: string): Map<string, number> {
-  return settled(sqliteDb(db).run((q) => closeoutHeadsStartedSteps(q, itemId)));
+export async function closeoutHeadsStarted(
+  store: Db,
+  itemId: string,
+): Promise<Map<string, number>> {
+  return store.run((q) => closeoutHeadsStartedSteps(q, itemId));
 }
 
 export function* closeoutHeadsStartedSteps(q: Q, itemId: string) {
@@ -539,12 +542,12 @@ export function* closeoutHeadsStartedSteps(q: Q, itemId: string) {
 }
 
 /** Latest stored Closeout results for this exact candidate, using the item index. */
-export function getCloseoutProgress(
-  db: Database,
+export async function getCloseoutProgress(
+  store: Db,
   itemId: string,
   head: string,
-): CloseoutProgressRecord | null {
-  return settled(sqliteDb(db).run((q) => getCloseoutProgressSteps(q, itemId, head)));
+): Promise<CloseoutProgressRecord | null> {
+  return store.run((q) => getCloseoutProgressSteps(q, itemId, head));
 }
 
 export function* getCloseoutProgressSteps(q: Q, itemId: string, head: string) {
@@ -594,8 +597,8 @@ export type CloseoutProgressState = Pick<
   "id" | "itemId" | "head" | "policyDigest" | "decision" | "updatedAt" | "finishedAt"
 > & { steps: Pick<CloseoutStepRecord, "state">[] };
 
-export function listCloseoutProgressStates(db: Database): CloseoutProgressState[] {
-  return settled(sqliteDb(db).run(listCloseoutProgressStatesSteps));
+export async function listCloseoutProgressStates(store: Db): Promise<CloseoutProgressState[]> {
+  return store.run((q) => listCloseoutProgressStatesSteps(q));
 }
 
 export function* listCloseoutProgressStatesSteps(q: Q): Steps<CloseoutProgressState[]> {
@@ -797,11 +800,11 @@ export function* setRunningCloseoutStepDetailSteps(
   );
 }
 
-export function failedCloseoutReviews(
-  db: Database,
+export async function failedCloseoutReviews(
+  store: Db,
   itemId: string,
-): AcceptedCloseoutReviews | null {
-  return settled(sqliteDb(db).run((q) => failedCloseoutReviewsSteps(q, itemId)));
+): Promise<AcceptedCloseoutReviews | null> {
+  return store.run((q) => failedCloseoutReviewsSteps(q, itemId));
 }
 
 export function* failedCloseoutReviewsSteps(
@@ -868,6 +871,6 @@ export function* latestCloseoutProgressMarkerSteps(q: Q, itemId: string) {
   return row ?? null;
 }
 
-export function latestCloseoutProgressMarker(db: Database, itemId: string) {
-  return settled(sqliteDb(db).run((q) => latestCloseoutProgressMarkerSteps(q, itemId)));
+export async function latestCloseoutProgressMarker(store: Db, itemId: string) {
+  return store.run((q) => latestCloseoutProgressMarkerSteps(q, itemId));
 }

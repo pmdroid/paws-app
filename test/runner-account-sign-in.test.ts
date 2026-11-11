@@ -44,8 +44,8 @@ async function fixture(runnerVersion = "0.1.61") {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = issueWorkspaceBootstrap(db, "fixture-host", now);
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-host", now);
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-host",
     name: "Fixture",
@@ -226,7 +226,7 @@ test("a completed named sign-in repairs only its binding's sign-in failure", asy
     now,
   });
   for (const bindingId of [binding.id, other.id])
-    recordAccountObservation(db, {
+    await recordAccountObservation(sqliteDb(db), {
       bindingId,
       source: "result",
       sourceId: `failed-${bindingId}`,
@@ -241,10 +241,10 @@ test("a completed named sign-in repairs only its binding's sign-in failure", asy
     authorization: null,
     inputId: null,
   });
-  const auth = (bindingId: string) =>
-    bindingAccountHealth(db, bindingId).find((row) => row.kind === "auth")?.state;
-  expect(auth(binding.id)).toBe("ok");
-  expect(auth(other.id)).toBe("auth_required");
+  const auth = async (bindingId: string) =>
+    (await bindingAccountHealth(sqliteDb(db), bindingId)).find((row) => row.kind === "auth")?.state;
+  expect(await auth(binding.id)).toBe("ok");
+  expect(await auth(other.id)).toBe("auth_required");
   expect(policy(db, runnerId)).toBeNull();
   db.close();
 });

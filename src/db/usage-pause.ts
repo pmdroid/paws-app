@@ -1,19 +1,14 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { systemClock } from "../core";
 import { resumeAccountHealthNowSteps } from "./agent-account-health";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { type Db, type Q, type Steps } from "./db";
 import { accrueAwakeSteps } from "./items";
 import { usagePause as usagePauseTable } from "./schema";
 
 /** A run waiting for its agent's usage limit to reset. */
 export type UsagePause = typeof usagePauseTable.$inferSelect;
 
-export function startUsagePause(db: Database, pause: UsagePause, mono = systemClock.mono()): void {
-  settled(sqliteDb(db).transaction((q) => startUsagePauseSteps(q, pause, mono)));
-}
-
-export async function startUsagePauseAsync(
+export async function startUsagePause(
   store: Db,
   pause: UsagePause,
   mono = systemClock.mono(),
@@ -72,20 +67,11 @@ export function* usagePauseSteps(q: Q, runId: string): Steps<UsagePause | null> 
   return row ?? null;
 }
 
-export function usagePause(db: Database, runId: string): UsagePause | null {
-  return settled(sqliteDb(db).run((q) => usagePauseSteps(q, runId)));
+export async function usagePause(store: Db, runId: string): Promise<UsagePause | null> {
+  return store.run((q) => usagePauseSteps(q, runId));
 }
 
-export function endUsagePause(
-  db: Database,
-  runId: string,
-  mono = systemClock.mono(),
-  now = systemClock.now(),
-): void {
-  settled(sqliteDb(db).transaction((q) => endUsagePauseSteps(q, runId, mono, now)));
-}
-
-export async function endUsagePauseAsync(
+export async function endUsagePause(
   store: Db,
   runId: string,
   mono = systemClock.mono(),
@@ -127,8 +113,8 @@ export function* resumeUsagePauseNowSteps(q: Q, runId: string, now: number): Ste
 }
 
 /** Resume now: end the wait and lift the agent's cooldown so placement can try it again. */
-export function resumeUsagePauseNow(db: Database, runId: string, now: number): boolean {
-  return settled(sqliteDb(db).transaction((q) => resumeUsagePauseNowSteps(q, runId, now)));
+export async function resumeUsagePauseNow(store: Db, runId: string, now: number): Promise<boolean> {
+  return store.transaction((q) => resumeUsagePauseNowSteps(q, runId, now));
 }
 
 export function* clearUsagePausesSteps(q: Q): Steps<void> {
@@ -136,8 +122,8 @@ export function* clearUsagePausesSteps(q: Q): Steps<void> {
 }
 
 /** A pause lives in the process that waits for it; a restart starts from no waits. */
-export function clearUsagePauses(db: Database): void {
-  settled(sqliteDb(db).run((q) => clearUsagePausesSteps(q)));
+export async function clearUsagePauses(store: Db): Promise<void> {
+  await store.run((q) => clearUsagePausesSteps(q));
 }
 
 type CooldownQuery = { agent: string; now: number; runnerIds: readonly string[] };
@@ -164,11 +150,11 @@ export function* earliestRunnerCooldownSteps(
   return row ?? null;
 }
 
-export function earliestRunnerCooldown(
-  db: Database,
+export async function earliestRunnerCooldown(
+  store: Db,
   input: CooldownQuery,
-): { runnerId: string; until: number } | null {
-  return settled(sqliteDb(db).run((q) => earliestRunnerCooldownSteps(q, input)));
+): Promise<{ runnerId: string; until: number } | null> {
+  return store.run((q) => earliestRunnerCooldownSteps(q, input));
 }
 
 export function* runnerAgentLoginReadySteps(q: Q, runnerId: string, agent: string): Steps<boolean> {
@@ -190,6 +176,10 @@ export function* runnerAgentLoginReadySteps(q: Q, runnerId: string, agent: strin
   return row !== undefined;
 }
 
-export function runnerAgentLoginReady(db: Database, runnerId: string, agent: string): boolean {
-  return settled(sqliteDb(db).run((q) => runnerAgentLoginReadySteps(q, runnerId, agent)));
+export async function runnerAgentLoginReady(
+  store: Db,
+  runnerId: string,
+  agent: string,
+): Promise<boolean> {
+  return store.run((q) => runnerAgentLoginReadySteps(q, runnerId, agent));
 }

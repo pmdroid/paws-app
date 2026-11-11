@@ -118,7 +118,7 @@ describe("queued pull requests that conflict with main", () => {
 
     // Back in the queue on the same head: main moves again and it still conflicts.
     await h.requeue("ENG-3");
-    returnToMergeQueue(h.db, "ENG-3");
+    await returnToMergeQueue(sqliteDb(h.db), "ENG-3");
     const again = await h.moveMain("README.md", "main again\n");
     expect(await h.sweep(again)).toEqual([]);
     expect(getWorkItem(h.db, "ENG-3")?.state).toBe("merge_queue");
@@ -157,7 +157,7 @@ describe("queued pull requests that conflict with main", () => {
     expect(queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-4"]);
 
     await h.requeue("ENG-3");
-    returnToMergeQueue(h.db, "ENG-3");
+    await returnToMergeQueue(sqliteDb(h.db), "ENG-3");
     expect(queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-3", "ENG-4"]);
     expect(await h.pass("ENG-3")).toMatchObject({
       kind: "wait",
@@ -168,7 +168,7 @@ describe("queued pull requests that conflict with main", () => {
 
     // The kept place is spent: a later return to the agent leaves the queue as before.
     h.db.run("UPDATE work_item SET state = 'verifying' WHERE id = 'ENG-3'");
-    returnToMergeQueue(h.db, "ENG-3");
+    await returnToMergeQueue(sqliteDb(h.db), "ENG-3");
     expect(queued(h)).toEqual(["ENG-1", "ENG-2", "ENG-4"]);
   });
 
@@ -176,7 +176,7 @@ describe("queued pull requests that conflict with main", () => {
     const h = await start();
     await threeQueued(h);
     for (let round = 1; round <= MAX_REBASE_RETURNS; round++)
-      recordRebaseReturn(h.db, {
+      await recordRebaseReturn(sqliteDb(h.db), {
         itemId: "ENG-2",
         jobId: 900 + round,
         candidate: `old-${round}`,
@@ -208,7 +208,7 @@ describe("queued pull requests that conflict with main", () => {
     const h = await start();
     await threeQueued(h);
     for (let round = 1; round <= MAX_REBASE_RETURNS; round++)
-      recordRebaseReturn(h.db, {
+      await recordRebaseReturn(sqliteDb(h.db), {
         itemId: "ENG-3",
         jobId: 900 + round,
         candidate: `old-${round}`,

@@ -4,7 +4,7 @@ import {
   OutboxDispatcher,
   advanceOutboxSession,
   enqueueOutbox,
-  getOutbox,
+  getOutboxSteps,
   listOutbox,
   migrate,
   openDatabase,
@@ -113,7 +113,7 @@ test.each(["response", "select", "auth"])(
     const first = dispatcher(db, clock, api.tracker);
     await first.tick();
     await first.idle();
-    const prepared = getOutbox(db, id)!;
+    const prepared = (await sqliteDb(db).run((q) => getOutboxSteps(q, id)))!;
     expect(prepared.status).toBe("pending");
     const callerId = (prepared.payload as { id: string }).id;
     expect(callerId).toMatch(/^[\da-f-]{36}$/);
@@ -127,8 +127,11 @@ test.each(["response", "select", "auth"])(
       const recovered = dispatcher(reopened, clock, api.tracker);
       await recovered.tick();
       await recovered.idle();
-      expect(getOutbox(reopened, id)?.status).toBe("sent");
-      expect((getOutbox(reopened, id)!.payload as { id: string }).id).toBe(callerId);
+      expect((await sqliteDb(reopened).run((q) => getOutboxSteps(q, id)))?.status).toBe("sent");
+      expect(
+        ((await sqliteDb(reopened).run((q) => getOutboxSteps(q, id)))!.payload as { id: string })
+          .id,
+      ).toBe(callerId);
       expect(api.created).toHaveLength(1);
       expect(api.activities.get(callerId)?.["content"]).toMatchObject({ body });
     } finally {

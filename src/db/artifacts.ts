@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, count, eq, ne, notExists, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 export type StoredArtifact = {
   id: string;
@@ -72,12 +71,12 @@ export function* saveArtifactSteps(
   return stored;
 }
 
-export function saveArtifact(
-  db: Database,
+export async function saveArtifact(
+  store: Db,
   artifact: StoredArtifact & { identityHash?: string },
   now: number,
-): StoredArtifact {
-  return settled(sqliteDb(db).run((q) => saveArtifactSteps(q, artifact, now)));
+): Promise<StoredArtifact> {
+  return store.run((q) => saveArtifactSteps(q, artifact, now));
 }
 
 export function* markArtifactSteps(q: Q, id: string, assetUrl: string | null) {
@@ -90,8 +89,8 @@ export function* markArtifactSteps(q: Q, id: string, assetUrl: string | null) {
   );
 }
 
-export function markArtifact(db: Database, id: string, assetUrl: string | null): void {
-  settled(sqliteDb(db).run((q) => markArtifactSteps(q, id, assetUrl)));
+export async function markArtifact(store: Db, id: string, assetUrl: string | null): Promise<void> {
+  await store.run((q) => markArtifactSteps(q, id, assetUrl));
 }
 
 export function* listArtifactsSteps(q: Q, itemId: string) {
@@ -101,8 +100,8 @@ export function* listArtifactsSteps(q: Q, itemId: string) {
   );
 }
 
-export function listArtifacts(db: Database, itemId: string): StoredArtifact[] {
-  return settled(sqliteDb(db).run((q) => listArtifactsSteps(q, itemId)));
+export async function listArtifacts(store: Db, itemId: string): Promise<StoredArtifact[]> {
+  return store.run((q) => listArtifactsSteps(q, itemId));
 }
 
 export function* getArtifactSteps(q: Q, id: string) {
@@ -113,8 +112,8 @@ export function* getArtifactSteps(q: Q, id: string) {
   return row ?? null;
 }
 
-export function getArtifact(db: Database, id: string): StoredArtifact | null {
-  return settled(sqliteDb(db).run((q) => getArtifactSteps(q, id)));
+export async function getArtifact(store: Db, id: string): Promise<StoredArtifact | null> {
+  return store.run((q) => getArtifactSteps(q, id));
 }
 
 export function* beginArtifactAttemptSteps(q: Q, itemId: string, identityHash: string) {
@@ -132,8 +131,12 @@ export function* beginArtifactAttemptSteps(q: Q, itemId: string, identityHash: s
   return row!.version;
 }
 
-export function beginArtifactAttempt(db: Database, itemId: string, identityHash: string): number {
-  return settled(sqliteDb(db).run((q) => beginArtifactAttemptSteps(q, itemId, identityHash)));
+export async function beginArtifactAttempt(
+  store: Db,
+  itemId: string,
+  identityHash: string,
+): Promise<number> {
+  return store.run((q) => beginArtifactAttemptSteps(q, itemId, identityHash));
 }
 
 export function* completeArtifactAttemptSteps(
@@ -154,13 +157,13 @@ export function* completeArtifactAttemptSteps(
   );
 }
 
-export function completeArtifactAttempt(
-  db: Database,
+export async function completeArtifactAttempt(
+  store: Db,
   itemId: string,
   identityHash: string,
   version: number,
-): void {
-  settled(sqliteDb(db).run((q) => completeArtifactAttemptSteps(q, itemId, identityHash, version)));
+): Promise<void> {
+  await store.run((q) => completeArtifactAttemptSteps(q, itemId, identityHash, version));
 }
 
 export function* artifactPublicationReadySteps(q: Q, itemId: string) {
@@ -197,8 +200,8 @@ export function* artifactPublicationReadySteps(q: Q, itemId: string) {
   return uploads.pending === 0;
 }
 
-export function artifactPublicationReady(db: Database, itemId: string): boolean {
-  return settled(sqliteDb(db).run((q) => artifactPublicationReadySteps(q, itemId)));
+export async function artifactPublicationReady(store: Db, itemId: string): Promise<boolean> {
+  return store.run((q) => artifactPublicationReadySteps(q, itemId));
 }
 
 export function* requestArtifactAttachmentSteps(q: Q, itemId: string, identityHash: string) {
@@ -211,12 +214,12 @@ export function* requestArtifactAttachmentSteps(q: Q, itemId: string, identityHa
   );
 }
 
-export function requestArtifactAttachment(
-  db: Database,
+export async function requestArtifactAttachment(
+  store: Db,
   itemId: string,
   identityHash: string,
-): void {
-  settled(sqliteDb(db).run((q) => requestArtifactAttachmentSteps(q, itemId, identityHash)));
+): Promise<void> {
+  await store.run((q) => requestArtifactAttachmentSteps(q, itemId, identityHash));
 }
 
 export function* artifactAttachmentRequestedSteps(q: Q, itemId: string, identityHash: string) {
@@ -230,14 +233,12 @@ export function* artifactAttachmentRequestedSteps(q: Q, itemId: string, identity
   return row?.requested === 1;
 }
 
-export function artifactAttachmentRequested(
-  db: Database,
+export async function artifactAttachmentRequested(
+  store: Db,
   itemId: string,
   identityHash: string,
-): boolean {
-  return settled(
-    sqliteDb(db).run((q) => artifactAttachmentRequestedSteps(q, itemId, identityHash)),
-  );
+): Promise<boolean> {
+  return store.run((q) => artifactAttachmentRequestedSteps(q, itemId, identityHash));
 }
 
 function attempt(q: Q, itemId: string, identityHash: string) {

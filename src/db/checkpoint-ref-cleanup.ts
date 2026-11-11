@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { asc, eq } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 /** Items whose checkpoint ref still waits to be deleted, longest-ended first. */
 export function* endedCheckpointRefItemsSteps(q: Q) {
@@ -14,8 +13,8 @@ export function* endedCheckpointRefItemsSteps(q: Q) {
   return rows.map((row) => row.itemId);
 }
 
-export function endedCheckpointRefItems(db: Database): string[] {
-  return settled(sqliteDb(db).run(endedCheckpointRefItemsSteps));
+export async function endedCheckpointRefItems(store: Db): Promise<string[]> {
+  return store.run((q) => endedCheckpointRefItemsSteps(q));
 }
 
 export function* clearCheckpointRefCleanupSteps(q: Q, itemId: string) {
@@ -23,6 +22,6 @@ export function* clearCheckpointRefCleanupSteps(q: Q, itemId: string) {
   yield* q.exec(q.orm.delete(checkpointRefCleanup).where(eq(checkpointRefCleanup.itemId, itemId)));
 }
 
-export function clearCheckpointRefCleanup(db: Database, itemId: string): void {
-  settled(sqliteDb(db).run((q) => clearCheckpointRefCleanupSteps(q, itemId)));
+export async function clearCheckpointRefCleanup(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => clearCheckpointRefCleanupSteps(q, itemId));
 }

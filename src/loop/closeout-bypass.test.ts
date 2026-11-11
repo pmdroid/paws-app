@@ -94,7 +94,7 @@ const effects: LinkAskEffects = { bypass: reverifyBypassedSteps };
 test("Closeout help is a bypass link ask with the failed checks of the head", async () => {
   const { db, itemId, question } = await blocked();
   expect(question.kind).toBe("link");
-  expect(getLinkAsk(db, question.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     kind: "bypass",
     headCommit: HEAD,
     link: LINK,
@@ -103,14 +103,16 @@ test("Closeout help is a bypass link ask with the failed checks of the head", as
   expect(question.body).toContain(`Decide in Paws: ${LINK}`);
   expect(question.body).toContain("2 checks failed (independent-review, test)");
   expect(question.body).not.toContain("/paws bypass");
-  expect(listCloseoutRecoveries(db, itemId)[0]?.questionId).toBe(question.id);
+  expect((await listCloseoutRecoveries(sqliteDb(db), itemId))[0]?.questionId).toBe(question.id);
   expect(
-    listCloseoutBypassChecks(db, question.id).map(({ checkId, kind, state, attempt }) => ({
-      checkId,
-      kind,
-      state,
-      attempt,
-    })),
+    (await listCloseoutBypassChecks(sqliteDb(db), question.id)).map(
+      ({ checkId, kind, state, attempt }) => ({
+        checkId,
+        kind,
+        state,
+        attempt,
+      }),
+    ),
   ).toEqual([
     { checkId: "independent-review", kind: "review", state: "failed", attempt: 1 },
     { checkId: "test", kind: "command", state: "exhausted", attempt: 3 },
@@ -144,14 +146,14 @@ test("bypassing from the page writes the rows and verifies the same head again",
     `closeout-bypass:${question.id}`,
   ]);
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
-  expect(listCloseoutBypassChecks(db, question.id)[0]).toMatchObject({
+  expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]).toMatchObject({
     checkId: "independent-review",
     reason: "Smoke run moved to PAS-744.",
     approvedBy: "lead",
     approvedByName: "Lea Lead",
     approvedAt: NOW + 100,
   });
-  expect(listCloseoutBypassChecks(db, question.id)[1]?.approvedAt).toBeNull();
+  expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[1]?.approvedAt).toBeNull();
   const { bypasses } = await recoveryOptions(db, itemId);
   expect(bypasses).toEqual([
     {
@@ -208,7 +210,7 @@ test("a bypass needs offered checks, each once, each with a reason", async () =>
         effects,
       ),
     ).toBe("rejected");
-  expect(getQuestion(db, question.id)?.status).toBe("open");
+  expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
 });
@@ -230,8 +232,10 @@ test("someone who did not delegate and does not lead the project cannot bypass",
       effects,
     ),
   ).toBe("forbidden");
-  expect(getQuestion(db, question.id)?.status).toBe("open");
-  expect(listCloseoutBypassChecks(db, question.id).every((check) => !check.approvedBy)).toBe(true);
+  expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
+  expect(
+    (await listCloseoutBypassChecks(sqliteDb(db), question.id)).every((check) => !check.approvedBy),
+  ).toBe(true);
   expect((await recoveryOptions(db, itemId)).bypasses).toEqual([]);
 });
 
@@ -246,7 +250,10 @@ test("a /paws bypass reply in Linear is guidance and gets the link back once", a
       now: NOW + 100,
     }),
   ).toBe(true);
-  expect(getLinkAsk(db, question.id)).toMatchObject({ decision: null, closedReason: "guidance" });
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+    decision: null,
+    closedReason: "guidance",
+  });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
   expect(await recoveryOptions(db, itemId)).toEqual({ retryBaseline: ["test:1"], bypasses: [] });
@@ -283,7 +290,7 @@ test("guidance from the page restarts the agent and authorizes a new round", asy
 test("without a public link, Closeout help is a Linear question that cannot bypass", async () => {
   const { db, question } = await blocked(null);
   expect(question.kind).toBe("closeout-help");
-  expect(getLinkAsk(db, question.id)).toBeNull();
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toBeNull();
   expect(question.body).toContain("A reply here cannot bypass a check.");
   expect(question.body).not.toContain("/paws bypass");
 });

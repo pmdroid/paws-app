@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
@@ -13,7 +12,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { emitJobReady, enqueueJobOnceSteps } from "./jobs";
 import { jsonField } from "./json-text";
 
@@ -166,15 +165,13 @@ export function* recordPullCommentSteps(
   return { recorded: true, enqueued };
 }
 
-export function recordPullComment(
-  db: Database,
+export async function recordPullComment(
+  store: Db,
   comment: Omit<PullCommentRecord, "handledAt" | "outcome">,
   wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
-): boolean {
-  const { recorded, enqueued } = settled(
-    sqliteDb(db).run((q) => recordPullCommentSteps(q, comment, wait)),
-  );
-  if (enqueued) emitJobReady(db);
+): Promise<boolean> {
+  const { recorded, enqueued } = await store.run((q) => recordPullCommentSteps(q, comment, wait));
+  if (enqueued) emitJobReady(store);
   return recorded;
 }
 
@@ -224,8 +221,8 @@ export function* pendingPullCommentsSteps(q: Q, itemId: string) {
   return rows.map(mapRow);
 }
 
-export function pendingPullComments(db: Database, itemId: string): PullCommentRecord[] {
-  return settled(sqliteDb(db).run((q) => pendingPullCommentsSteps(q, itemId)));
+export async function pendingPullComments(store: Db, itemId: string): Promise<PullCommentRecord[]> {
+  return store.run((q) => pendingPullCommentsSteps(q, itemId));
 }
 
 export function* getPullCommentSteps(q: Q, source: PullCommentSource, commentId: number) {
@@ -239,12 +236,12 @@ export function* getPullCommentSteps(q: Q, source: PullCommentSource, commentId:
   return row === undefined ? null : mapRow(row);
 }
 
-export function getPullComment(
-  db: Database,
+export async function getPullComment(
+  store: Db,
   source: PullCommentSource,
   commentId: number,
-): PullCommentRecord | null {
-  return settled(sqliteDb(db).run((q) => getPullCommentSteps(q, source, commentId)));
+): Promise<PullCommentRecord | null> {
+  return store.run((q) => getPullCommentSteps(q, source, commentId));
 }
 
 /** Settle the given comments that are still open. The number settled. */
@@ -273,13 +270,13 @@ export function* settlePullCommentsSteps(
   return settledCount;
 }
 
-export function settlePullComments(
-  db: Database,
+export async function settlePullComments(
+  store: Db,
   comments: readonly Pick<PullCommentRecord, "source" | "commentId">[],
   outcome: PullCommentOutcome,
   now: number,
-): number {
-  return settled(sqliteDb(db).run((q) => settlePullCommentsSteps(q, comments, outcome, now)));
+): Promise<number> {
+  return store.run((q) => settlePullCommentsSteps(q, comments, outcome, now));
 }
 
 function mapRow(row: Row): PullCommentRecord {
@@ -317,8 +314,8 @@ export function* commentingAppsSteps(q: Q, owner: string, repo: string) {
   return rows.map((row) => row.login.slice(0, -"[bot]".length));
 }
 
-export function commentingApps(db: Database, owner: string, repo: string): string[] {
-  return settled(sqliteDb(db).run((q) => commentingAppsSteps(q, owner, repo)));
+export async function commentingApps(store: Db, owner: string, repo: string): Promise<string[]> {
+  return store.run((q) => commentingAppsSteps(q, owner, repo));
 }
 
 export function* pullReviewCheckWaitSteps(q: Q, itemId: string) {
@@ -345,8 +342,11 @@ export function* pullReviewCheckWaitSteps(q: Q, itemId: string) {
     : null;
 }
 
-export function pullReviewCheckWait(db: Database, itemId: string): ReviewCheckWait | null {
-  return settled(sqliteDb(db).run((q) => pullReviewCheckWaitSteps(q, itemId)));
+export async function pullReviewCheckWait(
+  store: Db,
+  itemId: string,
+): Promise<ReviewCheckWait | null> {
+  return store.run((q) => pullReviewCheckWaitSteps(q, itemId));
 }
 
 /** The newest item still in flight with this pull request on this repository. */
@@ -372,11 +372,11 @@ export function* openItemIdForPullSteps(q: Q, owner: string, repo: string, pullN
   return row?.id ?? null;
 }
 
-export function openItemIdForPull(
-  db: Database,
+export async function openItemIdForPull(
+  store: Db,
   owner: string,
   repo: string,
   pullNumber: number,
-): string | null {
-  return settled(sqliteDb(db).run((q) => openItemIdForPullSteps(q, owner, repo, pullNumber)));
+): Promise<string | null> {
+  return store.run((q) => openItemIdForPullSteps(q, owner, repo, pullNumber));
 }

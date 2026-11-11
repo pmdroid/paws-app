@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
 
 export type CiRerun = {
@@ -44,8 +44,8 @@ export function* recordCiRerunSteps(q: Q, rerun: CiRerun) {
   return inserted.length === 1;
 }
 
-export function recordCiRerun(db: Database, rerun: CiRerun): boolean {
-  return settled(sqliteDb(db).run((q) => recordCiRerunSteps(q, rerun)));
+export async function recordCiRerun(store: Db, rerun: CiRerun): Promise<boolean> {
+  return store.run((q) => recordCiRerunSteps(q, rerun));
 }
 
 export function* listCiRerunsSteps(q: Q, itemId: string) {
@@ -66,6 +66,6 @@ export function* listCiRerunsSteps(q: Q, itemId: string) {
   }));
 }
 
-export function listCiReruns(db: Database, itemId: string): CiRerun[] {
-  return settled(sqliteDb(db).run((q) => listCiRerunsSteps(q, itemId)));
+export async function listCiReruns(store: Db, itemId: string): Promise<CiRerun[]> {
+  return store.run((q) => listCiRerunsSteps(q, itemId));
 }

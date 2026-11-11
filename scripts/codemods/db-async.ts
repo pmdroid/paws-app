@@ -39,6 +39,7 @@ const TEST_CALLBACKS = new Set(["test", "it", "beforeAll", "beforeEach", "afterA
 const TRANSACTION_CALLS = new Set(["transaction", "immediate"]);
 const DB_TYPES = new Set(["Db", "SqliteDb", "PgDb"]);
 const LEFT_ALONE = new Set(["migrate", "appliedMigrations", "legacyMigrate", "sqliteDb"]);
+const RUNNERS = new Set(["settled", "sqliteDb", "run", "transaction", "runSteps", "sync"]);
 
 export const manipulationSettings = {
   indentationText: IndentationText.TwoSpaces,
@@ -63,6 +64,7 @@ type Wrapper = {
   fn: FunctionDeclaration;
   steps: FunctionDeclaration;
   sibling?: FunctionDeclaration;
+  body?: string;
 };
 type Plan = { wrapper: Wrapper; awaits: Map<CallExpression, boolean>; asyncs: Set<Fn> };
 
@@ -113,7 +115,9 @@ function references(decl: FunctionDeclaration | VariableDeclaration | MethodDecl
     .findReferencesAsNodes()
     .filter(
       (ref) =>
-        !ref.getFirstAncestor((n) => Node.isImportDeclaration(n) || Node.isExportDeclaration(n)),
+        !ref.getFirstAncestor(
+          (n) => Node.isImportDeclaration(n) || Node.isExportDeclaration(n) || Node.isTypeQuery(n),
+        ),
     );
 }
 
@@ -132,11 +136,35 @@ function findWrappers(files: SourceFile[], dbDir: string, report: Report): Wrapp
         report.withoutSteps.push({ ...site(fn), name });
         continue;
       }
+      const body = onlyRunsSteps(fn, steps) ? undefined : awaitedBody(fn);
+      if (body === null) {
+        report.boundaries.push({
+          ...site(fn),
+          reason: "body does more than run its Steps",
+          wrapper: name,
+        });
+        continue;
+      }
       const sibling = sf.getFunction(`${name}Async`);
-      wrappers.push({ fn, steps, sibling: sibling?.isAsync() ? sibling : undefined });
+      wrappers.push({ fn, steps, sibling: sibling?.isAsync() ? sibling : undefined, body });
     }
   }
   return wrappers;
+}
+
+function onlyRunsSteps(fn: FunctionDeclaration, steps: FunctionDeclaration): boolean {
+  const statements = fn.getStatements();
+  if (statements.length !== 1) return false;
+  const [statement] = statements;
+  if (statement!.getDescendantsOfKind(SyntaxKind.AsExpression).length > 0) return false;
+  return statement!.getDescendantsOfKind(SyntaxKind.CallExpression).every((call) => {
+    const name = calleeName(call);
+    return name === steps.getName() || (name !== undefined && RUNNERS.has(name));
+  });
+}
+
+function topLevelAwaits(sf: SourceFile): boolean {
+  return /\/(test|scripts)\//.test(sf.getFilePath());
 }
 
 function plan(wrapper: Wrapper, inScope: Set<SourceFile>, report: Report): Plan | null {
@@ -158,8 +186,11 @@ function plan(wrapper: Wrapper, inScope: Set<SourceFile>, report: Report): Plan 
         stop(ref, "used outside the given files");
         continue;
       }
-      const call = ref.getParent();
-      if (!call || !Node.isCallExpression(call) || call.getExpression() !== ref) {
+      const access = ref.getParent();
+      const callee =
+        Node.isPropertyAccessExpression(access) && access.getNameNode() === ref ? access : ref;
+      const call = callee.getParent();
+      if (!call || !Node.isCallExpression(call) || call.getExpression() !== callee) {
         stop(ref, "used as a value, not called");
         continue;
       }
@@ -183,6 +214,10 @@ function plan(wrapper: Wrapper, inScope: Set<SourceFile>, report: Report): Plan 
         continue;
       }
       const fn = call.getFirstAncestor(isFunctionLike);
+      if (!fn && topLevelAwaits(call.getSourceFile())) {
+        result.awaits.set(call, wrap);
+        continue;
+      }
       const reason = enclosingBoundary(fn);
       if (reason) {
         stop(call, reason);
@@ -219,12 +254,19 @@ function enclosingBoundary(fn: Node | undefined): string | undefined {
   if (Node.isFunctionDeclaration(fn)) return undefined;
   if (Node.isVariableDeclaration(parent) && parent.getInitializer() === fn) return undefined;
   if (Node.isCallExpression(parent) && parent.getArguments().includes(fn)) {
-    const name = calleeName(parent) ?? "an expression";
+    const name = calleeName(parent) ?? eachName(parent) ?? "an expression";
     if (TEST_CALLBACKS.has(name)) return undefined;
     if (SYNC_CALLBACKS.has(name)) return `sync callback (${name})`;
     return `callback passed to ${name}`;
   }
   return "function value";
+}
+
+function eachName(call: CallExpression): string | undefined {
+  const callee = call.getExpression();
+  if (!Node.isCallExpression(callee) || calleeName(callee) !== "each") return undefined;
+  const owner = callee.getExpression();
+  return Node.isPropertyAccessExpression(owner) ? owner.getExpression().getText() : undefined;
 }
 
 function moduleSpecifier(from: SourceFile, to: SourceFile): string {
@@ -301,7 +343,47 @@ function localHelpers(fn: FunctionDeclaration, seen = new Set<FunctionDeclaratio
   return seen;
 }
 
-function rewriteWrapper({ fn, steps }: Wrapper) {
+function awaitedBody(fn: FunctionDeclaration): string | null {
+  const name = fn.getParameters()[0]!.getName();
+  const body = fn.getBody()!;
+  const edits: { start: number; end: number; text: string }[] = [];
+  for (const id of body.getDescendantsOfKind(SyntaxKind.Identifier)) {
+    if (id.getText() !== name) continue;
+    const call = id.getParent();
+    if (!Node.isCallExpression(call) || call.getArguments()[0] !== id) return null;
+    if (calleeName(call) === "emitJobReady") {
+      edits.push({ start: id.getStart(), end: id.getEnd(), text: "store" });
+      continue;
+    }
+    const access = call.getParent();
+    const runner = access?.getParent();
+    const outer = runner?.getParent();
+    if (
+      calleeName(call) !== "sqliteDb" ||
+      !Node.isPropertyAccessExpression(access) ||
+      !["run", "transaction"].includes(access.getName()) ||
+      !Node.isCallExpression(runner) ||
+      runner.getExpression() !== access ||
+      !Node.isCallExpression(outer) ||
+      calleeName(outer) !== "settled"
+    )
+      return null;
+    const args = runner.getArguments().map((a) => a.getText());
+    edits.push({
+      start: outer.getStart(),
+      end: outer.getEnd(),
+      text: `(await store.${access.getName()}(${args.join(", ")}))`,
+    });
+  }
+  if (edits.length === 0) return null;
+  let text = body.getText();
+  const offset = body.getStart();
+  for (const edit of edits.sort((a, b) => b.start - a.start))
+    text = text.slice(0, edit.start - offset) + edit.text + text.slice(edit.end - offset);
+  return text;
+}
+
+function rewriteWrapper({ fn, steps, body }: Wrapper) {
   const transaction = [fn, ...localHelpers(fn)].some((f) =>
     f.getDescendantsOfKind(SyntaxKind.CallExpression).some((c) => calleeName(c) === "transaction"),
   );
@@ -314,7 +396,7 @@ function rewriteWrapper({ fn, steps }: Wrapper) {
   const docs = fn.getJsDocs().map((doc) => `${doc.getText()}\n`);
   fn.replaceWithText(
     `${docs.join("")}export async function ${fn.getName()}${typeParams.length ? `<${typeParams.join(", ")}>` : ""}(${params})` +
-      `${ret ? `: Promise<${ret}>` : ""} {\n  ${ret === "void" ? `await ${invoke};` : `return ${invoke};`}\n}`,
+      `${ret ? `: Promise<${ret}>` : ""} ${body ?? `{\n  ${ret === "void" ? `await ${invoke};` : `return ${invoke};`}\n}`}`,
   );
 }
 

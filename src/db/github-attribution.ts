@@ -5,7 +5,7 @@ import {
 } from "./workspace";
 import type { Database } from "bun:sqlite";
 import { and, eq, gt, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { dashboardPath } from "../dashboard-links";
 
 export type VerifiedGitHubAttribution = { id: number; login: string; name: string; email: string };
@@ -52,8 +52,12 @@ export function* requireAttributionSessionSteps(q: Q, binding: AttributionBindin
     throw new Error("A current sign-in and permitted workspace membership are required.");
 }
 
-export function requireAttributionSession(db: Database, binding: AttributionBinding, now: number) {
-  settled(sqliteDb(db).run((q) => requireAttributionSessionSteps(q, binding, now)));
+export async function requireAttributionSession(
+  store: Db,
+  binding: AttributionBinding,
+  now: number,
+) {
+  return store.run((q) => requireAttributionSessionSteps(q, binding, now));
 }
 
 type BeginInput = {
@@ -114,12 +118,12 @@ export function beginGitHubAttribution(
 
 type ConsumeInput = { stateHash: string; browserHash: string; now: number };
 
-export function consumeGitHubAttribution(
+export async function consumeGitHubAttribution(
   db: Database,
   binding: AttributionBinding,
   input: ConsumeInput,
-): number {
-  return consumeGitHubAttributionRequest(db, binding, input).revision;
+): Promise<number> {
+  return (await consumeGitHubAttributionRequest(sqliteDb(db), binding, input)).revision;
 }
 
 export function* consumeGitHubAttributionRequestSteps(
@@ -149,14 +153,12 @@ export function* consumeGitHubAttributionRequestSteps(
 }
 
 /** Uses up one pending link and says where its callback returns. */
-export function consumeGitHubAttributionRequest(
-  db: Database,
+export async function consumeGitHubAttributionRequest(
+  store: Db,
   binding: AttributionBinding,
   input: ConsumeInput,
-): { revision: number; returnPath: string } {
-  return settled(
-    sqliteDb(db).transaction((q) => consumeGitHubAttributionRequestSteps(q, binding, input)),
-  );
+): Promise<{ revision: number; returnPath: string }> {
+  return store.transaction((q) => consumeGitHubAttributionRequestSteps(q, binding, input));
 }
 
 export function* saveGitHubAttributionSteps(
@@ -197,18 +199,14 @@ export function* saveGitHubAttributionSteps(
   });
 }
 
-export function saveGitHubAttribution(
-  db: Database,
+export async function saveGitHubAttribution(
+  store: Db,
   binding: AttributionBinding,
   identity: VerifiedGitHubAttribution,
   revision: number,
   now: number,
 ) {
-  settled(
-    sqliteDb(db).transaction((q) =>
-      saveGitHubAttributionSteps(q, binding, identity, revision, now),
-    ),
-  );
+  return store.transaction((q) => saveGitHubAttributionSteps(q, binding, identity, revision, now));
 }
 
 export function* revokeGitHubAttributionSteps(q: Q, binding: AttributionBinding, now: number) {
@@ -245,8 +243,8 @@ export function* revokeGitHubAttributionSteps(q: Q, binding: AttributionBinding,
   });
 }
 
-export function revokeGitHubAttribution(db: Database, binding: AttributionBinding, now: number) {
-  settled(sqliteDb(db).transaction((q) => revokeGitHubAttributionSteps(q, binding, now)));
+export async function revokeGitHubAttribution(store: Db, binding: AttributionBinding, now: number) {
+  return store.transaction((q) => revokeGitHubAttributionSteps(q, binding, now));
 }
 
 export function* githubAttributionSteps(q: Q, workspaceId: string, userId: string) {
@@ -271,12 +269,12 @@ export function* githubAttributionSteps(q: Q, workspaceId: string, userId: strin
   return { ...found, email: `${found.id}+${found.login}@users.noreply.github.com` };
 }
 
-export function githubAttribution(
-  db: Database,
+export async function githubAttribution(
+  store: Db,
   workspaceId: string,
   userId: string,
-): VerifiedGitHubAttribution | null {
-  return settled(sqliteDb(db).run((q) => githubAttributionSteps(q, workspaceId, userId)));
+): Promise<VerifiedGitHubAttribution | null> {
+  return store.run((q) => githubAttributionSteps(q, workspaceId, userId));
 }
 
 export function* attributionItemScopeSteps(q: Q, itemId: string) {
@@ -297,9 +295,14 @@ export function* attributionItemScopeSteps(q: Q, itemId: string) {
   return row ?? null;
 }
 
-export function attributionItemScope(
-  db: Database,
+export async function attributionItemScope(
+  store: Db,
   itemId: string,
-): { workspaceId: string; organizationId: string; sessionId: string; teamId: string } | null {
-  return settled(sqliteDb(db).run((q) => attributionItemScopeSteps(q, itemId)));
+): Promise<{
+  workspaceId: string;
+  organizationId: string;
+  sessionId: string;
+  teamId: string;
+} | null> {
+  return store.run((q) => attributionItemScopeSteps(q, itemId));
 }

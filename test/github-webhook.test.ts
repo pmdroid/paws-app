@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { checkGitHubSignature, handleGitHubWebhook } from "../src/github";
-import { listGitHubDeliveries } from "../src/db";
+import { listGitHubDeliveries, sqliteDb } from "../src/db";
 import { startPaws } from "../src/index";
 import { tempHome } from "./helpers";
 
@@ -86,11 +86,11 @@ test("the running GitHub endpoint persists verified deliveries and deduplicates 
       });
     };
     expect((await send()).status).toBe(200);
-    expect(listGitHubDeliveries(paws.db)).toHaveLength(1);
+    expect(await listGitHubDeliveries(sqliteDb(paws.db))).toHaveLength(1);
     await paws.stop();
     paws = await startPaws(env);
     expect((await send()).status).toBe(200);
-    expect(listGitHubDeliveries(paws.db)).toMatchObject([
+    expect(await listGitHubDeliveries(sqliteDb(paws.db))).toMatchObject([
       { deliveryId: "delivery-1", event: "ping", payload },
     ]);
     expect(readFileSync(join(home, "paws.db")).toString()).not.toContain(secret);

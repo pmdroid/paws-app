@@ -49,10 +49,15 @@ async function fixture(
     evidence: EVIDENCE,
   });
   if (options.pull !== false)
-    recordItemPullRequest(db, { itemId, pullNumber: 12, pullUrl: null, openedAt: 1 });
+    await recordItemPullRequest(sqliteDb(db), {
+      itemId,
+      pullNumber: 12,
+      pullUrl: null,
+      openedAt: 1,
+    });
   if (options.pull !== false && options.stored !== false) {
-    savePullRequestText(
-      db,
+    await savePullRequestText(
+      sqliteDb(db),
       itemId,
       {
         title: "Grade release races",
@@ -142,7 +147,7 @@ test("a saved title reaches the open pull request without a push", async () => {
   expect(sent.title).toBe(draft.title);
   expect(sent.body.startsWith("Fixes DEP-686\n\nNew description\n\n")).toBe(true);
   expect(sent.body).toContain(EVIDENCE);
-  expect(getPullRequestText(f.db, f.itemId)).toMatchObject({ title: draft.title });
+  expect(await getPullRequestText(sqliteDb(f.db), f.itemId)).toMatchObject({ title: draft.title });
 });
 
 test("saving the same title and body again sends nothing", async () => {
@@ -184,7 +189,7 @@ test("a refused update keeps the tool's success and records one status line", as
     "Couldn't update the pull request title: GitHub answered 422: Validation Failed",
   ]);
   expect(f.journal).toHaveLength(1);
-  expect(getPullRequestText(f.db, f.itemId)?.title).toBe("Grade release races");
+  expect((await getPullRequestText(sqliteDb(f.db), f.itemId))?.title).toBe("Grade release races");
 });
 
 test("a pull request published before Paws stored its text is updated from GitHub's copy", async () => {
@@ -202,7 +207,7 @@ test("a pull request published before Paws stored its text is updated from GitHu
       evidence: EVIDENCE,
     }),
   });
-  expect(getPullRequestText(f.db, f.itemId)?.evidence).toBe(EVIDENCE);
+  expect((await getPullRequestText(sqliteDb(f.db), f.itemId))?.evidence).toBe(EVIDENCE);
 });
 
 test("stopping the run during the update records nothing", async () => {
@@ -214,7 +219,7 @@ test("stopping the run during the update records nothing", async () => {
   patch.resolve();
   expect(await work).toBe("stopped");
   expect(f.status).toEqual([]);
-  expect(getPullRequestText(f.db, f.itemId)?.title).toBe("Grade release races");
+  expect((await getPullRequestText(sqliteDb(f.db), f.itemId))?.title).toBe("Grade release races");
 });
 
 test("a stopped run sends nothing", async () => {
@@ -234,5 +239,5 @@ test("recovery finds the evidence from the Closeout summary when a later draft w
   const f = await fixture({ stored: false, savedDescription: "Unpublished description" });
   expect(await f.apply(draft)).toBe("updated");
   expect(f.requests.map((request) => request.method)).toEqual(["GET", "PATCH"]);
-  expect(getPullRequestText(f.db, f.itemId)?.evidence).toBe(EVIDENCE);
+  expect((await getPullRequestText(sqliteDb(f.db), f.itemId))?.evidence).toBe(EVIDENCE);
 });

@@ -273,7 +273,7 @@ test("a high-risk head is asked with a link: Markdown, no options, the link on t
   expect(await approval(db, heads.s)).toBe("missing");
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect(question.kind).toBe("link");
-  expect(getLinkAsk(db, question.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     kind: "risk",
     headCommit: heads.s,
     link: "https://paws.example/dashboard/issues/ENG-106#risk",
@@ -403,7 +403,10 @@ test("a Linear reply requests changes and never approves, even when it says appr
   ).toBe(true);
   expect(await approval(db, heads.s)).toBe("missing");
   expect(await sqliteDb(db).run((q) => riskApprovalsSteps(q, itemId))).toEqual([]);
-  expect(getLinkAsk(db, question.id)).toMatchObject({ decision: null, closedReason: "guidance" });
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+    decision: null,
+    closedReason: "guidance",
+  });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(resumes(db)).toEqual([
     expect.objectContaining({ reason: "review", handoff: expect.stringContaining("approve") }),
@@ -425,7 +428,7 @@ test("Stop stops the item and leaves the pull request open", async () => {
   });
   expect(outcome).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("cancelled");
-  expect(getLinkAsk(db, question.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     closedReason: "cancelled",
     decidedBy: "lead",
   });
@@ -451,7 +454,7 @@ test("someone who is neither the delegator nor the lead cannot answer", async ()
     ).toBe("forbidden");
   expect(await approval(db, heads.s)).toBe("missing");
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-  expect(getLinkAsk(db, question.id)?.closedAt).toBeNull();
+  expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
 });
 
 test("Stop only fits a risk approval", async () => {
@@ -549,7 +552,7 @@ test("a CI fix that only changes a test keeps the approval and merges without a 
     }),
   ).toEqual({ ok: true });
   // The carry-over names the approved head and why.
-  expect(getRiskFix(db, itemId, heads.ciFix)).toMatchObject({
+  expect(await getRiskFix(sqliteDb(db), itemId, heads.ciFix)).toMatchObject({
     approvedHead: heads.s,
     changed: ["test/x.test.ts"],
     paths: [],
@@ -576,13 +579,13 @@ test("a fix that changes a high-risk path asks again and lists only that change"
   ).toBe("asked");
   const ask = findOpenQuestion(db, "ses_1")!;
   const detail = `High-risk paths the fix changed since the approved ${heads.s.slice(0, 7)}: \`src/auth/session.ts\`.`;
-  expect(getLinkAsk(db, ask.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), ask.id)).toMatchObject({
     kind: "risk",
     headCommit: heads.authFix,
     detail,
   });
   // The whole pull request also changes `session.ts`; the ask leaves it out.
-  expect(getLinkAsk(db, ask.id)?.detail).not.toContain("`session.ts`");
+  expect((await getLinkAsk(sqliteDb(db), ask.id))?.detail).not.toContain("`session.ts`");
   const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(2);
   expect((elicitations[1]!.payload as { body: string }).body).toContain(detail);
@@ -592,11 +595,13 @@ test("a CI fix on a rebased head counts only the fix's own files, not main's", a
   const { db, itemId } = await riskApproved();
   fixAccepted(db, heads.rebasedCiFix, heads.newMain);
   expect(await approvalWithFixes(db, heads.rebasedCiFix)).toBe("approved");
-  expect(getRiskFix(db, itemId, heads.rebasedCiFix)?.changed).toEqual(["test/x.test.ts"]);
+  expect((await getRiskFix(sqliteDb(db), itemId, heads.rebasedCiFix))?.changed).toEqual([
+    "test/x.test.ts",
+  ]);
   // A rebase alone still follows samePatch and records no fix.
   fixAccepted(db, heads.rebased, heads.newMain);
   expect(await approvalWithFixes(db, heads.rebased)).toBe("approved");
-  expect(getRiskFix(db, itemId, heads.rebased)).toBeNull();
+  expect(await getRiskFix(sqliteDb(db), itemId, heads.rebased)).toBeNull();
 });
 
 test("without an approval, or when the fix cannot be read, a fix asks", async () => {
@@ -622,7 +627,7 @@ test("a carried-over approval is checked again against the high-risk paths in fo
   expect(await approvalWithFixes(db, heads.ciFix)).toBe("approved");
   // Settings now lists the tests too: the same fix no longer keeps the approval.
   expect(await approvalWithFixes(db, heads.ciFix, [...HIGH_RISK, "test/**"])).toBe("missing");
-  expect(getRiskFix(db, itemId, heads.ciFix)?.paths).toEqual(["test/x.test.ts"]);
+  expect((await getRiskFix(sqliteDb(db), itemId, heads.ciFix))?.paths).toEqual(["test/x.test.ts"]);
   // A fix Paws can no longer read forgets the earlier carry-over instead of trusting it.
   expect(await approvalWithFixes(db, heads.ciFix)).toBe("approved");
   expect(
@@ -634,7 +639,7 @@ test("a carried-over approval is checked again against the high-risk paths in fo
       fixRisk: async () => null,
     }),
   ).toBe("missing");
-  expect(getRiskFix(db, itemId, heads.ciFix)).toBeNull();
+  expect(await getRiskFix(sqliteDb(db), itemId, heads.ciFix)).toBeNull();
 });
 
 test("a rebase that changed the patch asks again, even when the change is only a test", async () => {
@@ -653,14 +658,19 @@ test("a rebase that changed the patch asks again, even when the change is only a
   expect(await samePatch(repo, heads.both, heads.absorbed, heads.mainWithTest)).toBe(false);
   expect(await fixChangedPaths(repo, heads.both, heads.absorbed, heads.mainWithTest)).toBeNull();
   expect(await approvalWithFixes(db, heads.absorbed)).toBe("missing");
-  expect(getRiskFix(db, itemId, heads.absorbed)).toBeNull();
+  expect(await getRiskFix(sqliteDb(db), itemId, heads.absorbed)).toBeNull();
 });
 
 /** Stored results, as reported through Closeout's real progress adapter. */
 async function cleanRiskFixture() {
   const fixture = await held();
   const { db, itemId } = fixture;
-  saveCandidatePaths(db, { itemId, head: heads.s, paths: ["session.ts"], recordedAt: NOW });
+  await saveCandidatePaths(sqliteDb(db), {
+    itemId,
+    head: heads.s,
+    paths: ["session.ts"],
+    recordedAt: NOW,
+  });
   const identity = {
     taskId: itemId,
     head: heads.s,
@@ -818,7 +828,7 @@ for (const policyPath of [
   test(`changing ${policyPath} always asks`, async () => {
     const f = await cleanRiskFixture();
     // The policy file deliberately matches no high-risk glob. Only session.ts is in risk.paths.
-    saveCandidatePaths(f.db, {
+    await saveCandidatePaths(sqliteDb(f.db), {
       itemId: f.itemId,
       head: heads.s,
       paths: ["session.ts", policyPath],
@@ -892,7 +902,7 @@ test("legacy, malformed and wrong-attempt review snapshots fail closed", async (
 
 test("review snapshots use the row's resolved attempt and hide invalid envelopes", async () => {
   const f = await cleanRiskFixture();
-  const step = getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find(
+  const step = (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
     (s) => s.id === "security-review",
   )!;
   f.progress.step(f.identity, {
@@ -902,7 +912,9 @@ test("review snapshots use the row's resolved attempt and hide invalid envelopes
     findingSeverities: ["P3"],
   });
   expect(
-    getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find((s) => s.id === "security-review"),
+    (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
+      (s) => s.id === "security-review",
+    ),
   ).toMatchObject({ attempt: 1, findings: "Current notes", findingSeverities: ["P3"] });
   for (const findings of [
     "{broken",
@@ -911,8 +923,9 @@ test("review snapshots use the row's resolved attempt and hide invalid envelopes
   ]) {
     f.db.run("UPDATE closeout_step SET findings = ? WHERE step_id = 'security-review'", [findings]);
     expect(
-      getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find((s) => s.id === "security-review")!
-        .findings,
+      (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
+        (s) => s.id === "security-review",
+      )!.findings,
     ).toBe(findings === "{broken" ? findings : null);
     expect(await f.read()).toBe("missing");
   }
@@ -925,7 +938,9 @@ test("a later clean attempt clears prior findings even without a running update"
   expect(await f.read()).toBe("missing");
   f.step("security-review", null, [], 2);
   expect(
-    getCloseoutProgress(f.db, f.itemId, heads.s)?.steps.find((s) => s.id === "security-review"),
+    (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))?.steps.find(
+      (s) => s.id === "security-review",
+    ),
   ).toMatchObject({ attempt: 2, findings: null, findingSeverities: [] });
   expect(await f.read()).toBe("approved");
   f.db.close();
@@ -934,7 +949,7 @@ test("a later clean attempt clears prior findings even without a running update"
 test("a cached review keeps only the snapshot of its unchanged attempt", async () => {
   const f = await cleanRiskFixture();
   f.step("security-review", "P3 notes", ["P3"]);
-  const cached = getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find(
+  const cached = (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
     (s) => s.id === "security-review",
   )!;
   f.db.run("UPDATE closeout_step SET findings = ? WHERE step_id = 'security-review'", [
@@ -942,8 +957,9 @@ test("a cached review keeps only the snapshot of its unchanged attempt", async (
   ]);
   f.progress.step(f.identity, { ...cached, findings: null, findingSeverities: undefined });
   expect(
-    getCloseoutProgress(f.db, f.itemId, heads.s)!.steps.find((s) => s.id === "security-review")!
-      .findings,
+    (await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))!.steps.find(
+      (s) => s.id === "security-review",
+    )!.findings,
   ).toBe('{"example":1}');
   expect(await f.read()).toBe("missing");
   f.step("security-review", "P3 notes", ["P3"]);
@@ -1005,7 +1021,7 @@ for (const severity of ["P0", "P1", "P2"] as const) {
     f.report("independent-review", severity);
     expect(await f.read()).toBe("missing");
     const finding = listReviewFindings(f.db)[0]!;
-    setReviewFindingStatus(f.db, {
+    await setReviewFindingStatus(sqliteDb(f.db), {
       id: finding.id,
       status: "dismissed",
       reason: "Acknowledged",
@@ -1020,15 +1036,15 @@ for (const severity of ["P0", "P1", "P2"] as const) {
 test("unknown or malformed candidate paths never reuse another head's path list", async () => {
   const f = await cleanRiskFixture();
   f.db.run("DELETE FROM candidate_paths");
-  saveCandidatePaths(f.db, {
+  await saveCandidatePaths(sqliteDb(f.db), {
     itemId: f.itemId,
     head: heads.changed,
     paths: ["session.ts"],
     recordedAt: NOW + 1,
   });
-  expect(getCandidatePaths(f.db, f.itemId, heads.s)).toBeNull();
+  expect(await getCandidatePaths(sqliteDb(f.db), f.itemId, heads.s)).toBeNull();
   expect(await f.read()).toBe("missing");
-  saveCandidatePaths(f.db, {
+  await saveCandidatePaths(sqliteDb(f.db), {
     itemId: f.itemId,
     head: heads.s,
     paths: ["session.ts"],
@@ -1044,7 +1060,7 @@ test("unknown or malformed candidate paths never reuse another head's path list"
 test("a carried acceptance after rebase does not substitute for exact-head reviews", async () => {
   const f = await cleanRiskFixture();
   classify(f.db, heads.rebased, heads.newMain);
-  saveCandidatePaths(f.db, {
+  await saveCandidatePaths(sqliteDb(f.db), {
     itemId: f.itemId,
     head: heads.rebased,
     paths: ["session.ts"],
@@ -1077,14 +1093,18 @@ test("differently named reviews do not substitute for the two required reviews",
 
 test("the exact-head progress reader selects the latest run and preserves the unfiltered reader", async () => {
   const f = await cleanRiskFixture();
-  expect(getCloseoutProgress(f.db, f.itemId, heads.s)).toEqual(listCloseoutProgress(f.db)[0]!);
-  expect(getCloseoutProgress(f.db, f.itemId, heads.rebased)).toBeNull();
-  expect(getCloseoutProgress(f.db, "another-item", heads.s)).toBeNull();
+  expect(await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s)).toEqual(
+    listCloseoutProgress(f.db)[0]!,
+  );
+  expect(await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.rebased)).toBeNull();
+  expect(await getCloseoutProgress(sqliteDb(f.db), "another-item", heads.s)).toBeNull();
   f.progress.begin({ ...f.identity, policyDigest: "other-policy" });
   f.db.run("UPDATE closeout_progress SET updated_at = ? WHERE policy_digest = 'other-policy'", [
     NOW + 1,
   ]);
-  expect(getCloseoutProgress(f.db, f.itemId, heads.s)?.policyDigest).toBe("other-policy");
+  expect((await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s))?.policyDigest).toBe(
+    "other-policy",
+  );
   f.db.close();
 });
 
@@ -1094,7 +1114,7 @@ test("a new or reopened finding at S revokes automatic eligibility", async () =>
   f.report("security-review", "P2", "Unsafe reuse");
   expect(await f.read()).toBe("missing");
   const finding = listReviewFindings(f.db)[0]!;
-  setReviewFindingStatus(f.db, {
+  await setReviewFindingStatus(sqliteDb(f.db), {
     id: finding.id,
     status: "dismissed",
     reason: "Reviewed",
@@ -1102,7 +1122,12 @@ test("a new or reopened finding at S revokes automatic eligibility", async () =>
     now: NOW,
   });
   expect(await f.read()).toBe("approved");
-  setReviewFindingStatus(f.db, { id: finding.id, status: "open", by: "user-lead", now: NOW + 1 });
+  await setReviewFindingStatus(sqliteDb(f.db), {
+    id: finding.id,
+    status: "open",
+    by: "user-lead",
+    now: NOW + 1,
+  });
   expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
   f.db.close();
 });
@@ -1142,7 +1167,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
       if (scenario === "missing security")
         f.db.run("DELETE FROM closeout_step WHERE step_id = 'security-review'");
       if (scenario === "rules change")
-        saveCandidatePaths(f.db, {
+        await saveCandidatePaths(sqliteDb(f.db), {
           itemId: f.itemId,
           head: heads.s,
           paths: ["tools/rules.ts"],
@@ -1161,7 +1186,7 @@ for (const scenario of ["clean", "P2", "missing security", "rules change", "off"
         head: heads.s,
         pull: { number: 1 },
         riskApproval: async () => (await display.read(f.itemId, heads.s))!.detail,
-        risk: getCandidateRisk(f.db, f.itemId, heads.s),
+        risk: await getCandidateRisk(sqliteDb(f.db), f.itemId, heads.s),
         openLine: "",
       });
       expect(body).toContain(expected);

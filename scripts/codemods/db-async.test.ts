@@ -37,11 +37,15 @@ test.each([
   ["a Db argument is kept as is", "db-arg.ts"],
   ["propagation reaches the caller's caller", "propagation.ts"],
   ["a sync test callback becomes async", "sync-test.ts"],
+  ["a test.each callback becomes async", "each.ts"],
+  ["a typeof reference does not hold the wrapper back", "typeof.ts"],
+  ["a test or script module awaits at top level", "test/top.ts"],
+  ["a this.method() call propagates like a plain call", "method.ts"],
   ["a .map callback stays synchronous", "map.ts"],
   ["a transaction body stays synchronous", "transaction.ts"],
   ["callers of a folded fooAsync sibling use the final name", "fold.ts"],
   ["an export used outside the globs stays synchronous", "outside.ts"],
-  ["wrappers become async over Db and fooAsync siblings fold in", "db/items.ts"],
+  ["wrappers become async over Db, fooAsync siblings fold in, side effects stay", "db/items.ts"],
 ])("%s", (_name, file) => {
   expect(read(dir, file)).toBe(read(join(fixtures, "after"), file));
 });
@@ -53,8 +57,15 @@ test("boundaries and exports without a Steps form are reported", () => {
     [7, "inside a transaction(...) body"],
   ]);
   expect(boundary("outside.ts")).toEqual([[5, "used outside the given files"]]);
+  expect(boundary("db/items.ts")).toEqual([]);
   expect(first.withoutSteps.map((s) => s.name)).toEqual(["itemFile"]);
-  expect(first).toMatchObject({ wrappers: 3, folded: 1, calls: 7, wrapped: 4, asyncFunctions: 6 });
+  expect(first).toMatchObject({
+    wrappers: 5,
+    folded: 1,
+    calls: 12,
+    wrapped: 8,
+    asyncFunctions: 10,
+  });
 });
 
 test("a second run changes nothing", () => {

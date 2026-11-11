@@ -8,7 +8,7 @@ import {
   claimOutboxHeads,
   completeOutbox,
   enqueueOutbox,
-  getOutbox,
+  getOutboxSteps,
   insertQueuedItem,
   insertRun,
   immediate,
@@ -132,7 +132,7 @@ export async function probeLinearActivityBudget(
       await outbox.idle();
     }
     assert.equal(activities.size, 61);
-    assert.equal(getOutbox(db, final)?.status, "pending");
+    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, final)))?.status, "pending");
     observe("Public history passes the former hourly cap before the final response", true, {
       events: eventCount,
       published: activities.size,
@@ -154,7 +154,7 @@ export async function probeLinearActivityBudget(
       assert.equal(output["body"], `Checked ${n}.`);
       assert.equal(delivered[n]!["ephemeral"], false);
     }
-    assert.equal(getOutbox(db, final)?.status, "sent");
+    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, final)))?.status, "sent");
     observe("Every public update survives SQLite reopen and precedes the final response", true, {
       published: activities.size,
       orderedTools: eventCount,
@@ -177,7 +177,7 @@ export async function probeLinearActivityBudget(
     });
     await outbox.tick();
     await outbox.idle();
-    assert.equal(getOutbox(db, keepalive)?.status, "sent");
+    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, keepalive)))?.status, "sent");
     observe("Keepalives remain deliverable alongside complete public history", true, {
       keepaliveSent: true,
     });
@@ -192,7 +192,7 @@ export async function probeLinearActivityBudget(
     const nextId = activity("next-run-session", "thought", item.id);
     await outbox.tick();
     await outbox.idle();
-    assert.equal(getOutbox(db, nextId)?.status, "sent");
+    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, nextId)))?.status, "sent");
     assert.notEqual(original.run.id, nextRun.id);
     observe("A new canonical run gets its first update without replaying stale progress", true, {
       runChanged: true,
@@ -200,11 +200,11 @@ export async function probeLinearActivityBudget(
     const question = activity("question-session", "elicitation", item.id);
     await outbox.tick();
     await outbox.idle();
-    assert.equal(getOutbox(db, question)?.status, "sent");
+    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, question)))?.status, "sent");
     const questionFinal = activity("question-session", "response", item.id);
     await outbox.tick();
     await outbox.idle();
-    assert.equal(getOutbox(db, questionFinal)?.status, "sent");
+    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, questionFinal)))?.status, "sent");
     observe(
       "Questions and the final response are delivered exactly once after queued history",
       true,
@@ -218,7 +218,7 @@ export async function probeLinearActivityBudget(
     for (let n = 0; n < 7; n++) {
       await outbox.tick();
       await outbox.idle();
-      assert.equal(getOutbox(db, critical)?.status, "pending");
+      assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, critical)))?.status, "pending");
       const before = requests;
       activity(`other-${n}`, "thought");
       const slack = enqueueOutbox(db, {
@@ -229,7 +229,7 @@ export async function probeLinearActivityBudget(
       await outbox.tick();
       await outbox.idle();
       assert.equal(requests, before);
-      assert.equal(getOutbox(db, slack)?.status, "sent");
+      assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, slack)))?.status, "sent");
       if (n === 0) {
         db.close();
         db = openDatabase(path);
@@ -242,13 +242,13 @@ export async function probeLinearActivityBudget(
     limited = false;
     await outbox.tick();
     await outbox.idle();
-    assert.equal(getOutbox(db, critical)?.status, "sent");
-    assert.equal(getOutbox(db, critical)?.attempts, 8);
+    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, critical)))?.status, "sent");
+    assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, critical)))?.attempts, 8);
     observe(
       "Actual HTTP429 Retry-After persists across restart and preserves normal history through seven limits",
       true,
       {
-        attempts: getOutbox(db, critical)?.attempts,
+        attempts: (await sqliteDb(db).run((q) => getOutboxSteps(q, critical)))?.attempts,
         delivered: true,
         otherTargetsUnaffected: true,
       },

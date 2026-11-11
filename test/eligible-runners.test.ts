@@ -39,7 +39,7 @@ const MEMBERS: Record<string, Member> = {
   gone: { role: "member", active: false, teamIds: ["team"] },
 };
 
-function workspace(runners: Record<string, Runner>) {
+async function workspace(runners: Record<string, Runner>) {
   const root = mkdtempSync(join(tmpdir(), "paws-eligible-"));
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
@@ -50,12 +50,12 @@ function workspace(runners: Record<string, Runner>) {
     name: "Founder",
     email: "founder@example.invalid",
   });
-  const ws = consumeWorkspaceBootstrap(db, {
+  const ws = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Test",
     userId: founder,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   const users: Record<string, string> = {};
@@ -209,7 +209,7 @@ const CASES: {
 
 for (const row of CASES)
   test(`eligibleRunners: ${row.name} is ${row.reason}`, async () => {
-    const ws = workspace({ runner: row.runner });
+    const ws = await workspace({ runner: row.runner });
     try {
       const result = await ws.check({ leads: row.leads, purpose: row.purpose });
       expect(result.map(({ id, eligible, reason }) => ({ id, eligible, reason }))).toEqual([
@@ -225,7 +225,7 @@ for (const row of CASES)
   });
 
 test("eligibleRunners lists every unrevoked runner in the workspace in id order", async () => {
-  const ws = workspace({
+  const ws = await workspace({
     b: { owner: "colleague" },
     a: { owner: "me" },
     c: { owner: "lead", sharing: 1 },
@@ -243,7 +243,7 @@ test("eligibleRunners lists every unrevoked runner in the workspace in id order"
 });
 
 test("eligibleRunners reports the work owner's runner as own even when it is shared and they lead", async () => {
-  const ws = workspace({ mine: { owner: "me", sharing: 1 } });
+  const ws = await workspace({ mine: { owner: "me", sharing: 1 } });
   try {
     expect((await ws.check({ leads: ["me"] }))[0]?.reason).toBe("own");
   } finally {
@@ -252,7 +252,7 @@ test("eligibleRunners reports the work owner's runner as own even when it is sha
 });
 
 test("eligibleRunners reads only SQLite", async () => {
-  const ws = workspace({ mine: { owner: "me" } });
+  const ws = await workspace({ mine: { owner: "me" } });
   const real = globalThis.fetch;
   let requests = 0;
   globalThis.fetch = (async () => {
@@ -270,7 +270,7 @@ test("eligibleRunners reads only SQLite", async () => {
 });
 
 test("a runner with an unacknowledged cancel stays online; capacity accounts for its cleanup", async () => {
-  const space = workspace({ box: { owner: "me" } });
+  const space = await workspace({ box: { owner: "me" } });
   const now = Date.now();
   try {
     space.db.run(
@@ -284,7 +284,7 @@ test("a runner with an unacknowledged cancel stays online; capacity accounts for
 });
 
 test("a repository command goes to the item's last runner while it is eligible and new enough, then to another", async () => {
-  const w = workspace({ first: { owner: "me" }, last: { owner: "me", ready: 0 } });
+  const w = await workspace({ first: { owner: "me" }, last: { owner: "me", ready: 0 } });
   try {
     const { db, now } = w;
     const repositoryRunner = () =>

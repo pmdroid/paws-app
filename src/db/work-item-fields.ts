@@ -1,12 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, isNull, lte, ne, notExists, notInArray, sql } from "drizzle-orm";
 import { delegationIssueIdSql, parentTaskKeySql } from "../core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { hasTableSteps } from "./linear-session-url";
-
-function run<T>(db: Database, steps: (q: Q) => Steps<T>): T {
-  return settled(sqliteDb(db).run(steps));
-}
 
 export function* itemOwnerUserIdSteps(q: Q, itemId: string) {
   const { workItem } = q.t;
@@ -16,8 +12,8 @@ export function* itemOwnerUserIdSteps(q: Q, itemId: string) {
   return row?.owner ?? null;
 }
 
-export function itemOwnerUserId(db: Database, itemId: string): string | null {
-  return run(db, (q) => itemOwnerUserIdSteps(q, itemId));
+export async function itemOwnerUserId(store: Db, itemId: string): Promise<string | null> {
+  return store.run((q) => itemOwnerUserIdSteps(q, itemId));
 }
 
 export function* assignUnownedItemSteps(q: Q, itemId: string, ownerUserId: string) {
@@ -30,8 +26,12 @@ export function* assignUnownedItemSteps(q: Q, itemId: string, ownerUserId: strin
   );
 }
 
-export function assignUnownedItem(db: Database, itemId: string, ownerUserId: string): void {
-  run(db, (q) => assignUnownedItemSteps(q, itemId, ownerUserId));
+export async function assignUnownedItem(
+  store: Db,
+  itemId: string,
+  ownerUserId: string,
+): Promise<void> {
+  await store.run((q) => assignUnownedItemSteps(q, itemId, ownerUserId));
 }
 
 export function* setItemBranchNameSteps(q: Q, itemId: string, branchName: string) {
@@ -57,8 +57,8 @@ export function* clearItemRecoverySteps(q: Q, itemId: string) {
   );
 }
 
-export function clearItemRecovery(db: Database, itemId: string): void {
-  run(db, (q) => clearItemRecoverySteps(q, itemId));
+export async function clearItemRecovery(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => clearItemRecoverySteps(q, itemId));
 }
 
 export function* bumpItemVersionSteps(q: Q, itemId: string) {
@@ -71,8 +71,8 @@ export function* bumpItemVersionSteps(q: Q, itemId: string) {
   );
 }
 
-export function bumpItemVersion(db: Database, itemId: string): void {
-  run(db, (q) => bumpItemVersionSteps(q, itemId));
+export async function bumpItemVersion(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => bumpItemVersionSteps(q, itemId));
 }
 
 type SessionMove = { delegationId: string; from: string; to: string };
@@ -87,8 +87,8 @@ export function* moveDelegationSessionSteps(q: Q, move: SessionMove) {
   );
 }
 
-export function moveDelegationSession(db: Database, move: SessionMove): void {
-  run(db, (q) => moveDelegationSessionSteps(q, move));
+export async function moveDelegationSession(store: Db, move: SessionMove): Promise<void> {
+  await store.run((q) => moveDelegationSessionSteps(q, move));
 }
 
 export function* issueOpenInOtherSessionSteps(q: Q, issueId: string, sessionId: string) {
@@ -156,7 +156,7 @@ export function* listItemIdsSteps(q: Q, includeArchived: boolean) {
 }
 
 export function listItemIds(db: Database, includeArchived: boolean): string[] {
-  return run(db, (q) => listItemIdsSteps(q, includeArchived));
+  return settled(sqliteDb(db).run((q) => listItemIdsSteps(q, includeArchived)));
 }
 
 export function* itemParentTaskKeySteps(q: Q, itemId: string) {
@@ -171,7 +171,7 @@ export function* itemParentTaskKeySteps(q: Q, itemId: string) {
 }
 
 export function itemParentTaskKey(db: Database, itemId: string): string | null {
-  return run(db, (q) => itemParentTaskKeySteps(q, itemId));
+  return settled(sqliteDb(db).run((q) => itemParentTaskKeySteps(q, itemId)));
 }
 
 export function* itemDelegationIssueIdSteps(q: Q, itemId: string) {
@@ -227,7 +227,7 @@ export function latestRestartEvent(
   db: Database,
   itemId: string,
 ): { reason: string; version: number } | null {
-  return run(db, (q) => latestRestartEventSteps(q, itemId));
+  return settled(sqliteDb(db).run((q) => latestRestartEventSteps(q, itemId)));
 }
 
 /** The parent task key of the delegation's first item. */

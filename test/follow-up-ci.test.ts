@@ -163,7 +163,7 @@ async function waitingTask(
   });
   enterMergeQueue(db, itemId, { phase: "merge_queue", baseSha: "f".repeat(40), wipCommit: HEAD });
   if (options.pull !== false)
-    recordItemPullRequest(db, {
+    await recordItemPullRequest(sqliteDb(db), {
       itemId,
       pullNumber: 7,
       pullUrl: "https://github.com/acme/one/pull/7",
@@ -212,7 +212,7 @@ test("a follow-up on a pull request with failed CI carries the person's text, fa
     expect(handoff).not.toContain(TOKEN);
     expect(handoff.length).toBeLessThan(20_000);
     expect(fixRounds(f.db, f.itemId)).toBe(0);
-    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(1);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(1);
   } finally {
     await f.close();
   }
@@ -255,7 +255,7 @@ for (const ci of ["unreadable", "throws"] as const)
       expect(handoff).toContain("do not assume it passed or failed");
       expect(handoff).not.toContain("CI failed on the pull request");
       expect(handoff).not.toContain(TOKEN);
-      expect(listPendingLinearTurns(f.db, "session")).toHaveLength(1);
+      expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -309,7 +309,7 @@ test("a stop during the CI read restarts nothing", async () => {
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please fix the build"));
     expect(f.resumes()).toEqual([]);
     expect(getWorkItem(f.db, f.itemId)!.state).toBe("merge_queue");
-    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
     expect(listJobs(f.db).some((job) => job.jobKey?.startsWith("linear-turn:"))).toBe(false);
   } finally {
     await f.close();
@@ -320,7 +320,7 @@ test("CI enrichment with a pending comment batch makes one follow-up handoff and
   const f = await waitingTask({ ci: "failed" });
   try {
     const received = Date.now();
-    recordPullComment(f.db, {
+    await recordPullComment(sqliteDb(f.db), {
       source: "conversation",
       commentId: 501,
       itemId: f.itemId,
@@ -348,7 +348,9 @@ test("CI enrichment with a pending comment batch makes one follow-up handoff and
     expect(listJobs(f.db).some((job) => job.jobKey?.startsWith("ci-failed:"))).toBe(false);
     expect(fixRounds(f.db, f.itemId)).toBe(0);
     expect(gathering()).toEqual(window);
-    expect(pendingPullComments(f.db, f.itemId).map((comment) => comment.commentId)).toEqual([501]);
+    expect(
+      (await pendingPullComments(sqliteDb(f.db), f.itemId)).map((comment) => comment.commentId),
+    ).toEqual([501]);
   } finally {
     await f.close();
   }
@@ -363,7 +365,7 @@ test("two replies before dispatch make one handoff with both and one CI section"
     const handoff = f.handoff();
     expect(handoff).toStartWith("Please fix the build\n\nAnd keep the flag name\n\n");
     expect(handoff.split("CI failed on the pull request")).toHaveLength(2);
-    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(2);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(2);
   } finally {
     await f.close();
   }

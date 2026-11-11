@@ -65,17 +65,7 @@ export function* enqueueIssueStatusSteps(
   });
 }
 
-export function enqueueIssueStatus(
-  db: Database,
-  item: Pick<WorkItemRecord, "id" | "linearIssueId" | "sessionKey" | "version">,
-  stateType: "completed" | "canceled",
-  now: number,
-  fence?: { delivery: "stop"; generation: number },
-): void {
-  settled(sqliteDb(db).transaction((q) => enqueueIssueStatusSteps(q, item, stateType, now, fence)));
-}
-
-export async function enqueueIssueStatusAsync(
+export async function enqueueIssueStatus(
   store: Db,
   item: Pick<WorkItemRecord, "id" | "linearIssueId" | "sessionKey" | "version">,
   stateType: "completed" | "canceled",
@@ -135,8 +125,11 @@ export function* requireLinearTaskDelegationSteps(
   );
 }
 
-export function requireLinearTaskDelegation(db: Database, input: LinearTaskDelegationInput): void {
-  settled(sqliteDb(db).run((q) => requireLinearTaskDelegationSteps(q, input)));
+export async function requireLinearTaskDelegation(
+  store: Db,
+  input: LinearTaskDelegationInput,
+): Promise<void> {
+  await store.run((q) => requireLinearTaskDelegationSteps(q, input));
 }
 
 type DelegatedTeams = {

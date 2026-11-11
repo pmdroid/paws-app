@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, isNull, lte, max, ne, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 import { workspaceMemberUsableWhere } from "./workspace";
 
@@ -39,8 +38,8 @@ export function* agentModelSourcesSteps(q: Q, at: number) {
   );
 }
 
-export function agentModelSources(db: Database, at: number): AgentModelSource[] {
-  return settled(sqliteDb(db).run((q) => agentModelSourcesSteps(q, at)));
+export async function agentModelSources(store: Db, at: number): Promise<AgentModelSource[]> {
+  return store.run((q) => agentModelSourcesSteps(q, at));
 }
 
 type ProbeOwner = { runnerId: string; userId: string; agent: string };
@@ -62,11 +61,11 @@ export function* cachedAgentModelsSteps(q: Q, owner: ProbeOwner) {
   );
 }
 
-export function cachedAgentModels(
-  db: Database,
+export async function cachedAgentModels(
+  store: Db,
   owner: ProbeOwner,
-): { model: string; resultJson: string; updatedAt: number }[] {
-  return settled(sqliteDb(db).run((q) => cachedAgentModelsSteps(q, owner)));
+): Promise<{ model: string; resultJson: string; updatedAt: number }[]> {
+  return store.run((q) => cachedAgentModelsSteps(q, owner));
 }
 
 export type PendingAgentModelProbe = {
@@ -99,8 +98,8 @@ export function* pendingAgentModelProbesSteps(q: Q) {
   );
 }
 
-export function pendingAgentModelProbes(db: Database): PendingAgentModelProbe[] {
-  return settled(sqliteDb(db).run((q) => pendingAgentModelProbesSteps(q)));
+export async function pendingAgentModelProbes(store: Db): Promise<PendingAgentModelProbe[]> {
+  return store.run((q) => pendingAgentModelProbesSteps(q));
 }
 
 type AgentModelEntry = ProbeOwner & { model: string; resultJson: string; updatedAt: number };
@@ -121,8 +120,8 @@ export function* saveAgentModelCatalogSteps(q: Q, entry: AgentModelEntry) {
   );
 }
 
-export function saveAgentModelCatalog(db: Database, entry: AgentModelEntry): void {
-  settled(sqliteDb(db).run((q) => saveAgentModelCatalogSteps(q, entry)));
+export async function saveAgentModelCatalog(store: Db, entry: AgentModelEntry): Promise<void> {
+  await store.run((q) => saveAgentModelCatalogSteps(q, entry));
 }
 
 export function* finishAgentModelProbeSteps(q: Q, commandId: string, at: number) {
@@ -130,8 +129,12 @@ export function* finishAgentModelProbeSteps(q: Q, commandId: string, at: number)
   yield* q.exec(q.orm.update(p).set({ finishedAt: at }).where(eq(p.commandId, commandId)));
 }
 
-export function finishAgentModelProbe(db: Database, commandId: string, at: number): void {
-  settled(sqliteDb(db).run((q) => finishAgentModelProbeSteps(q, commandId, at)));
+export async function finishAgentModelProbe(
+  store: Db,
+  commandId: string,
+  at: number,
+): Promise<void> {
+  await store.run((q) => finishAgentModelProbeSteps(q, commandId, at));
 }
 
 type NewAgentModelProbe = ProbeOwner & { commandId: string; model: string; requestedAt: number };
@@ -140,8 +143,8 @@ export function* insertAgentModelProbeSteps(q: Q, probe: NewAgentModelProbe) {
   yield* q.exec(q.orm.insert(q.t.agentModelProbe).values({ ...probe, finishedAt: null }));
 }
 
-export function insertAgentModelProbe(db: Database, probe: NewAgentModelProbe): void {
-  settled(sqliteDb(db).run((q) => insertAgentModelProbeSteps(q, probe)));
+export async function insertAgentModelProbe(store: Db, probe: NewAgentModelProbe): Promise<void> {
+  await store.run((q) => insertAgentModelProbeSteps(q, probe));
 }
 
 export function* lastAgentModelProbeAtSteps(q: Q, owner: ProbeOwner, model?: string) {
@@ -162,6 +165,10 @@ export function* lastAgentModelProbeAtSteps(q: Q, owner: ProbeOwner, model?: str
   return row?.at ?? 0;
 }
 
-export function lastAgentModelProbeAt(db: Database, owner: ProbeOwner, model?: string): number {
-  return settled(sqliteDb(db).run((q) => lastAgentModelProbeAtSteps(q, owner, model)));
+export async function lastAgentModelProbeAt(
+  store: Db,
+  owner: ProbeOwner,
+  model?: string,
+): Promise<number> {
+  return store.run((q) => lastAgentModelProbeAtSteps(q, owner, model));
 }

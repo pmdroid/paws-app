@@ -244,8 +244,11 @@ export function* findingGroupingAdminsSteps(
   );
 }
 
-export function findingGroupingAdmins(db: Database, workspaceId: string): { userId: string }[] {
-  return settled(sqliteDb(db).run((q) => findingGroupingAdminsSteps(q, workspaceId)));
+export async function findingGroupingAdmins(
+  store: Db,
+  workspaceId: string,
+): Promise<{ userId: string }[]> {
+  return store.run((q) => findingGroupingAdminsSteps(q, workspaceId));
 }
 
 /** An expired command cannot return evidence after a coordinator restart. */
@@ -600,8 +603,8 @@ export function* closeFindingGroupSteps(q: Q, input: FindingGroupClose) {
   );
 }
 
-export function closeFindingGroup(db: Database, input: FindingGroupClose): void {
-  settled(sqliteDb(db).run((q) => closeFindingGroupSteps(q, input)));
+export async function closeFindingGroup(store: Db, input: FindingGroupClose): Promise<void> {
+  await store.run((q) => closeFindingGroupSteps(q, input));
 }
 
 export function* releaseFindingGroupActionSteps(q: Q, id: string, action: GroupAction) {

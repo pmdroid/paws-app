@@ -120,8 +120,8 @@ export function* listWorkspaceMembersSteps(q: Q, workspaceId: string) {
   return rows as ((typeof rows)[number] & { role: WorkspaceRole })[];
 }
 
-export function listWorkspaceMembers(db: Database, workspaceId: string) {
-  return settled(sqliteDb(db).run((q) => listWorkspaceMembersSteps(q, workspaceId)));
+export async function listWorkspaceMembers(store: Db, workspaceId: string) {
+  return store.run((q) => listWorkspaceMembersSteps(q, workspaceId));
 }
 
 export function* requireWorkspaceAdminSteps(
@@ -233,8 +233,11 @@ export function* replaceWorkspaceRepositoriesSteps(q: Q, input: RepositoriesChan
   });
 }
 
-export function replaceWorkspaceRepositories(db: Database, input: RepositoriesChange): void {
-  settled(sqliteDb(db).transaction((q) => replaceWorkspaceRepositoriesSteps(q, input)));
+export async function replaceWorkspaceRepositories(
+  store: Db,
+  input: RepositoriesChange,
+): Promise<void> {
+  await store.transaction((q) => replaceWorkspaceRepositoriesSteps(q, input));
 }
 
 /**
@@ -276,8 +279,11 @@ export function* listWorkspaceRepositoryNamesSteps(q: Q, workspaceId?: string): 
   });
 }
 
-export function listWorkspaceRepositoryNames(db: Database, workspaceId?: string): string[] {
-  return settled(sqliteDb(db).run((q) => listWorkspaceRepositoryNamesSteps(q, workspaceId)));
+export async function listWorkspaceRepositoryNames(
+  store: Db,
+  workspaceId?: string,
+): Promise<string[]> {
+  return store.run((q) => listWorkspaceRepositoryNamesSteps(q, workspaceId));
 }
 
 export function* listWorkspaceRepositoriesSteps(q: Q, workspaceId: string) {
@@ -291,8 +297,8 @@ export function* listWorkspaceRepositoriesSteps(q: Q, workspaceId: string) {
   );
 }
 
-export function listWorkspaceRepositories(db: Database, workspaceId: string) {
-  return settled(sqliteDb(db).run((q) => listWorkspaceRepositoriesSteps(q, workspaceId)));
+export async function listWorkspaceRepositories(store: Db, workspaceId: string) {
+  return store.run((q) => listWorkspaceRepositoriesSteps(q, workspaceId));
 }
 
 export function* distinctWorkspaceRepositoriesSteps(q: Q) {

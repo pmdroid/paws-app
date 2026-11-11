@@ -13,6 +13,7 @@ import {
   migrate,
   openDatabase,
   recordItemPullRequest,
+  sqliteDb,
 } from "../src/db";
 import { parseAgentEvent, parseLinearIssueClosed } from "../src/linear";
 import { closeClosedIssueTasks } from "../src/loop";
@@ -20,7 +21,7 @@ import { tempHome } from "./helpers";
 
 const ITEM = "ACME-12";
 
-function itemIn(state: WorkItemState) {
+async function itemIn(state: WorkItemState) {
   const db = openDatabase(join(tempHome(), "paws.db"));
   migrate(db);
   insertQueuedItem(db, { id: ITEM, sessionKey: "session", now: 0 });
@@ -29,11 +30,16 @@ function itemIn(state: WorkItemState) {
   if (state === "awaiting_input") applyWorkItemEvent(db, ITEM, "blocking_question");
   if (state === "merge_queue") applyWorkItemEvent(db, ITEM, "closeout_accepted");
   expect(getWorkItem(db, ITEM)?.state).toBe(state);
-  recordItemPullRequest(db, { itemId: ITEM, pullNumber: 42, pullUrl: null, openedAt: 0 });
+  await recordItemPullRequest(sqliteDb(db), {
+    itemId: ITEM,
+    pullNumber: 42,
+    pullUrl: null,
+    openedAt: 0,
+  });
   return { db, runId: run.id };
 }
 
-const close = (db: ReturnType<typeof itemIn>["db"], stateType: "completed" | "canceled") =>
+const close = (db: Awaited<ReturnType<typeof itemIn>>["db"], stateType: "completed" | "canceled") =>
   closeClosedIssueTasks(
     db,
     {
@@ -46,19 +52,19 @@ const close = (db: ReturnType<typeof itemIn>["db"], stateType: "completed" | "ca
     { notify: () => {}, now: () => 10 },
   );
 
-const responses = (db: ReturnType<typeof itemIn>["db"]) =>
+const responses = (db: Awaited<ReturnType<typeof itemIn>>["db"]) =>
   listOutbox(db)
     .filter((row) => (row.payload as { kind?: string }).kind === "response")
     .map((row) => (row.payload as { body: string }).body);
 
-const closeJobs = (db: ReturnType<typeof itemIn>["db"]) =>
+const closeJobs = (db: Awaited<ReturnType<typeof itemIn>>["db"]) =>
   listJobs(db)
     .filter((job) => job.queue === JOB_KIND.closeStoppedPull)
     .map((job) => job.payload);
 
 for (const state of ["running", "verifying", "awaiting_input", "merge_queue"] as const)
   test(`an issue canceled in Linear while ${state} stops the run and closes its PR with a comment`, async () => {
-    const { db, runId } = itemIn(state);
+    const { db, runId } = await itemIn(state);
     expect(await close(db, "canceled")).toEqual([{ itemId: ITEM, outcome: "cancelled" }]);
     expect(getWorkItem(db, ITEM)?.state).toBe("cancelled");
     if (state === "running") expect(getRun(db, runId)?.status).toBe("lost");
@@ -74,7 +80,7 @@ for (const state of ["running", "verifying", "awaiting_input", "merge_queue"] as
   });
 
 test("a Duplicate issue arrives as canceled and closes the PR the same way", async () => {
-  const { db } = itemIn("running");
+  const { db } = await itemIn("running");
   const at = new Date(1_000).toISOString();
   const event = parseAgentEvent(
     JSON.stringify({
@@ -104,8 +110,8 @@ test("a Duplicate issue arrives as canceled and closes the PR the same way", asy
   db.close();
 });
 
-test("a Linear session stop of the same item still pauses it and keeps the PR", () => {
-  const { db } = itemIn("running");
+test("a Linear session stop of the same item still pauses it and keeps the PR", async () => {
+  const { db } = await itemIn("running");
   const stop = { type: "stop", itemId: ITEM, source: "linear", requestedAt: 10 } as const;
   expect(applyLinearCommand(db, stop).applied).toBe(true);
   expect(getWorkItem(db, ITEM)?.state).toBe("paused");
@@ -114,7 +120,7 @@ test("a Linear session stop of the same item still pauses it and keeps the PR", 
 });
 
 test("Done without a merge cancels the item and leaves its PR open", async () => {
-  const { db } = itemIn("running");
+  const { db } = await itemIn("running");
   expect(await close(db, "completed")).toEqual([{ itemId: ITEM, outcome: "cancelled" }]);
   expect(closeJobs(db)).toEqual([]);
   expect(responses(db)).toEqual([

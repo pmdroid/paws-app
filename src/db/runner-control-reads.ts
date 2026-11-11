@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, lte, not, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { workspaceMemberUsableWhere } from "./workspace";
 
 export function* liveRunnerSessionsSteps(
@@ -81,6 +81,6 @@ export function* certificateRunnerRevokedSteps(q: Q, fingerprint: string): Steps
   return row !== undefined;
 }
 
-export function certificateRunnerRevoked(db: Database, fingerprint: string): boolean {
-  return settled(sqliteDb(db).run((q) => certificateRunnerRevokedSteps(q, fingerprint)));
+export async function certificateRunnerRevoked(store: Db, fingerprint: string): Promise<boolean> {
+  return store.run((q) => certificateRunnerRevokedSteps(q, fingerprint));
 }

@@ -14,6 +14,7 @@ import {
   bindLinearSessionTask,
   getWorkItem,
   listOutbox,
+  sqliteDb,
 } from "../../src/db";
 import type { EnvSource } from "../../src/config";
 import { startPaws } from "../../src/index";
@@ -282,12 +283,12 @@ try {
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const workspace = consumeWorkspaceBootstrap(paws.db, {
+    const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
       id: workspaceId(),
       organizationId: "org",
       name: "Fixture",
       userId,
-      tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(paws.db, "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
       now,
     });
     const issued = issueWorkspaceSession(paws.db, { userId, workspaceId: workspace.id, now });

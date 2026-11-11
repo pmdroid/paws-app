@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, asc, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { emitJobReady, enqueueJobOnceSteps } from "./jobs";
 import {
   DEFAULT_PULL_FEEDBACK_WAIT,
@@ -96,8 +96,8 @@ export function* getPullReviewSteps(q: Q, reviewId: number) {
   return row === undefined ? null : mapRow(row);
 }
 
-export function getPullReview(db: Database, reviewId: number): PullReviewRecord | null {
-  return settled(sqliteDb(db).run((q) => getPullReviewSteps(q, reviewId)));
+export async function getPullReview(store: Db, reviewId: number): Promise<PullReviewRecord | null> {
+  return store.run((q) => getPullReviewSteps(q, reviewId));
 }
 
 /** Changes-requested reviews of this item that have not reached the agent or the team yet. */
@@ -119,8 +119,11 @@ export function* pendingChangeRequestsSteps(q: Q, itemId: string) {
   return rows.map(mapRow);
 }
 
-export function pendingChangeRequests(db: Database, itemId: string): PullReviewRecord[] {
-  return settled(sqliteDb(db).run((q) => pendingChangeRequestsSteps(q, itemId)));
+export async function pendingChangeRequests(
+  store: Db,
+  itemId: string,
+): Promise<PullReviewRecord[]> {
+  return store.run((q) => pendingChangeRequestsSteps(q, itemId));
 }
 
 /** Run this item's pending review jobs now, for a merge that waits on them. */
@@ -166,13 +169,13 @@ export function* wakePullReviewsSteps(
   );
 }
 
-export function wakePullReviews(
-  db: Database,
+export async function wakePullReviews(
+  store: Db,
   itemId: string,
   now: number,
   wait: PullFeedbackWait = DEFAULT_PULL_FEEDBACK_WAIT,
-): void {
-  settled(sqliteDb(db).run((q) => wakePullReviewsSteps(q, itemId, now, wait)));
+): Promise<void> {
+  await store.run((q) => wakePullReviewsSteps(q, itemId, now, wait));
 }
 
 export function* settlePullReviewSteps(
@@ -192,13 +195,13 @@ export function* settlePullReviewSteps(
   return rows.length > 0;
 }
 
-export function settlePullReview(
-  db: Database,
+export async function settlePullReview(
+  store: Db,
   reviewId: number,
   outcome: PullReviewOutcome,
   now: number,
-): boolean {
-  return settled(sqliteDb(db).run((q) => settlePullReviewSteps(q, reviewId, outcome, now)));
+): Promise<boolean> {
+  return store.run((q) => settlePullReviewSteps(q, reviewId, outcome, now));
 }
 
 function mapRow(row: Row): PullReviewRecord {
@@ -236,6 +239,10 @@ export function* openItemIdsForRepositorySteps(q: Q, owner: string, repo: string
   return rows.map((row) => row.id);
 }
 
-export function openItemIdsForRepository(db: Database, owner: string, repo: string): string[] {
-  return settled(sqliteDb(db).run((q) => openItemIdsForRepositorySteps(q, owner, repo)));
+export async function openItemIdsForRepository(
+  store: Db,
+  owner: string,
+  repo: string,
+): Promise<string[]> {
+  return store.run((q) => openItemIdsForRepositorySteps(q, owner, repo));
 }

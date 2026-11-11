@@ -96,7 +96,7 @@ const FILTER: PullCommentFilter = {
       : [],
 };
 
-function setup(threads = THREADS) {
+async function setup(threads = THREADS) {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "eng-1", now: 1, sessionKey: "s-1" });
@@ -107,7 +107,12 @@ function setup(threads = THREADS) {
   });
   beginImplementRun(db, "eng-1", 1);
   enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
-  recordItemPullRequest(db, { itemId: "eng-1", pullNumber: 7, pullUrl: null, openedAt: 1 });
+  await recordItemPullRequest(sqliteDb(db), {
+    itemId: "eng-1",
+    pullNumber: 7,
+    pullUrl: null,
+    openedAt: 1,
+  });
   const github = createFakeReviewThreads(threads);
   const queue = createFakeMergeQueue();
   const checkRuns = createFakeCheckRuns();
@@ -247,20 +252,20 @@ function setup(threads = THREADS) {
   };
 }
 
-const commentJobs = (db: ReturnType<typeof setup>["db"]) =>
+const commentJobs = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   listJobs(db).filter((job) => job.queue === JOB_KIND.pullComments);
-const resumeJobs = (db: ReturnType<typeof setup>["db"]) =>
+const resumeJobs = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
-const handoff = (db: ReturnType<typeof setup>["db"]) =>
+const handoff = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   (resumeJobs(db)[0]?.payload as { handoff: string; reason: string } | undefined) ?? null;
-const feedbackThoughts = (db: ReturnType<typeof setup>["db"]) =>
+const feedbackThoughts = (db: Awaited<ReturnType<typeof setup>>["db"]) =>
   listOutbox(db)
     .filter((row) => row.op === "activity" && row.idempotencyKey.startsWith("pull-feedback:"))
     .map((row) => (row.payload as { kind: string; body: string }).body);
 
 describe("pull request comments restart the item", () => {
   test("an inline comment from a person restarts once with the comment and its thread", async () => {
-    const { db, caps, inline } = setup();
+    const { db, caps, inline } = await setup();
     await inline({
       id: 9001,
       review: 601,
@@ -274,7 +279,7 @@ describe("pull request comments restart the item", () => {
       author: "pascal",
       body: "This sorts the wrong way round.",
     });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(2);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(2);
     expect(commentJobs(db)).toHaveLength(1);
     expect(commentJobs(db)[0]?.payload).toEqual({ pullCommentsFor: "eng-1" });
 
@@ -293,8 +298,8 @@ describe("pull request comments restart the item", () => {
     expect(text).not.toContain("cache key");
     expect(text).not.toContain("Done already.");
     expect(text).toContain(`${COMMENT_FIX_INSTRUCTION}\n\nReply list.`);
-    expect(getPullComment(db, "inline", 9001)?.outcome).toBe("restarted");
-    expect(getPullComment(db, "review", 601)?.outcome).toBe("restarted");
+    expect((await getPullComment(sqliteDb(db), "inline", 9001))?.outcome).toBe("restarted");
+    expect((await getPullComment(sqliteDb(db), "review", 601))?.outcome).toBe("restarted");
     // The Linear session wakes and says why the agent is back.
     expect(feedbackThoughts(db)).toEqual([
       "@pascal commented on pull request #7. The agent is working on the comments.",
@@ -307,14 +312,14 @@ describe("pull request comments restart the item", () => {
       author: "pascal",
       body: "This sorts the wrong way round.",
     });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(0);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(resumeJobs(db)).toHaveLength(1);
     expect(feedbackThoughts(db)).toHaveLength(1);
   });
 
   test("a Bugbot inline finding restarts once with the finding", async () => {
-    const { db, caps, inline } = setup();
+    const { db, caps, inline } = await setup();
     await inline({
       id: 9101,
       review: 701,
@@ -329,7 +334,7 @@ describe("pull request comments restart the item", () => {
   });
 
   test("a Bugbot comment against a fixed Closeout finding quotes both and asks the team", async () => {
-    const { db, caps, inline, setFindings } = setup();
+    const { db, caps, inline, setFindings } = await setup();
     setFindings(CLOSEOUT_FINDINGS);
     await inline({
       id: 9102,
@@ -361,7 +366,7 @@ describe("pull request comments restart the item", () => {
   });
 
   test("an unrelated Bugbot comment gets Closeout's findings as context only", async () => {
-    const { db, caps, inline, setFindings } = setup();
+    const { db, caps, inline, setFindings } = await setup();
     setFindings(CLOSEOUT_FINDINGS);
     await inline({
       id: 9103,
@@ -381,7 +386,7 @@ describe("pull request comments restart the item", () => {
   });
 
   test("without stored Closeout findings the handoff has no findings note", async () => {
-    const { db, caps, conversation } = setup();
+    const { db, caps, conversation } = await setup();
     await conversation({ id: 3002, author: "pascal", body: "Please also fix the README." });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
     expect(handoff(db)!.handoff).not.toContain("Closeout's independent review");
@@ -389,12 +394,12 @@ describe("pull request comments restart the item", () => {
   });
 
   test("a conversation comment from a person restarts once with its text", async () => {
-    const { db, caps, conversation } = setup();
+    const { db, caps, conversation } = await setup();
     expect(
       await conversation({ id: 3001, author: "pascal", body: "Please also fix the README." }),
     ).toBe(true);
     await conversation({ id: 3001, author: "pascal", body: "Please also fix the README." });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(1);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(1);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
     expect(resumeJobs(db)).toHaveLength(1);
     expect(handoff(db)?.handoff).toContain("@pascal in the conversation:");
@@ -402,7 +407,7 @@ describe("pull request comments restart the item", () => {
   });
 
   test("a comment fix on an accepted head is one candidate review escape, even redelivered", async () => {
-    const { db, caps, conversation, inline } = setup();
+    const { db, caps, conversation, inline } = await setup();
     await markCloseoutAccepted(sqliteDb(db), "eng-1", "h");
     await conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
     await conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
@@ -410,7 +415,7 @@ describe("pull request comments restart the item", () => {
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
     await conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
-    expect(listReviewEscapes(db)).toEqual([
+    expect(await listReviewEscapes(sqliteDb(db))).toEqual([
       expect.objectContaining({
         itemId: "eng-1",
         trigger: "comment",
@@ -428,7 +433,7 @@ describe("pull request comments restart the item", () => {
   });
 
   test("an inline comment without a readable thread still carries its text", async () => {
-    const { db, caps, inline } = setup([]);
+    const { db, caps, inline } = await setup([]);
     await inline({
       id: 9201,
       review: 801,
@@ -443,7 +448,7 @@ describe("pull request comments restart the item", () => {
 
 describe("comments that do not restart", () => {
   test("the Paws App's own comments, edits, deletions and ignored bots record nothing", async () => {
-    const { db, conversation, inline } = setup();
+    const { db, conversation, inline } = await setup();
     await conversation({ id: 1, author: "someone[bot]", body: "Opened by Paws.", app: 42 });
     await conversation({ id: 2, author: "paws-test[bot]", body: "Paws again." });
     await conversation({ id: 3, author: "pascal", body: "Edited.", action: "edited" });
@@ -451,12 +456,12 @@ describe("comments that do not restart", () => {
     await conversation({ id: 5, author: "cloudflare-workers-and-pages[bot]", body: "Deploying…" });
     await conversation({ id: 6, author: "Linear-Code[bot]", body: "PAS-1" });
     await inline({ id: 7, review: 70, author: "pascal", body: "Edited inline.", action: "edited" });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(0);
     expect(commentJobs(db)).toHaveLength(0);
   });
 
   test("a status comment with an ignored marker records nothing; the same bot's failure restarts", async () => {
-    const { db, caps, conversation } = setup();
+    const { db, caps, conversation } = await setup();
     expect(
       await conversation({
         id: 11,
@@ -464,7 +469,7 @@ describe("comments that do not restart", () => {
         body: "<!-- deploy-security-proof -->\n## Deploy security proof\nResult: **PASS**",
       }),
     ).toBe(true);
-    expect(getPullComment(db, "conversation", 11)).toBeNull();
+    expect(await getPullComment(sqliteDb(db), "conversation", 11)).toBeNull();
     expect(commentJobs(db)).toHaveLength(0);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(resumeJobs(db)).toHaveLength(0);
@@ -474,13 +479,15 @@ describe("comments that do not restart", () => {
       author: "github-actions[bot]",
       body: "## Deploy security proof\nResult: **FAIL**: the staging token is readable.",
     });
-    expect(pendingPullComments(db, "eng-1").map((comment) => comment.commentId)).toEqual([12]);
+    expect(
+      (await pendingPullComments(sqliteDb(db), "eng-1")).map((comment) => comment.commentId),
+    ).toEqual([12]);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
     expect(handoff(db)?.handoff).toContain("the staging token is readable");
   });
 
   test("an inline comment from a review bot without a marker still restarts", async () => {
-    const { db, caps, inline } = setup();
+    const { db, caps, inline } = await setup();
     await inline({
       id: 13,
       review: 130,
@@ -492,7 +499,7 @@ describe("comments that do not restart", () => {
   });
 
   test("an edited sticky comment does not restart the item, with or without a marker", async () => {
-    const { db, caps, conversation } = setup();
+    const { db, caps, conversation } = await setup();
     await conversation({
       id: 14,
       author: "github-actions[bot]",
@@ -510,14 +517,14 @@ describe("comments that do not restart", () => {
       body: "Bundle size changed by +2 KB",
       action: "edited",
     });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(0);
     expect(commentJobs(db)).toHaveLength(0);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(resumeJobs(db)).toHaveLength(0);
   });
 
   test("a fork's pull request, another pull request and an ended item record nothing", async () => {
-    const { db, inline, send, conversation } = setup();
+    const { db, inline, send, conversation } = await setup();
     await inline({ id: 1, review: 10, author: "pascal", body: "Fork.", headRepository: 99 });
     await send("issue_comment", {
       action: "created",
@@ -531,11 +538,11 @@ describe("comments that do not restart", () => {
     });
     db.run("UPDATE work_item SET state='merged' WHERE id='eng-1'");
     await conversation({ id: 4, author: "pascal", body: "Too late." });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(0);
   });
 
   test("a comment on an item that ended before its turn is dropped", async () => {
-    const { db, caps, conversation } = setup();
+    const { db, caps, conversation } = await setup();
     await conversation({ id: 1, author: "pascal", body: "Fix this." });
     db.run("UPDATE work_item SET state='cancelled' WHERE id='eng-1'");
     expect(await handlePullComments(db, "eng-1", caps)).toBe("dropped");
@@ -543,7 +550,7 @@ describe("comments that do not restart", () => {
   });
 
   test("the inline comments of a changes-requested review go with that review", async () => {
-    const { db, caps, send, pull } = setup();
+    const { db, caps, send, pull } = await setup();
     await send("pull_request_review_comment", {
       action: "created",
       comment: {
@@ -562,7 +569,7 @@ describe("comments that do not restart", () => {
       pull_request: pull(),
     });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
-    expect(getPullComment(db, "inline", 5001)?.outcome).toBe("covered");
+    expect((await getPullComment(sqliteDb(db), "inline", 5001))?.outcome).toBe("covered");
     expect(await handlePullReview(db, 601, caps)).toBe("restarted");
     expect(resumeJobs(db)).toHaveLength(1);
   });
@@ -570,7 +577,7 @@ describe("comments that do not restart", () => {
 
 describe("timing", () => {
   test("three comments within a minute make one restart", async () => {
-    const { db, caps, conversation, inline, tick } = setup();
+    const { db, caps, conversation, inline, tick } = await setup();
     await conversation({ id: 1, author: "pascal", body: "First." });
     const [job] = commentJobs(db);
     expect(job?.runAt).toBe(1_000 + PULL_COMMENT_SETTLE_MS);
@@ -592,7 +599,7 @@ describe("timing", () => {
   });
 
   test("a comment during a turn or evaluation waits, and holds the merge", async () => {
-    const { db, caps, conversation, setBusy } = setup();
+    const { db, caps, conversation, setBusy } = await setup();
     db.run("UPDATE work_item SET state='verifying' WHERE id='eng-1'");
     await conversation({ id: 1, author: "pascal", body: "Also this." });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("wait");
@@ -611,7 +618,7 @@ describe("timing", () => {
   });
 
   test("with the fix rounds spent, the next comment asks and does not restart", async () => {
-    const { db, caps, conversation, setLimit } = setup();
+    const { db, caps, conversation, setLimit } = await setup();
     setLimit(0);
     await conversation({ id: 1, author: "pascal", body: "Rename it." });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("asked");
@@ -621,7 +628,7 @@ describe("timing", () => {
     expect(question?.body).toContain("@pascal commented on pull request #7");
     expect(question?.body).toContain("all 0 fix rounds are spent");
     expect(question?.body).toContain("Rename it.");
-    expect(getPullComment(db, "conversation", 1)?.outcome).toBe("asked");
+    expect((await getPullComment(sqliteDb(db), "conversation", 1))?.outcome).toBe("asked");
   });
 });
 
@@ -633,7 +640,7 @@ describe("review apps still checking the head", () => {
   });
 
   test("comments wait for every review app's check, then restart once with all of them", async () => {
-    const f = setup();
+    const f = await setup();
     f.setReviewApps(["acme-lint"]);
     f.checkRuns.runs.h = [
       run("Acme Review", "acme-review", "completed"),
@@ -676,7 +683,7 @@ describe("review apps still checking the head", () => {
   });
 
   test("a review check still running past the longest wait restarts with what arrived", async () => {
-    const f = setup();
+    const f = await setup();
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
     f.setReviewApps(["acme-lint"]);
     await f.conversation({ id: 1, author: "pascal", body: "Rename it." });
@@ -688,7 +695,7 @@ describe("review apps still checking the head", () => {
   });
 
   test("a changes-requested review waits for another review app's check too", async () => {
-    const f = setup();
+    const f = await setup();
     f.setReviewApps(["acme-lint"]);
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
     await f.send("pull_request_review", {
@@ -716,7 +723,7 @@ describe("review apps still checking the head", () => {
   });
 
   test("a check read that fails keeps the wait until the longest wait", async () => {
-    const f = setup();
+    const f = await setup();
     f.setReviewApps(["acme-lint"]);
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
     await f.conversation({ id: 1, author: "pascal", body: "Rename it." });
@@ -731,7 +738,7 @@ describe("review apps still checking the head", () => {
   });
 
   test("the longest wait counts from the head's push, not from when its checks start", async () => {
-    const f = setup();
+    const f = await setup();
     f.setReviewApps(["acme-lint"]);
     f.checkRuns.pushedAt.h = f.caps.now();
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "queued")];
@@ -745,7 +752,7 @@ describe("review apps still checking the head", () => {
   });
 
   test("with no review check pending, the quiet window alone decides", async () => {
-    const f = setup();
+    const f = await setup();
     f.setReviewApps(["acme-lint"]);
     f.checkRuns.runs.h = [
       run("Acme Lint", "acme-lint", "completed"),

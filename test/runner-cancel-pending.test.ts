@@ -46,12 +46,12 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
       name: "Owner",
       email: "owner@example.invalid",
     });
-    const workspace = consumeWorkspaceBootstrap(db, {
+    const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
       id: "ws",
       organizationId: "org",
       name: "Test",
       userId,
-      tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+      tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
       now,
     });
     db.run(
@@ -217,7 +217,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     expect(await runnerCancelPending(sqliteDb(db), "box")).toBe(true);
     expect(runnerOccupancy(db, "box", now).occupied).toBe(1);
     // Generic release/recovery paths end authority but keep the slot until confirmation.
-    releaseRunCapacity(db, run.id, now);
+    await releaseRunCapacity(sqliteDb(db), run.id, now);
     expect(await runnerSlotFree(sqliteDb(db), ["box"], now)).toBe(false);
     await work.heartbeat(
       "box",
@@ -286,7 +286,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
     await work.heartbeat("box", 1, host, undefined, undefined, undefined, undefined, [
       { runId: retry.id, generation: 2 },
     ]);
-    releaseRunCapacity(db, retry.id, now);
+    await releaseRunCapacity(sqliteDb(db), retry.id, now);
     now = reported.expiresAt + 1;
     await work.heartbeat(
       "box",

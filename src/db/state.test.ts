@@ -280,7 +280,7 @@ describe("restart recovery", () => {
     test("does not run after the item is cancelled", async () => {
       const { db, clock, item } = await deferred();
       recoverOnStartup(db, clock.now());
-      cancelOpenJobs(db, { itemId: item.id, reason: "stop", now: clock.now() });
+      await cancelOpenJobs(sqliteDb(db), { itemId: item.id, reason: "stop", now: clock.now() });
       clock.advance(700_000);
       expect(claimNextJob(db, { now: clock.now() })).toBeNull();
     });
@@ -358,7 +358,7 @@ describe("restart recovery", () => {
     for (const sameRepository of [true, false]) {
       for (const status of ["pending", "running"] as const) {
         for (const inFlight of [false, true]) {
-          test(`mixed startup ${order}, same repo=${sameRepository}, ${status}, in flight=${inFlight} preserves unrelated merge work`, () => {
+          test(`mixed startup ${order}, same repo=${sameRepository}, ${status}, in flight=${inFlight} preserves unrelated merge work`, async () => {
             const { db, clock } = harness();
             const ids = order === "keep-first" ? ["keep", "reverify"] : ["reverify", "keep"];
             for (const id of ids) {
@@ -410,7 +410,12 @@ describe("restart recovery", () => {
             for (let repeat = 0; repeat < 2; repeat++) {
               clock.advance(1);
               recoverOnStartup(db, clock.now());
-              applyDecision(db, getWorkItem(db, "reverify")!, { type: "reverify" }, clock.now());
+              await applyDecision(
+                sqliteDb(db),
+                getWorkItem(db, "reverify")!,
+                { type: "reverify" },
+                clock.now(),
+              );
               expect(getJob(db, mergeId)).toEqual(savedJob);
               expect(getWorkItem(db, "keep")).toEqual(savedItem);
               expect(db.query("SELECT * FROM merge_call WHERE item_id = ?").get("keep")).toEqual(
@@ -685,7 +690,7 @@ describe("hard caps", () => {
 });
 
 describe("linear commands", () => {
-  test("a stop is applied before the call returns", () => {
+  test("a stop is applied before the call returns", async () => {
     const { db, clock } = harness();
     const seen: string[] = [];
     const bus = new CommandBus();
@@ -702,7 +707,12 @@ describe("linear commands", () => {
       commits: 3,
       recordedAt: clock.now(),
     });
-    recordItemPullRequest(db, { itemId: "eng-2", pullNumber: 7, pullUrl: null, openedAt: 1 });
+    await recordItemPullRequest(sqliteDb(db), {
+      itemId: "eng-2",
+      pullNumber: 7,
+      pullUrl: null,
+      openedAt: 1,
+    });
     enqueueJob(db, {
       queue: "github.merge",
       payload: { itemId: "eng-2" },
@@ -735,7 +745,7 @@ describe("linear commands", () => {
     });
     expect(merge).not.toBeNull();
     expect(merge !== null && completeJob(db, merge, clock.now())).toBe(false);
-    expect(getItemPullRequest(db, "eng-2")?.pullNumber).toBe(7);
+    expect((await getItemPullRequest(sqliteDb(db), "eng-2"))?.pullNumber).toBe(7);
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.closeStoppedPull)).toBe(false);
 
     submitCommand(db, bus, {
@@ -778,7 +788,7 @@ describe("linear commands", () => {
     );
   });
 
-  test("a stop names the commits left on the branch and the open pull request", () => {
+  test("a stop names the commits left on the branch and the open pull request", async () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-5", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, "eng-5", clock.now());
@@ -790,7 +800,12 @@ describe("linear commands", () => {
       commits: 1,
       recordedAt: clock.now(),
     });
-    recordItemPullRequest(db, { itemId: "eng-5", pullNumber: 12, pullUrl: null, openedAt: 1 });
+    await recordItemPullRequest(sqliteDb(db), {
+      itemId: "eng-5",
+      pullNumber: 12,
+      pullUrl: null,
+      openedAt: 1,
+    });
     submitCommand(db, new CommandBus(), {
       type: "stop",
       source: "dashboard",
@@ -885,15 +900,15 @@ describe("linear commands", () => {
     db.close();
   });
 
-  test("a take over ends the session with who took it and the manual title", () => {
+  test("a take over ends the session with who took it and the manual title", async () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: clock.now() });
     const identifier = getWorkItem(db, "eng-9")!.linearIdentifier;
     beginImplementRun(db, "eng-9", clock.now());
-    expect(takeOverItem(db, "eng-9", "Ada", clock.now()).applied).toBe(false);
+    expect((await takeOverItem(sqliteDb(db), "eng-9", "Ada", clock.now())).applied).toBe(false);
     applyWorkItemEvent(db, "eng-9", "run_failed");
     const version = getWorkItem(db, "eng-9")!.version;
-    expect(takeOverItem(db, "eng-9", "Ada", clock.now()).applied).toBe(true);
+    expect((await takeOverItem(sqliteDb(db), "eng-9", "Ada", clock.now())).applied).toBe(true);
     expect(getWorkItem(db, "eng-9")).toMatchObject({ state: "manual" });
     expect(getWorkItem(db, "eng-9")!.version).toBeGreaterThan(version + 1);
     const stop = listOutbox(db).filter((row) => row.delivery === "stop");

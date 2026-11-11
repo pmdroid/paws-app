@@ -230,7 +230,7 @@ describe("retro dispatch, composed with a fake runner", () => {
     const retro = (await getRetro(sqliteDb(reopened), "r1"))!;
     expect(retro.state).toBe("published");
     expect((retro.result as { items: unknown[] }).items).toHaveLength(1);
-    expect(listRetroItems(reopened, "r1")).toHaveLength(1);
+    expect(await listRetroItems(sqliteDb(reopened), "r1")).toHaveLength(1);
     expect(
       (await listRetroAttempts(sqliteDb(reopened), "r1")).map((entry) => entry.outcome),
     ).toEqual(["succeeded"]);
@@ -671,7 +671,7 @@ describe("recovery", () => {
     expect(runnerOccupancy(db, "R1", clock.now).occupied).toBe(0);
     expect(await getRetro(sqliteDb(db), "r1")).toMatchObject({ state: "failed" });
     expect((await getRetro(sqliteDb(db), "r1"))!.error).toContain("lost workspace authority");
-    expect(listRetroItems(db, "r1")).toEqual([]);
+    expect(await listRetroItems(sqliteDb(db), "r1")).toEqual([]);
   });
 
   test("an unfetched command is released when the owner loses workspace authority", async () => {
@@ -705,7 +705,7 @@ describe("recovery", () => {
       diagnostic: "ready",
       activeMs: 42_000,
     });
-    expect(listRetroItems(db, "r1")).toHaveLength(1);
+    expect(await listRetroItems(sqliteDb(db), "r1")).toHaveLength(1);
   });
 });
 
@@ -732,7 +732,7 @@ describe("agent account admission", () => {
     addRunner(db, { id: "R1" });
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const binding = await ensureLegacyAgentBinding(sqliteDb(db), "R1", "codex", clock.now);
-    recordAccountObservation(db, {
+    await recordAccountObservation(sqliteDb(db), {
       bindingId: binding.id,
       source: "result",
       sourceId: "model-hold",
@@ -751,7 +751,7 @@ describe("agent account admission", () => {
     });
     expect((await dispatcher.generation("r1"))!.detail).toContain("model unavailable");
 
-    recordAccountObservation(db, {
+    await recordAccountObservation(sqliteDb(db), {
       bindingId: binding.id,
       source: "result",
       sourceId: "provider-hold",
@@ -768,7 +768,7 @@ describe("agent account admission", () => {
       attempt: 0,
     });
 
-    recordAccountObservation(db, {
+    await recordAccountObservation(sqliteDb(db), {
       bindingId: binding.id,
       source: "result",
       sourceId: "provider-ok",
@@ -788,7 +788,7 @@ describe("agent account admission", () => {
     db.run("UPDATE runner SET last_seen_at=?", [clock.now]);
     const accountId = legacyAgentAccountId("ws", "codex");
     const binding = await ensureLegacyAgentBinding(sqliteDb(db), "R1", "codex", clock.now);
-    recordAccountObservation(db, {
+    await recordAccountObservation(sqliteDb(db), {
       bindingId: binding.id,
       source: "result",
       sourceId: "quota-hold",
@@ -861,7 +861,7 @@ describe("agent account admission", () => {
          binding_id, named, recorded_at) VALUES ('other', 'ws', 'R1', 'codex', ?, ?, 0, ?)`,
       [accountId, binding.id, clock.now],
     );
-    expect(accountSlotsInUse(db, accountId, clock.now)).toBe(1);
+    expect(await accountSlotsInUse(sqliteDb(db), accountId, clock.now)).toBe(1);
     const dispatcher = open(db);
     await dispatcher.tick();
     expect(await dispatcher.generation("r1")).toMatchObject({
@@ -876,6 +876,6 @@ describe("agent account admission", () => {
     );
     await dispatcher.tick();
     expect(await dispatcher.generation("r1")).toMatchObject({ state: "generating", attempt: 1 });
-    expect(accountSlotsInUse(db, accountId, clock.now)).toBe(1);
+    expect(await accountSlotsInUse(sqliteDb(db), accountId, clock.now)).toBe(1);
   });
 });

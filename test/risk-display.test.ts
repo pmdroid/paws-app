@@ -15,6 +15,7 @@ import {
   recordLinkAskDecision,
   recordReviewFindings,
   saveCheckpoint,
+  sqliteDb,
 } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
 
@@ -45,7 +46,7 @@ async function fixture(
     paths: ["auth.ts"],
     classifiedAt: now,
   });
-  saveCandidatePaths(db, {
+  await saveCandidatePaths(sqliteDb(db), {
     itemId: item.id,
     head: "head",
     paths: scenario === "rules change" ? ["rules.ts"] : ["auth.ts"],
@@ -232,12 +233,12 @@ test("the disabled risk gate does not claim manual approval is required", async 
   ).toBe("not_required");
 });
 
-function approve(f: Awaited<ReturnType<typeof fixture>>, head: string) {
+async function approve(f: Awaited<ReturnType<typeof fixture>>, head: string) {
   f.db.run(
     "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'risk-session', 'link', 'Risk', 'open', 1)",
     [f.item.id],
   );
-  insertLinkAsk(f.db, {
+  await insertLinkAsk(sqliteDb(f.db), {
     questionId: "q-risk",
     itemId: f.item.id,
     kind: "risk",
@@ -248,7 +249,7 @@ function approve(f: Awaited<ReturnType<typeof fixture>>, head: string) {
     answerers: ["person"],
     createdAt: 1,
   });
-  recordLinkAskDecision(f.db, "q-risk", {
+  await recordLinkAskDecision(sqliteDb(f.db), "q-risk", {
     decision: "approve",
     note: null,
     decidedBy: "person",
@@ -258,7 +259,7 @@ function approve(f: Awaited<ReturnType<typeof fixture>>, head: string) {
 
 test("a human approval overrides the automatic-approval explanation", async () => {
   const f = await fixture("off");
-  approve(f, "head");
+  await approve(f, "head");
   expect((await f.provider.issue(f.item.id))?.risk?.automaticApproval).toBe(
     "Approved: a person approved this commit",
   );
@@ -266,7 +267,7 @@ test("a human approval overrides the automatic-approval explanation", async () =
 
 test("a human approval carried over by the lane is displayed as approved", async () => {
   const f = await fixture("off");
-  approve(f, "earlier-head");
+  await approve(f, "earlier-head");
   let approvedHead: string | undefined;
   let approvalKind: "exact" | "same_patch" | "fix" | undefined;
   const result = await riskApprovalFor(f.db, {
@@ -407,7 +408,7 @@ async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<voi
 
 test("a failing human-approval display observer cannot reject an approved head", async () => {
   const f = await fixture("off");
-  approve(f, "head");
+  await approve(f, "head");
   expect(
     await riskApprovalFor(f.db, {
       itemId: f.item.id,

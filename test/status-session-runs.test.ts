@@ -153,7 +153,7 @@ test("a reply in the Linear session shows in the run's timeline with its author,
       createdAtMs: NOW + 1_500,
       now: NOW + 1_500,
     });
-    applyLinearTurns(db, "ses_8", ["reply-1"], item.id);
+    await applyLinearTurns(sqliteDb(db), "ses_8", ["reply-1"], item.id);
 
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,

@@ -4,7 +4,7 @@ import type { RepositoryBinding } from "../core";
 import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import { jsonValue } from "./json-text";
 import { orm } from "./orm";
-import { question, workItemRepository, workItemRepositoryQuestion } from "./schema";
+import { workItemRepository } from "./schema";
 import { immediate } from "./tx";
 
 export function* getWorkItemRepositorySteps(q: Q, itemId: string): Steps<RepositoryBinding | null> {
@@ -121,40 +121,24 @@ export function* saveWorkItemRepositoryQuestionSteps(
   );
 }
 
-export function saveWorkItemRepositoryQuestion(
-  db: Database,
+export async function saveWorkItemRepositoryQuestion(
+  store: Db,
   itemId: string,
   questionId: string,
   candidates: readonly RepositoryBinding[],
-): void {
-  settled(
-    sqliteDb(db).run((q) => saveWorkItemRepositoryQuestionSteps(q, itemId, questionId, candidates)),
-  );
+): Promise<void> {
+  await store.run((q) => saveWorkItemRepositoryQuestionSteps(q, itemId, questionId, candidates));
 }
 
-export function getWorkItemRepositoryAnswer(
-  db: Database,
+export async function getWorkItemRepositoryAnswer(
+  store: Db,
   itemId: string,
-): { questionId: string; answer: string; candidates: readonly RepositoryBinding[] } | null {
-  const row = orm(db)
-    .select({
-      questionId: question.id,
-      answer: question.answer,
-      candidates: workItemRepositoryQuestion.candidates,
-    })
-    .from(workItemRepositoryQuestion)
-    .innerJoin(question, eq(question.id, workItemRepositoryQuestion.questionId))
-    .where(
-      and(
-        eq(workItemRepositoryQuestion.itemId, itemId),
-        eq(question.status, "answered"),
-        isNotNull(question.answer),
-      ),
-    )
-    .get();
-  return row === undefined
-    ? null
-    : { questionId: row.questionId, answer: row.answer!, candidates: JSON.parse(row.candidates) };
+): Promise<{
+  questionId: string;
+  answer: string;
+  candidates: readonly RepositoryBinding[];
+} | null> {
+  return store.run((q) => getWorkItemRepositoryAnswerSteps(q, itemId));
 }
 
 export function* getWorkItemRepositoryAnswerSteps(
@@ -241,23 +225,11 @@ export function* getWorkItemRepositoryChoiceSteps(
   ) as RepositoryBinding;
 }
 
-export function getWorkItemRepositoryChoice(
-  db: Database,
+export async function getWorkItemRepositoryChoice(
+  store: Db,
   itemId: string,
-): RepositoryBinding | null {
-  const row = orm(db)
-    .select({ chosen: workItemRepositoryQuestion.chosenRepository })
-    .from(workItemRepositoryQuestion)
-    .innerJoin(question, eq(question.id, workItemRepositoryQuestion.questionId))
-    .where(
-      and(
-        eq(workItemRepositoryQuestion.itemId, itemId),
-        eq(question.status, "answered"),
-        isNotNull(workItemRepositoryQuestion.chosenRepository),
-      ),
-    )
-    .get();
-  return row === undefined ? null : JSON.parse(row.chosen!);
+): Promise<RepositoryBinding | null> {
+  return store.run((q) => getWorkItemRepositoryChoiceSteps(q, itemId));
 }
 
 function sameRepository(left: RepositoryBinding, right: RepositoryBinding): boolean {

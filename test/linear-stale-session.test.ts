@@ -358,13 +358,13 @@ test.each([
       f.db.run("PRAGMA foreign_keys = ON");
       if (gone) {
         await f.orchestrator.onLinearEvent(created("new"));
-        expect(getConversation(f.db, f.oldId).blocked).toBe(false);
+        expect((await getConversation(sqliteDb(f.db), f.oldId)).blocked).toBe(false);
         expect(f.db.query("SELECT id FROM work_item WHERE state = 'queued'").all()).toHaveLength(1);
       } else {
         await expect(f.orchestrator.onLinearEvent(created("new"))).rejects.toThrow(
           "retry automatically",
         );
-        expect(getConversation(f.db, f.oldId).blocked).toBe(true);
+        expect((await getConversation(sqliteDb(f.db), f.oldId)).blocked).toBe(true);
         expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
       }
     } finally {

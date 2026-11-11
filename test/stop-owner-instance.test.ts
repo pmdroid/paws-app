@@ -19,6 +19,7 @@ import {
   OutboxDispatcher,
   registerInstance,
   submitCommand,
+  sqliteDb,
 } from "../src/db";
 import { Orchestrator } from "../src/loop";
 import { tempHome } from "./helpers";
@@ -78,10 +79,10 @@ function twoInstances(poll = true) {
   return { a: paws(path, root, "a", poll), b: paws(path, root, "b", poll) };
 }
 
-function runningItem(db: Database, id: string, owner: string): void {
+async function runningItem(db: Database, id: string, owner: string): Promise<void> {
   insertQueuedItem(db, { id, sessionKey: `${id}-session`, now: Date.now() });
   const { run } = beginImplementRun(db, id, Date.now());
-  claimRun(db, run.id, owner);
+  await claimRun(sqliteDb(db), run.id, owner);
 }
 
 function stop(
@@ -101,7 +102,7 @@ function stop(
 test("a stop received by instance B aborts the turn on instance A, which owns the run, within 2 s", async () => {
   const { a, b } = twoInstances();
   try {
-    runningItem(a.db, "acme-1", a.id);
+    await runningItem(a.db, "acme-1", a.id);
     const turn = await a.startTurn("acme-1");
     const started = performance.now();
 
@@ -125,7 +126,7 @@ test("a stop received by instance B aborts the turn on instance A, which owns th
 test("a stop for a run on the receiving instance aborts its turn at once and addresses no one else", async () => {
   const { a, b } = twoInstances();
   try {
-    runningItem(a.db, "acme-2", a.id);
+    await runningItem(a.db, "acme-2", a.id);
     const turn = await a.startTurn("acme-2");
 
     expect(stop(a.db, a.orchestrator, "acme-2")).toEqual({ applied: true });
@@ -142,10 +143,10 @@ test("a stop for a run on the receiving instance aborts its turn at once and add
   }
 });
 
-test("the owner's delivery row commits with the stop itself, before any bus emits", () => {
+test("the owner's delivery row commits with the stop itself, before any bus emits", async () => {
   const { a, b } = twoInstances(false);
   try {
-    runningItem(a.db, "acme-3", a.id);
+    await runningItem(a.db, "acme-3", a.id);
     const command = {
       type: "stop" as const,
       source: "dashboard" as const,
@@ -168,7 +169,7 @@ test("the owner's delivery row commits with the stop itself, before any bus emit
 test("a delayed stop aborts the turn it stopped and leaves a turn started after a resume", async () => {
   const { a, b } = twoInstances(false);
   try {
-    runningItem(a.db, "acme-4", a.id);
+    await runningItem(a.db, "acme-4", a.id);
     const stopped = await a.startTurn("acme-4", "acme-4-old");
     expect(stop(b.db, b.orchestrator, "acme-4", "linear")).toEqual({ applied: true });
     expect(getWorkItem(b.db, "acme-4")?.state).toBe("paused");

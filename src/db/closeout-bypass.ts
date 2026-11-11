@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 /**
  * A failed Closeout check a bypass link ask offers, as Closeout judged it on
@@ -40,16 +39,19 @@ export function* saveCloseoutBypassChecksSteps(
     );
 }
 
-export function saveCloseoutBypassChecks(
-  db: Database,
+export async function saveCloseoutBypassChecks(
+  store: Db,
   questionId: string,
   checks: readonly { id: string; kind: string; state: string; attempt?: number; message: string }[],
-): void {
-  settled(sqliteDb(db).run((q) => saveCloseoutBypassChecksSteps(q, questionId, checks)));
+): Promise<void> {
+  await store.run((q) => saveCloseoutBypassChecksSteps(q, questionId, checks));
 }
 
-export function listCloseoutBypassChecks(db: Database, questionId: string): CloseoutBypassCheck[] {
-  return settled(sqliteDb(db).run((q) => listCloseoutBypassChecksSteps(q, questionId)));
+export async function listCloseoutBypassChecks(
+  store: Db,
+  questionId: string,
+): Promise<CloseoutBypassCheck[]> {
+  return store.run((q) => listCloseoutBypassChecksSteps(q, questionId));
 }
 
 export function* listCloseoutBypassChecksSteps(
@@ -111,8 +113,8 @@ export function* approveCloseoutBypassChecksSteps(
 }
 
 /** The synchronous `approveCloseoutBypassChecksSteps`, for callers that are not async yet. */
-export function approveCloseoutBypassChecks(
-  db: Database,
+export async function approveCloseoutBypassChecks(
+  store: Db,
   questionId: string,
   input: {
     checks: readonly { checkId: string; reason: string }[];
@@ -120,6 +122,6 @@ export function approveCloseoutBypassChecks(
     approvedByName: string;
     now: number;
   },
-): boolean {
-  return settled(sqliteDb(db).run((q) => approveCloseoutBypassChecksSteps(q, questionId, input)));
+): Promise<boolean> {
+  return store.run((q) => approveCloseoutBypassChecksSteps(q, questionId, input));
 }

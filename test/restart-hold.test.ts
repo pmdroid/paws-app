@@ -87,8 +87,13 @@ function orchestrate(db: Database, now: number) {
   return jobs;
 }
 
-function loseDelivery(db: Database, how: "cancelled" | "completed", now: number): void {
-  if (how === "cancelled") cancelOpenJobs(db, { itemId: "item", reason: "interrupted", now });
+async function loseDelivery(
+  db: Database,
+  how: "cancelled" | "completed",
+  now: number,
+): Promise<void> {
+  if (how === "cancelled")
+    await cancelOpenJobs(sqliteDb(db), { itemId: "item", reason: "interrupted", now });
   else
     db.run(
       "UPDATE job SET status='done', finished_at=?, locked_by=NULL WHERE queue='item.ask' AND status IN ('pending','running')",
@@ -97,7 +102,7 @@ function loseDelivery(db: Database, how: "cancelled" | "completed", now: number)
 }
 
 describe("restart hold", () => {
-  test("three startups across file reopens keep one decision and no execution", () => {
+  test("three startups across file reopens keep one decision and no execution", async () => {
     const path = join(tempHome(), "paws.db");
     let db = legacyMigratedDatabase(path);
     seed(db);
@@ -108,7 +113,7 @@ describe("restart hold", () => {
     for (const [index, now] of [200, LATER, LATER * 2, LATER * 3].entries()) {
       db = openDatabase(path);
       legacyMigrate(db);
-      if (index % 2 === 0) loseDelivery(db, "cancelled", now - 1);
+      if (index % 2 === 0) await loseDelivery(db, "cancelled", now - 1);
       expect(recoverOnStartup(db, now).map((decision) => decision.type)).toEqual(["ask_restart"]);
       expect(restartHold(db, getWorkItem(db, "item")!)).not.toBeNull();
       expect(liveAsks(db)).toHaveLength(1);
@@ -119,14 +124,14 @@ describe("restart hold", () => {
 
   test.each(["pending", "cancelled", "completed"] as const)(
     "the startup window and orphan grace keep the decision when delivery is %s",
-    (delivery) => {
+    async (delivery) => {
       const db = fixture();
       recoverOnStartup(db, 100);
-      if (delivery !== "pending") loseDelivery(db, delivery, 150);
+      if (delivery !== "pending") await loseDelivery(db, delivery, 150);
       expect(requeueOrphanedWork(db, ORPHAN_LATER)).toEqual([]);
       expect(executions(db)).toEqual([]);
       expect(liveAsks(db)).toHaveLength(1);
-      if (delivery !== "pending") loseDelivery(db, delivery, ORPHAN_LATER + 1);
+      if (delivery !== "pending") await loseDelivery(db, delivery, ORPHAN_LATER + 1);
       recoverOnStartup(db, ORPHAN_LATER + LATER);
       expect(getWorkItem(db, "item")?.state).toBe("recovering");
       expect(executions(db)).toEqual([]);
@@ -216,7 +221,7 @@ describe("restart hold", () => {
     const db = fixture();
     recoverOnStartup(db, 100);
     await orchestrate(db, 200).tick(["item.ask"]);
-    applyDecision(db, getWorkItem(db, "item")!, { type: "ask_restart" }, 300);
+    await applyDecision(sqliteDb(db), getWorkItem(db, "item")!, { type: "ask_restart" }, 300);
     expect(liveAsks(db)).toEqual([]);
     expect(actionableQuestions(db)).toHaveLength(1);
     expect(findOpenQuestion(db, "session")?.reason).toBe("restart");
@@ -231,7 +236,7 @@ describe("restart hold", () => {
     db.close();
   });
 
-  test("migration keeps a restart decision that was already waiting", () => {
+  test("migration keeps a restart decision that was already waiting", async () => {
     const db = openDatabase(":memory:");
     legacyMigrate(db, { until: "20261101T0739_job_activation" });
     seed(db);
@@ -243,7 +248,7 @@ describe("restart hold", () => {
       payload: { itemId: "item", reason: "restart" },
       now: 2,
     });
-    cancelOpenJobs(db, { itemId: "item", reason: "startup", now: 3 });
+    await cancelOpenJobs(sqliteDb(db), { itemId: "item", reason: "startup", now: 3 });
     legacyMigrate(db);
     expect(restartHold(db, getWorkItem(db, "item")!)).toMatchObject({ sessionId: "session" });
     recoverOnStartup(db, LATER);

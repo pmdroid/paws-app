@@ -6,7 +6,7 @@ import {
   enqueueJob,
   enqueueOutbox,
   getJob,
-  getOutbox,
+  getOutboxSteps,
   legacyMigrate,
   openDatabase,
   sqliteDb,
@@ -111,7 +111,7 @@ describe("sqlite", () => {
       orderingKey: "session-1",
       payload: { body: "Starting" },
     });
-    expect(getOutbox(db, id)).toMatchObject({
+    expect(await sqliteDb(db).run((q) => getOutboxSteps(q, id))).toMatchObject({
       id,
       target: "linear",
       op: "activity",
@@ -130,7 +130,7 @@ describe("sqlite", () => {
       },
     });
     expect(delivered).toEqual([id]);
-    expect(getOutbox(db, id)?.status).toBe("sent");
+    expect((await sqliteDb(db).run((q) => getOutboxSteps(q, id)))?.status).toBe("sent");
     db.close();
   });
 });

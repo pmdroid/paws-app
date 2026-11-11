@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 
 type DashboardAliasKind = "runs" | "sessions" | "verdicts";
 
@@ -51,11 +50,11 @@ export function* resolveDashboardAliasSteps(
   }
 }
 
-export function resolveDashboardAlias(
-  db: Database,
+export async function resolveDashboardAlias(
+  store: Db,
   kind: DashboardAliasKind,
   id: string,
   sessionIds?: readonly string[],
-): string | null {
-  return settled(sqliteDb(db).run((q) => resolveDashboardAliasSteps(q, kind, id, sessionIds)));
+): Promise<string | null> {
+  return store.run((q) => resolveDashboardAliasSteps(q, kind, id, sessionIds));
 }

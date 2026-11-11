@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { migrate, openDatabase } from "../../src/db";
-import { saveHook } from "../../src/db";
+import { saveHook, sqliteDb } from "../../src/db";
 import { handleHookSettingsRequest, handleSkillSettingsRequest } from "../../src/settings";
 import { addSkill, fakeSkillResolver } from "../../src/skills";
 
@@ -23,8 +23,8 @@ await addSkill(
   { kind: "git", url: "https://github.com/pmdroid/skills.git", subfolder: "review-paws" },
   { agents: ["claude"] },
 );
-saveHook(
-  db,
+await saveHook(
+  sqliteDb(db),
   {
     id: "hook_guard",
     event: "before_shell",

@@ -13,6 +13,7 @@ import {
   setJournalSink,
   syncSteps,
   type Q,
+  sqliteDb,
 } from "../src/db";
 import { findOpenQuestion, getQuestion, openQuestion } from "../src/questions";
 import { answer, ask, cancelItemQuestions } from "./questions";
@@ -66,11 +67,11 @@ test("a second ask is queued and delivered in order once the open one is answere
   const outcome = await answer(db, reply("answer-1", "Yes"));
   expect(outcome).toMatchObject({ status: "answered", question: { id: first.id } });
   expect(outcome.status === "answered" && outcome.next?.id).toBe(second.question.id);
-  expect(getQuestion(db, second.question.id)).toMatchObject({
+  expect(await getQuestion(sqliteDb(db), second.question.id)).toMatchObject({
     status: "open",
     createdAt: NOW + 100,
   });
-  expect(getQuestion(db, third.question.id)?.status).toBe("queued");
+  expect((await getQuestion(sqliteDb(db), third.question.id))?.status).toBe("queued");
   expect(elicitations(db)).toEqual([second.question.id]);
 });
 
@@ -79,8 +80,8 @@ test("a newer runner wait replaces a queued one of the same kind", async () => {
   await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const older = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
   const newer = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 2 });
-  expect(getQuestion(db, older.question.id)?.status).toBe("cancelled");
-  expect(getQuestion(db, newer.question.id)?.status).toBe("queued");
+  expect((await getQuestion(sqliteDb(db), older.question.id))?.status).toBe("cancelled");
+  expect((await getQuestion(sqliteDb(db), newer.question.id))?.status).toBe("queued");
 });
 
 test("a newer CI help replaces only its own task's queued CI help", async () => {
@@ -98,9 +99,9 @@ test("a newer CI help replaces only its own task's queued CI help", async () => 
     },
   );
   const newer = await ask(db, asker, "ci-help", "CI failed again.", { now: NOW + 3 });
-  expect(getQuestion(db, older.question.id)?.status).toBe("cancelled");
-  expect(getQuestion(db, other.question.id)?.status).toBe("queued");
-  expect(getQuestion(db, newer.question.id)?.status).toBe("queued");
+  expect((await getQuestion(sqliteDb(db), older.question.id))?.status).toBe("cancelled");
+  expect((await getQuestion(sqliteDb(db), other.question.id))?.status).toBe("queued");
+  expect((await getQuestion(sqliteDb(db), newer.question.id))?.status).toBe("queued");
 });
 
 async function queuedCloseoutHelp() {
@@ -119,7 +120,7 @@ async function queuedCloseoutHelp() {
   );
   await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const help = await ask(db, asker, "closeout-help", "Closeout needs your help.", { now: NOW + 1 });
-  saveCloseoutRecovery(db, {
+  await saveCloseoutRecovery(sqliteDb(db), {
     questionId: help.question.id,
     taskId: "ENG-7",
     itemId: asker.itemId,
@@ -157,7 +158,7 @@ test("a queued Closeout help is dropped once its candidate moved", async () => {
   expect(await promote(db)).toEqual([
     `question ${help.id} dropped from the queue: its candidate moved`,
   ]);
-  expect(getQuestion(db, help.id)?.status).toBe("cancelled");
+  expect((await getQuestion(sqliteDb(db), help.id))?.status).toBe("cancelled");
   expect(elicitations(db)).toEqual([]);
 });
 
@@ -190,7 +191,7 @@ test("the answer is idempotent on the delivery id and runs its kind's effect onc
   expect((await answer(db, reply("answer-1", "Keep waiting"), effects)).status).toBe("duplicate");
   expect((await answer(db, reply("answer-2", "Keep waiting"), effects)).status).toBe("unasked");
   expect(resumed).toEqual([asked.question.id]);
-  expect(getQuestion(db, asked.question.id)).toMatchObject({
+  expect(await getQuestion(sqliteDb(db), asked.question.id)).toMatchObject({
     status: "answered",
     answer: "Keep waiting",
     answerEventKey: "answer-1",
@@ -209,7 +210,7 @@ test("a queued question for a run that is no longer current is dropped with a jo
   } finally {
     restore();
   }
-  expect(getQuestion(db, stale.question.id)?.status).toBe("cancelled");
+  expect((await getQuestion(sqliteDb(db), stale.question.id))?.status).toBe("cancelled");
   expect(findOpenQuestion(db, "ses_1")).toBeNull();
   expect(lines).toEqual([
     `question ${stale.question.id} dropped from the queue: its run is no longer current`,
@@ -222,8 +223,8 @@ test("cancelling the task cancels its open and queued questions", async () => {
   const open = await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
   const queued = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
   await cancelItemQuestions(db, asker.itemId, NOW + 2);
-  expect(getQuestion(db, open.id)?.status).toBe("cancelled");
-  expect(getQuestion(db, queued.question.id)?.status).toBe("cancelled");
+  expect((await getQuestion(sqliteDb(db), open.id))?.status).toBe("cancelled");
+  expect((await getQuestion(sqliteDb(db), queued.question.id))?.status).toBe("cancelled");
   expect(elicitations(db)).toEqual([]);
 });
 

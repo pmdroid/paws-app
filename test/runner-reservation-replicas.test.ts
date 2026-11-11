@@ -45,12 +45,12 @@ async function replicas() {
     name: "Acme Owner",
     email: "owner@acme.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "acme",
     name: "Acme",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "acme", clock)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "acme", clock)),
     now: clock,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [

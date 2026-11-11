@@ -163,10 +163,10 @@ describe("the runner lease grace", () => {
     expect(getRun(db, run.id)?.status).toBe("active");
   });
 
-  test("halt keeps an unsettled runner occupied through the grace", () => {
+  test("halt keeps an unsettled runner occupied through the grace", async () => {
     const { clock, db, item, run } = leased();
     clock.advance(RENEWAL_MS + 59_000);
-    halt(db, getWorkItem(db, item.id)!, clock.now());
+    await halt(sqliteDb(db), getWorkItem(db, item.id)!, clock.now());
     expect(getRun(db, run.id)?.status).toBe("ended");
     expect(runnerHasCapacity(db, "runner", clock.now())).toBe(false);
     clock.advance(RUNNER_LEASE_GRACE_MS);
@@ -192,19 +192,19 @@ describe("the runner lease grace", () => {
   test("recovery retains a delivered current-command result after lease grace", async () => {
     const { clock, db, item, run } = leased();
     clock.advance(PAST);
-    expect(runnerHoldsRunWork(db, run.id, clock.now())).toBe(false);
+    expect(await runnerHoldsRunWork(sqliteDb(db), run.id, clock.now())).toBe(false);
     db.run(
       "INSERT INTO runner_result(run_id,generation,command_id,payload,received_at) VALUES(?,1,'other','{}',?)",
       [run.id, clock.now()],
     );
     expect(await runnerWorkHasResult(sqliteDb(db), run.id)).toBe(false);
     db.run("UPDATE runner_result SET command_id='command' WHERE run_id=?", [run.id]);
-    expect(runnerHoldsRunWork(db, run.id, clock.now())).toBe(true);
+    expect(await runnerHoldsRunWork(sqliteDb(db), run.id, clock.now())).toBe(true);
     expect(await runnerWorkHasResult(sqliteDb(db), run.id)).toBe(true);
     expect(closeExpiredRunnerLeases(db, clock.now())).toEqual([]);
     expect(runnerSlotsHeldBetweenCommands(db, "runner", clock.now())).toBe(1);
     expect(getRun(db, run.id)?.status).toBe("active");
-    expect(runnerHoldsRunWork(db, run.id, clock.now(), true)).toBe(false);
+    expect(await runnerHoldsRunWork(sqliteDb(db), run.id, clock.now(), true)).toBe(false);
     expect(recoverOnStartup(db, clock.now())).toMatchObject([{ type: "resume", reattach: true }]);
     expect(getWorkItem(db, item.id)?.state).toBe("running");
     expect(getRun(db, run.id)?.status).toBe("active");

@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { TaskMode, WorkItemState } from "../core";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import type { ManagedBlockerItem } from "./item-dependencies";
 import { jsonValue, parsedJson } from "./json-text";
 
@@ -24,10 +23,6 @@ export type ParentSubIssueRow = {
   sessionId: string | null;
   delegationId: string | null;
 };
-
-function run<T>(db: Database, body: (q: Q) => Steps<T>): T {
-  return settled(sqliteDb(db).run(body));
-}
 
 function subColumns(q: Q) {
   const { parentDelegationIssue: c } = q.t;
@@ -64,11 +59,11 @@ export function* readParentDelegationSteps<Edge>(
   return row ? { ...row, edges: parsedJson<Edge[]>(q, row.edges) } : null;
 }
 
-export function readParentDelegation<Edge>(
-  db: Database,
+export async function readParentDelegation<Edge>(
+  store: Db,
   delegationId: string,
-): ParentDelegationRow<Edge> | null {
-  return run(db, (q) => readParentDelegationSteps<Edge>(q, delegationId));
+): Promise<ParentDelegationRow<Edge> | null> {
+  return store.run((q) => readParentDelegationSteps(q, delegationId));
 }
 
 export function* listParentSubIssuesSteps(q: Q, parentDelegationId: string) {
@@ -82,8 +77,11 @@ export function* listParentSubIssuesSteps(q: Q, parentDelegationId: string) {
   );
 }
 
-export function listParentSubIssues(db: Database, parentDelegationId: string): ParentSubIssueRow[] {
-  return run(db, (q) => listParentSubIssuesSteps(q, parentDelegationId));
+export async function listParentSubIssues(
+  store: Db,
+  parentDelegationId: string,
+): Promise<ParentSubIssueRow[]> {
+  return store.run((q) => listParentSubIssuesSteps(q, parentDelegationId));
 }
 
 export function* parentSubIssueForSessionSteps(q: Q, sessionId: string) {
@@ -98,11 +96,11 @@ export function* parentSubIssueForSessionSteps(q: Q, sessionId: string) {
   );
 }
 
-export function parentSubIssueForSession(
-  db: Database,
+export async function parentSubIssueForSession(
+  store: Db,
   sessionId: string,
-): ParentSubIssueRow | null {
-  return run(db, (q) => parentSubIssueForSessionSteps(q, sessionId));
+): Promise<ParentSubIssueRow | null> {
+  return store.run((q) => parentSubIssueForSessionSteps(q, sessionId));
 }
 
 export function* activeParentSubIssueSteps(q: Q, issueId: string, organizationId: string) {
@@ -124,12 +122,12 @@ export function* activeParentSubIssueSteps(q: Q, issueId: string, organizationId
   );
 }
 
-export function activeParentSubIssue(
-  db: Database,
+export async function activeParentSubIssue(
+  store: Db,
   issueId: string,
   organizationId: string,
-): ParentSubIssueRow | null {
-  return run(db, (q) => activeParentSubIssueSteps(q, issueId, organizationId));
+): Promise<ParentSubIssueRow | null> {
+  return store.run((q) => activeParentSubIssueSteps(q, issueId, organizationId));
 }
 
 export function* parentSubIssueActiveSteps(q: Q, workspaceId: string, issueId: string) {
@@ -143,8 +141,12 @@ export function* parentSubIssueActiveSteps(q: Q, workspaceId: string, issueId: s
   return row !== undefined;
 }
 
-export function parentSubIssueActive(db: Database, workspaceId: string, issueId: string): boolean {
-  return run(db, (q) => parentSubIssueActiveSteps(q, workspaceId, issueId));
+export async function parentSubIssueActive(
+  store: Db,
+  workspaceId: string,
+  issueId: string,
+): Promise<boolean> {
+  return store.run((q) => parentSubIssueActiveSteps(q, workspaceId, issueId));
 }
 
 export function* parentSubIssueIdentifierSteps(
@@ -162,12 +164,12 @@ export function* parentSubIssueIdentifierSteps(
   return row?.identifier;
 }
 
-export function parentSubIssueIdentifier(
-  db: Database,
+export async function parentSubIssueIdentifier(
+  store: Db,
   parentDelegationId: string,
   issueId: string,
-): string | undefined {
-  return run(db, (q) => parentSubIssueIdentifierSteps(q, parentDelegationId, issueId));
+): Promise<string | undefined> {
+  return store.run((q) => parentSubIssueIdentifierSteps(q, parentDelegationId, issueId));
 }
 
 export function* parentDelegationActiveSteps(q: Q, workspaceId: string, parentIssueId: string) {
@@ -187,12 +189,12 @@ export function* parentDelegationActiveSteps(q: Q, workspaceId: string, parentIs
   return row !== undefined;
 }
 
-export function parentDelegationActive(
-  db: Database,
+export async function parentDelegationActive(
+  store: Db,
   workspaceId: string,
   parentIssueId: string,
-): boolean {
-  return run(db, (q) => parentDelegationActiveSteps(q, workspaceId, parentIssueId));
+): Promise<boolean> {
+  return store.run((q) => parentDelegationActiveSteps(q, workspaceId, parentIssueId));
 }
 
 export function* listActiveParentDelegationIdsSteps(q: Q) {
@@ -207,8 +209,8 @@ export function* listActiveParentDelegationIdsSteps(q: Q) {
   return rows.map((row) => row.id);
 }
 
-export function listActiveParentDelegationIds(db: Database): string[] {
-  return run(db, (q) => listActiveParentDelegationIdsSteps(q));
+export async function listActiveParentDelegationIds(store: Db): Promise<string[]> {
+  return store.run((q) => listActiveParentDelegationIdsSteps(q));
 }
 
 type NewParentDelegation<Edge> = {
@@ -232,8 +234,8 @@ export function* insertParentDelegationSteps<Edge>(q: Q, parent: NewParentDelega
   );
 }
 
-export function insertParentDelegation<Edge>(db: Database, parent: NewParentDelegation<Edge>) {
-  run(db, (q) => insertParentDelegationSteps(q, parent));
+export async function insertParentDelegation<Edge>(store: Db, parent: NewParentDelegation<Edge>) {
+  return store.run((q) => insertParentDelegationSteps(q, parent));
 }
 
 type NewParentSubIssue = {
@@ -250,8 +252,8 @@ export function* insertParentSubIssueSteps(q: Q, sub: NewParentSubIssue) {
   yield* q.exec(q.orm.insert(q.t.parentDelegationIssue).values(sub));
 }
 
-export function insertParentSubIssue(db: Database, sub: NewParentSubIssue): void {
-  run(db, (q) => insertParentSubIssueSteps(q, sub));
+export async function insertParentSubIssue(store: Db, sub: NewParentSubIssue): Promise<void> {
+  await store.run((q) => insertParentSubIssueSteps(q, sub));
 }
 
 export function* claimParentSubIssueSessionSteps(
@@ -278,13 +280,15 @@ export function* claimParentSubIssueSessionSteps(
   return rows.length;
 }
 
-export function claimParentSubIssueSession(
-  db: Database,
+export async function claimParentSubIssueSession(
+  store: Db,
   parentDelegationId: string,
   issueId: string,
   sessionId: string,
-): number {
-  return run(db, (q) => claimParentSubIssueSessionSteps(q, parentDelegationId, issueId, sessionId));
+): Promise<number> {
+  return store.run((q) =>
+    claimParentSubIssueSessionSteps(q, parentDelegationId, issueId, sessionId),
+  );
 }
 
 export function* moveParentSubIssueSessionSteps(
@@ -306,11 +310,11 @@ export function* moveParentSubIssueSessionSteps(
   );
 }
 
-export function moveParentSubIssueSession(
-  db: Database,
+export async function moveParentSubIssueSession(
+  store: Db,
   move: { parentDelegationId: string; issueId: string; from: string; to: string },
-): void {
-  run(db, (q) => moveParentSubIssueSessionSteps(q, move));
+): Promise<void> {
+  await store.run((q) => moveParentSubIssueSessionSteps(q, move));
 }
 
 export function* setParentSubIssueDelegationSteps(q: Q, sessionId: string, delegationId: string) {
@@ -318,12 +322,12 @@ export function* setParentSubIssueDelegationSteps(q: Q, sessionId: string, deleg
   yield* q.exec(q.orm.update(c).set({ delegationId }).where(eq(c.sessionId, sessionId)));
 }
 
-export function setParentSubIssueDelegation(
-  db: Database,
+export async function setParentSubIssueDelegation(
+  store: Db,
   sessionId: string,
   delegationId: string,
-): void {
-  run(db, (q) => setParentSubIssueDelegationSteps(q, sessionId, delegationId));
+): Promise<void> {
+  await store.run((q) => setParentSubIssueDelegationSteps(q, sessionId, delegationId));
 }
 
 export function* setParentDelegationErrorSteps(
@@ -335,12 +339,12 @@ export function* setParentDelegationErrorSteps(
   yield* q.exec(q.orm.update(p).set({ lastError }).where(eq(p.delegationId, delegationId)));
 }
 
-export function setParentDelegationError(
-  db: Database,
+export async function setParentDelegationError(
+  store: Db,
   delegationId: string,
   lastError: string | null,
-): void {
-  run(db, (q) => setParentDelegationErrorSteps(q, delegationId, lastError));
+): Promise<void> {
+  await store.run((q) => setParentDelegationErrorSteps(q, delegationId, lastError));
 }
 
 export function* listIssueBlockerItemsSteps(q: Q, workspaceId: string, issueId: string) {
@@ -375,12 +379,12 @@ export function* listIssueBlockerItemsSteps(q: Q, workspaceId: string, issueId: 
   }));
 }
 
-export function listIssueBlockerItems(
-  db: Database,
+export async function listIssueBlockerItems(
+  store: Db,
   workspaceId: string,
   issueId: string,
-): ManagedBlockerItem[] {
-  return run(db, (q) => listIssueBlockerItemsSteps(q, workspaceId, issueId));
+): Promise<ManagedBlockerItem[]> {
+  return store.run((q) => listIssueBlockerItemsSteps(q, workspaceId, issueId));
 }
 
 export function* workspaceIssueHasOpenItemSteps(q: Q, workspaceId: string, issueId: string) {
@@ -403,12 +407,12 @@ export function* workspaceIssueHasOpenItemSteps(q: Q, workspaceId: string, issue
   return row !== undefined;
 }
 
-export function workspaceIssueHasOpenItem(
-  db: Database,
+export async function workspaceIssueHasOpenItem(
+  store: Db,
   workspaceId: string,
   issueId: string,
-): boolean {
-  return run(db, (q) => workspaceIssueHasOpenItemSteps(q, workspaceId, issueId));
+): Promise<boolean> {
+  return store.run((q) => workspaceIssueHasOpenItemSteps(q, workspaceId, issueId));
 }
 
 export function* delegationHasLiveItemSteps(q: Q, delegationId: string) {
@@ -427,8 +431,8 @@ export function* delegationHasLiveItemSteps(q: Q, delegationId: string) {
   return row !== undefined;
 }
 
-export function delegationHasLiveItem(db: Database, delegationId: string): boolean {
-  return run(db, (q) => delegationHasLiveItemSteps(q, delegationId));
+export async function delegationHasLiveItem(store: Db, delegationId: string): Promise<boolean> {
+  return store.run((q) => delegationHasLiveItemSteps(q, delegationId));
 }
 
 export function* listFailedDelegationItemIdsSteps(q: Q, delegationId: string) {
@@ -442,8 +446,11 @@ export function* listFailedDelegationItemIdsSteps(q: Q, delegationId: string) {
   return rows.map((row) => row.id);
 }
 
-export function listFailedDelegationItemIds(db: Database, delegationId: string): string[] {
-  return run(db, (q) => listFailedDelegationItemIdsSteps(q, delegationId));
+export async function listFailedDelegationItemIds(
+  store: Db,
+  delegationId: string,
+): Promise<string[]> {
+  return store.run((q) => listFailedDelegationItemIdsSteps(q, delegationId));
 }
 
 export function* setItemOwnerSteps(q: Q, itemId: string, ownerUserId: string) {
@@ -451,6 +458,6 @@ export function* setItemOwnerSteps(q: Q, itemId: string, ownerUserId: string) {
   yield* q.exec(q.orm.update(workItem).set({ ownerUserId }).where(eq(workItem.id, itemId)));
 }
 
-export function setItemOwner(db: Database, itemId: string, ownerUserId: string): void {
-  run(db, (q) => setItemOwnerSteps(q, itemId, ownerUserId));
+export async function setItemOwner(store: Db, itemId: string, ownerUserId: string): Promise<void> {
+  await store.run((q) => setItemOwnerSteps(q, itemId, ownerUserId));
 }

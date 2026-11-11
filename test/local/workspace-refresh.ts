@@ -6,6 +6,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   workspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import {
   issueWorkspaceBootstrap,
@@ -28,12 +29,12 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
     name: "Member",
     email: "member@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Workspace",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org")),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org")),
     now: Date.now(),
   });
   let reads = 0;
@@ -155,12 +156,12 @@ export async function probeWorkspaceRefresh(root: string, observe: Observe) {
     name: "Member",
     email: "member@example.invalid",
   });
-  const selected = consumeWorkspaceBootstrap(draining, {
+  const selected = await consumeWorkspaceBootstrap(sqliteDb(draining), {
     id: workspaceId(),
     organizationId: "org",
     name: "Workspace",
     userId: memberId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(draining, "org", 0)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(draining, "org", 0)),
     now: 0,
   });
   const session = issueWorkspaceSession(draining, {

@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull, notInArray, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonText } from "./json-text";
 
 /** Record the item version that carried the question's answer back; 0 means none will. */
@@ -11,8 +10,12 @@ export function* setQuestionHandoffVersionSteps(q: Q, questionId: string, versio
   );
 }
 
-export function setQuestionHandoffVersion(db: Database, questionId: string, version: number): void {
-  settled(sqliteDb(db).run((q) => setQuestionHandoffVersionSteps(q, questionId, version)));
+export async function setQuestionHandoffVersion(
+  store: Db,
+  questionId: string,
+  version: number,
+): Promise<void> {
+  await store.run((q) => setQuestionHandoffVersionSteps(q, questionId, version));
 }
 
 /** Store the answer to a retry question, which no agent turn will read. */
@@ -23,8 +26,8 @@ export function* setRetryAnswerSteps(q: Q, questionId: string, answer: string) {
   );
 }
 
-export function setRetryAnswer(db: Database, questionId: string, answer: string): void {
-  settled(sqliteDb(db).run((q) => setRetryAnswerSteps(q, questionId, answer)));
+export async function setRetryAnswer(store: Db, questionId: string, answer: string): Promise<void> {
+  await store.run((q) => setRetryAnswerSteps(q, questionId, answer));
 }
 
 /** Answered questions on this session no turn has received yet, oldest answer first. */
@@ -58,15 +61,15 @@ export function* pendingAnswerHandoffsSteps(
   );
 }
 
-export function pendingAnswerHandoffs(
-  db: Database,
+export async function pendingAnswerHandoffs(
+  store: Db,
   itemId: string,
   sessionId: string,
   excludedKinds: readonly string[],
-): { id: string; body: string; options: string | null; answer: string }[] {
-  return settled(
-    sqliteDb(db).run((q) => pendingAnswerHandoffsSteps(q, itemId, sessionId, excludedKinds)),
-  ) as { id: string; body: string; options: string | null; answer: string }[];
+): Promise<{ id: string; body: string; options: string | null; answer: string }[]> {
+  return (await store.run((q) =>
+    pendingAnswerHandoffsSteps(q, itemId, sessionId, excludedKinds),
+  )) as { id: string; body: string; options: string | null; answer: string }[];
 }
 
 /** Whether `ask()` recorded this question and it still waits for an answer on the session. */
@@ -91,6 +94,10 @@ export function* askedQuestionOpenSteps(q: Q, sessionId: string, questionId: str
   return row !== undefined;
 }
 
-export function askedQuestionOpen(db: Database, sessionId: string, questionId: string): boolean {
-  return settled(sqliteDb(db).run((q) => askedQuestionOpenSteps(q, sessionId, questionId)));
+export async function askedQuestionOpen(
+  store: Db,
+  sessionId: string,
+  questionId: string,
+): Promise<boolean> {
+  return store.run((q) => askedQuestionOpenSteps(q, sessionId, questionId));
 }

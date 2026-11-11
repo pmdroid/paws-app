@@ -118,8 +118,8 @@ export function* claimRunSteps(q: Q, runId: string, ownerInstance: string): Step
   );
 }
 
-export function claimRun(db: Database, runId: string, ownerInstance: string): void {
-  settled(sqliteDb(db).run((q) => claimRunSteps(q, runId, ownerInstance)));
+export async function claimRun(store: Db, runId: string, ownerInstance: string): Promise<void> {
+  await store.run((q) => claimRunSteps(q, runId, ownerInstance));
 }
 
 export function* markRunSteps(q: Q, id: string, status: RunStatus, now: number): Steps<void> {
@@ -159,8 +159,8 @@ export function* releaseRunCapacitySteps(q: Q, runId: string, now: number): Step
   yield* q.exec(q.orm.delete(runnerWorkGrant).where(eq(runnerWorkGrant.runId, runId)));
 }
 
-export function releaseRunCapacity(db: Database, runId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => releaseRunCapacitySteps(q, runId, now)));
+export async function releaseRunCapacity(store: Db, runId: string, now: number): Promise<void> {
+  await store.run((q) => releaseRunCapacitySteps(q, runId, now));
 }
 
 export function* saveRunResultSteps(

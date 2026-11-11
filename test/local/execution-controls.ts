@@ -21,6 +21,7 @@ import {
   replaceWorkspaceRepositories,
   syncWorkspaceMember,
   workspaceSessionIds,
+  sqliteDb,
 } from "../../src/db";
 import { createExecutionControls } from "../../src/execution-controls";
 import { createFakeTracker, createLinearMembershipReads } from "../../src/linear";
@@ -36,7 +37,7 @@ import {
   type WorkspaceAccess,
 } from "../../src/workspace";
 
-export function createExecutionControlsFixture(
+export async function createExecutionControlsFixture(
   root: string,
   options: {
     interruptItem?: (id: string) => Promise<void>;
@@ -54,12 +55,12 @@ export function createExecutionControlsFixture(
     name: "Admin",
     email: "admin@example.invalid",
   });
-  consumeWorkspaceBootstrap(db, {
+  await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId,
     organizationId: "org",
     name: "Controls verification",
     userId: "admin",
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", now)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
   for (const [id, role, teamIds] of [
@@ -111,7 +112,7 @@ export function createExecutionControlsFixture(
     repo: "unmapped",
     remoteUrl: "https://example.invalid/fixture/unmapped",
   });
-  replaceWorkspaceRepositories(db, {
+  await replaceWorkspaceRepositories(sqliteDb(db), {
     workspaceId,
     actorId: "admin",
     repositories: [{ repository: "fixture/allowed", teamId: "team" }],
@@ -221,7 +222,7 @@ export function createExecutionControlsFixture(
 }
 
 export async function probeExecutionControls(root: string) {
-  const fixture = createExecutionControlsFixture(root);
+  const fixture = await createExecutionControlsFixture(root);
   const { db, call } = fixture;
   const observations: { name: string; passed: boolean; observed: unknown }[] = [];
   const observe = (name: string, observed: unknown) =>
@@ -248,7 +249,7 @@ export async function probeExecutionControls(root: string) {
       { admin: 200, member: 200, denied: 5 },
     );
     const resetsAt = Date.now() + 3_600_000;
-    startUsagePause(db, {
+    await startUsagePause(sqliteDb(db), {
       runId: fixture.runId,
       itemId: "controlled",
       agent: "claude",
@@ -263,7 +264,7 @@ export async function probeExecutionControls(root: string) {
     ]);
     assert.equal((await call("resume_now", "inactive")).status, 401);
     assert.equal((await call("resume_now")).status, 200);
-    assert(usagePause(db, fixture.runId)!.resumeAt <= Date.now());
+    assert((await usagePause(sqliteDb(db), fixture.runId))!.resumeAt <= Date.now());
     assert.equal(getWorkItem(db, "controlled")!.state, "running");
     db.run("DELETE FROM usage_pause");
     assert.equal((await call("resume_now")).status, 409);
@@ -414,7 +415,7 @@ export async function probeExecutionControls(root: string) {
 if (import.meta.main) {
   const root = mkdtempSync(join(tmpdir(), "paws-execution-controls-"));
   if (process.argv.includes("--serve")) {
-    const fixture = createExecutionControlsFixture(root);
+    const fixture = await createExecutionControlsFixture(root);
     console.log(
       JSON.stringify({
         root,

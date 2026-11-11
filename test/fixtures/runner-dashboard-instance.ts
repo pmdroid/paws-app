@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { consumeWorkspaceBootstrap, putWorkspaceUser, syncWorkspaceMember } from "../../src/db";
+import {
+  consumeWorkspaceBootstrap,
+  putWorkspaceUser,
+  syncWorkspaceMember,
+  sqliteDb,
+} from "../../src/db";
 import { startPaws } from "../../src/index";
 import { initializeRunnerCoordinator } from "../../src/runner-coordinator";
 import { createRunnerKey } from "../../src/runner-identity";
@@ -86,12 +91,12 @@ const owner = putWorkspaceUser(paws.db, {
   name: "Owner",
   email: "owner@example.invalid",
 });
-const workspace = consumeWorkspaceBootstrap(paws.db, {
+const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
   id: workspaceId(),
   organizationId: "org",
   name: "Runner proof",
   userId: owner,
-  tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(paws.db, "org", now)),
+  tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
   now,
 });
 const member = putWorkspaceUser(paws.db, {

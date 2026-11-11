@@ -488,8 +488,8 @@ export function* recordRetroEvidenceSteps(q: Q, retroId: string, evidence: Retro
   }
 }
 
-export function listRetroEvidence(db: Database, retroId: string): RetroEvidence[] {
-  return settled(sqliteDb(db).run((q) => listRetroEvidenceSteps(q, retroId)));
+export async function listRetroEvidence(store: Db, retroId: string): Promise<RetroEvidence[]> {
+  return store.run((q) => listRetroEvidenceSteps(q, retroId));
 }
 
 export function* listRetroEvidenceSteps(q: Q, retroId: string) {
@@ -534,8 +534,11 @@ export function* recordRetroCoverageGapSteps(q: Q, input: CoverageGap) {
   );
 }
 
-export function listRetroCoverageGaps(db: Database, retroId: string): RetroCoverageGap[] {
-  return settled(sqliteDb(db).run((q) => listRetroCoverageGapsSteps(q, retroId)));
+export async function listRetroCoverageGaps(
+  store: Db,
+  retroId: string,
+): Promise<RetroCoverageGap[]> {
+  return store.run((q) => listRetroCoverageGapsSteps(q, retroId));
 }
 
 export function* listRetroCoverageGapsSteps(q: Q, retroId: string) {
@@ -596,12 +599,12 @@ export function* writeRetroArtifactSteps(q: Q, root: string, input: ArtifactWrit
   return (yield* retroArtifactSteps(q, input.retroId, input.kind))!;
 }
 
-export function retroArtifact(
-  db: Database,
+export async function retroArtifact(
+  store: Db,
   retroId: string,
   kind: RetroArtifactKind,
-): RetroArtifactRecord | null {
-  return settled(sqliteDb(db).run((q) => retroArtifactSteps(q, retroId, kind)));
+): Promise<RetroArtifactRecord | null> {
+  return store.run((q) => retroArtifactSteps(q, retroId, kind));
 }
 
 export function* retroArtifactSteps(q: Q, retroId: string, kind: RetroArtifactKind) {
@@ -1024,8 +1027,8 @@ export function* closeRetroSteps(q: Q, input: Close) {
   return changed.length === 1;
 }
 
-export function listRetroItems(db: Database, retroId: string): RetroItem[] {
-  return settled(sqliteDb(db).run((q) => listRetroItemsSteps(q, retroId)));
+export async function listRetroItems(store: Db, retroId: string): Promise<RetroItem[]> {
+  return store.run((q) => listRetroItemsSteps(q, retroId));
 }
 
 export function* listRetroItemsSteps(q: Q, retroId: string) {

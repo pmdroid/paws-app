@@ -50,8 +50,8 @@ async function fixture() {
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const bootstrap = issueWorkspaceBootstrap(db, "fixture-host", now);
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const bootstrap = await issueWorkspaceBootstrap(db, "fixture-host", now);
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "fixture-host",
     name: "Fixture",
@@ -386,9 +386,9 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
     agents: ["claude" as const, "codex" as const],
     updatedAt: runner.now(),
   };
-  saveSkill(runner.db, pin);
-  saveSkill(runner.db, { ...pin, name: "gone", version: "1.0.0" });
-  markSkillRemoved(runner.db, "gone", runner.now());
+  await saveSkill(sqliteDb(runner.db), pin);
+  await saveSkill(sqliteDb(runner.db), { ...pin, name: "gone", version: "1.0.0" });
+  await markSkillRemoved(sqliteDb(runner.db), "gone", runner.now());
 
   const older = (await (await runner.heartbeat({}))!.json()) as Record<string, unknown>;
   expect(older.skills).toBeUndefined();
@@ -408,7 +408,7 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
       agents: ["claude", "codex"],
     },
   ]);
-  expect(listRunnerSkills(runner.db, runner.runnerId)).toEqual([
+  expect(await listRunnerSkills(sqliteDb(runner.db), runner.runnerId)).toEqual([
     { ...installed[0]!, status: "installed", error: null, waiting: null, reportedAt: runner.now() },
   ]);
   const refused = {
@@ -419,7 +419,7 @@ test("a heartbeat that reports installed skills gets the manifest and can downlo
     error: "Skill impeccable 2.4.1 failed its checksum and was not installed.",
   };
   expect((await runner.heartbeat({ skills: [refused] }))!.status).toBe(200);
-  expect(listRunnerSkills(runner.db, runner.runnerId)).toEqual([
+  expect(await listRunnerSkills(sqliteDb(runner.db), runner.runnerId)).toEqual([
     { ...refused, status: "refused", waiting: null, reportedAt: runner.now() },
   ]);
 
@@ -501,19 +501,22 @@ test("a runner waiting on running tasks says how many still hold the earlier ver
     agents: ["claude" as const],
     updatedAt: runner.now(),
   };
-  saveSkill(runner.db, pin);
+  await saveSkill(sqliteDb(runner.db), pin);
   const pending = { name: pin.name, version: pin.version, sha256: pin.sha256, status: "pending" };
   expect((await runner.heartbeat({ skills: [{ ...pending, waiting: 2 }] }))?.status).toBe(200);
   const list = (await runner.list()) as unknown as {
     runners: { skills: RunnerSkillView[] }[];
   };
   expect(list.runners[0]!.skills[0]).toMatchObject({ state: "installing", waiting: 2 });
-  expect(skillRollouts(runner.db)[0]).toMatchObject({
+  expect((await skillRollouts(sqliteDb(runner.db)))[0]).toMatchObject({
     installing: [],
     waiting: [{ runner: "Host VM", tasks: 2 }],
   });
   expect((await runner.heartbeat({ skills: [pending] }))?.status).toBe(200);
-  expect(skillRollouts(runner.db)[0]).toMatchObject({ installing: ["Host VM"], waiting: [] });
+  expect((await skillRollouts(sqliteDb(runner.db)))[0]).toMatchObject({
+    installing: ["Host VM"],
+    waiting: [],
+  });
 });
 
 test("the runner list shows each registered skill as up to date, installing, out of date or failed", async () => {
@@ -526,7 +529,7 @@ test("the runner list shows each registered skill as up to date, installing, out
     updatedAt: runner.now(),
   };
   for (const name of ["current", "failing", "missing", "older", "pending"])
-    saveSkill(runner.db, { ...pin, name, version: "2.0.0" });
+    await saveSkill(sqliteDb(runner.db), { ...pin, name, version: "2.0.0" });
   const reported = (name: string, status: string, sha256 = pin.sha256, version = "2.0.0") => ({
     name,
     version,
@@ -595,7 +598,9 @@ test("the runner list shows each registered skill as up to date, installing, out
       reportedAt: runner.now(),
     },
   ]);
-  expect(skillRollouts(runner.db).map(({ name, ...rollout }) => [name, rollout])).toEqual([
+  expect(
+    (await skillRollouts(sqliteDb(runner.db))).map(({ name, ...rollout }) => [name, rollout]),
+  ).toEqual([
     ["current", { total: 1, upToDate: 1, installing: [], waiting: [], outOfDate: [], failed: [] }],
     [
       "failing",

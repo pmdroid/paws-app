@@ -133,10 +133,12 @@ export function* ensureRestartQuestionSteps(
   return { held: true, armed };
 }
 
-export function ensureRestartQuestion(db: Database, item: WorkItemRecord, now: number): boolean {
-  const { held, armed } = settled(
-    sqliteDb(db).transaction((q) => ensureRestartQuestionSteps(q, item, now)),
-  );
-  if (armed) emitJobReady(db);
+export async function ensureRestartQuestion(
+  store: Db,
+  item: WorkItemRecord,
+  now: number,
+): Promise<boolean> {
+  const { held, armed } = await store.transaction((q) => ensureRestartQuestionSteps(q, item, now));
+  if (armed) emitJobReady(store);
   return held;
 }

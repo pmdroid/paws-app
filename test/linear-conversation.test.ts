@@ -19,6 +19,7 @@ import {
   listPendingLinearTurns,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../src/db";
 import { findOpenQuestion } from "../src/questions";
 import { worktreePath } from "../src/acp";
@@ -294,13 +295,14 @@ for (const phase of ["implement", "review"] as const) {
       await Promise.all([first, updates]);
       const original = f.item();
       expect(original.state).toBe("queued");
-      expect(listPendingLinearTurns(f.db, "session").map((turn) => turn.body)).toEqual([
-        "FIRST_UPDATE",
-        "SECOND_UPDATE",
-      ]);
+      expect(
+        (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
+      ).toEqual(["FIRST_UPDATE", "SECOND_UPDATE"]);
       if (phase === "implement")
         expect(running(Number(readFileSync(f.evidence + ".descendant", "utf8")))).toBe(false);
-      expect(getConversation(f.db, original.id).entries).not.toContain("PRIVATE_HIDDEN");
+      expect((await getConversation(sqliteDb(f.db), original.id)).entries).not.toContain(
+        "PRIVATE_HIDDEN",
+      );
       f.reopen();
       await tickWithRestarts(f.jobs, f.orchestrator, f.db);
       expect(f.item().id).toBe(original.id);
@@ -320,7 +322,7 @@ for (const phase of ["implement", "review"] as const) {
           existsSync(join(worktreePath(f.pawsRoot, itemPathId(original)), "old-writes.txt")),
         ).toBe(true);
       }
-      expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+      expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
       const count = f.starts.length;
       await f.orchestrator.onLinearEvent(event("update-two", "SECOND_UPDATE", 3));
       expect(f.starts.length).toBe(count);
@@ -338,7 +340,7 @@ test("new prompt after completion creates a new task and preserves the terminal 
     await tickWithRestarts(f.jobs, f.orchestrator, f.db);
     const original = f.item();
     applyWorkItemEvent(f.db, original.id, "merge_accepted");
-    expect(getConversation(f.db, original.id).entries).toContain(
+    expect((await getConversation(sqliteDb(f.db), original.id)).entries).toContain(
       "Append the required fixed suffix.",
     );
     await f.orchestrator.onLinearEvent(event("later", "ANOTHER_REQUEST", 4));
@@ -385,7 +387,7 @@ test("Stop wins over an interrupted turn, quiesces descendants and keeps complet
     await Promise.all([tick, update, stop, duplicate]);
     expect(f.item().state).toBe("paused");
     expect(running(Number(readFileSync(f.evidence + ".descendant", "utf8")))).toBe(false);
-    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
     expect(await tickWithRestarts(f.jobs, f.orchestrator, f.db)).toBeNull();
     await f.orchestrator.onLinearEvent(event("after-stop", "NEW_REQUEST", 4));
     expect(f.item().state).toBe("queued");
@@ -447,7 +449,7 @@ test("prompt before creation recovers the authoritative issue and reuses its tas
     expect(f.prompts().find((row) => row.purpose === "implement")?.prompt).toContain(
       "EARLY_REQUEST",
     );
-    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
   } finally {
     await f.close();
   }
@@ -459,9 +461,9 @@ test("unresolved early prompt remains durable until creation supplies its issue"
     await expect(
       f.orchestrator.onLinearEvent({ ...event("early", "PENDING_REQUEST", 2), issueId: null }),
     ).rejects.toThrow("user update remains pending");
-    expect(listPendingLinearTurns(f.db, "session").map((turn) => turn.body)).toEqual([
-      "PENDING_REQUEST",
-    ]);
+    expect(
+      (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
+    ).toEqual(["PENDING_REQUEST"]);
     f.reopen();
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     await tickWithRestarts(f.jobs, f.orchestrator, f.db);
@@ -469,7 +471,7 @@ test("unresolved early prompt remains durable until creation supplies its issue"
     expect(f.prompts().find((row) => row.purpose === "implement")?.prompt).toContain(
       "PENDING_REQUEST",
     );
-    expect(listPendingLinearTurns(f.db, "session")).toEqual([]);
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toEqual([]);
   } finally {
     await f.close();
   }
@@ -503,8 +505,8 @@ test("an accepted answer question redirects through classification before code e
     const implementation = f.prompts().find((row) => row.purpose === "implement")!.prompt;
     expect(implementation).toContain("ANSWER_OBSERVATION");
     expect(implementation).not.toContain("PRIVATE_ANSWER_HIDDEN");
-    expect(getConversation(f.db, task).entries).toContain("ANSWER_OBSERVATION");
-    expect(listPendingLinearTurns(f.db, "session")).toHaveLength(0);
+    expect((await getConversation(sqliteDb(f.db), task)).entries).toContain("ANSWER_OBSERVATION");
+    expect(await listPendingLinearTurns(sqliteDb(f.db), "session")).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -524,9 +526,9 @@ test("a prompt interrupts intake classification and is routed once after the old
     expect(f.starts).toEqual(["classify", "classify"]);
     expect(getTaskMode(f.db, f.item().id)).toBe("answer");
     expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(1);
-    expect(listPendingLinearTurns(f.db, "session").map((turn) => turn.body)).toEqual([
-      "Explain the updated request",
-    ]);
+    expect(
+      (await listPendingLinearTurns(sqliteDb(f.db), "session")).map((turn) => turn.body),
+    ).toEqual(["Explain the updated request"]);
   } finally {
     await f.close();
   }
@@ -584,7 +586,9 @@ test.each(["answer", "artifact"] as const)(
       expect(implementation).toContain("ANSWER_OBSERVATION");
       expect(implementation).toContain("Also implement both child changes");
       expect(implementation).not.toContain("PRIVATE_ANSWER_HIDDEN");
-      expect(getConversation(f.db, children[0]!.id).entries).toContain("ANSWER_OBSERVATION");
+      expect((await getConversation(sqliteDb(f.db), children[0]!.id)).entries).toContain(
+        "ANSWER_OBSERVATION",
+      );
       expect(f.starts.filter((purpose) => purpose === "classify")).toHaveLength(2);
       expect(f.db.query("SELECT id FROM work_item").all()).toHaveLength(3);
     } finally {
@@ -693,7 +697,7 @@ test.each(["shutdown", "interrupt"] as const)(
           : f.orchestrator.interruptLinearSession("session");
       await expect(stopping).rejects.toThrow("ACP process cleanup could not be verified");
       expect(f.db.query("SELECT 1 AS open").get()).toEqual({ open: 1 });
-      expect(getConversation(f.db, f.item().id).blocked).toBe(true);
+      expect((await getConversation(sqliteDb(f.db), f.item().id)).blocked).toBe(true);
     } finally {
       f.db.run("DELETE FROM linear_conversation");
       await f.close();

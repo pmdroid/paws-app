@@ -19,19 +19,19 @@ import { workspaceAdmission } from "./fake-workspace";
 export const REPOSITORY = "pmdroid/paws-app";
 export const NOW = 1_800_000_000_000;
 
-export function workspaceWithRunners(db: Database) {
+export async function workspaceWithRunners(db: Database) {
   const userId = putWorkspaceUser(db, {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
     email: "owner@example.invalid",
   });
-  const workspace = consumeWorkspaceBootstrap(db, {
+  const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: workspaceId(),
     organizationId: "org",
     name: "Fixture",
     userId,
-    tokenHash: workspaceTokenHash(issueWorkspaceBootstrap(db, "org", NOW)),
+    tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", NOW)),
     now: NOW,
   });
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, REPOSITORY, "team"]);
