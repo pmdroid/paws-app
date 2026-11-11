@@ -142,6 +142,7 @@ test("production explicit session intake stays pending when follow-up fails and 
   };
   const first = openLinear({
     db,
+    store: sqliteDb(db),
     secretsDir,
     env: { LINEAR_ACCESS_TOKEN: "host-only-token" },
     fetch: fetchImpl,
@@ -157,6 +158,7 @@ test("production explicit session intake stays pending when follow-up fails and 
   expect(await reopened.listUnhandled()).toHaveLength(1);
   const second = openLinear({
     db,
+    store: sqliteDb(db),
     secretsDir,
     env: { LINEAR_ACCESS_TOKEN: "host-only-token" },
     fetch: fetchImpl,

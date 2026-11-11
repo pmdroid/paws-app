@@ -41,7 +41,7 @@ async function itemIn(state: WorkItemState) {
 
 const close = (db: Awaited<ReturnType<typeof itemIn>>["db"], stateType: "completed" | "canceled") =>
   closeClosedIssueTasks(
-    db,
+    sqliteDb(db),
     {
       issueId: `lin-item-${ITEM}`,
       organizationId: null,
@@ -106,7 +106,7 @@ test("a Duplicate issue arrives as canceled and closes the PR the same way", asy
   )!;
   const closed = parseLinearIssueClosed(event)!;
   expect(closed.stateType).toBe("canceled");
-  await closeClosedIssueTasks(db, closed, { notify: () => {}, now: () => 10 });
+  await closeClosedIssueTasks(sqliteDb(db), closed, { notify: () => {}, now: () => 10 });
   expect(await responses(db)).toEqual([
     "Canceled in Linear. PR #42 was closed; the branch is kept.",
   ]);

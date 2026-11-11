@@ -109,7 +109,7 @@ test.each(["push", "pr", "merge"] as const)(
         stateType: "started",
       });
       const stopped: string[] = [];
-      const gate = new LinearTaskAccess(db, {
+      const gate = new LinearTaskAccess(sqliteDb(db), {
         access: access.adapter,
         lifecycle,
         oauthClientId: "client",

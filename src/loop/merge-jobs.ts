@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
 import {
   githubDeliveryRecordedSteps,
@@ -16,7 +15,6 @@ import {
   recordGitHubDeliverySteps,
   retryLeasedJobSteps,
   returnToMergeQueueSteps,
-  sqliteDb,
   type Job,
   type Q,
   type RunnerCapacityWaitState,
@@ -88,14 +86,13 @@ export async function retryMergeLater(
 }
 
 export async function acceptGitHubDelivery(
-  db: Database,
+  store: Db,
   delivery: { deliveryId: string; event: string; payload: string },
   now: number,
   comments?: PullCommentFilter,
 ): Promise<boolean> {
   // Avoid provider callbacks for successful duplicates. The transactional insert remains
   // authoritative when another connection accepts this delivery after the read.
-  const store = sqliteDb(db);
   if (await store.run((q) => githubDeliveryRecordedSteps(q, delivery.deliveryId))) return false;
   const body: unknown = JSON.parse(delivery.payload);
   // Callbacks can resolve credentials and start an identity-cache refresh. Run them
@@ -209,8 +206,7 @@ function* enqueueVerifiedMergeSteps(q: Q, input: VerifiedMerge) {
   );
 }
 
-export async function enqueueVerifiedMerge(db: Database, input: VerifiedMerge): Promise<number> {
-  const store = sqliteDb(db);
+export async function enqueueVerifiedMerge(store: Db, input: VerifiedMerge): Promise<number> {
   const { id, armed } = await store.transaction((q) => enqueueVerifiedMergeSteps(q, input));
   if (armed) emitJobReady(store);
   return id;

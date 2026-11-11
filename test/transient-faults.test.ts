@@ -442,7 +442,7 @@ async function runWithFault(fault: {
   let implementations = 0;
   let sequence = 0;
   let orchestrator: ReturnType<typeof attachOrchestrator>;
-  const gate = new LinearTaskAccess(db, {
+  const gate = new LinearTaskAccess(sqliteDb(db), {
     access: access.adapter,
     lifecycle,
     oauthClientId: scope.oauthClientId,

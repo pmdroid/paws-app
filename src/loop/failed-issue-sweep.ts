@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import type { LinearCommand } from "../core";
-import { listWorkItemsSteps, sqliteDb } from "../db";
+import { listWorkItemsSteps, type Db } from "../db";
 import { journalCaught } from "../journal";
 import type { LinearIssueClosed, TrackerRequestOptions } from "../linear";
 import { closeClosedIssueTasks, type ClosedIssueTask } from "./linear-administration";
@@ -9,7 +8,7 @@ export const FAILED_ISSUE_SWEEP_JOB = "linear.failed-issues.sweep";
 export const FAILED_ISSUE_SWEEP_MS = 6 * 60 * 60 * 1000;
 
 export async function sweepFailedIssues(
-  db: Database,
+  store: Db,
   options: {
     readIssueClosures(
       ids: readonly string[],
@@ -23,7 +22,7 @@ export async function sweepFailedIssues(
 ): Promise<ClosedIssueTask[]> {
   const ids = [
     ...new Set(
-      (await sqliteDb(db).run(listWorkItemsSteps))
+      (await store.run(listWorkItemsSteps))
         .filter((item) => item.state === "failed" && item.linearIssueId !== "")
         .map((item) => item.linearIssueId),
     ),
@@ -42,6 +41,6 @@ export async function sweepFailedIssues(
   const closed: ClosedIssueTask[] = [];
   for (const closure of closures)
     if (ids.includes(closure.issueId))
-      closed.push(...(await closeClosedIssueTasks(db, closure, options)));
+      closed.push(...(await closeClosedIssueTasks(store, closure, options)));
   return closed;
 }

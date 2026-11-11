@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { isTerminalWorkItemState, type LinearCommand, type WorkItemState } from "../core";
 import {
   issueItemsCreatedBySteps,
@@ -25,7 +24,6 @@ import {
   listWorkItemsSteps,
   recordLinearNotificationSteps,
   revokeLinearInstallationSteps,
-  sqliteDb,
   type Db,
   type Q,
   type Steps,
@@ -38,13 +36,13 @@ import {
 } from "../linear";
 import { worktreeBranch } from "./sources";
 
-const notifications = new WeakMap<Database, Map<string, Promise<void>>>();
+const notifications = new WeakMap<Db, Map<string, Promise<void>>>();
 
 /** Where commands applied in a transaction forward from, and whether a job became ready. */
 type CommandContext = { self: string | undefined; notifications: { ready: boolean } };
 
 export async function handleLinearAdministration(
-  db: Database,
+  store: Db,
   event: AcceptedLinearEvent,
   options: {
     oauthClientId: string | null;
@@ -59,7 +57,6 @@ export async function handleLinearAdministration(
 ): Promise<boolean> {
   const administration = parseLinearAdministration(event);
   if (administration === null) return false;
-  const store = sqliteDb(db);
   if (options.oauthClientId === null || administration.oauthClientId !== options.oauthClientId)
     return true;
   if (
@@ -72,10 +69,10 @@ export async function handleLinearAdministration(
     if (await store.run((q) => hasLinearNotificationSteps(q, administration))) return true;
     if (options.reconcile === undefined)
       throw new Error("Linear notification reconciliation is unavailable.");
-    let pending = notifications.get(db);
+    let pending = notifications.get(store);
     if (pending === undefined) {
       pending = new Map();
-      notifications.set(db, pending);
+      notifications.set(store, pending);
     }
     const key = JSON.stringify([
       administration.organizationId,
@@ -88,7 +85,7 @@ export async function handleLinearAdministration(
       work = Promise.resolve()
         .then(async () => {
           if (administration.action === "issueUnassignedFromYou")
-            await stopUndelegatedIssue(db, administration, options);
+            await stopUndelegatedIssue(store, administration, options);
         })
         .then(() => options.reconcile?.(administration))
         .then(async () => {
@@ -103,7 +100,7 @@ export async function handleLinearAdministration(
     return true;
   }
   const context: CommandContext = {
-    self: commandInstance(db),
+    self: commandInstance(store),
     notifications: { ready: false },
   };
   const { commands, stopped } = await store.transaction(function* (q) {
@@ -151,7 +148,7 @@ export async function handleLinearAdministration(
 }
 
 export async function stopUndelegatedIssue(
-  db: Database,
+  store: Db,
   undelegation: {
     organizationId: string;
     appUserId: string;
@@ -163,9 +160,8 @@ export async function stopUndelegatedIssue(
     interrupt?: (sessionId: string) => Promise<void>;
   },
 ): Promise<void> {
-  const store = sqliteDb(db);
   const context: CommandContext = {
-    self: commandInstance(db),
+    self: commandInstance(store),
     notifications: { ready: false },
   };
   const { commands, stopped } = await store.transaction(function* (q) {
@@ -198,7 +194,7 @@ export type ClosedIssueTask = {
  * Duplicate closes the task's open pull request in any state, with a comment that says why.
  */
 export async function closeClosedIssueTasks(
-  db: Database,
+  store: Db,
   closed: LinearIssueClosed,
   options: {
     notify: (command: LinearCommand) => void;
@@ -206,9 +202,8 @@ export async function closeClosedIssueTasks(
     now?: () => number;
   },
 ): Promise<ClosedIssueTask[]> {
-  const store = sqliteDb(db);
   const context: CommandContext = {
-    self: commandInstance(db),
+    self: commandInstance(store),
     notifications: { ready: false },
   };
   const now = options.now?.() ?? Date.now();

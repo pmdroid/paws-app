@@ -142,7 +142,7 @@ async function setup() {
   let wait: PullFeedbackWait | undefined;
   const send = (event: string, payload: Record<string, unknown>) =>
     acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: `d-${(delivery += 1)}`,
         event,
@@ -438,7 +438,7 @@ describe("Paws replies to every handed-off comment", () => {
   test("answered and unreported threads stay open", async () => {
     const { db, github, replies } = await setup();
     await recordReplyTargets(
-      db,
+      sqliteDb(db),
       "eng-1",
       "restart-answers",
       [1, 2].map((number) => ({
@@ -473,7 +473,7 @@ describe("Paws replies to every handed-off comment", () => {
   test("a permanently failed resolution leaves later replies and resolutions independent", async () => {
     const { db, github, replies } = await setup();
     await recordReplyTargets(
-      db,
+      sqliteDb(db),
       "eng-1",
       "restart-fix",
       [

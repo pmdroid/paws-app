@@ -95,7 +95,7 @@ test("a review restart posts one working-on-it comment and 👀 on each comment,
   const { db, github, clock, startRestart, turnStarts } = await setup();
   await startRestart("review", "Fix the review.", "review:eng-1:601");
   await recordReplyTargets(
-    db,
+    sqliteDb(db),
     "eng-1",
     "review:eng-1:601",
     [target(1, "thread", 9001), target(2, "thread", 9101), target(3, "conversation", 5001)],
@@ -134,7 +134,7 @@ test("Paws does not read its own working-on-it comment back as a new comment", a
 
   const comment = (id: number, body: string) =>
     acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: `d-${id}`,
         event: "issue_comment",

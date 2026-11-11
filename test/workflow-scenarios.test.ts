@@ -252,7 +252,7 @@ describe("combined recovery scenarios", () => {
           review: { id: 42, state: "changes_requested", body: "Fix it", user: { login: "lead" } },
         }),
       };
-      expect(await acceptGitHubDelivery(w.db, delivery, w.now)).toBe(true);
+      expect(await acceptGitHubDelivery(sqliteDb(w.db), delivery, w.now)).toBe(true);
       const reviews = async () =>
         (await pendingChangeRequests(sqliteDb(w.db), id)).map((review) => review.reviewId);
       expect(await reviews()).toEqual([42]);
@@ -263,11 +263,11 @@ describe("combined recovery scenarios", () => {
 
       w.crash();
       await w.start();
-      expect(await acceptGitHubDelivery(w.db, delivery, w.now)).toBe(false);
+      expect(await acceptGitHubDelivery(sqliteDb(w.db), delivery, w.now)).toBe(false);
       w.crash();
       w.advance(1_000);
       await w.start();
-      expect(await acceptGitHubDelivery(w.db, delivery, w.now)).toBe(false);
+      expect(await acceptGitHubDelivery(sqliteDb(w.db), delivery, w.now)).toBe(false);
       expect(await reviews()).toEqual([42]);
       expect(await jobs()).toEqual(effects);
       expect((await liveExecution(w, id)).map((job) => job.id)).toEqual(merge);

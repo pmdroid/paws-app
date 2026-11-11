@@ -490,7 +490,7 @@ test("undelegation cancels a held item and ends its hold", async () => {
     const { db, itemId } = fixture;
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).not.toBeNull();
     await stopUndelegatedIssue(
-      db,
+      sqliteDb(db),
       { organizationId: "org", appUserId: "app-user", issueId: "issue-1", createdAtMs: Date.now() },
       { notify() {} },
     );

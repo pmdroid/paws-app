@@ -773,7 +773,7 @@ function teamRepositoryIntegration(db: ReturnType<typeof tempDb>) {
         (await getWorkItemRepositoryChoice(sqliteDb(db), item.id));
       const decision =
         scope && repository
-          ? ((await teamRepositoryDenial(db, item, scope, repository)) ?? true)
+          ? ((await teamRepositoryDenial(sqliteDb(db), item, scope, repository)) ?? true)
           : false;
       decisions.push(decision);
       return decision;

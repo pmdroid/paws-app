@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
   advanceLinearSessionGeneration,
   ensureLinearSessionSteps,
@@ -15,7 +14,6 @@ import {
   listWorkItemsSteps,
   recordLinearInstallationSteps,
   requireLinearTaskDelegationSteps,
-  sqliteDb,
   type Db,
   type Q,
   type Steps,
@@ -72,7 +70,7 @@ export class LinearTaskAccess {
   private readonly store: Db;
 
   constructor(
-    db: Database,
+    store: Db,
     private readonly options: {
       access: LinearAccessReads | null;
       lifecycle: LinearIssueLifecycle | null;
@@ -83,7 +81,7 @@ export class LinearTaskAccess {
       now?: () => number;
     },
   ) {
-    this.store = sqliteDb(db);
+    this.store = store;
   }
 
   private session(sessionId: string) {

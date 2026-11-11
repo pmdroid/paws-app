@@ -123,6 +123,7 @@ async function fixture() {
   const runtime = () =>
     openLinear({
       db,
+      store: sqliteDb(db),
       secretsDir: join(home, "secrets"),
       env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
       isAuthorized: async () => false,

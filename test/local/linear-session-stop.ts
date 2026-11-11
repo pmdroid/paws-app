@@ -111,7 +111,7 @@ export async function probeLinearSessionStop(root: string) {
       const poller = startCatchUpPoller({
         source,
         store,
-        db,
+        db: sqliteDb(db),
         now: () => clock.now(),
         sleeper: {
           wait: () =>

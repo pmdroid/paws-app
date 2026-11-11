@@ -72,12 +72,13 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
     const requests: string[] = [];
     const opened = openLinear({
       db,
+      store: sqliteDb(db),
       secretsDir: join(root, "secrets"),
       env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
       isAuthorized: async () => !isLinearAppRevoked(db, scope),
       beforeEvent: async (event) => {
         if (
-          await handleLinearAdministration(db, event, {
+          await handleLinearAdministration(sqliteDb(db), event, {
             ...scope,
             notify: () => {
               throw new Error("The classifier has no work item to cancel");
@@ -120,7 +121,7 @@ test.each(["revoked", "team-denied", "team-retry", "initial-denied"] as const)(
         });
       },
     });
-    gate = new LinearTaskAccess(db, {
+    gate = new LinearTaskAccess(sqliteDb(db), {
       access: opened.access,
       lifecycle: opened.issueLifecycle,
       oauthClientId: "client",

@@ -126,7 +126,7 @@ function setup(
   const poller = startCatchUpPoller({
     source: options.reread === false ? { poll: (since) => source.poll(since) } : source,
     store,
-    db,
+    db: sqliteDb(db),
     now: () => now,
     sleeper: {
       wait: () =>

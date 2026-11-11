@@ -132,7 +132,7 @@ test("real LinearTaskAccess distinguishes revoked installation from unavailable 
     delegateId: "app",
     stateType: "started",
   });
-  const gate = new LinearTaskAccess(db, {
+  const gate = new LinearTaskAccess(sqliteDb(db), {
     access: reads.adapter,
     lifecycle,
     oauthClientId: "client",

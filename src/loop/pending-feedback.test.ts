@@ -91,7 +91,7 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
   let delivery = 0;
   const send = (event: string, payload: Record<string, unknown>) =>
     acceptGitHubDelivery(
-      db,
+      sqliteDb(db),
       {
         deliveryId: `d-${(delivery += 1)}`,
         event,

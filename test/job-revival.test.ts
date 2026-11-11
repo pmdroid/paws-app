@@ -97,10 +97,10 @@ test.each(["done", "cancelled", "dead"] as const)(
     await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
     await applyWorkItemEvent(sqliteDb(db), "item", "closeout_accepted");
     const input = { itemId: "item", head: "head", summary: "accepted", now: 2 };
-    const id = await enqueueVerifiedMerge(db, input);
+    const id = await enqueueVerifiedMerge(sqliteDb(db), input);
     const old = (await claimNextJob(sqliteDb(db), { now: 2, queues: [JOB_KIND.merge] }))!;
     db.run("UPDATE job SET status=? WHERE id=?", [status, id]);
-    expect(await enqueueVerifiedMerge(db, { ...input, now: 3 })).toBe(id);
+    expect(await enqueueVerifiedMerge(sqliteDb(db), { ...input, now: 3 })).toBe(id);
     expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
     const current = (await claimNextJob(sqliteDb(db), { now: 3, queues: [JOB_KIND.merge] }))!;
     expect(current.id).toBe(old.id);

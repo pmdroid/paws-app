@@ -66,6 +66,7 @@ for (const shutdown of ["application", "linear"] as const) {
       const release = Promise.withResolvers<void>();
       const linear = openLinear({
         db,
+        store: sqliteDb(db),
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
         signal: controller.signal,
@@ -120,6 +121,7 @@ for (const shutdown of ["application", "linear"] as const) {
       orchestrator = makeOrchestrator();
       const recovered = openLinear({
         db,
+        store: sqliteDb(db),
         secretsDir: join(home, "secrets"),
         env: { LINEAR_ACCESS_TOKEN: "fixture-token" },
         isAuthorized: async () => false,

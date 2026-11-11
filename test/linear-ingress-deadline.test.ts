@@ -72,6 +72,7 @@ function fixture() {
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
   const linear = openLinear({
     db,
+    store: sqliteDb(db),
     secretsDir: join(home, "secrets"),
     env: { LINEAR_ACCESS_TOKEN: "fixture-token", LINEAR_CLIENT_ID: "client" },
     beforeEvent: (event, ...args: unknown[]) =>
@@ -147,7 +148,7 @@ function fixture() {
       throw new Error("Unexpected Linear request");
     },
   });
-  gate = new LinearTaskAccess(db, {
+  gate = new LinearTaskAccess(sqliteDb(db), {
     access: linear.access,
     lifecycle: createFakeLinearIssueLifecycle({
       id: "issue",

@@ -227,7 +227,7 @@ describe("Settings › Merging › Ignored PR comments", () => {
     let delivery = 0;
     const comment = (id: number, author: string, body: string) =>
       acceptGitHubDelivery(
-        db,
+        sqliteDb(db),
         {
           deliveryId: `d-${(delivery += 1)}`,
           event: "issue_comment",

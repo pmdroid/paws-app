@@ -144,6 +144,7 @@ test("a revoked installation leaves webhook dispatch available but starts no cat
   let requests = 0;
   const opened = openLinear({
     db: f.db,
+    store: sqliteDb(f.db),
     secretsDir: join(f.home, "secrets"),
     env: { LINEAR_CLIENT_ID: "client", LINEAR_APP_USER_ID: "app" },
     isAuthorized: f.allowed,
