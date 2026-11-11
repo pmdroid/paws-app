@@ -39,7 +39,7 @@ async function seed(active = true): Promise<Database> {
       remoteUrl: `https://github.com/acme/${repo}`,
     });
   }
-  recordReviewFindings(db, {
+  await recordReviewFindings(sqliteDb(db), {
     itemId: "item-a",
     repository: "acme/platform",
     head: "a".repeat(40),
@@ -50,7 +50,7 @@ async function seed(active = true): Promise<Database> {
     ],
     reviewed: [],
   });
-  recordReviewFindings(db, {
+  await recordReviewFindings(sqliteDb(db), {
     itemId: "item-b",
     repository: "acme/web",
     head: "c".repeat(40),
@@ -58,14 +58,14 @@ async function seed(active = true): Promise<Database> {
     findings: [finding({ severity: "P3", location: "src/view.tsx:9" })],
     reviewed: [],
   });
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "user-ada",
     linearUserId: "linear-ada",
     name: "Ada",
     email: "ada@example.invalid",
   });
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", ["ws-1", "org-1", "Workspace", 1]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws-1",
     userId,
     role: "member",

@@ -71,7 +71,7 @@ async function fixture(agentRead?: AgentRead) {
   const path = join(root, "paws.db");
   let db: Database = migratedDatabase(path);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -112,7 +112,7 @@ async function fixture(agentRead?: AgentRead) {
   );
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -120,7 +120,7 @@ async function fixture(agentRead?: AgentRead) {
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   await bindWorkItemRepository(sqliteDb(db), item.id, {
     owner: "acme",
     repo: "fixture",

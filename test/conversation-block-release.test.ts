@@ -56,7 +56,12 @@ async function blockedAfterCleanupFailure() {
   const db = openDatabase(join(home, "paws.db"));
   migrate(db);
   let now = Date.now();
-  putWorkspaceUser(db, { id: "owner", linearUserId: "owner", name: "Owner", email: "o@x.invalid" });
+  await putWorkspaceUser(sqliteDb(db), {
+    id: "owner",
+    linearUserId: "owner",
+    name: "Owner",
+    email: "o@x.invalid",
+  });
   const workspace = await consumeWorkspaceBootstrap(sqliteDb(db), {
     id: "workspace",
     organizationId: "org",
@@ -69,7 +74,7 @@ async function blockedAfterCleanupFailure() {
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at) VALUES('agentbox',?,'owner','agentbox','active',?)",
     [workspace.id, now],
   );
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",
@@ -104,7 +109,7 @@ async function blockedAfterCleanupFailure() {
     },
   });
   await orchestrator.onLinearEvent(linearEvent("created", null));
-  const itemId = getLinearSession(db, "session")!.activeItemId!;
+  const itemId = (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!;
   const { run } = beginImplementRun(db, itemId, now);
   db.run(
     "INSERT INTO runner_command(id,runner_id,run_id,generation,kind,envelope,expires_at,acknowledged_at) VALUES('command','agentbox',?,1,'run','{}',?,?)",

@@ -110,10 +110,10 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
       w.start();
       return;
     case "sweep":
-      w.sweep();
+      await w.sweep();
       return;
     case "settle":
-      w.settle();
+      await w.settle();
       return;
     case "advance":
       w.advance(action.ms);
@@ -224,23 +224,30 @@ async function failure(sequence: Sequence): Promise<string | null> {
   const ids = sequence.fixtures;
   try {
     for (const [step, action] of sequence.actions.entries()) {
-      const before = new Map(ids.map((id) => [id, factsOf(w.db, id)]));
+      const before = new Map<Fixture, ItemFacts>();
+      for (const id of ids) before.set(id, await factsOf(w.db, id));
       try {
         await apply(w, sequence, action);
       } catch (error) {
         return `step ${step} ${action.kind} threw: ${String(error)}`;
       }
       for (const id of ids) {
-        const broken = transitionFailure(id, before.get(id)!, factsOf(w.db, id), action, sequence);
+        const broken = transitionFailure(
+          id,
+          before.get(id)!,
+          await factsOf(w.db, id),
+          action,
+          sequence,
+        );
         if (broken) return `step ${step} ${action.kind}: ${broken}`;
       }
-      const unsafe = unexpectedViolations(w.db, w.now, { liveness: false });
+      const unsafe = await unexpectedViolations(w.db, w.now, { liveness: false });
       if (unsafe.length > 0) return `step ${step} ${action.kind}: ${unsafe.join("; ")}`;
     }
     w.crash();
     w.start();
-    w.settle();
-    const stuck = unexpectedViolations(w.db, w.now);
+    await w.settle();
+    const stuck = await unexpectedViolations(w.db, w.now);
     if (stuck.length > 0) return `after settling: ${stuck.join("; ")}`;
     return null;
   } finally {

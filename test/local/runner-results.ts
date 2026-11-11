@@ -33,7 +33,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
   migrate(db);
   try {
     const now = Date.now();
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: "owner",
       name: "Owner",
@@ -72,7 +72,7 @@ export async function probeRunnerResults(root: string, observe: Observe) {
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     const item = insertQueuedItem(db, { id: "result-item", now, sessionKey: "result-session" });
     const { run } = beginImplementRun(db, item.id, now);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-org",
       oauthClientId: "fixture",
       appUserId: "app",
@@ -80,7 +80,9 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, "result-session", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "result-session", item.delegationId, {
+      actorId: "owner",
+    });
     const repository = {
       owner: "fixture",
       repo: "repository",

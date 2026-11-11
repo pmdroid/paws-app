@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFetchGitHubClient, type GitExec } from "../github";
-import { getWorkItem, migrate, openDatabase, recordLinearInstallation } from "../db";
+import { getWorkItem, migrate, openDatabase, recordLinearInstallation, sqliteDb } from "../db";
 import { intakeDelegatedIssue } from "../intake";
 import {
   createFakeLinearAccessReads,
@@ -79,7 +79,7 @@ test.each(["push", "pr", "merge"] as const)(
     try {
       const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
       if (!task.ok) throw new Error("Unexpected dependency cycle");
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         ...scope,
         sessionId: "session",
         teamId: "team",

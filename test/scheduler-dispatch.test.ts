@@ -1,6 +1,6 @@
 import { confirmFakeMerge } from "./fake-workspace";
 import { expect, test } from "bun:test";
-import { ensureLinearSession, insertQueuedItem } from "../src/db";
+import { ensureLinearSession, insertQueuedItem, sqliteDb } from "../src/db";
 import type { SchedulerOptions } from "../src/scheduler";
 import { tempDb } from "./helpers";
 import { workspaceDispatch } from "./fake-workspace";
@@ -19,7 +19,7 @@ test("dispatch asks readiness itself instead of trusting a handed-in ready list"
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('lin-item-blocker','lin-item-blocked')",
     );
     expect(await workspaceDispatch(db, { now: 1000 })).toEqual(["blocker"]);
-    confirmFakeMerge(db, "blocker");
+    await confirmFakeMerge(db, "blocker");
     db.run("UPDATE work_item SET state='merged' WHERE id='blocker'");
     expect(await workspaceDispatch(db, { now: 1001 })).toEqual(["blocked"]);
   } finally {
@@ -61,7 +61,11 @@ test("dispatch yields an idle merge session to a ready sibling", async () => {
     insertQueuedItem(db, { id: "next", now: 2, sessionKey: "session" });
     sameDelegation(db, ["merging", "next"]);
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='merging'");
-    ensureLinearSession(db, { sessionId: "session", issueId: "lin-item-merging", now: 1 });
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: "session",
+      issueId: "lin-item-merging",
+      now: 1,
+    });
     db.run("UPDATE linear_session SET active_item_id='merging' WHERE session_id='session'");
     await workspaceDispatch(db, { now: 1000 });
     expect(

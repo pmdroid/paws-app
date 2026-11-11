@@ -36,7 +36,7 @@ async function fixture() {
   let db = openDatabase(path);
   migrate(db);
   let now = Date.now();
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "owner",
     linearUserId: "owner",
     name: "owner",
@@ -51,13 +51,13 @@ async function fixture() {
     now,
   });
   for (const role of ["admin", "member"] as const) {
-    putWorkspaceUser(db, {
+    await putWorkspaceUser(sqliteDb(db), {
       id: role,
       linearUserId: role,
       name: role,
       email: `${role}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "ws",
       userId: role,
       role,
@@ -79,12 +79,9 @@ async function fixture() {
     PAWS_GITHUB_CLIENT_SECRET: "scripted-client-secret",
     GITHUB_APP_PRIVATE_KEY_PATH: join(home, "key.pem"),
   };
-  const sessions = Object.fromEntries(
-    ["owner", "admin", "member"].map((role) => [
-      role,
-      issueWorkspaceSession(db, { workspaceId: "ws", userId: role, now }),
-    ]),
-  );
+  const sessions: Record<string, Awaited<ReturnType<typeof issueWorkspaceSession>>> = {};
+  for (const role of ["owner", "admin", "member"])
+    sessions[role] = await issueWorkspaceSession(db, { workspaceId: "ws", userId: role, now });
   const calls: { path: string; body: string }[] = [];
   let hold: Promise<void> | undefined;
   let beforeInstallation: (() => Promise<void>) | undefined;

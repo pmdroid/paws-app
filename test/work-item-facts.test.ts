@@ -16,7 +16,7 @@ test("lists each item's owner, Linear project, and creation time", async () => {
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
   );
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "user",
     linearUserId: "linear-user",
     name: "Ada Owner",

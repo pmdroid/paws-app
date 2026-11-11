@@ -43,12 +43,12 @@ const REQUIREMENT: ResolvedEvidence = {
 };
 const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea" };
 
-function evidence(db: ReturnType<typeof openDatabase>, itemId: string, runId: string) {
+async function evidence(db: ReturnType<typeof openDatabase>, itemId: string, runId: string) {
   for (const [id, name] of [
     ["ev-1", "Settings · Audit · 1440px"],
     ["ev-2", "Settings · Audit · 390px"],
   ] as const)
-    saveEvidence(db, {
+    await saveEvidence(sqliteDb(db), {
       id,
       itemId,
       runId,
@@ -86,7 +86,7 @@ async function reviewing() {
     "Lea",
     "lea@example.com",
   ]);
-  evidence(db, item.id, run.id);
+  await evidence(db, item.id, run.id);
   const asked = await sqliteDb(db).transaction((q) =>
     askForVisualReviewSteps(q, {
       item: getWorkItem(db, item.id)!,

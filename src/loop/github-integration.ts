@@ -152,7 +152,7 @@ export class GitHubInstallationCheck {
     this.closed = true;
   }
 
-  invalidate(scope: { sessionId?: string; issueId?: string } = {}): void {
+  async invalidate(scope: { sessionId?: string; issueId?: string } = {}): Promise<void> {
     for (const [itemId, ready] of this.lastReady) {
       const item = getWorkItem(this.db, itemId);
       if (
@@ -161,7 +161,8 @@ export class GitHubInstallationCheck {
           (scope.issueId === undefined ||
             item.linearIssueId === scope.issueId ||
             (item.sessionKey !== null &&
-              getLinearSession(this.db, item.sessionKey)?.issueId === scope.issueId)))
+              (await getLinearSession(sqliteDb(this.db), item.sessionKey))?.issueId ===
+                scope.issueId)))
       )
         ready.reusable = false;
     }

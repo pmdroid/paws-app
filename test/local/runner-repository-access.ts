@@ -45,7 +45,7 @@ export async function probeRunnerRepositoryAccess(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "fixture-owner",
     name: "Owner",
@@ -147,7 +147,7 @@ export async function probeRunnerRepositoryAccess(
       sessionKey: sessionId,
     });
     const { run } = beginImplementRun(db, item.id, now);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-repository",
       oauthClientId: "fixture-app",
       appUserId: "fixture-app-user",
@@ -155,7 +155,9 @@ export async function probeRunnerRepositoryAccess(
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "fixture-owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionId, item.delegationId, {
+      actorId: "fixture-owner",
+    });
     const repository = {
       owner: "fixture",
       repo: "repository",

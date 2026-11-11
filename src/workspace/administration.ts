@@ -147,7 +147,7 @@ export async function handleWorkspaceAdministration(
         verified.userId !== member.linearUserId
       )
         throw new Error("Linear membership could not be verified.");
-      changeWorkspaceRole(options.db, {
+      await changeWorkspaceRole(sqliteDb(options.db), {
         workspaceId: principal.workspaceId,
         actorId: principal.userId,
         userId: body["userId"],

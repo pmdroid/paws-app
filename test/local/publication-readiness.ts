@@ -86,7 +86,7 @@ export async function probePublicationReadiness(root: string) {
     });
     assert(intake.ok);
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -94,7 +94,9 @@ export async function probePublicationReadiness(root: string) {
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "human",
+    });
     const itemId = intake.items.find((item) => item.linearIssueId === "issue")!.id;
     const target = { delegationId: intake.delegation.id, workspaceId: "workspace" };
     let onChanges = (_changes: ItemChanges) => {};
@@ -404,7 +406,7 @@ export async function probePublicationReadiness(root: string) {
       applyWorkItemEvent(f.db, manual, "dispatched");
       applyWorkItemEvent(f.db, manual, "run_failed");
       applyWorkItemEvent(f.db, manual, "take_over");
-      saveTaskMode(f.db, manual, "code");
+      await saveTaskMode(sqliteDb(f.db), manual, "code");
       f.tracker.deps.set("parent", [
         { blockerLinearIssueId: "outside", blockedLinearIssueId: "issue" },
         { blockerLinearIssueId: "manual", blockedLinearIssueId: "issue" },

@@ -591,7 +591,7 @@ test("a frontend change without visual proof gets a fix round, publishes 16 scre
     expect(prompts.get("fix")).toContain("visual-proof (evidence): failed");
     expect(prompts.get("fix")).toContain('publish_artifact with checkId "visual-proof"');
     const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-303")!;
-    expect(listEvidence(db, item.id)).toHaveLength(16);
+    expect(await listEvidence(sqliteDb(db), item.id)).toHaveLength(16);
     // One thought for the check, with the count and the Paws link; the images stay in Paws.
     const link = "https://paws.example/dashboard/issues/ENG-303#evidence-gallery";
     const evidence = tracker.progress.filter((update) => update.body.includes("Closeout evidence"));

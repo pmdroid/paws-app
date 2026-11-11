@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, ilike, like, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import type { WorkItemRecord } from "./items";
 import { enqueueOutboxOnceSteps } from "./outbox";
 import type { itemBranchState, itemPullRequest } from "./schema";
@@ -21,8 +20,8 @@ export function* recordItemBranchStateSteps(q: Q, state: ItemBranchState): Steps
 }
 
 /** The branch as the last finished agent turn left it. A later turn replaces it. */
-export function recordItemBranchState(db: Database, state: ItemBranchState): void {
-  settled(sqliteDb(db).run((q) => recordItemBranchStateSteps(q, state)));
+export async function recordItemBranchState(store: Db, state: ItemBranchState): Promise<void> {
+  await store.run((q) => recordItemBranchStateSteps(q, state));
 }
 
 export function* getItemBranchStateSteps(q: Q, itemId: string): Steps<ItemBranchState | null> {

@@ -272,7 +272,7 @@ export async function probeScheduler(
   {
     const { db, ids } = await setup("idle-merge", 2, () => ["src/shared"]);
     db.run("UPDATE work_item SET delegation_id=? WHERE id=?", [`epic-${ids[0]!}`, ids[1]!]);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "merge-org",
       oauthClientId: "merge-client",
       appUserId: "app",
@@ -280,7 +280,9 @@ export async function probeScheduler(
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "merge-session", `epic-${ids[0]!}`, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "merge-session", `epic-${ids[0]!}`, {
+      actorId: "owner",
+    });
     const firstOnly = { now: 1000, admission: onlyStarts(db, ids[0]!) };
     assert.deepEqual(await dispatch(db, firstOnly), [ids[0]!]);
     const start = claimNextJob(db, { now: 1000, queues: [JOB_KIND.start] })!;
@@ -391,7 +393,7 @@ export async function probeScheduler(
     const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
     assert(intake.ok);
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -399,7 +401,9 @@ export async function probeScheduler(
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "owner",
+    });
     const ids = intake.items.map((item) => item.id);
     assert.deepEqual(await dispatch(db, { now: 1000 }), []);
     const lifecycle = createFakeLinearIssueLifecycle({
@@ -463,7 +467,7 @@ export async function probeScheduler(
       const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: parent, now: 1000 });
       assert(intake.ok);
       const sessionId = `session-${parent}`;
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "client",
         appUserId: "app",
@@ -471,7 +475,9 @@ export async function probeScheduler(
         teamId: "team",
         observedAtMs: 1000,
       });
-      bindLinearSessionTask(db, sessionId, intake.delegation.id, { actorId: "owner" });
+      await bindLinearSessionTask(sqliteDb(db), sessionId, intake.delegation.id, {
+        actorId: "owner",
+      });
       sessions.set(
         sessionId,
         intake.items.map((item) => item.id),
@@ -502,10 +508,10 @@ export async function probeScheduler(
     for (const [sessionId, ids] of sessions) {
       const selected = ids.filter((id) => admitted.includes(id));
       assert.equal(selected.length, ids.length);
-      activateLinearItem(db, sessionId, selected[0]!);
+      await activateLinearItem(sqliteDb(db), sessionId, selected[0]!);
       applyWorkItemEvent(db, selected[0]!, "dispatched");
-      assert.throws(
-        () => activateLinearItem(db, sessionId, selected[1]!),
+      await assert.rejects(
+        activateLinearItem(sqliteDb(db), sessionId, selected[1]!),
         /Previous Linear task is still active/,
       );
     }

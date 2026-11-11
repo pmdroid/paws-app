@@ -48,7 +48,7 @@ async function fixture(
   const db = openDatabase(join(root, "paws.db"));
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -66,7 +66,7 @@ async function fixture(
     "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES(?,?,?,'Fixture','active',?,?)",
     ["runner", workspace.id, userId, now, now],
   );
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -837,8 +837,8 @@ function secondRunner(f: Awaited<ReturnType<typeof fixture>>) {
   );
 }
 
-function linearSession(f: Awaited<ReturnType<typeof fixture>>, sessionId: string) {
-  recordLinearInstallation(f.db, {
+async function linearSession(f: Awaited<ReturnType<typeof fixture>>, sessionId: string) {
+  await recordLinearInstallation(sqliteDb(f.db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -864,7 +864,7 @@ test("twelve resuming items keep one unacknowledged helper per runner and none f
   const f = await fixture();
   secondRunner(f);
   const sessions = Array.from({ length: 12 }, (_, index) => `session-${index}`);
-  for (const session of sessions) linearSession(f, session);
+  for (const session of sessions) await linearSession(f, session);
   const openHelpers = () =>
     f.db
       .query<{ id: string; runnerId: string; acked: number | null }, [number]>(
@@ -1023,7 +1023,7 @@ test("a second attempt on one helper keeps it open until the last attempt finish
 
 test("held-back helpers journal one line per runner at most every five minutes", async () => {
   const f = await fixture();
-  linearSession(f, "waiting");
+  await linearSession(f, "waiting");
   const holdOnce = async () => {
     const out = await f.helpers.dispatch({
       runnerId: "runner",
@@ -1096,7 +1096,7 @@ async function answerTask() {
       await recordRunnerCapacity(sqliteDb(db), runnerId, 2, 2, 2);
     return createRunnerPlacement({ store: sqliteDb(db), now });
   });
-  const fill = (runnerId: string) => {
+  const fill = async (runnerId: string) => {
     for (const id of [`${runnerId}-1`, `${runnerId}-2`]) {
       insertQueuedItem(f.db, { id, now: Date.now(), sessionKey: `${id}-session` });
       const { run } = beginImplementRun(f.db, id, Date.now());
@@ -1111,7 +1111,7 @@ async function answerTask() {
 
 test("an answer task's helper goes to the idle runner while the other runner is full", async () => {
   const f = await answerTask();
-  f.fill("goldbox");
+  await f.fill("goldbox");
   expect(f.db.query("SELECT 1 FROM runner_helper WHERE ended_at IS NULL").get()).toBeNull();
   const pending = f.backend.forSession("session", "classify")(f.input);
   expect((await f.dispatched()).runnerId).toBe("runner");
@@ -1121,8 +1121,8 @@ test("an answer task's helper goes to the idle runner while the other runner is 
 
 test("capacity-only rejections wait in the helper lane instead of failing", async () => {
   const f = await answerTask();
-  f.fill("runner");
-  f.fill("goldbox");
+  await f.fill("runner");
+  await f.fill("goldbox");
   const pending = f.backend
     .forSession(
       "session",

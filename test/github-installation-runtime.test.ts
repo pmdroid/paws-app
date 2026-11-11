@@ -30,8 +30,14 @@ async function fixture(launch?: AgentLaunch) {
   const home = tempHome();
   const clock = new FakeClock(1_000);
   const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-  ensureLinearSession(db, { sessionId: "session", issueId: "ENG-1", now: clock.now() });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "linear-owner" });
+  await ensureLinearSession(sqliteDb(db), {
+    sessionId: "session",
+    issueId: "ENG-1",
+    now: clock.now(),
+  });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, {
+    actorId: "linear-owner",
+  });
   const jobs = new JobLoop(db, clock);
   const outbox = new OutboxDispatcher(db, clock);
   const host = new FakeGitHubIntegration();
@@ -199,7 +205,7 @@ test.each(["pending", "rejected"] as const)(
       await reading.promise;
       const writer = insertQueuedItem(f.db, { id: "ENG-2", sessionKey: "writer" });
       applyWorkItemEvent(f.db, writer.id, "dispatched");
-      saveTaskMode(f.db, writer.id, "answer");
+      await saveTaskMode(sqliteDb(f.db), writer.id, "answer");
       enqueueJobOnce(f.db, {
         queue: JOB_KIND.resume,
         jobKey: "writer",

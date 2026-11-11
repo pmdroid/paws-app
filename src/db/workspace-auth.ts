@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, count, eq, gt, lte } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import {
   auditWorkspaceAccessSteps,
   workspaceMemberSteps,
@@ -200,8 +199,8 @@ export function* changeWorkspaceRoleSteps(q: Q, input: RoleChangeInput) {
   return null;
 }
 
-export function changeWorkspaceRole(db: Database, input: RoleChangeInput): void {
-  const error = settled(sqliteDb(db).transaction((q) => changeWorkspaceRoleSteps(q, input)));
+export async function changeWorkspaceRole(store: Db, input: RoleChangeInput): Promise<void> {
+  const error = await store.transaction((q) => changeWorkspaceRoleSteps(q, input));
   if (error !== null) throw new Error(error);
 }
 

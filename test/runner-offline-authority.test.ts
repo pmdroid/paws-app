@@ -58,7 +58,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   const clock = { at: Date.now(), monotonic: 0 };
   const pawsNow = () => clock.at;
   let db = migratedDatabase(path);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -108,7 +108,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
   );
   const item = insertQueuedItem(db, { id: "item", now: pawsNow(), sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, pawsNow());
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -116,11 +116,16 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     teamId: "team",
     observedAtMs: pawsNow(),
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   await bindWorkItemRepository(sqliteDb(db), item.id, repository);
-  const start = () =>
-    registerInstance(db, { role: "all", host: "acme", version: null, now: pawsNow() });
-  let instance = start();
+  const start = async () =>
+    await registerInstance(sqliteDb(db), {
+      role: "all",
+      host: "acme",
+      version: null,
+      now: pawsNow(),
+    });
+  let instance = await start();
   await claimRun(sqliteDb(db), run.id, instance.id);
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
@@ -352,8 +357,8 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
     },
     setLink: (next: typeof link) => (link = next),
     tick,
-    async tickUntil(done: () => boolean) {
-      for (let index = 0; index < 400 && !done(); index++) await tick();
+    async tickUntil(done: () => boolean | Promise<boolean>) {
+      for (let index = 0; index < 400 && !(await done()); index++) await tick();
     },
     async advance(ms: number, pawsUp = true) {
       for (let spent = 0; spent < ms; spent += STEP) {
@@ -403,7 +408,7 @@ async function fixture(options: { skewMs?: number; expiresInMs?: number } = {}) 
       db.close();
       await this.advance(ms, false);
       db = openDatabase(path);
-      instance = start();
+      instance = await start();
       paws = open();
       link = "up";
       return await recoverOnStartup(sqliteDb(db), clock.at, RUNNER_OFFLINE_BUDGET_MS, instance.id);
@@ -542,15 +547,17 @@ test.skipIf(!linuxUser)(
       f.setLink("partitioned");
       await f.advance(RUNNER_OFFLINE_BUDGET_MS / 2);
       await expect(f.nextGeneration()).rejects.toThrow("Run assignment generation conflicts.");
-      expect(runnerHasCapacity(f.db, f.runnerId, f.clock.at)).toBe(false);
+      expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, f.clock.at)).toBe(false);
       await f.advance(RUNNER_OFFLINE_BUDGET_MS / 2 + 2 * STEP);
       expect(f.replaced).toHaveLength(1);
       expect(f.overlaps).toEqual([]);
-      expect(runnerHasCapacity(f.db, f.runnerId, f.clock.at)).toBe(false);
+      expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, f.clock.at)).toBe(false);
       f.finish();
       f.setLink("up");
-      await f.tickUntil(() => runnerHasCapacity(f.db, f.runnerId, f.clock.at));
-      expect(runnerHasCapacity(f.db, f.runnerId, f.clock.at)).toBe(true);
+      await f.tickUntil(
+        async () => await runnerHasCapacity(sqliteDb(f.db), f.runnerId, f.clock.at),
+      );
+      expect(await runnerHasCapacity(sqliteDb(f.db), f.runnerId, f.clock.at)).toBe(true);
       await f.tickUntil(() => f.refusedResults.length > 0);
       expect(f.posted.map((result) => result.stopReason)).not.toContain("end_turn");
     } finally {

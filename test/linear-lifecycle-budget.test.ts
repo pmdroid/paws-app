@@ -15,6 +15,7 @@ import {
   migrate,
   openDatabase,
   putWorkspaceUser,
+  sqliteDb,
 } from "../src/db";
 import { createEvidenceStore } from "../src/evidence";
 import { createFakeGitHub, fakeMergeReadiness } from "../src/github";
@@ -453,7 +454,7 @@ async function runTask(input: {
         // The screens are approved on the item page; a Linear reply never approves them.
         asked.push("visual-review");
         const workspaceId = db.query<{ id: string }, []>("SELECT id FROM workspace").get()!.id;
-        const userId = putWorkspaceUser(db, {
+        const userId = await putWorkspaceUser(sqliteDb(db), {
           id: "user-pascal",
           linearUserId: "pascal",
           name: "Pascal",

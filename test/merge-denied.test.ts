@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../src/core";
-import { getWorkItem, listJobs, mergeCallInFlight } from "../src/db";
+import { getWorkItem, listJobs, mergeCallInFlight, sqliteDb } from "../src/db";
 import { questionEffects } from "../src/loop";
 import { findOpenQuestion } from "../src/questions";
 import { answer } from "./questions";
@@ -58,7 +58,7 @@ describe("a merge GitHub refuses", () => {
     refuse(h);
     expect(await h.pass(item.id)).toEqual({ kind: "asked" });
     expect(getWorkItem(h.db, item.id)?.state).toBe("awaiting_input");
-    expect(mergeCallInFlight(h.db, item.id)).toBe(false);
+    expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
     const question = findOpenQuestion(h.db, `ses-${item.id}`)!;
     expect(question.options).toEqual([RETRY_MERGE]);
     expect(question.body).toContain("status 405");

@@ -29,7 +29,7 @@ export async function probeRunnerPlacement(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
-  const owner = putWorkspaceUser(db, {
+  const owner = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -46,7 +46,7 @@ export async function probeRunnerPlacement(
   });
   const item = insertQueuedItem(db, { id: "placement", now, sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app-client",
     appUserId: "app",
@@ -54,7 +54,7 @@ export async function probeRunnerPlacement(
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   await bindWorkItemRepository(sqliteDb(db), item.id, {
     owner: "fixture",
     repo: "repository",
@@ -75,14 +75,14 @@ export async function probeRunnerPlacement(
     const userId =
       user === "owner"
         ? owner
-        : putWorkspaceUser(db, {
+        : await putWorkspaceUser(sqliteDb(db), {
             id: workspaceId(),
             linearUserId: user!,
             name: user!,
             email: `${user}@example.invalid`,
           });
     if (user !== "owner")
-      syncWorkspaceMember(db, {
+      await syncWorkspaceMember(sqliteDb(db), {
         workspaceId: workspace.id,
         userId,
         role: "member",
@@ -101,8 +101,8 @@ export async function probeRunnerPlacement(
     db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'codex',1)", [id!]);
   }
   let installationObservation = now;
-  const observeInstallation = (teamId: string) =>
-    recordLinearInstallation(db, {
+  const observeInstallation = async (teamId: string) =>
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app-client",
       appUserId: "app",
@@ -165,9 +165,9 @@ export async function probeRunnerPlacement(
       sameAppUser: true,
       sameTeam: true,
     });
-    observeInstallation("other-team");
+    await observeInstallation("other-team");
     await assert.rejects(ids(), /outside workspace access/);
-    observeInstallation("team");
+    await observeInstallation("team");
     assert.deepEqual(await ids(), ["own", "second"]);
     observe("A changed installation team still fences selection", true, {
       teamChangeRejected: true,

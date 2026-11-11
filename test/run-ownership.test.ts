@@ -56,20 +56,30 @@ describe("run ownership", () => {
     const a = shared.open();
     const b = shared.open();
     try {
-      const acme = registerInstance(a, { role: "all", host: "acme-a", version: null, now: 0 });
+      const acme = await registerInstance(sqliteDb(a), {
+        role: "all",
+        host: "acme-a",
+        version: null,
+        now: 0,
+      });
       const ownedRun = await runningItem(a, "acme-1", acme.id, 0);
       insertQueuedItem(a, { id: "acme-2", sessionKey: "acme-2-session", now: 0 });
       beginImplementRun(a, "acme-2", 0, checkpoint);
 
-      const other = registerInstance(b, { role: "all", host: "acme-b", version: null, now: 1_000 });
+      const other = await registerInstance(sqliteDb(b), {
+        role: "all",
+        host: "acme-b",
+        version: null,
+        now: 1_000,
+      });
       expect(await recoverOnStartup(sqliteDb(b), 1_000, undefined, other.id)).toEqual([
         { type: "resume", freshSession: true, checkpoint },
       ]);
       expect(getWorkItem(b, "acme-1")).toMatchObject({ state: "running", recoveryAttempts: 0 });
       expect(resumeJobs(b, "acme-1")).toEqual([]);
-      expect(runOwner(b, ownedRun)).toBe(acme.id);
+      expect(await runOwner(sqliteDb(b), ownedRun)).toBe(acme.id);
       expect(getWorkItem(b, "acme-2")).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
-      expect(runOwner(b, getWorkItem(b, "acme-2")!.currentRunId!)).toBe(other.id);
+      expect(await runOwner(sqliteDb(b), getWorkItem(b, "acme-2")!.currentRunId!)).toBe(other.id);
     } finally {
       b.close();
       a.close();
@@ -83,16 +93,35 @@ describe("run ownership", () => {
     const c = shared.open();
     const clock = new FakeClock(0);
     try {
-      const acme = registerInstance(a, { role: "all", host: "acme-a", version: null, now: 0 });
+      const acme = await registerInstance(sqliteDb(a), {
+        role: "all",
+        host: "acme-a",
+        version: null,
+        now: 0,
+      });
       const runId = await runningItem(a, "acme-1", acme.id, 0);
       const live = [
         {
           db: b,
-          id: registerInstance(b, { role: "all", host: "acme-b", version: null, now: 0 }).id,
+          id: (
+            await registerInstance(sqliteDb(b), {
+              role: "all",
+              host: "acme-b",
+              version: null,
+              now: 0,
+            })
+          ).id,
         },
         {
           db: c,
-          id: registerInstance(c, { role: "all", host: "acme-c", version: null, now: 0 }).id,
+          id: (
+            await registerInstance(sqliteDb(c), {
+              role: "all",
+              host: "acme-c",
+              version: null,
+              now: 0,
+            })
+          ).id,
         },
       ];
       const decisions: { by: string; decision: StartupDecision }[] = [];
@@ -125,7 +154,7 @@ describe("run ownership", () => {
       expect(takenAt!).toBeLessThanOrEqual(90_000);
       expect(decisions).toHaveLength(1);
       expect(decisions[0]!.decision).toEqual({ type: "resume", freshSession: true, checkpoint });
-      expect(runOwner(b, runId)).toBe(decisions[0]!.by);
+      expect(await runOwner(sqliteDb(b), runId)).toBe(decisions[0]!.by);
       expect(getWorkItem(b, "acme-1")).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
       expect(resumeJobs(b, "acme-1")).toHaveLength(1);
     } finally {
@@ -140,7 +169,7 @@ describe("run ownership", () => {
     const db = shared.open();
     try {
       const exited = Bun.spawnSync(["true"]).pid;
-      const crashed = registerInstance(db, {
+      const crashed = await registerInstance(sqliteDb(db), {
         role: "all",
         host: "acme",
         version: null,
@@ -148,7 +177,7 @@ describe("run ownership", () => {
         pid: exited,
       });
       const runId = await runningItem(db, "acme-1", crashed.id, 0);
-      const restarted = registerInstance(db, {
+      const restarted = await registerInstance(sqliteDb(db), {
         role: "all",
         host: "acme",
         version: null,
@@ -158,7 +187,7 @@ describe("run ownership", () => {
       expect(await recoverOnStartup(sqliteDb(db), 1_000, undefined, restarted.id)).toEqual([
         { type: "resume", freshSession: true, checkpoint },
       ]);
-      expect(runOwner(db, runId)).toBe(restarted.id);
+      expect(await runOwner(sqliteDb(db), runId)).toBe(restarted.id);
     } finally {
       db.close();
     }
@@ -169,8 +198,18 @@ describe("run ownership", () => {
     const a = shared.open();
     const b = shared.open();
     try {
-      const acme = registerInstance(a, { role: "all", host: "acme-a", version: null, now: 0 });
-      const other = registerInstance(b, { role: "all", host: "acme-b", version: null, now: 0 });
+      const acme = await registerInstance(sqliteDb(a), {
+        role: "all",
+        host: "acme-a",
+        version: null,
+        now: 0,
+      });
+      const other = await registerInstance(sqliteDb(b), {
+        role: "all",
+        host: "acme-b",
+        version: null,
+        now: 0,
+      });
       const mine = await runningItem(a, "acme-1", acme.id, 0);
       const theirs = await runningItem(b, "acme-2", other.id, 0);
 
@@ -233,7 +272,7 @@ describe("run ownership across two Paws processes", () => {
       const b = await readyInstance(second);
       expect(getWorkItem(db, "acme-1")).toMatchObject({ state: "running", recoveryAttempts: 0 });
       expect(resumeJobs(db, "acme-1")).toEqual([]);
-      expect(runOwner(db, aRun)).toBe(a);
+      expect(await runOwner(sqliteDb(db), aRun)).toBe(a);
       const bRun = await runningItem(db, "acme-2", b, Date.now());
 
       first.kill("SIGTERM");

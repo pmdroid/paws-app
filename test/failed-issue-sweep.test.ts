@@ -9,6 +9,7 @@ import {
   openDatabase,
   recordLinearInstallation,
   setJournalSink,
+  sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import { createFakeTracker } from "../src/linear";
@@ -35,7 +36,7 @@ async function fixture() {
   ]);
   const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
   if (!task.ok) throw new Error("Unexpected issue cycle");
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -43,7 +44,7 @@ async function fixture() {
     teamId: "team",
     observedAtMs: 1,
   });
-  bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
+  await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id, { actorId: "human" });
   const item = task.items[0]!;
   applyWorkItemEvent(db, item.id, "start_timed_out");
   expect(getWorkItem(db, item.id)?.state).toBe("failed");

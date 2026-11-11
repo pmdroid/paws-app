@@ -85,7 +85,7 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
     };
     expect(await acceptGitHubDelivery(db, delivery, clock.now())).toBe(true);
     expect(await acceptGitHubDelivery(db, delivery, clock.now())).toBe(false);
-    expect(mergeCallInFlight(db, "eng-1")).toBe(true);
+    expect(await mergeCallInFlight(sqliteDb(db), "eng-1")).toBe(true);
     reason = "ci";
     await loop.tick();
     expect(backstop).toBe(true);

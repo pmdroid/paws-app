@@ -31,9 +31,9 @@ async function fixture() {
   const db = tempDb();
   const item = insertQueuedItem(db);
   const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-  ensureLinearSession(db, { sessionId: "session", issueId: item.linearIssueId });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "human" });
-  recordLinearInstallation(db, {
+  await ensureLinearSession(sqliteDb(db), { sessionId: "session", issueId: item.linearIssueId });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "human" });
+  await recordLinearInstallation(sqliteDb(db), {
     ...scope,
     sessionId: "session",
     teamId: "team",

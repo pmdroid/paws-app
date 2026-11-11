@@ -52,11 +52,11 @@ export function* registerInstanceSteps(
   return row;
 }
 
-export function registerInstance(
-  db: Database,
+export async function registerInstance(
+  store: Db,
   input: { role: InstanceRole; host: string; version: string | null; now: number; pid?: number },
-): Instance {
-  return settled(sqliteDb(db).run((q) => registerInstanceSteps(q, input)));
+): Promise<Instance> {
+  return store.run((q) => registerInstanceSteps(q, input));
 }
 
 export function* heartbeatInstanceSteps(q: Q, id: string, now: number) {

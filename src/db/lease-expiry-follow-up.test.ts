@@ -226,7 +226,7 @@ describe("follow-up after an expired runner lease", () => {
     expect(await closeExpiredRunnerLeases(sqliteDb(db), at)).toEqual([run.id]);
     const held = getWorkItem(db, item.id)!;
     expect(held.state).toBe("recovering");
-    expect(restartHold(db, held)).not.toBeNull();
+    expect(await restartHold(sqliteDb(db), held)).not.toBeNull();
     expect(pending(db).map((job) => job.queue)).toEqual(["item.ask"]);
     expect(await recoverOnStartup(sqliteDb(db), at + 1)).toEqual([{ type: "ask_restart" }]);
     expect(await requeueOrphanedWork(sqliteDb(db), at + ORPHAN_GRACE_MS + 1)).toEqual([]);

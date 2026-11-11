@@ -78,7 +78,7 @@ describe("advanceMerge", () => {
 
   test("a recorded remote merge completes the item before anything is published", async () => {
     const db = queued();
-    recordConfirmedRemoteMerge(db, {
+    await recordConfirmedRemoteMerge(sqliteDb(db), {
       itemId: "eng-1",
       repositoryOwner: "acme",
       repositoryName: "app",
@@ -96,7 +96,7 @@ describe("advanceMerge", () => {
     });
     expect(getWorkItem(db, "eng-1")?.state).toBe("merged");
     expect(calls).toEqual(["completed"]);
-    expect(mergeCallInFlight(db, "eng-1")).toBe(false);
+    expect(await mergeCallInFlight(sqliteDb(db), "eng-1")).toBe(false);
   });
 
   test("a durable marker without a payload flag fences publication after a confirmed negative read", async () => {
@@ -110,7 +110,7 @@ describe("advanceMerge", () => {
         kind: "returned",
       });
       expect(getWorkItem(db, "eng-1")?.state).toBe("verifying");
-      expect(mergeCallInFlight(db, "eng-1")).toBe(false);
+      expect(await mergeCallInFlight(sqliteDb(db), "eng-1")).toBe(false);
     } finally {
       db.close();
     }
@@ -133,7 +133,7 @@ describe("advanceMerge", () => {
         kind: "failed",
         reason: "no_github",
       });
-      expect(mergeCallInFlight(db, "eng-1")).toBe(false);
+      expect(await mergeCallInFlight(sqliteDb(db), "eng-1")).toBe(false);
     } finally {
       db.close();
     }

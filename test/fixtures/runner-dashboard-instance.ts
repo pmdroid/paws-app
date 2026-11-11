@@ -85,7 +85,7 @@ const paws = await startPaws({
 });
 await paws.ready;
 const now = Date.now();
-const owner = putWorkspaceUser(paws.db, {
+const owner = await putWorkspaceUser(sqliteDb(paws.db), {
   id: workspaceId(),
   linearUserId: "owner",
   name: "Owner",
@@ -99,13 +99,13 @@ const workspace = await consumeWorkspaceBootstrap(sqliteDb(paws.db), {
   tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(paws.db, "org", now)),
   now,
 });
-const member = putWorkspaceUser(paws.db, {
+const member = await putWorkspaceUser(sqliteDb(paws.db), {
   id: workspaceId(),
   linearUserId: "member",
   name: "Member",
   email: "member@example.invalid",
 });
-syncWorkspaceMember(paws.db, {
+await syncWorkspaceMember(sqliteDb(paws.db), {
   workspaceId: workspace.id,
   userId: member,
   role: "member",
@@ -113,20 +113,19 @@ syncWorkspaceMember(paws.db, {
   teamIds: ["team"],
   now,
 });
-const sessions = Object.fromEntries(
-  [
-    ["owner", owner, now],
-    ["member", member, now],
-    ["stale", owner, now - 2 * 24 * 60 * 60_000],
-  ].map(([name, userId, authenticatedAt]) => {
-    const issued = issueWorkspaceSession(paws.db, {
-      userId: String(userId),
-      workspaceId: workspace.id,
-      now: Number(authenticatedAt),
-    });
-    return [name, issued.token];
-  }),
-);
+const sessions: Record<string, string> = {};
+for (const [name, userId, authenticatedAt] of [
+  ["owner", owner, now],
+  ["member", member, now],
+  ["stale", owner, now - 2 * 24 * 60 * 60_000],
+] as const) {
+  const issued = await issueWorkspaceSession(paws.db, {
+    userId,
+    workspaceId: workspace.id,
+    now: authenticatedAt,
+  });
+  sessions[name] = issued.token;
+}
 const key = await createRunnerKey(join(root, "client"));
 console.log(
   JSON.stringify({

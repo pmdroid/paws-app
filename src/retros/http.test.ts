@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember } from "../db";
+import { migrate, openDatabase, putWorkspaceUser, syncWorkspaceMember, sqliteDb } from "../db";
 import type { AgentModelCatalog } from "../runner-models";
 import type { WorkspacePrincipal } from "../workspace";
 import {
@@ -34,14 +34,21 @@ function fixture(catalogs: AgentModelCatalog[] | null = CATALOGS) {
   migrate(db);
   db.run("INSERT INTO workspace VALUES ('ws', 'org', 'Kyku', 0)");
   db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-1')", [APP]);
-  const member = (linearUserId: string, role: "admin" | "member", active = true) => {
-    const userId = putWorkspaceUser(db, {
+  const member = async (linearUserId: string, role: "admin" | "member", active = true) => {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: `user-${linearUserId}`,
       linearUserId,
       name: linearUserId,
       email: `${linearUserId}@example.invalid`,
     });
-    syncWorkspaceMember(db, { workspaceId: "ws", userId, role, active, teamIds: [], now: 1 });
+    await syncWorkspaceMember(sqliteDb(db), {
+      workspaceId: "ws",
+      userId,
+      role,
+      active,
+      teamIds: [],
+      now: 1,
+    });
     const principal: WorkspacePrincipal = {
       workspaceId: "ws",
       userId,
@@ -75,8 +82,8 @@ const settings = () => ({
 
 test("a member reads the settings and an admin saves them with an audit entry", async () => {
   const { member, handle, audit, catalog } = fixture();
-  const admin = member("admin", "admin");
-  const reader = member("reader", "member");
+  const admin = await member("admin", "admin");
+  const reader = await member("reader", "member");
   const before = (await (await handle(get(), reader))!.json()) as RetroSettingsView;
   expect(before).toMatchObject({ revision: 0, saved: false, canEdit: false });
   expect(before.accessibleRepositories).toEqual([APP]);
@@ -99,7 +106,7 @@ test("a member cannot save and the refusal is audited", async () => {
   const { member, handle, audit } = fixture();
   const response = await handle(
     put({ expectedRevision: 0, settings: settings() }),
-    member("reader", "member"),
+    await member("reader", "member"),
   );
   expect(response!.status).toBe(403);
   expect(audit()).toEqual([{ action: "access.denied", subject: RETRO_SETTINGS_PATH }]);
@@ -107,12 +114,12 @@ test("a member cannot save and the refusal is audited", async () => {
 
 test("an inactive member cannot read", async () => {
   const { member, handle } = fixture();
-  expect((await handle(get(), member("gone", "member", false)))!.status).toBe(403);
+  expect((await handle(get(), await member("gone", "member", false)))!.status).toBe(403);
 });
 
 test("a conflict returns the saved revision with the unchanged draft", async () => {
   const { member, handle } = fixture();
-  const admin = member("admin", "admin");
+  const admin = await member("admin", "admin");
   await handle(put({ expectedRevision: 0, settings: settings() }), admin);
   const draft = { ...settings(), outputLimits: { maxItems: 2, workedWell: 1 } };
   const response = await handle(put({ expectedRevision: 0, settings: draft }), admin);
@@ -123,7 +130,7 @@ test("a conflict returns the saved revision with the unchanged draft", async () 
 
 test("inaccessible repositories and unavailable catalogs are told apart", async () => {
   const { member, handle } = fixture(null);
-  const admin = member("admin", "admin");
+  const admin = await member("admin", "admin");
   const inaccessible = await handle(
     put({ expectedRevision: 0, settings: { ...settings(), repositories: ["other/repo"] } }),
     admin,
@@ -139,7 +146,7 @@ test("inaccessible repositories and unavailable catalogs are told apart", async 
 
 test("other paths and methods are not handled as saves", async () => {
   const { member, handle } = fixture();
-  const admin = member("admin", "admin");
+  const admin = await member("admin", "admin");
   expect(await handle(new Request("http://127.0.0.1/api/retros/other"), admin)).toBeNull();
   expect(
     (await handle(

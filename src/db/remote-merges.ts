@@ -65,11 +65,11 @@ export function* recordConfirmedRemoteMergeSteps(q: Q, input: ConfirmedRemoteMer
   return saved;
 }
 
-export function recordConfirmedRemoteMerge(
-  db: Database,
+export async function recordConfirmedRemoteMerge(
+  store: Db,
   input: ConfirmedRemoteMerge,
-): ConfirmedRemoteMerge {
-  return settled(sqliteDb(db).transaction((q) => recordConfirmedRemoteMergeSteps(q, input)));
+): Promise<ConfirmedRemoteMerge> {
+  return store.transaction((q) => recordConfirmedRemoteMergeSteps(q, input));
 }
 
 export function* beginMergeCallSteps(q: Q, itemId: string, head: string, now: number) {
@@ -114,8 +114,8 @@ export function* mergeCallInFlightSteps(q: Q, itemId: string) {
   return row !== undefined;
 }
 
-export function mergeCallInFlight(db: Database, itemId: string): boolean {
-  return settled(sqliteDb(db).run((q) => mergeCallInFlightSteps(q, itemId)));
+export async function mergeCallInFlight(store: Db, itemId: string): Promise<boolean> {
+  return store.run((q) => mergeCallInFlightSteps(q, itemId));
 }
 
 export function* mergeStopRequestedSteps(q: Q, itemId: string) {

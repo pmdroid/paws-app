@@ -150,7 +150,7 @@ function polled(input: {
   };
 }
 
-function setup(options: { members?: string[]; agents?: string[] } = {}) {
+async function setup(options: { members?: string[]; agents?: string[] } = {}) {
   const db = openDatabase(":memory:");
   migrate(db);
   const clock = new FakeClock(T0);
@@ -168,7 +168,7 @@ function setup(options: { members?: string[]; agents?: string[] } = {}) {
     wait: () => ({ quietMs: 60_000, maxMs: 300_000 }),
   };
   insertQueuedItem(db, { id: "eng-1", now: T0, sessionKey: SESSION });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: ORG,
     oauthClientId: "client-1",
     appUserId: APP_USER,
@@ -252,7 +252,7 @@ function setup(options: { members?: string[]; agents?: string[] } = {}) {
   };
 }
 
-function toMergeQueue(db: ReturnType<typeof setup>["db"]) {
+function toMergeQueue(db: Awaited<ReturnType<typeof setup>>["db"]) {
   beginImplementRun(db, "eng-1", T0);
   enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
 }
@@ -287,7 +287,7 @@ describe("receiving ordinary Linear comments", () => {
   });
 
   test("an authorized comment is recorded once, acknowledged once and gathered by one job", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       const raw = webhookComment({ id: "c-1", body: "Rename the flag to `strict`." });
@@ -314,7 +314,7 @@ describe("receiving ordinary Linear comments", () => {
   });
 
   test("idle merge-queue work wakes once and the comment is in the resumed brief", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use the v2 endpoint." })));
@@ -344,7 +344,7 @@ describe("receiving ordinary Linear comments", () => {
   });
 
   test("an edit, deletion or revocation after the wake still applies before the agent reads it", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use red." })));
@@ -378,7 +378,7 @@ describe("receiving ordinary Linear comments", () => {
   });
 
   test("a comment edited while its turn runs stays queued with the new text", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Old text." })));
       const item = getWorkItem(f.db, "eng-1")!;
@@ -397,7 +397,7 @@ describe("receiving ordinary Linear comments", () => {
   });
 
   test("the loop's own capabilities wake idle work once for a webhook comment", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Ship it behind a flag." })));
@@ -411,7 +411,7 @@ describe("receiving ordinary Linear comments", () => {
   });
 
   test("a queued item takes the comment into its next brief without another dispatch", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Keep the old API too." })));
       expect(await f.deliver()).toBe("done");
@@ -436,7 +436,7 @@ describe("receiving ordinary Linear comments", () => {
   });
 
   test("a running agent is not interrupted; the comment waits for the turn to end", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       beginImplementRun(f.db, "eng-1", T0);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Skip the migration." })));
@@ -459,7 +459,7 @@ describe("receiving ordinary Linear comments", () => {
 
 describe("who may comment", () => {
   test("an allowlisted external agent on behalf of a member is authorized as an agent", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       const raw = webhookComment({
@@ -486,7 +486,7 @@ describe("who may comment", () => {
   });
 
   test("an agent acting for someone outside the team is rejected", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       await f.receive(
         fromWebhook(
@@ -506,7 +506,7 @@ describe("who may comment", () => {
   });
 
   test("Paws's own comments, other bots and claimed identities never reach the agent", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       await f.receive(fromWebhook(webhookComment({ id: "own", body: "Done.", userId: APP_USER })));
       await f.receive(
@@ -548,7 +548,7 @@ describe("who may comment", () => {
   });
 
   test("a reply in the agent session's thread stays with the session reply path", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       await f.receive(
         fromWebhook(
@@ -569,7 +569,7 @@ describe("who may comment", () => {
   });
 
   test("unknown, revoked and other-workspace authors are rejected", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Hi", userId: MALLORY })));
       expect(await f.comment("c-1")).toMatchObject({ state: "rejected", reason: "not_member" });
@@ -592,7 +592,7 @@ describe("who may comment", () => {
 
 describe("routing to the right work", () => {
   test("a comment on a parent issue is refused visibly, never fanned out to sub-issues", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       const brief = JSON.stringify({ epic: { issueId: "parent-issue" } });
       f.db.run("UPDATE work_item SET brief = ? WHERE id = 'eng-1'", [brief]);
@@ -620,7 +620,7 @@ describe("routing to the right work", () => {
   });
 
   test("comments older than the delegation are not replayed by catch-up", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       await f.receive(
         polled({ id: "old", body: "From last month.", createdAtMs: T0 - 86_400_000 }),
@@ -635,7 +635,7 @@ describe("routing to the right work", () => {
   });
 
   test("a stop or a new session after receipt keeps the comment from the old generation", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "First." })));
@@ -649,7 +649,7 @@ describe("routing to the right work", () => {
   });
 
   test("a comment queued for a session the item no longer belongs to is superseded", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "First." })));
@@ -664,7 +664,7 @@ describe("routing to the right work", () => {
 
 describe("edits, deletions and restarts", () => {
   test("an edit before delivery replaces the body; an older update is ignored", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use red." })));
@@ -700,7 +700,7 @@ describe("edits, deletions and restarts", () => {
   });
 
   test("a deletion before delivery retires the comment and catch-up cannot revive it", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Oops." })));
@@ -719,7 +719,7 @@ describe("edits, deletions and restarts", () => {
   });
 
   test("a deletion that arrives first leaves a tombstone", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       await f.receive(
         fromWebhook(
@@ -734,7 +734,7 @@ describe("edits, deletions and restarts", () => {
   });
 
   test("a restart between receipt and routing routes the comment on redelivery", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       f.db.run(
@@ -755,7 +755,7 @@ describe("edits, deletions and restarts", () => {
 describe("holds, questions and gates", () => {
   test("paused, manual and failed work keeps the comment and is not woken", async () => {
     for (const hold of ["paused", "manual", "failed"] as const) {
-      const f = setup();
+      const f = await setup();
       try {
         beginImplementRun(f.db, "eng-1", T0);
         f.db.run("UPDATE work_item SET state = ? WHERE id = 'eng-1'", [hold]);
@@ -773,7 +773,7 @@ describe("holds, questions and gates", () => {
 
   test("completed, merged and cancelled work is not resurrected", async () => {
     for (const ended of ["completed", "merged", "cancelled"] as const) {
-      const f = setup();
+      const f = await setup();
       try {
         f.db.run("UPDATE work_item SET state = ? WHERE id = 'eng-1'", [ended]);
         await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Reopen this." })));
@@ -787,7 +787,7 @@ describe("holds, questions and gates", () => {
   });
 
   test("teardown uncertainty keeps a queued comment queued until the item settles", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Later." })));
@@ -820,7 +820,7 @@ describe("holds, questions and gates", () => {
       "policy-outage",
     ];
     for (const kind of gates) {
-      const f = setup();
+      const f = await setup();
       try {
         const { run } = beginImplementRun(f.db, "eng-1", T0);
         const item = getWorkItem(f.db, "eng-1")!;
@@ -849,7 +849,7 @@ describe("holds, questions and gates", () => {
   });
 
   test("two comments while a question is open are context, not an answer", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       const { run } = beginImplementRun(f.db, "eng-1", T0);
       const item = getWorkItem(f.db, "eng-1")!;
@@ -876,7 +876,7 @@ describe("holds, questions and gates", () => {
 
 describe("batching with pull request feedback", () => {
   test("a burst of comments moves the one job inside the quiet window and maximum wait", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       for (let index = 0; index < 8; index++) {
@@ -904,7 +904,7 @@ describe("batching with pull request feedback", () => {
   });
 
   test("pending pull request comments and CI keep their wait and carry the Linear comment in one restart", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await recordPullComment(sqliteDb(f.db), {
@@ -961,7 +961,7 @@ describe("review findings", () => {
   });
 
   test("a batch takes only the comments that fit; the rest wait for the next handoff", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       for (let index = 0; index < 4; index++)
@@ -993,7 +993,7 @@ describe("review findings", () => {
   });
 
   test("while the member checker is unavailable recovered comments wait instead of passing", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "After restart." })));
@@ -1012,7 +1012,7 @@ describe("review findings", () => {
   });
 
   test("a session reply whose source comment was already handed off is not delivered again", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use tabs." })));
@@ -1046,7 +1046,7 @@ describe("review findings", () => {
   });
 
   test("the restart leaves GitHub's merge queue first, and a merged pull request is not restarted", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await recordItemPullRequest(sqliteDb(f.db), {
@@ -1070,7 +1070,7 @@ describe("review findings", () => {
   });
 
   test("comments left over after a turn's brief rearm their delivery job", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       for (let index = 0; index < 5; index++)
         await f.receive(
@@ -1093,7 +1093,7 @@ describe("review findings", () => {
   });
 
   test("a comment takes the pull request out of GitHub's merge queue on receipt", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await recordItemPullRequest(sqliteDb(f.db), {
@@ -1113,7 +1113,7 @@ describe("review findings", () => {
   });
 
   test("a pull request closed without merging settles the comments so the item is not held", async () => {
-    const f = setup();
+    const f = await setup();
     try {
       toMergeQueue(f.db);
       await recordItemPullRequest(sqliteDb(f.db), {

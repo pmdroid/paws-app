@@ -9,6 +9,7 @@ import {
   openDatabase,
   saveTaskMode,
   setJournalSink,
+  sqliteDb,
 } from "../src/db";
 import { unavailableRemoteExecution } from "../src/index";
 import { createFakeTracker } from "../src/linear";
@@ -63,7 +64,7 @@ test("with a workspace and no paired runner a delegated task fails because a rem
       payload: JSON.stringify({ agentSession: { creatorId: "human" } }),
     });
     const itemId = db.query<{ id: string }, []>("SELECT id FROM work_item").get()!.id;
-    saveTaskMode(db, itemId, "answer");
+    await saveTaskMode(sqliteDb(db), itemId, "answer");
     await orchestrator.reconcileExecution();
     for (let tick = 0; tick < 5 && getWorkItem(db, itemId)?.state !== "failed"; tick++)
       await jobs.tick();

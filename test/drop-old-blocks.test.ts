@@ -80,7 +80,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
       db.query<{ id: string }, []>("SELECT item_id AS id FROM scheduler_admission").all(),
     ).toEqual([{ id: "hold-0" }]);
     expect(await orchestrator.dependencyHandoff("hold-1")).toBeUndefined();
-    confirmFakeMerge(db, "hold-0");
+    await confirmFakeMerge(db, "hold-0");
     db.run("UPDATE work_item SET state = 'merged' WHERE id = 'hold-0'");
     const run = insertRun(db, {
       itemId: "hold-0",
@@ -146,7 +146,7 @@ test("migration 059 drops the old block tables and task_block holds each depende
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     db.run("INSERT OR IGNORE INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -154,7 +154,9 @@ test("migration 059 drops the old block tables and task_block holds each depende
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "owner",
+    });
     const blocked = intake.items.find((item) => item.linearIssueId === "b");
     expect(blocked).toBeDefined();
     db.run(

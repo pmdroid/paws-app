@@ -52,7 +52,7 @@ async function setup(active = true) {
     "Sam",
     "sam@example.com",
   ]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws",
     userId: "user-1",
     role: "member",

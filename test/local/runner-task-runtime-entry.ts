@@ -163,7 +163,7 @@ if (mode === "agent") {
   git(["clone", "--bare", "origin", "origin.git"]);
   const { db, service } = await coordinator(0);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -216,7 +216,7 @@ if (mode === "agent") {
         sessionKey: sessionId,
       });
       const { run } = beginImplementRun(db, item.id, now);
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "fixture",
         appUserId: "app",
@@ -224,8 +224,8 @@ if (mode === "agent") {
         teamId: "team",
         observedAtMs: now,
       });
-      bindLinearSessionTask(db, sessionId, item.delegationId, { actorId: "owner" });
-      saveTaskMode(db, item.id, purpose, 0, repository);
+      await bindLinearSessionTask(sqliteDb(db), sessionId, item.delegationId, { actorId: "owner" });
+      await saveTaskMode(sqliteDb(db), item.id, purpose, 0, repository);
       const binding = {
         owner: "fixture",
         repo: "repository",

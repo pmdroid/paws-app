@@ -58,7 +58,7 @@ describe("interrupted verification", () => {
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
     const held = getWorkItem(db, item.id)!;
     expect(held.state).toBe("recovering");
-    expect(restartHold(db, held)).not.toBeNull();
+    expect(await restartHold(sqliteDb(db), held)).not.toBeNull();
   });
 
   test("a start leaves a backed-off re-verify of a deferred candidate where it is", async () => {

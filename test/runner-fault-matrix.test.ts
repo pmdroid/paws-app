@@ -307,7 +307,7 @@ async function runRemoteFault(fault: Fault) {
 
   const db = migratedDatabase(join(root, "paws.db"));
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -771,7 +771,7 @@ async function runRemoteFault(fault: Fault) {
       payload: "{}",
     });
     const item = listWorkItems(db)[0]!;
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -779,7 +779,7 @@ async function runRemoteFault(fault: Fault) {
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
     await syncItemDependencies(db, {
       itemId: item.id,

@@ -8,6 +8,7 @@ import {
   syncWorkspaceMember,
   workspaceForOrganization,
   workspaceMember,
+  sqliteDb,
 } from "../../src/db";
 import { createLinearMembershipReads } from "../../src/linear";
 import {
@@ -362,7 +363,7 @@ export async function probeWorkspaceBrowser(
     const racedLogin = login("owner");
     await membershipStarted;
     now += 1;
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: ownerSession.workspaceId,
       userId: ownerSession.userId,
       role: "member",

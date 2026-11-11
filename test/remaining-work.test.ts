@@ -25,13 +25,13 @@ afterEach(() => {
 
 const PULL_URL = "https://github.com/acme/app/pull/7";
 
-function itemWithReport(report: Record<string, unknown>) {
+async function itemWithReport(report: Record<string, unknown>) {
   const db = tempDb();
   databases.push(db);
   const { item } = beginImplementRun(db, insertQueuedItem(db, { id: "ACME-1" }).id, 1);
   enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: 1 });
   enterMergeQueue(db, item.id, { phase: "merge_queue" });
-  savePullRequestDraft(db, item.id, parsePullRequest(report), 2);
+  await savePullRequestDraft(sqliteDb(db), item.id, parsePullRequest(report), 2);
   const tracker = createFakeTracker([
     {
       linearIssueId: item.linearIssueId,
@@ -45,7 +45,7 @@ function itemWithReport(report: Record<string, unknown>) {
 }
 
 async function merge(db: Database, itemId: string) {
-  recordConfirmedRemoteMerge(db, {
+  await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId,
     repositoryOwner: "acme",
     repositoryName: "app",
@@ -63,7 +63,7 @@ async function deliverAll(db: Database, tracker: ReturnType<typeof createFakeTra
 }
 
 test("two parts left for later become two delegated sub-issues after the merge, not before", async () => {
-  const { db, item, tracker } = itemWithReport({
+  const { db, item, tracker } = await itemWithReport({
     title: "Move acme pull queries to Steps, part 1",
     body: "Moved `pull-drafts.ts`.",
     remaining: [
@@ -101,7 +101,7 @@ test("two parts left for later become two delegated sub-issues after the merge, 
 });
 
 test("a report without remaining files nothing after the merge", async () => {
-  const { db, item, tracker } = itemWithReport({ title: "Fix acme", body: "Fixed it." });
+  const { db, item, tracker } = await itemWithReport({ title: "Fix acme", body: "Fixed it." });
   expect(getPullRequestDraft(db, item.id)).toEqual({ title: "Fix acme", body: "Fixed it." });
   await merge(db, item.id);
   await deliverAll(db, tracker);

@@ -25,9 +25,9 @@ export default {
     const previous = await pair("previous", 1, [REPOSITORY]);
     const full = await pair("full", 1, [REPOSITORY]);
     const newly = await pair("newly", 1, ["other/repo"]);
-    queue("busy");
+    await queue("busy");
     const busy = insertRun(db, { itemId: "busy", now: NOW, status: "active" });
-    queue("parked");
+    await queue("parked");
     applyWorkItemEvent(db, "parked", "dispatched");
     const run = insertRun(db, { itemId: "parked", now: NOW, status: "active" });
     db.run("UPDATE work_item SET current_run_id=? WHERE id='parked'", [run.id]);

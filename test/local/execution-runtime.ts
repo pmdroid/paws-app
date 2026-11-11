@@ -179,7 +179,7 @@ export async function probeExecutionRuntime(input: {
   const target = { delegationId: accepted.delegation.id, workspaceId: input.workspaceId };
   const itemTarget = { itemId, workspaceId: input.workspaceId };
   const sessionId = "runtime-execution-session";
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     sessionId,
     organizationId: "org",
     teamId: "team",
@@ -187,9 +187,9 @@ export async function probeExecutionRuntime(input: {
     appUserId: "app",
     observedAtMs: Date.now(),
   });
-  bindLinearSessionTask(db, sessionId, target.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), sessionId, target.delegationId, { actorId: "owner" });
   db.run("UPDATE work_item SET session_key=? WHERE id=?", [sessionId, itemId]);
-  saveTaskMode(db, itemId, "code", 0, true);
+  await saveTaskMode(sqliteDb(db), itemId, "code", 0, true);
   beginImplementRun(db, itemId, Date.now());
   applyWorkItemEvent(db, itemId, "turn_ended");
   saveCheckpoint(db, itemId, {
@@ -372,7 +372,7 @@ export async function probeExecutionRuntime(input: {
     sessionKey: "runtime-terminal-session",
   });
   for (const nextSession of ["runtime-terminal-session", "runtime-fresh-session"])
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: nextSession,
       organizationId: "org",
       teamId: "team",
@@ -380,7 +380,7 @@ export async function probeExecutionRuntime(input: {
       appUserId: "app",
       observedAtMs: Date.now(),
     });
-  bindLinearSessionTask(db, "runtime-terminal-session", terminal.delegationId, {
+  await bindLinearSessionTask(sqliteDb(db), "runtime-terminal-session", terminal.delegationId, {
     actorId: "owner",
   });
   applyWorkItemEvent(db, terminal.id, "cancel");
@@ -421,7 +421,7 @@ export async function probeExecutionRuntime(input: {
     ),
   );
   assert.equal(getWorkItem(db, itemId)!.state, "cancelled");
-  assert.equal(getLinearSession(db, "runtime-fresh-session")!.stoppedAt, null);
+  assert.equal((await getLinearSession(sqliteDb(db), "runtime-fresh-session"))!.stoppedAt, null);
   observe(
     "Production catch-up drains stopped and terminal session replays before delivering a fresh session activity",
     { handled: replayKeys.length, oldCancelled: true, freshSessionActive: true },

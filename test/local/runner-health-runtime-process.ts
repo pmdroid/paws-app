@@ -76,7 +76,7 @@ if (mode === "prepare") {
   const db = openDatabase(dbPath);
   migrate(db);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -130,7 +130,7 @@ if (mode === "prepare") {
     if (process.argv[4] === "helpers") {
       config.helpers = true;
       config.runnerId = paired.runnerId;
-      recordLinearInstallation(db, {
+      await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "app",
         appUserId: "app-user",

@@ -26,8 +26,13 @@ async function fixture() {
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',?)", [now]);
   const bindings = new Map<string, { userId: string; workspaceId: string; sessionHash: string }>();
   for (const [index, id] of ["lead", "steerer"].entries()) {
-    putWorkspaceUser(db, { id, linearUserId: id, name: id, email: `${id}@example.invalid` });
-    syncWorkspaceMember(db, {
+    await putWorkspaceUser(sqliteDb(db), {
+      id,
+      linearUserId: id,
+      name: id,
+      email: `${id}@example.invalid`,
+    });
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: id,
       role: "member",
@@ -35,7 +40,7 @@ async function fixture() {
       teamIds: ["team"],
       now,
     });
-    const session = issueWorkspaceSession(db, { workspaceId: "workspace", userId: id, now });
+    const session = await issueWorkspaceSession(db, { workspaceId: "workspace", userId: id, now });
     const binding = {
       workspaceId: "workspace",
       userId: id,
@@ -57,7 +62,7 @@ async function fixture() {
     );
   }
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -65,7 +70,7 @@ async function fixture() {
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "steerer" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "steerer" });
   db.run(
     "INSERT INTO work_item_scheduling(item_id,project_id,project_known,priority,project_lead_id) VALUES(?,?,1,0,'lead')",
     [item.id, "project"],

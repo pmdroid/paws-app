@@ -146,14 +146,14 @@ async function waitingTask(
     }),
   });
   await orchestrator.onLinearEvent(linearEvent("created", null));
-  itemId = getLinearSession(db, "session")!.activeItemId!;
+  itemId = (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!;
   await bindWorkItemRepository(sqliteDb(db), itemId, {
     owner: "acme",
     repo: "one",
     remoteUrl: "https://github.com/acme/one.git",
   });
   const { run } = beginImplementRun(db, itemId, Date.now());
-  recordItemBranchState(db, {
+  await recordItemBranchState(sqliteDb(db), {
     itemId,
     runId: run.id,
     head: HEAD,
@@ -277,8 +277,8 @@ test("a follow-up whose failing check has no readable log names the check and sa
 test("a head that moves during the CI read attaches no stale CI facts", async () => {
   const f = await waitingTask({
     ci: "failed",
-    onCiRead: (db, itemId) =>
-      recordItemBranchState(db, {
+    onCiRead: async (db, itemId) =>
+      await recordItemBranchState(sqliteDb(db), {
         itemId,
         runId: getWorkItem(db, itemId)!.currentRunId!,
         head: OTHER,

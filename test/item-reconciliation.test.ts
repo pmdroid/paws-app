@@ -6,6 +6,7 @@ import {
   legacyMigrate,
   openDatabase,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { createItemReconciler, intakeDelegatedIssue } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -145,7 +146,7 @@ test("a spec change on the item's issue is reconciled through the item", async (
     db.run(
       "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
     );
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -153,7 +154,9 @@ test("a spec change on the item's issue is reconciled through the item", async (
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "linear-person" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "linear-person",
+    });
     const changed: string[][] = [];
     const reconciler = createItemReconciler({
       db,
@@ -214,7 +217,7 @@ test("a reconcile handed the intake's reads writes the scheduler rows without re
     if (!intake.ok) return;
     const itemId = intake.items[0]!.id;
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -222,7 +225,7 @@ test("a reconcile handed the intake's reads writes the scheduler rows without re
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id);
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id);
     const unread = async (): Promise<never> => {
       throw new Error("The intake's reads must not be repeated");
     };

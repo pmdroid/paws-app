@@ -10,7 +10,7 @@ import { parentIssueIdSql } from "../src/core";
 import type { AcceptedLinearEvent, EpicSnapshot } from "../src/linear";
 import { createParentFixture } from "./local/parent-fixture";
 
-type Fixture = ReturnType<typeof createParentFixture>;
+type Fixture = Awaited<ReturnType<typeof createParentFixture>>;
 
 async function delegate(f: Fixture, blocked = false) {
   const parent: EpicSnapshot = {
@@ -43,7 +43,7 @@ async function delegate(f: Fixture, blocked = false) {
       ],
     );
   }
-  ensureLinearSession(f.db, {
+  await ensureLinearSession(sqliteDb(f.db), {
     sessionId: "parent-session",
     issueId: "parent",
     organizationId: "org",
@@ -57,10 +57,10 @@ async function delegate(f: Fixture, blocked = false) {
 }
 
 /** Someone delegates the sub-issue again in Linear, which opens another session on it. */
-function created(f: Fixture, sessionId: string): AcceptedLinearEvent {
+async function created(f: Fixture, sessionId: string): Promise<AcceptedLinearEvent> {
   if (!f.db.query("SELECT 1 FROM linear_session WHERE session_id=?").get(sessionId)) {
-    ensureLinearSession(f.db, { sessionId, issueId: "a", creatorId: "actor" });
-    recordLinearInstallation(f.db, {
+    await ensureLinearSession(sqliteDb(f.db), { sessionId, issueId: "a", creatorId: "actor" });
+    await recordLinearInstallation(sqliteDb(f.db), {
       sessionId,
       organizationId: "org",
       teamId: "team",
@@ -85,18 +85,18 @@ function created(f: Fixture, sessionId: string): AcceptedLinearEvent {
 }
 
 test("a second session on a running sub-issue is refused and the first keeps it", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     await delegate(f);
     expect(f.started).toEqual(["a"]);
-    const decision = await f.parents.authorizeEvent(created(f, "again"));
+    const decision = await f.parents.authorizeEvent(await created(f, "again"));
     expect(decision).toEqual({
       outcome: "refused",
       reason:
         "CH-1 is still running in its earlier Paws session. Paws continues there, so reply in that session to steer it.",
     });
-    expect(await f.parents.recheckEvent(created(f, "again"))).toBe(false);
-    expect(await f.parents.recheckEvent(created(f, "session-a"))).toBe(true);
+    expect(await f.parents.recheckEvent(await created(f, "again"))).toBe(false);
+    expect(await f.parents.recheckEvent(await created(f, "session-a"))).toBe(true);
     expect(
       f.db.query("SELECT session_id FROM parent_delegation_issue WHERE issue_id='a'").get(),
     ).toEqual({ session_id: "session-a" });
@@ -106,11 +106,13 @@ test("a second session on a running sub-issue is refused and the first keeps it"
 });
 
 test("a failed sub-issue starts again in a new session", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     await delegate(f);
     f.db.run("UPDATE work_item SET state='failed' WHERE linear_issue_id='a'");
-    expect(await f.parents.authorizeEvent(created(f, "again"))).toEqual({ outcome: "accepted" });
+    expect(await f.parents.authorizeEvent(await created(f, "again"))).toEqual({
+      outcome: "accepted",
+    });
     expect(
       f.db
         .query("SELECT session_id,delegation_id FROM parent_delegation_issue WHERE issue_id='a'")
@@ -126,11 +128,11 @@ test("a failed sub-issue starts again in a new session", async () => {
 });
 
 test("a sub-issue still waiting for its blockers refuses a session of its own", async () => {
-  const f = createParentFixture();
+  const f = await createParentFixture();
   try {
     await delegate(f, true);
     expect(f.started).toEqual([]);
-    expect(await f.parents.authorizeEvent(created(f, "early"))).toEqual({
+    expect(await f.parents.authorizeEvent(await created(f, "early"))).toEqual({
       outcome: "refused",
       reason:
         "CH-1 waits for its blockers under its delegated parent. Paws opens its session when they finish.",

@@ -57,7 +57,7 @@ const repository = {
 async function fixture(root: string) {
   const db = tempDb();
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -111,7 +111,7 @@ async function fixture(root: string) {
   async function startRun(name: string) {
     const item = insertQueuedItem(db, { id: `${name}-item`, now, sessionKey: `${name}-session` });
     const { run } = beginImplementRun(db, item.id, now);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "session-org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -119,7 +119,9 @@ async function fixture(root: string) {
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, `${name}-session`, item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), `${name}-session`, item.delegationId, {
+      actorId: "owner",
+    });
     await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     return { itemId: item.id, runId: run.id };
   }
@@ -418,7 +420,7 @@ describe("agent session snapshots", () => {
 
     // A runner owned by another member never reads the owner's session.
     db.run("UPDATE agent_session_snapshot SET owner_user_id=? WHERE run_id=?", [
-      putWorkspaceUser(db, {
+      await putWorkspaceUser(sqliteDb(db), {
         id: workspaceId(),
         linearUserId: "other",
         name: "Other",

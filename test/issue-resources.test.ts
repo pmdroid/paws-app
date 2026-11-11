@@ -7,6 +7,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
@@ -17,10 +18,15 @@ test("issue and question resources need a Paws session, show only the member's s
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
   );
-  putWorkspaceUser(db, { id: "member", linearUserId: "member", name: "member", email: "m@x.test" });
+  await putWorkspaceUser(sqliteDb(db), {
+    id: "member",
+    linearUserId: "member",
+    name: "member",
+    email: "m@x.test",
+  });
   let teamIds = ["team"];
-  const member = () =>
-    syncWorkspaceMember(db, {
+  const member = async () =>
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -28,7 +34,7 @@ test("issue and question resources need a Paws session, show only the member's s
       teamIds,
       now: Date.now(),
     });
-  member();
+  await member();
   for (const [session, team] of [
     ["session-mine", "team"],
     ["session-other", "other-team"],
@@ -71,7 +77,7 @@ test("issue and question resources need a Paws session, show only the member's s
     },
   });
   const server = startServer({ port, hostname: "127.0.0.1", db, workspaceAccess: access });
-  const session = issueWorkspaceSession(db, {
+  const session = await issueWorkspaceSession(db, {
     workspaceId: "workspace",
     userId: "member",
     now: Date.now(),
@@ -122,7 +128,7 @@ test("issue and question resources need a Paws session, show only the member's s
     );
 
     teamIds = ["other-team"];
-    member();
+    await member();
     const revoked = await fetch(url("/PAS-1"), signedIn({ "If-None-Match": etag }));
     expect(revoked.status).toBe(404);
     expect(await listed()).toEqual(["PAS-2"]);

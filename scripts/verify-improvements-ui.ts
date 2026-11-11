@@ -1,7 +1,7 @@
 import { chromium, expect, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { createRetro, insertQueuedItem, listImprovementDeliveries } from "../src/db";
+import { createRetro, insertQueuedItem, listImprovementDeliveries, sqliteDb } from "../src/db";
 import {
   deliverImprovements,
   syncImprovementOutcomes,
@@ -24,10 +24,10 @@ const startSession: StartIssueSession = async (target) => {
   starts.push(target.id);
   return { id: `session-${starts.length}`, url: null };
 };
-const w = world({ linear, startSession, dashboardUrl: "http://127.0.0.1/" });
+const w = await world({ linear, startSession, dashboardUrl: "http://127.0.0.1/" });
 await seedDaily(w.db);
 const retro = w.retro.a;
-createRetro(w.db, {
+await createRetro(sqliteDb(w.db), {
   id: "r0",
   workspaceId: "ws",
   windowStart: START - 7 * 86_400_000,
@@ -123,10 +123,10 @@ const server = startServer({
     return reviews(request, principal, sessionIds);
   },
 });
-const cookieFor = (userId: string) =>
-  `${WORKSPACE_COOKIE}=${issueWorkspaceSession(w.db, { workspaceId: "ws", userId, now: Date.now() }).token}`;
-const ada = cookieFor("user-ada");
-const admin = cookieFor("user-admin");
+const cookieFor = async (userId: string) =>
+  `${WORKSPACE_COOKIE}=${(await issueWorkspaceSession(w.db, { workspaceId: "ws", userId, now: Date.now() })).token}`;
+const ada = await cookieFor("user-ada");
+const admin = await cookieFor("user-admin");
 
 const browser = await chromium.launch({
   headless: true,
@@ -281,7 +281,7 @@ try {
   await desk.locator(`[data-improvement-row="${retro}"]`).focus();
   await desk.keyboard.press("Enter");
   await expect(desk.locator("#improvement-heading")).toBeFocused();
-  const other = await open(1440, "light", cookieFor("user-bea"));
+  const other = await open(1440, "light", await cookieFor("user-bea"));
   await other.goto(`${origin}/dashboard/improvements/${retro}`);
   await other.getByRole("button", { name: "Reject" }).click();
   await other.getByLabel("Why reject it?").fill("Covered by the recovery runbook");
@@ -296,7 +296,7 @@ try {
   await expect(desk.getByRole("button", { name: "File the issue" })).toBeVisible();
   await desk.locator('[data-improvement-form="create"] button[type=submit]').dblclick();
   await expect(desk.locator("#improvements-page")).toContainText("Accepted. Paws files the issue");
-  expect(listImprovementDeliveries(w.db, retro)).toHaveLength(1);
+  expect(await listImprovementDeliveries(sqliteDb(w.db), retro)).toHaveLength(1);
 
   linear.fail("createIssue", "lose");
   const deliver = (at: number) =>
@@ -326,7 +326,7 @@ try {
   await expect(desk.locator("#improvements-page")).toContainText("Delegated.");
   expect(starts).toHaveLength(1);
 
-  const issueId = listImprovementDeliveries(w.db, retro)[0]!.remoteId!;
+  const issueId = (await listImprovementDeliveries(sqliteDb(w.db), retro))[0]!.remoteId!;
   insertQueuedItem(w.db, { id: "work-x", sessionKey: "session-a", now: END + 2_500 });
   w.db.run("UPDATE work_item SET linear_issue_id = ?, state = 'running' WHERE id = 'work-x'", [
     issueId,

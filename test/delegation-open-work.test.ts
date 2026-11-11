@@ -19,12 +19,12 @@ const issue = {
   subIssues: [],
 };
 
-function install(db: ReturnType<typeof tempDb>, delegationId: string): void {
+async function install(db: ReturnType<typeof tempDb>, delegationId: string): Promise<void> {
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
   db.run(
     "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
   );
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -32,7 +32,7 @@ function install(db: ReturnType<typeof tempDb>, delegationId: string): void {
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", delegationId, { actorId: "linear-person" });
+  await bindLinearSessionTask(sqliteDb(db), "session", delegationId, { actorId: "linear-person" });
 }
 
 test("a delegation whose only item is cancelled is no longer treated as running by reconciliation and readiness", async () => {
@@ -56,7 +56,7 @@ test("a delegation whose only item is cancelled is no longer treated as running 
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
     const itemId = intake.items[0]!.id;
-    install(db, intake.delegation.id);
+    await install(db, intake.delegation.id);
     const target = { itemId, workspaceId: "workspace" };
     expect((await sqliteDb(db).run((q) => readyItemsSteps(q, target))).heldItemIds).toEqual([
       itemId,
@@ -109,7 +109,7 @@ test("a sub-issue of a delegated parent reads its parent issue from parent_deleg
     });
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
-    install(db, intake.delegation.id);
+    await install(db, intake.delegation.id);
     db.run(
       `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,title,session_id,owner_user_id,edges,created_at)
        VALUES('adopted','workspace','org','parent-issue','PRJ-1','Parent','parent-session','person','[]',1000)`,

@@ -32,7 +32,7 @@ async function assignedPreview(runnerVersion: string) {
   const now = () => 1_800_000_000_000;
   const db = migratedDatabase(join(root, "paws.db"));
   try {
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: "owner",
       name: "Owner",
@@ -77,7 +77,7 @@ async function assignedPreview(runnerVersion: string) {
     ]);
     const item = insertQueuedItem(db, { id: "item", now: now(), sessionKey: "session" });
     const { run } = beginImplementRun(db, item.id, now());
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -85,7 +85,7 @@ async function assignedPreview(runnerVersion: string) {
       teamId: "team",
       observedAtMs: now(),
     });
-    bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
     await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     const work = createRunnerWork({
       db,

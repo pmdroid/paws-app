@@ -39,7 +39,7 @@ async function fixture() {
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   const now = 1_800_000_000_000;
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -62,13 +62,13 @@ async function fixture() {
     teamIds: [],
   });
   const admin = principal(userId, "admin");
-  const memberId = putWorkspaceUser(db, {
+  const memberId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "member",
     name: "member",
     email: "member@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId: memberId,
     role: "member",
@@ -232,9 +232,9 @@ test("lowering concurrency below running work holds back new placement", async (
       [run.id, runner.runnerId, runner.workspaceId, `cmd-${index}`, runner.now + 60_000],
     );
   }
-  expect(runnerHasCapacity(runner.db, runner.runnerId, runner.now)).toBe(true);
+  expect(await runnerHasCapacity(sqliteDb(runner.db), runner.runnerId, runner.now)).toBe(true);
   expect((await runner.set(1)).status).toBe(200);
-  expect(runnerHasCapacity(runner.db, runner.runnerId, runner.now)).toBe(false);
+  expect(await runnerHasCapacity(sqliteDb(runner.db), runner.runnerId, runner.now)).toBe(false);
   expect((await runner.list()).slots).toEqual({ used: 2, total: 1 });
   expect(
     runner.db

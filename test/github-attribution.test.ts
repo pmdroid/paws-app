@@ -17,7 +17,7 @@ import {
 } from "../src/db";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
 
-function fixture(configured = true) {
+async function fixture(configured = true) {
   const root = mkdtempSync(join(tmpdir(), "paws-attribution-"));
   const path = join(root, "db.sqlite");
   let db = openDatabase(path);
@@ -26,13 +26,13 @@ function fixture(configured = true) {
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',?)", [now]);
   db.run("INSERT INTO workspace VALUES('other','other-org','Other',?)", [now]);
   for (const id of ["alice", "bob"]) {
-    putWorkspaceUser(db, {
+    await putWorkspaceUser(sqliteDb(db), {
       id,
       linearUserId: `linear-${id}`,
       name: id,
       email: `${id}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: id,
       role: "member",
@@ -41,7 +41,7 @@ function fixture(configured = true) {
       now,
     });
   }
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "other",
     userId: "alice",
     role: "member",
@@ -49,9 +49,9 @@ function fixture(configured = true) {
     teamIds: ["team"],
     now,
   });
-  const alice = issueWorkspaceSession(db, { workspaceId: "workspace", userId: "alice", now });
-  const bob = issueWorkspaceSession(db, { workspaceId: "workspace", userId: "bob", now });
-  const other = issueWorkspaceSession(db, { workspaceId: "other", userId: "alice", now });
+  const alice = await issueWorkspaceSession(db, { workspaceId: "workspace", userId: "alice", now });
+  const bob = await issueWorkspaceSession(db, { workspaceId: "workspace", userId: "bob", now });
+  const other = await issueWorkspaceSession(db, { workspaceId: "other", userId: "alice", now });
   let active = true;
   let guest = false;
   let tokenScope = "";
@@ -201,7 +201,7 @@ function fixture(configured = true) {
 }
 
 test("self-link persists verified consent over HTTP and SQLite restart with single-use PKCE and no token storage", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     expect((await f.request("POST", f.alice, { consent: false })).status).toBe(400);
     expect((await f.request("POST", f.alice, { consent: true }, "wrong")).status).toBe(403);
@@ -263,7 +263,7 @@ for (const scenario of [
   "demote-inflight",
 ] as const) {
   test(`self-link rejects ${scenario}`, async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const pending = await f.begin();
       let session = f.alice;
@@ -315,7 +315,7 @@ for (const scenario of [
 }
 
 test("missing App credentials keep attribution readable and revocable without starting OAuth", async () => {
-  const f = fixture(false);
+  const f = await fixture(false);
   try {
     const response = await f.request("GET");
     expect(response.status).toBe(200);
@@ -358,7 +358,7 @@ test("missing App credentials keep attribution readable and revocable without st
 });
 
 test("an older sign-in can still change its own attribution while the session is valid", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const pending = await f.begin();
     expect((await f.callback(pending)).status).toBe(303);
@@ -379,7 +379,7 @@ test("an older sign-in can still change its own attribution while the session is
 });
 
 test("the Settings link returns to Settings, and a forged return_path never leaves the two allowed pages", async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const pending = await f.begin();
     expect(
@@ -448,6 +448,6 @@ test("the Settings link returns to Settings, and a forged return_path never leav
   }
 });
 
-function binding(f: ReturnType<typeof fixture>) {
+function binding(f: Awaited<ReturnType<typeof fixture>>) {
   return { workspaceId: "workspace", userId: "alice", sessionHash: f.alice.session.tokenHash };
 }

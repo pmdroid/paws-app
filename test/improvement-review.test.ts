@@ -35,7 +35,7 @@ import {
 
 describe("improvement decisions", () => {
   test("two reviewers: the second conflicting decision returns the first one with 409", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const first = await w.api("ada", `/api/improvements/${id}/decision`, accept());
     expect(first.status).toBe(200);
@@ -47,7 +47,7 @@ describe("improvement decisions", () => {
       reviewState: "accepted",
       decision: { by: "user-ada" },
     });
-    const [delivery] = listImprovementDeliveries(w.db, id);
+    const [delivery] = await listImprovementDeliveries(sqliteDb(w.db), id);
     expect(delivery).toMatchObject({ operation: "create_issue", targetTeamId: "team-a" });
     expect(delivery!.content).toMatchObject({
       proposalVersion: 1,
@@ -57,7 +57,7 @@ describe("improvement decisions", () => {
   });
 
   test("a repeated accept must match the frozen criterion and accepts the issue identifier", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const path = `/api/improvements/${id}/decision`;
     const link = { kind: "link", issue: "PAS-60" };
@@ -81,21 +81,21 @@ describe("improvement decisions", () => {
   });
 
   test("reject then accept: rejection records the reason and no delivery", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const rejected = await w.api("bea", `/api/improvements/${id}/decision`, reject());
     expect(rejected.body.item).toMatchObject({
       reviewState: "rejected",
       decision: { reason: "Not recurring" },
     });
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
     const late = await w.api("ada", `/api/improvements/${id}/decision`, accept());
     expect(late.status).toBe(409);
     expect(late.body.item.reviewState).toBe("rejected");
   });
 
   test("duplicate clicks return the existing result without a second delivery", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const [one, two] = await Promise.all([
       w.api("ada", `/api/improvements/${id}/decision`, accept()),
@@ -103,16 +103,16 @@ describe("improvement decisions", () => {
     ]);
     expect([one.status, two.status]).toEqual([200, 200]);
     expect([one.body.status, two.body.status].sort()).toEqual(["decided", "unchanged"]);
-    expect(listImprovementDeliveries(w.db, id)).toHaveLength(1);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toHaveLength(1);
     const again = await w.api("bea", `/api/improvements/${id}/decision`, reject(1));
     expect(again.status).toBe(409);
   });
 
   test("filing in flight: reject and reopen cannot undo an accepted issue", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
-    const [delivery] = listImprovementDeliveries(w.db, id);
+    const [delivery] = await listImprovementDeliveries(sqliteDb(w.db), id);
     await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       owner: "outbox",
@@ -129,10 +129,10 @@ describe("improvement decisions", () => {
   });
 
   test("a filing failure stays accepted and retry reuses the same delivery", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
-    const [delivery] = listImprovementDeliveries(w.db, id);
+    const [delivery] = await listImprovementDeliveries(sqliteDb(w.db), id);
     await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery!.id,
       owner: "outbox",
@@ -158,7 +158,7 @@ describe("improvement decisions", () => {
     expect(retried.status).toBe(202);
     expect(retried.body.item.reviewState).toBe("accepted");
     expect((await w.api("bea", path, {})).body.status).toBe("in_progress");
-    const after = listImprovementDeliveries(w.db, id);
+    const after = await listImprovementDeliveries(sqliteDb(w.db), id);
     expect(after.map((d) => [d.id, d.state])).toEqual([[delivery!.id, "pending"]]);
 
     await claimImprovementDelivery(sqliteDb(w.db), {
@@ -180,10 +180,10 @@ describe("improvement decisions", () => {
   });
 
   test("an unfiled create chooses another mapped team; an uncertain one only reconciles", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     await w.api("ada", `/api/improvements/${id}/decision`, accept());
-    const [delivery] = listImprovementDeliveries(w.db, id);
+    const [delivery] = await listImprovementDeliveries(sqliteDb(w.db), id);
     const base = `/api/improvements/${id}/deliveries/${delivery!.id}`;
     w.db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-b')", [A]);
     w.db.run("DELETE FROM workspace_repository WHERE repository = ? AND team_id = 'team-a'", [A]);
@@ -243,7 +243,7 @@ describe("improvement decisions", () => {
     expect(frozen.body.reason).toBe("destination_frozen");
     const retried = await w.api("admin", `${base}/retry`, {});
     expect(retried.status).toBe(202);
-    expect(listImprovementDeliveries(w.db, id)[0]).toMatchObject({
+    expect((await listImprovementDeliveries(sqliteDb(w.db), id))[0]).toMatchObject({
       state: "unknown",
       blocked: null,
       targetTeamId: "team-b",
@@ -251,7 +251,7 @@ describe("improvement decisions", () => {
   });
 
   test("a blocked link reopens for a new choice; a stranded evidence comment can be cancelled", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const decision = `/api/improvements/${id}/decision`;
     const settle = async (
@@ -260,7 +260,9 @@ describe("improvement decisions", () => {
       outcome: "succeeded" | "failed",
       blocked?: "conflict",
     ) => {
-      const target = listImprovementDeliveries(w.db, id).find((d) => d.operation === operation)!;
+      const target = (await listImprovementDeliveries(sqliteDb(w.db), id)).find(
+        (d) => d.operation === operation,
+      )!;
       await claimImprovementDelivery(sqliteDb(w.db), {
         deliveryId: target.id,
         owner: "outbox",
@@ -322,19 +324,21 @@ describe("improvement decisions", () => {
       reviewState: "accepted",
       decision: { evidenceComment: false },
     });
-    expect(listImprovementDeliveries(w.db, id).map((d) => d.operation)).toEqual(["link_issue"]);
+    expect((await listImprovementDeliveries(sqliteDb(w.db), id)).map((d) => d.operation)).toEqual([
+      "link_issue",
+    ]);
     expect((await w.api("ada", cancel, {})).status).toBe(404);
   });
 
   test("link revalidates the issue; a link alone posts no comment", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const decide = (intent: unknown) =>
       w.api("ada", `/api/improvements/${id}/decision`, accept(1, intent));
     w.lookup.setUnavailable(true);
     const down = await decide({ kind: "link", issue: "PAS-60" });
     expect(down.status).toBe(503);
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
     w.lookup.setUnavailable(false);
     expect((await decide({ kind: "link", issue: "PAS-404" })).body.reason).toBe("issue_not_found");
     const hidden = await decide({ kind: "link", issue: "OPS-7" });
@@ -354,11 +358,13 @@ describe("improvement decisions", () => {
       reviewState: "accepted",
       decision: { intent: "link", intentIssueId: "issue-open", evidenceComment: false },
     });
-    expect(listImprovementDeliveries(w.db, id).map((d) => d.operation)).toEqual(["link_issue"]);
+    expect((await listImprovementDeliveries(sqliteDb(w.db), id)).map((d) => d.operation)).toEqual([
+      "link_issue",
+    ]);
   });
 
   test("a proposal that changes while Linear is read is not accepted", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const ada = w.people["ada"]!;
     const outcome = await decideInboxItem(w.db, {
@@ -371,7 +377,7 @@ describe("improvement decisions", () => {
         intent: { kind: "link", issue: "PAS-60" },
       },
       lookup: async (issue) => {
-        recordImprovementProposal(w.db, {
+        await recordImprovementProposal(sqliteDb(w.db), {
           workspaceId: "ws",
           repository: A,
           source: { kind: "retro_item", key: "r1/p1" },
@@ -390,11 +396,11 @@ describe("improvement decisions", () => {
       now: w.now,
     });
     expect(outcome).toMatchObject({ status: "conflict", reason: "proposal_changed" });
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
   });
 
   test("link and add evidence freezes an explicit comment intent; closed needs explicit consent", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const linked = await w.api(
       "ada",
@@ -402,7 +408,7 @@ describe("improvement decisions", () => {
       accept(1, { kind: "link", issue: "PAS-61", allowClosed: true, addEvidenceComment: true }),
     );
     expect(linked.status).toBe(200);
-    const deliveries = listImprovementDeliveries(w.db, id);
+    const deliveries = await listImprovementDeliveries(sqliteDb(w.db), id);
     expect(deliveries.map((d) => d.operation).sort()).toEqual(["evidence_comment", "link_issue"]);
     expect(deliveries.every((d) => d.targetIssueId === "issue-closed")).toBe(true);
     expect(deliveries[0]!.content).toMatchObject({
@@ -411,7 +417,7 @@ describe("improvement decisions", () => {
   });
 
   test("create must name a destination the reviewer is authorized for", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     const refused = await w.api(
       "ada",
@@ -427,12 +433,15 @@ describe("improvement decisions", () => {
   });
 
   test("access revoked during the Linear lookup refuses the link", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
-    const decideWhile = async (revoke: () => void) => {
+    const decideWhile = async (revoke: () => unknown) => {
       const http = createImprovementsHttp({
         db: w.db,
-        lookup: async (issue) => (revoke(), w.lookup.lookup(issue)),
+        lookup: async (issue) => {
+          await revoke();
+          return w.lookup.lookup(issue);
+        },
         now: w.now,
       });
       const response = await http(
@@ -446,8 +455,8 @@ describe("improvement decisions", () => {
       return { status: response!.status, body: (await response!.json()) as Json };
     };
     let at = 2;
-    const member = (active: boolean, teamIds: string[]) =>
-      syncWorkspaceMember(w.db, {
+    const member = async (active: boolean, teamIds: string[]) =>
+      await syncWorkspaceMember(sqliteDb(w.db), {
         workspaceId: "ws",
         userId: "user-ada",
         role: "member",
@@ -455,22 +464,22 @@ describe("improvement decisions", () => {
         teamIds,
         now: at++,
       });
-    const lostTeam = await decideWhile(() => member(true, []));
+    const lostTeam = await decideWhile(async () => await member(true, []));
     expect([lostTeam.status, lostTeam.body.reason]).toEqual([404, "not_found"]);
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
-    member(true, ["team-a"]);
-    const revoked = await decideWhile(() => member(false, ["team-a"]));
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
+    await member(true, ["team-a"]);
+    const revoked = await decideWhile(async () => await member(false, ["team-a"]));
     expect([revoked.status, revoked.body.reason]).toEqual([404, "not_found"]);
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
-    member(true, ["team-a"]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
+    await member(true, ["team-a"]);
     const kept = await decideWhile(() => {});
     expect(kept.body.status).toBe("decided");
   });
 
   test("revoked membership loses reads and decisions; another workspace sees nothing", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
-    syncWorkspaceMember(w.db, {
+    await syncWorkspaceMember(sqliteDb(w.db), {
       workspaceId: "ws",
       userId: "user-bea",
       role: "member",
@@ -481,7 +490,7 @@ describe("improvement decisions", () => {
     expect((await w.api("bea", "/api/improvements")).status).toBe(403);
     expect((await w.api("bea", `/api/improvements/${id}/decision`, accept())).status).toBe(403);
     expect((await w.retroApi("bea", "/api/retros/history")).status).toBe(403);
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
     w.people["outsider"] = { ...w.people["ada"]!, workspaceId: "other" };
     expect((await w.api("outsider", "/api/improvements")).status).toBe(403);
     expect((await w.api("outsider", `/api/improvements/${id}`)).status).toBe(403);
@@ -489,7 +498,7 @@ describe("improvement decisions", () => {
   });
 
   test("an admin-revoked member loses reads and decisions", async () => {
-    const w = world();
+    const w = await world();
     const id = w.retro.a;
     await changeWorkspaceRevocation(sqliteDb(w.db), {
       workspaceId: "ws",
@@ -501,11 +510,11 @@ describe("improvement decisions", () => {
     expect((await w.api("bea", "/api/improvements")).status).toBe(403);
     expect((await w.api("bea", `/api/improvements/${id}/decision`, accept())).status).toBe(403);
     expect((await w.retroApi("bea", "/api/retros/history")).status).toBe(403);
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
   });
 
   test("responses are no-store and missing ids are recoverable 404s", async () => {
-    const w = world();
+    const w = await world();
     const list = await w.api("ada", "/api/improvements");
     expect(list.headers.get("cache-control")).toBe("no-store");
     const missing = await w.api("ada", "/api/improvements/01MISSING/decision", accept());
@@ -518,7 +527,7 @@ describe("improvement decisions", () => {
 
 describe("daily findings share legacy claims", () => {
   test("new daily acceptance needs a criterion stored as an annotation", async () => {
-    const w = world();
+    const w = await world();
     await seedDaily(w.db);
     const list = await w.api("ada", "/api/improvements?source=daily");
     const [daily] = list.body.items;
@@ -544,12 +553,14 @@ describe("daily findings share legacy claims", () => {
       { revision: 1, actor: "user-ada" },
     ]);
     expect(
-      listImprovementProposals(w.db, daily.id).every((p) => p.verificationCriterion === ""),
+      (await listImprovementProposals(sqliteDb(w.db), daily.id)).every(
+        (p) => p.verificationCriterion === "",
+      ),
     ).toBe(true);
   });
 
   test("legacy File after inbox Create is refused, and inbox Create after a legacy claim conflicts", async () => {
-    const w = world();
+    const w = await world();
     const { groupId } = await seedDaily(w.db);
     const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
     const done = await w.api(
@@ -582,7 +593,7 @@ describe("daily findings share legacy claims", () => {
     expect(legacy!.status).toBe(409);
     expect(files).toEqual([]);
 
-    const other = world();
+    const other = await world();
     const seeded = await seedDaily(other.db);
     other.db.run("UPDATE finding_group SET action='file' WHERE id=?", [seeded.groupId]);
     const [claimed] = (await other.api("ada", "/api/improvements?source=daily")).body.items;
@@ -601,7 +612,7 @@ describe("daily findings share legacy claims", () => {
 
 describe("legacy dismissal after an inbox accept", () => {
   test("neither a group nor a single finding can be dismissed once the inbox accepted it", async () => {
-    const w = world();
+    const w = await world();
     const { groupId, findings } = await seedDaily(w.db);
     const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
     const done = await w.api(
@@ -629,13 +640,16 @@ describe("legacy dismissal after an inbox accept", () => {
       { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
     );
     expect(single!.status).toBe(409);
-    expect(listReviewFindings(w.db).every((f) => f.status === "open")).toBe(true);
+    expect((await listReviewFindings(sqliteDb(w.db))).every((f) => f.status === "open")).toBe(true);
   });
 });
 
 describe("individual finding issues share the inbox claim", () => {
   const ORIGIN = "https://paws.example";
-  function route(w: ReturnType<typeof world>, file: () => Promise<void> = async () => {}) {
+  async function route(
+    w: Awaited<ReturnType<typeof world>>,
+    file: () => Promise<void> = async () => {},
+  ) {
     const filed: string[] = [];
     const handle = createFindingIssueRoute({
       db: w.db,
@@ -671,7 +685,7 @@ describe("individual finding issues share the inbox claim", () => {
       },
       now: () => END + 50,
     });
-    const { session } = issueWorkspaceSession(w.db, {
+    const { session } = await issueWorkspaceSession(w.db, {
       workspaceId: "ws",
       userId: "user-bea",
       now: END,
@@ -701,7 +715,7 @@ describe("individual finding issues share the inbox claim", () => {
       );
     return { post, filed };
   }
-  const acceptDaily = async (w: ReturnType<typeof world>) => {
+  const acceptDaily = async (w: Awaited<ReturnType<typeof world>>) => {
     const [daily] = (await w.api("ada", "/api/improvements?source=daily")).body.items;
     return w.api(
       "ada",
@@ -714,21 +728,21 @@ describe("individual finding issues share the inbox claim", () => {
   };
 
   test("an inbox accept blocks filing the same finding individually", async () => {
-    const w = world();
+    const w = await world();
     await seedDaily(w.db);
     expect((await acceptDaily(w)).body.status).toBe("decided");
-    const { post, filed } = route(w);
+    const { post, filed } = await route(w);
     const refused = await post();
     expect(refused!.status).toBe(409);
     expect(filed).toEqual([]);
   });
 
   test("an individual filing, finished or in flight, blocks the inbox accept", async () => {
-    const w = world();
+    const w = await world();
     await seedDaily(w.db);
     let release = () => {};
     const gate = new Promise<void>((resolve) => (release = resolve));
-    const { post, filed } = route(w, () => gate);
+    const { post, filed } = await route(w, () => gate);
     const pending = post();
     await Bun.sleep(0);
     expect(filed).toHaveLength(1);
@@ -742,11 +756,11 @@ describe("individual finding issues share the inbox claim", () => {
       issue: { identifier: "PAS-77", origin: "legacy" },
       legacy: [{ kind: "filed", issue: "PAS-77" }],
     });
-    expect(listImprovementDeliveries(w.db, after.body.item.id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), after.body.item.id)).toEqual([]);
   });
 
   test("an individual filing after a dismissed group still blocks the inbox Create", async () => {
-    const w = world();
+    const w = await world();
     const { groupId } = await seedDaily(w.db);
     const dismissed = await handleFindingGroupsRequest(
       new Request("http://paws.test/api/finding-groups", {
@@ -756,18 +770,18 @@ describe("individual finding issues share the inbox claim", () => {
       { db: w.db, principal: w.people["bea"]!, sessionIds: ONLY_A },
     );
     expect(dismissed!.status).toBe(200);
-    const { post } = route(w);
+    const { post } = await route(w);
     expect((await post())!.status).toBe(200);
     const after = await acceptDaily(w);
     expect([after.status, after.body.reason]).toEqual([409, "known_issue"]);
     expect(after.body.item.issue).toMatchObject({ identifier: "PAS-77", origin: "legacy" });
-    expect(listImprovementDeliveries(w.db, after.body.item.id)).toEqual([]);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), after.body.item.id)).toEqual([]);
   });
 });
 
 describe("partial repository access", () => {
   test("a member who reads only one of two repositories sees only that repository", async () => {
-    const w = world();
+    const w = await world();
     const list = await w.api("ada", "/api/improvements");
     expect(list.body.items.map((i: { id: string }) => i.id)).toEqual([w.retro.a]);
     expect(list.body.counts).toMatchObject({ total: 1, weekly: 1 });
@@ -821,7 +835,7 @@ describe("partial repository access", () => {
   });
 
   test("readable sessions do not replace repository permission for downloads", async () => {
-    const w = world();
+    const w = await world();
     for (const file of ["digest", "report", "prompt"])
       expect((await w.retroApi("ada", `/api/retros/reports/r1/${file}`, ALL)).status).toBe(403);
     const report = (await (
@@ -834,7 +848,7 @@ describe("partial repository access", () => {
   });
 
   test("full access downloads the digest, report and rendered prompt", async () => {
-    const w = world();
+    const w = await world();
     const digest = await w.retroApi("admin", "/api/retros/reports/r1/digest");
     expect(digest.status).toBe(200);
     expect(digest.headers.get("content-disposition")).toContain("attachment");

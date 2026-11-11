@@ -159,12 +159,12 @@ async function held(head = heads.s, base = heads.base) {
     payload: { id: crypto.randomUUID(), sessionId: "ses_1", kind: "response", body: "Opened #1." },
     now: NOW - 4,
   });
-  classify(db, head, base);
+  await classify(db, head, base);
   return { db, itemId: item.id };
 }
 
-function classify(db: ReturnType<typeof openDatabase>, head: string, base: string) {
-  saveCandidateRisk(db, {
+async function classify(db: ReturnType<typeof openDatabase>, head: string, base: string) {
+  await saveCandidateRisk(sqliteDb(db), {
     itemId: "ENG-106",
     head,
     base,
@@ -239,11 +239,11 @@ async function riskApproved() {
 }
 
 /** The fix at `head` passed Closeout and the lane holds it again. */
-function fixAccepted(db: ReturnType<typeof openDatabase>, head: string, base: string) {
+async function fixAccepted(db: ReturnType<typeof openDatabase>, head: string, base: string) {
   if (getWorkItem(db, "ENG-106")?.state === "verifying")
     applyWorkItemEvent(db, "ENG-106", "closeout_accepted");
   saveCheckpoint(db, "ENG-106", { phase: "merge_queue", baseSha: base, wipCommit: head });
-  saveCandidateRisk(db, {
+  await saveCandidateRisk(sqliteDb(db), {
     itemId: "ENG-106",
     head,
     base,
@@ -297,7 +297,7 @@ test("a high-risk head is asked with a link: Markdown, no options, the link on t
 
 test("a normal-tier head, or a Paws without an https link, needs no approval", async () => {
   const { db } = await held();
-  saveCandidateRisk(db, {
+  await saveCandidateRisk(sqliteDb(db), {
     itemId: "ENG-106",
     head: heads.s,
     base: heads.base,
@@ -306,7 +306,7 @@ test("a normal-tier head, or a Paws without an https link, needs no approval", a
     classifiedAt: NOW,
   });
   expect(await approval(db, heads.s)).toBe("not_required");
-  classify(db, heads.s, heads.base);
+  await classify(db, heads.s, heads.base);
   const local = (publicUrl: string | null) =>
     riskApprovalFor(db, {
       itemId: "ENG-106",
@@ -483,10 +483,10 @@ test("a new head after the approval needs a new approval; a rebase onto main kee
     now: NOW + 100,
   });
   // The same patch on a newer main.
-  classify(db, heads.rebased, heads.newMain);
+  await classify(db, heads.rebased, heads.newMain);
   expect(await approval(db, heads.rebased)).toBe("approved");
   // Any change to the patch asks again.
-  classify(db, heads.changed, heads.newMain);
+  await classify(db, heads.changed, heads.newMain);
   expect(await approval(db, heads.changed)).toBe("missing");
 });
 
@@ -535,7 +535,7 @@ test("the ask, its link and the decision reach Linear after the pull request res
 
 test("a CI fix that only changes a test keeps the approval and merges without a new ask", async () => {
   const { db, itemId } = await riskApproved();
-  fixAccepted(db, heads.ciFix, heads.base);
+  await fixAccepted(db, heads.ciFix, heads.base);
   const kept = await approvalWithFixes(db, heads.ciFix);
   expect(kept).toBe("approved");
   expect(
@@ -567,7 +567,7 @@ test("a CI fix that only changes a test keeps the approval and merges without a 
 
 test("a fix that changes a high-risk path asks again and lists only that change", async () => {
   const { db, itemId } = await riskApproved();
-  fixAccepted(db, heads.authFix, heads.base);
+  await fixAccepted(db, heads.authFix, heads.base);
   expect(await approvalWithFixes(db, heads.authFix)).toBe("missing");
   expect(
     await askRiskApproval(db, {
@@ -593,23 +593,23 @@ test("a fix that changes a high-risk path asks again and lists only that change"
 
 test("a CI fix on a rebased head counts only the fix's own files, not main's", async () => {
   const { db, itemId } = await riskApproved();
-  fixAccepted(db, heads.rebasedCiFix, heads.newMain);
+  await fixAccepted(db, heads.rebasedCiFix, heads.newMain);
   expect(await approvalWithFixes(db, heads.rebasedCiFix)).toBe("approved");
   expect((await getRiskFix(sqliteDb(db), itemId, heads.rebasedCiFix))?.changed).toEqual([
     "test/x.test.ts",
   ]);
   // A rebase alone still follows samePatch and records no fix.
-  fixAccepted(db, heads.rebased, heads.newMain);
+  await fixAccepted(db, heads.rebased, heads.newMain);
   expect(await approvalWithFixes(db, heads.rebased)).toBe("approved");
   expect(await getRiskFix(sqliteDb(db), itemId, heads.rebased)).toBeNull();
 });
 
 test("without an approval, or when the fix cannot be read, a fix asks", async () => {
   const { db } = await asked();
-  fixAccepted(db, heads.ciFix, heads.base);
+  await fixAccepted(db, heads.ciFix, heads.base);
   expect(await approvalWithFixes(db, heads.ciFix)).toBe("missing");
   const fixture = await riskApproved();
-  fixAccepted(fixture.db, heads.ciFix, heads.base);
+  await fixAccepted(fixture.db, heads.ciFix, heads.base);
   expect(
     await riskApprovalFor(fixture.db, {
       itemId: "ENG-106",
@@ -623,7 +623,7 @@ test("without an approval, or when the fix cannot be read, a fix asks", async ()
 
 test("a carried-over approval is checked again against the high-risk paths in force now", async () => {
   const { db, itemId } = await riskApproved();
-  fixAccepted(db, heads.ciFix, heads.base);
+  await fixAccepted(db, heads.ciFix, heads.base);
   expect(await approvalWithFixes(db, heads.ciFix)).toBe("approved");
   // Settings now lists the tests too: the same fix no longer keeps the approval.
   expect(await approvalWithFixes(db, heads.ciFix, [...HIGH_RISK, "test/**"])).toBe("missing");
@@ -653,7 +653,7 @@ test("a rebase that changed the patch asks again, even when the change is only a
     actor,
     now: NOW + 100,
   });
-  fixAccepted(db, heads.absorbed, heads.mainWithTest);
+  await fixAccepted(db, heads.absorbed, heads.mainWithTest);
   // The rebased patch lost the test main already had: not samePatch, and no fix was made.
   expect(await samePatch(repo, heads.both, heads.absorbed, heads.mainWithTest)).toBe(false);
   expect(await fixChangedPaths(repo, heads.both, heads.absorbed, heads.mainWithTest)).toBeNull();
@@ -725,13 +725,13 @@ async function cleanRiskFixture() {
       },
       ...overrides,
     });
-  const report = (
+  const report = async (
     review: string,
     severity: "P0" | "P1" | "P2" | "P3",
     text = "Review detail",
     at = NOW,
   ) => {
-    recordReviewFindings(db, {
+    await recordReviewFindings(sqliteDb(db), {
       itemId,
       repository: "acme/repo",
       head: heads.s,
@@ -795,7 +795,7 @@ for (const review of ["security-review", "independent-review"]) {
   test(`a P2 finding in ${review} asks even when Closeout passed it`, async () => {
     const f = await cleanRiskFixture();
     f.step(review, "Display text is not a severity source", ["P2"]);
-    f.report(review, "P2");
+    await f.report(review, "P2");
     expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
     f.db.close();
   });
@@ -842,12 +842,12 @@ for (const policyPath of [
 test("a new head, policy, base or unfinished run loses automatic eligibility", async () => {
   const f = await cleanRiskFixture();
   expect(await f.read()).toBe("approved");
-  classify(f.db, heads.changed, heads.base);
+  await classify(f.db, heads.changed, heads.base);
   expect(await f.read({ head: heads.changed })).toBe("missing");
   expect(await f.read({ policyDigest: "new-policy" })).toBe("missing");
   expect(await f.read({ policyDigest: null })).toBe("missing");
   expect(await f.read({ policyPaths: null })).toBe("missing");
-  saveCandidateRisk(f.db, {
+  await saveCandidateRisk(sqliteDb(f.db), {
     itemId: f.itemId,
     head: heads.s,
     base: heads.newMain,
@@ -856,7 +856,7 @@ test("a new head, policy, base or unfinished run loses automatic eligibility", a
     classifiedAt: NOW,
   });
   expect(await f.read()).toBe("missing");
-  classify(f.db, heads.s, heads.base);
+  await classify(f.db, heads.s, heads.base);
   f.progress.begin(f.identity);
   expect(await f.read()).toBe("missing");
   f.db.close();
@@ -877,7 +877,7 @@ test("P3 snapshots pass before the shared finding import, regardless of display 
   f.step("security-review", "P3 session.ts:12: Notes\nP1 and P10 are terms in the explanation", [
     "P3",
   ]);
-  expect(listReviewFindings(f.db)).toEqual([]);
+  expect(await listReviewFindings(sqliteDb(f.db))).toEqual([]);
   expect(await f.read()).toBe("approved");
   f.step("security-review", "A completely different display format", ["P3"]);
   expect(await f.read()).toBe("approved");
@@ -989,9 +989,9 @@ for (const severity of ["P2", "P3"] as const) {
   test(`shared reports can veto but cannot authorize this head's ${severity} review`, async () => {
     const f = await cleanRiskFixture();
     f.step("security-review", "Original report", [severity]);
-    f.report("security-review", severity, "Same finding");
+    await f.report("security-review", severity, "Same finding");
     insertQueuedItem(f.db, { id: "other-item", sessionKey: "other-session", title: "Other" });
-    recordReviewFindings(f.db, {
+    await recordReviewFindings(sqliteDb(f.db), {
       itemId: "other-item",
       repository: "acme/repo",
       head: heads.changed,
@@ -1008,7 +1008,9 @@ for (const severity of ["P2", "P3"] as const) {
       ],
       reviewed: [],
     });
-    expect(listReviewFindings(f.db)[0]?.severity).toBe(severity === "P2" ? "P3" : "P2");
+    expect((await listReviewFindings(sqliteDb(f.db)))[0]?.severity).toBe(
+      severity === "P2" ? "P3" : "P2",
+    );
     expect(await f.read()).toBe("missing");
     f.db.close();
   });
@@ -1018,9 +1020,9 @@ for (const severity of ["P0", "P1", "P2"] as const) {
   test(`structured ${severity} in a passed review blocks regardless of display format or dismissal`, async () => {
     const f = await cleanRiskFixture();
     f.step("independent-review", "P3 misleading display text", [severity]);
-    f.report("independent-review", severity);
+    await f.report("independent-review", severity);
     expect(await f.read()).toBe("missing");
-    const finding = listReviewFindings(f.db)[0]!;
+    const finding = (await listReviewFindings(sqliteDb(f.db)))[0]!;
     await setReviewFindingStatus(sqliteDb(f.db), {
       id: finding.id,
       status: "dismissed",
@@ -1059,7 +1061,7 @@ test("unknown or malformed candidate paths never reuse another head's path list"
 
 test("a carried acceptance after rebase does not substitute for exact-head reviews", async () => {
   const f = await cleanRiskFixture();
-  classify(f.db, heads.rebased, heads.newMain);
+  await classify(f.db, heads.rebased, heads.newMain);
   await saveCandidatePaths(sqliteDb(f.db), {
     itemId: f.itemId,
     head: heads.rebased,
@@ -1111,9 +1113,9 @@ test("the exact-head progress reader selects the latest run and preserves the un
 test("a new or reopened finding at S revokes automatic eligibility", async () => {
   const f = await cleanRiskFixture();
   expect(await f.read()).toBe("approved");
-  f.report("security-review", "P2", "Unsafe reuse");
+  await f.report("security-review", "P2", "Unsafe reuse");
   expect(await f.read()).toBe("missing");
-  const finding = listReviewFindings(f.db)[0]!;
+  const finding = (await listReviewFindings(sqliteDb(f.db)))[0]!;
   await setReviewFindingStatus(sqliteDb(f.db), {
     id: finding.id,
     status: "dismissed",

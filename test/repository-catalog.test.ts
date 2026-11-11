@@ -202,8 +202,8 @@ test("fresh workspace repository choices are available before catalog refresh an
     db.run(
       "INSERT INTO workspace_repository(workspace_id,repository,team_id) VALUES('ws','Acme/One','team'),('ws','acme/two','team'),('ws','acme/other-team','another-team'),('other','acme/other-workspace','team')",
     );
-    ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
-    recordLinearInstallation(db, {
+    await ensureLinearSession(sqliteDb(db), { sessionId: "session", issueId: "issue" });
+    await recordLinearInstallation(sqliteDb(db), {
       sessionId: "session",
       organizationId: "org",
       oauthClientId: "client",

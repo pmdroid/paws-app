@@ -89,7 +89,7 @@ test("a stop during a successful squash waits for completion and answers already
   expect(getWorkItem(db, "holder")).toMatchObject({ state: "merge_queue", cancelRequested: false });
   expect(await mergeStopRequested(sqliteDb(db), "holder")).toBe(true);
   expect(await drainCommands(sqliteDb(db), bus, 1_010)).toBe(1);
-  recordConfirmedRemoteMerge(db, {
+  await recordConfirmedRemoteMerge(sqliteDb(db), {
     itemId: "holder",
     repositoryOwner: "acme",
     repositoryName: "app",
@@ -102,7 +102,7 @@ test("a stop during a successful squash waits for completion and answers already
     "merged",
   );
   expect(await completeMergedItem(sqliteDb(db), { itemId: "holder", now: 1_021 })).toBeNull();
-  expect(mergeCallInFlight(db, "holder")).toBe(false);
+  expect(await mergeCallInFlight(sqliteDb(db), "holder")).toBe(false);
   await drainCommands(sqliteDb(db), bus, 2_010);
   await drainCommands(sqliteDb(db), bus, 3_010);
   expect(emitted).toEqual([]);

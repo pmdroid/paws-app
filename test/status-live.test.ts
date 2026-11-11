@@ -55,7 +55,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
     db.run(
       "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('ws','org','Workspace',0)",
     );
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: "user",
       linearUserId: "linear-user",
       name: "Ada Owner",

@@ -20,7 +20,7 @@ export const REPOSITORY = "pmdroid/paws-app";
 export const NOW = 1_800_000_000_000;
 
 export async function workspaceWithRunners(db: Database) {
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -56,7 +56,7 @@ export async function workspaceWithRunners(db: Database) {
       repo,
       remoteUrl: `https://github.com/${REPOSITORY}.git`,
     });
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -65,7 +65,7 @@ export async function workspaceWithRunners(db: Database) {
       observedAtMs: NOW,
     });
     const delegationId = getWorkItem(db, id)!.delegationId;
-    bindLinearSessionTask(db, sessionKey, delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionKey, delegationId, { actorId: "owner" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
   };
   const pass = (reported: RunnerHostRefusal[][] = []) =>

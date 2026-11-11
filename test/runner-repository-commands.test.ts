@@ -38,7 +38,7 @@ async function fixture(file = ":memory:") {
   const db = openDatabase(file);
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "repository-commands-owner",
     name: "Owner",
@@ -46,7 +46,7 @@ async function fixture(file = ":memory:") {
   });
   const workspace = workspaceId();
   db.run("INSERT INTO workspace VALUES(?,?,?,?)", [workspace, workspace, "Fixture", now]);
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace,
     userId,
     role: "admin",

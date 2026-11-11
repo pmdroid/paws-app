@@ -74,17 +74,15 @@ export function* runnerHasCapacitySteps(
   return row.occupied + additionalReservations < row.capacity;
 }
 
-export function runnerHasCapacity(
-  db: Database,
+export async function runnerHasCapacity(
+  store: Db,
   runnerId: string,
   now: number,
   excludeRunId = "",
   additionalReservations = 0,
-): boolean {
-  return settled(
-    sqliteDb(db).run((q) =>
-      runnerHasCapacitySteps(q, runnerId, now, excludeRunId, additionalReservations),
-    ),
+): Promise<boolean> {
+  return store.run((q) =>
+    runnerHasCapacitySteps(q, runnerId, now, excludeRunId, additionalReservations),
   );
 }
 
@@ -109,13 +107,13 @@ export function* runnerOccupancySteps(q: Q, runnerId: string, now: number, exclu
   return row!;
 }
 
-export function runnerOccupancy(
-  db: Database,
+export async function runnerOccupancy(
+  store: Db,
   runnerId: string,
   now: number,
   excludeRunId = "",
-): { capacity: number; occupied: number } {
-  return settled(sqliteDb(db).run((q) => runnerOccupancySteps(q, runnerId, now, excludeRunId)));
+): Promise<{ capacity: number; occupied: number }> {
+  return store.run((q) => runnerOccupancySteps(q, runnerId, now, excludeRunId));
 }
 
 export function* runnerSlotsHeldBetweenCommandsSteps(
@@ -174,15 +172,13 @@ function* runnerOccupancyCapacitySteps(q: Q, runnerId: string) {
   return row ? Math.min(row.capacity, row.desired ?? 16) : 0;
 }
 
-export function runnerSlotsHeldBetweenCommands(
-  db: Database,
+export async function runnerSlotsHeldBetweenCommands(
+  store: Db,
   runnerId: string,
   now: number,
   excludeRunId = "",
-): number {
-  return settled(
-    sqliteDb(db).run((q) => runnerSlotsHeldBetweenCommandsSteps(q, runnerId, now, excludeRunId)),
-  );
+): Promise<number> {
+  return store.run((q) => runnerSlotsHeldBetweenCommandsSteps(q, runnerId, now, excludeRunId));
 }
 
 export function* activeRunnerIdsSteps(q: Q, now: number) {

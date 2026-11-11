@@ -12,6 +12,7 @@ import {
   putWorkspaceUser,
   recordLinearInstallation,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { Orchestrator } from "../src/loop";
 import { itemOwnerHasEligibleRunnerSteps } from "../src/runner-placement";
@@ -22,20 +23,20 @@ const DAY = 24 * 60 * 60 * 1000;
 const START = 1_000;
 
 /** A workspace where `other` owns one busy single-slot runner and `me` owns none. */
-function workspace(db: Database) {
+async function workspace(db: Database) {
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',0)");
   const users: Record<string, string> = {};
   for (const [name, role] of [
     ["other", "admin"],
     ["me", "member"],
   ] as const) {
-    users[name] = putWorkspaceUser(db, {
+    users[name] = await putWorkspaceUser(sqliteDb(db), {
       id: name,
       linearUserId: `linear-${name}`,
       name,
       email: `${name}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "ws",
       userId: users[name]!,
       role,
@@ -51,14 +52,14 @@ function workspace(db: Database) {
   db.run("UPDATE work_item SET linear_identifier='PAS-1',owner_user_id=? WHERE id='mine'", [
     users.me!,
   ]);
-  ensureLinearSession(db, {
+  await ensureLinearSession(sqliteDb(db), {
     sessionId: "session",
     issueId: item.linearIssueId,
     organizationId: "org",
     creatorId: "linear-me",
     now: START,
   });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",
@@ -66,7 +67,7 @@ function workspace(db: Database) {
     teamId: "team",
     observedAtMs: 0,
   });
-  bindLinearSessionTask(db, "session", item.delegationId);
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
   return users;
 }
 
@@ -114,7 +115,7 @@ test("a delegator with no runner they may use is not queued behind busy slots an
   const clock = new FakeClock(START);
   const paws = orchestrator(db, clock);
   try {
-    const users = workspace(db);
+    const users = await workspace(db);
     await paws.reconcileExecution();
     await paws.reconcileExecution();
     expect(startJobs(db, "busy")).toBe(1);
@@ -149,7 +150,7 @@ test("a delegator whose only runner is busy still gets the queue notice with the
   const clock = new FakeClock(START);
   const paws = orchestrator(db, clock);
   try {
-    const users = workspace(db);
+    const users = await workspace(db);
     // The delegator's runner is the only active one, and the other item takes its slot.
     db.run("UPDATE runner SET status='paused' WHERE id='theirs'");
     addRunner(db, "own", users.me!, START);

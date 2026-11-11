@@ -32,14 +32,14 @@ function fixture(delegateId: string | null = "paws-app") {
       { issueId, delegatedAtMs },
     );
   };
-  const session = (sessionId: string, issueId: string, now: number) =>
-    ensureLinearSession(db, { sessionId, issueId, appUserId: "paws-app", now });
+  const session = async (sessionId: string, issueId: string, now: number) =>
+    await ensureLinearSession(sqliteDb(db), { sessionId, issueId, appUserId: "paws-app", now });
   return { db, store, delivered, check, session };
 }
 
 test("a re-delegation into an earlier idle session starts work in that session", async () => {
   const f = fixture();
-  f.session("old-session", "issue-1", 10 * MINUTE);
+  await f.session("old-session", "issue-1", 10 * MINUTE);
 
   expect(await f.check("issue-1")).toBe(true);
 
@@ -57,8 +57,8 @@ test("a re-delegation into an earlier idle session starts work in that session",
 
 test("a re-delegation that brought a new session leaves intake to that session", async () => {
   const f = fixture();
-  f.session("old-session", "issue-1", 10 * MINUTE);
-  f.session("new-session", "issue-1", DELEGATED_AT + 2_000);
+  await f.session("old-session", "issue-1", 10 * MINUTE);
+  await f.session("new-session", "issue-1", DELEGATED_AT + 2_000);
 
   expect(await f.check("issue-1")).toBe(false);
   expect(f.delivered).toHaveLength(0);
@@ -67,7 +67,7 @@ test("a re-delegation that brought a new session leaves intake to that session",
 test("an issue that already has an open task starts nothing", async () => {
   const f = fixture();
   insertQueuedItem(f.db, { id: "task", sessionKey: "new-session" });
-  f.session("old-session", "lin-item-task", 10 * MINUTE);
+  await f.session("old-session", "lin-item-task", 10 * MINUTE);
 
   expect(await f.check("lin-item-task")).toBe(false);
   expect(f.delivered).toHaveLength(0);
@@ -75,7 +75,7 @@ test("an issue that already has an open task starts nothing", async () => {
 
 test("an issue undelegated again before the check starts nothing", async () => {
   const f = fixture(null);
-  f.session("old-session", "issue-1", 10 * MINUTE);
+  await f.session("old-session", "issue-1", 10 * MINUTE);
 
   expect(await f.check("issue-1")).toBe(false);
   expect(f.delivered).toHaveLength(0);
@@ -83,7 +83,7 @@ test("an issue undelegated again before the check starts nothing", async () => {
 
 test("a check superseded by a later delegation leaves it to the later check", async () => {
   const f = fixture();
-  f.session("old-session", "issue-1", 10 * MINUTE);
+  await f.session("old-session", "issue-1", 10 * MINUTE);
   await f.store.setCursor("delegated:issue-1", DELEGATED_AT + MINUTE);
 
   expect(

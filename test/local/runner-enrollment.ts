@@ -76,7 +76,7 @@ export async function probeRunnerEnrollment(
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
   let now = Date.now();
-  const ownerUserId = putWorkspaceUser(db, {
+  const ownerUserId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "enroll-owner",
     name: "Fixture owner",
@@ -91,14 +91,14 @@ export async function probeRunnerEnrollment(
     tokenHash: workspaceTokenHash(bootstrap),
     now,
   });
-  function person(name: string, active = true) {
-    const userId = putWorkspaceUser(db, {
+  async function person(name: string, active = true) {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: `enroll-${name}`,
       name,
       email: `${name}@example.invalid`,
     });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace.id,
       userId,
       role: "member",
@@ -115,8 +115,8 @@ export async function probeRunnerEnrollment(
     };
     return principal;
   }
-  const member = person("member");
-  const inactive = person("inactive", false);
+  const member = await person("member");
+  const inactive = await person("inactive", false);
   const control = createRunnerControl({
     db,
     authority,
@@ -246,7 +246,7 @@ export async function probeRunnerEnrollment(
     });
 
     const leaving = await control.createEnrollment(member, { name: "leaving" });
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: workspace.id,
       userId: member.userId,
       role: "member",

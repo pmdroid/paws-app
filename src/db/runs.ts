@@ -104,8 +104,8 @@ export function* runOwnerSteps(q: Q, runId: string): Steps<string | null> {
   return row?.owner ?? null;
 }
 
-export function runOwner(db: Database, runId: string): string | null {
-  return settled(sqliteDb(db).run((q) => runOwnerSteps(q, runId)));
+export async function runOwner(store: Db, runId: string): Promise<string | null> {
+  return store.run((q) => runOwnerSteps(q, runId));
 }
 
 export function* claimRunSteps(q: Q, runId: string, ownerInstance: string): Steps<void> {

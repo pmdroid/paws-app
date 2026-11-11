@@ -33,13 +33,13 @@ const RUNNERS_URL = "https://paws.example/dashboard/runners";
 
 async function workspace(db: Database) {
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',0)");
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "me",
     linearUserId: "linear-me",
     name: "me",
     email: "me@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws",
     userId: "me",
     role: "admin",
@@ -50,14 +50,14 @@ async function workspace(db: Database) {
   addRunner(db, "runner-1", START);
   const item = insertQueuedItem(db, { id: "cli", now: START, sessionKey: "session" });
   db.run("UPDATE work_item SET linear_identifier='DEP-12',owner_user_id='me' WHERE id='cli'");
-  ensureLinearSession(db, {
+  await ensureLinearSession(sqliteDb(db), {
     sessionId: "session",
     issueId: item.linearIssueId,
     organizationId: "org",
     creatorId: "linear-me",
     now: START,
   });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",
@@ -65,7 +65,7 @@ async function workspace(db: Database) {
     teamId: "team",
     observedAtMs: 0,
   });
-  bindLinearSessionTask(db, "session", item.delegationId);
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
   await bindWorkItemRepository(sqliteDb(db), "cli", {
     owner: "acme",
     repo: "cli",

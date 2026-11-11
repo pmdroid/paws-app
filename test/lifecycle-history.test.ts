@@ -135,7 +135,7 @@ test("an answered runner wait re-verifies without passing through running", asyn
 test("Discarding a plan completes it from the wait with one answer_completed", async () => {
   const db = database();
   const item = insertQueuedItem(db, { id: "eng-9", sessionKey: "ses", now: 1_000 });
-  saveTaskMode(db, item.id, "plan");
+  await saveTaskMode(sqliteDb(db), item.id, "plan");
   const { run } = beginImplementRun(db, item.id, 1_000);
   const asked = await loopAsk(
     db,

@@ -48,7 +48,7 @@ async function fixture(child = false, actorId: string | null = "human") {
   ]);
   const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent" });
   if (!task.ok) throw new Error("Unexpected cycle");
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     ...scope,
     sessionId: "session",
     teamId: "parent-team",
@@ -57,7 +57,7 @@ async function fixture(child = false, actorId: string | null = "human") {
   const ownerId =
     actorId === null
       ? null
-      : putWorkspaceUser(db, {
+      : await putWorkspaceUser(sqliteDb(db), {
           id: `user-${actorId}`,
           linearUserId: actorId,
           name: actorId,

@@ -112,7 +112,7 @@ async function probeWorkspaceHttpDrain(path: string, observe: Observe) {
   const db = openDatabase(path);
   migrate(db);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -126,7 +126,7 @@ async function probeWorkspaceHttpDrain(path: string, observe: Observe) {
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", now)),
     now,
   });
-  const session = issueWorkspaceSession(db, { userId, workspaceId: workspace.id, now });
+  const session = await issueWorkspaceSession(db, { userId, workspaceId: workspace.id, now });
   const ready = Promise.withResolvers<WorkspaceAccess>();
   const entered = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();

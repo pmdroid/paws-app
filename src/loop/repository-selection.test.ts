@@ -41,8 +41,8 @@ test("lost repository interpreter ownership persists cleanup failure before abor
     profile: { agent: "codex", model: null },
     signal: controller.signal,
     launch: () => ({ command: process.execPath, args: [wrapper, trace, script], env: process.env }),
-    onCleanupFailure() {
-      saveConversation(db, "item", "[]", null, true);
+    async onCleanupFailure() {
+      await saveConversation(sqliteDb(db), "item", "[]", null, true);
     },
   }).catch((error: unknown) => error);
   try {

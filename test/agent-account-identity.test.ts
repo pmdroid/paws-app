@@ -40,7 +40,7 @@ async function fixture() {
   const db = openDatabase(join(tempHome(), "paws.sqlite"));
   legacyMigrate(db);
   let clock = Date.now();
-  const owner = putWorkspaceUser(db, {
+  const owner = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -54,7 +54,7 @@ async function fixture() {
     tokenHash: workspaceTokenHash(await issueWorkspaceBootstrap(db, "org", clock)),
     now: clock,
   });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app-client",
     appUserId: "app",
@@ -63,7 +63,7 @@ async function fixture() {
     observedAtMs: clock,
   });
   const item = insertQueuedItem(db, { id: "item", now: clock, sessionKey: "session" });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [owner, item.id]);
   for (const id of ["R1", "R2"]) {
     db.run(

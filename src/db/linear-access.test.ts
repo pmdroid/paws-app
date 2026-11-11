@@ -15,23 +15,48 @@ function database() {
 test("a session read naming the team fills a teamless webhook observed in the same millisecond", async () => {
   const db = database();
   try {
-    recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: null, observedAtMs: 5 });
-    recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: "team", observedAtMs: 5 });
+    await recordLinearInstallation(sqliteDb(db), {
+      ...scope,
+      sessionId: "s",
+      teamId: null,
+      observedAtMs: 5,
+    });
+    await recordLinearInstallation(sqliteDb(db), {
+      ...scope,
+      sessionId: "s",
+      teamId: "team",
+      observedAtMs: 5,
+    });
     expect((await getLinearSessionInstallation(sqliteDb(db), "s"))?.teamId).toBe("team");
-    recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: null, observedAtMs: 5 });
+    await recordLinearInstallation(sqliteDb(db), {
+      ...scope,
+      sessionId: "s",
+      teamId: null,
+      observedAtMs: 5,
+    });
     expect((await getLinearSessionInstallation(sqliteDb(db), "s"))?.teamId).toBe("team");
   } finally {
     db.close();
   }
 });
 
-test("two different teams observed in the same millisecond still conflict", () => {
+test("two different teams observed in the same millisecond still conflict", async () => {
   const db = database();
   try {
-    recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: "a", observedAtMs: 5 });
-    expect(() =>
-      recordLinearInstallation(db, { ...scope, sessionId: "s", teamId: "b", observedAtMs: 5 }),
-    ).toThrow("Linear session team observations conflict");
+    await recordLinearInstallation(sqliteDb(db), {
+      ...scope,
+      sessionId: "s",
+      teamId: "a",
+      observedAtMs: 5,
+    });
+    await expect(
+      recordLinearInstallation(sqliteDb(db), {
+        ...scope,
+        sessionId: "s",
+        teamId: "b",
+        observedAtMs: 5,
+      }),
+    ).rejects.toThrow("Linear session team observations conflict");
   } finally {
     db.close();
   }

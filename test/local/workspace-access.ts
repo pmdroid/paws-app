@@ -28,7 +28,7 @@ export async function probeWorkspaceAccess(
   const db = openDatabase(path);
   migrate(db);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(now),
     linearUserId: "linear-owner",
     name: "Fixture owner",
@@ -77,7 +77,7 @@ export async function probeWorkspaceAccess(
       replayError,
     },
   );
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -91,7 +91,7 @@ export async function probeWorkspaceAccess(
     member?.role === "admin" && member.teamIds.join() === "team-one",
     member,
   );
-  const issued = issueWorkspaceSession(db, { userId, workspaceId: workspace.id, now });
+  const issued = await issueWorkspaceSession(db, { userId, workspaceId: workspace.id, now });
   const cookie = `${WORKSPACE_COOKIE}=${issued.token}`;
   const request = new Request("https://paws.example.invalid/api/issues", { headers: { cookie } });
   const stored = JSON.stringify(db.query("SELECT * FROM workspace_session").all());
@@ -160,7 +160,7 @@ export async function probeWorkspaceAccess(
     responses,
   );
   const restored = openDatabase(path);
-  const idle = issueWorkspaceSession(restored, { userId, workspaceId: workspace.id, now });
+  const idle = await issueWorkspaceSession(restored, { userId, workspaceId: workspace.id, now });
   const idleRequest = new Request(request.url, {
     headers: { cookie: `${WORKSPACE_COOKIE}=${idle.token}` },
   });
@@ -174,7 +174,7 @@ export async function probeWorkspaceAccess(
     liveBeforeIdleLimit && extendedByUse && idleExpiry,
     { liveBeforeIdleLimit, extendedByUse, idleExpiry },
   );
-  syncWorkspaceMember(restored, {
+  await syncWorkspaceMember(sqliteDb(restored), {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -193,7 +193,7 @@ export async function probeWorkspaceAccess(
   const audits = restored
     .query<{ count: number }, []>("SELECT count(*) AS count FROM workspace_access_audit")
     .get()!.count;
-  syncWorkspaceMember(restored, {
+  await syncWorkspaceMember(sqliteDb(restored), {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -201,7 +201,7 @@ export async function probeWorkspaceAccess(
     teamIds: ["stale-team"],
     now: now + 3,
   });
-  syncWorkspaceMember(restored, {
+  await syncWorkspaceMember(sqliteDb(restored), {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -223,7 +223,7 @@ export async function probeWorkspaceAccess(
     audits === repeatedAudits,
     { audits, repeatedAudits },
   );
-  syncWorkspaceMember(restored, {
+  await syncWorkspaceMember(sqliteDb(restored), {
     workspaceId: workspace.id,
     userId,
     role: "member",
@@ -231,7 +231,7 @@ export async function probeWorkspaceAccess(
     teamIds: ["team-one"],
     now: now + 4,
   });
-  const returned = issueWorkspaceSession(restored, {
+  const returned = await issueWorkspaceSession(restored, {
     userId,
     workspaceId: workspace.id,
     now: now + 4,

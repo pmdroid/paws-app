@@ -91,7 +91,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
 
   const db = migratedDatabase(join(root, "paws.db"));
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -234,7 +234,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
       payload: "{}",
     });
     const item = listWorkItems(db).find((row) => row.sessionKey === "session-1")!;
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -242,7 +242,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, "session-1", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session-1", item.delegationId, { actorId: "owner" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
     await syncItemDependencies(db, {
       itemId: item.id,

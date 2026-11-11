@@ -75,8 +75,8 @@ test("two ready items that share a Linear session are both admitted", async () =
     insertQueuedItem(db, { id: "one", now: 1, sessionKey: "shared" });
     insertQueuedItem(db, { id: "two", now: 2, sessionKey: "shared" });
     db.run("UPDATE work_item SET delegation_id=? WHERE id=?", ["epic-one", "two"]);
-    ensureLinearSession(db, { sessionId: "shared", issueId: "lin-one", now: 1000 });
-    bindLinearSessionTask(db, "shared", "epic-one");
+    await ensureLinearSession(sqliteDb(db), { sessionId: "shared", issueId: "lin-one", now: 1000 });
+    await bindLinearSessionTask(sqliteDb(db), "shared", "epic-one");
     const sessions = db
       .query<{ id: string; sessionId: string | null }, []>(
         "SELECT id, session_key AS sessionId FROM work_item ORDER BY id",
@@ -145,7 +145,7 @@ test("a task_block dependency is admitted only after its blocker item is merged"
     assert(intake.ok);
     const ids = new Map(intake.items.map((item) => [item.linearIssueId, item.id]));
     db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -153,7 +153,9 @@ test("a task_block dependency is admitted only after its blocker item is merged"
       teamId: "team",
       observedAtMs: 1000,
     });
-    bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+      actorId: "owner",
+    });
     for (const item of intake.items)
       await syncItemDependencies(db, {
         itemId: item.id,
@@ -174,7 +176,7 @@ test("a task_block dependency is admitted only after its blocker item is merged"
     assert(blocker);
     assert(blocked);
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), [blocker]);
-    confirmFakeMerge(db, blocker);
+    await confirmFakeMerge(db, blocker);
     db.run("UPDATE work_item SET state='merged' WHERE id=?", [blocker]);
     assert.deepEqual(await workspaceDispatch(db, { now: 1001 }), [blocked]);
   } finally {
@@ -223,7 +225,7 @@ test("task_block depth stays on the active item when a merged row shares its iss
 });
 
 async function runnerWithSlots(db: ReturnType<typeof tempDb>, capacity: number): Promise<void> {
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",

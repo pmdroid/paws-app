@@ -142,11 +142,11 @@ function jsonOut<T>(q: Q, stored: unknown): T {
 
 type SettingsInput = RetroSettings & { workspaceId: string; createdBy: string; now: number };
 
-export function saveRetroSettingsRevision(
-  db: Database,
+export async function saveRetroSettingsRevision(
+  store: Db,
   input: SettingsInput,
-): RetroSettingsRevision {
-  return settled(sqliteDb(db).transaction((q) => saveRetroSettingsRevisionSteps(q, input)));
+): Promise<RetroSettingsRevision> {
+  return store.transaction((q) => saveRetroSettingsRevisionSteps(q, input));
 }
 
 export function* saveRetroSettingsRevisionSteps(q: Q, input: SettingsInput) {
@@ -284,8 +284,11 @@ type NewRetro = {
   now: number;
 };
 
-export function createRetro(db: Database, input: NewRetro): { retro: Retro; created: boolean } {
-  return settled(sqliteDb(db).transaction((q) => createRetroSteps(q, input)));
+export async function createRetro(
+  store: Db,
+  input: NewRetro,
+): Promise<{ retro: Retro; created: boolean }> {
+  return store.transaction((q) => createRetroSteps(q, input));
 }
 
 export function* createRetroSteps(q: Q, input: NewRetro) {
@@ -387,8 +390,8 @@ type CollectionStart =
   | { ok: false; reason: "not_collecting" }
   | { ok: false; reason: "busy"; busy: { repository: string; retroId: string }[] };
 
-export function beginRetroCollection(db: Database, input: Collection): CollectionStart {
-  return settled(sqliteDb(db).transaction((q) => beginRetroCollectionSteps(q, input)));
+export async function beginRetroCollection(store: Db, input: Collection): Promise<CollectionStart> {
+  return store.transaction((q) => beginRetroCollectionSteps(q, input));
 }
 
 export function* beginRetroCollectionSteps(q: Q, input: Collection) {
@@ -445,12 +448,12 @@ export function* beginRetroCollectionSteps(q: Q, input: Collection) {
   } as CollectionStart;
 }
 
-export function recordRetroEvidence(
-  db: Database,
+export async function recordRetroEvidence(
+  store: Db,
   retroId: string,
   evidence: RetroEvidence[],
-): void {
-  settled(sqliteDb(db).transaction((q) => recordRetroEvidenceSteps(q, retroId, evidence)));
+): Promise<void> {
+  await store.transaction((q) => recordRetroEvidenceSteps(q, retroId, evidence));
 }
 
 export function* recordRetroEvidenceSteps(q: Q, retroId: string, evidence: RetroEvidence[]) {
@@ -560,12 +563,12 @@ export function* listRetroCoverageGapsSteps(q: Q, retroId: string) {
 
 type ArtifactWrite = { retroId: string; kind: RetroArtifactKind; bytes: Uint8Array; now: number };
 
-export function writeRetroArtifact(
-  db: Database,
+export async function writeRetroArtifact(
+  store: Db,
   root: string,
   input: ArtifactWrite,
-): RetroArtifactRecord {
-  return settled(sqliteDb(db).run((q) => writeRetroArtifactSteps(q, root, input)));
+): Promise<RetroArtifactRecord> {
+  return store.run((q) => writeRetroArtifactSteps(q, root, input));
 }
 
 export function* writeRetroArtifactSteps(q: Q, root: string, input: ArtifactWrite) {
@@ -651,8 +654,8 @@ export function* readRetroArtifactSteps(
 
 type Freeze = { retroId: string; endCursors: Record<string, number>; now: number };
 
-export function freezeRetroInput(db: Database, input: Freeze): Retro {
-  return settled(sqliteDb(db).transaction((q) => freezeRetroInputSteps(q, input)));
+export async function freezeRetroInput(store: Db, input: Freeze): Promise<Retro> {
+  return store.transaction((q) => freezeRetroInputSteps(q, input));
 }
 
 export function* freezeRetroInputSteps(q: Q, input: Freeze) {
@@ -707,8 +710,11 @@ type AttemptStart = {
   maxAttempts?: number;
 };
 
-export function startRetroAttempt(db: Database, input: AttemptStart): { attempt: number } | null {
-  return settled(sqliteDb(db).transaction((q) => startRetroAttemptSteps(q, input)));
+export async function startRetroAttempt(
+  store: Db,
+  input: AttemptStart,
+): Promise<{ attempt: number } | null> {
+  return store.transaction((q) => startRetroAttemptSteps(q, input));
 }
 
 export function* startRetroAttemptSteps(
@@ -860,8 +866,8 @@ type Publication = {
   now: number;
 };
 
-export function publishRetro(db: Database, input: Publication): RetroPublication {
-  return settled(sqliteDb(db).transaction((q) => publishRetroSteps(q, input)));
+export async function publishRetro(store: Db, input: Publication): Promise<RetroPublication> {
+  return store.transaction((q) => publishRetroSteps(q, input));
 }
 
 export function* publishRetroSteps(q: Q, input: Publication): Steps<RetroPublication> {

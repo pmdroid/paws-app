@@ -2,7 +2,14 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, getLinearSession, getTaskMode, getWorkItem } from "../src/db";
+import {
+  JobLoop,
+  OutboxDispatcher,
+  getLinearSession,
+  getTaskMode,
+  getWorkItem,
+  sqliteDb,
+} from "../src/db";
 import type { GitHubBinding } from "../src/github";
 import {
   acknowledgeNewSession,
@@ -162,9 +169,9 @@ test("intake of a lone issue reads the issue and its relations after the first a
     expect(f.calls[0]).toBe("postProgress");
     expect(f.intakeCalls).toEqual(["loadEpic", "listDeps"]);
     expect(f.launches).toEqual([]);
-    expect(getWorkItem(f.db, getLinearSession(f.db, "session")!.activeItemId!)?.state).toBe(
-      "queued",
-    );
+    expect(
+      getWorkItem(f.db, (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!)?.state,
+    ).toBe("queued");
   } finally {
     f.db.close();
   }
@@ -185,7 +192,10 @@ test("a lone issue hydrates its session context and classifies at start", async 
     expect(classify?.[0]).toBe("classify");
     expect(Number(classify?.[1])).toBeGreaterThanOrEqual(hydrated);
     expect(answer?.[0]).toBe("answer");
-    const item = getWorkItem(f.db, getLinearSession(f.db, "session")!.activeItemId!)!;
+    const item = getWorkItem(
+      f.db,
+      (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
+    )!;
     expect(getTaskMode(f.db, item.id)).toBe("answer");
     expect(item.state).toBe("completed");
   } finally {
@@ -201,7 +211,10 @@ test("a parent with open sub-issues still classifies at intake", async () => {
   try {
     await f.intake();
     expect(f.launches.map((launch) => launch.split("@")[0])).toEqual(["classify"]);
-    const item = getWorkItem(f.db, getLinearSession(f.db, "session")!.activeItemId!)!;
+    const item = getWorkItem(
+      f.db,
+      (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!,
+    )!;
     expect(item.linearIssueId).toBe("solo");
     expect(getTaskMode(f.db, item.id)).toBe("answer");
   } finally {
@@ -217,7 +230,7 @@ const pull = (state: string, ref: string, repository = "acme/app") => ({
 async function startedMode(f: ReturnType<typeof setup>) {
   await f.intake();
   await f.jobs.tick();
-  return getTaskMode(f.db, getLinearSession(f.db, "session")!.activeItemId!);
+  return getTaskMode(f.db, (await getLinearSession(sqliteDb(f.db), "session"))!.activeItemId!);
 }
 
 test("an open pull request on the issue's Paws branch saves code without classifying", async () => {

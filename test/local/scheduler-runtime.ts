@@ -52,9 +52,13 @@ export async function probeSchedulerRuntime(
   db.run(
     "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('blocker','original')",
   );
-  ensureLinearSession(db, { sessionId: "session", issueId: "parent", now: clock.now() });
-  bindLinearSessionTask(db, "session", "epic");
-  activateLinearItem(db, "session", "original");
+  await ensureLinearSession(sqliteDb(db), {
+    sessionId: "session",
+    issueId: "parent",
+    now: clock.now(),
+  });
+  await bindLinearSessionTask(sqliteDb(db), "session", "epic");
+  await activateLinearItem(sqliteDb(db), "session", "original");
   const heldLoop = new JobLoop(db, clock);
   let heldTicks = 0;
   registerScheduler(
@@ -70,12 +74,12 @@ export async function probeSchedulerRuntime(
     "the durable custom hook replaces standalone admission while reconciliation is held",
     firstTick.queue === "scheduler.tick" &&
       heldTicks === 1 &&
-      getLinearSession(db, "session")?.activeItemId === "original" &&
+      (await getLinearSession(sqliteDb(db), "session"))?.activeItemId === "original" &&
       db.query("SELECT 1 FROM scheduler_admission").get() === null,
     {
       queue: firstTick.queue,
       heldTicks,
-      activeItemId: getLinearSession(db, "session")?.activeItemId,
+      activeItemId: (await getLinearSession(sqliteDb(db), "session"))?.activeItemId,
     },
   );
   db.close();
@@ -97,7 +101,7 @@ export async function probeSchedulerRuntime(
     registerScheduler(
       jobs,
       async () => {
-        events.push(`reconcile:${getLinearSession(db, "session")?.activeItemId}`);
+        events.push(`reconcile:${(await getLinearSession(sqliteDb(db), "session"))?.activeItemId}`);
         await orchestrator.reconcileExecution();
       },
       clock.now(),
@@ -112,12 +116,12 @@ export async function probeSchedulerRuntime(
         getJob(db, firstTick.id)?.fireCount === 2 &&
         JSON.stringify(events) === JSON.stringify(["reconcile:original"]) &&
         admission?.item_id === "blocker" &&
-        getLinearSession(db, "session")?.activeItemId === null,
+        (await getLinearSession(sqliteDb(db), "session"))?.activeItemId === null,
       { tick: tick?.id, fireCount: getJob(db, firstTick.id)?.fireCount, events, admission },
     );
-    jobs.register(JOB_KIND.start, (job) => {
+    jobs.register(JOB_KIND.start, async (job) => {
       const itemId = (job.payload as { itemId: string }).itemId;
-      activateLinearItem(db, "session", itemId);
+      await activateLinearItem(sqliteDb(db), "session", itemId);
       applyWorkItemEvent(db, itemId, "dispatched");
     });
     const start = await jobs.tick();
@@ -125,12 +129,12 @@ export async function probeSchedulerRuntime(
       "the admitted blocker claims and activates the yielded canonical session",
       start?.queue === JOB_KIND.start &&
         getWorkItem(db, "blocker")?.state === "running" &&
-        getLinearSession(db, "session")?.activeItemId === "blocker" &&
+        (await getLinearSession(sqliteDb(db), "session"))?.activeItemId === "blocker" &&
         getWorkItem(db, "original")?.state === "merge_queue",
       {
         queue: start?.queue,
         state: getWorkItem(db, "blocker")?.state,
-        activeItemId: getLinearSession(db, "session")?.activeItemId,
+        activeItemId: (await getLinearSession(sqliteDb(db), "session"))?.activeItemId,
       },
     );
   } finally {

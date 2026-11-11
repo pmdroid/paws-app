@@ -3,7 +3,15 @@ import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRetro, migrate, openDatabase, orm, saveRetroSettingsRevision, schema } from "../db";
+import {
+  createRetro,
+  migrate,
+  openDatabase,
+  orm,
+  saveRetroSettingsRevision,
+  schema,
+  sqliteDb,
+} from "../db";
 import { signRunnerRetroCommand, type RunnerRetroCommand } from "../runner-protocol";
 import { collectRetroDigest, createRetroDispatcher } from "./index";
 import { FIXTURE_END, FIXTURE_REPO, FIXTURE_START } from "./result.fixtures";
@@ -115,7 +123,7 @@ export async function world(options: { activity?: boolean; retries?: number } = 
     seedActivity(db, "PAS-817", 4);
     seedActivity(db, "PAS-843", 5);
   }
-  const { revision } = saveRetroSettingsRevision(db, {
+  const { revision } = await saveRetroSettingsRevision(sqliteDb(db), {
     workspaceId: "ws",
     prompt: "Review {{period}} in {{repositories}}.\n\n{{digest}}",
     agentProfile: { agent: "codex", model: "gpt-x", effort: null },
@@ -126,7 +134,7 @@ export async function world(options: { activity?: boolean; retries?: number } = 
     createdBy: "admin",
     now: 1,
   });
-  createRetro(db, {
+  await createRetro(sqliteDb(db), {
     id: "r1",
     workspaceId: "ws",
     windowStart: FIXTURE_START,

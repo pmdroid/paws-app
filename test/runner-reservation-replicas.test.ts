@@ -39,7 +39,7 @@ async function replicas() {
   const db = openDatabase(path);
   migrate(db);
   let clock = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "acme-owner",
     name: "Acme Owner",
@@ -117,7 +117,7 @@ async function replicas() {
     const sessionId = `acme-session-${sequence}`;
     const record = insertQueuedItem(db, { id, now: clock, sessionKey: sessionId });
     const { run } = beginImplementRun(db, id, clock);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "acme",
       oauthClientId: "acme-app",
       appUserId: "acme-app-user",
@@ -125,7 +125,9 @@ async function replicas() {
       teamId: "acme-team",
       observedAtMs: clock,
     });
-    bindLinearSessionTask(db, sessionId, record.delegationId, { actorId: "acme-owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionId, record.delegationId, {
+      actorId: "acme-owner",
+    });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
     await bindWorkItemRepository(sqliteDb(db), id, {
       owner: "acme",

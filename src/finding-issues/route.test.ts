@@ -72,14 +72,14 @@ async function setup(role: WorkspaceRole | null = "member") {
     "Kyku",
     NOW,
   ]);
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "user-1",
     linearUserId: "linear-1",
     name: "Sam",
     email: "sam@example.com",
   });
   if (role !== null)
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "ws",
       userId: "user-1",
       role,
@@ -87,7 +87,11 @@ async function setup(role: WorkspaceRole | null = "member") {
       teamIds: [],
       now: NOW,
     });
-  const { session } = issueWorkspaceSession(db, { workspaceId: "ws", userId: "user-1", now: NOW });
+  const { session } = await issueWorkspaceSession(db, {
+    workspaceId: "ws",
+    userId: "user-1",
+    now: NOW,
+  });
   const tracker = createFakeTracker();
   for (const id of ["PAS-633", "PAS-700"])
     tracker.findingIssueTargets.set(`lin-item-${id}`, {
@@ -228,7 +232,7 @@ test("two clicks at once file one issue", async () => {
 // A Linear guest never gets a workspace session, so the route only has to refuse a revoked member.
 test("a revoked member gets 403 and nothing is filed", async () => {
   const revoked = await setup();
-  syncWorkspaceMember(revoked.db, {
+  await syncWorkspaceMember(sqliteDb(revoked.db), {
     workspaceId: "ws",
     userId: "user-1",
     role: "member",

@@ -63,8 +63,13 @@ async function fixture() {
   ]);
   const task = await intakeDelegatedIssue(db, tracker, { linearIssueId: "issue" });
   if (!task.ok) throw new Error("Unexpected issue cycle");
-  recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
-  bindLinearSessionTask(db, "session", task.delegation.id, { actorId: "human" });
+  await recordLinearInstallation(sqliteDb(db), {
+    ...scope,
+    sessionId: "session",
+    teamId: "team",
+    observedAtMs: 1,
+  });
+  await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id, { actorId: "human" });
   const journal: string[] = [];
   const restore = setJournalSink((line) => journal.push(line));
   cleanup.push(restore);
@@ -231,7 +236,7 @@ test("a confirmed merge from the task's own branch completes the task as merged"
   const f = await fixture();
   for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
     applyWorkItemEvent(f.db, f.item.id, step);
-  recordConfirmedRemoteMerge(f.db, {
+  await recordConfirmedRemoteMerge(sqliteDb(f.db), {
     itemId: f.item.id,
     repositoryOwner: "acme",
     repositoryName: "app",

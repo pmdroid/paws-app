@@ -38,7 +38,7 @@ async function fixture(
     policyDigest: "policy",
     policyPath: null,
   };
-  saveCandidateRisk(db, {
+  await saveCandidateRisk(sqliteDb(db), {
     itemId: item.id,
     head: "head",
     base: "base",
@@ -295,7 +295,7 @@ test("a human approval carried over by the lane is displayed as approved", async
 
 test("custom review findings name the actual review", async () => {
   const f = await fixture();
-  recordReviewFindings(f.db, {
+  await recordReviewFindings(sqliteDb(f.db), {
     itemId: f.item.id,
     repository: "acme/repo",
     head: "head",

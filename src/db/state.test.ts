@@ -103,7 +103,7 @@ describe("restart recovery", () => {
       branchName: "paws/eng-2",
       now: clock.now(),
     });
-    saveTaskMode(db, item.id, "code", 0);
+    await saveTaskMode(sqliteDb(db), item.id, "code", 0);
     const { run } = beginImplementRun(db, item.id, clock.now());
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
@@ -699,7 +699,7 @@ describe("linear commands", () => {
     });
     insertQueuedItem(db, { id: "eng-2", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, "eng-2", clock.now());
-    recordItemBranchState(db, {
+    await recordItemBranchState(sqliteDb(db), {
       itemId: "eng-2",
       runId: run.id,
       head: "b".repeat(40),
@@ -794,7 +794,7 @@ describe("linear commands", () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-5", sessionKey: "ses", now: clock.now() });
     const { run } = beginImplementRun(db, "eng-5", clock.now());
-    recordItemBranchState(db, {
+    await recordItemBranchState(sqliteDb(db), {
       itemId: "eng-5",
       runId: run.id,
       head: "b".repeat(40),
@@ -876,7 +876,7 @@ describe("linear commands", () => {
     insertQueuedItem(db, { id: "eng-7", sessionKey: "ses-7", now: clock.now() });
     insertQueuedItem(db, { id: "eng-8", sessionKey: "ses-8", now: clock.now() });
     const { run } = beginImplementRun(db, "eng-8", clock.now());
-    recordItemBranchState(db, {
+    await recordItemBranchState(sqliteDb(db), {
       itemId: "eng-8",
       runId: run.id,
       head: "b".repeat(40),

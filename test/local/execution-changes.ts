@@ -16,6 +16,7 @@ import {
   saveCheckpoint,
   saveTaskMode,
   setCurrentRun,
+  sqliteDb,
 } from "../../src/db";
 import { createFakeTracker } from "../../src/linear";
 import { Orchestrator, type ExecutionChanges } from "../../src/loop";
@@ -93,9 +94,13 @@ export async function probeExecutionChanges(
     parentCanceled: false,
     ...patch,
   });
-  const seed = (id: string, states: readonly string[]) => {
-    ensureLinearSession(db, { sessionId: `${id}-session`, issueId: id, now: clock.now() });
-    bindLinearSessionTask(db, `${id}-session`, id);
+  const seed = async (id: string, states: readonly string[]) => {
+    await ensureLinearSession(sqliteDb(db), {
+      sessionId: `${id}-session`,
+      issueId: id,
+      now: clock.now(),
+    });
+    await bindLinearSessionTask(sqliteDb(db), `${id}-session`, id);
     states.forEach((state, index) =>
       db.run(
         "INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -115,7 +120,7 @@ export async function probeExecutionChanges(
     );
   };
   try {
-    seed("criteria", ["merge_queue", "awaiting_input", "paused", "merged", "queued"]);
+    await seed("criteria", ["merge_queue", "awaiting_input", "paused", "merged", "queued"]);
     saveCheckpoint(db, "criteria-2", {
       phase: "running",
       wipCommit: "paused-existing-work",
@@ -207,7 +212,7 @@ export async function probeExecutionChanges(
         .get()?.n === 0,
       cancelReceipts,
     );
-    seed("added", ["queued"]);
+    await seed("added", ["queued"]);
     orchestrator.applyDelegationChanges(changes("added", { addedItemIds: ["added-0"] }));
     observe(
       "new subissues enter canonical repository-backed code mode",
@@ -221,14 +226,14 @@ export async function probeExecutionChanges(
     const activeStates = WORK_ITEM_STATES.filter(
       (state) => !["merged", "completed", "cancelled"].includes(state),
     );
-    seed("cancel", activeStates);
+    await seed("cancel", activeStates);
     orchestrator.applyDelegationChanges(changes("cancel", { parentCanceled: true }));
     observe(
       "epic cancellation cascades through every nonterminal state",
       activeStates.every((_, index) => getWorkItem(db, `cancel-${index}`)?.state === "cancelled"),
       activeStates,
     );
-    seed("blocker", ["queued", "queued"]);
+    await seed("blocker", ["queued", "queued"]);
     db.run(
       "INSERT INTO task_block(blocker_linear_issue_id,blocked_linear_issue_id) VALUES('blocker-0','blocker-1')",
     );
@@ -254,8 +259,8 @@ export async function probeExecutionChanges(
       getWorkItem(db, "added-0"),
     );
     db.run("UPDATE work_item SET state='cancelled' WHERE state IN ('queued','paused')");
-    seed("pause", ["queued"]);
-    saveTaskMode(db, "pause-0", "answer");
+    await seed("pause", ["queued"]);
+    await saveTaskMode(sqliteDb(db), "pause-0", "answer");
     saveCheckpoint(db, "pause-0", { phase: "running", wipCommit: "preserved-commit" });
     const pauseJob = enqueueJob(db, {
       queue: JOB_KIND.start,

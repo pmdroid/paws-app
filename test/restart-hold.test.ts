@@ -119,7 +119,7 @@ describe("restart hold", () => {
       expect((await recoverOnStartup(sqliteDb(db), now)).map((decision) => decision.type)).toEqual([
         "ask_restart",
       ]);
-      expect(restartHold(db, getWorkItem(db, "item")!)).not.toBeNull();
+      expect(await restartHold(sqliteDb(db), getWorkItem(db, "item")!)).not.toBeNull();
       expect(liveAsks(db)).toHaveLength(1);
       expect(executions(db)).toEqual([]);
       db.close();
@@ -181,7 +181,7 @@ describe("restart hold", () => {
     ).toBe("unasked");
     const item = getWorkItem(db, "item")!;
     expect(item).toMatchObject({ state: "queued", recoveryAttempts: 1 });
-    expect(restartHold(db, item)).toBeNull();
+    expect(await restartHold(sqliteDb(db), item)).toBeNull();
     expect(db.query("SELECT 1 FROM restart_hold").all()).toEqual([]);
     expect(executions(db)).toHaveLength(1);
     expect(executions(db)[0]?.jobKey).toStartWith("resume:answer:");
@@ -216,7 +216,7 @@ describe("restart hold", () => {
     expect(listWorkItemEventRows(db, "item").map((event) => event.event)).not.toContain(
       "recovered",
     );
-    expect(restartHold(db, getWorkItem(db, "item")!)).not.toBeNull();
+    expect(await restartHold(sqliteDb(db), getWorkItem(db, "item")!)).not.toBeNull();
     expect(await listRuns(sqliteDb(db), "item")).toHaveLength(runs);
     db.close();
   });
@@ -254,7 +254,9 @@ describe("restart hold", () => {
     });
     await cancelOpenJobs(sqliteDb(db), { itemId: "item", reason: "startup", now: 3 });
     legacyMigrate(db);
-    expect(restartHold(db, getWorkItem(db, "item")!)).toMatchObject({ sessionId: "session" });
+    expect(await restartHold(sqliteDb(db), getWorkItem(db, "item")!)).toMatchObject({
+      sessionId: "session",
+    });
     await recoverOnStartup(sqliteDb(db), LATER);
     expect(executions(db)).toEqual([]);
     expect(liveAsks(db)).toHaveLength(1);

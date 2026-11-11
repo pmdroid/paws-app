@@ -29,7 +29,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
   const clock = new FakeClock(Date.now());
   const now = () => clock.now();
   const origin = "https://paws.example.invalid";
-  const owner = dbApi.putWorkspaceUser(db, {
+  const owner = await dbApi.putWorkspaceUser(sqliteDb(db), {
     id: "owner",
     linearUserId: "owner",
     name: "Owner",
@@ -45,8 +45,8 @@ test("onboarded authoritative creator resumes once with current App and no perso
     ),
     now: now(),
   });
-  dbApi.ensureLinearSession(db, { sessionId: "session", issueId: "issue" });
-  dbApi.recordLinearInstallation(db, {
+  await dbApi.ensureLinearSession(sqliteDb(db), { sessionId: "session", issueId: "issue" });
+  await dbApi.recordLinearInstallation(sqliteDb(db), {
     sessionId: "session",
     organizationId: "org",
     oauthClientId: "client",
@@ -322,7 +322,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
     expect(policyCoauthors(await policy())).toEqual([]);
     expect(dbApi.listJobs(db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
     const member = dbApi.workspaceLinearMember(db, "workspace", "creator")!;
-    const login = workspace.issueWorkspaceSession(db, {
+    const login = await workspace.issueWorkspaceSession(db, {
       workspaceId: "workspace",
       userId: member.userId,
       now: now(),

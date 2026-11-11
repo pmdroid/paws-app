@@ -83,8 +83,8 @@ export function* putWorkspaceUserSteps(q: Q, input: WorkspaceUserInput) {
   return rows[0]!.id;
 }
 
-export function putWorkspaceUser(db: Database, input: WorkspaceUserInput): string {
-  return settled(sqliteDb(db).run((q) => putWorkspaceUserSteps(q, input)));
+export async function putWorkspaceUser(store: Db, input: WorkspaceUserInput): Promise<string> {
+  return store.run((q) => putWorkspaceUserSteps(q, input));
 }
 
 export function* workspaceUserIdForLinearUserSteps(q: Q, linearUserId: string) {
@@ -253,8 +253,8 @@ export function* syncWorkspaceMemberSteps(q: Q, input: WorkspaceMemberSync) {
   return true;
 }
 
-export function syncWorkspaceMember(db: Database, input: WorkspaceMemberSync): boolean {
-  return settled(sqliteDb(db).transaction((q) => syncWorkspaceMemberSteps(q, input)));
+export async function syncWorkspaceMember(store: Db, input: WorkspaceMemberSync): Promise<boolean> {
+  return store.transaction((q) => syncWorkspaceMemberSteps(q, input));
 }
 
 type LinearUserChange = {
@@ -366,8 +366,8 @@ export function* saveWorkspaceSessionSteps(q: Q, session: WorkspaceSession) {
   yield* q.exec(q.orm.insert(q.t.workspaceSession).values(session));
 }
 
-export function saveWorkspaceSession(db: Database, session: WorkspaceSession): void {
-  settled(sqliteDb(db).run((q) => saveWorkspaceSessionSteps(q, session)));
+export async function saveWorkspaceSession(store: Db, session: WorkspaceSession): Promise<void> {
+  await store.run((q) => saveWorkspaceSessionSteps(q, session));
 }
 
 export function* readWorkspaceSessionSteps(q: Q, tokenHash: string, now: number, lifetime: number) {

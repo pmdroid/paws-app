@@ -47,7 +47,7 @@ export async function probeRunnerSessionHelpers(
   let db = openDatabase(dbPath);
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -133,7 +133,7 @@ export async function probeRunnerSessionHelpers(
         },
       );
     }
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org",
       oauthClientId: "app",
       appUserId: "app-user",
@@ -247,7 +247,7 @@ export async function probeRunnerSessionHelpers(
     assert.equal(selected.command.purpose, "select_repository");
     const item = insertQueuedItem(db, { id: "task", sessionKey: "session", now });
     const { run } = beginImplementRun(db, item.id, now);
-    bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
     const repository = {
       owner: "acme",
       repo: "app",
@@ -294,7 +294,7 @@ export async function probeRunnerSessionHelpers(
       expiryStatus: 409,
       durationMs: 60_000,
     });
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "other-org",
       oauthClientId: "app",
       appUserId: "app-user",

@@ -729,14 +729,14 @@ describe("skill pins", () => {
 
   test("a removed skill is forgotten once no runner reports it", async () => {
     await addSkill(registry(fakeSkillResolver()), { kind: "npm", package: "impeccable" });
-    const userId = putWorkspaceUser(db, {
+    const userId = await putWorkspaceUser(sqliteDb(db), {
       id: "user-1",
       linearUserId: "user-linear",
       name: "Owner",
       email: "owner@example.invalid",
     });
     db.run("INSERT INTO workspace VALUES('ws-1','org-1','Workspace',1)");
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "ws-1",
       userId,
       role: "admin",

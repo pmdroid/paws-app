@@ -6,6 +6,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { startServer } from "../src/server";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
@@ -18,10 +19,15 @@ test("run, session and verdict links resolve through stored records the signed-i
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
   );
-  putWorkspaceUser(db, { id: "member", linearUserId: "member", name: "member", email: "m@x.test" });
+  await putWorkspaceUser(sqliteDb(db), {
+    id: "member",
+    linearUserId: "member",
+    name: "member",
+    email: "m@x.test",
+  });
   let teamIds = ["team"];
-  const member = () =>
-    syncWorkspaceMember(db, {
+  const member = async () =>
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: "workspace",
       userId: "member",
       role: "member",
@@ -29,7 +35,7 @@ test("run, session and verdict links resolve through stored records the signed-i
       teamIds,
       now: Date.now(),
     });
-  member();
+  await member();
   for (const [session, team] of [
     ["session-mine", "team"],
     ["session-other", "other-team"],
@@ -43,7 +49,8 @@ test("run, session and verdict links resolve through stored records the signed-i
   insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine", now: old });
   insertQueuedItem(db, { id: "PAS-5", sessionKey: "session-mine", now: old + 1 });
   insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other", now: old });
-  const runs = [0, 1].map((at) => insertRun(db, { itemId: "PAS-1", now: old + at }).id);
+  const runs = [];
+  for (const at of [0, 1]) runs.push(insertRun(db, { itemId: "PAS-1", now: old + at }).id);
   const hidden = insertRun(db, { itemId: "PAS-2", now: old }).id;
   db.run("UPDATE work_item SET state = 'merged'");
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
@@ -76,7 +83,7 @@ test("run, session and verdict links resolve through stored records the signed-i
   try {
     for (const path of [`/runs/${runs[0]}`, "/sessions/session-mine", "/verdicts/PAS-1"])
       expect((await fetch(alias(path))).status).toBe(401);
-    const session = issueWorkspaceSession(db, {
+    const session = await issueWorkspaceSession(db, {
       workspaceId: "workspace",
       userId: "member",
       now: Date.now(),
@@ -107,7 +114,7 @@ test("run, session and verdict links resolve through stored records the signed-i
       expect(await resolve(path, cookie)).toEqual(unknown);
 
     teamIds = ["other-team"];
-    member();
+    await member();
     expect(await resolve(`/runs/${runs[0]}`, cookie)).toEqual(unknown);
     expect(await resolve("/sessions/session-other", cookie)).toEqual({
       status: 200,

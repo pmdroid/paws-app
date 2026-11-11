@@ -246,7 +246,7 @@ describe("GET /api/evidence/:id", () => {
 });
 
 test("the server refuses evidence without a session and hides it from members without access", async () => {
-  const f = memberWorkspace();
+  const f = await memberWorkspace();
   const home = mkdtempSync(join(tmpdir(), "paws-evidence-server-"));
   roots.push(home);
   const evidenceDir = join(home, "evidence");
@@ -288,7 +288,7 @@ test("the server refuses evidence without a session and hides it from members wi
     workspaceAccess: access,
     evidenceDir,
   });
-  const session = issueWorkspaceSession(f.db, { ...f.actor, now: Date.now() });
+  const session = await issueWorkspaceSession(f.db, { ...f.actor, now: Date.now() });
   const url = (id: string) => `http://127.0.0.1:${server.port}/api/evidence/${id}`;
   try {
     expect((await fetch(url(saved.id))).status).toBe(401);
@@ -305,19 +305,19 @@ test("the server refuses evidence without a session and hides it from members wi
 });
 
 /** A database with one workspace member who has no access to other sessions' evidence. */
-function memberWorkspace() {
+async function memberWorkspace() {
   const db = openDatabase(":memory:");
   migrate(db);
   db.run(
     "INSERT INTO workspace(id,linear_organization_id,name,created_at) VALUES('workspace','org','Workspace',0)",
   );
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "actor",
     linearUserId: "actor",
     name: "actor",
     email: "actor@example.test",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "workspace",
     userId: "actor",
     role: "member",

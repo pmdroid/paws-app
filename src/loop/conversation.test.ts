@@ -36,8 +36,8 @@ test("recovery consumes only new public transcript observations once after an in
         }) +
         '{"event":',
     );
-    saveConversation(
-      db,
+    await saveConversation(
+      sqliteDb(db),
       "item",
       JSON.stringify([{ kind: "request", body: "INITIAL_REQUEST" }]),
       path,

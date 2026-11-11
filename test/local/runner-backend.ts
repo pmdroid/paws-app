@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { Database } from "bun:sqlite";
 import { createAcpActivityReporter } from "../../src/loop";
 import { createHash, randomBytes, randomUUID, generateKeyPairSync } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync } from "node:fs";
@@ -66,6 +67,20 @@ import { applyWorkItemEvent } from "../../src/db";
 import { PawsShutdown, RunnerCapacityWait } from "../../src/core";
 import { createRunnerPlacement } from "../../src/runner-placement";
 
+async function slotsTaken(
+  db: Database,
+  hostIds: readonly string[],
+  now: number,
+  occupied: boolean,
+): Promise<number> {
+  let total = 0;
+  for (const id of hostIds)
+    total +=
+      (occupied ? (await runnerOccupancy(sqliteDb(db), id, now)).occupied : 0) +
+      (await runnerSlotsHeldBetweenCommands(sqliteDb(db), id, now));
+  return total;
+}
+
 export async function probeRunnerBackend(
   root: string,
   observe: (name: string, passed: boolean, value: unknown) => void,
@@ -78,7 +93,7 @@ export async function probeRunnerBackend(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -289,7 +304,7 @@ export async function probeRunnerBackend(
       "refs/heads/main",
     ]);
     assert.equal(linked.exitCode, 0, linked.stderr.toString());
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "fixture-work",
       oauthClientId: "fixture-app",
       appUserId: "app-user",
@@ -297,7 +312,7 @@ export async function probeRunnerBackend(
       teamId: "fixture-team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, sessionId, record.delegationId, { actorId: "owner" });
+    await bindLinearSessionTask(sqliteDb(db), sessionId, record.delegationId, { actorId: "owner" });
     db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
     settled(
       sqliteDb(db).transaction((q) =>
@@ -1392,7 +1407,7 @@ export async function probeRunnerBackend(
     for (const purpose of ["answer", "artifact"] as const) {
       for (const withRepository of [false, true]) {
         const task = await item();
-        saveTaskMode(db, task.id, purpose, 0, withRepository);
+        await saveTaskMode(sqliteDb(db), task.id, purpose, 0, withRepository);
         const directory = join(root, `response-${task.id}`);
         mkdirSync(directory, { mode: 0o700 });
         if (withRepository)
@@ -1655,7 +1670,7 @@ export async function probeRunnerBackend(
       }
     }
     const changedTask = await item();
-    saveTaskMode(db, changedTask.id, "answer");
+    await saveTaskMode(sqliteDb(db), changedTask.id, "answer");
     await assert.rejects(
       sealedBackend.forItem(changedTask.id)(
         input(changedTask, {
@@ -1677,7 +1692,7 @@ export async function probeRunnerBackend(
       { commands: 0 },
     );
     const unsafeTask = await item();
-    saveTaskMode(db, unsafeTask.id, "artifact", 0, true);
+    await saveTaskMode(sqliteDb(db), unsafeTask.id, "artifact", 0, true);
     const unsafeDirectory = join(root, "unsafe-response");
     mkdirSync(unsafeDirectory, { mode: 0o700 });
     writeFileSync(
@@ -1698,7 +1713,7 @@ export async function probeRunnerBackend(
     for (const kind of ["run", "review", "answer", "artifact"] as const) {
       const record = await item();
       const isTask = kind === "answer" || kind === "artifact";
-      if (isTask) saveTaskMode(db, record.id, kind);
+      if (isTask) await saveTaskMode(sqliteDb(db), record.id, kind);
       const directory = isTask ? join(root, `inputs-${record.id}`) : source;
       mkdirSync(directory, { recursive: true, mode: 0o700 });
       if (!isTask) await git(["-C", source, "reset", "--hard", base]);
@@ -2457,16 +2472,7 @@ export async function probeRunnerBackend(
           const command = await next(host);
           assert(command.type === "run" || command.type === "review");
           assert.equal(command.runnerId, host);
-          assert.equal(
-            hostIds.reduce(
-              (total, id) =>
-                total +
-                runnerOccupancy(db, id, now).occupied +
-                runnerSlotsHeldBetweenCommands(db, id, now),
-              0,
-            ),
-            1,
-          );
+          assert.equal(await slotsTaken(db, hostIds, now, true), 1);
           const affinityGrant = await work.issueGrant({
             runnerId: host,
             runId: command.runId,
@@ -2487,10 +2493,7 @@ export async function probeRunnerBackend(
             },
           });
           await affinityTurn;
-          assert.equal(
-            hostIds.reduce((total, id) => total + runnerSlotsHeldBetweenCommands(db, id, now), 0),
-            1,
-          );
+          assert.equal(await slotsTaken(db, hostIds, now, false), 1);
           return command;
         };
         const implemented = await step(firstHost, "implementer");
@@ -2521,7 +2524,7 @@ export async function probeRunnerBackend(
         assert.notEqual(replacement, firstHost);
         const moved = await step(replacement, "reviewer");
         assert(!("resumeSessionId" in moved));
-        assert.equal(runnerSlotsHeldBetweenCommands(db, firstHost, now), 0);
+        assert.equal(await runnerSlotsHeldBetweenCommands(sqliteDb(db), firstHost, now), 0);
         // Reviewer preflight after a moved review/ejection must not use cached model evidence
         // or the checkout pin. A revoked previous generation must not prevent reviewerPreparation.
         db.run("UPDATE runner_agent_policy SET resolved_model='model'");
@@ -2577,7 +2580,7 @@ export async function probeRunnerBackend(
       });
       for (const purpose of ["answer", "artifact"] as const) {
         const record = await item();
-        saveTaskMode(db, record.id, purpose);
+        await saveTaskMode(sqliteDb(db), record.id, purpose);
         const host = (
           await placement.candidates({
             itemId: record.id,
@@ -2624,10 +2627,7 @@ export async function probeRunnerBackend(
             result: receipt,
           });
           await affinityTurn;
-          assert.equal(
-            hostIds.reduce((total, id) => total + runnerSlotsHeldBetweenCommands(db, id, now), 0),
-            1,
-          );
+          assert.equal(await slotsTaken(db, hostIds, now, false), 1);
         }
         db.run("UPDATE run SET status='ended' WHERE id=?", [record.run.id]);
       }
@@ -3066,16 +3066,7 @@ export async function probeRunnerBackend(
       if (independent.type !== "review") throw new Error("Expected fresh independent review");
       assert.equal(independent.runnerId, conflicting.runnerId);
       assert.equal(independent.generation, conflicting.generation + 1);
-      assert.equal(
-        hostIds.reduce(
-          (total, id) =>
-            total +
-            runnerOccupancy(db, id, now).occupied +
-            runnerSlotsHeldBetweenCommands(db, id, now),
-          0,
-        ),
-        1,
-      );
+      assert.equal(await slotsTaken(db, hostIds, now, true), 1);
       assert.match(independent.prompt, /fresh agent session/);
       const independentGrant = await work.issueGrant({
         runnerId: independentHost,
@@ -3141,16 +3132,7 @@ export async function probeRunnerBackend(
         if (conflictingReview.type !== "review") throw new Error("Expected conflicting review");
         if (previousGeneration) assert.equal(conflictingReview.generation, previousGeneration + 1);
         previousGeneration = conflictingReview.generation;
-        assert.equal(
-          hostIds.reduce(
-            (total, id) =>
-              total +
-              runnerOccupancy(db, id, now).occupied +
-              runnerSlotsHeldBetweenCommands(db, id, now),
-            0,
-          ),
-          1,
-        );
+        assert.equal(await slotsTaken(db, hostIds, now, true), 1);
         const retryGrant = await work.issueGrant({
           runnerId: pinnedReviewHost,
           runId: conflictingReview.runId,
@@ -3223,15 +3205,15 @@ export async function probeRunnerBackend(
           },
         }),
       );
-      let settled = false;
+      let finished = false;
       void limitedRun.then(
-        () => (settled = true),
-        () => (settled = true),
+        () => (finished = true),
+        () => (finished = true),
       );
       const limitedPause = await paused(getWorkItem(db, limited.id)!.currentRunId!);
       assert.equal(limitedPause?.resumeAt, now + 180_000);
       await delay(20);
-      assert.equal(settled, false);
+      assert.equal(finished, false);
       // The line names the date too when the resume falls on the next UTC day.
       const resume = new Date(now + 180_000).toISOString();
       const day =

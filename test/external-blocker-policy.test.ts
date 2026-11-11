@@ -42,7 +42,7 @@ async function fixture() {
   );
   db.run("INSERT INTO workspace_user_team VALUES('workspace','person','team')");
   db.run("INSERT INTO workspace_repository VALUES('workspace','owner/repo','team')");
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -50,7 +50,9 @@ async function fixture() {
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "linear-person" });
+  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, {
+    actorId: "linear-person",
+  });
   const itemId = intake.items[0]!.id;
   const target = { workspaceId: "workspace", itemId };
   const refresh = async () =>
@@ -111,7 +113,7 @@ test("Managed blockers in another delegation require canonical delivery", async 
     });
     const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
     if (!intake.ok) throw new Error("Intake failed");
-    recordLinearInstallation(f.db, {
+    await recordLinearInstallation(sqliteDb(f.db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -119,11 +121,11 @@ test("Managed blockers in another delegation require canonical delivery", async 
       teamId: "team",
       observedAtMs: 2000,
     });
-    bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
+    await bindLinearSessionTask(sqliteDb(f.db), "other-session", intake.delegation.id, {
       actorId: "linear-person",
     });
     const item = intake.items[0]!;
-    saveTaskMode(f.db, item.id, "code");
+    await saveTaskMode(sqliteDb(f.db), item.id, "code");
     await f.refresh();
     expect(await f.ready()).toBe(false);
     f.db.run("UPDATE work_item SET state='completed' WHERE id=?", [item.id]);
@@ -154,7 +156,7 @@ test("A blocker whose Paws tasks were all cancelled follows its Linear state", a
     });
     const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
     if (!intake.ok) throw new Error("Intake failed");
-    recordLinearInstallation(f.db, {
+    await recordLinearInstallation(sqliteDb(f.db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -162,7 +164,7 @@ test("A blocker whose Paws tasks were all cancelled follows its Linear state", a
       teamId: "team",
       observedAtMs: 2000,
     });
-    bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
+    await bindLinearSessionTask(sqliteDb(f.db), "other-session", intake.delegation.id, {
       actorId: "linear-person",
     });
     f.db.run("UPDATE work_item SET state='cancelled' WHERE id=?", [intake.items[0]!.id]);
@@ -188,7 +190,7 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
     });
     const intake = await intakeDelegatedIssue(f.db, f.tracker, { linearIssueId: "a", now: 2000 });
     if (!intake.ok) throw new Error("Intake failed");
-    recordLinearInstallation(f.db, {
+    await recordLinearInstallation(sqliteDb(f.db), {
       organizationId: "org",
       oauthClientId: "client",
       appUserId: "app",
@@ -196,7 +198,7 @@ test("Re-delegated managed blockers follow the latest active item", async () => 
       teamId: "team",
       observedAtMs: 2000,
     });
-    bindLinearSessionTask(f.db, "other-session", intake.delegation.id, {
+    await bindLinearSessionTask(sqliteDb(f.db), "other-session", intake.delegation.id, {
       actorId: "linear-person",
     });
     const newer = intake.items[0]!;

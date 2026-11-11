@@ -121,8 +121,11 @@ export function* recordLinearInstallationSteps(
   );
 }
 
-export function recordLinearInstallation(db: Database, input: LinearInstallationObservation): void {
-  settled(sqliteDb(db).transaction((q) => recordLinearInstallationSteps(q, input)));
+export async function recordLinearInstallation(
+  store: Db,
+  input: LinearInstallationObservation,
+): Promise<void> {
+  await store.transaction((q) => recordLinearInstallationSteps(q, input));
 }
 
 type LinearRevocationEvent = {

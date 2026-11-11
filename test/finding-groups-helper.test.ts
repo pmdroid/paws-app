@@ -16,13 +16,13 @@ async function seed() {
   const db = tempDb();
   let now = Date.now();
   db.run("INSERT INTO workspace VALUES('ws','org','Workspace',1)");
-  putWorkspaceUser(db, {
+  await putWorkspaceUser(sqliteDb(db), {
     id: "admin",
     linearUserId: "linear-admin",
     name: "Admin",
     email: "admin@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws",
     userId: "admin",
     role: "admin",
@@ -30,7 +30,7 @@ async function seed() {
     teamIds: [],
     now,
   });
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     sessionId: "reporting-session",
     organizationId: "org",
     oauthClientId: "client",
@@ -133,7 +133,7 @@ test("daily helper refuses older runners and cannot read a session from another 
       }),
     ).rejects.toThrow("No paired runner");
     expect(f.db.query("SELECT 1 FROM runner_helper").get()).toBeNull();
-    recordLinearInstallation(f.db, {
+    await recordLinearInstallation(sqliteDb(f.db), {
       sessionId: "other-session",
       organizationId: "other-org",
       oauthClientId: "client",
@@ -290,7 +290,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
         startedAt: f.now,
       }),
     );
-    recordLinearInstallation(f.db, {
+    await recordLinearInstallation(sqliteDb(f.db), {
       sessionId: "interactive",
       organizationId: "org",
       oauthClientId: "client",
@@ -525,13 +525,13 @@ test("a failed receipt completion is retried by cleanup before the original erro
 test("grouping runs on a later admin's runner when the earlier admin has none", async () => {
   const f = await seed();
   try {
-    putWorkspaceUser(f.db, {
+    await putWorkspaceUser(sqliteDb(f.db), {
       id: "aaa",
       linearUserId: "linear-aaa",
       name: "Aaa",
       email: "aaa@example.invalid",
     });
-    syncWorkspaceMember(f.db, {
+    await syncWorkspaceMember(sqliteDb(f.db), {
       workspaceId: "ws",
       userId: "aaa",
       role: "admin",

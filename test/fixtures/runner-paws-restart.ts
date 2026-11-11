@@ -196,7 +196,7 @@ const start = () =>
   );
 let paws = await start();
 await paws.ready;
-const userId = putWorkspaceUser(paws.db, {
+const userId = await putWorkspaceUser(sqliteDb(paws.db), {
   id: workspaceId(),
   linearUserId: "owner",
   name: "Owner",
@@ -477,7 +477,7 @@ async function until(label: string, done: () => boolean) {
 async function addItem(id: string, answer = false) {
   const sessionKey = `session-${id}`;
   const item = insertQueuedItem(paws.db, { id, sessionKey, now: Date.now() });
-  recordLinearInstallation(paws.db, {
+  await recordLinearInstallation(sqliteDb(paws.db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -485,9 +485,11 @@ async function addItem(id: string, answer = false) {
     teamId: "team",
     observedAtMs: Date.now(),
   });
-  bindLinearSessionTask(paws.db, sessionKey, item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(paws.db), sessionKey, item.delegationId, {
+    actorId: "owner",
+  });
   paws.db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, id]);
-  if (answer) saveTaskMode(paws.db, id, "answer");
+  if (answer) await saveTaskMode(sqliteDb(paws.db), id, "answer");
   else
     await bindWorkItemRepository(sqliteDb(paws.db), id, {
       owner: "pmdroid",

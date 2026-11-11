@@ -181,7 +181,7 @@ async function usageLimitScenario(
   const path = join(root, "paws.db");
   let db: Database = migratedDatabase(path);
   const now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -225,7 +225,7 @@ async function usageLimitScenario(
     ]);
   const foreignRunnerIds: string[] = [];
   if (wake === "foreign-workspace" || wake === "foreign-owner") {
-    const otherUser = putWorkspaceUser(db, {
+    const otherUser = await putWorkspaceUser(sqliteDb(db), {
       id: workspaceId(),
       linearUserId: "other",
       name: "Other",
@@ -242,7 +242,7 @@ async function usageLimitScenario(
             now,
           })
         : workspace;
-    syncWorkspaceMember(db, {
+    await syncWorkspaceMember(sqliteDb(db), {
       workspaceId: otherWorkspace.id,
       userId: otherUser,
       role: "member",
@@ -263,7 +263,7 @@ async function usageLimitScenario(
   }
   const item = insertQueuedItem(db, { id: "item", now, sessionKey: "session" });
   const { run } = beginImplementRun(db, item.id, now);
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
     appUserId: "app-user",
@@ -271,7 +271,7 @@ async function usageLimitScenario(
     teamId: "team",
     observedAtMs: now,
   });
-  bindLinearSessionTask(db, "session", item.delegationId, { actorId: "owner" });
+  await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
   await bindWorkItemRepository(sqliteDb(db), item.id, {
     owner: "acme",
     repo: "fixture",

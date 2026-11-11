@@ -7098,7 +7098,7 @@ export class Orchestrator {
   ): Promise<void> {
     if (sessionId === null) return;
     this.taskAccess()?.invalidate({ sessionId });
-    this.githubAuth?.invalidate({ sessionId });
+    await this.githubAuth?.invalidate({ sessionId });
     const requestedAt = at > 0 ? at : this.now();
     const commands: LinearCommand[] = [];
     let deferred = false;
@@ -7461,8 +7461,10 @@ export class Orchestrator {
     if (failure?.status === "rejected") throw failure.reason;
   }
 
-  invalidateGitHubAuthorization(scope: { sessionId?: string; issueId?: string } = {}): void {
-    this.githubAuth?.invalidate(scope);
+  async invalidateGitHubAuthorization(
+    scope: { sessionId?: string; issueId?: string } = {},
+  ): Promise<void> {
+    await this.githubAuth?.invalidate(scope);
   }
 
   async reconcileExecution(): Promise<void> {

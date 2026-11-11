@@ -35,7 +35,7 @@ export async function probeRunnerCoordinatorData(
   const db = openDatabase(join(root, "paws.sqlite"));
   migrate(db);
   let now = Date.now();
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "relay-owner",
     name: "Owner",
@@ -202,7 +202,7 @@ export async function probeRunnerCoordinatorData(
     db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
     const item = insertQueuedItem(db, { id: "relay-item", now, sessionKey: "relay-session" });
     const { run } = beginImplementRun(db, item.id, now);
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "relay-org",
       oauthClientId: "fixture",
       appUserId: "app",
@@ -210,7 +210,9 @@ export async function probeRunnerCoordinatorData(
       teamId: "team",
       observedAtMs: now,
     });
-    bindLinearSessionTask(db, "relay-session", item.delegationId, { actorId: "relay-owner" });
+    await bindLinearSessionTask(sqliteDb(db), "relay-session", item.delegationId, {
+      actorId: "relay-owner",
+    });
     const repository = {
       owner: "fixture",
       repo: "repository",

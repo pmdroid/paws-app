@@ -14,7 +14,12 @@ const home = process.argv[2]!;
 const db = openDatabase(join(home, "paws.db"));
 migrate(db);
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
-recordLinearInstallation(db, { ...scope, sessionId: "session", teamId: "team", observedAtMs: 1 });
+await recordLinearInstallation(sqliteDb(db), {
+  ...scope,
+  sessionId: "session",
+  teamId: "team",
+  observedAtMs: 1,
+});
 await revokeLinearInstallation(sqliteDb(db), { ...scope, eventKey: "revoked", createdAtMs: 2 });
 db.close();
 storeLinearToken(home, {

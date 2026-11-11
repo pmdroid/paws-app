@@ -37,7 +37,7 @@ import { createFakeImprovementLinear } from "../src/linear";
 const REPO = "acme/app";
 const MINUTE = 60_000;
 
-function world() {
+async function world() {
   const db = openDatabase(join(mkdtempSync(join(tmpdir(), "paws-improvement-delivery-")), "db"));
   migrate(db);
   db.run("INSERT INTO workspace VALUES ('ws', 'org', 'Kyku', 0)");
@@ -45,13 +45,13 @@ function world() {
   db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-a')", [REPO]);
   db.run("INSERT INTO workspace_repository VALUES ('ws', ?, 'team-b')", [REPO]);
   db.run("INSERT INTO workspace_repository VALUES ('other', ?, 'team-x')", [REPO]);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: "user-ada",
     linearUserId: "linear-ada",
     name: "Ada",
     email: "ada@example.invalid",
   });
-  syncWorkspaceMember(db, {
+  await syncWorkspaceMember(sqliteDb(db), {
     workspaceId: "ws",
     userId,
     role: "admin",
@@ -98,7 +98,7 @@ function world() {
   return { db, linear, now, advance, run };
 }
 
-type World = ReturnType<typeof world>;
+type World = Awaited<ReturnType<typeof world>>;
 
 function proposal(step: ImprovementActionStep, title = `Fix ${step}`) {
   return {
@@ -111,7 +111,7 @@ function proposal(step: ImprovementActionStep, title = `Fix ${step}`) {
   };
 }
 
-function acceptRetro(
+async function acceptRetro(
   w: World,
   options: {
     step?: ImprovementActionStep;
@@ -124,7 +124,7 @@ function acceptRetro(
 ) {
   const step = options.step ?? "issue";
   const workspaceId = options.workspaceId ?? "ws";
-  const { improvementId } = recordImprovementProposal(w.db, {
+  const { improvementId } = await recordImprovementProposal(sqliteDb(w.db), {
     workspaceId,
     repository: REPO,
     source: { kind: "retro_item", key: options.key ?? `r1/${step}` },
@@ -138,7 +138,7 @@ function acceptRetro(
     requested.kind === "link" && requested.teamId === undefined && linked
       ? { ...requested, teamId: linked.teamId }
       : requested;
-  const decided = decideImprovement(w.db, {
+  const decided = await decideImprovement(sqliteDb(w.db), {
     improvementId,
     expectedVersion: 1,
     review: { kind: "accept", proposalVersion: 1, intent },
@@ -170,12 +170,12 @@ function acceptRetro(
   return improvementId;
 }
 
-const view = (w: World, id: string) =>
+const view = async (w: World, id: string) =>
   improvementView(w.db, {
-    improvement: getImprovement(w.db, id)!,
+    improvement: (await getImprovement(sqliteDb(w.db), id))!,
     sourceKind: "retro_item",
     sourceKeys: [],
-    proposal: listImprovementProposals(w.db, id).at(-1)!,
+    proposal: (await listImprovementProposals(sqliteDb(w.db), id)).at(-1)!,
     criterion: null,
     lifecycle: "pending",
     issue: null,
@@ -185,16 +185,18 @@ const view = (w: World, id: string) =>
     members: [],
   });
 
-const delivery = (w: World, improvementId: string, operation = "create_issue") =>
-  listImprovementDeliveries(w.db, improvementId).find((d) => d.operation === operation)!;
+const delivery = async (w: World, improvementId: string, operation = "create_issue") =>
+  (await listImprovementDeliveries(sqliteDb(w.db), improvementId)).find(
+    (d) => d.operation === operation,
+  )!;
 
 const recovery = async (w: World, improvementId: string, operation: string) =>
   (await view(w, improvementId)).deliveries.find((d) => d.operation === operation)!.recovery;
 
-const reopen = (w: World, improvementId: string) =>
-  decideImprovement(w.db, {
+const reopen = async (w: World, improvementId: string) =>
+  await decideImprovement(sqliteDb(w.db), {
     improvementId,
-    expectedVersion: getImprovement(w.db, improvementId)!.version,
+    expectedVersion: (await getImprovement(sqliteDb(w.db), improvementId))!.version,
     review: { kind: "reopen" },
     actor: "user-ada",
     now: w.now(),
@@ -202,9 +204,10 @@ const reopen = (w: World, improvementId: string) =>
 
 describe("improvement delivery", () => {
   test("every action step creates one undelegated issue with its frozen evidence", async () => {
-    const w = world();
+    const w = await world();
     const steps: ImprovementActionStep[] = ["automatic", "rule", "convention", "decision", "issue"];
-    const ids = steps.map((step) => acceptRetro(w, { step }));
+    const ids: string[] = [];
+    for (const step of steps) ids.push(await acceptRetro(w, { step }));
     await w.run();
     await w.run();
     expect(w.linear.created).toHaveLength(5);
@@ -225,7 +228,7 @@ describe("improvement delivery", () => {
       expect(created.description).toContain(`https://paws.test/dashboard/improvements/${id}`);
       expect(created.description).toContain("accepted by Ada");
       expect(created.description).toContain("Paws has not delegated this issue.");
-      const improvement = getImprovement(w.db, id)!;
+      const improvement = (await getImprovement(sqliteDb(w.db), id))!;
       expect(improvement.reviewState).toBe("accepted");
       expect(improvement.issue).toMatchObject({
         id: improvementIssueUuid("ws", id),
@@ -237,9 +240,9 @@ describe("improvement delivery", () => {
   });
 
   test("a daily finding files as a review finding and its source findings carry the issue", async () => {
-    const w = world();
+    const w = await world();
     insertQueuedItem(w.db, { id: "item-a", sessionKey: "s", now: 1 });
-    recordReviewFindings(w.db, {
+    await recordReviewFindings(sqliteDb(w.db), {
       itemId: "item-a",
       repository: REPO,
       head: "a".repeat(40),
@@ -254,25 +257,27 @@ describe("improvement delivery", () => {
         why: "pre-existing" as const,
       })),
     });
-    const findings = listReviewFindings(w.db).sort((x, y) => x.id - y.id);
+    const findings = (await listReviewFindings(sqliteDb(w.db))).sort((x, y) => x.id - y.id);
     let improvementId = "";
     for (const finding of findings)
-      improvementId = recordImprovementProposal(w.db, {
-        workspaceId: "ws",
-        repository: REPO,
-        source: { kind: "daily_finding", key: dailyFindingKey(finding) },
-        proposal: {
-          title: "Shared fix",
-          problem: "Two findings",
-          proposedChange: "Scope: src",
-          actionStep: "issue",
-          verificationCriterion: "",
-          evidence: findings.map((f) => `review_finding:${f.key}`),
-        },
-        ...(improvementId ? { attachTo: improvementId } : {}),
-        now: 3,
-      }).improvementId;
-    decideImprovement(w.db, {
+      improvementId = (
+        await recordImprovementProposal(sqliteDb(w.db), {
+          workspaceId: "ws",
+          repository: REPO,
+          source: { kind: "daily_finding", key: dailyFindingKey(finding) },
+          proposal: {
+            title: "Shared fix",
+            problem: "Two findings",
+            proposedChange: "Scope: src",
+            actionStep: "issue",
+            verificationCriterion: "",
+            evidence: findings.map((f) => `review_finding:${f.key}`),
+          },
+          ...(improvementId ? { attachTo: improvementId } : {}),
+          now: 3,
+        })
+      ).improvementId;
+    await decideImprovement(sqliteDb(w.db), {
       improvementId,
       expectedVersion: 1,
       review: {
@@ -300,50 +305,57 @@ describe("improvement delivery", () => {
     w.db.run(`CREATE TRIGGER fail_filing BEFORE UPDATE ON review_finding
       BEGIN SELECT RAISE(ABORT, 'disk full'); END`);
     await w.run();
-    expect(delivery(w, improvementId).state).toBe("claimed");
-    expect(getImprovement(w.db, improvementId)!.issue).toBeNull();
-    expect(listReviewFindings(w.db).map((f) => f.status)).toEqual(["open", "open"]);
+    expect((await delivery(w, improvementId)).state).toBe("claimed");
+    expect((await getImprovement(sqliteDb(w.db), improvementId))!.issue).toBeNull();
+    expect((await listReviewFindings(sqliteDb(w.db))).map((f) => f.status)).toEqual([
+      "open",
+      "open",
+    ]);
     w.db.run("DROP TRIGGER fail_filing");
     w.advance(10 * MINUTE);
     await w.run();
-    expect(delivery(w, improvementId).state).toBe("succeeded");
+    expect((await delivery(w, improvementId)).state).toBe("succeeded");
     expect(w.linear.created).toHaveLength(1);
     const created = w.linear.created[0]!;
     expect(created.label).toBe("review finding");
     expect(created.description).toContain("**Source:** Daily review findings");
     expect(created.description).not.toContain("Weekly retro");
     expect(created.description).toContain("2 review findings");
-    const identifier = getImprovement(w.db, improvementId)!.issue!.identifier;
-    expect(listReviewFindings(w.db).map((f) => [f.status, f.filedIssue])).toEqual([
-      ["filed", identifier],
-      ["filed", identifier],
-    ]);
+    const identifier = (await getImprovement(sqliteDb(w.db), improvementId))!.issue!.identifier;
+    expect((await listReviewFindings(sqliteDb(w.db))).map((f) => [f.status, f.filedIssue])).toEqual(
+      [
+        ["filed", identifier],
+        ["filed", identifier],
+      ],
+    );
   });
 
   test("the issue UUID is reserved before the request and a lost response reconciles it", async () => {
-    const w = world();
-    const id = acceptRetro(w);
+    const w = await world();
+    const id = await acceptRetro(w);
     w.linear.fail("createIssue", "lose");
     await w.run();
-    const lost = delivery(w, id);
+    const lost = await delivery(w, id);
     expect(lost.state).toBe("unknown");
     expect(lost.remoteId).toBe(improvementIssueUuid("ws", id));
-    expect(getImprovement(w.db, id)!.reviewState).toBe("accepted");
+    expect((await getImprovement(sqliteDb(w.db), id))!.reviewState).toBe("accepted");
     expect((await view(w, id)).deliveries[0]).toMatchObject({ status: "unknown", recovery: null });
     await w.run();
-    expect(delivery(w, id).state).toBe("unknown");
+    expect((await delivery(w, id)).state).toBe("unknown");
     w.advance(10 * MINUTE);
     await w.run();
-    expect(delivery(w, id).state).toBe("succeeded");
+    expect((await delivery(w, id)).state).toBe("succeeded");
     expect(w.linear.created).toHaveLength(1);
     expect(w.linear.calls.filter((c) => c.method === "createIssue")).toHaveLength(1);
-    expect(getImprovement(w.db, id)!.issue!.id).toBe(improvementIssueUuid("ws", id));
+    expect((await getImprovement(sqliteDb(w.db), id))!.issue!.id).toBe(
+      improvementIssueUuid("ws", id),
+    );
   });
 
   test("a double click, a crashed worker and duplicate dispatch leave one issue", async () => {
-    const w = world();
-    const id = acceptRetro(w);
-    const again = decideImprovement(w.db, {
+    const w = await world();
+    const id = await acceptRetro(w);
+    const again = await decideImprovement(sqliteDb(w.db), {
       improvementId: id,
       expectedVersion: 1,
       review: { kind: "accept", proposalVersion: 1, intent: { kind: "create", teamId: "team-a" } },
@@ -352,7 +364,7 @@ describe("improvement delivery", () => {
     });
     expect(again.ok).toBe(false);
     const crashed = (await claimImprovementDelivery(sqliteDb(w.db), {
-      deliveryId: delivery(w, id).id,
+      deliveryId: (await delivery(w, id)).id,
       owner: "crashed",
       now: w.now(),
       leaseMs: 1_000,
@@ -367,25 +379,25 @@ describe("improvement delivery", () => {
       id: improvementIssueUuid("ws", id),
       teamId: "team-a",
       title: "t",
-      description: `Paws reference: \`${improvementIssueMarker(getImprovement(w.db, id)!)}\``,
+      description: `Paws reference: \`${improvementIssueMarker((await getImprovement(sqliteDb(w.db), id))!)}\``,
       label: "paws retro",
     });
     await w.run();
-    expect(delivery(w, id).state).toBe("claimed");
+    expect((await delivery(w, id)).state).toBe("claimed");
     w.advance(2_000);
     await Promise.all([w.run({ owner: "worker-1" }), w.run({ owner: "worker-2" })]);
-    expect(delivery(w, id).state).toBe("succeeded");
+    expect((await delivery(w, id)).state).toBe("succeeded");
     expect(w.linear.created).toHaveLength(1);
     expect(
-      (await listImprovementDeliveryAttempts(sqliteDb(w.db), delivery(w, id).id)).map(
+      (await listImprovementDeliveryAttempts(sqliteDb(w.db), (await delivery(w, id)).id)).map(
         (a) => a.outcome,
       ),
     ).toEqual(["expired", "succeeded"]);
   });
 
   test("rate limiting keeps the decision and waits for Linear's retry time", async () => {
-    const w = world();
-    const id = acceptRetro(w);
+    const w = await world();
+    const id = await acceptRetro(w);
     w.linear.fail("findIssue", {
       ok: false,
       failure: "rate_limited",
@@ -393,53 +405,57 @@ describe("improvement delivery", () => {
       message: "RATELIMITED",
     });
     await w.run();
-    const limited = delivery(w, id);
+    const limited = await delivery(w, id);
     expect(limited.state).toBe("failed");
     expect(limited.blocked).toBeNull();
     expect(limited.nextAttemptAt).toBe(w.now() + 5 * MINUTE);
-    expect(getImprovement(w.db, id)!.reviewState).toBe("accepted");
+    expect((await getImprovement(sqliteDb(w.db), id))!.reviewState).toBe("accepted");
     w.advance(4 * MINUTE);
     const calls = w.linear.calls.length;
     await w.run();
     expect(w.linear.calls).toHaveLength(calls);
     w.advance(MINUTE);
     await w.run();
-    expect(delivery(w, id).state).toBe("succeeded");
+    expect((await delivery(w, id)).state).toBe("succeeded");
   });
 
   test("revoked access blocks until a person retries; transient outages are bounded", async () => {
-    const w = world();
-    const id = acceptRetro(w);
+    const w = await world();
+    const id = await acceptRetro(w);
     w.linear.fail("findIssue", { ok: false, failure: "unauthorized", message: "401" });
     await w.run();
-    expect(delivery(w, id)).toMatchObject({ state: "failed", blocked: "unauthorized" });
+    expect(await delivery(w, id)).toMatchObject({ state: "failed", blocked: "unauthorized" });
     w.advance(24 * 60 * MINUTE);
     await w.run();
-    expect(delivery(w, id).state).toBe("failed");
-    expect(getImprovement(w.db, id)!.reviewState).toBe("accepted");
+    expect((await delivery(w, id)).state).toBe("failed");
+    expect((await getImprovement(sqliteDb(w.db), id))!.reviewState).toBe("accepted");
     await requeueImprovementDelivery(sqliteDb(w.db), {
-      deliveryId: delivery(w, id).id,
+      deliveryId: (await delivery(w, id)).id,
       now: w.now(),
     });
     await w.run();
-    expect(delivery(w, id).state).toBe("succeeded");
+    expect((await delivery(w, id)).state).toBe("succeeded");
 
-    const other = acceptRetro(w, { key: "r1/other" });
+    const other = await acceptRetro(w, { key: "r1/other" });
     for (let i = 0; i < 8; i++) {
       w.linear.fail("findIssue", { ok: false, failure: "unavailable", message: "502" });
       await w.run();
       w.advance(2 * 60 * MINUTE);
     }
-    expect(delivery(w, other)).toMatchObject({ state: "failed", blocked: "attempts", attempts: 8 });
+    expect(await delivery(w, other)).toMatchObject({
+      state: "failed",
+      blocked: "attempts",
+      attempts: 8,
+    });
     expect(w.linear.created).toHaveLength(1);
   });
 
   test("a removed destination mapping is accepted but unfiled until a person repairs it", async () => {
-    const w = world();
-    const id = acceptRetro(w);
+    const w = await world();
+    const id = await acceptRetro(w);
     w.db.run("DELETE FROM workspace_repository WHERE team_id = 'team-a'");
     await w.run();
-    expect(delivery(w, id)).toMatchObject({ state: "failed", blocked: "destination" });
+    expect(await delivery(w, id)).toMatchObject({ state: "failed", blocked: "destination" });
     expect(w.linear.calls).toHaveLength(0);
     expect((await view(w, id)).deliveries[0]).toMatchObject({
       status: "retryable",
@@ -448,7 +464,7 @@ describe("improvement delivery", () => {
     });
     expect(
       await repairImprovementDestination(sqliteDb(w.db), {
-        deliveryId: delivery(w, id).id,
+        deliveryId: (await delivery(w, id)).id,
         teamId: "team-b",
         now: w.now(),
       }),
@@ -461,32 +477,31 @@ describe("improvement delivery", () => {
   });
 
   test("an unknown outcome never reroutes, even after its mapping is removed", async () => {
-    const w = world();
-    const id = acceptRetro(w);
+    const w = await world();
+    const id = await acceptRetro(w);
     w.linear.fail("createIssue", { ok: false, failure: "unknown", message: "timeout" });
     await w.run();
     w.db.run("DELETE FROM workspace_repository WHERE team_id = 'team-a'");
     w.advance(10 * MINUTE);
     await w.run();
-    expect(delivery(w, id)).toMatchObject({ state: "unknown", blocked: "destination" });
+    expect(await delivery(w, id)).toMatchObject({ state: "unknown", blocked: "destination" });
     expect(
       await repairImprovementDestination(sqliteDb(w.db), {
-        deliveryId: delivery(w, id).id,
+        deliveryId: (await delivery(w, id)).id,
         teamId: "team-b",
         now: w.now(),
       }),
     ).toBeNull();
+    const frozen = (await delivery(w, id)).id;
     expect(() =>
-      w.db.run("UPDATE improvement_delivery SET target_team_id = 'team-b' WHERE id = ?", [
-        delivery(w, id).id,
-      ]),
+      w.db.run("UPDATE improvement_delivery SET target_team_id = 'team-b' WHERE id = ?", [frozen]),
     ).toThrow("frozen");
     expect(w.linear.created).toHaveLength(0);
   });
 
   test("a pre-existing issue id in another team is not linked", async () => {
-    const w = world();
-    const id = acceptRetro(w);
+    const w = await world();
+    const id = await acceptRetro(w);
     w.linear.issues.set(improvementIssueUuid("ws", id), {
       id: improvementIssueUuid("ws", id),
       identifier: "ODD-1",
@@ -496,14 +511,14 @@ describe("improvement delivery", () => {
       delegated: false,
     });
     await w.run();
-    expect(delivery(w, id)).toMatchObject({ state: "failed", blocked: "conflict" });
-    expect(getImprovement(w.db, id)!.issue).toBeNull();
+    expect(await delivery(w, id)).toMatchObject({ state: "failed", blocked: "conflict" });
+    expect((await getImprovement(sqliteDb(w.db), id))!.issue).toBeNull();
   });
 
   test("an issue under this improvement's id without its Paws reference is not linked", async () => {
-    const w = world();
-    const id = acceptRetro(w);
-    const other = acceptRetro(w, { key: "r2/issue" });
+    const w = await world();
+    const id = await acceptRetro(w);
+    const other = await acceptRetro(w, { key: "r2/issue" });
     w.linear.issues.set(improvementIssueUuid("ws", id), {
       id: improvementIssueUuid("ws", id),
       identifier: "PAS-77",
@@ -511,39 +526,39 @@ describe("improvement delivery", () => {
       teamId: "team-a",
       state: "open",
       delegated: false,
-      description: `Paws reference: \`${improvementIssueMarker(getImprovement(w.db, other)!)}\``,
+      description: `Paws reference: \`${improvementIssueMarker((await getImprovement(sqliteDb(w.db), other))!)}\``,
     });
     await w.run();
-    expect(delivery(w, id)).toMatchObject({ state: "failed", blocked: "conflict" });
-    expect(getImprovement(w.db, id)!.issue).toBeNull();
-    expect(delivery(w, other).state).toBe("succeeded");
+    expect(await delivery(w, id)).toMatchObject({ state: "failed", blocked: "conflict" });
+    expect((await getImprovement(sqliteDb(w.db), id))!.issue).toBeNull();
+    expect((await delivery(w, other)).state).toBe("succeeded");
     expect(w.linear.created.at(-1)!.description).toContain(
-      improvementIssueMarker(getImprovement(w.db, other)!),
+      improvementIssueMarker((await getImprovement(sqliteDb(w.db), other))!),
     );
   });
 
   test("each workspace delivers only through its own Linear connection", async () => {
-    const w = world();
-    const mine = acceptRetro(w);
-    const theirs = acceptRetro(w, {
+    const w = await world();
+    const mine = await acceptRetro(w);
+    const theirs = await acceptRetro(w, {
       workspaceId: "other",
       key: "r9/x",
       intent: { kind: "create", teamId: "team-x" },
     });
     await w.run();
-    expect(delivery(w, mine).state).toBe("succeeded");
-    expect(delivery(w, theirs)).toMatchObject({ state: "failed", blocked: "workspace" });
+    expect((await delivery(w, mine)).state).toBe("succeeded");
+    expect(await delivery(w, theirs)).toMatchObject({ state: "failed", blocked: "workspace" });
     expect(w.linear.calls.some((c) => c.id === improvementIssueUuid("other", theirs))).toBe(false);
     expect(improvementIssueUuid("ws", mine)).not.toBe(improvementIssueUuid("other", mine));
   });
 
   test("link only records the association and writes nothing to Linear", async () => {
-    const w = world();
-    const id = acceptRetro(w, { intent: { kind: "link", issueId: "issue-open" } });
+    const w = await world();
+    const id = await acceptRetro(w, { intent: { kind: "link", issueId: "issue-open" } });
     await w.run();
     await w.run();
-    expect(delivery(w, id, "link_issue").state).toBe("succeeded");
-    expect(getImprovement(w.db, id)!.issue).toMatchObject({
+    expect((await delivery(w, id, "link_issue")).state).toBe("succeeded");
+    expect((await getImprovement(sqliteDb(w.db), id))!.issue).toMatchObject({
       id: "issue-open",
       identifier: "PAS-60",
       url: "https://linear.app/x/PAS-60",
@@ -553,48 +568,56 @@ describe("improvement delivery", () => {
   });
 
   test("a link to an unavailable or unmapped issue never falls back to creating one", async () => {
-    const w = world();
-    const gone = acceptRetro(w, { key: "r1/gone", intent: { kind: "link", issueId: "missing" } });
-    const away = acceptRetro(w, {
+    const w = await world();
+    const gone = await acceptRetro(w, {
+      key: "r1/gone",
+      intent: { kind: "link", issueId: "missing" },
+    });
+    const away = await acceptRetro(w, {
       key: "r1/away",
       intent: { kind: "link", issueId: "issue-elsewhere" },
     });
     await w.run();
-    expect(delivery(w, gone, "link_issue")).toMatchObject({
+    expect(await delivery(w, gone, "link_issue")).toMatchObject({
       state: "failed",
       blocked: "unavailable",
     });
-    expect(delivery(w, away, "link_issue")).toMatchObject({
+    expect(await delivery(w, away, "link_issue")).toMatchObject({
       state: "failed",
       blocked: "destination",
     });
     expect(w.linear.calls.some((c) => c.method === "createIssue")).toBe(false);
-    expect(listImprovementDeliveries(w.db, gone).map((d) => d.operation)).toEqual(["link_issue"]);
+    expect((await listImprovementDeliveries(sqliteDb(w.db), gone)).map((d) => d.operation)).toEqual(
+      ["link_issue"],
+    );
   });
 
   test("a linked issue that moved to another mapped team is not followed", async () => {
-    const w = world();
-    const id = acceptRetro(w, {
+    const w = await world();
+    const id = await acceptRetro(w, {
       intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
     });
-    expect(delivery(w, id, "link_issue").targetTeamId).toBe("team-a");
-    expect(delivery(w, id, "evidence_comment").targetTeamId).toBe("team-a");
+    expect((await delivery(w, id, "link_issue")).targetTeamId).toBe("team-a");
+    expect((await delivery(w, id, "evidence_comment")).targetTeamId).toBe("team-a");
     w.linear.issues.set("issue-open", { ...w.linear.issues.get("issue-open")!, teamId: "team-b" });
     await w.run();
-    expect(delivery(w, id, "link_issue")).toMatchObject({
+    expect(await delivery(w, id, "link_issue")).toMatchObject({
       state: "failed",
       blocked: "destination",
     });
     expect(w.linear.comments.size).toBe(0);
-    expect(getImprovement(w.db, id)!.issue).toBeNull();
+    expect((await getImprovement(sqliteDb(w.db), id))!.issue).toBeNull();
     expect(await recovery(w, id, "link_issue")).toBe("reopen");
 
-    expect(reopen(w, id).ok).toBe(true);
-    expect(getImprovement(w.db, id)).toMatchObject({ reviewState: "needs_review", intent: null });
-    expect(listImprovementDeliveries(w.db, id)).toEqual([]);
-    const relinked = decideImprovement(w.db, {
+    expect((await reopen(w, id)).ok).toBe(true);
+    expect(await getImprovement(sqliteDb(w.db), id)).toMatchObject({
+      reviewState: "needs_review",
+      intent: null,
+    });
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toEqual([]);
+    const relinked = await decideImprovement(sqliteDb(w.db), {
       improvementId: id,
-      expectedVersion: getImprovement(w.db, id)!.version,
+      expectedVersion: (await getImprovement(sqliteDb(w.db), id))!.version,
       review: {
         kind: "accept",
         proposalVersion: 1,
@@ -606,147 +629,150 @@ describe("improvement delivery", () => {
     });
     expect(relinked.ok).toBe(true);
     await w.run();
-    expect(delivery(w, id, "link_issue").state).toBe("succeeded");
-    expect(getImprovement(w.db, id)!.issue!.id).toBe("issue-open");
+    expect((await delivery(w, id, "link_issue")).state).toBe("succeeded");
+    expect((await getImprovement(sqliteDb(w.db), id))!.issue!.id).toBe("issue-open");
   });
 
   test("a legacy link without a frozen team can be reopened and linked again", async () => {
-    const w = world();
-    const id = acceptRetro(w, { intent: { kind: "link", issueId: "issue-open" } });
+    const w = await world();
+    const id = await acceptRetro(w, { intent: { kind: "link", issueId: "issue-open" } });
     w.db.run("DROP TRIGGER improvement_delivery_intent_frozen");
     w.db.run("UPDATE improvement_delivery SET target_team_id = NULL, content = '{}'");
     await w.run();
-    expect(delivery(w, id, "link_issue")).toMatchObject({
+    expect(await delivery(w, id, "link_issue")).toMatchObject({
       state: "failed",
       blocked: "destination",
     });
     expect(await recovery(w, id, "link_issue")).toBe("reopen");
-    expect(reopen(w, id).ok).toBe(true);
-    expect(getImprovement(w.db, id)!.reviewState).toBe("needs_review");
+    expect((await reopen(w, id)).ok).toBe(true);
+    expect((await getImprovement(sqliteDb(w.db), id))!.reviewState).toBe("needs_review");
   });
 
   test("reopen is refused once anything may have reached Linear", async () => {
-    const w = world();
-    const created = acceptRetro(w, { key: "r1/create" });
+    const w = await world();
+    const created = await acceptRetro(w, { key: "r1/create" });
     w.linear.fail("createIssue", { ok: false, failure: "unauthorized", message: "401" });
     await w.run();
-    expect(delivery(w, created).blocked).toBe("unauthorized");
-    expect(reopen(w, created)).toMatchObject({ ok: false, reason: "accepted" });
+    expect((await delivery(w, created)).blocked).toBe("unauthorized");
+    expect(await reopen(w, created)).toMatchObject({ ok: false, reason: "accepted" });
 
-    const linked = acceptRetro(w, {
+    const linked = await acceptRetro(w, {
       key: "r1/link",
       intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
     });
     w.linear.fail("createComment", "lose");
     await w.run();
-    expect(delivery(w, linked, "evidence_comment").state).toBe("unknown");
-    expect(reopen(w, linked)).toMatchObject({ ok: false, reason: "accepted" });
+    expect((await delivery(w, linked, "evidence_comment")).state).toBe("unknown");
+    expect(await reopen(w, linked)).toMatchObject({ ok: false, reason: "accepted" });
     expect(
       await cancelImprovementEvidenceComment(
         sqliteDb(w.db),
-        delivery(w, linked, "evidence_comment").id,
+        (await delivery(w, linked, "evidence_comment")).id,
       ),
     ).toBeNull();
-    expect(listImprovementDeliveries(w.db, linked)).toHaveLength(2);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), linked)).toHaveLength(2);
   });
 
   test("a target closed after acceptance needs a new review choice before link or evidence", async () => {
-    const w = world();
-    const withComment = acceptRetro(w, {
+    const w = await world();
+    const withComment = await acceptRetro(w, {
       key: "r1/a",
       intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
     });
     w.linear.fail("findComment", { ok: false, failure: "rate_limited", message: "429" });
     await w.run();
-    expect(delivery(w, withComment, "link_issue").state).toBe("succeeded");
-    expect(delivery(w, withComment, "evidence_comment").state).toBe("failed");
-    const pending = acceptRetro(w, {
+    expect((await delivery(w, withComment, "link_issue")).state).toBe("succeeded");
+    expect((await delivery(w, withComment, "evidence_comment")).state).toBe("failed");
+    const pending = await acceptRetro(w, {
       key: "r1/b",
       intent: { kind: "link", issueId: "issue-open" },
     });
     w.linear.issues.set("issue-open", { ...w.linear.issues.get("issue-open")!, state: "closed" });
     // Accepted while closed: the reviewer confirmed the closed target.
-    const confirmed = acceptRetro(w, {
+    const confirmed = await acceptRetro(w, {
       key: "r1/c",
       intent: { kind: "link", issueId: "issue-open" },
     });
     w.advance(10 * MINUTE);
     await w.run();
-    expect(delivery(w, withComment, "evidence_comment")).toMatchObject({
+    expect(await delivery(w, withComment, "evidence_comment")).toMatchObject({
       state: "failed",
       blocked: "conflict",
     });
-    expect(delivery(w, pending, "link_issue")).toMatchObject({
+    expect(await delivery(w, pending, "link_issue")).toMatchObject({
       state: "failed",
       blocked: "conflict",
     });
-    expect(delivery(w, confirmed, "link_issue").state).toBe("succeeded");
+    expect((await delivery(w, confirmed, "link_issue")).state).toBe("succeeded");
     expect(w.linear.comments.size).toBe(0);
     expect(w.linear.calls.some((c) => c.method === "createComment")).toBe(false);
 
     expect(await recovery(w, pending, "link_issue")).toBe("reopen");
-    expect(reopen(w, pending).ok).toBe(true);
+    expect((await reopen(w, pending)).ok).toBe(true);
     expect(await recovery(w, withComment, "evidence_comment")).toBe("cancel_comment");
-    expect(reopen(w, withComment)).toMatchObject({ ok: false, reason: "accepted" });
-    const comment = delivery(w, withComment, "evidence_comment");
+    expect(await reopen(w, withComment)).toMatchObject({ ok: false, reason: "accepted" });
+    const comment = await delivery(w, withComment, "evidence_comment");
     expect(await cancelImprovementEvidenceComment(sqliteDb(w.db), comment.id)).toMatchObject({
       reviewState: "accepted",
       evidenceComment: false,
     });
-    expect(listImprovementDeliveries(w.db, withComment).map((d) => d.operation)).toEqual([
-      "link_issue",
-    ]);
-    expect(getImprovement(w.db, withComment)!.issue!.id).toBe("issue-open");
+    expect(
+      (await listImprovementDeliveries(sqliteDb(w.db), withComment)).map((d) => d.operation),
+    ).toEqual(["link_issue"]);
+    expect((await getImprovement(sqliteDb(w.db), withComment))!.issue!.id).toBe("issue-open");
   });
 
   test("link and add evidence posts one comment, reconciling an uncertain post", async () => {
-    const w = world();
-    const id = acceptRetro(w, {
+    const w = await world();
+    const id = await acceptRetro(w, {
       intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
     });
     w.linear.fail("createComment", "lose");
     await w.run();
-    expect(delivery(w, id, "link_issue").state).toBe("succeeded");
-    const comment = delivery(w, id, "evidence_comment");
+    expect((await delivery(w, id, "link_issue")).state).toBe("succeeded");
+    const comment = await delivery(w, id, "evidence_comment");
     expect(comment.state).toBe("unknown");
     expect(comment.remoteId).toBe(improvementCommentUuid("ws", id));
     w.advance(10 * MINUTE);
     await w.run();
     w.advance(10 * MINUTE);
     await w.run();
-    expect(delivery(w, id, "evidence_comment").state).toBe("succeeded");
+    expect((await delivery(w, id, "evidence_comment")).state).toBe("succeeded");
     expect(w.linear.comments.size).toBe(1);
     expect(w.linear.calls.filter((c) => c.method === "createComment")).toHaveLength(1);
     const body = w.linear.comments.get(improvementCommentUuid("ws", id))!.body;
     expect(body).toContain("weekly retro");
     expect(body).toContain("Linking does not mean this issue covers the new scope.");
-    expect(getImprovement(w.db, id)!.issue!.id).toBe("issue-open");
+    expect((await getImprovement(sqliteDb(w.db), id))!.issue!.id).toBe("issue-open");
   });
 
   test("the evidence comment waits for its link and a refused post is retried, not duplicated", async () => {
-    const w = world();
-    const id = acceptRetro(w, {
+    const w = await world();
+    const id = await acceptRetro(w, {
       intent: { kind: "link", issueId: "issue-open", addEvidenceComment: true },
     });
     w.linear.fail("findIssue", { ok: false, failure: "unavailable", message: "502" });
     await w.run();
-    expect(delivery(w, id, "link_issue").state).toBe("failed");
-    expect(delivery(w, id, "evidence_comment").attempts).toBe(0);
+    expect((await delivery(w, id, "link_issue")).state).toBe("failed");
+    expect((await delivery(w, id, "evidence_comment")).attempts).toBe(0);
     w.linear.fail("createComment", { ok: false, failure: "rate_limited", message: "429" });
     w.advance(MINUTE);
     await w.run();
-    expect(delivery(w, id, "evidence_comment")).toMatchObject({ state: "failed", blocked: null });
+    expect(await delivery(w, id, "evidence_comment")).toMatchObject({
+      state: "failed",
+      blocked: null,
+    });
     w.advance(10 * MINUTE);
     await w.run();
-    expect(delivery(w, id, "evidence_comment").state).toBe("succeeded");
+    expect((await delivery(w, id, "evidence_comment")).state).toBe("succeeded");
     expect(w.linear.comments.size).toBe(1);
   });
 
   test("recurring evidence reuses the confirmed issue instead of filing another", async () => {
-    const w = world();
-    const id = acceptRetro(w);
+    const w = await world();
+    const id = await acceptRetro(w);
     await w.run();
-    recordImprovementProposal(w.db, {
+    await recordImprovementProposal(sqliteDb(w.db), {
       workspaceId: "ws",
       repository: REPO,
       source: { kind: "retro_item", key: "r2/issue" },
@@ -757,6 +783,6 @@ describe("improvement delivery", () => {
     w.advance(MINUTE);
     await w.run();
     expect(w.linear.created).toHaveLength(1);
-    expect(listImprovementDeliveries(w.db, id)).toHaveLength(1);
+    expect(await listImprovementDeliveries(sqliteDb(w.db), id)).toHaveLength(1);
   });
 });

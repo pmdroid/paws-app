@@ -54,7 +54,7 @@ async function setup(options: { version?: string; conversations?: number } = {})
   const db = openDatabase(":memory:");
   migrate(db);
   const clock = new FakeClock(T0);
-  const userId = putWorkspaceUser(db, {
+  const userId = await putWorkspaceUser(sqliteDb(db), {
     id: workspaceId(),
     linearUserId: "owner",
     name: "Owner",
@@ -105,10 +105,10 @@ async function setup(options: { version?: string; conversations?: number } = {})
     db.close();
   });
 
-  function item(id: string, state: "merge_queue" | "running" | "queued" = "merge_queue") {
+  async function item(id: string, state: "merge_queue" | "running" | "queued" = "merge_queue") {
     const session = `ses-${id}`;
     insertQueuedItem(db, { id, now: T0, sessionKey: session });
-    recordLinearInstallation(db, {
+    await recordLinearInstallation(sqliteDb(db), {
       organizationId: "org-acme",
       oauthClientId: "app",
       appUserId: "paws-app",
@@ -253,16 +253,16 @@ async function setup(options: { version?: string; conversations?: number } = {})
       listOutbox(db, session)
         .filter((row) => (row.payload as { kind: string }).kind === "response")
         .map((row) => (row.payload as { body: string }).body),
-    resumes: () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume),
-    taskSlots: () => runnerTaskSlots(db, clock.now(), clock.now() - 60_000),
+    resumes: async () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume),
+    taskSlots: async () => await runnerTaskSlots(sqliteDb(db), clock.now(), clock.now() - 60_000),
   };
 }
 
 test("with every work slot busy, a message on an idle item starts a conversation at once and the reply reaches the session", async () => {
   const f = await setup();
-  f.item("acme-busy", "running");
-  const acme = f.item("acme-1");
-  const slots = f.taskSlots();
+  await f.item("acme-busy", "running");
+  const acme = await f.item("acme-1");
+  const slots = await f.taskSlots();
   expect(slots[0]!.used).toBeGreaterThanOrEqual(slots[0]!.capacity);
 
   await f.say("acme-1", "c-1", "Why does checkout retry the card twice?");
@@ -276,9 +276,9 @@ test("with every work slot busy, a message on an idle item starts a conversation
     conversation: { itemId: "acme-1", runId: acme.runId, resumeSessionId: "claude-acme-1" },
   });
   expect(started!.command.prompt).toContain("Why does checkout retry the card twice?");
-  expect(f.taskSlots()).toEqual(slots);
+  expect(await f.taskSlots()).toEqual(slots);
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
-  expect(f.resumes()).toEqual([]);
+  expect(await f.resumes()).toEqual([]);
   expect((await getLinearComment(sqliteDb(f.db), "c-1"))!.state).toBe("delivered");
 
   await f.answer(started!.id, {
@@ -295,9 +295,9 @@ test("with every work slot busy, a message on an idle item starts a conversation
 
 test("a reply in the Linear session of an idle item goes to a conversation, not a restart", async () => {
   const f = await setup();
-  const acme = f.item("acme-1");
+  const acme = await f.item("acme-1");
   await f.reply(acme.session, "Is the retry covered by a test?");
-  expect(f.resumes()).toEqual([]);
+  expect(await f.resumes()).toEqual([]);
   expect(await f.deliver("acme-1")).toBe("wait");
   const [started] = await f.conversations();
   expect(started!.command.prompt).toContain("Is the retry covered by a test?");
@@ -307,7 +307,7 @@ test("a reply in the Linear session of an idle item goes to a conversation, not 
 
 test("a turn that ends without a reply posts its final message as the reply", async () => {
   const f = await setup();
-  const acme = f.item("acme-1", "queued");
+  const acme = await f.item("acme-1", "queued");
   await f.say("acme-1", "c-1", "Which file holds the checkout form?");
   expect(await f.deliver("acme-1")).toBe("wait");
   await f.answer((await f.conversations())[0]!.id, { text: "It is src/checkout/form.tsx." });
@@ -319,7 +319,7 @@ test("a turn that ends without a reply posts its final message as the reply", as
 test("three messages on three items with a conversation limit of 2: two run and the third waits for a conversation slot", async () => {
   const f = await setup({ conversations: 2 });
   for (const id of ["acme-1", "acme-2", "acme-3"]) {
-    f.item(id);
+    await f.item(id);
     await f.say(id, `c-${id}`, `What does ${id} change?`);
   }
   expect(await f.deliver("acme-1")).toBe("wait");
@@ -330,7 +330,7 @@ test("three messages on three items with a conversation limit of 2: two run and 
     "acme-2",
   ]);
   expect((await getLinearComment(sqliteDb(f.db), "c-acme-3"))!.state).toBe("queued");
-  expect(f.resumes()).toEqual([]);
+  expect(await f.resumes()).toEqual([]);
 
   await f.answer((await f.conversations())[0]!.id, { text: "acme-1 renames the flag." });
   expect(await f.deliver("acme-1")).toBe("done");
@@ -339,25 +339,25 @@ test("three messages on three items with a conversation limit of 2: two run and 
     "acme-2",
     "acme-3",
   ]);
-  expect(f.resumes()).toEqual([]);
+  expect(await f.resumes()).toEqual([]);
 });
 
 test("a timeout posts the timeout reply once and keeps the session", async () => {
   const f = await setup();
-  const acme = f.item("acme-1");
+  const acme = await f.item("acme-1");
   await f.say("acme-1", "c-1", "Walk me through the whole payment flow.");
   expect(await f.deliver("acme-1")).toBe("wait");
   await f.answer((await f.conversations())[0]!.id, { text: "Still reading", timedOut: true });
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
   expect(f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
-  expect(getLinearSession(f.db, acme.session)!.stoppedAt).toBeNull();
+  expect((await getLinearSession(sqliteDb(f.db), acme.session))!.stoppedAt).toBeNull();
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("merge_queue");
 });
 
 test("a helper that expires without a result posts the timeout reply once", async () => {
   const f = await setup();
-  const acme = f.item("acme-1");
+  const acme = await f.item("acme-1");
   await f.say("acme-1", "c-1", "Walk me through the whole payment flow.");
   expect(await f.deliver("acme-1")).toBe("wait");
   expect(await f.deliver("acme-1")).toBe("wait");
@@ -365,12 +365,12 @@ test("a helper that expires without a result posts the timeout reply once", asyn
   expect(await f.deliver("acme-1")).toBe("done");
   expect(await f.deliver("acme-1")).toBe("done");
   expect(f.responses(acme.session)).toEqual([CONVERSATION_TIMEOUT_REPLY]);
-  expect(getLinearSession(f.db, acme.session)!.stoppedAt).toBeNull();
+  expect((await getLinearSession(sqliteDb(f.db), acme.session))!.stoppedAt).toBeNull();
 });
 
 test("a message while a work turn runs is delivered at the turn boundary, as today", async () => {
   const f = await setup();
-  f.item("acme-1", "running");
+  await f.item("acme-1", "running");
   await f.say("acme-1", "c-1", "Also cover the empty cart.");
   expect(await f.deliver("acme-1")).toBe("wait");
   expect(await f.conversations()).toEqual([]);
@@ -382,18 +382,18 @@ test("a message while a work turn runs is delivered at the turn boundary, as tod
 for (const version of ["0.1.73", "0.1.75", "0.1.76"])
   test(`a runner at ${version}, which cannot return a conversation's replies or start_work, gets a follow_up restart with the message`, async () => {
     const f = await setup({ version });
-    f.item("acme-1");
+    await f.item("acme-1");
     await f.say("acme-1", "c-1", "Use the v2 endpoint.");
     expect(await f.deliver("acme-1")).toBe("restarted");
     expect(await f.conversations()).toEqual([]);
-    expect(f.resumes()).toHaveLength(1);
-    expect((f.resumes()[0]!.payload as { reason: string }).reason).toBe("follow_up");
+    expect(await f.resumes()).toHaveLength(1);
+    expect(((await f.resumes())[0]!.payload as { reason: string }).reason).toBe("follow_up");
     expect((await f.brief("acme-1"))?.text).toContain("Use the v2 endpoint.");
   });
 
 test("a queued item's start job waits while a conversation runs on its session", async () => {
   const f = await setup();
-  f.item("acme-1", "queued");
+  await f.item("acme-1", "queued");
   await f.say("acme-1", "c-1", "What is left to do?");
   expect(await f.deliver("acme-1")).toBe("wait");
   const [started] = await f.conversations();
@@ -428,7 +428,7 @@ test("a queued item's start job waits while a conversation runs on its session",
 
 test("session replies past the prompt budget wait for the next conversation", async () => {
   const f = await setup();
-  const acme = f.item("acme-1");
+  const acme = await f.item("acme-1");
   await f.turn(acme.session, "turn-1", `First: ${"a".repeat(40_000)}`);
   await f.turn(acme.session, "turn-2", `Second: ${"b".repeat(40_000)}`);
   expect(await f.deliver("acme-1")).toBe("wait");
@@ -448,9 +448,9 @@ test("session replies past the prompt budget wait for the next conversation", as
 
 test("start_work in a conversation on a 0.1.77 runner restarts the item with the plan and posts it, holding no slot while it waits", async () => {
   const f = await setup({ version: "0.1.77" });
-  f.item("acme-busy", "running");
-  const acme = f.item("acme-1");
-  const slots = f.taskSlots();
+  await f.item("acme-busy", "running");
+  const acme = await f.item("acme-1");
+  const slots = await f.taskSlots();
   expect(slots[0]!.used).toBeGreaterThanOrEqual(slots[0]!.capacity);
   await f.say("acme-1", "c-1", "Please add a test for the card retry.");
   expect(await f.deliver("acme-1")).toBe("wait");
@@ -468,26 +468,26 @@ test("start_work in a conversation on a 0.1.77 runner restarts the item with the
     "I will add that test.",
     `${START_WORK_RESPONSE}${plan}`,
   ]);
-  const [resume] = f.resumes();
-  expect(f.resumes()).toHaveLength(1);
+  const [resume] = await f.resumes();
+  expect(await f.resumes()).toHaveLength(1);
   expect(resume!.payload).toMatchObject({ itemId: "acme-1", reason: "follow_up" });
   expect((resume!.payload as { handoff: string }).handoff).toContain(plan);
   expect(getWorkItem(f.db, "acme-1")!.state).toBe("queued");
   // Waiting in line holds neither a conversation nor a work slot: only acme-busy holds one.
   expect(await f.conversations()).toEqual([]);
-  expect(f.taskSlots()[0]).toMatchObject({ used: 1, capacity: 1 });
+  expect((await f.taskSlots())[0]).toMatchObject({ used: 1, capacity: 1 });
 });
 
 test("start_work after the item moved on posts that the work did not start", async () => {
   const f = await setup();
-  const acme = f.item("acme-1");
+  const acme = await f.item("acme-1");
   await f.say("acme-1", "c-1", "Please rename the flag.");
   expect(await f.deliver("acme-1")).toBe("wait");
   const [started] = await f.conversations();
   f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id='acme-1'");
   await f.answer(started!.id, { text: "", startWork: "Rename the flag." });
   expect(await f.deliver("acme-1")).toBe("done");
-  expect(f.resumes()).toEqual([]);
+  expect(await f.resumes()).toEqual([]);
   expect(f.responses(acme.session)).toEqual([
     "I could not start the work: the item moved on while we talked. Reply to try again.",
   ]);

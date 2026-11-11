@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, lt, lte, notInArray, sql, type SQL } from "drizzle-orm";
 import { findingPlace, reviewFindingKey, type ReviewFindingStatus } from "../core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 export type ReviewFindingSeverity = "P0" | "P1" | "P2" | "P3";
 /** In code the change did not touch, or reported only because it is below the review's `failOn`. */
@@ -133,11 +132,11 @@ export function* recordReviewFindingsSteps(
   return { recorded: keys.size, gone };
 }
 
-export function recordReviewFindings(
-  db: Database,
+export async function recordReviewFindings(
+  store: Db,
   input: RecordReviewFindings,
-): { recorded: number; gone: number } {
-  return settled(sqliteDb(db).transaction((q) => recordReviewFindingsSteps(q, input)));
+): Promise<{ recorded: number; gone: number }> {
+  return store.transaction((q) => recordReviewFindingsSteps(q, input));
 }
 
 function* upsert(
@@ -301,11 +300,11 @@ export function* listReviewFindingsSteps(
   return rows.map(mapRow);
 }
 
-export function listReviewFindings(
-  db: Database,
+export async function listReviewFindings(
+  store: Db,
   filter: ReviewFindingFilter = {},
-): ReviewFindingRecord[] {
-  return settled(sqliteDb(db).run((q) => listReviewFindingsSteps(q, filter)));
+): Promise<ReviewFindingRecord[]> {
+  return store.run((q) => listReviewFindingsSteps(q, filter));
 }
 
 export function* getReviewFindingSteps(q: Q, id: number): Steps<ReviewFindingRecord | null> {
@@ -473,6 +472,9 @@ export function* reviewFindingsByIdsSteps(
   return rows.map(mapRow);
 }
 
-export function reviewFindingsByIds(db: Database, ids: readonly number[]): ReviewFindingRecord[] {
-  return settled(sqliteDb(db).run((q) => reviewFindingsByIdsSteps(q, ids)));
+export async function reviewFindingsByIds(
+  store: Db,
+  ids: readonly number[],
+): Promise<ReviewFindingRecord[]> {
+  return store.run((q) => reviewFindingsByIdsSteps(q, ids));
 }

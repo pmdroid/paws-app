@@ -28,11 +28,11 @@ function candidates() {
   beginImplementRun(db, "eng-1", 1);
   enterMergeQueue(db, "eng-1", { phase: "merge_queue", baseSha: "b", wipCommit: "h" });
   let key = 0;
-  const add = (
+  const add = async (
     trigger: ReviewEscapeTrigger,
     settled?: { escape: boolean; reason?: "flake" | "tests_docs_format" },
   ) => {
-    recordReviewEscape(db, {
+    await recordReviewEscape(sqliteDb(db), {
       triggerKey: `k-${(key += 1)}`,
       itemId: "eng-1",
       trigger,
@@ -42,7 +42,7 @@ function candidates() {
       recordedAt: key * 10,
     });
     if (settled)
-      settleReviewEscape(db, key, {
+      await settleReviewEscape(sqliteDb(db), key, {
         fixHead: "f",
         files: ["src/a.ts"],
         escape: settled.escape,
@@ -56,15 +56,15 @@ function candidates() {
 describe("the reviewer score report", () => {
   test("lists found after the PR with counts per trigger, beside the escapes after merge", async () => {
     const { db, add } = candidates();
-    add("ci", { escape: true });
-    add("ci", { escape: true });
-    add("ci", { escape: false, reason: "flake" });
-    add("review", { escape: true });
-    add("comment", { escape: false, reason: "tests_docs_format" });
-    add("comment");
+    await add("ci", { escape: true });
+    await add("ci", { escape: true });
+    await add("ci", { escape: false, reason: "flake" });
+    await add("review", { escape: true });
+    await add("comment", { escape: false, reason: "tests_docs_format" });
+    await add("comment");
     // Recording the same trigger key again changes nothing.
     expect(
-      recordReviewEscape(db, {
+      await recordReviewEscape(sqliteDb(db), {
         triggerKey: "k-1",
         itemId: "eng-1",
         trigger: "ci",

@@ -35,7 +35,7 @@ async function relationsFixture(options: { batched?: boolean } = {}) {
   const intake = await intakeDelegatedIssue(db, tracker, { linearIssueId: "parent", now: 1000 });
   if (!intake.ok) throw new Error("intake failed");
   db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-  recordLinearInstallation(db, {
+  await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "client",
     appUserId: "app",
@@ -43,7 +43,7 @@ async function relationsFixture(options: { batched?: boolean } = {}) {
     teamId: "team",
     observedAtMs: 1000,
   });
-  bindLinearSessionTask(db, "session", intake.delegation.id, { actorId: "human" });
+  await bindLinearSessionTask(sqliteDb(db), "session", intake.delegation.id, { actorId: "human" });
   let epicReads = 0;
   const depReads: string[] = [];
   const reconciler = createItemReconciler({
