@@ -596,9 +596,9 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
 
   test("an emoji is a reply", async () => {
     const { db } = await handedOff();
-    expect(await turnEnds(db, "R1 fixed: ✅\nR2 not changed: 👍\nR3 not changed: Fresh read.")).toBe(
-      "complete",
-    );
+    expect(
+      await turnEnds(db, "R1 fixed: ✅\nR2 not changed: 👍\nR3 not changed: Fresh read."),
+    ).toBe("complete");
   });
 
   test("a turn end another writer overtook keeps nothing and sends nothing", async () => {

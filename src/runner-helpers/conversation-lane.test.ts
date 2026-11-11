@@ -69,20 +69,20 @@ async function fixture(version: string | null, conversations?: number) {
   const dispatch = async (sessionId: string, purpose: "classify" | "conversation") =>
     (
       await helpers.dispatch({
-      runnerId: "runner",
-      sessionId,
-      purpose,
-      profile: { agent: "claude", model: null },
-      prompt: "What does the acme checkout do?",
-      ...(purpose === "conversation"
-        ? {
-            conversation: {
-              itemId: "item-acme",
-              runId: "run-acme",
-              resumeSessionId: `claude-${sessionId}`,
-            },
-          }
-        : {}),
+        runnerId: "runner",
+        sessionId,
+        purpose,
+        profile: { agent: "claude", model: null },
+        prompt: "What does the acme checkout do?",
+        ...(purpose === "conversation"
+          ? {
+              conversation: {
+                itemId: "item-acme",
+                runId: "run-acme",
+                resumeSessionId: `claude-${sessionId}`,
+              },
+            }
+          : {}),
       })
     ).command;
   cleanup.push(() => {
