@@ -185,7 +185,7 @@ async function fixture({
     now: () => clock.now(),
   });
   const vmHttp = createMemberVmHttp({ db, available: () => available, now: () => clock.now() });
-  const read = createOnboardingReadiness(db);
+  const read = createOnboardingReadiness(sqliteDb(db));
   const page = async () =>
     onboardingPage({
       identifier: "TEST-1",

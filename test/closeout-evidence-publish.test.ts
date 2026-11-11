@@ -91,7 +91,7 @@ function setup() {
     fetch: async (_url, request) =>
       new Response(null, { status: request?.method === "PUT" ? 200 : 404 }),
   });
-  const store = createEvidenceStore({ db, root: join(home, "evidence") });
+  const store = createEvidenceStore({ store: sqliteDb(db), root: join(home, "evidence") });
   let sequence = 0;
   return {
     db,

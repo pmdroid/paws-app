@@ -54,7 +54,7 @@ function harness(limits?: { video: number; image: number }) {
   roots.push(home);
   const root = join(home, "evidence");
   const store = createEvidenceStore({
-    db,
+    store: sqliteDb(db),
     root,
     now: () => 1_700_000_000_000,
     ...(limits ? { limits } : {}),
@@ -167,7 +167,7 @@ describe("GET /api/evidence/:id", () => {
       sessionIds: string[] | null = ["session-visible"],
     ) =>
       handleEvidenceRequest(new Request(`http://paws.test/api/evidence/${id}`, init), {
-        db: h.db,
+        store: sqliteDb(h.db),
         root: h.root,
         sessionIds: sessionIds ?? undefined,
       }).then((response) => response!);
@@ -251,7 +251,7 @@ test("the server refuses evidence without a session and hides it from members wi
   roots.push(home);
   const evidenceDir = join(home, "evidence");
   insertQueuedItem(f.db, { id: "evidence-item", sessionKey: "session-elsewhere" });
-  const saved = await createEvidenceStore({ db: f.db, root: evidenceDir }).save({
+  const saved = await createEvidenceStore({ store: sqliteDb(f.db), root: evidenceDir }).save({
     itemId: "evidence-item",
     runId: "run",
     checkId: "e2e",

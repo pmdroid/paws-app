@@ -31,7 +31,7 @@ function setup() {
   const item = insertQueuedItem(db, { id: "item", sessionKey: "session" });
   db.run("UPDATE work_item SET state='verifying' WHERE id='item'");
   const tracker = createFakeTracker();
-  const store = createEvidenceStore({ db, root: join(home, "evidence") });
+  const store = createEvidenceStore({ store: sqliteDb(db), root: join(home, "evidence") });
   const publisher = createEvidenceArtifactPublisher({
     store: sqliteDb(db),
     itemId: "item",

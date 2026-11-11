@@ -1,10 +1,9 @@
-import type { Database } from "bun:sqlite";
 import {
   getEvidenceSteps,
   getVisualReviewMarkSteps,
   getWorkItemSteps,
-  sqliteDb,
   type Q,
+  type Db,
 } from "../db";
 import { openEvidenceFile, type EvidenceObjects } from "./objects";
 import { ULID_PATTERN } from "./ulid";
@@ -16,7 +15,7 @@ export function isEvidenceFilePath(path: string): boolean {
 }
 
 export type EvidenceRequestOptions = {
-  db: Database;
+  store: Db;
   root: string;
   objects?: EvidenceObjects;
   sessionIds: readonly string[] | undefined;
@@ -39,7 +38,7 @@ export async function handleEvidenceRequest(
     return new Response(null, { status: 405, headers: { ...PRIVATE, allow: "GET, HEAD" } });
   const id = path.slice(EVIDENCE_API_PATH.length);
   if (!ULID_PATTERN.test(id)) return notFound();
-  const store = sqliteDb(options.db);
+  const store = options.store;
   const evidence = await store.run(function* (q) {
     return (yield* getEvidenceSteps(q, id)) ?? (yield* markedEvidenceSteps(q, id));
   });
@@ -61,7 +60,7 @@ export async function handleEvidenceRequest(
       headers: { ...headers, "content-range": `bytes */${size}` },
     });
   const head = request.method === "HEAD";
-  const file = await openEvidenceFile(sqliteDb(options.db), options, id, range ?? undefined);
+  const file = await openEvidenceFile(options.store, options, id, range ?? undefined);
   if (file === null || file.size !== size) return notFound();
   if (head && file.body instanceof ReadableStream) await file.body.cancel();
   if (range === null)

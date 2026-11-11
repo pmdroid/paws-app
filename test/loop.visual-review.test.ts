@@ -1165,7 +1165,7 @@ async function pausedForReview(
   const evidenceRoot = path.join(layout.pawsRoot, "evidence");
   let spacing = 0;
   const store = createEvidenceStore({
-    db,
+    store: sqliteDb(db),
     root: evidenceRoot,
     now: () => clock.now() + spacing,
   });

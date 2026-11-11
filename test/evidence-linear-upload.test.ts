@@ -45,7 +45,7 @@ function setup(reviewed = true) {
   migrate(db);
   insertQueuedItem(db, { id: "item", sessionKey: "session" });
   const root = join(home, "evidence");
-  const store = createEvidenceStore({ db, root });
+  const store = createEvidenceStore({ store: sqliteDb(db), root });
   const uploads: string[] = [];
   const failures = { remaining: 0 };
   const files = createLinearFileTransfer({

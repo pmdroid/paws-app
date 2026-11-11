@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import {
   activeRunnerOwnersSteps,
@@ -19,7 +18,6 @@ import {
   reviewFindingsByIdsSteps,
   findingGroupSourcesSteps,
   setFindingGroupRunFingerprintSteps,
-  sqliteDb,
   workspaceSessionIdsSteps,
   findingGroupingAdminsSteps,
   findingGroupingEnabledSteps,
@@ -199,16 +197,13 @@ export function validateGroups(
 }
 
 export async function createFindingGrouping(options: {
-  db: Database;
-  /** The async `Db` over `db`. Defaults to `sqliteDb(db)`. */
-  store?: Db;
+  store: Db;
   issues: FindingIssueAdapter;
   helper: GroupingHelper;
   sources: (workspaceId: string) => GroupingInput[] | Promise<GroupingInput[]>;
   now?: () => number;
 }) {
-  const { db } = options;
-  const store = options.store ?? sqliteDb(db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   // A previous process cannot still own a helper after the maximum command lifetime.
   await recoverFindingGroupRuns(store, now());
@@ -373,11 +368,10 @@ export async function createFindingGrouping(options: {
 }
 
 export async function scopedGroupingSources(
-  db: Database,
+  store: Db,
   workspaceId: string,
   sessions: readonly string[],
 ): Promise<GroupingInput[]> {
-  const store = sqliteDb(db);
   const allowed = new Set(sessions);
   const sources = new Map(
     (await store.run((q) => findingGroupSourcesSteps(q, workspaceId)))
@@ -437,10 +431,9 @@ export function createFakeGroupingHelper(text: string) {
 }
 
 export async function groupingAuthorityUser(
-  db: Database,
+  store: Db,
   workspaceId: string,
 ): Promise<string | null> {
-  const store = sqliteDb(db);
   const admins = await store.run((q) => findingGroupingAdminsSteps(q, workspaceId));
   if (!admins.length) return null;
   const owners = new Set(await store.run((q) => activeRunnerOwnersSteps(q, workspaceId)));
@@ -448,14 +441,14 @@ export async function groupingAuthorityUser(
 }
 
 export async function workspaceGroupingSources(
-  db: Database,
+  store: Db,
   workspaceId: string,
   clientId: string,
 ): Promise<GroupingInput[]> {
-  const userId = await groupingAuthorityUser(db, workspaceId);
+  const userId = await groupingAuthorityUser(store, workspaceId);
   if (!userId) return [];
-  const sessions = await sqliteDb(db).run((q) =>
+  const sessions = await store.run((q) =>
     workspaceSessionIdsSteps(q, workspaceId, userId, clientId),
   );
-  return scopedGroupingSources(db, workspaceId, sessions);
+  return scopedGroupingSources(store, workspaceId, sessions);
 }

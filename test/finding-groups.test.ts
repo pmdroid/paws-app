@@ -101,7 +101,7 @@ async function seed() {
   ]);
   let now = epoch;
   const grouping = await createFindingGrouping({
-    db,
+    store: sqliteDb(db),
     sources: () => sources(),
     helper: helper.run,
     issues,
@@ -198,7 +198,7 @@ test("empty findings and failed helpers never spend extra turns on the same UTC 
   const f = await seed();
   try {
     const empty = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: () => [],
       issues: f.issues,
       helper: f.helper.run,
@@ -208,7 +208,7 @@ test("empty findings and failed helpers never spend extra turns on the same UTC 
     expect(f.helper.calls).toHaveLength(0);
     expect(f.issues.reads).toHaveLength(0);
     const failed = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: f.sources,
       issues: f.issues,
       helper: async () => {
@@ -488,7 +488,7 @@ test("large inputs fit the helper schema and rotate overflow without another fin
     const helper = createFakeGroupingHelper('{"groups":[]}');
     let now = epoch;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: () => findings,
       issues: f.issues,
       helper: helper.run,
@@ -668,7 +668,7 @@ test("overflow advances by a full batch and keeps groups outside the current bat
     const batches: number[][] = [];
     let now = epoch;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: () => rows,
       issues: f.issues,
       now: () => now,
@@ -764,7 +764,7 @@ test("admin grouping covers findings reported by teams outside that admin's memb
         },
       ],
     });
-    const rows = await workspaceGroupingSources(f.db, "ws", "client");
+    const rows = await workspaceGroupingSources(sqliteDb(f.db), "ws", "client");
     expect(rows.some((row) => row.teamId === "team-x")).toBe(true);
     expect(rows.some((row) => row.teamId === "team-y")).toBe(true);
   } finally {
@@ -801,8 +801,10 @@ test("grouping authority is an admin who owns a runner, not an earlier admin wit
     f.db.run(
       "INSERT INTO runner(id,workspace_id,owner_user_id,name,status,created_at,last_seen_at) VALUES('runner','ws','ada','Runner','active',1,1)",
     );
-    expect(await groupingAuthorityUser(f.db, "ws")).toBe("ada");
-    expect((await workspaceGroupingSources(f.db, "ws", "client")).length).toBeGreaterThan(0);
+    expect(await groupingAuthorityUser(sqliteDb(f.db), "ws")).toBe("ada");
+    expect((await workspaceGroupingSources(sqliteDb(f.db), "ws", "client")).length).toBeGreaterThan(
+      0,
+    );
   } finally {
     f.db.close();
   }
@@ -821,7 +823,7 @@ test("a partial grouping cycle processes each finding and then skips unchanged s
     let calls = 0;
     let now = epoch;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: () => rows,
       issues: f.issues,
       now: () => now,
@@ -862,7 +864,7 @@ test("daily finding updates do not reset the overflow cursor", async () => {
     const covered = new Set<number>();
     let now = epoch;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       sources: () => rows,
       issues: f.issues,
       now: () => now,
@@ -963,7 +965,7 @@ test("persisted overflow IDs survive closures between daily runs", async () => {
     let now = epoch;
     const batches: number[][] = [];
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       issues: f.issues,
       sources: () => rows,
       now: () => now,
@@ -993,7 +995,7 @@ test("recovered runs cannot publish groups or overwrite interrupted history", as
     const before = await listFindingGroups(sqliteDb(f.db), "ws");
     let now = epoch + 86400000;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       issues: f.issues,
       sources: async () =>
         (await f.sources()).map((row) => ({ ...row, text: row.text + " changed" })),
@@ -1028,7 +1030,7 @@ test("a preempted turn consumes the daily allowance and retries on the next UTC 
     let now = epoch;
     let attempts = 0;
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       issues: f.issues,
       sources: f.sources,
       now: () => now,
@@ -1068,7 +1070,7 @@ test("legacy position cursors start a fresh ID-based pass", async () => {
       text: "x".repeat(4000),
     }));
     const grouping = await createFindingGrouping({
-      db: f.db,
+      store: sqliteDb(f.db),
       issues: f.issues,
       sources: () => rows,
       now: () => epoch,

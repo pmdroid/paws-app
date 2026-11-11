@@ -567,7 +567,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       run: () => refreshRepositoryCatalog(db, listCatalog),
     });
   if (options?.refreshAgentCatalog) {
-    const agentCatalog = createAgentCatalog({ db, registry: createNpmRegistry() });
+    const agentCatalog = createAgentCatalog({ store, registry: createNpmRegistry() });
     // Hourly checks keep the daily read on schedule across sleep and restarts.
     periodic.push({
       queue: "agent.catalog.refresh",
@@ -856,7 +856,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
           await orchestrator?.interruptItem(itemId);
         },
         assignments,
-        onboardingReadiness: createOnboardingReadiness(db),
+        onboardingReadiness: createOnboardingReadiness(store),
         createVmAvailable,
         githubAttributionClient: (() => {
           try {
@@ -936,7 +936,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       const key = envelopeSubkey(paths.secretsDir, "paws-evidence-objects");
       return withSealedRunFileObjects(createS3RunFileObjects("evidence", s3), key);
     });
-  void uploadLocalEvidence(db, { root: paths.evidenceDir, objects: evidenceObjects }).catch(
+  void uploadLocalEvidence(store, { root: paths.evidenceDir, objects: evidenceObjects }).catch(
     (error: unknown) => journalCaught(error, "index.startPaws.uploadLocalEvidence", null),
   );
   const closeoutEvidence = {
@@ -1134,7 +1134,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   });
   const findingGrouping = linear?.findingIssues
     ? await createFindingGrouping({
-        db,
         store,
         issues: linear.findingIssues,
         helper: createFindingGroupHelper({
@@ -1148,7 +1147,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         }),
         sources: (workspaceId) => {
           if (!runtime.linearClientId) return [];
-          return workspaceGroupingSources(db, workspaceId, runtime.linearClientId);
+          return workspaceGroupingSources(store, workspaceId, runtime.linearClientId);
         },
       })
     : null;
@@ -1824,7 +1823,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
               objects: evidenceObjects,
               store: {
                 save: (input) =>
-                  createEvidenceStore({ db, root: paths.evidenceDir, objects: evidenceObjects })
+                  createEvidenceStore({ store, root: paths.evidenceDir, objects: evidenceObjects })
                     .save(input)
                     .catch((error: unknown) => {
                       if (error instanceof EvidenceRejectedError)
