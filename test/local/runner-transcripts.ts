@@ -124,12 +124,14 @@ export async function probeRunnerTranscripts(
     prompt: "Produce the fixture.",
   };
   work.assign(command);
-  const token = work.issueGrant({
-    runnerId,
-    runId: run.id,
-    commandId: command.id,
-    generation: 1,
-  }).token;
+  const token = (
+    await work.issueGrant({
+      runnerId,
+      runId: run.id,
+      commandId: command.id,
+      generation: 1,
+    })
+  ).token;
   const access = { runnerId, runId: run.id, token };
   const objects = providedObjects ?? createFakeRunnerTranscriptObjects();
   let readFault: "throw" | "short" | "long" | "digest" | undefined;
@@ -314,12 +316,14 @@ export async function probeRunnerTranscripts(
       generation: 2,
     };
     work.assign(emptyCommand);
-    const emptyToken = work.issueGrant({
-      runnerId,
-      runId: run.id,
-      commandId: emptyCommand.id,
-      generation: 2,
-    }).token;
+    const emptyToken = (
+      await work.issueGrant({
+        runnerId,
+        runId: run.id,
+        commandId: emptyCommand.id,
+        generation: 2,
+      })
+    ).token;
     await transcripts.finish(
       { ...access, token: emptyToken },
       {
@@ -337,12 +341,14 @@ export async function probeRunnerTranscripts(
     });
     const next = { ...emptyCommand, id: workspaceId(now), generation: 3 };
     work.assign(next);
-    const nextToken = work.issueGrant({
-      runnerId,
-      runId: run.id,
-      commandId: next.id,
-      generation: 3,
-    }).token;
+    const nextToken = (
+      await work.issueGrant({
+        runnerId,
+        runId: run.id,
+        commandId: next.id,
+        generation: 3,
+      })
+    ).token;
     let release: () => void = () => undefined;
     let entered: () => void = () => undefined;
     const held = new Promise<void>((resolve) => {

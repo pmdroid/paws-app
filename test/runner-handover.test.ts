@@ -251,31 +251,32 @@ async function setup() {
     await drive(command);
     return { result: (await settled)!, notices, command };
   }
-  function grant(command: RunCommand) {
-    return work.issueGrant({
-      runnerId,
-      runId: command.runId,
-      commandId: command.id,
-      generation: command.generation,
-    }).token;
+  async function grant(command: RunCommand) {
+    return (
+      await work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      })
+    ).token;
   }
-  function events(command: RunCommand, list: RunnerEvent[]) {
-    const token = grant(command);
+  async function events(command: RunCommand, list: RunnerEvent[]) {
+    const token = await grant(command);
     const after = db
       .query<{ sequence: number }, [string]>(
         "SELECT last_sequence AS sequence FROM runner_work WHERE run_id=?",
       )
       .get(command.runId)!.sequence;
-    list.forEach((event, index) =>
-      work.event({
+    for (const [index, event] of list.entries())
+      await work.event({
         runnerId,
         runId: command.runId,
         generation: command.generation,
         sequence: after + index + 1,
         token,
         event,
-      }),
-    );
+      });
   }
   async function submit(
     command: RunCommand,
@@ -289,7 +290,7 @@ async function setup() {
       runnerId,
       runId: command.runId,
       generation: command.generation,
-      token: grant(command),
+      token: await grant(command),
       result: {
         executionId: workspaceId(),
         commandId: command.id,
@@ -318,7 +319,7 @@ async function setup() {
     git(["-C", runner, "add", "-A"]);
     git(["-C", runner, "commit", "-q", "-m", "Save work in progress"]);
     const wip = git(["-C", runner, "rev-parse", "HEAD"]);
-    const access = { runnerId, runId: command.runId, token: grant(command) };
+    const access = { runnerId, runId: command.runId, token: await grant(command) };
     const bundle = randomBytes(10_000);
     await sessions.upload(access, {
       generation: command.generation,
@@ -338,7 +339,7 @@ async function setup() {
       turn: command.generation,
     });
     // The runner commits to the handover before it publishes the result.
-    events(command, [{ type: "handover", handedOver: true }]);
+    await events(command, [{ type: "handover", handedOver: true }]);
     await submit(command, { handedOver: true, candidateSha: wip });
     return wip;
   }
@@ -427,7 +428,7 @@ test("a session waiting on ask_team hands over without losing its question", asy
   const { result } = await context.turn(
     record,
     async (command) => {
-      context.events(command, [
+      await context.events(command, [
         { type: "question", text: "Which color should the button be?", options: ["Red", "Blue"] },
       ]);
       while (!asked.length) await delay(1);
@@ -461,14 +462,14 @@ test("a handover that fails after the interrupt while Paws posts a question keep
   const { result } = await context.turn(
     record,
     async (command) => {
-      context.events(command, [
+      await context.events(command, [
         { type: "question", text: "Which color should the button be?", options: ["Red", "Blue"] },
       ]);
       while (!asked.length) await delay(1);
       const handing = context.backend.handOverItem(record.id);
       await context.next();
       // The snapshot fails after the interrupt while Paws is still posting the question.
-      context.events(command, [
+      await context.events(command, [
         { type: "handover_interrupted" },
         { type: "handover", handedOver: false, reason: "snapshot" },
       ]);
@@ -498,7 +499,7 @@ test("a handover the runner cannot finish within 2 minutes is reported and the s
   const { result, notices } = await context.turn(record, async (command) => {
     const handing = context.backend.handOverItem(record.id);
     await context.next();
-    context.events(command, [{ type: "handover", handedOver: false, reason: "timeout" }]);
+    await context.events(command, [{ type: "handover", handedOver: false, reason: "timeout" }]);
     outcome = await handing;
     // The session went on and finished its turn on the same runner.
     writeFileSync(join(context.runner, "result.txt"), "finished");
@@ -521,7 +522,7 @@ test("a handover that fails after the interrupt is reported with its reason, and
   const { result, notices } = await context.turn(record, async (command) => {
     const handing = context.backend.handOverItem(record.id);
     await context.next();
-    context.events(command, [
+    await context.events(command, [
       { type: "handover_interrupted" },
       { type: "handover", handedOver: false, reason: "snapshot" },
     ]);
@@ -578,7 +579,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
         git(["-C", runner, "commit", "-q", "-m", "Add the findings contract"]);
         interval = git(["-C", runner, "rev-parse", "HEAD"]);
         // An interval checkpoint becomes the item's checkpoint while the turn runs.
-        context.events(command, [{ type: "checkpoint", reason: "interval", sha: interval }]);
+        await context.events(command, [{ type: "checkpoint", reason: "interval", sha: interval }]);
         while (getWorkItem(db, record.id)?.checkpoint?.wipCommit !== interval) await delay(1);
         writeFileSync(join(runner, "findings.tsx"), "<Findings />\n");
         git(["-C", runner, "add", "-A"]);
@@ -611,7 +612,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
           runId: command.runId,
           generation: command.generation,
         });
-        context.events(command, [{ type: "checkpoint", reason: "stop", sha: snapshot }]);
+        await context.events(command, [{ type: "checkpoint", reason: "stop", sha: snapshot }]);
         // Only then does Paws cancel the run.
         expect(await context.next()).toMatchObject({ type: "cancel", runId: command.runId });
       },

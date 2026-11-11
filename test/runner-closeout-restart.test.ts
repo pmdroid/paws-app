@@ -233,13 +233,15 @@ async function fixture(agentRead?: AgentRead) {
         "SELECT consumed_sequence AS sequence FROM runner_work WHERE run_id=?",
       )
       .get(run.id)?.sequence ?? 0;
-  const grant = (command: CloseoutCommand) =>
-    services.work.issueGrant({
-      runnerId,
-      runId: command.runId,
-      commandId: command.id,
-      generation: command.generation,
-    }).token;
+  const grant = async (command: CloseoutCommand) =>
+    (
+      await services.work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      })
+    ).token;
 
   return {
     head,
@@ -263,12 +265,12 @@ async function fixture(agentRead?: AgentRead) {
     get services() {
       return services;
     },
-    say(command: CloseoutCommand, sequence: number, text: string) {
-      services.work.event({
+    async say(command: CloseoutCommand, sequence: number, text: string) {
+      await services.work.event({
         runnerId,
         runId: command.runId,
         generation: command.generation,
-        token: grant(command),
+        token: await grant(command),
         sequence,
         event: {
           type: "activity",
@@ -276,12 +278,12 @@ async function fixture(agentRead?: AgentRead) {
         },
       });
     },
-    finish(command: CloseoutCommand, result: Partial<RunnerResult>) {
+    async finish(command: CloseoutCommand, result: Partial<RunnerResult>) {
       return services.results.submit({
         runnerId,
         runId: command.runId,
         generation: command.generation,
-        token: grant(command),
+        token: await grant(command),
         result: {
           executionId: workspaceId(),
           commandId: command.id,
@@ -325,7 +327,7 @@ async function shutDownMidCommand(f: Fixture, options: (signal: AbortSignal) => 
     );
   await f.until(() => f.placed.length === 1);
   const command = f.placed[0]!;
-  f.say(command, 1, "Before the restart.");
+  await f.say(command, 1, "Before the restart.");
   await f.until(() => f.consumed() === 1);
   shutdown.abort(new PawsShutdown());
   expect(await first).not.toBeNull();
@@ -599,7 +601,7 @@ test("a turn on a runner that takes it gets one read token and its prompt line; 
       const command = f.placed[0]!;
       expect(command.type === "run" && command.githubRead).toBe(current ? true : undefined);
       expect(command.prompt?.endsWith(`\n\n${READ_PROMPT}`)).toBe(current);
-      f.say(command, 1, `gh printed ${READ_TOKEN}`);
+      await f.say(command, 1, `gh printed ${READ_TOKEN}`);
       await f.until(() => f.consumed() === 1);
       await f.finish(command, { candidateSha: f.head, closeoutReport: REPORT });
       expect(await running).toMatchObject({ stopReason: "end_turn" });

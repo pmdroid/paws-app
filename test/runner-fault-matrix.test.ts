@@ -542,7 +542,7 @@ async function runRemoteFault(fault: Fault) {
   const handled = new Set<string>();
   let unreachable: { command: RunnerCommand; since: number } | undefined;
   async function deliver(command: Extract<RunnerCommand, { type: "run" }>) {
-    const grant = work.issueGrant({
+    const grant = await work.issueGrant({
       runnerId,
       runId: command.runId,
       commandId: command.id,
@@ -587,17 +587,19 @@ async function runRemoteFault(fault: Fault) {
     const sha = await git(["-C", source, "rev-parse", "HEAD"]);
     await git(["-C", source, "push", "-q", origin, `${sha}:refs/paws/checkpoints/${branch}`]);
     runner.checkpointSha = sha;
-    work.event({
+    await work.event({
       runnerId,
       runId: command.runId,
       generation: command.generation,
       sequence: 1,
-      token: work.issueGrant({
-        runnerId,
-        runId: command.runId,
-        commandId: command.id,
-        generation: command.generation,
-      }).token,
+      token: (
+        await work.issueGrant({
+          runnerId,
+          runId: command.runId,
+          commandId: command.id,
+          generation: command.generation,
+        })
+      ).token,
       event: { type: "checkpoint", reason: "interval", sha },
     });
   }

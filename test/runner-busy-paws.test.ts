@@ -109,7 +109,12 @@ async function fixture() {
   };
   work.assign(command);
   await work.acknowledge(runnerId, command.id);
-  const grant = work.issueGrant({ runnerId, runId: run.id, commandId: command.id, generation: 1 });
+  const grant = await work.issueGrant({
+    runnerId,
+    runId: run.id,
+    commandId: command.id,
+    generation: 1,
+  });
   // A helper holds the runner's only slot, so the runner has no capacity left.
   db.run(
     "INSERT INTO runner_helper(id,runner_id,workspace_id,session_id,session_generation,runner_fence,envelope,expires_at) VALUES('busy',?,?,'session',0,0,'{}',?)",
@@ -156,7 +161,7 @@ test("a heartbeat 70 s late for a run the runner reports, on a full runner, rene
     ).toEqual([]);
     f.clock.at += 60_000 + 70_000;
     // Before the late heartbeat lands, the run's own requests still see it as reported.
-    const renewed = f.work.issueGrant({
+    const renewed = await f.work.issueGrant({
       runnerId: f.runnerId,
       runId: f.run.id,
       commandId: f.command.id,
@@ -242,14 +247,14 @@ test("a run reported earlier but left out of the latest report gets no grace on 
     );
     f.db.run("UPDATE runner SET live_reported_at=? WHERE id=?", [f.clock.at + 1, f.runnerId]);
     f.clock.at += 60_000 + 70_000;
-    expect(() =>
+    await expect(
       f.work.issueGrant({
         runnerId: f.runnerId,
         runId: f.run.id,
         commandId: f.command.id,
         generation: 1,
       }),
-    ).toThrow("Runner work is fenced or its lease expired.");
+    ).rejects.toThrow("Runner work is fenced or its lease expired.");
   } finally {
     f.close();
   }

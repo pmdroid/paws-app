@@ -404,7 +404,7 @@ async function usageLimitScenario(
           agents.push(command.profile.agent);
           const limited = !limitedCommand;
           if (limited) limitedCommand = command.id;
-          const grant = work.issueGrant({
+          const grant = await work.issueGrant({
             runnerId,
             runId: command.runId,
             commandId: command.id,

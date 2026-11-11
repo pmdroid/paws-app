@@ -110,7 +110,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
       if (permission && request.method === "POST") {
         const input = grant.parse(await body(request));
         return json(
-          work.issueGrant({
+          await work.issueGrant({
             ...input,
             runnerId,
             runId: id.parse(decodeURIComponent(permission[1]!)),
@@ -122,7 +122,7 @@ export function createRunnerWorkHttp(work: RunnerWork, options: { skillsRoot?: s
         if (!authorization || !/^Bearer [A-Za-z0-9_-]{43}$/.test(authorization))
           return json({ error: "A run grant is required." }, 403);
         const input = event.parse(await body(request, 1_048_576));
-        return json(work.event({ ...input, runnerId, token: authorization.slice(7) }));
+        return json(await work.event({ ...input, runnerId, token: authorization.slice(7) }));
       }
       return null;
     } catch (error) {

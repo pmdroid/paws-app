@@ -138,7 +138,7 @@ export async function probeRunnerRepositoryAccess(
       return installation;
     },
   });
-  function assigned(type: "run" | "review" = "run", targetRunner = runnerId, bindBot = true) {
+  async function assigned(type: "run" | "review" = "run", targetRunner = runnerId, bindBot = true) {
     const sessionId = workspaceId();
     const item = insertQueuedItem(db, {
       id: workspaceId(),
@@ -178,7 +178,7 @@ export async function probeRunnerRepositoryAccess(
       prompt: "Use the assigned repository.",
     };
     work.assign(command);
-    const grant = work.issueGrant({
+    const grant = await work.issueGrant({
       runnerId: targetRunner,
       runId: run.id,
       commandId: command.id,
@@ -207,7 +207,7 @@ export async function probeRunnerRepositoryAccess(
       },
     });
     async function exchange(
-      assignment: ReturnType<typeof assigned>,
+      assignment: Awaited<ReturnType<typeof assigned>>,
       mode: "read" | "write",
       options: { token?: string; body?: unknown; certificate?: boolean } = {},
     ) {
@@ -228,7 +228,7 @@ export async function probeRunnerRepositoryAccess(
         },
       );
     }
-    const first = assigned();
+    const first = await assigned();
     const read = await exchange(first, "read");
     assert.equal(read.status, 200);
     assert.deepEqual(JSON.parse(read.body), {
@@ -286,7 +286,7 @@ export async function probeRunnerRepositoryAccess(
     assert(!changedBot.body.includes("fake-installation-token"));
     beforeMint = undefined;
     currentBot = bot;
-    const review = assigned("review", reviewRunnerId);
+    const review = await assigned("review", reviewRunnerId);
     assert.equal((await exchange(review, "read")).status, 200);
     const mintedBefore = github.minted.length;
     assert.equal((await exchange(review, "write")).status, 403);
@@ -392,11 +392,11 @@ export async function probeRunnerRepositoryAccess(
       },
     );
     await work.finish(first.command.runId, first.command.generation);
-    const unbound = assigned("run", runnerId, false);
+    const unbound = await assigned("run", runnerId, false);
     assert.equal((await exchange(unbound, "read")).status, 200);
     assert.equal((await exchange(unbound, "write")).status, 403);
     await work.finish(unbound.command.runId, unbound.command.generation);
-    const changedInstallation = assigned();
+    const changedInstallation = await assigned();
     beforeMint = () => {
       installation = "different-installation";
     };
@@ -404,7 +404,10 @@ export async function probeRunnerRepositoryAccess(
     beforeMint = undefined;
     installation = "fixture-installation";
     await work.finish(changedInstallation.command.runId, changedInstallation.command.generation);
-    const scenarios: [string, (entry: ReturnType<typeof assigned>) => void | Promise<void>][] = [
+    const scenarios: [
+      string,
+      (entry: Awaited<ReturnType<typeof assigned>>) => void | Promise<void>,
+    ][] = [
       [
         "cancelled",
         ({ item }) => {
@@ -447,7 +450,7 @@ export async function probeRunnerRepositoryAccess(
     ];
     const fenced: string[] = [];
     for (const [name, change] of scenarios) {
-      const entry = assigned();
+      const entry = await assigned();
       let changed = false;
       beforeMint = async () => {
         await change(entry);
@@ -471,7 +474,7 @@ export async function probeRunnerRepositoryAccess(
       true,
       { fenced },
     );
-    const revoked = assigned();
+    const revoked = await assigned();
     beforeMint = () =>
       control.setStatus({ ...principal, authenticatedAt: now }, runnerId, "revoked");
     const denied = await exchange(revoked, "read");

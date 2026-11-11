@@ -123,7 +123,7 @@ async function fixture(root: string) {
     bindWorkItemRepository(db, item.id, repository);
     return { itemId: item.id, runId: run.id };
   }
-  function assign(
+  async function assign(
     run: { itemId: string; runId: string },
     runnerId: string,
     generation: number,
@@ -147,12 +147,14 @@ async function fixture(root: string) {
         ? { ...base, type: "run", prompt: "Produce the fixture." }
         : { ...base, type: "review", prompt: "Review the fixture." };
     work.assign(command);
-    const token = work.issueGrant({
-      runnerId,
-      runId: run.runId,
-      commandId: command.id,
-      generation,
-    }).token;
+    const token = (
+      await work.issueGrant({
+        runnerId,
+        runId: run.runId,
+        commandId: command.id,
+        generation,
+      })
+    ).token;
     return { runnerId, runId: run.runId, token };
   }
   return { db, work, userId, workspaceId: workspace.id, enroll, startRun, assign };
@@ -209,7 +211,7 @@ describe("agent session snapshots", () => {
   async function sealed() {
     const runnerA = await f.enroll("a");
     const run = f.startRun("first");
-    const access = f.assign(run, runnerA, 1);
+    const access = await f.assign(run, runnerA, 1);
     const sessions = createAgentSessions({ db, work, objects, key });
     await sessions.upload(access, chunk(1, 0, full));
     await sessions.upload(access, chunk(1, AGENT_SESSION_CHUNK_BYTES, full));
@@ -221,7 +223,7 @@ describe("agent session snapshots", () => {
   test("uploads in order, retries idempotently, refuses gaps, bad hashes and sealed appends", async () => {
     const runnerA = await f.enroll("a");
     const run = f.startRun("first");
-    const access = f.assign(run, runnerA, 1);
+    const access = await f.assign(run, runnerA, 1);
     const sessions = createAgentSessions({ db, work, objects, key });
 
     expect(await sessions.upload(access, chunk(1, 0, full))).toEqual({
@@ -293,7 +295,7 @@ describe("agent session snapshots", () => {
 
   test("refuses a snapshot over the size cap", async () => {
     const runnerA = await f.enroll("a");
-    const access = f.assign(f.startRun("first"), runnerA, 1);
+    const access = await f.assign(f.startRun("first"), runnerA, 1);
     const sessions = createAgentSessions({
       db,
       work,
@@ -345,7 +347,7 @@ describe("agent session snapshots", () => {
     // The same plaintext at the same offset in another run's snapshot does not decrypt here.
     const runnerB = await f.enroll("b");
     const second = f.startRun("second");
-    const secondAccess = f.assign(second, runnerB, 1);
+    const secondAccess = await f.assign(second, runnerB, 1);
     await sessions.upload(secondAccess, chunk(1, 0, full));
     const secondKey = `paws/agent-sessions/${f.workspaceId}/${second.runId}/1/0-${sha(full)}`;
     objects.objects.set(offset0, objects.objects.get(secondKey)!);
@@ -360,15 +362,19 @@ describe("agent session snapshots", () => {
     const { sessions, access, run } = await sealed();
     const runnerB = await f.enroll("b");
     const second = f.startRun("second");
-    const secondAccess = f.assign(second, runnerB, 1);
-    const fresh = work.issueGrant({
-      runnerId: access.runnerId,
-      runId: run.runId,
-      commandId: db
-        .query<{ id: string }, [string]>("SELECT command_id AS id FROM runner_work WHERE run_id=?")
-        .get(run.runId)!.id,
-      generation: 1,
-    }).token;
+    const secondAccess = await f.assign(second, runnerB, 1);
+    const fresh = (
+      await work.issueGrant({
+        runnerId: access.runnerId,
+        runId: run.runId,
+        commandId: db
+          .query<{ id: string }, [string]>(
+            "SELECT command_id AS id FROM runner_work WHERE run_id=?",
+          )
+          .get(run.runId)!.id,
+        generation: 1,
+      })
+    ).token;
     // The earlier grant was replaced, so it is stale.
     expect(() => sessions.read({ ...access, generation: 1 }, 1)).toThrow();
     expect(await collect(sessions.read({ ...access, token: fresh, generation: 1 }, 1))).toEqual(
@@ -385,7 +391,7 @@ describe("agent session snapshots", () => {
 
     const third = f.startRun("third");
     const runnerC = await f.enroll("c");
-    const review = f.assign(third, runnerC, 1, "review");
+    const review = await f.assign(third, runnerC, 1, "review");
     await expect(sessions.upload(review, chunk(1, 0, full))).rejects.toThrow(
       "Agent session request is refused",
     );
@@ -395,7 +401,7 @@ describe("agent session snapshots", () => {
     const { sessions, access, run } = await sealed();
     await work.finish(run.runId, 1);
     const runnerC = await f.enroll("c");
-    const moved = f.assign(run, runnerC, 2);
+    const moved = await f.assign(run, runnerC, 2);
     expect(await collect(sessions.read({ ...moved, generation: 2 }, 1))).toEqual(snapshot);
     expect(() => sessions.read({ ...access, generation: 1 }, 1)).toThrow(RunnerWorkFencedError);
     expect(() => sessions.read({ ...access, generation: 2 }, 1)).toThrow();
@@ -430,7 +436,7 @@ describe("agent session snapshots", () => {
   test("HTTP routes map fences to 409, storage to 503 and everything else to 403", async () => {
     const runnerA = await f.enroll("a");
     const run = f.startRun("first");
-    const access = f.assign(run, runnerA, 1);
+    const access = await f.assign(run, runnerA, 1);
     let failRead = false;
     const faulty: AgentSessionObjects = {
       write: (name, bytes) => objects.write(name, bytes),
@@ -482,7 +488,7 @@ describe("agent session snapshots", () => {
   });
 
   type Sessions = ReturnType<typeof createAgentSessions>;
-  type Access = ReturnType<typeof f.assign>;
+  type Access = Awaited<ReturnType<typeof f.assign>>;
   async function seal(sessions: Sessions, access: Access, generation: number, bytes = snapshot) {
     for (let offset = 0; offset < bytes.length; offset += AGENT_SESSION_CHUNK_BYTES)
       await sessions.upload(
@@ -506,7 +512,7 @@ describe("agent session snapshots", () => {
     const { sessions, access, run, runnerA } = await sealed();
     expect(objectsOf(run.runId, 1)).toHaveLength(3);
     await work.finish(run.runId, 1);
-    const next = f.assign(run, runnerA, 2);
+    const next = await f.assign(run, runnerA, 2);
     const second = Buffer.concat([full, tail, MARKER]);
     await sessions.upload(next, chunk(2, 0, full));
     // A newer snapshot still uploading does not discard the sealed one.
@@ -539,7 +545,7 @@ describe("agent session snapshots", () => {
       between: f.startRun("between"),
     };
     for (const run of Object.values(runs)) {
-      await seal(sessions, f.assign(run, runnerA, 1), 1);
+      await seal(sessions, await f.assign(run, runnerA, 1), 1);
       await work.finish(run.runId, 1);
     }
     db.run("UPDATE run SET status='lost' WHERE id=?", [runs.lost.runId]);
@@ -585,7 +591,7 @@ describe("agent session snapshots", () => {
   test("an upload that loses the race with a prune deletes its object", async () => {
     const runnerA = await f.enroll("a");
     const run = f.startRun("first");
-    const access = f.assign(run, runnerA, 1);
+    const access = await f.assign(run, runnerA, 1);
     let sessions: Sessions;
     const racing: AgentSessionObjects = {
       async write(name, bytes) {
@@ -632,7 +638,7 @@ describe("agent session snapshots", () => {
     ).toEqual({ eligible: false, failure: "other_account" });
 
     await work.finish(run.runId, 1);
-    await seal(sessions, f.assign(run, runnerA, 2), 2);
+    await seal(sessions, await f.assign(run, runnerA, 2), 2);
     expect(await plan()).toMatchObject({ eligible: true, restoreSession: { generation: 2 } });
 
     // The newest row discarded by an interrupted prune is skipped too.
@@ -803,7 +809,7 @@ describe("agent session storage in S3", () => {
         objects,
         key: randomBytes(32),
       });
-      const access = f.assign(f.startRun("first"), await f.enroll("a"), 1);
+      const access = await f.assign(f.startRun("first"), await f.enroll("a"), 1);
       await sessions.upload(access, chunk(1, 0, full));
       await sessions.upload(access, chunk(1, AGENT_SESSION_CHUNK_BYTES, full));
       await sessions.upload(access, chunk(1, 2 * AGENT_SESSION_CHUNK_BYTES, tail));

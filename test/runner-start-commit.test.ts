@@ -579,7 +579,7 @@ async function startScenario(input: {
         executions++;
         const cancelled = input.cancelFirstRun === true && executions === 1;
         await work.acknowledge(runnerId, command.id);
-        const grant = work.issueGrant({
+        const grant = await work.issueGrant({
           runnerId,
           runId: command.runId,
           commandId: command.id,

@@ -128,12 +128,14 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
     const access = {
       runnerId,
       runId: run.id,
-      token: work.issueGrant({
-        runnerId,
-        runId: run.id,
-        commandId: command.id,
-        generation: 1,
-      }).token,
+      token: (
+        await work.issueGrant({
+          runnerId,
+          runId: run.id,
+          commandId: command.id,
+          generation: 1,
+        })
+      ).token,
     };
     const storage = join(root, "artifacts");
     const artifacts = createRunnerArtifactStore({ root: storage, work });
@@ -168,7 +170,7 @@ export async function probeRunnerArtifacts(root: string, observe: Observe) {
     const snapshot = await artifacts.snapshot(run.id, 1, descriptor);
     assert.deepEqual(Buffer.from(await snapshot.bytes.arrayBuffer()), bytes);
     assert.equal(snapshot.sha256, descriptor.sha256);
-    work.event({
+    await work.event({
       ...access,
       generation: 1,
       sequence: 1,
