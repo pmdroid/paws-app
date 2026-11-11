@@ -25,7 +25,6 @@ import {
   type RunnerHelperResult,
 } from "../runner-protocol";
 import { versionAtLeast } from "./session-restore";
-import { syncSteps } from "./sync-steps";
 import { usageLimitWait } from "./usage-limit-wait";
 
 import {
@@ -133,7 +132,7 @@ export function createRemoteSessionAgentRunner(options: {
           held.clear();
           const open =
             purpose === "classify" || purpose === "select_repository"
-              ? options.helpers.open(sessionId)
+              ? await store.run((q) => options.helpers.openSteps(q, sessionId))
               : null;
           if (open?.purpose === purpose && open.prompt === input.prompt) {
             command = open;
@@ -205,24 +204,21 @@ export function createRemoteSessionAgentRunner(options: {
             try {
               placed = runner.account;
               command = await store.transaction(function* (q) {
-                const dispatched = yield* syncSteps(
-                  () =>
-                    options.helpers.dispatch({
-                      runnerId: runner.id,
-                      sessionId,
-                      purpose,
-                      profile,
-                      prompt: input.prompt,
-                      ...(runner.account?.named
-                        ? {
-                            account: {
-                              accountId: runner.account.accountId,
-                              bindingId: runner.account.bindingId,
-                            },
-                          }
-                        : {}),
-                    }).command,
-                );
+                const { command: dispatched } = yield* options.helpers.dispatchSteps(q, {
+                  runnerId: runner.id,
+                  sessionId,
+                  purpose,
+                  profile,
+                  prompt: input.prompt,
+                  ...(runner.account?.named
+                    ? {
+                        account: {
+                          accountId: runner.account.accountId,
+                          bindingId: runner.account.bindingId,
+                        },
+                      }
+                    : {}),
+                });
                 if (options.placement)
                   yield* options.placement.startedSteps(q, {
                     commandId: dispatched.id,

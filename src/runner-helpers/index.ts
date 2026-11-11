@@ -2,30 +2,25 @@ import {
   acknowledgeRunnerHelperSteps,
   endRunnerHelper,
   workspaceMemberUsable,
-  getLinearSession,
   getLinearSessionSteps,
-  immediate,
-  insertRunnerHelper,
-  linearSessionClientId,
+  insertRunnerHelperSteps,
   linearSessionClientIdSteps,
-  openSessionHelper,
-  recordCommandAccount,
+  openSessionHelperSteps,
+  recordCommandAccountSteps,
   runnerHelperAcknowledgedSteps,
-  runnerHelperAvailability,
+  runnerHelperAvailabilitySteps,
   runnerHelperResultMatchesSteps,
-  runnerHelperRow,
   runnerHelperRowSteps,
+  settled,
   sqliteDb,
   storeRunnerHelperResultSteps,
   unacknowledgedRunnerHelpersSteps,
-  usableRunner,
   usableRunnerSteps,
-  yieldFindingGroupHelpers,
-  workspaceSessionIds,
+  yieldFindingGroupHelpersSteps,
   workspaceSessionIdsSteps,
-  workspaceMember,
   workspaceMemberSteps,
   type Q,
+  type Steps,
   type RunnerHelperRow,
   type UsableRunner,
 } from "../db";
@@ -50,6 +45,15 @@ import {
 import { runnerRequestUnavailable } from "../runner-work";
 
 type HelperCommand = Extract<RunnerCommand, { type: "helper" }>;
+type HelperDispatch = {
+  runnerId: string;
+  sessionId: string;
+  purpose: HelperCommand["purpose"];
+  profile: RunnerProfile;
+  prompt: string;
+  account?: RunnerAccount;
+  conversation?: HelperCommand["conversation"];
+};
 class HelperFencedError extends Error {}
 export class RunnerHelperBusyError extends Error {
   override readonly name = "RunnerHelperBusyError";
@@ -67,29 +71,8 @@ export function createRunnerHelpers(options: {
   const { db } = options;
   const store = sqliteDb(db);
   const now = options.now ?? Date.now;
-  function identity(runnerId: string) {
-    return identified(usableRunner(db, runnerId));
-  }
   function* identitySteps(q: Q, runnerId: string) {
     return identified(yield* usableRunnerSteps(q, runnerId));
-  }
-  function scope(
-    runnerId: string,
-    sessionId: string,
-    generation: number,
-    purpose?: HelperCommand["purpose"],
-  ) {
-    const runner = identity(runnerId);
-    const session = getLinearSession(db, sessionId);
-    const clientId = linearSessionClientId(db, sessionId);
-    const grouping = purpose === "finding_groups";
-    const member = grouping ? workspaceMember(db, runner.workspaceId, runner.userId) : null;
-    if (
-      !sessionHeld(grouping, member, session, generation, clientId) ||
-      !workspaceSessionIds(db, runner.workspaceId, runner.userId, clientId).includes(sessionId)
-    )
-      throw new HelperFencedError("Linear helper session authority changed");
-    return runner;
   }
   function* scopeSteps(
     q: Q,
@@ -113,16 +96,6 @@ export function createRunnerHelpers(options: {
     )
       throw new HelperFencedError("Linear helper session authority changed");
     return runner;
-  }
-  function current(id: string, runnerId?: string) {
-    const { row, command, envelope } = assigned(runnerHelperRow(db, id), id, runnerId);
-    const runner = scope(
-      row.runnerId,
-      command.sessionId,
-      command.sessionGeneration,
-      command.purpose,
-    );
-    return { row: unchangedIdentity(runner, row), command, envelope };
   }
   function* currentSteps(q: Q, id: string, runnerId?: string) {
     const { row, command, envelope } = assigned(yield* runnerHelperRowSteps(q, id), id, runnerId);
@@ -153,68 +126,77 @@ export function createRunnerHelpers(options: {
       throw new HelperFencedError("Runner helper command is obsolete");
     return { row, command, envelope };
   }
+  function* openSteps(q: Q, sessionId: string): Steps<HelperCommand | null> {
+    const session = yield* getLinearSessionSteps(q, sessionId);
+    const row = session && (yield* openSessionHelperSteps(q, sessionId, session.generation, now()));
+    if (!row) return null;
+    try {
+      return (yield* currentSteps(q, row.id)).command;
+    } catch (error) {
+      if (error instanceof HelperFencedError) return null;
+      throw error;
+    }
+  }
+  function* dispatchSteps(q: Q, input: HelperDispatch) {
+    const session = yield* getLinearSessionSteps(q, input.sessionId);
+    if (!session) throw new HelperFencedError("Linear helper session is unavailable");
+    const runner = yield* scopeSteps(
+      q,
+      input.runnerId,
+      input.sessionId,
+      session.generation,
+      input.purpose,
+    );
+    if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
+    const conversation = input.purpose === "conversation";
+    if (input.purpose === "classify" || input.purpose === "select_repository") {
+      const open = yield* openSteps(q, input.sessionId);
+      if (open) throw new RunnerHelperBusyError(open.runnerId);
+    }
+    const availability = yield* runnerHelperAvailabilitySteps(
+      q,
+      input.runnerId,
+      now(),
+      input.purpose !== "finding_groups",
+      conversation,
+    );
+    if (availability.held) throw new RunnerHelperBusyError(input.runnerId);
+    if (!availability.available) throw new RunnerHelperBusyError();
+    const at = now();
+    const command = RunnerCommandSchema.parse({
+      ...input,
+      id: randomUUID(),
+      type: "helper",
+      workspaceId: runner.workspaceId,
+      sessionGeneration: session.generation,
+      issuedAt: at,
+      expiresAt: at + runnerHelperLifetime(input.purpose),
+    }) as HelperCommand;
+    const envelope = signRunnerCommand({
+      keyId: options.keyId,
+      privateKey: options.privateKey,
+      command,
+    });
+    // Validate and sign first. Fencing and admission commit together, only on this runner.
+    yield* recordCommandAccountSteps(q, command, at);
+    if (input.purpose !== "finding_groups" && !conversation)
+      yield* yieldFindingGroupHelpersSteps(q, input.runnerId, at);
+    yield* insertRunnerHelperSteps(q, {
+      id: command.id,
+      runnerId: command.runnerId,
+      workspaceId: command.workspaceId,
+      sessionId: command.sessionId,
+      sessionGeneration: command.sessionGeneration,
+      runnerFence: runner.fence,
+      envelope: JSON.stringify(envelope),
+      expiresAt: command.expiresAt,
+      purpose: command.purpose,
+    });
+    return { command, envelope };
+  }
   const api = {
-    dispatch(input: {
-      runnerId: string;
-      sessionId: string;
-      purpose: HelperCommand["purpose"];
-      profile: RunnerProfile;
-      prompt: string;
-      account?: RunnerAccount;
-      conversation?: HelperCommand["conversation"];
-    }) {
-      return immediate(db, () => {
-        const session = getLinearSession(db, input.sessionId);
-        if (!session) throw new HelperFencedError("Linear helper session is unavailable");
-        const runner = scope(input.runnerId, input.sessionId, session.generation, input.purpose);
-        if (runner.status !== "active") throw new Error("Runner is not accepting helper work");
-        const conversation = input.purpose === "conversation";
-        if (input.purpose === "classify" || input.purpose === "select_repository") {
-          const open = api.open(input.sessionId);
-          if (open) throw new RunnerHelperBusyError(open.runnerId);
-        }
-        const availability = runnerHelperAvailability(
-          db,
-          input.runnerId,
-          now(),
-          input.purpose !== "finding_groups",
-          conversation,
-        );
-        if (availability.held) throw new RunnerHelperBusyError(input.runnerId);
-        if (!availability.available) throw new RunnerHelperBusyError();
-        const at = now();
-        const command = RunnerCommandSchema.parse({
-          ...input,
-          id: randomUUID(),
-          type: "helper",
-          workspaceId: runner.workspaceId,
-          sessionGeneration: session.generation,
-          issuedAt: at,
-          expiresAt: at + runnerHelperLifetime(input.purpose),
-        }) as HelperCommand;
-        const envelope = signRunnerCommand({
-          keyId: options.keyId,
-          privateKey: options.privateKey,
-          command,
-        });
-        // Validate and sign first. Fencing and admission commit together, only on this runner.
-        recordCommandAccount(db, command, at);
-        if (input.purpose !== "finding_groups" && !conversation)
-          yieldFindingGroupHelpers(db, input.runnerId, at);
-        insertRunnerHelper(db, {
-          id: command.id,
-          runnerId: command.runnerId,
-          workspaceId: command.workspaceId,
-          sessionId: command.sessionId,
-          sessionGeneration: command.sessionGeneration,
-          runnerFence: runner.fence,
-          envelope: JSON.stringify(envelope),
-          expiresAt: command.expiresAt,
-          purpose: command.purpose,
-        });
-        return { command, envelope };
-      });
-    },
+    dispatchSteps,
+    dispatch: (input: HelperDispatch) => settled(store.transaction((q) => dispatchSteps(q, input))),
     commands(runnerId: string): Promise<SignedRunnerCommand[]> {
       return store.run(function* (q) {
         yield* identitySteps(q, runnerId);
@@ -233,17 +215,7 @@ export function createRunnerHelpers(options: {
       });
     },
     current: (id: string, runnerId?: string) => store.run((q) => currentSteps(q, id, runnerId)),
-    open(sessionId: string): HelperCommand | null {
-      const session = getLinearSession(db, sessionId);
-      const row = session && openSessionHelper(db, sessionId, session.generation, now());
-      if (!row) return null;
-      try {
-        return current(row.id).command;
-      } catch (error) {
-        if (error instanceof HelperFencedError) return null;
-        throw error;
-      }
-    },
+    openSteps,
     acknowledged: (id: string) => store.run((q) => runnerHelperAcknowledgedSteps(q, id)),
     async acknowledge(runnerId: string, id: string): Promise<void> {
       await store.transaction(function* (q) {

@@ -67,9 +67,9 @@ test("daily helper uses an admin runner, accepts a stopped reporting session, an
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,
-        dispatch(input) {
+        *dispatchSteps(q, input) {
           dispatches++;
-          const result = f.helpers.dispatch(input);
+          const result = yield* f.helpers.dispatchSteps(q, input);
           void f.helpers.submit("runner", {
             commandId: result.command.id,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -164,8 +164,8 @@ test("grouping accepts a result after one minute, records usage, and rejects err
         profile: () => ({ agent: "codex", model: null }),
         helpers: async () => ({
           ...f.helpers,
-          dispatch(input) {
-            const dispatched = f.helpers.dispatch(input);
+          *dispatchSteps(q, input) {
+            const dispatched = yield* f.helpers.dispatchSteps(q, input);
             expect(dispatched.command.expiresAt - dispatched.command.issuedAt).toBe(600000);
             f.advance(90000);
             void f.helpers.submit("runner", {
@@ -225,10 +225,10 @@ test("pre-dispatch refusals try the next admin runner without issuing a second h
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,
-        dispatch(input) {
+        *dispatchSteps(q, input) {
           attempts++;
           if (attempts === 1) throw new Error("Runner cancellation teardown is still pending");
-          const result = f.helpers.dispatch(input);
+          const result = yield* f.helpers.dispatchSteps(q, input);
           void f.helpers.submit(input.runnerId, {
             commandId: result.command.id,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -372,8 +372,8 @@ test("cleanup accounting cannot replace a local abort and reports cancellation i
       db: f.db,
       helpers: {
         ...f.helpers,
-        dispatch(input) {
-          const issued = f.helpers.dispatch(input);
+        *dispatchSteps(q, input) {
+          const issued = yield* f.helpers.dispatchSteps(q, input);
           abort.abort(original);
           return issued;
         },
@@ -484,8 +484,8 @@ test("a failed receipt completion is retried by cleanup before the original erro
       },
       helpers: async () => ({
         ...f.helpers,
-        dispatch(input) {
-          const issued = f.helpers.dispatch(input);
+        *dispatchSteps(q, input) {
+          const issued = yield* f.helpers.dispatchSteps(q, input);
           void f.helpers.submit("runner", {
             commandId: issued.command.id,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -543,9 +543,9 @@ test("grouping runs on a later admin's runner when the earlier admin has none", 
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,
-        dispatch(input) {
+        *dispatchSteps(q, input) {
           runnerId = input.runnerId;
-          const issued = f.helpers.dispatch(input);
+          const issued = yield* f.helpers.dispatchSteps(q, input);
           void f.helpers.submit(input.runnerId, {
             commandId: issued.command.id,
             executionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -594,9 +594,9 @@ test("grouping does not dispatch a session the runner owner cannot authorize", a
       profile: () => ({ agent: "codex", model: null }),
       helpers: async () => ({
         ...f.helpers,
-        dispatch(input) {
+        *dispatchSteps(q, input) {
           attempts++;
-          return f.helpers.dispatch(input);
+          return yield* f.helpers.dispatchSteps(q, input);
         },
       }),
     });
