@@ -20,12 +20,14 @@ import {
   updateRunnerStatus,
   type RunnerHostRefusal,
   sqliteDb,
+  syncSteps,
   type RunnerCapacityWaitState,
 } from "../src/db";
 import {
   createRunnerHostRefusals,
   createRunnerPlacement,
   itemRunnerVerdicts,
+  itemRunnerVerdictsSteps,
   SESSION_GRACE_MS,
 } from "../src/runner-placement";
 import { createRunnerWork } from "../src/runner-work";
@@ -377,7 +379,7 @@ test("an enabled but unavailable placement scope stays queued while disabled che
   await pair("agentbox", 1, [REPOSITORY]);
   queue("unknown");
   const options = { now: NOW, admission: workspaceAdmission(db) };
-  expect(await dispatch(db, { ...options, itemRunners: () => null })).toEqual([]);
+  expect(await dispatch(db, { ...options, itemRunners: () => syncSteps(() => null) })).toEqual([]);
   expect(getWorkItem(db, "unknown")?.state).toBe("queued");
   expect((await listItemHolds(sqliteDb(db)))[0]?.blockers[0]).toContain("placement scope");
   expect(await dispatch(db, options)).toEqual(["unknown"]);
@@ -570,7 +572,7 @@ test("admission fails over from a busy session runner once session grace ends", 
     return dispatch(db, {
       now,
       admission: workspaceAdmission(db),
-      itemRunners: (itemId) => itemRunnerVerdicts(db, { itemId, agent: "claude", now }),
+      itemRunners: (q, itemId) => itemRunnerVerdictsSteps(q, db, { itemId, agent: "claude", now }),
     });
   };
 

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { eq, notInArray } from "drizzle-orm";
 import { WORK_ITEM_STATES } from "../src/core";
-import { listTaskBlockers, migrations } from "../src/db";
+import { listTaskBlockers, migrations, syncSteps } from "../src/db";
 import { cycleMessage, intakeDelegatedIssue, orderByBlocks, queueMessage } from "../src/intake";
 import { createFakeTracker, type EpicSnapshot } from "../src/linear";
 import { tempDb } from "./helpers";
@@ -106,21 +106,22 @@ describe("intake", () => {
     const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
-      adoptParent: () => {
-        epicExisted =
-          db
-            .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'")
-            .get() !== null;
-        db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
-        db.run(
-          "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
-        );
-        db.run(
-          `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,title,session_id,owner_user_id,edges,created_at)
+      adoptParent: () =>
+        syncSteps(() => {
+          epicExisted =
+            db
+              .query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'epic'")
+              .get() !== null;
+          db.run("INSERT INTO workspace VALUES('workspace','org','Workspace',1000)");
+          db.run(
+            "INSERT INTO workspace_user VALUES('person','linear-person','Person','person@example.test')",
+          );
+          db.run(
+            `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,title,session_id,owner_user_id,edges,created_at)
            VALUES('adopted','workspace','org','parent','ENG-1','Parent','ses_1','person','[]',1)`,
-        );
-        return true;
-      },
+          );
+          return true;
+        }),
     });
     expect(epicExisted).toBe(false);
     expect(result.ok).toBe(true);
@@ -154,7 +155,7 @@ describe("intake", () => {
     const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
-      adoptParent: () => false,
+      adoptParent: () => syncSteps(() => false),
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -178,10 +179,11 @@ describe("intake", () => {
     const result = await intakeDelegatedIssue(db, tracker, {
       linearIssueId: "parent",
       sessionId: "ses_1",
-      adoptParent: () => {
-        called = true;
-        return true;
-      },
+      adoptParent: () =>
+        syncSteps(() => {
+          called = true;
+          return true;
+        }),
     });
     expect(called).toBe(false);
     expect(result.ok).toBe(false);
@@ -439,13 +441,14 @@ describe("intake", () => {
       linearIssueId: "parent",
       sessionId: "ses_1",
       taskKey: "parent-task",
-      adoptParent: () => {
-        db.run(
-          `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,title,session_id,owner_user_id,edges,created_at)
+      adoptParent: () =>
+        syncSteps(() => {
+          db.run(
+            `INSERT INTO parent_delegation(delegation_id,workspace_id,organization_id,parent_issue_id,parent_identifier,title,session_id,owner_user_id,edges,created_at)
            VALUES('adopted','workspace','org','parent','ENG-1','Parent','ses_1','person','[]',1)`,
-        );
-        return true;
-      },
+          );
+          return true;
+        }),
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;

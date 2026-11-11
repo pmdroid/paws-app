@@ -19,6 +19,7 @@ import {
   openDatabase,
   recordLinearTurn,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import { createFakeTracker } from "../src/linear";
 import { intakeDelegatedIssue } from "../src/intake";
@@ -354,7 +355,8 @@ test("intake sets the session owner's workspace user on each new solo item and l
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
     pawsRoot: "/tmp/unused-owner-fixture",
-    linearIntakeActor: (sessionId) => (sessionId === "delegated" ? "delegate" : undefined),
+    linearIntakeActor: (_q, sessionId) =>
+      syncSteps(() => (sessionId === "delegated" ? "delegate" : undefined)),
   });
   try {
     ensureLinearSession(db, {

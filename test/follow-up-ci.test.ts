@@ -23,6 +23,7 @@ import {
   recordPullComment,
   restart,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import { fakeMergeReadiness, type GitHubClient, type GitHubResponse } from "../src/github";
 
@@ -135,7 +136,7 @@ async function waitingTask(
     pawsRoot: home,
     jobs: new JobLoop(db, systemClock),
     outbox: new OutboxDispatcher(db, systemClock),
-    authorizeLinearIntake: () => true,
+    authorizeLinearIntake: () => syncSteps(() => true),
     githubForRepository: () => ({
       appId: "1",
       installationId: "2",

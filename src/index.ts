@@ -287,7 +287,7 @@ import {
   createRunnerPlacementBrowser,
   itemOwnerEligibleRunnerSteps,
   itemOwnerHasEligibleRunnerSteps,
-  itemRunnerVerdicts,
+  itemRunnerVerdictsSteps,
   createRunnerHostRefusals,
   itemOwnerRunnerSetupNeedSteps,
   itemRepositoryAllowedOnSteps,
@@ -1555,10 +1555,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
               ownerHasRunner: (q: Q, itemId: string, agent: string, now: number) =>
                 itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now }),
               itemRunners: (
+                q: Q,
                 itemId: string,
                 profile: { agent: string; model?: string | null },
                 now: number,
-              ) => itemRunnerVerdicts(db, { itemId, ...profile, now }),
+              ) => itemRunnerVerdictsSteps(q, db, { itemId, ...profile, now }),
               onRunnerHostRefusals: runnerHostRefusals.report,
               runnerSetupNeed: (itemId: string, agent: string, now: number) =>
                 store.run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
@@ -1613,15 +1614,20 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         journal,
         runnersUrl: dashboardUrl(runtime.publicUrl ?? "http://127.0.0.1:8787", "/runners"),
         publicUrl: runtime.publicUrl,
-        authorizeLinearIntake: (sessionId, spec) =>
-          (parents?.authorizeIntake(sessionId, spec) ?? true) &&
-          (!workspace || (assignments?.authorizeIntake(sessionId, spec) ?? true)),
+        authorizeLinearIntake: function* (q, sessionId, spec) {
+          return (
+            (!parents || (yield* parents.authorizeIntakeSteps(q, sessionId, spec))) &&
+            (!workspace ||
+              !assignments ||
+              (yield* assignments.authorizeIntakeSteps(q, sessionId, spec)))
+          );
+        },
         ...(parents
           ? {
-              linearIntakeScope: parents.scope,
-              linearIntakeActor: parents.actor,
-              onLinearIntake: parents.accepted,
-              adoptLinearParent: parents.adoptParent,
+              linearIntakeScope: parents.scopeSteps,
+              linearIntakeActor: parents.actorSteps,
+              onLinearIntake: parents.acceptedSteps,
+              adoptLinearParent: parents.adoptParentSteps,
             }
           : {}),
         authorizeLinearEvent: async (event) => {

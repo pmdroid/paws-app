@@ -12,7 +12,7 @@ import {
   type RunnerHostRefusal,
   sqliteDb,
 } from "../src/db";
-import { itemRunnerVerdicts } from "../src/runner-placement";
+import { itemRunnerVerdictsSteps } from "../src/runner-placement";
 import { dispatch } from "../src/scheduler";
 import { issueWorkspaceBootstrap, workspaceId, workspaceTokenHash } from "../src/workspace";
 import { workspaceAdmission } from "./fake-workspace";
@@ -72,7 +72,8 @@ export function workspaceWithRunners(db: Database) {
     dispatch(db, {
       now: NOW,
       admission: workspaceAdmission(db),
-      itemRunners: (itemId) => itemRunnerVerdicts(db, { itemId, agent: "claude", now: NOW }),
+      itemRunners: (q, itemId) =>
+        itemRunnerVerdictsSteps(q, db, { itemId, agent: "claude", now: NOW }),
       onRunnerHostRefusals: (refusals) => reported.push([...refusals]),
     });
   return { pair, queue, pass, workspace, userId };

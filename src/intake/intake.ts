@@ -73,7 +73,7 @@ export async function intakeDelegatedIssue(
     taskKey?: string;
     singleIssue?: boolean;
     acknowledged?: boolean;
-    isCurrent?: () => boolean;
+    isCurrent?: () => boolean | Promise<boolean>;
     onAccepted?: (q: Q, result: IntakeResult) => Steps<void>;
     beforeAdmit?: (q: Q) => Steps<void>;
     reconcileSessions?: (issueIds: readonly string[]) => Promise<void>;
@@ -82,10 +82,11 @@ export async function intakeDelegatedIssue(
     /** Reads an earlier item's branch on GitHub. Without it every delegation starts fresh. */
     inspectBranch?: (earlier: EarlierAttempt) => Promise<EarlierBranch>;
     adoptParent?: (
+      q: Q,
       sessionId: string,
       snapshot: EpicSnapshot,
       edges: readonly DependencyEdge[],
-    ) => boolean;
+    ) => Steps<boolean>;
   },
 ): Promise<IntakeResult> {
   const store = sqliteDb(db);
@@ -110,10 +111,12 @@ export async function intakeDelegatedIssue(
   const nodes = workNodes(snapshot);
   const edges = await collectEdges(tracker, snapshot);
   const ordered = orderByBlocks(nodes, edges);
-  if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
+  if (input.isCurrent && !(await input.isCurrent()))
+    throw new Error("Delegated intake was superseded");
   if (ordered.ok && (delegatedAlone || !input.adoptParent))
     await input.reconcileSessions?.(ordered.ordered.map((node) => node.linearIssueId));
-  if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
+  if (input.isCurrent && !(await input.isCurrent()))
+    throw new Error("Delegated intake was superseded");
   const accepted = await findAcceptedIntake(db, input.linearIssueId, taskKey);
   if (accepted !== null) {
     const result = { ok: true as const, ...accepted, alreadyExisted: true as const };
@@ -124,7 +127,8 @@ export async function intakeDelegatedIssue(
     ordered.ok && !input.startFresh && input.inspectBranch
       ? await continuedBranches(db, ordered.ordered, input.inspectBranch)
       : new Map<string, EarlierAttempt>();
-  if (input.isCurrent && !input.isCurrent()) throw new Error("Delegated intake was superseded");
+  if (input.isCurrent && !(await input.isCurrent()))
+    throw new Error("Delegated intake was superseded");
   if (!ordered.ok) {
     const identifiers = ordered.remaining.map((node) => node.identifier);
     const result = {
@@ -162,7 +166,8 @@ export async function intakeDelegatedIssue(
       if (
         snapshot.subIssues.length > 0 &&
         sessionId.length > 0 &&
-        input.adoptParent?.(sessionId, snapshot, edges)
+        input.adoptParent &&
+        (yield* input.adoptParent(q, sessionId, snapshot, edges))
       ) {
         adopted = true;
         const delegation = yield* readAdoptedParentSteps(q, snapshot.linearIssueId);

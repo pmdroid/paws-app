@@ -179,7 +179,7 @@ test("onboarded authoritative creator resumes once with current App and no perso
         (await access.authorizeLinearEvent(incoming))
           ? await assignments.authorize(incoming)
           : { outcome: "refused", reason: "denied" },
-      authorizeLinearIntake: (id, spec) => assignments.authorizeIntake(id, spec),
+      authorizeLinearIntake: (q, id, spec) => assignments.authorizeIntakeSteps(q, id, spec),
       launch: () => {
         throw new Error("Unexpected agent launch");
       },

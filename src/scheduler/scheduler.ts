@@ -92,7 +92,7 @@ export type SchedulerOptions = {
   /** Queued items whose owner has no runner they may use, after every admission pass. */
   onRunnerSetup?: (itemIds: readonly string[]) => void | Promise<void>;
   onWaits?: (waits: readonly ItemWait[]) => void;
-  itemRunners?: (itemId: string) => ItemRunnerVerdicts | null;
+  itemRunners?: (q: Q, itemId: string) => Steps<ItemRunnerVerdicts | null>;
   onRunnerHostRefusals?: (refusals: readonly RunnerHostRefusal[], now: number) => void;
   ownerCap?: number | null;
   log?: (line: string) => void;
@@ -652,13 +652,13 @@ async function admit(
       }
     const credit = (itemId: string, runnerId: string) => credits.get(itemId)?.get(runnerId) ?? 0;
     const answers = new Map<string, ItemRunnerVerdicts | null>();
-    const verdictsFor = (itemId: string): ItemRunnerVerdicts | null => {
+    function* verdictsFor(itemId: string): Steps<ItemRunnerVerdicts | null> {
       if (!options.itemRunners) return null;
-      if (!answers.has(itemId)) answers.set(itemId, options.itemRunners(itemId));
+      if (!answers.has(itemId)) answers.set(itemId, yield* options.itemRunners(q, itemId));
       return answers.get(itemId)!;
-    };
-    const openRunner = (itemId: string): string | null | undefined => {
-      const verdicts = verdictsFor(itemId);
+    }
+    function* openRunner(itemId: string): Steps<string | null | undefined> {
+      const verdicts = yield* verdictsFor(itemId);
       if (!options.itemRunners) return undefined;
       if (!verdicts) return null;
       const open = (id: string) => (slots?.open.get(id) ?? 0) + credit(itemId, id);
@@ -666,16 +666,16 @@ async function admit(
         (runner) => runner.rejection === null && open(runner.id) > 0,
       );
       return free[0]?.id ?? null;
-    };
+    }
     const choices = new Map<string, string>();
-    const takeSlot = (itemId: string): boolean => {
-      const runnerId = openRunner(itemId);
+    function* takeSlot(itemId: string): Steps<boolean> {
+      const runnerId = yield* openRunner(itemId);
       if (runnerId === undefined) return true;
       if (runnerId === null) return false;
       slots!.open.set(runnerId, slots!.open.get(runnerId)! - 1 + credit(itemId, runnerId));
       choices.set(itemId, runnerId);
       return true;
-    };
+    }
     const pins = slots
       ? (yield* pinnedWaits(q, now))
           .filter((pin) => byId.has(pin.itemId) && pin.runnerIds.some((id) => slots.open.has(id)))
@@ -725,7 +725,7 @@ async function admit(
       ) {
         const assigned = assignedRunners.get(item.id);
         if (assigned && slots) slots.open.set(assigned, (slots.open.get(assigned) ?? 0) - 1);
-        else takeSlot(item.id);
+        else yield* takeSlot(item.id);
       }
     const running = new Map<string, number>();
     for (const item of items)
@@ -770,7 +770,7 @@ async function admit(
     for (const { item, capped } of order) {
       if (capped || setup.has(item.id)) continue;
       yield* claimPinned(item);
-      const runnerId = openRunner(item.id);
+      const runnerId = yield* openRunner(item.id);
       const reused = runnerId ? credit(item.id, runnerId) : 0;
       if (free + reused <= 0) continue;
       const next = footprint(item, options);
@@ -781,7 +781,7 @@ async function admit(
         overlaps.set(item.id, overlap);
         continue;
       }
-      if (!takeSlot(item.id)) continue;
+      if (!(yield* takeSlot(item.id))) continue;
       yield* cancelPendingItemJobsSteps(q, JOB_KIND.start, item.id, now);
       const handoff = options.handoffForItem
         ? yield* options.handoffForItem(q, item.id)
@@ -813,16 +813,16 @@ async function admit(
     const waiting = order.filter(
       ({ item }) => !admitted.includes(item.id) && !setup.has(item.id) && !overlaps.has(item.id),
     );
-    const noRunnerLine = (itemId: string): string | null => {
-      if (openRunner(itemId) !== null) return null;
-      const verdicts = verdictsFor(itemId);
+    function* noRunnerLine(itemId: string): Steps<string | null> {
+      if ((yield* openRunner(itemId)) !== null) return null;
+      const verdicts = yield* verdictsFor(itemId);
       if (!verdicts) return "Waiting for placement scope to become available";
       if (!verdicts.runners.length)
         return `No runner can take ${verdicts.repository ?? "this item"}: no paired runners available to its owner`;
       return `No runner can take ${verdicts.repository ?? "this item"}: ${verdicts.runners
         .map((runner) => `${runner.name}: ${runner.rejection ?? RUNNER_FULL}`)
         .join("; ")}`;
-    };
+    }
     const line = [
       ...waiting.filter(({ capped }) => !capped),
       ...waiting.filter(({ capped }) => capped),
@@ -844,15 +844,15 @@ async function admit(
           reason: start.held,
           blockers: start.held === "blocked" ? yield* blockingIssuesSteps(q, item.id) : [],
         });
+    for (const { item, capped } of waiting) {
+      const noRunner = capped ? null : yield* noRunnerLine(item.id);
+      holds.push({
+        itemId: item.id,
+        reason: capped ? "cap" : "slot",
+        blockers: noRunner === null ? [] : [noRunner],
+      });
+    }
     holds.push(
-      ...waiting.map(({ item, capped }): ItemHold => {
-        const noRunner = capped ? null : noRunnerLine(item.id);
-        return {
-          itemId: item.id,
-          reason: capped ? "cap" : "slot",
-          blockers: noRunner === null ? [] : [noRunner],
-        };
-      }),
       ...[...overlaps].map(([itemId, overlap]): ItemHold => ({
         itemId,
         reason: "overlap",
@@ -881,6 +881,12 @@ async function admit(
     );
     yield* postWaitKeepalivesSteps(q, waits, now);
     yield* postConflictHoldsSteps(q, waits, now);
+    const verdicts: ItemRunnerVerdicts[] = [];
+    for (const item of items)
+      if (item.state === "queued" && !item.cancelRequested && !item.absent) {
+        const found = yield* verdictsFor(item.id);
+        if (found) verdicts.push(found);
+      }
     return {
       armed,
       admitted,
@@ -888,14 +894,7 @@ async function admit(
       waiting: waiting.map(({ item }) => item.id),
       setup: [...setup],
       changes,
-      hostRefusals: hostRefusals(
-        items
-          .filter((item) => item.state === "queued" && !item.cancelRequested && !item.absent)
-          .flatMap((item) => {
-            const verdicts = verdictsFor(item.id);
-            return verdicts ? [verdicts] : [];
-          }),
-      ),
+      hostRefusals: hostRefusals(verdicts),
     };
   });
   if (result.armed) emitJobReady(store);

@@ -420,7 +420,8 @@ async function firstDelegation(
         : { outcome: "refused", reason: "Only workspace members may delegate." },
     recheckLinearEvent: async (event) =>
       (await access.recheckLinearEvent(event)) && (await assignments.recheck(event)),
-    authorizeLinearIntake: (sessionId, spec) => assignments.authorizeIntake(sessionId, spec),
+    authorizeLinearIntake: (q, sessionId, spec) =>
+      assignments.authorizeIntakeSteps(q, sessionId, spec),
   });
   const state = () => listWorkItems(db)[0]?.state ?? null;
   /** Runs every due job and outbox row, then lets `minutes` of fake time pass with nothing due. */

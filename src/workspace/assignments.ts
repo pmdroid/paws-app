@@ -592,6 +592,7 @@ export function createWorkspaceAssignments(options: {
     authorizeIntake(sessionId: string, spec: EpicSnapshot): boolean {
       return settled(store.run((q) => authorizeIntakeSteps(q, sessionId, spec)));
     },
+    authorizeIntakeSteps,
     async authorize(event: AcceptedLinearEvent): Promise<IntakeDecision> {
       if (!event.sessionId) return refused("Paws could not match this event to a session.");
       const sessionId = event.sessionId;
