@@ -209,7 +209,7 @@ const ALLOWED: Record<ModuleName | "root", readonly (ModuleName | "root")[]> = {
   deployment: ["config"],
   // setup is the wizard. It is allowed to import install (and comments) through index.ts.
   auth: ["journal", "config", "github", "credentials", "core", "db"],
-  workspace: ["journal", "db", "linear", "slack", "decisions", "dashboard-links"],
+  workspace: ["journal", "credentials", "db", "linear", "slack", "decisions", "dashboard-links"],
   "runner-identity": ["journal", "credentials"],
   "runner-repository-access": ["journal", "github", "runner-work", "runner-repository-commands"],
   "runner-repository-commands": ["journal", "db", "runner-protocol", "workspace"],
