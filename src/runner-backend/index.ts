@@ -139,7 +139,7 @@ import {
   RemoteStartUnverified,
 } from "./start-commit";
 import {
-  planSessionRestore,
+  planSessionRestoreSteps,
   runnerGoneReason,
   sessionMoveNotice,
   type SessionRestorePlan,
@@ -169,7 +169,8 @@ import {
 } from "../core";
 import {
   sessionHolder,
-  runRunner,
+  sessionHolderSteps,
+  runRunnerSteps,
   PlacementRaceError,
   RUNNER_ONLINE_MS,
   SESSION_GRACE_MS,
@@ -205,14 +206,14 @@ export const restoredCheckpointNote = (sha: string) =>
 const NO_FREE_CAPACITY = ": no free capacity";
 const ACCOUNT_CONCURRENCY_LIMIT = ": account at its concurrency limit";
 
-function earlierSession(
-  db: Database,
+async function earlierSession(
+  store: Db,
   itemId: string,
   runnerId: string,
   agent: string,
   bindingId: string | undefined,
-): string | undefined {
-  const holder = sessionHolder(db, itemId);
+): Promise<string | undefined> {
+  const holder = await store.run((q) => sessionHolderSteps(q, itemId));
   return holder?.runnerId === runnerId &&
     holder.agent === agent &&
     (bindingId === undefined || holder.bindingId === bindingId)
@@ -814,7 +815,9 @@ export function createRemoteAgentRunner(options: {
           !input.prepareOnly &&
           input.role === "implementer" &&
           input.checkpoint !== false;
-        const holder = continuesSession ? sessionHolder(db, itemId) : undefined;
+        const holder = continuesSession
+          ? await store.run((q) => sessionHolderSteps(q, itemId))
+          : undefined;
         const session =
           holder?.agent === profile.agent
             ? { runnerId: holder.runnerId, bindingId: holder.bindingId }
@@ -822,12 +825,14 @@ export function createRemoteAgentRunner(options: {
         const runId = (await store.run((q) => getWorkItemSteps(q, itemId)))?.currentRunId;
         const { pinnedRunnerId, preferRunnerId } =
           !input.prepareOnly && runId
-            ? runRunner(db, {
-                itemId,
-                runId,
-                continuesSession,
-                ...(session ? { sessionRunnerId: session.runnerId } : {}),
-              })
+            ? await store.run((q) =>
+                runRunnerSteps(q, {
+                  itemId,
+                  runId,
+                  continuesSession,
+                  ...(session ? { sessionRunnerId: session.runnerId } : {}),
+                }),
+              )
             : {};
         const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
@@ -846,15 +851,13 @@ export function createRemoteAgentRunner(options: {
           input.role === "implementer" &&
           input.checkpoint !== false
             ? {
-                restore: function* (_q: Q, runnerId: string, account?: PlacementAccount) {
-                  const plan = yield* syncSteps(() =>
-                    planSessionRestore(db, {
-                      runId,
-                      agent: profile.agent,
-                      targetRunnerId: runnerId,
-                      ...(account ? { targetAccount: account } : {}),
-                    }),
-                  );
+                restore: function* (q: Q, runnerId: string, account?: PlacementAccount) {
+                  const plan = yield* planSessionRestoreSteps(q, {
+                    runId,
+                    agent: profile.agent,
+                    targetRunnerId: runnerId,
+                    ...(account ? { targetAccount: account } : {}),
+                  });
                   return plan.eligible
                     ? { sameVersion: plan.restoreSession.agentVersion === plan.targetVersion }
                     : null;
@@ -1207,12 +1210,14 @@ export function createRemoteAgentRunner(options: {
                 input.checkpoint !== false &&
                 pinnedRunnerId &&
                 pinnedRunnerId !== selected.id
-                  ? planSessionRestore(db, {
-                      runId: selected.runId,
-                      agent: profile.agent,
-                      targetRunnerId: selected.id,
-                      ...(selected.account ? { targetAccount: selected.account } : {}),
-                    })
+                  ? await store.run((q) =>
+                      planSessionRestoreSteps(q, {
+                        runId: selected.runId,
+                        agent: profile.agent,
+                        targetRunnerId: selected.id,
+                        ...(selected.account ? { targetAccount: selected.account } : {}),
+                      }),
+                    )
                   : undefined;
               const mirror = taskScope ? undefined : itemCandidate(scoped.repository!).mirror;
               const head = taskScope ? undefined : await candidateHead(scoped.repository!);
@@ -1482,8 +1487,8 @@ export function createRemoteAgentRunner(options: {
                 input.role === "implementer" &&
                 input.checkpoint !== false &&
                 versionAtLeast(await hostVersion(selected.id), SESSION_RESUME_RUNNER_VERSION)
-                  ? earlierSession(
-                      db,
+                  ? await earlierSession(
+                      store,
                       itemId,
                       selected.id,
                       profile.agent,

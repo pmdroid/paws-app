@@ -165,4 +165,4 @@ export { createRunnerPlacementBrowser } from "./browser";
 export { itemRunnerVerdicts } from "./fit";
 export { createRunnerHostRefusals } from "./host-refusals";
 
-export { sessionHolder, runRunner } from "./session";
+export { sessionHolder, sessionHolderSteps, runRunnerSteps } from "./session";
