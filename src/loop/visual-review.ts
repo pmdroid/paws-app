@@ -11,13 +11,11 @@ import {
   type LinkAsk,
   type WorkItemRecord,
   applyWorkItemEvent,
-  closeLinkAsk,
+  closeLinkAskSteps,
   enqueueJobOnce,
-  enqueueOutboxOnce,
   enqueueOutboxOnceSteps,
   getEvidence,
   getEvidenceSteps,
-  getLinkAsk,
   getLinkAskSteps,
   getWorkItem,
   getWorkItemSteps,
@@ -29,32 +27,37 @@ import {
   listVisualReviewsSteps,
   saveCheckpoint,
   saveVisualReviewMarks,
+  settled,
   sqliteDb,
   type Db,
+  type Q,
+  type Steps,
   type StoredEvidence,
   type VisualReviewMark,
 } from "../db";
 import { reviewMarkPath } from "./input-files";
 import { compareScreenshots } from "./screenshot-diff";
 import {
-  acceptedVisualReviews,
+  acceptedVisualReviewsSteps,
   approvalTime,
   carriedInFull,
   humanApprovedScreens,
-  recordCarriedVisualReview,
+  recordCarriedVisualReviewSteps,
   visualReviewCarriedNote,
   type VisualReviewCarry,
-  cancelQuestion,
+  cancelQuestionSteps,
   findOpenQuestion,
+  findOpenQuestionSteps,
   getQuestion,
   getVisualReview,
+  getVisualReviewSteps,
   insertVisualReview,
   lastVisualReviewFeedback,
   openVisualReviewContinue,
   parseVisualReviewAnswer,
   recordVisualReviewAnswer,
-  rejectedEvidenceIds,
-  removeLinkAskUrl,
+  rejectedEvidenceIdsSteps,
+  removeLinkAskUrlSteps,
   shortCommit,
   visualReviewAcceptedHandoff,
   visualReviewChangesHandoff,
@@ -66,14 +69,25 @@ import {
   VISUAL_REVIEW_REMINDER,
 } from "../questions";
 
+type DueReview = { requirement: ResolvedEvidence; evidenceIds: string[] } | null;
+
 export function dueVisualReview(
   db: Database,
   itemId: string,
   requirements: readonly ResolvedEvidence[],
   approvals: readonly EvidenceApproval[],
-): { requirement: ResolvedEvidence; evidenceIds: string[] } | null {
-  const rejected = rejectedEvidenceIds(db, itemId);
-  const evidence = latestEvidence(listEvidence(db, itemId));
+): DueReview {
+  return settled(sqliteDb(db).run((q) => dueVisualReviewSteps(q, itemId, requirements, approvals)));
+}
+
+export function* dueVisualReviewSteps(
+  q: Q,
+  itemId: string,
+  requirements: readonly ResolvedEvidence[],
+  approvals: readonly EvidenceApproval[],
+): Steps<DueReview> {
+  const rejected = yield* rejectedEvidenceIdsSteps(q, itemId);
+  const evidence = latestEvidence(yield* listEvidenceSteps(q, itemId));
   for (const requirement of requirements) {
     const evidenceIds = evidence
       .filter(
@@ -171,19 +185,22 @@ async function looksTheSame(
  * Every file due for review carried an approval over: records the accepted
  * review without a question and posts one line to Linear. Call inside a transaction.
  */
-export function carryVisualReview(
-  db: Database,
-  input: {
-    item: WorkItemRecord;
-    sessionId: string;
-    checkId: string;
-    evidenceIds: readonly string[];
-    carried: readonly VisualReviewCarry[];
-    head: string;
-    now: number;
-  },
-): StoredVisualReview {
-  const review = recordCarriedVisualReview(db, {
+type CarryInput = {
+  item: WorkItemRecord;
+  sessionId: string;
+  checkId: string;
+  evidenceIds: readonly string[];
+  carried: readonly VisualReviewCarry[];
+  head: string;
+  now: number;
+};
+
+export function carryVisualReview(db: Database, input: CarryInput): StoredVisualReview {
+  return settled(sqliteDb(db).run((q) => carryVisualReviewSteps(q, input)));
+}
+
+export function* carryVisualReviewSteps(q: Q, input: CarryInput): Steps<StoredVisualReview> {
+  const review = yield* recordCarriedVisualReviewSteps(q, {
     itemId: input.item.id,
     checkId: input.checkId,
     evidenceIds: input.evidenceIds,
@@ -192,8 +209,8 @@ export function carryVisualReview(
     now: input.now,
   });
   const approvedAt = Math.max(...input.carried.map((entry) => entry.approvedAt));
-  postNote(
-    db,
+  yield* postNoteSteps(
+    q,
     input.sessionId,
     input.item,
     visualReviewCarriedNote(approvedAt, input.now),
@@ -207,15 +224,18 @@ export function carryVisualReview(
  * The open review question of the item's pending-human check: a link ask
  * answered on the item page, or an older Linear question with options.
  */
-export function pendingVisualReview(
-  db: Database,
-  item: WorkItemRecord,
-): { question: StoredQuestion; review: StoredVisualReview } | null {
+type PendingReview = { question: StoredQuestion; review: StoredVisualReview } | null;
+
+export function pendingVisualReview(db: Database, item: WorkItemRecord): PendingReview {
+  return settled(sqliteDb(db).run((q) => pendingVisualReviewSteps(q, item)));
+}
+
+export function* pendingVisualReviewSteps(q: Q, item: WorkItemRecord): Steps<PendingReview> {
   if (item.sessionKey === null) return null;
-  const question = findOpenQuestion(db, item.sessionKey);
+  const question = yield* findOpenQuestionSteps(q, item.sessionKey);
   if (question?.itemId !== item.id) return null;
   if (question.kind !== "visual-review" && question.kind !== "link") return null;
-  const review = getVisualReview(db, question.id);
+  const review = yield* getVisualReviewSteps(q, question.id);
   return review?.kind === "review" ? { question, review } : null;
 }
 
@@ -226,10 +246,21 @@ export function cancelVisualReviewQuestion(
   reason: "head_moved" | "cancelled",
   now: number,
 ): void {
-  cancelQuestion(db, questionId, now);
-  if (getLinkAsk(db, questionId)?.closedAt !== null) return;
-  closeLinkAsk(db, questionId, { reason, now });
-  removeLinkAskUrl(db, questionId, now);
+  settled(
+    sqliteDb(db).transaction((q) => cancelVisualReviewQuestionSteps(q, questionId, reason, now)),
+  );
+}
+
+export function* cancelVisualReviewQuestionSteps(
+  q: Q,
+  questionId: string,
+  reason: "head_moved" | "cancelled",
+  now: number,
+): Steps<void> {
+  yield* cancelQuestionSteps(q, questionId, now);
+  if ((yield* getLinkAskSteps(q, questionId))?.closedAt !== null) return;
+  yield* closeLinkAskSteps(q, questionId, { reason, now });
+  yield* removeLinkAskUrlSteps(q, questionId, now);
 }
 
 /** A pending-human check opens while the item is verifying head S. */
@@ -349,7 +380,18 @@ export function postNote(
   key: string,
   now: number,
 ): void {
-  enqueueOutboxOnce(db, {
+  settled(sqliteDb(db).run((q) => postNoteSteps(q, sessionId, item, body, key, now)));
+}
+
+export function* postNoteSteps(
+  q: Q,
+  sessionId: string,
+  item: WorkItemRecord,
+  body: string,
+  key: string,
+  now: number,
+): Steps<void> {
+  yield* enqueueOutboxOnceSteps(q, {
     target: "linear",
     op: "activity",
     orderingKey: sessionId,
@@ -534,7 +576,15 @@ export function visualReviewApprovals(
   itemId: string,
   task: string,
 ): EvidenceApproval[] {
-  return acceptedVisualReviews(db, itemId).map((review) => ({
+  return settled(sqliteDb(db).run((q) => visualReviewApprovalsSteps(q, itemId, task)));
+}
+
+export function* visualReviewApprovalsSteps(
+  q: Q,
+  itemId: string,
+  task: string,
+): Steps<EvidenceApproval[]> {
+  return (yield* acceptedVisualReviewsSteps(q, itemId)).map((review) => ({
     task,
     checkId: review.checkId,
     evidenceIds: review.evidenceIds,
