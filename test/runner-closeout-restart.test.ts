@@ -129,7 +129,11 @@ async function fixture(agentRead?: AgentRead) {
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
   // The agent's turn ended and Closeout is checking its candidate.
   await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
-  saveCheckpoint(db, item.id, { phase: "verifying", baseSha: base, wipCommit: head });
+  await saveCheckpoint(sqliteDb(db), item.id, {
+    phase: "verifying",
+    baseSha: base,
+    wipCommit: head,
+  });
 
   const keys = generateKeyPairSync("ed25519");
   function open() {
@@ -342,13 +346,19 @@ async function shutDownMidCommand(f: Fixture, options: (signal: AbortSignal) => 
 async function restartWithRunnerHolding(f: Fixture) {
   expect(f.commandCount("cancel")).toBe(0);
   await prepareShutdown(sqliteDb(f.db));
-  expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 0 });
+  expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+    state: "verifying",
+    recoveryAttempts: 0,
+  });
   expect((await getRun(sqliteDb(f.db), f.run.id))?.status).toBe("active");
   f.restart();
   expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([{ type: "reverify" }]);
   // A second start before the re-verify ran does not queue another one.
   expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([{ type: "reverify" }]);
-  expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 0 });
+  expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+    state: "verifying",
+    recoveryAttempts: 0,
+  });
   expect(
     (await listJobs(sqliteDb(f.db))).filter(
       (job) => job.queue === "run.reverify" && job.status === "pending",
@@ -496,7 +506,7 @@ test("a verifying item whose runner lease ran past its grace re-verifies as befo
     expect(f.commandCount("cancel")).toBe(0);
     const later = Date.now() + 60_001 + RUNNER_LEASE_GRACE_MS;
     await prepareShutdown(sqliteDb(f.db), later);
-    expect(getWorkItem(f.db, f.item.id)).toMatchObject({
+    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
       state: "verifying",
       checkpoint: { phase: "verifying", wipCommit: f.head },
     });
@@ -505,7 +515,10 @@ test("a verifying item whose runner lease ran past its grace re-verifies as befo
     expect(await recoverOnStartup(sqliteDb(f.db), later)).toEqual([
       { type: "reverify", resumed: true },
     ]);
-    expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 1 });
+    expect(await getWorkItem(sqliteDb(f.db), f.item.id)).toMatchObject({
+      state: "verifying",
+      recoveryAttempts: 1,
+    });
     const open = (await listJobs(sqliteDb(f.db))).filter((job) => job.status === "pending");
     expect(open.map((job) => job.queue)).toEqual(["run.reverify"]);
     expect(open[0]!.payload).toMatchObject({ itemId: f.item.id, recheckHead: true });

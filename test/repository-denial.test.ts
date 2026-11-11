@@ -75,7 +75,7 @@ async function seed() {
           }),
         ],
       );
-    return getWorkItem(db, id)!;
+    return (await getWorkItem(sqliteDb(db), id))!;
   };
   return { db, item };
 }
@@ -182,13 +182,17 @@ for (const [name, decide, response] of [
     const check = new GitHubInstallationCheck(db, integration, () => 1000);
     try {
       expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
-      expect(getWorkItem(db, current.id)?.state).toBe("cancelled");
+      expect((await getWorkItem(sqliteDb(db), current.id))?.state).toBe("cancelled");
       expect(await stopResponses(db)).toEqual([response]);
       expect(integration.checks.map((entry) => entry.kind)).toEqual(["installation", "member"]);
       expect(db.query("SELECT * FROM github_integration_hold").all()).toHaveLength(0);
       expect(db.query("SELECT * FROM question").all()).toHaveLength(0);
       expect(
-        await check.ensure(getWorkItem(db, current.id)!, "initial", new AbortController().signal),
+        await check.ensure(
+          (await getWorkItem(sqliteDb(db), current.id))!,
+          "initial",
+          new AbortController().signal,
+        ),
       ).toBe(false);
       expect(await stopResponses(db)).toEqual([response]);
     } finally {
@@ -206,7 +210,7 @@ test("a denial without a reason still ends with the default response", async () 
   const check = new GitHubInstallationCheck(db, integration, () => 1000);
   try {
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
-    expect(getWorkItem(db, current.id)?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), current.id))?.state).toBe("cancelled");
     expect(await stopResponses(db)).toEqual([
       "Cancelled from Linear. Branch paws/PAS-677 has no commits; no PR was opened. Re-delegate to continue.",
     ]);
@@ -224,11 +228,11 @@ test("a membership lost while held cancels on recovery with the member reason", 
   const check = new GitHubInstallationCheck(db, integration, () => 1000);
   try {
     expect(await check.ensure(current, "initial", new AbortController().signal)).toBe(false);
-    expect(getWorkItem(db, current.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), current.id))?.state).toBe("awaiting_input");
     integration.installed = true;
     integration.permitted = await sqliteDb(db).run((q) => teamMemberDenialSteps(q, current));
     await check.recover();
-    expect(getWorkItem(db, current.id)?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), current.id))?.state).toBe("cancelled");
     expect(await stopResponses(db)).toEqual(["You're not a member of Pascal in Paws."]);
   } finally {
     check.close();

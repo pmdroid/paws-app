@@ -38,7 +38,7 @@ describe("advanceMerge when the Closeout policy on main does not load", () => {
       base: item.base,
       head: item.accepted,
     });
-    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("merge_queue");
     expect(await reverifyJobs(h)).toEqual([]);
     expect(h.verified).toEqual([]);
     expect(h.github.merged).toEqual([]);
@@ -79,7 +79,7 @@ describe("advanceMerge when the Closeout policy on main does not load", () => {
     h.state.policyDigest = "sha256:fixed-policy";
     h.state.recheckDigest = "sha256:changed-recheck";
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("verifying");
     expect(await reverifyJobs(h)).toEqual([`reverify:ENG-1:${item.accepted}:merge:2`]);
     expect(h.github.merged).toEqual([]);
   });

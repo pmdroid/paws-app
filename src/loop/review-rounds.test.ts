@@ -62,7 +62,7 @@ async function asked(findings?: string) {
     "lea@example.com",
   ]);
   const question = (await askReviewRounds(db, {
-    item: getWorkItem(db, item.id)!,
+    item: (await getWorkItem(sqliteDb(db), item.id))!,
     help: {
       itemId: item.id,
       taskId: item.id,
@@ -96,7 +96,7 @@ test("the limit comes from the exhausted review check", () => {
 
 test("one elicitation without options names the recurring bug class and links to the item", async () => {
   const { db, itemId, question } = await asked();
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
   expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     kind: "rounds",
     rounds: ROUNDS,
@@ -159,7 +159,7 @@ test("Rethink the approach restarts the item with the findings, the note and a n
     decidedBy: "lead",
     closedReason: "decided",
   });
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   const body = await handoff(db);
   expect(body).toContain("A person asked you to rethink the approach");
   expect(body).toContain("(most are unchecked null)");
@@ -186,7 +186,7 @@ test("Rethink the approach needs no note", async () => {
       now: NOW + 100,
     }),
   ).toBe("answered");
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   expect(await handoff(db)).not.toContain("Note from the person");
 });
 
@@ -202,7 +202,7 @@ test("Keep going restarts the item with four more rounds", async () => {
       now: NOW + 100,
     }),
   ).toBe("answered");
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   expect(await handoff(db)).toContain(
     "A person allowed 4 more review rounds: fix the open findings.",
   );
@@ -227,7 +227,7 @@ test("Stop ends the item as asked and sends nothing back to the agent", async ()
       now: NOW + 100,
     }),
   ).toBe("answered");
-  expect(getWorkItem(db, itemId)?.state).toBe("failed");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("failed");
   expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
   const failure = (await listOutbox(sqliteDb(db))).find((row) =>
     row.idempotencyKey.includes(":closeout:review_rounds"),
@@ -250,7 +250,7 @@ test("a decision of another kind does not fit a rounds ask", async () => {
         now: NOW + 100,
       }),
     ).toBe("rejected");
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
 });
 
 test("someone who did not delegate and does not lead the project cannot stop the item", async () => {
@@ -265,7 +265,7 @@ test("someone who did not delegate and does not lead the project cannot stop the
       now: NOW + 100,
     }),
   ).toBe("forbidden");
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
 });
 
 test("a reply in Linear is Rethink the approach with the reply as the note", async () => {
@@ -288,7 +288,7 @@ test("a reply in Linear is Rethink the approach with the reply as the note", asy
   expect((await getQuestion(sqliteDb(db), question.id))?.answer).toBe(
     "rethink: Stop patching; move the check into the middleware.",
   );
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   const body = await handoff(db);
   expect(body).toContain("A person asked you to rethink the approach");
   expect(body).toContain(

@@ -1153,12 +1153,12 @@ export function createRemoteAgentRunner(options: {
               networkGit,
               ...(checkpoint?.wipCommit ? { wipCommit: checkpoint.wipCommit } : {}),
               ...(checkpoint?.baseSha ? { baseSha: checkpoint.baseSha } : {}),
-              persistFallback: (fallback) => {
+              persistFallback: async (fallback) => {
                 const note = lostCommitsNote(fallback.start, fallback.lost);
                 // A stop after this save but before the reset repeats the same fallback.
                 repeated = pending?.includes(note) === true;
                 lostCommits = repeated ? pending : pending ? `${pending}\n${note}` : note;
-                saveCheckpoint(db, itemId, {
+                await saveCheckpoint(store, itemId, {
                   ...checkpoint,
                   wipCommit: fallback.start,
                   lostCommits,

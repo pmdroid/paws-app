@@ -29,8 +29,12 @@ async function verifying(candidate = true) {
   const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW);
   await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   if (candidate)
-    saveCheckpoint(db, item.id, { phase: "verifying", baseSha: "base", wipCommit: "head" });
-  return { db, item: getWorkItem(db, item.id)!, run };
+    await saveCheckpoint(sqliteDb(db), item.id, {
+      phase: "verifying",
+      baseSha: "base",
+      wipCommit: "head",
+    });
+  return { db, item: (await getWorkItem(sqliteDb(db), item.id))!, run };
 }
 
 const pending = async (db: Awaited<ReturnType<typeof verifying>>["db"]) =>
@@ -40,12 +44,15 @@ describe("interrupted verification", () => {
   test("a clean shutdown keeps the candidate in verifying and the next start re-verifies it", async () => {
     const { db, item, run } = await verifying();
     await prepareShutdown(sqliteDb(db), NOW + 1);
-    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("verifying");
     expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
     expect(await recoverOnStartup(sqliteDb(db), NOW + 2)).toEqual([
       { type: "reverify", resumed: true },
     ]);
-    expect(getWorkItem(db, item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 1 });
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
+      state: "verifying",
+      recoveryAttempts: 1,
+    });
     expect((await pending(db)).map((job) => job.queue)).toEqual([JOB_KIND.reverify]);
   });
 
@@ -56,7 +63,7 @@ describe("interrupted verification", () => {
     ]);
     expect(await recoverOnStartup(sqliteDb(db), NOW + 2)).toEqual([{ type: "ask_restart" }]);
     expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
-    const held = getWorkItem(db, item.id)!;
+    const held = (await getWorkItem(sqliteDb(db), item.id))!;
     expect(held.state).toBe("recovering");
     expect(await restartHold(sqliteDb(db), held)).not.toBeNull();
   });
@@ -75,13 +82,13 @@ describe("interrupted verification", () => {
     expect(await pending(db)).toMatchObject([
       { queue: JOB_KIND.reverify, runAt: NOW + 60_000, payload: { retry: 1 } },
     ]);
-    expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(0);
+    expect((await getWorkItem(sqliteDb(db), item.id))?.recoveryAttempts).toBe(0);
   });
 
   test("a verifying item without a recorded candidate still moves to recovering", async () => {
     const { db, item } = await verifying(false);
     await prepareShutdown(sqliteDb(db), NOW + 1);
-    expect(getWorkItem(db, item.id)?.state).toBe("recovering");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("recovering");
   });
 
   test("an expired runner lease keeps the candidate verifying, and re-verifies it without waiting for orphan recovery", async () => {
@@ -97,7 +104,7 @@ describe("interrupted verification", () => {
     );
     const later = NOW + 60_000 + RUNNER_LEASE_GRACE_MS + 10 * 60_000;
     expect(await closeExpiredRunnerLeases(sqliteDb(db), later)).toEqual([run.id]);
-    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("verifying");
     expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
     expect(await pending(db)).toMatchObject([
       { queue: JOB_KIND.reverify, payload: { itemId: item.id, recheckHead: true } },

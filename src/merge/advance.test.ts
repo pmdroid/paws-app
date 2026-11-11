@@ -98,7 +98,7 @@ describe("advanceMerge", () => {
     ).toEqual({
       kind: "obsolete",
     });
-    expect(getWorkItem(db, "eng-1")?.state).toBe("merged");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("merged");
     expect(calls).toEqual(["completed"]);
     expect(await mergeCallInFlight(sqliteDb(db), "eng-1")).toBe(false);
   });
@@ -113,7 +113,7 @@ describe("advanceMerge", () => {
       ).toEqual({
         kind: "returned",
       });
-      expect(getWorkItem(db, "eng-1")?.state).toBe("verifying");
+      expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("verifying");
       expect(await mergeCallInFlight(sqliteDb(db), "eng-1")).toBe(false);
     } finally {
       db.close();

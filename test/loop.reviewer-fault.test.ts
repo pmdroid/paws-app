@@ -129,7 +129,7 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     db.run("UPDATE work_item SET delegated_by = 'delegator-1'");
     await drain();
 
-    const items = listWorkItems(db);
+    const items = await listWorkItems(sqliteDb(db));
     expect(items.map((item) => item.state)).toEqual(["verifying", "verifying"]);
     expect((await holds()).map((job) => (job.payload as { itemId: string }).itemId).sort()).toEqual(
       items.map((item) => item.id).sort(),
@@ -163,7 +163,10 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     }
     expect(delays).toEqual([5 * 60_000, 15 * 60_000, 15 * 60_000, 15 * 60_000]);
     await drain();
-    expect(listWorkItems(db).map((item) => item.state)).toEqual(["verifying", "verifying"]);
+    expect((await listWorkItems(sqliteDb(db))).map((item) => item.state)).toEqual([
+      "verifying",
+      "verifying",
+    ]);
     expect(tracker.questions).toEqual([]);
     expect(
       tracker.progress.filter((update) => update.body.includes("can't run its review")),
@@ -193,7 +196,10 @@ test("a reviewer fault holds two items with one alert, and a reviewer change re-
     }
     for (const _ of released) await jobs.tick([JOB_KIND.reverify]);
 
-    expect(listWorkItems(db).map((item) => item.state)).toEqual(["merge_queue", "merge_queue"]);
+    expect((await listWorkItems(sqliteDb(db))).map((item) => item.state)).toEqual([
+      "merge_queue",
+      "merge_queue",
+    ]);
     expect(tracker.questions).toEqual([]);
   } finally {
     await orchestrator.shutdown();

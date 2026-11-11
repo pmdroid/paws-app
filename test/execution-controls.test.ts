@@ -74,7 +74,7 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     assert.equal((await getJob(sqliteDb(db), stale))!.status, "dead");
 
     // Once the session is stopped, only its dead final Stop delivery can be retried.
-    const session = getWorkItem(db, "controlled")!.sessionKey!;
+    const session = (await getWorkItem(sqliteDb(db), "controlled"))!.sessionKey!;
     const stop = await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "activity",
@@ -157,16 +157,16 @@ test("Resume restarts an item a Linear stop paused, and Stop cancels it", async 
       });
     };
     await stop();
-    assert.equal(getWorkItem(db, "controlled")?.state, "paused");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))?.state, "paused");
     const view = (await (await call()).json()) as { actions: string[] };
     assert.deepEqual(view.actions, ["stop", "resume"]);
     assert.equal((await call("resume")).status, 200);
-    assert.equal(getWorkItem(db, "controlled")?.state, "queued");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))?.state, "queued");
     assert.equal((await getLinearSession(sqliteDb(db), "session-controlled"))?.stoppedAt, null);
 
     await stop();
     assert.equal((await call("stop")).status, 200);
-    assert.equal(getWorkItem(db, "controlled")?.state, "cancelled");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))?.state, "cancelled");
   } finally {
     await fixture.close();
     rmSync(root, { recursive: true, force: true });
@@ -204,7 +204,7 @@ test("Asking which controls an item has is not a denial; a refused action still 
 
     for (const action of ["pause", "stop"])
       assert.equal((await call(action, "outside")).status, 403);
-    assert.equal(getWorkItem(db, "controlled")!.state, "running");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "running");
     assert.deepEqual(denials(), [
       { userId: "outside", subject: "execution-controls" },
       { userId: "outside", subject: "execution-controls" },

@@ -104,7 +104,7 @@ async function setup(threads = THREADS, options: { commentsPerPage?: number } = 
     flush: async () => {},
   };
   let delivery = 0;
-  const deliver = (review: {
+  const deliver = async (review: {
     id: number;
     state: string;
     body?: string;
@@ -130,7 +130,7 @@ async function setup(threads = THREADS, options: { commentsPerPage?: number } = 
           pull_request: {
             number: review.pull ?? 7,
             head: {
-              ref: review.branch ?? worktreeBranch(getWorkItem(db, "eng-1")!),
+              ref: review.branch ?? worktreeBranch((await getWorkItem(sqliteDb(db), "eng-1"))!),
               sha: "h",
               repo: review.headRepository === null ? null : { id: review.headRepository ?? 11 },
             },
@@ -174,7 +174,7 @@ describe("changes-requested reviews", () => {
     ]);
 
     expect(await handlePullReview(db, 501, caps)).toBe("restarted");
-    expect(getWorkItem(db, "eng-1")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("queued");
     expect(fixRounds(db, "eng-1")).toBe(1);
     const [resume] = await resumeJobs(db);
     expect(resume?.jobKey).toBe("review:eng-1:501");
@@ -258,7 +258,7 @@ describe("changes-requested reviews", () => {
     expect(await handlePullReview(db, 501, caps)).toBe("wait");
 
     await applyWorkItemEvent(sqliteDb(db), "eng-1", "closeout_accepted");
-    expect(getWorkItem(db, "eng-1")?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("merge_queue");
     setBusy(true);
     expect(await handlePullReview(db, 501, caps)).toBe("wait");
     const step = await advanceMerge(
@@ -313,7 +313,7 @@ describe("changes-requested reviews", () => {
     await deliver({ id: 501, state: "changes_requested", body: "Rename it." });
     expect(await handlePullReview(db, 501, caps)).toBe("asked");
     expect(await feedbackActivities(db)).toEqual([]);
-    expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), "eng-1"))?.state).toBe("awaiting_input");
     expect(await resumeJobs(db)).toHaveLength(0);
     const question = findOpenQuestion(db, "s-1");
     expect(question?.kind).toBe("ci-help");

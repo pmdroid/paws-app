@@ -154,7 +154,7 @@ export class GitHubInstallationCheck {
 
   async invalidate(scope: { sessionId?: string; issueId?: string } = {}): Promise<void> {
     for (const [itemId, ready] of this.lastReady) {
-      const item = getWorkItem(this.db, itemId);
+      const item = await getWorkItem(sqliteDb(this.db), itemId);
       if (
         item === null ||
         ((scope.sessionId === undefined || item.sessionKey === scope.sessionId) &&

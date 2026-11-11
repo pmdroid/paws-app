@@ -65,8 +65,13 @@ async function setup() {
       reactToComment: (commentId, on) => reactToComment({ ...access, commentId, on }),
     }),
   );
-  const startRestart = (reason: RestartReason, body: string, jobKey: string) => {
-    restart(db, getWorkItem(db, "eng-1")!, { reason, body, jobKey, now: clock.now() });
+  const startRestart = async (reason: RestartReason, body: string, jobKey: string) => {
+    restart(db, (await getWorkItem(sqliteDb(db), "eng-1"))!, {
+      reason,
+      body,
+      jobKey,
+      now: clock.now(),
+    });
   };
   const turnStarts = async () => {
     const job = (await listJobs(sqliteDb(db))).find((entry) => entry.queue === JOB_KIND.resume)!;
@@ -88,7 +93,7 @@ const target = (number: number, kind: "thread" | "conversation", commentId: numb
 
 test("a review restart posts one working-on-it comment and 👀 on each comment, once", async () => {
   const { db, github, clock, startRestart, turnStarts } = await setup();
-  startRestart("review", "Fix the review.", "review:eng-1:601");
+  await startRestart("review", "Fix the review.", "review:eng-1:601");
   await recordReplyTargets(
     db,
     "eng-1",
@@ -112,7 +117,7 @@ test("a review restart posts one working-on-it comment and 👀 on each comment,
 
 test("a conflict restart names the merge conflict and reacts to nothing", async () => {
   const { github, startRestart, turnStarts } = await setup();
-  startRestart("conflict", REBASE_CONFLICT_INSTRUCTION, "conflict:eng-1:recheck:h");
+  await startRestart("conflict", REBASE_CONFLICT_INSTRUCTION, "conflict:eng-1:recheck:h");
 
   await turnStarts();
 
@@ -124,7 +129,7 @@ test("a conflict restart names the merge conflict and reacts to nothing", async 
 
 test("Paws does not read its own working-on-it comment back as a new comment", async () => {
   const { db, github, clock, startRestart, turnStarts } = await setup();
-  startRestart("conflict", REBASE_CONFLICT_INSTRUCTION, "conflict:eng-1:recheck:h");
+  await startRestart("conflict", REBASE_CONFLICT_INSTRUCTION, "conflict:eng-1:recheck:h");
   await turnStarts();
 
   const comment = (id: number, body: string) =>

@@ -430,7 +430,7 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
         preparing = true;
         await preparationGate;
       }
-      const item = listWorkItems(paws.db).find((i) => i.currentRunId === runId)!;
+      const item = (await listWorkItems(sqliteDb(paws.db))).find((i) => i.currentRunId === runId)!;
       return {
         token: "fixture",
         expiresAt: Date.now() + 60_000,
@@ -463,15 +463,15 @@ let runtime = runnerRestart
   ? await runtimeProcess(runtimeOptions)
   : await openRunnerRuntime(runtimeOptions);
 
-async function until(label: string, done: () => boolean) {
+async function until(label: string, done: () => boolean | Promise<boolean>) {
   const deadline = performance.now() + 30_000;
-  while (!done() && performance.now() < deadline) {
+  while (!(await done()) && performance.now() < deadline) {
     await runtime.tick();
     await Bun.sleep(5);
   }
   assert(
-    done(),
-    `${label}: ${JSON.stringify({ errors, items: listWorkItems(paws.db), commands: [...commands.values()], activities: (await listOutbox(sqliteDb(paws.db))).map((row) => row.payload) })}`,
+    await done(),
+    `${label}: ${JSON.stringify({ errors, items: await listWorkItems(sqliteDb(paws.db)), commands: [...commands.values()], activities: (await listOutbox(sqliteDb(paws.db))).map((row) => row.payload) })}`,
   );
 }
 async function addItem(id: string, answer = false) {
@@ -589,7 +589,7 @@ async function restartMidTurn(command: RunnerCommand) {
   paws = await start();
   await paws.ready;
   down = false;
-  assert.equal(getWorkItem(paws.db, command.itemId)?.recoveryAttempts, 0);
+  assert.equal((await getWorkItem(sqliteDb(paws.db), command.itemId))?.recoveryAttempts, 0);
   await until("original result accepted", () => accepted.some((r) => r.commandId === command.id));
   assert.equal(executions.get(command.id), execution);
   assert.equal(accepted.filter((r) => r.commandId === command.id).length, 1);
@@ -609,7 +609,7 @@ try {
     const old = [...commands.values()].find((c) => c.type === "run")!;
     assert(old.type === "run");
     const oldExecution = executions.get(old.id);
-    const branch = getWorkItem(paws.db, code)?.branchName;
+    const branch = (await getWorkItem(sqliteDb(paws.db), code))?.branchName;
     assert(
       paws.db
         .query("SELECT 1 FROM runner_command WHERE id=? AND acknowledged_at IS NOT NULL")
@@ -664,16 +664,16 @@ try {
     );
     const replacement = activeCommand("run")!;
     assert(replacement.type === "run");
-    assert.equal(getWorkItem(paws.db, code)?.branchName, branch);
+    assert.equal((await getWorkItem(sqliteDb(paws.db), code))?.branchName, branch);
     assert(!accepted.some((r) => r.commandId === old.id));
     assert(replacement.generation > old.generation);
-    assert.notEqual(getWorkItem(paws.db, code)?.state, "failed");
+    assert.notEqual((await getWorkItem(sqliteDb(paws.db), code))?.state, "failed");
     if (oldExecution) assert(stops > 0, "old worker must be stopped before replacement");
     finish(replacement);
     await until("reviewer after recovery", () => !!activeCommand("review"));
     finish(activeCommand("review")!);
     await until("pull request after recovery", () => github.opened.length === 1);
-    assert.equal(getWorkItem(paws.db, code)?.acceptedHead, head);
+    assert.equal((await getWorkItem(sqliteDb(paws.db), code))?.acceptedHead, head);
     const activities = (await listOutbox(sqliteDb(paws.db))).map((row) =>
       JSON.stringify(row.payload),
     );
@@ -690,9 +690,12 @@ try {
     const answer = await addItem("answer", true);
     await until("answer running", () => !!activeCommand("task"));
     await restartMidTurn(activeCommand("task")!);
-    await until("answer completed", () => getWorkItem(paws.db, answer)?.state === "completed");
+    await until(
+      "answer completed",
+      async () => (await getWorkItem(sqliteDb(paws.db), answer))?.state === "completed",
+    );
     assert.equal(github.opened.length, 1);
-    assert.equal(getWorkItem(paws.db, code)?.acceptedHead, head);
+    assert.equal((await getWorkItem(sqliteDb(paws.db), code))?.acceptedHead, head);
     assert.equal(stops, 0);
     assert.equal(paws.db.query("SELECT 1 FROM runner_command WHERE kind='cancel'").all().length, 0);
     assert.equal(executions.size, 3);

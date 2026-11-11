@@ -35,7 +35,11 @@ test("quiet verification retries once across restart, then asks a person", async
     insertQueuedItem(db, { id: "stalled", sessionKey: "ses", now: clock.now() });
     await beginImplementRun(sqliteDb(db), "stalled", clock.now());
     await applyWorkItemEvent(sqliteDb(db), "stalled", "turn_ended", { now: clock.now() });
-    saveCheckpoint(db, "stalled", { phase: "verifying", baseSha: "base", wipCommit: "head" });
+    await saveCheckpoint(sqliteDb(db), "stalled", {
+      phase: "verifying",
+      baseSha: "base",
+      wipCommit: "head",
+    });
     const lines: string[] = [];
     const cancelled: string[] = [];
     const check = () =>
@@ -49,7 +53,7 @@ test("quiet verification retries once across restart, then asks a person", async
     clock.advance(31 * 60_000);
     await recordAgentCloseout(
       sqliteDb(db),
-      getWorkItem(db, "stalled")!.currentRunId!,
+      (await getWorkItem(sqliteDb(db), "stalled"))!.currentRunId!,
       "stalled",
       {
         type: "report",
@@ -86,7 +90,7 @@ test("quiet verification retries once across restart, then asks a person", async
     ).toHaveLength(1);
     expect(lines).toEqual(["closeout stalled for 31 min, re-running once"]);
     // The real re-verify closes the quiet run and opens a new one on the same head.
-    const prior = getWorkItem(db, "stalled")!.currentRunId!;
+    const prior = (await getWorkItem(sqliteDb(db), "stalled"))!.currentRunId!;
     await markRun(sqliteDb(db), prior, "lost", clock.now());
     const rerun = await insertRun(sqliteDb(db), {
       itemId: "stalled",
@@ -125,8 +129,8 @@ test("quiet verification retries once across restart, then asks a person", async
         questionEffects(db, { now: clock.now() }),
       ),
     );
-    expect(getWorkItem(db, "stalled")?.state).toBe("verifying");
-    expect(getWorkItem(db, "stalled")?.checkpoint?.wipCommit).toBe("head");
+    expect((await getWorkItem(sqliteDb(db), "stalled"))?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), "stalled"))?.checkpoint?.wipCommit).toBe("head");
   } finally {
     db.close();
     rmSync(root, { recursive: true });
@@ -137,7 +141,11 @@ async function verifyingItem(id: string, db: ReturnType<typeof openDatabase>, no
   insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now });
   await beginImplementRun(sqliteDb(db), id, now);
   await applyWorkItemEvent(sqliteDb(db), id, "turn_ended", { now });
-  saveCheckpoint(db, id, { phase: "verifying", baseSha: "base", wipCommit: "head" });
+  await saveCheckpoint(sqliteDb(db), id, {
+    phase: "verifying",
+    baseSha: "base",
+    wipCommit: "head",
+  });
 }
 
 test("a usage pause is not a stall, and one failed cancel leaves the other items recovered", async () => {
@@ -147,7 +155,7 @@ test("a usage pause is not a stall, and one failed cancel leaves the other items
     const clock = new FakeClock(Date.now() + 1000);
     for (const id of ["paused", "broken", "quiet"]) await verifyingItem(id, db, clock.now());
     await startUsagePause(sqliteDb(db), {
-      runId: getWorkItem(db, "paused")!.currentRunId!,
+      runId: (await getWorkItem(sqliteDb(db), "paused"))!.currentRunId!,
       itemId: "paused",
       agent: "cursor",
       runnerId: null,

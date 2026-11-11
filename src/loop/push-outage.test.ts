@@ -127,7 +127,7 @@ describe("a push outage", () => {
       });
     }
     for (const name of ["a", "b", "c"]) {
-      expect(getWorkItem(db, `item-${name}`)?.state).toBe("running");
+      expect((await getWorkItem(sqliteDb(db), `item-${name}`))?.state).toBe("running");
       expect(findOpenQuestion(db, `ses-${name}`)).toBeNull();
     }
     expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toEqual([]);
@@ -197,7 +197,7 @@ describe("a push outage", () => {
     // One question for the workspace, not one per item, and the item keeps its state.
     expect(await askAboutPushOutage(db, REPOSITORY, hour + 10 * MINUTE)).toBe("already");
     for (const name of ["b", "c"]) expect(findOpenQuestion(db, `ses-${name}`)).toBeNull();
-    expect(getWorkItem(db, "item-a")?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), "item-a"))?.state).toBe("running");
     expect(
       (await listOutbox(sqliteDb(db)))
         .filter((row) => row.op === "elicitation")

@@ -78,7 +78,7 @@ test("an answered agent question restarts the same run with the handoff", async 
   );
 
   expect(outcome.status).toBe("answered");
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
   expect(await resumes(db)).toEqual([
     expect.objectContaining({
       jobKey: `resume:answer:${asked.question.id}`,
@@ -107,7 +107,7 @@ test.each(["clarification", "repository"] as const)(
     const { db, asker } = await parked();
     const asked = await ask(db, asker, kind, "Which outcome?", { now: NOW });
     await answer(db, reply("Change the code"), questionEffects(db, { now: NOW + 100 }));
-    expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
     expect((await resumes(db)).map((job) => job.jobKey)).toEqual([
       `resume:answer:${asked.question.id}`,
     ]);
@@ -119,7 +119,7 @@ test("an answer while the asking run is still live leaves the resume to the end 
   await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
   const effects = questionEffects(db, { now: NOW + 100, asking: (runId) => runId === asker.runId });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
   expect(await resumes(db)).toHaveLength(1);
 });
 
@@ -128,7 +128,7 @@ test("a redirecting answer resumes the task without a handoff job", async () => 
   await ask(db, asker, "agent", "Include archived rows?", { now: NOW });
   const effects = questionEffects(db, { now: NOW + 100, redirect: true });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("queued");
   expect(await resumes(db)).toHaveLength(1);
 });
 
@@ -153,7 +153,7 @@ test("an agent question queued behind another is delivered once that one is answ
     question: { id: waiting.question.id },
     next: { id: queued.question.id, status: "open" },
   });
-  expect(getWorkItem(db, asker.itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), asker.itemId))?.state).toBe("awaiting_input");
   expect(await resumes(db)).toEqual([]);
   expect((await listOutbox(sqliteDb(db))).map((row) => row.idempotencyKey)).toEqual([
     `question:${waiting.question.id}`,

@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { runAgent } from "../src/acp";
 import { RunnerSlotsBusyError, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, getWorkItem, migrate, openDatabase } from "../src/db";
+import { sqliteDb, JobLoop, OutboxDispatcher, getWorkItem, migrate, openDatabase } from "../src/db";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
 import { tempHome } from "./helpers";
@@ -82,7 +82,7 @@ test("a busy helper lane leaves the start attempts alone and a failing helper sp
       await jobs.tick();
     }
     expect(helperCalls).toEqual(["classify", "classify", "classify"]);
-    expect(getWorkItem(db, itemId)?.state).toBe("recovering");
+    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("recovering");
     expect(attempts()).toEqual([0]);
 
     outcome = new Error("Remote session helper timed out");
@@ -91,7 +91,7 @@ test("a busy helper lane leaves the start attempts alone and a failing helper sp
     await jobs.tick();
     expect(helperCalls).toEqual(["classify"]);
     expect(attempts()).toEqual([1]);
-    expect(getWorkItem(db, itemId)?.state).not.toBe("failed");
+    expect((await getWorkItem(sqliteDb(db), itemId))?.state).not.toBe("failed");
   } finally {
     await orchestrator.shutdown().catch(() => undefined);
     await outbox.idle();

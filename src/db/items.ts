@@ -1,5 +1,4 @@
 import { pendingRestartHandoffSteps } from "./restart";
-import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
@@ -21,7 +20,7 @@ import {
   type AnyColumn,
   type SQL,
 } from "drizzle-orm";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import type { Db, Q, Steps } from "./db";
 import { haltSteps } from "./halt";
 import { jsonField as jsonPath } from "./json-text";
 import { wakeMergesBehindSteps } from "./merge-queue";
@@ -180,8 +179,8 @@ export function* getWorkItemSteps(q: Q, id: string) {
   return row === undefined ? null : mapItem(row);
 }
 
-export function getWorkItem(db: Database, id: string): WorkItemRecord | null {
-  return settled(sqliteDb(db).run((q) => getWorkItemSteps(q, id)));
+export async function getWorkItem(store: Db, id: string): Promise<WorkItemRecord | null> {
+  return store.run((q) => getWorkItemSteps(q, id));
 }
 
 export function* listWorkItemsSteps(q: Q) {
@@ -191,8 +190,8 @@ export function* listWorkItemsSteps(q: Q) {
   return rows.map(mapItem);
 }
 
-export function listWorkItems(db: Database): WorkItemRecord[] {
-  return settled(sqliteDb(db).run(listWorkItemsSteps));
+export async function listWorkItems(store: Db): Promise<WorkItemRecord[]> {
+  return store.run((q) => listWorkItemsSteps(q));
 }
 
 export function* listWorkItemsByStatesSteps(q: Q, states: readonly WorkItemState[]) {
@@ -440,8 +439,12 @@ export function* saveCheckpointSteps(q: Q, id: string, checkpoint: Checkpoint | 
   });
 }
 
-export function saveCheckpoint(db: Database, id: string, checkpoint: Checkpoint | null): void {
-  settled(sqliteDb(db).run((q) => saveCheckpointSteps(q, id, checkpoint)));
+export async function saveCheckpoint(
+  store: Db,
+  id: string,
+  checkpoint: Checkpoint | null,
+): Promise<void> {
+  await store.run((q) => saveCheckpointSteps(q, id, checkpoint));
 }
 
 export function* setRecoveryAttemptsSteps(q: Q, id: string, attempts: number) {

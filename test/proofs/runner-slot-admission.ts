@@ -74,8 +74,8 @@ export default {
     );
     proof.expect(
       "the third item remains queued",
-      getWorkItem(db, "c")?.state === "queued",
-      getWorkItem(db, "c")?.state,
+      (await getWorkItem(sqliteDb(db), "c"))?.state === "queued",
+      (await getWorkItem(sqliteDb(db), "c"))?.state,
     );
     await recordRunnerRepositories(sqliteDb(db), goldbox, [REPOSITORY], NOW + 1);
     proof.expect("newly allowed capacity admits the held item", (await pass()).includes("c"));

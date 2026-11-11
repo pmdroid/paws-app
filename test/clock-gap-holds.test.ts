@@ -83,9 +83,9 @@ async function hold(db: Database, now: number, kind: Hold, merging: boolean): Pr
   }
   if (merging) {
     await markCloseoutAccepted(sqliteDb(db), "item", "wip");
-    saveCheckpoint(db, "item", MERGING);
+    await saveCheckpoint(sqliteDb(db), "item", MERGING);
   }
-  expect(getWorkItem(db, "item")?.state).toBe(kind);
+  expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe(kind);
 }
 
 async function executions(db: Database) {
@@ -104,7 +104,7 @@ function actionableQuestions(db: Database) {
 }
 
 async function snapshot(db: Database) {
-  const item = getWorkItem(db, "item")!;
+  const item = (await getWorkItem(sqliteDb(db), "item"))!;
   return {
     item: {
       state: item.state,
@@ -184,7 +184,7 @@ describe("clock gaps preserve human holds", () => {
 
             await recoverOnStartup(sqliteDb(db), clock.now());
             expect(await requeueOrphanedWork(sqliteDb(db), clock.now() + TWO_HOURS)).toEqual([]);
-            expect(getWorkItem(db, "item")).toMatchObject(before.item);
+            expect(await getWorkItem(sqliteDb(db), "item")).toMatchObject(before.item);
             expect(await executions(db)).toEqual([]);
             expect(actionableQuestions(db)).toHaveLength(kind === "awaiting_input" ? 1 : 0);
           } finally {
@@ -210,7 +210,7 @@ describe("clock gaps preserve human holds", () => {
         };
         const effects = () => questionEffects(db, { now: reply.now });
         expect((await answer(db, reply, effects())).status).toBe("answered");
-        const released = getWorkItem(db, "item")!;
+        const released = (await getWorkItem(sqliteDb(db), "item"))!;
         expect(released.state).toBe("queued");
         expect((await executions(db)).map((job) => job.jobKey)).toEqual([
           expect.stringMatching(/^resume:answer:/),
@@ -221,7 +221,7 @@ describe("clock gaps preserve human holds", () => {
           "unasked",
         );
         await observeGaps(db, clock, TWO_HOURS + 1);
-        expect(getWorkItem(db, "item")?.version).toBe(released.version);
+        expect((await getWorkItem(sqliteDb(db), "item"))?.version).toBe(released.version);
         expect(await executions(db)).toHaveLength(1);
       } finally {
         db.close();

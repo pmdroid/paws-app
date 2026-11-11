@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, inArray, isNotNull, min, or, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import type { Q, Steps, Db } from "./db";
 import type * as pgSchema from "./schema-pg";
 
 export const CLOSEOUT_OUTPUT_CAP_BYTES = 64 * 1024;
@@ -564,8 +563,8 @@ export function* getCloseoutProgressSteps(q: Q, itemId: string, head: string) {
   return progressRecord(run, steps);
 }
 
-export function listCloseoutProgress(db: Database): CloseoutProgressRecord[] {
-  return settled(sqliteDb(db).run(listCloseoutProgressSteps));
+export async function listCloseoutProgress(store: Db): Promise<CloseoutProgressRecord[]> {
+  return store.run((q) => listCloseoutProgressSteps(q));
 }
 
 export function* listCloseoutProgressSteps(q: Q) {

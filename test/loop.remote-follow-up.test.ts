@@ -97,9 +97,9 @@ for (const delivered of [true, false, "completed"] as const)
     try {
       await orchestrator.onLinearEvent(event("created", null));
       const running = jobs.tick();
-      const item = listWorkItems(db)[0]!;
+      const item = (await listWorkItems(sqliteDb(db)))[0]!;
       for (let attempt = 0; attempt < 500; attempt++) {
-        const current = listWorkItems(db)[0]!;
+        const current = (await listWorkItems(sqliteDb(db)))[0]!;
         if (
           current.currentRunId &&
           (await getRun(sqliteDb(db), current.currentRunId))?.status === "active"
@@ -107,7 +107,7 @@ for (const delivered of [true, false, "completed"] as const)
           break;
         await Bun.sleep(10);
       }
-      const runId = listWorkItems(db)[0]!.currentRunId!;
+      const runId = (await listWorkItems(sqliteDb(db)))[0]!.currentRunId!;
       if (delivered === "completed") {
         enqueueOutboxOnce(db, {
           target: "linear",
@@ -127,7 +127,7 @@ for (const delivered of [true, false, "completed"] as const)
       const resumes = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
       if (delivered === true) {
         expect((await getRun(sqliteDb(db), runId))?.status).toBe("active");
-        expect(listWorkItems(db)[0]!.currentRunId).toBe(runId);
+        expect((await listWorkItems(sqliteDb(db)))[0]!.currentRunId).toBe(runId);
         expect(resumes).toHaveLength(0);
         await orchestrator.onLinearEvent({ ...event("prompted", null), signal: "stop" });
       } else {

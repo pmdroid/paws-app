@@ -72,7 +72,7 @@ describe("follow-up after an expired runner lease", () => {
     const { db, item, run } = await leased();
     const at = START + PAST;
     expect(await closeExpiredRunnerLeases(sqliteDb(db), at)).toEqual([run.id]);
-    const current = getWorkItem(db, item.id)!;
+    const current = (await getWorkItem(sqliteDb(db), item.id))!;
     expect(current.state).toBe("recovering");
     expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
     expect(runnerWork(db, run.id)?.endedAt).toBe(at);
@@ -95,9 +95,9 @@ describe("follow-up after an expired runner lease", () => {
   test("a verifying candidate re-verifies without an implementer turn", async () => {
     const { db, item, run } = await leased();
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
-    saveCheckpoint(db, item.id, candidate);
+    await saveCheckpoint(sqliteDb(db), item.id, candidate);
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
-    expect(getWorkItem(db, item.id)?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("verifying");
     expect(await pending(db)).toMatchObject([
       {
         queue: JOB_KIND.reverify,
@@ -109,9 +109,9 @@ describe("follow-up after an expired runner lease", () => {
   test("verifying work without a candidate resumes execution", async () => {
     const { db, item, run } = await leased();
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
-    saveCheckpoint(db, item.id, null);
+    await saveCheckpoint(sqliteDb(db), item.id, null);
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
-    expect(getWorkItem(db, item.id)?.state).toBe("recovering");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("recovering");
     expect((await pending(db)).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
   });
 
@@ -119,14 +119,14 @@ describe("follow-up after an expired runner lease", () => {
     const { db, item, run } = await leased();
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
     await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
-    saveCheckpoint(db, item.id, { ...candidate, phase: "merge_queue" });
+    await saveCheckpoint(sqliteDb(db), item.id, { ...candidate, phase: "merge_queue" });
     await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: item.id },
       now: START,
     });
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
-    const current = getWorkItem(db, item.id)!;
+    const current = (await getWorkItem(sqliteDb(db), item.id))!;
     expect(current.state).toBe("verifying");
     expect(current.checkpoint?.phase).toBe("verifying");
     expect((await pending(db)).filter((job) => job.queue === JOB_KIND.reverify)).toMatchObject([
@@ -138,7 +138,7 @@ describe("follow-up after an expired runner lease", () => {
   test("a valid pending job keeps ownership of the progress", async () => {
     const { db, item, run } = await leased();
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
-    saveCheckpoint(db, item.id, candidate);
+    await saveCheckpoint(sqliteDb(db), item.id, candidate);
     await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.reverify,
       payload: { itemId: item.id },
@@ -188,7 +188,7 @@ describe("follow-up after an expired runner lease", () => {
       [run.id, START],
     );
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([]);
-    expect(getWorkItem(db, item.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("running");
     expect(await pending(db)).toEqual([]);
   });
 
@@ -197,7 +197,7 @@ describe("follow-up after an expired runner lease", () => {
     await setCurrentRun(sqliteDb(db), item.id, "newer-run");
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
     expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
-    expect(getWorkItem(db, item.id)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("running");
     expect(await pending(db)).toEqual([]);
   });
 
@@ -212,7 +212,7 @@ describe("follow-up after an expired runner lease", () => {
     const { db, item, run } = await leased();
     await applyWorkItemEvent(sqliteDb(db), item.id, "pause");
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
-    expect(getWorkItem(db, item.id)?.state).toBe("paused");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("paused");
     expect(await pending(db)).toEqual([]);
   });
 
@@ -249,7 +249,7 @@ describe("follow-up after an expired runner lease", () => {
       at += PAST;
     }
     expect(await closeExpiredRunnerLeases(sqliteDb(db), at)).toEqual([run.id]);
-    const held = getWorkItem(db, item.id)!;
+    const held = (await getWorkItem(sqliteDb(db), item.id))!;
     expect(held.state).toBe("recovering");
     expect(await restartHold(sqliteDb(db), held)).not.toBeNull();
     expect((await pending(db)).map((job) => job.queue)).toEqual(["item.ask"]);
@@ -262,7 +262,7 @@ describe("follow-up after an expired runner lease", () => {
     const { db, item, run } = await leased();
     expect(await closeExpiredRunnerLeases(sqliteDb(db), START + PAST)).toEqual([run.id]);
     expect(await recoverOnStartup(sqliteDb(db), START + PAST + 1)).toEqual([]);
-    expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(0);
+    expect((await getWorkItem(sqliteDb(db), item.id))?.recoveryAttempts).toBe(0);
     expect((await pending(db)).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
   });
 
@@ -281,7 +281,7 @@ describe("follow-up after an expired runner lease", () => {
     first.db.close();
 
     const second = openDatabase(path);
-    expect(getWorkItem(second, "item")?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(second), "item"))?.state).toBe("running");
     expect((await getRun(sqliteDb(second), first.run.id))?.status).toBe("active");
     expect(runnerWork(second, first.run.id)?.endedAt).toBeNull();
     second.run("DROP TRIGGER fail_follow_up");
@@ -289,7 +289,7 @@ describe("follow-up after an expired runner lease", () => {
     second.close();
 
     const third = openDatabase(path);
-    expect(getWorkItem(third, "item")?.state).toBe("recovering");
+    expect((await getWorkItem(sqliteDb(third), "item"))?.state).toBe("recovering");
     expect((await getRun(sqliteDb(third), first.run.id))?.status).toBe("lost");
     expect(runnerWork(third, first.run.id)?.endedAt).toBe(START + PAST);
     expect(await pending(third)).toMatchObject([

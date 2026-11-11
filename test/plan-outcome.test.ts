@@ -230,7 +230,7 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
     expect(await getTaskMode(sqliteDb(db), itemId)).toBe("plan");
 
     // The proposal arrives as one select elicitation, and the run wrote nothing.
-    expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
     const first = findOpenQuestion(db, "session")!;
     expect(first).toMatchObject({
       kind: "plan-approval",
@@ -253,9 +253,9 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
     const edit = findOpenQuestion(db, "session")!;
     expect(edit.kind).toBe("plan-approval");
     expect(edit.body).toContain("What should change");
-    expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
     await reply("change", "Create smaller sub-issues: drop the smoke-run one.");
-    expect(getWorkItem(db, itemId)?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
     await jobs.tick();
     expect(purposes).toEqual(["classify", "plan", "plan"]);
     expect(prompts.at(-1)).toContain(
@@ -267,7 +267,7 @@ test("a planning request proposes sub-issues, takes an edit, and files them once
 
     // Create files both under the parent in blocks order, with the repository label.
     await reply("create", "Create 2 sub-issues");
-    expect(getWorkItem(db, itemId)?.state).toBe("completed");
+    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("completed");
     await outbox.idle();
     await outbox.idle();
     expect(tracker.subIssueRequests).toHaveLength(1);
@@ -318,7 +318,7 @@ test("Discard completes the plan with one response and files nothing", async () 
     expect(findOpenQuestion(db, "session")?.kind).toBe("plan-approval");
     await reply("discard", "Discard");
     await outbox.idle();
-    expect(getWorkItem(db, itemId)?.state).toBe("completed");
+    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("completed");
     expect(tracker.subIssueRequests).toEqual([]);
     expect(
       tracker.progress.filter((update) => update.kind === "response").map((update) => update.body),

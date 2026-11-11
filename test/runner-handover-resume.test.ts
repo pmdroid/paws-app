@@ -483,7 +483,7 @@ test("a handed-over session continues on the second runner from its WIP commit, 
   await context.submit(onB, runners.b, { candidateSha: wip });
   const result = await running;
   expect(result).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
-  expect(getWorkItem(context.db, record.id)?.checkpoint?.wipCommit).toBe(wip);
+  expect((await getWorkItem(sqliteDb(context.db), record.id))?.checkpoint?.wipCommit).toBe(wip);
   expect(notices.filter((notice) => notice.startsWith("Moved"))).toEqual([
     `Moved from A to B. Continuing the agent's session from turn ${onA.generation}.\n`,
   ]);
@@ -617,7 +617,7 @@ test("a question that cannot be asked keeps the turn's work as a WIP commit befo
   await context.events(onA, runners.a, [{ type: "checkpoint", reason: "stop", sha: wip }]);
   expect(await context.next(runners.a)).toMatchObject({ type: "cancel", runId: onA.runId });
   expect(await running).toMatchObject({ message: "Question owner is stale" });
-  expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(wip);
+  expect((await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit).toBe(wip);
 });
 
 test("a Paws shutdown while the run waits on its question keeps the turn's work before the cancel", async () => {
@@ -644,7 +644,7 @@ test("a Paws shutdown while the run waits on its question keeps the turn's work 
   await context.events(onA, runners.a, [{ type: "checkpoint", reason: "stop", sha: wip }]);
   expect(await context.next(runners.a)).toMatchObject({ type: "cancel", runId: onA.runId });
   await running;
-  expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(wip);
+  expect((await getWorkItem(sqliteDb(db), record.id))?.checkpoint?.wipCommit).toBe(wip);
 });
 
 test("after a restart the handed-over run still avoids the runner it left and waits", async () => {

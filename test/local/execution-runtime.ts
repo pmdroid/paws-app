@@ -192,12 +192,12 @@ export async function probeExecutionRuntime(input: {
   await saveTaskMode(sqliteDb(db), itemId, "code", 0, true);
   await beginImplementRun(sqliteDb(db), itemId, Date.now());
   await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
-  saveCheckpoint(db, itemId, {
+  await saveCheckpoint(sqliteDb(db), itemId, {
     phase: "verifying",
     wipCommit: "a".repeat(40),
     baseSha: "b".repeat(40),
   });
-  const oldRun = getWorkItem(db, itemId)!.currentRunId;
+  const oldRun = (await getWorkItem(sqliteDb(db), itemId))!.currentRunId;
   const oldMerge = await enqueueJob(sqliteDb(db), {
     queue: "github.merge",
     payload: { itemId },
@@ -280,9 +280,9 @@ export async function probeExecutionRuntime(input: {
       spec()?.revision === 2 && !(await hasPendingDelegationChanges(db, target.delegationId)),
   );
   assert.notEqual(spec()!.hash, first.hash);
-  assert.equal(getWorkItem(db, itemId)!.currentRunId, oldRun);
-  assert.equal(getWorkItem(db, itemId)!.checkpoint?.phase, "running");
-  assert.equal(getWorkItem(db, itemId)!.state, "queued");
+  assert.equal((await getWorkItem(sqliteDb(db), itemId))!.currentRunId, oldRun);
+  assert.equal((await getWorkItem(sqliteDb(db), itemId))!.checkpoint?.phase, "running");
+  assert.equal((await getWorkItem(sqliteDb(db), itemId))!.state, "queued");
   assert.equal(
     db.query<{ status: string }, [number]>("SELECT status FROM job WHERE id=?").get(oldMerge)!
       .status,
@@ -362,7 +362,7 @@ export async function probeExecutionRuntime(input: {
         )
         .get()?.handled === 1,
   );
-  assert.equal(getWorkItem(db, itemId)!.state, "cancelled");
+  assert.equal((await getWorkItem(sqliteDb(db), itemId))!.state, "cancelled");
   observe("Signed Stop replay drains without reconciling or reviving its stopped epic", {
     cancelled: true,
     handled: true,
@@ -420,7 +420,7 @@ export async function probeExecutionRuntime(input: {
           .get(key)?.handled === 1,
     ),
   );
-  assert.equal(getWorkItem(db, itemId)!.state, "cancelled");
+  assert.equal((await getWorkItem(sqliteDb(db), itemId))!.state, "cancelled");
   assert.equal((await getLinearSession(sqliteDb(db), "runtime-fresh-session"))!.stoppedAt, null);
   observe(
     "Production catch-up drains stopped and terminal session replays before delivering a fresh session activity",

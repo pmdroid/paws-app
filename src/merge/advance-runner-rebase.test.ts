@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { getWorkItem, listRebaseReturns } from "../db";
+import { sqliteDb, getWorkItem, listRebaseReturns } from "../db";
 import { setJournalSink } from "../journal";
 import { mergeHarness, pendingCi, type MergeHarness } from "./advance-harness";
 
@@ -95,7 +95,7 @@ describe("advanceMerge rebases on a runner", () => {
     const main = await h.moveMain("ok.txt", "from-main\n");
     h.state.runnerRebase = async () => ({ outcome: "conflict", files: ["ok.txt"] });
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("queued");
     expect(
       listRebaseReturns(h.db, "ENG-1", 0).map((row) => ({ base: row.base, files: row.files })),
     ).toEqual([{ base: main, files: ["ok.txt"] }]);
@@ -115,7 +115,7 @@ describe("advanceMerge rebases on a runner", () => {
     const head = await h.remoteHead("ENG-1");
     expect(head).not.toBe(item.accepted);
     await h.git(h.bare, "merge-base", "--is-ancestor", main, head);
-    expect(getWorkItem(h.db, "ENG-1")?.state).toBe("verifying");
+    expect((await getWorkItem(sqliteDb(h.db), "ENG-1"))?.state).toBe("verifying");
     expect(fallbacks()).toEqual([
       "item ENG-1 rebases on the control plane: runner rebase timed out after 10 minutes",
     ]);

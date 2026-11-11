@@ -254,7 +254,7 @@ test("a continuation write failure rolls back the answer and state transition", 
       WHEN NEW.queue = 'run.resume' BEGIN SELECT RAISE(ABORT, 'resume unavailable'); END`);
     await expect(orchestrator.onLinearEvent(prompt())).rejects.toThrow("resume unavailable");
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
     db.run("DROP TRIGGER reject_resume");
     await orchestrator.onLinearEvent(prompt());
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
@@ -267,14 +267,14 @@ test("a Linear Stop pauses the item with its question open, and a reply restarts
   const { db, item, question, orchestrator } = await setup(createFakeTracker([]));
   try {
     await orchestrator.onLinearEvent({ ...prompt(), body: null, signal: "stop" });
-    expect(getWorkItem(db, item.id)?.state).toBe("paused");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("paused");
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
     expect(
       (await listOutbox(sqliteDb(db))).map((row) => (row.payload as { body?: string }).body),
     ).toContain("Paused. Reply here or re-delegate to continue.");
 
     await orchestrator.onLinearEvent(prompt(NOW + 500, "reply-1"));
-    expect(getWorkItem(db, item.id)?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("queued");
     expect((await getQuestion(sqliteDb(db), question.id))?.answer).toBeNull();
     expect(findOpenQuestion(db, "ses_1")).toBeNull();
     const resume = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
@@ -393,7 +393,11 @@ test("a runner wait asked before a restart is answered by the next process witho
     await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
     const wait = await ask(
       db,
-      { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses_1" },
+      {
+        itemId: item.id,
+        runId: (await getWorkItem(sqliteDb(db), item.id))!.currentRunId,
+        sessionId: "ses_1",
+      },
       "runner-wait",
       "Move the task to another runner, or keep waiting?",
       { options: ["Move to another runner", "Keep waiting"], now: NOW },

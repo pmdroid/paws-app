@@ -136,7 +136,11 @@ async function seedVerifying(db: Database, id: string, head: string, now: number
   });
   await markRun(sqliteDb(db), started.run.id, "ended", now);
   await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
-  saveCheckpoint(db, id, { phase: "verifying", baseSha: sha("c"), wipCommit: head });
+  await saveCheckpoint(sqliteDb(db), id, {
+    phase: "verifying",
+    baseSha: sha("c"),
+    wipCommit: head,
+  });
 }
 
 async function acceptVerdict(

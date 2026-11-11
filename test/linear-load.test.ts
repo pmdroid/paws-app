@@ -159,15 +159,17 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
     updatedAtMs: clock.now(),
     payload: JSON.stringify({ agentSession: { creatorId: "human" } }),
   });
-  const tasks = () => listWorkItems(db).filter((item) => item.linearIdentifier.startsWith("ENG-"));
-  const count = (state: string) => tasks().filter((item) => item.state === state).length;
+  const tasks = async () =>
+    (await listWorkItems(sqliteDb(db))).filter((item) => item.linearIdentifier.startsWith("ENG-"));
+  const count = async (state: string) =>
+    (await tasks()).filter((item) => item.state === state).length;
   const step = async (ms = STEP_MS) => {
     while ((await jobs.tick()) !== null || (await outbox.tick()).length > 0) await outbox.idle();
     clock.advance(ms);
     runner.seen(clock.now());
   };
-  const settle = async (done: () => boolean) => {
-    for (let steps = 0; steps < 200 && !done(); steps++) await step();
+  const settle = async (done: () => Promise<boolean>) => {
+    for (let steps = 0; steps < 200 && !(await done()); steps++) await step();
   };
   try {
     // Tasks arrive a runner's worth at a time: every dispatch scans the whole queue.
@@ -175,18 +177,20 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
       const end = Math.min(start + SLOTS, STARTED);
       for (let index = start; index < end; index++)
         await orchestrator.onLinearEvent(event(index, "created"));
-      await settle(() => count("completed") + count("awaiting_input") === end);
+      await settle(
+        async () => (await count("completed")) + (await count("awaiting_input")) === end,
+      );
     }
     await runner.fill(clock.now());
     for (let index = STARTED; index < TASKS; index++)
       await orchestrator.onLinearEvent(event(index, "created"));
     await step();
-    const queued = count("queued");
+    const queued = await count("queued");
     const before = { requests, perTask: await linearRequestsByItem(sqliteDb(db)) };
     for (let waited = 0; waited < HOUR_MS; waited += WAIT_STEP_MS) await step(WAIT_STEP_MS);
     const after = await linearRequestsByItem(sqliteDb(db));
     const waiting = {
-      queued: count("queued"),
+      queued: await count("queued"),
       requests: requests - before.requests,
       // A waiting task's only Linear request is its "still in line" ephemeral at minutes 25 and 50.
       spent: new Set(
@@ -196,13 +200,13 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
     runner.free();
     for (let index = 0; index < QUESTIONS; index++)
       await orchestrator.onLinearEvent(event(index, "prompted", "A table."));
-    await settle(() => count("completed") === TASKS);
+    await settle(async () => (await count("completed")) === TASKS);
     const perTask = [...(await linearRequestsByItem(sqliteDb(db))).values()];
     expect({
       queued,
       waiting,
       asked: asked.size,
-      completed: count("completed"),
+      completed: await count("completed"),
       counted: perTask.length,
     }).toEqual({
       queued: TASKS - STARTED,

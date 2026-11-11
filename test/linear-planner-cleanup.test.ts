@@ -208,7 +208,7 @@ test.skipIf(process.platform !== "linux")(
       await work;
       const itemId = (await getLinearSession(sqliteDb(db), "session"))!.activeItemId!;
       expect((await getConversation(sqliteDb(db), itemId)).blocked).toBe(true);
-      expect(getWorkItem(db, itemId)?.state).not.toBe("completed");
+      expect((await getWorkItem(sqliteDb(db), itemId))?.state).not.toBe("completed");
       await expect(orchestrator.shutdown()).rejects.toThrow("cleanup");
       expect(launches).toBe(2);
     } finally {

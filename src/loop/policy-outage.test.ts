@@ -44,9 +44,9 @@ async function queue(...ids: string[]) {
   return db;
 }
 
-function hold(db: Database, id: string, now = 10, unreadable = BROKEN) {
+async function hold(db: Database, id: string, now = 10, unreadable = BROKEN) {
   return holdForPolicyOutage(sqliteDb(db), {
-    item: getWorkItem(db, id)!,
+    item: (await getWorkItem(sqliteDb(db), id))!,
     repository: REPOSITORY,
     unreadable,
     now,
@@ -78,8 +78,8 @@ describe("an unreadable Closeout policy on main", () => {
     expect(second).toBe(
       `${wait} [Open question](https://paws.example/dashboard/questions/${asked[0]!.id}).`,
     );
-    expect(getWorkItem(db, "ENG-1")?.state).toBe("merge_queue");
-    expect(getWorkItem(db, "ENG-2")?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), "ENG-1"))?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), "ENG-2"))?.state).toBe("merge_queue");
   });
 
   test("main loading again settles the question and ends the outage", async () => {

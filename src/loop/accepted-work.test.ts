@@ -29,7 +29,11 @@ async function acceptedItem() {
   await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
   await markCloseoutAccepted(sqliteDb(db), item.id, ACCEPTED);
-  saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: ACCEPTED });
+  await saveCheckpoint(sqliteDb(db), item.id, {
+    phase: "merge_queue",
+    baseSha: "base",
+    wipCommit: ACCEPTED,
+  });
   await applyWorkItemEvent(sqliteDb(db), item.id, "restart", { kind: "restart", reason: "review" });
   await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
   return { db, itemId: item.id, runId: run.id };
@@ -66,7 +70,7 @@ test("an accepted head that is the pull request head goes to the merge queue wit
 
   expect(await mergeAcceptedWork(sqliteDb(db), itemId, { now: 3_000 })).toBe(true);
 
-  const item = getWorkItem(db, itemId)!;
+  const item = (await getWorkItem(sqliteDb(db), itemId))!;
   expect(item).toMatchObject({ state: "merge_queue", currentRunId: runId });
   expect(item.checkpoint).toMatchObject({ phase: "merge_queue", wipCommit: ACCEPTED });
   expect((await getRun(sqliteDb(db), runId))?.status).toBe("ended");
@@ -98,7 +102,7 @@ test("new input or a different pull request head still gets an implement turn", 
 
 test("a rejected push whose remote is the accepted head goes to the merge queue without a question", async () => {
   const { db, itemId } = await acceptedItem();
-  expect(getWorkItem(db, itemId)?.state).toBe("running");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("running");
 
   expect(
     await settleRejectedPush(sqliteDb(db), itemId, {
@@ -108,7 +112,7 @@ test("a rejected push whose remote is the accepted head goes to the merge queue 
     }),
   ).toBe(true);
 
-  expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("merge_queue");
   expect(db.query("SELECT * FROM question").all()).toEqual([]);
   expect((await listJobs(sqliteDb(db))).some((job) => job.queue === "item.ask")).toBe(false);
   expect((await mergeJobs(db)).map((job) => (job.payload as { head: string }).head)).toEqual([
@@ -125,7 +129,7 @@ test("a rejected push whose remote contains the accepted head goes to the merge 
       now: 2_000,
     }),
   ).toBe(true);
-  expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("merge_queue");
 });
 
 test("a rejected push whose remote diverged from the accepted head is left to conflict handling", async () => {
@@ -144,7 +148,7 @@ test("a rejected push whose remote diverged from the accepted head is left to co
       now: 2_000,
     }),
   ).toBe(false);
-  expect(getWorkItem(db, itemId)?.state).toBe("running");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("running");
   expect(await mergeJobs(db)).toEqual([]);
 });
 
@@ -161,25 +165,25 @@ test("an item without accepted work is not sent to the merge queue", async () =>
       now: 2_000,
     }),
   ).toBe(false);
-  expect(getWorkItem(db, "fresh")?.state).toBe("running");
+  expect((await getWorkItem(sqliteDb(db), "fresh"))?.state).toBe("running");
 });
 
 test("an accepted item queued again by a restart leaves that restart for the merge queue", async () => {
   const { db, itemId } = await acceptedItem();
-  const item = getWorkItem(db, itemId)!;
+  const item = (await getWorkItem(sqliteDb(db), itemId))!;
   const job = restart(db, item, { reason: "follow_up", body: "go on", now: 2_000 })!;
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   expect(await mergeAcceptedWork(sqliteDb(db), itemId, { now: 3_000, exceptJobId: job })).toBe(
     true,
   );
-  expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("merge_queue");
   expect((await listJobs(sqliteDb(db))).find((entry) => entry.id === job)?.status).toBe("pending");
 });
 
 for (const reason of ["ci", "review"] as const) {
   test(`a rejected push of a turn carrying ${reason} input goes to the question, not the merge queue`, async () => {
     const { db, itemId } = await acceptedItem();
-    const job = restart(db, getWorkItem(db, itemId)!, {
+    const job = restart(db, (await getWorkItem(sqliteDb(db), itemId))!, {
       reason,
       body: `fix ${reason}`,
       now: 2_000,
@@ -193,7 +197,7 @@ for (const reason of ["ci", "review"] as const) {
         now: 3_000,
       }),
     ).toBe(false);
-    expect(getWorkItem(db, itemId)?.state).toBe("running");
+    expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("running");
     expect(await mergeJobs(db)).toEqual([]);
   });
 }

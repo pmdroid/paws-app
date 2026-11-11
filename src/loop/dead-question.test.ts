@@ -28,7 +28,7 @@ async function waitingItem(kind: "agent" | "visual-review" = "agent") {
   open.push(db);
   insertQueuedItem(db, { id: "item-q", sessionKey: "ses-q", now: 0 });
   await beginImplementRun(sqliteDb(db), "item-q", 1_000);
-  const item = getWorkItem(db, "item-q")!;
+  const item = (await getWorkItem(sqliteDb(db), "item-q"))!;
   const asked = await sqliteDb(db).transaction((q) =>
     askSteps(
       q,
@@ -58,7 +58,7 @@ async function waitingItem(kind: "agent" | "visual-review" = "agent") {
 describe("a question whose elicitation died twice", () => {
   test("is asked again through ask() with a fresh delivery", async () => {
     const { db, question, job } = await waitingItem();
-    expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), "item-q"))?.state).toBe("awaiting_input");
     expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toHaveLength(1);
 
     const again = await reaskDeadQuestion(db, {
@@ -77,7 +77,7 @@ describe("a question whose elicitation died twice", () => {
     });
     expect((await getQuestion(sqliteDb(db), question.id))?.cancelledAt).toBe(3_000);
     expect(findOpenQuestion(db, "ses-q")?.id).toBe(again!);
-    expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), "item-q"))?.state).toBe("awaiting_input");
     expect(
       (await listOutbox(sqliteDb(db), "ses-q")).map((row) => [row.idempotencyKey, row.status]),
     ).toEqual([

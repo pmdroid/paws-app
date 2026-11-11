@@ -133,12 +133,12 @@ export async function probeSchedulerRuntime(
     observe(
       "the admitted blocker claims and activates the yielded canonical session",
       start?.queue === JOB_KIND.start &&
-        getWorkItem(db, "blocker")?.state === "running" &&
+        (await getWorkItem(sqliteDb(db), "blocker"))?.state === "running" &&
         (await getLinearSession(sqliteDb(db), "session"))?.activeItemId === "blocker" &&
-        getWorkItem(db, "original")?.state === "merge_queue",
+        (await getWorkItem(sqliteDb(db), "original"))?.state === "merge_queue",
       {
         queue: start?.queue,
-        state: getWorkItem(db, "blocker")?.state,
+        state: (await getWorkItem(sqliteDb(db), "blocker"))?.state,
         activeItemId: (await getLinearSession(sqliteDb(db), "session"))?.activeItemId,
       },
     );

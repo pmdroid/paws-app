@@ -57,7 +57,7 @@ describe("a merge GitHub refuses", () => {
     const item = await h.addItem("ACME-1");
     refuse(h);
     expect(await h.pass(item.id)).toEqual({ kind: "asked" });
-    expect(getWorkItem(h.db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("awaiting_input");
     expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(false);
     const question = findOpenQuestion(h.db, `ses-${item.id}`)!;
     expect(question.options).toEqual([RETRY_MERGE]);
@@ -74,7 +74,7 @@ describe("a merge GitHub refuses", () => {
     refuse(h);
     await h.pass(item.id);
     await reply(h, item.id, RETRY_MERGE);
-    expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
     expect(await agentJobs(h)).toEqual([]);
     expect(
       (await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.reverify),
@@ -122,7 +122,7 @@ describe("a merge GitHub refuses", () => {
     };
     expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "ci" });
     expect(findOpenQuestion(h.db, `ses-${item.id}`)).toBeNull();
-    expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(h.db), item.id))?.state).toBe("merge_queue");
     h.state.mergeState = null;
     expect(await h.pass(item.id)).toMatchObject({ kind: "wait", reason: "ci" });
     expect(await h.remoteHead(item.id)).not.toBe(item.accepted);

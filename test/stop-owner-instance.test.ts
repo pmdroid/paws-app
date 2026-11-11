@@ -108,7 +108,7 @@ test("a stop received by instance B aborts the turn on instance A, which owns th
     const started = performance.now();
 
     expect(await stop(b.db, b.orchestrator, "acme-1")).toEqual({ applied: true });
-    expect(getWorkItem(b.db, "acme-1")?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(b.db), "acme-1"))?.state).toBe("cancelled");
     expect(turn.controller.signal.aborted).toBe(false);
 
     await new Promise<void>((resolve) =>
@@ -165,7 +165,7 @@ test("the owner's delivery row commits with the stop itself, before any bus emit
     expect(delivery.map((job) => job.status)).toEqual(["pending"]);
     expect(delivery[0]?.payload).toEqual({
       command,
-      stoppedAtVersion: getWorkItem(a.db, "acme-3")!.version,
+      stoppedAtVersion: (await getWorkItem(sqliteDb(a.db), "acme-3"))!.version,
     });
   } finally {
     a.close();
@@ -179,7 +179,7 @@ test("a delayed stop aborts the turn it stopped and leaves a turn started after 
     await runningItem(a.db, "acme-4", a.id);
     const stopped = await a.startTurn("acme-4", "acme-4-old");
     expect(await stop(b.db, b.orchestrator, "acme-4", "linear")).toEqual({ applied: true });
-    expect(getWorkItem(b.db, "acme-4")?.state).toBe("paused");
+    expect((await getWorkItem(sqliteDb(b.db), "acme-4"))?.state).toBe("paused");
     await applyWorkItemEvent(sqliteDb(b.db), "acme-4", "resume");
     const replacement = await a.startTurn("acme-4", "acme-4-new");
 
@@ -228,7 +228,7 @@ test("a queued stop forwards to the run's owner through the store the orchestrat
     });
     expect((await jobs.tick([JOB_KIND.command]))?.queue).toBe(JOB_KIND.command);
     expect(orchestrator.store).toBe(store);
-    expect(getWorkItem(db, "acme-5")?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), "acme-5"))?.state).toBe("cancelled");
     const deliveries = (await listJobs(sqliteDb(db))).filter(
       (job) => job.queue === commandDeliveryQueue(a.id),
     );

@@ -420,7 +420,7 @@ test("an item in merge_queue whose merge job is gone fails closed into a re-veri
     db.run("UPDATE job SET status='dead', finished_at=0 WHERE id=?", [finished]);
     const now = 10 * 60_000;
     await workspaceDispatch(db, { now });
-    assert.equal(getWorkItem(db, "merging")?.state, "verifying");
+    assert.equal((await getWorkItem(sqliteDb(db), "merging"))?.state, "verifying");
     const job = await claimNextJob(sqliteDb(db), { now });
     assert.equal(job?.queue, JOB_KIND.reverify);
     assert.deepEqual(job?.payload, {
@@ -455,7 +455,7 @@ test("an item in merge_queue with a parked merge job is left in the queue", asyn
     });
     db.run("UPDATE job SET status='done', finished_at=0 WHERE id=?", [older]);
     await workspaceDispatch(db, { now: 10 * 60_000 });
-    assert.equal(getWorkItem(db, "waiting")?.state, "merge_queue");
+    assert.equal((await getWorkItem(sqliteDb(db), "waiting"))?.state, "merge_queue");
     assert.equal(
       db.query(`SELECT 1 FROM job WHERE queue='${JOB_KIND.reverify}' AND status='pending'`).get(),
       null,

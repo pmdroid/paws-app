@@ -64,9 +64,9 @@ test("a task keeps the commit policy it started with when credit changes mid-fli
   try {
     insertQueuedItem(db, { id: "task", sessionKey: "session", now: 1_000 });
     await beginImplementRun(sqliteDb(db), "task", 1_000);
-    expect(await policyFor(getWorkItem(db, "task")!)).toEqual(BOT_ONLY);
+    expect(await policyFor((await getWorkItem(sqliteDb(db), "task"))!)).toEqual(BOT_ONLY);
     current = WITH_CREDIT;
-    expect(await policyFor(getWorkItem(db, "task")!)).toEqual(BOT_ONLY);
+    expect(await policyFor((await getWorkItem(sqliteDb(db), "task"))!)).toEqual(BOT_ONLY);
     expect(resolutions).toBe(1);
   } finally {
     await orchestrator.shutdown();

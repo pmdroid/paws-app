@@ -29,7 +29,7 @@ async function itemIn(state: WorkItemState) {
   if (state !== "running") await applyWorkItemEvent(sqliteDb(db), ITEM, "turn_ended");
   if (state === "awaiting_input") await applyWorkItemEvent(sqliteDb(db), ITEM, "blocking_question");
   if (state === "merge_queue") await applyWorkItemEvent(sqliteDb(db), ITEM, "closeout_accepted");
-  expect(getWorkItem(db, ITEM)?.state).toBe(state);
+  expect((await getWorkItem(sqliteDb(db), ITEM))?.state).toBe(state);
   await recordItemPullRequest(sqliteDb(db), {
     itemId: ITEM,
     pullNumber: 42,
@@ -66,7 +66,7 @@ for (const state of ["running", "verifying", "awaiting_input", "merge_queue"] as
   test(`an issue canceled in Linear while ${state} stops the run and closes its PR with a comment`, async () => {
     const { db, runId } = await itemIn(state);
     expect(await close(db, "canceled")).toEqual([{ itemId: ITEM, outcome: "cancelled" }]);
-    expect(getWorkItem(db, ITEM)?.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), ITEM))?.state).toBe("cancelled");
     if (state === "running") expect((await getRun(sqliteDb(db), runId))?.status).toBe("lost");
     expect(await responses(db)).toEqual([
       "Canceled in Linear. PR #42 was closed; the branch is kept.",
@@ -118,7 +118,7 @@ test("a Linear session stop of the same item still pauses it and keeps the PR", 
   const { db } = await itemIn("running");
   const stop = { type: "stop", itemId: ITEM, source: "linear", requestedAt: 10 } as const;
   expect((await applyLinearCommand(sqliteDb(db), stop)).applied).toBe(true);
-  expect(getWorkItem(db, ITEM)?.state).toBe("paused");
+  expect((await getWorkItem(sqliteDb(db), ITEM))?.state).toBe("paused");
   expect(await closeJobs(db)).toEqual([]);
   db.close();
 });

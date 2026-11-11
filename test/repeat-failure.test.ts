@@ -30,10 +30,22 @@ test("a retried task that fails again with the same reason posts a second error"
   databases.push(db);
   const { id } = insertQueuedItem(db, { sessionKey: "session" });
   await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
-  await failWorkItem(sqliteDb(db), getWorkItem(db, id)!, "run_error", "first failure", 1);
+  await failWorkItem(
+    sqliteDb(db),
+    (await getWorkItem(sqliteDb(db), id))!,
+    "run_error",
+    "first failure",
+    1,
+  );
   await applyWorkItemEvent(sqliteDb(db), id, "restart");
   await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
-  await failWorkItem(sqliteDb(db), getWorkItem(db, id)!, "run_error", "second failure", 2);
+  await failWorkItem(
+    sqliteDb(db),
+    (await getWorkItem(sqliteDb(db), id))!,
+    "run_error",
+    "second failure",
+    2,
+  );
   expect(errorBodies(db)).toEqual(["first failure", "second failure"]);
 });
 

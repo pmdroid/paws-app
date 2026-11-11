@@ -185,10 +185,9 @@ export async function probeRunnerOrchestration(
     let leaseAborted = false;
     async function reclaim(signal: AbortSignal | undefined) {
       assert(signal);
+      const first = (await listWorkItems(sqliteDb(db)))[0]?.id;
       const owned = (await listJobs(sqliteDb(db))).find(
-        (job) =>
-          job.status === "running" &&
-          (job.payload as { itemId?: string }).itemId === listWorkItems(db)[0]?.id,
+        (job) => job.status === "running" && (job.payload as { itemId?: string }).itemId === first,
       )!;
       assert(owned);
       const other = new JobLoop(db, clock, { leaseMs: 300 });
@@ -196,7 +195,7 @@ export async function probeRunnerOrchestration(
       const started = new Promise<void>((r) => (entered = r));
       const blocked = new Promise<void>((r) => (releaseReplacement = r));
       other.register(owned.queue, async () => {
-        const item = listWorkItems(db)[0]!;
+        const item = (await listWorkItems(sqliteDb(db)))[0]!;
         replacementRunId = (
           await insertRun(sqliteDb(db), {
             itemId: item.id,
@@ -215,7 +214,7 @@ export async function probeRunnerOrchestration(
       if (owned.queue === JOB_KIND.start) {
         assert.equal(await replacementTick, null);
         db.run("UPDATE job SET locked_by = ? WHERE id = ?", ["replacement:claim", owned.id]);
-        replacementRunId = listWorkItems(db)[0]!.currentRunId!;
+        replacementRunId = (await listWorkItems(sqliteDb(db)))[0]!.currentRunId!;
       } else {
         await Promise.race([
           started,
@@ -345,7 +344,7 @@ export async function probeRunnerOrchestration(
         payload: "{}",
       });
       await until("the answer is recorded", () => !findOpenQuestion(db, "session"));
-      assert.equal(getWorkItem(db, itemId)?.state, "verifying");
+      assert.equal((await getWorkItem(sqliteDb(db), itemId))?.state, "verifying");
       for (let polls = 0; polls < 5; polls++) {
         release();
         await poll();
@@ -406,7 +405,7 @@ export async function probeRunnerOrchestration(
             scheduling: async () => ({}),
             async publicationReady(itemId: string) {
               assert.equal((await getLinearSession(sqliteDb(db), "session"))?.activeItemId, itemId);
-              assert.equal(getWorkItem(db, "new-blocker")?.state, "completed");
+              assert.equal((await getWorkItem(sqliteDb(db), "new-blocker"))?.state, "completed");
               return true;
             },
           }
@@ -498,7 +497,7 @@ export async function probeRunnerOrchestration(
                 assert(!options.prompt.includes("Reply with a JSON array of findings"));
               }
               if (reverifying) laterDispatches++;
-              const item = getWorkItem(db, itemId)!;
+              const item = (await getWorkItem(sqliteDb(db), itemId))!;
               assert.equal((await getRun(sqliteDb(db), item.currentRunId!))?.status, "active");
               const checks = options.runId.startsWith("checks-");
               calls.push({
@@ -614,7 +613,7 @@ export async function probeRunnerOrchestration(
               ) {
                 const baseSha = await git(["-C", options.worktreePath, "rev-parse", "HEAD"]);
                 const checkpoint = { phase: "running" as const, baseSha, wipCommit: baseSha };
-                saveCheckpoint(db, item.id, checkpoint);
+                await saveCheckpoint(sqliteDb(db), item.id, checkpoint);
                 assert(options.networkGit);
                 const before = appChecks.length;
                 await options.networkGit(["-C", options.worktreePath, "fetch", origin, baseSha]);
@@ -806,7 +805,7 @@ export async function probeRunnerOrchestration(
           payload: "{}",
         });
       if (mergeDependencyYield) {
-        const queued = listWorkItems(db)[0]!;
+        const queued = (await listWorkItems(sqliteDb(db)))[0]!;
         await saveTaskMode(sqliteDb(db), queued.id, "code", 0, true);
         await bindWorkItemRepository(sqliteDb(db), queued.id, {
           owner: "acme",
@@ -823,7 +822,7 @@ export async function probeRunnerOrchestration(
         await orchestrator.reconcileExecution();
       }
       if (scenario === "resume-lease") {
-        const pending = listWorkItems(db)[0]!;
+        const pending = (await listWorkItems(sqliteDb(db)))[0]!;
         await beginImplementRun(sqliteDb(db), pending.id, clock.now(), {
           phase: "running",
           baseSha: await git(["-C", source, "rev-parse", "HEAD"]),
@@ -843,12 +842,12 @@ export async function probeRunnerOrchestration(
           clock.now(),
           clock.now(),
         ]);
-      if (!initialLease && listWorkItems(db)[0]?.state === "queued") {
+      if (!initialLease && (await listWorkItems(sqliteDb(db)))[0]?.state === "queued") {
         verificationExclusions = [];
         await orchestrator.reconcileExecution();
         await jobs.tick([JOB_KIND.resume]);
       }
-      const item = listWorkItems(db)[0]!;
+      const item = (await listWorkItems(sqliteDb(db)))[0]!;
       if (initialLease) {
         assert.equal(item.state, "running");
         assert.equal(item.currentRunId, replacementRunId);
@@ -930,7 +929,7 @@ export async function probeRunnerOrchestration(
             await setCurrentRun(sqliteDb(db), item.id, foreignRunId);
           } else await markRun(sqliteDb(db), originalRunId, "active", Date.now());
           assert.deepEqual(await recoverOnStartup(sqliteDb(db)), [{ type: "reverify" }]);
-          assert.equal(getWorkItem(db, item.id)?.state, "verifying");
+          assert.equal((await getWorkItem(sqliteDb(db), item.id))?.state, "verifying");
           assert.equal((await getRun(sqliteDb(db), foreignRunId))?.status, "active");
         }
         if (mergeDependencyYield) {
@@ -960,7 +959,7 @@ export async function probeRunnerOrchestration(
           assert.equal(before, item.id);
           const deferred = await jobs.tick();
           assert.equal(deferred?.queue, JOB_KIND.merge);
-          assert.equal(getWorkItem(db, item.id)?.state, "merge_queue");
+          assert.equal((await getWorkItem(sqliteDb(db), item.id))?.state, "merge_queue");
           assert.equal((await getLinearSession(sqliteDb(db), "session"))?.activeItemId, item.id);
           observe("The owned merge defers and joins without releasing its session early", true, {
             job: deferred?.id,
@@ -971,7 +970,7 @@ export async function probeRunnerOrchestration(
           const blocker = await jobs.tick();
           assert(blocker);
           assert.equal((blocker.payload as { itemId: string }).itemId, "new-blocker");
-          assert.equal(getWorkItem(db, "new-blocker")?.state, "completed");
+          assert.equal((await getWorkItem(sqliteDb(db), "new-blocker"))?.state, "completed");
           assert.equal(
             (await getLinearSession(sqliteDb(db), "session"))?.activeItemId,
             "new-blocker",
@@ -979,7 +978,7 @@ export async function probeRunnerOrchestration(
           observe(
             "The same-session blocker acquires the shared footprint and delivers through the selected remote port",
             true,
-            { job: blocker?.id, state: getWorkItem(db, "new-blocker")?.state },
+            { job: blocker?.id, state: (await getWorkItem(sqliteDb(db), "new-blocker"))?.state },
           );
           assert(clock instanceof FakeClock);
           clock.advance(30001);
@@ -1029,14 +1028,14 @@ export async function probeRunnerOrchestration(
         if (rebase) {
           // The lane only rebases: the new head goes back to verifying, Closeout runs it in the
           // reverify job, and a later lane turn merges it.
-          assert.equal(getWorkItem(db, item.id)?.state, "verifying");
+          assert.equal((await getWorkItem(sqliteDb(db), item.id))?.state, "verifying");
           assert.equal(
             calls.filter((call) => call.checks && call.reverifying).length,
             0,
             "the merge job ran Closeout",
           );
           for (let idle = 0, turns = 0; turns < 40 && idle < 400;) {
-            const state = getWorkItem(db, item.id)?.state;
+            const state = (await getWorkItem(sqliteDb(db), item.id))?.state;
             if (state === "merged" || state === "awaiting_input" || state === "failed") break;
             if (await tickWithRestarts(jobs, orchestrator, db)) {
               turns++;
@@ -1047,7 +1046,7 @@ export async function probeRunnerOrchestration(
             }
           }
         }
-        const verified = getWorkItem(db, item.id)!;
+        const verified = (await getWorkItem(sqliteDb(db), item.id))!;
         if (legacy && verified.state !== "merged")
           assert.equal(await git(["--git-dir", mirror, "rev-parse", candidate]), accepted);
         if (rebase) {

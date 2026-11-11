@@ -28,7 +28,7 @@ test("a runner checkpoint records the main its run was given, and only for that 
   const db = migratedDatabase(join(root, "paws.db"));
   const item = insertQueuedItem(db, { id: "item", now: 1, branchName: "paws/item" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1);
-  saveCheckpoint(db, item.id, { phase: "running", baseSha: BASE, wipCommit: BASE });
+  await saveCheckpoint(sqliteDb(db), item.id, { phase: "running", baseSha: BASE, wipCommit: BASE });
   const record = (sha: string, mainSha?: string) =>
     recordRunnerCheckpoint(sqliteDb(db), {
       itemId: item.id,
@@ -40,12 +40,12 @@ test("a runner checkpoint records the main its run was given, and only for that 
     });
 
   await record(FIRST, MAIN);
-  expect(getWorkItem(db, item.id)?.checkpoint).toMatchObject({
+  expect((await getWorkItem(sqliteDb(db), item.id))?.checkpoint).toMatchObject({
     wipCommit: FIRST,
     checkpointMain: { sha: FIRST, main: MAIN },
   });
   await record(SECOND);
-  const checkpoint = getWorkItem(db, item.id)?.checkpoint;
+  const checkpoint = (await getWorkItem(sqliteDb(db), item.id))?.checkpoint;
   expect(checkpoint?.wipCommit).toBe(SECOND);
   expect(checkpoint?.checkpointMain).toBeUndefined();
   db.close();

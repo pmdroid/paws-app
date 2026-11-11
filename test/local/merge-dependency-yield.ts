@@ -76,8 +76,10 @@ export async function probeMergeDependencyYield(
       const successor = db.query("SELECT queue,status FROM job WHERE status='pending'").get();
       observe(
         `workspace publication fails closed with a ${label} canonical dependency guard`,
-        getWorkItem(db, "item")?.state === "merge_queue" && gitHubCalls === 0 && successor !== null,
-        { state: getWorkItem(db, "item")?.state, gitHubCalls, successor },
+        (await getWorkItem(sqliteDb(db), "item"))?.state === "merge_queue" &&
+          gitHubCalls === 0 &&
+          successor !== null,
+        { state: (await getWorkItem(sqliteDb(db), "item"))?.state, gitHubCalls, successor },
       );
     } finally {
       await orchestrator.shutdown();

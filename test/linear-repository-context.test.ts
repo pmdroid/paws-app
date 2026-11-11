@@ -218,7 +218,7 @@ test.each(
                 },
                 agentForItem(itemId) {
                   return async (options) => {
-                    expect(getWorkItem(db, itemId)?.currentRunId).not.toBeNull();
+                    expect((await getWorkItem(sqliteDb(db), itemId))?.currentRunId).not.toBeNull();
                     return runAgent({
                       ...options,
                       ...launchFixture({
@@ -257,7 +257,7 @@ test.each(
       expect(purposes).toEqual([]);
       if (scenario === "clarify") {
         await f.jobs.tick();
-        expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+        expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
         await f.orchestrator.onLinearEvent({
           ...event,
           dedupeKey: "clarification",
@@ -273,7 +273,7 @@ test.each(
       if (repositoryChoice) {
         await f.jobs.tick();
         expect(findOpenQuestion(db, "session")?.options).toHaveLength(2);
-        expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+        expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
       }
       db.close();
       db = openDatabase(dbPath);
@@ -294,7 +294,7 @@ test.each(
         expect(await getLinearSessionGeneration(sqliteDb(db), "session")).toBe(0);
       }
       await f.jobs.tick();
-      expect(getWorkItem(db, itemId)?.state).toBe("completed");
+      expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("completed");
       expect(getWorkItemRepository(db, itemId)).toEqual(repository);
       expect(await taskRequiresRepository(sqliteDb(db), itemId)).toBe(true);
       expect(purposes).toEqual(

@@ -312,7 +312,7 @@ test("host credentials reach real host clone and fetch without reaching reposito
       );
       await workspaceDispatch(db, { now: Date.now() });
       await jobs.tick();
-      expect(getWorkItem(db, item.id)?.state).toBe("completed");
+      expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("completed");
       expect(checkedReads).toBe(1);
       expect(lifecycle.started).toEqual([]);
       expect(lifecycle.issue.assigneeId).toBe("human");

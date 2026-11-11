@@ -47,7 +47,7 @@ async function fixture() {
   await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id, { actorId: "human" });
   const item = task.items[0]!;
   await applyWorkItemEvent(sqliteDb(db), item.id, "start_timed_out");
-  expect(getWorkItem(db, item.id)?.state).toBe("failed");
+  expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("failed");
   const journal: string[] = [];
   cleanup.push(setJournalSink((line) => journal.push(line)));
   const notified: string[] = [];
@@ -75,7 +75,7 @@ test("a failed item whose issue is Done is cancelled once, and a second round do
   const f = await fixture();
   f.tracker.issueClosures.set("issue", closure("completed"));
   expect(await f.sweep()).toEqual([{ itemId: f.item.id, outcome: "cancelled" }]);
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
   expect(f.notified).toEqual([f.item.id]);
   expect(await f.responses()).toEqual([ISSUE_CLOSED_RESPONSE.completed]);
 
@@ -88,14 +88,14 @@ test("a failed item whose open issue is archived is cancelled", async () => {
   const f = await fixture();
   f.tracker.issueClosures.set("issue", closure("canceled"));
   expect(await f.sweep()).toEqual([{ itemId: f.item.id, outcome: "cancelled" }]);
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("cancelled");
 });
 
 test("a failed item whose issue is still open stays failed", async () => {
   const f = await fixture();
   expect(await f.sweep()).toEqual([]);
   expect(f.tracker.issueClosureReads).toEqual([["issue"]]);
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("failed");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("failed");
 });
 
 test("a failed Linear read cancels nothing and logs once", async () => {
@@ -103,7 +103,7 @@ test("a failed Linear read cancels nothing and logs once", async () => {
   f.tracker.issueClosures.set("issue", closure("completed"));
   f.tracker.issueClosureFailures.push(new Error("Linear is down"));
   expect(await f.sweep()).toEqual([]);
-  expect(getWorkItem(f.db, f.item.id)?.state).toBe("failed");
+  expect((await getWorkItem(sqliteDb(f.db), f.item.id))?.state).toBe("failed");
   expect(f.notified).toEqual([]);
   expect(f.journal.filter((line) => line.includes("Linear is down"))).toHaveLength(1);
 });

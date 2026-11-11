@@ -499,7 +499,7 @@ test("first assignment holds without manufacturing membership and resumes once a
     await jobs.tick();
     await jobs.tick();
     expect(f.calls).toBe(1);
-    expect(listWorkItems(f.db)).toHaveLength(1);
+    expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(1);
     expect(
       (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "item.start"),
     ).toHaveLength(1);
@@ -578,7 +578,7 @@ for (const change of [
       // intake, which reads the epic anyway and compares it with the stored snapshot.
       expect(f.calls).toBe(change === "spec" ? 1 : 0);
       expect(f.continuations).toEqual([]);
-      expect(listWorkItems(f.db)).toHaveLength(0);
+      expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(0);
     } finally {
       await f.close();
     }
@@ -728,7 +728,7 @@ test("a Linear guest's delegation is ignored, and the session's response says gu
       response: true,
     });
     await acknowledgeNewSession(f.tracker, f.event, (event) => f.orchestrator.onLinearEvent(event));
-    expect(listWorkItems(f.db)).toHaveLength(0);
+    expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(0);
     expect(f.tracker.progress.slice(1).map((update) => [update.kind, update.body])).toEqual([
       ["response", "Linear guests can't use Paws."],
     ]);
@@ -757,7 +757,7 @@ test("a member's delegation whose first Linear read fails is retried and accepte
       );
     await expect(deliver(0)).rejects.toBeInstanceOf(LinearIntakePendingError);
     await deliver(1);
-    expect(listWorkItems(f.db)).toHaveLength(1);
+    expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(1);
     expect(f.tracker.progress.filter((update) => update.kind === "error")).toEqual([]);
     expect(f.tracker.progress[1]!.body).toContain("Linear HTTP 503");
   } finally {
@@ -776,7 +776,7 @@ test("one delegation event reads each Linear source once", async () => {
     await f.orchestrator.onLinearEvent(f.event);
     expect(reads).toBe(1);
     expect(f.sessionReads).toBe(1);
-    expect(listWorkItems(f.db)).toHaveLength(1);
+    expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(1);
   } finally {
     await f.close();
   }
@@ -914,7 +914,7 @@ for (const [change, reason, apply] of [
       await jobs.tick();
       await jobs.tick();
       expect(f.calls).toBe(0);
-      expect(listWorkItems(f.db)).toHaveLength(0);
+      expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(0);
       expect(await errors(f)).toEqual([`Paws did not start this work. ${reason}`]);
       expect(f.db.query("SELECT status FROM workspace_assignment").get()).toEqual({
         status: "invalid",
@@ -945,7 +945,7 @@ for (const change of ["spec", "repository", "membership"])
           f.db.run("UPDATE workspace_member SET active=0 WHERE user_id<>'owner'");
       });
       await f.jobs().tick();
-      expect(listWorkItems(f.db)).toHaveLength(0);
+      expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(0);
       expect(
         (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "item.start"),
       ).toHaveLength(0);
@@ -1106,7 +1106,7 @@ test("the creator's link sign-in resumes the held session and lands on its onboa
     await jobs.tick();
     await jobs.tick();
     expect(f.continuations).toEqual([f.event.dedupeKey]);
-    expect(listWorkItems(f.db)).toHaveLength(1);
+    expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(1);
     expect(await elicitations(f)).toHaveLength(1);
 
     // Reopening after a restart shows the current state from SQLite.
@@ -1404,7 +1404,7 @@ async function onboarded(f: Awaited<ReturnType<typeof fixture>>) {
   await jobs.tick();
   await jobs.tick();
   expect(f.continuations).toEqual([f.event.dedupeKey]);
-  const items = listWorkItems(f.db);
+  const items = await listWorkItems(sqliteDb(f.db));
   expect(items).toHaveLength(1);
   return { path: onboardPath(link), cookie: sessionCookie(done), itemId: items[0]!.id };
 }
@@ -1591,7 +1591,7 @@ test("a pending hold past one day posts one final response, ends the session and
     expect(f.tracker.questions).toHaveLength(1);
     expect((await getLinearSession(sqliteDb(f.db), "session"))!.stoppedAt).not.toBeNull();
     expect(holdStatus(f)).toBe("invalid");
-    expect(listWorkItems(f.db)).toHaveLength(0);
+    expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(0);
 
     // The link, a late callback and a later sign-in from the dashboard cannot start the work.
     expect((await f.begin(link)).status).toBe(404);
@@ -1888,7 +1888,7 @@ test("the creator's replies before sign-in reach the first agent prompt in order
     await jobs.tick();
     await jobs.tick();
     expect(f.calls).toBe(1);
-    expect(listWorkItems(f.db)).toHaveLength(1);
+    expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(1);
 
     const running = f.orchestratorJobs.tick();
     const deadline = Date.now() + 15_000;
@@ -1972,7 +1972,7 @@ test("revoked members cannot sign in or delegate while Linear still considers th
       response: true,
     });
     await acknowledgeNewSession(f.tracker, f.event, (event) => f.orchestrator.onLinearEvent(event));
-    expect(listWorkItems(f.db)).toHaveLength(0);
+    expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(0);
     expect(f.tracker.progress.slice(1).map((update) => [update.kind, update.body])).toEqual([
       ["response", WORKSPACE_REVOKED_RESPONSE],
     ]);
@@ -2021,7 +2021,7 @@ test("a held delegation revoked during continuation retains its final response",
     ).toEqual([]);
     expect(f.calls).toBe(1);
     await f.deliver();
-    expect(listWorkItems(f.db)).toHaveLength(0);
+    expect(await listWorkItems(sqliteDb(f.db))).toHaveLength(0);
     expect(
       f.tracker.progress.filter((row) => row.kind === "response").map((row) => row.body),
     ).toContain(WORKSPACE_REVOKED_RESPONSE);

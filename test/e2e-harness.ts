@@ -5,7 +5,6 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { Database } from "bun:sqlite";
 import type { FakeScript } from "../src/acp/testing/script";
-import { getWorkItem } from "../src/db";
 import {
   INSTALLATION_PERMISSIONS,
   fakeMergeReadiness,
@@ -107,10 +106,9 @@ export async function gitIdentity(dir: string): Promise<void> {
 
 export function stateOf(db: Database, identifier: string): string | null {
   const row = db
-    .query<{ id: string }, [string]>("SELECT id FROM work_item WHERE linear_identifier = ?")
+    .query<{ state: string }, [string]>("SELECT state FROM work_item WHERE linear_identifier = ?")
     .get(identifier);
-  if (!row) return null;
-  return getWorkItem(db, row.id)?.state ?? null;
+  return row?.state ?? null;
 }
 
 export function emptyReview(): FakeScript {

@@ -508,7 +508,7 @@ try {
           headers,
         );
         assert.equal(stopResult.status, 200);
-        assert.equal(getWorkItem(paws.db, controlled.id)?.state, "cancelled");
+        assert.equal((await getWorkItem(sqliteDb(paws.db), controlled.id))?.state, "cancelled");
         assert(
           (await listOutbox(sqliteDb(paws.db), controlled.sessionKey!)).some(
             (row) =>

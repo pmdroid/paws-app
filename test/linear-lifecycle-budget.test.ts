@@ -427,7 +427,7 @@ async function runTask(input: {
     linearTaskModes: true,
     linearAccess: gate,
   });
-  const state = () => listWorkItems(db)[0]?.state ?? null;
+  const state = async () => (await listWorkItems(sqliteDb(db)))[0]?.state ?? null;
   const deliver = async (body: Record<string, unknown>, delivery: string) => {
     const response = await handleLinearWebhook(signed(body, delivery), "secret", linear.webhook);
     expect(response.status).toBe(200);
@@ -447,8 +447,8 @@ async function runTask(input: {
       "created-delivery",
     );
     const deadline = Date.now() + 20_000;
-    while (!["merged", "failed"].includes(state() ?? "")) {
-      if (Date.now() > deadline) throw new Error(`The task is stuck in ${state()}`);
+    while (!["merged", "failed"].includes((await state()) ?? "")) {
+      if (Date.now() > deadline) throw new Error(`The task is stuck in ${await state()}`);
       while ((await outbox.tick()).length > 0) await outbox.idle();
       const open = findOpenQuestion(db, "session");
       if (open !== null && open.kind === "link" && !asked.includes("visual-review")) {
@@ -509,7 +509,7 @@ async function runTask(input: {
       perCaller[caller!] = (perCaller[caller!] ?? 0) + count;
     }
     return {
-      state: state(),
+      state: await state(),
       asked,
       polls,
       heads: heads.size,

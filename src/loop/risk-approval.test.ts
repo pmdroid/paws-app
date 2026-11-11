@@ -132,7 +132,11 @@ async function held(head = heads.s, base = heads.base) {
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
   await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
-  saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: base, wipCommit: head });
+  await saveCheckpoint(sqliteDb(db), item.id, {
+    phase: "merge_queue",
+    baseSha: base,
+    wipCommit: head,
+  });
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
   await sqliteDb(db).run((q) =>
     saveSchedulingContextSteps(q, { itemId: item.id, projectId: "project", projectLeadId: "lead" }),
@@ -181,7 +185,7 @@ async function classify(db: ReturnType<typeof openDatabase>, head: string, base:
 async function asked(head = heads.s) {
   const fixture = await held(head);
   const outcome = await askRiskApproval(fixture.db, {
-    item: getWorkItem(fixture.db, fixture.itemId)!,
+    item: (await getWorkItem(sqliteDb(fixture.db), fixture.itemId))!,
     head,
     publicUrl: PUBLIC_URL,
     now: NOW,
@@ -244,9 +248,13 @@ async function riskApproved() {
 
 /** The fix at `head` passed Closeout and the lane holds it again. */
 async function fixAccepted(db: ReturnType<typeof openDatabase>, head: string, base: string) {
-  if (getWorkItem(db, "ENG-106")?.state === "verifying")
+  if ((await getWorkItem(sqliteDb(db), "ENG-106"))?.state === "verifying")
     await applyWorkItemEvent(sqliteDb(db), "ENG-106", "closeout_accepted");
-  saveCheckpoint(db, "ENG-106", { phase: "merge_queue", baseSha: base, wipCommit: head });
+  await saveCheckpoint(sqliteDb(db), "ENG-106", {
+    phase: "merge_queue",
+    baseSha: base,
+    wipCommit: head,
+  });
   await saveCandidateRisk(sqliteDb(db), {
     itemId: "ENG-106",
     head,
@@ -275,7 +283,7 @@ async function resumes(db: ReturnType<typeof openDatabase>) {
 test("a high-risk head is asked with a link: Markdown, no options, the link on the session", async () => {
   const { db, itemId, question } = await asked();
   expect(await approval(db, heads.s)).toBe("missing");
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
   expect(question.kind).toBe("link");
   expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     kind: "risk",
@@ -322,7 +330,7 @@ test("a normal-tier head, or a Paws without an https link, needs no approval", a
   expect(await local("http://127.0.0.1:8787")).toBe("not_required");
   expect(
     await askRiskApproval(db, {
-      item: getWorkItem(db, "ENG-106")!,
+      item: (await getWorkItem(sqliteDb(db), "ENG-106"))!,
       head: heads.s,
       publicUrl: null,
       now: NOW,
@@ -344,7 +352,7 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
   });
   expect(outcome).toBe("answered");
   expect(await approval(db, heads.s)).toBe("approved");
-  expect(getWorkItem(db, itemId)?.state).toBe("verifying");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("verifying");
   expect(
     (await listWorkItemEventRows(sqliteDb(db), itemId))
       .slice(-2)
@@ -384,7 +392,7 @@ test("Request changes on the Risk card restarts the item with the note", async (
     actor,
     now: NOW + 100,
   });
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   expect(await resumes(db)).toEqual([
     expect.objectContaining({
       reason: "review",
@@ -413,7 +421,7 @@ test("a Linear reply requests changes and never approves, even when it says appr
     decision: null,
     closedReason: "guidance",
   });
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   expect(await resumes(db)).toEqual([
     expect.objectContaining({ reason: "review", handoff: expect.stringContaining("approve") }),
   ]);
@@ -433,7 +441,7 @@ test("Stop stops the item and leaves the pull request open", async () => {
     now: NOW + 100,
   });
   expect(outcome).toBe("answered");
-  expect(getWorkItem(db, itemId)?.state).toBe("cancelled");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("cancelled");
   expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     closedReason: "cancelled",
     decidedBy: "lead",
@@ -463,7 +471,7 @@ test("someone who is neither the delegator nor the lead cannot answer", async ()
       }),
     ).toBe("forbidden");
   expect(await approval(db, heads.s)).toBe("missing");
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
   expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
 });
 
@@ -574,7 +582,7 @@ test("a CI fix that only changes a test keeps the approval and merges without a 
   expect((await listOutbox(sqliteDb(db))).filter((row) => row.op === "elicitation")).toHaveLength(
     1,
   );
-  expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("merge_queue");
 });
 
 test("a fix that changes a high-risk path asks again and lists only that change", async () => {
@@ -583,7 +591,7 @@ test("a fix that changes a high-risk path asks again and lists only that change"
   expect(await approvalWithFixes(db, heads.authFix)).toBe("missing");
   expect(
     await askRiskApproval(db, {
-      item: getWorkItem(db, itemId)!,
+      item: (await getWorkItem(sqliteDb(db), itemId))!,
       head: heads.authFix,
       publicUrl: PUBLIC_URL,
       now: NOW + 600,
@@ -780,7 +788,7 @@ async function automaticMerge(f: Awaited<ReturnType<typeof cleanRiskFixture>>) {
   if (!verdict.ok && verdict.block === "risk_approval") {
     expect(
       await askRiskApproval(f.db, {
-        item: getWorkItem(f.db, f.itemId)!,
+        item: (await getWorkItem(sqliteDb(f.db), f.itemId))!,
         head: heads.s,
         publicUrl: PUBLIC_URL,
         now: NOW,
@@ -1108,7 +1116,7 @@ test("differently named reviews do not substitute for the two required reviews",
 test("the exact-head progress reader selects the latest run and preserves the unfiltered reader", async () => {
   const f = await cleanRiskFixture();
   expect(await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.s)).toEqual(
-    listCloseoutProgress(f.db)[0]!,
+    (await listCloseoutProgress(sqliteDb(f.db)))[0]!,
   );
   expect(await getCloseoutProgress(sqliteDb(f.db), f.itemId, heads.rebased)).toBeNull();
   expect(await getCloseoutProgress(sqliteDb(f.db), "another-item", heads.s)).toBeNull();
@@ -1152,7 +1160,7 @@ for (const enabled of [undefined, false]) {
     expect(await f.read({ autoApproveHighRisk: enabled })).toBe("missing");
     expect(
       await askRiskApproval(f.db, {
-        item: getWorkItem(f.db, f.itemId)!,
+        item: (await getWorkItem(sqliteDb(f.db), f.itemId))!,
         head: heads.s,
         publicUrl: PUBLIC_URL,
         now: NOW,

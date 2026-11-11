@@ -110,7 +110,7 @@ export async function createExecutionControlsFixture(
     });
     await bindLinearSessionTask(sqliteDb(db), item.sessionKey!, item.delegationId);
   }
-  const item = getWorkItem(db, "controlled")!;
+  const item = (await getWorkItem(sqliteDb(db), "controlled"))!;
   db.run(
     `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at,session_key)
     VALUES('other',?,'other','other','Unrelated item','queued','paws/other',1,?,?)`,
@@ -274,7 +274,7 @@ export async function probeExecutionControls(root: string) {
     assert.equal((await call("resume_now", "inactive")).status, 401);
     assert.equal((await call("resume_now")).status, 200);
     assert((await usagePause(sqliteDb(db), fixture.runId))!.resumeAt <= Date.now());
-    assert.equal(getWorkItem(db, "controlled")!.state, "running");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "running");
     db.run("DELETE FROM usage_pause");
     assert.equal((await call("resume_now")).status, 409);
     observe("Resume now ends a usage-limit wait without changing the item state", {
@@ -286,7 +286,7 @@ export async function probeExecutionControls(root: string) {
       { "x-paws-workspace": "foreign" },
     ] as Record<string, string>[])
       assert.equal((await call("stop", "member", "controlled", extra)).status, 403);
-    assert.equal(getWorkItem(db, "controlled")!.state, "running");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "running");
     observe("Cross-origin, CSRF and workspace-selection violations fail before canonical effects", {
       state: "running",
     });
@@ -294,16 +294,16 @@ export async function probeExecutionControls(root: string) {
       "CREATE TEMP TRIGGER reject_control_audit BEFORE INSERT ON workspace_access_audit WHEN NEW.action='execution.pause' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END",
     );
     assert.equal((await call("pause")).status, 503);
-    assert.equal(getWorkItem(db, "controlled")!.state, "running");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "running");
     db.run("DROP TRIGGER reject_control_audit");
     observe("Audit failure rolls back the actual canonical pause transaction before live effects", {
       state: "running",
     });
     assert.equal((await call("pause")).status, 200);
-    assert.equal(getWorkItem(db, "controlled")!.state, "paused");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "paused");
     assert.equal((await call("pause")).status, 409);
     assert.equal((await call("resume")).status, 200);
-    assert.equal(getWorkItem(db, "controlled")!.state, "queued");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "queued");
     observe(
       "Public Pause and Resume reach actual canonical orchestrator ports and reject stale duplicate actions",
       { state: "queued" },
@@ -321,13 +321,13 @@ export async function probeExecutionControls(root: string) {
     });
     for (
       let count = 0;
-      count < 100 && getWorkItem(db, "controlled")!.state !== "cancelled";
+      count < 100 && (await getWorkItem(sqliteDb(db), "controlled"))!.state !== "cancelled";
       count++
     )
       await new Promise((resolve) => setTimeout(resolve, 2));
-    assert.equal(getWorkItem(db, "controlled")!.state, "cancelled");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "cancelled");
     assert.equal(returned, false);
-    assert.equal(getWorkItem(db, "other")!.state, "queued");
+    assert.equal((await getWorkItem(sqliteDb(db), "other"))!.state, "queued");
     release();
     assert.equal((await stopping).status, 200);
     assert.equal((await call("stop")).status, 409);
@@ -342,14 +342,14 @@ export async function probeExecutionControls(root: string) {
       {
         state: "cancelled",
         other: "queued",
-        branch: getWorkItem(db, "controlled")!.branchName,
+        branch: (await getWorkItem(sqliteDb(db), "controlled"))!.branchName,
         messages,
       },
     );
     db.run("UPDATE work_item SET state='paused',cancel_requested=0 WHERE id='controlled'");
     fixture.revokeDuringResume();
     assert.equal((await call("resume")).status, 409);
-    assert.equal(getWorkItem(db, "controlled")!.state, "paused");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "paused");
     observe(
       "Membership revoked during the actual resume join fences its post-join canonical restart",
       { state: "paused" },
@@ -377,7 +377,7 @@ export async function probeExecutionControls(root: string) {
       },
     });
     assert.equal((await revoking.handle(stopRequest, verified.principal, allowed))!.status, 409);
-    assert.equal(getWorkItem(db, "controlled")!.state, "running");
+    assert.equal((await getWorkItem(sqliteDb(db), "controlled"))!.state, "running");
     observe(
       "Stop rechecks current membership inside its committing transaction after initial authorization",
       { state: "running", status: 409 },

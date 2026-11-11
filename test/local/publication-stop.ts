@@ -155,7 +155,7 @@ export async function probePublicationStop(
     });
     await bindLinearSessionTask(sqliteDb(db), "session", "epic");
     await bindWorkItemRepository(sqliteDb(db), "item", repository);
-    branch = getWorkItem(db, "item")!.branchName;
+    branch = (await getWorkItem(sqliteDb(db), "item"))!.branchName;
     await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "item" },
@@ -179,13 +179,13 @@ export async function probePublicationStop(
     );
     observe(
       "canonical Stop and pull cleanup roll back in the same transaction",
-      getWorkItem(db, "item")?.state === "merge_queue" &&
+      (await getWorkItem(sqliteDb(db), "item"))?.state === "merge_queue" &&
         db
           .query<{ n: number }, []>(
             "SELECT COUNT(*) AS n FROM job WHERE queue='github.close_stopped'",
           )
           .get()?.n === 0,
-      getWorkItem(db, "item")?.state,
+      (await getWorkItem(sqliteDb(db), "item"))?.state,
     );
     await current.orchestrator.onLinearEvent({
       dedupeKey: "stop",
@@ -203,7 +203,7 @@ export async function probePublicationStop(
     });
     observe(
       "a Linear Stop pauses the item, cancels canonical merge work and leaves the pull request open",
-      getWorkItem(db, "item")?.state === "paused" &&
+      (await getWorkItem(sqliteDb(db), "item"))?.state === "paused" &&
         db.query<{ status: string }, []>("SELECT status FROM job WHERE job_key='old-merge'").get()
           ?.status === "cancelled" &&
         db.query("SELECT 1 FROM job WHERE queue='github.close_stopped'").get() === null &&
@@ -230,7 +230,7 @@ export async function probePublicationStop(
     await current.jobs.tick();
     observe(
       "a GitHub outage retains durable stopped PR cleanup without failing the item",
-      getWorkItem(db, "item")?.state === "cancelled" &&
+      (await getWorkItem(sqliteDb(db), "item"))?.state === "cancelled" &&
         db
           .query<{ status: string }, []>(
             "SELECT status FROM job WHERE queue='github.close_stopped'",
@@ -351,7 +351,7 @@ export async function probePublicationStop(
       "production merge waits durably without exhausting retry attempts or asking a person",
       successor?.n === 1 &&
         successor.runAt === clock.now() + 30000 &&
-        getWorkItem(db, "pending-item")?.state === "merge_queue" &&
+        (await getWorkItem(sqliteDb(db), "pending-item"))?.state === "merge_queue" &&
         calls.length === beforePending,
       { successor, calls: calls.length },
     );
@@ -535,16 +535,16 @@ export async function probePublicationStop(
     observe(
       "restored child dispatch ignores archived history while refresh holds empty epics",
       restored === 1 &&
-        getWorkItem(db, "all-removed-old")?.state === "cancelled" &&
-        getWorkItem(db, "restored-old")?.state === "cancelled",
+        (await getWorkItem(sqliteDb(db), "all-removed-old"))?.state === "cancelled" &&
+        (await getWorkItem(sqliteDb(db), "restored-old"))?.state === "cancelled",
       { restored },
     );
     pendingEpics.delete("all-removed");
     await current.orchestrator.reconcileExecution();
     const outcomes = [
-      getWorkItem(db, "all-removed-old")?.state,
-      getWorkItem(db, "delivered-history-old")?.state,
-      getWorkItem(db, "delivered-history-new")?.state,
+      (await getWorkItem(sqliteDb(db), "all-removed-old"))?.state,
+      (await getWorkItem(sqliteDb(db), "delivered-history-old"))?.state,
+      (await getWorkItem(sqliteDb(db), "delivered-history-new"))?.state,
     ];
     observe(
       "all removed work stays cancelled and delivered history stays terminal",
@@ -569,7 +569,7 @@ export async function probePublicationStop(
       now: clock.now(),
     });
     await setCurrentRun(sqliteDb(db), "owned-refresh-item", ownedRun.id);
-    saveCheckpoint(db, "owned-refresh-item", {
+    await saveCheckpoint(sqliteDb(db), "owned-refresh-item", {
       phase: "merge_queue",
       wipCommit: "a".repeat(40),
       baseSha: "b".repeat(40),
@@ -582,7 +582,8 @@ export async function probePublicationStop(
         profiles: { implementer: { agent: "codex" }, reviewer: { agent: "codex" } },
       }),
     );
-    freshness = (itemId) => !pendingEpics.has(getWorkItem(db, itemId)!.delegationId);
+    freshness = async (itemId) =>
+      !pendingEpics.has((await getWorkItem(sqliteDb(db), itemId))!.delegationId);
     onToken = () => {
       onToken = undefined;
       pendingEpics.add("owned-refresh");
@@ -619,7 +620,7 @@ export async function probePublicationStop(
     await current.jobs.tick();
     observe(
       "pending reconciliation retains required verification rather than skipping its successor",
-      getWorkItem(db, "owned-refresh-item")?.state === "verifying" &&
+      (await getWorkItem(sqliteDb(db), "owned-refresh-item"))?.state === "verifying" &&
         db
           .query("SELECT 1 FROM job WHERE job_key=? AND queue=? AND status='pending'")
           .get(`merge-reconciliation:${verifyingRace}`, JOB_KIND.reverify) !== null,
@@ -686,12 +687,12 @@ export async function probePublicationStop(
       "criteria invalidation aborts an owned publication freshness waiter before joining its job",
       callerAborted &&
         joinedRefresh &&
-        getWorkItem(db, "owned-refresh-item")?.state === "queued" &&
+        (await getWorkItem(sqliteDb(db), "owned-refresh-item"))?.state === "queued" &&
         calls.length === beforeOwned,
       {
         callerAborted,
         joinedRefresh,
-        item: getWorkItem(db, "owned-refresh-item")?.state,
+        item: (await getWorkItem(sqliteDb(db), "owned-refresh-item"))?.state,
         calls: calls.length,
       },
     );

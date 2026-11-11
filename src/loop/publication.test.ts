@@ -119,7 +119,7 @@ test.each(["push", "pr", "merge"] as const)(
             stopped.push(id);
           }),
       });
-      const item = getWorkItem(db, task.items[0]!.id)!;
+      const item = (await getWorkItem(sqliteDb(db), task.items[0]!.id))!;
       f.state.verify = () => gate.assert(item, f.controller.signal);
       const started = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();

@@ -66,8 +66,8 @@ async function respond(db: Database, id: string): Promise<void> {
   });
 }
 
-function sendBack(db: Database, id: string, reason: "conflict" | "ci"): void {
-  restart(db, getWorkItem(db, id)!, {
+async function sendBack(db: Database, id: string, reason: "conflict" | "ci"): Promise<void> {
+  restart(db, (await getWorkItem(sqliteDb(db), id))!, {
     reason,
     body: "Rebase.",
     jobKey: `${reason}:${id}`,
@@ -94,7 +94,7 @@ async function held(
 ): Promise<void> {
   await item(db, id, "merge_queue", 2, [TOOLKIT, PROJECT]);
   if (respondFirst) await respond(db, id);
-  sendBack(db, id, reason);
+  await sendBack(db, id, reason);
 }
 
 test("an item sent back to rebase and held behind another posts one line naming blocker and files", async () => {

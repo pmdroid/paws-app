@@ -49,8 +49,12 @@ async function fixture() {
     remoteUrl: "https://example.invalid/repo.git",
   });
   await beginImplementRun(sqliteDb(db), "item", 1);
-  saveCheckpoint(db, "item", { phase: "running", baseSha: "base", wipCommit: "head" });
-  return { db, item: getWorkItem(db, "item")! };
+  await saveCheckpoint(sqliteDb(db), "item", {
+    phase: "running",
+    baseSha: "base",
+    wipCommit: "head",
+  });
+  return { db, item: (await getWorkItem(sqliteDb(db), "item"))! };
 }
 
 describe("restart and ask", () => {
@@ -62,16 +66,24 @@ describe("restart and ask", () => {
     const queue = listMergeQueues(db);
     await beginMergeCall(sqliteDb(db), "item", "head", 3);
     expect(
-      restart(db, getWorkItem(db, "item")!, { reason: "review", body: "Fix it.", now: 4 }),
+      restart(db, (await getWorkItem(sqliteDb(db), "item"))!, {
+        reason: "review",
+        body: "Fix it.",
+        now: 4,
+      }),
     ).toBeNull();
-    expect(getWorkItem(db, "item")?.state).toBe("merge_queue");
+    expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe("merge_queue");
     expect(await listJobs(sqliteDb(db))).toHaveLength(jobs);
     expect(listMergeQueues(db)).toEqual(queue);
     await endMergeCall(sqliteDb(db), "item");
     expect(
-      restart(db, getWorkItem(db, "item")!, { reason: "review", body: "Fix it.", now: 5 }),
+      restart(db, (await getWorkItem(sqliteDb(db), "item"))!, {
+        reason: "review",
+        body: "Fix it.",
+        now: 5,
+      }),
     ).not.toBeNull();
-    expect(getWorkItem(db, "item")?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe("queued");
   });
 
   test("a failed item restarted with a stale cancel request is queued ready to start", async () => {
@@ -79,8 +91,12 @@ describe("restart and ask", () => {
     db.run(
       "UPDATE work_item SET state='failed',cancel_requested=1,recovery_attempts=2 WHERE id='item'",
     );
-    restart(db, getWorkItem(db, "item")!, { reason: "answer", body: "Try again.", now: 2 });
-    expect(getWorkItem(db, "item")).toMatchObject({
+    restart(db, (await getWorkItem(sqliteDb(db), "item"))!, {
+      reason: "answer",
+      body: "Try again.",
+      now: 2,
+    });
+    expect(await getWorkItem(sqliteDb(db), "item")).toMatchObject({
       state: "queued",
       cancelRequested: false,
       recoveryAttempts: 0,
@@ -91,8 +107,12 @@ describe("restart and ask", () => {
   test("a restart keeps the cancel request of an item a person is stopping", async () => {
     const { db } = await fixture();
     db.run("UPDATE work_item SET cancel_requested=1 WHERE id='item'");
-    restart(db, getWorkItem(db, "item")!, { reason: "findings", body: "Fix this.", now: 2 });
-    expect(getWorkItem(db, "item")?.cancelRequested).toBe(true);
+    restart(db, (await getWorkItem(sqliteDb(db), "item"))!, {
+      reason: "findings",
+      body: "Fix this.",
+      now: 2,
+    });
+    expect((await getWorkItem(sqliteDb(db), "item"))?.cancelRequested).toBe(true);
   });
 
   test.each(["findings", "ci", "review", "conflict", "follow_up", "answer"] as const)(
@@ -106,7 +126,7 @@ describe("restart and ask", () => {
       });
       await joinMergeQueue(sqliteDb(db), { itemId: item.id, repository: "owner/repo", now: 1 });
       const jobId = restart(db, item, { reason, body: "Keep the branch and fix this.", now: 2 });
-      const queued = getWorkItem(db, item.id)!;
+      const queued = (await getWorkItem(sqliteDb(db), item.id))!;
       expect(queued).toMatchObject({
         state: "queued",
         sessionKey: item.sessionKey,
@@ -141,7 +161,7 @@ describe("restart and ask", () => {
     expect(fixRounds(db, item.id)).toBe(1);
     db.run("UPDATE job SET status='done', attempts=4, finished_at=3 WHERE id=?", [first]);
     await beginImplementRun(sqliteDb(db), item.id, 4);
-    const secondItem = getWorkItem(db, item.id)!;
+    const secondItem = (await getWorkItem(sqliteDb(db), item.id))!;
     const second = restart(db, secondItem, {
       reason: "ci",
       body: "second failure",
@@ -164,10 +184,19 @@ describe("restart and ask", () => {
     expect(fixRounds(db, item.id)).toBe(2);
     expect(await listJobs(sqliteDb(db))).toHaveLength(1);
 
-    restart(db, getWorkItem(db, item.id)!, { reason: "answer", body: "try again", now: 6 });
+    restart(db, (await getWorkItem(sqliteDb(db), item.id))!, {
+      reason: "answer",
+      body: "try again",
+      now: 6,
+    });
     expect(fixRounds(db, item.id)).toBe(0);
     await beginImplementRun(sqliteDb(db), item.id, 7);
-    restart(db, getWorkItem(db, item.id)!, { reason: "ci", body: "third failure", jobKey, now: 8 });
+    restart(db, (await getWorkItem(sqliteDb(db), item.id))!, {
+      reason: "ci",
+      body: "third failure",
+      jobKey,
+      now: 8,
+    });
     expect(fixRounds(db, item.id)).toBe(1);
     db.close();
   });
@@ -183,7 +212,7 @@ describe("restart and ask", () => {
     expect(() =>
       restart(db, item, { reason: "ci", body: "fix", jobKey: "blocked", now: 2 }),
     ).toThrow("pending resume");
-    expect(getWorkItem(db, item.id)).toEqual(item);
+    expect(await getWorkItem(sqliteDb(db), item.id)).toEqual(item);
     expect((await getRun(sqliteDb(db), item.currentRunId!))?.status).toBe("active");
     expect(
       (await listWorkItemEventRows(sqliteDb(db), item.id)).filter(
@@ -213,7 +242,7 @@ describe("restart and ask", () => {
     await jobs.tick(["item.ask"]);
     await recoverOnStartup(sqliteDb(db), 400);
     await jobs.tick(["item.ask"]);
-    expect(getWorkItem(db, "item")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), "item"))?.state).toBe("awaiting_input");
     expect(
       db.query("SELECT id FROM question WHERE status IN ('open','queued')").all(),
     ).toHaveLength(1);
@@ -260,7 +289,7 @@ describe("restart and ask", () => {
     expect(() => restart(db, item, { reason: "findings", body: "fix", now: 2 })).toThrow(
       "injected",
     );
-    expect(getWorkItem(db, item.id)).toEqual(item);
+    expect(await getWorkItem(sqliteDb(db), item.id)).toEqual(item);
     expect((await getJob(sqliteDb(db), job))?.status).toBe("pending");
     expect((await getRun(sqliteDb(db), item.currentRunId!))?.status).toBe("active");
     db.close();
@@ -269,7 +298,7 @@ describe("restart and ask", () => {
   test("an old job after restart cannot accept, ask, or execute its handler", async () => {
     const { db, item } = await fixture();
     await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
-    const verifying = getWorkItem(db, item.id)!;
+    const verifying = (await getWorkItem(sqliteDb(db), item.id))!;
     const oldId = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.reverify,
       payload: { itemId: item.id },
@@ -325,7 +354,7 @@ describe("restart and ask", () => {
       admission: workspaceAdmission(db),
     });
     await jobs.tick([JOB_KIND.reverify]);
-    expect(getWorkItem(db, item.id)?.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("queued");
     expect(findOpenQuestion(db, "session")).toBeNull();
     expect(await listOutbox(sqliteDb(db))).toEqual(before.outbox);
     db.close();
@@ -362,13 +391,13 @@ describe("restart and ask", () => {
       { sessionId: "session", deliveryId: "one", body: "Use A", answeredBy: "lead", now: 4 },
       questionEffects(db, { now: 4 }),
     );
-    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
     await answer(
       db,
       { sessionId: "session", deliveryId: "two", body: "Continue", answeredBy: "lead", now: 5 },
       questionEffects(db, { now: 5 }),
     );
-    expect(getWorkItem(db, item.id)).toMatchObject({
+    expect(await getWorkItem(sqliteDb(db), item.id)).toMatchObject({
       state: "queued",
       currentRunId: item.currentRunId,
       sessionKey: "session",
@@ -391,7 +420,12 @@ describe("restart and ask", () => {
         { now: 2 },
       ),
     );
-    await applyDecision(sqliteDb(db), getWorkItem(db, item.id)!, { type: "ask_restart" }, 3);
+    await applyDecision(
+      sqliteDb(db),
+      (await getWorkItem(sqliteDb(db), item.id))!,
+      { type: "ask_restart" },
+      3,
+    );
     const clock = new FakeClock(4);
     const jobs = new JobLoop(db, clock);
     attachOrchestrator({
@@ -402,7 +436,7 @@ describe("restart and ask", () => {
       admission: workspaceAdmission(db),
     });
     await jobs.tick(["item.ask"]);
-    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
     expect(findOpenQuestion(db, "session")?.body).toBe("Which direction?");
     expect(db.query("SELECT reason FROM question WHERE status='queued'").all()).toEqual([
       { reason: "restart" },
@@ -422,7 +456,7 @@ describe("restart and ask", () => {
       ),
     );
     await recoverOnStartup(sqliteDb(db), 3);
-    expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), item.id))?.state).toBe("awaiting_input");
     expect(findOpenQuestion(db, "session")?.body).toBe("Continue?");
     expect(
       (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.catchup),

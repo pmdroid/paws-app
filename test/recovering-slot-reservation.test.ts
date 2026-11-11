@@ -67,9 +67,13 @@ test("twenty recovering items fill six free slots in one tick and do not fail fo
         expect(new Set(pending.map((job) => job.runAt)).size).toBeGreaterThan(1);
         expect(started.size, lines.join("\n")).toBe(6);
         expect(
-          listWorkItems(db).filter((item) => ["failed", "awaiting_input"].includes(item.state)),
+          (await listWorkItems(sqliteDb(db))).filter((item) =>
+            ["failed", "awaiting_input"].includes(item.state),
+          ),
         ).toHaveLength(0);
-        const running = listWorkItems(db).filter((item) => started.has(item.linearIdentifier));
+        const running = (await listWorkItems(sqliteDb(db))).filter((item) =>
+          started.has(item.linearIdentifier),
+        );
         for (const item of running)
           expect(lines.filter((line) => line.includes(`item=${item.id}`)).join("\n")).not.toContain(
             "Waiting for a free slot",
@@ -94,8 +98,9 @@ test("a failed preparation releases its reservation and the next recovering item
       placementPollMs: 1,
       random: () => 0,
       lines,
-      ready: (started, db) =>
-        started.size === 1 && listWorkItems(db).some((item) => item.state === "awaiting_input"),
+      ready: async (started, db) =>
+        started.size === 1 &&
+        (await listWorkItems(sqliteDb(db))).some((item) => item.state === "awaiting_input"),
       wrap(placement) {
         return {
           ...placement,
@@ -111,7 +116,9 @@ test("a failed preparation releases its reservation and the next recovering item
       async assert(started, db) {
         expect(started.size, lines.join("\n")).toBe(1);
         expect(lines.join("\n")).not.toContain("Waiting for a free slot");
-        const failed = listWorkItems(db).filter((item) => item.state === "awaiting_input");
+        const failed = (await listWorkItems(sqliteDb(db))).filter(
+          (item) => item.state === "awaiting_input",
+        );
         expect(failed.map((item) => item.linearIdentifier)).toHaveLength(1);
         expect(started.has(failed[0]!.linearIdentifier)).toBe(false);
       },
@@ -130,7 +137,7 @@ async function runRecovering(input: {
   placementPollMs?: number;
   random?: () => number;
   wrap?: (placement: RunnerPlacement) => RunnerPlacement;
-  ready?: (started: Set<string>, db: ReturnType<typeof migratedDatabase>) => boolean;
+  ready?: (started: Set<string>, db: ReturnType<typeof migratedDatabase>) => Promise<boolean>;
   assert: (started: Set<string>, db: ReturnType<typeof migratedDatabase>) => void | Promise<void>;
 }) {
   const root = mkdtempSync(join(tmpdir(), "paws-recovering-slots-"));
@@ -323,7 +330,9 @@ async function runRecovering(input: {
               models: [{ id: "fixture-implement-model", name: "Fixture" }],
             });
           if (command.type === "run") {
-            const item = listWorkItems(db).find((row) => row.currentRunId === command.runId);
+            const item = (await listWorkItems(sqliteDb(db))).find(
+              (row) => row.currentRunId === command.runId,
+            );
             if (item) started.add(item.linearIdentifier);
           }
         }
@@ -350,7 +359,9 @@ async function runRecovering(input: {
         updatedAtMs: Date.now(),
         payload: "{}",
       });
-      const item = listWorkItems(db).find((row) => row.sessionKey === `session-${index}`)!;
+      const item = (await listWorkItems(sqliteDb(db))).find(
+        (row) => row.sessionKey === `session-${index}`,
+      )!;
       await recordLinearInstallation(sqliteDb(db), {
         organizationId: "org",
         oauthClientId: "app",
@@ -390,7 +401,7 @@ async function runRecovering(input: {
         (job) => job.queue === JOB_KIND.resume && job.status === "pending",
       ).length;
     const settled = async () =>
-      input.ready?.(started, db) ??
+      (await input.ready?.(started, db)) ??
       (started.size >= Math.min(input.count, input.capacity) &&
         (input.clock instanceof FakeClock
           ? (await parked()) === input.count - input.capacity
@@ -399,17 +410,23 @@ async function runRecovering(input: {
     const detail = JSON.stringify({
       started: [...started],
       parked: await parked(),
-      jobs: (await listJobs(sqliteDb(db)))
-        .filter((job) => job.queue === JOB_KIND.resume)
-        .map((job) => resumeLine(db, job)),
-      items: listWorkItems(db).map((item) => `${item.linearIdentifier}:${item.state}`),
+      jobs: await Promise.all(
+        (await listJobs(sqliteDb(db)))
+          .filter((job) => job.queue === JOB_KIND.resume)
+          .map((job) => resumeLine(db, job)),
+      ),
+      items: (await listWorkItems(sqliteDb(db))).map(
+        (item) => `${item.linearIdentifier}:${item.state}`,
+      ),
       lines: input.lines,
     });
     expect(started.size, detail).toBe(Math.min(input.count, input.capacity));
     if (input.clock instanceof FakeClock) {
       expect(await parked(), detail).toBe(input.count - input.capacity);
     }
-    for (const item of listWorkItems(db).filter((row) => started.has(row.linearIdentifier)))
+    for (const item of (await listWorkItems(sqliteDb(db))).filter((row) =>
+      started.has(row.linearIdentifier),
+    ))
       expect([...(prepared.get(item.id) ?? [])].sort()).toEqual(["implementer", "reviewer"]);
     await input.assert(started, db);
   } finally {
@@ -442,9 +459,9 @@ async function recover(
   });
 }
 
-function resumeLine(db: ReturnType<typeof migratedDatabase>, job: Job): string {
+async function resumeLine(db: ReturnType<typeof migratedDatabase>, job: Job): Promise<string> {
   const itemId = (job.payload as { itemId?: string }).itemId ?? "";
-  return `${getWorkItem(db, itemId)?.linearIdentifier ?? itemId}:${job.status}`;
+  return `${(await getWorkItem(sqliteDb(db), itemId))?.linearIdentifier ?? itemId}:${job.status}`;
 }
 
 function receipt(command: RunnerCommand) {

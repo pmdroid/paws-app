@@ -101,7 +101,7 @@ describe("a waiting question", () => {
   async function waiting(db: Database) {
     insertQueuedItem(db, { id: "item-q", sessionKey: "ses-1", now: 0 });
     await beginImplementRun(sqliteDb(db), "item-q", 1_000);
-    const item = getWorkItem(db, "item-q")!;
+    const item = (await getWorkItem(sqliteDb(db), "item-q"))!;
     await sqliteDb(db).transaction((q) =>
       askSteps(
         q,
@@ -111,7 +111,7 @@ describe("a waiting question", () => {
         { options: ["paws-app", "paws-runner"], now: 2_000 },
       ),
     );
-    expect(getWorkItem(db, "item-q")?.state).toBe("awaiting_input");
+    expect((await getWorkItem(sqliteDb(db), "item-q"))?.state).toBe("awaiting_input");
   }
 
   const errorActivity = async (db: Database, key: string) =>

@@ -141,7 +141,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
           now: 1000,
         }),
       );
-    const original = getWorkItem(db, manualId)!;
+    const original = (await getWorkItem(sqliteDb(db), manualId))!;
     const notices = async () =>
       (await listOutbox(sqliteDb(db))).filter((row) =>
         row.idempotencyKey.startsWith(`criteria-changed:${manualId}:`),
@@ -162,10 +162,10 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     await expect(
       reconciler.reconcile({ itemId: manualId, workspaceId: "workspace" }),
     ).rejects.toThrow("injected activity failure");
-    expect(getWorkItem(db, manualId)).toEqual(original);
-    expect(getWorkItem(db, ids.running!)!.state).toBe("running");
+    expect(await getWorkItem(sqliteDb(db), manualId)).toEqual(original);
+    expect((await getWorkItem(sqliteDb(db), ids.running!))!.state).toBe("running");
     expect(jobs()).toEqual(originalJobs);
-    expect(getWorkItem(db, ids.removed!)!.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), ids.removed!))!.state).toBe("queued");
     expect(
       await Promise.all(
         questions.map(async (q) => (await getQuestion(sqliteDb(db), q.id))!.cancelledAt),
@@ -174,7 +174,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     db.run("DROP TRIGGER fail_criteria_activity");
 
     await reconciler.reconcile({ itemId: manualId, workspaceId: "workspace" });
-    expect(getWorkItem(db, manualId)).toEqual({
+    expect(await getWorkItem(sqliteDb(db), manualId)).toEqual({
       ...original,
       brief: {
         ...original.brief!,
@@ -182,7 +182,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
       },
     });
     expect(await notices()).toHaveLength(1);
-    expect(getWorkItem(db, ids.removed!)!.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), ids.removed!))!.state).toBe("cancelled");
     expect(((await notices())[0]!.payload as { body: string }).body).toContain("manual");
     expect(
       db.query("SELECT 1 FROM job WHERE json_extract(payload,'$.itemId')=?").get(manualId),
@@ -211,7 +211,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
         ).toBeNull();
     }
     for (const state of states) {
-      const item = getWorkItem(db, ids[state]!)!;
+      const item = (await getWorkItem(sqliteDb(db), ids[state]!))!;
       expect(item.brief!.issue.description).toBe("Updated criteria");
       expect(item.state).toBe(state === "running" || state === "failed" ? "queued" : state);
       if (["manual", "merged", "completed", "cancelled"].includes(state))
@@ -231,8 +231,10 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
       .subIssues.find((child) => child.linearIssueId === "manual")!.description =
       "Latest manual criteria";
     await reconciler.reconcile({ itemId: manualId, workspaceId: "workspace" });
-    expect(getWorkItem(db, manualId)!.brief!.issue.description).toBe("Latest manual criteria");
-    expect(getWorkItem(db, manualId)!.version).toBe(7);
+    expect((await getWorkItem(sqliteDb(db), manualId))!.brief!.issue.description).toBe(
+      "Latest manual criteria",
+    );
+    expect((await getWorkItem(sqliteDb(db), manualId))!.version).toBe(7);
     expect(await notices()).toHaveLength(2);
     expect(jobs()).toEqual(afterJobs);
     await advanceLinearSessionGeneration(sqliteDb(db), "session", { now: clock.now() });
@@ -249,7 +251,9 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
       .subIssues.find((child) => child.linearIssueId === "manual")!.description =
       "Criteria after PR";
     await reconciler.reconcile({ itemId: manualId, workspaceId: "workspace" });
-    expect(getWorkItem(db, manualId)!.brief!.issue.description).toBe("Criteria after PR");
+    expect((await getWorkItem(sqliteDb(db), manualId))!.brief!.issue.description).toBe(
+      "Criteria after PR",
+    );
     expect(await notices()).toHaveLength(2);
     expect(transition("manual", "restart").ok).toBe(false);
     expect(transition("manual", "resume").ok).toBe(false);

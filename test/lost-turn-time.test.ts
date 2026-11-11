@@ -24,12 +24,12 @@ test("a turn declared lost gives back its implementation time after the last che
   await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
   await accrueAwake(sqliteDb(db), id, 0, 1, undefined, true);
   await accrueAwake(sqliteDb(db), id, 60 * MINUTE, 2, undefined, true);
-  expect(getWorkItem(db, id)!.implementMs).toBe(60 * MINUTE);
+  expect((await getWorkItem(sqliteDb(db), id))!.implementMs).toBe(60 * MINUTE);
 
   expect(await refundLostTurnAsync(sqliteDb(db), id, 60 * MINUTE, 3, 40 * MINUTE)).toBe(
     40 * MINUTE,
   );
-  const item = getWorkItem(db, id)!;
+  const item = (await getWorkItem(sqliteDb(db), id))!;
   expect(item.implementMs).toBe(20 * MINUTE);
   expect(item.agentMs).toBe(20 * MINUTE);
   expect(item.awakeMs).toBe(20 * MINUTE);
@@ -37,5 +37,5 @@ test("a turn declared lost gives back its implementation time after the last che
   expect(await refundLostTurnAsync(sqliteDb(db), id, 60 * MINUTE, 4, 90 * MINUTE)).toBe(
     20 * MINUTE,
   );
-  expect(getWorkItem(db, id)!.implementMs).toBe(0);
+  expect((await getWorkItem(sqliteDb(db), id))!.implementMs).toBe(0);
 });

@@ -194,11 +194,17 @@ test("a rejected second-child cancellation rolls back signed revocation before n
       second.id +
       "' AND NEW.state = 'cancelled' BEGIN SELECT RAISE(ABORT, 'Second child cannot cancel'); END",
   );
-  const original = f.task.items.map((item) => getWorkItem(f.db, item.id)?.state);
+  const original = await Promise.all(
+    f.task.items.map(async (item) => (await getWorkItem(sqliteDb(f.db), item.id))?.state),
+  );
   const event = revoked();
   expect((await f.post(event, "atomic-revocation")).status).toBe(200);
   expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toHaveLength(1);
-  expect(f.task.items.map((item) => getWorkItem(f.db, item.id)?.state)).toEqual(original);
+  expect(
+    await Promise.all(
+      f.task.items.map(async (item) => (await getWorkItem(sqliteDb(f.db), item.id))?.state),
+    ),
+  ).toEqual(original);
   expect((await getLinearSession(sqliteDb(f.db), "session"))?.generation).toBe(0);
   expect((await getLinearSession(sqliteDb(f.db), "session"))?.stoppedAt).toBeNull();
   expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("allowed");
@@ -221,10 +227,11 @@ test("a rejected second-child cancellation rolls back signed revocation before n
   )
     await Bun.sleep(5);
   expect(await createInboxStore(sqliteDb(f.db)).listUnhandled()).toEqual([]);
-  expect(f.task.items.map((item) => getWorkItem(f.db, item.id)?.state)).toEqual([
-    "cancelled",
-    "cancelled",
-  ]);
+  expect(
+    await Promise.all(
+      f.task.items.map(async (item) => (await getWorkItem(sqliteDb(f.db), item.id))?.state),
+    ),
+  ).toEqual(["cancelled", "cancelled"]);
   expect(f.notifications).toEqual(f.task.items.map((item) => item.id));
   expect(f.interrupted).toEqual(["session"]);
   expect(f.owned.signal.aborted).toBe(true);
@@ -247,7 +254,7 @@ test("signed revocation stops owned work and fences active, queued and delayed r
   await f.active.promise;
   expect((await f.post(revoked())).status).toBe(200);
   expect(await getLinearSessionAccess(sqliteDb(f.db), "session")).toBe("revoked");
-  expect(getWorkItem(f.db, f.task.items[0]!.id)?.state).toBe("cancelled");
+  expect((await getWorkItem(sqliteDb(f.db), f.task.items[0]!.id))?.state).toBe("cancelled");
   expect(f.owned.signal.aborted).toBe(true);
   expect(
     (await listOutbox(sqliteDb(f.db), "session")).every((row) => row.status === "dropped"),
@@ -354,10 +361,11 @@ test("undelegation cancels every queued task of the issue and stops its session 
       reconciled.push(notification.issueId);
     },
   });
-  expect(f.task.items.map((item) => getWorkItem(f.db, item.id)?.state)).toEqual([
-    "cancelled",
-    "cancelled",
-  ]);
+  expect(
+    await Promise.all(
+      f.task.items.map(async (item) => (await getWorkItem(sqliteDb(f.db), item.id))?.state),
+    ),
+  ).toEqual(["cancelled", "cancelled"]);
   expect(f.notifications).toEqual(f.task.items.map((item) => item.id));
   expect(f.interrupted).toEqual(["session"]);
   expect((await getLinearSession(sqliteDb(f.db), "session"))?.stoppedAt).not.toBeNull();
@@ -416,7 +424,7 @@ test("notification dedupe follows successful reconciliation and serializes overl
   await handleLinearAdministration(f.db, second, options);
   expect(calls).toBe(2);
   expect(isLinearAppRevoked(f.db, scope)).toBe(false);
-  expect(getWorkItem(f.db, f.task.items[0]!.id)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(f.db), f.task.items[0]!.id))?.state).toBe("queued");
 });
 
 test("production disconnected ingress preserves a signed created session across database reopen", async () => {

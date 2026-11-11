@@ -72,7 +72,11 @@ async function askedAtTimeLimit() {
     now,
   });
   await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched", { now });
-  saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
+  await saveCheckpoint(sqliteDb(db), item.id, {
+    phase: "running",
+    baseSha: "base",
+    wipCommit: "accepted",
+  });
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
   clock.advance(31 * MINUTE);
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
@@ -83,12 +87,16 @@ async function askedAtTimeLimit() {
   };
   await loopAsk(
     db,
-    { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses" },
+    {
+      itemId: item.id,
+      runId: (await getWorkItem(sqliteDb(db), item.id))!.currentRunId,
+      sessionId: "ses",
+    },
     "time-limit",
     request.body,
     { options: request.options, now: clock.now() },
   );
-  const asked = getWorkItem(db, item.id)!;
+  const asked = (await getWorkItem(sqliteDb(db), item.id))!;
   expect(asked.state).toBe("awaiting_input");
   return { clock, db, itemId: item.id, askedAt: asked.version };
 }
@@ -111,7 +119,11 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
   expect(ms.awaiting_input).toBe(10 * MINUTE);
   expect(ms.merge_queue).toBe(5 * MINUTE);
 
-  restart(db, getWorkItem(db, itemId)!, { reason: "ci", body: "CI failed", now: clock.now() });
+  restart(db, (await getWorkItem(sqliteDb(db), itemId))!, {
+    reason: "ci",
+    body: "CI failed",
+    now: clock.now(),
+  });
   expect(await restartedFromMergeQueue(sqliteDb(db), itemId)).toBe(true);
 });
 
@@ -133,7 +145,7 @@ test("an answered runner wait re-verifies without passing through running", asyn
     "The runner is paused. Keep waiting or move?",
     { options: ["Keep waiting", "Move"], now: 2_000 },
   );
-  const askedAt = getWorkItem(db, item.id)!.version;
+  const askedAt = (await getWorkItem(sqliteDb(db), item.id))!.version;
   expect((await reply(db, "Keep waiting", 3_000)).status).toBe("answered");
   expect(await history(db, item.id, askedAt)).toEqual([
     "awaiting_input -reverify_requested-> verifying",
@@ -163,7 +175,7 @@ test("Discarding a plan completes it from the wait with one answer_completed", a
     ],
     now: 2_000,
   });
-  const askedAt = getWorkItem(db, item.id)!.version;
+  const askedAt = (await getWorkItem(sqliteDb(db), item.id))!.version;
   expect((await reply(db, "Discard", 3_000)).status).toBe("answered");
   expect(await history(db, item.id, askedAt)).toEqual([
     "awaiting_input -answer_completed-> completed",
@@ -179,7 +191,7 @@ test("a failure in the merge queue records work_failed, not a lease expiry", asy
     baseSha: "base",
     wipCommit: "head",
   });
-  const queued = getWorkItem(db, item.id)!;
+  const queued = (await getWorkItem(sqliteDb(db), item.id))!;
   expect(await failWorkItem(sqliteDb(db), queued, "merge_error", "The merge failed.", 2_000)).toBe(
     true,
   );

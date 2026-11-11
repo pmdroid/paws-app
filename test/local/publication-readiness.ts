@@ -127,7 +127,7 @@ export async function probePublicationReadiness(root: string) {
     });
     await setCurrentRun(sqliteDb(db), itemId, run.id);
     const candidate = { sha: "a".repeat(40), baseSha: "b".repeat(40) };
-    saveCheckpoint(db, itemId, {
+    await saveCheckpoint(sqliteDb(db), itemId, {
       phase: "merge_queue",
       wipCommit: candidate.sha,
       baseSha: candidate.baseSha,
@@ -225,7 +225,7 @@ export async function probePublicationReadiness(root: string) {
               readyItemsSteps(q, { itemId: f.itemId, workspaceId: "workspace" }),
             )
           ).generation,
-          state: getWorkItem(f.db, f.itemId)!.state,
+          state: (await getWorkItem(sqliteDb(f.db), f.itemId))!.state,
         },
       );
       assert(await completeJob(sqliteDb(f.db), first, f.clock.now()));
@@ -264,8 +264,8 @@ export async function probePublicationReadiness(root: string) {
       f.tracker.epics.get("issue")!.description = "Acceptance criteria changed without a webhook";
       if (await guard.publicationReady(f.itemId, "merge", undefined, f.candidate)) mergeCalls++;
       assert.equal(mergeCalls, 0);
-      assert.equal(getWorkItem(f.db, f.itemId)!.state, "queued");
-      assert.equal(getWorkItem(f.db, f.itemId)!.currentRunId, null);
+      assert.equal((await getWorkItem(sqliteDb(f.db), f.itemId))!.state, "queued");
+      assert.equal((await getWorkItem(sqliteDb(f.db), f.itemId))!.currentRunId, null);
       assert.equal(
         f.db
           .query<{ revision: number }, [string]>(
@@ -276,7 +276,11 @@ export async function probePublicationReadiness(root: string) {
       );
       observe(
         "A missed criteria webhook is discovered before an old approved candidate can merge",
-        { mergeCalls, state: getWorkItem(f.db, f.itemId)!.state, loads: f.loads() },
+        {
+          mergeCalls,
+          state: (await getWorkItem(sqliteDb(f.db), f.itemId))!.state,
+          loads: f.loads(),
+        },
       );
     } finally {
       await f.close();
@@ -359,7 +363,13 @@ export async function probePublicationReadiness(root: string) {
       assert.equal(job.status, "cancelled");
       observe(
         "Canonical cancellation aborts a running owned job awaiting its own shared refresh and joins without deadlock",
-        { exited, joined, mergeCalls, job, state: getWorkItem(f.db, f.itemId)!.state },
+        {
+          exited,
+          joined,
+          mergeCalls,
+          job,
+          state: (await getWorkItem(sqliteDb(f.db), f.itemId))!.state,
+        },
       );
     } finally {
       await f.close();
@@ -420,7 +430,7 @@ export async function probePublicationReadiness(root: string) {
         now: () => f.clock.now(),
       });
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
-      assert.equal(getWorkItem(f.db, f.itemId)!.state, "merge_queue");
+      assert.equal((await getWorkItem(sqliteDb(f.db), f.itemId))!.state, "merge_queue");
       assert.deepEqual(
         (
           await sqliteDb(f.db).run((q) =>
@@ -459,7 +469,7 @@ export async function probePublicationReadiness(root: string) {
         "Fresh unfinished or cyclic blockers hold a verified candidate while exact completed or canceled manual and external blockers release it and unrelated work stays ready",
         {
           loads: f.loads(),
-          state: getWorkItem(f.db, f.itemId)!.state,
+          state: (await getWorkItem(sqliteDb(f.db), f.itemId))!.state,
           independentReady: (
             await sqliteDb(f.db).run((q) =>
               readyItemsSteps(q, { itemId: independent, workspaceId: "workspace" }),

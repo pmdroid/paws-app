@@ -96,7 +96,7 @@ test("artifact completion requires uploaded deliverables and survives database r
   db.close();
   const restored = openDatabase(file);
   try {
-    expect(getWorkItem(restored, item.id)?.state).toBe("completed");
+    expect((await getWorkItem(sqliteDb(restored), item.id))?.state).toBe("completed");
     expect((await listOutbox(sqliteDb(restored), "session")).map((row) => row.payload)).toEqual([
       { sessionId: "session", kind: "response", body: "Here is the complete report." },
       { itemId: item.id, linearIssueId: item.linearIssueId, stateType: "completed" },

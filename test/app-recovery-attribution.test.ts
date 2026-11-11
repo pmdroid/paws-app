@@ -88,7 +88,7 @@ for (const state of [
                 ? (["turn_ended", "closeout_accepted"] as const)
                 : [])
         await applyWorkItemEvent(sqliteDb(paws.db), "legacy", event);
-      const held = getWorkItem(paws.db, "legacy")!;
+      const held = (await getWorkItem(sqliteDb(paws.db), "legacy"))!;
       const runStatus = (await getRun(sqliteDb(paws.db), run.id))?.status;
       const outbox = (await listOutbox(sqliteDb(paws.db))).length;
       clock.sleep(2 * 60 * 60_000 + 1);
@@ -102,7 +102,7 @@ for (const state of [
             job.status === "pending",
         ),
       ).toBe(false);
-      expect(getWorkItem(paws.db, "legacy")).toMatchObject({
+      expect(await getWorkItem(sqliteDb(paws.db), "legacy")).toMatchObject({
         state: held.state,
         currentRunId: run.id,
         checkpoint: held.checkpoint,

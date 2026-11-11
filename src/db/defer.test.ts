@@ -32,7 +32,7 @@ test("deferring a running item loses its run, moves it to recovering, and schedu
   });
   restore();
   expect(lines).toContain("item item-1 deferred: retry 2 in 5000 ms");
-  expect(getWorkItem(db, "item-1")?.state).toBe("recovering");
+  expect((await getWorkItem(sqliteDb(db), "item-1"))?.state).toBe("recovering");
   expect((await getRun(sqliteDb(db), run.id))?.status).toBe("lost");
   expect(
     (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
@@ -65,11 +65,14 @@ test("deferring the same item version twice schedules one resume", async () => {
   const { item } = await beginImplementRun(sqliteDb(db), "item-1", 1_000);
   const input = { retry: 1, delayMs: 10, handoff: null, message: "Retrying.", now: 2_000 };
   await deferWorkItem(sqliteDb(db), item, input);
-  await deferWorkItem(sqliteDb(db), getWorkItem(db, "item-1")!, { ...input, retry: 2 });
+  await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), "item-1"))!, {
+    ...input,
+    retry: 2,
+  });
   expect(
     (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
   ).toHaveLength(1);
-  expect(getWorkItem(db, "item-1")?.state).toBe("recovering");
+  expect((await getWorkItem(sqliteDb(db), "item-1"))?.state).toBe("recovering");
 });
 
 test("deferring verification of a recorded candidate keeps it verifying and re-verifies that head", async () => {
@@ -78,8 +81,12 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
   insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
   const { run } = await beginImplementRun(sqliteDb(db), "item-1", 1_000);
   await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
-  saveCheckpoint(db, "item-1", { phase: "verifying", baseSha: "base", wipCommit: "head" });
-  const verifying = getWorkItem(db, "item-1")!;
+  await saveCheckpoint(sqliteDb(db), "item-1", {
+    phase: "verifying",
+    baseSha: "base",
+    wipCommit: "head",
+  });
+  const verifying = (await getWorkItem(sqliteDb(db), "item-1"))!;
   await deferWorkItem(sqliteDb(db), verifying, {
     retry: 2,
     delayMs: 5_000,
@@ -87,7 +94,7 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
     message: "Closeout: the review timed out. Paws tries again in 5 s.",
     now: 2_000,
   });
-  expect(getWorkItem(db, "item-1")).toMatchObject({
+  expect(await getWorkItem(sqliteDb(db), "item-1")).toMatchObject({
     state: "verifying",
     version: verifying.version,
     checkpoint: { phase: "verifying", wipCommit: "head" },
@@ -103,7 +110,7 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
     },
   ]);
   expect(jobs[0]!.payload).not.toHaveProperty("handoff");
-  await deferWorkItem(sqliteDb(db), getWorkItem(db, "item-1")!, {
+  await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), "item-1"))!, {
     retry: MAX_TRANSIENT_RETRIES,
     delayMs: 10,
     handoff: null,
@@ -123,14 +130,14 @@ test("deferring verification without a recorded candidate falls back to a resume
   insertQueuedItem(db, { id: "item-1", now: 1_000 });
   await beginImplementRun(sqliteDb(db), "item-1", 1_000);
   await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
-  await deferWorkItem(sqliteDb(db), getWorkItem(db, "item-1")!, {
+  await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), "item-1"))!, {
     retry: 1,
     delayMs: 10,
     handoff: null,
     message: null,
     now: 2_000,
   });
-  expect(getWorkItem(db, "item-1")?.state).toBe("recovering");
+  expect((await getWorkItem(sqliteDb(db), "item-1"))?.state).toBe("recovering");
   expect((await listJobs(sqliteDb(db))).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
 });
 
@@ -140,9 +147,13 @@ test("a Closeout fault re-verifies the same version once per faulted job and car
   insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
   await beginImplementRun(sqliteDb(db), "item-1", 1_000);
   await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
-  saveCheckpoint(db, "item-1", { phase: "verifying", baseSha: "base", wipCommit: "head" });
+  await saveCheckpoint(sqliteDb(db), "item-1", {
+    phase: "verifying",
+    baseSha: "base",
+    wipCommit: "head",
+  });
   const fault = async (jobId: number, reasons: string[], now: number) =>
-    await deferWorkItem(sqliteDb(db), getWorkItem(db, "item-1")!, {
+    await deferWorkItem(sqliteDb(db), (await getWorkItem(sqliteDb(db), "item-1"))!, {
       retry: reasons.length,
       delayMs: 60_000,
       handoff: null,
@@ -153,7 +164,7 @@ test("a Closeout fault re-verifies the same version once per faulted job and car
   await fault(7, ["lost"], 2_000);
   await fault(7, ["lost"], 2_500);
   await fault(8, ["lost", "lost again"], 3_000);
-  expect(getWorkItem(db, "item-1")?.state).toBe("verifying");
+  expect((await getWorkItem(sqliteDb(db), "item-1"))?.state).toBe("verifying");
   expect(
     (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.reverify),
   ).toMatchObject([

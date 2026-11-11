@@ -6,6 +6,7 @@ import { expect, test } from "bun:test";
 import { runAgent, type RunAgentOptions, type RunAgentResult } from "../src/acp";
 import { systemClock } from "../src/core";
 import {
+  sqliteDb,
   JobLoop,
   OutboxDispatcher,
   getWorkItem,
@@ -122,7 +123,7 @@ async function handOver(options: {
             git(["add", "-A"]);
             git(["commit", "-q", "-m", "Save work in progress"]);
             wip = git(["rev-parse", "HEAD"]);
-            saveCheckpoint(db, listWorkItems(db)[0]!.id, {
+            await saveCheckpoint(sqliteDb(db), (await listWorkItems(sqliteDb(db)))[0]!.id, {
               phase: "running",
               baseSha: git(["rev-parse", "HEAD~1"]),
               wipCommit: wip,
@@ -180,12 +181,12 @@ async function handOver(options: {
       await outbox.idle();
       if (job === null) await Bun.sleep(10);
     }
-    const item = listWorkItems(db)[0]!;
+    const item = (await listWorkItems(sqliteDb(db)))[0]!;
     return {
       wip,
       prompts,
       state: stateOf(db, "ENG-8"),
-      checkpoint: getWorkItem(db, item.id)?.checkpoint,
+      checkpoint: (await getWorkItem(sqliteDb(db), item.id))?.checkpoint,
       questions: tracker.questions.map((question) => question.body),
       detail: JSON.stringify({
         items: db.query("SELECT linear_identifier, state FROM work_item").all(),

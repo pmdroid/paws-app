@@ -25,7 +25,7 @@ async function runningItem() {
 
 test("a candidate that conflicts with its moved branch restarts with reason conflict and no question", async () => {
   const { db, itemId, runId } = await runningItem();
-  expect(getWorkItem(db, itemId)?.state).toBe("running");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("running");
 
   expect(
     await restartForPushConflict(db, itemId, {
@@ -35,7 +35,7 @@ test("a candidate that conflicts with its moved branch restarts with reason conf
     }),
   ).toBe(true);
 
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   expect((await getRun(sqliteDb(db), runId))?.status).toBe("ended");
   const resumes = (await listJobs(sqliteDb(db))).filter(
     (job) => job.queue === JOB_KIND.resume && job.status === "pending",
@@ -72,7 +72,7 @@ test("three genuine push conflicts spend the shared budget, then ask for guidanc
   expect(
     await restartForPushConflict(db, itemId, { branch: "paws/topic", files: ["b.ts"], now: 3_000 }),
   ).toBe(true);
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
   expect(db.query("SELECT COUNT(*) AS n FROM rebase_return WHERE reason='push'").get()).toEqual({
     n: 3,
   });
@@ -106,7 +106,7 @@ test("push conflicts also respect the six-return rolling hour budget", async () 
   expect(
     await restartForPushConflict(db, itemId, { branch: "paws/topic", files: ["a.ts"], now: 2_000 }),
   ).toBe(true);
-  expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("awaiting_input");
   expect(db.query("SELECT body FROM question").get()).toEqual({
     body: expect.stringContaining("7 times within an hour"),
   });
@@ -131,7 +131,7 @@ test("a person's answer refills the consecutive push-conflict budget", async () 
   expect(
     await restartForPushConflict(db, itemId, { branch: "paws/topic", files: ["a.ts"], now: 4_000 }),
   ).toBe(true);
-  expect(getWorkItem(db, itemId)?.state).toBe("queued");
+  expect((await getWorkItem(sqliteDb(db), itemId))?.state).toBe("queued");
   expect(db.query("SELECT COUNT(*) AS n FROM question").get()).toEqual({ n: 0 });
   db.close();
 });

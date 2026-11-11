@@ -271,7 +271,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     updatedAtMs: Date.now(),
     payload: "{}",
   });
-  const item = listWorkItems(db).find((row) => row.sessionKey === "session-1")!;
+  const item = (await listWorkItems(sqliteDb(db))).find((row) => row.sessionKey === "session-1")!;
   await recordLinearInstallation(sqliteDb(db), {
     organizationId: "org",
     oauthClientId: "app",
@@ -301,7 +301,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
   const controller = new AbortController();
   const loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
   const settled = async () => {
-    const current = getWorkItem(db, item.id)!;
+    const current = (await getWorkItem(sqliteDb(db), item.id))!;
     if ((await getRunnerSetupHold(sqliteDb(db), item.id)) && current.state === "queued")
       return true;
     return (await listJobs(sqliteDb(db))).some(
@@ -351,11 +351,11 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
   try {
     const { db, itemId } = fixture;
     const detail = JSON.stringify({
-      item: getWorkItem(db, itemId),
+      item: await getWorkItem(sqliteDb(db), itemId),
       jobs: (await fixture.itemJobs()).map((job) => `${job.queue}:${job.status}`),
       thoughts: await fixture.thoughts(),
     });
-    expect(getWorkItem(db, itemId)!.state, detail).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), itemId))!.state, detail).toBe("queued");
     expect(await getRunnerSetupHold(sqliteDb(db), itemId), detail).toMatchObject({
       reason: "no-runner",
       ownerUserId: fixture.memberId,
@@ -393,7 +393,7 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
     expect(
       (await fixture.itemJobs()).filter((job) => job.status === "pending").map((job) => job.queue),
     ).toEqual([JOB_KIND.resume]);
-    expect(getWorkItem(db, itemId)!.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), itemId))!.state).toBe("queued");
     expect((await listOutbox(sqliteDb(db))).length).toBe(outboxBefore);
     expect((await fixture.thoughts()).join("\n")).not.toMatch(
       /Stopped after|couldn't start|Queued:/,
@@ -407,7 +407,7 @@ test("a delegator whose runner needs its agent signed in hears the runner and th
   const fixture = await delegate("unsigned");
   try {
     const { db, itemId } = fixture;
-    expect(getWorkItem(db, itemId)!.state).toBe("queued");
+    expect((await getWorkItem(sqliteDb(db), itemId))!.state).toBe("queued");
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toMatchObject({
       reason: "agent-not-signed-in",
       runnerId: fixture.memberRunner,
@@ -478,7 +478,7 @@ test("Stop ends the hold", async () => {
     const stop: LinearCommand = { type: "stop", itemId, source: "linear", requestedAt: Date.now() };
     expect((await applyLinearCommand(sqliteDb(db), stop)).applied).toBe(true);
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
-    expect(getWorkItem(db, itemId)!.state).toBe("paused");
+    expect((await getWorkItem(sqliteDb(db), itemId))!.state).toBe("paused");
   } finally {
     await fixture.close();
   }
@@ -494,7 +494,7 @@ test("undelegation cancels a held item and ends its hold", async () => {
       { organizationId: "org", appUserId: "app-user", issueId: "issue-1", createdAtMs: Date.now() },
       { notify() {} },
     );
-    expect(getWorkItem(db, itemId)!.state).toBe("cancelled");
+    expect((await getWorkItem(sqliteDb(db), itemId))!.state).toBe("cancelled");
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
   } finally {
     await fixture.close();
@@ -506,7 +506,7 @@ test("signing the agent in resumes the held item in the same run and session, wi
   try {
     const { db, itemId } = fixture;
     const hold = (await getRunnerSetupHold(sqliteDb(db), itemId))!;
-    const item = getWorkItem(db, itemId)!;
+    const item = (await getWorkItem(sqliteDb(db), itemId))!;
     expect(hold.runId).not.toBeNull();
     expect(item.currentRunId).toBe(hold.runId);
 
@@ -516,7 +516,7 @@ test("signing the agent in resumes the held item in the same run and session, wi
       db.query("SELECT 1 FROM run WHERE id=? AND status='active'").get(hold.runId!) !== null;
     while (Date.now() < deadline && !active()) await Bun.sleep(10);
 
-    const resumed = getWorkItem(db, itemId)!;
+    const resumed = (await getWorkItem(sqliteDb(db), itemId))!;
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
     expect(active()).toBe(true);
     expect(resumed.currentRunId).toBe(hold.runId);
