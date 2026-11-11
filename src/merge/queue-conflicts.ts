@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { JOB_KIND } from "../core";
 import {
   emitJobReady,
@@ -9,8 +8,6 @@ import {
   listMergeQueuesSteps,
   rebaseReturnedForSteps,
   recordRebaseReturnSteps,
-  settled,
-  sqliteDb,
   type Db,
   type MergeQueuePosition,
   type Q,
@@ -39,19 +36,14 @@ export type QueueConflictSweep = { repository: string; main: string | null };
  * Main moved in `repository`: check the queued pull requests behind the front once for this main
  * commit. A redelivered webhook, or the lane's merge and its webhook, share the one job.
  */
-export function mainMoved(db: Database, input: QueueConflictSweep & { now: number }): void {
-  if (settled(sqliteDb(db).run((q) => mainMovedSteps(q, input)))) emitJobReady(db);
-}
-
-/** {@link mainMoved} on the store, for a caller outside a synchronous transaction. */
-export async function mainMovedAsync(
+export async function mainMoved(
   store: Db,
   input: QueueConflictSweep & { now: number },
 ): Promise<void> {
   if (await store.run((q) => mainMovedSteps(q, input))) emitJobReady(store);
 }
 
-function* mainMovedSteps(q: Q, input: QueueConflictSweep & { now: number }): Steps<boolean> {
+export function* mainMovedSteps(q: Q, input: QueueConflictSweep & { now: number }): Steps<boolean> {
   if ((yield* behindFrontSteps(q, input.repository)).length === 0) return false;
   return (yield* enqueueJobOnceSteps(q, sweepJob(input))).inserted;
 }

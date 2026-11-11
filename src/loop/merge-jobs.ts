@@ -26,7 +26,7 @@ import {
 import {
   MERGE_CI_ASK_AFTER_MS,
   githubQueueWatch,
-  mainMoved,
+  mainMovedSteps,
   type QueueConflictSweep,
 } from "../merge";
 import { askSteps } from "./operations";
@@ -101,14 +101,14 @@ export function acceptGitHubDelivery(
   // Callbacks can resolve credentials and start an identity-cache refresh. Run them
   // before taking the write lock; only synchronous database effects belong below.
   const wait = comments?.commentWait?.();
-  const recordComment = prepareCommentDelivery(db, delivery.event, body, now, comments);
+  const recordComment = prepareCommentDelivery(delivery.event, body, now, comments);
   const accepted = settled(
     store.transaction(function* (q) {
       if (!(yield* recordGitHubDeliverySteps(q, delivery, now))) return null;
       const review = yield* recordReviewDeliverySteps(q, delivery.event, body, now, wait);
-      recordComment?.();
+      const comment = recordComment ? yield* q.transaction(recordComment) : null;
       const moved = mainMove(delivery.event, body);
-      if (moved) mainMoved(db, { ...moved, now });
+      const swept = moved ? yield* mainMovedSteps(q, { ...moved, now }) : false;
       const facts = deliveryFacts(delivery.event, body);
       for (const job of yield* openMergeJobsSteps(q)) {
         const payload = payloadRecord(JSON.parse(job.payload));
@@ -124,7 +124,7 @@ export function acceptGitHubDelivery(
               (item !== null && facts.branches.has(worktreeBranch(item)));
         if (matches) yield* nudgeJobRunAtSteps(q, job.id, now);
       }
-      return review.enqueued;
+      return review.enqueued || comment?.enqueued === true || swept;
     }),
   );
   if (accepted === null) return false;

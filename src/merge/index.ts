@@ -26,6 +26,7 @@ export {
 } from "./orders";
 export {
   mainMoved,
+  mainMovedSteps,
   queueConflictSweep,
   returnQueuedConflicts,
   type QueueConflictCapabilities,

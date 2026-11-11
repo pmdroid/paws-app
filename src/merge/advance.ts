@@ -66,7 +66,7 @@ import {
   type OrderCapabilities,
 } from "./orders";
 import type { RebaseConflict } from "./budget";
-import { mainMovedAsync as checkQueueBehind } from "./queue-conflicts";
+import { mainMoved as checkQueueBehind } from "./queue-conflicts";
 import { rebaseBudgetForSteps } from "./returns";
 import {
   laneTurn,
