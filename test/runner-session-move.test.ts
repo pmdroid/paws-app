@@ -239,22 +239,21 @@ async function setup() {
   }
   /** A finished turn: optional runner events, then the result. */
   async function finish(command: RunCommand, runnerId: string, events: RunnerEvent[] = []) {
-    const grant = work.issueGrant({
+    const grant = await work.issueGrant({
       runnerId,
       runId: command.runId,
       commandId: command.id,
       generation: command.generation,
     });
-    events.forEach((event, index) =>
-      work.event({
+    for (const [index, event] of events.entries())
+      await work.event({
         runnerId,
         runId: command.runId,
         generation: command.generation,
         sequence: index + 1,
         token: grant.token,
         event,
-      }),
-    );
+      });
     await results.submit({
       runnerId,
       runId: command.runId,
@@ -279,7 +278,7 @@ async function setup() {
   const VERSIONS = { claude: "2.1.7", codex: "2.1.1", grok: "1.0.50" };
   /** Runner A seals a snapshot of its turn through the store, as the runner uploads it. */
   async function seal(command: RunCommand, agent: "claude" | "codex" | "grok") {
-    const grant = work.issueGrant({
+    const grant = await work.issueGrant({
       runnerId: runners.a,
       runId: command.runId,
       commandId: command.id,
@@ -413,7 +412,7 @@ test("a move with an eligible snapshot sends restoreSession and posts the restor
     events: [{ type: "session_restore", restored: true }],
     // The new runner, holding the run's grant, reads the snapshot Paws sealed for A.
     async dispatched(command, runnerId) {
-      const grant = context.work.issueGrant({
+      const grant = await context.work.issueGrant({
         runnerId,
         runId: command.runId,
         commandId: command.id,

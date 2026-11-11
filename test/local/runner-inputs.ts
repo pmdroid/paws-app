@@ -170,9 +170,10 @@ export async function probeRunnerInputs(
   assert.equal(RunnerCommandSchema.parse(command).type, "run");
   assert.equal(RunnerCommandSchema.parse({ ...command, type: "review" }).type, "review");
   work.assign(command);
-  const grant = () =>
-    work.issueGrant({ runnerId, runId: run.id, commandId: command.id, generation: 1 }).token;
-  let token = grant();
+  const grant = async () =>
+    (await work.issueGrant({ runnerId, runId: run.id, commandId: command.id, generation: 1 }))
+      .token;
+  let token = await grant();
   const serverKey = join(root, "server.key");
   const serverCert = join(root, "server.pem");
   const openssl = Bun.spawn(

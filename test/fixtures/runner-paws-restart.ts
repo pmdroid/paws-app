@@ -384,7 +384,7 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     async issueRunGrant(runId, request) {
       reachable();
       try {
-        return services.work.issueGrant({ runnerId, runId, ...request });
+        return await services.work.issueGrant({ runnerId, runId, ...request });
       } catch (error) {
         throw new RunnerRequestError(
           runnerFailureStatus(error),
@@ -397,7 +397,7 @@ const runtimeOptions: Parameters<typeof openRunnerRuntime>[0] = {
     },
     async sendEvent(event, token) {
       reachable();
-      const receipt = services.work.event({ runnerId, token, ...event });
+      const receipt = await services.work.event({ runnerId, token, ...event });
       if (receipt.duplicate) duplicateEvents++;
       if (!lostEventReceipts.has(`${event.runId}:${event.generation}`)) {
         lostEventReceipts.add(`${event.runId}:${event.generation}`);

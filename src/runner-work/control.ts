@@ -843,7 +843,7 @@ export function createRunnerWork(options: {
       });
     },
     issueGrant(input: { runnerId: string; runId: string; commandId: string; generation: number }) {
-      return transaction(function* (q) {
+      return store.transaction(function* (q) {
         const work = yield* liveSteps(q, input.runnerId, input.runId, input.generation, now());
         if (work.commandId !== input.commandId) throw new Error("Run command changed.");
         const token = workspaceSecret();
@@ -860,7 +860,7 @@ export function createRunnerWork(options: {
         return { token, expiresAt };
       });
     },
-    event(input: {
+    async event(input: {
       runnerId: string;
       runId: string;
       generation: number;
@@ -871,7 +871,7 @@ export function createRunnerWork(options: {
       const event = JSON.stringify(RunnerEventSchema.parse(withoutJournalTime(input.event)));
       if (!Number.isSafeInteger(input.sequence) || input.sequence < 1)
         throw new Error("Event sequence is invalid.");
-      return transaction(function* (q) {
+      return store.transaction(function* (q) {
         const at = now();
         const key = {
           runId: input.runId,

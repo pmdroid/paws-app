@@ -171,31 +171,32 @@ async function setup() {
     }
     return null;
   }
-  const grant = (command: RunCommand, runnerId: string) =>
-    work.issueGrant({
-      runnerId,
-      runId: command.runId,
-      commandId: command.id,
-      generation: command.generation,
-    }).token;
-  function events(command: RunCommand, runnerId: string, list: RunnerEvent[]) {
-    const token = grant(command, runnerId);
+  const grant = async (command: RunCommand, runnerId: string) =>
+    (
+      await work.issueGrant({
+        runnerId,
+        runId: command.runId,
+        commandId: command.id,
+        generation: command.generation,
+      })
+    ).token;
+  async function events(command: RunCommand, runnerId: string, list: RunnerEvent[]) {
+    const token = await grant(command, runnerId);
     const after =
       db
         .query<{ sequence: number }, [string, number]>(
           "SELECT last_sequence AS sequence FROM runner_work WHERE run_id=? AND generation=?",
         )
         .get(command.runId, command.generation)?.sequence ?? 0;
-    list.forEach((event, index) =>
-      work.event({
+    for (const [index, event] of list.entries())
+      await work.event({
         runnerId,
         runId: command.runId,
         generation: command.generation,
         sequence: after + index + 1,
         token,
         event,
-      }),
-    );
+      });
   }
   async function submit(
     command: RunCommand,
@@ -206,7 +207,7 @@ async function setup() {
       runnerId,
       runId: command.runId,
       generation: command.generation,
-      token: grant(command, runnerId),
+      token: await grant(command, runnerId),
       result: {
         executionId: workspaceId(),
         commandId: command.id,
@@ -232,7 +233,11 @@ async function setup() {
     writeFileSync(join(checkout, "result.txt"), `half done in ${command.runId}`);
     git(["-C", checkout, "commit", "-q", "-am", "Save work in progress"]);
     const wip = git(["-C", checkout, "rev-parse", "HEAD"]);
-    const access = { runnerId: runners.a, runId: command.runId, token: grant(command, runners.a) };
+    const access = {
+      runnerId: runners.a,
+      runId: command.runId,
+      token: await grant(command, runners.a),
+    };
     const bundle = randomBytes(10_000);
     await sessions.upload(access, {
       generation: command.generation,
@@ -251,7 +256,7 @@ async function setup() {
       commitSha: wip,
       turn: command.generation,
     });
-    events(command, runners.a, [{ type: "handover", handedOver: true }]);
+    await events(command, runners.a, [{ type: "handover", handedOver: true }]);
     await submit(command, runners.a, { handedOver: true, candidateSha: wip });
     return wip;
   }
@@ -386,7 +391,7 @@ async function setup() {
     prompts.push(onA.prompt);
     db.run("UPDATE runner SET status='active' WHERE id=?", [runners.b]);
     whileMoving();
-    events(onA, runners.a, [
+    await events(onA, runners.a, [
       ...(question ? [{ type: "question" as const, text: "Which delimiter?", options: [] }] : []),
       {
         type: "activity",
@@ -417,12 +422,12 @@ async function setup() {
     runners,
     backend,
     results,
-    answers(command: RunCommand, after = 0) {
+    async answers(command: RunCommand, after = 0) {
       return results.answers({
         runnerId: runners.a,
         runId: command.runId,
         generation: command.generation,
-        token: grant(command, runners.a),
+        token: await grant(command, runners.a),
         after,
       });
     },
@@ -472,7 +477,7 @@ test("a handed-over session continues on the second runner from its WIP commit, 
   expect(onB.prompt).toContain("Implement fixture");
   expect(onB.prompt).toContain("The parser handles headers; rows are next.");
   expect(onB.prompt).toContain("Paws moved this session to another runner");
-  context.events(onB, runners.b, [{ type: "session_restore", restored: true }]);
+  await context.events(onB, runners.b, [{ type: "session_restore", restored: true }]);
   await context.submit(onB, runners.b, { candidateSha: wip });
   const result = await running;
   expect(result).toMatchObject({ stopReason: "end_turn", candidateSha: wip });
@@ -488,7 +493,7 @@ test("a reviewer after a moved session never carries the implementer's native se
   const { record, wip, running } = await context.handOverTurn();
   const onB = (await context.next(runners.b)) as RunCommand;
   expect(onB.restoreSession).toBeDefined();
-  context.events(onB, runners.b, [{ type: "session_restore", restored: true }]);
+  await context.events(onB, runners.b, [{ type: "session_restore", restored: true }]);
   await context.submit(onB, runners.b, { candidateSha: wip });
   await running;
   const stop = new AbortController();
@@ -601,11 +606,13 @@ test("a question that cannot be asked keeps the turn's work as a WIP commit befo
   db.run("UPDATE runner_host_status SET runner_version='0.1.73' WHERE runner_id=?", [runners.a]);
   const { running } = context.turn(record, [], "stale");
   const onA = (await context.next(runners.a)) as RunCommand;
-  context.events(onA, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  await context.events(onA, runners.a, [
+    { type: "question", text: "Which delimiter?", options: [] },
+  ]);
   const checkpoint = await context.next(runners.a);
   expect(checkpoint).toMatchObject({ type: "checkpoint", runId: onA.runId });
   const wip = "a".repeat(40);
-  context.events(onA, runners.a, [{ type: "checkpoint", reason: "stop", sha: wip }]);
+  await context.events(onA, runners.a, [{ type: "checkpoint", reason: "stop", sha: wip }]);
   expect(await context.next(runners.a)).toMatchObject({ type: "cancel", runId: onA.runId });
   expect(await running).toMatchObject({ message: "Question owner is stale" });
   expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(wip);
@@ -618,7 +625,9 @@ test("a Paws shutdown while the run waits on its question keeps the turn's work 
   db.run("UPDATE runner_host_status SET runner_version='0.1.73' WHERE runner_id=?", [runners.a]);
   const { running, stop } = context.turn(record, [], "waiting");
   const onA = (await context.next(runners.a)) as RunCommand;
-  context.events(onA, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  await context.events(onA, runners.a, [
+    { type: "question", text: "Which delimiter?", options: [] },
+  ]);
   for (
     let index = 0;
     index < 5000 &&
@@ -630,7 +639,7 @@ test("a Paws shutdown while the run waits on its question keeps the turn's work 
   stop.abort(new PawsShutdown());
   expect(await context.next(runners.a)).toMatchObject({ type: "checkpoint", runId: onA.runId });
   const wip = "b".repeat(40);
-  context.events(onA, runners.a, [{ type: "checkpoint", reason: "stop", sha: wip }]);
+  await context.events(onA, runners.a, [{ type: "checkpoint", reason: "stop", sha: wip }]);
   expect(await context.next(runners.a)).toMatchObject({ type: "cancel", runId: onA.runId });
   await running;
   expect(getWorkItem(db, record.id)?.checkpoint?.wipCommit).toBe(wip);
@@ -1052,13 +1061,13 @@ test("replayed questions attach to the open answer without asking or cancelling 
   const first = context.turn(record, [], ask);
   const command = (await context.next(runners.a)) as RunCommand;
   const event = { type: "question" as const, text: "Which delimiter?", options: [] };
-  context.events(command, runners.a, [event]);
+  await context.events(command, runners.a, [event]);
   for (let i = 0; i < 5000; i++) {
     if (asks > 0) break;
     await delay(1);
   }
   // Replay while the first ask is still waiting on its answer.
-  context.events(command, runners.a, [event, event]);
+  await context.events(command, runners.a, [event, event]);
   expect(await context.next(runners.a, 50)).toBeNull();
   expect(asks).toBe(1);
   db.run("UPDATE question SET status='answered',answer='Use commas.' WHERE run_id=?", [
@@ -1077,7 +1086,9 @@ test("replayed questions attach to the open answer without asking or cancelling 
   ).toEqual([1, 2, 3].map((sequence) => ({ sequence, answer: "Use commas." })));
   expect(await context.answers(command, 3)).toEqual([]);
   // A later answered request must not be held behind an unanswered duplicate.
-  context.events(command, runners.a, [{ type: "question", text: "Which encoding?", options: [] }]);
+  await context.events(command, runners.a, [
+    { type: "question", text: "Which encoding?", options: [] },
+  ]);
   context.results.answer({
     runId: command.runId,
     generation: command.generation,
@@ -1105,7 +1116,7 @@ test("different text while a question is open still fails as overlapping questio
       }),
   );
   const command = (await context.next(runners.a)) as RunCommand;
-  context.events(command, runners.a, [
+  await context.events(command, runners.a, [
     { type: "question", text: "Which delimiter?", options: [] },
     { type: "question", text: "Which encoding?", options: [] },
   ]);
@@ -1130,14 +1141,18 @@ test("a replay attaches to a question already stored by an earlier attachment", 
     throw new Error("Question owner is stale");
   });
   const command = (await context.next(runners.a)) as RunCommand;
-  context.events(command, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  await context.events(command, runners.a, [
+    { type: "question", text: "Which delimiter?", options: [] },
+  ]);
   expect(await context.next(runners.a, 50)).toBeNull();
   expect(asks).toBe(0);
   // The first sequence was consumed before Paws restarted; the runner replays at sequence 2.
   turn.stop.abort(new PawsShutdown());
   await turn.running;
   const resumed = context.turn(record, [], "stale");
-  context.events(command, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  await context.events(command, runners.a, [
+    { type: "question", text: "Which delimiter?", options: [] },
+  ]);
   expect(await context.next(runners.a, 50)).toBeNull();
   db.run("UPDATE question SET status='answered',answer='Use commas.' WHERE run_id=?", [
     record.runId,
@@ -1186,7 +1201,7 @@ for (const [owner, change] of [
       });
       const command = (await context.next(runners.a)) as RunCommand;
       const stale = () => db.run(`UPDATE work_item SET ${change} WHERE id=?`, [record.id]);
-      context.events(command, runners.a, [
+      await context.events(command, runners.a, [
         { type: "question", text: "Which delimiter?", options: [] },
       ]);
       // Nothing awaits before this `stale()`, so the backend has not read the event yet.
@@ -1223,7 +1238,9 @@ test("a replay fails as stale when the open question belongs to an earlier sessi
     return { answer: "Never asked." };
   });
   const command = (await context.next(runners.a)) as RunCommand;
-  context.events(command, runners.a, [{ type: "question", text: "Which delimiter?", options: [] }]);
+  await context.events(command, runners.a, [
+    { type: "question", text: "Which delimiter?", options: [] },
+  ]);
   expect(await context.next(runners.a)).toMatchObject({ type: "cancel" });
   expect(await turn.running).toMatchObject({ message: "Question owner is stale" });
   expect(asks).toBe(0);

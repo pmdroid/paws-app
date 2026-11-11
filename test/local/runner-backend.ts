@@ -433,13 +433,13 @@ export async function probeRunnerBackend(
     assert.equal(assigned.repository.baseSha, base);
     assert.deepEqual(assigned.repository.checkoutExclusions, ["large"]);
     assert.equal(assigned.prompt, "Implement fixture");
-    const grant = work.issueGrant({
+    const grant = await work.issueGrant({
       runnerId,
       runId: assigned.runId,
       commandId: assigned.id,
       generation: assigned.generation,
     });
-    work.event({
+    await work.event({
       runnerId,
       runId: assigned.runId,
       generation: assigned.generation,
@@ -468,7 +468,7 @@ export async function probeRunnerBackend(
         data: artifactBytes.toString("base64"),
       },
     });
-    work.event({
+    await work.event({
       runnerId,
       runId: assigned.runId,
       generation: assigned.generation,
@@ -498,7 +498,7 @@ export async function probeRunnerBackend(
         data: videoBytes.toString("base64"),
       },
     });
-    work.event({
+    await work.event({
       runnerId,
       runId: assigned.runId,
       generation: assigned.generation,
@@ -506,7 +506,7 @@ export async function probeRunnerBackend(
       sequence: 3,
       event: { type: "artifact", artifact: video },
     });
-    work.event({
+    await work.event({
       runnerId,
       runId: assigned.runId,
       generation: assigned.generation,
@@ -518,7 +518,7 @@ export async function probeRunnerBackend(
         dropped: "Paws keeps at most 20 artifacts per run",
       },
     });
-    work.event({
+    await work.event({
       runnerId,
       runId: assigned.runId,
       generation: assigned.generation,
@@ -544,7 +544,7 @@ export async function probeRunnerBackend(
         },
       },
     });
-    work.event({
+    await work.event({
       runnerId,
       runId: assigned.runId,
       generation: assigned.generation,
@@ -628,7 +628,7 @@ export async function probeRunnerBackend(
     const early = stoppedAgent(input(stopped));
     const earlyCommand = await next();
     if (earlyCommand.type !== "run") throw new Error("Expected an implementation run");
-    const earlyToken = work.issueGrant({
+    const earlyToken = await work.issueGrant({
       runnerId,
       runId: earlyCommand.runId,
       commandId: earlyCommand.id,
@@ -636,7 +636,7 @@ export async function probeRunnerBackend(
     });
     // The worker publishes its stop checkpoint before reporting the interrupted turn.
     await git(["-C", source, "reset", "--hard", head]);
-    work.event({
+    await work.event({
       runnerId,
       runId: earlyCommand.runId,
       generation: earlyCommand.generation,
@@ -662,13 +662,13 @@ export async function probeRunnerBackend(
     assert.equal(getWorkItem(db, stopped.id)?.state, "running");
     assert.equal(getWorkItem(db, stopped.id)?.checkpoint?.wipCommit, head);
     assert.equal(resumed.repository.baseSha, head);
-    const resumedToken = work.issueGrant({
+    const resumedToken = await work.issueGrant({
       runnerId,
       runId: resumed.runId,
       commandId: resumed.id,
       generation: resumed.generation,
     });
-    work.event({
+    await work.event({
       runnerId,
       runId: resumed.runId,
       generation: resumed.generation,
@@ -692,14 +692,16 @@ export async function probeRunnerBackend(
     const interrupt = async (
       command: Extract<Awaited<ReturnType<typeof next>>, { type: "run" }>,
     ) => {
-      const token = work.issueGrant({
-        runnerId,
-        runId: command.runId,
-        commandId: command.id,
-        generation: command.generation,
-      }).token;
+      const token = (
+        await work.issueGrant({
+          runnerId,
+          runId: command.runId,
+          commandId: command.id,
+          generation: command.generation,
+        })
+      ).token;
       const sent = { runnerId, runId: command.runId, generation: command.generation, token };
-      work.event({ ...sent, sequence: 1, event: { type: "checkpoint", reason: "stop" } });
+      await work.event({ ...sent, sequence: 1, event: { type: "checkpoint", reason: "stop" } });
       await results.submit({
         ...sent,
         result: { ...result(command), stopReason: "cancelled", cancelled: true, interrupted: true },
@@ -728,14 +730,14 @@ export async function probeRunnerBackend(
       const command = await next();
       if (command.type !== "run") throw new Error("Expected implementation");
       const previousWip = getWorkItem(db, record.id)?.checkpoint?.wipCommit;
-      const publicationGrant = work.issueGrant({
+      const publicationGrant = await work.issueGrant({
         runnerId,
         runId: command.runId,
         commandId: command.id,
         generation: command.generation,
       });
       if (publication === "refused")
-        work.event({
+        await work.event({
           runnerId,
           runId: command.runId,
           generation: command.generation,
@@ -744,7 +746,7 @@ export async function probeRunnerBackend(
           event: { type: "checkpoint", reason: "stop", sha: head, dropped: "Git push refused" },
         });
       if (publication === "failed" || publication === "older")
-        work.event({
+        await work.event({
           runnerId,
           runId: command.runId,
           generation: command.generation,
@@ -777,7 +779,7 @@ export async function probeRunnerBackend(
       const run = backend.forItem(record.id)(input(record));
       const command = await next();
       if (command.type !== "run") throw new Error("Expected an implementation run");
-      const stopGrant = work.issueGrant({
+      const stopGrant = await work.issueGrant({
         runnerId,
         runId: command.runId,
         commandId: command.id,
@@ -958,13 +960,13 @@ export async function probeRunnerBackend(
     void beforeRestart.catch(() => undefined);
     const detachedCommand = await next();
     if (detachedCommand.type !== "run") throw new Error("Expected an implementation run");
-    const detachedGrant = work.issueGrant({
+    const detachedGrant = await work.issueGrant({
       runnerId,
       runId: detachedCommand.runId,
       commandId: detachedCommand.id,
       generation: detachedCommand.generation,
     });
-    work.event({
+    await work.event({
       runnerId,
       runId: detachedCommand.runId,
       generation: detachedCommand.generation,
@@ -991,7 +993,7 @@ export async function probeRunnerBackend(
         },
       }),
     );
-    work.event({
+    await work.event({
       runnerId,
       runId: detachedCommand.runId,
       generation: detachedCommand.generation,
@@ -1059,7 +1061,7 @@ export async function probeRunnerBackend(
     void beforeReplay.catch(() => undefined);
     const replayCommand = await next();
     if (replayCommand.type !== "run") throw new Error("Expected an implementation run");
-    const replayGrant = work.issueGrant({
+    const replayGrant = await work.issueGrant({
       runnerId,
       runId: replayCommand.runId,
       commandId: replayCommand.id,
@@ -1090,7 +1092,7 @@ export async function probeRunnerBackend(
       [1, { type: "artifact", artifact: replayArtifact }],
       [2, { type: "progress", text: "Published the report" }],
     ] as const)
-      work.event({
+      await work.event({
         runnerId,
         runId: replayCommand.runId,
         generation: replayCommand.generation,
@@ -1154,12 +1156,14 @@ export async function probeRunnerBackend(
       runnerId,
       runId: acceptedCommand.runId,
       generation: acceptedCommand.generation,
-      token: work.issueGrant({
-        runnerId,
-        runId: acceptedCommand.runId,
-        commandId: acceptedCommand.id,
-        generation: acceptedCommand.generation,
-      }).token,
+      token: (
+        await work.issueGrant({
+          runnerId,
+          runId: acceptedCommand.runId,
+          commandId: acceptedCommand.id,
+          generation: acceptedCommand.generation,
+        })
+      ).token,
       result: { ...result(acceptedCommand), candidateSha: head },
     });
     acceptedShutdown.abort(new PawsShutdown());
@@ -1212,7 +1216,7 @@ export async function probeRunnerBackend(
     if (review.type !== "review") throw new Error("Unexpected command");
     assert.deepEqual(review.repository.checkoutExclusions, ["captured"]);
     assert.equal(review.prompt, "Replayed review");
-    const reviewGrant = work.issueGrant({
+    const reviewGrant = await work.issueGrant({
       runnerId,
       runId: review.runId,
       commandId: review.id,
@@ -1227,7 +1231,7 @@ export async function probeRunnerBackend(
         result: { ...result(review, "reviewer"), candidateSha: head },
       }),
     );
-    work.event({
+    await work.event({
       runnerId,
       runId: review.runId,
       generation: review.generation,
@@ -1304,7 +1308,7 @@ export async function probeRunnerBackend(
     let commandReview = await next();
     while (commandReview.type !== "review" || commandReview.itemId !== commandReviewer.id)
       commandReview = await next();
-    const commandGrant = work.issueGrant({
+    const commandGrant = await work.issueGrant({
       runnerId,
       runId: commandReview.runId,
       commandId: commandReview.id,
@@ -1469,13 +1473,13 @@ export async function probeRunnerBackend(
           assert(!existsSync(join(directory, "repository", ".git")));
         }
         assert.equal(command.sessionId, `session-${sequence}`);
-        const taskGrant = work.issueGrant({
+        const taskGrant = await work.issueGrant({
           runnerId,
           runId: command.runId,
           commandId: command.id,
           generation: command.generation,
         });
-        work.event({
+        await work.event({
           runnerId,
           runId: command.runId,
           generation: command.generation,
@@ -1483,7 +1487,7 @@ export async function probeRunnerBackend(
           sequence: 1,
           event: { type: "progress", text: "Bounded progress" },
         });
-        work.event({
+        await work.event({
           runnerId,
           runId: command.runId,
           generation: command.generation,
@@ -1503,7 +1507,7 @@ export async function probeRunnerBackend(
               data: artifactBytes.toString("base64"),
             },
           });
-          work.event({
+          await work.event({
             runnerId,
             runId: command.runId,
             generation: command.generation,
@@ -1730,7 +1734,7 @@ export async function probeRunnerBackend(
         Buffer.from("prepared Linear attachment"),
       ];
       preparedBytes.fill(0);
-      const inputGrant = work.issueGrant({
+      const inputGrant = await work.issueGrant({
         runnerId,
         runId: dispatched.runId,
         commandId: dispatched.id,
@@ -1926,7 +1930,7 @@ export async function probeRunnerBackend(
       );
       const command = await next();
       if (command.type !== "review") throw new Error("Unexpected sealed transcript command");
-      const transcriptGrant = work.issueGrant({
+      const transcriptGrant = await work.issueGrant({
         runnerId,
         runId: command.runId,
         commandId: command.id,
@@ -1935,7 +1939,7 @@ export async function probeRunnerBackend(
       const receipt = result(command, "reviewer");
       await seal(command, transcriptGrant.token, receipt.executionId, raw);
       for (let eventSequence = 1; eventSequence <= 130; eventSequence++) {
-        work.event({
+        await work.event({
           runnerId,
           runId: command.runId,
           generation: command.generation,
@@ -1981,7 +1985,7 @@ export async function probeRunnerBackend(
       );
       const command = await next();
       if (command.type !== "review") throw new Error("Unexpected rejected transcript command");
-      const transcriptGrant = work.issueGrant({
+      const transcriptGrant = await work.issueGrant({
         runnerId,
         runId: command.runId,
         commandId: command.id,
@@ -2087,13 +2091,13 @@ export async function probeRunnerBackend(
     const questionCommand = await next();
     assert.equal(questionCommand.type, "run");
     if (questionCommand.type !== "run") throw new Error("Unexpected command");
-    const questionGrant = work.issueGrant({
+    const questionGrant = await work.issueGrant({
       runnerId,
       runId: questionCommand.runId,
       commandId: questionCommand.id,
       generation: questionCommand.generation,
     });
-    work.event({
+    await work.event({
       runnerId,
       runId: questionCommand.runId,
       generation: questionCommand.generation,
@@ -2122,7 +2126,7 @@ export async function probeRunnerBackend(
       await delay(1);
     }
     assert(opened && answered);
-    work.event({
+    await work.event({
       runnerId,
       runId: questionCommand.runId,
       generation: questionCommand.generation,
@@ -2191,7 +2195,7 @@ export async function probeRunnerBackend(
     );
     const pushCommand = await next();
     if (pushCommand.type !== "run") throw new Error("Unexpected push command");
-    const pushGrant = work.issueGrant({
+    const pushGrant = await work.issueGrant({
       runnerId,
       runId: pushCommand.runId,
       commandId: pushCommand.id,
@@ -2228,7 +2232,7 @@ export async function probeRunnerBackend(
     const mismatchRejection = assert.rejects(mismatchRun, /HEAD does not match/);
     const mismatchCommand = await next();
     if (mismatchCommand.type !== "run") throw new Error("Unexpected candidate command");
-    const mismatchGrant = work.issueGrant({
+    const mismatchGrant = await work.issueGrant({
       runnerId,
       runId: mismatchCommand.runId,
       commandId: mismatchCommand.id,
@@ -2255,7 +2259,7 @@ export async function probeRunnerBackend(
     const absentRejection = assert.rejects(absentRun, /no candidate commit/);
     const absentCommand = await next();
     if (absentCommand.type !== "run") throw new Error("Unexpected absent candidate command");
-    const absentGrant = work.issueGrant({
+    const absentGrant = await work.issueGrant({
       runnerId,
       runId: absentCommand.runId,
       commandId: absentCommand.id,
@@ -2286,7 +2290,7 @@ export async function probeRunnerBackend(
     );
     const unauthorizedCommand = await next();
     if (unauthorizedCommand.type !== "run") throw new Error("Unexpected unauthorized candidate");
-    const unauthorizedGrant = work.issueGrant({
+    const unauthorizedGrant = await work.issueGrant({
       runnerId,
       runId: unauthorizedCommand.runId,
       commandId: unauthorizedCommand.id,
@@ -2452,7 +2456,7 @@ export async function probeRunnerBackend(
             ),
             1,
           );
-          const affinityGrant = work.issueGrant({
+          const affinityGrant = await work.issueGrant({
             runnerId: host,
             runId: command.runId,
             commandId: command.id,
@@ -2578,7 +2582,7 @@ export async function probeRunnerBackend(
           const command = await next(host);
           assert.equal(command.type, "task");
           if (command.type !== "task") throw new Error("Expected response task");
-          const affinityGrant = work.issueGrant({
+          const affinityGrant = await work.issueGrant({
             runnerId: host,
             runId: command.runId,
             commandId: command.id,
@@ -2656,13 +2660,13 @@ export async function probeRunnerBackend(
       true,
       { preparationMs: 16000, selections: 2 },
     );
-    const firstToken = work.issueGrant({
+    const firstToken = await work.issueGrant({
       runnerId: hostIds[0]!,
       runId: firstAttempt.runId,
       commandId: firstAttempt.id,
       generation: firstAttempt.generation,
     });
-    work.event({
+    await work.event({
       runnerId: hostIds[0]!,
       runId: firstAttempt.runId,
       generation: firstAttempt.generation,
@@ -2725,7 +2729,7 @@ export async function probeRunnerBackend(
       }),
       /fenced|expired|unavailable/i,
     );
-    const secondToken = work.issueGrant({
+    const secondToken = await work.issueGrant({
       runnerId: hostIds[1]!,
       runId: secondAttempt.runId,
       commandId: secondAttempt.id,
@@ -2766,7 +2770,7 @@ export async function probeRunnerBackend(
     const thirdAttempt = await next(hostIds[1]!);
     if (thirdAttempt.type !== "run") throw new Error("Expected third failover work");
     assert.equal(thirdAttempt.generation, secondAttempt.generation + 1);
-    const thirdToken = work.issueGrant({
+    const thirdToken = await work.issueGrant({
       runnerId: hostIds[1]!,
       runId: thirdAttempt.runId,
       commandId: thirdAttempt.id,
@@ -2774,7 +2778,7 @@ export async function probeRunnerBackend(
     });
     assert.match(thirdAttempt.prompt, /Retained work before heartbeat loss/);
     for (let eventSequence = 1; eventSequence <= 130; eventSequence++)
-      work.event({
+      await work.event({
         runnerId: hostIds[1]!,
         runId: thirdAttempt.runId,
         generation: thirdAttempt.generation,
@@ -2882,7 +2886,7 @@ export async function probeRunnerBackend(
     void artifactFailover.catch(() => undefined);
     const artifactCommand = await next(hostIds[0]!);
     if (artifactCommand.type !== "run") throw new Error("Expected artifact failover work");
-    const artifactToken = work.issueGrant({
+    const artifactToken = await work.issueGrant({
       runnerId: hostIds[0]!,
       runId: artifactCommand.runId,
       commandId: artifactCommand.id,
@@ -2909,7 +2913,7 @@ export async function probeRunnerBackend(
         data: retainedBytes.toString("base64"),
       },
     });
-    work.event({
+    await work.event({
       runnerId: hostIds[0]!,
       runId: artifactCommand.runId,
       generation: artifactCommand.generation,
@@ -2961,7 +2965,7 @@ export async function probeRunnerBackend(
     const approvedCommand = await next(continuationHost);
     if (approvedCommand.type !== "run") throw new Error("Expected approved continuation");
     assert.match(approvedCommand.prompt, /Keep the existing artifact/);
-    const approvedToken = work.issueGrant({
+    const approvedToken = await work.issueGrant({
       runnerId: continuationHost,
       runId: approvedCommand.runId,
       commandId: approvedCommand.id,
@@ -3011,13 +3015,13 @@ export async function probeRunnerBackend(
       void independentReview.catch(() => undefined);
       const conflicting = await next(continuationHost);
       if (conflicting.type !== "review") throw new Error("Expected independent review command");
-      const conflictGrant = work.issueGrant({
+      const conflictGrant = await work.issueGrant({
         runnerId: continuationHost,
         runId: conflicting.runId,
         commandId: conflicting.id,
         generation: conflicting.generation,
       });
-      work.event({
+      await work.event({
         runnerId: continuationHost,
         runId: conflicting.runId,
         generation: conflicting.generation,
@@ -3061,7 +3065,7 @@ export async function probeRunnerBackend(
         1,
       );
       assert.match(independent.prompt, /fresh agent session/);
-      const independentGrant = work.issueGrant({
+      const independentGrant = await work.issueGrant({
         runnerId: independentHost,
         runId: independent.runId,
         commandId: independent.id,
@@ -3135,7 +3139,7 @@ export async function probeRunnerBackend(
           ),
           1,
         );
-        const retryGrant = work.issueGrant({
+        const retryGrant = await work.issueGrant({
           runnerId: pinnedReviewHost,
           runId: conflictingReview.runId,
           commandId: conflictingReview.id,

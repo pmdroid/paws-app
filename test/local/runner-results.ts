@@ -134,8 +134,9 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         runnerId,
         runId: run.id,
         generation,
-        token: work.issueGrant({ runnerId, runId: run.id, commandId: command.id, generation })
-          .token,
+        token: (
+          await work.issueGrant({ runnerId, runId: run.id, commandId: command.id, generation })
+        ).token,
       };
       const result: RunnerResult = {
         executionId: workspaceId(),
@@ -200,8 +201,8 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         ))!.status,
         403,
       );
-      work.event({ ...access, sequence: 1, event: { type: "progress", text: "Working" } });
-      work.event({
+      await work.event({ ...access, sequence: 1, event: { type: "progress", text: "Working" } });
+      await work.event({
         ...access,
         sequence: 2,
         event: { type: "question", text: "Which fixture?", options: ["A", "B"] },
@@ -225,11 +226,11 @@ export async function probeRunnerResults(root: string, observe: Observe) {
         ],
       );
       assert.deepEqual(
-        work.event({ ...access, sequence: 1, event: { type: "progress", text: "Working" } }),
+        await work.event({ ...access, sequence: 1, event: { type: "progress", text: "Working" } }),
         { duplicate: true },
       );
-      assert.throws(
-        () => work.event({ ...access, sequence: 1, event: { type: "progress", text: "Changed" } }),
+      await assert.rejects(
+        work.event({ ...access, sequence: 1, event: { type: "progress", text: "Changed" } }),
         /changed its payload/,
       );
       assert.throws(
@@ -253,12 +254,12 @@ export async function probeRunnerResults(root: string, observe: Observe) {
       assert.equal(answers!.status, 200);
       assert.deepEqual(await answers!.json(), { answers: [{ sequence: 2, answer: "A" }] });
       assert.deepEqual(await results.answers({ ...access, after: 2 }), []);
-      work.event({
+      await work.event({
         ...access,
         sequence: 3,
         event: { type: "question", text: "Older question", options: ["A"] },
       });
-      work.event({
+      await work.event({
         ...access,
         sequence: 4,
         event: { type: "question", text: "Newer question", options: ["B"] },
