@@ -158,7 +158,7 @@ export async function probeRunnerPublicActivity(root: string) {
         .join(""),
     );
     const options = {
-      db,
+      store: sqliteDb(db),
       closeoutHome: root,
       sessionIds: ["visible-session"],
       env: { API_KEY: "tool-secret-fixture" },
