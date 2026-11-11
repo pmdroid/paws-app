@@ -25,7 +25,7 @@ import {
   retryAfterMs,
   retryBackoffMs,
 } from "../core";
-import { settled, sqliteDb, type Db, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Db, type Q } from "./db";
 import { journal } from "./journal";
 import { jsonField, jsonText } from "./json-text";
 
@@ -162,10 +162,6 @@ export function emitJobReady(db: JobReadySource): void {
 }
 
 /** The synchronous wrapper callers use until they become async. */
-function run<T>(db: Database, steps: (q: Q) => Steps<T>): T {
-  return settled(sqliteDb(db).run(steps));
-}
-
 function sqlLiteral(value: string): string {
   if (!/^[A-Za-z0-9._%:-]+$/.test(value)) throw new Error(`unsafe SQL literal: ${value}`);
   return `'${value}'`;
@@ -274,7 +270,7 @@ export function* enqueueJobSteps(q: Q, input: NewJob) {
 
 /** Insert in the same transaction as the state change that needs the work. */
 export function enqueueJob(db: Database, job: NewJob): number {
-  const id = run(db, (q) => enqueueJobSteps(q, job));
+  const id = settled(sqliteDb(db).run((q) => enqueueJobSteps(q, job)));
   emitJobReady(db);
   return id;
 }
@@ -321,7 +317,7 @@ export function* enqueueJobOnceSteps(q: Q, job: NewJob) {
 }
 
 export function enqueueJobOnce(db: Database, job: NewJob): number {
-  const { id, inserted } = run(db, (q) => enqueueJobOnceSteps(q, job));
+  const { id, inserted } = settled(sqliteDb(db).run((q) => enqueueJobOnceSteps(q, job)));
   if (inserted) emitJobReady(db);
   return id;
 }
@@ -401,7 +397,7 @@ export function* getJobSteps(q: Q, id: number) {
 }
 
 export function getJob(db: Database, id: number): Job | null {
-  return run(db, (q) => getJobSteps(q, id));
+  return settled(sqliteDb(db).run((q) => getJobSteps(q, id)));
 }
 
 export function* jobStatusByKeySteps(q: Q, jobKey: string) {
@@ -422,7 +418,7 @@ export function* listJobsSteps(q: Q) {
 }
 
 export function listJobs(db: Database): Job[] {
-  return run(db, listJobsSteps);
+  return settled(sqliteDb(db).run(listJobsSteps));
 }
 
 export function* nextClaimableRunAtSteps(
@@ -489,7 +485,7 @@ export function* claimNextJobSteps(q: Q, options: ClaimOptions = {}) {
 }
 
 export function claimNextJob(db: Database, options: ClaimOptions = {}): Job | null {
-  return run(db, (q) => claimNextJobSteps(q, options));
+  return settled(sqliteDb(db).run((q) => claimNextJobSteps(q, options)));
 }
 
 export function* completeJobSteps(q: Q, job: Job, now = Date.now()) {
@@ -520,7 +516,7 @@ export function* completeJobSteps(q: Q, job: Job, now = Date.now()) {
 
 /** Succeeds only for the worker that holds the lease. A recurring row arms its next fire. */
 export function completeJob(db: Database, job: Job, now = Date.now()): boolean {
-  return run(db, (q) => completeJobSteps(q, job, now));
+  return settled(sqliteDb(db).run((q) => completeJobSteps(q, job, now)));
 }
 
 export function* failJobSteps(
@@ -593,7 +589,7 @@ export function* isJobCurrentSteps(q: Q, job: Job) {
 }
 
 export function isJobCurrent(db: Database, job: Job): boolean {
-  return run(db, (q) => isJobCurrentSteps(q, job));
+  return settled(sqliteDb(db).run((q) => isJobCurrentSteps(q, job)));
 }
 
 export function* hasLiveJobSteps(q: Q, itemId: string, now: number, exceptJobId?: number) {
@@ -671,7 +667,7 @@ export function* extendJobLeaseSteps(q: Q, job: Job, now: number, leaseMs: numbe
 }
 
 export function extendJobLease(db: Database, job: Job, now: number, leaseMs: number): boolean {
-  return run(db, (q) => extendJobLeaseSteps(q, job, now, leaseMs));
+  return settled(sqliteDb(db).run((q) => extendJobLeaseSteps(q, job, now, leaseMs)));
 }
 
 export function* parkLeasedJobSteps(
