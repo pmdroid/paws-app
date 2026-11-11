@@ -19,11 +19,11 @@ import {
 } from "../src/db";
 import { Orchestrator } from "../src/loop";
 import {
-  itemOwnerEligibleRunner,
+  itemOwnerEligibleRunnerSteps,
   itemOwnerHasEligibleRunnerSteps,
-  itemOwnerRunnerSetupNeed,
-  itemRepositoryAllowedOn,
-  itemRepositoryRefusals,
+  itemOwnerRunnerSetupNeedSteps,
+  itemRepositoryAllowedOnSteps,
+  itemRepositoryRefusalsSteps,
 } from "../src/runner-placement";
 import { tempDb, tempHome } from "./helpers";
 import { workspaceAdmission } from "./fake-workspace";
@@ -96,12 +96,13 @@ function orchestrator(db: Database, clock: FakeClock, jobs: JobLoop) {
     ownerHasRunner: (q, itemId, agent, now) =>
       itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now }),
     runnerSetupNeed: async (itemId, agent, now) =>
-      itemOwnerRunnerSetupNeed(db, { itemId, agent, now }),
+      sqliteDb(db).run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now })),
     eligibleRunner: async (itemId, agent, now) =>
-      itemOwnerEligibleRunner(db, { itemId, agent, now }),
-    repositoryRefusals: async (itemId, now) => itemRepositoryRefusals(db, { itemId, now }),
+      sqliteDb(db).run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now })),
+    repositoryRefusals: async (itemId, now) =>
+      sqliteDb(db).run((q) => itemRepositoryRefusalsSteps(q, { itemId, now })),
     repositoryAllowedOn: async (itemId, runnerId, now) =>
-      itemRepositoryAllowedOn(db, { itemId, runnerId, now }),
+      sqliteDb(db).run((q) => itemRepositoryAllowedOnSteps(q, { itemId, runnerId, now })),
   });
 }
 
@@ -206,7 +207,11 @@ test("a runner that allows the repository is only offline: no question, and the 
     await recordRunnerRepositories(sqliteDb(db), "runner-1", ["acme/monorepo"], START);
     addRunner(db, "runner-2", 0);
     await recordRunnerRepositories(sqliteDb(db), "runner-2", ["acme/cli"], 0);
-    expect(itemRepositoryRefusals(db, { itemId: "cli", now: START + 120_000 })).toBeNull();
+    expect(
+      await sqliteDb(db).run((q) =>
+        itemRepositoryRefusalsSteps(q, { itemId: "cli", now: START + 120_000 }),
+      ),
+    ).toBeNull();
     expect(
       new RunnerCapacityWait([], undefined, [
         "runner-1: repository not allowed in the runner's host config",
@@ -262,7 +267,11 @@ test("Retry with nothing fixed asks once more; Retry after the host list is fixe
     ).toBe("answered");
     expect(getWorkItem(db, "cli")?.state).toBe("queued");
     expect(startJobs(db)).toBe(1);
-    expect(itemRepositoryRefusals(db, { itemId: "cli", now: clock.now() })).toBeNull();
+    expect(
+      await sqliteDb(db).run((q) =>
+        itemRepositoryRefusalsSteps(q, { itemId: "cli", now: clock.now() }),
+      ),
+    ).toBeNull();
   });
 });
 

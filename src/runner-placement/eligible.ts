@@ -1,5 +1,4 @@
 import { isWorkspaceAdmin } from "../workspace";
-import type { Database } from "bun:sqlite";
 import {
   delegatedLinearUserIdSteps,
   delegationLeadUserIdsSteps,
@@ -10,8 +9,6 @@ import {
   runnerHostVersionSteps,
   runnerNameSteps,
   runnerRepositoryRefusalSteps,
-  settled,
-  sqliteDb,
   workspaceMemberSteps,
   workspaceMemberUsable,
   workspaceUserIdForLinearUserSteps,
@@ -79,10 +76,6 @@ export function* eligibleRunnersSteps(q: Q, input: EligibleRunnersInput): Steps<
   return runners;
 }
 
-export function eligibleRunners(db: Database, input: EligibleRunnersInput): EligibleRunner[] {
-  return settled(sqliteDb(db).run((q) => eligibleRunnersSteps(q, input)));
-}
-
 function* runnerNameOrIdSteps(q: Q, runnerId: string) {
   return (yield* runnerNameSteps(q, runnerId)) ?? runnerId;
 }
@@ -119,15 +112,6 @@ export function* runnerSetupNeedSteps(
   return { reason: "no-runner" };
 }
 
-export function runnerSetupNeed(
-  db: Database,
-  runners: readonly EligibleRunner[],
-  owner: { ownerUserId: string | null; leadUserIds: readonly string[] },
-  agent: string,
-): RunnerSetupNeed | null {
-  return settled(sqliteDb(db).run((q) => runnerSetupNeedSteps(q, runners, owner, agent)));
-}
-
 /** The workspace, team, owner and project leads of a work item, or null when one is unknown. */
 export function* itemOwnerScopeSteps(q: Q, itemId: string) {
   const scope = yield* itemOwnerScopeRowSteps(q, itemId);
@@ -140,10 +124,6 @@ export function* itemOwnerScopeSteps(q: Q, itemId: string) {
   // The leads of the Linear projects across the item's delegation lend their shared runners.
   const leadUserIds = yield* delegationLeadUserIdsSteps(q, scope.delegationId);
   return { workspaceId: scope.workspaceId, teamId: scope.teamId, ownerUserId, leadUserIds };
-}
-
-export function itemOwnerScope(db: Database, itemId: string) {
-  return settled(sqliteDb(db).run((q) => itemOwnerScopeSteps(q, itemId)));
 }
 
 type ItemRunnerInput = { itemId: string; agent: string; now?: number };
@@ -170,10 +150,6 @@ export function* itemOwnerHasEligibleRunnerSteps(q: Q, input: ItemRunnerInput) {
   return found === null ? null : found.runners.some((runner) => runner.eligible);
 }
 
-export function itemOwnerHasEligibleRunner(db: Database, input: ItemRunnerInput): boolean | null {
-  return settled(sqliteDb(db).run((q) => itemOwnerHasEligibleRunnerSteps(q, input)));
-}
-
 /**
  * Why the owner of a work item has no runner Paws may use, as `runnerSetupNeed` decides it. Null
  * when a runner is usable or only offline, or when the item's scope is not known yet.
@@ -183,13 +159,6 @@ export function* itemOwnerRunnerSetupNeedSteps(q: Q, input: ItemRunnerInput) {
   return found === null
     ? null
     : yield* runnerSetupNeedSteps(q, found.runners, found.scope, input.agent);
-}
-
-export function itemOwnerRunnerSetupNeed(
-  db: Database,
-  input: ItemRunnerInput,
-): RunnerSetupNeed | null {
-  return settled(sqliteDb(db).run((q) => itemOwnerRunnerSetupNeedSteps(q, input)));
 }
 
 /**
@@ -210,13 +179,6 @@ export function* itemOwnerEligibleRunnerSteps(q: Q, input: ItemRunnerInput) {
       });
   named.sort((a, b) => Number(b.own) - Number(a.own) || a.name.localeCompare(b.name));
   return named[0] ? { id: named[0].id, name: named[0].name } : null;
-}
-
-export function itemOwnerEligibleRunner(
-  db: Database,
-  input: ItemRunnerInput,
-): { id: string; name: string } | null {
-  return settled(sqliteDb(db).run((q) => itemOwnerEligibleRunnerSteps(q, input)));
 }
 
 export function* itemRepositoryRunnerSteps(q: Q, input: { itemId: string; now?: number }) {
@@ -243,13 +205,6 @@ export function* itemRepositoryRunnerSteps(q: Q, input: { itemId: string; now?: 
     eligible.find((candidate) => candidate.ownerId === scope.ownerUserId) ??
     eligible[0];
   return runner ? { id: runner.id, workspaceId: runner.workspaceId } : null;
-}
-
-export function itemRepositoryRunner(
-  db: Database,
-  input: { itemId: string; now?: number },
-): { id: string; workspaceId: string } | null {
-  return settled(sqliteDb(db).run((q) => itemRepositoryRunnerSteps(q, input)));
 }
 
 const OUT_OF_SCOPE = new Set<EligibleRunnerReason>([
@@ -290,13 +245,6 @@ export function* itemRepositoryAllowedOnSteps(
   );
 }
 
-export function itemRepositoryAllowedOn(
-  db: Database,
-  input: { itemId: string; runnerId: string; now?: number },
-): boolean {
-  return settled(sqliteDb(db).run((q) => itemRepositoryAllowedOnSteps(q, input)));
-}
-
 export function* itemRepositoryRefusalsSteps(q: Q, input: { itemId: string; now?: number }) {
   const found = yield* itemRepositoryRunnersSteps(q, input);
   if (!found || found.runners.length === 0) return null;
@@ -313,11 +261,4 @@ export function* itemRepositoryRefusalsSteps(q: Q, input: { itemId: string; now?
     });
   }
   return { repository, refusals };
-}
-
-export function itemRepositoryRefusals(
-  db: Database,
-  input: { itemId: string; now?: number },
-): { repository: string; refusals: RepositoryRefusal[] } | null {
-  return settled(sqliteDb(db).run((q) => itemRepositoryRefusalsSteps(q, input)));
 }

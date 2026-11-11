@@ -1089,7 +1089,7 @@ function answerTask() {
     );
     db.run("UPDATE runner SET name='agentbox' WHERE id='runner'");
     for (const runnerId of ["runner", "goldbox"]) recordRunnerCapacity(db, runnerId, 2, 2, 2);
-    return createRunnerPlacement({ db, now });
+    return createRunnerPlacement({ store: sqliteDb(db), now });
   });
   const fill = (runnerId: string) => {
     for (const id of [`${runnerId}-1`, `${runnerId}-2`]) {

@@ -211,23 +211,6 @@ export function openBlockers(db: Database, itemId: string): string[] {
   return blockingIssues(db, itemId);
 }
 
-function canDispatchDelegation(q: Q, admission: ItemAdmission, delegationId: string) {
-  return admission.steps
-    ? admission.steps.canDispatchDelegation(q, delegationId)
-    : syncRead(admission.canDispatchDelegation(delegationId));
-}
-
-function canStart(q: Q, admission: ItemAdmission, itemId: string) {
-  return admission.steps
-    ? admission.steps.canStart(q, itemId)
-    : syncRead(admission.canStart(itemId));
-}
-
-// oxlint-disable-next-line require-yield
-function* syncRead<T>(result: Promise<T>): Steps<T> {
-  return settled(result);
-}
-
 export function schedulerPaths(paths: readonly string[]): string[] {
   if (!paths.length) return ["*"];
   return [
@@ -470,7 +453,7 @@ function* yieldIdleMergeSessions(
     if (
       item.state !== "merge_queue" ||
       item.absent ||
-      !(yield* canDispatchDelegation(q, admission, item.delegationId)) ||
+      !(yield* admission.steps.canDispatchDelegation(q, item.delegationId)) ||
       !items.some(
         (other) =>
           other.id !== item.id && other.delegationId === item.delegationId && ready.has(other.id),
@@ -501,7 +484,7 @@ function* reportDependencyCycles(
     )
       continue;
     const workspaceId = members.find((member) => member.workspaceId)?.workspaceId;
-    if (!workspaceId || !(yield* canDispatchDelegation(q, admission, delegationId))) continue;
+    if (!workspaceId || !(yield* admission.steps.canDispatchDelegation(q, delegationId))) continue;
     const held: Item[] = [];
     try {
       for (const member of members.sort((left, right) => left.position - right.position))
@@ -562,7 +545,7 @@ async function admit(
     // `runner_setup.check` job ends it, after a runner write, never this tick.
     for (const item of items)
       if (item.state === "queued" && !item.cancelRequested && !item.absent && !item.setupHeld)
-        starts.push({ item, start: yield* canStart(q, admission, item.id) });
+        starts.push({ item, start: yield* admission.steps.canStart(q, item.id) });
     const ready = new Set(starts.filter(({ start }) => start.ok).map(({ item }) => item.id));
     yield* yieldIdleMergeSessions(q, items, ready, admission, now);
     if (options.sessionFor)

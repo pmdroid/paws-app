@@ -16,6 +16,7 @@ import {
   recordLinearInstallation,
   resumeUsagePauseNow,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
@@ -290,7 +291,7 @@ async function usageLimitScenario(
     });
     const results = createRunnerResults({ db, work });
     const health = createRunnerHealth({ db, work });
-    const placement = createRunnerPlacement({ db });
+    const placement = createRunnerPlacement({ store: sqliteDb(db) });
     const backend = createRemoteAgentRunner({
       db,
       work,

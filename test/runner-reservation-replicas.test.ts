@@ -15,6 +15,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { createRemoteAgentRunner } from "../src/runner-backend";
 import { createRunnerControl } from "../src/runner-control";
@@ -99,7 +100,7 @@ async function replicas() {
       now: () => clock,
       pollIntervalMs: 5,
       instanceId,
-      placement: createRunnerPlacement({ db: own, now: () => clock }),
+      placement: createRunnerPlacement({ store: sqliteDb(own), now: () => clock }),
       async fetchCandidate() {
         throw new Error("This fixture does not return a candidate");
       },

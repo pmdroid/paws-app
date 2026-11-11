@@ -19,6 +19,7 @@ import {
   recordLinearInstallation,
   setCurrentRun,
   type Job,
+  sqliteDb,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -218,7 +219,7 @@ async function runRecovering(input: {
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
   const prepared = new Map<string, Set<string>>();
-  const basePlacement = createRunnerPlacement({ db });
+  const basePlacement = createRunnerPlacement({ store: sqliteDb(db) });
   const trackedPlacement: RunnerPlacement = {
     ...basePlacement,
     *startedSteps(q, value) {

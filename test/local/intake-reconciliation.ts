@@ -10,35 +10,44 @@ import {
   openDatabase,
   recordLinearInstallation,
   saveTaskMode,
+  sqliteDb,
 } from "../../src/db";
 import {
   createItemReconciler,
   intakeDelegatedIssue,
-  readyItems,
+  readyItemsSteps,
   SWEEP_FULL_REFRESH_MS,
   type ItemChanges,
 } from "../../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../../src/linear";
 
-function delegationReadyItemIds(db: Database, delegationId: string, workspaceId: string): string[] {
-  return db
+async function delegationReadyItemIds(
+  db: Database,
+  delegationId: string,
+  workspaceId: string,
+): Promise<string[]> {
+  const items = db
     .query<{ id: string }, [string]>(
       `SELECT i.id FROM work_item i LEFT JOIN work_item_specification p ON p.item_id=i.id
        WHERE i.delegation_id=? AND COALESCE(p.present,1)=1 ORDER BY i.position,i.id`,
     )
-    .all(delegationId)
-    .flatMap((item) => {
-      try {
-        return readyItems(db, { itemId: item.id, workspaceId }).readyItemIds;
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          error.message === "Dependency workspace or task ownership changed"
-        )
-          return [];
+    .all(delegationId);
+  const ready: string[] = [];
+  for (const item of items) {
+    try {
+      ready.push(
+        ...(await sqliteDb(db).run((q) => readyItemsSteps(q, { itemId: item.id, workspaceId })))
+          .readyItemIds,
+      );
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        error.message !== "Dependency workspace or task ownership changed"
+      )
         throw error;
-      }
-    });
+    }
+  }
+  return ready;
 }
 
 export async function probeEpicReconciliation(root: string) {
@@ -172,7 +181,7 @@ export async function probeEpicReconciliation(root: string) {
       db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM item_reconciliation_effect").get()!.n,
       1,
     );
-    assert.deepEqual(delegationReadyItemIds(db, delegationId, target.workspaceId), []);
+    assert.deepEqual(await delegationReadyItemIds(db, delegationId, target.workspaceId), []);
     const recoveredDb = openDatabase(join(root, "paws.sqlite"));
     try {
       let recoveredEffects: ItemChanges | null = null;
@@ -238,16 +247,18 @@ export async function probeEpicReconciliation(root: string) {
     );
     tracker.deps.set("parent", [{ blockerLinearIssueId: "outside", blockedLinearIssueId: "b" }]);
     await reconciler.reconcile(target);
-    assert.deepEqual(delegationReadyItemIds(db, delegationId, target.workspaceId), []);
+    assert.deepEqual(await delegationReadyItemIds(db, delegationId, target.workspaceId), []);
     lifecycle.issues.get("outside")!.stateType = "completed";
     const beforeWrong = recorded.length;
     await reconciler.issueChanged({ issueId: "outside", organizationId: "other" });
     assert.equal(recorded.length, beforeWrong);
     await reconciler.issueChanged({ issueId: "outside", organizationId: "org" });
-    assert.deepEqual(delegationReadyItemIds(db, delegationId, target.workspaceId), [b]);
+    assert.deepEqual(await delegationReadyItemIds(db, delegationId, target.workspaceId), [b]);
     observe(
       "External blocker events resync only matching organization epics",
-      readyItems(db, { itemId: b, workspaceId: target.workspaceId }),
+      await sqliteDb(db).run((q) =>
+        readyItemsSteps(q, { itemId: b, workspaceId: target.workspaceId }),
+      ),
     );
     const beforeSweep = recorded.length;
     const sweptAt = Date.now();
@@ -288,7 +299,7 @@ export async function probeEpicReconciliation(root: string) {
     });
     const flight = coalesced.reconcile(target);
     await entered;
-    assert.deepEqual(delegationReadyItemIds(db, delegationId, target.workspaceId), []);
+    assert.deepEqual(await delegationReadyItemIds(db, delegationId, target.workspaceId), []);
     const same = coalesced.reconcile(target);
     const waiter = new AbortController();
     const canceledWaiter = assert.rejects(
@@ -297,7 +308,7 @@ export async function probeEpicReconciliation(root: string) {
     );
     waiter.abort(new Error("Waiter canceled"));
     await canceledWaiter;
-    assert.deepEqual(delegationReadyItemIds(db, delegationId, target.workspaceId), []);
+    assert.deepEqual(await delegationReadyItemIds(db, delegationId, target.workspaceId), []);
     release();
     await Promise.all([flight, same]);
     assert.equal(loads, 2);
@@ -354,7 +365,7 @@ export async function probeEpicReconciliation(root: string) {
     lifecycle.issues.get("b")!.stateType = "canceled";
     await reconciler.reconcile(target);
     assert.deepEqual(recorded.at(-1)!.canceledItemIds, [b]);
-    assert.deepEqual(delegationReadyItemIds(db, delegationId, target.workspaceId), []);
+    assert.deepEqual(await delegationReadyItemIds(db, delegationId, target.workspaceId), []);
     tracker.epics.get("parent")!.subIssues = [keepIssue];
     lifecycle.issue.stateType = "started";
     await reconciler.reconcile(target);
@@ -399,7 +410,7 @@ export async function probeEpicReconciliation(root: string) {
     assert(!restored.removedItemIds.includes(secondRestoration));
     assert.deepEqual(restored.removedItemIds, []);
     assert.deepEqual(joinedChanges.at(-1)!.removedItemIds, [firstRestoration]);
-    assert.deepEqual(delegationReadyItemIds(db, delegationId, target.workspaceId), [
+    assert.deepEqual(await delegationReadyItemIds(db, delegationId, target.workspaceId), [
       secondRestoration,
     ]);
     await reconciler.reconcile(target);

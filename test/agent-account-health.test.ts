@@ -22,13 +22,15 @@ import {
   sqliteDb,
 } from "../src/db";
 import {
-  bindingReadiness,
+  bindingReadinessSteps,
   classifyAgentFailure,
   createRunnerPlacement,
 } from "../src/runner-placement";
 import type { RunnerResult } from "../src/runner-protocol";
 
 const NOW = 1_800_000_000_000;
+const bindingReadiness = (db: Database, input: Parameters<typeof bindingReadinessSteps>[1]) =>
+  sqliteDb(db).run((q) => bindingReadinessSteps(q, input));
 const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -130,13 +132,13 @@ test("the same account on two runners shares a quota cooldown; other accounts an
   const reset = NOW + 2 * 3_600_000;
   expect(exhaust(db, bindings.a1, "cmd-1", NOW, reset)).toEqual({ quota: "applied" });
   for (const bindingId of [bindings.a1, bindings.a2])
-    expect(bindingReadiness(db, { bindingId, now: NOW + 1 })).toEqual({
+    expect(await bindingReadiness(db, { bindingId, now: NOW + 1 })).toEqual({
       ready: false,
       reason: "exhausted",
       until: reset + ACCOUNT_RESET_SLACK_MS,
     });
   for (const bindingId of [bindings.b1, bindings.c2])
-    expect(bindingReadiness(db, { bindingId, now: NOW + 1 })).toMatchObject({ ready: true });
+    expect(await bindingReadiness(db, { bindingId, now: NOW + 1 })).toMatchObject({ ready: true });
 });
 
 test("a runner's default sign-in keeps its quota to that runner", async () => {
@@ -144,10 +146,12 @@ test("a runner's default sign-in keeps its quota to that runner", async () => {
   const r1 = (await ensureLegacyAgentBinding(sqliteDb(db), "R1", "claude", NOW)).id;
   const r2 = (await ensureLegacyAgentBinding(sqliteDb(db), "R2", "claude", NOW)).id;
   exhaust(db, r1, "cmd-1", NOW);
-  expect(bindingReadiness(db, { bindingId: r1, now: NOW + 1 })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: r1, now: NOW + 1 })).toMatchObject({
     reason: "exhausted",
   });
-  expect(bindingReadiness(db, { bindingId: r2, now: NOW + 1 })).toMatchObject({ ready: true });
+  expect(await bindingReadiness(db, { bindingId: r2, now: NOW + 1 })).toMatchObject({
+    ready: true,
+  });
 });
 
 test("a sign-in failure disables only its binding until a successful repair", async () => {
@@ -162,12 +166,12 @@ test("a sign-in failure disables only its binding until a successful repair", as
   });
   const late = NOW + 30 * 86_400_000;
   seen(db, late);
-  expect(bindingReadiness(db, { bindingId: bindings.a1, now: late })).toEqual({
+  expect(await bindingReadiness(db, { bindingId: bindings.a1, now: late })).toEqual({
     ready: false,
     reason: "auth-required",
     until: null,
   });
-  expect(bindingReadiness(db, { bindingId: bindings.a2, now: late })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: bindings.a2, now: late })).toMatchObject({
     ready: true,
   });
   recordAccountObservation(db, {
@@ -179,7 +183,7 @@ test("a sign-in failure disables only its binding until a successful repair", as
     state: "ok",
     clears: ["auth"],
   });
-  expect(bindingReadiness(db, { bindingId: bindings.a1, now: late })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: bindings.a1, now: late })).toMatchObject({
     ready: true,
   });
 });
@@ -216,7 +220,7 @@ test("a stale or late success cannot erase a newer failure, and a repeat changes
       clears: ["auth"],
     }),
   ).toEqual({ auth: "stale" });
-  expect(bindingReadiness(db, { bindingId: bindings.a1, now: NOW + 20 })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: bindings.a1, now: NOW + 20 })).toMatchObject({
     reason: "auth-required",
   });
 
@@ -242,7 +246,7 @@ test("a success cannot re-enable a removed binding or a disabled account", async
       clears: ["auth", "quota"],
     }),
   ).toEqual({ auth: "removed", quota: "removed" });
-  expect(bindingReadiness(db, { bindingId: bindings.a1, now: NOW + 1 })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: bindings.a1, now: NOW + 1 })).toMatchObject({
     reason: "removed",
   });
   await setAgentAccountEnabled(sqliteDb(db), {
@@ -251,19 +255,19 @@ test("a success cannot re-enable a removed binding or a disabled account", async
     enabled: false,
     now: NOW,
   });
-  expect(bindingReadiness(db, { bindingId: bindings.b1, now: NOW + 1 })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: bindings.b1, now: NOW + 1 })).toMatchObject({
     reason: "disabled",
   });
   db.run("UPDATE runner SET status='revoked',revoked_at=? WHERE id='R2'", [NOW]);
-  expect(bindingReadiness(db, { bindingId: bindings.c2, now: NOW + 1 })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: bindings.c2, now: NOW + 1 })).toMatchObject({
     reason: "revoked",
   });
 });
 
 test("exhausted, auth-required, offline, busy, paused, restricted and unsupported-model stay distinct", async () => {
   const { db, bindings, accounts } = await fixture();
-  const reason = (bindingId: string, model?: string) => {
-    const readiness = bindingReadiness(db, { bindingId, model: model ?? null, now: NOW + 1 });
+  const reason = async (bindingId: string, model?: string) => {
+    const readiness = await bindingReadiness(db, { bindingId, model: model ?? null, now: NOW + 1 });
     return readiness.ready ? "ready" : readiness.reason;
   };
   recordAccountObservation(db, {
@@ -275,10 +279,10 @@ test("exhausted, auth-required, offline, busy, paused, restricted and unsupporte
     state: "unsupported_model",
     model: "opus-9",
   });
-  expect(reason(bindings.b1, "opus-9")).toBe("unsupported-model");
-  expect(reason(bindings.b1, "sonnet-9")).toBe("ready");
+  expect(await reason(bindings.b1, "opus-9")).toBe("unsupported-model");
+  expect(await reason(bindings.b1, "sonnet-9")).toBe("ready");
   exhaust(db, bindings.a1, "cmd-quota", NOW);
-  expect(reason(bindings.a1)).toBe("exhausted");
+  expect(await reason(bindings.a1)).toBe("exhausted");
   recordAccountObservation(db, {
     bindingId: bindings.a2,
     source: "result",
@@ -287,7 +291,7 @@ test("exhausted, auth-required, offline, busy, paused, restricted and unsupporte
     now: NOW + 1,
     state: "auth_required",
   });
-  expect(reason(bindings.a2)).toBe("auth-required");
+  expect(await reason(bindings.a2)).toBe("auth-required");
   db.run("UPDATE runner SET last_seen_at=? WHERE id='R3'", [NOW - 120_000]);
   const r3 = (
     await bindAgentAccount(sqliteDb(db), {
@@ -297,9 +301,9 @@ test("exhausted, auth-required, offline, busy, paused, restricted and unsupporte
       now: NOW,
     })
   ).id;
-  expect(reason(r3)).toBe("offline");
+  expect(await reason(r3)).toBe("offline");
   db.run("UPDATE runner SET last_seen_at=?,status='paused' WHERE id='R3'", [NOW]);
-  expect(reason(r3)).toBe("paused");
+  expect(await reason(r3)).toBe("paused");
   db.run("UPDATE runner SET status='active' WHERE id='R3'");
   await setAgentAccountConcurrency(sqliteDb(db), {
     workspaceId: "W1",
@@ -308,7 +312,7 @@ test("exhausted, auth-required, offline, busy, paused, restricted and unsupporte
     now: NOW,
   });
   attempt(db, "cmd-running", bindings.c2, NOW);
-  expect(reason(r3)).toBe("busy");
+  expect(await reason(r3)).toBe("busy");
   recordAccountObservation(db, {
     bindingId: bindings.c2,
     source: "result",
@@ -317,8 +321,8 @@ test("exhausted, auth-required, offline, busy, paused, restricted and unsupporte
     now: NOW,
     state: "restricted",
   });
-  expect(reason(r3)).toBe("provider-restricted");
-  expect(reason(bindings.b1, "sonnet-9")).toBe("ready");
+  expect(await reason(r3)).toBe("provider-restricted");
+  expect(await reason(bindings.b1, "sonnet-9")).toBe("ready");
 });
 
 test("a provider restriction cannot be bypassed by rotating to another account", async () => {
@@ -332,10 +336,10 @@ test("a provider restriction cannot be bypassed by rotating to another account",
     state: "restricted",
   });
   for (const bindingId of [bindings.a1, bindings.a2, bindings.b1])
-    expect(bindingReadiness(db, { bindingId, now: NOW + 1 })).toMatchObject({
+    expect(await bindingReadiness(db, { bindingId, now: NOW + 1 })).toMatchObject({
       reason: "provider-restricted",
     });
-  expect(bindingReadiness(db, { bindingId: bindings.c2, now: NOW + 1 })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: bindings.c2, now: NOW + 1 })).toMatchObject({
     ready: true,
   });
 });
@@ -370,16 +374,16 @@ test("a due recheck admits one real attempt; the others keep waiting for its res
   exhaust(db, bindings.a1, "cmd-1", NOW);
   const due = bindingAccountHealth(db, bindings.a1)[0]!.nextCheckAt!;
   seen(db, due);
-  expect(bindingReadiness(db, { bindingId: bindings.a2, now: due - 1 })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: bindings.a2, now: due - 1 })).toMatchObject({
     reason: "exhausted",
   });
-  expect(bindingReadiness(db, { bindingId: bindings.a2, now: due })).toEqual({
+  expect(await bindingReadiness(db, { bindingId: bindings.a2, now: due })).toEqual({
     ready: true,
     low: false,
     revalidating: true,
   });
   attempt(db, "cmd-recheck", bindings.a2, due);
-  expect(bindingReadiness(db, { bindingId: bindings.a1, now: due + 1 })).toEqual({
+  expect(await bindingReadiness(db, { bindingId: bindings.a1, now: due + 1 })).toEqual({
     ready: false,
     reason: "exhausted",
     until: null,
@@ -394,7 +398,7 @@ test("a due recheck admits one real attempt; the others keep waiting for its res
     state: "ok",
     clears: ["auth", "provider", "quota"],
   });
-  expect(bindingReadiness(db, { bindingId: bindings.a1, now: due + 6 })).toEqual({
+  expect(await bindingReadiness(db, { bindingId: bindings.a1, now: due + 6 })).toEqual({
     ready: true,
     low: false,
     revalidating: false,
@@ -411,7 +415,7 @@ test("low quota is advisory and never blocks", async () => {
     now: NOW,
     state: "low",
   });
-  expect(bindingReadiness(db, { bindingId: bindings.a2, now: NOW + 1 })).toEqual({
+  expect(await bindingReadiness(db, { bindingId: bindings.a2, now: NOW + 1 })).toEqual({
     ready: true,
     low: true,
     revalidating: false,
@@ -427,12 +431,12 @@ test("cooldowns survive a restart and resume-now makes the account due", async (
   first.db.close();
   const db = openDatabase(path);
   migrate(db);
-  expect(bindingReadiness(db, { bindingId: first.bindings.a2, now: NOW + 1 })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: first.bindings.a2, now: NOW + 1 })).toMatchObject({
     reason: "exhausted",
   });
   expect(exhaust(db, first.bindings.a1, "cmd-1", NOW)).toEqual({ quota: "duplicate" });
   await resumeAccountHealthNow(sqliteDb(db), "claude", null, NOW + 2);
-  expect(bindingReadiness(db, { bindingId: first.bindings.a2, now: NOW + 2 })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: first.bindings.a2, now: NOW + 2 })).toMatchObject({
     ready: true,
     revalidating: true,
   });
@@ -441,9 +445,11 @@ test("cooldowns survive a restart and resume-now makes the account due", async (
 
 test("a usage-limit result shares its cooldown across the account and returns the recheck", async () => {
   const { db, bindings } = await fixture();
-  const placement = createRunnerPlacement({ db, now: () => NOW + 50 });
+  const placement = createRunnerPlacement({ store: sqliteDb(db), now: () => NOW + 50 });
+  const finished = (input: Parameters<typeof placement.finishedSteps>[1]) =>
+    sqliteDb(db).transaction((q) => placement.finishedSteps(q, input));
   attempt(db, "cmd-limit", bindings.a1, NOW);
-  const outcome = placement.finished({
+  const outcome = await finished({
     commandId: "cmd-limit",
     runnerId: "R1",
     profile: { agent: "claude" },
@@ -463,16 +469,16 @@ test("a usage-limit result shares its cooldown across the account and returns th
   const recheckAt =
     NOW + 40 + accountRecheckDelay(bindingAccountHealth(db, bindings.a1)[0]!.scopeId, 1);
   expect(outcome).toEqual({ retryable: true, usageLimit: { resetsAt: null, recheckAt } });
-  expect(bindingReadiness(db, { bindingId: bindings.a2, now: NOW + 41 })).toEqual({
+  expect(await bindingReadiness(db, { bindingId: bindings.a2, now: NOW + 41 })).toEqual({
     ready: false,
     reason: "exhausted",
     until: recheckAt,
   });
-  expect(bindingReadiness(db, { bindingId: bindings.b1, now: NOW + 41 })).toMatchObject({
+  expect(await bindingReadiness(db, { bindingId: bindings.b1, now: NOW + 41 })).toMatchObject({
     ready: true,
   });
   attempt(db, "cmd-tests", bindings.b1, NOW + 41);
-  placement.finished({
+  await finished({
     commandId: "cmd-tests",
     runnerId: "R1",
     profile: { agent: "claude" },
@@ -492,7 +498,7 @@ test("a usage-limit result shares its cooldown across the account and returns th
   expect(bindingAccountHealth(db, bindings.b1)).toEqual([]);
   attempt(db, "cmd-lost", bindings.b1, NOW + 46);
   expect(
-    placement.finished({
+    await finished({
       commandId: "cmd-lost",
       runnerId: "R1",
       failure: "heartbeat_lost",

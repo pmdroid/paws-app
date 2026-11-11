@@ -27,9 +27,9 @@ import {
 } from "../src/linear";
 import { attachOrchestrator, LinearTaskAccess, type AgentLaunch } from "../src/loop";
 import {
-  itemOwnerEligibleRunner,
+  itemOwnerEligibleRunnerSteps,
   itemOwnerHasEligibleRunnerSteps,
-  itemOwnerRunnerSetupNeed,
+  itemOwnerRunnerSetupNeedSteps,
 } from "../src/runner-placement";
 import {
   createWorkspaceAccess,
@@ -411,9 +411,9 @@ async function firstDelegation(
     ownerHasRunner: (q, itemId, agent, at) =>
       itemOwnerHasEligibleRunnerSteps(q, { itemId, agent, now: at }),
     runnerSetupNeed: async (itemId, agent, at) =>
-      itemOwnerRunnerSetupNeed(db, { itemId, agent, now: at }),
+      sqliteDb(db).run((q) => itemOwnerRunnerSetupNeedSteps(q, { itemId, agent, now: at })),
     eligibleRunner: async (itemId, agent, at) =>
-      itemOwnerEligibleRunner(db, { itemId, agent, now: at }),
+      sqliteDb(db).run((q) => itemOwnerEligibleRunnerSteps(q, { itemId, agent, now: at })),
     authorizeLinearEvent: async (event) =>
       (await access.authorizeLinearEvent(event))
         ? assignments.authorize(event)

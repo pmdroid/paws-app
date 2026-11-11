@@ -6,6 +6,7 @@ import {
   getConfirmedRemoteMerge,
   recordConfirmedRemoteMerge,
   recordLinearInstallation,
+  type Q,
 } from "../src/db";
 import { itemDependenciesCurrent, recordItemDependencies } from "../src/intake";
 import { createAdmission, dispatch, type ItemAdmission } from "../src/scheduler";
@@ -55,10 +56,19 @@ export function workspaceAdmission(db: Database, options: AdmissionOptions = {})
       if (delegationId !== undefined) joinFakeWorkspace(db, delegationId);
       return check(id);
     };
+  const joinedSteps =
+    (delegationOf: (id: string) => string | undefined) =>
+    <R>(check: (q: Q, id: string) => R) =>
+    (q: Q, id: string): R =>
+      joined(delegationOf)((joinedId) => check(q, joinedId))(id);
   return {
     canDispatchDelegation: joined((id) => id)(admission.canDispatchDelegation),
     canStart: joined(ofItem)(admission.canStart),
     canMerge: joined(ofItem)(admission.canMerge),
+    steps: {
+      canDispatchDelegation: joinedSteps((id) => id)(admission.steps.canDispatchDelegation),
+      canStart: joinedSteps(ofItem)(admission.steps.canStart),
+    },
   };
 }
 

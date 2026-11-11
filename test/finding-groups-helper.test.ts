@@ -264,7 +264,7 @@ test("one-runner foreground placement preempts grouping and fences its old lease
   const f = await seed();
   try {
     const profile = { agent: "codex" as const, model: null };
-    const placement = createRunnerPlacement({ db: f.db, now: () => f.now });
+    const placement = createRunnerPlacement({ store: sqliteDb(f.db), now: () => f.now });
     await placement.candidates({
       sessionId: "reporting-session",
       findingGroups: true,
@@ -279,15 +279,17 @@ test("one-runner foreground placement preempts grouping and fences its old lease
       profile,
       prompt: "Group findings",
     });
-    placement.started({
-      commandId: maintenance.command.id,
-      runnerId: "runner",
-      sessionId: "reporting-session",
-      profile,
-      role: "implementer",
-      purpose: "helper",
-      startedAt: f.now,
-    });
+    await sqliteDb(f.db).transaction((q) =>
+      placement.startedSteps(q, {
+        commandId: maintenance.command.id,
+        runnerId: "runner",
+        sessionId: "reporting-session",
+        profile,
+        role: "implementer",
+        purpose: "helper",
+        startedAt: f.now,
+      }),
+    );
     recordLinearInstallation(f.db, {
       sessionId: "interactive",
       organizationId: "org",
@@ -435,7 +437,7 @@ test("ranking idle and excluded runners never fences maintenance on another runn
       profile,
       prompt: "Group",
     });
-    const placement = createRunnerPlacement({ db: f.db, now: () => f.now });
+    const placement = createRunnerPlacement({ store: sqliteDb(f.db), now: () => f.now });
     const request = {
       sessionId: "reporting-session",
       profile,
@@ -469,7 +471,7 @@ test("a failed receipt completion is retried by cleanup before the original erro
   const { createRunnerPlacement } = await import("../src/runner-placement");
   const f = await seed();
   try {
-    const placement = createRunnerPlacement({ db: f.db });
+    const placement = createRunnerPlacement({ store: sqliteDb(f.db) });
     const original = new Error("Transient receipt failure");
     let attempts = 0;
     const helper = createFindingGroupHelper({

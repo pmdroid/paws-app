@@ -410,7 +410,7 @@ async function runRemoteFault(fault: Fault) {
     work,
     results,
     health,
-    placement: createRunnerPlacement({ db }),
+    placement: createRunnerPlacement({ store: sqliteDb(db) }),
     pollIntervalMs: 5,
     ...(fault.startsWith("silent") ? { silentRunMs: SILENT_RUN_MS } : {}),
     ...(hung ? { hungRunMs: HUNG_RUN_MS } : {}),

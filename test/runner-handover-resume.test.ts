@@ -143,7 +143,7 @@ async function setup() {
     health,
     now: () => now,
     pollIntervalMs: 1,
-    placement: createRunnerPlacement({ db, now: () => now }),
+    placement: createRunnerPlacement({ store: sqliteDb(db), now: () => now }),
     async fetchCandidate(candidate) {
       git(["-C", candidate.mirror, "fetch", "-q", checkout, candidate.candidateSha]);
       git(["-C", candidate.mirror, "update-ref", candidate.ref, candidate.candidateSha]);

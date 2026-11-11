@@ -14,6 +14,7 @@ import {
   listWorkItems,
   putWorkspaceUser,
   recordLinearInstallation,
+  sqliteDb,
 } from "../src/db";
 import { syncItemDependencies } from "../src/intake";
 import { createFakeLinearIssueLifecycle, createFakeTracker } from "../src/linear";
@@ -143,7 +144,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
     results,
     health,
     pollIntervalMs: 5,
-    placement: wrap({ db, runnerId, placement: createRunnerPlacement({ db }) }),
+    placement: wrap({ db, runnerId, placement: createRunnerPlacement({ store: sqliteDb(db) }) }),
     async fetchCandidate() {
       throw new Error("This fixture does not return a candidate");
     },
