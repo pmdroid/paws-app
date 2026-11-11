@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createLinearAuth, readStoredToken } from "../src/linear";
-import { claimNextJob, completeJob, listJobs, migrate, openDatabase } from "../src/db";
+import { claimNextJob, completeJob, listJobs, migrate, openDatabase, sqliteDb } from "../src/db";
 import { refreshCredential } from "../src/credentials";
 import { storeLinearToken, tempHome } from "./helpers";
 
@@ -62,12 +62,13 @@ test("a refresh waiter rereads credentials when another worker completes between
       identity: "synthetic-linear-install",
       read() {
         const snapshot = stored;
-        if (++reads === 2) {
-          const job = claimNextJob(db, { workerId: "competing-refresh" });
-          expect(job).not.toBeNull();
-          stored = rotated;
-          expect(completeJob(db, job!)).toBe(true);
-        }
+        if (++reads === 2)
+          void (async () => {
+            const job = await claimNextJob(sqliteDb(db), { workerId: "competing-refresh" });
+            expect(job).not.toBeNull();
+            stored = rotated;
+            expect(await completeJob(sqliteDb(db), job!)).toBe(true);
+          })();
         return snapshot;
       },
       write(credential) {
@@ -78,7 +79,7 @@ test("a refresh waiter rereads credentials when another worker completes between
       },
     });
     expect(value).toEqual(rotated);
-    expect(listJobs(db).map((job) => job.status)).toEqual(["done"]);
+    expect((await listJobs(sqliteDb(db))).map((job) => job.status)).toEqual(["done"]);
   } finally {
     db.close();
     rmSync(home, { recursive: true, force: true });
@@ -122,7 +123,7 @@ test("a refresh discards its rotation when its claim expires during the latest r
     expect(value).toEqual(replacement);
     expect(stored).toEqual(replacement);
     expect(writes).toBe(0);
-    expect(listJobs(db)[0]?.status).toBe("running");
+    expect((await listJobs(sqliteDb(db)))[0]?.status).toBe("running");
   } finally {
     clock.mockRestore();
     db.close();
@@ -141,7 +142,7 @@ test("credential publication holds the SQLite writer lock through read and write
   const stored = { accessToken: "synthetic-access-old", refreshToken: "synthetic-refresh-old" };
   let reads = 0;
   let lockedReads = 0;
-  const claim = () => claimNextJob(peer, { workerId: "peer", now: Date.now() + 60_000 });
+  const claim = () => peer.run("BEGIN IMMEDIATE");
   try {
     await refreshCredential({
       db,
@@ -162,7 +163,7 @@ test("credential publication holds the SQLite writer lock through read and write
       },
     });
     expect(lockedReads).toBe(2);
-    expect(listJobs(peer)[0]?.status).toBe("done");
+    expect((await listJobs(sqliteDb(peer)))[0]?.status).toBe("done");
   } finally {
     peer.close();
     db.close();
@@ -197,7 +198,7 @@ test("separate Linear clients share one durable refresh job and rotate the encry
       Array(5).fill("synthetic-access-new"),
     );
     expect(requests).toBe(1);
-    expect(listJobs(db).map((job) => job.status)).toEqual(["done"]);
+    expect((await listJobs(sqliteDb(db))).map((job) => job.status)).toEqual(["done"]);
     expect(readStoredToken(db, secretsDir)?.refreshToken).toBe("synthetic-refresh-new");
   } finally {
     db.close();
@@ -244,9 +245,9 @@ test("a killed refresh process replays the consumed Linear token after restart a
     expect(bodies).toEqual(["synthetic-refresh-old", "synthetic-refresh-old"]);
     expect(storedRefresh(home)).toBe("synthetic-refresh-rotated");
     const db = openDatabase(join(home, "paws.db"));
-    expect(listJobs(db).map((job) => ({ status: job.status, attempts: job.attempts }))).toEqual([
-      { status: "done", attempts: 2 },
-    ]);
+    expect(
+      (await listJobs(sqliteDb(db))).map((job) => ({ status: job.status, attempts: job.attempts })),
+    ).toEqual([{ status: "done", attempts: 2 }]);
     db.close();
     const artifacts = [
       join(home, "paws.db"),
@@ -290,8 +291,8 @@ test("refresh failures keep the prior token and persist only a sanitized retry e
     });
     await expect(auth.ensureFresh()).rejects.toThrow("Integration token refresh failed");
     expect(readStoredToken(db, secretsDir)?.refreshToken).toBe("synthetic-refresh-old");
-    expect(listJobs(db)[0]?.lastError).toBe("Integration token refresh failed.");
-    expect(listJobs(db)[0]?.status).toBe("pending");
+    expect((await listJobs(sqliteDb(db)))[0]?.lastError).toBe("Integration token refresh failed.");
+    expect((await listJobs(sqliteDb(db)))[0]?.status).toBe("pending");
   } finally {
     db.close();
     rmSync(home, { recursive: true, force: true });

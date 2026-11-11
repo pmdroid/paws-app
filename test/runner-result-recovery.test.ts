@@ -175,8 +175,10 @@ async function fixture() {
   };
 }
 
-const resumes = (db: Database) =>
-  listJobs(db).filter((job) => job.queue === "run.resume" && job.status === "pending");
+const resumes = async (db: Database) =>
+  (await listJobs(sqliteDb(db))).filter(
+    (job) => job.queue === "run.resume" && job.status === "pending",
+  );
 
 test("an accepted result survives a reopen and lease expiry, and recovery reattaches to it", async () => {
   const f = await fixture();
@@ -194,8 +196,8 @@ test("an accepted result survives a reopen and lease expiry, and recovery reatta
       { type: "resume", freshSession: true, checkpoint: null, reattach: true },
     ]);
     await recoverOnStartup(sqliteDb(f.db), f.clock.at);
-    expect(resumes(f.db)).toHaveLength(1);
-    expect(resumes(f.db)[0]?.payload).not.toHaveProperty("handoff");
+    expect(await resumes(f.db)).toHaveLength(1);
+    expect((await resumes(f.db))[0]?.payload).not.toHaveProperty("handoff");
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
     await f.work.finish(f.run.id, 1);
     await expect(f.results.read(f.run.id, 1, command.id)).rejects.toThrow();

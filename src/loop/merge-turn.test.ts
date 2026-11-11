@@ -61,7 +61,7 @@ async function hungTurn() {
     await released;
     return read(issueId);
   };
-  const resumeId = enqueueJob(db, {
+  const resumeId = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     payload: { itemId: ITEM, reason: "answer" },
     now: clock.now(),
@@ -78,19 +78,23 @@ async function hungTurn() {
   return { db, clock, jobs, lines, resumeId };
 }
 
-function mergeJob(db: ReturnType<typeof openDatabase>, now: number) {
-  return enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: ITEM, head: HEAD }, now });
+async function mergeJob(db: ReturnType<typeof openDatabase>, now: number) {
+  return await enqueueJob(sqliteDb(db), {
+    queue: JOB_KIND.merge,
+    payload: { itemId: ITEM, head: HEAD },
+    now,
+  });
 }
 
-function parkedForTurn(db: ReturnType<typeof openDatabase>, id: number, now: number) {
-  const job = getJob(db, id)!;
+async function parkedForTurn(db: ReturnType<typeof openDatabase>, id: number, now: number) {
+  const job = (await getJob(sqliteDb(db), id))!;
   return job.status === "pending" && job.attempts === 0 && job.runAt === now + MERGE_OWNER_POLL_MS;
 }
 
 test("a Merge answer that ends a hung turn's job no longer parks the merge behind it", async () => {
   const { db, clock, jobs, lines, resumeId } = await hungTurn();
   expect(await mergeAcceptedWork(sqliteDb(db), ITEM, { now: clock.now() })).toBe(true);
-  expect(getJob(db, resumeId)?.status).toBe("cancelled");
+  expect((await getJob(sqliteDb(db), resumeId))?.status).toBe("cancelled");
   expect(getWorkItem(db, ITEM)?.state).toBe("merge_queue");
   const merge = db
     .query<{ id: number }, [string]>("SELECT id FROM job WHERE queue = ? AND status = 'pending'")
@@ -98,8 +102,8 @@ test("a Merge answer that ends a hung turn's job no longer parks the merge behin
 
   expect((await jobs.tick([JOB_KIND.merge]))?.id).toBe(merge);
 
-  expect(parkedForTurn(db, merge, clock.now())).toBe(false);
-  expect(getJob(db, merge)?.attempts).toBe(1);
+  expect(await parkedForTurn(db, merge, clock.now())).toBe(false);
+  expect((await getJob(sqliteDb(db), merge))?.attempts).toBe(1);
   expect(lines).toContain(
     `merge for item ${ITEM} dropped the stale context of ${JOB_KIND.resume} job ${resumeId}, which is no longer running`,
   );
@@ -108,18 +112,18 @@ test("a Merge answer that ends a hung turn's job no longer parks the merge behin
 test("a merge parked behind a running job journals why, once per ten minutes", async () => {
   const { db, clock, jobs, lines, resumeId } = await hungTurn();
   const waiting = `merge for item ${ITEM} waits for its turn behind ${JOB_KIND.resume} job ${resumeId}`;
-  const merge = mergeJob(db, clock.now());
+  const merge = await mergeJob(db, clock.now());
 
   await jobs.tick([JOB_KIND.merge]);
-  expect(parkedForTurn(db, merge, clock.now())).toBe(true);
+  expect(await parkedForTurn(db, merge, clock.now())).toBe(true);
   clock.advance(MERGE_OWNER_POLL_MS);
   await jobs.tick([JOB_KIND.merge]);
-  expect(parkedForTurn(db, merge, clock.now())).toBe(true);
+  expect(await parkedForTurn(db, merge, clock.now())).toBe(true);
   expect(lines.filter((line) => line === waiting)).toHaveLength(1);
 
   clock.advance(10 * 60_000);
   await jobs.tick([JOB_KIND.merge]);
-  expect(parkedForTurn(db, merge, clock.now())).toBe(true);
+  expect(await parkedForTurn(db, merge, clock.now())).toBe(true);
   expect(lines.filter((line) => line === waiting)).toHaveLength(2);
 });
 
@@ -128,11 +132,11 @@ test("a context whose job finished in the job table is dropped and the merge goe
   db.run("UPDATE job SET status = 'done', locked_by = NULL, locked_until = NULL WHERE id = ?", [
     resumeId,
   ]);
-  const merge = mergeJob(db, clock.now());
+  const merge = await mergeJob(db, clock.now());
 
   await jobs.tick([JOB_KIND.merge]);
 
-  expect(parkedForTurn(db, merge, clock.now())).toBe(false);
+  expect(await parkedForTurn(db, merge, clock.now())).toBe(false);
   expect(lines.some((line) => line.includes("dropped the stale context"))).toBe(true);
   expect(lines.some((line) => line.includes("waits for its turn"))).toBe(false);
 });

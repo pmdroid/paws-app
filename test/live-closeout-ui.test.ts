@@ -240,8 +240,8 @@ describe("live closeout ui", () => {
     db.run("UPDATE work_item SET session_key = NULL WHERE id = ?", [id]);
     await seedVerifying(db, id, sha("b"), now);
     // Closeout time counts while a job verifies the item.
-    enqueueJob(db, { queue: "run.reverify", payload: { itemId: id }, now });
-    claimNextJob(db, { now, leaseMs: 60_000, queues: ["run.reverify"] });
+    await enqueueJob(sqliteDb(db), { queue: "run.reverify", payload: { itemId: id }, now });
+    await claimNextJob(sqliteDb(db), { now, leaseMs: 60_000, queues: ["run.reverify"] });
     await accrueAwake(sqliteDb(db), id, 0, now);
     await accrueAwake(sqliteDb(db), id, 1_000, now + 1_000);
     const run = (await snapshotOf(db, now + 1_000)).runs.find((entry) => entry.itemId === id);

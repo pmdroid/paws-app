@@ -37,13 +37,21 @@ test("the cleanup renames linear.activity rows and cancels linear.epic.reconcile
       idempotencyKey: "ask",
       payload: {},
     });
-    const epic = enqueueJob(db, { queue: "linear.epic.reconcile", payload: {}, now: 1 });
-    const sweep = enqueueJob(db, { queue: "linear.epics.reconcile", payload: {}, now: 1 });
+    const epic = await enqueueJob(sqliteDb(db), {
+      queue: "linear.epic.reconcile",
+      payload: {},
+      now: 1,
+    });
+    const sweep = await enqueueJob(sqliteDb(db), {
+      queue: "linear.epics.reconcile",
+      payload: {},
+      now: 1,
+    });
     db.run(migration.sql);
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, legacy)))?.op).toBe("activity");
     expect((await sqliteDb(db).run((q) => getOutboxSteps(q, elicitation)))?.op).toBe("elicitation");
-    expect(getJob(db, epic)?.status).toBe("cancelled");
-    expect(getJob(db, sweep)?.status).toBe("pending");
+    expect((await getJob(sqliteDb(db), epic))?.status).toBe("cancelled");
+    expect((await getJob(sqliteDb(db), sweep))?.status).toBe("pending");
   } finally {
     db.close();
   }

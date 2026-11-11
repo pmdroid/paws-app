@@ -57,8 +57,8 @@ const responses = async (db: Awaited<ReturnType<typeof itemIn>>["db"]) =>
     .filter((row) => (row.payload as { kind?: string }).kind === "response")
     .map((row) => (row.payload as { body: string }).body);
 
-const closeJobs = (db: Awaited<ReturnType<typeof itemIn>>["db"]) =>
-  listJobs(db)
+const closeJobs = async (db: Awaited<ReturnType<typeof itemIn>>["db"]) =>
+  (await listJobs(sqliteDb(db)))
     .filter((job) => job.queue === JOB_KIND.closeStoppedPull)
     .map((job) => job.payload);
 
@@ -71,7 +71,7 @@ for (const state of ["running", "verifying", "awaiting_input", "merge_queue"] as
     expect(await responses(db)).toEqual([
       "Canceled in Linear. PR #42 was closed; the branch is kept.",
     ]);
-    expect(closeJobs(db)).toEqual([
+    expect(await closeJobs(db)).toEqual([
       {
         itemId: ITEM,
         comment:
@@ -110,7 +110,7 @@ test("a Duplicate issue arrives as canceled and closes the PR the same way", asy
   expect(await responses(db)).toEqual([
     "Canceled in Linear. PR #42 was closed; the branch is kept.",
   ]);
-  expect(closeJobs(db)).toHaveLength(1);
+  expect(await closeJobs(db)).toHaveLength(1);
   db.close();
 });
 
@@ -119,14 +119,14 @@ test("a Linear session stop of the same item still pauses it and keeps the PR", 
   const stop = { type: "stop", itemId: ITEM, source: "linear", requestedAt: 10 } as const;
   expect((await applyLinearCommand(sqliteDb(db), stop)).applied).toBe(true);
   expect(getWorkItem(db, ITEM)?.state).toBe("paused");
-  expect(closeJobs(db)).toEqual([]);
+  expect(await closeJobs(db)).toEqual([]);
   db.close();
 });
 
 test("Done without a merge cancels the item and leaves its PR open", async () => {
   const { db } = await itemIn("running");
   expect(await close(db, "completed")).toEqual([{ itemId: ITEM, outcome: "cancelled" }]);
-  expect(closeJobs(db)).toEqual([]);
+  expect(await closeJobs(db)).toEqual([]);
   expect(await responses(db)).toEqual([
     "Closed: the issue was completed outside this task. Branch paws/ACME-12 has no commits; PR #42 stays open.",
   ]);

@@ -33,7 +33,7 @@ async function itemWithReport(report: Record<string, unknown>) {
     insertQueuedItem(db, { id: "ACME-1" }).id,
     1,
   );
-  enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: 1 });
+  await enqueueJob(sqliteDb(db), { queue: JOB_KIND.resume, payload: { itemId: item.id }, now: 1 });
   await enterMergeQueue(sqliteDb(db), item.id, { phase: "merge_queue" });
   await savePullRequestDraft(sqliteDb(db), item.id, parsePullRequest(report), 2);
   const tracker = createFakeTracker([

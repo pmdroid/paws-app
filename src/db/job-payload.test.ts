@@ -19,15 +19,19 @@ test("clearing a leased job's wait bookkeeping preserves its item-version fence 
   try {
     migrate(db);
     const item = insertQueuedItem(db, { now: 1_000 });
-    const id = enqueueJob(db, {
+    const id = await enqueueJob(sqliteDb(db), {
       queue: "run.reverify",
       payload: { itemId: item.id, verificationWaitSince: 10 },
       now: 1_000,
     });
-    const job = claimNextJob(db, { queues: ["run.reverify"], now: 1_000, leaseMs: 5_000 })!;
+    const job = (await claimNextJob(sqliteDb(db), {
+      queues: ["run.reverify"],
+      now: 1_000,
+      leaseMs: 5_000,
+    }))!;
     expect(job.id).toBe(id);
     expect(await replaceLeasedJobPayload(sqliteDb(db), job, { itemId: item.id }, 1_001)).toBe(true);
-    expect(getJob(db, id)).toMatchObject({
+    expect(await getJob(sqliteDb(db), id)).toMatchObject({
       status: "running",
       attempts: 1,
       payload: { itemId: item.id },
@@ -42,7 +46,7 @@ test("clearing a leased job's wait bookkeeping preserves its item-version fence 
     expect(await replaceLeasedJobPayload(sqliteDb(db), job, { itemId: item.id }, 1_003)).toBe(
       false,
     );
-    expect(getJob(db, id)?.payload).toMatchObject({ decide: true });
+    expect((await getJob(sqliteDb(db), id))?.payload).toMatchObject({ decide: true });
   } finally {
     db.close();
   }
@@ -55,8 +59,16 @@ test("a parked verification version refresh is limited to its original eligible 
     const item = insertQueuedItem(db, { now: 1000 });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
     applyWorkItemEvent(db, item.id, "turn_ended");
-    const id = enqueueJob(db, { queue: "run.reverify", payload: { itemId: item.id }, now: 1000 });
-    const job = claimNextJob(db, { queues: ["run.reverify"], now: 1000, leaseMs: 5000 })!;
+    const id = await enqueueJob(sqliteDb(db), {
+      queue: "run.reverify",
+      payload: { itemId: item.id },
+      now: 1000,
+    });
+    const job = (await claimNextJob(sqliteDb(db), {
+      queues: ["run.reverify"],
+      now: 1000,
+      leaseMs: 5000,
+    }))!;
     db.run("UPDATE work_item SET version=version+1,state='merge_queue' WHERE id=?", [item.id]);
     expect(await jobVersionCurrent(sqliteDb(db), job)).toBe(false);
     expect(await refreshVerificationJobVersion(sqliteDb(db), job, run.id, 1001)).toBe(true);
@@ -71,7 +83,7 @@ test("a parked verification version refresh is limited to its original eligible 
     expect(await refreshVerificationJobVersion(sqliteDb(db), job, run.id, 1002)).toBe(false);
     db.run("UPDATE work_item SET state='verifying' WHERE id=?", [item.id]);
     expect(await refreshVerificationJobVersion(sqliteDb(db), job, run.id, 6001)).toBe(false);
-    expect(getJob(db, id)?.attempts).toBe(1);
+    expect((await getJob(sqliteDb(db), id))?.attempts).toBe(1);
   } finally {
     db.close();
   }

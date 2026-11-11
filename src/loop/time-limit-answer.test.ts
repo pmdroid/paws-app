@@ -40,7 +40,7 @@ async function askedAtTimeLimit(pendingHandoff?: string) {
   applyWorkItemEvent(db, item.id, "dispatched");
   saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
   if (pendingHandoff !== undefined)
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       payload: { itemId: item.id, reason: "review", handoff: pendingHandoff },
       now: clock.now(),
@@ -50,7 +50,8 @@ async function askedAtTimeLimit(pendingHandoff?: string) {
   expect(
     (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).asked,
   ).toBe(true);
-  const request = listJobs(db).find((job) => job.queue === "item.ask")!.payload as {
+  const request = (await listJobs(sqliteDb(db))).find((job) => job.queue === "item.ask")!
+    .payload as {
     body: string;
     options: string[];
   };
@@ -81,8 +82,12 @@ async function askedBeforeAcceptance(state: "running" | "verifying") {
   saveCheckpoint(db, item.id, { phase: state, baseSha: "base", wipCommit: "head" });
   const queue = state === "verifying" ? JOB_KIND.reverify : JOB_KIND.resume;
   if (state === "verifying") applyWorkItemEvent(db, item.id, "turn_ended");
-  enqueueJob(db, { queue, payload: { itemId: item.id }, now: clock.now() });
-  claimNextJob(db, { now: clock.now(), leaseMs: 24 * 60 * MINUTE, queues: [queue] });
+  await enqueueJob(sqliteDb(db), { queue, payload: { itemId: item.id }, now: clock.now() });
+  await claimNextJob(sqliteDb(db), {
+    now: clock.now(),
+    leaseMs: 24 * 60 * MINUTE,
+    queues: [queue],
+  });
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now());
   clock.advance(31 * MINUTE);
   expect(await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now())).toMatchObject({
@@ -91,11 +96,12 @@ async function askedBeforeAcceptance(state: "running" | "verifying") {
     stopAgent: true,
     item: { state },
   });
-  expect(listJobs(db).find((job) => job.queue === queue)).toMatchObject({
+  expect((await listJobs(sqliteDb(db))).find((job) => job.queue === queue)).toMatchObject({
     status: "cancelled",
     lastError: "time_limit",
   });
-  const request = listJobs(db).find((job) => job.queue === "item.ask")!.payload as {
+  const request = (await listJobs(sqliteDb(db))).find((job) => job.queue === "item.ask")!
+    .payload as {
     body: string;
     options: string[];
     reason: string;
@@ -145,7 +151,9 @@ test("Continue at the time limit starts a fresh budget and resumes it", async ()
       body: "Starting on your request with a fresh 30-minute fixes time limit.",
     },
   ]);
-  expect(listJobs(db).find((job) => job.queue === "run.resume")?.payload).toMatchObject({
+  expect(
+    (await listJobs(sqliteDb(db))).find((job) => job.queue === "run.resume")?.payload,
+  ).toMatchObject({
     itemId: item.id,
     reason: "answer",
   });
@@ -163,7 +171,7 @@ test("Continue hands over a review the time limit cut off before the agent start
   const question = db.query<{ body: string }, []>("SELECT body FROM question").get()!;
   expect(question.body).toContain("The agent had not started on the latest feedback yet");
   expect((await reply(db, "Continue", clock.now())).status).toBe("answered");
-  const resumes = listJobs(db).filter((job) => job.queue === "run.resume");
+  const resumes = (await listJobs(sqliteDb(db))).filter((job) => job.queue === "run.resume");
   expect(resumes.map((job) => job.status)).toEqual(["cancelled", "pending"]);
   const handoff = (resumes[1]!.payload as { handoff: string }).handoff;
   expect(handoff.startsWith(review)).toBe(true);
@@ -175,7 +183,7 @@ test("Stop at the time limit ends the task and names the accepted branch", async
   const { clock, db, item } = await askedAtTimeLimit();
   expect((await reply(db, "Stop", clock.now())).status).toBe("answered");
   expect(getWorkItem(db, item.id)?.state).toBe("failed");
-  expect(listJobs(db).some((job) => job.queue === "run.resume")).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === "run.resume")).toBe(false);
   expect((await listOutbox(sqliteDb(db))).at(-1)?.payload).toMatchObject({
     kind: "error",
     body: expect.stringMatching(
@@ -193,7 +201,7 @@ test("Continue while the stopped run is still finishing queues one fenced restar
     fixMs: 0,
     maxAwakeMs: 3 * 60 * MINUTE,
   });
-  expect(listJobs(db).some((job) => job.queue === "run.resume")).toBe(true);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === "run.resume")).toBe(true);
 });
 
 test("the time-limit question for accepted work offers Merge, Continue and Stop", async () => {
@@ -217,11 +225,13 @@ test("Merge the accepted work at the time limit goes to the merge queue without 
     phase: "merge_queue",
     wipCommit: "accepted",
   });
-  expect(listJobs(db).some((job) => job.queue === "run.resume" && job.status === "pending")).toBe(
-    false,
-  );
   expect(
-    listJobs(db)
+    (await listJobs(sqliteDb(db))).some(
+      (job) => job.queue === "run.resume" && job.status === "pending",
+    ),
+  ).toBe(false);
+  expect(
+    (await listJobs(sqliteDb(db)))
       .filter((job) => job.queue === "github.merge")
       .map((job) => job.payload),
   ).toEqual([{ itemId: item.id, summary: "Closeout accepted.", head: "accepted" }]);
@@ -273,7 +283,7 @@ test("Continue after the time limit stopped Closeout checks the same head again 
     checkpoint: { phase: "verifying", wipCommit: "head" },
   });
   expect(
-    listJobs(db)
+    (await listJobs(sqliteDb(db)))
       .filter((job) => job.queue.startsWith("run.") || job.queue === "item.start")
       .map((job) => [job.queue, job.status]),
   ).toEqual([
@@ -291,7 +301,9 @@ test("Continue after the time limit stopped an agent without an accepted head re
     maxAwakeMs: 3 * 60 * MINUTE,
   });
   expect(
-    listJobs(db).find((job) => job.queue === "run.resume" && job.status === "pending"),
+    (await listJobs(sqliteDb(db))).find(
+      (job) => job.queue === "run.resume" && job.status === "pending",
+    ),
   ).toMatchObject({ payload: { reason: "answer" } });
 });
 

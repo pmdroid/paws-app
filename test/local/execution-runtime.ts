@@ -198,7 +198,7 @@ export async function probeExecutionRuntime(input: {
     baseSha: "b".repeat(40),
   });
   const oldRun = getWorkItem(db, itemId)!.currentRunId;
-  const oldMerge = enqueueJob(db, {
+  const oldMerge = await enqueueJob(sqliteDb(db), {
     queue: "github.merge",
     payload: { itemId },
     runAt: Date.now() + 86_400_000,

@@ -61,7 +61,7 @@ async function fixture() {
   db.run("UPDATE work_item SET current_run_id=? WHERE id='X'", [lost]);
   work(lost, NOW - 1);
   applyWorkItemEvent(db, "X", "lease_expired");
-  const resume = enqueueJob(db, {
+  const resume = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     payload: {
       itemId: "X",

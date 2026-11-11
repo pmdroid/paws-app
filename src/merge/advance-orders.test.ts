@@ -45,8 +45,8 @@ async function start(settings: Parameters<typeof mergeHarness>[0] = {}) {
   return harness;
 }
 
-function resumes(h: MergeHarness) {
-  return listJobs(h.db)
+async function resumes(h: MergeHarness) {
+  return (await listJobs(sqliteDb(h.db)))
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => job.payload as { itemId: string; handoff: string; reason: string });
 }
@@ -140,14 +140,14 @@ describe("advanceMerge in the repository merge queue", () => {
       await h.pass(id);
       h.clock.advance(1_000);
     }
-    const behind = enqueueJob(h.db, {
+    const behind = await enqueueJob(sqliteDb(h.db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "ENG-122", mergeWait: { reason: "ahead" } },
       runAt: h.clock.now() + 300_000,
       now: h.clock.now(),
     });
 
-    const review = enqueueJob(h.db, {
+    const review = await enqueueJob(sqliteDb(h.db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "ENG-124", mergeWait: { reason: "review" } },
       runAt: h.clock.now() + 300_000,
@@ -157,9 +157,9 @@ describe("advanceMerge in the repository merge queue", () => {
     const failing = items[0]!.accepted;
     h.state.ci = (head) => (head === failing ? failingTest() : undefined);
     expect(await h.pass("ENG-121")).toEqual({ kind: "returned" });
-    expect(getJob(h.db, behind)?.runAt).toBe(h.clock.now());
-    expect(getJob(h.db, review)?.runAt).toBe(h.clock.now() + 300_000);
-    expect(resumes(h).map((payload) => [payload.itemId, payload.reason])).toEqual([
+    expect((await getJob(sqliteDb(h.db), behind))?.runAt).toBe(h.clock.now());
+    expect((await getJob(sqliteDb(h.db), review))?.runAt).toBe(h.clock.now() + 300_000);
+    expect((await resumes(h)).map((payload) => [payload.itemId, payload.reason])).toEqual([
       ["ENG-121", "ci"],
     ]);
     expect(queued(h)).toEqual(["ENG-122", "ENG-123"]);
@@ -226,7 +226,9 @@ describe("advanceMerge in the repository merge queue", () => {
     h.state.policyDigest = "sha256:changed-policy";
     for (const id of ids.toReversed()) expect(await h.pass(id)).toMatchObject({ kind: "wait" });
     expect(ids.map((id) => getWorkItem(h.db, id)?.state)).toEqual(ids.map(() => "merge_queue"));
-    expect(listJobs(h.db).filter((job) => job.queue === JOB_KIND.reverify)).toEqual([]);
+    expect(
+      (await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.reverify),
+    ).toEqual([]);
     h.state.ci = () => undefined;
     // The front merges on the acceptance it already had; nothing ran through Closeout again.
     expect(await passUntilMerged(h, "ENG-161")).toEqual({ kind: "merged" });
@@ -248,7 +250,9 @@ describe("advanceMerge in the repository merge queue", () => {
     // Behind the front, each waiting task sends itself to Closeout without waiting for its turn.
     for (const id of ids.toReversed()) expect(await h.pass(id)).toEqual({ kind: "returned" });
     expect(ids.map((id) => getWorkItem(h.db, id)?.state)).toEqual(ids.map(() => "verifying"));
-    const reverify = listJobs(h.db).filter((job) => job.queue === JOB_KIND.reverify);
+    const reverify = (await listJobs(sqliteDb(h.db))).filter(
+      (job) => job.queue === JOB_KIND.reverify,
+    );
     expect(reverify.map((job) => (job.payload as { itemId: string }).itemId).toSorted()).toEqual(
       ids,
     );
@@ -259,9 +263,11 @@ describe("advanceMerge in the repository merge queue", () => {
     );
     expect(h.github.merged).toEqual([]);
     // The five Closeout re-runs are claimed side by side, not one after another.
-    const running = ids.map(() =>
-      claimNextJob(h.db, { queues: [JOB_KIND.reverify], now: h.clock.now() }),
-    );
+    const running = [];
+    for (const _ of ids)
+      running.push(
+        await claimNextJob(sqliteDb(h.db), { queues: [JOB_KIND.reverify], now: h.clock.now() }),
+      );
     expect(
       running.map((job) => (job?.payload as { itemId?: string } | undefined)?.itemId).toSorted(),
     ).toEqual(ids);
@@ -279,7 +285,7 @@ describe("advanceMerge in the repository merge queue", () => {
       now: h.clock.now(),
     });
     h.clock.advance(1_000);
-    const waiting = enqueueJob(h.db, {
+    const waiting = await enqueueJob(sqliteDb(h.db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "ENG-131", mergeWait: { reason: "dependencies" } },
       runAt: h.clock.now() + 300_000,
@@ -295,7 +301,7 @@ describe("advanceMerge in the repository merge queue", () => {
     expect(h.bodies("status")).toEqual(["ENG-131: waiting for ENG-132"]);
     expect(await h.pass("ENG-132")).toEqual({ kind: "merged" });
     expect(h.published).toEqual(["ENG-132"]);
-    expect(getJob(h.db, waiting)?.runAt).toBe(h.clock.now());
+    expect((await getJob(sqliteDb(h.db), waiting))?.runAt).toBe(h.clock.now());
 
     expect(queued(h)).toEqual(["ENG-131"]);
     expect(await h.pass("ENG-131")).toEqual({ kind: "merged" });
@@ -371,8 +377,8 @@ describe("advanceMerge in the repository merge queue", () => {
 });
 
 describe("advanceMerge on failed CI while a review is required", () => {
-  const feedbackJobs = (h: MergeHarness) =>
-    listJobs(h.db).filter((job) => job.queue === JOB_KIND.pullComments);
+  const feedbackJobs = async (h: MergeHarness) =>
+    (await listJobs(sqliteDb(h.db))).filter((job) => job.queue === JOB_KIND.pullComments);
 
   test("the review gate records the failure once and sends nothing back before the batch", async () => {
     const h = await start({ settings: { order: "queue" } });
@@ -391,13 +397,13 @@ describe("advanceMerge on failed CI while a review is required", () => {
     expect(failure?.failedChecks).toEqual([
       { name: "test", url: "https://ci.example/1", failsOnBase: false, logTail: LOG_TAIL },
     ]);
-    expect(feedbackJobs(h).map((job) => job.runAt)).toEqual([observed + 60_000]);
+    expect((await feedbackJobs(h)).map((job) => job.runAt)).toEqual([observed + 60_000]);
 
     h.clock.advance(20_000);
     expect(await h.pass("ENG-131")).toMatchObject({ kind: "wait", reason: "review" });
     expect((await pendingPullCiFailures(sqliteDb(h.db), "ENG-131"))[0]?.observedAt).toBe(observed);
-    expect(feedbackJobs(h).map((job) => job.runAt)).toEqual([observed + 60_000]);
-    expect(resumes(h)).toEqual([]);
+    expect((await feedbackJobs(h)).map((job) => job.runAt)).toEqual([observed + 60_000]);
+    expect(await resumes(h)).toEqual([]);
     expect(await listCiRounds(sqliteDb(h.db), "ENG-131")).toEqual([]);
     expect(getWorkItem(h.db, "ENG-131")?.state).toBe("merge_queue");
     expect(h.github.merged).toEqual([]);
@@ -412,7 +418,7 @@ describe("advanceMerge on failed CI while a review is required", () => {
     h.state.reviews.set(item.pull, "APPROVED");
     expect(await h.pass("ENG-132")).toMatchObject({ kind: "wait", reason: "review" });
     expect(h.github.merged).toEqual([]);
-    expect(resumes(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
 
     h.state.ci = () => undefined;
     expect(await h.pass("ENG-132")).toEqual({ kind: "merged" });
@@ -430,7 +436,7 @@ describe("advanceMerge on failed CI while a review is required", () => {
     h.state.ci = () => undefined;
     expect(await h.pass("ENG-133")).toMatchObject({ kind: "wait", reason: "review" });
     expect(await pendingPullCiFailures(sqliteDb(h.db), "ENG-133")).toEqual([]);
-    expect(feedbackJobs(h)).toEqual([]);
+    expect(await feedbackJobs(h)).toEqual([]);
 
     h.state.ci = failingTest;
     await h.pass("ENG-133");
@@ -440,7 +446,7 @@ describe("advanceMerge on failed CI while a review is required", () => {
     h.state.pullHead = () => "0".repeat(40);
     expect(await h.pass("ENG-133")).toMatchObject({ kind: "wait", reason: "review" });
     expect(await pendingPullCiFailures(sqliteDb(h.db), "ENG-133")).toEqual([]);
-    expect(resumes(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
     expect(await listCiRounds(sqliteDb(h.db), "ENG-133")).toEqual([]);
   });
 });
@@ -452,7 +458,7 @@ describe("advanceMerge on a CI failure", () => {
     h.state.ci = failingTest;
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("queued");
-    const [resume] = resumes(h);
+    const [resume] = await resumes(h);
     expect(resume?.reason).toBe("ci");
     expect(resume?.handoff).toContain(`End of the \`test\` log:\n\`\`\`\n${LOG_TAIL}\n\`\`\``);
     expect(h.bodies("status")).toContain("CI: `test` failed. Sent back to the agent, fix 1 of 3.");
@@ -520,7 +526,7 @@ describe("advanceMerge on a CI failure", () => {
       ["asked", null, 1],
     ]);
     expect(new Set(rounds.map((round) => round.head)).size).toBe(2);
-    expect(resumes(h)).toHaveLength(1);
+    expect(await resumes(h)).toHaveLength(1);
   });
 
   test("with CI fix attempts set to 0, Paws asks on the first failure", async () => {
@@ -530,7 +536,7 @@ describe("advanceMerge on a CI failure", () => {
     h.state.ci = failingTest;
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
     expect(findOpenQuestion(h.db, "ses-ENG-1")?.body).toContain("Fix rounds are set to 0");
-    expect(resumes(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
   });
 
   test("a changed CI fix setting applies to the next CI round of a running task", async () => {
@@ -598,12 +604,12 @@ describe("advanceMerge on cancelled CI jobs", () => {
         `Re-ran cancelled CI jobs on ${item.accepted.slice(0, 7)}.`,
       );
       expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
-      expect(resumes(h)).toEqual([]);
+      expect(await resumes(h)).toEqual([]);
       expect(await listCiRounds(sqliteDb(h.db), "ENG-1")).toEqual([]);
 
       h.state.ci = () => undefined;
       expect(await passUntilMerged(h, "ENG-1")).toEqual({ kind: "merged" });
-      expect(resumes(h)).toEqual([]);
+      expect(await resumes(h)).toEqual([]);
     });
 
   test("a re-run cancelled again goes back to the agent as today", async () => {
@@ -613,7 +619,7 @@ describe("advanceMerge on cancelled CI jobs", () => {
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "ci" });
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
     expect(h.state.ciReruns).toHaveLength(1);
-    expect(resumes(h).map((resume) => resume.reason)).toEqual(["ci"]);
+    expect((await resumes(h)).map((resume) => resume.reason)).toEqual(["ci"]);
     expect(h.bodies("status")).toContain(
       "CI: `test (1/4)`, `lint, format, types, test, dashboard build` failed. Sent back to the agent, fix 1 of 3.",
     );
@@ -689,7 +695,7 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     await h.pass("ENG-1");
     queue.remove(1, "FAILED_CHECKS");
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    const [resume] = resumes(h);
+    const [resume] = await resumes(h);
     expect(resume?.reason).toBe("ci");
     expect(resume?.handoff).toContain("GitHub's merge queue removed the pull request");
     expect(h.bodies("status")).toContain(
@@ -756,7 +762,7 @@ describe("advanceMerge while the pull request waits for a review", () => {
     const h = await waiting();
     const main = await h.moveMain("ok.txt", "from-main\n");
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect(resumes(h).map((payload) => [payload.reason, payload.handoff])).toEqual([
+    expect((await resumes(h)).map((payload) => [payload.reason, payload.handoff])).toEqual([
       ["conflict", REBASE_CONFLICT_INSTRUCTION],
     ]);
     expect(listRebaseReturns(h.db, "ENG-1", 0)).toMatchObject([{ base: main, reason: "merge" }]);
@@ -769,7 +775,7 @@ describe("advanceMerge while the pull request waits for a review", () => {
   test("a clean pull request keeps waiting for the review", async () => {
     const h = await waiting();
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
-    expect(resumes(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
     expect(h.bodies("afterPullRequest")).toEqual([NOTICE]);
   });
 
@@ -779,7 +785,7 @@ describe("advanceMerge while the pull request waits for a review", () => {
     h.state.lazyMergeable.set(1, 100);
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
     expect(h.state.pullReads.get(1)).toBe(4);
-    expect(resumes(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
     expect(h.bodies("afterPullRequest")).toEqual([NOTICE]);
   });
 
@@ -799,7 +805,7 @@ describe("advanceMerge while the pull request waits for a review", () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "asked" });
     expect(findOpenQuestion(h.db, "ses-ENG-1")).toMatchObject({ reason: "rebase_budget_spent" });
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("awaiting_input");
-    expect(resumes(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
     expect(h.bodies("afterPullRequest")).toEqual([]);
   });
 
@@ -808,7 +814,9 @@ describe("advanceMerge while the pull request waits for a review", () => {
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
     await h.moveMain("ok.txt", "from-main\n");
     expect(await h.pass("ENG-1")).toEqual({ kind: "returned" });
-    expect(resumes(h).map((payload) => payload.handoff)).toEqual([REBASE_CONFLICT_INSTRUCTION]);
+    expect((await resumes(h)).map((payload) => payload.handoff)).toEqual([
+      REBASE_CONFLICT_INSTRUCTION,
+    ]);
     expect(h.bodies("afterPullRequest")).toEqual([NOTICE]);
   });
 });
@@ -828,14 +836,14 @@ describe("CI failure collection window", () => {
         reason: "ci",
         message: "CI failed: acme test; waiting for acme shard to finish (up to 20 min)",
       });
-      expect(resumes(h)).toEqual([]);
+      expect(await resumes(h)).toEqual([]);
       h.clock.advance(19 * 60_000);
       expect(await h.pass("ACME-1440")).toMatchObject({ kind: "wait", reason: "ci" });
-      expect(resumes(h)).toEqual([]);
+      expect(await resumes(h)).toEqual([]);
       conclusion = finish;
       if (finish === null) h.clock.advance(60_000);
       expect(await h.pass("ACME-1440")).toEqual({ kind: "returned" });
-      const turns = resumes(h);
+      const turns = await resumes(h);
       expect(turns).toHaveLength(1);
       expect(turns[0]!.handoff).toContain("acme test");
       if (finish === "FAILURE") expect(turns[0]!.handoff).toContain("- acme shard");
@@ -860,7 +868,7 @@ test("acme head movement starts a fresh CI collection window", async () => {
   expect(await h.pass("ACME-1441")).toMatchObject({ kind: "wait", head: item.accepted });
   h.clock.advance(60_000);
   expect(await h.pass("ACME-1441")).toMatchObject({ kind: "wait", reason: "ci" });
-  expect(resumes(h)).toEqual([]);
+  expect(await resumes(h)).toEqual([]);
 });
 
 describe("CI collection across merge paths", () => {
@@ -881,12 +889,12 @@ describe("CI collection across merge paths", () => {
       reason: "ci",
       message: "CI failed: acme test; waiting for acme shard to finish (up to 20 min)",
     });
-    expect(resumes(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
     expect(queue.enqueued).toEqual([]);
     h.state.ci = () => checks("FAILURE");
     expect(await h.pass("ACME-queue")).toEqual({ kind: "returned" });
-    expect(resumes(h)).toHaveLength(1);
-    expect(resumes(h)[0]!.handoff).toContain("acme shard");
+    expect(await resumes(h)).toHaveLength(1);
+    expect((await resumes(h))[0]!.handoff).toContain("acme shard");
   });
 
   test("acme final squash recheck starts the same collection window", async () => {
@@ -898,12 +906,12 @@ describe("CI collection across merge paths", () => {
         ? [{ name: "acme test", conclusion: "SUCCESS", detailsUrl: null }]
         : checks(null);
     expect(await h.pass("ACME-recheck")).toMatchObject({ kind: "wait", reason: "ci" });
-    expect(resumes(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
     expect(h.github.merged).toEqual([]);
     h.clock.advance(20 * 60_000);
     expect(await h.pass("ACME-recheck")).toEqual({ kind: "returned" });
-    expect(resumes(h)).toHaveLength(1);
-    expect(resumes(h)[0]!.handoff).toContain(
+    expect(await resumes(h)).toHaveLength(1);
+    expect((await resumes(h))[0]!.handoff).toContain(
       "acme shard (https://ci.example/shard): still running",
     );
   });
@@ -922,7 +930,7 @@ describe("CI collection across merge paths", () => {
     await h.pass("ACME-review");
     const [failure] = await pendingPullCiFailures(sqliteDb(h.db), "ACME-review");
     expect(failure!.failedChecks.map((check) => check.name)).toEqual(["acme test", "acme shard"]);
-    expect(resumes(h)).toEqual([]);
+    expect(await resumes(h)).toEqual([]);
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { JOB_KIND } from "../src/core";
-import { listJobs, type Job } from "../src/db";
+import { sqliteDb, listJobs, type Job } from "../src/db";
 import {
   AGENT_QUEUES,
   FIXTURES,
@@ -118,8 +118,10 @@ const REVERIFIERS: readonly Fixture[] = [
 const KEEP_PLACE: readonly Fixture[] = ["merge_queue", "merge_inflight"];
 const WAITERS: readonly Fixture[] = ["parked_wait", "transient_retry"];
 
-function itemJobs(w: World, id: string): Job[] {
-  return listJobs(w.db).filter((job) => (job.payload as { itemId?: string }).itemId === id);
+async function itemJobs(w: World, id: string): Promise<Job[]> {
+  return (await listJobs(sqliteDb(w.db))).filter(
+    (job) => (job.payload as { itemId?: string }).itemId === id,
+  );
 }
 
 function live(jobs: Job[]): Job[] {
@@ -137,12 +139,14 @@ async function expectations(
     expect([id, held(await factsOf(w.db, id))]).toEqual([id, held(initial.get(id)!.facts)]);
   }
   for (const id of REVERIFIERS) {
-    const jobs = live(itemJobs(w, id)).filter((job) => job.status === "pending");
+    const jobs = live(await itemJobs(w, id)).filter((job) => job.status === "pending");
     expect([id, jobs.filter((job) => AGENT_QUEUES.includes(job.queue))]).toEqual([id, []]);
     expect([id, (await factsOf(w.db, id)).state]).not.toEqual([id, "merge_queue"]);
   }
   expect((await factsOf(w.db, "verifying_rejected")).acceptedHead).toBeNull();
-  expect(itemJobs(w, "verifying_rejected").some((job) => job.queue === JOB_KIND.merge)).toBe(false);
+  expect(
+    (await itemJobs(w, "verifying_rejected")).some((job) => job.queue === JOB_KIND.merge),
+  ).toBe(false);
   for (const id of KEEP_PLACE) {
     const facts = await factsOf(w.db, id);
     expect([id, facts.state, facts.mergeCall]).toEqual([
@@ -150,12 +154,12 @@ async function expectations(
       "merge_queue",
       id === "merge_inflight",
     ]);
-    const merge = live(itemJobs(w, id)).filter((job) => job.queue === JOB_KIND.merge);
+    const merge = live(await itemJobs(w, id)).filter((job) => job.queue === JOB_KIND.merge);
     expect([id, merge.map((job) => job.id)]).toEqual([id, initial.get(id)!.jobIds]);
-    expect(itemJobs(w, id).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
+    expect((await itemJobs(w, id)).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
   }
   for (const id of WAITERS) {
-    const jobs = live(itemJobs(w, id));
+    const jobs = live(await itemJobs(w, id));
     expect([id, jobs.map((job) => [job.id, job.status, job.payload])]).toEqual([
       id,
       initial.get(id)!.jobs.map((job) => [job.id, "pending", job.payload]),
@@ -185,7 +189,7 @@ describe("every combined state through every recovery entry", () => {
         expect(await violations(w.db, w.now)).toEqual([]);
         const initial = new Map<Fixture, InitialFacts>();
         for (const id of FIXTURES) {
-          const jobs = live(itemJobs(w, id));
+          const jobs = live(await itemJobs(w, id));
           const merge = jobs.filter((job) => job.queue === JOB_KIND.merge).map((job) => job.id);
           initial.set(id, { facts: await factsOf(w.db, id), jobs, jobIds: merge });
         }

@@ -125,7 +125,7 @@ describe("what an item does now", () => {
     const now = START + 26 * MINUTE;
     insertQueuedItem(db, { id: "parked", title: "parked", now: START });
     db.run("UPDATE work_item SET awake_ms=? WHERE id='parked'", [114 * MINUTE]);
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       payload: {
         itemId: "parked",

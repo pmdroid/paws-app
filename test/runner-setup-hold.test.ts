@@ -304,7 +304,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     const current = getWorkItem(db, item.id)!;
     if ((await getRunnerSetupHold(sqliteDb(db), item.id)) && current.state === "queued")
       return true;
-    return listJobs(db).some(
+    return (await listJobs(sqliteDb(db))).some(
       (job) =>
         (job.queue === JOB_KIND.resume ||
           (job.payload as { capacityWait?: unknown }).capacityWait !== undefined) &&
@@ -330,8 +330,10 @@ async function delegate(delegatorRunner: DelegatorRunner) {
         .map((row) => row.payload as { kind?: string; body?: string })
         .filter((payload) => payload.kind === "thought")
         .map((payload) => payload.body),
-    itemJobs: () =>
-      listJobs(db).filter((job) => (job.payload as { itemId?: string }).itemId === item.id),
+    itemJobs: async () =>
+      (await listJobs(sqliteDb(db))).filter(
+        (job) => (job.payload as { itemId?: string }).itemId === item.id,
+      ),
     async close() {
       controller.abort();
       sim.stopped = true;
@@ -350,7 +352,7 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
     const { db, itemId } = fixture;
     const detail = JSON.stringify({
       item: getWorkItem(db, itemId),
-      jobs: fixture.itemJobs().map((job) => `${job.queue}:${job.status}`),
+      jobs: (await fixture.itemJobs()).map((job) => `${job.queue}:${job.status}`),
       thoughts: await fixture.thoughts(),
     });
     expect(getWorkItem(db, itemId)!.state, detail).toBe("queued");
@@ -387,12 +389,9 @@ test("a delegator without a runner gets one thought and a quiet hold that takes 
     }
     expect(waiting).not.toContain(itemId);
     expect(db.query("SELECT 1 FROM scheduler_admission WHERE item_id=?").all(itemId)).toEqual([]);
-    expect(fixture.itemJobs().filter((job) => job.status === "running")).toEqual([]);
+    expect((await fixture.itemJobs()).filter((job) => job.status === "running")).toEqual([]);
     expect(
-      fixture
-        .itemJobs()
-        .filter((job) => job.status === "pending")
-        .map((job) => job.queue),
+      (await fixture.itemJobs()).filter((job) => job.status === "pending").map((job) => job.queue),
     ).toEqual([JOB_KIND.resume]);
     expect(getWorkItem(db, itemId)!.state).toBe("queued");
     expect((await listOutbox(sqliteDb(db))).length).toBe(outboxBefore);
@@ -428,8 +427,7 @@ test("a delegator whose runner is only busy still waits for capacity", async () 
     const { db, itemId } = fixture;
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
     expect(
-      fixture
-        .itemJobs()
+      (await fixture.itemJobs())
         .filter(
           (job) =>
             job.status === "pending" &&
@@ -456,8 +454,7 @@ test("a delegator whose own runner is offline waits for it instead of hearing th
     const { db, itemId } = fixture;
     expect(await getRunnerSetupHold(sqliteDb(db), itemId)).toBeNull();
     expect(
-      fixture
-        .itemJobs()
+      (await fixture.itemJobs())
         .filter(
           (job) =>
             job.status === "pending" &&

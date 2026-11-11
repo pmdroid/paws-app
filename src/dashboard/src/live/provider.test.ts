@@ -507,7 +507,7 @@ describe("live status provider", () => {
       },
       now,
     });
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: "github.merge",
       jobKey: `merge:${merging.id}:${head}`,
       payload: { itemId: merging.id, summary: `${summary}\nCaller attempt: 2`, head },
@@ -793,7 +793,7 @@ describe("live status provider", () => {
         baseSha: head,
         wipCommit: head,
       });
-      enqueueJob(db, {
+      await enqueueJob(sqliteDb(db), {
         queue: "github.merge",
         jobKey: `merge:${item.id}`,
         payload: { itemId: item.id, head },
@@ -850,7 +850,7 @@ describe("live status provider", () => {
     const back = await merging("ENG-15", "acme/platform", null, 6);
     applyWorkItemEvent(db, back.id, "restart", { kind: "restart", reason: "ci" });
     applyWorkItemEvent(db, back.id, "dispatched");
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       jobKey: `ci-failed:${back.id}:0`,
       payload: { itemId: back.id, reason: "ci-failed" },
@@ -946,7 +946,11 @@ describe("live status provider", () => {
       wipCommit: head,
     });
     await joinMergeQueue(sqliteDb(db), { itemId: item.id, repository: "acme/platform", now: 10 });
-    const job = enqueueJob(db, { queue: "github.merge", payload: { itemId: item.id }, now: 20 });
+    const job = await enqueueJob(sqliteDb(db), {
+      queue: "github.merge",
+      payload: { itemId: item.id },
+      now: 20,
+    });
     const reason = "Paws's host is out of disk space (/tmp, 12 MB left)";
     db.run("UPDATE job SET last_error=? WHERE id=?", [
       `push failed: ${reason}: fatal: Out of diskspace`,
@@ -968,10 +972,14 @@ describe("live status provider", () => {
   test("an item backing off after a full disk keeps the notice until its retry runs", async () => {
     const db = database();
     const item = insertQueuedItem(db, { id: "ENG-32", title: "Disk", sessionKey: "ses_e", now: 1 });
-    const failed = enqueueJob(db, { queue: "run.resume", payload: { itemId: item.id }, now: 10 });
+    const failed = await enqueueJob(sqliteDb(db), {
+      queue: "run.resume",
+      payload: { itemId: item.id },
+      now: 10,
+    });
     db.run("UPDATE job SET status='done' WHERE id=?", [failed]);
     const reason = "Paws's host is out of disk space (/tmp, 0 KB left)";
-    const retry = enqueueJob(db, {
+    const retry = await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       payload: { itemId: item.id, reason: "transient_failure", lastError: `${reason}: ENOSPC` },
       runAt: 1_000,
@@ -1006,7 +1014,7 @@ describe("live status provider", () => {
     const back = await bound("ENG-22", 2);
     applyWorkItemEvent(db, back.id, "restart", { kind: "restart", reason: "ci" });
     applyWorkItemEvent(db, back.id, "dispatched");
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       jobKey: `ci-failed:${back.id}:0`,
       payload: { itemId: back.id, reason: "ci-failed" },

@@ -114,8 +114,13 @@ export function reapFencedJobs(db: Database, now: number): number {
   ).changes;
 }
 
-export function claimedJob(db: Database, queue: string, payload: object, now: number): number {
-  const id = enqueueJob(db, { queue, payload, now });
+export async function claimedJob(
+  db: Database,
+  queue: string,
+  payload: object,
+  now: number,
+): Promise<number> {
+  const id = await enqueueJob(sqliteDb(db), { queue, payload, now });
   db.run("UPDATE job SET status='running', attempts=1, locked_by=?, locked_until=? WHERE id=?", [
     `worker:${id}`,
     now + JOB_LEASE_MS,
@@ -160,7 +165,7 @@ export async function seedFixture(
   if (fixture === "queued") return;
   const { run } = await beginImplementRun(sqliteDb(db), id, now, RUNNING);
   if (fixture.startsWith("running") || fixture.startsWith("verifying"))
-    claimedJob(db, JOB_KIND.start, { itemId: id, runId: run.id }, now);
+    await claimedJob(db, JOB_KIND.start, { itemId: id, runId: run.id }, now);
   const toVerifying = () => {
     applyWorkItemEvent(db, id, "turn_ended", { now });
     saveCheckpoint(db, id, CANDIDATE);
@@ -172,7 +177,7 @@ export async function seedFixture(
     saveCheckpoint(db, id, MERGING);
     await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "owner/repo", now });
     if (runEnded) await markRun(sqliteDb(db), run.id, "ended", now);
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       jobKey: `merge:${id}:head:accepted`,
       payload: { itemId: id, head: "head", summary: "Closeout accepted." },
@@ -212,7 +217,7 @@ export async function seedFixture(
     case "recovering":
       applyWorkItemEvent(db, id, "lease_expired", { now });
       await markRun(sqliteDb(db), run.id, "lost", now);
-      enqueueJob(db, {
+      await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.resume,
         jobKey: `orphan:${id}:${now}`,
         payload: { itemId: id, runId: run.id, freshSession: true, reason: "orphaned" },
@@ -395,15 +400,19 @@ export type ItemFacts = {
   mergeCall: boolean;
 };
 
-function liveJobsOf(db: Database, item: WorkItemRecord): Job[] {
-  return listJobs(db).filter(
+async function liveJobsOf(db: Database, item: WorkItemRecord): Promise<Job[]> {
+  return (await listJobs(sqliteDb(db))).filter(
     (job) =>
       (job.payload as { itemId?: unknown } | null)?.itemId === item.id &&
       (job.status === "running" || job.status === "pending"),
   );
 }
 
-export function progressJobs(db: Database, item: WorkItemRecord, now: number): Job[] {
+export async function progressJobs(
+  db: Database,
+  item: WorkItemRecord,
+  now: number,
+): Promise<Job[]> {
   const current = new Set(
     db
       .query<{ id: number }, [string, number, number]>(
@@ -415,7 +424,7 @@ export function progressJobs(db: Database, item: WorkItemRecord, now: number): J
       .all(item.id, item.version, now)
       .map((row) => row.id),
   );
-  return liveJobsOf(db, item).filter((job) => current.has(job.id));
+  return (await liveJobsOf(db, item)).filter((job) => current.has(job.id));
 }
 
 function actionableQuestions(db: Database, itemId: string): number {
@@ -457,9 +466,7 @@ export async function factsOf(db: Database, id: string): Promise<ItemFacts> {
     checkpoint: item.checkpoint,
     runStatus: item.currentRunId === null ? null : (getRun(db, item.currentRunId)?.status ?? null),
     cancelRequested: item.cancelRequested,
-    liveJobs: liveJobsOf(db, item)
-      .map((job) => `${job.queue}:${job.status}`)
-      .sort(),
+    liveJobs: (await liveJobsOf(db, item)).map((job) => `${job.queue}:${job.status}`).sort(),
     questions: actionableQuestions(db, id),
     restartHold: (await restartHold(sqliteDb(db), item)) !== null,
     mergeCall: await mergeCallInFlight(sqliteDb(db), id),
@@ -530,9 +537,9 @@ export async function violations(
   const found: string[] = [];
   for (const item of listWorkItems(db)) {
     const say = (message: string) => found.push(`${item.id} (${item.state}): ${message}`);
-    const live = liveJobsOf(db, item);
+    const live = await liveJobsOf(db, item);
     const execution = live.filter((job) => EXECUTION_QUEUES.includes(job.queue));
-    const progress = progressJobs(db, item, now).filter((job) =>
+    const progress = (await progressJobs(db, item, now)).filter((job) =>
       EXECUTION_QUEUES.includes(job.queue),
     );
     const questions = actionableQuestions(db, item.id);

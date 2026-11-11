@@ -164,7 +164,8 @@ function setup(
       world.prompts.push(prompt);
       return prompt;
     },
-    resumes: () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume),
+    resumes: async () =>
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
     async webhook(prompt: Prompt) {
       const body = JSON.stringify({
         type: "AgentSessionEvent",
@@ -252,7 +253,7 @@ test("a reply behind the poll cursor with no webhook answers the open question o
       answer: "Yes",
       answerEventKey: "activity:reply-1",
     });
-    expect(t.resumes()).toHaveLength(1);
+    expect(await t.resumes()).toHaveLength(1);
     expect(t.journal.filter((line) => line.includes("poll re-read found reply"))).toEqual([
       "poll re-read found reply reply-1 in question thread ses_1 that no webhook delivered",
     ]);
@@ -269,7 +270,7 @@ test("a reply delivered by both a webhook and the poll answers the question once
     expect((await getQuestion(sqliteDb(t.db), t.question.id))?.status).toBe("answered");
     t.advance(60_000);
     await t.poller.pollNow();
-    expect(t.resumes()).toHaveLength(1);
+    expect(await t.resumes()).toHaveLength(1);
     expect(t.delivered.filter((event) => event.activityId === "reply-1")).toHaveLength(0);
     expect(t.journal.some((line) => line.includes("poll re-read found reply"))).toBe(false);
   } finally {
@@ -286,7 +287,7 @@ test("a reply in another issue's thread does not touch the open question", async
     t.advance(60_000);
     await t.poller.pollNow();
     expect((await getQuestion(sqliteDb(t.db), t.question.id))?.status).toBe("open");
-    expect(t.resumes()).toHaveLength(0);
+    expect(await t.resumes()).toHaveLength(0);
     expect(new Set(t.world.threadReads)).toEqual(new Set(["ses_1"]));
   } finally {
     await t.close();

@@ -69,7 +69,7 @@ async function setup() {
     restart(db, getWorkItem(db, "eng-1")!, { reason, body, jobKey, now: clock.now() });
   };
   const turnStarts = async () => {
-    const job = listJobs(db).find((entry) => entry.queue === JOB_KIND.resume)!;
+    const job = (await listJobs(sqliteDb(db))).find((entry) => entry.queue === JOB_KIND.resume)!;
     await sqliteDb(db).transaction((q) => fixRoundNoticeSteps(q, job, clock.now()));
     while ((await outbox.tick()).length > 0) await outbox.idle();
   };

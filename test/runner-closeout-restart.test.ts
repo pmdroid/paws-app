@@ -350,7 +350,9 @@ async function restartWithRunnerHolding(f: Fixture) {
   expect(await recoverOnStartup(sqliteDb(f.db))).toEqual([{ type: "reverify" }]);
   expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 0 });
   expect(
-    listJobs(f.db).filter((job) => job.queue === "run.reverify" && job.status === "pending"),
+    (await listJobs(sqliteDb(f.db))).filter(
+      (job) => job.queue === "run.reverify" && job.status === "pending",
+    ),
   ).toHaveLength(1);
 }
 
@@ -504,14 +506,14 @@ test("a verifying item whose runner lease ran past its grace re-verifies as befo
       { type: "reverify", resumed: true },
     ]);
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 1 });
-    const open = listJobs(f.db).filter((job) => job.status === "pending");
+    const open = (await listJobs(sqliteDb(f.db))).filter((job) => job.status === "pending");
     expect(open.map((job) => job.queue)).toEqual(["run.reverify"]);
     expect(open[0]!.payload).toMatchObject({ itemId: f.item.id, recheckHead: true });
     f.restart();
     expect(await recoverOnStartup(sqliteDb(f.db), later + 1_000)).toEqual([
       { type: "ask_restart" },
     ]);
-    expect(listJobs(f.db).some((job) => job.queue === "run.resume")).toBe(false);
+    expect((await listJobs(sqliteDb(f.db))).some((job) => job.queue === "run.resume")).toBe(false);
   } finally {
     await f.close();
   }

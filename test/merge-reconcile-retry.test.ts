@@ -5,7 +5,7 @@ import path from "node:path";
 import { expect, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
 import { JOB_KIND, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listJobs, migrate, openDatabase } from "../src/db";
+import { sqliteDb, JobLoop, OutboxDispatcher, listJobs, migrate, openDatabase } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import {
   createItemReconciler,
@@ -32,8 +32,8 @@ test("a merge attempt reconciles a request a Linear 503 left pending and merges"
   const run = await delegate(1);
   try {
     await run.until(() => stateOf(run.db, "ACME-1") === "merged");
-    expect(run.failedReads(), run.detail()).toBe(1);
-    expect(run.implementRuns(), run.detail()).toBe(1);
+    expect(run.failedReads(), await run.detail()).toBe(1);
+    expect(run.implementRuns(), await run.detail()).toBe(1);
     expect(run.github.merged).toHaveLength(1);
     expect(run.lines.filter((line) => line.includes("reconciles pending Linear changes"))).toEqual([
       "item ACME-1: a merge attempt reconciles pending Linear changes",
@@ -47,14 +47,18 @@ test("a reconcile that keeps failing holds the item in the merge queue without m
   const run = await delegate(Number.POSITIVE_INFINITY);
   try {
     await run.until(() => run.failedReads() >= 3);
-    expect(stateOf(run.db, "ACME-1"), run.detail()).toBe("merge_queue");
-    expect(await hasPendingDelegationChanges(run.db, run.delegationId), run.detail()).toBe(true);
+    expect(stateOf(run.db, "ACME-1"), await run.detail()).toBe("merge_queue");
+    expect(await hasPendingDelegationChanges(run.db, run.delegationId), await run.detail()).toBe(
+      true,
+    );
     expect(
-      listJobs(run.db).some((job) => job.queue === JOB_KIND.merge && job.status === "pending"),
-      run.detail(),
+      (await listJobs(sqliteDb(run.db))).some(
+        (job) => job.queue === JOB_KIND.merge && job.status === "pending",
+      ),
+      await run.detail(),
     ).toBe(true);
     expect(run.github.merged).toEqual([]);
-    expect(run.implementRuns(), run.detail()).toBe(1);
+    expect(run.implementRuns(), await run.detail()).toBe(1);
   } finally {
     await run.cleanup();
   }
@@ -179,13 +183,15 @@ async function delegate(failures: number) {
         }
       }
       while ((await outbox.tick()).length > 0) await outbox.idle();
-      expect(done(), this.detail()).toBe(true);
+      expect(done(), await this.detail()).toBe(true);
     },
-    detail: () =>
+    detail: async () =>
       JSON.stringify({
         state: stateOf(db, "ACME-1"),
         failed,
-        jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
+        jobs: (await listJobs(sqliteDb(db))).map(
+          (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
+        ),
         lines: lines.slice(-20),
       }),
     async cleanup() {

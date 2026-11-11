@@ -35,21 +35,23 @@ async function acceptedItem() {
   return { db, itemId: item.id, runId: run.id };
 }
 
-function implementTurns(db: Awaited<ReturnType<typeof acceptedItem>>["db"]) {
-  return listJobs(db).filter(
+async function implementTurns(db: Awaited<ReturnType<typeof acceptedItem>>["db"]) {
+  return (await listJobs(sqliteDb(db))).filter(
     (job) =>
       (job.queue === JOB_KIND.resume || job.queue === JOB_KIND.start) &&
       (job.status === "pending" || job.status === "running"),
   );
 }
 
-function mergeJobs(db: Awaited<ReturnType<typeof acceptedItem>>["db"]) {
-  return listJobs(db).filter((job) => job.queue === JOB_KIND.merge && job.status === "pending");
+async function mergeJobs(db: Awaited<ReturnType<typeof acceptedItem>>["db"]) {
+  return (await listJobs(sqliteDb(db))).filter(
+    (job) => job.queue === JOB_KIND.merge && job.status === "pending",
+  );
 }
 
 test("an accepted head that is the pull request head goes to the merge queue without an implement turn", async () => {
   const { db, itemId, runId } = await acceptedItem();
-  const resume = enqueueJob(db, {
+  const resume = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     payload: { itemId, reason: "transient_failure" },
     now: 2_000,
@@ -68,9 +70,9 @@ test("an accepted head that is the pull request head goes to the merge queue wit
   expect(item).toMatchObject({ state: "merge_queue", currentRunId: runId });
   expect(item.checkpoint).toMatchObject({ phase: "merge_queue", wipCommit: ACCEPTED });
   expect(getRun(db, runId)?.status).toBe("ended");
-  expect(listJobs(db).find((job) => job.id === resume)?.status).toBe("cancelled");
-  expect(implementTurns(db)).toEqual([]);
-  expect(mergeJobs(db).map((job) => job.payload)).toEqual([
+  expect((await listJobs(sqliteDb(db))).find((job) => job.id === resume)?.status).toBe("cancelled");
+  expect(await implementTurns(db)).toEqual([]);
+  expect((await mergeJobs(db)).map((job) => job.payload)).toEqual([
     { itemId, summary: "Closeout accepted.", head: ACCEPTED },
   ]);
 });
@@ -108,8 +110,10 @@ test("a rejected push whose remote is the accepted head goes to the merge queue 
 
   expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
   expect(db.query("SELECT * FROM question").all()).toEqual([]);
-  expect(listJobs(db).some((job) => job.queue === "item.ask")).toBe(false);
-  expect(mergeJobs(db).map((job) => (job.payload as { head: string }).head)).toEqual([ACCEPTED]);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === "item.ask")).toBe(false);
+  expect((await mergeJobs(db)).map((job) => (job.payload as { head: string }).head)).toEqual([
+    ACCEPTED,
+  ]);
 });
 
 test("a rejected push whose remote contains the accepted head goes to the merge queue", async () => {
@@ -141,7 +145,7 @@ test("a rejected push whose remote diverged from the accepted head is left to co
     }),
   ).toBe(false);
   expect(getWorkItem(db, itemId)?.state).toBe("running");
-  expect(mergeJobs(db)).toEqual([]);
+  expect(await mergeJobs(db)).toEqual([]);
 });
 
 test("an item without accepted work is not sent to the merge queue", async () => {
@@ -169,7 +173,7 @@ test("an accepted item queued again by a restart leaves that restart for the mer
     true,
   );
   expect(getWorkItem(db, itemId)?.state).toBe("merge_queue");
-  expect(listJobs(db).find((entry) => entry.id === job)?.status).toBe("pending");
+  expect((await listJobs(sqliteDb(db))).find((entry) => entry.id === job)?.status).toBe("pending");
 });
 
 for (const reason of ["ci", "review"] as const) {
@@ -190,7 +194,7 @@ for (const reason of ["ci", "review"] as const) {
       }),
     ).toBe(false);
     expect(getWorkItem(db, itemId)?.state).toBe("running");
-    expect(mergeJobs(db)).toEqual([]);
+    expect(await mergeJobs(db)).toEqual([]);
   });
 }
 
@@ -215,7 +219,7 @@ for (const decision of ["rejected", "blocked"] as const) {
     // A database written before rejection retired accepted_head can still carry it.
     await markCloseoutAccepted(sqliteDb(db), itemId, ACCEPTED);
     expect(await mergeAcceptedWork(sqliteDb(db), itemId, { now: 2_000 })).toBe(false);
-    expect(mergeJobs(db)).toEqual([]);
+    expect(await mergeJobs(db)).toEqual([]);
   });
 }
 

@@ -271,7 +271,7 @@ test("Done cancels a merge-queue task without a confirmed merge and completes it
     ISSUE_CLOSED_RESPONSE.completed,
   ]);
   expect(
-    listJobs(f.db).some(
+    (await listJobs(sqliteDb(f.db))).some(
       (job) =>
         job.queue === JOB_KIND.closeStoppedPull &&
         (job.payload as { itemId?: string }).itemId === f.item.id,
@@ -406,7 +406,9 @@ for (const exit of ["closed", "undelegated"] as const) {
       cancelRequested: false,
     });
     expect(
-      listJobs(f.db).filter((job) => job.queue === JOB_KIND.command && job.status === "pending"),
+      (await listJobs(sqliteDb(f.db))).filter(
+        (job) => job.queue === JOB_KIND.command && job.status === "pending",
+      ),
     ).toHaveLength(1);
     await endMergeCall(sqliteDb(f.db), f.item.id);
     await drainCommands(sqliteDb(f.db), new CommandBus(), now + 2_000);

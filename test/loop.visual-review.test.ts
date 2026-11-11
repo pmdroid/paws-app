@@ -168,7 +168,9 @@ test("a reply from someone who can't answer gets a note; the delegator's reply r
     await f.orchestrator.onLinearEvent(prompted("Accept", "someone-else"));
     expect((await getQuestion(sqliteDb(f.db), open.id))?.status).toBe("open");
     expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");
-    expect(listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(0);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === JOB_KIND.resume),
+    ).toHaveLength(0);
     expect(f.notes(VISUAL_REVIEW_ANSWERERS)).toBe(1);
 
     await f.orchestrator.onLinearEvent(prompted("Looks good", "delegator-1", "activity:ok"));
@@ -447,7 +449,9 @@ test("after three rounds of changes Paws asks whether to keep going instead of r
     expect(asked.options).toEqual(["Keep going"]);
     expect(listWorkItems(f.db)[0]!.state).toBe("awaiting_input");
     expect(
-      listJobs(f.db).filter((job) => job.queue === JOB_KIND.resume && job.finishedAt === null),
+      (await listJobs(sqliteDb(f.db))).filter(
+        (job) => job.queue === JOB_KIND.resume && job.finishedAt === null,
+      ),
     ).toEqual([]);
 
     await f.orchestrator.onLinearEvent(
@@ -1294,7 +1298,7 @@ async function pausedForReview(
     async driveUntil(done: () => boolean) {
       const deadline = Date.now() + 90_000;
       while (!done()) {
-        if (Date.now() > deadline) throw new Error(JSON.stringify(listJobs(db)));
+        if (Date.now() > deadline) throw new Error(JSON.stringify(await listJobs(sqliteDb(db))));
         const state = listWorkItems(db)[0]!.state;
         if (state === "failed")
           throw new Error(`task ${state}: ${JSON.stringify(listWorkItems(db)[0])}`);

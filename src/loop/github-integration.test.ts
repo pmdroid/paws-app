@@ -70,7 +70,7 @@ test("ready: two members use one App installation and proceed without any questi
     for (const id of ["member-a", "member-b"])
       expect(await f.auth.ensure(await f.item(id), "initial", f.signal)).toBe(true);
     expect(await f.auth.ensure(await f.item("publisher"), "publication", f.signal)).toBe(true);
-    expect(listJobs(f.db)).toHaveLength(0);
+    expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
     expect(await listOutbox(sqliteDb(f.db))).toHaveLength(0);
     expect(f.db.query("SELECT * FROM question").all()).toHaveLength(0);
   } finally {
@@ -97,7 +97,7 @@ test("missing installation: the waiting message shows once and the item resumes 
     f.ready();
     await f.auth.recover();
     expect(getWorkItem(f.db, item.id)?.state).toBe("running");
-    expect(listJobs(f.db).map((job) => job.queue)).toEqual(["run.resume"]);
+    expect((await listJobs(sqliteDb(f.db))).map((job) => job.queue)).toEqual(["run.resume"]);
     expect(f.db.query("SELECT * FROM question WHERE status='open'").all()).toHaveLength(0);
   } finally {
     f.auth.close();
@@ -150,7 +150,7 @@ test("App hold survives restart, notifies only administrators and revalidates ex
   try {
     await Promise.all([recovered.recover(), recovered.recover()]);
     await recovered.recover();
-    expect(listJobs(reopened)).toHaveLength(1);
+    expect(await listJobs(sqliteDb(reopened))).toHaveLength(1);
     expect(getWorkItem(reopened, item.id)?.state).toBe("running");
     expect(
       reopened.query<{ status: string }, []>("SELECT status FROM github_integration_hold").get()
@@ -189,7 +189,9 @@ for (const invalidation of [
       f.ready();
       await f.auth.recover();
       expect(
-        listJobs(f.db).filter((job) => job.queue === "run.resume" || job.queue === "run.reverify"),
+        (await listJobs(sqliteDb(f.db))).filter(
+          (job) => job.queue === "run.resume" || job.queue === "run.reverify",
+        ),
       ).toHaveLength(0);
       if (invalidation !== "stop") expect(getWorkItem(f.db, item.id)?.state).toBe("cancelled");
       expect(
@@ -211,7 +213,7 @@ test("App preflight refuses a checkpoint changed during installation lookup", as
   };
   try {
     expect(await f.auth.ensure(item, "initial", f.signal)).toBe(false);
-    expect(listJobs(f.db)).toHaveLength(0);
+    expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
   } finally {
     f.auth.close();
     f.db.close();
@@ -251,7 +253,9 @@ test("denied: a member who loses access while held is cancelled on recovery", as
     f.ready();
     await f.auth.recover();
     expect(getWorkItem(f.db, item.id)?.state).toBe("cancelled");
-    expect(listJobs(f.db).filter((job) => job.queue === "run.resume")).toHaveLength(0);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "run.resume"),
+    ).toHaveLength(0);
   } finally {
     f.auth.close();
     f.db.close();
@@ -272,7 +276,7 @@ test("one unavailable requester does not stop recovery of other held work", asyn
     await f.auth.recover();
     expect(getWorkItem(f.db, "unavailable")?.state).toBe("awaiting_input");
     expect(getWorkItem(f.db, "ready")?.state).toBe("running");
-    expect(listJobs(f.db)).toHaveLength(1);
+    expect(await listJobs(sqliteDb(f.db))).toHaveLength(1);
   } finally {
     f.auth.close();
     f.db.close();
@@ -288,7 +292,7 @@ test("App publication recovery queues fresh verification, not publication", asyn
     await f.auth.ensure(getWorkItem(f.db, item.id)!, "publication", f.signal);
     f.ready();
     await f.auth.recover();
-    expect(listJobs(f.db).map((job) => job.queue)).toEqual(["run.reverify"]);
+    expect((await listJobs(sqliteDb(f.db))).map((job) => job.queue)).toEqual(["run.reverify"]);
     expect(getWorkItem(f.db, item.id)?.state).toBe("verifying");
   } finally {
     f.auth.close();
@@ -352,12 +356,16 @@ test("recovery replaces an unavailable message with the current installation blo
       ),
     ).toHaveLength(1);
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
-    expect(listJobs(f.db).filter((job) => job.queue === "run.resume")).toHaveLength(0);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "run.resume"),
+    ).toHaveLength(0);
     installed = true;
     await f.auth.recover();
     await f.auth.recover();
     expect(getWorkItem(f.db, item.id)?.state).toBe("running");
-    expect(listJobs(f.db).filter((job) => job.queue === "run.resume")).toHaveLength(1);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "run.resume"),
+    ).toHaveLength(1);
   } finally {
     f.auth.close();
     f.db.close();

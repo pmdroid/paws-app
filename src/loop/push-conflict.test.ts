@@ -37,7 +37,7 @@ test("a candidate that conflicts with its moved branch restarts with reason conf
 
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(getRun(db, runId)?.status).toBe("ended");
-  const resumes = listJobs(db).filter(
+  const resumes = (await listJobs(sqliteDb(db))).filter(
     (job) => job.queue === JOB_KIND.resume && job.status === "pending",
   );
   expect(resumes).toHaveLength(1);
@@ -54,7 +54,7 @@ test("an item that is no longer running is not restarted for a push conflict", a
   expect(
     await restartForPushConflict(db, itemId, { branch: "paws/pas-886", files: ["a"], now: 2_000 }),
   ).toBe(false);
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+  expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
 });
 
 test("three genuine push conflicts spend the shared budget, then ask for guidance", async () => {
@@ -83,14 +83,14 @@ test("three genuine push conflicts spend the shared budget, then ask for guidanc
   expect(db.query("SELECT body FROM question").get()).toEqual({
     body: expect.stringContaining("Reply with guidance"),
   });
-  expect(listJobs(db).filter((j) => j.queue === JOB_KIND.resume)).toHaveLength(3);
+  expect((await listJobs(sqliteDb(db))).filter((j) => j.queue === JOB_KIND.resume)).toHaveLength(3);
   db.close();
 });
 
 test("push conflicts also respect the six-return rolling hour budget", async () => {
   const { db, itemId } = await runningItem();
   for (let n = 0; n < 6; n++) {
-    const jobId = enqueueJob(db, {
+    const jobId = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       payload: { itemId, reason: "conflict" },
       now: 1_000 + n,
@@ -123,7 +123,11 @@ test("a person's answer refills the consecutive push-conflict budget", async () 
     });
     applyWorkItemEvent(db, itemId, "dispatched");
   }
-  enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId, reason: "answer" }, now: 3_000 });
+  await enqueueJob(sqliteDb(db), {
+    queue: JOB_KIND.resume,
+    payload: { itemId, reason: "answer" },
+    now: 3_000,
+  });
   expect(
     await restartForPushConflict(db, itemId, { branch: "paws/topic", files: ["a.ts"], now: 4_000 }),
   ).toBe(true);

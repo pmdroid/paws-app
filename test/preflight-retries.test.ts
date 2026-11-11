@@ -308,14 +308,16 @@ async function runPreflight(fault: {
       state: stateOf(db, "ENG-7"),
       implemented,
       preparations,
-      retries: listJobs(db)
+      retries: (await listJobs(sqliteDb(db)))
         .filter((job) => job.queue === JOB_KIND.resume)
         .map((job) => (job.payload as { retry?: number }).retry ?? 0)
         .filter((retry) => retry > 0),
       questions: tracker.questions.map((question) => question.body),
       detail: JSON.stringify({
         items: db.query("SELECT linear_identifier, state FROM work_item").all(),
-        jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
+        jobs: (await listJobs(sqliteDb(db))).map(
+          (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
+        ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
       }),
     };

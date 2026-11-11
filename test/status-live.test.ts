@@ -162,7 +162,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
       payload: { sessionId: "ses_1", kind: "response", body: summary },
       now: NOW,
     });
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: "github.merge",
       jobKey: `merge:${merging.id}:${HEAD}`,
       payload: { itemId: merging.id, summary: `${summary}\nCaller attempt: 2`, head: HEAD },
@@ -316,7 +316,7 @@ test("a merge-queue item whose re-verify waits for a runner slot says it is next
       now: 1,
     });
     applyWorkItemEvent(db, merging.id, "reverify_requested");
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: "run.reverify",
       payload: {
         itemId: merging.id,

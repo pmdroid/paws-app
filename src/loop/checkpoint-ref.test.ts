@@ -44,13 +44,15 @@ for (const state of ["completed", "merged", "cancelled"] as const)
       { repository: expect.objectContaining(REPOSITORY), ref: "refs/paws/checkpoints/paws/item" },
     ]);
     expect(ended()).toEqual([]);
-    expect(listJobs(db)).toEqual([]);
+    expect(await listJobs(sqliteDb(db))).toEqual([]);
   });
 
 test("a Stop records the deletion without closeStoppedPull", async () => {
   const { db, item, ended } = await setup();
   applyWorkItemEvent(db, item.id, "cancel", { now: 2 });
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.closeStoppedPull)).toBe(false);
+  expect(
+    (await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.closeStoppedPull),
+  ).toBe(false);
   expect(ended()).toEqual([item.id]);
 });
 

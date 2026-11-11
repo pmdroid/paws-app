@@ -185,7 +185,7 @@ export async function probeRunnerOrchestration(
     let leaseAborted = false;
     async function reclaim(signal: AbortSignal | undefined) {
       assert(signal);
-      const owned = listJobs(db).find(
+      const owned = (await listJobs(sqliteDb(db))).find(
         (job) =>
           job.status === "running" &&
           (job.payload as { itemId?: string }).itemId === listWorkItems(db)[0]?.id,
@@ -223,7 +223,7 @@ export async function probeRunnerOrchestration(
             throw new Error("Replacement could not claim job");
           }),
         ]);
-        assert.notEqual(getJob(db, owned.id)?.lockedBy, owned.lockedBy);
+        assert.notEqual((await getJob(sqliteDb(db), owned.id))?.lockedBy, owned.lockedBy);
       }
       reclaimedJobId = owned.id;
       await Promise.race([
@@ -828,7 +828,7 @@ export async function probeRunnerOrchestration(
           baseSha: await git(["-C", source, "rev-parse", "HEAD"]),
         });
         applyWorkItemEvent(db, pending.id, "lease_expired");
-        enqueueJob(db, {
+        await enqueueJob(sqliteDb(db), {
           queue: JOB_KIND.resume,
           payload: { itemId: pending.id },
           priority: -100,
@@ -852,13 +852,18 @@ export async function probeRunnerOrchestration(
         assert.equal(item.state, "running");
         assert.equal(item.currentRunId, replacementRunId);
         assert.equal(getRun(db, replacementRunId)?.status, "active");
-        assert.equal(getJob(db, reclaimedJobId)?.status, "running");
+        assert.equal((await getJob(sqliteDb(db), reclaimedJobId))?.status, "running");
         assert(leaseAborted);
         assert.equal(witnessCalls, 0);
         observe(
           "selected initial transport aborts on lease loss without ending current run: " + scenario,
           true,
-          { state: item.state, replacementRunId, job: getJob(db, reclaimedJobId), leaseAborted },
+          {
+            state: item.state,
+            replacementRunId,
+            job: await getJob(sqliteDb(db), reclaimedJobId),
+            leaseAborted,
+          },
         );
         continue;
       }
@@ -1010,8 +1015,10 @@ export async function probeRunnerOrchestration(
           db.run("DELETE FROM item_candidate WHERE item_id = ?", [item.id]);
         }
         const reverifyId = merging
-          ? listJobs(db).find((job) => job.queue === JOB_KIND.merge && job.status === "pending")!.id
-          : enqueueJob(db, {
+          ? (await listJobs(sqliteDb(db))).find(
+              (job) => job.queue === JOB_KIND.merge && job.status === "pending",
+            )!.id
+          : await enqueueJob(sqliteDb(db), {
               queue: JOB_KIND.reverify,
               priority: -100,
               payload: { itemId: item.id },
@@ -1106,8 +1113,14 @@ export async function probeRunnerOrchestration(
           assert.equal(verified.state, "merged");
           assert.equal(reviewRunId, "");
           assert.equal(laterDispatches, 0);
-          assert.equal(listJobs(db).find((job) => job.id === reverifyId)?.status, "done");
-          assert.equal(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify).length, 0);
+          assert.equal(
+            (await listJobs(sqliteDb(db))).find((job) => job.id === reverifyId)?.status,
+            "done",
+          );
+          assert.equal(
+            (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.reverify).length,
+            0,
+          );
           assert.equal((await listRuns(sqliteDb(db), item.id)).length, 1);
           if (mergeDependencyYield) {
             assert.equal((await getLinearSession(sqliteDb(db), "session"))?.activeItemId, item.id);
@@ -1126,7 +1139,8 @@ export async function probeRunnerOrchestration(
             {
               state: verified.state,
               accepted,
-              jobStatus: listJobs(db).find((job) => job.id === reverifyId)?.status,
+              jobStatus: (await listJobs(sqliteDb(db))).find((job) => job.id === reverifyId)
+                ?.status,
             },
           );
         } else if (scenario === "reverify-lease") {
@@ -1135,7 +1149,7 @@ export async function probeRunnerOrchestration(
           assert.equal(verified.state, "verifying");
           assert.equal(getRun(db, replacementRunId)?.status, "active");
           assert.equal(getRun(db, reviewRunId)?.status, "ended");
-          assert.equal(getJob(db, reclaimedJobId)?.status, "running");
+          assert.equal((await getJob(sqliteDb(db), reclaimedJobId))?.status, "running");
           observe(
             "selected verification transport aborts on job reclaim without accepting stale result: " +
               scenario,
@@ -1144,7 +1158,7 @@ export async function probeRunnerOrchestration(
               state: verified.state,
               replacementRunId,
               reviewRunId,
-              job: getJob(db, reclaimedJobId),
+              job: await getJob(sqliteDb(db), reclaimedJobId),
               leaseAborted,
             },
           );
@@ -1165,7 +1179,10 @@ export async function probeRunnerOrchestration(
             (await listRuns(sqliteDb(db), item.id)).length,
             scenario === "crashed-review" ? 3 : 2,
           );
-          assert.equal(listJobs(db).find((job) => job.id === reverifyId)?.status, "done");
+          assert.equal(
+            (await listJobs(sqliteDb(db))).find((job) => job.id === reverifyId)?.status,
+            "done",
+          );
           observe(
             "orphaned active lifetime is closed and reverified after startup recovery: " + scenario,
             true,
@@ -1182,9 +1199,9 @@ export async function probeRunnerOrchestration(
           assert.equal(getRun(db, originalRunId)?.status, "ended");
           if (scenario === "success") {
             assert.equal(
-              listJobs(db).find((job) => job.id === reverifyId)?.status,
+              (await listJobs(sqliteDb(db))).find((job) => job.id === reverifyId)?.status,
               "done",
-              JSON.stringify(listJobs(db).find((job) => job.id === reverifyId)),
+              JSON.stringify((await listJobs(sqliteDb(db))).find((job) => job.id === reverifyId)),
             );
             assert.equal(verified.state, "merge_queue");
             assert(laterDispatches > 0);
@@ -1225,7 +1242,8 @@ export async function probeRunnerOrchestration(
               reviewRunId,
               currentRunId: verified.currentRunId,
               state: verified.state,
-              jobStatus: listJobs(db).find((job) => job.id === reverifyId)?.status,
+              jobStatus: (await listJobs(sqliteDb(db))).find((job) => job.id === reverifyId)
+                ?.status,
               laterDispatches,
               witnessCalls,
             },

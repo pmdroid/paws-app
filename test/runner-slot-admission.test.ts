@@ -128,7 +128,7 @@ async function parkedRun(db: Database, id: string, runnerIds: string[], online: 
   applyWorkItemEvent(db, id, "dispatched");
   const run = await insertRun(sqliteDb(db), { itemId: id, now: NOW, status: "provisioning" });
   db.run("UPDATE work_item SET current_run_id=? WHERE id=?", [run.id, id]);
-  const jobId = enqueueJob(db, {
+  const jobId = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     payload: {
       itemId: id,
@@ -155,12 +155,13 @@ test("a parked item is placed on a runner as soon as it reports the repository a
   );
   await queue("parked");
   const { jobId, runId } = await parkedRun(db, "parked", [agentbox], [agentbox, goldbox]);
-  const waited = () =>
-    (getJob(db, jobId)!.payload as { capacityWait: RunnerCapacityWaitState }).capacityWait;
+  const waited = async () =>
+    ((await getJob(sqliteDb(db), jobId))!.payload as { capacityWait: RunnerCapacityWaitState })
+      .capacityWait;
   expect(
     await runnerSlotFree(
       sqliteDb(db),
-      await slotWaitRunners(sqliteDb(db), runId, waited(), NOW),
+      await slotWaitRunners(sqliteDb(db), runId, await waited(), NOW),
       NOW,
       runId,
     ),
@@ -186,12 +187,12 @@ test("a parked item is placed on a runner as soon as it reports the repository a
     REPOSITORY,
   ]);
 
-  expect(getJob(db, jobId)!.runAt).toBe(clock.now);
-  expect(waited().online).toEqual([agentbox]);
+  expect((await getJob(sqliteDb(db), jobId))!.runAt).toBe(clock.now);
+  expect((await waited()).online).toEqual([agentbox]);
   expect(
     await runnerSlotFree(
       sqliteDb(db),
-      await slotWaitRunners(sqliteDb(db), runId, waited(), clock.now),
+      await slotWaitRunners(sqliteDb(db), runId, await waited(), clock.now),
       clock.now,
       runId,
     ),
@@ -212,15 +213,15 @@ test("a raised capacity and a resumed runner wake parked items; an unchanged rep
   const agentbox = await pair("agentbox", 1, [REPOSITORY]);
   await queue("parked");
   const { jobId } = await parkedRun(db, "parked", [agentbox], [agentbox]);
-  const runAt = () => getJob(db, jobId)!.runAt;
+  const runAt = async () => (await getJob(sqliteDb(db), jobId))!.runAt;
   const parkedUntil = NOW + 60_000;
 
   await recordRunnerCapacity(sqliteDb(db), agentbox, 1, undefined, undefined, NOW + 1);
   await recordRunnerRepositories(sqliteDb(db), agentbox, [REPOSITORY], NOW + 1);
-  expect(runAt()).toBe(parkedUntil);
+  expect(await runAt()).toBe(parkedUntil);
 
   await recordRunnerCapacity(sqliteDb(db), agentbox, 2, undefined, undefined, NOW + 2);
-  expect(runAt()).toBe(NOW + 2);
+  expect(await runAt()).toBe(NOW + 2);
 
   db.run("UPDATE job SET run_at=? WHERE id=?", [parkedUntil, jobId]);
   await updateRunnerStatus(sqliteDb(db), {
@@ -230,7 +231,7 @@ test("a raised capacity and a resumed runner wake parked items; an unchanged rep
     status: "active",
     now: NOW + 3,
   });
-  expect(runAt()).toBe(NOW + 3);
+  expect(await runAt()).toBe(NOW + 3);
 });
 
 test("an admission reserves only its chosen runner and placement honors that choice", async () => {
@@ -308,12 +309,12 @@ test("a reconnect with unchanged reports wakes parked work once, without waking 
   await work.heartbeat(id, 2, {}, undefined, undefined, undefined, undefined, undefined, [
     REPOSITORY,
   ]);
-  expect(getJob(db, jobId)!.runAt).toBe(now);
+  expect((await getJob(sqliteDb(db), jobId))!.runAt).toBe(now);
   db.run("UPDATE job SET run_at=? WHERE id=?", [now + 60_000, jobId]);
   await work.heartbeat(id, 2, {}, undefined, undefined, undefined, undefined, undefined, [
     REPOSITORY,
   ]);
-  expect(getJob(db, jobId)!.runAt).toBe(now + 60_000);
+  expect((await getJob(sqliteDb(db), jobId))!.runAt).toBe(now + 60_000);
 });
 
 test("offline runners never give admission an unlimited slot budget", async () => {
@@ -358,7 +359,7 @@ test("a successful background sign-in check wakes parked work", async () => {
     agentExited: true,
     login: { agent: "claude", authenticated: true, method: "subscription" },
   });
-  expect(getJob(db, jobId)!.runAt).toBe(at);
+  expect((await getJob(sqliteDb(db), jobId))!.runAt).toBe(at);
   expect(
     (await sqliteDb(db).run((q) =>
       itemRunnerVerdictsSteps(q, sqliteDb(db), { itemId: "parked", agent: "claude", now: at }),

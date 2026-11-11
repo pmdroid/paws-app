@@ -139,16 +139,16 @@ export async function probePublicationReadiness(root: string) {
       loads++;
       return load(id);
     };
-    function queue() {
-      return enqueueJob(db, {
+    async function queue() {
+      return await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.merge,
         payload: { itemId },
         now: clock.now(),
       });
     }
-    function claim() {
-      queue();
-      const job = claimNextJob(db, {
+    async function claim() {
+      await queue();
+      const job = await claimNextJob(sqliteDb(db), {
         workerId: "publication-proof",
         leaseMs: 10_000,
         now: clock.now(),
@@ -183,7 +183,7 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("unchanged");
     try {
-      const first = f.claim();
+      const first = await f.claim();
       const guard = createPublicationReadiness({
         db: f.db,
         reconciler: f.reconciler,
@@ -229,8 +229,8 @@ export async function probePublicationReadiness(root: string) {
           state: getWorkItem(f.db, f.itemId)!.state,
         },
       );
-      assert(completeJob(f.db, first, f.clock.now()));
-      f.claim();
+      assert(await completeJob(sqliteDb(f.db), first, f.clock.now()));
+      await f.claim();
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
       assert.equal(f.loads(), 3);
       const rebased = { sha: "c".repeat(40), baseSha: "d".repeat(40) };
@@ -247,7 +247,7 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("missed-webhook");
     try {
-      f.claim();
+      await f.claim();
       f.setEffects(function* (q, changes) {
         if (!changes.specChangedItemIds.includes(f.itemId)) return;
         yield* applyWorkItemEventSteps(q, f.itemId, "restart");
@@ -325,7 +325,7 @@ export async function probePublicationReadiness(root: string) {
           exited = true;
         }
       });
-      f.queue();
+      await f.queue();
       ownedJob = loop.tick();
       let watchdog: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -369,7 +369,7 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("transport-repair");
     try {
-      f.claim();
+      await f.claim();
       const original = f.tracker.loadEpic;
       f.tracker.loadEpic = async () => {
         throw new Error("Scripted temporary Linear read failure");
@@ -399,7 +399,7 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("new-blocker", true);
     try {
-      let job = f.claim();
+      let job = await f.claim();
       const manual = f.db
         .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_issue_id='manual'")
         .get()!.id;
@@ -434,14 +434,14 @@ export async function probePublicationReadiness(root: string) {
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
       f.lifecycle.issues.get("manual")!.stateType = "completed";
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
-      assert(completeJob(f.db, job, f.clock.now()));
-      job = f.claim();
+      assert(await completeJob(sqliteDb(f.db), job, f.clock.now()));
+      job = await f.claim();
       f.lifecycle.issues.get("manual")!.stateType = "started";
       assert.equal(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate), false);
       f.lifecycle.issues.get("manual")!.stateType = "canceled";
       assert(await guard.publicationReady(f.itemId, "merge", undefined, f.candidate));
-      assert(completeJob(f.db, job, f.clock.now()));
-      job = f.claim();
+      assert(await completeJob(sqliteDb(f.db), job, f.clock.now()));
+      job = await f.claim();
       f.lifecycle.issues.get("manual")!.stateType = "completed";
       f.tracker.deps.set("parent", [
         ...f.tracker.deps.get("parent")!,
@@ -475,7 +475,7 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("authority");
     try {
-      f.claim();
+      await f.claim();
       const load = f.tracker.loadEpic;
       f.tracker.loadEpic = async (id) => {
         const value = await load(id);
@@ -501,7 +501,7 @@ export async function probePublicationReadiness(root: string) {
   {
     const f = await fixture("advance-policy");
     try {
-      f.claim();
+      await f.claim();
       let permitted = false;
       const guard = createPublicationReadiness({
         db: f.db,

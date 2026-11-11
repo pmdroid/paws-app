@@ -309,16 +309,17 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     expect(db.query("SELECT item_id FROM scheduler_admission").all()).toHaveLength(5);
     loop = jobs.run(controller.signal, (ms) => Bun.sleep(ms));
     const deadline = Date.now() + 20_000;
-    const parked = () =>
-      listJobs(db).filter(
+    const parked = async () =>
+      (await listJobs(sqliteDb(db))).filter(
         (job) =>
           job.status === "pending" &&
           (job.payload as { capacityWait?: unknown }).capacityWait !== undefined,
       ).length;
-    while (Date.now() < deadline && !(started.has("ENG-5") && parked() === 4)) await Bun.sleep(10);
+    while (Date.now() < deadline && !(started.has("ENG-5") && (await parked()) === 4))
+      await Bun.sleep(10);
     const itemJob = (job: Job) =>
       getWorkItem(db, (job.payload as { itemId: string }).itemId)?.linearIdentifier ?? "";
-    const executions = listJobs(db).filter((job) =>
+    const executions = (await listJobs(sqliteDb(db))).filter((job) =>
       [JOB_KIND.start, JOB_KIND.resume].includes(job.queue as typeof JOB_KIND.start),
     );
     const detail = JSON.stringify({

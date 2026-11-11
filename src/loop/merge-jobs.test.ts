@@ -51,7 +51,7 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
   const { db, clock } = queue();
   try {
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    const id = enqueueJob(db, {
+    const id = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1", head: "h", ciWaitDeadline: clock.now() - 1 },
       now: clock.now(),
@@ -63,11 +63,12 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
     loop.register(JOB_KIND.merge, async (job) => {
       expect(await parkMerge(sqliteDb(db), job, clock.now(), { reason })).toBe("parked");
       backstop =
-        reason === "ci" && getJob(db, job.id)!.runAt === clock.now() + MERGE_BACKSTOP_POLL_MS;
+        reason === "ci" &&
+        (await getJob(sqliteDb(db), job.id))!.runAt === clock.now() + MERGE_BACKSTOP_POLL_MS;
     });
     for (const delay of [10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000]) {
       expect((await loop.tick())?.id).toBe(id);
-      const parked = getJob(db, id)!;
+      const parked = (await getJob(sqliteDb(db), id))!;
       expect(parked.status).toBe("pending");
       expect(parked.attempts).toBe(0);
       expect(parked.runAt).toBe(clock.now() + delay);
@@ -98,7 +99,7 @@ describe("merge CI wait", () => {
   test("a parked merge remembers what it waits for, for the Merge queue page", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1" },
       now: clock.now(),
@@ -113,13 +114,13 @@ describe("merge CI wait", () => {
       });
     });
     const ran = await loop.tick();
-    expect(getJob(db, ran!.id)?.payload).toMatchObject({
+    expect((await getJob(sqliteDb(db), ran!.id))?.payload).toMatchObject({
       mergeWait: { reason: "review", message: "Waiting for an approving review." },
     });
     reason = "ci";
     clock.advance(60_000);
     await loop.tick();
-    expect(getJob(db, ran!.id)?.payload).toMatchObject({
+    expect((await getJob(sqliteDb(db), ran!.id))?.payload).toMatchObject({
       mergeWait: { reason: "ci", message: "CI 4 of 6 done." },
     });
   });
@@ -127,7 +128,7 @@ describe("merge CI wait", () => {
   test("a queued wait that left GitHub's merge queue records it, so the next pass does not ask", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1", githubQueue: { queued: true, position: 1 } },
       now: clock.now(),
@@ -142,7 +143,9 @@ describe("merge CI wait", () => {
       });
     });
     const ran = await loop.tick();
-    expect(getJob(db, ran!.id)?.payload).toMatchObject({ githubQueue: { queued: false } });
+    expect((await getJob(sqliteDb(db), ran!.id))?.payload).toMatchObject({
+      githubQueue: { queued: false },
+    });
   });
 
   test("a merge whose CI is still pending does not keep a running job", async () => {
@@ -166,12 +169,12 @@ describe("merge CI wait", () => {
       repository: "acme/one",
       now: clock.now(),
     });
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-2" },
       now: clock.now(),
@@ -181,7 +184,7 @@ describe("merge CI wait", () => {
       expect(await parkMerge(sqliteDb(db), job, clock.now())).toBe("parked");
     });
     const ran = await loop.tick();
-    const parked = ran === null ? null : getJob(db, ran.id);
+    const parked = ran === null ? null : await getJob(sqliteDb(db), ran.id);
     expect(parked?.status).toBe("pending");
     expect(parked?.lockedBy).toBeNull();
     expect(parked?.attempts).toBe(0);
@@ -190,7 +193,7 @@ describe("merge CI wait", () => {
       itemId: "eng-1",
       ciWaitDeadline: clock.now() + MERGE_CI_WAIT_MS,
     });
-    const other = claimNextJob(db, {
+    const other = await claimNextJob(sqliteDb(db), {
       workerId: "worker",
       leaseMs: 60_000,
       now: clock.now(),
@@ -200,7 +203,7 @@ describe("merge CI wait", () => {
     expect(other?.status).toBe("running");
     clock.advance(MERGE_CI_POLL_MS);
     expect(
-      claimNextJob(db, {
+      await claimNextJob(sqliteDb(db), {
         workerId: "worker",
         leaseMs: 60_000,
         now: clock.now(),
@@ -208,10 +211,10 @@ describe("merge CI wait", () => {
       }),
     ).toBeNull();
     if (other === null) throw new Error("missing claim");
-    expect(completeJob(db, other, clock.now())).toBe(true);
-    expect(claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })?.payload).toMatchObject(
-      { itemId: "eng-1" },
-    );
+    expect(await completeJob(sqliteDb(db), other, clock.now())).toBe(true);
+    expect(
+      (await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [JOB_KIND.merge] }))?.payload,
+    ).toMatchObject({ itemId: "eng-1" });
   });
 
   test("CI pending past the wait limit parks at the backstop and does not fail", async () => {
@@ -219,18 +222,28 @@ describe("merge CI wait", () => {
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     await beginImplementRun(sqliteDb(db), "eng-1", clock.now());
     await enterMergeQueue(sqliteDb(db), "eng-1", { phase: "merge_queue", wipCommit: "h" });
-    enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-1" }, now: clock.now() });
-    const first = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
+    await enqueueJob(sqliteDb(db), {
+      queue: JOB_KIND.merge,
+      payload: { itemId: "eng-1" },
+      now: clock.now(),
+    });
+    const first = (await claimNextJob(sqliteDb(db), {
+      now: clock.now(),
+      queues: [JOB_KIND.merge],
+    }))!;
     expect(await parkMerge(sqliteDb(db), first, clock.now(), { reason: "ci", head: "h" })).toBe(
       "parked",
     );
     clock.advance(MERGE_CI_WAIT_MS);
-    const again = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
+    const again = (await claimNextJob(sqliteDb(db), {
+      now: clock.now(),
+      queues: [JOB_KIND.merge],
+    }))!;
     expect(again.id).toBe(first.id);
     expect(await parkMerge(sqliteDb(db), again, clock.now(), { reason: "ci", head: "h" })).toBe(
       "parked",
     );
-    expect(getJob(db, first.id)).toMatchObject({
+    expect(await getJob(sqliteDb(db), first.id)).toMatchObject({
       status: "pending",
       runAt: clock.now() + MERGE_BACKSTOP_POLL_MS,
     });
@@ -240,7 +253,7 @@ describe("merge CI wait", () => {
   test("CI that turns green during the backstop wait merges once", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    const id = enqueueJob(db, {
+    const id = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1" },
       now: clock.now(),
@@ -264,7 +277,7 @@ describe("merge CI wait", () => {
     clock.advance(MERGE_BACKSTOP_POLL_MS);
     await loop.tick();
     expect(merges).toBe(1);
-    expect(getJob(db, id)?.status).toBe("done");
+    expect((await getJob(sqliteDb(db), id))?.status).toBe("done");
   });
   test("a reclaimed merge job keeps the verified base, head, and summary", async () => {
     const { db, clock } = queue();
@@ -274,12 +287,12 @@ describe("merge CI wait", () => {
       repo: "one",
       remoteUrl: "https://github.com/acme/one.git",
     });
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
-    const first = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
+    const first = await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [JOB_KIND.merge] });
     if (first === null) throw new Error("missing claim");
     expect(
       await parkMerge(sqliteDb(db), first, clock.now(), {
@@ -289,7 +302,7 @@ describe("merge CI wait", () => {
       }),
     ).toBe("parked");
     clock.advance(MERGE_CI_POLL_MS);
-    const again = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
+    const again = await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [JOB_KIND.merge] });
     expect(again?.id).toBe(first.id);
     expect(ciWaitVerification(again?.payload)).toEqual({
       base: "base-sha",
@@ -303,7 +316,7 @@ describe("merge job retries", () => {
   test("waiting for the task's other job does not spend an attempt", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    const id = enqueueJob(db, {
+    const id = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1", head: "head-sha" },
       maxAttempts: 2,
@@ -317,7 +330,7 @@ describe("merge job retries", () => {
       await loop.tick();
       clock.advance(10_000);
     }
-    expect(getJob(db, id)).toMatchObject({
+    expect(await getJob(sqliteDb(db), id)).toMatchObject({
       status: "pending",
       attempts: 0,
       payload: { itemId: "eng-1", head: "head-sha" },
@@ -327,7 +340,7 @@ describe("merge job retries", () => {
   test("a failed attempt waits for its backoff and keeps the attempt spent", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    const id = enqueueJob(db, {
+    const id = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1" },
       now: clock.now(),
@@ -337,7 +350,7 @@ describe("merge job retries", () => {
       await retryMergeLater(db, job, clock.now(), 30_000, new Error("GitHub returned 502"));
     });
     await loop.tick();
-    expect(getJob(db, id)).toMatchObject({
+    expect(await getJob(sqliteDb(db), id)).toMatchObject({
       status: "pending",
       attempts: 1,
       runAt: clock.now() + 30_000,
@@ -354,12 +367,12 @@ describe("GitHub deliveries", () => {
   async function parked(githubQueue?: { queued: boolean }) {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    const id = enqueueJob(db, {
+    const id = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1", head },
       now: clock.now(),
     });
-    const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
+    const job = await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [JOB_KIND.merge] });
     if (job === null) throw new Error("missing claim");
     await parkMerge(sqliteDb(db), job, clock.now(), {
       base: "b".repeat(40),
@@ -383,19 +396,19 @@ describe("GitHub deliveries", () => {
 
   test("a check_suite delivery for the head wakes its merge job at once", async () => {
     const { db, clock, id } = await parked();
-    expect(getJob(db, id)?.runAt).toBeGreaterThan(clock.now());
+    expect((await getJob(sqliteDb(db), id))?.runAt).toBeGreaterThan(clock.now());
     expect(
       await deliver(db, clock.now(), "check_suite", {
         action: "completed",
         check_suite: { head_sha: head, head_branch: "elsewhere", pull_requests: [] },
       }),
     ).toBe(true);
-    expect(getJob(db, id)?.runAt).toBe(clock.now());
+    expect((await getJob(sqliteDb(db), id))?.runAt).toBe(clock.now());
   });
 
   test("a check that only started, or a pending status, does not wake the merge job", async () => {
     const { db, clock, id } = await parked();
-    const runAt = getJob(db, id)?.runAt;
+    const runAt = (await getJob(sqliteDb(db), id))?.runAt;
     await deliver(db, clock.now(), "check_run", {
       action: "created",
       check_run: { head_sha: head },
@@ -405,7 +418,7 @@ describe("GitHub deliveries", () => {
       check_suite: { head_sha: head },
     });
     await deliver(db, clock.now(), "status", { state: "pending", sha: head });
-    expect(getJob(db, id)?.runAt).toBe(runAt);
+    expect((await getJob(sqliteDb(db), id))?.runAt).toBe(runAt);
   });
 
   test("a redelivered delivery id is recorded once and wakes nothing again", async () => {
@@ -414,7 +427,7 @@ describe("GitHub deliveries", () => {
     expect(await deliver(db, clock.now(), "status", payload)).toBe(true);
     db.run("UPDATE job SET run_at = ? WHERE id = ?", [clock.now() + 60_000, id]);
     expect(await deliver(db, clock.now(), "status", payload)).toBe(false);
-    expect(getJob(db, id)?.runAt).toBe(clock.now() + 60_000);
+    expect((await getJob(sqliteDb(db), id))?.runAt).toBe(clock.now() + 60_000);
   });
 
   test("check_run, status, pull_request and review deliveries match by head or branch", async () => {
@@ -449,18 +462,18 @@ describe("GitHub deliveries", () => {
     for (const [index, [event, payload]] of cases.entries()) {
       const { db, clock, id, branch } = await parked();
       expect(await deliver(db, clock.now(), event, payload(branch), `d-${index}`)).toBe(true);
-      expect(getJob(db, id)?.runAt, `${event} ${index}`).toBe(clock.now());
+      expect((await getJob(sqliteDb(db), id))?.runAt, `${event} ${index}`).toBe(clock.now());
     }
   });
 
   test("a delivery for another head or branch leaves the merge job parked", async () => {
     const { db, clock, id } = await parked();
-    const runAt = getJob(db, id)?.runAt;
+    const runAt = (await getJob(sqliteDb(db), id))?.runAt;
     await deliver(db, clock.now(), "pull_request", {
       pull_request: { head: { sha: "c".repeat(40), ref: "paws/eng-2" } },
     });
     await deliver(db, clock.now(), "merge_group", { merge_group: { head_sha: "d".repeat(40) } });
-    expect(getJob(db, id)?.runAt).toBe(runAt);
+    expect((await getJob(sqliteDb(db), id))?.runAt).toBe(runAt);
   });
 
   test("a merge_group delivery wakes merges in GitHub's merge queue", async () => {
@@ -469,13 +482,13 @@ describe("GitHub deliveries", () => {
       action: "destroyed",
       merge_group: { head_sha: "d".repeat(40), head_ref: "refs/heads/gh-readonly-queue/main/pr-7" },
     });
-    expect(getJob(db, id)?.runAt).toBe(clock.now());
+    expect((await getJob(sqliteDb(db), id))?.runAt).toBe(clock.now());
   });
 
   test("a delivery while the merge job runs makes its next pass run at once", async () => {
     const { db, clock, id } = await parked();
     clock.advance(MERGE_CI_POLL_MS);
-    const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
+    const job = await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [JOB_KIND.merge] });
     expect(job?.id).toBe(id);
     clock.advance(1_000);
     await deliver(db, clock.now(), "check_suite", {
@@ -483,7 +496,7 @@ describe("GitHub deliveries", () => {
       check_suite: { head_sha: head },
     });
     expect(await parkMerge(sqliteDb(db), job!, clock.now(), { head })).toBe("parked");
-    expect(getJob(db, id)).toMatchObject({ status: "pending", runAt: clock.now() });
+    expect(await getJob(sqliteDb(db), id)).toMatchObject({ status: "pending", runAt: clock.now() });
   });
 });
 
@@ -507,8 +520,8 @@ describe("main moving", () => {
     return { db, clock };
   }
 
-  function sweeps(db: ReturnType<typeof queue>["db"]) {
-    return listJobs(db)
+  async function sweeps(db: ReturnType<typeof queue>["db"]) {
+    return (await listJobs(sqliteDb(db)))
       .filter((job) => job.queue === JOB_KIND.queueConflicts)
       .map((job) => job.payload);
   }
@@ -544,7 +557,7 @@ describe("main moving", () => {
       },
       clock.now(),
     );
-    expect(sweeps(db)).toEqual([{ repository: "acme/app", main }]);
+    expect(await sweeps(db)).toEqual([{ repository: "acme/app", main }]);
   });
 
   test("a push to another branch or a closed unmerged pull request checks nothing", async () => {
@@ -571,15 +584,15 @@ describe("main moving", () => {
       },
       clock.now(),
     );
-    expect(sweeps(db)).toEqual([]);
+    expect(await sweeps(db)).toEqual([]);
   });
 });
 
 describe("merge poll backstop", () => {
-  function ciWait() {
+  async function ciWait() {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    const id = enqueueJob(db, {
+    const id = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1" },
       now: clock.now(),
@@ -598,7 +611,7 @@ describe("merge poll backstop", () => {
   }
 
   test("with deliveries flowing, a 20-minute CI wait makes at most 5 GitHub status reads", async () => {
-    const { db, clock, loop, reads } = ciWait();
+    const { db, clock, loop, reads } = await ciWait();
     await ping(db, clock.now());
     for (let elapsed = 0; elapsed <= 20 * 60_000; elapsed += MERGE_CI_POLL_MS) {
       await loop.tick();
@@ -609,29 +622,29 @@ describe("merge poll backstop", () => {
   });
 
   test("a CI wait polls every 10 seconds when no delivery arrived in the last hour", async () => {
-    const { db, clock, id, loop } = ciWait();
+    const { db, clock, id, loop } = await ciWait();
     await ping(db, clock.now());
     clock.advance(60 * 60_000);
     await loop.tick();
-    expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_CI_POLL_MS);
+    expect((await getJob(sqliteDb(db), id))?.runAt).toBe(clock.now() + MERGE_CI_POLL_MS);
     await ping(db, clock.now(), "ping-2");
     clock.advance(MERGE_CI_POLL_MS);
     await loop.tick();
-    expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_BACKSTOP_POLL_MS);
+    expect((await getJob(sqliteDb(db), id))?.runAt).toBe(clock.now() + MERGE_BACKSTOP_POLL_MS);
   });
 
   test("a wait for a review or the queue polls every 5 minutes while deliveries flow", async () => {
     const { db, clock } = queue();
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
-    const id = enqueueJob(db, {
+    const id = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
     await ping(db, clock.now());
-    const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
+    const job = await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [JOB_KIND.merge] });
     await parkMerge(sqliteDb(db), job!, clock.now(), { queued: true, reason: "review" });
-    expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_BACKSTOP_POLL_MS);
+    expect((await getJob(sqliteDb(db), id))?.runAt).toBe(clock.now() + MERGE_BACKSTOP_POLL_MS);
   });
 });
 
@@ -644,19 +657,29 @@ describe("slow CI question", () => {
     await beginImplementRun(sqliteDb(db), "eng-1", clock.now());
     await enterMergeQueue(sqliteDb(db), "eng-1", { phase: "merge_queue", wipCommit: "h" });
     await markCloseoutAccepted(sqliteDb(db), "eng-1", "h");
-    enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-1" }, now: clock.now() });
-    const first = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
+    await enqueueJob(sqliteDb(db), {
+      queue: JOB_KIND.merge,
+      payload: { itemId: "eng-1" },
+      now: clock.now(),
+    });
+    const first = (await claimNextJob(sqliteDb(db), {
+      now: clock.now(),
+      queues: [JOB_KIND.merge],
+    }))!;
     expect(await parkMerge(sqliteDb(db), first, clock.now(), { reason: "ci", head: "h" })).toBe(
       "parked",
     );
     clock.advance(MERGE_CI_ASK_AFTER_MS);
-    const again = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
+    const again = (await claimNextJob(sqliteDb(db), {
+      now: clock.now(),
+      queues: [JOB_KIND.merge],
+    }))!;
     expect(await parkMerge(sqliteDb(db), again, clock.now(), { reason: "ci", head: "h" })).toBe(
       "ask",
     );
     expect(await askAboutSlowCi(db, "eng-1", { checks, now: clock.now() })).toBe(true);
     expect(await askAboutSlowCi(db, "eng-1", { checks, now: clock.now() })).toBe(false);
-    completeJob(db, again, clock.now());
+    await completeJob(sqliteDb(db), again, clock.now());
     return { db, clock };
   }
 
@@ -690,12 +713,12 @@ describe("slow CI question", () => {
     expect(await reply(db, "Merge the accepted work", clock.now())).toBe("answered");
     expect(getWorkItem(db, "eng-1")).toMatchObject({ state: "merge_queue", acceptedHead: "h" });
     expect(await listRuns(sqliteDb(db), "eng-1")).toHaveLength(runs);
-    const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] })!;
+    const job = (await claimNextJob(sqliteDb(db), { now: clock.now(), queues: [JOB_KIND.merge] }))!;
     expect(job.payload).toMatchObject({ itemId: "eng-1", head: "h" });
     expect(await parkMerge(sqliteDb(db), job, clock.now(), { reason: "ci", head: "h" })).toBe(
       "parked",
     );
-    expect(getJob(db, job.id)).toMatchObject({
+    expect(await getJob(sqliteDb(db), job.id)).toMatchObject({
       runAt: clock.now() + MERGE_CI_POLL_MS,
       payload: { ciWaitStartedAt: clock.now(), ciWaitDeadline: clock.now() + MERGE_CI_WAIT_MS },
     });
@@ -715,6 +738,6 @@ describe("slow CI question", () => {
         /^Stopped while GitHub CI was pending, as asked in Linear\. The accepted work is on branch `.+`\.$/,
       ),
     });
-    expect(listJobs(db).some((job) => job.status === "pending")).toBe(false);
+    expect((await listJobs(sqliteDb(db))).some((job) => job.status === "pending")).toBe(false);
   });
 });

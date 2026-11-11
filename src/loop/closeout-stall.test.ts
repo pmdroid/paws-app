@@ -63,22 +63,26 @@ test("quiet verification retries once across restart, then asks a person", async
     await check();
     expect(lines).toHaveLength(0);
     expect(cancelled).toHaveLength(0);
-    expect(listJobs(db)).toHaveLength(0);
+    expect(await listJobs(sqliteDb(db))).toHaveLength(0);
     // Restart with no in-memory Closeout operation and retain the last event's clock.
     db.close();
     db = openDatabase(path);
-    const oldJob = enqueueJob(db, {
+    const oldJob = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.reverify,
       payload: { itemId: "stalled" },
       now: clock.now(),
     });
-    claimNextJob(db, { now: clock.now(), leaseMs: 60 * 60_000 });
+    await claimNextJob(sqliteDb(db), { now: clock.now(), leaseMs: 60 * 60_000 });
     clock.advance(31 * 60_000);
     await check();
-    expect(listJobs(db).find((job) => job.id === oldJob)?.status).toBe("cancelled");
+    expect((await listJobs(sqliteDb(db))).find((job) => job.id === oldJob)?.status).toBe(
+      "cancelled",
+    );
     await check();
     expect(
-      listJobs(db).filter((j) => j.queue === JOB_KIND.reverify && j.id !== oldJob),
+      (await listJobs(sqliteDb(db))).filter(
+        (j) => j.queue === JOB_KIND.reverify && j.id !== oldJob,
+      ),
     ).toHaveLength(1);
     expect(lines).toEqual(["closeout stalled for 31 min, re-running once"]);
     // The real re-verify closes the quiet run and opens a new one on the same head.
@@ -104,7 +108,9 @@ test("quiet verification retries once across restart, then asks a person", async
     ]);
     expect(cancelled).toHaveLength(2);
     expect(
-      listJobs(db).filter((j) => j.queue === JOB_KIND.reverify && j.id !== oldJob),
+      (await listJobs(sqliteDb(db))).filter(
+        (j) => j.queue === JOB_KIND.reverify && j.id !== oldJob,
+      ),
     ).toHaveLength(1);
     await sqliteDb(db).transaction((q) =>
       answerSteps(
@@ -158,7 +164,9 @@ test("a usage pause is not a stall, and one failed cancel leaves the other items
       },
       journal: (line) => lines.push(line),
     });
-    const retried = listJobs(db).map((job) => (job.payload as { itemId: string }).itemId);
+    const retried = (await listJobs(sqliteDb(db))).map(
+      (job) => (job.payload as { itemId: string }).itemId,
+    );
     expect(retried).toEqual(["quiet"]);
   } finally {
     db.close();

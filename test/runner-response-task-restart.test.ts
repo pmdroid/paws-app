@@ -312,7 +312,9 @@ test("an answer task mid-turn keeps running through a Paws restart and finishes 
     ]);
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
     expect(
-      listJobs(f.db).filter((job) => job.queue === "run.resume" && job.status === "pending"),
+      (await listJobs(sqliteDb(f.db))).filter(
+        (job) => job.queue === "run.resume" && job.status === "pending",
+      ),
     ).toHaveLength(1);
 
     const commands = f.commandCount();

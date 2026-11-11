@@ -41,15 +41,15 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
         headers: fixture.headers(identity),
         body: JSON.stringify({ action: "retry", target }),
       });
-    const dead = (itemId: string) =>
-      enqueueJob(db, {
+    const dead = async (itemId: string) =>
+      await enqueueJob(sqliteDb(db), {
         queue: "test.unhandled",
         payload: { itemId },
         jobKey: `dead:${itemId}`,
         runAt: Date.now() + 3_600_000,
       });
-    const mine = dead("controlled");
-    const foreign = dead("foreign");
+    const mine = await dead("controlled");
+    const foreign = await dead("foreign");
     db.run("UPDATE job SET status = 'dead', last_error = 'runner lost' WHERE id IN (?, ?)", [
       mine,
       foreign,
@@ -58,20 +58,20 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     assert.equal((await retry("job:x")).status, 400);
     assert.equal((await retry(`job:${mine}`, "inactive")).status, 401);
     assert.equal((await retry(`job:${foreign}`, "admin")).status, 403);
-    assert.equal(getJob(db, foreign)!.status, "dead");
+    assert.equal((await getJob(sqliteDb(db), foreign))!.status, "dead");
     assert.equal((await retry(`job:${mine}`)).status, 200);
-    assert.equal(getJob(db, mine)!.status, "pending");
-    assert.equal(getJob(db, mine)!.attempts, 0);
+    assert.equal((await getJob(sqliteDb(db), mine))!.status, "pending");
+    assert.equal((await getJob(sqliteDb(db), mine))!.attempts, 0);
     assert.equal((await retry(`job:${mine}`)).status, 403);
 
     // A dead job from an earlier state of the item is refused, so its work is not revived.
-    const stale = dead("controlled-stale");
+    const stale = await dead("controlled-stale");
     db.run("UPDATE job SET payload = json_set(payload, '$.itemId', 'controlled') WHERE id = ?", [
       stale,
     ]);
     db.run("UPDATE job SET status = 'dead', item_version = -1 WHERE id = ?", [stale]);
     assert.equal((await retry(`job:${stale}`)).status, 409);
-    assert.equal(getJob(db, stale)!.status, "dead");
+    assert.equal((await getJob(sqliteDb(db), stale))!.status, "dead");
 
     // Once the session is stopped, only its dead final Stop delivery can be retried.
     const session = getWorkItem(db, "controlled")!.sessionKey!;
@@ -83,7 +83,7 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
       idempotencyKey: "stop:controlled:retry-test",
       payload: { itemId: "controlled", kind: "response", body: "Stopped." },
     });
-    const late = dead("controlled-late");
+    const late = await dead("controlled-late");
     db.run("UPDATE job SET payload = json_set(payload, '$.itemId', 'controlled') WHERE id = ?", [
       late,
     ]);
@@ -91,7 +91,7 @@ test("Retry puts a dead job of an authorized item back to pending and refuses ev
     db.run("UPDATE outbox SET status = 'dead', error = 'Linear is down' WHERE id = ?", [stop]);
     db.run("UPDATE linear_session SET stopped_at = ? WHERE session_id = ?", [Date.now(), session]);
     assert.equal((await retry(`job:${late}`)).status, 403);
-    assert.equal(getJob(db, late)!.status, "dead");
+    assert.equal((await getJob(sqliteDb(db), late))!.status, "dead");
     assert.equal((await retry(`outbox:${stop}`, "inactive")).status, 401);
     assert.equal((await retry(`outbox:${stop}`)).status, 200);
     assert.equal((await sqliteDb(db).run((q) => getOutboxSteps(q, stop)))!.status, "pending");

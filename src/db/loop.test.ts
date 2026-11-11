@@ -63,9 +63,13 @@ describe("job loop", () => {
     try {
       const loop = new JobLoop(db, clock);
       for (const recurringEveryMs of [undefined, 100]) {
-        const id = enqueueJob(db, { queue: "removed", recurringEveryMs, now: clock.now() });
+        const id = await enqueueJob(sqliteDb(db), {
+          queue: "removed",
+          recurringEveryMs,
+          now: clock.now(),
+        });
         await loop.tick(["removed"]);
-        expect(getJob(db, id)).toMatchObject({
+        expect(await getJob(sqliteDb(db), id)).toMatchObject({
           status: "cancelled",
           lastError: "No handler for removed",
           finishedAt: clock.now(),
@@ -89,10 +93,14 @@ describe("job loop", () => {
       const db = openDatabase(":memory:");
       migrate(db);
       const clock = new FakeClock(1000);
-      const removed = enqueueJob(db, { queue: "removed", recurringEveryMs: 100, now: 2000 });
-      const oneShot = enqueueJob(db, { queue: "other", now: 2000 });
+      const removed = await enqueueJob(sqliteDb(db), {
+        queue: "removed",
+        recurringEveryMs: 100,
+        now: 2000,
+      });
+      const oneShot = await enqueueJob(sqliteDb(db), { queue: "other", now: 2000 });
       const known = registered
-        ? enqueueJob(db, { queue: "work", recurringEveryMs: 100, now: 2000 })
+        ? await enqueueJob(sqliteDb(db), { queue: "work", recurringEveryMs: 100, now: 2000 })
         : null;
       const lines: string[] = [];
       const restore = setJournalSink((line) => lines.push(line));
@@ -102,9 +110,9 @@ describe("job loop", () => {
         const controller = new AbortController();
         controller.abort();
         await loop.run(controller.signal);
-        expect(getJob(db, removed)).toBeNull();
-        expect(getJob(db, oneShot)?.status).toBe("pending");
-        if (known !== null) expect(getJob(db, known)?.status).toBe("pending");
+        expect(await getJob(sqliteDb(db), removed)).toBeNull();
+        expect((await getJob(sqliteDb(db), oneShot))?.status).toBe("pending");
+        if (known !== null) expect((await getJob(sqliteDb(db), known))?.status).toBe("pending");
         expect(lines).toEqual([
           `job ${removed} removed recurring definition removed: No handler for removed`,
         ]);
@@ -124,8 +132,8 @@ describe("job loop", () => {
     loop.register("work", (job) => {
       handled.push(job.queue);
     });
-    enqueueJob(db, { queue: "later", runAt: 10_000, now: clock.now() });
-    enqueueJob(db, { queue: "work", runAt: 500, now: clock.now() });
+    await enqueueJob(sqliteDb(db), { queue: "later", runAt: 10_000, now: clock.now() });
+    await enqueueJob(sqliteDb(db), { queue: "work", runAt: 500, now: clock.now() });
     const controller = new AbortController();
     let steps = 0;
     await loop.run(controller.signal, async () => {
@@ -134,7 +142,9 @@ describe("job loop", () => {
       if (handled.length > 0 || steps > 20) controller.abort();
     });
     expect(handled).toEqual(["work"]);
-    expect(listJobs(db).find((job) => job.queue === "later")?.status).toBe("pending");
+    expect((await listJobs(sqliteDb(db))).find((job) => job.queue === "later")?.status).toBe(
+      "pending",
+    );
   });
 
   test("a thrown handler is retried and then failed", async () => {
@@ -145,12 +155,12 @@ describe("job loop", () => {
     loop.register("work", () => {
       throw new Error("boom");
     });
-    enqueueJob(db, { queue: "work", maxAttempts: 2, now: clock.now() });
+    await enqueueJob(sqliteDb(db), { queue: "work", maxAttempts: 2, now: clock.now() });
     await loop.tick();
-    expect(listJobs(db)[0]?.status).toBe("pending");
+    expect((await listJobs(sqliteDb(db)))[0]?.status).toBe("pending");
     clock.advance(50);
     await loop.tick();
-    expect(listJobs(db)[0]?.status).toBe("dead");
+    expect((await listJobs(sqliteDb(db)))[0]?.status).toBe("dead");
   });
 });
 
@@ -171,23 +181,33 @@ for (const scenario of ["reclaimed", "cancelled"] as const) {
       await blocked;
       authority.signal.throwIfAborted();
     });
-    const id = enqueueJob(db, { queue: "work", payload: { itemId: "item" }, now: clock.now() });
+    const id = await enqueueJob(sqliteDb(db), {
+      queue: "work",
+      payload: { itemId: "item" },
+      now: clock.now(),
+    });
     const running = loop.tick();
     await started;
     if (scenario === "reclaimed") {
       clock.advance(30001);
       expect(
-        claimNextJob(db, { workerId: "job-loop", queues: ["work"], now: clock.now() })?.id,
+        (
+          await claimNextJob(sqliteDb(db), {
+            workerId: "job-loop",
+            queues: ["work"],
+            now: clock.now(),
+          })
+        )?.id,
       ).toBe(id);
     } else
       await cancelOpenJobs(sqliteDb(db), { itemId: "item", reason: "cancelled", now: clock.now() });
-    const replacement = getJob(db, id);
+    const replacement = await getJob(sqliteDb(db), id);
     expect(context.isCurrent()).toBe(false);
     expect(context.signal.aborted).toBe(true);
     expect(await context.extendLease()).toBe(false);
     finish();
     await running;
-    expect(getJob(db, id)).toEqual(replacement);
+    expect(await getJob(sqliteDb(db), id)).toEqual(replacement);
     db.close();
   });
 }
@@ -205,18 +225,18 @@ test("a long handler renews its claim while other workers poll", async () => {
     entered();
     await blocked;
   });
-  const id = enqueueJob(db, { queue: "work", now: clock.now() });
+  const id = await enqueueJob(sqliteDb(db), { queue: "work", now: clock.now() });
   const running = loop.tick();
   await started;
   for (let i = 0; i < 6; i++) {
     clock.advance(30);
     await Bun.sleep(40);
-    expect(claimNextJob(db, { queues: ["work"], now: clock.now() })).toBeNull();
+    expect(await claimNextJob(sqliteDb(db), { queues: ["work"], now: clock.now() })).toBeNull();
   }
-  expect(getJob(db, id)?.attempts).toBe(1);
+  expect((await getJob(sqliteDb(db), id))?.attempts).toBe(1);
   finish();
   await running;
-  expect(getJob(db, id)?.status).toBe("done");
+  expect((await getJob(sqliteDb(db), id))?.status).toBe("done");
   db.close();
 });
 
@@ -236,16 +256,18 @@ test("a renewal after a pause keeps the job when nobody claimed it in the meanti
     await blocked;
     authority.signal.throwIfAborted();
   });
-  const id = enqueueJob(db, { queue: "work", now: clock.now() });
+  const id = await enqueueJob(sqliteDb(db), { queue: "work", now: clock.now() });
   const running = loop.tick();
   await started;
   clock.advance(45_000);
   expect(context.isCurrent()).toBe(true);
   expect(await context.extendLease()).toBe(true);
-  expect(claimNextJob(db, { workerId: "other", queues: ["work"], now: clock.now() })).toBeNull();
+  expect(
+    await claimNextJob(sqliteDb(db), { workerId: "other", queues: ["work"], now: clock.now() }),
+  ).toBeNull();
   finish();
   await running;
-  expect(getJob(db, id)).toMatchObject({ status: "done", attempts: 1 });
+  expect(await getJob(sqliteDb(db), id)).toMatchObject({ status: "done", attempts: 1 });
   db.close();
 });
 
@@ -271,7 +293,7 @@ test("an idle loop claims once per ceiling and sleeps until the earliest run_at"
   loop.register("work", () => {
     seen.push(clock.now());
   });
-  enqueueJob(db, { queue: "work", runAt: 2_500, now: 0 });
+  await enqueueJob(sqliteDb(db), { queue: "work", runAt: 2_500, now: 0 });
   const requested: number[] = [];
   const controller = new AbortController();
   await loop.run(controller.signal, async (ms) => {
@@ -299,7 +321,7 @@ test("a job enqueued while the loop sleeps starts within 50ms", async () => {
   const running = loop.run(controller.signal);
   await Bun.sleep(20);
   const enqueuedAt = Date.now();
-  enqueueJob(db, { queue: "work", now: enqueuedAt });
+  await enqueueJob(sqliteDb(db), { queue: "work", now: enqueuedAt });
   for (let attempt = 0; attempt < 40; attempt++) {
     if (startedAt !== 0) break;
     await Bun.sleep(1);
@@ -323,7 +345,7 @@ test("a claim failure keeps the worker polling and runs the job once", async () 
   loop.register("work", () => {
     runs += 1;
   });
-  const id = enqueueJob(real, { queue: "work", now: clock.now() });
+  const id = await enqueueJob(sqliteDb(real), { queue: "work", now: clock.now() });
   gate.failNext();
   const controller = new AbortController();
   let polls = 0;
@@ -336,7 +358,7 @@ test("a claim failure keeps the worker polling and runs the job once", async () 
     expect(lines.join("\n")).toContain("SQLITE_BUSY");
     expect(runs).toBe(1);
     expect(polls).toBeGreaterThan(0);
-    expect(getJob(real, id)).toMatchObject({ status: "done", attempts: 1 });
+    expect(await getJob(sqliteDb(real), id)).toMatchObject({ status: "done", attempts: 1 });
     expect(loop.liveness()).toMatchObject({ polling: true, inFlight: 0, workerCount: 1 });
   } finally {
     restore();
@@ -363,23 +385,23 @@ test("a claim failure does not cancel or repeat an in-flight handler", async () 
     await blocked;
     authority.signal.throwIfAborted();
   });
-  const runningId = enqueueJob(real, { queue: "work", now: clock.now() });
+  const runningId = await enqueueJob(sqliteDb(real), { queue: "work", now: clock.now() });
   const running = loop.tick();
   await started;
   expect(loop.liveness().inFlight).toBe(1);
-  const waitingId = enqueueJob(real, { queue: "work", now: clock.now() });
+  const waitingId = await enqueueJob(sqliteDb(real), { queue: "work", now: clock.now() });
   gate.failNext();
   expect(await loop.tick()).toBeNull();
   expect(context.signal.aborted).toBe(false);
-  expect(getJob(real, runningId)).toMatchObject({ status: "running", attempts: 1 });
-  expect(getJob(real, waitingId)).toMatchObject({ status: "pending", attempts: 0 });
+  expect(await getJob(sqliteDb(real), runningId)).toMatchObject({ status: "running", attempts: 1 });
+  expect(await getJob(sqliteDb(real), waitingId)).toMatchObject({ status: "pending", attempts: 0 });
   expect(loop.liveness().inFlight).toBe(1);
   finish();
   await running;
   expect(runs).toBe(1);
-  expect(getJob(real, runningId)).toMatchObject({ status: "done", attempts: 1 });
+  expect(await getJob(sqliteDb(real), runningId)).toMatchObject({ status: "done", attempts: 1 });
   await loop.tick();
-  expect(getJob(real, waitingId)).toMatchObject({ status: "done", attempts: 1 });
+  expect(await getJob(sqliteDb(real), waitingId)).toMatchObject({ status: "done", attempts: 1 });
   real.close();
 });
 

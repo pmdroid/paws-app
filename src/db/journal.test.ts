@@ -35,8 +35,8 @@ function database() {
   return db;
 }
 
-function claim(db: ReturnType<typeof database>, queue: string) {
-  const job = claimNextJob(db, { workerId: "w", now: 1_000, queues: [queue] });
+async function claim(db: ReturnType<typeof database>, queue: string) {
+  const job = await claimNextJob(sqliteDb(db), { workerId: "w", now: 1_000, queues: [queue] });
   if (job === null) throw new Error(`no ${queue} job`);
   return job;
 }
@@ -83,18 +83,18 @@ describe("journal", () => {
 
   test("writes done, dead and cancelled outcomes for item jobs", async () => {
     const db = database();
-    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
-    completeJob(db, claim(db, JOB_KIND.resume), 1_000);
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
+    await completeJob(sqliteDb(db), await claim(db, JOB_KIND.resume), 1_000);
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "b" },
       maxAttempts: 1,
       now: 0,
     });
-    await failJob(sqliteDb(db), claim(db, JOB_KIND.merge), new Error("merge\nconflict"), {
+    await failJob(sqliteDb(db), await claim(db, JOB_KIND.merge), new Error("merge\nconflict"), {
       now: 1_000,
     });
-    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "c" }, now: 0 });
+    await enqueueJob(sqliteDb(db), { queue: JOB_KIND.resume, payload: { itemId: "c" }, now: 0 });
     await cancelOpenJobs(sqliteDb(db), { itemId: "c", reason: "stopped", now: 1_000 });
     expect(lines.filter((line) => line.startsWith("job "))).toEqual([
       "job 1 run.resume done item=a attempts=1/10",
@@ -105,10 +105,12 @@ describe("journal", () => {
 
   test("leaves other queues and retried jobs out", async () => {
     const db = database();
-    enqueueJob(db, { queue: JOB_KIND.catchup, now: 0 });
-    completeJob(db, claim(db, JOB_KIND.catchup), 1_000);
-    enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
-    await failJob(sqliteDb(db), claim(db, JOB_KIND.resume), new Error("busy"), { now: 1_000 });
+    await enqueueJob(sqliteDb(db), { queue: JOB_KIND.catchup, now: 0 });
+    await completeJob(sqliteDb(db), await claim(db, JOB_KIND.catchup), 1_000);
+    await enqueueJob(sqliteDb(db), { queue: JOB_KIND.resume, payload: { itemId: "a" }, now: 0 });
+    await failJob(sqliteDb(db), await claim(db, JOB_KIND.resume), new Error("busy"), {
+      now: 1_000,
+    });
     expect(lines.filter((line) => line.startsWith("job "))).toEqual([]);
   });
 });

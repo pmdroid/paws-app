@@ -79,15 +79,15 @@ describe("sqlite", () => {
     db.close();
   });
 
-  test("enqueueJob round-trips and claim takes the due row", () => {
+  test("enqueueJob round-trips and claim takes the due row", async () => {
     const db = openTemp();
-    const id = enqueueJob(db, {
+    const id = await enqueueJob(sqliteDb(db), {
       queue: "run",
       jobKey: "item-1",
       payload: { itemId: "i1" },
       priority: 1,
     });
-    expect(getJob(db, id)).toMatchObject({
+    expect(await getJob(sqliteDb(db), id)).toMatchObject({
       id,
       queue: "run",
       jobKey: "item-1",
@@ -95,7 +95,7 @@ describe("sqlite", () => {
       status: "pending",
       priority: 1,
     });
-    expect(claimNextJob(db, { workerId: "test" })?.id).toBe(id);
+    expect((await claimNextJob(sqliteDb(db), { workerId: "test" }))?.id).toBe(id);
     expect(() =>
       db.run("INSERT INTO job (queue, payload, run_at, created_at) VALUES ('q', '{', 0, 0)"),
     ).toThrow();

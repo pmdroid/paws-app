@@ -210,8 +210,10 @@ async function setup(options: { members?: string[]; agents?: string[] } = {}) {
     deliver: () => deliverLinearComments(db, "eng-1", caps),
     comment: async (id: string) =>
       (await getLinearComment(sqliteDb(db), id)) as LinearCommentRecord,
-    commentJobs: () => listJobs(db).filter((job) => job.queue === JOB_KIND.linearComments),
-    resumeJobs: () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume),
+    commentJobs: async () =>
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.linearComments),
+    resumeJobs: async () =>
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
     onLeave: (record: (pullNumber: number) => void) => {
       const original = orchestrator["linearCommentCapabilities"].bind(orchestrator);
       Object.assign(orchestrator, {
@@ -225,7 +227,7 @@ async function setup(options: { members?: string[]; agents?: string[] } = {}) {
       });
     },
     resumedBrief: async () => {
-      const job = listJobs(db).find((entry) => entry.queue === JOB_KIND.resume);
+      const job = (await listJobs(sqliteDb(db))).find((entry) => entry.queue === JOB_KIND.resume);
       const restartBody = (job?.payload as { handoff?: string } | undefined)?.handoff ?? "";
       return [restartBody, (await turnBrief(db, getWorkItem(db, "eng-1")!, caps)) ?? ""].join(
         "\n\n",
@@ -310,8 +312,8 @@ describe("receiving ordinary Linear comments", () => {
       expect(await f.thoughts()).toEqual([
         "Received a comment on eng-1. Paws hands it to the agent at its next turn.",
       ]);
-      expect(f.commentJobs()).toHaveLength(1);
-      expect(f.commentJobs()[0]!.runAt).toBe(T0 + 60_000);
+      expect(await f.commentJobs()).toHaveLength(1);
+      expect((await f.commentJobs())[0]!.runAt).toBe(T0 + 60_000);
     } finally {
       await f.close();
     }
@@ -326,7 +328,7 @@ describe("receiving ordinary Linear comments", () => {
       expect(await f.deliver()).toBe("restarted");
       expect(await f.deliver()).toBe("done");
       expect(getWorkItem(f.db, "eng-1")!.state).toBe("queued");
-      const resumes = f.resumeJobs();
+      const resumes = await f.resumeJobs();
       expect(resumes).toHaveLength(1);
       expect((resumes[0]!.payload as { reason: string }).reason).toBe("follow_up");
       expect((resumes[0]!.payload as { handoff: string }).handoff).toBe(LINEAR_COMMENT_RESTART);
@@ -407,7 +409,7 @@ describe("receiving ordinary Linear comments", () => {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Ship it behind a flag." })));
       expect(await f.deliverWithLoop()).toBe("restarted");
       expect(await f.deliverWithLoop()).toBe("done");
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
       expect(await f.resumedBrief()).toContain("Ship it behind a flag.");
     } finally {
       await f.close();
@@ -419,7 +421,7 @@ describe("receiving ordinary Linear comments", () => {
     try {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Keep the old API too." })));
       expect(await f.deliver()).toBe("done");
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
       const item = getWorkItem(f.db, "eng-1")!;
       const offered = await linearCommentBrief(sqliteDb(f.db), item, f.caps);
       expect(offered?.text).toContain("Keep the old API too.");
@@ -450,14 +452,14 @@ describe("receiving ordinary Linear comments", () => {
       expect(await f.deliver()).toBe("wait");
       expect((await f.comment("c-1")).state).toBe("queued");
       expect(getWorkItem(f.db, "eng-1")!.state).toBe("running");
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
       await enterMergeQueue(sqliteDb(f.db), "eng-1", {
         phase: "merge_queue",
         baseSha: "b",
         wipCommit: "h",
       });
       expect(await f.deliver()).toBe("restarted");
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
       expect(await f.resumedBrief()).toContain("Skip the migration.");
     } finally {
       await f.close();
@@ -507,7 +509,7 @@ describe("who may comment", () => {
         ),
       );
       expect(await f.comment("c-1")).toMatchObject({ state: "rejected", reason: "on_behalf_of" });
-      expect(f.commentJobs()).toHaveLength(0);
+      expect(await f.commentJobs()).toHaveLength(0);
     } finally {
       await f.close();
     }
@@ -548,7 +550,7 @@ describe("who may comment", () => {
       expect(await f.comment("gh")).toMatchObject({ state: "ignored", reason: "bot" });
       expect(await f.comment("claim")).toMatchObject({ state: "ignored", reason: "bot" });
       expect(f.authorized).toEqual([]);
-      expect(f.commentJobs()).toHaveLength(0);
+      expect(await f.commentJobs()).toHaveLength(0);
       expect(await f.thoughts()).toEqual([]);
     } finally {
       await f.close();
@@ -616,7 +618,7 @@ describe("routing to the right work", () => {
         ),
       );
       expect(await f.comment("c-1")).toMatchObject({ state: "rejected", reason: "parent_issue" });
-      expect(f.commentJobs()).toHaveLength(0);
+      expect(await f.commentJobs()).toHaveLength(0);
       expect(
         (await listOutbox(sqliteDb(f.db), "ses-parent")).map(
           (row) => (row.payload as { body: string }).body,
@@ -652,7 +654,7 @@ describe("routing to the right work", () => {
       await acceptLinearStop(sqliteDb(f.db), SESSION, "stop-1", T0 + 2_000);
       expect(await f.deliver()).toBe("done");
       expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "session_stopped" });
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
     } finally {
       await f.close();
     }
@@ -722,7 +724,7 @@ describe("edits, deletions and restarts", () => {
       await f.receive(polled({ id: "c-1", body: "Oops.", updatedAtMs: T0 + 4_000 }));
       expect(await f.comment("c-1")).toMatchObject({ state: "removed", reason: "deleted" });
       expect(await f.deliver()).toBe("done");
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
     } finally {
       await f.close();
     }
@@ -755,7 +757,7 @@ describe("edits, deletions and restarts", () => {
       );
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Left behind." })));
       expect((await f.comment("c-1")).state).toBe("queued");
-      expect(f.commentJobs()).toHaveLength(1);
+      expect(await f.commentJobs()).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -773,7 +775,7 @@ describe("holds, questions and gates", () => {
         expect(await f.deliver()).toBe("done");
         expect(getWorkItem(f.db, "eng-1")!.state).toBe(hold);
         expect((await f.comment("c-1")).state).toBe("queued");
-        expect(f.resumeJobs()).toHaveLength(0);
+        expect(await f.resumeJobs()).toHaveLength(0);
         expect((await f.thoughts())[0]).toContain("waits with it");
       } finally {
         await f.close();
@@ -789,7 +791,7 @@ describe("holds, questions and gates", () => {
         await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Reopen this." })));
         expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "ended" });
         expect(getWorkItem(f.db, "eng-1")!.state).toBe(ended);
-        expect(f.commentJobs()).toHaveLength(0);
+        expect(await f.commentJobs()).toHaveLength(0);
       } finally {
         await f.close();
       }
@@ -901,11 +903,11 @@ describe("batching with pull request feedback", () => {
           ),
         );
       }
-      const jobs = f.commentJobs();
+      const jobs = await f.commentJobs();
       expect(jobs).toHaveLength(1);
       expect(jobs[0]!.runAt).toBe(jobs[0]!.createdAt + 300_000);
       expect(await f.deliver()).toBe("restarted");
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
       const handoff = await f.resumedBrief();
       for (let index = 0; index < 8; index++) expect(handoff).toContain(`Note ${index}.`);
     } finally {
@@ -929,18 +931,22 @@ describe("batching with pull request feedback", () => {
         line: null,
         receivedAt: T0,
       });
-      const pullJob = listJobs(f.db).find((job) => job.queue === JOB_KIND.pullComments)!;
+      const pullJob = (await listJobs(sqliteDb(f.db))).find(
+        (job) => job.queue === JOB_KIND.pullComments,
+      )!;
       const pullRunAt = pullJob.runAt;
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "And rename it." })));
-      expect(listJobs(f.db).find((job) => job.id === pullJob.id)!.runAt).toBe(pullRunAt);
+      expect((await listJobs(sqliteDb(f.db))).find((job) => job.id === pullJob.id)!.runAt).toBe(
+        pullRunAt,
+      );
       expect(await f.deliver()).toBe("wait");
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
       const item = getWorkItem(f.db, "eng-1")!;
       restart(f.db, item, { reason: "review", body: "pull comments", jobKey: "review:x", now: T0 });
       expect(await f.deliver()).toBe("done");
       const brief = await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps);
       expect(brief).toContain("And rename it.");
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -985,7 +991,7 @@ describe("review findings", () => {
           ),
         );
       expect(await f.deliver()).toBe("restarted");
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
       const first = (await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps))!;
       expect(first.length).toBeLessThanOrEqual(12_000);
       expect(first).toContain(LINEAR_COMMENT_INSTRUCTION);
@@ -993,7 +999,7 @@ describe("review findings", () => {
       expect((await f.comment("big-1")).state).toBe("delivered");
       expect(first).not.toContain("3".repeat(3_900));
       expect((await f.comment("big-3")).state).toBe("queued");
-      expect(f.commentJobs().filter((job) => job.status === "pending")).toHaveLength(1);
+      expect((await f.commentJobs()).filter((job) => job.status === "pending")).toHaveLength(1);
       const brief = await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps);
       expect(brief).toContain("3".repeat(3_900));
       expect(await f.comment("big-3")).toMatchObject({ state: "delivered", via: "brief" });
@@ -1009,7 +1015,7 @@ describe("review findings", () => {
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "After restart." })));
       f.setCheckerReady(false);
       expect(await f.deliver()).toBe("wait");
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
       expect(await turnBrief(f.db, getWorkItem(f.db, "eng-1")!, f.caps)).toBeNull();
       expect((await f.comment("c-1")).state).toBe("queued");
       f.members.delete(PASCAL);
@@ -1049,7 +1055,7 @@ describe("review findings", () => {
       };
       await f.receive(prompted);
       expect(f.db.query("SELECT count(*) AS n FROM linear_turn").get()).toEqual({ n: 0 });
-      expect(f.resumeJobs()).toHaveLength(1);
+      expect(await f.resumeJobs()).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -1069,7 +1075,7 @@ describe("review findings", () => {
       f.setQueueResult("merged");
       expect(await f.deliver()).toBe("wait");
       expect(f.leftQueue).toEqual([7]);
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
       expect((await f.comment("c-1")).state).toBe("queued");
       f.setQueueResult("left");
       expect(await f.deliver()).toBe("restarted");
@@ -1096,7 +1102,7 @@ describe("review findings", () => {
       const item = getWorkItem(f.db, "eng-1")!;
       await turnBrief(f.db, item, f.caps);
       expect((await f.comment("big-4")).state).toBe("queued");
-      expect(f.commentJobs().filter((job) => job.status === "pending")).toHaveLength(1);
+      expect((await f.commentJobs()).filter((job) => job.status === "pending")).toHaveLength(1);
     } finally {
       await f.close();
     }
@@ -1136,7 +1142,7 @@ describe("review findings", () => {
       f.setQueueResult("closed");
       expect(await f.deliver()).toBe("done");
       expect(await f.comment("c-1")).toMatchObject({ state: "ignored", reason: "pull_closed" });
-      expect(f.resumeJobs()).toHaveLength(0);
+      expect(await f.resumeJobs()).toHaveLength(0);
       expect((await f.thoughts()).at(-1)).toBe(
         "Pull request #7 was closed without merging, so Paws did not pass the comment on eng-1 to the agent.",
       );

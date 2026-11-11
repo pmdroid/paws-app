@@ -42,7 +42,7 @@ for (const exit of ["cancel", "ask", "fail"] as const) {
   test(`${exit} wakes parked followers immediately`, async () => {
     const db = setup();
     for (const reason of ["ahead", "dependencies", "ci"])
-      enqueueJob(db, {
+      await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.merge,
         jobKey: reason,
         payload: { itemId: reason, mergeWait: { reason } },
@@ -67,7 +67,7 @@ for (const exit of ["cancel", "ask", "fail"] as const) {
       applyWorkItemEvent(db, "holder", "closeout_infra_failed", { now: 10 });
     }
     expect(
-      listJobs(db)
+      (await listJobs(sqliteDb(db)))
         .filter((j) => j.queue === JOB_KIND.merge)
         .map((j) => [j.jobKey, j.runAt]),
     ).toEqual([
@@ -133,7 +133,9 @@ test("a deferred stop cancels when the squash did not succeed", async () => {
   await endMergeCall(sqliteDb(db), "holder");
   await drainCommands(sqliteDb(db), bus, 1_010);
   expect(getWorkItem(db, "holder")?.state).toBe("cancelled");
-  expect(listJobs(db).some((j) => j.queue === JOB_KIND.closeStoppedPull)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((j) => j.queue === JOB_KIND.closeStoppedPull)).toBe(
+    false,
+  );
   expect(
     (await listOutbox(sqliteDb(db))).some((row) =>
       String((row.payload as { body?: string }).body).startsWith("Stopped by test."),

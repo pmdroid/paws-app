@@ -102,10 +102,12 @@ test("Accept on a question asked before the link ask requests changes and never 
     feedback: "Accept",
   });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+  const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
   expect(resume).toMatchObject({ jobKey: `resume:answer:${question.id}` });
   expect((resume!.payload as { reason: string }).reason).toBe("review");
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toEqual([]);
+  expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.reverify)).toEqual(
+    [],
+  );
 });
 
 test("Request changes restarts the item for review with the feedback", async () => {
@@ -115,7 +117,7 @@ test("Request changes restarts the item for review with the feedback", async () 
   );
   expect((await getVisualReview(sqliteDb(db), question.id))?.outcome).toBe("changes_requested");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+  const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
   expect((resume!.payload as { handoff: string }).handoff).toContain("Make the hint shorter");
 });
 
@@ -153,5 +155,5 @@ test("the round-limit question waits behind a sibling's queued question", async 
     options: [...VISUAL_REVIEW_CONTINUE_OPTIONS],
   });
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+  expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
 });

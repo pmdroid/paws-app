@@ -49,7 +49,7 @@ async function fixture() {
     insertQueuedItem(db, { id, now: 0 });
     applyWorkItemEvent(db, id, "dispatched");
     const run = await insertRun(sqliteDb(db), { itemId: id, now: 0, status: "active" });
-    const job = enqueueJob(db, {
+    const job = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
       payload: { itemId: id },
       runAt: NOW + 60_000,
@@ -118,7 +118,7 @@ test("a task waiting for CI between its run and Closeout frees its runner slot",
       NOW + 2,
       second,
     ]);
-    const recheck = enqueueJob(db, {
+    const recheck = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       payload: { itemId: "placed-2" },
       now: NOW + 2,

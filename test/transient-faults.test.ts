@@ -575,7 +575,7 @@ async function runWithFault(fault: {
       if ((await jobs.tick()) === null) {
         await outbox.tick();
         await Bun.sleep(25);
-        const delayed = listJobs(db).find(
+        const delayed = (await listJobs(sqliteDb(db))).find(
           (job) =>
             (job.queue === JOB_KIND.resume || job.queue === JOB_KIND.start) &&
             job.status === "pending" &&
@@ -584,7 +584,8 @@ async function runWithFault(fault: {
         if (fault.clock && delayed) {
           waits.push({
             delayMs: delayed.runAt - clock.now(),
-            runningJobs: listJobs(db).filter((job) => job.status === "running").length,
+            runningJobs: (await listJobs(sqliteDb(db))).filter((job) => job.status === "running")
+              .length,
           });
           fault.clock.advance(delayed.runAt - clock.now());
         }
@@ -602,7 +603,7 @@ async function runWithFault(fault: {
     }
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
-    const pendingWait = listJobs(db).find(
+    const pendingWait = (await listJobs(sqliteDb(db))).find(
       (job) =>
         job.status === "pending" &&
         (job.payload as { capacityWait?: unknown } | null)?.capacityWait !== undefined,
@@ -626,7 +627,7 @@ async function runWithFault(fault: {
       states,
       thoughts: progress("thought"),
       errors: progress("error"),
-      retries: listJobs(db)
+      retries: (await listJobs(sqliteDb(db)))
         .filter(
           (job) =>
             job.queue === JOB_KIND.resume ||
@@ -634,12 +635,16 @@ async function runWithFault(fault: {
         )
         .map((job) => (job.payload as { retry?: number }).retry ?? 0),
       runs: (await listRuns(sqliteDb(db))).map((run) => `${run.kind}:${run.status}`),
-      jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
+      jobs: (await listJobs(sqliteDb(db))).map(
+        (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
+      ),
       implementations,
       waits,
       detail: JSON.stringify({
         items: db.query("SELECT linear_identifier, state FROM work_item").all(),
-        jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
+        jobs: (await listJobs(sqliteDb(db))).map(
+          (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
+        ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
       }),
     };

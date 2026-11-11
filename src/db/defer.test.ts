@@ -34,7 +34,9 @@ test("deferring a running item loses its run, moves it to recovering, and schedu
   expect(lines).toContain("item item-1 deferred: retry 2 in 5000 ms");
   expect(getWorkItem(db, "item-1")?.state).toBe("recovering");
   expect(getRun(db, run.id)?.status).toBe("lost");
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toMatchObject([
+  expect(
+    (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
+  ).toMatchObject([
     {
       status: "pending",
       runAt: 7_000,
@@ -64,7 +66,9 @@ test("deferring the same item version twice schedules one resume", async () => {
   const input = { retry: 1, delayMs: 10, handoff: null, message: "Retrying.", now: 2_000 };
   await deferWorkItem(sqliteDb(db), item, input);
   await deferWorkItem(sqliteDb(db), getWorkItem(db, "item-1")!, { ...input, retry: 2 });
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
+  expect(
+    (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
+  ).toHaveLength(1);
   expect(getWorkItem(db, "item-1")?.state).toBe("recovering");
 });
 
@@ -89,7 +93,7 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
     checkpoint: { phase: "verifying", wipCommit: "head" },
   });
   expect(getRun(db, run.id)?.status).toBe("lost");
-  const jobs = listJobs(db).filter((job) => job.status === "pending");
+  const jobs = (await listJobs(sqliteDb(db))).filter((job) => job.status === "pending");
   expect(jobs).toMatchObject([
     {
       queue: JOB_KIND.reverify,
@@ -107,7 +111,7 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
     now: 3_000,
   });
   expect(
-    listJobs(db)
+    (await listJobs(sqliteDb(db)))
       .filter((job) => job.queue === JOB_KIND.reverify)
       .map((job) => job.maxAttempts),
   ).toEqual([MAX_TRANSIENT_RETRIES - 1, 1]);
@@ -127,7 +131,7 @@ test("deferring verification without a recorded candidate falls back to a resume
     now: 2_000,
   });
   expect(getWorkItem(db, "item-1")?.state).toBe("recovering");
-  expect(listJobs(db).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
+  expect((await listJobs(sqliteDb(db))).map((job) => job.queue)).toEqual([JOB_KIND.resume]);
 });
 
 test("a Closeout fault re-verifies the same version once per faulted job and carries the faults", async () => {
@@ -150,7 +154,9 @@ test("a Closeout fault re-verifies the same version once per faulted job and car
   await fault(7, ["lost"], 2_500);
   await fault(8, ["lost", "lost again"], 3_000);
   expect(getWorkItem(db, "item-1")?.state).toBe("verifying");
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.reverify)).toMatchObject([
+  expect(
+    (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.reverify),
+  ).toMatchObject([
     { runAt: 62_000, payload: { reason: "closeout_fault", closeoutFaults: { reasons: ["lost"] } } },
     {
       runAt: 63_000,

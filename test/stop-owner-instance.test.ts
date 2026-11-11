@@ -114,9 +114,13 @@ test("a stop received by instance B aborts the turn on instance A, which owns th
       turn.controller.signal.addEventListener("abort", () => resolve(), { once: true }),
     );
     expect(performance.now() - started).toBeLessThan(2_000);
-    const deliveries = listJobs(a.db).filter((job) => job.queue === commandDeliveryQueue(a.id));
+    const deliveries = (await listJobs(sqliteDb(a.db))).filter(
+      (job) => job.queue === commandDeliveryQueue(a.id),
+    );
     expect(deliveries.map((job) => job.status)).toEqual(["done"]);
-    expect(listJobs(a.db).some((job) => job.queue === commandDeliveryQueue(b.id))).toBe(false);
+    expect(
+      (await listJobs(sqliteDb(a.db))).some((job) => job.queue === commandDeliveryQueue(b.id)),
+    ).toBe(false);
   } finally {
     a.close();
     b.close();
@@ -132,7 +136,7 @@ test("a stop for a run on the receiving instance aborts its turn at once and add
     expect(await stop(a.db, a.orchestrator, "acme-2")).toEqual({ applied: true });
     expect(turn.controller.signal.aborted).toBe(true);
     expect(
-      listJobs(a.db).filter(
+      (await listJobs(sqliteDb(a.db))).filter(
         (job) =>
           job.queue === commandDeliveryQueue(a.id) || job.queue === commandDeliveryQueue(b.id),
       ),
@@ -154,7 +158,9 @@ test("the owner's delivery row commits with the stop itself, before any bus emit
       requestedAt: Date.now(),
     };
     expect(await applyLinearCommand(sqliteDb(b.db), command)).toEqual({ applied: true });
-    const delivery = listJobs(a.db).filter((job) => job.queue === commandDeliveryQueue(a.id));
+    const delivery = (await listJobs(sqliteDb(a.db))).filter(
+      (job) => job.queue === commandDeliveryQueue(a.id),
+    );
     expect(delivery.map((job) => job.status)).toEqual(["pending"]);
     expect(delivery[0]?.payload).toEqual({
       command,

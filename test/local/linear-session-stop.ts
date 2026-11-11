@@ -166,7 +166,11 @@ export async function probeLinearSessionStop(root: string) {
         pullUrl: null,
         openedAt: 1,
       });
-      enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: old.id }, now: clock.now() });
+      await enqueueJob(sqliteDb(db), {
+        queue: JOB_KIND.merge,
+        payload: { itemId: old.id },
+        now: clock.now(),
+      });
       const replacement = insertQueuedItem(db, {
         id: `webhook-new-${field}`,
         sessionKey: `webhook-new-${field}`,
@@ -226,7 +230,7 @@ export async function probeLinearSessionStop(root: string) {
         assert.equal(getWorkItem(db, replacement.id)?.state, "queued");
         // A stop or archive from Linear leaves the pull request and the issue status alone.
         assert.ok(
-          !listJobs(db).some(
+          !(await listJobs(sqliteDb(db))).some(
             (job) =>
               job.queue === JOB_KIND.closeStoppedPull &&
               (job.payload as { itemId?: string }).itemId === old.id,
@@ -249,7 +253,7 @@ export async function probeLinearSessionStop(root: string) {
           ),
         );
         assert.ok(
-          !listJobs(db).some(
+          !(await listJobs(sqliteDb(db))).some(
             (job) =>
               job.queue === JOB_KIND.merge &&
               job.status === "pending" &&

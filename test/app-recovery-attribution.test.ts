@@ -96,7 +96,7 @@ for (const state of [
         await Bun.sleep(10);
       expect(paws.db.query("SELECT 1 FROM wake").get()).not.toBeNull();
       expect(
-        listJobs(paws.db).some(
+        (await listJobs(sqliteDb(paws.db))).some(
           (job) =>
             (job.queue === JOB_KIND.start || job.queue === JOB_KIND.resume) &&
             job.status === "pending",

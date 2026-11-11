@@ -491,14 +491,18 @@ test("first assignment holds without manufacturing membership and resumes once a
     await f.restart();
     expect((await f.callback(start)).status).toBe(303);
     expect((await f.callback(start)).status).toBe(400);
-    expect(listJobs(f.db).filter((job) => job.queue === "workspace.assignment")).toHaveLength(1);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "workspace.assignment"),
+    ).toHaveLength(1);
     await f.restart();
     const jobs = f.jobs();
     await jobs.tick();
     await jobs.tick();
     expect(f.calls).toBe(1);
     expect(listWorkItems(f.db)).toHaveLength(1);
-    expect(listJobs(f.db).filter((job) => job.queue === "item.start")).toHaveLength(1);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "item.start"),
+    ).toHaveLength(1);
     expect(f.continuations).toEqual([f.event.dedupeKey]);
     expect(await f.assignments.authorize(f.event)).toMatchObject({ outcome: "refused" });
     expect(
@@ -522,7 +526,7 @@ for (const identity of ["wrong", "outsider"])
       if (identity === "wrong")
         expect(await refused.text()).toContain("This link belongs to Morgan Member.");
       expect(refused.headers.get("location")).toBeNull();
-      expect(listJobs(f.db)).toHaveLength(0);
+      expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
       expect(
         f.db.query("SELECT status,completed_at AS completedAt FROM workspace_assignment").get(),
       ).toEqual({ status: "pending", completedAt: null });
@@ -815,7 +819,9 @@ test("an interrupted canonical continuation retries from durable acceptance with
     await f.callback(await f.begin());
     f.failContinue();
     await f.jobs().tick();
-    const job = listJobs(f.db).find((value) => value.queue === "workspace.assignment")!;
+    const job = (await listJobs(sqliteDb(f.db))).find(
+      (value) => value.queue === "workspace.assignment",
+    )!;
     expect(job.status).toBe("pending");
     await f.restart();
     f.clock.advance(60_000);
@@ -836,9 +842,14 @@ test("two workers cannot claim the same durable continuation", async () => {
   try {
     await f.assignments.authorize(f.event);
     await f.callback(await f.begin());
-    const first = claimNextJob(f.db, { queues: ["workspace.assignment"], now: f.clock.now() })!;
-    expect(claimNextJob(f.db, { queues: ["workspace.assignment"], now: f.clock.now() })).toBeNull();
-    expect(completeJob(f.db, first, f.clock.now())).toBe(true);
+    const first = (await claimNextJob(sqliteDb(f.db), {
+      queues: ["workspace.assignment"],
+      now: f.clock.now(),
+    }))!;
+    expect(
+      await claimNextJob(sqliteDb(f.db), { queues: ["workspace.assignment"], now: f.clock.now() }),
+    ).toBeNull();
+    expect(await completeJob(sqliteDb(f.db), first, f.clock.now())).toBe(true);
   } finally {
     await f.close();
   }
@@ -907,7 +918,9 @@ for (const [change, reason, apply] of [
         status: "invalid",
       });
       expect(
-        listJobs(f.db).filter((job) => job.queue === "workspace.assignment" && job.lastError),
+        (await listJobs(sqliteDb(f.db))).filter(
+          (job) => job.queue === "workspace.assignment" && job.lastError,
+        ),
       ).toEqual([]);
     } finally {
       await f.close();
@@ -931,7 +944,9 @@ for (const change of ["spec", "repository", "membership"])
       });
       await f.jobs().tick();
       expect(listWorkItems(f.db)).toHaveLength(0);
-      expect(listJobs(f.db).filter((job) => job.queue === "item.start")).toHaveLength(0);
+      expect(
+        (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "item.start"),
+      ).toHaveLength(0);
     } finally {
       await f.close();
     }
@@ -962,7 +977,7 @@ test("browser callback cannot accept a hold after losing the issue team", async 
     const start = await f.begin();
     f.setTeams([]);
     expect((await f.callback(start)).status).toBe(400);
-    expect(listJobs(f.db)).toHaveLength(0);
+    expect(await listJobs(sqliteDb(f.db))).toHaveLength(0);
   } finally {
     await f.close();
   }
@@ -1697,7 +1712,9 @@ test("five failed callbacks from one IP in ten minutes block the sixth without a
     expect(Number(limited.headers.get("retry-after"))).toBeLessThanOrEqual(600);
     expect(f.linearRequests).toBe(linear);
     expect(await listOutbox(sqliteDb(f.db))).toHaveLength(outbox);
-    expect(listJobs(f.db).filter((job) => job.queue === "workspace.assignment")).toHaveLength(0);
+    expect(
+      (await listJobs(sqliteDb(f.db))).filter((job) => job.queue === "workspace.assignment"),
+    ).toHaveLength(0);
     expect(holdStatus(f)).toBe("pending");
     expect(f.logs).toEqual(["Paws rate limit reached: linear.callback.failed.ip"]);
 
@@ -1994,7 +2011,7 @@ test("a held delegation revoked during continuation retains its final response",
     await jobs.tick();
     await jobs.tick();
     expect(
-      listJobs(f.db)
+      (await listJobs(sqliteDb(f.db)))
         .filter((job) => job.queue === "workspace.assignment" && job.lastError)
         .map((job) => job.lastError),
     ).toEqual([]);

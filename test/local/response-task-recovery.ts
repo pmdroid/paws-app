@@ -119,8 +119,9 @@ export async function probeResponseTaskRecovery(root: string) {
       assert.equal(getWorkItem(db, item.id)?.recoveryAttempts, 1);
       assert.equal(getRun(db, run.id)?.status, "active");
       assert.equal(
-        listJobs(db).filter((job) => job.queue === JOB_KIND.resume && job.status === "pending")
-          .length,
+        (await listJobs(sqliteDb(db))).filter(
+          (job) => job.queue === JOB_KIND.resume && job.status === "pending",
+        ).length,
         1,
       );
       await jobs.tick();

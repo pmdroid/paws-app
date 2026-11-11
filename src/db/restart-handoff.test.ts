@@ -60,7 +60,7 @@ for (const reason of ["findings", "review", "ci"] as const) {
       } else {
         expect(await requeueOrphanedWork(sqliteDb(db), 400_000)).toEqual(["item"]);
       }
-      const job = listJobs(db).at(-1)!;
+      const job = (await listJobs(sqliteDb(db))).at(-1)!;
       expect(job.payload).toMatchObject({ handoff: body, limit: 4 });
       expect((await pendingRestartHandoff(sqliteDb(db), "item")).handoff).toBe(body);
       if (reason === "findings") expect(getWorkItem(db, "item")?.acceptedHead).toBeNull();
@@ -74,7 +74,7 @@ test("completed input is not resurrected by recovery", async () => {
   migrate(db);
   insertQueuedItem(db, { id: "item" });
   await beginImplementRun(sqliteDb(db), "item", 1, checkpoint);
-  const id = enqueueJob(db, {
+  const id = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     payload: { itemId: "item", handoff: "old review" },
     now: 1,
@@ -82,7 +82,7 @@ test("completed input is not resurrected by recovery", async () => {
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
   applyWorkItemEvent(db, "item", "turn_ended");
   await recoverOnStartup(sqliteDb(db), 10);
-  expect(listJobs(db).at(-1)!.payload).not.toHaveProperty("handoff");
+  expect((await listJobs(sqliteDb(db))).at(-1)!.payload).not.toHaveProperty("handoff");
   expect(await pendingRestartHandoff(sqliteDb(db), "item")).toEqual({});
   db.close();
 });
@@ -91,14 +91,14 @@ test("pending input follows activation order when an older job row is reused", a
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "item" });
-  const first = enqueueJob(db, {
+  const first = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     jobKey: "reused",
     payload: { itemId: "item" },
     now: 1,
   });
   db.run("UPDATE job SET status='done' WHERE id=?", [first]);
-  enqueueJob(db, {
+  await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     payload: { itemId: "item", handoff: "older review" },
     now: 2,
@@ -137,7 +137,7 @@ test("a follow-up whose turn a clean stop aborted is carried into the recovery r
   const { db, body, jobId } = await acceptedFollowUp();
   db.run("UPDATE job SET status='done', finished_at=6 WHERE id=?", [jobId]);
   await recoverOnStartup(sqliteDb(db), 10);
-  expect(listJobs(db).at(-1)!.payload).toMatchObject({ handoff: body });
+  expect((await listJobs(sqliteDb(db))).at(-1)!.payload).toMatchObject({ handoff: body });
   expect((await pendingRestartHandoff(sqliteDb(db), "item")).handoff).toBe(body);
   db.close();
 });
@@ -146,7 +146,7 @@ test("a follow-up whose turn a crash cut off is carried into the recovery resume
   const { db, body, jobId } = await acceptedFollowUp();
   db.run("UPDATE job SET status='running', locked_until=5 WHERE id=?", [jobId]);
   await recoverOnStartup(sqliteDb(db), 10);
-  expect(listJobs(db).at(-1)!.payload).toMatchObject({ handoff: body });
+  expect((await listJobs(sqliteDb(db))).at(-1)!.payload).toMatchObject({ handoff: body });
   db.close();
 });
 

@@ -95,9 +95,13 @@ test("Linear answers preserve their human author through persisted inbox replay"
     expect(replayed.activityCreatedAtMs).toBe(NOW + 1);
     await orchestrator.onLinearEvent(replayed);
     expect((await getQuestion(sqliteDb(db), question.id))?.answeredBy).toBe("human-1");
-    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
+    expect(
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
+    ).toHaveLength(1);
     await orchestrator.onLinearEvent(replayed);
-    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
+    expect(
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
+    ).toHaveLength(1);
   } finally {
     db.close();
   }
@@ -110,7 +114,7 @@ test.each([NOW - 1, NOW])(
     try {
       await orchestrator.onLinearEvent(prompt(at));
       expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-      expect(listJobs(db)).toHaveLength(0);
+      expect(await listJobs(sqliteDb(db))).toHaveLength(0);
     } finally {
       db.close();
     }
@@ -136,7 +140,9 @@ test("an answer racing delivery suppresses the unsent elicitation", async () => 
     await orchestrator.onLinearEvent(prompt());
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("answered");
     expect((await listOutbox(sqliteDb(db)))[0]?.status).toBe("dropped");
-    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(1);
+    expect(
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
+    ).toHaveLength(1);
   } finally {
     db.close();
   }
@@ -186,7 +192,7 @@ test("an activity ID alone does not establish a human respondent", async () => {
   try {
     await orchestrator.onLinearEvent(prompt(NOW + 1, "anonymous-activity", null));
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-    expect(listJobs(db)).toHaveLength(0);
+    expect(await listJobs(sqliteDb(db))).toHaveLength(0);
   } finally {
     db.close();
   }
@@ -197,7 +203,7 @@ test("a webhook without an activity creation time cannot answer from delivery ti
   try {
     await orchestrator.onLinearEvent({ ...prompt(), activityCreatedAtMs: null });
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-    expect(listJobs(db)).toHaveLength(0);
+    expect(await listJobs(sqliteDb(db))).toHaveLength(0);
   } finally {
     db.close();
   }
@@ -271,7 +277,7 @@ test("a Linear Stop pauses the item with its question open, and a reply restarts
     expect(getWorkItem(db, item.id)?.state).toBe("queued");
     expect((await getQuestion(sqliteDb(db), question.id))?.answer).toBeNull();
     expect(findOpenQuestion(db, "ses_1")).toBeNull();
-    const resume = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+    const resume = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
     expect(resume).toHaveLength(1);
     expect(resume[0]!.payload).toMatchObject({
       reason: "follow_up",
@@ -398,7 +404,9 @@ test("a runner wait asked before a restart is answered by the next process witho
       status: "answered",
       answeredBy: "human-1",
     });
-    expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toHaveLength(0);
+    expect(
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
+    ).toHaveLength(0);
   } finally {
     db.close();
   }

@@ -91,7 +91,9 @@ test("transient production authorization persists a wait, survives restart and r
     await Promise.all([recovered.recover(), recovered.recover()]);
     await recovered.recover();
     expect(getWorkItem(reopened, first.id)?.state).toBe("running");
-    expect(listJobs(reopened).filter((job) => job.queue === "run.resume")).toHaveLength(2);
+    expect(
+      (await listJobs(sqliteDb(reopened))).filter((job) => job.queue === "run.resume"),
+    ).toHaveLength(2);
     insertQueuedItem(reopened, { id: "revoked", sessionKey: "revoked", title: "revoked" });
     await beginImplementRun(sqliteDb(reopened), "revoked", 2000);
     host.check = async () => false;

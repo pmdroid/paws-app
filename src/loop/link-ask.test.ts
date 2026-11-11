@@ -195,7 +195,7 @@ test("a Linear reply never resolves an approval kind, whatever it says", async (
   expect(linkAsk).toMatchObject({ decision: null, closedReason: "guidance" });
   expect(db.query("SELECT COUNT(*) AS n FROM workspace_access_audit").get()).toEqual({ n: 0 });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  const resume = listJobs(db).find((job) => job.queue === JOB_KIND.resume)!;
+  const resume = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!;
   expect((resume.payload as { handoff: string }).handoff).toContain(
     "The reply is guidance and approves nothing",
   );
@@ -214,7 +214,9 @@ test("a Linear reply never resolves an approval kind, whatever it says", async (
 
 test("the reminder fires once after 24 hours", async () => {
   const { db, question } = await asked();
-  const job = listJobs(db).find((entry) => entry.queue === JOB_KIND.linkAskReminder)!;
+  const job = (await listJobs(sqliteDb(db))).find(
+    (entry) => entry.queue === JOB_KIND.linkAskReminder,
+  )!;
   expect(job.runAt).toBe(NOW + LINK_ASK_REMINDER_MS);
   expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(true);
   expect(await remindLinkAsk(db, question.id, NOW + 2 * LINK_ASK_REMINDER_MS)).toBe(false);

@@ -130,7 +130,10 @@ export async function probeStandaloneAttribution(root: string) {
       true,
     );
     assert.equal(getWorkItem(db, item.id)!.state, "running");
-    assert.equal(listJobs(db).filter((job) => job.queue === "run.resume").length, 0);
+    assert.equal(
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === "run.resume").length,
+      0,
+    );
     observations.push(
       "an unlinked delegator gets a bot-only policy and the App gate starts work without waiting",
     );

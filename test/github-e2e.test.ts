@@ -10,7 +10,15 @@ import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import type { FakeScript } from "../src/acp/testing/script";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, getWorkItem, listJobs, migrate, openDatabase } from "../src/db";
+import {
+  sqliteDb,
+  JobLoop,
+  OutboxDispatcher,
+  getWorkItem,
+  listJobs,
+  migrate,
+  openDatabase,
+} from "../src/db";
 import {
   INSTALLATION_PERMISSIONS,
   createFakeGitHub,
@@ -118,7 +126,7 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
   try {
     const appeared = Date.now() + 10_000;
     while (Date.now() < appeared && stateOf(db, "DEMO-2") === null) await Bun.sleep(20);
-    expect(stateOf(db, "DEMO-2"), debug(layout, db)).not.toBeNull();
+    expect(stateOf(db, "DEMO-2"), await debug(layout, db)).not.toBeNull();
     const deadline = Date.now() + 90_000;
     let idle = 0;
     while (Date.now() < deadline && !delegationMerged(db)) {
@@ -134,11 +142,11 @@ test("a Linear delegation publishes and merges three GitHub pull requests with o
     stop = true;
     await answerer;
 
-    expect(whileAsking, debug(layout, db)).toBe("merged/merged/awaiting_input");
-    expect(delegationMerged(db), debug(layout, db)).toBe(true);
+    expect(whileAsking, await debug(layout, db)).toBe("merged/merged/awaiting_input");
+    expect(delegationMerged(db), await debug(layout, db)).toBe(true);
     expect(
       ["DEMO-2", "DEMO-3", "DEMO-4"].map((id) => stateOf(db, id)),
-      debug(layout, db),
+      await debug(layout, db),
     ).toEqual(["merged", "merged", "merged"]);
     expect(github.opened.map((pull) => pull.head)).toEqual(
       ["DEMO-2", "DEMO-3", "DEMO-4"].map(
@@ -511,9 +519,11 @@ function delegationMerged(db: Database): boolean {
   return items.length > 0 && items.every((item) => item.state === "merged");
 }
 
-function debug(layout: { pawsRoot: string }, db: Database): string {
+async function debug(layout: { pawsRoot: string }, db: Database): Promise<string> {
   try {
-    const jobs = listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`);
+    const jobs = (await listJobs(sqliteDb(db))).map(
+      (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
+    );
     const items = db
       .query<{ linear_identifier: string; state: string }, []>(
         "SELECT linear_identifier, state FROM work_item ORDER BY position",

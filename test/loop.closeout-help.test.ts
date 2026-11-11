@@ -57,14 +57,18 @@ const reply = (body: string) => ({
   now: NOW + 100,
 });
 
-const jobs = (db: ReturnType<typeof tempDb>) =>
-  listJobs(db).map((job) => ({ queue: job.queue, jobKey: job.jobKey, payload: job.payload }));
+const jobs = async (db: ReturnType<typeof tempDb>) =>
+  (await listJobs(sqliteDb(db))).map((job) => ({
+    queue: job.queue,
+    jobKey: job.jobKey,
+    payload: job.payload,
+  }));
 
 test("a Closeout guidance answer resumes the agent with the Closeout summary", async () => {
   const { db, asker, question } = await closeoutHelp();
   await answer(db, reply("Create ok.txt"), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-  expect(jobs(db)).toEqual([
+  expect(await jobs(db)).toEqual([
     {
       queue: JOB_KIND.resume,
       jobKey: `closeout-guidance:${question.id}`,
@@ -83,7 +87,7 @@ test("a /paws bypass reply is guidance: it restarts the agent and bypasses nothi
   const body = "/paws bypass test -- Known fixture failure";
   await answer(db, reply(body), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-  expect(jobs(db)).toEqual([
+  expect(await jobs(db)).toEqual([
     {
       queue: JOB_KIND.resume,
       jobKey: `closeout-guidance:${question.id}`,
@@ -185,7 +189,7 @@ test("a CI help answer resumes the agent with the handoff", async () => {
   });
   await answer(db, reply("Fix the flaky test"), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-  expect(jobs(db).map((job) => job.jobKey)).toEqual([`resume:answer:${question.id}`]);
+  expect((await jobs(db)).map((job) => job.jobKey)).toEqual([`resume:answer:${question.id}`]);
 });
 
 const blocked = {
@@ -216,7 +220,7 @@ for (const body of ["Retry Closeout", "  RETRY "])
     expect((await delivered(db))[0]?.body).toContain("Choose Retry Closeout, or reply retry");
     await answer(db, reply(body), questionEffects(db, { now: NOW + 100 }));
     expect(getWorkItem(db, asker.itemId)?.state).toBe("verifying");
-    expect(jobs(db)).toEqual([
+    expect(await jobs(db)).toEqual([
       {
         queue: JOB_KIND.reverify,
         jobKey: `retry-closeout:${question.id}`,
@@ -238,7 +242,7 @@ test("a longer reply to that question is guidance and restarts the agent with it
   expect(question.options).toEqual(["Retry Closeout"]);
   await answer(db, reply("retry, but also fix X"), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-  expect(jobs(db)).toMatchObject([
+  expect(await jobs(db)).toMatchObject([
     {
       queue: JOB_KIND.resume,
       jobKey: `closeout-guidance:${question.id}`,
@@ -258,7 +262,7 @@ test("a check failing on the code offers no Retry Closeout, and retry restarts t
   expect((await delivered(db))[0]?.body).not.toContain("Retry Closeout");
   await answer(db, reply("retry"), questionEffects(db, { now: NOW + 100 }));
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-  expect(jobs(db).map((job) => job.jobKey)).toEqual([`closeout-guidance:${question.id}`]);
+  expect((await jobs(db)).map((job) => job.jobKey)).toEqual([`closeout-guidance:${question.id}`]);
 });
 
 test("blocking review findings offer no Retry Closeout", async () => {
@@ -296,6 +300,6 @@ test("the exported re-verify path settles an unanswered question without the age
     verifyAgainSteps(q, answered, { now: NOW + 100, key: "policy-loaded" }),
   );
   expect(getWorkItem(db, asker.itemId)?.state).toBe("verifying");
-  expect(jobs(db).map((job) => job.jobKey)).toEqual([`policy-loaded:${question.id}`]);
+  expect((await jobs(db)).map((job) => job.jobKey)).toEqual([`policy-loaded:${question.id}`]);
   expect(runs(db)).toBe(1);
 });

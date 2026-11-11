@@ -112,8 +112,8 @@ const history = (db: ReturnType<typeof tempDb>, itemId: string) =>
     )
     .all(itemId);
 
-const resumes = (db: ReturnType<typeof tempDb>) =>
-  listJobs(db)
+const resumes = async (db: ReturnType<typeof tempDb>) =>
+  (await listJobs(sqliteDb(db)))
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => ({ ...(job.payload as object), runId: undefined }));
 
@@ -132,7 +132,7 @@ test("signed out, another session or an answered question are refused", async ()
     expect(await elsewhere?.json()).toEqual({ error: "This question is no longer waiting" });
     db.run("UPDATE question SET status = 'answered' WHERE id = ?", [question.id]);
     expect((await submit(body))?.status).toBe(409);
-    expect(resumes(db)).toEqual([]);
+    expect(await resumes(db)).toEqual([]);
   } finally {
     db.close();
   }
@@ -196,8 +196,8 @@ test("an option answered in Paws restarts the item as a Linear reply does, once"
     expect(getWorkItem(paws.db, paws.item.id)?.state).toBe(
       getWorkItem(linear.db, linear.item.id)!.state,
     );
-    expect(resumes(paws.db)).toHaveLength(1);
-    expect(resumes(paws.db)).toEqual(resumes(linear.db));
+    expect(await resumes(paws.db)).toHaveLength(1);
+    expect(await resumes(paws.db)).toEqual(await resumes(linear.db));
 
     const again = await paws.submit({ questionId: paws.question.id, answer: OPTIONS[1] });
     expect(again?.status).toBe(409);
@@ -209,7 +209,7 @@ test("an option answered in Paws restarts the item as a Linear reply does, once"
         answeredByName: "Sam",
       }),
     ).toBe("rejected");
-    expect(resumes(paws.db)).toHaveLength(1);
+    expect(await resumes(paws.db)).toHaveLength(1);
     expect(history(paws.db, paws.item.id)).toEqual(history(linear.db, linear.item.id));
 
     expect(await pawsNotes(paws.db)).toEqual([
@@ -231,13 +231,13 @@ test("a rejected answer leaves the question open and a corrected answer closes i
     const rejected = await submit({ questionId: question.id, answer: "/paws decision expired" });
     expect(rejected?.status).toBe(409);
     expect((await getQuestion(sqliteDb(db), question.id))?.status).toBe("open");
-    expect(resumes(db)).toEqual([]);
+    expect(await resumes(db)).toEqual([]);
     expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(200);
     expect(await getQuestion(sqliteDb(db), question.id)).toMatchObject({
       status: "answered",
       answer: OPTIONS[0],
     });
-    expect(resumes(db)).toHaveLength(1);
+    expect(await resumes(db)).toHaveLength(1);
   } finally {
     db.close();
   }
@@ -248,7 +248,7 @@ test("a cancelled question is not answered and nothing restarts", async () => {
   try {
     db.run("UPDATE question SET cancelled_at = ? WHERE id = ?", [NOW + 2, question.id]);
     expect((await submit({ questionId: question.id, answer: OPTIONS[0] }))?.status).toBe(409);
-    expect(resumes(db)).toEqual([]);
+    expect(await resumes(db)).toEqual([]);
     expect(db.query("SELECT event_key FROM linear_turn").all()).toEqual([]);
   } finally {
     db.close();
@@ -271,7 +271,7 @@ test("a Linear reply racing a Paws answer answers the question once", async () =
     const stored = (await getQuestion(sqliteDb(db), question.id))!;
     expect(stored.status).toBe("answered");
     expect(stored.answer).toBe(answered ? OPTIONS[0]! : OPTIONS[1]!);
-    expect(resumes(db)).toHaveLength(1);
+    expect(await resumes(db)).toHaveLength(1);
     expect(await pawsNotes(db)).toHaveLength(answered ? 1 : 0);
     expect(
       db.query("SELECT state FROM linear_turn WHERE event_key LIKE 'paws-answer:%'").all(),

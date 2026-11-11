@@ -134,7 +134,7 @@ test("the visual review is a link ask without options, reminded once from the sh
     "Decide in Paws: https://paws.example/dashboard/issues/ENG-103#visual-review",
   );
   expect(payload.body).toContain("A reply here cannot approve the screens.");
-  expect(listJobs(db).map((job) => [job.queue, job.runAt])).toEqual([
+  expect((await listJobs(sqliteDb(db))).map((job) => [job.queue, job.runAt])).toEqual([
     [JOB_KIND.linkAskReminder, NOW + LINK_ASK_REMINDER_MS],
   ]);
 });
@@ -168,7 +168,7 @@ test("Approve on the page passes the check for that head and those files", async
   ).toBeNull();
   // The evaluation still running on S picks the approval up; nothing restarts.
   expect(getWorkItem(db, itemId)?.state).toBe("verifying");
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
+  expect((await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume)).toEqual([]);
   const notes = (await listOutbox(sqliteDb(db))).filter((row) => row.op === "activity");
   expect(notes.map((row) => (row.payload as { body: string }).body)).toContain(
     "Lea accepted the screens of 4b317d5 in Paws.",
@@ -191,7 +191,7 @@ test("Approve after the other checks finished completes the evaluation of the sa
   });
   expect(getWorkItem(db, itemId)?.state).toBe("verifying");
   expect(
-    listJobs(db)
+    (await listJobs(sqliteDb(db)))
       .filter((job) => job.queue === JOB_KIND.reverify)
       .map((job) => [job.jobKey, job.payload]),
   ).toEqual([[`visual-review-accepted:${question.id}`, { itemId, decide: true }]]);
@@ -242,7 +242,7 @@ test("Request changes on the page restarts the item with the marks and the note"
     "mark-1",
   ]);
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+  const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
   const handoff = (resume!.payload as { handoff: string }).handoff;
   expect(handoff).toContain("The Retry button wraps under the row.");
   expect(handoff).toContain("Settings · Audit · 390px (evidence ev-2");
@@ -271,7 +271,7 @@ test("a Linear reply that says approve requests changes and never approves", asy
     decision: null,
   });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  const [resume] = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+  const [resume] = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
   expect((resume!.payload as { handoff: string }).handoff).toContain(
     "The reviewer requested changes in the visual review of check visual-proof:\napprove",
   );

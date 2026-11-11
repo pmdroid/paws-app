@@ -150,7 +150,11 @@ async function held(head = heads.s, base = heads.base) {
     "lea@example.com",
   ]);
   // The merge job that published the pull request, and its response in Linear.
-  enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: item.id }, now: NOW - 5 });
+  await enqueueJob(sqliteDb(db), {
+    queue: JOB_KIND.merge,
+    payload: { itemId: item.id },
+    now: NOW - 5,
+  });
   enqueueOutboxOnce(db, {
     target: "linear",
     op: "activity",
@@ -262,8 +266,8 @@ async function activities(db: ReturnType<typeof openDatabase>) {
     });
 }
 
-function resumes(db: ReturnType<typeof openDatabase>) {
-  return listJobs(db)
+async function resumes(db: ReturnType<typeof openDatabase>) {
+  return (await listJobs(sqliteDb(db)))
     .filter((job) => job.queue === JOB_KIND.resume)
     .map((job) => job.payload as { handoff: string; reason: string });
 }
@@ -290,9 +294,9 @@ test("a high-risk head is asked with a link: Markdown, no options, the link on t
     "Decide in Paws: https://paws.example/dashboard/issues/ENG-106#risk",
   );
   expect(payload.body).toContain("A reply here cannot approve the risk.");
-  expect(listJobs(db).find((job) => job.queue === JOB_KIND.linkAskReminder)?.runAt).toBe(
-    NOW + LINK_ASK_REMINDER_MS,
-  );
+  expect(
+    (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.linkAskReminder)?.runAt,
+  ).toBe(NOW + LINK_ASK_REMINDER_MS);
 });
 
 test("a normal-tier head, or a Paws without an https link, needs no approval", async () => {
@@ -350,11 +354,11 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
     ["awaiting_input", "reverify_requested", "verifying"],
   ]);
   expect(
-    listJobs(db)
+    (await listJobs(sqliteDb(db)))
       .filter((job) => job.queue === JOB_KIND.reverify)
       .map((job) => [job.jobKey, job.payload]),
   ).toEqual([[`risk-approved:${question.id}`, { itemId, decide: true }]]);
-  expect(resumes(db)).toEqual([]);
+  expect(await resumes(db)).toEqual([]);
   expect(await activities(db)).toEqual([
     {
       key: `risk-approval:decided:${question.id}`,
@@ -381,7 +385,7 @@ test("Request changes on the Risk card restarts the item with the note", async (
     now: NOW + 100,
   });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(resumes(db)).toEqual([
+  expect(await resumes(db)).toEqual([
     expect.objectContaining({
       reason: "review",
       handoff: expect.stringContaining("Keep the old tokens valid for a day."),
@@ -410,7 +414,7 @@ test("a Linear reply requests changes and never approves, even when it says appr
     closedReason: "guidance",
   });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(resumes(db)).toEqual([
+  expect(await resumes(db)).toEqual([
     expect.objectContaining({ reason: "review", handoff: expect.stringContaining("approve") }),
   ]);
   expect(await activities(db)).toEqual([
@@ -434,7 +438,9 @@ test("Stop stops the item and leaves the pull request open", async () => {
     closedReason: "cancelled",
     decidedBy: "lead",
   });
-  expect(listJobs(db).filter((job) => job.queue === JOB_KIND.closeStoppedPull)).toEqual([]);
+  expect(
+    (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.closeStoppedPull),
+  ).toEqual([]);
   const stopped = (await listOutbox(sqliteDb(db))).find((row) =>
     row.idempotencyKey.startsWith("command:stop:"),
   );

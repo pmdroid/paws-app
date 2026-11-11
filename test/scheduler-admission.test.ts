@@ -353,10 +353,13 @@ test("work back in flight without an admission is re-admitted, so its jobs run i
       await bindWorkItemRepository(sqliteDb(db), id, repository);
       applyWorkItemEvent(db, id, "dispatched");
       applyWorkItemEvent(db, id, "turn_ended");
-      enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: id }, now: 0 });
+      await enqueueJob(sqliteDb(db), { queue: JOB_KIND.reverify, payload: { itemId: id }, now: 0 });
     }
     await workspaceDispatch(db, { now: 1000 });
-    const claimed = [claimNextJob(db, { now: 1000 }), claimNextJob(db, { now: 1000 })];
+    const claimed = [
+      await claimNextJob(sqliteDb(db), { now: 1000 }),
+      await claimNextJob(sqliteDb(db), { now: 1000 }),
+    ];
     assert.deepEqual(
       claimed.map((job) => (job?.payload as { itemId?: string } | undefined)?.itemId ?? null),
       ["a", "b"],
@@ -373,7 +376,7 @@ test("work stuck in flight with no job is queued again and doesn't block other s
     await bindWorkItemRepository(sqliteDb(db), "stuck", repository);
     applyWorkItemEvent(db, "stuck", "dispatched");
     applyWorkItemEvent(db, "stuck", "turn_ended");
-    const finished = enqueueJob(db, {
+    const finished = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.reverify,
       payload: { itemId: "stuck" },
       now: 0,
@@ -383,9 +386,10 @@ test("work stuck in flight with no job is queued again and doesn't block other s
     await bindWorkItemRepository(sqliteDb(db), "next", repository);
     const now = 10 * 60_000;
     assert.deepEqual(await workspaceDispatch(db, { now }), ["next"]);
-    const claimed = [claimNextJob(db, { now }), claimNextJob(db, { now })].map(
-      (job) => `${job?.queue}:${(job?.payload as { itemId?: string } | undefined)?.itemId}`,
-    );
+    const claimed = [
+      await claimNextJob(sqliteDb(db), { now }),
+      await claimNextJob(sqliteDb(db), { now }),
+    ].map((job) => `${job?.queue}:${(job?.payload as { itemId?: string } | undefined)?.itemId}`);
     assert.deepEqual(claimed.sort(), [`${JOB_KIND.start}:next`, `${JOB_KIND.reverify}:stuck`]);
     assert.equal(
       db.query("SELECT 1 FROM outbox WHERE ordering_key='stuck-session'").get() !== null,
@@ -408,7 +412,7 @@ test("an item in merge_queue whose merge job is gone fails closed into a re-veri
   const db = tempDb();
   try {
     await mergeQueueItem(db, "merging");
-    const finished = enqueueJob(db, {
+    const finished = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "merging", head: "h", summary: "s" },
       now: 0,
@@ -417,7 +421,7 @@ test("an item in merge_queue whose merge job is gone fails closed into a re-veri
     const now = 10 * 60_000;
     await workspaceDispatch(db, { now });
     assert.equal(getWorkItem(db, "merging")?.state, "verifying");
-    const job = claimNextJob(db, { now });
+    const job = await claimNextJob(sqliteDb(db), { now });
     assert.equal(job?.queue, JOB_KIND.reverify);
     assert.deepEqual(job?.payload, {
       itemId: "merging",
@@ -438,13 +442,13 @@ test("an item in merge_queue with a parked merge job is left in the queue", asyn
   const db = tempDb();
   try {
     await mergeQueueItem(db, "waiting");
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "waiting", head: "h", summary: "s" },
       now: 0,
       runAt: 60 * 60_000,
     });
-    const older = enqueueJob(db, {
+    const older = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.reverify,
       payload: { itemId: "waiting" },
       now: 0,

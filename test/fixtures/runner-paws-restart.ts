@@ -497,7 +497,7 @@ async function addItem(id: string, answer = false) {
       remoteUrl,
     });
   const { run } = await beginImplementRun(sqliteDb(paws.db), id, Date.now());
-  enqueueJob(paws.db, {
+  await enqueueJob(sqliteDb(paws.db), {
     queue: JOB_KIND.resume,
     payload: { itemId: id, runId: run.id, freshSession: true },
   });

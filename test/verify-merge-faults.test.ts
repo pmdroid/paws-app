@@ -5,7 +5,7 @@ import { expect, spyOn, test } from "bun:test";
 import type { FakeScript } from "../src/acp/testing/script";
 import * as closeoutCommands from "../src/closeout-spec/run/exec";
 import { JOB_KIND, systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher, listJobs, migrate, openDatabase } from "../src/db";
+import { sqliteDb, JobLoop, OutboxDispatcher, listJobs, migrate, openDatabase } from "../src/db";
 import { createFakeGitHub, type GitHubResponse } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
 import { attachOrchestrator } from "../src/loop";
@@ -220,7 +220,7 @@ async function runWithFault(
       errors: progress("error"),
       closed: progress("response").filter((body) => body.startsWith("Closed:")),
       questions: progress("elicitation"),
-      pending: listJobs(db)
+      pending: (await listJobs(sqliteDb(db)))
         .filter((job) => job.status === "pending" || job.status === "running")
         .map((job) => job.queue),
       injected,
@@ -228,7 +228,9 @@ async function runWithFault(
       implementations,
       detail: JSON.stringify({
         state: stateOf(db, "ENG-7"),
-        jobs: listJobs(db).map((job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`),
+        jobs: (await listJobs(sqliteDb(db))).map(
+          (job) => `${job.queue}:${job.status}:${job.lastError ?? ""}`,
+        ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),
       }),
     };

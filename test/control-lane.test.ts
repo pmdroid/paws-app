@@ -43,15 +43,25 @@ test("reconciliation runs while every execution worker holds a handler open", as
   for (let attempt = 0; attempt < 200 && held.length < 4; attempt++) await Bun.sleep(5);
   await Bun.sleep(20);
   expect(held.sort()).toEqual(ids.slice(0, 4));
-  const id = enqueueJob(db, { queue: "execution.reconcile", priority: 0, now: clock.now() });
+  const id = await enqueueJob(sqliteDb(db), {
+    queue: "execution.reconcile",
+    priority: 0,
+    now: clock.now(),
+  });
   expect(await Promise.race([reconciliation, Bun.sleep(1000).then(() => false)])).toBe(true);
   // The loop awaits the database after the handler returns, so completion lands a few ticks later.
-  for (let attempt = 0; attempt < 50 && getJob(db, id)?.status !== "done"; attempt++)
+  for (
+    let attempt = 0;
+    attempt < 50 && (await getJob(sqliteDb(db), id))?.status !== "done";
+    attempt++
+  )
     await Bun.sleep(1);
-  expect(getJob(db, id)?.status).toBe("done");
+  expect((await getJob(sqliteDb(db), id))?.status).toBe("done");
   expect(held.length).toBe(4);
   expect(
-    listJobs(db).filter((job) => job.queue === JOB_KIND.start && job.status === "running"),
+    (await listJobs(sqliteDb(db))).filter(
+      (job) => job.queue === JOB_KIND.start && job.status === "running",
+    ),
   ).toHaveLength(4);
   release();
   controller.abort();

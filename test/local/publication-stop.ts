@@ -156,7 +156,7 @@ export async function probePublicationStop(
     await bindLinearSessionTask(sqliteDb(db), "session", "epic");
     await bindWorkItemRepository(sqliteDb(db), "item", repository);
     branch = getWorkItem(db, "item")!.branchName;
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "item" },
       jobKey: "old-merge",
@@ -219,7 +219,7 @@ export async function probePublicationStop(
       { keepPullRequest: true },
     );
     // Only an explicit request closes a stopped pull request now.
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.closeStoppedPull,
       payload: { itemId: "item" },
       jobKey: "explicit-close",
@@ -333,7 +333,7 @@ export async function probePublicationStop(
     await bindLinearSessionTask(sqliteDb(db), "pending-session", "pending");
     await bindWorkItemRepository(sqliteDb(db), "pending-item", repository);
     pendingEpics.add("pending");
-    const pendingJob = enqueueJob(db, {
+    const pendingJob = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "pending-item" },
       jobKey: "pending-refresh-merge",
@@ -587,7 +587,7 @@ export async function probePublicationStop(
       onToken = undefined;
       pendingEpics.add("owned-refresh");
     };
-    const tokenRace = enqueueJob(db, {
+    const tokenRace = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "owned-refresh-item" },
       priority: -100,
@@ -610,7 +610,7 @@ export async function probePublicationStop(
       applyWorkItemEvent(db, "owned-refresh-item", "reverify_requested");
       return false;
     };
-    const verifyingRace = enqueueJob(db, {
+    const verifyingRace = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "owned-refresh-item" },
       priority: -100,
@@ -663,7 +663,7 @@ export async function probePublicationStop(
       });
       return waiter;
     };
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       priority: 0,
       payload: { itemId: "owned-refresh-item" },

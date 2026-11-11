@@ -127,12 +127,16 @@ describe("the runner lease grace", () => {
   test("the sweep leaves expired work to its live placement owner", async () => {
     const { db, clock, run } = await leased();
     const item = getRun(db, run.id)!;
-    enqueueJob(db, { queue: "run.resume", payload: { itemId: item.itemId }, now: clock.now() });
-    const job = claimNextJob(db, {
+    await enqueueJob(sqliteDb(db), {
+      queue: "run.resume",
+      payload: { itemId: item.itemId },
+      now: clock.now(),
+    });
+    const job = (await claimNextJob(sqliteDb(db), {
       now: clock.now(),
       leaseMs: PAST + 60_000,
       queues: ["run.resume"],
-    })!;
+    }))!;
     expect(job).not.toBeNull();
     clock.advance(PAST);
     expect(await closeExpiredRunnerLeases(sqliteDb(db), clock.now())).toEqual([]);

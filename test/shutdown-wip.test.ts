@@ -183,7 +183,10 @@ describe("shutdown WIP", () => {
       });
       await bindLinearSessionTask(sqliteDb(paws.db), "session", answer.delegationId);
       await saveTaskMode(sqliteDb(paws.db), answer.id, "answer");
-      enqueueJob(paws.db, { queue: JOB_KIND.start, payload: { itemId: answer.id } });
+      await enqueueJob(sqliteDb(paws.db), {
+        queue: JOB_KIND.start,
+        payload: { itemId: answer.id },
+      });
       const ticked = () =>
         paws.db
           .query<{ n: number }, []>(

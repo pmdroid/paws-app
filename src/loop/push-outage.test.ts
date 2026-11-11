@@ -45,7 +45,7 @@ async function lane() {
     insertQueuedItem(db, { id: `item-${name}`, sessionKey: `ses-${name}`, now: 0 });
     await beginImplementRun(sqliteDb(db), `item-${name}`, 1);
     jobs.push(
-      enqueueJob(db, {
+      await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.merge,
         jobKey: `merge:item-${name}`,
         payload: { itemId: `item-${name}` },
@@ -56,8 +56,13 @@ async function lane() {
   return { db, jobs: jobs as [number, number, number] };
 }
 
-function claim(db: Database, now: number) {
-  return claimNextJob(db, { workerId: "worker", leaseMs: MINUTE, now, queues: [JOB_KIND.merge] });
+async function claim(db: Database, now: number) {
+  return await claimNextJob(sqliteDb(db), {
+    workerId: "worker",
+    leaseMs: MINUTE,
+    now,
+    queues: [JOB_KIND.merge],
+  });
 }
 
 /** Runs the next due merge job the way the orchestrator does with a push outage. */
@@ -66,7 +71,7 @@ async function attempt(
   now: number,
   pushes: (jobId: number) => "refused" | "works",
 ): Promise<{ id: number; pushed: boolean; held?: boolean } | null> {
-  const job = claim(db, now);
+  const job = await claim(db, now);
   if (!job) return null;
   try {
     await holdPush(sqliteDb(db), REPOSITORY, job.id);
@@ -113,7 +118,7 @@ describe("a push outage", () => {
       lastError: DENIED,
     });
     for (const id of jobs) {
-      const job = getJob(db, id)!;
+      const job = (await getJob(sqliteDb(db), id))!;
       expect(job.status).toBe("pending");
       expect(job.attempts).toBe(0);
       expect(job.payload).toMatchObject({
@@ -138,7 +143,7 @@ describe("a push outage", () => {
     for (let index = 0; index < 5; index++) {
       now = (await getPushOutage(sqliteDb(db), REPOSITORY))!.nextProbeAt;
       // Only the probe is due; the held jobs wait for the outage to end.
-      expect(claim(db, now - 1)).toBeNull();
+      expect(await claim(db, now - 1)).toBeNull();
       const tried = await attempt(db, now, () => "refused");
       expect(tried).toMatchObject({ id: jobs[0], pushed: false, held: false });
       probes.push(now);

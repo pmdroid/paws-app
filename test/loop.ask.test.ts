@@ -58,7 +58,8 @@ const reply = (body: string, deliveryId = "activity:ans") => ({
   now: NOW + 100,
 });
 
-const resumes = (db: Database) => listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+const resumes = async (db: Database) =>
+  (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
 
 test("an answered agent question restarts the same run with the handoff", async () => {
   const { db, asker } = await parked();
@@ -78,7 +79,7 @@ test("an answered agent question restarts the same run with the handoff", async 
 
   expect(outcome.status).toBe("answered");
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-  expect(resumes(db)).toEqual([
+  expect(await resumes(db)).toEqual([
     expect.objectContaining({
       jobKey: `resume:answer:${asked.question.id}`,
       status: "pending",
@@ -97,7 +98,7 @@ test("an answered agent question restarts the same run with the handoff", async 
   expect(
     (await answer(db, reply("parquet, please"), questionEffects(db, { now: NOW + 100 }))).status,
   ).toBe("duplicate");
-  expect(resumes(db)).toHaveLength(1);
+  expect(await resumes(db)).toHaveLength(1);
 });
 
 test.each(["clarification", "repository"] as const)(
@@ -107,7 +108,9 @@ test.each(["clarification", "repository"] as const)(
     const asked = await ask(db, asker, kind, "Which outcome?", { now: NOW });
     await answer(db, reply("Change the code"), questionEffects(db, { now: NOW + 100 }));
     expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-    expect(resumes(db).map((job) => job.jobKey)).toEqual([`resume:answer:${asked.question.id}`]);
+    expect((await resumes(db)).map((job) => job.jobKey)).toEqual([
+      `resume:answer:${asked.question.id}`,
+    ]);
   },
 );
 
@@ -117,7 +120,7 @@ test("an answer while the asking run is still live leaves the resume to the end 
   const effects = questionEffects(db, { now: NOW + 100, asking: (runId) => runId === asker.runId });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-  expect(resumes(db)).toHaveLength(1);
+  expect(await resumes(db)).toHaveLength(1);
 });
 
 test("a redirecting answer resumes the task without a handoff job", async () => {
@@ -126,7 +129,7 @@ test("a redirecting answer resumes the task without a handoff job", async () => 
   const effects = questionEffects(db, { now: NOW + 100, redirect: true });
   expect((await answer(db, reply("parquet"), effects)).status).toBe("answered");
   expect(getWorkItem(db, asker.itemId)?.state).toBe("queued");
-  expect(resumes(db)).toHaveLength(1);
+  expect(await resumes(db)).toHaveLength(1);
 });
 
 test("an agent question queued behind another is delivered once that one is answered", async () => {
@@ -151,7 +154,7 @@ test("an agent question queued behind another is delivered once that one is answ
     next: { id: queued.question.id, status: "open" },
   });
   expect(getWorkItem(db, asker.itemId)?.state).toBe("awaiting_input");
-  expect(resumes(db)).toEqual([]);
+  expect(await resumes(db)).toEqual([]);
   expect((await listOutbox(sqliteDb(db))).map((row) => row.idempotencyKey)).toEqual([
     `question:${waiting.question.id}`,
     `question:${queued.question.id}`,

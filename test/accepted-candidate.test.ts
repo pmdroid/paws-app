@@ -176,7 +176,7 @@ async function runAccepted(options: {
     const progress = (kind: string) =>
       tracker.progress.filter((update) => update.kind === kind).map((update) => update.body);
     const item = listWorkItems(db).find((entry) => entry.linearIdentifier === "ENG-8");
-    const merges = listJobs(db).filter((job) => job.queue === JOB_KIND.merge);
+    const merges = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.merge);
     return {
       state: stateOf(db, "ENG-8"),
       implementRuns,
@@ -188,7 +188,7 @@ async function runAccepted(options: {
       questions: progress("elicitation"),
       detail: JSON.stringify({
         state: item ? getWorkItem(db, item.id)?.state : null,
-        jobs: listJobs(db).map(
+        jobs: (await listJobs(sqliteDb(db))).map(
           (job) => `${job.queue}:${job.status}:${job.attempts}:${job.lastError ?? ""}`,
         ),
         progress: tracker.progress.map((update) => `${update.kind}: ${update.body}`),

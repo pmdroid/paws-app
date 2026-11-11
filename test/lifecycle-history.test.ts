@@ -72,7 +72,8 @@ async function askedAtTimeLimit() {
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
   clock.advance(31 * MINUTE);
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
-  const request = listJobs(db).find((job) => job.queue === "item.ask")!.payload as {
+  const request = (await listJobs(sqliteDb(db))).find((job) => job.queue === "item.ask")!
+    .payload as {
     body: string;
     options: string[];
   };
@@ -129,7 +130,7 @@ test("an answered runner wait re-verifies without passing through running", asyn
   const askedAt = getWorkItem(db, item.id)!.version;
   expect((await reply(db, "Keep waiting", 3_000)).status).toBe("answered");
   expect(history(db, item.id, askedAt)).toEqual(["awaiting_input -reverify_requested-> verifying"]);
-  expect(listJobs(db).some((job) => job.queue === "run.reverify")).toBe(true);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === "run.reverify")).toBe(true);
 });
 
 test("Discarding a plan completes it from the wait with one answer_completed", async () => {

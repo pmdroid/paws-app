@@ -382,7 +382,7 @@ async function scenario(
       pulls: pulls.opened,
       merged: pulls.merged,
       requests,
-      jobs: listJobs(db),
+      jobs: await listJobs(sqliteDb(db)),
       issues,
     };
     save(`${name}.json`, result);

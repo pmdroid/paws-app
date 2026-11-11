@@ -257,7 +257,8 @@ async function setup(options: { version?: string; conversations?: number } = {})
       (await listOutbox(sqliteDb(db), session))
         .filter((row) => (row.payload as { kind: string }).kind === "response")
         .map((row) => (row.payload as { body: string }).body),
-    resumes: async () => listJobs(db).filter((job) => job.queue === JOB_KIND.resume),
+    resumes: async () =>
+      (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume),
     taskSlots: async () => await runnerTaskSlots(sqliteDb(db), clock.now(), clock.now() - 60_000),
   };
 }
@@ -401,7 +402,7 @@ test("a queued item's start job waits while a conversation runs on its session",
   await f.say("acme-1", "c-1", "What is left to do?");
   expect(await f.deliver("acme-1")).toBe("wait");
   const [started] = await f.conversations();
-  const jobId = enqueueJob(f.db, {
+  const jobId = await enqueueJob(sqliteDb(f.db), {
     queue: JOB_KIND.start,
     payload: { itemId: "acme-1" },
     now: f.clock.now(),
@@ -414,10 +415,13 @@ test("a queued item's start job waits while a conversation runs on its session",
     sessionId: null,
     now: f.clock.now(),
   });
-  const job = claimNextJob(f.db, { now: f.clock.now(), queues: [JOB_KIND.start] })!;
+  const job = (await claimNextJob(sqliteDb(f.db), {
+    now: f.clock.now(),
+    queues: [JOB_KIND.start],
+  }))!;
   const current = { isCurrent: () => true };
   expect(await f.orchestrator["waitingForConversation"](job, current)).toBe(true);
-  expect(listJobs(f.db).find((entry) => entry.id === job.id)).toMatchObject({
+  expect((await listJobs(sqliteDb(f.db))).find((entry) => entry.id === job.id)).toMatchObject({
     status: "pending",
     attempts: job.attempts - 1,
   });
@@ -426,7 +430,10 @@ test("a queued item's start job waits while a conversation runs on its session",
   await f.answer(started!.id, { text: "Only the tests." });
   expect(await f.deliver("acme-1")).toBe("done");
   f.clock.advance(60_000);
-  const again = claimNextJob(f.db, { now: f.clock.now(), queues: [JOB_KIND.start] })!;
+  const again = (await claimNextJob(sqliteDb(f.db), {
+    now: f.clock.now(),
+    queues: [JOB_KIND.start],
+  }))!;
   expect(await f.orchestrator["waitingForConversation"](again, current)).toBe(false);
 });
 

@@ -33,8 +33,8 @@ async function verifying(candidate = true) {
   return { db, item: getWorkItem(db, item.id)!, run };
 }
 
-const pending = (db: Awaited<ReturnType<typeof verifying>>["db"]) =>
-  listJobs(db).filter((job) => job.status === "pending");
+const pending = async (db: Awaited<ReturnType<typeof verifying>>["db"]) =>
+  (await listJobs(sqliteDb(db))).filter((job) => job.status === "pending");
 
 describe("interrupted verification", () => {
   test("a clean shutdown keeps the candidate in verifying and the next start re-verifies it", async () => {
@@ -46,7 +46,7 @@ describe("interrupted verification", () => {
       { type: "reverify", resumed: true },
     ]);
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "verifying", recoveryAttempts: 1 });
-    expect(pending(db).map((job) => job.queue)).toEqual([JOB_KIND.reverify]);
+    expect((await pending(db)).map((job) => job.queue)).toEqual([JOB_KIND.reverify]);
   });
 
   test("a crash start re-verifies the candidate once and then asks", async () => {
@@ -55,7 +55,7 @@ describe("interrupted verification", () => {
       { type: "reverify", resumed: true },
     ]);
     expect(await recoverOnStartup(sqliteDb(db), NOW + 2)).toEqual([{ type: "ask_restart" }]);
-    expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+    expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
     const held = getWorkItem(db, item.id)!;
     expect(held.state).toBe("recovering");
     expect(await restartHold(sqliteDb(db), held)).not.toBeNull();
@@ -72,7 +72,7 @@ describe("interrupted verification", () => {
     });
     await prepareShutdown(sqliteDb(db), NOW + 1);
     expect(await recoverOnStartup(sqliteDb(db), NOW + 2)).toEqual([]);
-    expect(pending(db)).toMatchObject([
+    expect(await pending(db)).toMatchObject([
       { queue: JOB_KIND.reverify, runAt: NOW + 60_000, payload: { retry: 1 } },
     ]);
     expect(getWorkItem(db, item.id)?.recoveryAttempts).toBe(0);
@@ -99,7 +99,7 @@ describe("interrupted verification", () => {
     expect(await closeExpiredRunnerLeases(sqliteDb(db), later)).toEqual([run.id]);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
     expect(getRun(db, run.id)?.status).toBe("lost");
-    expect(pending(db)).toMatchObject([
+    expect(await pending(db)).toMatchObject([
       { queue: JOB_KIND.reverify, payload: { itemId: item.id, recheckHead: true } },
     ]);
     expect(await requeueOrphanedWork(sqliteDb(db), later)).toEqual([]);

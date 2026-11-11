@@ -121,7 +121,7 @@ test("a broken approve rule is a rule link ask with its summary and the link", a
   expect(await listCloseoutBypassChecks(sqliteDb(db), question.id)).toMatchObject([
     { checkId: "api-contract", kind: "rule", state: "failed", attempt: 1, message: FEEDBACK },
   ]);
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
 });
 
 test("Approve records who and why and verifies the same head again", async () => {
@@ -144,11 +144,11 @@ test("Approve records who and why and verifies the same head again", async () =>
     state: "verifying",
     checkpoint: { phase: "verifying", baseSha: "base", wipCommit: HEAD },
   });
-  expect(listJobs(db).map((job) => [job.queue, job.jobKey])).toContainEqual([
+  expect((await listJobs(sqliteDb(db))).map((job) => [job.queue, job.jobKey])).toContainEqual([
     JOB_KIND.reverify,
     `closeout-bypass:${question.id}`,
   ]);
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
   expect((await listCloseoutBypassChecks(sqliteDb(db), question.id))[0]).toMatchObject({
     reason: "The contract change is intended for v2.",
     approvedBy: "lead",
@@ -232,12 +232,14 @@ test("Send back restarts the agent with the finding", async () => {
   ).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   const handoff = (
-    listJobs(db).find((job) => job.queue === JOB_KIND.resume)!.payload as { handoff: string }
+    (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!.payload as {
+      handoff: string;
+    }
   ).handoff;
   expect(handoff).toContain("Keep Task.title; add the new field beside it.");
   expect(handoff).toContain("removed field Task.title");
   expect(handoff).toContain("api-contract (rule): failed");
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
   expect(await recoveryOptions(db, itemId)).toEqual({
     retryBaseline: ["api-contract:1"],
     bypasses: [],
@@ -260,9 +262,11 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
     closedReason: "guidance",
   });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
   const handoff = (
-    listJobs(db).find((job) => job.queue === JOB_KIND.resume)!.payload as { handoff: string }
+    (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!.payload as {
+      handoff: string;
+    }
   ).handoff;
   expect(handoff).toContain("The reply is guidance and approves nothing");
   expect(handoff).toContain("removed field Task.title");

@@ -29,8 +29,8 @@ function mergeQueueItem(id: string, awakeMs = 0) {
   return db;
 }
 
-function resumeJobs(db: ReturnType<typeof tempDb>, itemId: string) {
-  return listJobs(db).filter(
+async function resumeJobs(db: ReturnType<typeof tempDb>, itemId: string) {
+  return (await listJobs(sqliteDb(db))).filter(
     (job) =>
       job.queue === JOB_KIND.resume &&
       (job.payload as { itemId?: string }).itemId === itemId &&
@@ -52,7 +52,7 @@ test("own_turn starts exactly one suggestion restart from merge_queue, and none 
       await startTurn(db, { itemId: "acme-1", head: "a".repeat(40), suggestions: 1, now: 5 }),
     ).toBe("started");
     expect(getWorkItem(db, "acme-1")?.state).toBe("queued");
-    expect(resumeJobs(db, "acme-1").map((job) => job.jobKey)).toEqual([
+    expect((await resumeJobs(db, "acme-1")).map((job) => job.jobKey)).toEqual([
       "suggested-findings:acme-1",
     ]);
     db.run("UPDATE work_item SET state = 'merge_queue' WHERE id = 'acme-1'");
@@ -91,7 +91,7 @@ test("own_turn starts nothing without suggestions or when another restart is alr
       await startTurn(db, { itemId: "acme-2", head: "a".repeat(40), suggestions: 1, now: 5 }),
     ).toBe("skipped");
     expect(getWorkItem(db, "acme-2")?.state).toBe("merge_queue");
-    expect(resumeJobs(db, "acme-2")).toEqual([]);
+    expect(await resumeJobs(db, "acme-2")).toEqual([]);
   } finally {
     db.close();
   }

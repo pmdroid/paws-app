@@ -111,7 +111,7 @@ async function fixture(): Promise<Database> {
   insertQueuedItem(db, { id: "ENG-5", title: "Held review", sessionKey: "s1", now: NOW - 4_000 });
   await beginImplementRun(sqliteDb(db), "ENG-5", NOW - 3_900);
   applyWorkItemEvent(db, "ENG-5", "turn_ended");
-  enqueueJob(db, {
+  await enqueueJob(sqliteDb(db), {
     queue: "run.reverify",
     payload: { itemId: "ENG-5", reviewerFault: "reviewer-key" },
     runAt: NOW + 900_000,

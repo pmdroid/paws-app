@@ -321,12 +321,16 @@ describe("one page per issue", () => {
       payload: { sessionId: SESSION, body: "Which repository?" },
       now: T0 + 130_000,
     });
-    const job = enqueueJob(db, {
+    const job = await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       payload: { itemId: ITEM },
       now: T0 + 140_000,
     });
-    const otherJob = enqueueJob(db, { queue: "run.resume", payload: { itemId: "other" }, now: T0 });
+    const otherJob = await enqueueJob(sqliteDb(db), {
+      queue: "run.resume",
+      payload: { itemId: "other" },
+      now: T0,
+    });
     db.run(
       "UPDATE outbox SET status = 'dead', attempts = 5, error = 'Linear is down' WHERE id = ?",
       [elicitation],

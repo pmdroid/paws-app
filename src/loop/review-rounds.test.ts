@@ -83,8 +83,8 @@ async function asked(findings?: string) {
 
 const actor = { workspaceId: "ws", userId: "user-lead", name: "Lea" };
 
-function handoff(db: Awaited<ReturnType<typeof asked>>["db"]): string {
-  const resume = listJobs(db).find((job) => job.queue === JOB_KIND.resume)!;
+async function handoff(db: Awaited<ReturnType<typeof asked>>["db"]): Promise<string> {
+  const resume = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!;
   return (resume.payload as { handoff: string }).handoff;
 }
 
@@ -160,7 +160,7 @@ test("Rethink the approach restarts the item with the findings, the note and a n
     closedReason: "decided",
   });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  const body = handoff(db);
+  const body = await handoff(db);
   expect(body).toContain("A person asked you to rethink the approach");
   expect(body).toContain("(most are unchecked null)");
   expect(body).toContain("Note from the person: Validate the session once at the boundary.");
@@ -187,7 +187,7 @@ test("Rethink the approach needs no note", async () => {
     }),
   ).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(handoff(db)).not.toContain("Note from the person");
+  expect(await handoff(db)).not.toContain("Note from the person");
 });
 
 test("Keep going restarts the item with four more rounds", async () => {
@@ -203,7 +203,9 @@ test("Keep going restarts the item with four more rounds", async () => {
     }),
   ).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  expect(handoff(db)).toContain("A person allowed 4 more review rounds: fix the open findings.");
+  expect(await handoff(db)).toContain(
+    "A person allowed 4 more review rounds: fix the open findings.",
+  );
   expect((await recoveryOptions(db, itemId)).retryBaseline).toEqual(BASELINE);
   const notes = (await listOutbox(sqliteDb(db))).filter((row) =>
     row.idempotencyKey.startsWith("link-ask-decided:"),
@@ -226,7 +228,7 @@ test("Stop ends the item as asked and sends nothing back to the agent", async ()
     }),
   ).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("failed");
-  expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
+  expect((await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
   const failure = (await listOutbox(sqliteDb(db))).find((row) =>
     row.idempotencyKey.includes(":closeout:review_rounds"),
   )!;
@@ -287,7 +289,7 @@ test("a reply in Linear is Rethink the approach with the reply as the note", asy
     "rethink: Stop patching; move the check into the middleware.",
   );
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
-  const body = handoff(db);
+  const body = await handoff(db);
   expect(body).toContain("A person asked you to rethink the approach");
   expect(body).toContain(
     "Note from the person: Stop patching; move the check into the middleware.",

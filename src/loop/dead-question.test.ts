@@ -46,7 +46,7 @@ async function waitingItem(kind: "agent" | "visual-review" = "agent") {
     );
   // Both deliveries of the elicitation used their attempts.
   db.run("UPDATE outbox SET status = 'dead', error = 'Linear is down' WHERE op = 'elicitation'");
-  const job = enqueueJob(db, {
+  const job = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.reaskQuestion,
     jobKey: `${JOB_KIND.reaskQuestion}:${asked.question.id}`,
     payload: { itemId: "item-q", questionId: asked.question.id },
@@ -86,7 +86,10 @@ describe("a question whose elicitation died twice", () => {
     ]);
     expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toEqual([]);
     // The job remembers the question it produced, so that question shares this allowance.
-    expect(getJob(db, job)?.payload).toMatchObject({ questionId: question.id, reaskedAs: again });
+    expect((await getJob(sqliteDb(db), job))?.payload).toMatchObject({
+      questionId: question.id,
+      reaskedAs: again,
+    });
   });
 
   test("a visual review keeps its question and review, and is delivered again", async () => {
@@ -113,7 +116,7 @@ describe("a question whose elicitation died twice", () => {
       (await listOutbox(sqliteDb(db), "ses-q"))[0]?.payload,
     );
     expect(await listDeadDeliveries(sqliteDb(db), "item-q")).toEqual([]);
-    expect(getJob(db, job)?.payload).toMatchObject({ reaskedAs: question.id });
+    expect((await getJob(sqliteDb(db), job))?.payload).toMatchObject({ reaskedAs: question.id });
   });
 
   test("changes nothing once the item stopped waiting or the question was answered", async () => {

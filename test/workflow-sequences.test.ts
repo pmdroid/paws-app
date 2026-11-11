@@ -175,14 +175,14 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
       return;
     }
     case "ack": {
-      const job = claimNextJob(w.db, { now: w.now, queues: ACK_QUEUES });
+      const job = await claimNextJob(sqliteDb(w.db), { now: w.now, queues: ACK_QUEUES });
       if (job === null) return;
       if (action.crashBefore) {
         w.crash();
         return;
       }
-      expect(completeJob(w.db, job, w.now)).toBe(true);
-      if (action.twice) expect(completeJob(w.db, job, w.now)).toBe(false);
+      expect(await completeJob(sqliteDb(w.db), job, w.now)).toBe(true);
+      if (action.twice) expect(await completeJob(sqliteDb(w.db), job, w.now)).toBe(false);
       return;
     }
     default: {

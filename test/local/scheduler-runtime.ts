@@ -113,11 +113,16 @@ export async function probeSchedulerRuntime(
     observe(
       "after restart the same recurring tick yields the merge session and admits the blocker in one dispatch",
       tick?.id === firstTick.id &&
-        getJob(db, firstTick.id)?.fireCount === 2 &&
+        (await getJob(sqliteDb(db), firstTick.id))?.fireCount === 2 &&
         JSON.stringify(events) === JSON.stringify(["reconcile:original"]) &&
         admission?.item_id === "blocker" &&
         (await getLinearSession(sqliteDb(db), "session"))?.activeItemId === null,
-      { tick: tick?.id, fireCount: getJob(db, firstTick.id)?.fireCount, events, admission },
+      {
+        tick: tick?.id,
+        fireCount: (await getJob(sqliteDb(db), firstTick.id))?.fireCount,
+        events,
+        admission,
+      },
     );
     jobs.register(JOB_KIND.start, async (job) => {
       const itemId = (job.payload as { itemId: string }).itemId;

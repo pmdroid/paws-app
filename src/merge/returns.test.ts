@@ -56,7 +56,9 @@ describe("merge returns", () => {
     expect(sent).toBe(true);
     expect(getWorkItem(db, "eng-1")?.state).toBe("queued");
     expect(getWorkItem(db, "eng-1")?.checkpoint?.phase).toBe("running");
-    expect(listJobs(db).map((job) => [job.queue, job.jobKey, job.payload])).toEqual([
+    expect(
+      (await listJobs(sqliteDb(db))).map((job) => [job.queue, job.jobKey, job.payload]),
+    ).toEqual([
       [
         JOB_KIND.resume,
         "rebase-conflict:eng-1:0:0",
@@ -78,13 +80,13 @@ describe("merge returns", () => {
     expect((await sendBack(db, 0)).sent).toBe(false);
     expect((await sendBack(db)).sent).toBe(true);
     expect((await sendBack(db)).sent).toBe(false);
-    expect(listJobs(db)).toHaveLength(1);
+    expect(await listJobs(sqliteDb(db))).toHaveLength(1);
   });
 
   test("a Linear user turn resets the budget", async () => {
     const db = await queued();
     await sendBack(db, 1);
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       jobKey: "linear-turn:s-1:1",
       payload: { itemId: "eng-1" },
@@ -97,7 +99,7 @@ describe("merge returns", () => {
     const db = await queued();
     await sendBack(db, 1);
     expect(await rebaseReturns(db, "eng-1")).toBe(1);
-    enqueueJob(db, {
+    await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.resume,
       jobKey: "resume:answer:guidance",
       payload: { itemId: "eng-1", reason: "answer" },
@@ -110,17 +112,21 @@ describe("merge returns", () => {
     const db = await queued();
     try {
       for (const reason of ["findings", "ci", "review"]) {
-        enqueueJob(db, { queue: JOB_KIND.resume, payload: { itemId: "eng-1", reason }, now: 2 });
+        await enqueueJob(sqliteDb(db), {
+          queue: JOB_KIND.resume,
+          payload: { itemId: "eng-1", reason },
+          now: 2,
+        });
       }
       expect(fixRounds(db, "eng-1")).toBe(3);
       expect(ciFixes(db, "eng-1")).toBe(3);
-      enqueueJob(db, {
+      await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.resume,
         payload: { itemId: "eng-1", reason: "conflict" },
         now: 3,
       });
       expect(fixRounds(db, "eng-1")).toBe(3);
-      const reply = enqueueJob(db, {
+      const reply = await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.resume,
         jobKey: "linear-turn:s-1:2",
         payload: { itemId: "eng-1" },
@@ -130,7 +136,7 @@ describe("merge returns", () => {
       await saveHumanRetryWindow(sqliteDb(db), "eng-1", reply, ["redispatched-evidence"]);
       expect(await humanRetryBaseline(sqliteDb(db), "eng-1")).toEqual(["failed-evidence"]);
       expect(fixRounds(db, "eng-1")).toBe(0);
-      enqueueJob(db, {
+      await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.resume,
         payload: { itemId: "eng-1", reason: "ci" },
         now: 5,

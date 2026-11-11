@@ -67,7 +67,7 @@ async function failedAttempt() {
   const first = await admit("old");
   if (!first.ok) throw new Error("Expected admission");
   const id = first.items[0]!.id;
-  enqueueJob(db, { queue: "item.start", payload: { itemId: id } });
+  await enqueueJob(sqliteDb(db), { queue: "item.start", payload: { itemId: id } });
   applyWorkItemEvent(db, id, "dispatched");
   failWorkItem(db, getWorkItem(db, id)!, "no_repository", "No repository accessible", 10);
   tracker.progress.length = 0;
@@ -129,7 +129,8 @@ test.each(["run", "checkpoint", "job", "conversation", "cleanup", "parent", "sib
     if (held === "run") await insertRun(sqliteDb(db), { itemId: id, now: 1, status: "ended" });
     if (held === "checkpoint")
       db.run("UPDATE work_item SET checkpoint = ? WHERE id = ?", ['{"phase":"running"}', id]);
-    if (held === "job") enqueueJob(db, { queue: "item.start", payload: { itemId: id } });
+    if (held === "job")
+      await enqueueJob(sqliteDb(db), { queue: "item.start", payload: { itemId: id } });
     if (held === "conversation") await saveConversation(sqliteDb(db), id, "[]", null, true);
     if (held === "cleanup") blockLinearSessionCleanup(db, "old");
     if (held === "parent")

@@ -107,7 +107,7 @@ export async function probeCurrentRunStartup(root: string) {
     try {
       if (mode !== "clarified-artifact") await workspaceDispatch(db, { now: clock.now() });
       else
-        enqueueJob(db, {
+        await enqueueJob(sqliteDb(db), {
           queue: mode === "clarified-artifact" ? JOB_KIND.resume : JOB_KIND.start,
           payload: {
             itemId: item.id,

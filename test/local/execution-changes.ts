@@ -126,7 +126,7 @@ export async function probeExecutionChanges(
       wipCommit: "paused-existing-work",
       baseSha: "previous-base",
     });
-    const oldStart = enqueueJob(db, {
+    const oldStart = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
       payload: { itemId: "criteria-4" },
       jobKey: "start:criteria-4:0",
@@ -142,7 +142,7 @@ export async function probeExecutionChanges(
     });
     setCurrentRun(db, "criteria-0", run.id);
     saveCheckpoint(db, "criteria-0", { phase: "merge_queue", wipCommit: "old-verified-candidate" });
-    const oldJob = enqueueJob(db, {
+    const oldJob = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.merge,
       payload: { itemId: "criteria-0", head: "old-verified-candidate" },
       jobKey: "old-approval",
@@ -262,7 +262,7 @@ export async function probeExecutionChanges(
     await seed("pause", ["queued"]);
     await saveTaskMode(sqliteDb(db), "pause-0", "answer");
     saveCheckpoint(db, "pause-0", { phase: "running", wipCommit: "preserved-commit" });
-    const pauseJob = enqueueJob(db, {
+    const pauseJob = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
       payload: { itemId: "pause-0" },
       jobKey: "pause-proof",

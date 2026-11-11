@@ -345,7 +345,7 @@ test("session affinity waits for other runs' held slots and unassigned reservati
       "second",
     ]);
     insertQueuedItem(db, { id: "pinned", now: placed.now() });
-    const pin = enqueueJob(db, {
+    const pin = await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       now: placed.now(),
       payload: {

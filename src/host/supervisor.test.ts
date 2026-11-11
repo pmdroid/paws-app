@@ -34,8 +34,8 @@ import { HostSupervisor } from "./supervisor";
 import { WakeDetector } from "./wake";
 
 /** The unit fixture holds a real job while its simulated agent is running. */
-function agentJob(db: Database, itemId: string, now: number) {
-  const id = enqueueJob(db, {
+async function agentJob(db: Database, itemId: string, now: number) {
+  const id = await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     jobKey: `fixture-agent:${itemId}:${getWorkItem(db, itemId)!.version}`,
     payload: { itemId },
@@ -59,10 +59,10 @@ async function beginImplementRun(
   checkpoint?: Checkpoint,
 ) {
   const result = await beginRun(sqliteDb(db), itemId, now, checkpoint);
-  agentJob(db, itemId, now);
+  await agentJob(db, itemId, now);
   return result;
 }
-function applyWorkItemEvent(
+async function applyWorkItemEvent(
   db: Database,
   id: string,
   event: WorkItemEvent,
@@ -71,15 +71,15 @@ function applyWorkItemEvent(
   const before = getWorkItem(db, id)!.state;
   const result = applyEvent(db, id, event, record);
   if (before === "running" && result.state !== "running") endAgentJob(db, id);
-  if (before !== "running" && result.state === "running") agentJob(db, id, 1_000_000);
+  if (before !== "running" && result.state === "running") await agentJob(db, id, 1_000_000);
   return result;
 }
 async function enterMergeQueue(db: Database, itemId: string, checkpoint: Checkpoint) {
   endAgentJob(db, itemId);
   return await enterQueue(sqliteDb(db), itemId, checkpoint);
 }
-const listJobs = (db: Database) =>
-  storedJobs(db).filter((job) => !job.jobKey?.startsWith("fixture-agent:"));
+const listJobs = async (db: Database) =>
+  (await storedJobs(sqliteDb(db))).filter((job) => !job.jobKey?.startsWith("fixture-agent:"));
 
 const checkpoint: Checkpoint = { phase: "running", wipCommit: "wip", turn: 3, baseSha: "main" };
 
@@ -107,13 +107,17 @@ async function startRun(
 }
 
 /** A job that holds the item's lease, as one does while Closeout verifies it. */
-function verifyingJob(db: ReturnType<typeof boot>["db"], clock: FakeClock) {
-  enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: "eng-9" }, now: clock.now() });
-  return claimNextJob(db, {
+async function verifyingJob(db: ReturnType<typeof boot>["db"], clock: FakeClock) {
+  await enqueueJob(sqliteDb(db), {
+    queue: JOB_KIND.reverify,
+    payload: { itemId: "eng-9" },
+    now: clock.now(),
+  });
+  return (await claimNextJob(sqliteDb(db), {
     now: clock.now(),
     leaseMs: 24 * 60 * 60_000,
     queues: [JOB_KIND.reverify],
-  })!;
+  }))!;
 }
 
 async function activities(db: ReturnType<typeof boot>["db"]) {
@@ -128,17 +132,17 @@ describe("supervisor accrual writes", () => {
       await host.tick();
       clock.advance(10 * 60_000);
       await host.tick();
-      applyWorkItemEvent(db, "eng-9", "turn_ended");
-      applyWorkItemEvent(db, "eng-9", "closeout_accepted");
+      await applyWorkItemEvent(db, "eng-9", "turn_ended");
+      await applyWorkItemEvent(db, "eng-9", "closeout_accepted");
       await markCloseoutAccepted(sqliteDb(db), "eng-9", "accepted");
       for (let hour = 0; hour < 4; hour += 1) {
         clock.advance(60 * 60_000);
         await host.tick();
       }
       // A changes-requested review sends the item back; it waits a tick for a runner.
-      applyWorkItemEvent(db, "eng-9", "restart", { kind: "restart", reason: "review" });
+      await applyWorkItemEvent(db, "eng-9", "restart", { kind: "restart", reason: "review" });
       await host.tick();
-      applyWorkItemEvent(db, "eng-9", "dispatched");
+      await applyWorkItemEvent(db, "eng-9", "dispatched");
       await host.tick();
       clock.advance(5 * 60_000);
       await host.tick();
@@ -160,7 +164,7 @@ describe("supervisor accrual writes", () => {
         insertQueuedItem(db, { id, now: clock.now() });
         if (id !== "idle") await beginImplementRun(db, id, clock.now());
       }
-      applyWorkItemEvent(db, "paused", "pause");
+      await applyWorkItemEvent(db, "paused", "pause");
       db.exec(`
         CREATE TEMP TABLE item_write (id TEXT);
         CREATE TEMP TRIGGER count_item_write AFTER UPDATE ON work_item BEGIN
@@ -186,7 +190,7 @@ describe("supervisor accrual writes", () => {
       await host.tick();
       expect(writes()).toEqual([{ id: "awake" }, { id: "awake" }]);
 
-      applyWorkItemEvent(db, "paused", "resume");
+      await applyWorkItemEvent(db, "paused", "resume");
       db.exec("DELETE FROM item_write");
       clock.advance(250);
       await host.tick();
@@ -267,24 +271,32 @@ describe("host suspension and clock gaps", () => {
     held: (typeof HELD)[number],
   ) {
     const { run } = await startRun(db, clock);
-    if (held === "paused") applyWorkItemEvent(db, "eng-9", "pause");
-    if (held === "awaiting_input") applyWorkItemEvent(db, "eng-9", "blocking_question");
+    if (held === "paused") await applyWorkItemEvent(db, "eng-9", "pause");
+    if (held === "awaiting_input") await applyWorkItemEvent(db, "eng-9", "blocking_question");
     if (held === "accepted") {
-      applyWorkItemEvent(db, "eng-9", "turn_ended");
+      await applyWorkItemEvent(db, "eng-9", "turn_ended");
       await markCloseoutAccepted(sqliteDb(db), "eng-9", "wip");
-      verifyingJob(db, clock);
+      await verifyingJob(db, clock);
     }
     if (held === "merge_queue" || held === "merge_call") {
       await markCloseoutAccepted(sqliteDb(db), "eng-9", "wip");
       await enterMergeQueue(db, "eng-9", { ...checkpoint, phase: "merge_queue" });
-      enqueueJob(db, { queue: JOB_KIND.merge, payload: { itemId: "eng-9" }, now: clock.now() });
-      claimNextJob(db, { workerId: "merger", now: clock.now(), queues: [JOB_KIND.merge] });
+      await enqueueJob(sqliteDb(db), {
+        queue: JOB_KIND.merge,
+        payload: { itemId: "eng-9" },
+        now: clock.now(),
+      });
+      await claimNextJob(sqliteDb(db), {
+        workerId: "merger",
+        now: clock.now(),
+        queues: [JOB_KIND.merge],
+      });
       if (held === "merge_call") beginMergeCall(db, "eng-9", "wip", clock.now());
     }
     return run;
   }
 
-  function snapshot(db: ReturnType<typeof boot>["db"], runId: string) {
+  async function snapshot(db: ReturnType<typeof boot>["db"], runId: string) {
     const item = getWorkItem(db, "eng-9")!;
     return {
       item: {
@@ -296,7 +308,7 @@ describe("host suspension and clock gaps", () => {
         version: item.version,
       },
       run: getRun(db, runId)?.status,
-      jobs: storedJobs(db).filter((job) => job.queue !== JOB_KIND.catchup),
+      jobs: (await storedJobs(sqliteDb(db))).filter((job) => job.queue !== JOB_KIND.catchup),
       mergeCall: db.query("SELECT * FROM merge_call WHERE item_id = 'eng-9'").get(),
     };
   }
@@ -308,21 +320,23 @@ describe("host suspension and clock gaps", () => {
         try {
           const run = await hold(db, clock, held);
           await host.tick();
-          const before = snapshot(db, run.id);
+          const before = await snapshot(db, run.id);
 
           clock.sleep(gapMs);
           await host.tick();
           await host.tick();
 
           // No reset, no new implementer, no cancelled job and no rewritten hold.
-          expect(snapshot(db, run.id)).toEqual(before);
+          expect(await snapshot(db, run.id)).toEqual(before);
           expect(await activities(db)).toEqual([]);
-          expect(listJobs(db).filter((job) => job.queue === JOB_KIND.catchup)).toHaveLength(1);
+          expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.catchup)).toHaveLength(
+            1,
+          );
           expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([{ slept_ms: gapMs }]);
           if (held === "merge_queue" || held === "merge_call") {
             // The merge job that was working when the host slept still owns the outcome.
             const merge = before.jobs.find((job) => job.queue === JOB_KIND.merge)!;
-            expect(completeJob(db, merge, clock.now())).toBe(true);
+            expect(await completeJob(sqliteDb(db), merge, clock.now())).toBe(true);
           }
         } finally {
           host.stop();
@@ -339,7 +353,7 @@ describe("host suspension and clock gaps", () => {
     try {
       const { run } = await startRun(db, new FakeClock(wall.now));
       await host.tick();
-      const before = snapshot(db, run.id);
+      const before = await snapshot(db, run.id);
       // NTP steps the wall clock three hours ahead while monotonic time moves one second.
       wall.now += 3 * 60 * 60_000 + 1_000;
       wall.mono += 1_000;
@@ -348,7 +362,7 @@ describe("host suspension and clock gaps", () => {
       wall.now -= 3 * 60 * 60_000;
       wall.mono += 1_000;
       await host.tick();
-      expect(snapshot(db, run.id)).toEqual(before);
+      expect(await snapshot(db, run.id)).toEqual(before);
       expect(getWorkItem(db, "eng-9")?.agentMs).toBe(2_000);
       expect(db.query("SELECT slept_ms FROM wake").all()).toEqual([{ slept_ms: 3 * 60 * 60_000 }]);
       expect(await activities(db)).toEqual([]);
@@ -364,16 +378,16 @@ describe("host suspension and clock gaps", () => {
       const { run } = await startRun(db, clock);
       await host.tick();
       host.stop();
-      const before = snapshot(db, run.id);
+      const before = await snapshot(db, run.id);
       clock.sleep(TWO_HOURS + 1);
       const next = new HostSupervisor(db, clock, new WakeDetector(clock), 250);
       await next.tick();
       clock.advance(250);
       await next.tick();
       next.stop();
-      expect(snapshot(db, run.id)).toEqual(before);
+      expect(await snapshot(db, run.id)).toEqual(before);
       expect(db.query("SELECT 1 FROM wake").all()).toEqual([]);
-      expect(listJobs(db).filter((job) => job.queue === JOB_KIND.catchup)).toEqual([]);
+      expect((await listJobs(db)).filter((job) => job.queue === JOB_KIND.catchup)).toEqual([]);
     } finally {
       db.close();
     }
@@ -390,7 +404,7 @@ describe("host suspension and clock gaps", () => {
 
     clock.advance(990);
     await host.tick();
-    expect(listJobs(db).some((job) => job.queue === "item.ask")).toBe(true);
+    expect((await listJobs(db)).some((job) => job.queue === "item.ask")).toBe(true);
   });
 
   test("the default budget counts implementation only: Closeout time never stops the task", async () => {
@@ -401,8 +415,8 @@ describe("host suspension and clock gaps", () => {
       clock.advance(45 * 60_000);
       await host.tick();
       expect(getWorkItem(db, "eng-9")?.state).toBe("running");
-      applyWorkItemEvent(db, "eng-9", "turn_ended");
-      verifyingJob(db, clock);
+      await applyWorkItemEvent(db, "eng-9", "turn_ended");
+      await verifyingJob(db, clock);
       clock.advance(4 * 60 * 60_000);
       await host.tick();
       expect(getWorkItem(db, "eng-9")).toMatchObject({
@@ -410,7 +424,7 @@ describe("host suspension and clock gaps", () => {
         implementMs: 45 * 60_000,
         closeoutMs: 4 * 60 * 60_000,
       });
-      expect(listJobs(db).some((job) => job.queue === "item.ask")).toBe(false);
+      expect((await listJobs(db)).some((job) => job.queue === "item.ask")).toBe(false);
     } finally {
       host.stop();
       db.close();
@@ -431,7 +445,11 @@ describe("host suspension and clock gaps", () => {
         }),
     );
     const verify = async () => {
-      enqueueJob(db, { queue: JOB_KIND.reverify, payload: { itemId: "eng-9" }, now: clock.now() });
+      await enqueueJob(sqliteDb(db), {
+        queue: JOB_KIND.reverify,
+        payload: { itemId: "eng-9" },
+        now: clock.now(),
+      });
       const handling = new Promise<void>((resolve) => (started = resolve));
       // The claim is awaited; the handler then holds the job until finish().
       const running = jobs.tick([JOB_KIND.reverify]);
@@ -443,7 +461,7 @@ describe("host suspension and clock gaps", () => {
       await host.tick();
       clock.advance(40 * 60_000);
       await host.tick();
-      applyWorkItemEvent(db, "eng-9", "turn_ended");
+      await applyWorkItemEvent(db, "eng-9", "turn_ended");
       // Two idle hours pass without a tick, then a job claims the item.
       clock.advance(2 * 60 * 60_000);
       const { running } = await verify();
@@ -471,10 +489,10 @@ describe("host suspension and clock gaps", () => {
     const { clock, db, host } = boot();
     await startRun(db, clock);
     await host.tick();
-    applyWorkItemEvent(db, "eng-9", "blocking_question");
+    await applyWorkItemEvent(db, "eng-9", "blocking_question");
     clock.advance(10_000);
     await host.tick();
-    applyWorkItemEvent(db, "eng-9", "answer_received");
+    await applyWorkItemEvent(db, "eng-9", "answer_received");
     clock.advance(100);
     await host.tick();
     expect(getWorkItem(db, "eng-9")?.awakeMs).toBe(100);
@@ -486,7 +504,7 @@ describe("host suspension and clock gaps", () => {
     clock.sleep(5 * 60_000);
     await host.tick();
     expect(await activities(db)).toHaveLength(0);
-    expect(listJobs(db).filter((job) => job.queue === "linear.catchup")).toHaveLength(1);
+    expect((await listJobs(db)).filter((job) => job.queue === "linear.catchup")).toHaveLength(1);
   });
 
   test("SIGTERM commits WIP on the item branch before the run is left recoverable", async () => {
@@ -535,7 +553,7 @@ test("the supervisor stops the live agent when the time limit asks instead of fa
   await host.tick();
   expect(stopped).toEqual(["eng-9"]);
   expect(getWorkItem(db, "eng-9")?.state).toBe("running");
-  expect(listJobs(db).filter((job) => job.queue === "item.ask")).toHaveLength(1);
+  expect((await listJobs(db)).filter((job) => job.queue === "item.ask")).toHaveLength(1);
   expect(getRun(db, run.id)?.status).toBe("ended");
   await host.tick();
   expect(stopped).toEqual(["eng-9"]);

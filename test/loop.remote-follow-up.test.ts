@@ -120,7 +120,7 @@ for (const delivered of [true, false, "completed"] as const)
       expect(forwarded).toEqual(
         delivered === "completed" ? [] : [{ itemId: item.id, body: "Also cover the empty state" }],
       );
-      const resumes = listJobs(db).filter((job) => job.queue === JOB_KIND.resume);
+      const resumes = (await listJobs(sqliteDb(db))).filter((job) => job.queue === JOB_KIND.resume);
       if (delivered === true) {
         expect(getRun(db, runId)?.status).toBe("active");
         expect(listWorkItems(db)[0]!.currentRunId).toBe(runId);

@@ -43,8 +43,8 @@ async function runningItem(db: Database, id: string, owner: string, now: number)
   return run.id;
 }
 
-function resumeJobs(db: Database, itemId: string) {
-  return listJobs(db).filter(
+async function resumeJobs(db: Database, itemId: string) {
+  return (await listJobs(sqliteDb(db))).filter(
     (job) =>
       job.queue === JOB_KIND.resume && (job.payload as { itemId?: string }).itemId === itemId,
   );
@@ -76,7 +76,7 @@ describe("run ownership", () => {
         { type: "resume", freshSession: true, checkpoint },
       ]);
       expect(getWorkItem(b, "acme-1")).toMatchObject({ state: "running", recoveryAttempts: 0 });
-      expect(resumeJobs(b, "acme-1")).toEqual([]);
+      expect(await resumeJobs(b, "acme-1")).toEqual([]);
       expect(await runOwner(sqliteDb(b), ownedRun)).toBe(acme.id);
       expect(getWorkItem(b, "acme-2")).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
       expect(await runOwner(sqliteDb(b), getWorkItem(b, "acme-2")!.currentRunId!)).toBe(other.id);
@@ -156,7 +156,7 @@ describe("run ownership", () => {
       expect(decisions[0]!.decision).toEqual({ type: "resume", freshSession: true, checkpoint });
       expect(await runOwner(sqliteDb(b), runId)).toBe(decisions[0]!.by);
       expect(getWorkItem(b, "acme-1")).toMatchObject({ state: "recovering", recoveryAttempts: 1 });
-      expect(resumeJobs(b, "acme-1")).toHaveLength(1);
+      expect(await resumeJobs(b, "acme-1")).toHaveLength(1);
     } finally {
       c.close();
       b.close();
@@ -271,7 +271,7 @@ describe("run ownership across two Paws processes", () => {
       second = spawnPaws(home);
       const b = await readyInstance(second);
       expect(getWorkItem(db, "acme-1")).toMatchObject({ state: "running", recoveryAttempts: 0 });
-      expect(resumeJobs(db, "acme-1")).toEqual([]);
+      expect(await resumeJobs(db, "acme-1")).toEqual([]);
       expect(await runOwner(sqliteDb(db), aRun)).toBe(a);
       const bRun = await runningItem(db, "acme-2", b, Date.now());
 
