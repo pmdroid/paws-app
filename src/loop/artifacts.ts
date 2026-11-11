@@ -59,8 +59,11 @@ export function createLinearArtifactReader(options: { db: Database; secretsDir: 
   };
 }
 
-export function publishedEvidence(db: Database, itemId: string): PublishedEvidence[] {
-  return settled(sqliteDb(db).run((q) => publishedEvidenceSteps(q, itemId)));
+export async function publishedEvidence(
+  db: Database,
+  itemId: string,
+): Promise<PublishedEvidence[]> {
+  return await sqliteDb(db).run((q) => publishedEvidenceSteps(q, itemId));
 }
 
 export function* publishedEvidenceSteps(q: Q, itemId: string): Steps<PublishedEvidence[]> {

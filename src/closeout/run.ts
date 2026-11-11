@@ -74,7 +74,7 @@ export type EvaluateInput = {
   bypasses?: readonly CloseoutBypass[];
   reviewRetryDelaysMs?: readonly number[];
   /** The task's videos and screenshots, read again for each evaluation. */
-  published?: () => readonly PublishedEvidence[];
+  published?: () => Promise<readonly PublishedEvidence[]>;
   /** Visual reviews of those files, read again for each evaluation. */
   approvals?: () => readonly EvidenceApproval[];
   /** Command checks taken from green CI at `head` instead of running. */
@@ -118,7 +118,7 @@ export type GateInput = {
   retryBaseline?: readonly string[];
   bypasses?: readonly CloseoutBypass[];
   reviewRetryDelaysMs?: readonly number[];
-  published?: () => readonly PublishedEvidence[];
+  published?: () => Promise<readonly PublishedEvidence[]>;
   approvals?: () => readonly EvidenceApproval[];
   /** Command checks taken from green CI at the first head. A fixed head runs them again. */
   fromCi?: readonly CiResult[];
@@ -248,7 +248,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.home !== undefined ? { home: input.home } : {}),
       ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
       ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
-      ...publishedOf(input),
+      ...(await publishedOf(input)),
       ...(input.pawsHome !== undefined ? { pawsHome: input.pawsHome } : {}),
       ...(progress !== undefined ? { progress } : {}),
       ...(input.commandRunner ? { commandRunner: input.commandRunner } : {}),
@@ -316,7 +316,7 @@ async function evaluateUnsealed(input: EvaluateInput): Promise<Evaluation> {
       ...(input.home !== undefined ? { home: input.home } : {}),
       ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
       ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
-      ...publishedOf(input),
+      ...(await publishedOf(input)),
     });
   } catch (error) {
     if (isTransient(error)) throw error;
@@ -524,7 +524,7 @@ async function decideRecorded(input: EvaluateInput): Promise<Evaluation> {
       ...(input.home !== undefined ? { home: input.home } : {}),
       ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
       ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
-      ...publishedOf(input),
+      ...(await publishedOf(input)),
     });
   } catch (error) {
     if (isTransient(error)) throw error;
@@ -651,11 +651,11 @@ function pullRequestOf(input: EvaluateInput): { pullRequest?: PullRequestDraft }
   return draft ? { pullRequest: draft } : {};
 }
 
-function publishedOf(input: EvaluateInput): {
+async function publishedOf(input: EvaluateInput): Promise<{
   published?: readonly PublishedEvidence[];
   approvals?: readonly EvidenceApproval[];
-} {
-  const published = input.published?.();
+}> {
+  const published = await input.published?.();
   const approvals = input.approvals?.();
   return { ...(published ? { published } : {}), ...(approvals ? { approvals } : {}) };
 }
@@ -853,7 +853,7 @@ async function startParallelReviews(
         ...(input.home !== undefined ? { home: input.home } : {}),
         ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
         ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
-        ...publishedOf(input),
+        ...(await publishedOf(input)),
       }),
     );
   } catch (caughtError3) {
@@ -1022,7 +1022,7 @@ async function addReviewEvidence(
           ...(input.home !== undefined ? { home: input.home } : {}),
           ...(input.policyRoot !== undefined ? { policyRoot: input.policyRoot } : {}),
           ...(input.retryBaseline !== undefined ? { retryBaseline: input.retryBaseline } : {}),
-          ...publishedOf(input),
+          ...(await publishedOf(input)),
         }),
       );
       if (refreshed.items.some((entry) => entry.state === "exhausted")) {
