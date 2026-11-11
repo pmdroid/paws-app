@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   emitJobReady,
