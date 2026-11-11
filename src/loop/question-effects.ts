@@ -1,4 +1,4 @@
-import { mergeAcceptedWork } from "./accepted-work";
+import { mergeAcceptedWorkSteps } from "./accepted-work";
 import { SLOW_CI_REASON } from "./merge-jobs";
 import { askSteps, restartSteps } from "./operations";
 import type { Database } from "bun:sqlite";
@@ -199,7 +199,7 @@ export function questionEffects(
     }
     yield* consumeTurn(q, question);
     if ((yield* findOpenQuestionSteps(q, question.sessionId))?.itemId === question.itemId) return;
-    yield* syncSteps(() => mergeAcceptedWork(db, question.itemId, { now: input.now }));
+    yield* mergeAcceptedWorkSteps(q, question.itemId, { now: input.now });
   }
   /**
    * Merge sends the accepted head to the merge queue without another turn. Continue, or a typed
@@ -209,7 +209,7 @@ export function questionEffects(
   function* timeLimit(q: Q, question: StoredQuestion): Steps<void> {
     if ((question.answer ?? "").trim().toLowerCase() === TIME_LIMIT_MERGE.toLowerCase()) {
       yield* consumeTurn(q, question);
-      yield* syncSteps(() => mergeAcceptedWork(db, question.itemId, { now: input.now }));
+      yield* mergeAcceptedWorkSteps(q, question.itemId, { now: input.now });
       return;
     }
     if (!/^\s*stop\b/i.test(question.answer ?? "")) {

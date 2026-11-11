@@ -1,20 +1,22 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, type WorkItemState } from "../core";
 import {
-  cancelAcceptedWorkJobs,
-  latestMergeJobSummary,
-  applyWorkItemEvent,
-  closeoutPolicyDigests,
-  pendingRestartHandoffSteps,
-  enqueueJobOnce,
-  getRun,
-  getWorkItem,
+  applyWorkItemEventSteps,
+  cancelAcceptedWorkJobsSteps,
+  closeoutPolicyDigestsSteps,
+  emitJobReady,
+  enqueueJobOnceSteps,
+  getRunSteps,
   getWorkItemSteps,
-  immediate,
-  leaveMergeQueue,
-  markRun,
-  saveCheckpoint,
+  latestMergeJobSummarySteps,
+  leaveMergeQueueSteps,
+  markRunSteps,
+  pendingRestartHandoffSteps,
+  saveCheckpointSteps,
+  settled,
   sqliteDb,
+  type Q,
+  type Steps,
 } from "../db";
 
 const ACCEPTS_FROM: ReadonlySet<WorkItemState> = new Set([
@@ -59,37 +61,43 @@ export function acceptedResumeNeedsTurn(input: {
  * a later Closeout run on that head did not accept it. Automatic callers check for pending agent
  * input first; a person's Merge answer does not wait for it.
  */
-export function mergeAcceptedWork(
-  db: Database,
-  itemId: string,
-  input: { now: number; exceptJobId?: number },
-): boolean {
-  return immediate(db, () => {
-    const item = getWorkItem(db, itemId);
-    if (!item || item.cancelRequested || item.acceptedHead === null) return false;
-    if (!ACCEPTS_FROM.has(item.state)) return false;
-    const head = item.acceptedHead;
-    const verdict = closeoutPolicyDigests(db, itemId, head);
-    if (verdict !== null && verdict.decision !== "accepted") return false;
-    cancelAcceptedWorkJobs(db, itemId, input.now, input.exceptJobId);
-    if (item.currentRunId !== null) {
-      const run = getRun(db, item.currentRunId);
-      if (run?.status === "active" || run?.status === "provisioning")
-        markRun(db, run.id, "ended", input.now);
-    }
-    applyWorkItemEvent(db, itemId, "closeout_accepted", { now: input.now });
-    saveCheckpoint(db, itemId, { ...item.checkpoint, phase: "merge_queue", wipCommit: head });
-    leaveMergeQueue(db, itemId);
-    const queued = getWorkItem(db, itemId)!;
-    const summary = latestMergeJobSummary(db, itemId) ?? "Closeout accepted.";
-    enqueueJobOnce(db, {
-      queue: JOB_KIND.merge,
-      jobKey: `merge:${itemId}:${head}:accepted:${queued.version}`,
-      payload: { itemId, summary, head },
-      now: input.now,
-    });
-    return true;
+type MergeInput = { now: number; exceptJobId?: number };
+
+export function* mergeAcceptedWorkSteps(q: Q, itemId: string, input: MergeInput): Steps<boolean> {
+  const item = yield* getWorkItemSteps(q, itemId);
+  if (!item || item.cancelRequested || item.acceptedHead === null) return false;
+  if (!ACCEPTS_FROM.has(item.state)) return false;
+  const head = item.acceptedHead;
+  const verdict = yield* closeoutPolicyDigestsSteps(q, itemId, head);
+  if (verdict !== null && verdict.decision !== "accepted") return false;
+  yield* cancelAcceptedWorkJobsSteps(q, itemId, input.now, input.exceptJobId);
+  if (item.currentRunId !== null) {
+    const run = yield* getRunSteps(q, item.currentRunId);
+    if (run?.status === "active" || run?.status === "provisioning")
+      yield* markRunSteps(q, run.id, "ended", input.now);
+  }
+  yield* applyWorkItemEventSteps(q, itemId, "closeout_accepted", { now: input.now });
+  yield* saveCheckpointSteps(q, itemId, {
+    ...item.checkpoint,
+    phase: "merge_queue",
+    wipCommit: head,
   });
+  yield* leaveMergeQueueSteps(q, itemId);
+  const queued = (yield* getWorkItemSteps(q, itemId))!;
+  const summary = (yield* latestMergeJobSummarySteps(q, itemId)) ?? "Closeout accepted.";
+  yield* enqueueJobOnceSteps(q, {
+    queue: JOB_KIND.merge,
+    jobKey: `merge:${itemId}:${head}:accepted:${queued.version}`,
+    payload: { itemId, summary, head },
+    now: input.now,
+  });
+  return true;
+}
+
+export function mergeAcceptedWork(db: Database, itemId: string, input: MergeInput): boolean {
+  const merged = settled(sqliteDb(db).transaction((q) => mergeAcceptedWorkSteps(q, itemId, input)));
+  if (merged) emitJobReady(db);
+  return merged;
 }
 
 /**
