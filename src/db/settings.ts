@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { eq } from "drizzle-orm";
 import { type Q, type Db } from "./db";
 import { orm } from "./orm";
-import { setting } from "./schema/settings";
+import { setting as savedSetting } from "./schema/settings";
 import { isLegacyDatabase } from "./migrate";
 
 export const CONFIG_SETTINGS_KEY = "config.toml";
@@ -51,9 +51,9 @@ export function readSavedSettings(path: string): string | null {
   try {
     return (
       orm(db)
-        .select({ value: setting.value })
-        .from(setting)
-        .where(eq(setting.key, CONFIG_SETTINGS_KEY))
+        .select({ value: savedSetting.value })
+        .from(savedSetting)
+        .where(eq(savedSetting.key, CONFIG_SETTINGS_KEY))
         .get()?.value ?? null
     );
   } finally {
