@@ -33,6 +33,7 @@ export {
   migrate,
   migrationTags,
   setAsideLegacyDatabase,
+  setAsideSqliteDatabase,
 } from "./migrate";
 export * from "./repositories";
 export * from "./repository-catalog";
@@ -58,8 +59,10 @@ export type { Migration } from "./migration";
 export { incrementalVacuum, openDatabase, truncateWal, withSecureDelete } from "./open";
 export {
   connectPostgres,
+  openPawsStore,
   openPglite,
   openPostgres,
+  type PawsStore,
   type PgliteDb,
   type PostgresDb,
 } from "./postgres";
