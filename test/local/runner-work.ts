@@ -598,7 +598,8 @@ export async function probeRunnerWork(
       true,
       { revokedRunnerDenied: true, completionDenied: true, heartbeatDenied: true },
     );
-    const contenders = Array.from({ length: 2 }, (_, index) => {
+    const contenders = [];
+    for (let index = 0; index < 2; index++) {
       const queued = insertQueuedItem(db, {
         id: `capacity-${index}`,
         now,
@@ -606,14 +607,14 @@ export async function probeRunnerWork(
       });
       const started = beginImplementRun(db, queued.id, now);
       bindWorkItemRepository(db, queued.id, repository);
-      return {
+      contenders.push({
         ...replacement,
         id: workspaceId(),
         itemId: queued.id,
         runId: started.run.id,
         generation: 1,
-      };
-    });
+      });
+    }
     const barrier = join(root, "capacity-start");
     const children = contenders.map((value, index) => {
       const commandPath = join(root, `capacity-${index}.json`);

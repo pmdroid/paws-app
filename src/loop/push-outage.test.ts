@@ -40,16 +40,19 @@ function lane() {
   const db = openDatabase(":memory:");
   migrate(db);
   open.push(db);
-  const jobs = ["a", "b", "c"].map((name, index) => {
+  const jobs = [];
+  for (const [index, name] of ["a", "b", "c"].entries()) {
     insertQueuedItem(db, { id: `item-${name}`, sessionKey: `ses-${name}`, now: 0 });
     beginImplementRun(db, `item-${name}`, 1);
-    return enqueueJob(db, {
-      queue: JOB_KIND.merge,
-      jobKey: `merge:item-${name}`,
-      payload: { itemId: `item-${name}` },
-      now: 10 + index,
-    });
-  });
+    jobs.push(
+      enqueueJob(db, {
+        queue: JOB_KIND.merge,
+        jobKey: `merge:item-${name}`,
+        payload: { itemId: `item-${name}` },
+        now: 10 + index,
+      }),
+    );
+  }
   return { db, jobs: jobs as [number, number, number] };
 }
 

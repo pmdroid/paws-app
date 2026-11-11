@@ -30,7 +30,8 @@ function item(db: Database, id: string, identifier: string, session: string, now
 test("every engine run of an issue, including a finished one, resolves to that issue", async () => {
   const db = database();
   item(db, "item-1", "PAS-1", "session-a", 0);
-  const runs = [0, 1, 2].map((at) => insertRun(db, { itemId: "item-1", now: at }).id);
+  const runs = [];
+  for (const at of [0, 1, 2]) runs.push(insertRun(db, { itemId: "item-1", now: at }).id);
   db.run("UPDATE work_item SET state = 'merged' WHERE id = 'item-1'");
   for (const run of runs)
     expect(await resolveDashboardAlias(sqliteDb(db), "runs", run)).toBe("PAS-1");

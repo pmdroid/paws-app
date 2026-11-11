@@ -3200,15 +3200,15 @@ export async function probeRunnerBackend(
           },
         }),
       );
-      let settled = false;
+      let finished = false;
       void limitedRun.then(
-        () => (settled = true),
-        () => (settled = true),
+        () => (finished = true),
+        () => (finished = true),
       );
       const limitedPause = await paused(getWorkItem(db, limited.id)!.currentRunId!);
       assert.equal(limitedPause?.resumeAt, now + 180_000);
       await delay(20);
-      assert.equal(settled, false);
+      assert.equal(finished, false);
       // The line names the date too when the resume falls on the next UTC day.
       const resume = new Date(now + 180_000).toISOString();
       const day =

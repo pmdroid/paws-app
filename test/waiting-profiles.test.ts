@@ -72,7 +72,7 @@ function fixture() {
     remoteExecution: { agentForItem: () => runner, agentForSession: () => runner },
   });
   let n = 0;
-  const seed = (state: string, snapshot = true) => {
+  const seed = async (state: string, snapshot = true) => {
     const queued = insertQueuedItem(db, { id: `item-${++n}`, now: 1000 });
     const { item, run } = beginImplementRun(db, queued.id, 1000);
     db.run("UPDATE work_item SET state=? WHERE id=?", [state, item.id]);
@@ -104,7 +104,7 @@ function fixture() {
 
 test("saving without the toggle leaves all snapshots byte-for-byte unchanged", async () => {
   const f = fixture();
-  const waiting = f.seed("awaiting_input");
+  const waiting = await f.seed("awaiting_input");
   const before = readFileSync(waiting.file, "utf8");
   for (const apply of [undefined, false]) {
     expect((await f.save(apply))!.status).toBe(200);
@@ -114,12 +114,12 @@ test("saving without the toggle leaves all snapshots byte-for-byte unchanged", a
 
 test("only unfinished runs without live work leases change; queued items still resolve at start", async () => {
   const f = fixture();
-  const waiting = ["awaiting_input", "running", "verifying", "paused", "recovering"].map((s) =>
-    f.seed(s),
-  );
-  const expired = f.seed("running"),
-    ended = f.seed("running"),
-    executing = f.seed("running");
+  const waiting = [];
+  for (const s of ["awaiting_input", "running", "verifying", "paused", "recovering"])
+    waiting.push(await f.seed(s));
+  const expired = await f.seed("running"),
+    ended = await f.seed("running"),
+    executing = await f.seed("running");
   f.db.run("PRAGMA foreign_keys=OFF");
   for (const [entry, lease, end] of [
     [expired, 1000, null],
@@ -130,13 +130,11 @@ test("only unfinished runs without live work leases change; queued items still r
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until,ended_at) VALUES(?,?,?,?,?,?,?,?)",
       [entry.run.id, "runner", "workspace", 1, 0, entry.run.id, lease, end],
     );
-  const untouched = [
-    executing,
-    ...["completed", "merged", "cancelled", "queued"].map((s) => f.seed(s)),
-  ];
+  const untouched = [executing];
+  for (const s of ["completed", "merged", "cancelled", "queued"]) untouched.push(await f.seed(s));
   const original = untouched.map((entry) => readFileSync(entry.file, "utf8"));
   const queued = insertQueuedItem(f.db, { id: "not-started" });
-  const noSnapshot = f.seed("recovering", false);
+  const noSnapshot = await f.seed("recovering", false);
   const response = await f.save(true);
   expect(await response!.json()).toMatchObject({ waitingRuns: 7 });
   for (const entry of [...waiting, expired, ended])
@@ -159,7 +157,7 @@ test("only unfinished runs without live work leases change; queued items still r
 
 test("agent change announces once at session start, including after a new run", async () => {
   const f = fixture();
-  const waiting = f.seed("awaiting_input");
+  const waiting = await f.seed("awaiting_input");
   await f.save(true);
   const internal = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
@@ -190,7 +188,7 @@ test("agent change announces once at session start, including after a new run", 
 
 test("a retry resolves profiles from Settings, not the previous run's snapshot", async () => {
   const f = fixture();
-  const failed = f.seed("running");
+  const failed = await f.seed("running");
   writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
   f.db.run("UPDATE run SET status='lost' WHERE id=?", [failed.run.id]);
   const internals = f.orchestrator as unknown as {
@@ -209,7 +207,7 @@ test("a retry resolves profiles from Settings, not the previous run's snapshot",
 
 test("a pending agent switch announcement carries to a retry's new run", async () => {
   const f = fixture();
-  const waiting = f.seed("awaiting_input");
+  const waiting = await f.seed("awaiting_input");
   await f.save(true);
   const internals = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
@@ -228,9 +226,9 @@ test("a pending agent switch announcement carries to a retry's new run", async (
   expect(internals.readProfileSnapshot(back.id)).toEqual({ profiles: oldProfiles });
 });
 
-test("model-only changes preserve candidate and do not announce an agent switch", () => {
+test("model-only changes preserve candidate and do not announce an agent switch", async () => {
   const f = fixture();
-  const waiting = f.seed("paused");
+  const waiting = await f.seed("paused");
   writeAgentSettings(join(f.root, "config.toml"), {
     defaults: { ...oldProfiles, implementer: { agent: "claude", model: "new" } },
     projects: [],
@@ -244,7 +242,7 @@ test("model-only changes preserve candidate and do not announce an agent switch"
 
 test("an existing remote invocation resolves updated waiting profiles and role-specific fallback", async () => {
   const f = fixture();
-  const waiting = f.seed("running");
+  const waiting = await f.seed("running");
   const internal = f.orchestrator as unknown as {
     remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
   };
@@ -279,7 +277,7 @@ test.each([false, true])(
   async (observed) => {
     const f = fixture();
     writeAgentSettings(join(f.root, "config.toml"), { defaults: oldProfiles, projects: [] });
-    const waiting = f.seed("paused");
+    const waiting = await f.seed("paused");
     const internals = f.orchestrator as unknown as {
       ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
       remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;
@@ -309,7 +307,7 @@ test.each([false, true])(
 
 test("automatic reconciliation waits for a live runner lease to end", async () => {
   const f = fixture();
-  const waiting = f.seed("running");
+  const waiting = await f.seed("running");
   writeAgentSettings(join(f.root, "config.toml"), { defaults: profiles, projects: [] });
   f.db.run("PRAGMA foreign_keys=OFF");
   f.db.run(
@@ -330,7 +328,7 @@ test("a retired account order in config.toml changes no waiting run and reaches 
   const f = fixture();
   const config = join(f.root, "config.toml");
   writeAgentSettings(config, { defaults: oldProfiles, projects: [] });
-  const waiting = f.seed("paused");
+  const waiting = await f.seed("paused");
   const before = readFileSync(waiting.file, "utf8");
   writeFileSync(
     config,
@@ -362,7 +360,7 @@ test("Acme labels change only the next run and a failed Linear read retains its 
       Codex: { agent: "codex", model: "acme-codex" },
     },
   });
-  const failed = f.seed("running");
+  const failed = await f.seed("running");
   const item = () => getWorkItem(f.db, failed.item.id)!;
   const internals = f.orchestrator as unknown as {
     ensureRun(item: WorkItemRecord): Promise<{ id: string }>;
@@ -409,14 +407,14 @@ type Gate = {
 };
 
 /** A retrying Acme item whose failed run saved old profiles, with labels set in the Linear fake. */
-function labelled() {
+async function labelled() {
   const f = fixture();
   writeAgentSettings(join(f.root, "config.toml"), {
     defaults: oldProfiles,
     projects: [],
     presets,
   });
-  const failed = f.seed("running");
+  const failed = await f.seed("running");
   f.db.run("UPDATE work_item SET session_key='acme-session' WHERE id=?", [failed.item.id]);
   f.db.run("UPDATE run SET status='lost' WHERE id=?", [failed.run.id]);
   const item = () => getWorkItem(f.db, failed.item.id)!;
@@ -437,7 +435,7 @@ function labelled() {
 }
 
 test("an Implementer label starts the run with its preset and names the source once", async () => {
-  const f = labelled();
+  const f = await labelled();
   f.label({ implementer: "Opus" });
   const run = await f.gate.ensureRun(f.item());
   expect(f.snapshot(run.id).profiles.implementer).toEqual(presets.Opus);
@@ -458,7 +456,7 @@ test("an Implementer label starts the run with its preset and names the source o
 });
 
 test("a label that changes the agent is announced by the next run", async () => {
-  const f = labelled();
+  const f = await labelled();
   f.label({ implementer: "Opus" });
   const opus = await f.gate.ensureRun(f.item());
   f.label({ implementer: "Codex" });
@@ -478,7 +476,7 @@ test("a label that changes the agent is announced by the next run", async () => 
 });
 
 test("an unknown label asks, starts nothing, and Use the default holds for the item", async () => {
-  const f = labelled();
+  const f = await labelled();
   f.label({ implementer: "Acme unknown" });
   const run = await f.gate.ensureRun(f.item());
   expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(false);
@@ -499,7 +497,7 @@ test("an unknown label asks, starts nothing, and Use the default holds for the i
 });
 
 test("I fixed the label reads the corrected label before the run goes on", async () => {
-  const f = labelled();
+  const f = await labelled();
   f.label({ implementer: "Acme unknown" });
   const run = await f.gate.ensureRun(f.item());
   await f.gate.checkProfileLabels(f.item(), run.id);
@@ -515,7 +513,7 @@ test("I fixed the label reads the corrected label before the run goes on", async
 });
 
 test("a reviewer label equal to the implementer asks the same question", async () => {
-  const f = labelled();
+  const f = await labelled();
   f.label({ implementer: "Opus", reviewer: "Opus" });
   const run = await f.gate.ensureRun(f.item());
   expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(false);
@@ -525,7 +523,7 @@ test("a reviewer label equal to the implementer asks the same question", async (
 });
 
 test("without a Linear session an unusable label fails the item instead of hanging", async () => {
-  const f = labelled();
+  const f = await labelled();
   f.label({ implementer: "Acme unknown" });
   const run = await f.gate.ensureRun(f.item());
   f.db.run("UPDATE work_item SET session_key=NULL WHERE id=?", [f.item().id]);
@@ -534,7 +532,7 @@ test("without a Linear session an unusable label fails the item instead of hangi
 });
 
 test("with no previous labels a failed Linear read uses none and journals once", async () => {
-  const f = labelled();
+  const f = await labelled();
   f.tracker.issueRepositoryHints = async () => {
     throw new Error("Linear offline");
   };
@@ -545,7 +543,7 @@ test("with no previous labels a failed Linear read uses none and journals once",
 });
 
 test("without labels a new run saves the Settings profiles and asks nothing", async () => {
-  const f = labelled();
+  const f = await labelled();
   f.label({});
   const run = await f.gate.ensureRun(f.item());
   expect(await f.gate.checkProfileLabels(f.item(), run.id)).toBe(true);

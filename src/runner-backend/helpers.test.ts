@@ -1092,7 +1092,7 @@ async function answerTask() {
     for (const runnerId of ["runner", "goldbox"]) recordRunnerCapacity(db, runnerId, 2, 2, 2);
     return createRunnerPlacement({ store: sqliteDb(db), now });
   });
-  const fill = (runnerId: string) => {
+  const fill = async (runnerId: string) => {
     for (const id of [`${runnerId}-1`, `${runnerId}-2`]) {
       insertQueuedItem(f.db, { id, now: Date.now(), sessionKey: `${id}-session` });
       const { run } = beginImplementRun(f.db, id, Date.now());
@@ -1107,7 +1107,7 @@ async function answerTask() {
 
 test("an answer task's helper goes to the idle runner while the other runner is full", async () => {
   const f = await answerTask();
-  f.fill("goldbox");
+  await f.fill("goldbox");
   expect(f.db.query("SELECT 1 FROM runner_helper WHERE ended_at IS NULL").get()).toBeNull();
   const pending = f.backend.forSession("session", "classify")(f.input);
   expect((await f.dispatched()).runnerId).toBe("runner");
@@ -1117,8 +1117,8 @@ test("an answer task's helper goes to the idle runner while the other runner is 
 
 test("capacity-only rejections wait in the helper lane instead of failing", async () => {
   const f = await answerTask();
-  f.fill("runner");
-  f.fill("goldbox");
+  await f.fill("runner");
+  await f.fill("goldbox");
   const pending = f.backend
     .forSession(
       "session",

@@ -326,7 +326,8 @@ describe("live status provider", () => {
     const home = mkdtempSync(join(tmpdir(), "paws-status-reviewer-"));
     homes.push(home);
     const profiles = ["grok", "claude", "codex"] as const;
-    const ids = profiles.map((reviewer, index) => {
+    const ids: string[] = [];
+    for (const [index, reviewer] of profiles.entries()) {
       const item = insertQueuedItem(db, { id: `ENG-${index + 1}`, title: "Review", now: 1 });
       const { run } = beginImplementRun(db, item.id, 2);
       db.run("UPDATE run SET agent = ? WHERE id = ?", ["codex", run.id]);
@@ -341,8 +342,8 @@ describe("live status provider", () => {
           },
         }),
       );
-      return run.id;
-    });
+      ids.push(run.id);
+    }
     writeFileSync(join(home, "config.toml"), '[agents.defaults.reviewer]\nagent = "codex"\n');
     const server = startStatusServer({
       port: 0,

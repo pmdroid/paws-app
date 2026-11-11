@@ -49,7 +49,8 @@ test("run, session and verdict links resolve through stored records the signed-i
   insertQueuedItem(db, { id: "PAS-1", sessionKey: "session-mine", now: old });
   insertQueuedItem(db, { id: "PAS-5", sessionKey: "session-mine", now: old + 1 });
   insertQueuedItem(db, { id: "PAS-2", sessionKey: "session-other", now: old });
-  const runs = [0, 1].map((at) => insertRun(db, { itemId: "PAS-1", now: old + at }).id);
+  const runs = [];
+  for (const at of [0, 1]) runs.push(insertRun(db, { itemId: "PAS-1", now: old + at }).id);
   const hidden = insertRun(db, { itemId: "PAS-2", now: old }).id;
   db.run("UPDATE work_item SET state = 'merged'");
   const reservation = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });

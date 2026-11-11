@@ -177,7 +177,7 @@ test("100 tasks stay under 1,700 Linear requests and spend one per 25 minutes wh
         await orchestrator.onLinearEvent(event(index, "created"));
       await settle(() => count("completed") + count("awaiting_input") === end);
     }
-    runner.fill(clock.now());
+    await runner.fill(clock.now());
     for (let index = STARTED; index < TASKS; index++)
       await orchestrator.onLinearEvent(event(index, "created"));
     await step();
@@ -252,7 +252,7 @@ async function seedRunner(db: Database, now: number) {
   return {
     full: () => busy() >= SLOTS,
     seen: (at: number) => db.run("UPDATE runner SET last_seen_at=?", [at]),
-    fill(at: number) {
+    async fill(at: number) {
       for (let slot = 0; slot < SLOTS; slot++) {
         const item = insertQueuedItem(db, { id: `other-${slot}`, now: at });
         const run = insertRun(db, { itemId: item.id, now: at, status: "active" });

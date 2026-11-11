@@ -67,7 +67,8 @@ async function fixture() {
   }
   placed("placed-1");
   const second = placed("placed-2");
-  const stuck = ["stuck-1", "stuck-2", "stuck-3"].map((id) => running(id).job);
+  const stuck = [];
+  for (const id of ["stuck-1", "stuck-2", "stuck-3"]) stuck.push(running(id).job);
   for (const [index, id] of READY.entries()) insertQueuedItem(db, { id, now: index + 1 });
   return { db, second, stuck };
 }

@@ -205,7 +205,7 @@ async function fixture() {
     for (let index = 0; index < 50; index++) if ((await loop.tick()) === null) return;
     throw new Error("delete job did not settle");
   };
-  const task = (runnerId: string, identifier: string) => {
+  const task = async (runnerId: string, identifier: string) => {
     const itemId = `item-${identifier}`;
     db.run(
       `INSERT INTO work_item(id,delegation_id,linear_issue_id,linear_identifier,title,state,branch_name,position,created_at)
@@ -330,7 +330,7 @@ describe("Delete VM", () => {
   test("a running task blocks the delete and is named, until the delete is forced", async () => {
     const f = await fixture();
     const vm = await f.ready();
-    const itemId = f.task(vm.runnerId!, "PAS-901");
+    const itemId = await f.task(vm.runnerId!, "PAS-901");
 
     await f.remove(f.member, vm.id);
     await f.settle();
@@ -364,7 +364,7 @@ describe("Delete VM", () => {
   test("a task whose stop was asked for still blocks while it runs on the VM", async () => {
     const f = await fixture();
     const vm = await f.ready();
-    const itemId = f.task(vm.runnerId!, "PAS-903");
+    const itemId = await f.task(vm.runnerId!, "PAS-903");
     f.db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [itemId]);
 
     await f.remove(f.member, vm.id);
@@ -385,7 +385,7 @@ describe("Delete VM", () => {
   test("a forced delete asks Stop once and goes on while the stopped task winds down", async () => {
     const f = await fixture();
     const vm = await f.ready();
-    const itemId = f.task(vm.runnerId!, "PAS-904");
+    const itemId = await f.task(vm.runnerId!, "PAS-904");
     await f.remove(f.member, vm.id, true);
     await f.loop.tick();
     expect(f.stopped).toEqual([itemId]);
@@ -686,7 +686,7 @@ describe("Delete VM while a provisioning step is still running", () => {
       )
       .get()!;
     expect((await getRunner(sqliteDb(f.db), orphan.id))!.status).toBe("paused");
-    const itemId = f.task(orphan.id, "PAS-902");
+    const itemId = await f.task(orphan.id, "PAS-902");
 
     const manual = await f.control.createEnrollment(f.principal(f.member.userId, "member"), {
       name: "ada-lovelace-paws",

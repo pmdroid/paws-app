@@ -243,7 +243,8 @@ describe("slots held between commands", () => {
     migrate(db);
     db.run("PRAGMA foreign_keys=OFF");
     db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES('runner',2)");
-    const runs = [1, 2, 3, 4].map((index) => {
+    const runs = [];
+    for (const index of [1, 2, 3, 4]) {
       const item = insertQueuedItem(db, { id: `item-${index}`, now: clock.now() });
       const { run } = beginImplementRun(db, item.id, clock.now(), checkpoint);
       db.run(
@@ -260,8 +261,8 @@ describe("slots held between commands", () => {
           clock.now(),
         ],
       );
-      return run;
-    });
+      runs.push(run);
+    }
     expect(
       await runnerSlotsHeldBetweenCommands(sqliteDb(db), "runner", clock.now(), "new-run"),
     ).toBe(4);
@@ -293,15 +294,17 @@ describe("slots held between commands", () => {
       );
       db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", [id]);
     }
-    const [busy, fresh, tied] = ["busy", "fresh", "tied"].map(
-      (id) =>
+    const started = [];
+    for (const id of ["busy", "fresh", "tied"])
+      started.push(
         beginImplementRun(
           db,
           insertQueuedItem(db, { id, now: clock.now() }).id,
           clock.now(),
           checkpoint,
         ).run,
-    );
+      );
+    const [busy, fresh, tied] = started;
     db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'busy','workspace',1,0,'busy',?)",
       [busy!.id, clock.now() + RENEWAL_MS],
