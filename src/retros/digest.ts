@@ -12,6 +12,7 @@ import {
   type RetroActivityItem,
   type RetroActivitySnapshot,
   type RetroActivityTransition,
+  sqliteDb,
 } from "../db";
 import { dailyFindingKey } from "../improvements";
 
@@ -1022,7 +1023,7 @@ const progressKey = (progressId: string) =>
     ? progressId
     : `sha256:${createHash("sha256").update(progressId).digest("hex")}`;
 
-export function collectRetroDigest(
+export async function collectRetroDigest(
   db: Database,
   input: {
     retroId: string;
@@ -1031,8 +1032,8 @@ export function collectRetroDigest(
     secrets?: readonly string[];
     maxPromptChars?: number;
   },
-): RetroCollection {
-  const retro = getRetro(db, input.retroId);
+): Promise<RetroCollection> {
+  const retro = await getRetro(sqliteDb(db), input.retroId);
   if (retro === null || retro.state !== "collecting")
     return { ok: false, reason: "not_collecting" };
   const begun = beginRetroCollection(db, {

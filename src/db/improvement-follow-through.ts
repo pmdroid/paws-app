@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   and,
   asc,
@@ -13,7 +12,7 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonText, jsonValue } from "./json-text";
 
 export type ImprovementIssueSyncStatus = "available" | "missing" | "unauthorized" | "unavailable";
@@ -47,11 +46,11 @@ export function* improvementIssueSyncSteps(
     : null;
 }
 
-export function improvementIssueSync(
-  db: Database,
+export async function improvementIssueSync(
+  store: Db,
   improvementId: string,
-): ImprovementIssueSync | null {
-  return settled(sqliteDb(db).run((q) => improvementIssueSyncSteps(q, improvementId)));
+): Promise<ImprovementIssueSync | null> {
+  return store.run((q) => improvementIssueSyncSteps(q, improvementId));
 }
 
 type IssueSyncInput = {
@@ -97,8 +96,11 @@ export function* recordImprovementIssueSyncSteps(q: Q, input: IssueSyncInput): S
   return rows.length === 1;
 }
 
-export function recordImprovementIssueSync(db: Database, input: IssueSyncInput): boolean {
-  return settled(sqliteDb(db).run((q) => recordImprovementIssueSyncSteps(q, input)));
+export async function recordImprovementIssueSync(
+  store: Db,
+  input: IssueSyncInput,
+): Promise<boolean> {
+  return store.run((q) => recordImprovementIssueSyncSteps(q, input));
 }
 
 export function* followThroughCandidatesSteps(
@@ -122,11 +124,11 @@ export function* followThroughCandidatesSteps(
   return rows.map((row) => ({ ...row, issueId: row.issueId! }));
 }
 
-export function followThroughCandidates(
-  db: Database,
+export async function followThroughCandidates(
+  store: Db,
   limit: number,
-): { id: string; workspaceId: string; issueId: string }[] {
-  return settled(sqliteDb(db).run((q) => followThroughCandidatesSteps(q, limit)));
+): Promise<{ id: string; workspaceId: string; issueId: string }[]> {
+  return store.run((q) => followThroughCandidatesSteps(q, limit));
 }
 
 export function* markImprovementCheckedSteps(
@@ -146,8 +148,12 @@ export function* markImprovementCheckedSteps(
   );
 }
 
-export function markImprovementChecked(db: Database, improvementId: string, now: number): void {
-  settled(sqliteDb(db).run((q) => markImprovementCheckedSteps(q, improvementId, now)));
+export async function markImprovementChecked(
+  store: Db,
+  improvementId: string,
+  now: number,
+): Promise<void> {
+  await store.run((q) => markImprovementCheckedSteps(q, improvementId, now));
 }
 
 export type ImprovementDelegationState = "requested" | "started" | "existing" | "failed";
@@ -179,11 +185,11 @@ export function* improvementDelegationSteps(
   return row ? delegationFromRow(row) : null;
 }
 
-export function improvementDelegation(
-  db: Database,
+export async function improvementDelegation(
+  store: Db,
   improvementId: string,
-): ImprovementDelegation | null {
-  return settled(sqliteDb(db).run((q) => improvementDelegationSteps(q, improvementId)));
+): Promise<ImprovementDelegation | null> {
+  return store.run((q) => improvementDelegationSteps(q, improvementId));
 }
 
 type DelegationClaim = {
@@ -236,11 +242,11 @@ export function* claimImprovementDelegationSteps(
   return row ? delegationFromRow(row) : null;
 }
 
-export function claimImprovementDelegation(
-  db: Database,
+export async function claimImprovementDelegation(
+  store: Db,
   input: DelegationClaim,
-): ImprovementDelegation | null {
-  return settled(sqliteDb(db).run((q) => claimImprovementDelegationSteps(q, input)));
+): Promise<ImprovementDelegation | null> {
+  return store.run((q) => claimImprovementDelegationSteps(q, input));
 }
 
 type DelegationSettlement = {
@@ -279,8 +285,11 @@ export function* settleImprovementDelegationSteps(
   return rows.length === 1;
 }
 
-export function settleImprovementDelegation(db: Database, input: DelegationSettlement): boolean {
-  return settled(sqliteDb(db).run((q) => settleImprovementDelegationSteps(q, input)));
+export async function settleImprovementDelegation(
+  store: Db,
+  input: DelegationSettlement,
+): Promise<boolean> {
+  return store.run((q) => settleImprovementDelegationSteps(q, input));
 }
 
 type OtherDelegationQuery = { improvementId: string; issueId: string; now: number };
@@ -324,11 +333,11 @@ export function* otherDelegationForIssueSteps(
   return row ? delegationFromRow(row) : null;
 }
 
-export function otherDelegationForIssue(
-  db: Database,
+export async function otherDelegationForIssue(
+  store: Db,
   input: OtherDelegationQuery,
-): ImprovementDelegation | null {
-  return settled(sqliteDb(db).run((q) => otherDelegationForIssueSteps(q, input)));
+): Promise<ImprovementDelegation | null> {
+  return store.run((q) => otherDelegationForIssueSteps(q, input));
 }
 
 export function* bumpImprovementVersionSteps(q: Q, improvementId: string): Steps<void> {
@@ -341,8 +350,8 @@ export function* bumpImprovementVersionSteps(q: Q, improvementId: string): Steps
   );
 }
 
-export function bumpImprovementVersion(db: Database, improvementId: string): void {
-  settled(sqliteDb(db).run((q) => bumpImprovementVersionSteps(q, improvementId)));
+export async function bumpImprovementVersion(store: Db, improvementId: string): Promise<void> {
+  await store.run((q) => bumpImprovementVersionSteps(q, improvementId));
 }
 
 export function* expiredImprovementDelegationsSteps(
@@ -359,8 +368,11 @@ export function* expiredImprovementDelegationsSteps(
   return rows.map(delegationFromRow);
 }
 
-export function expiredImprovementDelegations(db: Database, now: number): ImprovementDelegation[] {
-  return settled(sqliteDb(db).run((q) => expiredImprovementDelegationsSteps(q, now)));
+export async function expiredImprovementDelegations(
+  store: Db,
+  now: number,
+): Promise<ImprovementDelegation[]> {
+  return store.run((q) => expiredImprovementDelegationsSteps(q, now));
 }
 
 export type ImprovementActionKind =
@@ -424,8 +436,11 @@ export function* recordImprovementActionSteps(q: Q, input: ActionInput): Steps<n
   return version;
 }
 
-export function recordImprovementAction(db: Database, input: ActionInput): number | null {
-  return settled(sqliteDb(db).transaction((q) => recordImprovementActionSteps(q, input)));
+export async function recordImprovementAction(
+  store: Db,
+  input: ActionInput,
+): Promise<number | null> {
+  return store.transaction((q) => recordImprovementActionSteps(q, input));
 }
 
 export function* listImprovementActionsSteps(
@@ -457,8 +472,11 @@ export function* listImprovementActionsSteps(
   }));
 }
 
-export function listImprovementActions(db: Database, improvementId: string): ImprovementAction[] {
-  return settled(sqliteDb(db).run((q) => listImprovementActionsSteps(q, improvementId)));
+export async function listImprovementActions(
+  store: Db,
+  improvementId: string,
+): Promise<ImprovementAction[]> {
+  return store.run((q) => listImprovementActionsSteps(q, improvementId));
 }
 
 type CriterionInput = {
@@ -484,8 +502,11 @@ export function* annotateImprovementCriterionSteps(q: Q, input: CriterionInput):
   );
 }
 
-export function annotateImprovementCriterion(db: Database, input: CriterionInput): void {
-  settled(sqliteDb(db).run((q) => annotateImprovementCriterionSteps(q, input)));
+export async function annotateImprovementCriterion(
+  store: Db,
+  input: CriterionInput,
+): Promise<void> {
+  await store.run((q) => annotateImprovementCriterionSteps(q, input));
 }
 
 type ReturnToReview = { improvementId: string; version: number; actor: string; now: number };
@@ -553,8 +574,8 @@ export function* returnImprovementToReviewSteps(q: Q, input: ReturnToReview): St
   );
 }
 
-export function returnImprovementToReview(db: Database, input: ReturnToReview): void {
-  settled(sqliteDb(db).transaction((q) => returnImprovementToReviewSteps(q, input)));
+export async function returnImprovementToReview(store: Db, input: ReturnToReview): Promise<void> {
+  await store.transaction((q) => returnImprovementToReviewSteps(q, input));
 }
 
 export type IssueWork = {
@@ -661,11 +682,11 @@ export function* improvementWorkBindingSteps(
   return row ?? null;
 }
 
-export function improvementWorkBinding(
-  db: Database,
+export async function improvementWorkBinding(
+  store: Db,
   improvementId: string,
-): ImprovementWorkBinding | null {
-  return settled(sqliteDb(db).run((q) => improvementWorkBindingSteps(q, improvementId)));
+): Promise<ImprovementWorkBinding | null> {
+  return store.run((q) => improvementWorkBindingSteps(q, improvementId));
 }
 
 type BoundImprovement = { id: string; issueId: string; repository: string };
@@ -690,11 +711,11 @@ export function* boundImprovementWorkSteps(
   return row ? workFromRow(row) : null;
 }
 
-export function boundImprovementWork(
-  db: Database,
+export async function boundImprovementWork(
+  store: Db,
   improvement: BoundImprovement,
-): IssueWork | null {
-  return settled(sqliteDb(db).run((q) => boundImprovementWorkSteps(q, improvement)));
+): Promise<IssueWork | null> {
+  return store.run((q) => boundImprovementWorkSteps(q, improvement));
 }
 
 type IssueWorkQuery = {
@@ -728,8 +749,8 @@ export function* newestIssueWorkSteps(q: Q, input: IssueWorkQuery): Steps<IssueW
   return row ? workFromRow(row) : null;
 }
 
-export function newestIssueWork(db: Database, input: IssueWorkQuery): IssueWork | null {
-  return settled(sqliteDb(db).run((q) => newestIssueWorkSteps(q, input)));
+export async function newestIssueWork(store: Db, input: IssueWorkQuery): Promise<IssueWork | null> {
+  return store.run((q) => newestIssueWorkSteps(q, input));
 }
 
 type WorkBindingInput = {
@@ -769,8 +790,8 @@ export function* bindImprovementWorkSteps(q: Q, input: WorkBindingInput): Steps<
   return rows.length === 1;
 }
 
-export function bindImprovementWork(db: Database, input: WorkBindingInput): boolean {
-  return settled(sqliteDb(db).run((q) => bindImprovementWorkSteps(q, input)));
+export async function bindImprovementWork(store: Db, input: WorkBindingInput): Promise<boolean> {
+  return store.run((q) => bindImprovementWorkSteps(q, input));
 }
 
 export type CloseoutStepResult = {
@@ -811,10 +832,10 @@ export function* closeoutStepResultSteps(
   return row ?? null;
 }
 
-export function closeoutStepResult(
-  db: Database,
+export async function closeoutStepResult(
+  store: Db,
   progressId: string,
   stepId: string,
-): CloseoutStepResult | null {
-  return settled(sqliteDb(db).run((q) => closeoutStepResultSteps(q, progressId, stepId)));
+): Promise<CloseoutStepResult | null> {
+  return store.run((q) => closeoutStepResultSteps(q, progressId, stepId));
 }

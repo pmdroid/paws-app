@@ -1,12 +1,11 @@
 import type { Database } from "bun:sqlite";
 import {
-  createRetro,
-  getRetro,
-  immediate,
-  latestRetroSettingsRevision,
+  createRetroSteps,
+  getRetroSteps,
   latestRetroSettingsRevisionSteps,
-  retroIdForWindow,
+  retroIdForWindowSteps,
   saveRetroSettingsRevisionSteps,
+  settled,
   sqliteDb,
   type Q,
   type Retro,
@@ -406,50 +405,57 @@ export type RetroRunFreeze =
       message: string;
     };
 
-export function freezeRetroRun(
-  db: Database,
-  input: {
-    id: string;
-    workspaceId: string;
-    windowStart: number;
-    windowEnd: number;
-    origin: RetroOrigin;
-    scheduledFor?: number;
-    catalogs: readonly AgentModelCatalog[] | null;
-    accessibleRepositories: readonly string[];
-    now: number;
-  },
-): RetroRunFreeze {
-  return immediate(db, (): RetroRunFreeze => {
-    const existing = retroIdForWindow(db, input.workspaceId, input.windowStart, input.windowEnd);
-    if (existing !== null) return { ok: true, retro: getRetro(db, existing)!, created: false };
-    const latest = latestRetroSettingsRevision(db, input.workspaceId);
-    if (latest === null)
-      return { ok: false, reason: "no_settings", message: "Save retro settings first." };
-    const repositories = retroRunRepositories(latest.repositories, input.accessibleRepositories);
-    if (repositories.length === 0)
-      return {
-        ok: false,
-        reason: "no_accessible_repository",
-        message: "None of the selected repositories is accessible.",
-      };
-    const resolved = resolveRetroProfile(latest.agentProfile as RetroAgentProfile, input.catalogs);
-    if (!resolved.ok)
-      return { ok: false, reason: resolved.reason, message: resolved.problem.message };
-    const frozen = createRetro(db, {
-      id: input.id,
-      workspaceId: input.workspaceId,
-      windowStart: input.windowStart,
-      windowEnd: input.windowEnd,
-      origin: input.origin,
-      ...(input.scheduledFor === undefined ? {} : { scheduledFor: input.scheduledFor }),
-      settingsRevision: latest.revision,
-      agentProfile: resolved.profile,
-      repositories,
-      now: input.now,
-    });
-    return { ok: true, ...frozen };
+type FreezeInput = {
+  id: string;
+  workspaceId: string;
+  windowStart: number;
+  windowEnd: number;
+  origin: RetroOrigin;
+  scheduledFor?: number;
+  catalogs: readonly AgentModelCatalog[] | null;
+  accessibleRepositories: readonly string[];
+  now: number;
+};
+
+export function* freezeRetroRunSteps(q: Q, input: FreezeInput): Steps<RetroRunFreeze> {
+  const existing = yield* retroIdForWindowSteps(
+    q,
+    input.workspaceId,
+    input.windowStart,
+    input.windowEnd,
+  );
+  if (existing !== null)
+    return { ok: true, retro: (yield* getRetroSteps(q, existing))!, created: false };
+  const latest = yield* latestRetroSettingsRevisionSteps(q, input.workspaceId);
+  if (latest === null)
+    return { ok: false, reason: "no_settings", message: "Save retro settings first." };
+  const repositories = retroRunRepositories(latest.repositories, input.accessibleRepositories);
+  if (repositories.length === 0)
+    return {
+      ok: false,
+      reason: "no_accessible_repository",
+      message: "None of the selected repositories is accessible.",
+    };
+  const resolved = resolveRetroProfile(latest.agentProfile as RetroAgentProfile, input.catalogs);
+  if (!resolved.ok)
+    return { ok: false, reason: resolved.reason, message: resolved.problem.message };
+  const frozen = yield* createRetroSteps(q, {
+    id: input.id,
+    workspaceId: input.workspaceId,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    origin: input.origin,
+    ...(input.scheduledFor === undefined ? {} : { scheduledFor: input.scheduledFor }),
+    settingsRevision: latest.revision,
+    agentProfile: resolved.profile,
+    repositories,
+    now: input.now,
   });
+  return { ok: true, ...frozen };
+}
+
+export function freezeRetroRun(db: Database, input: FreezeInput): RetroRunFreeze {
+  return settled(sqliteDb(db).transaction((q) => freezeRetroRunSteps(q, input)));
 }
 
 export function retroRunRepositories(
