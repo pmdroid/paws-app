@@ -185,7 +185,7 @@ function setup(threads = THREADS) {
     },
   });
   /** One inline comment, as GitHub sends it: the comment and its implicit comment-only review. */
-  const inline = (input: {
+  const inline = async (input: {
     id: number;
     review: number;
     author: string;
@@ -194,7 +194,7 @@ function setup(threads = THREADS) {
     action?: string;
     headRepository?: number;
   }) => {
-    send("pull_request_review_comment", {
+    await send("pull_request_review_comment", {
       action: input.action ?? "created",
       comment: {
         id: input.id,
@@ -206,7 +206,7 @@ function setup(threads = THREADS) {
       },
       pull_request: pull(input.headRepository),
     });
-    send("pull_request_review", {
+    await send("pull_request_review", {
       action: input.action === "edited" ? "edited" : "submitted",
       review: { id: input.review, state: "commented", body: null, user: { login: input.author } },
       pull_request: pull(input.headRepository),
@@ -261,9 +261,19 @@ const feedbackThoughts = (db: ReturnType<typeof setup>["db"]) =>
 describe("pull request comments restart the item", () => {
   test("an inline comment from a person restarts once with the comment and its thread", async () => {
     const { db, caps, inline } = setup();
-    inline({ id: 9001, review: 601, author: "pascal", body: "This sorts the wrong way round." });
+    await inline({
+      id: 9001,
+      review: 601,
+      author: "pascal",
+      body: "This sorts the wrong way round.",
+    });
     // A redelivered webhook records nothing new.
-    inline({ id: 9001, review: 601, author: "pascal", body: "This sorts the wrong way round." });
+    await inline({
+      id: 9001,
+      review: 601,
+      author: "pascal",
+      body: "This sorts the wrong way round.",
+    });
     expect(pendingPullComments(db, "eng-1")).toHaveLength(2);
     expect(commentJobs(db)).toHaveLength(1);
     expect(commentJobs(db)[0]?.payload).toEqual({ pullCommentsFor: "eng-1" });
@@ -291,7 +301,12 @@ describe("pull request comments restart the item", () => {
     ]);
 
     // Redelivered after the restart: nothing.
-    inline({ id: 9001, review: 601, author: "pascal", body: "This sorts the wrong way round." });
+    await inline({
+      id: 9001,
+      review: 601,
+      author: "pascal",
+      body: "This sorts the wrong way round.",
+    });
     expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(resumeJobs(db)).toHaveLength(1);
@@ -300,7 +315,7 @@ describe("pull request comments restart the item", () => {
 
   test("a Bugbot inline finding restarts once with the finding", async () => {
     const { db, caps, inline } = setup();
-    inline({
+    await inline({
       id: 9101,
       review: 701,
       author: "cursor[bot]",
@@ -316,7 +331,7 @@ describe("pull request comments restart the item", () => {
   test("a Bugbot comment against a fixed Closeout finding quotes both and asks the team", async () => {
     const { db, caps, inline, setFindings } = setup();
     setFindings(CLOSEOUT_FINDINGS);
-    inline({
+    await inline({
       id: 9102,
       review: 702,
       author: "cursor[bot]",
@@ -348,7 +363,7 @@ describe("pull request comments restart the item", () => {
   test("an unrelated Bugbot comment gets Closeout's findings as context only", async () => {
     const { db, caps, inline, setFindings } = setup();
     setFindings(CLOSEOUT_FINDINGS);
-    inline({
+    await inline({
       id: 9103,
       review: 703,
       author: "cursor[bot]",
@@ -367,7 +382,7 @@ describe("pull request comments restart the item", () => {
 
   test("without stored Closeout findings the handoff has no findings note", async () => {
     const { db, caps, conversation } = setup();
-    conversation({ id: 3002, author: "pascal", body: "Please also fix the README." });
+    await conversation({ id: 3002, author: "pascal", body: "Please also fix the README." });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
     expect(handoff(db)!.handoff).not.toContain("Closeout's independent review");
     expect(handoff(db)!.handoff).not.toContain(CONTRADICTION_INSTRUCTION);
@@ -375,10 +390,10 @@ describe("pull request comments restart the item", () => {
 
   test("a conversation comment from a person restarts once with its text", async () => {
     const { db, caps, conversation } = setup();
-    expect(conversation({ id: 3001, author: "pascal", body: "Please also fix the README." })).toBe(
-      true,
-    );
-    conversation({ id: 3001, author: "pascal", body: "Please also fix the README." });
+    expect(
+      await conversation({ id: 3001, author: "pascal", body: "Please also fix the README." }),
+    ).toBe(true);
+    await conversation({ id: 3001, author: "pascal", body: "Please also fix the README." });
     expect(pendingPullComments(db, "eng-1")).toHaveLength(1);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
     expect(resumeJobs(db)).toHaveLength(1);
@@ -389,11 +404,11 @@ describe("pull request comments restart the item", () => {
   test("a comment fix on an accepted head is one candidate review escape, even redelivered", async () => {
     const { db, caps, conversation, inline } = setup();
     await markCloseoutAccepted(sqliteDb(db), "eng-1", "h");
-    conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
-    conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
-    inline({ id: 9001, review: 601, author: "cursor[bot]", body: "Bug: off by one." });
+    await conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
+    await conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
+    await inline({ id: 9001, review: 601, author: "cursor[bot]", body: "Bug: off by one." });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
-    conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
+    await conversation({ id: 3001, author: "pascal", body: "This drops the last page." });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(listReviewEscapes(db)).toEqual([
       expect.objectContaining({
@@ -414,22 +429,28 @@ describe("pull request comments restart the item", () => {
 
   test("an inline comment without a readable thread still carries its text", async () => {
     const { db, caps, inline } = setup([]);
-    inline({ id: 9201, review: 801, author: "pascal", body: "Rename this.", path: "src/a.ts" });
+    await inline({
+      id: 9201,
+      review: 801,
+      author: "pascal",
+      body: "Rename this.",
+      path: "src/a.ts",
+    });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
     expect(handoff(db)?.handoff).toContain("`src/a.ts:12`: Rename this.");
   });
 });
 
 describe("comments that do not restart", () => {
-  test("the Paws App's own comments, edits, deletions and ignored bots record nothing", () => {
+  test("the Paws App's own comments, edits, deletions and ignored bots record nothing", async () => {
     const { db, conversation, inline } = setup();
-    conversation({ id: 1, author: "someone[bot]", body: "Opened by Paws.", app: 42 });
-    conversation({ id: 2, author: "paws-test[bot]", body: "Paws again." });
-    conversation({ id: 3, author: "pascal", body: "Edited.", action: "edited" });
-    conversation({ id: 4, author: "pascal", body: "Gone.", action: "deleted" });
-    conversation({ id: 5, author: "cloudflare-workers-and-pages[bot]", body: "Deploying…" });
-    conversation({ id: 6, author: "Linear-Code[bot]", body: "PAS-1" });
-    inline({ id: 7, review: 70, author: "pascal", body: "Edited inline.", action: "edited" });
+    await conversation({ id: 1, author: "someone[bot]", body: "Opened by Paws.", app: 42 });
+    await conversation({ id: 2, author: "paws-test[bot]", body: "Paws again." });
+    await conversation({ id: 3, author: "pascal", body: "Edited.", action: "edited" });
+    await conversation({ id: 4, author: "pascal", body: "Gone.", action: "deleted" });
+    await conversation({ id: 5, author: "cloudflare-workers-and-pages[bot]", body: "Deploying…" });
+    await conversation({ id: 6, author: "Linear-Code[bot]", body: "PAS-1" });
+    await inline({ id: 7, review: 70, author: "pascal", body: "Edited inline.", action: "edited" });
     expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
     expect(commentJobs(db)).toHaveLength(0);
   });
@@ -437,7 +458,7 @@ describe("comments that do not restart", () => {
   test("a status comment with an ignored marker records nothing; the same bot's failure restarts", async () => {
     const { db, caps, conversation } = setup();
     expect(
-      conversation({
+      await conversation({
         id: 11,
         author: "github-actions[bot]",
         body: "<!-- deploy-security-proof -->\n## Deploy security proof\nResult: **PASS**",
@@ -448,7 +469,7 @@ describe("comments that do not restart", () => {
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(resumeJobs(db)).toHaveLength(0);
 
-    conversation({
+    await conversation({
       id: 12,
       author: "github-actions[bot]",
       body: "## Deploy security proof\nResult: **FAIL**: the staging token is readable.",
@@ -460,25 +481,30 @@ describe("comments that do not restart", () => {
 
   test("an inline comment from a review bot without a marker still restarts", async () => {
     const { db, caps, inline } = setup();
-    inline({ id: 13, review: 130, author: "cursor[bot]", body: "Bug: the retry never stops." });
+    await inline({
+      id: 13,
+      review: 130,
+      author: "cursor[bot]",
+      body: "Bug: the retry never stops.",
+    });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
     expect(handoff(db)?.handoff).toContain("Bug: the retry never stops.");
   });
 
   test("an edited sticky comment does not restart the item, with or without a marker", async () => {
     const { db, caps, conversation } = setup();
-    conversation({
+    await conversation({
       id: 14,
       author: "github-actions[bot]",
       body: "<!-- add-pr-comment:todo-count -->\nTODO count changed from 235 to 234 (-1)",
     });
-    conversation({
+    await conversation({
       id: 14,
       author: "github-actions[bot]",
       body: "<!-- add-pr-comment:todo-count -->\nTODO count changed from 234 to 233 (-1)",
       action: "edited",
     });
-    conversation({
+    await conversation({
       id: 15,
       author: "github-actions[bot]",
       body: "Bundle size changed by +2 KB",
@@ -490,27 +516,27 @@ describe("comments that do not restart", () => {
     expect(resumeJobs(db)).toHaveLength(0);
   });
 
-  test("a fork's pull request, another pull request and an ended item record nothing", () => {
+  test("a fork's pull request, another pull request and an ended item record nothing", async () => {
     const { db, inline, send, conversation } = setup();
-    inline({ id: 1, review: 10, author: "pascal", body: "Fork.", headRepository: 99 });
-    send("issue_comment", {
+    await inline({ id: 1, review: 10, author: "pascal", body: "Fork.", headRepository: 99 });
+    await send("issue_comment", {
       action: "created",
       issue: { number: 8, pull_request: {} },
       comment: { id: 2, body: "Other pull request.", user: { login: "pascal" } },
     });
-    send("issue_comment", {
+    await send("issue_comment", {
       action: "created",
       issue: { number: 7 },
       comment: { id: 3, body: "Plain issue.", user: { login: "pascal" } },
     });
     db.run("UPDATE work_item SET state='merged' WHERE id='eng-1'");
-    conversation({ id: 4, author: "pascal", body: "Too late." });
+    await conversation({ id: 4, author: "pascal", body: "Too late." });
     expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
   });
 
   test("a comment on an item that ended before its turn is dropped", async () => {
     const { db, caps, conversation } = setup();
-    conversation({ id: 1, author: "pascal", body: "Fix this." });
+    await conversation({ id: 1, author: "pascal", body: "Fix this." });
     db.run("UPDATE work_item SET state='cancelled' WHERE id='eng-1'");
     expect(await handlePullComments(db, "eng-1", caps)).toBe("dropped");
     expect(resumeJobs(db)).toHaveLength(0);
@@ -518,7 +544,7 @@ describe("comments that do not restart", () => {
 
   test("the inline comments of a changes-requested review go with that review", async () => {
     const { db, caps, send, pull } = setup();
-    send("pull_request_review_comment", {
+    await send("pull_request_review_comment", {
       action: "created",
       comment: {
         id: 5001,
@@ -530,7 +556,7 @@ describe("comments that do not restart", () => {
       },
       pull_request: pull(),
     });
-    send("pull_request_review", {
+    await send("pull_request_review", {
       action: "submitted",
       review: { id: 601, state: "changes_requested", body: "Fix.", user: { login: "pascal" } },
       pull_request: pull(),
@@ -545,13 +571,13 @@ describe("comments that do not restart", () => {
 describe("timing", () => {
   test("three comments within a minute make one restart", async () => {
     const { db, caps, conversation, inline, tick } = setup();
-    conversation({ id: 1, author: "pascal", body: "First." });
+    await conversation({ id: 1, author: "pascal", body: "First." });
     const [job] = commentJobs(db);
     expect(job?.runAt).toBe(1_000 + PULL_COMMENT_SETTLE_MS);
     tick(25_000);
-    inline({ id: 2, review: 601, author: "pascal", body: "This sorts the wrong way round." });
+    await inline({ id: 2, review: 601, author: "pascal", body: "This sorts the wrong way round." });
     tick(30_000);
-    conversation({ id: 3, author: "rev", body: "Third." });
+    await conversation({ id: 3, author: "rev", body: "Third." });
     // One job, moved to a minute after the last comment.
     expect(commentJobs(db)).toHaveLength(1);
     expect(commentJobs(db)[0]?.runAt).toBe(1_000 + 55_000 + PULL_COMMENT_SETTLE_MS);
@@ -568,7 +594,7 @@ describe("timing", () => {
   test("a comment during a turn or evaluation waits, and holds the merge", async () => {
     const { db, caps, conversation, setBusy } = setup();
     db.run("UPDATE work_item SET state='verifying' WHERE id='eng-1'");
-    conversation({ id: 1, author: "pascal", body: "Also this." });
+    await conversation({ id: 1, author: "pascal", body: "Also this." });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("wait");
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='eng-1'");
     setBusy(true);
@@ -587,7 +613,7 @@ describe("timing", () => {
   test("with the fix rounds spent, the next comment asks and does not restart", async () => {
     const { db, caps, conversation, setLimit } = setup();
     setLimit(0);
-    conversation({ id: 1, author: "pascal", body: "Rename it." });
+    await conversation({ id: 1, author: "pascal", body: "Rename it." });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("asked");
     expect(getWorkItem(db, "eng-1")?.state).toBe("awaiting_input");
     expect(resumeJobs(db)).toHaveLength(0);
@@ -614,7 +640,11 @@ describe("review apps still checking the head", () => {
       run("Acme Lint", "acme-lint", "in_progress"),
       run("ci", "github-actions", "in_progress"),
     ];
-    f.conversation({ id: 1, author: "acme-review[bot]", body: "Bug: the key ignores the tenant." });
+    await f.conversation({
+      id: 1,
+      author: "acme-review[bot]",
+      body: "Bug: the key ignores the tenant.",
+    });
     f.tick(PULL_COMMENT_SETTLE_MS);
     expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
     expect(resumeJobs(f.db)).toHaveLength(0);
@@ -635,7 +665,7 @@ describe("review apps still checking the head", () => {
 
     f.tick(120_000);
     f.checkRuns.runs.h = f.checkRuns.runs.h.map((check) => ({ ...check, status: "completed" }));
-    f.conversation({ id: 2, author: "acme-lint[bot]", body: "Nit: rename the helper." });
+    await f.conversation({ id: 2, author: "acme-lint[bot]", body: "Nit: rename the helper." });
     f.tick(PULL_COMMENT_SETTLE_MS);
     expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
     expect(resumeJobs(f.db)).toHaveLength(1);
@@ -649,7 +679,7 @@ describe("review apps still checking the head", () => {
     const f = setup();
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
     f.setReviewApps(["acme-lint"]);
-    f.conversation({ id: 1, author: "pascal", body: "Rename it." });
+    await f.conversation({ id: 1, author: "pascal", body: "Rename it." });
     f.tick(PULL_COMMENT_SETTLE_MS);
     expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
     f.tick(900_000);
@@ -661,7 +691,7 @@ describe("review apps still checking the head", () => {
     const f = setup();
     f.setReviewApps(["acme-lint"]);
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
-    f.send("pull_request_review", {
+    await f.send("pull_request_review", {
       action: "submitted",
       review: {
         id: 602,
@@ -676,7 +706,7 @@ describe("review apps still checking the head", () => {
     expect(f.reviewWaits.at(-1)).toEqual({ head: "h", names: ["Acme Lint"] });
 
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "completed")];
-    f.conversation({ id: 3, author: "acme-lint[bot]", body: "Nit: rename the helper." });
+    await f.conversation({ id: 3, author: "acme-lint[bot]", body: "Nit: rename the helper." });
     f.tick(PULL_COMMENT_SETTLE_MS);
     expect(await handlePullReview(f.db, 602, f.caps)).toBe("restarted");
     expect(resumeJobs(f.db)).toHaveLength(1);
@@ -689,7 +719,7 @@ describe("review apps still checking the head", () => {
     const f = setup();
     f.setReviewApps(["acme-lint"]);
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
-    f.conversation({ id: 1, author: "pascal", body: "Rename it." });
+    await f.conversation({ id: 1, author: "pascal", body: "Rename it." });
     f.tick(PULL_COMMENT_SETTLE_MS);
     expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
     f.checkRuns.failing = true;
@@ -706,7 +736,7 @@ describe("review apps still checking the head", () => {
     f.checkRuns.pushedAt.h = f.caps.now();
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "queued")];
     f.tick(600_000);
-    f.conversation({ id: 1, author: "pascal", body: "Rename it." });
+    await f.conversation({ id: 1, author: "pascal", body: "Rename it." });
     f.tick(PULL_COMMENT_SETTLE_MS);
     expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("wait");
     f.checkRuns.runs.h = [run("Acme Lint", "acme-lint", "in_progress")];
@@ -721,7 +751,7 @@ describe("review apps still checking the head", () => {
       run("Acme Lint", "acme-lint", "completed"),
       run("ci", "github-actions", "queued"),
     ];
-    f.conversation({ id: 1, author: "pascal", body: "Rename it." });
+    await f.conversation({ id: 1, author: "pascal", body: "Rename it." });
     expect(await handlePullComments(f.db, "eng-1", f.caps)).toBe("restarted");
     expect(f.checkRuns.reads).toBe(1);
     expect(resumeJobs(f.db)).toHaveLength(1);

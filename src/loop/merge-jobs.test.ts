@@ -83,8 +83,8 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
         pull_request: { merged: true, head: { sha: "h" } },
       }),
     };
-    expect(acceptGitHubDelivery(db, delivery, clock.now())).toBe(true);
-    expect(acceptGitHubDelivery(db, delivery, clock.now())).toBe(false);
+    expect(await acceptGitHubDelivery(db, delivery, clock.now())).toBe(true);
+    expect(await acceptGitHubDelivery(db, delivery, clock.now())).toBe(false);
     expect(mergeCallInFlight(db, "eng-1")).toBe(true);
     reason = "ci";
     await loop.tick();
@@ -381,7 +381,7 @@ describe("GitHub deliveries", () => {
     const { db, clock, id } = await parked();
     expect(getJob(db, id)?.runAt).toBeGreaterThan(clock.now());
     expect(
-      deliver(db, clock.now(), "check_suite", {
+      await deliver(db, clock.now(), "check_suite", {
         action: "completed",
         check_suite: { head_sha: head, head_branch: "elsewhere", pull_requests: [] },
       }),
@@ -392,21 +392,24 @@ describe("GitHub deliveries", () => {
   test("a check that only started, or a pending status, does not wake the merge job", async () => {
     const { db, clock, id } = await parked();
     const runAt = getJob(db, id)?.runAt;
-    deliver(db, clock.now(), "check_run", { action: "created", check_run: { head_sha: head } });
-    deliver(db, clock.now(), "check_suite", {
+    await deliver(db, clock.now(), "check_run", {
+      action: "created",
+      check_run: { head_sha: head },
+    });
+    await deliver(db, clock.now(), "check_suite", {
       action: "requested",
       check_suite: { head_sha: head },
     });
-    deliver(db, clock.now(), "status", { state: "pending", sha: head });
+    await deliver(db, clock.now(), "status", { state: "pending", sha: head });
     expect(getJob(db, id)?.runAt).toBe(runAt);
   });
 
   test("a redelivered delivery id is recorded once and wakes nothing again", async () => {
     const { db, clock, id } = await parked();
     const payload = { state: "success", sha: head, branches: [] };
-    expect(deliver(db, clock.now(), "status", payload)).toBe(true);
+    expect(await deliver(db, clock.now(), "status", payload)).toBe(true);
     db.run("UPDATE job SET run_at = ? WHERE id = ?", [clock.now() + 60_000, id]);
-    expect(deliver(db, clock.now(), "status", payload)).toBe(false);
+    expect(await deliver(db, clock.now(), "status", payload)).toBe(false);
     expect(getJob(db, id)?.runAt).toBe(clock.now() + 60_000);
   });
 
@@ -441,7 +444,7 @@ describe("GitHub deliveries", () => {
     ];
     for (const [index, [event, payload]] of cases.entries()) {
       const { db, clock, id, branch } = await parked();
-      expect(deliver(db, clock.now(), event, payload(branch), `d-${index}`)).toBe(true);
+      expect(await deliver(db, clock.now(), event, payload(branch), `d-${index}`)).toBe(true);
       expect(getJob(db, id)?.runAt, `${event} ${index}`).toBe(clock.now());
     }
   });
@@ -449,16 +452,16 @@ describe("GitHub deliveries", () => {
   test("a delivery for another head or branch leaves the merge job parked", async () => {
     const { db, clock, id } = await parked();
     const runAt = getJob(db, id)?.runAt;
-    deliver(db, clock.now(), "pull_request", {
+    await deliver(db, clock.now(), "pull_request", {
       pull_request: { head: { sha: "c".repeat(40), ref: "paws/eng-2" } },
     });
-    deliver(db, clock.now(), "merge_group", { merge_group: { head_sha: "d".repeat(40) } });
+    await deliver(db, clock.now(), "merge_group", { merge_group: { head_sha: "d".repeat(40) } });
     expect(getJob(db, id)?.runAt).toBe(runAt);
   });
 
   test("a merge_group delivery wakes merges in GitHub's merge queue", async () => {
     const { db, clock, id } = await parked({ queued: true });
-    deliver(db, clock.now(), "merge_group", {
+    await deliver(db, clock.now(), "merge_group", {
       action: "destroyed",
       merge_group: { head_sha: "d".repeat(40), head_ref: "refs/heads/gh-readonly-queue/main/pr-7" },
     });
@@ -471,7 +474,7 @@ describe("GitHub deliveries", () => {
     const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
     expect(job?.id).toBe(id);
     clock.advance(1_000);
-    deliver(db, clock.now(), "check_suite", {
+    await deliver(db, clock.now(), "check_suite", {
       action: "completed",
       check_suite: { head_sha: head },
     });
@@ -502,20 +505,20 @@ describe("main moving", () => {
       .map((job) => job.payload);
   }
 
-  test("a push to the default branch, its redelivery and the merged pull request check the queue once", () => {
+  test("a push to the default branch, its redelivery and the merged pull request check the queue once", async () => {
     const { db, clock } = twoQueued();
     const push = { ref: "refs/heads/main", after: main, repository };
-    acceptGitHubDelivery(
+    await acceptGitHubDelivery(
       db,
       { deliveryId: "p-1", event: "push", payload: JSON.stringify(push) },
       clock.now(),
     );
-    acceptGitHubDelivery(
+    await acceptGitHubDelivery(
       db,
       { deliveryId: "p-2", event: "push", payload: JSON.stringify(push) },
       clock.now(),
     );
-    acceptGitHubDelivery(
+    await acceptGitHubDelivery(
       db,
       {
         deliveryId: "pr-1",
@@ -536,9 +539,9 @@ describe("main moving", () => {
     expect(sweeps(db)).toEqual([{ repository: "acme/app", main }]);
   });
 
-  test("a push to another branch or a closed unmerged pull request checks nothing", () => {
+  test("a push to another branch or a closed unmerged pull request checks nothing", async () => {
     const { db, clock } = twoQueued();
-    acceptGitHubDelivery(
+    await acceptGitHubDelivery(
       db,
       {
         deliveryId: "p-1",
@@ -547,7 +550,7 @@ describe("main moving", () => {
       },
       clock.now(),
     );
-    acceptGitHubDelivery(
+    await acceptGitHubDelivery(
       db,
       {
         deliveryId: "pr-1",
@@ -582,13 +585,13 @@ describe("merge poll backstop", () => {
     return { db, clock, id, loop, reads: () => reads };
   }
 
-  function ping(db: ReturnType<typeof queue>["db"], now: number, deliveryId = "ping") {
-    acceptGitHubDelivery(db, { deliveryId, event: "ping", payload: "{}" }, now);
+  async function ping(db: ReturnType<typeof queue>["db"], now: number, deliveryId = "ping") {
+    await acceptGitHubDelivery(db, { deliveryId, event: "ping", payload: "{}" }, now);
   }
 
   test("with deliveries flowing, a 20-minute CI wait makes at most 5 GitHub status reads", async () => {
     const { db, clock, loop, reads } = ciWait();
-    ping(db, clock.now());
+    await ping(db, clock.now());
     for (let elapsed = 0; elapsed <= 20 * 60_000; elapsed += MERGE_CI_POLL_MS) {
       await loop.tick();
       clock.advance(MERGE_CI_POLL_MS);
@@ -599,11 +602,11 @@ describe("merge poll backstop", () => {
 
   test("a CI wait polls every 10 seconds when no delivery arrived in the last hour", async () => {
     const { db, clock, id, loop } = ciWait();
-    ping(db, clock.now());
+    await ping(db, clock.now());
     clock.advance(60 * 60_000);
     await loop.tick();
     expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_CI_POLL_MS);
-    ping(db, clock.now(), "ping-2");
+    await ping(db, clock.now(), "ping-2");
     clock.advance(MERGE_CI_POLL_MS);
     await loop.tick();
     expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_BACKSTOP_POLL_MS);
@@ -617,7 +620,7 @@ describe("merge poll backstop", () => {
       payload: { itemId: "eng-1" },
       now: clock.now(),
     });
-    ping(db, clock.now());
+    await ping(db, clock.now());
     const job = claimNextJob(db, { now: clock.now(), queues: [JOB_KIND.merge] });
     await parkMerge(sqliteDb(db), job!, clock.now(), { queued: true, reason: "review" });
     expect(getJob(db, id)?.runAt).toBe(clock.now() + MERGE_BACKSTOP_POLL_MS);
