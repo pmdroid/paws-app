@@ -155,9 +155,8 @@ async function replicas() {
       },
     });
   };
-  const probes = () =>
-    first.work
-      .commands(runnerId)
+  const probes = async () =>
+    (await first.work.commands(runnerId))
       .map(
         (envelope) =>
           JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as RunnerCommand,
@@ -205,7 +204,7 @@ test("two instances placing on a one-slot runner at once: only one wins", async 
     expect(String((waiting[0] as PromiseRejectedResult).reason)).toContain(
       "Waiting for a free slot",
     );
-    expect(fixture.probes()).toHaveLength(1);
+    expect(await fixture.probes()).toHaveLength(1);
     expect(
       fixture.db.query("SELECT instance_id AS instanceId FROM runner_reservation").all(),
     ).toHaveLength(1);
@@ -230,14 +229,14 @@ test("a crashed instance's reservation expires after two minutes and frees the s
       RunnerCapacityWait,
     );
     await Bun.sleep(50);
-    expect(fixture.probes()).toHaveLength(0);
+    expect(await fixture.probes()).toHaveLength(0);
 
     fixture.tick(RUNNER_RESERVATION_MS + 1);
     const placed = fixture.prepare(fixture.second, waiting, stop.signal);
     void placed.catch(() => undefined);
     const until = performance.now() + 5_000;
-    while (!fixture.probes().length && performance.now() < until) await Bun.sleep(5);
-    expect(fixture.probes()).toHaveLength(1);
+    while (!(await fixture.probes()).length && performance.now() < until) await Bun.sleep(5);
+    expect(await fixture.probes()).toHaveLength(1);
     expect(
       fixture.db
         .query("SELECT instance_id AS instanceId FROM runner_reservation")

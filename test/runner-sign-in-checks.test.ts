@@ -169,8 +169,8 @@ function fixture() {
         : {}),
     }).command;
   };
-  const delivered = (runnerId: string) =>
-    work.commands(runnerId).map((envelope) => {
+  const delivered = async (runnerId: string) =>
+    (await work.commands(runnerId)).map((envelope) => {
       const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
         id: string;
         type: string;
@@ -284,20 +284,20 @@ test("a pending helper goes out before a queued login check, which waits until t
   const f = fixture();
   const runnerId = f.runner();
   await f.health.refresh();
-  expect(f.delivered(runnerId).map(({ type }) => type)).toEqual(["login_check"]);
-  const [first] = f.delivered(runnerId);
-  f.work.acknowledge(runnerId, first!.id);
+  expect((await f.delivered(runnerId)).map(({ type }) => type)).toEqual(["login_check"]);
+  const [first] = await f.delivered(runnerId);
+  await f.work.acknowledge(runnerId, first!.id);
   await f.answer({ id: first!.id, runnerId, agent: "claude" });
 
   const helper = f.helper(runnerId);
   expect(await f.helpers.commands(runnerId)).toHaveLength(1);
-  expect(f.delivered(runnerId)).toEqual([]);
+  expect(await f.delivered(runnerId)).toEqual([]);
 
   await f.helpers.acknowledge(runnerId, helper.id);
-  expect(f.delivered(runnerId)).toEqual([]);
+  expect(await f.delivered(runnerId)).toEqual([]);
 
   f.helpers.finish(helper.id);
-  expect(f.delivered(runnerId).map(({ type }) => type)).toEqual(["login_check"]);
+  expect((await f.delivered(runnerId)).map(({ type }) => type)).toEqual(["login_check"]);
 });
 
 test("a helper that expired unserved, or a conversation in its own lane, holds no check back", async () => {
@@ -307,15 +307,15 @@ test("a helper that expired unserved, or a conversation in its own lane, holds n
   recordRunnerCapacity(f.db, runnerId, 1, 1, 2);
   await f.health.refresh();
   f.helper(runnerId, "conversation");
-  expect(f.delivered(runnerId).map(({ type }) => type)).toEqual(["login_check"]);
+  expect((await f.delivered(runnerId)).map(({ type }) => type)).toEqual(["login_check"]);
 
   const g = fixture();
   const other = g.runner();
   await g.health.refresh();
   g.helper(other);
-  expect(g.delivered(other)).toEqual([]);
+  expect(await g.delivered(other)).toEqual([]);
   g.advance(60_001);
-  expect(g.delivered(other).map(({ type }) => type)).toEqual(["login_check"]);
+  expect((await g.delivered(other)).map(({ type }) => type)).toEqual(["login_check"]);
 });
 
 test("no check is queued while a helper waits for the lane", async () => {
@@ -584,8 +584,8 @@ test("a sign-in goes to the runner before sign-in checks queued ahead of it", as
       expiresAt: f.now() + 120_000,
     });
   const session = await login.start(f.owner, runnerId, "claude");
-  const delivered = () =>
-    f.work.commands(runnerId).map((envelope) => {
+  const delivered = async () =>
+    (await f.work.commands(runnerId)).map((envelope) => {
       const command = JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
         id: string;
         type: string;
@@ -593,24 +593,24 @@ test("a sign-in goes to the runner before sign-in checks queued ahead of it", as
       };
       return { id: command.id, label: `${command.type} ${command.agent}` };
     });
-  expect(delivered().map(({ label }) => label)).toEqual(["login claude"]);
+  expect((await delivered()).map(({ label }) => label)).toEqual(["login claude"]);
 
-  f.work.acknowledge(runnerId, session.id);
-  expect(delivered()).toEqual([]);
+  await f.work.acknowledge(runnerId, session.id);
+  expect(await delivered()).toEqual([]);
   await login.exchange(runnerId, session.id, {
     state: "connected",
     terminal: "",
     authorization: null,
     inputId: null,
   });
-  const [codex] = delivered();
+  const [codex] = await delivered();
   expect(codex?.label).toBe("login_check codex");
-  expect(delivered().map(({ label }) => label)).toEqual(["login_check codex"]);
+  expect((await delivered()).map(({ label }) => label)).toEqual(["login_check codex"]);
 
-  f.work.acknowledge(runnerId, codex!.id);
-  expect(delivered()).toEqual([]);
+  await f.work.acknowledge(runnerId, codex!.id);
+  expect(await delivered()).toEqual([]);
   await f.answer({ id: codex!.id, runnerId, agent: "codex" });
-  expect(delivered().map(({ label }) => label)).toEqual(["login_check grok"]);
+  expect((await delivered()).map(({ label }) => label)).toEqual(["login_check grok"]);
 });
 
 test("a login check readies the runner's agent or marks it signed out", async () => {

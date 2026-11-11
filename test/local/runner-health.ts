@@ -174,7 +174,7 @@ export async function probeRunnerHealth(
     work.heartbeat(runnerId);
     assert.equal((await health.list(principal, runnerId)).lastSeenAt, now);
     const pending = await health.request(principal, runnerId, requestInput);
-    const verified = verifyRunnerCommand(work.commands(runnerId)[0], {
+    const verified = verifyRunnerCommand((await work.commands(runnerId))[0], {
       trustedKeys: new Map([["health-fixture", signing.publicKey]]),
       runnerId,
       workspaceId: workspace.id,

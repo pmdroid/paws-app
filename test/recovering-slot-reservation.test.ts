@@ -304,13 +304,13 @@ async function runRecovering(input: {
       for (const simulatedRunnerId of runnerIds) {
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now(), simulatedRunnerId]);
         work.heartbeat(simulatedRunnerId, input.capacity);
-        for (const envelope of work.commands(simulatedRunnerId)) {
+        for (const envelope of await work.commands(simulatedRunnerId)) {
           const command = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString(),
           ) as RunnerCommand;
           if (handled.has(command.id)) continue;
           handled.add(command.id);
-          work.acknowledge(simulatedRunnerId, command.id);
+          await work.acknowledge(simulatedRunnerId, command.id);
           if (command.type === "login_check")
             await health.submit(simulatedRunnerId, {
               ...receipt(command),

@@ -108,7 +108,7 @@ async function fixture() {
     prompt: "Fixture",
   };
   work.assign(command);
-  work.acknowledge(runnerId, command.id);
+  await work.acknowledge(runnerId, command.id);
   const grant = work.issueGrant({ runnerId, runId: run.id, commandId: command.id, generation: 1 });
   // A helper holds the runner's only slot, so the runner has no capacity left.
   db.run(

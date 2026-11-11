@@ -618,8 +618,8 @@ export function createRunnerWork(options: {
     enqueueSteps(q: Q, input: RunnerCommand) {
       return enqueuedSteps(q, parseEnqueued(input));
     },
-    commands(runnerId: string): SignedRunnerCommand[] {
-      const result = read(function* (q) {
+    async commands(runnerId: string): Promise<SignedRunnerCommand[]> {
+      const result = await store.run(function* (q) {
         yield* runnerSteps(q, runnerId);
         const signed: SignedRunnerCommand[] = [];
         // A sign-in someone is waiting on goes out before probes and sign-in checks queued earlier.
@@ -664,11 +664,12 @@ export function createRunnerWork(options: {
         );
       return result;
     },
-    acknowledge(runnerId: string, commandId: string) {
-      read((q) => runnerSteps(q, runnerId));
+    async acknowledge(runnerId: string, commandId: string) {
+      await store.run((q) => runnerSteps(q, runnerId));
       if (
-        read((q) => acknowledgeRunnerCommandSteps(q, runnerId, commandId, now())) !== 1 &&
-        !read((q) => repositoryCommandDeliveredToSteps(q, runnerId, commandId))
+        (await store.run((q) => acknowledgeRunnerCommandSteps(q, runnerId, commandId, now()))) !==
+          1 &&
+        !(await store.run((q) => repositoryCommandDeliveredToSteps(q, runnerId, commandId)))
       )
         throw new Error("Runner command is unknown.");
     },

@@ -225,14 +225,14 @@ export async function probeRunnerBackend(
     );
     db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [lastSeen ?? null, selectedRunnerId]);
   }
-  function drainCancels(selectedRunnerId: string) {
-    for (const envelope of work.commands(selectedRunnerId)) {
+  async function drainCancels(selectedRunnerId: string) {
+    for (const envelope of await work.commands(selectedRunnerId)) {
       const command = JSON.parse(
         Buffer.from(envelope.payload, "base64url").toString(),
       ) as RunnerCommand;
       if (command.type !== "cancel") continue;
       seen.add(command.id);
-      work.acknowledge(selectedRunnerId, command.id);
+      await work.acknowledge(selectedRunnerId, command.id);
       terminated(selectedRunnerId, command);
     }
   }
@@ -240,7 +240,7 @@ export async function probeRunnerBackend(
     // Measured in time, not polls: four test files run at once and can starve a 1 ms poll.
     const until = performance.now() + 10_000;
     while (performance.now() < until) {
-      for (const envelope of work.commands(selectedRunnerId)) {
+      for (const envelope of await work.commands(selectedRunnerId)) {
         const v = verifyRunnerCommand(envelope, {
           trustedKeys: new Map([["fixture", signing.publicKey]]),
           runnerId: selectedRunnerId,
@@ -254,7 +254,7 @@ export async function probeRunnerBackend(
           },
         });
         if (v.ok) {
-          if (acknowledge) work.acknowledge(selectedRunnerId, v.command.id);
+          if (acknowledge) await work.acknowledge(selectedRunnerId, v.command.id);
           if (acknowledge && v.command.type === "cancel") terminated(selectedRunnerId, v.command);
           return v.command;
         }
@@ -264,17 +264,17 @@ export async function probeRunnerBackend(
     throw new Error("No dispatched runner command");
   }
   let sequence = 0;
-  const finishRuns = () => {
+  const finishRuns = async () => {
     for (const { id } of db.query<{ id: string }, []>("SELECT id FROM runner").all())
-      drainCancels(id);
+      await drainCancels(id);
     db.run(
       "UPDATE run SET status='ended' WHERE status='active' AND id IN (SELECT run_id FROM runner_work WHERE ended_at IS NOT NULL)",
     );
   };
-  function item() {
+  async function item() {
     const id = `item-${++sequence}`,
       sessionId = `session-${sequence}`;
-    finishRuns();
+    await finishRuns();
     const record = insertQueuedItem(db, { id, now, sessionKey: sessionId });
     const { run } = beginImplementRun(db, id, now);
     const linked = Bun.spawnSync([
@@ -304,7 +304,7 @@ export async function probeRunnerBackend(
     return { id, run };
   }
   function input(
-    record: ReturnType<typeof item>,
+    record: Awaited<ReturnType<typeof item>>,
     overrides: Partial<RunAgentOptions> = {},
   ): RunAgentOptions {
     return {
@@ -333,12 +333,12 @@ export async function probeRunnerBackend(
   const failoverAbort = new AbortController();
   let pendingFailover: Promise<unknown> | undefined;
   try {
-    const denied = item();
+    const denied = await item();
     await assert.rejects(
       backend.forItem(denied.id)(input(denied)),
       /No available paired runner .*outside the runner workspace repository access/,
     );
-    assert.equal(work.commands(runnerId).length, 0);
+    assert.equal((await work.commands(runnerId)).length, 0);
     db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [
       workspace.id,
       "fixture/repository",
@@ -347,7 +347,7 @@ export async function probeRunnerBackend(
     observe("remote selection denies unmapped Linear repositories before dispatch", true, {
       commands: 0,
     });
-    const unsupported = item();
+    const unsupported = await item();
     await assert.rejects(
       backend.forItem(unsupported.id)(
         input(unsupported, {
@@ -367,7 +367,7 @@ export async function probeRunnerBackend(
       ),
       /input transfer is unavailable/,
     );
-    assert.equal(work.commands(runnerId).length, 0);
+    assert.equal((await work.commands(runnerId)).length, 0);
     await assert.rejects(
       backend.forItem(unsupported.id)(input(unsupported, { readOnly: true })),
       /reviewer role/,
@@ -377,7 +377,7 @@ export async function probeRunnerBackend(
       true,
       { commands: 0 },
     );
-    const first = item();
+    const first = await item();
     const events: AcpEvent[] = [];
     const updates: string[] = [];
     const replies: { text: string; sequence?: number }[] = [];
@@ -617,7 +617,7 @@ export async function probeRunnerBackend(
     );
     await git(["-C", source, "reset", "--hard", base]);
     const fetchedBefore = fetched;
-    const stopped = item();
+    const stopped = await item();
     const runnerAt = (version: string) =>
       db.run(
         "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
@@ -723,7 +723,7 @@ export async function probeRunnerBackend(
     // runner too old to tell a failed save from nothing to save fail closed too.
     for (const publication of ["refused", "failed", "missing", "older"] as const) {
       if (publication === "older") runnerAt("0.1.74");
-      const record = item();
+      const record = await item();
       const publicationRun = backend.forItem(record.id)(input(record));
       const command = await next();
       if (command.type !== "run") throw new Error("Expected implementation");
@@ -773,7 +773,7 @@ export async function probeRunnerBackend(
       {},
     );
     const stoppedWith = async (errorMessage: string, sessionId: string) => {
-      const record = item();
+      const record = await item();
       const run = backend.forItem(record.id)(input(record));
       const command = await next();
       if (command.type !== "run") throw new Error("Expected an implementation run");
@@ -810,7 +810,7 @@ export async function probeRunnerBackend(
       ["tooLong", tooLong],
     ] as const) {
       const stop = new AbortController();
-      finishRuns();
+      await finishRuns();
       db.run("UPDATE run SET status='active' WHERE id=?", [record.run.id]);
       const again = backend.forItem(record.id)(input(record, { signal: stop.signal }));
       void again.catch(() => undefined);
@@ -826,7 +826,7 @@ export async function probeRunnerBackend(
       { agent: "codex", model: "new-model" },
       { agent: "claude", model: "new-model" },
     ] as const) {
-      finishRuns();
+      await finishRuns();
       db.run("UPDATE run SET status='active' WHERE id=?", [first.run.id]);
       const stop = new AbortController();
       const again = backend.forItem(first.id)(input(first, { profile, signal: stop.signal }));
@@ -842,7 +842,7 @@ export async function probeRunnerBackend(
       stop.abort();
       await again.catch(() => undefined);
     }
-    while (work.commands(runnerId).length) await next();
+    while ((await work.commands(runnerId)).length) await next();
     db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
     observe(
       "a later run resumes the agent session of the item's last run unless that run errored other than at the usage limit",
@@ -859,7 +859,7 @@ export async function probeRunnerBackend(
         "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
         [runnerId, version, Date.now()],
       );
-      const record = item();
+      const record = await item();
       const stop = new AbortController();
       const sent = backend.forItem(record.id)(
         input(record, {
@@ -883,7 +883,7 @@ export async function probeRunnerBackend(
       await sent.catch(() => undefined);
       runtimeCommands[version] = command.runtimes ?? null;
     }
-    while (work.commands(runnerId).length) await next();
+    while ((await work.commands(runnerId)).length) await next();
     db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
     observe(
       "a run carries the repository's runtime list to a runner that accepts it and posts its notices",
@@ -921,13 +921,13 @@ export async function probeRunnerBackend(
       "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
       [runnerId, "0.1.52", Date.now()],
     );
-    const oldHookRun = item();
+    const oldHookRun = await item();
     await assert.rejects(
       backend.forItem(oldHookRun.id)(input(oldHookRun)),
       /needs runner 0.1.53 or later to run skill hooks/,
     );
     db.run("UPDATE runner_host_status SET runner_version='0.1.53' WHERE runner_id=?", [runnerId]);
-    const hookRun = item();
+    const hookRun = await item();
     const hookStop = new AbortController();
     const hooked = backend.forItem(hookRun.id)(
       input(hookRun, { signal: hookStop.signal, checkpoint: false }),
@@ -939,11 +939,11 @@ export async function probeRunnerBackend(
     assert.equal(hookCommand.hooks?.[0]?.skill, "guard");
     hookStop.abort();
     await hooked.catch(() => undefined);
-    while (work.commands(runnerId).length) await next();
+    while ((await work.commands(runnerId)).length) await next();
     deleteHook(db, "uploaded-guard");
     db.run("DELETE FROM runner_host_status WHERE runner_id=?", [runnerId]);
     await git(["-C", source, "reset", "--hard", base]);
-    const detached = item();
+    const detached = await item();
     const shutdown = new AbortController();
     const beforeEvents: string[] = [];
     const beforeRestart = backend.forItem(detached.id)(
@@ -981,7 +981,7 @@ export async function probeRunnerBackend(
           "SELECT ended_at AS ended FROM runner_work WHERE run_id=?",
         )
         .get(detachedCommand.runId)?.ended === null;
-    const cancelSent = work.commands(runnerId).length > 0;
+    const cancelSent = (await work.commands(runnerId)).length > 0;
     const afterEvents: string[] = [];
     const afterRestart = backend.forItem(detached.id)(
       input(detached, {
@@ -1010,7 +1010,7 @@ export async function probeRunnerBackend(
     const fetchedBeforeRestart = fetched;
     const reattached = await afterRestart;
     fetched = fetchedBeforeRestart;
-    const redispatched = work.commands(runnerId).length > 0;
+    const redispatched = (await work.commands(runnerId)).length > 0;
     observe(
       "a Paws restart leaves a runner's work running and the next call picks up its later events and result",
       leftLive &&
@@ -1029,7 +1029,7 @@ export async function probeRunnerBackend(
       },
     );
     await git(["-C", source, "reset", "--hard", base]);
-    const replayed = item();
+    const replayed = await item();
     let replayPublications = 0;
     const origins: unknown[] = [];
     const replayInput = (signal?: AbortSignal) =>
@@ -1142,7 +1142,7 @@ export async function probeRunnerBackend(
       },
     );
     await git(["-C", source, "reset", "--hard", base]);
-    const accepted = item();
+    const accepted = await item();
     const acceptedShutdown = new AbortController();
     const beforeExpiry = backend.forItem(accepted.id)(
       input(accepted, { signal: acceptedShutdown.signal }),
@@ -1171,7 +1171,7 @@ export async function probeRunnerBackend(
       .catch((error: unknown) => error);
     const recoveredFetches = fetched - fetchedBeforeExpiry;
     fetched = fetchedBeforeExpiry;
-    const placedAgain = work.commands(runnerId).length > 0;
+    const placedAgain = (await work.commands(runnerId)).length > 0;
     work.heartbeat(runnerId);
     observe(
       "a result accepted before the lease expired is consumed after a restart without another execution",
@@ -1185,7 +1185,7 @@ export async function probeRunnerBackend(
         recovered: recovered instanceof Error ? recovered.message : recovered,
       },
     );
-    const reviewer = item();
+    const reviewer = await item();
     let text = "";
     const reviewed = backend.forItem(reviewer.id)(
       input(reviewer, {
@@ -1252,7 +1252,7 @@ export async function probeRunnerBackend(
     );
     // The live gate's review command goes only to a runner release that runs it.
     const reviewBase = "b".repeat(40);
-    const reviewCommandInput = (record: ReturnType<typeof item>) =>
+    const reviewCommandInput = (record: Awaited<ReturnType<typeof item>>) =>
       input(record, {
         role: "reviewer",
         profile: { agent: "codex", model: "review-model" },
@@ -1268,7 +1268,7 @@ export async function probeRunnerBackend(
         profile: { agent: "codex" as const, model: null },
       },
     ]) {
-      const record = item();
+      const record = await item();
       await backend
         .forItem(record.id)(input(record, { ...overrides, reviewCommand: { base: reviewBase } }))
         .catch((error: Error) => refusedReviews.push(error.message));
@@ -1277,7 +1277,7 @@ export async function probeRunnerBackend(
       "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
       [runnerId, "0.1.46", Date.now()],
     );
-    const oldRunner = item();
+    const oldRunner = await item();
     const tooOld = await backend
       .forItem(oldRunner.id)(reviewCommandInput(oldRunner))
       .then(
@@ -1288,7 +1288,7 @@ export async function probeRunnerBackend(
       "INSERT INTO runner_host_status(runner_id,runner_version,reported_at) VALUES(?,?,?) ON CONFLICT(runner_id) DO UPDATE SET runner_version=excluded.runner_version",
       [runnerId, "0.1.47", Date.now()],
     );
-    const commandReviewer = item();
+    const commandReviewer = await item();
     let commandText = "";
     const commandReviewed = backend.forItem(commandReviewer.id)({
       ...reviewCommandInput(commandReviewer),
@@ -1380,7 +1380,7 @@ export async function probeRunnerBackend(
     }
     for (const purpose of ["answer", "artifact"] as const) {
       for (const withRepository of [false, true]) {
-        const task = item();
+        const task = await item();
         saveTaskMode(db, task.id, purpose, 0, withRepository);
         const directory = join(root, `response-${task.id}`);
         mkdirSync(directory, { mode: 0o700 });
@@ -1643,7 +1643,7 @@ export async function probeRunnerBackend(
         );
       }
     }
-    const changedTask = item();
+    const changedTask = await item();
     saveTaskMode(db, changedTask.id, "answer");
     await assert.rejects(
       sealedBackend.forItem(changedTask.id)(
@@ -1659,13 +1659,13 @@ export async function probeRunnerBackend(
       ),
       /binding changed/,
     );
-    assert.equal(work.commands(runnerId).length, 0);
+    assert.equal((await work.commands(runnerId)).length, 0);
     observe(
       "remote response dispatch rejects a session generation changed during preparation",
       true,
       { commands: 0 },
     );
-    const unsafeTask = item();
+    const unsafeTask = await item();
     saveTaskMode(db, unsafeTask.id, "artifact", 0, true);
     const unsafeDirectory = join(root, "unsafe-response");
     mkdirSync(unsafeDirectory, { mode: 0o700 });
@@ -1678,14 +1678,14 @@ export async function probeRunnerBackend(
       sealedBackend.forItem(unsafeTask.id)(input(unsafeTask, { worktreePath: unsafeDirectory })),
       /snapshot binding changed/,
     );
-    assert.equal(work.commands(runnerId).length, 0);
+    assert.equal((await work.commands(runnerId)).length, 0);
     observe("remote response repository metadata must match the canonical selection", true, {
       commands: 0,
     });
     const inputs = createRunnerInputStore({ root: join(root, "private-inputs"), work });
     const inputBackend = createRemoteAgentRunner({ ...backendOptions, transcripts, inputs });
     for (const kind of ["run", "review", "answer", "artifact"] as const) {
-      const record = item();
+      const record = await item();
       const isTask = kind === "answer" || kind === "artifact";
       if (isTask) saveTaskMode(db, record.id, kind);
       const directory = isTask ? join(root, `inputs-${record.id}`) : source;
@@ -1824,7 +1824,7 @@ export async function probeRunnerBackend(
         },
       );
     }
-    const badInputs = item();
+    const badInputs = await item();
     await assert.rejects(
       inputBackend.forItem(badInputs.id)(
         input(badInputs, {
@@ -1859,13 +1859,13 @@ export async function probeRunnerBackend(
       backend.forItem(badInputs.id)(input(badInputs, { prompt: "h".repeat(65537) })),
       /conversation context transfer is unavailable/,
     );
-    assert.equal(work.commands(runnerId).length, 0);
+    assert.equal((await work.commands(runnerId)).length, 0);
     observe(
       "private input path and aggregate bounds and missing context transport reject before assignment",
       true,
       { commands: 0 },
     );
-    const sealed = item();
+    const sealed = await item();
     const sealedPath = join(runDir(root, sealed.run.id), "acp.jsonl");
     mkdirSync(runDir(root, sealed.run.id), { recursive: true });
     const prefix = Buffer.from(
@@ -1967,7 +1967,7 @@ export async function probeRunnerBackend(
       { rawBytes: raw.length, turns: 2, recoveredTool: "Checked" },
     );
     for (const failure of ["unsealed", "mismatched", "cancelled"] as const) {
-      const rejected = item();
+      const rejected = await item();
       const response = sealedBackend.forItem(rejected.id)(
         input(rejected, { role: "reviewer", readOnly: true }),
       );
@@ -2014,7 +2014,7 @@ export async function probeRunnerBackend(
         { canonicalState: getWorkItem(db, rejected.id)?.state },
       );
     }
-    const prepared = item();
+    const prepared = await item();
     const preparation = backend.forItem(prepared.id)(
       input(prepared, {
         prepareOnly: true,
@@ -2035,7 +2035,7 @@ export async function probeRunnerBackend(
       role: ready.role,
     });
     await git(["-C", source, "reset", "--hard", base]);
-    const asked = item();
+    const asked = await item();
     let opened = false;
     let contextBody: string | undefined;
     const questioning = backend.forItem(asked.id)(
@@ -2176,7 +2176,7 @@ export async function probeRunnerBackend(
       true,
       { contextBody },
     );
-    const unpushed = item();
+    const unpushed = await item();
     const pushQuestions: string[] = [];
     const pushing = backend.forItem(unpushed.id)(
       input(unpushed, {
@@ -2222,7 +2222,7 @@ export async function probeRunnerBackend(
       { questions: pushQuestions.length },
     );
     await git(["-C", source, "reset", "--hard", base]);
-    const mismatched = item();
+    const mismatched = await item();
     importWrongHead = true;
     const mismatchRun = backend.forItem(mismatched.id)(input(mismatched));
     const mismatchRejection = assert.rejects(mismatchRun, /HEAD does not match/);
@@ -2250,7 +2250,7 @@ export async function probeRunnerBackend(
       head: await git(["-C", source, "rev-parse", "HEAD"]),
       canonicalState: "running",
     });
-    const absent = item();
+    const absent = await item();
     const absentRun = backend.forItem(absent.id)(input(absent));
     const absentRejection = assert.rejects(absentRun, /no candidate commit/);
     const absentCommand = await next();
@@ -2275,7 +2275,7 @@ export async function probeRunnerBackend(
       true,
       { canonicalState: getWorkItem(db, absent.id)?.state },
     );
-    const unauthorized = item();
+    const unauthorized = await item();
     const beforeUnauthorized = fetched;
     const unauthorizedRun = backend.forItem(unauthorized.id)(
       input(unauthorized, { networkGit: undefined }),
@@ -2307,7 +2307,7 @@ export async function probeRunnerBackend(
       fetched,
       head: base,
     });
-    const cancelled = item();
+    const cancelled = await item();
     const abort = new AbortController();
     const cancelledRun = backend.forItem(cancelled.id)(input(cancelled, { signal: abort.signal }));
     const rejection = assert.rejects(cancelledRun);
@@ -2322,7 +2322,7 @@ export async function probeRunnerBackend(
       cancelType: cancel.type,
       canonicalState: "running",
     });
-    const expired = item();
+    const expired = await item();
     const expiring = backend.forItem(expired.id)(input(expired));
     const expiry = assert.rejects(expiring, /lease expired/);
     await next();
@@ -2333,12 +2333,12 @@ export async function probeRunnerBackend(
       true,
       { leaseMs: 60000 },
     );
-    for (const envelope of work.commands(runnerId)) {
+    for (const envelope of await work.commands(runnerId)) {
       const command = JSON.parse(
         Buffer.from(envelope.payload, "base64url").toString(),
       ) as RunnerCommand;
       if (command.type === "cancel") {
-        work.acknowledge(runnerId, command.id);
+        await work.acknowledge(runnerId, command.id);
         terminated(runnerId, command);
       }
     }
@@ -2356,7 +2356,7 @@ export async function probeRunnerBackend(
     for (const hostId of hostIds) work.heartbeat(hostId);
     const placements: string[] = [];
     const observedFailures: string[] = [];
-    const failoverItem = item();
+    const failoverItem = await item();
     for (const [index, id] of hostIds.entries()) {
       db.run("INSERT INTO runner_policy(runner_id) VALUES(?)", [id]);
       db.run(
@@ -2417,7 +2417,7 @@ export async function probeRunnerBackend(
           [host, now],
         );
       for (const unavailable of ["offline", "revoked", "draining", "paused"] as const) {
-        const record = item();
+        const record = await item();
         const affinityNotices: string[] = [];
         const firstHost = (
           await placement.candidates({
@@ -2561,7 +2561,7 @@ export async function probeRunnerBackend(
         transcripts,
       });
       for (const purpose of ["answer", "artifact"] as const) {
-        const record = item();
+        const record = await item();
         saveTaskMode(db, record.id, purpose);
         const host = (
           await placement.candidates({
@@ -2699,14 +2699,14 @@ export async function probeRunnerBackend(
     const firstStop = await next(hostIds[0]!, false);
     assert.equal(firstStop.type, "cancel");
     await delay(10);
-    assert.equal(work.commands(hostIds[1]!).length, 0);
+    assert.equal((await work.commands(hostIds[1]!)).length, 0);
     assert.equal(fetched, beforeFailoverImports);
-    for (const envelope of work.commands(hostIds[0]!)) {
+    for (const envelope of await work.commands(hostIds[0]!)) {
       const command = JSON.parse(
         Buffer.from(envelope.payload, "base64url").toString(),
       ) as RunnerCommand;
       if (command.type === "cancel") {
-        work.acknowledge(hostIds[0]!, command.id);
+        await work.acknowledge(hostIds[0]!, command.id);
         terminated(hostIds[0]!, command);
       }
     }
@@ -2745,13 +2745,13 @@ export async function probeRunnerBackend(
     const secondStop = await next(hostIds[1]!, false);
     assert.equal(secondStop.type, "cancel");
     await delay(10);
-    assert.equal(work.commands(hostIds[2]!).length, 0);
-    for (const envelope of work.commands(hostIds[1]!)) {
+    assert.equal((await work.commands(hostIds[2]!)).length, 0);
+    for (const envelope of await work.commands(hostIds[1]!)) {
       const command = JSON.parse(
         Buffer.from(envelope.payload, "base64url").toString(),
       ) as RunnerCommand;
       if (command.type === "cancel") {
-        work.acknowledge(hostIds[1]!, command.id);
+        await work.acknowledge(hostIds[1]!, command.id);
         terminated(hostIds[1]!, command);
       }
     }
@@ -2759,7 +2759,7 @@ export async function probeRunnerBackend(
     for (let poll = 0; poll < 500 && !usagePause(db, failoverItem.run.id); poll++) await delay(1);
     const pinnedPause = usagePause(db, failoverItem.run.id);
     assert(pinnedPause);
-    assert.equal(work.commands(hostIds[2]!).length, 0);
+    assert.equal((await work.commands(hostIds[2]!)).length, 0);
     now = pinnedPause.resumeAt;
     for (const hostId of hostIds) work.heartbeat(hostId);
     db.run("UPDATE workspace_member SET checked_at=? WHERE user_id=?", [now, principal.userId]);
@@ -2841,7 +2841,7 @@ export async function probeRunnerBackend(
       models: [{ id: "model", name: "Model" }],
     });
     await preparing;
-    const artifactItem = item();
+    const artifactItem = await item();
     await git(["-C", source, "reset", "--hard", base]);
     const continuationState: { answer: string | null; questionId?: string } = { answer: null };
     let publications = 0;
@@ -2934,19 +2934,19 @@ export async function probeRunnerBackend(
     ]);
     const artifactStop = await next(hostIds[0]!, false);
     assert.equal(artifactStop.type, "cancel");
-    for (const envelope of work.commands(hostIds[0]!)) {
+    for (const envelope of await work.commands(hostIds[0]!)) {
       const command = JSON.parse(
         Buffer.from(envelope.payload, "base64url").toString(),
       ) as RunnerCommand;
       if (command.type === "cancel") {
-        work.acknowledge(hostIds[0]!, command.id);
+        await work.acknowledge(hostIds[0]!, command.id);
         terminated(hostIds[0]!, command);
       }
     }
     for (let index = 0; index < 1000 && !continuationState.questionId; index++) await delay(1);
     assert(continuationState.questionId);
     assert.equal(getWorkItem(db, artifactItem.id)?.state, "awaiting_input");
-    assert.equal(work.commands(hostIds[2]!).length, 0);
+    assert.equal((await work.commands(hostIds[2]!)).length, 0);
     assert.equal(publications, 1);
     continuationState.answer = "Keep the existing artifact and continue without republishing it.";
     const continuationHost = (
@@ -3036,12 +3036,12 @@ export async function probeRunnerBackend(
         },
       });
       assert.equal((await next(continuationHost, false)).type, "cancel");
-      for (const envelope of work.commands(continuationHost)) {
+      for (const envelope of await work.commands(continuationHost)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),
         ) as RunnerCommand;
         if (command.type === "cancel") {
-          work.acknowledge(continuationHost, command.id);
+          await work.acknowledge(continuationHost, command.id);
           terminated(continuationHost, command);
         }
       }
@@ -3152,11 +3152,12 @@ export async function probeRunnerBackend(
           },
         });
         assert.equal((await next(pinnedReviewHost, false)).type, "cancel");
-        for (const envelope of work.commands(pinnedReviewHost)) {
+        for (const envelope of await work.commands(pinnedReviewHost)) {
           const cancelCommand = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString(),
           ) as RunnerCommand;
-          if (cancelCommand.type === "cancel") work.acknowledge(pinnedReviewHost, cancelCommand.id);
+          if (cancelCommand.type === "cancel")
+            await work.acknowledge(pinnedReviewHost, cancelCommand.id);
         }
       }
       await boundedRejection;
@@ -3182,7 +3183,7 @@ export async function probeRunnerBackend(
         db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE agent='codex'", [until]);
       const dispatched = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
-          for (const hostId of hostIds) if (work.commands(hostId).length) return hostId;
+          for (const hostId of hostIds) if ((await work.commands(hostId)).length) return hostId;
           await delay(2);
         }
         return null;
@@ -3192,7 +3193,7 @@ export async function probeRunnerBackend(
         for (let attempt = 0; attempt < 500 && !usagePause(db, runId); attempt++) await delay(2);
         return usagePause(db, runId);
       };
-      const limited = item();
+      const limited = await item();
       const limitAbort = new AbortController();
       const lines: string[] = [];
       coolDown(now + 120_000);
@@ -3240,7 +3241,7 @@ export async function probeRunnerBackend(
         },
       );
 
-      const exhausted = item();
+      const exhausted = await item();
       const exhaustedAbort = new AbortController();
       coolDown(now + 3_600_000);
       const exhaustedRun = placedBackend.forItem(exhausted.id)(
@@ -3249,17 +3250,18 @@ export async function probeRunnerBackend(
       void exhaustedRun.catch(() => undefined);
       const exhaustedRunId = getWorkItem(db, exhausted.id)!.currentRunId!;
       assert(await paused(exhaustedRunId));
-      for (const hostId of hostIds) while (work.commands(hostId).length) await next(hostId);
+      for (const hostId of hostIds) while ((await work.commands(hostId)).length) await next(hostId);
       await delay(20);
-      assert(hostIds.every((hostId) => work.commands(hostId).length === 0));
+      for (const hostId of hostIds) assert.equal((await work.commands(hostId)).length, 0);
       assert.equal(resumeUsagePauseNow(db, exhaustedRunId, now), true);
       assert(await dispatched());
       exhaustedAbort.abort();
       await exhaustedRun.catch(() => undefined);
       coolDown(0);
       observe("Resume now ends a usage-limit wait and lifts the agent cooldown", true, {});
-      const occupied = hostIds.map((hostId) => {
-        const busy = item();
+      const occupied: string[] = [];
+      for (const hostId of hostIds) {
+        const busy = await item();
         db.run(
           "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
           [
@@ -3270,9 +3272,9 @@ export async function probeRunnerBackend(
             Date.now() + 3_600_000,
           ],
         );
-        return `busy-${hostId}`;
-      });
-      const queued = item();
+        occupied.push(`busy-${hostId}`);
+      }
+      const queued = await item();
       const fullWait = await placedBackend
         .forItem(queued.id)(input(queued))
         .catch((error: unknown) => error);
@@ -3314,19 +3316,21 @@ export async function probeRunnerBackend(
       };
       const firstDispatch = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
-          for (const hostId of hostIds) if (work.commands(hostId).length) return next(hostId);
+          for (const hostId of hostIds)
+            if ((await work.commands(hostId)).length) return next(hostId);
           await delay(2);
         }
         throw new Error("No dispatched runner command");
       };
       const drain = async () => {
-        for (const hostId of hostIds) while (work.commands(hostId).length) await next(hostId);
+        for (const hostId of hostIds)
+          while ((await work.commands(hostId)).length) await next(hostId);
       };
       const sent = async (version: string, checkpointBase = base) => {
         await drain();
         reportVersion(version);
         for (const hostId of hostIds) work.heartbeat(hostId);
-        const record = item();
+        const record = await item();
         saveCheckpoint(db, record.id, {
           phase: "running",
           baseSha: checkpointBase,
@@ -3378,7 +3382,7 @@ export async function probeRunnerBackend(
       const nextRun = async () => {
         for (let attempt = 0; attempt < 500; attempt++) {
           for (const hostId of hostIds)
-            while (work.commands(hostId).length) {
+            while ((await work.commands(hostId)).length) {
               const command = await next(hostId);
               if (command.type === "run") return command;
             }
@@ -3388,7 +3392,7 @@ export async function probeRunnerBackend(
       };
       await drain();
       for (const hostId of hostIds) work.heartbeat(hostId);
-      const restarted = item();
+      const restarted = await item();
       const restartAbort = new AbortController();
       let restartFailure: unknown = null;
       const restartedRun = placedBackend.forItem(restarted.id)(
@@ -3417,7 +3421,7 @@ export async function probeRunnerBackend(
       const offlineAt = now - 120_000;
       for (const hostId of hostIds)
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [offlineAt, hostId]);
-      const offline = item();
+      const offline = await item();
       const placementLogs: unknown[][] = [];
       const warn = console.warn;
       console.warn = (...args: unknown[]) => {
@@ -3454,17 +3458,17 @@ export async function probeRunnerBackend(
       observe("placement waits for a paired runner to come online instead of failing", true, {
         placedWhenOnline,
       });
-      const raced = item();
+      const raced = await item();
       const racedAbort = new AbortController();
       let racedFailure: unknown = null;
-      let filled: string[] = [];
+      const filled: string[] = [];
       const racedRun = placedBackend.forItem(raced.id)(
         input(raced, {
           signal: racedAbort.signal,
           prepareInputFiles: async ({ prompt }) => {
             if (!filled.length)
-              filled = hostIds.map((hostId) => {
-                const busy = item();
+              for (const hostId of hostIds) {
+                const busy = await item();
                 db.run(
                   "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,?,?)",
                   [
@@ -3475,8 +3479,8 @@ export async function probeRunnerBackend(
                     Date.now() + 3_600_000,
                   ],
                 );
-                return `raced-${hostId}`;
-              });
+                filled.push(`raced-${hostId}`);
+              }
             return { prompt, inputFiles: [] };
           },
         }),
@@ -3487,7 +3491,7 @@ export async function probeRunnerBackend(
         `UPDATE runner_work SET ended_at=?,teardown_confirmed_at=? WHERE command_id IN (${filled.map(() => "?").join(",")})`,
         [Date.now(), Date.now(), ...filled],
       );
-      finishRuns();
+      await finishRuns();
       const retriedRun = placedBackend.forItem(raced.id)(
         input(raced, { signal: racedAbort.signal }),
       );

@@ -15,9 +15,9 @@ try {
   });
   console.log(
     JSON.stringify({
-      commands: work
-        .commands(runnerId!)
-        .map((value) => JSON.parse(Buffer.from(value.payload, "base64url").toString("utf8")).id),
+      commands: (await work.commands(runnerId!)).map(
+        (value) => JSON.parse(Buffer.from(value.payload, "base64url").toString("utf8")).id,
+      ),
     }),
   );
 } finally {

@@ -119,8 +119,8 @@ async function fixture(runnerVersion = "0.1.61") {
     runnerId,
     now,
   });
-  const queued = () =>
-    work.commands(runnerId).map(
+  const queued = async () =>
+    (await work.commands(runnerId)).map(
       (envelope) =>
         JSON.parse(Buffer.from(envelope.payload, "base64url").toString()) as {
           id: string;
@@ -169,7 +169,7 @@ test("a named sign-in targets only its binding and leaves the default sign-in al
   const legacy = await login.start(principal, runnerId, "codex");
   expect(legacy.id).not.toBe(named.id);
   expect(legacy.bindingId).toBeNull();
-  expect(queued().map(({ id, type, account: target }) => ({ id, type, target }))).toEqual([
+  expect((await queued()).map(({ id, type, account: target }) => ({ id, type, target }))).toEqual([
     {
       id: named.id,
       type: "login",
@@ -283,7 +283,7 @@ test("a runner without account sign-in keeps refusing a named sign-in", async ()
   const response = (await browser(`codex/login?binding=${binding.id}`))!;
   expect(response.status).toBe(409);
   expect(((await response.json()) as { error: string }).error).toMatch(/0\.1\.61/);
-  expect(queued()).toEqual([]);
+  expect(await queued()).toEqual([]);
   db.close();
 });
 

@@ -225,8 +225,8 @@ export async function probeRunnerWork(
       claimCommand: () => true,
     });
     assert(verified.ok);
-    assert.equal(work.commands(firstRunner).length, 1);
-    assert.equal(work.commands(secondRunner).length, 0);
+    assert.equal((await work.commands(firstRunner)).length, 1);
+    assert.equal((await work.commands(secondRunner)).length, 0);
     observe("durable work is signed and bound to an active Linear workspace repository", true, {
       signatureVerified: verified.ok,
       firstRunnerCommands: 1,
@@ -236,9 +236,9 @@ export async function probeRunnerWork(
     });
     const before = await restartSnapshot(root, path, keyPath, firstRunner, now);
     assert.deepEqual(before.commands, [command.id]);
-    work.acknowledge(firstRunner, command.id);
-    work.acknowledge(firstRunner, command.id);
-    assert.throws(() => work.acknowledge(secondRunner, command.id), /unknown/);
+    await work.acknowledge(firstRunner, command.id);
+    await work.acknowledge(firstRunner, command.id);
+    await assert.rejects(work.acknowledge(secondRunner, command.id), /unknown/);
     const after = await restartSnapshot(root, path, keyPath, firstRunner, now);
     assert.deepEqual(after.commands, []);
     observe(
@@ -453,8 +453,8 @@ export async function probeRunnerWork(
     confirmStopped(firstRunner, command);
     work.assign(secondCommand);
     assert.throws(() => work.issueGrant(grantInput), /fenced/);
-    assert.equal(work.commands(firstRunner).length, 0);
-    assert.equal(work.commands(secondRunner).length, 1);
+    assert.equal((await work.commands(firstRunner)).length, 0);
+    assert.equal((await work.commands(secondRunner)).length, 1);
     observe(
       "expired leases cannot be revived and reassignment fences the previous generation",
       true,
@@ -494,7 +494,7 @@ export async function probeRunnerWork(
         }),
       /fenced/,
     );
-    const cancel = work.commands(secondRunner);
+    const cancel = await work.commands(secondRunner);
     assert.equal(cancel.length, 1);
     assert.equal(
       JSON.parse(Buffer.from(cancel[0]!.payload, "base64url").toString("utf8")).type,
@@ -508,7 +508,7 @@ export async function probeRunnerWork(
         .get(item.id)!.state,
     });
     const third = { ...secondCommand, id: workspaceId(), generation: 3 };
-    work.acknowledge(secondRunner, previousCancellationId);
+    await work.acknowledge(secondRunner, previousCancellationId);
     confirmStopped(secondRunner, secondCommand);
     work.assign(third);
     const thirdGrant = work.issueGrant({ ...current, commandId: third.id, generation: 3 });
@@ -558,12 +558,10 @@ export async function probeRunnerWork(
       profile: command.profile,
     });
     assert(
-      work
-        .commands(firstRunner)
-        .some(
-          (envelope) =>
-            JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")).id === probeId,
-        ),
+      (await work.commands(firstRunner)).some(
+        (envelope) =>
+          JSON.parse(Buffer.from(envelope.payload, "base64url").toString("utf8")).id === probeId,
+      ),
     );
     observe(
       "runner revocation fences current work independently of an otherwise valid run grant",
@@ -729,7 +727,7 @@ export async function probeRunnerWork(
           now: () => now,
         });
         assert.throws(() => reconstructed.assign(afterCancel), /(?:cancellation|free slot)/);
-        reconstructed.acknowledge(firstRunner, cancellationId);
+        await reconstructed.acknowledge(firstRunner, cancellationId);
       } finally {
         waitingForTeardown.close();
       }
@@ -812,7 +810,7 @@ export async function probeRunnerWork(
           () => work.assign({ ...review, id: workspaceId(), generation: 6 }),
           /(?:cancellation|free slot)/,
         );
-        work.acknowledge(firstRunner, pendingCancellation.id);
+        await work.acknowledge(firstRunner, pendingCancellation.id);
         let retryJoined = false;
         retriedAfterReceipt = backend.cancelItem(waiting.itemId).then(() => {
           retryJoined = true;
@@ -860,7 +858,7 @@ export async function probeRunnerWork(
       await until(() => latestCancel()?.id !== expiredCancel.id);
       const replacementCancellation = latestCancel()!;
       assert.notEqual(replacementCancellation.id, expiredCancel.id);
-      work.acknowledge(firstRunner, replacementCancellation.id);
+      await work.acknowledge(firstRunner, replacementCancellation.id);
       confirmStopped(firstRunner, { ...review, id: replacementCancellation.id, generation: 7 });
       await retriedCancel;
       assert.equal(
