@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, desc, eq, gt, isNull, max } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { ulid } from "./ulid";
 
 export const INSTANCE_HEARTBEAT_MS = 10_000;

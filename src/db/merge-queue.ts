@@ -1,7 +1,6 @@
-import type { Database } from "bun:sqlite";
 import { aliasedTable, and, asc, desc, eq, inArray, lt, max, ne, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonField } from "./json-text";
 
 /**

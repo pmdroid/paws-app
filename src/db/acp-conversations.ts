@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Db } from "./db";
+import { type Q, type Db } from "./db";
 import { jsonFromText, jsonText } from "./json-text";
 
 /** What the item page and the Linear session say while a block holds a reply back. */

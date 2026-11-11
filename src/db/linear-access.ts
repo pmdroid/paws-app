@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, inArray, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 import { ensureLinearSessionSteps } from "./linear-sessions";
 
 export type LinearInstallationScope = {

@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { and, eq, inArray, isNull, like, or, sql } from "drizzle-orm";
 import {
   CommandBus,
@@ -30,7 +29,7 @@ import { markRunSteps } from "./runs";
 import { haltSteps } from "./halt";
 import { enqueueEndedSessionFaceSteps, stoppedResponseSteps } from "./stop-response";
 import { mergeCallInFlightSteps, getConfirmedRemoteMergeSteps } from "./remote-merges";
-import { settled, sqliteDb, type Q, type Db, type Steps } from "./db";
+import { type Q, type Db, type Steps } from "./db";
 
 export function* enqueueCommandSteps(q: Q, command: LinearCommand, now = command.requestedAt) {
   return yield* enqueueJobOnceSteps(q, {
