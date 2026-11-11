@@ -107,7 +107,7 @@ describe("combined recovery scenarios", () => {
 
       w.crash();
       w.start();
-      w.settle();
+      await w.settle();
       expect(getJob(w.db, first)?.status).toBe("pending");
       expect(await pendingRestartHandoff(sqliteDb(w.db), id)).toEqual({
         handoff: "second failure",
@@ -137,7 +137,7 @@ describe("combined recovery scenarios", () => {
         expect(await mergeAcceptedWork(sqliteDb(w.db), id, { now: w.now })).toBe(false);
         await markCloseoutAccepted(sqliteDb(w.db), id, null as unknown as string);
       }
-      w.settle();
+      await w.settle();
       expect(factsOf(w.db, id).state).not.toBe("merge_queue");
       expect(itemJobs(w, id).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
       expect(unexpectedViolations(w.db, w.now)).toEqual([]);
@@ -197,7 +197,7 @@ describe("combined recovery scenarios", () => {
         restart(w.db, getWorkItem(w.db, id)!, { reason: "ci", body: "late", now: w.now }),
       ).toThrow("illegal_transition");
       expect(await completeMergedItem(sqliteDb(w.db), { itemId: id, now: w.now })).toBeNull();
-      w.settle();
+      await w.settle();
       expect(factsOf(w.db, id)).toMatchObject({ state: "merged", version: merged.version });
       expect(liveExecution(w, id)).toEqual([]);
       expect(unexpectedViolations(w.db, w.now)).toEqual([]);
@@ -267,8 +267,8 @@ describe("combined recovery scenarios", () => {
       const merging = getWorkItem(w.db, "merge_active_run")!;
       leaseRunnerWork(w.db, merging.currentRunId!, w.now);
       w.advance(MINUTE + RUNNER_LEASE_GRACE_MS);
-      w.sweep();
-      w.sweep();
+      await w.sweep();
+      await w.sweep();
       const expected = {
         running_leased: { state: "recovering", liveJobs: [`${JOB_KIND.resume}:pending`] },
         verifying_leased: { state: "verifying", liveJobs: [`${JOB_KIND.reverify}:pending`] },
@@ -310,7 +310,7 @@ describe("combined recovery scenarios", () => {
       w.start();
       const execution = [JOB_KIND.start, JOB_KIND.resume, JOB_KIND.reverify];
       expect(claimNextJob(w.db, { now: w.now, queues: execution })).toBeNull();
-      w.settle();
+      await w.settle();
       expect(claimNextJob(w.db, { now: w.now, queues: execution })).toBeNull();
       w.advance(HOUR + JOB_LEASE_MS);
       const claimed = claimNextJob(w.db, { now: w.now, queues: execution });
@@ -449,7 +449,7 @@ describe("runner control across Paws restarts", () => {
       ]);
       w.stop();
       w.start();
-      w.settle();
+      await w.settle();
       await held();
       expect(() =>
         controller().assign({ ...command, id: "work-2", generation: 2, issuedAt: w.now }),
@@ -471,7 +471,7 @@ describe("runner control across Paws restarts", () => {
       expect(runnerOccupancy(w.db, "box", w.now).occupied).toBe(0);
       w.crash();
       w.start();
-      w.settle();
+      await w.settle();
       expect(factsOf(w.db, "item")).toMatchObject({ state: "paused", liveJobs: [] });
       expect(runnerOccupancy(w.db, "box", w.now).occupied).toBe(0);
     } finally {
@@ -484,7 +484,7 @@ describe("runner control across Paws restarts", () => {
     try {
       expect((await controller().currentAsync(run.id, 1)).command.id).toBe("work-1");
       w.advance(10 * MINUTE + RUNNER_LEASE_GRACE_MS);
-      w.sweep();
+      await w.sweep();
       expect(getRun(w.db, run.id)?.status).toBe("lost");
       expect(factsOf(w.db, "item").state).toBe("recovering");
       for (const restartWith of ["crash", "stop"] as const) {
@@ -497,7 +497,7 @@ describe("runner control across Paws restarts", () => {
         ]);
         await expect(controller().currentAsync(run.id, 1)).rejects.toThrow(RunnerWorkFencedError);
       }
-      w.settle();
+      await w.settle();
       expect(factsOf(w.db, "item")).toMatchObject({
         state: "recovering",
         restartHold: false,

@@ -11,7 +11,7 @@ import {
   beginImplementRun,
   beginMergeCall,
   bindWorkItemRepository,
-  closeExpiredRunnerLeases,
+  closeExpiredRunnerLeasesAsync,
   closeoutPolicyDigests,
   deferWorkItem,
   enqueueJob,
@@ -29,7 +29,7 @@ import {
   openDatabase,
   prepareShutdown,
   recoverOnStartup,
-  requeueOrphanedWork,
+  requeueOrphanedWorkAsync,
   restartHold,
   saveCheckpoint,
   type Job,
@@ -333,18 +333,18 @@ export class World {
     recoverOnStartup(this.db, this.now);
   }
 
-  sweep(): void {
+  async sweep(): Promise<void> {
     this.trace.push(`sweep@${this.now - T0}`);
     reapFencedJobs(this.db, this.now);
-    closeExpiredRunnerLeases(this.db, this.now);
-    requeueOrphanedWork(this.db, this.now);
+    await closeExpiredRunnerLeasesAsync(sqliteDb(this.db), this.now);
+    await requeueOrphanedWorkAsync(sqliteDb(this.db), this.now);
   }
 
-  settle(): void {
+  async settle(): Promise<void> {
     let quiet = 0;
     for (let round = 0; round < 24 && quiet < 3; round++) {
       const before = JSON.stringify(dump(this.db, ["work_item", "job", "runner_work"]));
-      this.sweep();
+      await this.sweep();
       this.advance(ORPHAN_GRACE_MS + 1);
       quiet =
         JSON.stringify(dump(this.db, ["work_item", "job", "runner_work"])) === before

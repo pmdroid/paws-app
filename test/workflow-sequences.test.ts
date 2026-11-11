@@ -110,10 +110,10 @@ async function apply(w: World, sequence: Sequence, action: Action): Promise<void
       w.start();
       return;
     case "sweep":
-      w.sweep();
+      await w.sweep();
       return;
     case "settle":
-      w.settle();
+      await w.settle();
       return;
     case "advance":
       w.advance(action.ms);
@@ -224,7 +224,8 @@ async function failure(sequence: Sequence): Promise<string | null> {
   const ids = sequence.fixtures;
   try {
     for (const [step, action] of sequence.actions.entries()) {
-      const before = new Map(ids.map((id) => [id, factsOf(w.db, id)]));
+      const before = new Map<Fixture, ItemFacts>();
+      for (const id of ids) before.set(id, factsOf(w.db, id));
       try {
         await apply(w, sequence, action);
       } catch (error) {
@@ -239,7 +240,7 @@ async function failure(sequence: Sequence): Promise<string | null> {
     }
     w.crash();
     w.start();
-    w.settle();
+    await w.settle();
     const stuck = unexpectedViolations(w.db, w.now);
     if (stuck.length > 0) return `after settling: ${stuck.join("; ")}`;
     return null;

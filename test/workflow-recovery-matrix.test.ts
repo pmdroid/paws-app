@@ -19,7 +19,7 @@ import {
   type Fixture,
 } from "./workflow-world";
 
-type Entry = { startup: boolean; longGap?: true; run: (w: World) => void };
+type Entry = { startup: boolean; longGap?: true; run: (w: World) => Promise<void> };
 
 const WRITE_FAILURES = [
   "AFTER INSERT ON job",
@@ -30,21 +30,21 @@ const WRITE_FAILURES = [
 const ENTRIES: Record<string, Entry> = {
   crash: {
     startup: true,
-    run: (w) => {
+    run: async (w) => {
       w.crash();
       w.start();
     },
   },
   sigterm: {
     startup: true,
-    run: (w) => {
+    run: async (w) => {
       w.stop();
       w.start();
     },
   },
   repeated_startup: {
     startup: true,
-    run: (w) => {
+    run: async (w) => {
       for (let n = 0; n < 3; n++) {
         w.crash();
         w.advance(MINUTE);
@@ -54,17 +54,17 @@ const ENTRIES: Record<string, Entry> = {
   },
   partition: {
     startup: false,
-    run: (w) => {
+    run: async (w) => {
       for (let elapsed = 0; elapsed < SETTLE_MS; elapsed += MINUTE) {
         w.advance(MINUTE);
         w.renewJobLeases();
-        w.sweep();
+        await w.sweep();
       }
     },
   },
   clock_back: {
     startup: true,
-    run: (w) => {
+    run: async (w) => {
       w.crash();
       w.advance(-HOUR);
       w.start();
@@ -73,7 +73,7 @@ const ENTRIES: Record<string, Entry> = {
   clock_jump: {
     startup: true,
     longGap: true,
-    run: (w) => {
+    run: async (w) => {
       w.stop();
       w.advance(3 * HOUR);
       w.start();
@@ -84,7 +84,7 @@ const ENTRIES: Record<string, Entry> = {
       `write_failure ${point}`,
       {
         startup: true,
-        run: (w: World) => {
+        run: async (w: World) => {
           w.crash();
           const before = dump(w.db);
           failWrites(w.db, point);
@@ -179,17 +179,16 @@ describe("every combined state through every recovery entry", () => {
       const w = await new World().seed(FIXTURES);
       try {
         expect(violations(w.db, w.now)).toEqual([]);
-        const initial = new Map(
-          FIXTURES.map((id) => {
-            const jobs = live(itemJobs(w, id));
-            const merge = jobs.filter((job) => job.queue === JOB_KIND.merge).map((job) => job.id);
-            return [id, { facts: factsOf(w.db, id), jobs, jobIds: merge }] as const;
-          }),
-        );
-        entry.run(w);
+        const initial = new Map<Fixture, InitialFacts>();
+        for (const id of FIXTURES) {
+          const jobs = live(itemJobs(w, id));
+          const merge = jobs.filter((job) => job.queue === JOB_KIND.merge).map((job) => job.id);
+          initial.set(id, { facts: factsOf(w.db, id), jobs, jobIds: merge });
+        }
+        await entry.run(w);
         expect(unexpectedViolations(w.db, w.now)).toEqual([]);
         expectations(w, entry, initial);
-        w.settle();
+        await w.settle();
         expect(unexpectedViolations(w.db, w.now)).toEqual([]);
         expectations(w, entry, initial);
       } finally {
@@ -220,7 +219,7 @@ describe("preserved reproducers for open gaps", () => {
         "UPDATE job SET status='dead', last_error='attempts exhausted', finished_at=? WHERE queue=?",
         [w.now, JOB_KIND.merge],
       );
-      w.settle();
+      await w.settle();
       expect(violations(w.db, w.now)).toEqual([]);
     } finally {
       w.close();
