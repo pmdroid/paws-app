@@ -304,9 +304,9 @@ test("a runner that restarts between selection and assignment gets the item agai
 test("a real assignment error still fails the item", async () => {
   const outcome = await runItem(({ placement }) => ({
     ...placement,
-    started(input) {
+    *startedSteps(q, input) {
       if (input.purpose === "work") throw new Error("Runner usage receipt could not be written");
-      placement.started(input);
+      yield* placement.startedSteps(q, input);
     },
   }));
   const detail = JSON.stringify(outcome);

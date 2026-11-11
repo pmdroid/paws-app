@@ -1,9 +1,12 @@
 import type { Database } from "bun:sqlite";
 import {
   runnerConversationLaneSteps,
+  settled,
   sqliteDb,
   unfinishedConversationHelpersSteps,
   type Db,
+  type Q,
+  type Steps,
 } from "../db";
 import { journalCaught } from "../journal";
 import type { RunnerHelpers } from "../runner-helpers";
@@ -33,22 +36,17 @@ export function conversationTurns(options: {
   db: Database;
   store?: Db;
   helpers: RunnerHelpers;
-  holder: (itemId: string) => Holder | undefined;
+  holder: (q: Q, itemId: string) => Steps<Holder | undefined>;
   now?: () => number;
 }) {
   const store = options.store ?? sqliteDb(options.db);
   const now = options.now ?? Date.now;
-  return {
-    async lane(itemId: string): Promise<"closed" | "full" | "free"> {
-      const holder = options.holder(itemId);
-      if (!holder) return "closed";
-      return store.run((q) => runnerConversationLaneSteps(q, holder.runnerId, now()));
-    },
-    start(itemId: string, sessionId: string, prompt: string): boolean {
-      const holder = options.holder(itemId);
-      if (!holder) return false;
-      try {
-        options.helpers.dispatch({
+  function* startSteps(q: Q, itemId: string, sessionId: string, prompt: string): Steps<boolean> {
+    const holder = yield* options.holder(q, itemId);
+    if (!holder) return false;
+    try {
+      yield* q.transaction((savepoint) =>
+        options.helpers.dispatchSteps(savepoint, {
           runnerId: holder.runnerId,
           sessionId,
           purpose: "conversation",
@@ -56,13 +54,25 @@ export function conversationTurns(options: {
           prompt,
           ...(holder.account ? { account: holder.account } : {}),
           conversation: { itemId, runId: holder.runId, resumeSessionId: holder.sessionId },
-        });
-        return true;
-      } catch (error) {
-        journalCaught(error, "runner-backend.conversation.start", itemId);
-        return false;
-      }
+        }),
+      );
+      return true;
+    } catch (error) {
+      journalCaught(error, "runner-backend.conversation.start", itemId);
+      return false;
+    }
+  }
+  return {
+    lane(itemId: string): Promise<"closed" | "full" | "free"> {
+      return store.run(function* (q) {
+        const holder = yield* options.holder(q, itemId);
+        if (!holder) return "closed";
+        return yield* runnerConversationLaneSteps(q, holder.runnerId, now());
+      });
     },
+    startSteps,
+    start: (itemId: string, sessionId: string, prompt: string) =>
+      settled(store.transaction((q) => startSteps(q, itemId, sessionId, prompt))),
     async open(itemId: string): Promise<ConversationTurn[]> {
       const rows = await store.run((q) => unfinishedConversationHelpersSteps(q));
       return rows.flatMap((row) => {

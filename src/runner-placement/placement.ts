@@ -48,6 +48,7 @@ import type { RunnerCodingAgent } from "../runner-protocol";
 import type {
   EligibleRunner,
   PlacementAccount,
+  PlacementDisposition,
   PlacementReason,
   PlacementRequest,
   RunnerPlacement,
@@ -96,7 +97,10 @@ export function createRunnerPlacement(options: {
   db: Database;
   sessionActor?: (sessionId: string) => string | undefined;
   now?: () => number;
-}): RunnerPlacement {
+}): RunnerPlacement & {
+  started(input: Parameters<RunnerPlacement["startedSteps"]>[1]): void;
+  finished(input: Parameters<RunnerPlacement["finishedSteps"]>[1]): PlacementDisposition;
+} {
   const { db } = options;
   const store = sqliteDb(db);
   const now = options.now ?? Date.now;
@@ -296,7 +300,7 @@ export function createRunnerPlacement(options: {
   }
   function* admitSteps(
     q: Q,
-    input: Parameters<RunnerPlacement["started"]>[0],
+    input: Parameters<RunnerPlacement["startedSteps"]>[1],
     account: PlacementAccount,
     workspaceId: string,
   ) {
@@ -598,7 +602,7 @@ export function createRunnerPlacement(options: {
       account,
     }));
   }
-  function* startedSteps(q: Q, input: Parameters<RunnerPlacement["started"]>[0]) {
+  function* startedSteps(q: Q, input: Parameters<RunnerPlacement["startedSteps"]>[1]) {
     const key = admissionKey(
       input.runnerId,
       input,
@@ -643,11 +647,13 @@ export function createRunnerPlacement(options: {
       placementReason: admission.reason,
     });
     admissions.delete(key);
+    if (input.itemId && input.role === "implementer" && input.purpose === "work")
+      sessionWaits.delete(input.itemId);
   }
   function* finishedSteps(
     q: Q,
-    input: Parameters<RunnerPlacement["finished"]>[0],
-  ): Steps<ReturnType<RunnerPlacement["finished"]>> {
+    input: Parameters<RunnerPlacement["finishedSteps"]>[1],
+  ): Steps<PlacementDisposition> {
     const usage = yield* runnerExecutionReceiptSteps(q, input.commandId, input.runnerId);
     if (!usage) throw new Error("Runner usage receipt is not bound to an assignment");
     const result = input.result;
@@ -749,7 +755,7 @@ export function createRunnerPlacement(options: {
     };
   }
   return {
-    preview: (input) => settled(store.run((q) => selectSteps(q, input, true))),
+    previewSteps: (q, input) => selectSteps(q, input, true),
     candidates: (input) => store.run((q) => selectSteps(q, input)),
     setupNeed: (input) =>
       store.run(function* (q) {
@@ -769,11 +775,9 @@ export function createRunnerPlacement(options: {
           ? itemRepositoryRefusalsSteps(q, { itemId: input.itemId, now: now() })
           : syncSteps(() => null),
       ),
-    started(input) {
-      settled(store.transaction((q) => startedSteps(q, input)));
-      if (input.itemId && input.role === "implementer" && input.purpose === "work")
-        sessionWaits.delete(input.itemId);
-    },
+    startedSteps,
+    finishedSteps,
+    started: (input) => settled(store.transaction((q) => startedSteps(q, input))),
     finished: (input) => settled(store.transaction((q) => finishedSteps(q, input))),
   };
 }

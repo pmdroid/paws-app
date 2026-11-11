@@ -55,7 +55,7 @@ export function createRemoteCancellation(options: {
         const id = previous?.id ?? randomUUID();
         if (!previous) {
           try {
-            work.enqueue({
+            yield* work.enqueueSteps(q, {
               runId: row.runId,
               runnerId: row.runnerId,
               workspaceId: row.workspaceId,

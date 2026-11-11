@@ -40,11 +40,10 @@ import {
   setRunnerWorkCursorSteps,
   usageLimitResetSteps,
   getTaskModeSteps,
-  closeFallbackAttempts,
-  fallbackHistory,
+  closeFallbackAttemptsSteps,
+  fallbackHistorySteps,
   legacyAgentAccountId,
   legacyAgentBindingId,
-  getWorkItem,
   getWorkItemSteps,
   refundLostTurnAsync,
   listHooks,
@@ -52,7 +51,7 @@ import {
   endAgentWait,
   pinnedSlotsReservedSteps,
   releasePinnedSlotSteps,
-  recordFallbackAttempt,
+  recordFallbackAttemptSteps,
   runnerHasCapacitySteps,
   runnerSlotsHeldBetweenCommandsSteps,
   saveCheckpoint,
@@ -131,7 +130,6 @@ import { createRemoteHandover } from "./handover";
 import { conversationTurns } from "./conversation";
 import type { RunnerHelpers } from "../runner-helpers";
 import { createRemoteCheckpoint, recordRunnerCheckpoint } from "./checkpoint";
-import { syncSteps } from "./sync-steps";
 import {
   CheckpointLookupFailed,
   ensureStartOnRemote,
@@ -139,7 +137,7 @@ import {
   RemoteStartUnverified,
 } from "./start-commit";
 import {
-  planSessionRestore,
+  planSessionRestoreSteps,
   runnerGoneReason,
   sessionMoveNotice,
   type SessionRestorePlan,
@@ -168,12 +166,13 @@ import {
   type WorkspaceHook,
 } from "../core";
 import {
-  sessionHolder,
-  runRunner,
+  sessionHolderSteps,
+  runRunnerSteps,
   PlacementRaceError,
   RUNNER_ONLINE_MS,
   SESSION_GRACE_MS,
   type PlacementAccount,
+  type PlacementDisposition,
   type RunnerPlacement,
 } from "../runner-placement";
 
@@ -205,14 +204,14 @@ export const restoredCheckpointNote = (sha: string) =>
 const NO_FREE_CAPACITY = ": no free capacity";
 const ACCOUNT_CONCURRENCY_LIMIT = ": account at its concurrency limit";
 
-function earlierSession(
-  db: Database,
+async function earlierSession(
+  store: Db,
   itemId: string,
   runnerId: string,
   agent: string,
   bindingId: string | undefined,
-): string | undefined {
-  const holder = sessionHolder(db, itemId);
+): Promise<string | undefined> {
+  const holder = await store.run((q) => sessionHolderSteps(q, itemId));
   return holder?.runnerId === runnerId &&
     holder.agent === agent &&
     (bindingId === undefined || holder.bindingId === bindingId)
@@ -702,16 +701,18 @@ export function createRemoteAgentRunner(options: {
       if (!(await reserved(runId))) {
         try {
           const issuedAt = now();
-          work.enqueue({
-            id: randomUUID(),
-            runnerId: row.runnerId,
-            workspaceId: row.workspaceId,
-            issuedAt,
-            expiresAt: issuedAt + 60_000,
-            type: "cancel",
-            runId,
-            generation: row.generation,
-          });
+          await store.transaction((q) =>
+            work.enqueueSteps(q, {
+              id: randomUUID(),
+              runnerId: row.runnerId,
+              workspaceId: row.workspaceId,
+              issuedAt,
+              expiresAt: issuedAt + 60_000,
+              type: "cancel",
+              runId,
+              generation: row.generation,
+            }),
+          );
         } catch (error) {
           journalCaught(error, "runner-backend.attachedWork.cancelStale", itemId);
         }
@@ -814,7 +815,9 @@ export function createRemoteAgentRunner(options: {
           !input.prepareOnly &&
           input.role === "implementer" &&
           input.checkpoint !== false;
-        const holder = continuesSession ? sessionHolder(db, itemId) : undefined;
+        const holder = continuesSession
+          ? await store.run((q) => sessionHolderSteps(q, itemId))
+          : undefined;
         const session =
           holder?.agent === profile.agent
             ? { runnerId: holder.runnerId, bindingId: holder.bindingId }
@@ -822,12 +825,14 @@ export function createRemoteAgentRunner(options: {
         const runId = (await store.run((q) => getWorkItemSteps(q, itemId)))?.currentRunId;
         const { pinnedRunnerId, preferRunnerId } =
           !input.prepareOnly && runId
-            ? runRunner(db, {
-                itemId,
-                runId,
-                continuesSession,
-                ...(session ? { sessionRunnerId: session.runnerId } : {}),
-              })
+            ? await store.run((q) =>
+                runRunnerSteps(q, {
+                  itemId,
+                  runId,
+                  continuesSession,
+                  ...(session ? { sessionRunnerId: session.runnerId } : {}),
+                }),
+              )
             : {};
         const placementRequest: Parameters<RunnerPlacement["candidates"]>[0] = {
           itemId,
@@ -846,15 +851,13 @@ export function createRemoteAgentRunner(options: {
           input.role === "implementer" &&
           input.checkpoint !== false
             ? {
-                restore: function* (_q: Q, runnerId: string, account?: PlacementAccount) {
-                  const plan = yield* syncSteps(() =>
-                    planSessionRestore(db, {
-                      runId,
-                      agent: profile.agent,
-                      targetRunnerId: runnerId,
-                      ...(account ? { targetAccount: account } : {}),
-                    }),
-                  );
+                restore: function* (q: Q, runnerId: string, account?: PlacementAccount) {
+                  const plan = yield* planSessionRestoreSteps(q, {
+                    runId,
+                    agent: profile.agent,
+                    targetRunnerId: runnerId,
+                    ...(account ? { targetAccount: account } : {}),
+                  });
                   return plan.eligible
                     ? { sameVersion: plan.restoreSession.agentVersion === plan.targetVersion }
                     : null;
@@ -958,19 +961,19 @@ export function createRemoteAgentRunner(options: {
             const id = randomUUID();
             const issuedAt = now();
             try {
-              await store.transaction(() =>
-                syncSteps(() => {
-                  work.enqueue({
-                    id,
-                    runnerId: selected.id,
-                    workspaceId: selected.workspaceId,
-                    issuedAt,
-                    expiresAt: issuedAt + 120_000,
-                    type: "probe",
-                    profile,
-                    ...commandAccount(selected.account),
-                  });
-                  options.placement?.started({
+              await store.transaction(function* (q) {
+                yield* work.enqueueSteps(q, {
+                  id,
+                  runnerId: selected.id,
+                  workspaceId: selected.workspaceId,
+                  issuedAt,
+                  expiresAt: issuedAt + 120_000,
+                  type: "probe",
+                  profile,
+                  ...commandAccount(selected.account),
+                });
+                if (options.placement)
+                  yield* options.placement.startedSteps(q, {
                     commandId: id,
                     runnerId: selected.id,
                     itemId,
@@ -981,8 +984,7 @@ export function createRemoteAgentRunner(options: {
                     purpose: "prepare",
                     startedAt: issuedAt,
                   });
-                }),
-              );
+              });
             } catch (error) {
               if (error instanceof PlacementRaceError)
                 throw await placementRace(itemId, selected.id, error);
@@ -999,17 +1001,18 @@ export function createRemoteAgentRunner(options: {
               else work.scope(selected.runId, selected.workspaceId);
               const result = await health.read(selected.id, id);
               if (result) {
-                const disposition = await store.transaction(() =>
-                  syncSteps(() =>
-                    options.placement?.finished({
+                const disposition = await store.transaction(function* (q) {
+                  return (
+                    options.placement &&
+                    (yield* options.placement.finishedSteps(q, {
                       commandId: id,
                       runnerId: selected.id,
                       profile,
                       result,
                       finishedAt: now(),
-                    }),
-                  ),
-                );
+                    }))
+                  );
+                });
                 if (
                   disposition?.retryable &&
                   result.agentExited &&
@@ -1207,12 +1210,14 @@ export function createRemoteAgentRunner(options: {
                 input.checkpoint !== false &&
                 pinnedRunnerId &&
                 pinnedRunnerId !== selected.id
-                  ? planSessionRestore(db, {
-                      runId: selected.runId,
-                      agent: profile.agent,
-                      targetRunnerId: selected.id,
-                      ...(selected.account ? { targetAccount: selected.account } : {}),
-                    })
+                  ? await store.run((q) =>
+                      planSessionRestoreSteps(q, {
+                        runId: selected.runId,
+                        agent: profile.agent,
+                        targetRunnerId: selected.id,
+                        ...(selected.account ? { targetAccount: selected.account } : {}),
+                      }),
+                    )
                   : undefined;
               const mirror = taskScope ? undefined : itemCandidate(scoped.repository!).mirror;
               const head = taskScope ? undefined : await candidateHead(scoped.repository!);
@@ -1482,8 +1487,8 @@ export function createRemoteAgentRunner(options: {
                 input.role === "implementer" &&
                 input.checkpoint !== false &&
                 versionAtLeast(await hostVersion(selected.id), SESSION_RESUME_RUNNER_VERSION)
-                  ? earlierSession(
-                      db,
+                  ? await earlierSession(
+                      store,
                       itemId,
                       selected.id,
                       profile.agent,
@@ -1687,19 +1692,20 @@ export function createRemoteAgentRunner(options: {
                       undefined,
                       true,
                     );
-                  work.assign(assigned);
+                  yield* work.assignSteps(q, assigned);
                   yield* releaseRunnerReservationSteps(q, selected.runId, instanceId);
-                  options.placement?.started({
-                    commandId: assigned.id,
-                    runnerId: selected.id,
-                    itemId,
-                    runId: selected.runId,
-                    profile,
-                    ...(selected.account ? { account: selected.account } : {}),
-                    role: input.role,
-                    purpose: "work",
-                    startedAt: issuedAt,
-                  });
+                  if (options.placement)
+                    yield* options.placement.startedSteps(q, {
+                      commandId: assigned.id,
+                      runnerId: selected.id,
+                      itemId,
+                      runId: selected.runId,
+                      profile,
+                      ...(selected.account ? { account: selected.account } : {}),
+                      role: input.role,
+                      purpose: "work",
+                      startedAt: issuedAt,
+                    });
                 });
               } catch (error) {
                 if (error instanceof PlacementRaceError)
@@ -1781,7 +1787,7 @@ export function createRemoteAgentRunner(options: {
           command = assigned;
           let cursor = attached?.cursor ?? 0;
           let complete: RunnerResult | null = null;
-          let disposition: ReturnType<RunnerPlacement["finished"]> | undefined;
+          let disposition: PlacementDisposition | undefined;
           let heardAt = now();
           let savedAt = heardAt;
           const liveness = () =>
@@ -1838,31 +1844,33 @@ export function createRemoteAgentRunner(options: {
               signal.throwIfAborted();
               // The runner's heartbeat no longer names this work, so it is gone, not just quiet.
               if ((await liveness())?.lostAt != null) {
-                const recovered = await store.transaction(() =>
-                  syncSteps(() =>
-                    options.placement?.finished({
+                const recovered = await store.transaction(function* (q) {
+                  return (
+                    options.placement &&
+                    (yield* options.placement.finishedSteps(q, {
                       commandId: assigned.id,
                       runnerId: selected.id,
                       profile,
                       failure: "heartbeat_lost",
                       finishedAt: now(),
-                    }),
-                  ),
-                );
+                    }))
+                  );
+                });
                 if (!recovered?.retryable) throw error;
                 throw await lostRun("the runner no longer reports the command");
               }
-              const interrupted = await store.transaction(() =>
-                syncSteps(() =>
-                  options.placement?.finished({
+              const interrupted = await store.transaction(function* (q) {
+                return (
+                  options.placement &&
+                  (yield* options.placement.finishedSteps(q, {
                     commandId: assigned.id,
                     runnerId: selected.id,
                     profile,
                     failure: "heartbeat_lost",
                     finishedAt: now(),
-                  }),
-                ),
-              );
+                  }))
+                );
+              });
               if (!interrupted?.retryable) throw error;
               if (await heartbeatLost())
                 throw new RetryableRunnerError(
@@ -1883,17 +1891,18 @@ export function createRemoteAgentRunner(options: {
             if (questionError) throw questionError;
             complete = results.read(assigned.runId, assigned.generation, assigned.id);
             if (complete && !disposition)
-              disposition = await store.transaction(() =>
-                syncSteps(() =>
-                  options.placement?.finished({
+              disposition = await store.transaction(function* (q) {
+                return (
+                  options.placement &&
+                  (yield* options.placement.finishedSteps(q, {
                     commandId: assigned.id,
                     runnerId: selected.id,
                     profile,
                     result: complete!,
                     finishedAt: now(),
-                  }),
-                ),
-              );
+                  }))
+                );
+              });
             if (complete && disposition?.retryable && input.role === "reviewer")
               throw new RetryableRunnerError(
                 selected.id,
@@ -2278,14 +2287,15 @@ export function createRemoteAgentRunner(options: {
                 const minutes = Math.round((at - heardAt) / 60_000);
                 const recovered = await store.transaction(function* (q) {
                   yield* endLostRunnerWorkSteps(q, assigned.runId, assigned.generation, at);
-                  return yield* syncSteps(() =>
-                    options.placement?.finished({
+                  return (
+                    options.placement &&
+                    (yield* options.placement.finishedSteps(q, {
                       commandId: assigned.id,
                       runnerId: selected.id,
                       profile,
                       failure: "heartbeat_lost",
                       finishedAt: at,
-                    }),
+                    }))
                   );
                 });
                 if (!recovered?.retryable) throw new Error(RUN_LOST_MESSAGE);
@@ -2302,17 +2312,18 @@ export function createRemoteAgentRunner(options: {
               (await heartbeatLost()) &&
               !(await unreachableWithAuthority())
             ) {
-              const lost = await store.transaction(() =>
-                syncSteps(() =>
-                  options.placement?.finished({
+              const lost = await store.transaction(function* (q) {
+                return (
+                  options.placement &&
+                  (yield* options.placement.finishedSteps(q, {
                     commandId: assigned.id,
                     runnerId: selected.id,
                     profile,
                     failure: "heartbeat_lost",
                     finishedAt: now(),
-                  }),
-                ),
-              );
+                  }))
+                );
+              });
               if (!lost?.retryable) throw new Error("The runner stopped sending heartbeats.");
               throw new RetryableRunnerError(
                 selected.id,
@@ -2656,16 +2667,19 @@ export function createRemoteAgentRunner(options: {
             if (command && !detached) {
               try {
                 const issuedAt = now();
-                work.enqueue({
-                  id: randomUUID(),
-                  runnerId: selected.id,
-                  workspaceId: selected.workspaceId,
-                  issuedAt,
-                  expiresAt: issuedAt + 60_000,
-                  type: "cancel",
-                  runId: command.runId,
-                  generation: command.generation,
-                });
+                const cancelled = command;
+                await store.transaction((q) =>
+                  work.enqueueSteps(q, {
+                    id: randomUUID(),
+                    runnerId: selected.id,
+                    workspaceId: selected.workspaceId,
+                    issuedAt,
+                    expiresAt: issuedAt + 60_000,
+                    type: "cancel",
+                    runId: cancelled.runId,
+                    generation: cancelled.generation,
+                  }),
+                );
               } catch (caughtError4) {
                 journalCaught(caughtError4, "runner-backend.forItem.now", itemId);
               }
@@ -2697,10 +2711,14 @@ export function createRemoteAgentRunner(options: {
           const callId = failoverCallId(input);
           const ledger: FailoverLedger | undefined = runId
             ? {
-                load: (policyKey) => fallbackHistory(db, runId, callId, policyKey),
-                record: (entry) =>
-                  void recordFallbackAttempt(db, { ...entry, runId, callId, now: now() }),
-                finish: () => closeFallbackAttempts(db, runId, callId, now()),
+                load: (policyKey) =>
+                  store.run((q) => fallbackHistorySteps(q, runId, callId, policyKey)),
+                record: async (entry) => {
+                  await store.transaction((q) =>
+                    recordFallbackAttemptSteps(q, { ...entry, runId, callId, now: now() }),
+                  );
+                },
+                finish: () => store.run((q) => closeFallbackAttemptsSteps(q, runId, callId, now())),
               }
             : undefined;
           return await runWithFailover(
@@ -2708,9 +2726,9 @@ export function createRemoteAgentRunner(options: {
             moving,
             async () => cancelItem(itemId, input.signal),
             usageLimitWait(
-              { db, now, mono, interval },
-              () => {
-                const current = getWorkItem(db, itemId)?.currentRunId;
+              { store, now, mono, interval },
+              async () => {
+                const current = (await store.run((q) => getWorkItemSteps(q, itemId)))?.currentRunId;
                 return current ? { itemId, runId: current } : null;
               },
               input,
@@ -2733,7 +2751,7 @@ export function createConversationTurns(options: {
   helpers: RunnerHelpers;
   now?: () => number;
 }) {
-  return conversationTurns({ ...options, holder: (itemId) => sessionHolder(options.db, itemId) });
+  return conversationTurns({ ...options, holder: sessionHolderSteps });
 }
 
 export { fastForwardToBranchTip, fetchRunnerCandidate } from "./candidate";

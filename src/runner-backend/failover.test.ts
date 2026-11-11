@@ -494,7 +494,7 @@ test("a failed named account binding is excluded on its own, not its whole runne
 function memoryLedger() {
   const rows: (Parameters<FailoverLedger["record"]>[0] & { closed: boolean })[] = [];
   const ledger: FailoverLedger = {
-    load(policyKey) {
+    async load(policyKey) {
       const mine = rows.filter((row) => row.policyKey === policyKey && !row.closed);
       return {
         excluded: [...new Set(mine.map((row) => row.excludedKey).filter(Boolean))],
@@ -502,10 +502,10 @@ function memoryLedger() {
         usageLimits: mine.filter((row) => row.outcome === "usage_limit").length,
       };
     },
-    record(entry) {
+    async record(entry) {
       rows.push({ ...entry, closed: false });
     },
-    finish() {
+    async finish() {
       for (const row of rows) row.closed = true;
     },
   };
@@ -596,9 +596,9 @@ describe("persisted fallback attempts", () => {
     const order: string[] = [];
     const tracked: FailoverLedger = {
       ...ledger,
-      record(entry) {
+      async record(entry) {
         order.push("record");
-        ledger.record(entry);
+        await ledger.record(entry);
       },
     };
     await expect(
@@ -616,7 +616,7 @@ describe("persisted fallback attempts", () => {
       ),
     ).rejects.toThrow("teardown unconfirmed");
     expect(order).toEqual(["record", "settle"]);
-    expect(ledger.load(rows[0]!.policyKey)).toEqual({
+    expect(await ledger.load(rows[0]!.policyKey)).toEqual({
       excluded: ["runner-1"],
       failures: 1,
       usageLimits: 0,
@@ -640,13 +640,13 @@ describe("persisted fallback attempts", () => {
       ["handed_over", "old"],
       ["usage_limit", ""],
     ]);
-    expect(ledger.load(rows[0]!.policyKey).failures).toBe(0);
+    expect((await ledger.load(rows[0]!.policyKey)).failures).toBe(0);
   });
 
   test("usage-limit events spent before a restart stay spent", async () => {
     const { ledger } = memoryLedger();
     for (let event = 0; event < MAX_USAGE_LIMIT_EVENTS; event++)
-      ledger.record({
+      await ledger.record({
         policyKey: JSON.stringify([null, null, null]),
         outcome: "usage_limit",
         runnerId: "agentbox",
@@ -670,7 +670,7 @@ describe("persisted fallback attempts", () => {
 
   test("changed agent settings start from that configuration's own attempts", async () => {
     const { ledger } = memoryLedger();
-    ledger.record({
+    await ledger.record({
       policyKey: "another configuration",
       outcome: "failed",
       runnerId: "runner-1",
@@ -725,7 +725,12 @@ test("switching to saved settings keeps that configuration's spent failures and 
   const { ledger } = memoryLedger();
   const codexKey = JSON.stringify([["codex", "gpt-6-sol", null], null, null]);
   for (const runnerId of ["runner-1", "runner-2"])
-    ledger.record({ policyKey: codexKey, outcome: "failed", runnerId, excludedKey: runnerId });
+    await ledger.record({
+      policyKey: codexKey,
+      outcome: "failed",
+      runnerId,
+      excludedKey: runnerId,
+    });
   let profiles: ReturnType<NonNullable<RunAgentOptions["resolveProfiles"]>> = { profile: claude };
   let now = RESET - 1;
   const attempted: [string, string[]][] = [];

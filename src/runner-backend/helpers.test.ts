@@ -18,6 +18,7 @@ import {
   recordLinearInstallation,
   recordRunnerCapacity,
   sqliteDb,
+  syncSteps,
 } from "../db";
 import { RunnerSlotsBusyError, UserFacingError } from "../core";
 import { DEFAULT_RUN_TIMEOUT_MS, recoverAcpConversation, type RunAgentOptions } from "../acp";
@@ -293,12 +294,14 @@ test("a helper slot still busy at the deadline is a wait, not a failure", async 
       input.onRejected?.("runner", HELPER_SLOT_TAKEN);
       return [];
     },
-    started() {
-      throw new Error("Must not dispatch");
-    },
-    finished() {
-      return { retryable: false };
-    },
+    startedSteps: () =>
+      syncSteps(() => {
+        throw new Error("Must not dispatch");
+      }),
+    finishedSteps: () =>
+      syncSteps(() => {
+        return { retryable: false };
+      }),
   }));
   const pending = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
@@ -317,10 +320,11 @@ test("a helper that times out while other starts queue on its slot is a wait", a
       held = true;
       return [{ id: "runner", workspaceId: "workspace" }];
     },
-    started() {},
-    finished() {
-      return { retryable: false };
-    },
+    startedSteps: () => syncSteps(() => {}),
+    finishedSteps: () =>
+      syncSteps(() => {
+        return { retryable: false };
+      }),
   }));
   const holder = f.backend.forSession("session", "classify")(f.input);
   await Bun.sleep(10);
@@ -345,12 +349,14 @@ test.each([
       input.onRejected?.("runner", reason);
       return [];
     },
-    started() {
-      throw new Error("Must not dispatch");
-    },
-    finished() {
-      return { retryable: false };
-    },
+    startedSteps: () =>
+      syncSteps(() => {
+        throw new Error("Must not dispatch");
+      }),
+    finishedSteps: () =>
+      syncSteps(() => {
+        return { retryable: false };
+      }),
   }));
   const error = await f.backend
     .forSession(
@@ -396,20 +402,22 @@ test("Placement selects a real helper host and records admission and outcome ato
       );
       return [{ id: "selected", workspaceId: runner.workspaceId }];
     },
-    started(input) {
-      expect(db.inTransaction).toBe(true);
-      expect(input.runnerId).toBe("selected");
-      expect(
-        db.query("SELECT 1 FROM runner_helper WHERE id=?").get(input.commandId),
-      ).not.toBeNull();
-      calls.push("started");
-    },
-    finished(input) {
-      expect(db.inTransaction).toBe(true);
-      expect(input.result?.agentExited).toBe(true);
-      calls.push("finished");
-      return { retryable: false };
-    },
+    startedSteps: (_q, input) =>
+      syncSteps(() => {
+        expect(db.inTransaction).toBe(true);
+        expect(input.runnerId).toBe("selected");
+        expect(
+          db.query("SELECT 1 FROM runner_helper WHERE id=?").get(input.commandId),
+        ).not.toBeNull();
+        calls.push("started");
+      }),
+    finishedSteps: (_q, input) =>
+      syncSteps(() => {
+        expect(db.inTransaction).toBe(true);
+        expect(input.result?.agentExited).toBe(true);
+        calls.push("finished");
+        return { retryable: false };
+      }),
   }));
   const pending = f.backend.forSession("session", "classify")(f.input);
   for (let attempt = 0; attempt < 1000 && calls.length < 2; attempt++) await Bun.sleep(1);
@@ -430,12 +438,14 @@ test("Rejected placement admission rolls back the signed helper command", async 
         },
       ];
     },
-    started() {
-      throw new Error("Shared host authorization changed");
-    },
-    finished() {
-      return { retryable: false };
-    },
+    startedSteps: () =>
+      syncSteps(() => {
+        throw new Error("Shared host authorization changed");
+      }),
+    finishedSteps: () =>
+      syncSteps(() => {
+        return { retryable: false };
+      }),
   }));
   await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
     /No paired runner can run/,
@@ -448,12 +458,14 @@ test("An empty placement decision cannot fall back to another paired host", asyn
     async candidates() {
       return [];
     },
-    started() {
-      throw new Error("Must not dispatch");
-    },
-    finished() {
-      return { retryable: false };
-    },
+    startedSteps: () =>
+      syncSteps(() => {
+        throw new Error("Must not dispatch");
+      }),
+    finishedSteps: () =>
+      syncSteps(() => {
+        return { retryable: false };
+      }),
   }));
   await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
     /No paired runner can run/,
@@ -479,17 +491,19 @@ test("Three real helper assignments fail over after expired authentication and o
         .filter((id) => !request.excludeRunnerIds?.includes(id))
         .map((id) => ({ id, workspaceId: owner.workspaceId }));
     },
-    started(request) {
-      expect(db.inTransaction).toBe(true);
-      attempts.push(request.runnerId);
-    },
-    finished(observation) {
-      return {
-        retryable:
-          Boolean(observation.result?.authRequired) ||
-          quotaSignal(observation.result?.errorMessage ?? "", now())?.state === "exhausted",
-      };
-    },
+    startedSteps: (_q, request) =>
+      syncSteps(() => {
+        expect(db.inTransaction).toBe(true);
+        attempts.push(request.runnerId);
+      }),
+    finishedSteps: (_q, observation) =>
+      syncSteps(() => {
+        return {
+          retryable:
+            Boolean(observation.result?.authRequired) ||
+            quotaSignal(observation.result?.errorMessage ?? "", now())?.state === "exhausted",
+        };
+      }),
   }));
   const pending = f.backend.forSession("session", "classify")(f.input);
   const waitAttempt = async (count: number) => {
@@ -629,10 +643,11 @@ function coolingRunner(rejection = "agent quota cooldown") {
       }
       return [{ id: "runner", workspaceId: "unused" }];
     },
-    started() {},
-    finished() {
-      return { retryable: false };
-    },
+    startedSteps: () => syncSteps(() => {}),
+    finishedSteps: () =>
+      syncSteps(() => {
+        return { retryable: false };
+      }),
   });
 }
 
@@ -764,13 +779,14 @@ test("a helper whose named account hits its quota retries with the next account 
           account: { ...account, named: true },
         }));
     },
-    started() {},
-    finished(observation) {
-      const limited = quotaSignal(observation.result?.errorMessage ?? "", Date.now());
-      if (limited?.state !== "exhausted") return { retryable: false };
-      exhausted = bindings[0]!.bindingId;
-      return { retryable: true, usageLimit: { resetsAt: null, recheckAt: Date.now() + 60_000 } };
-    },
+    startedSteps: () => syncSteps(() => {}),
+    finishedSteps: (_q, observation) =>
+      syncSteps(() => {
+        const limited = quotaSignal(observation.result?.errorMessage ?? "", Date.now());
+        if (limited?.state !== "exhausted") return { retryable: false };
+        exhausted = bindings[0]!.bindingId;
+        return { retryable: true, usageLimit: { resetsAt: null, recheckAt: Date.now() + 60_000 } };
+      }),
   }));
   const pending = f.backend.forSession("session", "classify")(f.input);
   const helperCount = () =>
@@ -938,8 +954,8 @@ test("a reused helper's sign-in failure excludes its named account, not the runn
       excluded.push(request.excludeRunnerIds);
       return [];
     },
-    started() {},
-    finished: () => ({ retryable: true }),
+    startedSteps: () => syncSteps(() => {}),
+    finishedSteps: () => syncSteps(() => ({ retryable: true })),
   }));
   const workspace = f.db
     .query<{ id: string }, []>("SELECT workspace_id AS id FROM runner WHERE id='runner'")
@@ -1128,12 +1144,14 @@ test("a helper no runner can take names each runner's reason", async () => {
       input.onRejected?.("goldbox", "auth-expired");
       return [];
     },
-    started() {
-      throw new Error("Must not dispatch");
-    },
-    finished() {
-      return { retryable: false };
-    },
+    startedSteps: () =>
+      syncSteps(() => {
+        throw new Error("Must not dispatch");
+      }),
+    finishedSteps: () =>
+      syncSteps(() => {
+        return { retryable: false };
+      }),
   }));
   const error = await f.backend
     .forSession(
@@ -1157,12 +1175,14 @@ test("a dispatch the runner refuses is named in the failure", async () => {
         },
       ];
     },
-    started() {
-      throw new Error("Runner selection authority changed before assignment");
-    },
-    finished() {
-      return { retryable: false };
-    },
+    startedSteps: () =>
+      syncSteps(() => {
+        throw new Error("Runner selection authority changed before assignment");
+      }),
+    finishedSteps: () =>
+      syncSteps(() => {
+        return { retryable: false };
+      }),
   }));
   await expect(f.backend.forSession("session", "classify")(f.input)).rejects.toThrow(
     "right now: Fixture: Runner selection authority changed before assignment.",

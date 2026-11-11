@@ -167,8 +167,13 @@ export function createRunnerHealth(options: {
     }
     return (agent: Agent) => latest.get(agent);
   }
-  function queueCheck(runner: { id: string; workspaceId: string }, agent: Agent, at: number) {
-    work.enqueue({
+  function* queueCheckSteps(
+    q: Q,
+    runner: { id: string; workspaceId: string },
+    agent: Agent,
+    at: number,
+  ) {
+    yield* work.enqueueSteps(q, {
       id: randomUUID(),
       type: "login_check",
       runnerId: runner.id,
@@ -190,7 +195,7 @@ export function createRunnerHealth(options: {
           throw new Error("Runner health checks are already pending");
         const commandId = randomUUID();
         const expiresAt = at + 120_000;
-        work.enqueue({
+        yield* work.enqueueSteps(q, {
           id: commandId,
           runnerId,
           workspaceId: runner.workspaceId,
@@ -229,10 +234,10 @@ export function createRunnerHealth(options: {
             );
             let pending = yield* pendingHealthChecksSteps(q, runner.id, at);
             for (const agent of runnerAgents) {
-              if (!work.supportsAgent(runner.id, agent)) continue;
+              if (!(yield* work.supportsAgentSteps(q, runner.id, agent))) continue;
               if (pending >= 4) return;
               if (!checkDue(last(agent), states.get(agent), at)) continue;
-              queueCheck(runner, agent, at);
+              yield* queueCheckSteps(q, runner, agent, at);
               pending += 1;
             }
           });
@@ -250,7 +255,7 @@ export function createRunnerHealth(options: {
         const runner = yield* getRunnerSteps(q, runnerId);
         if (
           !runner ||
-          !work.supportsAgent(runnerId, agent) ||
+          !(yield* work.supportsAgentSteps(q, runnerId, agent)) ||
           runner.status !== "active" ||
           !workspaceMemberUsable(
             yield* workspaceMemberSteps(q, runner.workspaceId, runner.ownerUserId),
@@ -259,7 +264,7 @@ export function createRunnerHealth(options: {
           (yield* pendingHealthChecksSteps(q, runnerId, at)) >= 4
         )
           return false;
-        queueCheck(runner, agent, at);
+        yield* queueCheckSteps(q, runner, agent, at);
         return true;
       });
     },

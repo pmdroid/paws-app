@@ -424,6 +424,93 @@ export function createRunnerWork(options: {
     });
     return envelope;
   }
+  function* assignSteps(q: Q, input: WorkCommand) {
+    const command = RunnerCommandSchema.parse(input);
+    if (command.type !== "run" && command.type !== "review" && command.type !== "task")
+      throw new Error("Work command is required.");
+    const at = now();
+    const accepting = yield* runnerSteps(q, command.runnerId);
+    if (
+      accepting.status !== "active" ||
+      accepting.workspaceId !== command.workspaceId ||
+      command.issuedAt > at ||
+      command.expiresAt <= at
+    )
+      throw new Error("Runner is not accepting this assignment.");
+    if (
+      (yield* runnerCancelPendingSteps(q, command.runnerId)) &&
+      !(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId))
+    )
+      throw new RunnerTeardownPending([command.runnerId]);
+    if (!(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId)))
+      throw new Error("Runner is occupied by active work.");
+    if (command.type === "task")
+      bindTask(
+        command,
+        yield* responseTaskSteps(q, command.runId, command.workspaceId, false, accepting.userId),
+      );
+    else {
+      const { item, repository } = yield* taskSteps(q, command.runId, command.workspaceId);
+      if (
+        item.id !== command.itemId ||
+        repository.owner !== command.repository.owner ||
+        repository.repo !== command.repository.repo ||
+        repository.remoteUrl !== command.repository.remoteUrl
+      )
+        throw new Error("Run assignment repository or task changed.");
+    }
+    const owner = yield* runTeardownOwnerSteps(q, command.runId);
+    if (owner !== null) throw new RunnerTeardownPending([owner]);
+    const previous = yield* runnerWorkAssignmentSteps(q, command.runId);
+    if (
+      command.generation !== (previous?.generation ?? 0) + 1 ||
+      (previous?.endedAt === null &&
+        ((yield* acceptedSteps(q, previous))
+          ? previous.leaseUntil > at
+          : runnerLeaseLive(previous.leaseUntil, at)) &&
+        (yield* availableRunnerIdentitySteps(q, previous.runnerId))?.fence === previous.runnerFence)
+    )
+      throw new Error("Run assignment generation conflicts.");
+    const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
+    if (
+      command.type === "run" &&
+      command.livePreview &&
+      !runnerReleaseAtLeast(
+        yield* runnerHostVersionSteps(q, command.runnerId),
+        LIVE_PREVIEW_RUNNER_VERSION,
+      )
+    )
+      delete command.livePreview;
+    const envelope = yield* queueSteps(q, command);
+    yield* assignRunnerWorkSteps(q, {
+      runId: command.runId,
+      runnerId: command.runnerId,
+      workspaceId: command.workspaceId,
+      generation: command.generation,
+      runnerFence: accepting.fence,
+      commandId: command.id,
+      leaseUntil,
+    });
+    yield* deleteRunnerWorkGrantsSteps(q, command.runId);
+    yield* recordRunAgentSetupSteps(q, {
+      runId: command.runId,
+      runnerId: command.runnerId,
+      agent: command.profile.agent,
+      hooks:
+        command.type === "run" &&
+        (command.profile.agent === "claude" || command.profile.agent === "codex")
+          ? [
+              { name: "Paws Closeout", event: "stop" },
+              ...(command.hooks ?? []).map((hook) => ({
+                name: hook.command,
+                event: hook.event,
+              })),
+            ]
+          : [],
+      at,
+    });
+    return { envelope, leaseUntil };
+  }
   function parseEnqueued(input: RunnerCommand) {
     const command = RunnerCommandSchema.parse(input);
     if (command.type === "run" || command.type === "review" || command.type === "task")
@@ -495,6 +582,7 @@ export function createRunnerWork(options: {
     return openRunnerEventSteps(q, eventKey, row);
   }
   return {
+    supportsAgentSteps,
     supportsAgent(runnerId: string, agent: string) {
       return read((q) => supportsAgentSteps(q, runnerId, agent));
     },
@@ -511,101 +599,9 @@ export function createRunnerWork(options: {
       return read((q) => currentSteps(q, runId, generation));
     },
     currentSteps,
+    assignSteps,
     assign(input: WorkCommand) {
-      const command = RunnerCommandSchema.parse(input);
-      if (command.type !== "run" && command.type !== "review" && command.type !== "task")
-        throw new Error("Work command is required.");
-      return transaction(function* (q) {
-        const at = now();
-        const accepting = yield* runnerSteps(q, command.runnerId);
-        if (
-          accepting.status !== "active" ||
-          accepting.workspaceId !== command.workspaceId ||
-          command.issuedAt > at ||
-          command.expiresAt <= at
-        )
-          throw new Error("Runner is not accepting this assignment.");
-        if (
-          (yield* runnerCancelPendingSteps(q, command.runnerId)) &&
-          !(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId))
-        )
-          throw new RunnerTeardownPending([command.runnerId]);
-        if (!(yield* runnerHasCapacitySteps(q, command.runnerId, at, command.runId)))
-          throw new Error("Runner is occupied by active work.");
-        if (command.type === "task")
-          bindTask(
-            command,
-            yield* responseTaskSteps(
-              q,
-              command.runId,
-              command.workspaceId,
-              false,
-              accepting.userId,
-            ),
-          );
-        else {
-          const { item, repository } = yield* taskSteps(q, command.runId, command.workspaceId);
-          if (
-            item.id !== command.itemId ||
-            repository.owner !== command.repository.owner ||
-            repository.repo !== command.repository.repo ||
-            repository.remoteUrl !== command.repository.remoteUrl
-          )
-            throw new Error("Run assignment repository or task changed.");
-        }
-        const owner = yield* runTeardownOwnerSteps(q, command.runId);
-        if (owner !== null) throw new RunnerTeardownPending([owner]);
-        const previous = yield* runnerWorkAssignmentSteps(q, command.runId);
-        if (
-          command.generation !== (previous?.generation ?? 0) + 1 ||
-          (previous?.endedAt === null &&
-            ((yield* acceptedSteps(q, previous))
-              ? previous.leaseUntil > at
-              : runnerLeaseLive(previous.leaseUntil, at)) &&
-            (yield* availableRunnerIdentitySteps(q, previous.runnerId))?.fence ===
-              previous.runnerFence)
-        )
-          throw new Error("Run assignment generation conflicts.");
-        const leaseUntil = Math.min(command.expiresAt, at + RUNNER_LEASE_MS);
-        if (
-          command.type === "run" &&
-          command.livePreview &&
-          !runnerReleaseAtLeast(
-            yield* runnerHostVersionSteps(q, command.runnerId),
-            LIVE_PREVIEW_RUNNER_VERSION,
-          )
-        )
-          delete command.livePreview;
-        const envelope = yield* queueSteps(q, command);
-        yield* assignRunnerWorkSteps(q, {
-          runId: command.runId,
-          runnerId: command.runnerId,
-          workspaceId: command.workspaceId,
-          generation: command.generation,
-          runnerFence: accepting.fence,
-          commandId: command.id,
-          leaseUntil,
-        });
-        yield* deleteRunnerWorkGrantsSteps(q, command.runId);
-        yield* recordRunAgentSetupSteps(q, {
-          runId: command.runId,
-          runnerId: command.runnerId,
-          agent: command.profile.agent,
-          hooks:
-            command.type === "run" &&
-            (command.profile.agent === "claude" || command.profile.agent === "codex")
-              ? [
-                  { name: "Paws Closeout", event: "stop" },
-                  ...(command.hooks ?? []).map((hook) => ({
-                    name: hook.command,
-                    event: hook.event,
-                  })),
-                ]
-              : [],
-          at,
-        });
-        return { envelope, leaseUntil };
-      });
+      return transaction((q) => assignSteps(q, input));
     },
     enqueue(input: RunnerCommand) {
       const command = parseEnqueued(input);
