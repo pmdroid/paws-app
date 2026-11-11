@@ -1254,15 +1254,20 @@ export class Orchestrator {
     };
   }
 
-  private linearCommentBrief(item: WorkItemRecord): LinearCommentBrief | null {
+  private async linearCommentBrief(item: WorkItemRecord): Promise<LinearCommentBrief | null> {
     const policy = this.options.linearComments;
-    return policy ? linearCommentBrief(this.db, item, { now: () => this.now(), policy }) : null;
+    return policy
+      ? await linearCommentBrief(this.store, item, { now: () => this.now(), policy })
+      : null;
   }
 
-  private settleLinearCommentBrief(item: WorkItemRecord, brief: LinearCommentBrief | null): void {
+  private async settleLinearCommentBrief(
+    item: WorkItemRecord,
+    brief: LinearCommentBrief | null,
+  ): Promise<void> {
     const policy = this.options.linearComments;
     if (brief === null || policy === undefined) return;
-    settleLinearCommentBrief(this.db, item, brief, {
+    await settleLinearCommentBrief(this.store, item, brief, {
       now: this.now(),
       wait: policy.wait?.() ?? this.feedbackWait(),
     });
@@ -3554,7 +3559,7 @@ export class Orchestrator {
         ].join("\n");
       }
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
-      const responseComments = this.linearCommentBrief(item);
+      const responseComments = await this.linearCommentBrief(item);
       const prompt = [
         mode === "answer"
           ? "Answer the user's request in this Linear conversation. Provide the complete answer in your final message."
@@ -3603,7 +3608,7 @@ export class Orchestrator {
           onEvent: activity.onEvent,
         });
         if (result.stopReason === "end_turn" || this.askedRuns.has(run.id))
-          this.settleLinearCommentBrief(item, comments);
+          await this.settleLinearCommentBrief(item, comments);
         controller.signal.throwIfAborted();
         if (this.stopped(item.id) || this.askedRuns.has(run.id)) return false;
         if (
@@ -3617,7 +3622,7 @@ export class Orchestrator {
       };
       if (!(await turn(prompt, responseComments))) return;
       for (let extra = 0; extra < RESPONSE_COMMENT_TURNS; extra++) {
-        const later = this.linearCommentBrief(item);
+        const later = await this.linearCommentBrief(item);
         if (later === null) break;
         const again = [later.text, RESPONSE_COMMENT_PROMPT[mode]].join("\n\n");
         if (!(await turn(again, later))) return;
@@ -3835,7 +3840,7 @@ export class Orchestrator {
       const promptRunner = await this.prepareConversation(item);
       await this.hydrateLinearContext(item.sessionKey, controller.signal);
       const checkout = this.runCheckout(item);
-      const comments = this.linearCommentBrief(item);
+      const comments = await this.linearCommentBrief(item);
       const suggestions = returned === null ? "" : await this.suggestionBrief(item, repository);
       const turnHandoff = [handoff, comments?.text, suggestions]
         .filter((part) => part)
@@ -3935,7 +3940,7 @@ export class Orchestrator {
         ...(launched.cancelGraceMs !== undefined ? { cancelGraceMs: launched.cancelGraceMs } : {}),
       });
       if (executed.run.stopReason === "end_turn" || this.askedRuns.has(run.id))
-        this.settleLinearCommentBrief(item, comments);
+        await this.settleLinearCommentBrief(item, comments);
       this.assertJobCurrent(item.id);
       controller.signal.throwIfAborted();
       const finished = await this.store.run((q) => getWorkItemSteps(q, item.id));
