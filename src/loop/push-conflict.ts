@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { emitJobReady, getWorkItemSteps, recordRebaseReturnSteps, sqliteDb } from "../db";
-import { rebaseBudgetFor } from "../merge";
-import { ask, restartSteps } from "./operations";
+import { rebaseBudgetForSteps } from "../merge";
+import { askSteps, restartSteps } from "./operations";
 
 /** What the agent hears when its candidate no longer rebases onto the branch on GitHub. */
 export function pushConflictHandoff(branch: string, files: readonly string[]): string {
@@ -25,11 +25,11 @@ export async function restartForPushConflict(
     const item = yield* getWorkItemSteps(q, itemId);
     if (!item || item.cancelRequested || item.state !== "running") return false;
     const conflict = { base: null, files: input.files, reason: "push" as const };
-    const budget = rebaseBudgetFor(db, itemId, conflict, input.now);
+    const budget = yield* rebaseBudgetForSteps(q, itemId, conflict, input.now);
     if (!budget.allowed) {
       if (!item.sessionKey) return false;
-      ask(
-        db,
+      yield* askSteps(
+        q,
         { itemId, runId: item.currentRunId, sessionId: item.sessionKey, version: item.version },
         "ci-help",
         `${budget.message} Reply with guidance to resolve the conflicts on \`${input.branch}\` and continue, or stop the task.`,
