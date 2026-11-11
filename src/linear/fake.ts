@@ -5,6 +5,7 @@ import type { LinearIssueClosed } from "./administration";
 import type { IssuePullRequest } from "./issue-pulls";
 import type { LinearIssueContext } from "./issue-context";
 import type { FiledSubIssue } from "../core";
+import { projectOverviewText } from "./project-scope";
 import type { ProjectOverview } from "./project-scope";
 import { subIssueId, validateSubIssueRequest, type SubIssueRequest } from "./sub-issues";
 import {
@@ -223,10 +224,7 @@ export function createFakeTracker(epics: readonly EpicSnapshot[] = []): FakeTrac
       return {
         issue: briefIssueFromSnapshot(found),
         parent: parent === undefined ? null : briefIssueFromSnapshot(parent),
-        projectOverview:
-          overview?.name && overview.content.trim()
-            ? `Project overview: ${overview.name}\n\n${overview.content}`
-            : "",
+        projectOverview: projectOverviewText(overview),
       };
     },
     deps,
