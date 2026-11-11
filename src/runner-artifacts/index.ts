@@ -240,7 +240,10 @@ export function createRunnerArtifactStore(options: {
     }) {
       const value = RunnerArtifactChunkSchema.parse(input.chunk);
       assertNonSecretArtifactPath(value.artifact.path);
-      const { command } = options.work.authorize({ ...input, generation: value.generation });
+      const { command } = await options.work.authorizeAsync({
+        ...input,
+        generation: value.generation,
+      });
       const bytes = Buffer.from(value.data, "base64");
       const expected = Math.min(
         RUNNER_ARTIFACT_CHUNK_BYTES,
@@ -305,7 +308,7 @@ export function createRunnerArtifactStore(options: {
       descriptor: RunnerArtifact,
     ): Promise<ArtifactSnapshot> {
       const artifact = RunnerArtifactSchema.parse(descriptor);
-      const { command } = options.work.current(runId, generation);
+      const { command } = await options.work.currentAsync(runId, generation);
       const chunks =
         (options.remote && (await remoteSnapshot(options.remote, runId, command.id, artifact))) ??
         localChunks(command.id, artifact);

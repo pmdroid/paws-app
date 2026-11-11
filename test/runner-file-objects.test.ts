@@ -24,8 +24,8 @@ function fixture() {
     { type: "run" }
   >;
   const work = {
-    authorize: () => ({ command }),
-    current: () => ({ command }),
+    authorizeAsync: async () => ({ command }),
+    currentAsync: async () => ({ command }),
   } as unknown as RunnerWork;
   const objects = createFakeRunFileObjects();
   const instance = (root = mkdtempSync(join(tmpdir(), "paws-acme-instance-"))) => {

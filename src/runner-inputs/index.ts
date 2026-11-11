@@ -333,8 +333,11 @@ export function createRunnerInputStore(options: {
       raw: z.infer<typeof contextRequestSchema>,
     ) {
       const input = contextRequestSchema.parse(raw);
-      const authorize = () => {
-        const { command } = options.work.authorize({ ...access, generation: input.generation });
+      const authorize = async () => {
+        const { command } = await options.work.authorizeAsync({
+          ...access,
+          generation: input.generation,
+        });
         if (
           (command.type !== "run" && command.type !== "review" && command.type !== "task") ||
           command.id !== input.commandId ||
@@ -343,7 +346,7 @@ export function createRunnerInputStore(options: {
           throw new RunnerWorkFencedError("Runner prompt context assignment changed");
         return command.promptContext;
       };
-      const manifest = authorize();
+      const manifest = await authorize();
       const bytes =
         (await remoteChunk(access, input.commandId, "prompt", input.offset, manifest)) ??
         readChunk(input.commandId, input.offset, manifest, {
@@ -352,7 +355,7 @@ export function createRunnerInputStore(options: {
           expected: manifest,
           limit: RUNNER_PROMPT_CONTEXT_MAX_BYTES,
         });
-      if (JSON.stringify(authorize()) !== JSON.stringify(manifest))
+      if (JSON.stringify(await authorize()) !== JSON.stringify(manifest))
         throw new RunnerWorkFencedError("Runner prompt context assignment changed");
       return {
         commandId: input.commandId,
@@ -413,8 +416,11 @@ export function createRunnerInputStore(options: {
       raw: z.infer<typeof requestSchema>,
     ) {
       const input = requestSchema.parse(raw);
-      const authorize = () => {
-        const { command } = options.work.authorize({ ...access, generation: input.generation });
+      const authorize = async () => {
+        const { command } = await options.work.authorizeAsync({
+          ...access,
+          generation: input.generation,
+        });
         if (
           (command.type !== "run" && command.type !== "review" && command.type !== "task") ||
           command.id !== input.commandId ||
@@ -423,7 +429,7 @@ export function createRunnerInputStore(options: {
           throw new RunnerWorkFencedError("Runner input assignment changed");
         return command.inputFiles;
       };
-      const manifest = authorize();
+      const manifest = await authorize();
       const file = manifest[input.fileId];
       if (!file) throw new Error("Invalid runner input range");
       const bytes =
@@ -434,7 +440,7 @@ export function createRunnerInputStore(options: {
           expected: manifest,
           limit: RUNNER_INPUT_MAX_BYTES,
         });
-      if (JSON.stringify(authorize()) !== JSON.stringify(manifest))
+      if (JSON.stringify(await authorize()) !== JSON.stringify(manifest))
         throw new RunnerWorkFencedError("Runner input assignment changed");
       return {
         commandId: input.commandId,
