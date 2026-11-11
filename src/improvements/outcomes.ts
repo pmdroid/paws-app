@@ -39,11 +39,7 @@ import {
 } from "../db";
 import { journalCaught } from "../journal";
 import { listInboxItemsSteps, type ImprovementAccess, type InboxItem } from "./inbox";
-import {
-  findInboxItemSteps,
-  improvementDestinations,
-  type ImprovementReviewer,
-} from "./review";
+import { findInboxItemSteps, improvementDestinations, type ImprovementReviewer } from "./review";
 
 export const IMPROVEMENT_OUTCOME_LIMITS = {
   staleSyncMs: 6 * 60 * 60_000,
