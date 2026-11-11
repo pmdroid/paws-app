@@ -1,6 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { and, eq, isNull } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { type Q, type Steps, type Db } from "./db";
 
 export type FindingDecision = "fixed" | "declined";
 
@@ -60,13 +59,13 @@ export function* recordSuggestedFindingsSteps(
     );
 }
 
-export function recordSuggestedFindings(
-  db: Database,
+export async function recordSuggestedFindings(
+  store: Db,
   itemId: string,
   findings: readonly HandedFinding[],
   now: number,
-): void {
-  settled(sqliteDb(db).run((q) => recordSuggestedFindingsSteps(q, itemId, findings, now)));
+): Promise<void> {
+  await store.run((q) => recordSuggestedFindingsSteps(q, itemId, findings, now));
 }
 
 export function* suggestedFindingsSteps(q: Q, itemId: string): Steps<SuggestedFindingRecord[]> {
@@ -80,8 +79,11 @@ export function* suggestedFindingsSteps(q: Q, itemId: string): Steps<SuggestedFi
   )) as SuggestedFindingRecord[];
 }
 
-export function suggestedFindings(db: Database, itemId: string): SuggestedFindingRecord[] {
-  return settled(sqliteDb(db).run((q) => suggestedFindingsSteps(q, itemId)));
+export async function suggestedFindings(
+  store: Db,
+  itemId: string,
+): Promise<SuggestedFindingRecord[]> {
+  return store.run((q) => suggestedFindingsSteps(q, itemId));
 }
 
 type FindingDecisions = ReadonlyMap<string, { decision: FindingDecision; reason: string }>;
@@ -112,16 +114,14 @@ export function* decideSuggestedFindingsSteps(
   return stored;
 }
 
-export function decideSuggestedFindings(
-  db: Database,
+export async function decideSuggestedFindings(
+  store: Db,
   itemId: string,
   decisions: FindingDecisions,
   head: string | null,
   now: number,
-): number {
-  return settled(
-    sqliteDb(db).run((q) => decideSuggestedFindingsSteps(q, itemId, decisions, head, now)),
-  );
+): Promise<number> {
+  return store.run((q) => decideSuggestedFindingsSteps(q, itemId, decisions, head, now));
 }
 
 export function* recordSuggestionTurnSteps(q: Q, record: SuggestionTurnRecord): Steps<boolean> {
@@ -136,8 +136,11 @@ export function* recordSuggestionTurnSteps(q: Q, record: SuggestionTurnRecord): 
   return inserted.length > 0;
 }
 
-export function recordSuggestionTurn(db: Database, record: SuggestionTurnRecord): boolean {
-  return settled(sqliteDb(db).run((q) => recordSuggestionTurnSteps(q, record)));
+export async function recordSuggestionTurn(
+  store: Db,
+  record: SuggestionTurnRecord,
+): Promise<boolean> {
+  return store.run((q) => recordSuggestionTurnSteps(q, record));
 }
 
 export function* getSuggestionTurnSteps(q: Q, itemId: string): Steps<SuggestionTurnRecord | null> {
@@ -148,6 +151,9 @@ export function* getSuggestionTurnSteps(q: Q, itemId: string): Steps<SuggestionT
   return (row ?? null) as SuggestionTurnRecord | null;
 }
 
-export function getSuggestionTurn(db: Database, itemId: string): SuggestionTurnRecord | null {
-  return settled(sqliteDb(db).run((q) => getSuggestionTurnSteps(q, itemId)));
+export async function getSuggestionTurn(
+  store: Db,
+  itemId: string,
+): Promise<SuggestionTurnRecord | null> {
+  return store.run((q) => getSuggestionTurnSteps(q, itemId));
 }

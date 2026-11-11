@@ -11,6 +11,7 @@ import {
   getWorkItemSteps,
   getConfirmedRemoteMergeSteps,
   immediate,
+  nudgeJobRunAt,
   saveCheckpointSteps,
   parkLeasedJob,
   parkLeasedJobSteps,
@@ -119,12 +120,7 @@ export function acceptGitHubDelivery(
               (sha) => typeof sha === "string" && facts.shas.has(sha),
             ) ||
             (item !== null && facts.branches.has(worktreeBranch(item)));
-      if (matches)
-        db.run(
-          `UPDATE job SET run_at = CASE WHEN status = 'running' THEN MAX(run_at, ?) ELSE MIN(run_at, ?) END
-           WHERE id = ?`,
-          [now, now, job.id],
-        );
+      if (matches) nudgeJobRunAt(db, job.id, now);
     }
     return true;
   });

@@ -556,11 +556,11 @@ export type RetroRenderedPromptRead =
   | { ok: true; prompt: string; sha256: string; settingsRevision: number }
   | { ok: false; reason: "forbidden" | "not_found" };
 
-export function readRetroRenderedPrompt(
+export async function readRetroRenderedPrompt(
   db: Database,
   root: string,
   input: { principal: WorkspacePrincipal; sessionIds: readonly string[]; retroId: string },
-): RetroRenderedPromptRead {
+): Promise<RetroRenderedPromptRead> {
   const { principal } = input;
   if (!workspaceMemberUsable(workspaceMember(db, principal.workspaceId, principal.userId)))
     return { ok: false, reason: "forbidden" };
@@ -569,7 +569,7 @@ export function readRetroRenderedPrompt(
     root,
     principal,
     input.sessionIds,
-    getRetro(db, input.retroId),
+    await getRetro(sqliteDb(db), input.retroId),
   );
   if (readable === null) return { ok: false, reason: "not_found" };
   const { retro } = readable;

@@ -12,12 +12,7 @@ export type CatalogEntry = {
 };
 
 export function listRepositoryCatalog(db: Database): CatalogEntry[] {
-  return db
-    .query<CatalogEntry, []>(
-      `SELECT owner, repo, remote_url AS remoteUrl, default_branch AS defaultBranch
-       FROM repository_catalog ORDER BY repository`,
-    )
-    .all();
+  return settled(sqliteDb(db).run((q) => listRepositoryCatalogSteps(q)));
 }
 
 export function* listRepositoryCatalogSteps(q: Q): Steps<CatalogEntry[]> {
@@ -93,15 +88,7 @@ export function teamRepositoryAllowedSql(
 }
 
 export function listTeamRepositories(db: Database, sessionId: string): string[] {
-  return db
-    .query<{ repository: string }, [string]>(
-      `SELECT lower(p.repository) AS repository FROM workspace_repository p
-       JOIN workspace w ON w.id=p.workspace_id
-       JOIN linear_session s ON s.organization_id=w.linear_organization_id AND s.team_id=p.team_id
-       WHERE s.session_id=? ORDER BY repository`,
-    )
-    .all(sessionId)
-    .map((row) => row.repository);
+  return settled(sqliteDb(db).run((q) => listTeamRepositoriesSteps(q, sessionId)));
 }
 
 export function listRepositoryCandidates(
@@ -129,7 +116,7 @@ export function listRepositoryCandidates(
     .map(({ owner, repo, remoteUrl }) => ({ owner, repo, remoteUrl }));
 }
 
-function* listTeamRepositoriesSteps(q: Q, sessionId: string): Steps<string[]> {
+export function* listTeamRepositoriesSteps(q: Q, sessionId: string): Steps<string[]> {
   const { linearSession, workspace, workspaceRepository } = q.t;
   const rows = yield* q.all(
     q.orm

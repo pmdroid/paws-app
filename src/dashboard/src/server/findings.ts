@@ -10,6 +10,7 @@ import {
   workspaceMember,
   type ReviewFindingItem,
   type ReviewFindingRecord,
+  sqliteDb,
 } from "../../../db";
 import type { Database } from "bun:sqlite";
 import { journalCaught } from "../journal";
@@ -118,14 +119,14 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
     listReviewFindings(db).filter((row) => row.id === action.id),
   );
   if (shown.length === 0) return Response.json({ error: "Finding not found." }, { status: 404 });
-  if (findingHasGroupAction(db, principal.workspaceId, action.id))
+  if (await findingHasGroupAction(sqliteDb(db), principal.workspaceId, action.id))
     return Response.json(
       { error: "This finding has a group action in progress. Finish that action first." },
       { status: 409 },
     );
   if (
     action.action === "dismiss" &&
-    acceptedImprovementsForFindings(db, principal.workspaceId, [action.id]).length
+    (await acceptedImprovementsForFindings(sqliteDb(db), principal.workspaceId, [action.id])).length
   )
     return Response.json(
       { error: "The improvement inbox already accepted this finding. Its issue delivery stands." },
@@ -153,7 +154,7 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
       },
       { status: 409 },
     );
-  removeFindingFromOpenGroups(db, principal.workspaceId, action.id);
+  await removeFindingFromOpenGroups(sqliteDb(db), principal.workspaceId, action.id);
   auditWorkspaceAccess(db, {
     workspaceId: principal.workspaceId,
     userId: principal.userId,

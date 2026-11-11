@@ -24,7 +24,7 @@ import {
   createImprovementsHttp,
   ingestDailyFindings,
 } from "../src/improvements";
-import { createRetroReviewHttp, retroReaderAccess } from "../src/retros";
+import { createRetroReviewHttp, retroReaderAccessSteps } from "../src/retros";
 import { type WorkspacePrincipal } from "../src/workspace";
 
 export type Json = ReturnType<typeof JSON.parse>;
@@ -94,8 +94,11 @@ export function world(extra: Partial<Parameters<typeof createImprovementsHttp>[0
   const improvements = createImprovementsHttp({
     db,
     lookup: lookup.lookup,
-    retroEvidence: (principal, sessionIds, retroId) =>
-      retroReaderAccess(db, root, principal, sessionIds, retroId)?.readable ?? null,
+    retroEvidence: function* (q, principal, sessionIds, retroId) {
+      return (
+        (yield* retroReaderAccessSteps(q, root, principal, sessionIds, retroId))?.readable ?? null
+      );
+    },
     now,
     ...extra,
   });
