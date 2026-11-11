@@ -1605,13 +1605,13 @@ export class Orchestrator {
     const initialSession = sessionId
       ? await this.store.run((q) => getLinearSessionSteps(q, sessionId))
       : null;
-    const isCurrent = () => {
+    const isCurrent = async () => {
       if (this.shuttingDown) return false;
       if (initialSession === null || sessionId === null) return true;
-      const current = getLinearSession(this.db, sessionId);
+      const current = await this.store.run((q) => getLinearSessionSteps(q, sessionId));
       return current?.generation === initialSession.generation && current.stoppedAt === null;
     };
-    if (!isCurrent()) throw new Error("The Linear request changed before intake");
+    if (!(await isCurrent())) throw new Error("The Linear request changed before intake");
     const requestKey = taskKey;
     const savedRequest = requestKey
       ? await this.store.run((q) => getTaskClassificationSteps(q, requestKey))
@@ -1687,7 +1687,7 @@ export class Orchestrator {
               throw error;
             })
         : null;
-    if (!isCurrent()) throw new Error("The Linear request changed before intake");
+    if (!(await isCurrent())) throw new Error("The Linear request changed before intake");
     const now = () => this.now();
     function* retireRedirectedItemSteps(q: Q) {
       if (!redirect) return;
@@ -1712,7 +1712,7 @@ export class Orchestrator {
       this.assignSessionSteps(q, delegationId, session);
     const timeLimitsSteps = (q: Q, itemId: string) => this.timeLimitsSteps(q, itemId);
     const intakeCurrent = async () => {
-      if (!isCurrent()) return false;
+      if (!(await isCurrent())) return false;
       const authorized: EpicSnapshot | null = authorizedSnapshot;
       return (
         !sessionId ||
@@ -1768,7 +1768,7 @@ export class Orchestrator {
       ...(classification && classification.mode !== "code" ? { singleIssue: true } : {}),
       adoptParent: this.options.adoptLinearParent,
     });
-    if (!isCurrent()) throw new Error("The Linear request changed during intake");
+    if (!(await isCurrent())) throw new Error("The Linear request changed during intake");
     if (sessionId && loadedSnapshot && !result.alreadyExisted)
       this.intakeReads.set(sessionId, { snapshot: loadedSnapshot, edges });
     if (result.ok && classification && classification.mode !== "clarify") {
@@ -7609,8 +7609,12 @@ export class Orchestrator {
     return implementerAgentFor(config, this.repositoryForItem(item), this.knownProfileLabels(item));
   }
 
-  private implementerProfile(item: WorkItemRecord, config: ReturnType<typeof loadConfigFile>) {
-    const repository = this.repositoryForItem(item);
+  private *implementerProfileSteps(
+    q: Q,
+    item: WorkItemRecord,
+    config: ReturnType<typeof loadConfigFile>,
+  ) {
+    const repository = yield* getWorkItemRepositorySteps(q, item.id);
     return resolveAgentProfiles(
       config,
       repository ? `${repository.owner}/${repository.repo}` : undefined,
@@ -7631,7 +7635,12 @@ export class Orchestrator {
   ): Steps<ItemRunnerVerdicts | null> {
     const item = yield* getWorkItemSteps(q, itemId);
     return item && config
-      ? yield* itemRunners(q, itemId, this.implementerProfile(item, config), this.now())
+      ? yield* itemRunners(
+          q,
+          itemId,
+          yield* this.implementerProfileSteps(q, item, config),
+          this.now(),
+        )
       : null;
   }
 
