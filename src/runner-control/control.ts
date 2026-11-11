@@ -1,7 +1,8 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull, lte, not, or } from "drizzle-orm";
 import {
-  workspaceMemberUsableSql,
+  settled,
   workspaceMemberUsable,
+  workspaceMemberUsableWhere,
   agentCatalogSummarySteps,
   auditWorkspaceAccessSteps,
   createRunnerEnrollmentSteps,
@@ -20,6 +21,7 @@ import {
   sqliteDb,
   type Db,
   type Q,
+  type Steps,
   setRunnerAdminRepositoriesSteps,
   setRunnerConcurrencySteps,
   updateRunnerStatusSteps,
@@ -132,28 +134,15 @@ export function createRunnerControl(options: {
       };
     },
     expireConnections() {
-      const fingerprints = db
-        .query<{ fingerprint: string }, [number]>(
-          `SELECT c.fingerprint FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
-        JOIN workspace_member m ON m.workspace_id=r.workspace_id AND m.user_id=r.owner_user_id
-        WHERE c.revoked_at IS NOT NULL OR c.accepted_until<=? OR r.revoked_at IS NOT NULL
-        OR r.status='revoked' OR NOT (${workspaceMemberUsableSql("m")})`,
-        )
-        .all(now());
-      for (const { fingerprint } of fingerprints) options.disconnect(fingerprint);
+      const at = now();
+      for (const { fingerprint } of settled(store.run((q) => expiredFingerprintsSteps(q, at))))
+        options.disconnect(fingerprint);
     },
     authenticate(peer: RunnerPeer) {
       return authorized(peer);
     },
     revoked(peer: RunnerPeer): boolean {
-      return (
-        db
-          .query(
-            `SELECT 1 FROM runner_certificate c JOIN runner r ON r.id=c.runner_id
-            WHERE c.fingerprint=? AND (r.revoked_at IS NOT NULL OR r.status='revoked')`,
-          )
-          .get(peer.fingerprint) !== null
-      );
+      return settled(store.run((q) => fingerprintRevokedSteps(q, peer.fingerprint)));
     },
     async list(principal: WorkspacePrincipal, sessionIds: readonly string[]) {
       if (
@@ -317,6 +306,40 @@ export function createRunnerControl(options: {
 }
 
 export type RunnerControl = ReturnType<typeof createRunnerControl>;
+
+function* expiredFingerprintsSteps(q: Q, at: number): Steps<{ fingerprint: string }[]> {
+  const { runnerCertificate: c, runner: r, workspaceMember: m } = q.t;
+  return yield* q.all(
+    q.orm
+      .select({ fingerprint: c.fingerprint })
+      .from(c)
+      .innerJoin(r, eq(r.id, c.runnerId))
+      .innerJoin(m, and(eq(m.workspaceId, r.workspaceId), eq(m.userId, r.ownerUserId)))
+      .where(
+        or(
+          isNotNull(c.revokedAt),
+          lte(c.acceptedUntil, at),
+          isNotNull(r.revokedAt),
+          eq(r.status, "revoked"),
+          not(workspaceMemberUsableWhere(m)!),
+        ),
+      ),
+  );
+}
+
+function* fingerprintRevokedSteps(q: Q, fingerprint: string): Steps<boolean> {
+  const { runnerCertificate: c, runner: r } = q.t;
+  const row = yield* q.one(
+    q.orm
+      .select({ fingerprint: c.fingerprint })
+      .from(c)
+      .innerJoin(r, eq(r.id, c.runnerId))
+      .where(
+        and(eq(c.fingerprint, fingerprint), or(isNotNull(r.revokedAt), eq(r.status, "revoked"))),
+      ),
+  );
+  return row !== undefined;
+}
 
 /** A used, expired or unknown enrollment token, or one whose member may no longer own a runner. */
 export class RunnerEnrollmentDenied extends Error {
