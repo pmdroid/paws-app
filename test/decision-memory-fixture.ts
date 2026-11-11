@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   activateLinearItem,
@@ -8,16 +8,16 @@ import {
   getWorkItem,
   openDatabase,
   sqliteDb,
-} from "../../src/db";
+} from "../src/db";
 import {
   changeDecision,
   confirmDecisionSteps,
   listDecisions,
   suggestDecisionsSteps,
-} from "../../src/decisions";
-import { getQuestion, openQuestion } from "../../src/questions";
-import { answerQuestion } from "../questions";
-import { createExecutionControlsFixture } from "./execution-controls";
+} from "../src/decisions";
+import { getQuestion, openQuestion } from "../src/questions";
+import { answerQuestion } from "./questions";
+import { createExecutionControlsFixture } from "./local/execution-controls";
 
 export async function decisionFixture(root: string) {
   const fixture = createExecutionControlsFixture(root);
@@ -207,19 +207,4 @@ export async function probeDecisionMemory(root: string) {
   } finally {
     await f.close();
   }
-}
-
-if (import.meta.main) {
-  const root = process.argv[2]!;
-  if (!root) throw new Error("Provide a disposable evidence directory.");
-  mkdirSync(root, { recursive: true });
-  if (process.argv.includes("--serve")) {
-    const f = await decisionFixture(root);
-    writeFileSync(
-      join(root, "fixture.json"),
-      JSON.stringify({ origin: f.origin, token: f.sessions["member"]!.token }),
-    );
-    process.on("SIGTERM", () => void f.close().then(() => process.exit(0)));
-    console.log(f.origin);
-  } else console.log(await probeDecisionMemory(root));
 }
