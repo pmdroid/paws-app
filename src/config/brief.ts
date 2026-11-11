@@ -90,8 +90,8 @@ export function setBriefTemplatesText(current: string, templates: BriefTemplates
   return `${retained}\n${tables}`;
 }
 
-export function writeBriefTemplates(path: string, templates: BriefTemplates): void {
-  updateConfigText(path, (current) => {
+export function writeBriefTemplates(path: string, templates: BriefTemplates): Promise<void> {
+  return updateConfigText(path, (current) => {
     const next = setBriefTemplatesText(current, normalizeTemplates(templates));
     parseBriefTemplates(next);
     return next.endsWith("\n") || next === "" ? next : `${next}\n`;

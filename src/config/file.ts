@@ -632,20 +632,20 @@ function hasExplicitAgentProfiles(text: string): boolean {
 }
 
 /** Write `agents.implementer`, keeping every other line. Mode is always 0600. */
-export function writeImplementer(path: string, implementer: ImplementerName): void {
+export function writeImplementer(path: string, implementer: ImplementerName): Promise<void> {
   if (!isImplementer(implementer)) {
     throw new Error("agents.implementer must be claude, grok, codex, or opencode");
   }
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
   const profiles = parseAgentSettingsToml(current, implementer);
   if (profiles !== null && hasExplicitAgentProfiles(current)) {
-    writeAgentSettings(path, selectDefaultImplementer(profiles, implementer));
-    return;
+    return writeAgentSettings(path, selectDefaultImplementer(profiles, implementer));
   }
   const next = setImplementerText(current, implementer);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(path, next.endsWith("\n") ? next : `${next}\n`, { mode: 0o600 });
   chmodSync(path, 0o600);
+  return Promise.resolve();
 }
 
 function oneOf<T extends string>(

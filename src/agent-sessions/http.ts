@@ -16,11 +16,11 @@ export function createAgentSessionsHttp(sessions: AgentSessions) {
     async handle(action, raw, access) {
       if (action === "read") {
         const body = AgentSessionReadSchema.parse(raw);
-        const chunks = sessions.read(
+        const chunks = await sessions.read(
           { ...access, generation: body.generation },
           body.snapshotGeneration,
         );
-        const snapshot = sessions.snapshot(access.runId, body.snapshotGeneration)!;
+        const snapshot = (await sessions.snapshot(access.runId, body.snapshotGeneration))!;
         const first = await chunks.next();
         return new Response(
           new ReadableStream<Uint8Array>({

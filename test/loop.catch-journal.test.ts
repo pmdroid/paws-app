@@ -15,8 +15,9 @@ import {
   JobLoop,
   listCloseoutRounds,
   migrate,
-  readSetting,
-  updateSetting,
+  readSettingSteps,
+  sqliteDb,
+  updateSettingSteps,
   openDatabase,
   OutboxDispatcher,
   recordConfirmedRemoteMerge,
@@ -125,9 +126,11 @@ test("mergeSettingsFor names a refused value and continues on the workspace defa
 test("a Settings › Merging save reaches the next item without a restart; config.toml [merge] does not", async () => {
   const f = await fixture();
   const configPath = join(f.root, "config.toml");
-  const release = useSettingsStore(configPath, {
-    read: () => readSetting(f.db, CONFIG_SETTINGS_KEY),
-    update: (change) => updateSetting(f.db, CONFIG_SETTINGS_KEY, change),
+  const store = sqliteDb(f.db);
+  const settings = await useSettingsStore(configPath, {
+    read: () => store.run((q) => readSettingSteps(q, CONFIG_SETTINGS_KEY)),
+    update: (change) =>
+      store.transaction((q) => updateSettingSteps(q, CONFIG_SETTINGS_KEY, change)),
   });
   try {
     f.tracker.issueMergeContext = async () => ({ projectId: null, labels: [] });
@@ -155,7 +158,7 @@ test("a Settings › Merging save reaches the next item without a restart; confi
     await writeFile(configPath, '[merge]\nmain_moved = "ci"\n');
     expect(await next("item-c")).toBe("closeout");
   } finally {
-    release();
+    settings.release();
     await f.close();
   }
 });

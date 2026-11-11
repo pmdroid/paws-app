@@ -12,6 +12,7 @@ import {
   RunFileStorageError,
   runFileKeyId,
 } from "../src/run-files";
+import { syncSteps } from "../src/db";
 import { tempDb, tempHome } from "./helpers";
 
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -57,15 +58,16 @@ describe("run file store", () => {
       },
       plaintext,
     });
-  const state = (runId: string) => () => ({
-    ...file(runId),
-    open: true,
-    sizeBytes: db
-      .query<{ size: number }, [string]>(
-        "SELECT size_bytes AS size FROM runner_transcript WHERE run_id=?",
-      )
-      .get(runId)!.size,
-  });
+  const state = (runId: string) => () =>
+    syncSteps(() => ({
+      ...file(runId),
+      open: true,
+      sizeBytes: db
+        .query<{ size: number }, [string]>(
+          "SELECT size_bytes AS size FROM runner_transcript WHERE run_id=?",
+        )
+        .get(runId)!.size,
+    }));
   async function upload(runId: string, chunks = store()) {
     for (const [offset, bytes] of [
       [0, first],

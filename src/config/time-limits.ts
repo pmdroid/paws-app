@@ -188,6 +188,6 @@ export function setTimeLimitsText(current: string, settings: StoredTimeLimits): 
   return retained === "" ? table.trimStart() : `${retained}\n${table}`;
 }
 
-export function writeTimeLimits(path: string, settings: StoredTimeLimits): void {
-  updateConfigText(path, (text) => setTimeLimitsText(text, settings));
+export function writeTimeLimits(path: string, settings: StoredTimeLimits): Promise<void> {
+  return updateConfigText(path, (text) => setTimeLimitsText(text, settings));
 }

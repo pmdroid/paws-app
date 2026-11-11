@@ -767,14 +767,14 @@ export function writeMergePolicy(
   riskPaths?: Record<string, string[]>,
   wait?: CommentWaitInput,
   ignored?: Record<string, IgnoredComments>,
-): void {
+): Promise<void> {
   const withPaths =
     riskPaths === undefined
       ? current.repositories
       : withHighRiskPaths(current.repositories ?? {}, riskPaths);
   const repositories =
     ignored === undefined ? withPaths : withIgnoredComments(withPaths ?? {}, ignored);
-  updateConfigText(path, (text) =>
+  return updateConfigText(path, (text) =>
     setMergeSettingsText(text, {
       ...policy.default,
       ...(current.lane === undefined ? {} : { lane: current.lane }),
