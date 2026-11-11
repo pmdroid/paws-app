@@ -22,6 +22,7 @@ import {
   reserveImprovementDeliveryRemote,
   syncWorkspaceMember,
   type ImprovementActionStep,
+  sqliteDb,
 } from "../src/db";
 import {
   dailyFindingKey,
@@ -350,13 +351,13 @@ describe("improvement delivery", () => {
       now: w.now(),
     });
     expect(again.ok).toBe(false);
-    const crashed = claimImprovementDelivery(w.db, {
+    const crashed = (await claimImprovementDelivery(sqliteDb(w.db), {
       deliveryId: delivery(w, id).id,
       owner: "crashed",
       now: w.now(),
       leaseMs: 1_000,
-    })!;
-    reserveImprovementDeliveryRemote(w.db, {
+    }))!;
+    await reserveImprovementDeliveryRemote(sqliteDb(w.db), {
       deliveryId: crashed.id,
       owner: "crashed",
       attempt: crashed.attempts,
@@ -375,9 +376,11 @@ describe("improvement delivery", () => {
     await Promise.all([w.run({ owner: "worker-1" }), w.run({ owner: "worker-2" })]);
     expect(delivery(w, id).state).toBe("succeeded");
     expect(w.linear.created).toHaveLength(1);
-    expect(listImprovementDeliveryAttempts(w.db, delivery(w, id).id).map((a) => a.outcome)).toEqual(
-      ["expired", "succeeded"],
-    );
+    expect(
+      (await listImprovementDeliveryAttempts(sqliteDb(w.db), delivery(w, id).id)).map(
+        (a) => a.outcome,
+      ),
+    ).toEqual(["expired", "succeeded"]);
   });
 
   test("rate limiting keeps the decision and waits for Linear's retry time", async () => {
@@ -414,7 +417,10 @@ describe("improvement delivery", () => {
     await w.run();
     expect(delivery(w, id).state).toBe("failed");
     expect(getImprovement(w.db, id)!.reviewState).toBe("accepted");
-    requeueImprovementDelivery(w.db, { deliveryId: delivery(w, id).id, now: w.now() });
+    await requeueImprovementDelivery(sqliteDb(w.db), {
+      deliveryId: delivery(w, id).id,
+      now: w.now(),
+    });
     await w.run();
     expect(delivery(w, id).state).toBe("succeeded");
 
@@ -441,7 +447,7 @@ describe("improvement delivery", () => {
       recovery: "choose_destination",
     });
     expect(
-      repairImprovementDestination(w.db, {
+      await repairImprovementDestination(sqliteDb(w.db), {
         deliveryId: delivery(w, id).id,
         teamId: "team-b",
         now: w.now(),
@@ -464,7 +470,7 @@ describe("improvement delivery", () => {
     await w.run();
     expect(delivery(w, id)).toMatchObject({ state: "unknown", blocked: "destination" });
     expect(
-      repairImprovementDestination(w.db, {
+      await repairImprovementDestination(sqliteDb(w.db), {
         deliveryId: delivery(w, id).id,
         teamId: "team-b",
         now: w.now(),
@@ -636,7 +642,10 @@ describe("improvement delivery", () => {
     expect(delivery(w, linked, "evidence_comment").state).toBe("unknown");
     expect(reopen(w, linked)).toMatchObject({ ok: false, reason: "accepted" });
     expect(
-      cancelImprovementEvidenceComment(w.db, delivery(w, linked, "evidence_comment").id),
+      await cancelImprovementEvidenceComment(
+        sqliteDb(w.db),
+        delivery(w, linked, "evidence_comment").id,
+      ),
     ).toBeNull();
     expect(listImprovementDeliveries(w.db, linked)).toHaveLength(2);
   });
@@ -680,7 +689,7 @@ describe("improvement delivery", () => {
     expect(await recovery(w, withComment, "evidence_comment")).toBe("cancel_comment");
     expect(reopen(w, withComment)).toMatchObject({ ok: false, reason: "accepted" });
     const comment = delivery(w, withComment, "evidence_comment");
-    expect(cancelImprovementEvidenceComment(w.db, comment.id)).toMatchObject({
+    expect(await cancelImprovementEvidenceComment(sqliteDb(w.db), comment.id)).toMatchObject({
       reviewState: "accepted",
       evidenceComment: false,
     });

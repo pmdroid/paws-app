@@ -14,7 +14,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
+import { settled, sqliteDb, type Q, type Steps, type Db } from "./db";
 import type * as pgSchema from "./schema-pg";
 import { ulid } from "./ulid";
 
@@ -199,12 +199,12 @@ export function* getImprovementSteps(q: Q, id: string) {
   return row === undefined ? null : improvementFromRow(row);
 }
 
-export function improvementBySource(
-  db: Database,
+export async function improvementBySource(
+  store: Db,
   workspaceId: string,
   source: ImprovementSource,
-): Improvement | null {
-  return settled(sqliteDb(db).run((q) => improvementBySourceSteps(q, workspaceId, source)));
+): Promise<Improvement | null> {
+  return store.run((q) => improvementBySourceSteps(q, workspaceId, source));
 }
 
 export function* improvementBySourceSteps(q: Q, workspaceId: string, source: ImprovementSource) {
@@ -225,12 +225,12 @@ export function* improvementBySourceSteps(q: Q, workspaceId: string, source: Imp
   return row === undefined ? null : improvementFromRow(row);
 }
 
-export function improvementsForIssue(
-  db: Database,
+export async function improvementsForIssue(
+  store: Db,
   workspaceId: string,
   issueId: string,
-): Improvement[] {
-  return settled(sqliteDb(db).run((q) => improvementsForIssueSteps(q, workspaceId, issueId)));
+): Promise<Improvement[]> {
+  return store.run((q) => improvementsForIssueSteps(q, workspaceId, issueId));
 }
 
 export function* improvementsForIssueSteps(q: Q, workspaceId: string, issueId: string) {
@@ -245,8 +245,8 @@ export function* improvementsForIssueSteps(q: Q, workspaceId: string, issueId: s
   return rows.map(improvementFromRow);
 }
 
-export function listImprovements(db: Database, workspaceId: string): Improvement[] {
-  return settled(sqliteDb(db).run((q) => listImprovementsSteps(q, workspaceId)));
+export async function listImprovements(store: Db, workspaceId: string): Promise<Improvement[]> {
+  return store.run((q) => listImprovementsSteps(q, workspaceId));
 }
 
 export function* listImprovementsSteps(q: Q, workspaceId: string) {
@@ -588,8 +588,8 @@ export function* decideImprovementSteps(
   return { ok: true, improvement: (yield* getImprovementSteps(q, input.improvementId))! };
 }
 
-export function improvementWithdrawable(db: Database, improvementId: string): boolean {
-  return settled(sqliteDb(db).run((q) => improvementWithdrawableSteps(q, improvementId)));
+export async function improvementWithdrawable(store: Db, improvementId: string): Promise<boolean> {
+  return store.run((q) => improvementWithdrawableSteps(q, improvementId));
 }
 
 export function* improvementWithdrawableSteps(q: Q, improvementId: string) {
@@ -614,13 +614,11 @@ export function* improvementWithdrawableSteps(q: Q, improvementId: string) {
   );
 }
 
-export function cancelImprovementEvidenceComment(
-  db: Database,
+export async function cancelImprovementEvidenceComment(
+  store: Db,
   deliveryId: string,
-): Improvement | null {
-  return settled(
-    sqliteDb(db).transaction((q) => cancelImprovementEvidenceCommentSteps(q, deliveryId)),
-  );
+): Promise<Improvement | null> {
+  return store.transaction((q) => cancelImprovementEvidenceCommentSteps(q, deliveryId));
 }
 
 export function* cancelImprovementEvidenceCommentSteps(q: Q, deliveryId: string) {
@@ -671,11 +669,11 @@ export type ImprovementCriterion = {
   at: number;
 };
 
-export function listImprovementCriteria(
-  db: Database,
+export async function listImprovementCriteria(
+  store: Db,
   improvementId: string,
-): ImprovementCriterion[] {
-  return settled(sqliteDb(db).run((q) => listImprovementCriteriaSteps(q, improvementId)));
+): Promise<ImprovementCriterion[]> {
+  return store.run((q) => listImprovementCriteriaSteps(q, improvementId));
 }
 
 export function* listImprovementCriteriaSteps(q: Q, improvementId: string) {
@@ -695,11 +693,11 @@ export function* listImprovementCriteriaSteps(q: Q, improvementId: string) {
   );
 }
 
-export function requeueImprovementDelivery(
-  db: Database,
+export async function requeueImprovementDelivery(
+  store: Db,
   input: { deliveryId: string; now: number },
-): ImprovementDelivery | null {
-  return settled(sqliteDb(db).run((q) => requeueImprovementDeliverySteps(q, input)));
+): Promise<ImprovementDelivery | null> {
+  return store.run((q) => requeueImprovementDeliverySteps(q, input));
 }
 
 export function* requeueImprovementDeliverySteps(q: Q, input: { deliveryId: string; now: number }) {
@@ -725,11 +723,11 @@ export function* requeueImprovementDeliverySteps(q: Q, input: { deliveryId: stri
   return row === undefined ? null : deliveryFromRow(q, row);
 }
 
-export function repairImprovementDestination(
-  db: Database,
+export async function repairImprovementDestination(
+  store: Db,
   input: { deliveryId: string; teamId: string; now: number },
-): ImprovementDelivery | null {
-  return settled(sqliteDb(db).transaction((q) => repairImprovementDestinationSteps(q, input)));
+): Promise<ImprovementDelivery | null> {
+  return store.transaction((q) => repairImprovementDestinationSteps(q, input));
 }
 
 export function* repairImprovementDestinationSteps(
@@ -766,8 +764,11 @@ export function* repairImprovementDestinationSteps(
 
 type RemoteReservation = { deliveryId: string; owner: string; attempt: number; remoteId: string };
 
-export function reserveImprovementDeliveryRemote(db: Database, input: RemoteReservation): boolean {
-  return settled(sqliteDb(db).run((q) => reserveImprovementDeliveryRemoteSteps(q, input)));
+export async function reserveImprovementDeliveryRemote(
+  store: Db,
+  input: RemoteReservation,
+): Promise<boolean> {
+  return store.run((q) => reserveImprovementDeliveryRemoteSteps(q, input));
 }
 
 export function* reserveImprovementDeliveryRemoteSteps(q: Q, input: RemoteReservation) {
@@ -803,8 +804,8 @@ function deliveryDue(q: Q, now: number) {
   );
 }
 
-export function improvementDeliveryWorkspaces(db: Database, now: number): string[] {
-  return settled(sqliteDb(db).run((q) => improvementDeliveryWorkspacesSteps(q, now)));
+export async function improvementDeliveryWorkspaces(store: Db, now: number): Promise<string[]> {
+  return store.run((q) => improvementDeliveryWorkspacesSteps(q, now));
 }
 
 export function* improvementDeliveryWorkspacesSteps(q: Q, now: number) {
@@ -820,14 +821,12 @@ export function* improvementDeliveryWorkspacesSteps(q: Q, now: number) {
   return rows.map((row) => row.workspaceId);
 }
 
-export function acceptedImprovementsForFindings(
-  db: Database,
+export async function acceptedImprovementsForFindings(
+  store: Db,
   workspaceId: string,
   findingIds: readonly number[],
-): Improvement[] {
-  return settled(
-    sqliteDb(db).run((q) => acceptedImprovementsForFindingsSteps(q, workspaceId, findingIds)),
-  );
+): Promise<Improvement[]> {
+  return store.run((q) => acceptedImprovementsForFindingsSteps(q, workspaceId, findingIds));
 }
 
 export function* acceptedImprovementsForFindingsSteps(
@@ -862,11 +861,11 @@ export function* acceptedImprovementsForFindingsSteps(
   return rows.map(improvementFromRow);
 }
 
-export function listImprovementDecisions(
-  db: Database,
+export async function listImprovementDecisions(
+  store: Db,
   improvementId: string,
-): ImprovementDecision[] {
-  return settled(sqliteDb(db).run((q) => listImprovementDecisionsSteps(q, improvementId)));
+): Promise<ImprovementDecision[]> {
+  return store.run((q) => listImprovementDecisionsSteps(q, improvementId));
 }
 
 export function* listImprovementDecisionsSteps(q: Q, improvementId: string) {
@@ -935,12 +934,12 @@ export function* listImprovementDeliveriesSteps(q: Q, improvementId: string) {
   return rows.map((row) => deliveryFromRow(q, row));
 }
 
-export function claimableImprovementDeliveries(
-  db: Database,
+export async function claimableImprovementDeliveries(
+  store: Db,
   workspaceId: string,
   now: number,
-): ImprovementDelivery[] {
-  return settled(sqliteDb(db).run((q) => claimableImprovementDeliveriesSteps(q, workspaceId, now)));
+): Promise<ImprovementDelivery[]> {
+  return store.run((q) => claimableImprovementDeliveriesSteps(q, workspaceId, now));
 }
 
 export function* claimableImprovementDeliveriesSteps(q: Q, workspaceId: string, now: number) {
@@ -958,11 +957,11 @@ export function* claimableImprovementDeliveriesSteps(q: Q, workspaceId: string, 
 
 type DeliveryClaim = { deliveryId: string; owner: string; now: number; leaseMs: number };
 
-export function claimImprovementDelivery(
-  db: Database,
+export async function claimImprovementDelivery(
+  store: Db,
   input: DeliveryClaim,
-): ImprovementDelivery | null {
-  return settled(sqliteDb(db).transaction((q) => claimImprovementDeliverySteps(q, input)));
+): Promise<ImprovementDelivery | null> {
+  return store.transaction((q) => claimImprovementDeliverySteps(q, input));
 }
 
 export function* claimImprovementDeliverySteps(q: Q, input: DeliveryClaim) {
@@ -1011,8 +1010,11 @@ type DeliverySettlement = {
   now: number;
 };
 
-export function settleImprovementDelivery(db: Database, input: DeliverySettlement): boolean {
-  return settled(sqliteDb(db).transaction((q) => settleImprovementDeliverySteps(q, input)));
+export async function settleImprovementDelivery(
+  store: Db,
+  input: DeliverySettlement,
+): Promise<boolean> {
+  return store.transaction((q) => settleImprovementDeliverySteps(q, input));
 }
 
 export function* settleImprovementDeliverySteps(q: Q, input: DeliverySettlement) {
@@ -1093,11 +1095,11 @@ export type ImprovementDeliveryAttempt = {
   settledAt: number | null;
 };
 
-export function listImprovementDeliveryAttempts(
-  db: Database,
+export async function listImprovementDeliveryAttempts(
+  store: Db,
   deliveryId: string,
-): ImprovementDeliveryAttempt[] {
-  return settled(sqliteDb(db).run((q) => listImprovementDeliveryAttemptsSteps(q, deliveryId)));
+): Promise<ImprovementDeliveryAttempt[]> {
+  return store.run((q) => listImprovementDeliveryAttemptsSteps(q, deliveryId));
 }
 
 export function* listImprovementDeliveryAttemptsSteps(q: Q, deliveryId: string) {
@@ -1182,11 +1184,11 @@ export function* recordImprovementOutcomeSteps(q: Q, input: OutcomeInput) {
   } as ImprovementOutcomeRecord;
 }
 
-export function listImprovementOutcomes(
-  db: Database,
+export async function listImprovementOutcomes(
+  store: Db,
   improvementId: string,
-): ImprovementOutcomeRecord[] {
-  return settled(sqliteDb(db).run((q) => listImprovementOutcomesSteps(q, improvementId)));
+): Promise<ImprovementOutcomeRecord[]> {
+  return store.run((q) => listImprovementOutcomesSteps(q, improvementId));
 }
 
 export function* listImprovementOutcomesSteps(q: Q, improvementId: string) {
