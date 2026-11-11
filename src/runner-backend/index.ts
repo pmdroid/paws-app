@@ -701,16 +701,18 @@ export function createRemoteAgentRunner(options: {
       if (!(await reserved(runId))) {
         try {
           const issuedAt = now();
-          work.enqueue({
-            id: randomUUID(),
-            runnerId: row.runnerId,
-            workspaceId: row.workspaceId,
-            issuedAt,
-            expiresAt: issuedAt + 60_000,
-            type: "cancel",
-            runId,
-            generation: row.generation,
-          });
+          await store.transaction((q) =>
+            work.enqueueSteps(q, {
+              id: randomUUID(),
+              runnerId: row.runnerId,
+              workspaceId: row.workspaceId,
+              issuedAt,
+              expiresAt: issuedAt + 60_000,
+              type: "cancel",
+              runId,
+              generation: row.generation,
+            }),
+          );
         } catch (error) {
           journalCaught(error, "runner-backend.attachedWork.cancelStale", itemId);
         }
@@ -2665,16 +2667,19 @@ export function createRemoteAgentRunner(options: {
             if (command && !detached) {
               try {
                 const issuedAt = now();
-                work.enqueue({
-                  id: randomUUID(),
-                  runnerId: selected.id,
-                  workspaceId: selected.workspaceId,
-                  issuedAt,
-                  expiresAt: issuedAt + 60_000,
-                  type: "cancel",
-                  runId: command.runId,
-                  generation: command.generation,
-                });
+                const cancelled = command;
+                await store.transaction((q) =>
+                  work.enqueueSteps(q, {
+                    id: randomUUID(),
+                    runnerId: selected.id,
+                    workspaceId: selected.workspaceId,
+                    issuedAt,
+                    expiresAt: issuedAt + 60_000,
+                    type: "cancel",
+                    runId: cancelled.runId,
+                    generation: cancelled.generation,
+                  }),
+                );
               } catch (caughtError4) {
                 journalCaught(caughtError4, "runner-backend.forItem.now", itemId);
               }

@@ -75,7 +75,7 @@ export function createRemoteHandover(options: {
       const version = yield* runnerHostVersionSteps(q, row.runnerId);
       if (!versionAtLeast(version, HANDOVER_RUNNER_VERSION)) return "old_runner" as const;
       const at = now();
-      work.enqueue({
+      yield* work.enqueueSteps(q, {
         id: randomUUID(),
         type: "handover",
         runId: row.runId,

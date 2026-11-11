@@ -117,7 +117,7 @@ export function createRemoteCheckpoint(options: {
       if ((row.lastSeen ?? 0) <= now() - RUNNER_ONLINE_MS) return null;
       if (!versionAtLeast(row.version, CHECKPOINT_RUNNER_VERSION)) return null;
       const at = now();
-      work.enqueue({
+      yield* work.enqueueSteps(q, {
         id: randomUUID(),
         type: "checkpoint",
         runId,
