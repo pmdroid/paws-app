@@ -16,6 +16,7 @@ import {
   requireLinearTaskDelegation,
   revokeLinearInstallation,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import {
   createFakeLinearAccessReads,
@@ -65,7 +66,7 @@ async function fixture() {
     lifecycle,
     oauthClientId: "client",
     appUserId: "app",
-    stopSession: () => {},
+    stopSession: () => syncSteps(() => {}),
   });
   const orchestrator = attachOrchestrator({
     db,

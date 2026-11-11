@@ -411,7 +411,7 @@ test("a queued item's start job waits while a conversation runs on its session",
     now: f.clock.now(),
   });
   const job = claimNextJob(f.db, { now: f.clock.now(), queues: [JOB_KIND.start] })!;
-  const current = { isCurrent: () => true };
+  const current = { isCurrent: async () => true };
   expect(await f.orchestrator["waitingForConversation"](job, current)).toBe(true);
   expect(listJobs(f.db).find((entry) => entry.id === job.id)).toMatchObject({
     status: "pending",

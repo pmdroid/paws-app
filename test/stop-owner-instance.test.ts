@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
-import type { Clock } from "../src/core";
+import { JOB_KIND, type Clock } from "../src/core";
 import {
   applyLinearCommand,
   applyWorkItemEvent,
@@ -10,6 +10,7 @@ import {
   claimRun,
   commandDeliveryQueue,
   COMMAND_DELIVERY_MS,
+  enqueueCommand,
   getWorkItem,
   insertQueuedItem,
   JobLoop,
@@ -182,5 +183,50 @@ test("a delayed stop aborts the turn it stopped and leaves a turn started after 
   } finally {
     a.close();
     b.close();
+  }
+});
+
+test("a queued stop forwards to the run's owner through the store the orchestrator is bound to", async () => {
+  const { a } = await twoInstances(false);
+  const root = tempHome();
+  const db = openDatabase(join(a.db.filename));
+  const store = { ...sqliteDb(db) };
+  const self = await registerInstance(store, {
+    role: "all",
+    host: "acme-store",
+    version: null,
+    now: Date.now(),
+  });
+  bindInstance(store, self.id);
+  const jobs = new JobLoop(db, clock, { store });
+  const orchestrator = new Orchestrator({
+    db,
+    store,
+    jobs,
+    clock,
+    outbox: new OutboxDispatcher(db, clock, { store }),
+    pawsRoot: join(root, "store"),
+    home: join(root, "store"),
+    instanceId: self.id,
+    launch: () => {
+      throw new Error("The test starts no turn");
+    },
+  });
+  try {
+    await runningItem(a.db, "acme-5", a.id);
+    enqueueCommand(db, {
+      type: "stop",
+      source: "dashboard",
+      itemId: "acme-5",
+      requestedAt: Date.now(),
+    });
+    expect((await jobs.tick([JOB_KIND.command]))?.queue).toBe(JOB_KIND.command);
+    expect(orchestrator.store).toBe(store);
+    expect(getWorkItem(db, "acme-5")?.state).toBe("cancelled");
+    const deliveries = listJobs(db).filter((job) => job.queue === commandDeliveryQueue(a.id));
+    expect(deliveries.map((job) => job.status)).toEqual(["pending"]);
+  } finally {
+    a.close();
+    db.close();
   }
 });

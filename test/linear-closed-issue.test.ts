@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { systemClock } from "../src/core";
-import { JobLoop, OutboxDispatcher } from "../src/db";
+import { JobLoop, OutboxDispatcher, syncSteps } from "../src/db";
 import {
   acknowledgeNewSession,
   createFakeLinearAccessReads,
@@ -45,7 +45,7 @@ test.each([
     lifecycle,
     oauthClientId: "client",
     appUserId: "app",
-    stopSession: () => {},
+    stopSession: () => syncSteps(() => {}),
   });
   let launches = 0;
   const orchestrator = attachOrchestrator({

@@ -12,6 +12,7 @@ import {
   recordLinearInstallation,
   revokeLinearInstallation,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import {
@@ -94,9 +95,10 @@ async function fixture(child = false, actorId: string | null = "human") {
     lifecycle,
     oauthClientId: "client",
     appUserId: null,
-    stopSession: (id) => {
-      stopped.push(id);
-    },
+    stopSession: (_q, id) =>
+      syncSteps(() => {
+        stopped.push(id);
+      }),
     now: () => clock.now,
   });
   const item = getWorkItem(db, task.items[0]!.id)!;
@@ -195,7 +197,7 @@ test.each(["unknown", "rejected"])(
       lifecycle,
       oauthClientId: "client",
       appUserId: "app",
-      stopSession: () => {},
+      stopSession: () => syncSteps(() => {}),
       now: () => 10,
     });
     await expect(gate.prepare(f.item, new AbortController().signal)).rejects.toThrow();
@@ -207,7 +209,7 @@ test.each(["unknown", "rejected"])(
       lifecycle,
       oauthClientId: "client",
       appUserId: "app",
-      stopSession: () => {},
+      stopSession: () => syncSteps(() => {}),
       now: () => 11,
     });
     await expect(recovered.prepare(f.item, new AbortController().signal)).rejects.toThrow(

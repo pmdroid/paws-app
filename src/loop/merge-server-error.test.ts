@@ -18,6 +18,7 @@ import {
   recordItemPullRequest,
   recordRebaseReturn,
   sqliteDb,
+  syncSteps,
 } from "../db";
 import { GitHubHttpError, type GitHubClient } from "../github";
 import { REBASE_CONFLICT_INSTRUCTION } from "../merge";
@@ -79,7 +80,8 @@ async function fixture(mergeable: boolean | null) {
   });
   const context = {
     signal: new AbortController().signal,
-    isCurrent: () => true,
+    isCurrent: async () => true,
+    isCurrentSteps: () => syncSteps(() => true),
     extendLease: async () => true,
   };
   return {

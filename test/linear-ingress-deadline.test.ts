@@ -10,6 +10,7 @@ import {
   enqueueOutbox,
   recordLinearInstallation,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import {
   createFakeLinearIssueLifecycle,
@@ -157,7 +158,7 @@ function fixture() {
     }),
     oauthClientId: "client",
     appUserId: "app",
-    stopSession() {},
+    stopSession: () => syncSteps(() => {}),
   });
   const outbox = new OutboxDispatcher(db, systemClock);
   orchestrator = attachOrchestrator({

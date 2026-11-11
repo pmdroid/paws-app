@@ -1481,10 +1481,6 @@ export function* releaseReviewerFaultHoldsSteps(q: Q, itemId: string, now: numbe
   return rows.length;
 }
 
-export function releaseReviewerFaultHolds(db: Database, itemId: string, now: number): number {
-  return settled(sqliteDb(db).run((q) => releaseReviewerFaultHoldsSteps(q, itemId, now)));
-}
-
 export type RunnerCapacityWaitState = {
   since: number;
   attempt: number;

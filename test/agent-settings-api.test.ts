@@ -131,7 +131,7 @@ describe("local agent settings API", () => {
   test("applyToWaiting is a per-save boolean and is never stored", async () => {
     const { options } = fixture();
     let calls = 0;
-    options.applyToWaiting = () => {
+    options.applyToWaiting = async () => {
       calls++;
       return 3;
     };

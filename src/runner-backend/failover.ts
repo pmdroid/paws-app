@@ -70,7 +70,7 @@ export type FailoverAttempt = (
 /** Waits out a usage limit. It returns at the resume time or throws when the run stops. */
 export type UsageLimitWait = {
   now(): number;
-  pause(limit: UsageLimitPause, profilesChanged?: () => boolean): Promise<void>;
+  pause(limit: UsageLimitPause, profilesChanged?: () => Promise<boolean>): Promise<void>;
 };
 
 export type FailoverLedger = {
@@ -129,9 +129,9 @@ export async function runWithFailover(
       null,
     ]);
   let configuredProfilesKey = profileKey(input);
-  const profilesChanged = () =>
+  const profilesChanged = async () =>
     input.resolveProfiles !== undefined &&
-    profileKey(input.resolveProfiles()) !== configuredProfilesKey;
+    profileKey(await input.resolveProfiles()) !== configuredProfilesKey;
   let index = 0;
   if (ledger) {
     const history = await ledger.load(configuredProfilesKey);
@@ -192,7 +192,7 @@ export async function runWithFailover(
         if (usageLimits.now() < error.resumeAt && ++usageLimitEvents >= MAX_USAGE_LIMIT_EVENTS)
           throw new UsageLimitExhaustedError(error.runnerId, error);
         if (input.resolveProfiles) {
-          const latest = input.resolveProfiles();
+          const latest = await input.resolveProfiles();
           const latestKey = profileKey(latest);
           if (latestKey !== configuredProfilesKey) {
             profile = latest.profile;

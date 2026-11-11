@@ -152,7 +152,7 @@ test("only unfinished runs without live work leases change; queued items still r
     profileSnapshot(id: string): unknown;
   };
   const next = await internals.ensureRun(queued);
-  expect(internals.profileSnapshot(next.id)).toEqual(profiles);
+  expect(await internals.profileSnapshot(next.id)).toEqual(profiles);
 });
 
 test("agent change announces once at session start, including after a new run", async () => {
@@ -233,7 +233,7 @@ test("model-only changes preserve candidate and do not announce an agent switch"
     defaults: { ...oldProfiles, implementer: { agent: "claude", model: "new" } },
     projects: [],
   });
-  expect(f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
+  expect(await f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
   expect(JSON.parse(readFileSync(waiting.file, "utf8"))).toEqual({
     profiles: { ...oldProfiles, implementer: { agent: "claude", model: "new" } },
     candidate: waiting.candidate,
@@ -255,18 +255,18 @@ test("an existing remote invocation resolves updated waiting profiles and role-s
       worktreePath: f.root,
       prompt: "Continue",
     });
-  expect(f.calls[0]!.resolveProfiles!().profile).toEqual(oldProfiles.implementer);
+  expect((await f.calls[0]!.resolveProfiles!()).profile).toEqual(oldProfiles.implementer);
   const reviewerFallback = { agent: "codex", model: "fallback-review" } as const;
   writeAgentSettings(join(f.root, "config.toml"), {
     defaults: { ...profiles, reviewerFallback },
     projects: [],
   });
-  expect(f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
-  expect(f.calls[0]!.resolveProfiles!()).toEqual({
+  expect(await f.orchestrator.applyAgentSettingsToWaiting()).toBe(1);
+  expect(await f.calls[0]!.resolveProfiles!()).toEqual({
     profile: profiles.implementer,
     fallbackProfile: undefined,
   });
-  expect(f.calls[1]!.resolveProfiles!()).toEqual({
+  expect(await f.calls[1]!.resolveProfiles!()).toEqual({
     profile: profiles.reviewer,
     fallbackProfile: reviewerFallback,
   });
@@ -334,7 +334,7 @@ test("a retired account order in config.toml changes no waiting run and reaches 
     config,
     `${readFileSync(config, "utf8")}\n[agents.defaults.accounts]\nimplementer = ["01J0000000000000000000000A"]\nreviewer = ["01J0000000000000000000000X"]\n`,
   );
-  expect(f.orchestrator.applyAgentSettingsToWaiting()).toBe(0);
+  expect(await f.orchestrator.applyAgentSettingsToWaiting()).toBe(0);
   expect(readFileSync(waiting.file, "utf8")).toBe(before);
   const internal = f.orchestrator as unknown as {
     remoteAgentForItem(id: string): (input: RunAgentOptions) => Promise<RunAgentResult>;

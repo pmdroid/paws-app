@@ -40,6 +40,7 @@ import {
   migrate,
   openDatabase,
   sqliteDb,
+  syncSteps,
 } from "../src/db";
 import {
   createFakeGitHub,
@@ -2053,10 +2054,10 @@ test("a 1M reviewer profile without its entry reviews on the standard model with
   const reviewer = createAcpCodexReviewer({
     pawsRoot: layout.pawsRoot,
     home: layout.home,
-    profiles: {
+    profiles: async () => ({
       implementer: { agent: "codex", model: null },
       reviewer: { agent: "claude", model: "opus[1m]" },
-    },
+    }),
     postUpdate: {
       async post(text) {
         posted.push(text);
@@ -4915,9 +4916,10 @@ test("a Linear correction interrupts code, returns a screenshot, and completes a
       lifecycle,
       oauthClientId: scope.oauthClientId,
       appUserId: scope.appUserId,
-      stopSession: (sessionId) => {
-        revoked.push(sessionId);
-      },
+      stopSession: (_q, sessionId) =>
+        syncSteps(() => {
+          revoked.push(sessionId);
+        }),
       interruptSession: (sessionId) => orchestrator.interruptLinearSession(sessionId),
     });
     return attachOrchestrator({

@@ -3,7 +3,7 @@ import { journalCaught, journalItemId } from "../journal";
 import type { Database } from "bun:sqlite";
 import { DEFAULT_LEASE_MS, isMergeWork, JOB_KIND, sleep, type Clock } from "../core";
 import { and, eq, isNotNull, notInArray, sql } from "drizzle-orm";
-import { sqliteDb, type Db, type Q } from "./db";
+import { sqliteDb, type Db, type Q, type Steps } from "./db";
 import { jobInstanceElsewhereSteps } from "./instances";
 import { journal } from "./journal";
 import { accrueAtJobBoundary } from "./items";
@@ -12,7 +12,6 @@ import {
   completeJobSteps,
   extendJobLease,
   failJobSteps,
-  isJobCurrent,
   isJobCurrentSteps,
   nextClaimableRunAtSteps,
   onJobReady,
@@ -43,7 +42,8 @@ type Sleeper = (ms: number, signal?: AbortSignal) => Promise<void>;
 
 export type JobContext = {
   signal: AbortSignal;
-  isCurrent(): boolean;
+  isCurrent(): Promise<boolean>;
+  isCurrentSteps(q: Q): Steps<boolean>;
   extendLease: (leaseMs?: number) => Promise<boolean>;
 };
 
@@ -305,21 +305,17 @@ export class JobLoop {
   private async execute(job: Job, handler: JobHandler): Promise<void> {
     await this.settleAwake(job, "claimed");
     const controller = new AbortController();
-    const current = () => {
-      if (!controller.signal.aborted && !isJobCurrent(this.db, job))
+    function* currentSteps(q: Q) {
+      if (!controller.signal.aborted && !(yield* isJobCurrentSteps(q, job)))
         controller.abort(new Error("Job claim is no longer current"));
       return !controller.signal.aborted;
-    };
-    // The same check as `current`, awaited where the loop itself decides how the job ends.
-    const stillCurrent = async () => {
-      if (!controller.signal.aborted && !(await this.store.run((q) => isJobCurrentSteps(q, job))))
-        controller.abort(new Error("Job claim is no longer current"));
-      return !controller.signal.aborted;
-    };
+    }
+    const stillCurrent = () => this.store.run(currentSteps);
     const leaseMs = this.options.leaseMs ?? DEFAULT_LEASE_MS;
     const context: JobContext = {
       signal: controller.signal,
-      isCurrent: current,
+      isCurrent: stillCurrent,
+      isCurrentSteps: currentSteps,
       extendLease: async (duration = leaseMs) => {
         if (!(await stillCurrent())) return false;
         if (await extendJobLease(this.store, job, this.clock.now(), duration)) return true;
