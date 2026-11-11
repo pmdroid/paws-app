@@ -39,6 +39,7 @@ export {
   ciFixes,
   latestUserTurn,
   rebaseBudgetFor,
+  rebaseBudgetForSteps,
   rebaseReturns,
   returnToAgent,
   type MergeReturnReason,

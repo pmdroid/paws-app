@@ -1,14 +1,16 @@
 import type { Database } from "bun:sqlite";
 import {
-  fixRounds,
-  getItemPullRequest,
-  pendingPullCiFailures,
+  fixRoundsSteps,
+  getItemPullRequestSteps,
   pendingPullCiFailuresSteps,
-  recordCiRound,
-  recordReviewEscape,
-  settlePullCiFailures,
+  recordCiRoundSteps,
+  recordReviewEscapeSteps,
+  settled,
+  settlePullCiFailuresSteps,
   sqliteDb,
   type PullCiFailureRecord,
+  type Q,
+  type Steps,
   type WorkItemRecord,
 } from "../db";
 import { ciFixHandoff, ciFixQuestion, ciFixRoundLine } from "../merge";
@@ -30,7 +32,16 @@ export function currentPullCi(
   now: number,
   scope: PullCiScope = {},
 ): PullCiFailureRecord | null {
-  const pending = pendingPullCiFailures(db, item.id);
+  return settled(sqliteDb(db).run((q) => currentPullCiSteps(q, item, now, scope)));
+}
+
+export function* currentPullCiSteps(
+  q: Q,
+  item: WorkItemRecord,
+  now: number,
+  scope: PullCiScope = {},
+): Steps<PullCiFailureRecord | null> {
+  const pending = yield* pendingPullCiFailuresSteps(q, item.id);
   const current = pending.filter(
     (failure) =>
       failure.itemVersion === item.version &&
@@ -48,8 +59,8 @@ export function currentPullCi(
           !held.includes(failure) && (scope.head === undefined || failure.head === scope.head),
       )
       .at(-1) ?? null;
-  settlePullCiFailures(
-    db,
+  yield* settlePullCiFailuresSteps(
+    q,
     pending.filter((failure) => failure !== latest && !held.includes(failure)),
     "dropped",
     now,
@@ -81,27 +92,34 @@ export function pullCiHandoff(failure: PullCiFailureRecord): string {
   )}`;
 }
 
-export function pullCiQuestion(db: Database, failure: PullCiFailureRecord, limit: number): string {
+export function* pullCiQuestionSteps(
+  q: Q,
+  failure: PullCiFailureRecord,
+  limit: number,
+): Steps<string> {
   return ciFixQuestion(
     failure.failedChecks,
     limit,
-    getItemPullRequest(db, failure.itemId)?.pullUrl ?? null,
+    (yield* getItemPullRequestSteps(q, failure.itemId))?.pullUrl ?? null,
   );
 }
 
-export function pullCiRestarted(
-  db: Database,
-  input: {
-    item: WorkItemRecord;
-    failure: PullCiFailureRecord;
-    jobKey: string;
-    limit: number;
-    now: number;
-  },
-): string {
+type PullCiRestart = {
+  item: WorkItemRecord;
+  failure: PullCiFailureRecord;
+  jobKey: string;
+  limit: number;
+  now: number;
+};
+
+export function pullCiRestarted(db: Database, input: PullCiRestart): string {
+  return settled(sqliteDb(db).transaction((q) => pullCiRestartedSteps(q, input)));
+}
+
+export function* pullCiRestartedSteps(q: Q, input: PullCiRestart): Steps<string> {
   const { item, failure, now } = input;
-  const attempt = fixRounds(db, item.id);
-  recordCiRound(db, {
+  const attempt = yield* fixRoundsSteps(q, item.id);
+  yield* recordCiRoundSteps(q, {
     itemId: item.id,
     head: failure.head,
     runId: item.currentRunId,
@@ -112,7 +130,7 @@ export function pullCiRestarted(
     recordedAt: now,
   });
   if (item.acceptedHead !== null)
-    recordReviewEscape(db, {
+    yield* recordReviewEscapeSteps(q, {
       triggerKey: `${input.jobKey}:ci`,
       itemId: item.id,
       trigger: "ci",
@@ -126,15 +144,18 @@ export function pullCiRestarted(
       },
       recordedAt: now,
     });
-  settlePullCiFailures(db, [failure], "restarted", now);
+  yield* settlePullCiFailuresSteps(q, [failure], "restarted", now);
   return ciFixRoundLine(failure.failedChecks, attempt, input.limit);
 }
 
-export function pullCiAsked(
-  db: Database,
-  input: { item: WorkItemRecord; failure: PullCiFailureRecord; limit: number; now: number },
-): void {
-  recordCiRound(db, {
+type PullCiAsk = { item: WorkItemRecord; failure: PullCiFailureRecord; limit: number; now: number };
+
+export function pullCiAsked(db: Database, input: PullCiAsk): void {
+  settled(sqliteDb(db).transaction((q) => pullCiAskedSteps(q, input)));
+}
+
+export function* pullCiAskedSteps(q: Q, input: PullCiAsk): Steps<void> {
+  yield* recordCiRoundSteps(q, {
     itemId: input.item.id,
     head: input.failure.head,
     runId: input.item.currentRunId,
@@ -144,5 +165,5 @@ export function pullCiAsked(
     checks: input.failure.checks,
     recordedAt: input.now,
   });
-  settlePullCiFailures(db, [input.failure], "asked", input.now);
+  yield* settlePullCiFailuresSteps(q, [input.failure], "asked", input.now);
 }

@@ -1,17 +1,20 @@
 import type { Database } from "bun:sqlite";
 import type { StoredReviewFinding } from "../closeout";
 import {
-  fixRounds,
-  getItemPullRequest,
+  emitJobReady,
+  fixRoundsSteps,
   getItemPullRequestSteps,
-  getPullReview,
-  pendingChangeRequests,
+  getPullReviewSteps,
+  pendingChangeRequestsSteps,
   pendingPullCiFailuresSteps,
-  pendingPullComments,
   pendingPullCommentsSteps,
-  recordReviewEscape,
-  settlePullComments,
+  recordReviewEscapeSteps,
+  recordReviewRepliesSteps,
+  settled,
+  settlePullCommentsSteps,
   sqliteDb,
+  type Q,
+  type Steps,
   type NewReviewReply,
   type RestartHandoff,
   type PullCiFailureRecord,
@@ -20,15 +23,15 @@ import {
 } from "../db";
 import type { ReviewThread } from "../github";
 import { REBASE_CONFLICT_INSTRUCTION } from "../merge";
-import { restart } from "./operations";
+import { restartSteps } from "./operations";
 import { COMMENT_FIX_INSTRUCTION, commentDigest } from "./pull-comments";
-import { currentPullCi, pullCiHandoff, pullCiHead, pullCiRestarted } from "./pull-ci";
+import { currentPullCiSteps, pullCiHandoff, pullCiHead, pullCiRestartedSteps } from "./pull-ci";
 import {
   closeoutFindingsNote,
-  postPullFeedback,
+  postPullFeedbackSteps,
   type PullReviewCapabilities,
 } from "./pull-reviews";
-import { recordReplyTargets, replyListSection, replyTargets } from "./review-replies";
+import { replyListSection, replyTargets } from "./review-replies";
 
 export const REBASED_LINES_NOTE =
   "The comments below were made before this rebase. Their line numbers refer to the commit each comment was made on and may have moved after the rebase: find the code they mean on the rebased branch.";
@@ -90,31 +93,46 @@ export function storedFeedbackReads(
   item: WorkItemRecord,
   now: number,
 ): FeedbackReads | null {
-  const pullNumber = getItemPullRequest(db, item.id)?.pullNumber;
-  if (pullNumber === undefined || pendingPullComments(db, item.id).length === 0) return null;
+  return settled(sqliteDb(db).run((q) => storedFeedbackReadsSteps(q, item, now)));
+}
+
+export function* storedFeedbackReadsSteps(
+  q: Q,
+  item: WorkItemRecord,
+  now: number,
+): Steps<FeedbackReads | null> {
+  const pullNumber = (yield* getItemPullRequestSteps(q, item.id))?.pullNumber;
+  if (pullNumber === undefined || (yield* pendingPullCommentsSteps(q, item.id)).length === 0)
+    return null;
   return { pullNumber, threads: [], findings: [], head: null, started: now };
 }
 
-export function pendingFeedback(
-  db: Database,
+export function* pendingFeedbackSteps(
+  q: Q,
   item: WorkItemRecord,
   reads: FeedbackReads,
   now: number,
   options: { ci?: boolean } = {},
-): PendingFeedback {
+): Steps<PendingFeedback> {
   const { pullNumber, threads, findings } = reads;
-  settleCovered(db, pendingPullComments(db, item.id), now);
+  yield* settleCoveredSteps(q, yield* pendingPullCommentsSteps(q, item.id), now);
   const batch =
-    pendingChangeRequests(db, item.id).length > 0
+    (yield* pendingChangeRequestsSteps(q, item.id)).length > 0
       ? []
-      : pendingPullComments(db, item.id).filter((comment) => comment.pullNumber === pullNumber);
+      : (yield* pendingPullCommentsSteps(q, item.id)).filter(
+          (comment) => comment.pullNumber === pullNumber,
+        );
   const digest = batch.length === 0 ? null : commentDigest(batch, threads);
-  if (digest === null && batch.length > 0) settlePullComments(db, batch, "dropped", now);
+  if (digest === null && batch.length > 0) yield* settlePullCommentsSteps(q, batch, "dropped", now);
   const comments = digest === null ? [] : batch;
   const failure =
     options.ci === false
       ? null
-      : currentPullCi(db, item, now, { pullNumber, head: reads.head, observedBy: reads.started });
+      : yield* currentPullCiSteps(q, item, now, {
+          pullNumber,
+          head: reads.head,
+          observedBy: reads.started,
+        });
   const targets = replyTargets({ pullNumber, threads, reviews: [], comments });
   return { pullNumber, comments, digest, failure, targets, findings };
 }
@@ -138,64 +156,83 @@ export function feedbackHandoff(lead: readonly string[], feedback: PendingFeedba
     .join("\n\n");
 }
 
+type FeedbackRestart = Omit<RestartHandoff, "body" | "fixRound"> & {
+  lead: readonly string[];
+  reads: FeedbackReads | null;
+  ci?: boolean;
+  fixRoundLimit: number;
+  sessionId: string | null;
+};
+
 export function restartWithFeedback(
   db: Database,
   item: WorkItemRecord,
-  input: Omit<RestartHandoff, "body" | "fixRound"> & {
-    lead: readonly string[];
-    reads: FeedbackReads | null;
-    ci?: boolean;
-    fixRoundLimit: number;
-    sessionId: string | null;
-  },
+  input: FeedbackRestart,
 ): number | null {
+  const restarted = settled(
+    sqliteDb(db).transaction((q) => restartWithFeedbackSteps(q, item, input)),
+  );
+  if (restarted?.armed) emitJobReady(db);
+  return restarted?.id ?? null;
+}
+
+export function* restartWithFeedbackSteps(
+  q: Q,
+  item: WorkItemRecord,
+  input: FeedbackRestart,
+): Steps<{ id: number; armed: boolean } | null> {
   const { lead, reads, ci, fixRoundLimit, sessionId, ...handoff } = input;
   const fixRound = !FIX_REASONS.includes(handoff.reason);
   const carried =
-    reads !== null && (!fixRound || fixRounds(db, item.id) < fixRoundLimit)
-      ? pendingFeedback(db, item, reads, handoff.now, ci === false ? { ci } : {})
+    reads !== null && (!fixRound || (yield* fixRoundsSteps(q, item.id)) < fixRoundLimit)
+      ? yield* pendingFeedbackSteps(q, item, reads, handoff.now, ci === false ? { ci } : {})
       : null;
   const feedback = hasFeedback(carried) ? carried : null;
   const jobKey =
     handoff.jobKey ??
     (feedback === null ? undefined : `${handoff.reason}:${item.id}:${item.version}`);
-  const jobId = restart(db, item, {
+  const restarted = yield* restartSteps(q, item, {
     ...handoff,
     body: feedbackHandoff(lead, feedback),
     ...(jobKey === undefined ? {} : { jobKey }),
     ...(feedback !== null && fixRound ? { fixRound } : {}),
   });
-  if (jobId !== null && feedback !== null && jobKey !== undefined)
-    deliverFeedback(db, item, feedback, {
+  if (restarted !== null && feedback !== null && jobKey !== undefined)
+    yield* deliverFeedbackSteps(q, item, feedback, {
       jobKey,
       sessionId,
       limit: fixRoundLimit,
       now: handoff.now,
     });
-  return jobId;
+  return restarted;
 }
 
 const FIX_REASONS: readonly string[] = ["findings", "ci", "review"];
 
-export function deliverFeedback(
-  db: Database,
+export function* deliverFeedbackSteps(
+  q: Q,
   item: WorkItemRecord,
   feedback: PendingFeedback,
   input: { jobKey: string; sessionId: string | null; limit: number; now: number },
-): void {
+): Steps<void> {
   const { comments, failure, pullNumber } = feedback;
   const { jobKey, sessionId, now } = input;
   if (comments.length > 0) {
-    postPullFeedback(db, {
+    yield* postPullFeedbackSteps(q, {
       sessionId,
       item,
       key: jobKey,
       body: `${authors(comments)} commented on pull request #${pullNumber}. The agent is working on the comments.`,
       now,
     });
-    recordReplyTargets(db, item.id, jobKey, feedback.targets, now);
+    yield* recordReviewRepliesSteps(q, {
+      itemId: item.id,
+      restartKey: jobKey,
+      replies: feedback.targets,
+      now,
+    });
     if (item.acceptedHead !== null)
-      recordReviewEscape(db, {
+      yield* recordReviewEscapeSteps(q, {
         triggerKey: jobKey,
         itemId: item.id,
         trigger: "comment",
@@ -212,30 +249,32 @@ export function deliverFeedback(
         },
         recordedAt: now,
       });
-    settlePullComments(db, comments, "restarted", now);
+    yield* settlePullCommentsSteps(q, comments, "restarted", now);
   }
   if (failure !== null)
-    postPullFeedback(db, {
+    yield* postPullFeedbackSteps(q, {
       sessionId,
       item,
       key: `${jobKey}:ci`,
-      body: pullCiRestarted(db, { item, failure, jobKey, limit: input.limit, now }),
+      body: yield* pullCiRestartedSteps(q, { item, failure, jobKey, limit: input.limit, now }),
       now,
     });
 }
 
-export function settleCovered(
-  db: Database,
+export function* settleCoveredSteps(
+  q: Q,
   comments: readonly PullCommentRecord[],
   now: number,
-): number {
-  const covered = comments.filter(
-    (comment) =>
+): Steps<number> {
+  const covered: PullCommentRecord[] = [];
+  for (const comment of comments)
+    if (
       comment.source === "inline" &&
       comment.reviewId !== null &&
-      getPullReview(db, comment.reviewId) !== null,
-  );
-  settlePullComments(db, covered, "covered", now);
+      (yield* getPullReviewSteps(q, comment.reviewId)) !== null
+    )
+      covered.push(comment);
+  yield* settlePullCommentsSteps(q, covered, "covered", now);
   return covered.length;
 }
 
