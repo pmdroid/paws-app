@@ -29,8 +29,8 @@ for (const reason of ["findings", "review", "ci"] as const) {
       migrate(db);
       insertQueuedItem(db, { id: "item" });
       await beginImplementRun(sqliteDb(db), "item", 1, checkpoint);
-      applyWorkItemEvent(db, "item", "turn_ended");
-      applyWorkItemEvent(db, "item", "closeout_accepted");
+      await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
+      await applyWorkItemEvent(sqliteDb(db), "item", "closeout_accepted");
       const identity = {
         taskId: "item",
         base: "base",
@@ -44,7 +44,7 @@ for (const reason of ["findings", "review", "ci"] as const) {
         await finishCloseoutProgress(sqliteDb(db), "item", identity, "rejected", 3);
       const body = `Address pending ${reason}`;
       const jobId = restart(db, getWorkItem(db, "item")!, { reason, body, limit: 4, now: 4 })!;
-      applyWorkItemEvent(db, "item", "dispatched");
+      await applyWorkItemEvent(sqliteDb(db), "item", "dispatched");
       db.run("UPDATE job SET status='dead', finished_at=5 WHERE id=?", [jobId]);
       const item = getWorkItem(db, "item")!;
       if (recovery === "transient") {
@@ -80,7 +80,7 @@ test("completed input is not resurrected by recovery", async () => {
     now: 1,
   });
   db.run("UPDATE job SET status='done' WHERE id=?", [id]);
-  applyWorkItemEvent(db, "item", "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
   await recoverOnStartup(sqliteDb(db), 10);
   expect((await listJobs(sqliteDb(db))).at(-1)!.payload).not.toHaveProperty("handoff");
   expect(await pendingRestartHandoff(sqliteDb(db), "item")).toEqual({});
@@ -120,8 +120,8 @@ async function acceptedFollowUp() {
   migrate(db);
   insertQueuedItem(db, { id: "item" });
   await beginImplementRun(sqliteDb(db), "item", 1, checkpoint);
-  applyWorkItemEvent(db, "item", "turn_ended");
-  applyWorkItemEvent(db, "item", "closeout_accepted");
+  await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), "item", "closeout_accepted");
   await markCloseoutAccepted(sqliteDb(db), "item", "s");
   const body = "Fix the failing CI checks on acme/widgets";
   const jobId = restart(db, getWorkItem(db, "item")!, {
@@ -129,7 +129,7 @@ async function acceptedFollowUp() {
     body,
     now: Date.now(),
   })!;
-  applyWorkItemEvent(db, "item", "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), "item", "dispatched");
   return { db, body, jobId };
 }
 
@@ -153,8 +153,8 @@ test("a follow-up whose turn a crash cut off is carried into the recovery resume
 test("a follow-up whose turn finished is not repeated after a restart", async () => {
   const { db, jobId } = await acceptedFollowUp();
   db.run("UPDATE job SET status='done', finished_at=6 WHERE id=?", [jobId]);
-  applyWorkItemEvent(db, "item", "turn_ended");
-  applyWorkItemEvent(db, "item", "closeout_accepted");
+  await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), "item", "closeout_accepted");
   await recoverOnStartup(sqliteDb(db), 10);
   expect(await pendingRestartHandoff(sqliteDb(db), "item")).toEqual({});
   db.close();

@@ -278,7 +278,7 @@ describe("one page per issue", () => {
   test("the item timeline reads work_item_event, a restart with its reason", async () => {
     const db = database();
     await threeRuns(db);
-    applyWorkItemEvent(db, ITEM, "restart", {
+    await applyWorkItemEvent(sqliteDb(db), ITEM, "restart", {
       kind: "restart",
       reason: "follow_up",
       actor: "Jonas Berg",

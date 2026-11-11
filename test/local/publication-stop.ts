@@ -606,8 +606,8 @@ export async function probePublicationStop(
         .all(tokenRace, `merge-reconciliation:${tokenRace}`),
     );
     pendingEpics.delete("owned-refresh");
-    freshness = () => {
-      applyWorkItemEvent(db, "owned-refresh-item", "reverify_requested");
+    freshness = async () => {
+      await applyWorkItemEvent(sqliteDb(db), "owned-refresh-item", "reverify_requested");
       return false;
     };
     const verifyingRace = await enqueueJob(sqliteDb(db), {
@@ -627,7 +627,7 @@ export async function probePublicationStop(
         .query("SELECT queue,status FROM job WHERE job_key=?")
         .get(`merge-reconciliation:${verifyingRace}`),
     );
-    applyWorkItemEvent(db, "owned-refresh-item", "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), "owned-refresh-item", "closeout_accepted");
     let shared: Promise<void> | undefined;
     let callerAborted = false;
     let joinedRefresh = false;

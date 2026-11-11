@@ -87,9 +87,9 @@ describe("combined recovery scenarios", () => {
       expect(resume.payload).toMatchObject({ reason: "process_restart", handoff: "first failure" });
 
       w.db.run("UPDATE job SET status='done', finished_at=? WHERE id=?", [w.now, resume.id]);
-      applyWorkItemEvent(w.db, id, "recovered", { now: w.now });
-      applyWorkItemEvent(w.db, id, "turn_ended", { now: w.now });
-      applyWorkItemEvent(w.db, id, "closeout_accepted", { now: w.now });
+      await applyWorkItemEvent(sqliteDb(w.db), id, "recovered", { now: w.now });
+      await applyWorkItemEvent(sqliteDb(w.db), id, "turn_ended", { now: w.now });
+      await applyWorkItemEvent(sqliteDb(w.db), id, "closeout_accepted", { now: w.now });
       await markCloseoutAccepted(sqliteDb(w.db), id, "head");
 
       const second = () =>

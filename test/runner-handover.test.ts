@@ -607,7 +607,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
           asked: true,
           stopAgent: true,
         });
-        applyWorkItemEvent(db, record.id, "blocking_question");
+        await applyWorkItemEvent(sqliteDb(db), record.id, "blocking_question");
         stop.abort();
         expect(await context.next()).toMatchObject({
           type: "checkpoint",

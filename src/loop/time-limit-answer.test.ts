@@ -33,11 +33,11 @@ async function askedAtTimeLimit(pendingHandoff?: string) {
     now: clock.now(),
   });
   await beginImplementRun(sqliteDb(db), item.id, clock.now());
-  applyWorkItemEvent(db, item.id, "turn_ended");
-  applyWorkItemEvent(db, item.id, "closeout_accepted");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
   await markCloseoutAccepted(sqliteDb(db), item.id, "accepted");
-  applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
-  applyWorkItemEvent(db, item.id, "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "restart", { kind: "restart", reason: "review" });
+  await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
   saveCheckpoint(db, item.id, { phase: "running", baseSha: "base", wipCommit: "accepted" });
   if (pendingHandoff !== undefined)
     await enqueueJob(sqliteDb(db), {
@@ -81,7 +81,7 @@ async function askedBeforeAcceptance(state: "running" | "verifying") {
   await beginImplementRun(sqliteDb(db), item.id, clock.now());
   saveCheckpoint(db, item.id, { phase: state, baseSha: "base", wipCommit: "head" });
   const queue = state === "verifying" ? JOB_KIND.reverify : JOB_KIND.resume;
-  if (state === "verifying") applyWorkItemEvent(db, item.id, "turn_ended");
+  if (state === "verifying") await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   await enqueueJob(sqliteDb(db), { queue, payload: { itemId: item.id }, now: clock.now() });
   await claimNextJob(sqliteDb(db), {
     now: clock.now(),

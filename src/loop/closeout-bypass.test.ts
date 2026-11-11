@@ -37,7 +37,7 @@ async function blocked(publicUrl: string | null = "https://paws.example") {
   migrate(db);
   const item = insertQueuedItem(db, { id: "PAS-633", sessionKey: "ses_1", title: "Signed URLs" });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   saveCheckpoint(db, item.id, { phase: "verifying", baseSha: "base", wipCommit: HEAD });
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
   await sqliteDb(db).run((q) =>

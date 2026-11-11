@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  applyWorkItemEventSteps,
+  sqliteDb,
   applyWorkItemEvent,
   getWorkItem,
   insertQueuedItem,
@@ -8,7 +10,6 @@ import {
   openDatabase,
   TransitionRejectedError,
 } from "./index";
-import { immediate } from "./tx";
 
 function harness() {
   const db = openDatabase(":memory:");
@@ -18,24 +19,24 @@ function harness() {
 }
 
 describe("work_item_event", () => {
-  test("each committed transition writes one row with the version it produced", () => {
+  test("each committed transition writes one row with the version it produced", async () => {
     const { db, item } = harness();
-    const running = applyWorkItemEvent(db, item.id, "dispatched", { now: 2_000 });
-    applyWorkItemEvent(db, item.id, "restart", {
+    const running = await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched", { now: 2_000 });
+    await applyWorkItemEvent(sqliteDb(db), item.id, "restart", {
       kind: "restart",
       reason: "findings",
       payloadDigest: "sha256:abc",
       actor: "paws",
       now: 3_000,
     });
-    applyWorkItemEvent(db, item.id, "dispatched", { now: 4_000 });
-    applyWorkItemEvent(db, item.id, "blocking_question", {
+    await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched", { now: 4_000 });
+    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question", {
       kind: "ask",
       reason: "budget_spent",
       now: 5_000,
     });
 
-    const rows = listWorkItemEventRows(db, item.id);
+    const rows = await listWorkItemEventRows(sqliteDb(db), item.id);
     expect(
       rows.map((row) => [row.fromState, row.event, row.toState, row.kind, row.reason]),
     ).toEqual([
@@ -49,25 +50,25 @@ describe("work_item_event", () => {
     expect(rows.at(-1)?.version).toBe(getWorkItem(db, item.id)?.version);
   });
 
-  test("a rolled-back transition leaves no event row and no state change", () => {
+  test("a rolled-back transition leaves no event row and no state change", async () => {
     const { db, item } = harness();
-    expect(() =>
-      immediate(db, () => {
-        applyWorkItemEvent(db, item.id, "dispatched");
+    await expect(
+      sqliteDb(db).transaction(function* (q) {
+        yield* applyWorkItemEventSteps(q, item.id, "dispatched");
         throw new Error("the caller's next write failed");
       }),
-    ).toThrow("the caller's next write failed");
+    ).rejects.toThrow("the caller's next write failed");
 
     expect(getWorkItem(db, item.id)).toMatchObject({ state: "queued", version: item.version });
-    expect(listWorkItemEventRows(db, item.id)).toEqual([]);
+    expect(await listWorkItemEventRows(sqliteDb(db), item.id)).toEqual([]);
   });
 
-  test("a rejected event writes no row", () => {
+  test("a rejected event writes no row", async () => {
     const { db, item } = harness();
-    expect(() => applyWorkItemEvent(db, item.id, "merge_accepted")).toThrow(
+    await expect(applyWorkItemEvent(sqliteDb(db), item.id, "merge_accepted")).rejects.toThrow(
       TransitionRejectedError,
     );
-    expect(listWorkItemEventRows(db, item.id)).toEqual([]);
+    expect(await listWorkItemEventRows(sqliteDb(db), item.id)).toEqual([]);
   });
 
   test("a restart row must name a known reason and an ask row must name one", () => {
@@ -83,14 +84,13 @@ describe("work_item_event", () => {
     expect(() => insert("other", null)).toThrow();
   });
 
-  test("the history keeps the newest rows when limited", () => {
+  test("the history keeps the newest rows when limited", async () => {
     const { db, item } = harness();
-    applyWorkItemEvent(db, item.id, "dispatched", { now: 1 });
-    applyWorkItemEvent(db, item.id, "pause", { now: 2 });
-    applyWorkItemEvent(db, item.id, "resume", { now: 3 });
-    expect(listWorkItemEventRows(db, item.id, 2).map((row) => row.event)).toEqual([
-      "pause",
-      "resume",
-    ]);
+    await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched", { now: 1 });
+    await applyWorkItemEvent(sqliteDb(db), item.id, "pause", { now: 2 });
+    await applyWorkItemEvent(sqliteDb(db), item.id, "resume", { now: 3 });
+    expect((await listWorkItemEventRows(sqliteDb(db), item.id, 2)).map((row) => row.event)).toEqual(
+      ["pause", "resume"],
+    );
   });
 });

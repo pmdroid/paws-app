@@ -53,7 +53,7 @@ async function fixture() {
     db.run("INSERT INTO runner_capacity(runner_id,capacity) VALUES(?,1)", [runnerId]);
     const itemId = `busy-${runnerId}`;
     insertQueuedItem(db, { id: itemId, now: 0 });
-    applyWorkItemEvent(db, itemId, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
     const runId = (await insertRun(sqliteDb(db), { itemId, now: 0, status: "active" })).id;
     work(runId, runnerId, null);
     busy.set(runnerId, runId);
@@ -66,18 +66,18 @@ async function fixture() {
   const mergeItem = async (id: string, readyAt: number) => {
     insertQueuedItem(db, { id, now: 2 });
     await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: id, priority: 4 }));
-    applyWorkItemEvent(db, id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
     const runId = (await insertRun(sqliteDb(db), { itemId: id, now: 2, status: "ended" })).id;
     db.run("UPDATE work_item SET current_run_id=? WHERE id=?", [runId, id]);
     work(runId, "A", NOW - 1);
-    applyWorkItemEvent(db, id, "turn_ended");
-    applyWorkItemEvent(db, id, "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), id, "closeout_accepted");
     await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "acme/app", now: readyAt });
     return runId;
   };
   /** The item re-verifies; its job waits for a slot on `runnerIds`, all busy. */
   const reverify = async (id: string, runnerIds: string[]) => {
-    applyWorkItemEvent(db, id, "reverify_requested");
+    await applyWorkItemEvent(sqliteDb(db), id, "reverify_requested");
     return await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.reverify,
       payload: {
@@ -174,7 +174,7 @@ test("findings from a merge-queue re-verify send the fix ahead of a queued item 
   const { db, mergeItem, free } = await fixture();
   try {
     await mergeItem("M", NOW - 120_000);
-    applyWorkItemEvent(db, "M", "reverify_requested");
+    await applyWorkItemEvent(sqliteDb(db), "M", "reverify_requested");
     restart(db, getWorkItem(db, "M")!, { reason: "findings", body: "Fix findings", now: NOW });
     free("A", NOW + 1);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["M"]);
@@ -188,8 +188,8 @@ test("a fix sent back by a first Closeout keeps the usual order", async () => {
   try {
     insertQueuedItem(db, { id: "F", now: 2 });
     await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "F", priority: 4 }));
-    applyWorkItemEvent(db, "F", "dispatched");
-    applyWorkItemEvent(db, "F", "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), "F", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "F", "turn_ended");
     restart(db, getWorkItem(db, "F")!, { reason: "findings", body: "Fix findings", now: NOW });
     free("A", NOW + 1);
     expect(await workspaceDispatch(db, { now: NOW + 2 })).toEqual(["N"]);

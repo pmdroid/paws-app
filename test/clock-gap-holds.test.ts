@@ -50,15 +50,15 @@ async function seed(db: Database, now: number): Promise<void> {
 async function hold(db: Database, now: number, kind: Hold, merging: boolean): Promise<void> {
   await seed(db, now);
   const { run } = await beginImplementRun(sqliteDb(db), "item", now, RUNNING);
-  if (kind === "paused") applyWorkItemEvent(db, "item", "pause", { now });
+  if (kind === "paused") await applyWorkItemEvent(sqliteDb(db), "item", "pause", { now });
   if (kind === "manual") {
-    applyWorkItemEvent(db, "item", "run_failed", { now });
-    applyWorkItemEvent(db, "item", "take_over", { now });
+    await applyWorkItemEvent(sqliteDb(db), "item", "run_failed", { now });
+    await applyWorkItemEvent(sqliteDb(db), "item", "take_over", { now });
   }
   if (kind === "awaiting_input") {
     if (merging) {
-      applyWorkItemEvent(db, "item", "turn_ended", { now });
-      applyWorkItemEvent(db, "item", "closeout_accepted", { now });
+      await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended", { now });
+      await applyWorkItemEvent(sqliteDb(db), "item", "closeout_accepted", { now });
       await markCloseoutAccepted(sqliteDb(db), "item", "wip");
       await loopAsk(
         db,

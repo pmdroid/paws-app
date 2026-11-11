@@ -2097,7 +2097,7 @@ export async function probeRunnerBackend(
             assert.equal(request.question, "Include archived rows?");
             assert.deepEqual(request.options, [{ label: "Include", value: "yes" }]);
             assert.equal(request.context, undefined);
-            applyWorkItemEvent(db, asked.id, "blocking_question");
+            await applyWorkItemEvent(sqliteDb(db), asked.id, "blocking_question");
             const question = await openQuestion(db, {
               itemId: asked.id,
               runId: asked.run.id,
@@ -2108,7 +2108,7 @@ export async function probeRunnerBackend(
             opened = true;
             await delay(10, undefined, { signal: context.signal });
             await answerQuestion(db, question.id, { answer: "yes", answeredBy: "owner", now });
-            applyWorkItemEvent(db, asked.id, "answer_received");
+            await applyWorkItemEvent(sqliteDb(db), asked.id, "answer_received");
             return { answer: "yes" };
           },
         },
@@ -2872,7 +2872,7 @@ export async function probeRunnerBackend(
         },
         askTeam: {
           async ask(request, context) {
-            applyWorkItemEvent(db, artifactItem.id, "blocking_question");
+            await applyWorkItemEvent(sqliteDb(db), artifactItem.id, "blocking_question");
             const question = await openQuestion(db, {
               itemId: artifactItem.id,
               runId: artifactItem.run.id,
@@ -2888,7 +2888,7 @@ export async function probeRunnerBackend(
               answeredBy: "owner",
               now,
             });
-            applyWorkItemEvent(db, artifactItem.id, "answer_received");
+            await applyWorkItemEvent(sqliteDb(db), artifactItem.id, "answer_received");
             return { answer: continuationState.answer };
           },
         },

@@ -44,7 +44,7 @@ async function asked(findings?: string) {
   migrate(db);
   const item = insertQueuedItem(db, { id: "PAS-759", sessionKey: "ses_1", title: "Rounds" });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
   await sqliteDb(db).run((q) =>
     saveSchedulingContextSteps(q, { itemId: item.id, projectId: "project", projectLeadId: "lead" }),

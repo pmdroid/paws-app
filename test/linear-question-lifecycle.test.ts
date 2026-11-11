@@ -44,7 +44,7 @@ async function setup(tracker: TrackerAdapter | null = null) {
   const db = tempDb();
   const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", title: "Export rows" });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "blocking_question");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
   const question = await openQuestion(db, {
     itemId: item.id,
     sessionId: "ses_1",
@@ -214,8 +214,8 @@ test("a consumed activity cannot answer the next question in its session", async
   try {
     const event = prompt(NOW + 100);
     await orchestrator.onLinearEvent(event);
-    applyWorkItemEvent(db, item.id, "dispatched");
-    applyWorkItemEvent(db, item.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     const next = await openQuestion(db, {
       itemId: item.id,
       sessionId: "ses_1",
@@ -390,7 +390,7 @@ test("a runner wait asked before a restart is answered by the next process witho
   const { db, item, question, orchestrator } = await setup();
   try {
     await answerQuestion(db, question.id, { answer: "No", answeredBy: "human-1", now: NOW });
-    applyWorkItemEvent(db, item.id, "answer_received");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
     const wait = await ask(
       db,
       { itemId: item.id, runId: getWorkItem(db, item.id)!.currentRunId, sessionId: "ses_1" },

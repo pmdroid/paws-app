@@ -58,7 +58,7 @@ test("a parked verification version refresh is limited to its original eligible 
     migrate(db);
     const item = insertQueuedItem(db, { now: 1000 });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, 1000);
-    applyWorkItemEvent(db, item.id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
     const id = await enqueueJob(sqliteDb(db), {
       queue: "run.reverify",
       payload: { itemId: item.id },

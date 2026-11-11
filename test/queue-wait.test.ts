@@ -180,7 +180,7 @@ test("the status API shows a queued item's place in line until it starts", async
     const queueOf = async (id: string) =>
       (await createLiveStatusProvider(db).issues()).issues.find((item) => item.id === id)?.queue;
     expect(await queueOf("waiting")).toEqual({ position: 2, busySlots: 4, totalSlots: 4 });
-    applyWorkItemEvent(db, "ahead", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "ahead", "dispatched");
     settled(saveQueuePositions(sqliteDb(db), ["waiting"], { busy: 4, total: 4 }, 3));
     expect(await queueOf("ahead")).toBeUndefined();
     expect(await queueOf("waiting")).toEqual({ position: 1, busySlots: 4, totalSlots: 4 });
@@ -300,8 +300,8 @@ test("paused and recovering items get a waiting title and no ephemeral", async (
       now: 1_000,
     });
     await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId);
-    applyWorkItemEvent(db, "paused", "dispatched");
-    applyWorkItemEvent(db, "paused", "pause");
+    await applyWorkItemEvent(sqliteDb(db), "paused", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "paused", "pause");
     await putWorkspaceUser(sqliteDb(db), {
       id: "pascal",
       linearUserId: "pascal",

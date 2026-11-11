@@ -70,7 +70,7 @@ export async function startDashboardFixture(
       now: Date.now(),
     });
     runs[item] = (await beginImplementRun(sqliteDb(db), item, Date.now())).run.id;
-    applyWorkItemEvent(db, item, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), item, "blocking_question");
     db.run(
       "INSERT INTO question (id, item_id, session_id, body, status, created_at) VALUES (?, ?, ?, 'Which way?', 'open', 1)",
       [`q-${item}`, item, session],

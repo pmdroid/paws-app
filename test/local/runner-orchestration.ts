@@ -669,7 +669,8 @@ export async function probeRunnerOrchestration(
                   throw new Error("fixture remote verification unavailable");
                 if (!changed) {
                   changed = true;
-                  if (scenario === "cancelled") applyWorkItemEvent(db, item.id, "cancel");
+                  if (scenario === "cancelled")
+                    await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
                   if (scenario === "reassigned") {
                     const replacement = await insertRun(sqliteDb(db), {
                       itemId: item.id,
@@ -827,7 +828,7 @@ export async function probeRunnerOrchestration(
           phase: "running",
           baseSha: await git(["-C", source, "rev-parse", "HEAD"]),
         });
-        applyWorkItemEvent(db, pending.id, "lease_expired");
+        await applyWorkItemEvent(sqliteDb(db), pending.id, "lease_expired");
         await enqueueJob(sqliteDb(db), {
           queue: JOB_KIND.resume,
           payload: { itemId: pending.id },

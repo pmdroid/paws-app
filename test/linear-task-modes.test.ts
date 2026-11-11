@@ -130,7 +130,7 @@ test("answer mode and full prepared response survive reopen as a terminal comple
       kind: "response",
       body: response,
     });
-    expect(() => applyWorkItemEvent(restored, item.id, "restart")).toThrow();
+    await expect(applyWorkItemEvent(sqliteDb(restored), item.id, "restart")).rejects.toThrow();
   } finally {
     restored.close();
   }
@@ -142,7 +142,7 @@ test.each(["code", "artifact"] as const)(
     const db = tempDb();
     try {
       const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-      applyWorkItemEvent(db, item.id, "dispatched");
+      await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
       await saveTaskMode(sqliteDb(db), item.id, mode);
       await expect(completeAnswerTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
         "Only answer tasks",
@@ -162,12 +162,12 @@ test("Stop and empty responses cannot complete an answer task", async () => {
   const db = tempDb();
   try {
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    applyWorkItemEvent(db, item.id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
     await saveTaskMode(sqliteDb(db), item.id, "answer");
     await expect(completeAnswerTask(sqliteDb(db), item.id, " ")).rejects.toThrow(
       "prepared response",
     );
-    applyWorkItemEvent(db, item.id, "cancel");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
     await expect(completeAnswerTask(sqliteDb(db), item.id, "Done")).rejects.toThrow(
       "no longer running",
     );

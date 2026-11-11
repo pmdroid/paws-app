@@ -52,8 +52,8 @@ async function onMovedMain(h: MergeHarness, head: string, main: string): Promise
 
 async function backInQueue(h: MergeHarness, id: string): Promise<void> {
   const item = getWorkItem(h.db, id)!;
-  if (item.state === "queued") applyWorkItemEvent(h.db, id, "dispatched");
-  applyWorkItemEvent(h.db, id, "turn_ended");
+  if (item.state === "queued") await applyWorkItemEvent(sqliteDb(h.db), id, "dispatched");
+  await applyWorkItemEvent(sqliteDb(h.db), id, "turn_ended");
   await h.closeout(id);
 }
 

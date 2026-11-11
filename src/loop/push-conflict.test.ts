@@ -50,7 +50,7 @@ test("a candidate that conflicts with its moved branch restarts with reason conf
 
 test("an item that is no longer running is not restarted for a push conflict", async () => {
   const { db, itemId } = await runningItem();
-  applyWorkItemEvent(db, itemId, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
   expect(
     await restartForPushConflict(db, itemId, { branch: "paws/pas-886", files: ["a"], now: 2_000 }),
   ).toBe(false);
@@ -67,7 +67,7 @@ test("three genuine push conflicts spend the shared budget, then ask for guidanc
         now: 2_000 + attempt,
       }),
     ).toBe(true);
-    applyWorkItemEvent(db, itemId, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
   }
   expect(
     await restartForPushConflict(db, itemId, { branch: "paws/topic", files: ["b.ts"], now: 3_000 }),
@@ -121,7 +121,7 @@ test("a person's answer refills the consecutive push-conflict budget", async () 
       files: ["a.ts"],
       now: 2_000 + n,
     });
-    applyWorkItemEvent(db, itemId, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
   }
   await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,

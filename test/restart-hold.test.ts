@@ -213,9 +213,9 @@ describe("restart hold", () => {
       now: 150,
     });
     await orchestrate(db, 200).tick([JOB_KIND.resume]);
-    expect(listWorkItemEventRows(db, "item").map((event) => event.event)).not.toContain(
-      "recovered",
-    );
+    expect(
+      (await listWorkItemEventRows(sqliteDb(db), "item")).map((event) => event.event),
+    ).not.toContain("recovered");
     expect(await restartHold(sqliteDb(db), getWorkItem(db, "item")!)).not.toBeNull();
     expect(await listRuns(sqliteDb(db), "item")).toHaveLength(runs);
     db.close();

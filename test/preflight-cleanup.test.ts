@@ -121,7 +121,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       db = openDatabase(databasePath);
       expect((await getConversation(sqliteDb(db), item.id)).blocked).toBe(true);
       await answerQuestion(db, question!.id, { answer: "Retry", answeredBy: "human" });
-      applyWorkItemEvent(db, item.id, "answer_received");
+      await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
       orchestrator = create();
       const priorLaunches = launches;
       await (orchestrator as unknown as PreflightRunner).runItem(

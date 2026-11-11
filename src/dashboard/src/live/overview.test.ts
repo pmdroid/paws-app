@@ -84,7 +84,7 @@ async function fixture(): Promise<Database> {
   });
   insertQueuedItem(db, { id: "ENG-4", title: "Risky", sessionKey: "s1", now: NOW - 6_000 });
   await beginImplementRun(sqliteDb(db), "ENG-4", NOW - 5_900);
-  applyWorkItemEvent(db, "ENG-4", "blocking_question");
+  await applyWorkItemEvent(sqliteDb(db), "ENG-4", "blocking_question");
   db.run(
     "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', 'ENG-4', 's1', 'link', 'High-risk changes', 'open', ?)",
     [NOW - 5_000],
@@ -110,7 +110,7 @@ async function fixture(): Promise<Database> {
   });
   insertQueuedItem(db, { id: "ENG-5", title: "Held review", sessionKey: "s1", now: NOW - 4_000 });
   await beginImplementRun(sqliteDb(db), "ENG-5", NOW - 3_900);
-  applyWorkItemEvent(db, "ENG-5", "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), "ENG-5", "turn_ended");
   await enqueueJob(sqliteDb(db), {
     queue: "run.reverify",
     payload: { itemId: "ENG-5", reviewerFault: "reviewer-key" },
@@ -119,7 +119,7 @@ async function fixture(): Promise<Database> {
   });
   for (const [index, id] of ["ENG-6", "ENG-7"].entries()) {
     insertQueuedItem(db, { id, title: `Stopped ${index}`, sessionKey: "s1", now: NOW - 2_000 });
-    applyWorkItemEvent(db, id, "cancel", { now: NOW - 1_000 });
+    await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: NOW - 1_000 });
   }
   return db;
 }

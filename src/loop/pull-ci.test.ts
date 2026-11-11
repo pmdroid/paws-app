@@ -596,8 +596,8 @@ describe("failed CI while a pull request waits for review", () => {
 
     const superseded = await setup();
     await superseded.evaluate();
-    applyWorkItemEvent(superseded.db, "eng-1", "reverify_requested");
-    applyWorkItemEvent(superseded.db, "eng-1", "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(superseded.db), "eng-1", "reverify_requested");
+    await applyWorkItemEvent(sqliteDb(superseded.db), "eng-1", "closeout_accepted");
     superseded.tick(60_000);
     expect(await superseded.runDue()).toEqual(["done"]);
     expect((await getPullCiFailure(sqliteDb(superseded.db), "eng-1", HEAD))?.outcome).toBe(

@@ -26,12 +26,12 @@ async function acceptedItem() {
   migrate(db);
   const item = insertQueuedItem(db, { id: "pas-814", sessionKey: "ses", now: 1_000 });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, 1_000);
-  applyWorkItemEvent(db, item.id, "turn_ended");
-  applyWorkItemEvent(db, item.id, "closeout_accepted");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
   await markCloseoutAccepted(sqliteDb(db), item.id, ACCEPTED);
   saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: ACCEPTED });
-  applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
-  applyWorkItemEvent(db, item.id, "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "restart", { kind: "restart", reason: "review" });
+  await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
   return { db, itemId: item.id, runId: run.id };
 }
 

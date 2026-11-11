@@ -287,8 +287,8 @@ test("App publication recovery queues fresh verification, not publication", asyn
   const f = fixture();
   try {
     const item = await f.item("member");
-    applyWorkItemEvent(f.db, item.id, "turn_ended");
-    applyWorkItemEvent(f.db, item.id, "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(f.db), item.id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(f.db), item.id, "closeout_accepted");
     await f.auth.ensure(getWorkItem(f.db, item.id)!, "publication", f.signal);
     f.ready();
     await f.auth.recover();

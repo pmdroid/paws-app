@@ -46,7 +46,7 @@ async function fixture() {
   });
   await bindLinearSessionTask(sqliteDb(db), "session", task.delegation.id, { actorId: "human" });
   const item = task.items[0]!;
-  applyWorkItemEvent(db, item.id, "start_timed_out");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "start_timed_out");
   expect(getWorkItem(db, item.id)?.state).toBe("failed");
   const journal: string[] = [];
   cleanup.push(setJournalSink((line) => journal.push(line)));

@@ -166,14 +166,14 @@ export async function seedFixture(
   const { run } = await beginImplementRun(sqliteDb(db), id, now, RUNNING);
   if (fixture.startsWith("running") || fixture.startsWith("verifying"))
     await claimedJob(db, JOB_KIND.start, { itemId: id, runId: run.id }, now);
-  const toVerifying = () => {
-    applyWorkItemEvent(db, id, "turn_ended", { now });
+  const toVerifying = async () => {
+    await applyWorkItemEvent(sqliteDb(db), id, "turn_ended", { now });
     saveCheckpoint(db, id, CANDIDATE);
   };
   const toMergeQueue = async (runEnded = true) => {
-    toVerifying();
+    await toVerifying();
     await accept(db, id, now);
-    applyWorkItemEvent(db, id, "closeout_accepted", { now });
+    await applyWorkItemEvent(sqliteDb(db), id, "closeout_accepted", { now });
     saveCheckpoint(db, id, MERGING);
     await joinMergeQueue(sqliteDb(db), { itemId: id, repository: "owner/repo", now });
     if (runEnded) await markRun(sqliteDb(db), run.id, "ended", now);
@@ -194,17 +194,17 @@ export async function seedFixture(
       db.run("UPDATE work_item SET recovery_attempts=1, resumed_at=? WHERE id=?", [now, id]);
       return;
     case "verifying_candidate":
-      toVerifying();
+      await toVerifying();
       return;
     case "verifying_bare":
-      applyWorkItemEvent(db, id, "turn_ended", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "turn_ended", { now });
       return;
     case "verifying_leased":
-      toVerifying();
+      await toVerifying();
       leaseRunnerWork(db, run.id, now);
       return;
     case "verifying_rejected":
-      toVerifying();
+      await toVerifying();
       await accept(db, id, now);
       await finishCloseoutProgress(
         sqliteDb(db),
@@ -215,7 +215,7 @@ export async function seedFixture(
       );
       return;
     case "recovering":
-      applyWorkItemEvent(db, id, "lease_expired", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "lease_expired", { now });
       await markRun(sqliteDb(db), run.id, "lost", now);
       await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.resume,
@@ -254,7 +254,7 @@ export async function seedFixture(
       await toMergeQueue(false);
       return;
     case "paused":
-      applyWorkItemEvent(db, id, "pause", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "pause", { now });
       return;
     case "awaiting_input":
       await sqliteDb(db).transaction((q) =>
@@ -285,24 +285,24 @@ export async function seedFixture(
       );
       return;
     case "manual":
-      applyWorkItemEvent(db, id, "run_failed", { now });
-      applyWorkItemEvent(db, id, "take_over", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "run_failed", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "take_over", { now });
       return;
     case "failed":
-      applyWorkItemEvent(db, id, "run_failed", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "run_failed", { now });
       await markRun(sqliteDb(db), run.id, "ended", now);
       return;
     case "completed":
-      applyWorkItemEvent(db, id, "answer_completed", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "answer_completed", { now });
       await markRun(sqliteDb(db), run.id, "ended", now);
       return;
     case "merged":
       await toMergeQueue();
-      applyWorkItemEvent(db, id, "merge_accepted", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "merge_accepted", { now });
       finishItemJobs(db, id, now);
       return;
     case "cancelled":
-      applyWorkItemEvent(db, id, "cancel", { now });
+      await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now });
       db.run("UPDATE work_item SET cancel_requested=1 WHERE id=?", [id]);
       await markRun(sqliteDb(db), run.id, "lost", now);
       return;

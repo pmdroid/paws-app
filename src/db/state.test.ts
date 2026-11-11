@@ -147,8 +147,10 @@ describe("restart recovery", () => {
         const { db, clock } = harness();
         const item = insertQueuedItem(db, { now: clock.now() });
         const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
-        if (queue === JOB_KIND.reverify) applyWorkItemEvent(db, item.id, "turn_ended");
-        if (queue === JOB_KIND.resume) applyWorkItemEvent(db, item.id, "lease_expired");
+        if (queue === JOB_KIND.reverify)
+          await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+        if (queue === JOB_KIND.resume)
+          await applyWorkItemEvent(sqliteDb(db), item.id, "lease_expired");
         db.run("UPDATE work_item SET recovery_attempts=1 WHERE id=?", [item.id]);
         const state = getWorkItem(db, item.id)!.state;
         const id = await enqueueJob(sqliteDb(db), {
@@ -307,7 +309,7 @@ describe("restart recovery", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
-    applyWorkItemEvent(db, item.id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
     db.run("PRAGMA foreign_keys=OFF");
     db.run(
       "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,?,?,?,?)",
@@ -509,12 +511,12 @@ describe("restart recovery", () => {
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
     await enterMergeQueue(sqliteDb(db), item.id, checkpoint);
     await markRun(sqliteDb(db), run.id, "ended", clock.now());
-    applyWorkItemEvent(db, item.id, "reverify_requested");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "reverify_requested");
 
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "reverify" }]);
     expect(getWorkItem(db, item.id)?.state).toBe("verifying");
     db.run("UPDATE job SET status='done', finished_at=? WHERE queue='run.reverify'", [clock.now()]);
-    applyWorkItemEvent(db, item.id, "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
     clock.advance(10 * 60_000);
 
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
@@ -532,7 +534,7 @@ describe("restart recovery", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now());
-    applyWorkItemEvent(db, item.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     saveCheckpoint(db, item.id, { ...checkpoint, phase: "awaiting_input" });
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([{ type: "none" }]);
     expect(getWorkItem(db, item.id)?.state).toBe("awaiting_input");
@@ -545,9 +547,9 @@ describe("restart recovery", () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { id: "answered", sessionKey: "ses", now: clock.now() });
     const { run } = await beginImplementRun(sqliteDb(db), item.id, clock.now(), checkpoint);
-    applyWorkItemEvent(db, item.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     await markRun(sqliteDb(db), run.id, "ended", clock.now());
-    applyWorkItemEvent(db, item.id, "answer_received");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
     enqueueJobOnce(db, {
       queue: JOB_KIND.resume,
       jobKey: "resume:answer:q-1",
@@ -559,10 +561,10 @@ describe("restart recovery", () => {
     expect((await listJobs(sqliteDb(db))).map((job) => job.jobKey)).toEqual(["resume:answer:q-1"]);
   });
 
-  test("illegal transitions do not change the row", () => {
+  test("illegal transitions do not change the row", async () => {
     const { db, clock } = harness();
     const item = insertQueuedItem(db, { now: clock.now() });
-    expect(() => applyWorkItemEvent(db, item.id, "merge_accepted")).toThrow(
+    await expect(applyWorkItemEvent(sqliteDb(db), item.id, "merge_accepted")).rejects.toThrow(
       TransitionRejectedError,
     );
     expect(getWorkItem(db, item.id)?.state).toBe("queued");
@@ -645,10 +647,10 @@ describe("hard caps", () => {
     const item = insertQueuedItem(db, { maxAwakeMs: 50_000, now: clock.now() });
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
-    applyWorkItemEvent(db, item.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     clock.advance(10_000);
     await syncClock(sqliteDb(db), item.id, clock.mono());
-    applyWorkItemEvent(db, item.id, "answer_received");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
     clock.advance(100);
     expect(
       (await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true)).item
@@ -661,8 +663,8 @@ describe("hard caps", () => {
     const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
-    applyWorkItemEvent(db, item.id, "turn_ended");
-    applyWorkItemEvent(db, item.id, "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
     clock.advance(4 * 60 * 60_000);
     const result = await accrueAwake(
       sqliteDb(db),
@@ -682,10 +684,10 @@ describe("hard caps", () => {
     const item = insertQueuedItem(db, { maxAwakeMs: 1_000, now: clock.now() });
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
-    applyWorkItemEvent(db, item.id, "turn_ended");
-    applyWorkItemEvent(db, item.id, "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
     saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
-    applyWorkItemEvent(db, item.id, "reverify_requested");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "reverify_requested");
     clock.advance(4 * 60 * 60_000);
     const result = await accrueAwake(
       sqliteDb(db),
@@ -705,11 +707,14 @@ describe("hard caps", () => {
     const item = insertQueuedItem(db, { limits: { fixes: 1_000 }, now: clock.now() });
     await beginImplementRun(sqliteDb(db), item.id, clock.now());
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
-    applyWorkItemEvent(db, item.id, "turn_ended");
-    applyWorkItemEvent(db, item.id, "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
     saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: "base", wipCommit: "head" });
-    applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason: "review" });
-    applyWorkItemEvent(db, item.id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "restart", {
+      kind: "restart",
+      reason: "review",
+    });
+    await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
     // The merge queue dropped the baseline; the supervisor's next tick starts the clock again.
     await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     clock.advance(2_000);
@@ -805,8 +810,8 @@ describe("linear commands", () => {
     const { db, clock } = harness();
     insertQueuedItem(db, { id: "eng-3", sessionKey: "ses", now: clock.now() });
     await beginImplementRun(sqliteDb(db), "eng-3", clock.now());
-    applyWorkItemEvent(db, "eng-3", "turn_ended");
-    applyWorkItemEvent(db, "eng-3", "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), "eng-3", "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), "eng-3", "closeout_accepted");
     await enqueueJob(sqliteDb(db), {
       queue: "github.merge",
       payload: { itemId: "eng-3" },
@@ -948,7 +953,7 @@ describe("linear commands", () => {
     const identifier = getWorkItem(db, "eng-9")!.linearIdentifier;
     await beginImplementRun(sqliteDb(db), "eng-9", clock.now());
     expect((await takeOverItem(sqliteDb(db), "eng-9", "Ada", clock.now())).applied).toBe(false);
-    applyWorkItemEvent(db, "eng-9", "run_failed");
+    await applyWorkItemEvent(sqliteDb(db), "eng-9", "run_failed");
     const version = getWorkItem(db, "eng-9")!.version;
     expect((await takeOverItem(sqliteDb(db), "eng-9", "Ada", clock.now())).applied).toBe(true);
     expect(getWorkItem(db, "eng-9")).toMatchObject({ state: "manual" });

@@ -92,7 +92,7 @@ describe("status payload budget", () => {
       insertQueuedItem(db, { id, title: `Finished item ${index}`, now: now + index });
       await beginImplementRun(sqliteDb(db), id, now + index);
       await closeout(db, id, 1, 2, now + index);
-      applyWorkItemEvent(db, id, "cancel", { now: now + index + 10 });
+      await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: now + index + 10 });
     }
     for (let index = 0; index < 10; index += 1) {
       const id = `PAS-${2000 + index}`;

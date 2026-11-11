@@ -128,7 +128,7 @@ async function fixture(agentRead?: AgentRead) {
   });
   db.run("UPDATE work_item SET owner_user_id=? WHERE id=?", [userId, item.id]);
   // The agent's turn ended and Closeout is checking its candidate.
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   saveCheckpoint(db, item.id, { phase: "verifying", baseSha: base, wipCommit: head });
 
   const keys = generateKeyPairSync("ed25519");

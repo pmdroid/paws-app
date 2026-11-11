@@ -47,7 +47,7 @@ describe("journal", () => {
     insertQueuedItem(db, { id: "PAS-1" });
     await beginImplementRun(sqliteDb(db), "PAS-1", 1_000);
     await enterMergeQueue(sqliteDb(db), "PAS-1", { phase: "merge_queue" });
-    applyWorkItemEvent(db, "PAS-1", "merge_accepted");
+    await applyWorkItemEvent(sqliteDb(db), "PAS-1", "merge_accepted");
     expect(lines).toEqual([
       "transition PAS-1 queued --dispatched--> running v1",
       "transition PAS-1 running --turn_ended--> verifying v2",
@@ -63,7 +63,7 @@ describe("journal", () => {
     const item = getWorkItem(db, "PAS-2");
     if (item === null) throw new Error("missing item");
     lines = [];
-    failWorkItem(db, item, "start_timeout", "secret prompt text", 2_000);
+    await failWorkItem(sqliteDb(db), item, "start_timeout", "secret prompt text", 2_000);
     expect(lines).toContain("item PAS-2 failed: start_timeout");
     expect(lines.join("\n")).not.toContain("secret prompt text");
   });

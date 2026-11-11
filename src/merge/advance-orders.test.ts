@@ -183,7 +183,7 @@ describe("advanceMerge in the repository merge queue", () => {
       await h.pass(id);
       h.clock.advance(1_000);
     }
-    applyWorkItemEvent(h.db, "ENG-141", "reverify_requested");
+    await applyWorkItemEvent(sqliteDb(h.db), "ENG-141", "reverify_requested");
     expect(
       listMergeQueues(h.db).map((entry) => [entry.itemId, entry.position, entry.busy]),
     ).toEqual([

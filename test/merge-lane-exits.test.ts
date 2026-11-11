@@ -22,13 +22,13 @@ import {
   sqliteDb,
 } from "../src/db";
 
-function setup() {
+async function setup() {
   const db = openDatabase(":memory:");
   migrate(db);
   insertQueuedItem(db, { id: "holder", sessionKey: "session", now: 1 });
-  applyWorkItemEvent(db, "holder", "dispatched", { now: 1 });
-  applyWorkItemEvent(db, "holder", "turn_ended", { now: 1 });
-  applyWorkItemEvent(db, "holder", "closeout_accepted", { now: 1 });
+  await applyWorkItemEvent(sqliteDb(db), "holder", "dispatched", { now: 1 });
+  await applyWorkItemEvent(sqliteDb(db), "holder", "turn_ended", { now: 1 });
+  await applyWorkItemEvent(sqliteDb(db), "holder", "closeout_accepted", { now: 1 });
   return db;
 }
 const command = {
@@ -40,7 +40,7 @@ const command = {
 
 for (const exit of ["cancel", "ask", "fail"] as const) {
   test(`${exit} wakes parked followers immediately`, async () => {
-    const db = setup();
+    const db = await setup();
     for (const reason of ["ahead", "dependencies", "ci"])
       await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.merge,
@@ -63,8 +63,8 @@ for (const exit of ["cancel", "ask", "fail"] as const) {
         ),
       );
     if (exit === "fail") {
-      applyWorkItemEvent(db, "holder", "lease_expired", { now: 10 });
-      applyWorkItemEvent(db, "holder", "closeout_infra_failed", { now: 10 });
+      await applyWorkItemEvent(sqliteDb(db), "holder", "lease_expired", { now: 10 });
+      await applyWorkItemEvent(sqliteDb(db), "holder", "closeout_infra_failed", { now: 10 });
     }
     expect(
       (await listJobs(sqliteDb(db)))
@@ -80,7 +80,7 @@ for (const exit of ["cancel", "ask", "fail"] as const) {
 }
 
 test("a stop during a successful squash waits for completion and answers already merged once", async () => {
-  const db = setup();
+  const db = await setup();
   const bus = new CommandBus();
   const emitted: unknown[] = [];
   bus.subscribe((c) => emitted.push(c));
@@ -120,7 +120,7 @@ test("a stop during a successful squash waits for completion and answers already
 });
 
 test("a deferred stop cancels when the squash did not succeed", async () => {
-  const db = setup();
+  const db = await setup();
   const bus = new CommandBus();
   beginMergeCall(db, "holder", "head", 5);
   expect(

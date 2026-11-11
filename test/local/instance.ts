@@ -266,7 +266,7 @@ async function scenario(
   let interrupted = false;
   const interrupt = async () => {
     interrupted = true;
-    for (const item of listWorkItemsByStates(db, WORK_ITEM_STATES)) {
+    for (const item of await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES)) {
       if (["merged", "cancelled", "failed"].includes(item.state)) continue;
       await submitCommand(sqliteDb(db), orchestrator.bus, {
         type: "stop",
@@ -318,7 +318,9 @@ async function scenario(
       const question = linear.questions.at(-1);
       if (question && !answered) {
         answered = true;
-        parked = listWorkItemsByStates(db, WORK_ITEM_STATES).map((item) => item.state);
+        parked = (await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES)).map(
+          (item) => item.state,
+        );
         const parkedQuestions = await (await fetch(`${origin}/api/questions`)).json();
         save(`${name}-parked.json`, parkedQuestions);
         const parsed = parseQuestionListResponse(parkedQuestions);
@@ -350,11 +352,14 @@ async function scenario(
   })();
   try {
     const deadline = Date.now() + 60_000;
-    while (listWorkItemsByStates(db, WORK_ITEM_STATES).length === 0 && Date.now() < deadline)
+    while (
+      (await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES)).length === 0 &&
+      Date.now() < deadline
+    )
       await Bun.sleep(20);
     while (Date.now() < deadline) {
       if (interrupted) break;
-      const items = listWorkItemsByStates(db, WORK_ITEM_STATES);
+      const items = await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES);
       if (
         items.some((item) => ["failed"].includes(item.state)) ||
         (name !== "happy" && items.some((item) => item.state === "awaiting_input") && answered) ||
@@ -368,7 +373,9 @@ async function scenario(
     await answerer;
     const issues = await (await fetch(`${origin}/api/issues`)).json();
     assert(parseIssueListResponse(issues).ok);
-    const states = listWorkItemsByStates(db, WORK_ITEM_STATES).map((item) => item.state);
+    const states = (await listWorkItemsByStates(sqliteDb(db), WORK_ITEM_STATES)).map(
+      (item) => item.state,
+    );
     const finalHead = await git("--git-dir", bare, "rev-parse", "main");
     const finalContent = await git("--git-dir", bare, "show", "main:result.txt").catch(() => null);
     const result = {

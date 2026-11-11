@@ -28,7 +28,7 @@ export default {
     await queue("busy");
     const busy = await insertRun(sqliteDb(db), { itemId: "busy", now: NOW, status: "active" });
     await queue("parked");
-    applyWorkItemEvent(db, "parked", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "parked", "dispatched");
     const run = await insertRun(sqliteDb(db), { itemId: "parked", now: NOW, status: "active" });
     db.run("UPDATE work_item SET current_run_id=? WHERE id='parked'", [run.id]);
     db.run(

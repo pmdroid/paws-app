@@ -39,8 +39,8 @@ async function fixture() {
   });
   insertQueuedItem(db, { id: "ENG-7", sessionKey: "ses_1", now: clock.now() });
   await beginImplementRun(sqliteDb(db), "ENG-7", clock.now());
-  applyWorkItemEvent(db, "ENG-7", "turn_ended");
-  applyWorkItemEvent(db, "ENG-7", "closeout_accepted");
+  await applyWorkItemEvent(sqliteDb(db), "ENG-7", "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), "ENG-7", "closeout_accepted");
   enqueueOutboxOnce(db, {
     target: "linear",
     op: "activity",

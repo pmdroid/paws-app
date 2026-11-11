@@ -428,7 +428,7 @@ test("an automatic CI repair restart keeps adding to the same clock", async () =
 test("a failed item's follow-up clears the stop and the retries and resets the clock", async () => {
   const f = await waitingTask({ ci: "green" });
   try {
-    applyWorkItemEvent(f.db, f.itemId, "work_failed");
+    await applyWorkItemEvent(sqliteDb(f.db), f.itemId, "work_failed");
     f.db.run("UPDATE work_item SET cancel_requested = 1, recovery_attempts = 2 WHERE id = ?", [
       f.itemId,
     ]);

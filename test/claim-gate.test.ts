@@ -44,8 +44,8 @@ async function inFlight(
   event: "turn_ended" | "lease_expired",
 ): Promise<number> {
   await queued(db, id);
-  applyWorkItemEvent(db, id, "dispatched");
-  applyWorkItemEvent(db, id, event);
+  await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), id, event);
   return await enqueueJob(sqliteDb(db), {
     queue: event === "turn_ended" ? JOB_KIND.reverify : JOB_KIND.resume,
     payload: { itemId: id },
@@ -82,7 +82,7 @@ test("a reserved start is claimed without the legacy gate", async () => {
   const db = tempDb();
   try {
     await queued(db, "legacy");
-    applyWorkItemEvent(db, "legacy", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "legacy", "dispatched");
     await insertRun(sqliteDb(db), { itemId: "legacy", now: 0, status: "active" });
     await queued(db, "next", 1);
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["next"]);

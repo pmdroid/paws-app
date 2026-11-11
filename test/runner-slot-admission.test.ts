@@ -125,7 +125,7 @@ test("a runner that accepts some of the items is not reported", async () => {
 });
 
 async function parkedRun(db: Database, id: string, runnerIds: string[], online: string[]) {
-  applyWorkItemEvent(db, id, "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
   const run = await insertRun(sqliteDb(db), { itemId: id, now: NOW, status: "provisioning" });
   db.run("UPDATE work_item SET current_run_id=? WHERE id=?", [run.id, id]);
   const jobId = await enqueueJob(sqliteDb(db), {
@@ -476,7 +476,7 @@ test("a queued resume keeps its online pin and reservation past historical ended
   db.run("UPDATE run SET status='ended' WHERE id=?", [run.id]);
   expect(await pass()).toEqual(["resume"]);
   expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(pinned);
-  applyWorkItemEvent(db, "resume", "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), "resume", "dispatched");
   expect((await schedulerRunnerSlots(sqliteDb(db), NOW))[0]!.runnerId).toBe(pinned);
   const offered = await createRunnerPlacement({ store: sqliteDb(db), now: () => NOW }).candidates({
     itemId: "resume",
@@ -563,7 +563,7 @@ test("admission fails over from a busy session runner once session grace ends", 
   const holder = await pair("holder", 1, [REPOSITORY]);
   const other = await pair("other", 1, [REPOSITORY]);
   await queue("busy");
-  applyWorkItemEvent(db, "busy", "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), "busy", "dispatched");
   const occupant = await insertRun(sqliteDb(db), { itemId: "busy", now: NOW, status: "active" });
   db.run(
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,?,?,1,0,'busy',?)",

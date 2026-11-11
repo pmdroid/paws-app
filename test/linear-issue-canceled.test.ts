@@ -26,9 +26,9 @@ async function itemIn(state: WorkItemState) {
   migrate(db);
   insertQueuedItem(db, { id: ITEM, sessionKey: "session", now: 0 });
   const { run } = await beginImplementRun(sqliteDb(db), ITEM, 0);
-  if (state !== "running") applyWorkItemEvent(db, ITEM, "turn_ended");
-  if (state === "awaiting_input") applyWorkItemEvent(db, ITEM, "blocking_question");
-  if (state === "merge_queue") applyWorkItemEvent(db, ITEM, "closeout_accepted");
+  if (state !== "running") await applyWorkItemEvent(sqliteDb(db), ITEM, "turn_ended");
+  if (state === "awaiting_input") await applyWorkItemEvent(sqliteDb(db), ITEM, "blocking_question");
+  if (state === "merge_queue") await applyWorkItemEvent(sqliteDb(db), ITEM, "closeout_accepted");
   expect(getWorkItem(db, ITEM)?.state).toBe(state);
   await recordItemPullRequest(sqliteDb(db), {
     itemId: ITEM,

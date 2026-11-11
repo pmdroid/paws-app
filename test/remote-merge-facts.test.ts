@@ -33,12 +33,12 @@ test.each(["cancelled", "merged"] as const)(
     try {
       migrate(db);
       const item = insertQueuedItem(db, { id: "item" });
-      if (state === "cancelled") applyWorkItemEvent(db, item.id, "cancel");
+      if (state === "cancelled") await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
       else {
-        applyWorkItemEvent(db, item.id, "dispatched");
-        applyWorkItemEvent(db, item.id, "turn_ended");
-        applyWorkItemEvent(db, item.id, "closeout_accepted");
-        applyWorkItemEvent(db, item.id, "merge_accepted");
+        await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
+        await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+        await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
+        await applyWorkItemEvent(sqliteDb(db), item.id, "merge_accepted");
       }
       const before = getWorkItem(db, item.id);
       await recordConfirmedRemoteMerge(sqliteDb(db), fact());
@@ -97,7 +97,7 @@ test("a failed fact write leaves terminal task history and earlier confirmed mer
     insertQueuedItem(db, { id: "item" });
     insertQueuedItem(db, { id: "second" });
     await recordConfirmedRemoteMerge(sqliteDb(db), fact());
-    applyWorkItemEvent(db, "second", "cancel");
+    await applyWorkItemEvent(sqliteDb(db), "second", "cancel");
     db.exec(`CREATE TRIGGER deny_fact BEFORE INSERT ON remote_merge_fact
              WHEN NEW.item_id = 'second' BEGIN SELECT RAISE(ABORT, 'storage failure'); END`);
     await expect(recordConfirmedRemoteMerge(sqliteDb(db), fact("second"))).rejects.toThrow(

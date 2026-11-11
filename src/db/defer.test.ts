@@ -77,7 +77,7 @@ test("deferring verification of a recorded candidate keeps it verifying and re-v
   migrate(db);
   insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
   const { run } = await beginImplementRun(sqliteDb(db), "item-1", 1_000);
-  applyWorkItemEvent(db, "item-1", "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
   saveCheckpoint(db, "item-1", { phase: "verifying", baseSha: "base", wipCommit: "head" });
   const verifying = getWorkItem(db, "item-1")!;
   await deferWorkItem(sqliteDb(db), verifying, {
@@ -122,7 +122,7 @@ test("deferring verification without a recorded candidate falls back to a resume
   migrate(db);
   insertQueuedItem(db, { id: "item-1", now: 1_000 });
   await beginImplementRun(sqliteDb(db), "item-1", 1_000);
-  applyWorkItemEvent(db, "item-1", "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
   await deferWorkItem(sqliteDb(db), getWorkItem(db, "item-1")!, {
     retry: 1,
     delayMs: 10,
@@ -139,7 +139,7 @@ test("a Closeout fault re-verifies the same version once per faulted job and car
   migrate(db);
   insertQueuedItem(db, { id: "item-1", sessionKey: "ses_1", now: 1_000 });
   await beginImplementRun(sqliteDb(db), "item-1", 1_000);
-  applyWorkItemEvent(db, "item-1", "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), "item-1", "turn_ended");
   saveCheckpoint(db, "item-1", { phase: "verifying", baseSha: "base", wipCommit: "head" });
   const fault = async (jobId: number, reasons: string[], now: number) =>
     await deferWorkItem(sqliteDb(db), getWorkItem(db, "item-1")!, {

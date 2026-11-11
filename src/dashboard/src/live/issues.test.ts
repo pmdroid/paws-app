@@ -26,9 +26,9 @@ function database(): Database {
   return db;
 }
 
-function finish(db: Database, id: string, at: number): void {
+async function finish(db: Database, id: string, at: number): Promise<void> {
   insertQueuedItem(db, { id, title: id, now: at - 1_000 });
-  applyWorkItemEvent(db, id, "cancel", { now: at });
+  await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: at });
 }
 
 function provider(db: Database, sessionIds?: readonly string[]) {
@@ -43,9 +43,9 @@ describe("issue resources", () => {
   test("the list keeps every open issue and the 50 latest finished in a day; older issues open directly", async () => {
     const db = database();
     insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: NOW - 7 * STATUS_RECENT_MS });
-    finish(db, "ENG-OLD", NOW - STATUS_RECENT_MS - 60_000);
+    await finish(db, "ENG-OLD", NOW - STATUS_RECENT_MS - 60_000);
     for (let index = 0; index < STATUS_RECENT_LIMIT + 5; index += 1)
-      finish(db, `ENG-${100 + index}`, NOW - 120_000 - index * 1_000);
+      await finish(db, `ENG-${100 + index}`, NOW - 120_000 - index * 1_000);
     const live = provider(db);
     const parsed = parseIssueListResponse(JSON.parse(JSON.stringify(await live.issues())));
     if (!parsed.ok) throw new Error(parsed.error);
@@ -69,7 +69,7 @@ describe("issue resources", () => {
       baseSha: "b".repeat(40),
       wipCommit: "c".repeat(40),
     });
-    finish(db, "ENG-3", NOW - 5_000);
+    await finish(db, "ENG-3", NOW - 5_000);
     const live = provider(db);
     const list = await live.issues();
     expect(Object.keys(list).sort()).toEqual([

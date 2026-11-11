@@ -100,7 +100,7 @@ describe("live status provider", () => {
     migrated(db);
     insertQueuedItem(db, { id: "budget-question" });
     await beginImplementRun(sqliteDb(db), "budget-question", 1);
-    applyWorkItemEvent(db, "budget-question", "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), "budget-question", "blocking_question");
     seedQuestion(db, "budget-question", "session");
     const response = await handleStatusRequest(new Request("http://127.0.0.1/api/issues"), {
       db,
@@ -447,7 +447,7 @@ describe("live status provider", () => {
       now,
     });
     const waitingRun = await beginImplementRun(sqliteDb(db), waiting.id, now);
-    applyWorkItemEvent(db, waiting.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), waiting.id, "blocking_question");
     await beginImplementRun(sqliteDb(db), merging.id, now);
     await enterMergeQueue(sqliteDb(db), merging.id, {
       phase: "merge_queue",
@@ -582,7 +582,7 @@ describe("live status provider", () => {
     const now = 1_700_000_000_000;
     const item = insertQueuedItem(db, { id: "ENG-2", sessionKey: "ses_1", now });
     await beginImplementRun(sqliteDb(db), item.id, now);
-    applyWorkItemEvent(db, item.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     await enqueueOutbox(sqliteDb(db), {
       target: "linear",
       op: "elicitation",
@@ -606,7 +606,7 @@ describe("live status provider", () => {
     const head = "7f65200aa1b2c3d4";
     const item = insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", now });
     await beginImplementRun(sqliteDb(db), item.id, now);
-    applyWorkItemEvent(db, item.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     db.run(
       "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-bypass', ?, 'ses_1', 'link', 'Closeout needs your decision', 'open', ?)",
       [item.id, now],
@@ -653,7 +653,7 @@ describe("live status provider", () => {
     const head = "7f65200aa1b2c3d4";
     const item = insertQueuedItem(db, { id: "ENG-6", sessionKey: "ses_1", now });
     await beginImplementRun(sqliteDb(db), item.id, now);
-    applyWorkItemEvent(db, item.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     db.run(
       "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'ses_1', 'link', 'High-risk changes', 'open', ?)",
       [item.id, now],
@@ -698,7 +698,7 @@ describe("live status provider", () => {
     const head = "9c1d2e3ff0a1b2c3";
     const item = insertQueuedItem(db, { id: "ENG-6", sessionKey: "ses_1", now });
     await beginImplementRun(sqliteDb(db), item.id, now);
-    applyWorkItemEvent(db, item.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     db.run(
       "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'ses_1', 'link', 'High-risk changes', 'open', ?)",
       [item.id, now],
@@ -837,7 +837,7 @@ describe("live status provider", () => {
       4,
     );
     const merged = await merging("ENG-14", "acme/platform", null, 5);
-    applyWorkItemEvent(db, merged.id, "merge_accepted");
+    await applyWorkItemEvent(sqliteDb(db), merged.id, "merge_accepted");
     await recordConfirmedRemoteMerge(sqliteDb(db), {
       itemId: merged.id,
       repositoryOwner: "acme",
@@ -848,8 +848,8 @@ describe("live status provider", () => {
       confirmedAt: now - 60_000,
     });
     const back = await merging("ENG-15", "acme/platform", null, 6);
-    applyWorkItemEvent(db, back.id, "restart", { kind: "restart", reason: "ci" });
-    applyWorkItemEvent(db, back.id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), back.id, "restart", { kind: "restart", reason: "ci" });
+    await applyWorkItemEvent(sqliteDb(db), back.id, "dispatched");
     await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       jobKey: `ci-failed:${back.id}:0`,
@@ -910,7 +910,7 @@ describe("live status provider", () => {
         now: 10 * (index + 1),
       });
     }
-    applyWorkItemEvent(db, "ENG-21", "reverify_requested");
+    await applyWorkItemEvent(sqliteDb(db), "ENG-21", "reverify_requested");
 
     const provider = createLiveStatusProvider(db);
     const parsed = parseMergeQueueResponse(await provider.mergeQueue());
@@ -1012,8 +1012,8 @@ describe("live status provider", () => {
     };
     await bound("ENG-21", 1);
     const back = await bound("ENG-22", 2);
-    applyWorkItemEvent(db, back.id, "restart", { kind: "restart", reason: "ci" });
-    applyWorkItemEvent(db, back.id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), back.id, "restart", { kind: "restart", reason: "ci" });
+    await applyWorkItemEvent(sqliteDb(db), back.id, "dispatched");
     await enqueueJob(sqliteDb(db), {
       queue: "run.resume",
       jobKey: `ci-failed:${back.id}:0`,
@@ -1093,14 +1093,14 @@ describe("live status provider", () => {
   test("the list carries open items and finished items of the last 24 hours, at most 50", async () => {
     const db = database();
     const now = 1_700_000_000_000;
-    const finish = (id: string, at: number) => {
+    const finish = async (id: string, at: number) => {
       insertQueuedItem(db, { id, title: id, now: at - 1_000 });
-      applyWorkItemEvent(db, id, "cancel", { now: at });
+      await applyWorkItemEvent(sqliteDb(db), id, "cancel", { now: at });
     };
     // Open for a week: open items stay whatever their age.
     insertQueuedItem(db, { id: "ENG-OPEN", title: "Open", now: now - 7 * STATUS_RECENT_MS });
-    finish("ENG-OLD", now - STATUS_RECENT_MS - 60_000);
-    finish("ENG-RECENT", now - 60_000);
+    await finish("ENG-OLD", now - STATUS_RECENT_MS - 60_000);
+    await finish("ENG-RECENT", now - 60_000);
     const provider = createLiveStatusProvider(db, { now: () => new Date(now) });
     const ids = (await provider.issues()).issues.map((item) => item.id);
     expect(ids).toContain("ENG-OPEN");
@@ -1113,7 +1113,7 @@ describe("live status provider", () => {
     );
 
     for (let index = 0; index < STATUS_RECENT_LIMIT + 5; index += 1)
-      finish(`ENG-${100 + index}`, now - 120_000 - index * 1_000);
+      await finish(`ENG-${100 + index}`, now - 120_000 - index * 1_000);
     const capped = (await provider.issues()).issues;
     const finished = capped.filter((item) => item.state !== "queued").map((item) => item.id);
     expect(finished).toHaveLength(STATUS_RECENT_LIMIT);

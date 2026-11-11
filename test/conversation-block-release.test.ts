@@ -119,7 +119,7 @@ async function blockedAfterCleanupFailure() {
     "INSERT INTO runner_work(run_id,runner_id,workspace_id,generation,runner_fence,command_id,lease_until) VALUES(?,'agentbox',?,1,0,'command',?)",
     [run.id, workspace.id, now + 60_000],
   );
-  applyWorkItemEvent(db, itemId, "run_failed");
+  await applyWorkItemEvent(sqliteDb(db), itemId, "run_failed");
   blockConversation(db, itemId, now);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({

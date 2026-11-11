@@ -145,7 +145,7 @@ export async function probeBoundaries(
     });
     await recoverOnStartup(sqliteDb(db), clock.now());
     if (getWorkItem(db, recovering.id)?.state === "verifying")
-      applyWorkItemEvent(db, recovering.id, "closeout_accepted");
+      await applyWorkItemEvent(sqliteDb(db), recovering.id, "closeout_accepted");
     const reverification = await claimNextJob(sqliteDb(db), {
       now: clock.now(),
       queues: [JOB_KIND.reverify],

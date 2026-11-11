@@ -59,7 +59,7 @@ async function setup(state: "running" | "verifying" | "merge_queue") {
     remoteUrl: "https://github.com/acme/one.git",
   });
   await beginImplementRun(sqliteDb(db), "eng-1", 1);
-  if (state === "verifying") applyWorkItemEvent(db, "eng-1", "turn_ended");
+  if (state === "verifying") await applyWorkItemEvent(sqliteDb(db), "eng-1", "turn_ended");
   if (state === "merge_queue")
     await enterMergeQueue(sqliteDb(db), "eng-1", {
       phase: "merge_queue",
@@ -176,10 +176,10 @@ const feedbackThoughts = async (db: Db) =>
     .map((row) => (row.payload as { body: string }).body);
 const BOT_FINDING = "Medium: the cache key ignores the tenant.";
 
-function backToMergeQueue(db: Db) {
-  applyWorkItemEvent(db, "eng-1", "dispatched");
-  applyWorkItemEvent(db, "eng-1", "turn_ended");
-  applyWorkItemEvent(db, "eng-1", "closeout_accepted");
+async function backToMergeQueue(db: Db) {
+  await applyWorkItemEvent(sqliteDb(db), "eng-1", "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), "eng-1", "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), "eng-1", "closeout_accepted");
 }
 
 describe("a send-back carries the feedback waiting on the item", () => {
@@ -207,7 +207,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     ]);
     expect(fixRounds(h.db, "eng-1")).toBe(1);
 
-    backToMergeQueue(h.db);
+    await backToMergeQueue(h.db);
     expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("done");
     expect(await handoffs(h.db)).toHaveLength(1);
   });
@@ -251,7 +251,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(fixRounds(h.db, "eng-1")).toBe(0);
     expect(await pendingPullComments(sqliteDb(h.db), "eng-1")).toHaveLength(2);
 
-    backToMergeQueue(h.db);
+    await backToMergeQueue(h.db);
     expect(await handlePullComments(h.db, "eng-1", h.caps)).toBe("asked");
     expect(findOpenQuestion(h.db, "s-1")?.body).toContain(BOT_FINDING);
     expect(getWorkItem(h.db, "eng-1")?.state).toBe("awaiting_input");
@@ -266,7 +266,7 @@ describe("a send-back carries the feedback waiting on the item", () => {
     expect(await handoffs(h.db)).toHaveLength(0);
     expect(getWorkItem(h.db, "eng-1")?.state).toBe("running");
 
-    applyWorkItemEvent(h.db, "eng-1", "turn_ended");
+    await applyWorkItemEvent(sqliteDb(h.db), "eng-1", "turn_ended");
     await h.sendBack("conflict", REBASE_CONFLICT_INSTRUCTION);
     expect((await handoffs(h.db))[0]?.handoff).toContain(BOT_FINDING);
     expect((await getPullComment(sqliteDb(h.db), "inline", 9401))?.outcome).toBe("restarted");

@@ -32,7 +32,7 @@ async function setup(active = true) {
   const db = tempDb();
   const item = insertQueuedItem(db, { id: "PAS-1003", sessionKey: "ses_1", title: "Policy" });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "blocking_question");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
   const question = await openQuestion(db, {
     itemId: item.id,
     sessionId: "ses_1",

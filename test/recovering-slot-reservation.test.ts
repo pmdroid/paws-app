@@ -429,10 +429,10 @@ async function recover(
   now: number,
   maxAttempts: number,
 ) {
-  applyWorkItemEvent(db, itemId, "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
   const run = await insertRun(sqliteDb(db), { itemId, now, status: "active" });
   await setCurrentRun(sqliteDb(db), itemId, run.id);
-  applyWorkItemEvent(db, itemId, "lease_expired");
+  await applyWorkItemEvent(sqliteDb(db), itemId, "lease_expired");
   await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.resume,
     payload: { itemId, runId: run.id, reason: "transient_failure", retry: 0 },

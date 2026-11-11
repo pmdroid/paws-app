@@ -563,12 +563,12 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
     return context;
   }
   // The turn the restart handed the reply list to ends with `finalMessage`.
-  function turnEnds(
+  async function turnEnds(
     db: Awaited<ReturnType<typeof setup>>["db"],
     finalMessage: string,
     now = 5_000,
   ) {
-    applyWorkItemEvent(db, "eng-1", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "eng-1", "dispatched");
     const item = getWorkItem(db, "eng-1")!;
     return checkReviewReplies(sqliteDb(db), {
       item,
@@ -637,10 +637,10 @@ describe("a fix turn cannot end until every comment has its own reply", () => {
 
   test("a turn end another writer overtook keeps nothing and sends nothing", async () => {
     const { db } = await handedOff();
-    applyWorkItemEvent(db, "eng-1", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "eng-1", "dispatched");
     const item = getWorkItem(db, "eng-1")!;
     const resumes = (await jobs(db, JOB_KIND.resume)).length;
-    applyWorkItemEvent(db, "eng-1", "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), "eng-1", "turn_ended");
     const final = "R1 fixed: Sorted.";
     expect(
       await checkReviewReplies(sqliteDb(db), {

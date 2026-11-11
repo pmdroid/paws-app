@@ -34,7 +34,7 @@ test("quiet verification retries once across restart, then asks a person", async
     const clock = new FakeClock(Date.now() + 1000);
     insertQueuedItem(db, { id: "stalled", sessionKey: "ses", now: clock.now() });
     await beginImplementRun(sqliteDb(db), "stalled", clock.now());
-    applyWorkItemEvent(db, "stalled", "turn_ended", { now: clock.now() });
+    await applyWorkItemEvent(sqliteDb(db), "stalled", "turn_ended", { now: clock.now() });
     saveCheckpoint(db, "stalled", { phase: "verifying", baseSha: "base", wipCommit: "head" });
     const lines: string[] = [];
     const cancelled: string[] = [];
@@ -136,7 +136,7 @@ test("quiet verification retries once across restart, then asks a person", async
 async function verifyingItem(id: string, db: ReturnType<typeof openDatabase>, now: number) {
   insertQueuedItem(db, { id, sessionKey: `ses-${id}`, now });
   await beginImplementRun(sqliteDb(db), id, now);
-  applyWorkItemEvent(db, id, "turn_ended", { now });
+  await applyWorkItemEvent(sqliteDb(db), id, "turn_ended", { now });
   saveCheckpoint(db, id, { phase: "verifying", baseSha: "base", wipCommit: "head" });
 }
 

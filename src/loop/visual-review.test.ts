@@ -33,7 +33,7 @@ async function verifying() {
   migrate(db);
   const item = insertQueuedItem(db, { id: "ENG-3", sessionKey: "ses_1", title: "Hint" });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   return { db, itemId: item.id, runId: run.id };
 }
 

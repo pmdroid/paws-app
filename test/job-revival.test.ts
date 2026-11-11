@@ -94,8 +94,8 @@ test.each(["done", "cancelled", "dead"] as const)(
   "reviving a %s merge row never refreshes the old handler's fence",
   async (status) => {
     const db = await fixture();
-    applyWorkItemEvent(db, "item", "turn_ended");
-    applyWorkItemEvent(db, "item", "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), "item", "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), "item", "closeout_accepted");
     const input = { itemId: "item", head: "head", summary: "accepted", now: 2 };
     const id = await enqueueVerifiedMerge(db, input);
     const old = (await claimNextJob(sqliteDb(db), { now: 2, queues: [JOB_KIND.merge] }))!;

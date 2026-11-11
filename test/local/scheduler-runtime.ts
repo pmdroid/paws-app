@@ -127,7 +127,7 @@ export async function probeSchedulerRuntime(
     jobs.register(JOB_KIND.start, async (job) => {
       const itemId = (job.payload as { itemId: string }).itemId;
       await activateLinearItem(sqliteDb(db), "session", itemId);
-      applyWorkItemEvent(db, itemId, "dispatched");
+      await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
     });
     const start = await jobs.tick();
     observe(

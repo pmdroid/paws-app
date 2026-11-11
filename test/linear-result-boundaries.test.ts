@@ -26,7 +26,7 @@ test("only a newer accepted turn can change a non-code task outcome and code sta
   try {
     await ensureLinearSession(sqliteDb(db), { sessionId: "session" });
     const item = insertQueuedItem(db, { id: "ENG-1", sessionKey: "session" });
-    applyWorkItemEvent(db, item.id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
     await expect(selectTaskModeForTurn(sqliteDb(db), item.id, "answer", 1)).rejects.toThrow(
       "changed",
     );
@@ -49,7 +49,7 @@ test("only a newer accepted turn can change a non-code task outcome and code sta
     const fourth = await advanceLinearSessionGeneration(sqliteDb(db), "session");
     expect(await selectTaskModeForTurn(sqliteDb(db), item.id, "answer", fourth)).toBe("code");
     expect(await getTaskMode(sqliteDb(db), item.id)).toBe("code");
-    applyWorkItemEvent(db, item.id, "cancel");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "cancel");
     await expect(selectTaskModeForTurn(sqliteDb(db), item.id, "answer", fourth)).rejects.toThrow(
       "changed",
     );

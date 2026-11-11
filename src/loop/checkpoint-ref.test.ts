@@ -49,7 +49,7 @@ for (const state of ["completed", "merged", "cancelled"] as const)
 
 test("a Stop records the deletion without closeStoppedPull", async () => {
   const { db, item, ended } = await setup();
-  applyWorkItemEvent(db, item.id, "cancel", { now: 2 });
+  await applyWorkItemEvent(sqliteDb(db), item.id, "cancel", { now: 2 });
   expect(
     (await listJobs(sqliteDb(db))).some((job) => job.queue === JOB_KIND.closeStoppedPull),
   ).toBe(false);

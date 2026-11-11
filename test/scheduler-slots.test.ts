@@ -47,7 +47,7 @@ async function fixture() {
   }
   async function running(id: string) {
     insertQueuedItem(db, { id, now: 0 });
-    applyWorkItemEvent(db, id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
     const run = await insertRun(sqliteDb(db), { itemId: id, now: 0, status: "active" });
     const job = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,

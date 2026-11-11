@@ -377,7 +377,7 @@ test("a task retried after failing moves its Linear issue to started again", asy
     while ((await outbox.tick()).length > 0) await outbox.idle();
     expect(started()).toHaveLength(1);
     const item = listWorkItems(db)[0]!;
-    failWorkItem(db, item, "run_error", "The run failed.", Date.now());
+    await failWorkItem(sqliteDb(db), item, "run_error", "The run failed.", Date.now());
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
     await orchestrator.onLinearEvent(linearEvent("prompted", "Try again", null));
     await running;
@@ -477,7 +477,7 @@ test("a retried run starts with the main that moved while it was failed", async 
     running = tickWithRestarts(jobs, orchestrator, db);
     await waitFor(entered(1));
     const item = listWorkItems(db)[0]!;
-    failWorkItem(db, item, "run_error", "The run failed.", Date.now());
+    await failWorkItem(sqliteDb(db), item, "run_error", "The run failed.", Date.now());
     expect(getWorkItem(db, item.id)?.state).toBe("failed");
     await commitOnMain(layout.bare, "merged by hand\n", "hand.txt");
     const movedMain = (

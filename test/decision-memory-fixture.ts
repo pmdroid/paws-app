@@ -78,7 +78,7 @@ export async function probeDecisionMemory(root: string) {
       runId: f.runId,
       now: Date.now() - 1000,
     });
-    applyWorkItemEvent(f.db, "controlled", "blocking_question");
+    await applyWorkItemEvent(sqliteDb(f.db), "controlled", "blocking_question");
     const suggest = (questionId: string, body: string) =>
       sqliteDb(f.db).run((q) => suggestDecisionsSteps(q, questionId, body));
     const confirm = (questionId: string, value: string, userId: string) =>

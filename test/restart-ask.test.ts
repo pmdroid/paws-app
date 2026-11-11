@@ -117,7 +117,7 @@ describe("restart and ask", () => {
       expect(getRun(db, item.currentRunId!)?.status).toBe("ended");
       expect((await getJob(sqliteDb(db), prior))?.status).toBe("cancelled");
       expect(db.query("SELECT 1 FROM merge_queue_entry WHERE item_id=?").get(item.id)).toBeNull();
-      const event = listWorkItemEventRows(db, item.id).at(-1)!;
+      const event = (await listWorkItemEventRows(sqliteDb(db), item.id)).at(-1)!;
       expect(event).toMatchObject({ kind: "restart", reason, version: queued.version });
       expect(event.payloadDigest).toMatch(/^[a-f0-9]{64}$/);
       expect(await workspaceDispatch(db, { now: 3 })).toEqual([item.id]);
@@ -186,7 +186,9 @@ describe("restart and ask", () => {
     expect(getWorkItem(db, item.id)).toEqual(item);
     expect(getRun(db, item.currentRunId!)?.status).toBe("active");
     expect(
-      listWorkItemEventRows(db, item.id).filter((event) => event.kind === "restart"),
+      (await listWorkItemEventRows(sqliteDb(db), item.id)).filter(
+        (event) => event.kind === "restart",
+      ),
     ).toHaveLength(0);
     db.close();
   });
@@ -266,7 +268,7 @@ describe("restart and ask", () => {
 
   test("an old job after restart cannot accept, ask, or execute its handler", async () => {
     const { db, item } = await fixture();
-    applyWorkItemEvent(db, item.id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
     const verifying = getWorkItem(db, item.id)!;
     const oldId = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.reverify,
@@ -277,7 +279,7 @@ describe("restart and ask", () => {
     restart(db, verifying, { reason: "findings", body: "fix", now: 2 });
     expect(await jobVersionCurrent(sqliteDb(db), old)).toBe(false);
     const before = {
-      events: listWorkItemEventRows(db, item.id),
+      events: await listWorkItemEventRows(sqliteDb(db), item.id),
       outbox: await listOutbox(sqliteDb(db)),
       jobs: await listJobs(sqliteDb(db)),
     };
@@ -307,7 +309,7 @@ describe("restart and ask", () => {
       ),
     ).rejects.toThrow("stale");
     expect({
-      events: listWorkItemEventRows(db, item.id),
+      events: await listWorkItemEventRows(sqliteDb(db), item.id),
       outbox: await listOutbox(sqliteDb(db)),
       jobs: await listJobs(sqliteDb(db)),
     }).toEqual(before);
@@ -351,7 +353,7 @@ describe("restart and ask", () => {
     );
     expect(next.status).toBe("queued");
     expect(
-      listWorkItemEventRows(db, item.id)
+      (await listWorkItemEventRows(sqliteDb(db), item.id))
         .filter((event) => event.kind === "ask")
         .map((event) => event.reason),
     ).toEqual(["agent", "agent"]);

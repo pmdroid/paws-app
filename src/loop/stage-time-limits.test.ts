@@ -30,8 +30,8 @@ async function harness(toml: string, projectId: string | null = null) {
   await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
   const work = async (ms: number, reason?: RestartReason) => {
     if (reason) {
-      applyWorkItemEvent(db, item.id, "restart", { kind: "restart", reason });
-      applyWorkItemEvent(db, item.id, "dispatched");
+      await applyWorkItemEvent(sqliteDb(db), item.id, "restart", { kind: "restart", reason });
+      await applyWorkItemEvent(sqliteDb(db), item.id, "dispatched");
       await accrueAwake(sqliteDb(db), item.id, clock.mono(), clock.now(), undefined, true);
     }
     clock.advance(ms);
@@ -77,7 +77,7 @@ test("with fixes_minutes = 60, the second hour of fixes asks and names the fixes
 test("Closeout time does not count by default", async () => {
   const { clock, db, id, work } = await harness("");
   await work(10 * MINUTE);
-  applyWorkItemEvent(db, id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
   await enqueueJob(sqliteDb(db), {
     queue: JOB_KIND.reverify,
     payload: { itemId: id },

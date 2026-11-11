@@ -269,7 +269,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
     await runnerWithSlots(db, 2);
     for (const id of ["busy-1", "busy-2"]) {
       insertQueuedItem(db, { id, now: 0 });
-      applyWorkItemEvent(db, id, "dispatched");
+      await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
       await placeOnRunner(db, id);
     }
     const ready = ["a", "b", "c", "d"];
@@ -299,7 +299,7 @@ test("a waiting item's place in line moves up as items ahead start or leave", as
     });
 
     // A slot frees and the first item starts: everyone behind it moves up.
-    applyWorkItemEvent(db, "busy-1", "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), "busy-1", "blocking_question");
     leaveRunner(db, "busy-1");
     assert.deepEqual(await workspaceDispatch(db, { now: 1001 }), ["a"]);
     assert.deepEqual(line(), [
@@ -331,13 +331,13 @@ test("queued items wait for a free runner slot, and work in flight keeps its slo
   try {
     await runnerWithSlots(db, 2);
     insertQueuedItem(db, { id: "busy", now: 0 });
-    applyWorkItemEvent(db, "busy", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "busy", "dispatched");
     await placeOnRunner(db, "busy");
     for (const [index, id] of ["a", "b", "c"].entries())
       insertQueuedItem(db, { id, now: index + 1 });
     assert.deepEqual(await workspaceDispatch(db, { now: 1000 }), ["a"]);
     assert.deepEqual(await workspaceDispatch(db, { now: 1001 }), []);
-    applyWorkItemEvent(db, "busy", "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), "busy", "blocking_question");
     leaveRunner(db, "busy");
     assert.deepEqual(await workspaceDispatch(db, { now: 1002 }), ["b"]);
   } finally {
@@ -351,8 +351,8 @@ test("work back in flight without an admission is re-admitted, so its jobs run i
     for (const id of ["a", "b"]) {
       insertQueuedItem(db, { id, now: 0 });
       await bindWorkItemRepository(sqliteDb(db), id, repository);
-      applyWorkItemEvent(db, id, "dispatched");
-      applyWorkItemEvent(db, id, "turn_ended");
+      await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
+      await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
       await enqueueJob(sqliteDb(db), { queue: JOB_KIND.reverify, payload: { itemId: id }, now: 0 });
     }
     await workspaceDispatch(db, { now: 1000 });
@@ -374,8 +374,8 @@ test("work stuck in flight with no job is queued again and doesn't block other s
   try {
     insertQueuedItem(db, { id: "stuck", now: 0, sessionKey: "stuck-session" });
     await bindWorkItemRepository(sqliteDb(db), "stuck", repository);
-    applyWorkItemEvent(db, "stuck", "dispatched");
-    applyWorkItemEvent(db, "stuck", "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), "stuck", "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), "stuck", "turn_ended");
     const finished = await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.reverify,
       payload: { itemId: "stuck" },
@@ -403,9 +403,9 @@ test("work stuck in flight with no job is queued again and doesn't block other s
 async function mergeQueueItem(db: ReturnType<typeof tempDb>, id: string): Promise<void> {
   insertQueuedItem(db, { id, now: 0, sessionKey: `${id}-session` });
   await bindWorkItemRepository(sqliteDb(db), id, repository);
-  applyWorkItemEvent(db, id, "dispatched");
-  applyWorkItemEvent(db, id, "turn_ended");
-  applyWorkItemEvent(db, id, "closeout_accepted");
+  await applyWorkItemEvent(sqliteDb(db), id, "dispatched");
+  await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), id, "closeout_accepted");
 }
 
 test("an item in merge_queue whose merge job is gone fails closed into a re-verify", async () => {

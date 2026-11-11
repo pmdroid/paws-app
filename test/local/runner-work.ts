@@ -410,7 +410,7 @@ export async function probeRunnerWork(
         wrongRunnerDenied: true,
       },
     );
-    applyWorkItemEvent(db, item.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     await assert.rejects(work.authorizeAsync(event), /matching open question/);
     assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
     const question = await openQuestion(db, {
@@ -427,7 +427,7 @@ export async function probeRunnerWork(
     await assert.rejects(work.event({ ...event, sequence: 2 }), /matching open question/);
     await assert.rejects(work.authorizeAsync(event), /matching open question/);
     assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
-    applyWorkItemEvent(db, item.id, "answer_received");
+    await applyWorkItemEvent(sqliteDb(db), item.id, "answer_received");
     assert.equal((await work.authorizeAsync(event)).command.id, command.id);
     observe(
       "a live remote task retains its lease while its own Linear question awaits an answer",

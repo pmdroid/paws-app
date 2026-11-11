@@ -51,7 +51,7 @@ async function seed(): Promise<{ db: Database; home: string }> {
   homes.push(home);
   const item = insertQueuedItem(db, { id: "ENG-7", title: "Rules", sessionKey: "ses_7", now: NOW });
   await beginImplementRun(sqliteDb(db), item.id, NOW);
-  applyWorkItemEvent(db, item.id, "blocking_question");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
   const identity = {
     taskId: item.id,
     base: BASE,

@@ -97,7 +97,7 @@ function issueUpdate(stateType: string, updatedFrom: Record<string, unknown> = {
 
 test("a failed task whose issue moves to Done leaves Needs a person and completes its session without reading Linear", async () => {
   const f = await fixture();
-  applyWorkItemEvent(f.db, f.item.id, "start_timed_out");
+  await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "start_timed_out");
   const status = createLiveStatusProvider(f.db);
   const needsPerson = async () =>
     (await status.issues()).issues
@@ -214,7 +214,7 @@ test("an issue moved to Canceled cancels a queued task", async () => {
 
 test("a failed task whose issue moves to Duplicate is cancelled with the canceled response", async () => {
   const f = await fixture();
-  applyWorkItemEvent(f.db, f.item.id, "start_timed_out");
+  await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "start_timed_out");
   expect(getWorkItem(f.db, f.item.id)?.state).toBe("failed");
   const closed = parseLinearIssueClosed(
     parseAgentEvent(JSON.stringify(issueUpdate("duplicate")), "issue-duplicate", Date.now())!,
@@ -235,7 +235,7 @@ test("a failed task whose issue moves to Duplicate is cancelled with the cancele
 test("a confirmed merge from the task's own branch completes the task as merged", async () => {
   const f = await fixture();
   for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
-    applyWorkItemEvent(f.db, f.item.id, step);
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, step);
   await recordConfirmedRemoteMerge(sqliteDb(f.db), {
     itemId: f.item.id,
     repositoryOwner: "acme",
@@ -256,7 +256,7 @@ test("a confirmed merge from the task's own branch completes the task as merged"
 test("Done cancels a merge-queue task without a confirmed merge and completes its session", async () => {
   const f = await fixture();
   for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
-    applyWorkItemEvent(f.db, f.item.id, step);
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, step);
   const closed = parseLinearIssueClosed(
     parseAgentEvent(JSON.stringify(issueUpdate("completed")), "issue-queued", Date.now())!,
   )!;
@@ -298,7 +298,7 @@ test("a task created after the issue closed is a later delegation and stays", as
 
 test("the catch-up poll closes the tasks of an issue whose webhook was missed", async () => {
   const f = await fixture();
-  applyWorkItemEvent(f.db, f.item.id, "start_timed_out");
+  await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "start_timed_out");
   const store = createInboxStore(sqliteDb(f.db));
   const closedAtMs = Date.now() + 1_000;
   const sighting: IntakeSighting = {
@@ -367,9 +367,9 @@ describe("parseLinearIssueClosed", () => {
 for (const exit of ["closed", "undelegated"] as const) {
   test(`an issue ${exit} during a merge records a deferred cancel without interrupting the call`, async () => {
     const f = await fixture();
-    applyWorkItemEvent(f.db, f.item.id, "dispatched");
-    applyWorkItemEvent(f.db, f.item.id, "turn_ended");
-    applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "dispatched");
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "closeout_accepted");
     const now = Date.now() + 1_000;
     beginMergeCall(f.db, f.item.id, "head", now);
     let notified = 0;

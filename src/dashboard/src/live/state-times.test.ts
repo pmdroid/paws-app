@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { applyWorkItemEvent, insertQueuedItem, migrate, openDatabase } from "../../../db";
+import { sqliteDb, applyWorkItemEvent, insertQueuedItem, migrate, openDatabase } from "../../../db";
 import type { WorkItemEvent } from "../../../core";
 import { parseIssueListResponse, type IssueListResponse } from "../contract";
 import { createLiveStatusProvider } from "./provider";
@@ -30,17 +30,19 @@ async function issueList(db: Database, now: number): Promise<IssueListResponse> 
 }
 
 /** Applies each event `minutes` after `start`. */
-function walk(
+async function walk(
   db: Database,
   id: string,
   start: number,
   steps: [number, WorkItemEvent, ("restart" | "ask")?][],
-): void {
+): Promise<void> {
   for (const [minutes, event, kind] of steps) {
     const now = start + minutes * MIN;
-    if (kind === "restart") applyWorkItemEvent(db, id, event, { kind, reason: "findings", now });
-    else if (kind === "ask") applyWorkItemEvent(db, id, event, { kind, reason: "budget", now });
-    else applyWorkItemEvent(db, id, event, { now });
+    if (kind === "restart")
+      await applyWorkItemEvent(sqliteDb(db), id, event, { kind, reason: "findings", now });
+    else if (kind === "ask")
+      await applyWorkItemEvent(sqliteDb(db), id, event, { kind, reason: "budget", now });
+    else await applyWorkItemEvent(sqliteDb(db), id, event, { now });
   }
 }
 
@@ -52,7 +54,7 @@ describe("state times", () => {
   test("an item with a crash, a question, a rejected Closeout and a restart: its states add up to its age", async () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-1", now: T0 });
-    walk(db, "PAS-1", T0, [
+    await walk(db, "PAS-1", T0, [
       [10, "dispatched"],
       [30, "lease_expired"],
       [50, "recovered"],
@@ -87,13 +89,13 @@ describe("state times", () => {
   test("the current state counts up to now and a merged item stops at its merge", async () => {
     const db = database();
     insertQueuedItem(db, { id: "PAS-2", now: T0 });
-    walk(db, "PAS-2", T0, [[5, "dispatched"]]);
+    await walk(db, "PAS-2", T0, [[5, "dispatched"]]);
     const at = async (now: number) =>
       (await issueList(db, now)).issues.find((entry) => entry.id === "PAS-2")!.stateTimes!;
     expect(minutesByState((await at(T0 + 20 * MIN)).states)).toEqual({ queued: 5, running: 15 });
     expect(minutesByState((await at(T0 + 50 * MIN)).states)).toEqual({ queued: 5, running: 45 });
 
-    walk(db, "PAS-2", T0, [
+    await walk(db, "PAS-2", T0, [
       [60, "turn_ended"],
       [62, "closeout_accepted"],
       [70, "merge_accepted"],
@@ -123,7 +125,7 @@ describe("state times", () => {
       const start = T0 + k * HOUR;
       const age = 10 * k;
       insertQueuedItem(db, { id, now: start });
-      walk(db, id, start, [
+      await walk(db, id, start, [
         [5, "dispatched"],
         [age - 3, "turn_ended"],
         [age - 1, "closeout_accepted"],
@@ -132,7 +134,7 @@ describe("state times", () => {
     }
     // Merged 25 hours ago, outside the window.
     insertQueuedItem(db, { id: "PAS-90", now: now - 30 * HOUR });
-    walk(db, "PAS-90", now - 30 * HOUR, [
+    await walk(db, "PAS-90", now - 30 * HOUR, [
       [5, "dispatched"],
       [100, "turn_ended"],
       [200, "closeout_accepted"],
@@ -140,7 +142,7 @@ describe("state times", () => {
     ]);
     // Still open.
     insertQueuedItem(db, { id: "PAS-91", now: T0 });
-    walk(db, "PAS-91", T0, [[5, "dispatched"]]);
+    await walk(db, "PAS-91", T0, [[5, "dispatched"]]);
 
     const times = (await issueList(db, now)).mergedTimes!;
     expect(times.since).toBe(new Date(T0).toISOString());

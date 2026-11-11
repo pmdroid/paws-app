@@ -78,7 +78,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
     );
 
     const parked = await beginImplementRun(sqliteDb(db), waiting.id, NOW);
-    applyWorkItemEvent(db, waiting.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(db), waiting.id, "blocking_question");
     await beginImplementRun(sqliteDb(db), merging.id, NOW);
     await enterMergeQueue(sqliteDb(db), merging.id, {
       phase: "merge_queue",
@@ -315,7 +315,7 @@ test("a merge-queue item whose re-verify waits for a runner slot says it is next
       repository: "pmdroid/paws-demo",
       now: 1,
     });
-    applyWorkItemEvent(db, merging.id, "reverify_requested");
+    await applyWorkItemEvent(sqliteDb(db), merging.id, "reverify_requested");
     await enqueueJob(sqliteDb(db), {
       queue: "run.reverify",
       payload: {

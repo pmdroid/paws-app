@@ -153,8 +153,9 @@ describe("the runner lease grace", () => {
   for (const state of ["verifying", "merge_queue"] as const) {
     test(`expired abandoned ${state} work transitions with its lost run`, async () => {
       const { db, clock, run, item } = await leased();
-      applyWorkItemEvent(db, item.id, "turn_ended");
-      if (state === "merge_queue") applyWorkItemEvent(db, item.id, "closeout_accepted");
+      await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+      if (state === "merge_queue")
+        await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
       clock.advance(PAST);
       expect(await closeExpiredRunnerLeases(sqliteDb(db), clock.now())).toEqual([run.id]);
       expect(getRun(db, run.id)?.status).toBe("lost");

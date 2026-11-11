@@ -31,7 +31,7 @@ test("an answer restarts the task with a fresh transient-retry count", async () 
   const deferred = (await listJobs(sqliteDb(db))).find((job) => job.queue === JOB_KIND.resume)!;
   expect(deferred.payload).toMatchObject({ retry: MAX_TRANSIENT_RETRIES });
   db.run("UPDATE job SET status='done' WHERE id=?", [deferred.id]);
-  applyWorkItemEvent(db, item.id, "recovered");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "recovered");
   const running = getWorkItem(db, item.id)!;
   await sqliteDb(db).transaction((q) =>
     askSteps(

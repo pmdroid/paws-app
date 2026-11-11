@@ -87,7 +87,7 @@ for (const state of [
               : state === "merge_queue"
                 ? (["turn_ended", "closeout_accepted"] as const)
                 : [])
-        applyWorkItemEvent(paws.db, "legacy", event);
+        await applyWorkItemEvent(sqliteDb(paws.db), "legacy", event);
       const held = getWorkItem(paws.db, "legacy")!;
       const runStatus = getRun(paws.db, run.id)?.status;
       const outbox = (await listOutbox(sqliteDb(paws.db))).length;

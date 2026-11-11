@@ -130,8 +130,8 @@ async function held(head = heads.s, base = heads.base) {
     title: "Token rotation",
   });
   await beginImplementRun(sqliteDb(db), item.id, NOW - 10);
-  applyWorkItemEvent(db, item.id, "turn_ended");
-  applyWorkItemEvent(db, item.id, "closeout_accepted");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "closeout_accepted");
   saveCheckpoint(db, item.id, { phase: "merge_queue", baseSha: base, wipCommit: head });
   db.run("UPDATE work_item SET delegated_by = 'delegator' WHERE id = ?", [item.id]);
   await sqliteDb(db).run((q) =>
@@ -245,7 +245,7 @@ async function riskApproved() {
 /** The fix at `head` passed Closeout and the lane holds it again. */
 async function fixAccepted(db: ReturnType<typeof openDatabase>, head: string, base: string) {
   if (getWorkItem(db, "ENG-106")?.state === "verifying")
-    applyWorkItemEvent(db, "ENG-106", "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), "ENG-106", "closeout_accepted");
   saveCheckpoint(db, "ENG-106", { phase: "merge_queue", baseSha: base, wipCommit: head });
   await saveCandidateRisk(sqliteDb(db), {
     itemId: "ENG-106",
@@ -346,7 +346,7 @@ test("Approve on the Risk card binds to S and sends the item back to the merge q
   expect(await approval(db, heads.s)).toBe("approved");
   expect(getWorkItem(db, itemId)?.state).toBe("verifying");
   expect(
-    listWorkItemEventRows(db, itemId)
+    (await listWorkItemEventRows(sqliteDb(db), itemId))
       .slice(-2)
       .map((row) => [row.fromState, row.event, row.toState]),
   ).toEqual([

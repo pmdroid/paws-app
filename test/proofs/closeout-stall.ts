@@ -33,7 +33,7 @@ export default {
       const clock = new FakeClock(Date.now() + 1000);
       insertQueuedItem(db, { id: "quiet", sessionKey: "quiet-session", now: clock.now() });
       await beginImplementRun(sqliteDb(db), "quiet", clock.now());
-      applyWorkItemEvent(db, "quiet", "turn_ended", { now: clock.now() });
+      await applyWorkItemEvent(sqliteDb(db), "quiet", "turn_ended", { now: clock.now() });
       saveCheckpoint(db, "quiet", { phase: "verifying", baseSha: "base", wipCommit: "head" });
       const oldJob = await enqueueJob(sqliteDb(db), {
         queue: JOB_KIND.reverify,

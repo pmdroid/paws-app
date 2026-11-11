@@ -339,7 +339,7 @@ test("new prompt after completion creates a new task and preserves the terminal 
     await f.orchestrator.onLinearEvent(event("created", null, 1));
     await tickWithRestarts(f.jobs, f.orchestrator, f.db);
     const original = await f.item();
-    applyWorkItemEvent(f.db, original.id, "merge_accepted");
+    await applyWorkItemEvent(sqliteDb(f.db), original.id, "merge_accepted");
     expect((await getConversation(sqliteDb(f.db), original.id)).entries).toContain(
       "Append the required fixed suffix.",
     );

@@ -135,7 +135,7 @@ async function seedVerifying(db: Database, id: string, head: string, now: number
     wipCommit: head,
   });
   await markRun(sqliteDb(db), started.run.id, "ended", now);
-  applyWorkItemEvent(db, id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
   saveCheckpoint(db, id, { phase: "verifying", baseSha: sha("c"), wipCommit: head });
 }
 
@@ -225,7 +225,7 @@ describe("live closeout ui", () => {
     const id = "ENG-302";
     insertQueuedItem(db, { id });
     const { run } = await beginImplementRun(sqliteDb(db), id, 1);
-    applyWorkItemEvent(db, id, "pause");
+    await applyWorkItemEvent(sqliteDb(db), id, "pause");
     await markRun(sqliteDb(db), run.id, "lost", 2);
     expect((await snapshotOf(db, 3)).runs.find((entry) => entry.itemId === id)?.state).toBe(
       "paused",

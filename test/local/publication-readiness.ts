@@ -115,9 +115,9 @@ export async function probePublicationReadiness(root: string) {
       now: () => clock.now(),
     });
     await reconciler.reconcile({ itemId, workspaceId: target.workspaceId });
-    applyWorkItemEvent(db, itemId, "dispatched");
-    applyWorkItemEvent(db, itemId, "turn_ended");
-    applyWorkItemEvent(db, itemId, "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), itemId, "dispatched");
+    await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(db), itemId, "closeout_accepted");
     const run = await insertRun(sqliteDb(db), {
       itemId,
       agent: "scripted-producer",
@@ -405,9 +405,9 @@ export async function probePublicationReadiness(root: string) {
       const independent = f.db
         .query<{ id: string }, []>("SELECT id FROM work_item WHERE linear_issue_id='free'")
         .get()!.id;
-      applyWorkItemEvent(f.db, manual, "dispatched");
-      applyWorkItemEvent(f.db, manual, "run_failed");
-      applyWorkItemEvent(f.db, manual, "take_over");
+      await applyWorkItemEvent(sqliteDb(f.db), manual, "dispatched");
+      await applyWorkItemEvent(sqliteDb(f.db), manual, "run_failed");
+      await applyWorkItemEvent(sqliteDb(f.db), manual, "take_over");
       await saveTaskMode(sqliteDb(f.db), manual, "code");
       f.tracker.deps.set("parent", [
         { blockerLinearIssueId: "outside", blockedLinearIssueId: "issue" },

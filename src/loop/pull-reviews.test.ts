@@ -257,7 +257,7 @@ describe("changes-requested reviews", () => {
     await deliver({ id: 501, state: "changes_requested" });
     expect(await handlePullReview(db, 501, caps)).toBe("wait");
 
-    applyWorkItemEvent(db, "eng-1", "closeout_accepted");
+    await applyWorkItemEvent(sqliteDb(db), "eng-1", "closeout_accepted");
     expect(getWorkItem(db, "eng-1")?.state).toBe("merge_queue");
     setBusy(true);
     expect(await handlePullReview(db, 501, caps)).toBe("wait");

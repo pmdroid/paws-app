@@ -52,7 +52,7 @@ export async function probeLinearSessionStop(root: string) {
     for (const field of ["dismissedAt", "archivedAt", "stopping"] as const) {
       const old = insertQueuedItem(db, { id: `old-${field}`, sessionKey: `old-${field}` });
       await beginImplementRun(sqliteDb(db), old.id, clock.now());
-      applyWorkItemEvent(db, old.id, "blocking_question");
+      await applyWorkItemEvent(sqliteDb(db), old.id, "blocking_question");
       const replacement = insertQueuedItem(db, { id: `new-${field}`, sessionKey: `new-${field}` });
       await ensureLinearSession(sqliteDb(db), {
         sessionId: old.sessionKey!,
@@ -159,7 +159,7 @@ export async function probeLinearSessionStop(root: string) {
       const old = insertQueuedItem(db, { id: `webhook-${field}`, sessionKey: `webhook-${field}` });
       // The item waits in the merge queue with an open pull request.
       for (const step of ["dispatched", "turn_ended", "closeout_accepted"] as const)
-        applyWorkItemEvent(db, old.id, step);
+        await applyWorkItemEvent(sqliteDb(db), old.id, step);
       await recordItemPullRequest(sqliteDb(db), {
         itemId: old.id,
         pullNumber: 42,

@@ -69,7 +69,7 @@ async function applyWorkItemEvent(
   record?: WorkItemEventRecord,
 ) {
   const before = getWorkItem(db, id)!.state;
-  const result = applyEvent(db, id, event, record);
+  const result = await applyEvent(sqliteDb(db), id, event, record);
   if (before === "running" && result.state !== "running") endAgentJob(db, id);
   if (before !== "running" && result.state === "running") await agentJob(db, id, 1_000_000);
   return result;

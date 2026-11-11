@@ -35,7 +35,7 @@ async function asking(
 ): Promise<void> {
   insertQueuedItem(db, { id, title: `Title of ${id}`, sessionKey: session, now: NOW - 10_000 });
   await beginImplementRun(sqliteDb(db), id, NOW - 9_000);
-  applyWorkItemEvent(db, id, "blocking_question");
+  await applyWorkItemEvent(sqliteDb(db), id, "blocking_question");
   db.run(
     "INSERT INTO question (id, item_id, session_id, kind, body, options, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)",
     [

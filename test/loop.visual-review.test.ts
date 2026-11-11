@@ -548,7 +548,7 @@ test("retry on a task Closeout blocked for an uncovered file asks a new review r
       retryBaseline: [],
       summary: "Closeout: blocked\nvisual-proof: missing",
     });
-    applyWorkItemEvent(f.db, item.id, "blocking_question");
+    await applyWorkItemEvent(sqliteDb(f.db), item.id, "blocking_question");
 
     await f.orchestrator.onLinearEvent(prompted("retry", "delegator-1", "activity:retry"));
     await f.driveUntil(() => f.tracker.questions.length === 2);
@@ -966,9 +966,9 @@ async function headOf(worktree: string): Promise<string> {
 }
 
 /** The item verifies its current head again, as after a rebase in the lane. */
-function reverifyNow(db: Database, itemId: string, key: string): void {
-  applyWorkItemEvent(db, itemId, "answer_received");
-  applyWorkItemEvent(db, itemId, "turn_ended");
+async function reverifyNow(db: Database, itemId: string, key: string): Promise<void> {
+  await applyWorkItemEvent(sqliteDb(db), itemId, "answer_received");
+  await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
   enqueueJobOnce(db, {
     queue: JOB_KIND.reverify,
     jobKey: key,
@@ -997,7 +997,7 @@ test("a rebase that keeps the patch-id keeps the pending visual review open for 
     await rebaseOntoNewMain(f, worktree);
     const rebased = await headOf(worktree);
     expect(rebased).not.toBe(reviewed);
-    reverifyNow(f.db, item.id, "rebased");
+    await reverifyNow(f.db, item.id, "rebased");
     await f.tickAll();
 
     expect(gate.runs.map((entry) => entry.headSha).at(-1)).toBe(rebased);
@@ -1036,8 +1036,8 @@ test("a rebase that keeps the patch-id carries an accepted visual review to the 
     const item = listWorkItems(f.db)[0]!;
     // Accepted while Closeout still ran on the reviewed head; the head then moves.
     const open = findOpenQuestion(f.db, "ses_1")!;
-    applyWorkItemEvent(f.db, item.id, "answer_received");
-    applyWorkItemEvent(f.db, item.id, "turn_ended");
+    await applyWorkItemEvent(sqliteDb(f.db), item.id, "answer_received");
+    await applyWorkItemEvent(sqliteDb(f.db), item.id, "turn_ended");
     expect(await f.approve()).toBe("answered");
     expect((await getVisualReview(sqliteDb(f.db), open.id))?.outcome).toBe("accepted");
     await rebaseOntoNewMain(f, worktree);
@@ -1080,7 +1080,7 @@ test("a new head with a different patch-id cancels the pending visual review and
     await exec("git", ["-C", worktree, "add", "."]);
     await exec("git", [...IDENTITY, "-C", worktree, "commit", "-m", "New layout"]);
     const changed = await headOf(worktree);
-    reverifyNow(f.db, item.id, "changed");
+    await reverifyNow(f.db, item.id, "changed");
     await f.tickAll();
 
     expect((await getQuestion(sqliteDb(f.db), first.id))?.status).toBe("cancelled");

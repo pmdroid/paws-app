@@ -164,7 +164,7 @@ test("a queued final response verifies live access and survives the task's own c
       "closeout_accepted",
       "merge_accepted",
     ] as const)
-      applyWorkItemEvent(f.db, f.item.id, event);
+      await applyWorkItemEvent(sqliteDb(f.db), f.item.id, event);
     await f.enqueue("activity");
     await f.outbox.tick();
     await f.outbox.idle();
@@ -212,7 +212,7 @@ test("access removed during a fresh publication read prevents the queued mutatio
 test("a stopped task can acknowledge removal of delegation while installation access remains valid", async () => {
   const f = await fixture();
   try {
-    applyWorkItemEvent(f.db, f.item.id, "cancel");
+    await applyWorkItemEvent(sqliteDb(f.db), f.item.id, "cancel");
     await advanceLinearSessionGeneration(sqliteDb(f.db), "session", { stop: true, now: 10 });
     f.lifecycle.issue.delegateId = "different-app";
     await f.enqueue("activity", true);

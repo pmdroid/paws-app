@@ -74,8 +74,8 @@ async function holdMergeQueuePlace(
   lane = "",
 ) {
   await beginImplementRun(sqliteDb(db), id, clock.now());
-  applyWorkItemEvent(db, id, "turn_ended");
-  applyWorkItemEvent(db, id, "closeout_accepted");
+  await applyWorkItemEvent(sqliteDb(db), id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), id, "closeout_accepted");
   await joinMergeQueue(sqliteDb(db), {
     itemId: id,
     repository: "acme/one",
@@ -357,7 +357,7 @@ describe("job queue", () => {
     insertQueuedItem(db, { id: "eng-1", now: clock.now() });
     insertQueuedItem(db, { id: "eng-2", now: clock.now() });
     await beginImplementRun(sqliteDb(db), "eng-1", clock.now());
-    applyWorkItemEvent(db, "eng-1", "lease_expired");
+    await applyWorkItemEvent(sqliteDb(db), "eng-1", "lease_expired");
     await enqueueJob(sqliteDb(db), {
       queue: JOB_KIND.start,
       payload: { itemId: "eng-2" },

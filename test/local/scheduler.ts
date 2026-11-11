@@ -158,7 +158,11 @@ export async function probeScheduler(
       });
       const first = (await claimNextJob(sqliteDb(db), { now: 1000, queues: [JOB_KIND.start] }))!;
       assert(first);
-      applyWorkItemEvent(db, (first.payload as { itemId: string }).itemId, "dispatched");
+      await applyWorkItemEvent(
+        sqliteDb(db),
+        (first.payload as { itemId: string }).itemId,
+        "dispatched",
+      );
       const secondDb = openDatabase(join(directory, "paws.sqlite"));
       const second = (await claimNextJob(sqliteDb(secondDb), {
         now: 1000,
@@ -521,7 +525,7 @@ export async function probeScheduler(
       const selected = ids.filter((id) => admitted.includes(id));
       assert.equal(selected.length, ids.length);
       await activateLinearItem(sqliteDb(db), sessionId, selected[0]!);
-      applyWorkItemEvent(db, selected[0]!, "dispatched");
+      await applyWorkItemEvent(sqliteDb(db), selected[0]!, "dispatched");
       await assert.rejects(
         activateLinearItem(sqliteDb(db), sessionId, selected[1]!),
         /Previous Linear task is still active/,

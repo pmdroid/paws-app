@@ -27,7 +27,7 @@ async function verifying(candidate = true) {
   migrate(db);
   const item = insertQueuedItem(db, { id: "item", sessionKey: "session", now: NOW });
   const { run } = await beginImplementRun(sqliteDb(db), item.id, NOW);
-  applyWorkItemEvent(db, item.id, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), item.id, "turn_ended");
   if (candidate)
     saveCheckpoint(db, item.id, { phase: "verifying", baseSha: "base", wipCommit: "head" });
   return { db, item: getWorkItem(db, item.id)!, run };

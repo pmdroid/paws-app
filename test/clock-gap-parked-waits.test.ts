@@ -65,7 +65,8 @@ async function park(
       now,
     });
   } else {
-    if (wait === "resume capacity wait") applyWorkItemEvent(db, "eng-9", "lease_expired");
+    if (wait === "resume capacity wait")
+      await applyWorkItemEvent(sqliteDb(db), "eng-9", "lease_expired");
     await enqueueJob(sqliteDb(db), {
       queue: wait === "first-start capacity wait" ? JOB_KIND.start : JOB_KIND.resume,
       runAt: now + SLOT_POLL_MS,
@@ -351,7 +352,7 @@ describe("repeated clock gaps with holds and parked waits side by side", () => {
       });
       insertQueuedItem(db, { id: "eng-12", sessionKey: "session-12", now: clock.now() });
       await beginImplementRun(sqliteDb(db), "eng-12", clock.now(), checkpoint);
-      applyWorkItemEvent(db, "eng-12", "blocking_question");
+      await applyWorkItemEvent(sqliteDb(db), "eng-12", "blocking_question");
       db.run("UPDATE work_item SET recovery_attempts=1 WHERE id IN ('eng-9','eng-10')");
 
       await host.tick();

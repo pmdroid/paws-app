@@ -39,8 +39,8 @@ export default {
     await proof.delegate();
     await proof.waitFor(
       "Closeout accepts and the item waits in the merge queue on CI",
-      () =>
-        proof.itemState() === "merge_queue" &&
+      async () =>
+        (await proof.itemState()) === "merge_queue" &&
         proof.github.calls.some((call) => call.path === "/graphql"),
     );
     proof.github.ci.pending = false;
@@ -61,9 +61,10 @@ export default {
     );
     proof.expect(
       "the item went back to the agent with reason conflict",
-      proof.transitions().some((row) => row.from === "merge_queue" && row.event === "restart") &&
-        rebasePrompts.length === 1,
-      proof.transitions().map((row) => row.event),
+      (await proof.transitions()).some(
+        (row) => row.from === "merge_queue" && row.event === "restart",
+      ) && rebasePrompts.length === 1,
+      (await proof.transitions()).map((row) => row.event),
     );
     proof.expect(
       "the lane never squashed the conflicting pull request",

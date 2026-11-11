@@ -191,7 +191,7 @@ export async function probeExecutionRuntime(input: {
   db.run("UPDATE work_item SET session_key=? WHERE id=?", [sessionId, itemId]);
   await saveTaskMode(sqliteDb(db), itemId, "code", 0, true);
   await beginImplementRun(sqliteDb(db), itemId, Date.now());
-  applyWorkItemEvent(db, itemId, "turn_ended");
+  await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
   saveCheckpoint(db, itemId, {
     phase: "verifying",
     wipCommit: "a".repeat(40),
@@ -336,7 +336,7 @@ export async function probeExecutionRuntime(input: {
     JSON.stringify(["activity", "runtime-session-late"]),
     Date.now(),
   );
-  applyWorkItemEvent(db, itemId, "cancel");
+  await applyWorkItemEvent(sqliteDb(db), itemId, "cancel");
   const late = {
     type: "AgentSessionEvent",
     action: "prompted",
@@ -383,7 +383,7 @@ export async function probeExecutionRuntime(input: {
   await bindLinearSessionTask(sqliteDb(db), "runtime-terminal-session", terminal.delegationId, {
     actorId: "owner",
   });
-  applyWorkItemEvent(db, terminal.id, "cancel");
+  await applyWorkItemEvent(sqliteDb(db), terminal.id, "cancel");
   const store = createInboxStore(sqliteDb(db));
   const replayKeys = [];
   for (const [nextSession, body] of [
