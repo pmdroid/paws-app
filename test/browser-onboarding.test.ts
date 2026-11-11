@@ -1,3 +1,4 @@
+import { migratedHome } from "./helpers";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +14,7 @@ afterEach(async () => {
 });
 
 async function freshInstance(expectedOrganizationId?: string) {
-  const home = mkdtempSync(join(tmpdir(), "paws-browser-onboarding-"));
+  const home = await migratedHome(mkdtempSync(join(tmpdir(), "paws-browser-onboarding-")));
   roots.push(home);
   const cert = join(home, "server.crt");
   const key = join(home, "server.key");

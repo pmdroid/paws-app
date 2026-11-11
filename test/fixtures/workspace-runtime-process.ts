@@ -22,7 +22,7 @@ import {
   WORKSPACE_COOKIE,
 } from "../../src/workspace";
 import { runtimeLinear, runtimeNativeFetch } from "./workspace-runtime-linear";
-import { withHomeStore } from "../helpers";
+import { withHomeStore, migratedHome } from "../helpers";
 
 const mode = process.argv[2]!;
 const failures: unknown[] = [];
@@ -77,6 +77,7 @@ if (mode === "public")
       botUserId: "U123",
     }),
   );
+await migratedHome(source.PAWS_HOME!);
 const paws = await startPaws(source);
 const tls = source.PAWS_PUBLIC_DASHBOARD === "1";
 const origin = `${tls ? "https" : "http"}://127.0.0.1:${paws.server.port}`;

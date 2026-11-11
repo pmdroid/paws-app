@@ -1,3 +1,4 @@
+import { migratedHome } from "../helpers";
 import assert from "node:assert/strict";
 import { and, eq, inArray, isNotNull, type SQL } from "drizzle-orm";
 import { seed } from "../dialects";
@@ -110,6 +111,7 @@ await git(["-C", source, "commit", "-am", "Candidate"]);
 const head = await git(["-C", source, "rev-parse", "HEAD"]);
 await git(["-C", source, "bundle", "create", join(root, "candidate.bundle"), "HEAD", `^${base}`]);
 mkdirSync(home, { recursive: true });
+await migratedHome(home);
 writeFileSync(
   join(home, "config.toml"),
   '[agents.defaults.implementer]\nagent = "claude"\nmodel = "implement-model"\n[agents.defaults.reviewer]\nagent = "codex"\nmodel = "review-model"\n',

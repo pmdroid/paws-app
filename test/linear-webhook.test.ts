@@ -10,7 +10,7 @@ import {
   sessionCreatedKey,
 } from "../src/linear";
 import { createInboxStore } from "../src/linear";
-import { tempDb, tempHome } from "./helpers";
+import { migratedHome, tempDb } from "./helpers";
 
 const SECRET = "webhook-secret";
 
@@ -134,7 +134,7 @@ describe("linear webhooks", () => {
   });
 
   test("startPaws leaves webhook routes off unless LINEAR_WEBHOOKS is set", async () => {
-    const home = tempHome();
+    const home = await migratedHome();
     const paws = await startPaws({
       PAWS_HOME: home,
       PAWS_PORT: "0",
@@ -156,7 +156,7 @@ describe("linear webhooks", () => {
   });
 
   test("startPaws persists a signed webhook when LINEAR_WEBHOOKS is on", async () => {
-    const home = tempHome();
+    const home = await migratedHome();
     const paws = await startPaws({
       PAWS_HOME: home,
       PAWS_PORT: "0",

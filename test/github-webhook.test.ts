@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { checkGitHubSignature, handleGitHubWebhook } from "../src/github";
 import { listGitHubDeliveries } from "../src/db";
 import { startPaws } from "../src/index";
-import { tempHome } from "./helpers";
+import { migratedHome } from "./helpers";
 
 const secret = "synthetic-github-webhook-secret";
 function request(payload: string, change: Record<string, string> = {}): Request {
@@ -72,7 +72,7 @@ test("GitHub webhook does not acknowledge a verified event until its inbox accep
 });
 
 test("the running GitHub endpoint persists verified deliveries and deduplicates them across restart", async () => {
-  const home = tempHome();
+  const home = await migratedHome();
   const env = { PAWS_HOME: home, PAWS_PORT: "0", GITHUB_WEBHOOK_SECRET: secret };
   let paws = await startPaws(env);
   const payload = JSON.stringify({ action: "opened", pull_request: { number: 1 } });

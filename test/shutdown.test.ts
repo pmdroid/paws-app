@@ -2,11 +2,11 @@ import { expect, test } from "bun:test";
 import { databaseProbeSteps, setJournalSink } from "../src/db";
 import { startPaws } from "../src/index";
 import { shutdownPaws, stopPawsComponents } from "../src/shutdown";
-import { tempHome } from "./helpers";
+import { migratedHome } from "./helpers";
 
 for (const requestedCode of [0, 75]) {
   test(`composition logs a rejected server stop and exits ${requestedCode} after database close`, async () => {
-    const paws = await startPaws({ PAWS_HOME: tempHome(), PAWS_PORT: "0" });
+    const paws = await startPaws({ PAWS_HOME: await migratedHome(), PAWS_PORT: "0" });
     const stopServer = paws.server.stop.bind(paws.server);
     paws.server.stop = async (force) => {
       await stopServer(force);

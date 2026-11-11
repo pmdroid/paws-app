@@ -1,3 +1,4 @@
+import { migratedHome } from "../helpers";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -94,6 +95,7 @@ if (mode === "transcripts-later") {
   source.GITHUB_APP_ID = "99";
   source.GITHUB_APP_INSTALLATION_ID = "1";
   source.GITHUB_APP_PRIVATE_KEY_PATH = source.PAWS_TLS_KEY_PATH;
+  await migratedHome(root);
   const paws = await startPaws(source, { server: browserServer });
   try {
     const health = await runtimeNativeFetch(`https://127.0.0.1:${browserPort}/health`, {
@@ -168,6 +170,7 @@ if (mode === "remote") {
   assert(!existsSync(join(root, "paws.db")) && !existsSync(join(root, "pglite")));
   rmSync(config);
 }
+await migratedHome(root);
 const paws = await startPaws(source, {
   server: browserServer,
   ...(enabled

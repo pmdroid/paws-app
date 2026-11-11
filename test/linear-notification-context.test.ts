@@ -12,7 +12,7 @@ import {
 import { createFakeTracker } from "../src/linear";
 import { refreshLinearNotificationContext } from "../src/loop";
 import { intakeDelegatedIssue } from "../src/intake";
-import { tempHome } from "./helpers";
+import { tempHome, migratedHome } from "./helpers";
 
 const scope = { organizationId: "org", oauthClientId: "client", appUserId: "app" };
 
@@ -99,7 +99,12 @@ test.each(["context", "github-auth"])(
   "signed %s notification ingress retries failed context reads before deduplicating",
   async (mode) => {
     const proc = Bun.spawn(
-      [process.execPath, "test/fixtures/linear-notification-ingress.ts", tempHome(), mode],
+      [
+        process.execPath,
+        "test/fixtures/linear-notification-ingress.ts",
+        await migratedHome(),
+        mode,
+      ],
       { stdout: "pipe", stderr: "pipe" },
     );
     const [output, errors, code] = await Promise.all([

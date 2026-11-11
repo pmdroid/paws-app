@@ -1,3 +1,4 @@
+import { migratedHome } from "../helpers";
 import { eq } from "drizzle-orm";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -538,6 +539,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     },
     { preconnect: () => undefined },
   );
+  await migratedHome(root);
   const paws = await startPaws({
     PAWS_HOME: root,
     PAWS_HOST: "127.0.0.1",

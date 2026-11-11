@@ -1,3 +1,4 @@
+import { migratedHome } from "./helpers";
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,6 +32,7 @@ for (const state of [
     expect(realpathSync(join(home, ".kyotoagent"))).toBe(join(home, ".kyotoagent"));
     const pawsHome = join(home, ".paws");
     mkdirSync(pawsHome);
+    await migratedHome(pawsHome);
     writeFileSync(join(pawsHome, "config.toml"), '[github]\nauth = "app"\nrepo = "acme/demo"\n');
     const env = {
       PATH: "/usr/bin:/bin",
