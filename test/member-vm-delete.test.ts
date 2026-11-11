@@ -110,7 +110,7 @@ async function fixture() {
   const inactive = await person("Watcher", "member", false);
   const disconnected: string[] = [];
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},

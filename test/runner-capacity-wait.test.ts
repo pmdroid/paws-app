@@ -102,7 +102,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -141,7 +141,7 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
 
   let workNow = Date.now;
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -164,13 +164,13 @@ test("four tasks waiting for a busy runner leave the execution workers free for 
     { runId: otherRun.id, generation: 1 },
   ]);
   await work.heartbeat(freeRunner, 8);
-  const results = createRunnerResults({ db, work });
-  const health = createRunnerHealth({ db, work });
+  const results = createRunnerResults({ store: sqliteDb(db), work });
+  const health = createRunnerHealth({ store: sqliteDb(db), work });
   const identifiers = ["ENG-1", "ENG-2", "ENG-3", "ENG-4", "ENG-5"];
   const waiting = new Set(identifiers.slice(0, 4));
   const placement = createRunnerPlacement({ store: sqliteDb(db) });
   const backend = createRemoteAgentRunner({
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,

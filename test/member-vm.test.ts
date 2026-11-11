@@ -105,7 +105,7 @@ async function fixture(input: { exeDev?: ExeDev; installPolls?: number } = {}) {
   const member = await person("Ada Lovelace", "ada@example.invalid");
   const admin = principal(ownerUserId, "admin");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},

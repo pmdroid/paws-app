@@ -66,7 +66,7 @@ export async function probeRunnerPolicyBrowser(
     authenticatedAt: now,
     teamIds: ["team"],
   });
-  const browser = createRunnerPlacementBrowser({ db, now: () => now });
+  const browser = createRunnerPlacementBrowser({ store: sqliteDb(db), now: () => now });
   const request = async (path: string, actor: WorkspacePrincipal, value?: unknown) =>
     browser(
       new Request("https://paws.example.invalid" + path, {

@@ -78,7 +78,7 @@ export async function probeRunnerHealth(
   now = Date.now();
   let listener: Awaited<ReturnType<typeof startRunnerListener>> | undefined;
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect: (fingerprint) => listener?.revoke(fingerprint),
@@ -97,13 +97,13 @@ export async function probeRunnerHealth(
   if (identity.status !== "approved") throw new Error("Expected approved fixture identity");
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "health-fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  const health = createRunnerHealth({ db, work, now: () => now });
+  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => now });
   const requestInput = {
     type: "probe" as const,
     profile: { agent: "codex" as const, model: null },

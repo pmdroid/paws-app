@@ -78,7 +78,7 @@ export async function probeRunnerWork(
   const issuer = join(root, "issuer");
   const authority = await initializeRunnerAuthority(issuer);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: issuer,
     disconnect() {},
@@ -100,7 +100,7 @@ export async function probeRunnerWork(
   const keyPath = join(root, "fixture-signing.pem");
   writeFileSync(keyPath, keys.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -685,7 +685,7 @@ export async function probeRunnerWork(
       );
       await assert.rejects(work.assign(waiting), /occupied/);
       const helpers = createRunnerHelpers({
-        db,
+        store: sqliteDb(db),
         keyId: "fixture",
         privateKey: keys.privateKey,
         now: () => now,
@@ -750,7 +750,7 @@ export async function probeRunnerWork(
       const waitingForTeardown = openDatabase(path);
       try {
         const reconstructed = createRunnerWork({
-          db: waitingForTeardown,
+          store: sqliteDb(waitingForTeardown),
           keyId: "fixture",
           privateKey: keys.privateKey,
           eventKey: Buffer.alloc(32, 7),
@@ -799,10 +799,10 @@ export async function probeRunnerWork(
       await work.finish(waiting.runId, 4);
       await work.assign({ ...review, id: workspaceId(), generation: 5 });
       const backend = createRemoteAgentRunner({
-        db,
+        store: sqliteDb(db),
         work,
-        health: createRunnerHealth({ db, work, now: () => now }),
-        results: createRunnerResults({ db, work, now: () => now }),
+        health: createRunnerHealth({ store: sqliteDb(db), work, now: () => now }),
+        results: createRunnerResults({ store: sqliteDb(db), work, now: () => now }),
         now: () => now,
         pollIntervalMs: 1,
         async fetchCandidate() {

@@ -73,7 +73,7 @@ async function setup() {
   ]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -104,14 +104,14 @@ async function setup() {
   release("0.1.44");
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now,
   });
-  const results = createRunnerResults({ db, work, now });
-  const health = createRunnerHealth({ db, work, now });
+  const results = createRunnerResults({ store: sqliteDb(db), work, now });
+  const health = createRunnerHealth({ store: sqliteDb(db), work, now });
   const sessions = createAgentSessions({
     db,
     work,
@@ -138,7 +138,7 @@ async function setup() {
   /** The item's head on the Paws side: its candidate ref in the mirror. */
   const head = (id: string) => `${candidateRef(`display-${id}`)}`;
   const backend = createRemoteAgentRunner({
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,

@@ -62,7 +62,7 @@ async function fixture(runnerVersion = "0.1.61") {
   };
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -82,7 +82,7 @@ async function fixture(runnerVersion = "0.1.61") {
   const runnerId = await enroll("goldbox");
   const otherRunner = await enroll("silverbox");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -101,12 +101,12 @@ async function fixture(runnerVersion = "0.1.61") {
   expect(await heartbeat([])).toBe(200);
   const signedIn: string[] = [];
   const login = createRunnerLogin({
-    db,
+    store: sqliteDb(db),
     work,
     now: () => now,
     onSignedIn: ({ agent }) => signedIn.push(agent),
   });
-  const health = createRunnerHealth({ db, work, now: () => now });
+  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => now });
   const account = await createAgentAccount(sqliteDb(db), {
     workspaceId: workspace.id,
     agent: "codex",

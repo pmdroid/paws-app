@@ -75,14 +75,14 @@ async function fixture(
     observedAtMs: now,
   });
   const helpers = createRunnerHelpers({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => now,
   });
   const journaled: string[] = [];
   const backend = createRemoteSessionAgentRunner({
-    db,
+    store: sqliteDb(db),
     helpers,
     now: () => now,
     pollIntervalMs: 1,

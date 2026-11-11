@@ -6,15 +6,14 @@ import {
   runnerUsageListSteps,
   setRunnerAgentExtraUsageSteps,
   setRunnerSharingSteps,
-  sqliteDb,
   workspaceMemberSteps,
   workspaceMemberUsable,
   workspaceRunnerHostSteps,
   type Q,
+  type Db,
 } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { RunnerHealthResultSchema, labelModels } from "../runner-protocol";
 import type { WorkspacePrincipal } from "../workspace";
@@ -32,9 +31,8 @@ const PREFERRED_BECAUSE: Record<string, string> = {
   extra_usage: "runs on extra usage: no runner with quota was free",
 };
 
-export function createRunnerPlacementBrowser(options: { db: Database; now?: () => number }) {
-  const { db } = options;
-  const store = sqliteDb(db);
+export function createRunnerPlacementBrowser(options: { store: Db; now?: () => number }) {
+  const { store } = options;
   const now = options.now ?? Date.now;
   const json = (value: unknown, status = 200) =>
     Response.json(value, { status, headers: { "cache-control": "no-store" } });

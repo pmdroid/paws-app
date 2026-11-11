@@ -78,7 +78,7 @@ async function fixture() {
   ]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -118,13 +118,13 @@ async function fixture() {
   const keys = generateKeyPairSync("ed25519");
   const open = () => {
     const work = createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
       now,
     });
-    return { work, results: createRunnerResults({ db, work, now }) };
+    return { work, results: createRunnerResults({ store: sqliteDb(db), work, now }) };
   };
   let services = open();
   async function admit(expiresInMs = 4 * 60 * MINUTE) {

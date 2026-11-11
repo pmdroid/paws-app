@@ -1,6 +1,6 @@
 import {
   acknowledgeRunnerHelperSteps,
-  endRunnerHelper,
+  endRunnerHelperSteps,
   workspaceMemberUsable,
   getLinearSessionSteps,
   insertRunnerHelperSteps,
@@ -11,7 +11,6 @@ import {
   runnerHelperAvailabilitySteps,
   runnerHelperResultMatchesSteps,
   runnerHelperRowSteps,
-  sqliteDb,
   storeRunnerHelperResultSteps,
   unacknowledgedRunnerHelpersSteps,
   usableRunnerSteps,
@@ -22,10 +21,10 @@ import {
   type Steps,
   type RunnerHelperRow,
   type UsableRunner,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID, type KeyObject } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import {
   RunnerCommandSchema,
@@ -62,13 +61,12 @@ export class RunnerHelperBusyError extends Error {
 }
 
 export function createRunnerHelpers(options: {
-  db: Database;
+  store: Db;
   keyId: string;
   privateKey: KeyObject;
   now?: () => number;
 }) {
-  const { db } = options;
-  const store = sqliteDb(db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   function* identitySteps(q: Q, runnerId: string) {
     return identified(yield* usableRunnerSteps(q, runnerId));
@@ -242,8 +240,11 @@ export function createRunnerHelpers(options: {
       const { row } = await store.run((q) => currentSteps(q, id));
       return row.result === null ? null : RunnerHelperResultSchema.parse(JSON.parse(row.result));
     },
-    finish(id: string) {
-      endRunnerHelper(db, id, now());
+    finish(id: string): Promise<void> {
+      return store.run((q) => endRunnerHelperSteps(q, id, now()));
+    },
+    finishSteps(q: Q, id: string) {
+      return endRunnerHelperSteps(q, id, now());
     },
     async fetch(request: Request, runnerId: string): Promise<Response | null> {
       const path = new URL(request.url).pathname;

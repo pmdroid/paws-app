@@ -345,7 +345,7 @@ async function runnerWorld() {
   const keys = generateKeyPairSync("ed25519");
   const controller = () =>
     createRunnerWork({
-      db: w.db,
+      store: sqliteDb(w.db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),

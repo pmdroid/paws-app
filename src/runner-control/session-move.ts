@@ -6,13 +6,12 @@ import {
   noteRunnerSessionMoveSteps,
   requestRunnerSessionMoveSteps,
   runnerSessionMoveSteps,
-  sqliteDb,
   workspaceMemberSteps,
   workspaceRunnerStatusSteps,
   type Q,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
 
 /** What the runner backend's `handOverItem` answers, as far as the runner card tells it. */
@@ -45,14 +44,13 @@ const FAILED_STEP = {
  * shows the move from `runner_session_move`. The server checks the session, CSRF and origin.
  */
 export function createRunnerSessionMoves(options: {
-  db: Database;
+  store: Db;
   handOver(itemId: string, signal?: AbortSignal): Promise<SessionHandoverOutcome>;
   now?: () => number;
   /** Aborted at shutdown: Paws stops waiting for the runner's answer. */
   signal?: AbortSignal;
 }) {
-  const { db } = options;
-  const store = sqliteDb(db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   /** Settles once the runner answered; the route does not wait for it. */
   const pending = new Set<Promise<void>>();

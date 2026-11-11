@@ -163,7 +163,7 @@ async function fixture({
     teamIds: ["team"],
   };
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},

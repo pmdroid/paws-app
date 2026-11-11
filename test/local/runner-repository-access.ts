@@ -76,7 +76,7 @@ export async function probeRunnerRepositoryAccess(
   const authority = await initializeRunnerAuthority(authorityRoot);
   const client = await createRunnerKey(join(root, "client"));
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     now: () => now,
@@ -106,7 +106,7 @@ export async function probeRunnerRepositoryAccess(
   if (reviewIdentity.status !== "approved") throw new Error("Review enrollment was not approved");
   const reviewCertificate = reviewIdentity.certificate;
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),

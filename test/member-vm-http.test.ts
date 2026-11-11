@@ -85,7 +85,7 @@ async function fixture(options: { size?: ExeDevVmSize } = {}) {
   const member = await person("Ada Lovelace");
   const inactive = await person("Watcher", false);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},

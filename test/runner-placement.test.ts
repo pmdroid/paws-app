@@ -607,7 +607,7 @@ test("a runner with quota left goes before one running on extra usage, which nam
           startedAt: pool.now(),
         }),
       );
-      const response = await createRunnerPlacementBrowser({ db: pool.db })(
+      const response = await createRunnerPlacementBrowser({ store: sqliteDb(pool.db) })(
         new Request("http://127.0.0.1/api/runners/usage"),
         {
           workspaceId: pool.workspaceId,
@@ -651,7 +651,7 @@ test("the runner's owner and admins switch extra usage per agent, others get 403
     placed.db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [
       runnerId,
     ]);
-    const browser = createRunnerPlacementBrowser({ db: placed.db, now: placed.now });
+    const browser = createRunnerPlacementBrowser({ store: sqliteDb(placed.db), now: placed.now });
     const as = (userId: string, role: "admin" | "member") => ({
       workspaceId: placed.workspaceId,
       userId,
@@ -887,7 +887,7 @@ test("a moved run goes to the idle runner that can continue its agent session", 
           startedAt: placed.now(),
         }),
       );
-    const response = await createRunnerPlacementBrowser({ db: placed.db })(
+    const response = await createRunnerPlacementBrowser({ store: sqliteDb(placed.db) })(
       new Request("http://127.0.0.1/api/runners/usage"),
       {
         workspaceId: placed.workspaceId,

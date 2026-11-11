@@ -1,5 +1,5 @@
-import type { Database } from "bun:sqlite";
 import { z } from "zod";
+import type { Db } from "../db";
 import { journalCaught } from "../journal";
 import { RunnerRepositoryCommandResultSchema } from "../runner-protocol";
 import { issueRepositoryCommandGrant, recordRepositoryCommandResult } from "./commands";
@@ -7,7 +7,7 @@ import { issueRepositoryCommandGrant, recordRepositoryCommandResult } from "./co
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 const RESULT_BODY_LIMIT = 1_200_000;
 
-export function createRepositoryCommandsHttp(options: { db: Database; now?: () => number }) {
+export function createRepositoryCommandsHttp(options: { store: Db; now?: () => number }) {
   const now = options.now ?? Date.now;
   return async (request: Request, runnerId: string): Promise<Response | null> => {
     const path = /^\/v1\/repository-commands\/([^/]+)\/(grant|result)$/.exec(
@@ -19,13 +19,15 @@ export function createRepositoryCommandsHttp(options: { db: Database; now?: () =
       const commandId = id.parse(decodeURIComponent(path[1]!));
       if (path[2] === "grant") {
         z.strictObject({}).parse(await body(request, 4096));
-        return json(await issueRepositoryCommandGrant(options.db, { runnerId, commandId }, now()));
+        return json(
+          await issueRepositoryCommandGrant(options.store, { runnerId, commandId }, now()),
+        );
       }
       const result = RunnerRepositoryCommandResultSchema.parse(
         await body(request, RESULT_BODY_LIMIT),
       );
       return json(
-        await recordRepositoryCommandResult(options.db, { runnerId, commandId, result }, now()),
+        await recordRepositoryCommandResult(options.store, { runnerId, commandId, result }, now()),
       );
     } catch (error) {
       journalCaught(error, "runner-repository-commands.http", null);

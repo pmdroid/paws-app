@@ -64,14 +64,14 @@ export async function probeAgentModels(
   const key = generateKeyPairSync("ed25519");
   const work = () =>
     createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "models-proof",
       privateKey: key.privateKey,
       eventKey: Buffer.alloc(32, 7),
       now: () => now,
     });
-  const health = () => createRunnerHealth({ db, work: work(), now: () => now });
-  let catalog = createRunnerModels({ db, work: work(), now: () => now });
+  const health = () => createRunnerHealth({ store: sqliteDb(db), work: work(), now: () => now });
+  let catalog = createRunnerModels({ store: sqliteDb(db), work: work(), now: () => now });
   const principal = { workspaceId: workspace, userId };
   const count = () =>
     (db.query("SELECT COUNT(*) AS total FROM runner_command").get() as { total: number }).total;
@@ -187,7 +187,7 @@ export async function probeAgentModels(
     const before = await catalog.read(principal);
     db.close();
     db = openDatabase(path);
-    catalog = createRunnerModels({ db, work: work(), now: () => now });
+    catalog = createRunnerModels({ store: sqliteDb(db), work: work(), now: () => now });
     assert.deepEqual(await catalog.read(principal), before);
     observe("catalog survives process storage reopen", true, { models: before[0]!.models.length });
     assert.deepEqual(await catalog.read({ workspaceId: workspace, userId: otherUser }), []);

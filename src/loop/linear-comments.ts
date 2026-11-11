@@ -78,7 +78,7 @@ export type LinearConversations = {
   lane(itemId: string): Promise<"closed" | "full" | "free">;
   startSteps(q: Q, itemId: string, sessionId: string, prompt: string): Steps<boolean>;
   open(itemId: string): Promise<LinearConversationTurn[]>;
-  finish(commandId: string): void;
+  finishSteps(q: Q, commandId: string): Steps<void>;
 };
 
 export type LinearCommentCapabilities = {
@@ -539,7 +539,7 @@ async function postConversationReplies(
           },
           now,
         });
-      talk.finish(turn.commandId);
+      yield* talk.finishSteps(q, turn.commandId);
     });
     if (job.ready) emitJobReady(store);
     posted = true;

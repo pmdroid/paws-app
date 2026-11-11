@@ -22,7 +22,6 @@ import {
   runnerLoginRowSteps,
   runnerNamedBindingsSteps,
   setRunnerAgentSignedInSteps,
-  sqliteDb,
   storedAgentBindingIdSteps,
   updateRunnerLoginSteps,
   wakeRunnerSlotWaitsSteps,
@@ -31,10 +30,10 @@ import {
   type Q,
   type RunnerLoginRow,
   type Steps,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RunnerWork } from "../runner-work";
 import {
@@ -62,14 +61,13 @@ class SignInRefused extends Error {
 }
 
 export function createRunnerLogin(options: {
-  db: Database;
+  store: Db;
   work: RunnerWork;
   now?: () => number;
   /** Called after a sign-in completes, outside its transaction. */
   onSignedIn?: (input: { runnerId: string; agent: Agent }) => void;
 }) {
-  const { db, work } = options;
-  const store = sqliteDb(db);
+  const { store, work } = options;
   const now = options.now ?? Date.now;
   const inputs = new Map<string, { id: string; value: RunnerLoginInput }>();
   function* accessSteps(q: Q, workspaceId: string, userId: string, runnerId: string) {

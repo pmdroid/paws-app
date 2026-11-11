@@ -69,14 +69,14 @@ async function fixture(file = ":memory:") {
   await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
   const workHttp = createRunnerWorkHttp(work);
-  const commandsHttp = createRepositoryCommandsHttp({ db, now: () => now });
+  const commandsHttp = createRepositoryCommandsHttp({ store: sqliteDb(db), now: () => now });
   const github = createFakeGitHub();
   const mint = github.mintInstallationToken;
   github.mintInstallationToken = async (input) => ({
@@ -91,7 +91,7 @@ async function fixture(file = ":memory:") {
     now: () => now,
   });
   const enqueue = (expiresIn = 120_000, title?: string) =>
-    enqueueRepositoryCommand(db, {
+    enqueueRepositoryCommand(sqliteDb(db), {
       runnerId: "runner-a",
       workspaceId: workspace,
       itemId: item.id,
@@ -171,7 +171,7 @@ test("an enqueued repository command is delivered once, signed, to its runner", 
   expect(delivered).toHaveLength(1);
   expect(delivered[0]).toMatchObject({ id, type: "rebase", branch: "paws/item-1" });
   expect(await f.poll("runner-a")).toEqual([]);
-  expect(await repositoryCommandState(f.db, id)).toBe("delivered");
+  expect(await repositoryCommandState(sqliteDb(f.db), id)).toBe("delivered");
   expect((await f.ack(id, "runner-b"))!.status).toBe(403);
   expect((await f.ack(id, "runner-a"))!.status).toBe(200);
 });
@@ -223,7 +223,7 @@ test("a grant and a credential go only to the delivered runner while the command
 test("a posted result completes waitForRepositoryCommand and replays only unchanged", async () => {
   const f = await fixture();
   const id = await f.enqueue();
-  const waiting = waitForRepositoryCommand(f.db, id);
+  const waiting = waitForRepositoryCommand(sqliteDb(f.db), id);
   const early = await f.post(`/v1/repository-commands/${id}/result`, "runner-a", {
     outcome: "rebased",
     head: "c".repeat(40),
@@ -244,7 +244,7 @@ test("a posted result completes waitForRepositoryCommand and replays only unchan
     reason: "other",
   });
   expect(changed!.status).toBe(403);
-  expect(await repositoryCommandState(f.db, id)).toBe("done");
+  expect(await repositoryCommandState(sqliteDb(f.db), id)).toBe("done");
 });
 
 test("a command past expiresAt is expired and its credential route refuses", async () => {
@@ -255,8 +255,8 @@ test("a command past expiresAt is expired and its credential route refuses", asy
   expect(issued.status).toBe(200);
   f.advance(60_000);
   expect((await f.credential(id, issued.body.token))!.status).toBe(403);
-  expect(await repositoryCommandState(f.db, id)).toBe("expired");
-  expect(await waitForRepositoryCommand(f.db, id)).toEqual({ outcome: "expired" });
+  expect(await repositoryCommandState(sqliteDb(f.db), id)).toBe("expired");
+  expect(await waitForRepositoryCommand(sqliteDb(f.db), id)).toEqual({ outcome: "expired" });
   expect((await f.grant(id)).status).toBe(403);
   const late = await f.post(`/v1/repository-commands/${id}/result`, "runner-a", {
     outcome: "rebased",
@@ -270,7 +270,7 @@ test("an undelivered command past expiresAt is never delivered", async () => {
   const id = await f.enqueue(60_000);
   f.advance(60_000);
   expect(await f.poll("runner-a")).toEqual([]);
-  expect(await repositoryCommandState(f.db, id)).toBe("expired");
+  expect(await repositoryCommandState(sqliteDb(f.db), id)).toBe("expired");
 });
 
 test("a branch outside paws/ or an old runner is refused at enqueue", async () => {
@@ -286,7 +286,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
   const f = await fixture();
   const rebase = (runnerId = "runner-a", signal?: AbortSignal) =>
     rebaseOnRunner(
-      f.db,
+      sqliteDb(f.db),
       {
         runnerId,
         workspaceId: f.workspace,
@@ -303,7 +303,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
   const rebased = rebase();
   const [command] = await f.poll("runner-a");
   await recordRepositoryCommandResult(
-    f.db,
+    sqliteDb(f.db),
     {
       runnerId: "runner-a",
       commandId: command!.id,
@@ -331,7 +331,7 @@ test("a runner rebase resolves with the runner's result, and as failed on a time
   expect(issued.status).toBe(200);
   granted.abort(new Error("item stopped"));
   await expect(late).rejects.toThrow("item stopped");
-  expect(await repositoryCommandState(f.db, delivered!.id, f.now())).toBe("expired");
+  expect(await repositoryCommandState(sqliteDb(f.db), delivered!.id, f.now())).toBe("expired");
   expect((await f.credential(delivered!.id, issued.body.token))!.status).toBe(403);
   expect((await f.grant(delivered!.id)).status).toBe(403);
 
@@ -346,8 +346,8 @@ test("a rebase whose result arrives on another instance resolves within a second
   try {
     const f = await fixture(join(dir, "paws.sqlite"));
     const other = openDatabase(join(dir, "paws.sqlite"));
-    const otherHttp = createRepositoryCommandsHttp({ db: other, now: f.now });
-    const rebased = rebaseOnRunner(f.db, {
+    const otherHttp = createRepositoryCommandsHttp({ store: sqliteDb(other), now: f.now });
+    const rebased = rebaseOnRunner(sqliteDb(f.db), {
       runnerId: "runner-a",
       workspaceId: f.workspace,
       itemId: f.item.id,

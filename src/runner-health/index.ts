@@ -21,18 +21,17 @@ import {
   seenMemberRunnersSteps,
   setLegacyAgentQuotaSteps,
   setLegacyAgentReadySteps,
-  sqliteDb,
   touchRunnerSeenSteps,
   wakeRunnerSlotWaitsSteps,
   workspaceMemberSteps,
   type Q,
   type RunnerAgentLimit,
   type Steps,
+  type Db,
 } from "../db";
 import { isWorkspaceAdmin } from "../workspace";
 import { journalCaught } from "../journal";
 import { randomUUID } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import type { WorkspacePrincipal } from "../workspace";
 import type { RunnerWork } from "../runner-work";
@@ -91,13 +90,8 @@ function checkDue(
   return entry.result.receivedAt < at - (signedIn ? PASSED_CHECK_INTERVAL_MS : SIGN_IN_INTERVAL_MS);
 }
 
-export function createRunnerHealth(options: {
-  db: Database;
-  work: RunnerWork;
-  now?: () => number;
-}) {
-  const { db, work } = options;
-  const store = sqliteDb(db);
+export function createRunnerHealth(options: { store: Db; work: RunnerWork; now?: () => number }) {
+  const { store, work } = options;
   const now = options.now ?? Date.now;
   function* visibleSteps(q: Q, principal: WorkspacePrincipal, runnerId: string) {
     const member = yield* workspaceMemberSteps(q, principal.workspaceId, principal.userId);

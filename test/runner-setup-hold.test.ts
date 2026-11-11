@@ -124,7 +124,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -159,7 +159,7 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     return runnerId;
   };
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -182,10 +182,10 @@ async function delegate(delegatorRunner: DelegatorRunner) {
     );
   }
 
-  const results = createRunnerResults({ db, work });
-  const health = createRunnerHealth({ db, work });
+  const results = createRunnerResults({ store: sqliteDb(db), work });
+  const health = createRunnerHealth({ store: sqliteDb(db), work });
   const backend = createRemoteAgentRunner({
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,

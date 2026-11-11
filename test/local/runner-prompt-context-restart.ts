@@ -1,5 +1,5 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { openDatabase } from "../../src/db";
+import { openDatabase, sqliteDb } from "../../src/db";
 import { createRunnerInputStore } from "../../src/runner-inputs";
 import { RUNNER_INPUT_CHUNK_BYTES } from "../../src/runner-protocol";
 import { createRunnerWork } from "../../src/runner-work";
@@ -8,7 +8,7 @@ const input = await Bun.stdin.json();
 const db = openDatabase(input.dbPath);
 try {
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "restart",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),

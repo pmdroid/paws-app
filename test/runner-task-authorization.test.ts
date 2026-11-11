@@ -127,7 +127,7 @@ test("GET /api/runners lists only tasks in the caller's authorized sessions", as
     });
   await mapping(true);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(join(root, "issuer")),
     certificateRoot: join(root, "issuer"),
     disconnect() {},

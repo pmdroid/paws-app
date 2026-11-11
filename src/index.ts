@@ -124,6 +124,7 @@ import {
   RUN_TAKEOVER_JOB,
   RUN_TAKEOVER_MS,
   listRepositoryCatalogSteps,
+  incrementalVacuum,
   refreshRepositoryCatalog,
   startLoops,
   submitCommand,
@@ -1097,7 +1098,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         ...(parents ? { sessionActorSteps: parents.actorSteps } : {}),
       })
     : undefined;
-  const placementBrowser = createRunnerPlacementBrowser({ db });
+  const placementBrowser = createRunnerPlacementBrowser({ store });
   const accountManagement = createAccountManagement();
   const sessionMovesStop = new AbortController();
   const memberVmHttp = createMemberVmHttp({
@@ -1112,7 +1113,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         if (!placement) throw new Error("Remote execution requires current Linear ownership.");
         return {
           agents: createRemoteAgentRunner({
-            db,
             store,
             ...coordinator,
             fetchCandidate: fetchRunnerCandidate,
@@ -1121,7 +1121,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             instanceId: instance.id,
           }),
           sessions: createRemoteSessionAgentRunner({
-            db,
+            store,
             helpers: coordinator.helpers,
             placement,
           }),
@@ -1137,7 +1137,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         store,
         issues: linear.findingIssues,
         helper: createFindingGroupHelper({
-          db,
+          store,
           helpers: async () => {
             const coordinator = await runnerReady;
             if (!coordinator) throw new Error("A paired runner is required for finding grouping.");
@@ -1186,7 +1186,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   // failover in `forItem` resumes it on another eligible runner.
   const sessionMoves = remote
     ? createRunnerSessionMoves({
-        db,
+        store,
         signal: sessionMovesStop.signal,
         handOver: async (itemId, signal) => (await remote).agents.handOverItem(itemId, signal),
       })
@@ -1559,7 +1559,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
               conversations: async () => {
                 const coordinator = await runnerReady;
                 return coordinator
-                  ? createConversationTurns({ db, helpers: coordinator.helpers })
+                  ? createConversationTurns({ store, helpers: coordinator.helpers })
                   : null;
               },
               ownerHasRunner: (q: Q, itemId: string, agent: string, now: number) =>
@@ -1599,7 +1599,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
                     item.title,
                 );
                 return rebaseOnRunner(
-                  db,
+                  store,
                   {
                     runnerId: target.id,
                     workspaceId: target.workspaceId,
@@ -2030,7 +2030,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       // registered without runner placement too, since an unhandled job is cancelled, not kept.
       created.jobs.register(RUNNER_TRANSCRIPT_ENCRYPT_JOB, (_job, context) =>
         encryptRunnerTranscripts({
-          db,
+          store,
           stores: (transcriptStorage ?? loadRunnerTranscriptStores(runtime.env.home)).stores,
           key: loadRunnerTranscriptKey(join(paths.secretsDir, RUNNER_TRANSCRIPT_KEY_FILE)),
           signal: AbortSignal.any([context.signal, abort.signal]),
@@ -2048,9 +2048,11 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         }).then(({ sealed }) => journal(`runner events encrypted: ${sealed} events sealed`)),
       );
       created.jobs.register(RUNNER_EVENT_PRUNE_JOB, (_job, context) =>
-        pruneRunnerEvents({ db, signal: AbortSignal.any([context.signal, abort.signal]) }).then(
+        pruneRunnerEvents({ store, signal: AbortSignal.any([context.signal, abort.signal]) }).then(
           ({ deleted }) => {
-            if (deleted) journal(`runner events pruned: ${deleted} events deleted`);
+            if (!deleted) return;
+            incrementalVacuum(db);
+            journal(`runner events pruned: ${deleted} events deleted`);
           },
         ),
       );

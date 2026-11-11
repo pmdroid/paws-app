@@ -114,7 +114,7 @@ export async function probeRunnerEvidenceRelays(
   });
   const objects = createFakeRunnerTranscriptObjects();
   const transcripts = createRunnerTranscripts({
-    db,
+    store: sqliteDb(db),
     work: coordinator.work,
     objects,
     key: randomBytes(32),

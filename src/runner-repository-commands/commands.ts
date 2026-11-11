@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import {
   cancelOpenRepositoryCommandSteps,
   completeRepositoryCommandSteps,
@@ -14,8 +13,6 @@ import {
   repositoryCommandSettlementSteps,
   runnerHostVersionSteps,
   setRepositoryCommandGrantSteps,
-  settled as settledValue,
-  sqliteDb,
   usableRunnerSteps,
   type Db,
   type Q,
@@ -51,16 +48,16 @@ type Waiter = {
   promise: Promise<RepositoryCommandOutcome>;
   resolve(outcome: RepositoryCommandOutcome): void;
 };
-const instanceWaiters = new WeakMap<Database, Map<string, Waiter>>();
+const instanceWaiters = new WeakMap<Db, Map<string, Waiter>>();
 
-function waitersOf(db: Database) {
-  let waiters = instanceWaiters.get(db);
-  if (!waiters) instanceWaiters.set(db, (waiters = new Map()));
+function waitersOf(store: Db) {
+  let waiters = instanceWaiters.get(store);
+  if (!waiters) instanceWaiters.set(store, (waiters = new Map()));
   return waiters;
 }
 
-function waiter(db: Database, id: string): Waiter {
-  const waiters = waitersOf(db);
+function waiter(store: Db, id: string): Waiter {
+  const waiters = waitersOf(store);
   const existing = waiters.get(id);
   if (existing) return existing;
   let resolve!: (outcome: RepositoryCommandOutcome) => void;
@@ -70,11 +67,11 @@ function waiter(db: Database, id: string): Waiter {
   return created;
 }
 
-function settle(db: Database, id: string, outcome: RepositoryCommandOutcome) {
-  const settled = waiter(db, id);
+function settle(store: Db, id: string, outcome: RepositoryCommandOutcome) {
+  const settled = waiter(store, id);
   settled.resolve(outcome);
   setTimeout(() => {
-    if (waitersOf(db).get(id) === settled) waitersOf(db).delete(id);
+    if (waitersOf(store).get(id) === settled) waitersOf(store).delete(id);
   }, SETTLED_RETENTION_MS).unref();
 }
 
@@ -84,14 +81,9 @@ function parse(payload: string): RunnerRepositoryCommand {
   return command;
 }
 
-function expire(db: Database, at: number) {
-  for (const id of settledValue(sqliteDb(db).run((q) => expireDueRepositoryCommandsSteps(q, at))))
-    settle(db, id, { outcome: "expired" });
-}
-
-async function expireDue(store: Db, db: Database, at: number) {
+async function expireDue(store: Db, at: number) {
   for (const id of await store.run((q) => expireDueRepositoryCommandsSteps(q, at)))
-    settle(db, id, { outcome: "expired" });
+    settle(store, id, { outcome: "expired" });
 }
 
 function* activeRunnerSteps(q: Q, runnerId: string, workspace: string): Steps<boolean> {
@@ -121,10 +113,9 @@ export function rebaseCommitTitle(title: string): string | undefined {
 }
 
 export async function enqueueRepositoryCommand(
-  db: Database,
+  store: Db,
   input: RepositoryCommandInput,
 ): Promise<string> {
-  const store = sqliteDb(db);
   const { now, ...fields } = input;
   const at = now ?? Date.now();
   const command = parse(
@@ -151,18 +142,18 @@ export async function enqueueRepositoryCommand(
       expiresAt: command.expiresAt,
       createdAt: at,
     });
-    waiter(db, command.id);
+    waiter(store, command.id);
     setTimeout(
       () =>
         void store
           .run((later) => expireRepositoryCommandSteps(later, command.id))
           .then(
             (state) => {
-              if (state !== "done") settle(db, command.id, { outcome: "expired" });
+              if (state !== "done") settle(store, command.id, { outcome: "expired" });
             },
             (error: unknown) => {
               journalCaught(error, "runner-repository-commands.enqueue.expire", null);
-              settle(db, command.id, { outcome: "expired" });
+              settle(store, command.id, { outcome: "expired" });
             },
           ),
       Math.max(0, command.expiresAt - at),
@@ -172,16 +163,16 @@ export async function enqueueRepositoryCommand(
 }
 
 export async function waitForRepositoryCommand(
-  db: Database,
+  store: Db,
   id: string,
   signal?: AbortSignal,
 ): Promise<RepositoryCommandOutcome> {
   signal?.throwIfAborted();
-  const local = waitersOf(db).get(id);
+  const local = waitersOf(store).get(id);
   const done = new AbortController();
   const stop = signal ? AbortSignal.any([signal, done.signal]) : done.signal;
   try {
-    const polled = poll(sqliteDb(db), id, stop);
+    const polled = poll(store, id, stop);
     return await Promise.race(local ? [local.promise, polled] : [polled]);
   } finally {
     done.abort();
@@ -214,21 +205,19 @@ function pause(ms: number, signal: AbortSignal) {
   });
 }
 
-export function deliverRepositoryCommands(
-  db: Database,
+export async function deliverRepositoryCommands(
+  store: Db,
   runnerId: string,
   at: number,
   limit: number,
-): RunnerRepositoryCommand[] {
+): Promise<RunnerRepositoryCommand[]> {
   if (limit <= 0) return [];
-  expire(db, at);
-  return settledValue(
-    sqliteDb(db).transaction(function* (q) {
-      const rows = yield* pendingRepositoryCommandsSteps(q, runnerId, at, limit);
-      for (const row of rows) yield* markRepositoryCommandDeliveredSteps(q, row.id, at);
-      return rows.map((row) => parse(row.payload));
-    }),
-  );
+  await expireDue(store, at);
+  return store.transaction(function* (q) {
+    const rows = yield* pendingRepositoryCommandsSteps(q, runnerId, at, limit);
+    for (const row of rows) yield* markRepositoryCommandDeliveredSteps(q, row.id, at);
+    return rows.map((row) => parse(row.payload));
+  });
 }
 
 function* currentSteps(q: Q, runnerId: string, commandId: string, at: number) {
@@ -245,12 +234,11 @@ function* currentSteps(q: Q, runnerId: string, commandId: string, at: number) {
 }
 
 export async function issueRepositoryCommandGrant(
-  db: Database,
+  store: Db,
   input: { runnerId: string; commandId: string },
   at: number,
 ) {
-  const store = sqliteDb(db);
-  await expireDue(store, db, at);
+  await expireDue(store, at);
   return store.transaction(function* (q) {
     const { command } = yield* currentSteps(q, input.runnerId, input.commandId, at);
     const token = workspaceSecret();
@@ -261,12 +249,11 @@ export async function issueRepositoryCommandGrant(
 }
 
 export async function authorizeRepositoryCommand(
-  db: Database,
+  store: Db,
   input: { runnerId: string; commandId: string; token: string },
   at: number,
 ): Promise<RunnerRepositoryCommand> {
-  const store = sqliteDb(db);
-  await expireDue(store, db, at);
+  await expireDue(store, at);
   return store.transaction(function* (q) {
     const { row, command } = yield* currentSteps(q, input.runnerId, input.commandId, at);
     if (
@@ -280,14 +267,13 @@ export async function authorizeRepositoryCommand(
 }
 
 export async function recordRepositoryCommandResult(
-  db: Database,
+  store: Db,
   input: { runnerId: string; commandId: string; result: RunnerRepositoryCommandResult },
   at: number,
 ) {
   const result = RunnerRepositoryCommandResultSchema.parse(input.result);
   const stored = JSON.stringify(result);
-  const store = sqliteDb(db);
-  await expireDue(store, db, at);
+  await expireDue(store, at);
   const recorded = await store.transaction(function* (q) {
     const row = yield* repositoryCommandRowSteps(q, input.commandId);
     if (!row || row.runnerId !== input.runnerId)
@@ -302,7 +288,7 @@ export async function recordRepositoryCommandResult(
     yield* completeRepositoryCommandSteps(q, row.id, stored, at);
     return true;
   });
-  if (recorded) settle(db, input.commandId, result);
+  if (recorded) settle(store, input.commandId, result);
   return { duplicate: !recorded };
 }
 
@@ -310,34 +296,35 @@ export function repositoryCommandDeliveredToSteps(q: Q, runnerId: string, id: st
   return repositoryCommandReachedRunnerSteps(q, id, runnerId);
 }
 
-export async function repositoryCommandState(db: Database, id: string, at = Date.now()) {
-  const store = sqliteDb(db);
-  await expireDue(store, db, at);
+export async function repositoryCommandState(store: Db, id: string, at = Date.now()) {
+  await expireDue(store, at);
   return (await store.run((q) => repositoryCommandRowSteps(q, id)))?.state ?? null;
 }
 
-async function cancelRepositoryCommand(db: Database, id: string) {
-  if (await sqliteDb(db).run((q) => cancelOpenRepositoryCommandSteps(q, id)))
-    settle(db, id, { outcome: "expired" });
+async function cancelRepositoryCommand(store: Db, id: string) {
+  if (await store.run((q) => cancelOpenRepositoryCommandSteps(q, id)))
+    settle(store, id, { outcome: "expired" });
 }
 
 const REPOSITORY_REBASE_TIMEOUT_MS = 10 * 60_000;
 
 export async function rebaseOnRunner(
-  db: Database,
+  store: Db,
   input: Omit<RepositoryCommandInput, "expiresAt" | "now"> & { now: number },
   signal?: AbortSignal,
 ): Promise<RunnerRepositoryCommandResult> {
   try {
     signal?.throwIfAborted();
-    const id = await enqueueRepositoryCommand(db, {
+    const id = await enqueueRepositoryCommand(store, {
       ...input,
       expiresAt: input.now + REPOSITORY_REBASE_TIMEOUT_MS,
     });
-    const outcome = await waitForRepositoryCommand(db, id, signal).catch(async (error: unknown) => {
-      await cancelRepositoryCommand(db, id);
-      throw error;
-    });
+    const outcome = await waitForRepositoryCommand(store, id, signal).catch(
+      async (error: unknown) => {
+        await cancelRepositoryCommand(store, id);
+        throw error;
+      },
+    );
     return outcome.outcome === "expired"
       ? { outcome: "failed", reason: "timed out after 10 minutes" }
       : outcome;

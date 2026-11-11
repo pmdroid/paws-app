@@ -107,7 +107,7 @@ export async function probeRunnerHttp(
   const tls = { key: readFileSync(serverKey, "utf8"), cert: readFileSync(serverCert, "utf8") };
   let listener: Awaited<ReturnType<typeof startRunnerListener>> | undefined;
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect: (fingerprint) => listener?.revoke(fingerprint),

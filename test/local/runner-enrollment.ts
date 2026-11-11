@@ -118,7 +118,7 @@ export async function probeRunnerEnrollment(
   const member = await person("member");
   const inactive = await person("inactive", false);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect: () => {},

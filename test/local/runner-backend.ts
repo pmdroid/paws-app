@@ -118,7 +118,7 @@ export async function probeRunnerBackend(
   const issuer = join(root, "issuer");
   const authority = await initializeRunnerAuthority(issuer);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: issuer,
     disconnect() {},
@@ -135,14 +135,14 @@ export async function probeRunnerBackend(
   db.run("UPDATE runner SET status='active' WHERE id=?", [runnerId]);
   const signing = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: signing.privateKey,
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  const results = createRunnerResults({ db, work, now: () => now });
-  const health = createRunnerHealth({ db, work, now: () => now });
+  const results = createRunnerResults({ store: sqliteDb(db), work, now: () => now });
+  const health = createRunnerHealth({ store: sqliteDb(db), work, now: () => now });
   await work.heartbeat(runnerId);
   const source = join(root, "source");
   async function git(args: string[]) {
@@ -197,7 +197,7 @@ export async function probeRunnerBackend(
       return bot;
     },
     artifacts,
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,
@@ -1364,7 +1364,7 @@ export async function probeRunnerBackend(
     );
     const transcriptObjects = createFakeRunnerTranscriptObjects();
     const transcripts = createRunnerTranscripts({
-      db,
+      store: sqliteDb(db),
       work,
       objects: transcriptObjects,
       key: randomBytes(32),

@@ -53,7 +53,7 @@ async function assignedPreview(runnerVersion: string) {
     ]);
     const issuer = join(root, "issuer");
     const control = createRunnerControl({
-      db,
+      store: sqliteDb(db),
       authority: await initializeRunnerAuthority(issuer),
       certificateRoot: issuer,
       disconnect() {},
@@ -88,7 +88,7 @@ async function assignedPreview(runnerVersion: string) {
     await bindLinearSessionTask(sqliteDb(db), "session", item.delegationId, { actorId: "owner" });
     await bindWorkItemRepository(sqliteDb(db), item.id, repository);
     const work = createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: generateKeyPairSync("ed25519").privateKey,
       eventKey: Buffer.alloc(32, 7),

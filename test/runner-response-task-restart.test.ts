@@ -71,7 +71,7 @@ async function fixture() {
   });
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -109,17 +109,17 @@ async function fixture() {
   let downloads = 0;
   function open() {
     const work = createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),
     });
-    const results = createRunnerResults({ db, work });
+    const results = createRunnerResults({ store: sqliteDb(db), work });
     const backend = createRemoteAgentRunner({
-      db,
+      store: sqliteDb(db),
       work,
       results,
-      health: createRunnerHealth({ db, work }),
+      health: createRunnerHealth({ store: sqliteDb(db), work }),
       placement: createRunnerPlacement({ store: sqliteDb(db) }),
       pollIntervalMs: 5,
       async fetchCandidate() {

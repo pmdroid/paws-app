@@ -244,7 +244,7 @@ async function remoteFixture(
       "Remote ACP did not become ready",
     );
     const backend = createRemoteAgentRunner({
-      db,
+      store: sqliteDb(db),
       work: coordinator.work,
       results: coordinator.results,
       health: coordinator.health,

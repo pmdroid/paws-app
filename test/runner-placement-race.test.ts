@@ -108,7 +108,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
   db.run("INSERT INTO workspace_repository VALUES(?,?,?)", [workspace.id, "acme/fixture", "team"]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -130,16 +130,16 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
   db.run("INSERT INTO runner_agent_policy(runner_id,agent,ready) VALUES(?,'claude',1)", [runnerId]);
 
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
   await work.heartbeat(runnerId, 8);
-  const results = createRunnerResults({ db, work });
-  const health = createRunnerHealth({ db, work });
+  const results = createRunnerResults({ store: sqliteDb(db), work });
+  const health = createRunnerHealth({ store: sqliteDb(db), work });
   const backend = createRemoteAgentRunner({
-    db,
+    store: sqliteDb(db),
     work,
     results,
     health,

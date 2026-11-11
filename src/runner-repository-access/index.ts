@@ -9,6 +9,7 @@ import {
 import type { Database } from "bun:sqlite";
 import { authorizeRepositoryCommand } from "../runner-repository-commands";
 import { RunnerWorkFencedError, type RunnerWork } from "../runner-work";
+import { sqliteDb } from "../db";
 
 const inputSchema = z.strictObject({
   generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -407,7 +408,7 @@ export function createRepositoryCommandAccess(options: {
         commandId: idSchema.parse(decodeURIComponent(path[1]!)),
         token: received.token,
       };
-      const authorize = () => authorizeRepositoryCommand(options.db, access, now());
+      const authorize = () => authorizeRepositoryCommand(sqliteDb(options.db), access, now());
       const command = await authorize();
       if (!/^paws\//.test(command.branch)) return denied();
       const repository = `${command.repository.owner}/${command.repository.repo}`;

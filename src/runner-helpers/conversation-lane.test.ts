@@ -61,7 +61,7 @@ async function fixture(version: string | null, conversations?: number) {
   if (version)
     await recordRunnerHostStatus(sqliteDb(db), "runner", { runnerVersion: version }, now);
   const helpers = createRunnerHelpers({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     now: () => now,

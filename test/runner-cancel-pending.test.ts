@@ -32,7 +32,7 @@ test("real cancellation retains ownership through receipt, expiry, live reports 
   const keys = generateKeyPairSync("ed25519");
   const controller = () =>
     createRunnerWork({
-      db,
+      store: sqliteDb(db),
       keyId: "fixture",
       privateKey: keys.privateKey,
       eventKey: Buffer.alloc(32, 7),

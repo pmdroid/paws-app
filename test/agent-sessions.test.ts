@@ -80,7 +80,7 @@ async function fixture(root: string) {
   const authorityRoot = join(root, "issuer");
   const authority = await initializeRunnerAuthority(authorityRoot);
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority,
     certificateRoot: authorityRoot,
     disconnect() {},
@@ -103,7 +103,7 @@ async function fixture(root: string) {
     return runnerId;
   }
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),

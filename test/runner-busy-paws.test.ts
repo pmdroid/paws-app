@@ -57,7 +57,7 @@ async function fixture() {
   ]);
   const issuer = join(root, "issuer");
   const control = createRunnerControl({
-    db,
+    store: sqliteDb(db),
     authority: await initializeRunnerAuthority(issuer),
     certificateRoot: issuer,
     disconnect() {},
@@ -88,7 +88,7 @@ async function fixture() {
   await bindWorkItemRepository(sqliteDb(db), item.id, repository);
   const keys = generateKeyPairSync("ed25519");
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "fixture",
     privateKey: keys.privateKey,
     eventKey: Buffer.alloc(32, 7),
@@ -135,7 +135,7 @@ async function fixture() {
     work,
     grant,
     grants: () => grants().n,
-    results: () => createRunnerResults({ db, work, now }),
+    results: () => createRunnerResults({ store: sqliteDb(db), work, now }),
     close() {
       db.close();
       rmSync(root, { recursive: true, force: true });

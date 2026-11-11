@@ -1,5 +1,4 @@
-import type { Database } from "bun:sqlite";
-import { plaintextTranscriptChunks, sqliteDb } from "../db";
+import { plaintextTranscriptChunks, type Db } from "../db";
 import { createRunFileChunks, type RunFileObjects } from "../run-files";
 import { denied, transcriptPrefix } from "./store";
 
@@ -13,16 +12,16 @@ const BATCH = 100;
  * The caller journals the counts.
  */
 export async function encryptRunnerTranscripts(options: {
-  db: Database;
+  store: Db;
   stores: readonly RunFileObjects[];
   /** The 32-byte key from `loadRunnerTranscriptKey`. */
   key: Buffer;
   signal?: AbortSignal;
 }) {
-  const { db, stores, signal } = options;
+  const { store, stores, signal } = options;
   if (!stores.length) throw new Error("Runner transcript storage is unavailable");
   const files = createRunFileChunks({
-    store: sqliteDb(db),
+    store,
     kind: "transcript",
     objects: stores[0]!,
     key: options.key,
@@ -32,7 +31,7 @@ export async function encryptRunnerTranscripts(options: {
   let converted = 0;
   let skipped = 0;
   for (;;) {
-    const rows = await plaintextTranscriptChunks(sqliteDb(db), after, BATCH);
+    const rows = await plaintextTranscriptChunks(store, after, BATCH);
     if (!rows.length) break;
     for (const row of rows) {
       signal?.throwIfAborted();

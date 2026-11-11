@@ -62,12 +62,12 @@ async function fixture() {
 test("the catalog lists the 1M entry next to its standard model", async () => {
   const { db, principal } = await fixture();
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "labels",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const [catalog] = await createRunnerModels({ db, work }).read(principal);
+  const [catalog] = await createRunnerModels({ store: sqliteDb(db), work }).read(principal);
   expect(catalog?.models.map(({ id, name, longContext }) => ({ id, name, longContext }))).toEqual([
     { id: "opus", name: "Opus 5.5", longContext: false },
     { id: "opus[1m]", name: "Opus 5.5 · 1M context", longContext: true },
@@ -80,7 +80,7 @@ test("a runner's run history labels the model it ran", async () => {
     "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,agent,model,resolved_model,role,purpose,started_at,ended_at,outcome) VALUES('run-1',?,?,'claude','opus[1m]','opus[1m]','implementer','work',?,?,'success')",
     [runnerId, userId, now - 1000, now],
   );
-  const response = await createRunnerPlacementBrowser({ db })(
+  const response = await createRunnerPlacementBrowser({ store: sqliteDb(db) })(
     new Request("http://127.0.0.1/api/runners/usage"),
     { ...principal, role: "admin", authenticatedAt: now, teamIds: [] },
   );
@@ -101,7 +101,7 @@ test("a runner's history names the issue each execution worked on", async () => 
     "INSERT INTO runner_execution_usage(command_id,runner_id,owner_user_id,item_id,role,purpose,started_at) VALUES('work-1',?,?,'item-1','implementer','work',?),('prepare-1',?,?,NULL,'implementer','prepare',?)",
     [runnerId, userId, now - 1000, runnerId, userId, now - 2000],
   );
-  const response = await createRunnerPlacementBrowser({ db })(
+  const response = await createRunnerPlacementBrowser({ store: sqliteDb(db) })(
     new Request("http://127.0.0.1/api/runners/usage"),
     { ...principal, role: "admin", authenticatedAt: now, teamIds: [] },
   );
@@ -141,12 +141,12 @@ test("the catalog reports the agent's default model and effort", async () => {
     runnerId,
   ]);
   const work = createRunnerWork({
-    db,
+    store: sqliteDb(db),
     keyId: "labels",
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  const [catalog] = await createRunnerModels({ db, work }).read(principal);
+  const [catalog] = await createRunnerModels({ store: sqliteDb(db), work }).read(principal);
   expect(catalog?.defaultModel).toBe("opus");
   expect(catalog?.models.find((model) => model.id === "opus")?.defaultEffort).toBe("high");
 });

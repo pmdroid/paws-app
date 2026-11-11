@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Database } from "bun:sqlite";
 import {
   getWorkItemSteps,
   itemOpenRunnerWorkSteps,
@@ -9,7 +8,6 @@ import {
   runnerHostVersionSteps,
   runnerResultPayloadSteps,
   runnerWorkEndedSteps,
-  sqliteDb,
   type Db,
 } from "../db";
 import {
@@ -56,14 +54,12 @@ export type RunnerHandoverOutcome =
  * running attempt in `forItem` imports the WIP commit as the checkpoint; this only waits for it.
  */
 export function createRemoteHandover(options: {
-  db: Database;
-  store?: Db;
+  store: Db;
   work: RunnerWork;
   now?: () => number;
   pollIntervalMs?: number;
 }) {
-  const { db, work } = options;
-  const store = options.store ?? sqliteDb(db);
+  const { store, work } = options;
   const now = options.now ?? Date.now;
   return async function handOverItem(
     itemId: string,
