@@ -1,22 +1,21 @@
 import type { Database } from "bun:sqlite";
 import { JOB_KIND, TIME_LIMIT_MERGE } from "../core";
 import {
-  githubDeliveryRecorded,
-  openMergeJobs,
+  githubDeliveryRecordedSteps,
+  openMergeJobsSteps,
   applyWorkItemEventSteps,
   emitJobReady,
-  jobVersionCurrent,
+  jobVersionCurrentSteps,
   reenqueueJobSteps,
-  getWorkItem,
   getWorkItemSteps,
   getConfirmedRemoteMergeSteps,
-  immediate,
   saveCheckpointSteps,
   parkLeasedJob,
   parkLeasedJobSteps,
-  recordGitHubDelivery,
+  recordGitHubDeliverySteps,
   retryLeasedJobSteps,
   returnToMergeQueueSteps,
+  settled,
   sqliteDb,
   type Job,
   type Q,
@@ -29,9 +28,9 @@ import {
   mainMoved,
   type QueueConflictSweep,
 } from "../merge";
-import { ask } from "./operations";
+import { askSteps } from "./operations";
 import { prepareCommentDelivery, type PullCommentFilter } from "./pull-comments";
-import { recordReviewDelivery } from "./pull-reviews";
+import { recordReviewDeliverySteps } from "./pull-reviews";
 import { worktreeBranch } from "./sources";
 
 export const MERGE_OWNER_POLL_MS = 5_000;
@@ -95,39 +94,46 @@ export function acceptGitHubDelivery(
 ): boolean {
   // Avoid provider callbacks for successful duplicates. The transactional insert remains
   // authoritative when another connection accepts this delivery after the read.
-  if (githubDeliveryRecorded(db, delivery.deliveryId)) return false;
+  const store = sqliteDb(db);
+  if (settled(store.run((q) => githubDeliveryRecordedSteps(q, delivery.deliveryId)))) return false;
   const body: unknown = JSON.parse(delivery.payload);
   // Callbacks can resolve credentials and start an identity-cache refresh. Run them
   // before taking the write lock; only synchronous database effects belong below.
   const wait = comments?.commentWait?.();
   const recordComment = prepareCommentDelivery(db, delivery.event, body, now, comments);
-  return immediate(db, () => {
-    if (!recordGitHubDelivery(db, delivery, now)) return false;
-    recordReviewDelivery(db, delivery.event, body, now, wait);
-    recordComment?.();
-    const moved = mainMove(delivery.event, body);
-    if (moved) mainMoved(db, { ...moved, now });
-    const facts = deliveryFacts(delivery.event, body);
-    for (const job of openMergeJobs(db)) {
-      const payload = payloadRecord(JSON.parse(job.payload));
-      if (!jobVersionCurrent(db, job)) continue;
-      const item = typeof payload.itemId === "string" ? getWorkItem(db, payload.itemId) : null;
-      const matches =
-        delivery.event === "merge_group"
-          ? githubQueueWatch(payload)?.queued === true
-          : [payload.head, payload.ciWaitHead].some(
-              (sha) => typeof sha === "string" && facts.shas.has(sha),
-            ) ||
-            (item !== null && facts.branches.has(worktreeBranch(item)));
-      if (matches)
-        db.run(
-          `UPDATE job SET run_at = CASE WHEN status = 'running' THEN MAX(run_at, ?) ELSE MIN(run_at, ?) END
+  const accepted = settled(
+    store.transaction(function* (q) {
+      if (!(yield* recordGitHubDeliverySteps(q, delivery, now))) return null;
+      const review = yield* recordReviewDeliverySteps(q, delivery.event, body, now, wait);
+      recordComment?.();
+      const moved = mainMove(delivery.event, body);
+      if (moved) mainMoved(db, { ...moved, now });
+      const facts = deliveryFacts(delivery.event, body);
+      for (const job of yield* openMergeJobsSteps(q)) {
+        const payload = payloadRecord(JSON.parse(job.payload));
+        if (!(yield* jobVersionCurrentSteps(q, job))) continue;
+        const item =
+          typeof payload.itemId === "string" ? yield* getWorkItemSteps(q, payload.itemId) : null;
+        const matches =
+          delivery.event === "merge_group"
+            ? githubQueueWatch(payload)?.queued === true
+            : [payload.head, payload.ciWaitHead].some(
+                (sha) => typeof sha === "string" && facts.shas.has(sha),
+              ) ||
+              (item !== null && facts.branches.has(worktreeBranch(item)));
+        if (matches)
+          db.run(
+            `UPDATE job SET run_at = CASE WHEN status = 'running' THEN MAX(run_at, ?) ELSE MIN(run_at, ?) END
            WHERE id = ?`,
-          [now, now, job.id],
-        );
-    }
-    return true;
-  });
+            [now, now, job.id],
+          );
+      }
+      return review.enqueued;
+    }),
+  );
+  if (accepted === null) return false;
+  if (accepted) emitJobReady(store);
+  return true;
 }
 
 /** A push to the default branch, or a pull request merged into it: main's new commit. */
@@ -277,12 +283,12 @@ export async function askAboutSlowCi(
   input: { checks: string; now: number },
 ): Promise<boolean> {
   // The read and the ask stay in one synchronous pass on SQLite, as before.
-  return await sqliteDb(db).run(function* (q) {
+  return await sqliteDb(db).transaction(function* (q) {
     const item = yield* getWorkItemSteps(q, itemId);
     if (!item?.sessionKey || item.cancelRequested || item.state !== "merge_queue") return false;
     const hours = Math.round(MERGE_CI_ASK_AFTER_MS / (60 * 60_000));
-    ask(
-      db,
+    yield* askSteps(
+      q,
       { itemId, runId: item.currentRunId, sessionId: item.sessionKey, version: item.version },
       "time-limit",
       [

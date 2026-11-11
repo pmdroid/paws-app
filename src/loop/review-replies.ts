@@ -1,16 +1,20 @@
 import type { Database } from "bun:sqlite";
 import {
+  emitJobReady,
   markReviewReplyPostedSteps,
   recordReviewReplies,
-  getRun,
-  getWorkItem,
-  immediate,
-  markRun,
-  reportReviewReplies,
-  restartsSinceHumanTurn,
+  getRunSteps,
+  getWorkItemSteps,
+  markRunSteps,
+  reportReviewRepliesSteps,
+  restartsSinceHumanTurnSteps,
+  settled,
+  sqliteDb,
   unpostedReviewRepliesSteps,
-  unreportedReviewReplies,
+  unreportedReviewRepliesSteps,
   type Db,
+  type Q,
+  type Steps,
   type NewReviewReply,
   type PullCommentRecord,
   type PullReviewRecord,
@@ -19,7 +23,7 @@ import {
   type WorkItemRecord,
 } from "../db";
 import type { ReviewThread } from "../github";
-import { ask, restart } from "./operations";
+import { askSteps, restartSteps } from "./operations";
 
 /** Marks a comment Paws posted as a review reply, so it never comes back as a new comment. */
 export const REVIEW_REPLY_MARKER = "<!-- paws-review-reply -->";
@@ -137,21 +141,27 @@ export const REPLY_SEND_BACKS = 2;
  * round spent), or after {@link REPLY_SEND_BACKS} in the round the team is asked and the run ends
  * (`asked`). One transaction: the stored replies and the send-back or question commit together.
  */
+type ReplyCheck = {
+  item: WorkItemRecord;
+  runId: string;
+  sessionId: string | null;
+  finalMessage: string;
+  now: number;
+};
+
 export function checkReviewReplies(
   db: Database,
-  input: {
-    item: WorkItemRecord;
-    runId: string;
-    sessionId: string | null;
-    finalMessage: string;
-    now: number;
-  },
+  input: ReplyCheck,
 ): "complete" | "sent_back" | "asked" | "stale" {
   const { item } = input;
+  const store = sqliteDb(db);
   // Most turn ends have no reply list: skip the write transaction for them.
-  if (unreportedReviewReplies(db, item.id).length === 0) return "complete";
+  if (settled(store.run((q) => unreportedReviewRepliesSteps(q, item.id))).length === 0)
+    return "complete";
   try {
-    return immediate(db, () => checkOpenReplies(db, input));
+    const checked = settled(store.transaction((q) => checkOpenRepliesSteps(q, input)));
+    if (checked.armed) emitJobReady(db);
+    return checked.outcome;
   } catch (error) {
     if (error instanceof StaleTurnEnd) return "stale";
     throw error;
@@ -161,47 +171,48 @@ export function checkReviewReplies(
 /** Another writer moved the item on while the turn ended; nothing of this check is kept. */
 class StaleTurnEnd extends Error {}
 
-function checkOpenReplies(
-  db: Database,
-  input: Parameters<typeof checkReviewReplies>[1],
-): "complete" | "sent_back" | "asked" {
+function* checkOpenRepliesSteps(
+  q: Q,
+  input: ReplyCheck,
+): Steps<{ outcome: "complete" | "sent_back" | "asked"; armed: boolean }> {
   const { item, now } = input;
-  const current = getWorkItem(db, item.id);
+  const current = yield* getWorkItemSteps(q, item.id);
   if (current?.version !== item.version) throw new StaleTurnEnd();
-  const open = unreportedReviewReplies(db, item.id);
-  if (open.length === 0) return "complete";
+  const open = yield* unreportedReviewRepliesSteps(q, item.id);
+  if (open.length === 0) return { outcome: "complete", armed: false };
   const reports = parseReviewReplies(input.finalMessage);
   const missing = open.filter((reply) => !reports.has(reply.number));
   const complete = missing.length === 0 || input.sessionId === null;
-  reportReviewReplies(db, item.id, reports, now, !complete);
-  if (complete) return "complete";
+  yield* reportReviewRepliesSteps(q, item.id, reports, now, !complete);
+  if (complete) return { outcome: "complete", armed: false };
   // The round is the restart that handed off the open entries. A later handoff deletes the open
   // entries of earlier ones, so they share it; the newest row decides should that ever change.
   const round = open.reduce((a, b) => (b.id > a.id ? b : a)).restartKey;
   const prefix = `review-replies:${round}:`;
-  const sent = restartsSinceHumanTurn(db, item.id, prefix);
+  const sent = yield* restartsSinceHumanTurnSteps(q, item.id, prefix);
   const list = missing.map(entryLine).join("\n");
   if (sent < REPLY_SEND_BACKS) {
     // restart() ends the run; the next turn resumes the same session. Null: the merge lane owns
     // the item, so roll back the stored replies too.
-    const job = restart(db, item, {
+    const job = yield* restartSteps(q, item, {
       reason: "follow_up",
       body: `Your turn ended without a reply to every entry of the reply list. ${EACH_ENTRY} End your final message with a \`Review replies\` section that answers these entries, one line each, as \`R<n> fixed: …\` or \`R<n> not changed: …\`:\n\n${list}`,
       jobKey: `${prefix}${item.version}`,
       now,
     });
     if (job === null) throw new StaleTurnEnd();
-    return "sent_back";
+    return { outcome: "sent_back", armed: job.armed };
   }
-  ask(
-    db,
+  yield* askSteps(
+    q,
     { itemId: item.id, runId: input.runId, sessionId: input.sessionId!, version: item.version },
     "agent",
     `The agent ended its fix turn ${sent + 1} times without its own reply to every pull request comment it was given, so Closeout has not started. Still without a reply:\n\n${list}\n\nTell the agent how to answer them.`,
     { now },
   );
-  if (getRun(db, input.runId)?.status === "active") markRun(db, input.runId, "ended", now);
-  return "asked";
+  if ((yield* getRunSteps(q, input.runId))?.status === "active")
+    yield* markRunSteps(q, input.runId, "ended", now);
+  return { outcome: "asked", armed: false };
 }
 
 /** Record the reply targets of the restart with job key `restartKey`. Call inside its transaction. */
