@@ -184,8 +184,11 @@ function plan(wrapper: Wrapper, inScope: Set<SourceFile>, report: Report): Plan 
         stop(ref, "used outside the given files");
         continue;
       }
-      const call = ref.getParent();
-      if (!call || !Node.isCallExpression(call) || call.getExpression() !== ref) {
+      const access = ref.getParent();
+      const callee =
+        Node.isPropertyAccessExpression(access) && access.getNameNode() === ref ? access : ref;
+      const call = callee.getParent();
+      if (!call || !Node.isCallExpression(call) || call.getExpression() !== callee) {
         stop(ref, "used as a value, not called");
         continue;
       }
