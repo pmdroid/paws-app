@@ -92,7 +92,7 @@ test("fake e2e rows show up on the issue, question and merge queue resources as 
     });
     const open = await getWorkItem(sqliteDb(db), waiting.id);
     expect(open?.state).toBe("awaiting_input");
-    const question = await openQuestion(db, {
+    const question = await openQuestion(sqliteDb(db), {
       itemId: waiting.id,
       runId: parked.run.id,
       sessionId: "ses_1",

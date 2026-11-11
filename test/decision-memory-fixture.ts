@@ -27,7 +27,7 @@ export async function decisionFixture(root: string) {
     repo: "allowed",
     remoteUrl: "https://example.invalid/fixture/allowed",
   });
-  const question = await openQuestion(fixture.db, {
+  const question = await openQuestion(sqliteDb(fixture.db), {
     itemId: "controlled",
     sessionId: "session-controlled",
     body: "Which pagination format?",
@@ -71,7 +71,7 @@ export async function probeDecisionMemory(root: string) {
       [],
     );
     assert.equal((await listDecisions(f.db, actor, "pagination"))[0]?.id, id);
-    const pending = await openQuestion(f.db, {
+    const pending = await openQuestion(sqliteDb(f.db), {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "Which pagination format?",
@@ -138,7 +138,7 @@ export async function probeDecisionMemory(root: string) {
       answer: "Use cursor pagination.",
       answeredBy: "member",
     });
-    const next = await openQuestion(f.db, {
+    const next = await openQuestion(sqliteDb(f.db), {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "Which pagination format?",
@@ -192,7 +192,7 @@ export async function probeDecisionMemory(root: string) {
       "Persisted choices survive reopening SQLite and one human confirmation schedules exactly one resume",
     );
     await changeDecision(f.db, actor, { id, revision: 2, retire: true }, Date.now());
-    const retired = await openQuestion(f.db, {
+    const retired = await openQuestion(sqliteDb(f.db), {
       itemId: "controlled",
       sessionId: "session-controlled",
       body: "pagination",

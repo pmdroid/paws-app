@@ -187,7 +187,7 @@ async function remoteFixture(
               askTeam: {
                 async ask(request, context) {
                   await applyWorkItemEvent(sqliteDb(db), "controlled", "blocking_question");
-                  await openQuestion(db, {
+                  await openQuestion(sqliteDb(db), {
                     itemId: "controlled",
                     runId,
                     sessionId: "session-controlled",

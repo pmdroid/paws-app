@@ -64,7 +64,7 @@ test("an interpreted offered repository survives restart without changing the an
   try {
     migrate(db);
     const item = insertQueuedItem(db);
-    const question = await openQuestion(db, {
+    const question = await openQuestion(sqliteDb(db), {
       itemId: item.id,
       sessionId: "session",
       body: "Which repository?",
@@ -94,7 +94,7 @@ test("an interpreted offered repository survives restart without changing the an
     expect((await getWorkItemRepositoryAnswer(sqliteDb(db), item.id))?.answer).toBe(
       "Use the second repository for this change.",
     );
-    const replacement = await openQuestion(db, {
+    const replacement = await openQuestion(sqliteDb(db), {
       itemId: item.id,
       sessionId: "session",
       body: "Choose an accessible repository.",

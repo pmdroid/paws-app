@@ -1329,14 +1329,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
         orchestrator ? orchestrator.requestVisualReviewChanges(input) : "rejected",
       linkAsks: (request, principal, sessionIds) =>
         handleLinkAskAnswer(request, {
-          db,
+          store,
           principal,
           sessionIds,
           submit: async (input) => (orchestrator ? orchestrator.decideLinkAsk(input) : "rejected"),
         }),
       questionAnswers: (request, principal, sessionIds) =>
         handleQuestionAnswer(request, {
-          db,
+          store,
           principal,
           sessionIds,
           submit: async (input) => (orchestrator ? orchestrator.answerFromPaws(input) : "rejected"),

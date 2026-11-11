@@ -151,7 +151,7 @@ export async function probeExecutionChanges(
       jobKey: "old-approval",
       now: clock.now(),
     });
-    const question = await openQuestion(db, {
+    const question = await openQuestion(sqliteDb(db), {
       itemId: "criteria-1",
       sessionId: "criteria-session",
       body: "Old criteria signoff?",

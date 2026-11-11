@@ -134,7 +134,7 @@ export async function startDashboardFixture(
     evidenceDir,
     questionAnswers: (request, principal, sessionIds) =>
       handleQuestionAnswer(request, {
-        db,
+        store: sqliteDb(db),
         principal,
         sessionIds,
         submit: async (input) => (answers.push(input), "answered"),

@@ -134,7 +134,7 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
     const links: Awaited<ReturnType<typeof openLinkAsk>>[] = [];
     for (const kind of ["bypass", "screenshots", "risk", "rounds", "rule", "question"] as const)
       links.push(
-        await openLinkAsk(db, {
+        await openLinkAsk(sqliteDb(db), {
           asker: { itemId: manualId, runId: null, sessionId: "session" },
           kind,
           head: "candidate",
@@ -277,7 +277,7 @@ test.each(["all", "criteria"] as const)(
         title: "Manual edit",
         sessionKey: "session",
       });
-      const open = await openLinkAsk(db, {
+      const open = await openLinkAsk(sqliteDb(db), {
         asker: { itemId: item.id, runId: null, sessionId: "session" },
         kind: "risk",
         head: "candidate",
@@ -287,7 +287,7 @@ test.each(["all", "criteria"] as const)(
         now: 1000,
       });
       db.run("UPDATE outbox SET status='dead' WHERE op='elicitation'");
-      const queued = await openLinkAsk(db, {
+      const queued = await openLinkAsk(sqliteDb(db), {
         asker: { itemId: item.id, runId: null, sessionId: "session" },
         kind: "bypass",
         head: "candidate",

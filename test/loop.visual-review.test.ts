@@ -535,7 +535,7 @@ test("retry on a task Closeout blocked for an uncovered file asks a new review r
     await coverOnlyFirstShot(f.db, item.id, first.id);
     expect(await f.approve()).toBe("answered");
     f.db.run("DELETE FROM job WHERE queue = ? AND finished_at IS NULL", [JOB_KIND.resume]);
-    const blocked = await openQuestion(f.db, {
+    const blocked = await openQuestion(sqliteDb(f.db), {
       itemId: item.id,
       sessionId: "ses_1",
       body: "Closeout needs your help.",

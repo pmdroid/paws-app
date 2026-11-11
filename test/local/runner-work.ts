@@ -413,7 +413,7 @@ export async function probeRunnerWork(
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
     await assert.rejects(work.authorizeAsync(event), /matching open question/);
     assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
-    const question = await openQuestion(db, {
+    const question = await openQuestion(sqliteDb(db), {
       itemId: item.id,
       runId: run.id,
       sessionId: "fixture-session",

@@ -144,7 +144,7 @@ export async function probeWorkspaceLinearActions(root: string, observe: Observe
     });
     await beginImplementRun(sqliteDb(db), item.id, now - 10);
     await applyWorkItemEvent(sqliteDb(db), item.id, "blocking_question");
-    const question = await openQuestion(db, {
+    const question = await openQuestion(sqliteDb(db), {
       itemId: item.id,
       sessionId,
       body: "Include archived rows?",
@@ -599,7 +599,7 @@ async function probeWorkspaceLinearHttps(root: string, observe: Observe) {
     });
     await beginImplementRun(sqliteDb(db), id, at - 10);
     await applyWorkItemEvent(sqliteDb(db), id, "blocking_question");
-    const question = await openQuestion(db, {
+    const question = await openQuestion(sqliteDb(db), {
       itemId: id,
       sessionId: id,
       body: "Include archived rows?",

@@ -57,7 +57,11 @@ test("a question asks at once when the session waits on nothing", async () => {
 
 test("a second ask is queued and delivered in order once the open one is answered", async () => {
   const { db, asker } = await setup();
-  const first = await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  const first = await openQuestion(sqliteDb(db), {
+    ...asker,
+    body: "Include archived rows?",
+    now: NOW,
+  });
   const second = await ask(db, asker, "agent", "Which format?", { now: NOW + 1 });
   const third = await ask(db, asker, "agent", "Which delimiter?", { now: NOW + 2 });
   expect(second.status).toBe("queued");
@@ -77,7 +81,7 @@ test("a second ask is queued and delivered in order once the open one is answere
 
 test("a newer runner wait replaces a queued one of the same kind", async () => {
   const { db, asker } = await setup();
-  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  await openQuestion(sqliteDb(db), { ...asker, body: "Include archived rows?", now: NOW });
   const older = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
   const newer = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 2 });
   expect((await getQuestion(sqliteDb(db), older.question.id))?.status).toBe("cancelled");
@@ -87,7 +91,7 @@ test("a newer runner wait replaces a queued one of the same kind", async () => {
 test("a newer CI help replaces only its own task's queued CI help", async () => {
   const { db, asker } = await setup();
   const sibling = insertQueuedItem(db, { id: "ENG-8", sessionKey: "ses_1", title: "Import rows" });
-  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  await openQuestion(sqliteDb(db), { ...asker, body: "Include archived rows?", now: NOW });
   const older = await ask(db, asker, "ci-help", "CI failed.", { now: NOW + 1 });
   const other = await ask(
     db,
@@ -118,7 +122,7 @@ async function queuedCloseoutHelp() {
     NOW,
     true,
   );
-  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  await openQuestion(sqliteDb(db), { ...asker, body: "Include archived rows?", now: NOW });
   const help = await ask(db, asker, "closeout-help", "Closeout needs your help.", { now: NOW + 1 });
   await saveCloseoutRecovery(sqliteDb(db), {
     questionId: help.question.id,
@@ -204,7 +208,7 @@ test("the answer is idempotent on the delivery id and runs its kind's effect onc
 
 test("a queued question for a run that is no longer current is dropped with a journal entry", async () => {
   const { db, asker } = await setup();
-  await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  await openQuestion(sqliteDb(db), { ...asker, body: "Include archived rows?", now: NOW });
   const stale = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
   await setCurrentRun(sqliteDb(db), asker.itemId, null);
   const lines: string[] = [];
@@ -224,7 +228,11 @@ test("a queued question for a run that is no longer current is dropped with a jo
 
 test("cancelling the task cancels its open and queued questions", async () => {
   const { db, asker } = await setup();
-  const open = await openQuestion(db, { ...asker, body: "Include archived rows?", now: NOW });
+  const open = await openQuestion(sqliteDb(db), {
+    ...asker,
+    body: "Include archived rows?",
+    now: NOW,
+  });
   const queued = await ask(db, asker, "runner-wait", "Move or keep waiting?", { now: NOW + 1 });
   await cancelItemQuestions(db, asker.itemId, NOW + 2);
   expect((await getQuestion(sqliteDb(db), open.id))?.status).toBe("cancelled");

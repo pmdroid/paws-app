@@ -200,7 +200,7 @@ test("structured choices persist their values and display their labels", async (
     title: "Choose",
   });
   const options = ["Other", { label: "Paws", value: "https://github.com/pmdroid/paws-app" }];
-  const question = await openQuestion(db, {
+  const question = await openQuestion(sqliteDb(db), {
     itemId: item.id,
     sessionId: "ses-choices",
     body: "Which?",
