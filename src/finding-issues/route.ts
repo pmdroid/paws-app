@@ -36,7 +36,7 @@ export type FileFindingIssue = (
 export type FindingIssueRouteOptions = {
   db: Database;
   /** Each review of a work item, as the issue page shows it. */
-  reviews: (itemId: string) => StatusReview[];
+  reviews: (itemId: string) => Promise<StatusReview[]>;
   /** Linear's issue filer. Absent without a Linear connection. */
   file: FileFindingIssue | undefined;
   now?: () => number;
@@ -105,7 +105,12 @@ export function createFindingIssueRoute(options: FindingIssueRouteOptions) {
       );
     const item = await store.run((q) => visibleItemSteps(q, itemId, access.sessionIds));
     if (item === null) return Response.json({ error: "Issue not found." }, { status: 404 });
-    const found = latestPreExisting(options.reviews(item.id), reviewId, location, explanation);
+    const found = latestPreExisting(
+      await options.reviews(item.id),
+      reviewId,
+      location,
+      explanation,
+    );
     if (found === null)
       return Response.json(
         { error: "That pre-existing finding is not on this issue. Refresh the issue." },

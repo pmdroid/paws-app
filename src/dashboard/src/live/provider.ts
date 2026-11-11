@@ -620,14 +620,15 @@ async function readItemDetail(
   const pawsHome = options.pawsHome ?? env.PAWS_HOME;
   if (!pawsHome || detail.verdicts.length === 0) return { ...detail, id, blocks, risk };
   const progress = await sqliteDb(db).run(listCloseoutProgressSteps);
+  const verdicts: typeof detail.verdicts = [];
+  for (const verdict of detail.verdicts) {
+    const record = records.find((entry) => publicId(entry) === verdict.itemId);
+    const reviews = record ? await itemReviews(db, record.id, pawsHome, env, progress) : [];
+    verdicts.push(reviews.length === 0 ? verdict : { ...verdict, reviews });
+  }
   return {
     ...detail,
-    verdicts: detail.verdicts.map((verdict) => {
-      const record = records.find((entry) => publicId(entry) === verdict.itemId);
-      if (!record) return verdict;
-      const reviews = itemReviews(db, record.id, pawsHome, env, progress);
-      return reviews.length === 0 ? verdict : { ...verdict, reviews };
-    }),
+    verdicts,
     id,
     blocks,
     risk,
