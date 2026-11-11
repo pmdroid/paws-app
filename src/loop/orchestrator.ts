@@ -23,7 +23,7 @@ import {
   deferWorkItem,
   delegatedLinearUserIdSteps,
   deleteCancelledLinearTurnSteps,
-  enqueueJobOnceAsync,
+  enqueueJobOnce,
   enqueueOutboxOnceSteps,
   ensureLinearSessionSteps,
   gatherLinearComments,
@@ -6798,7 +6798,7 @@ export class Orchestrator {
     await this.store.run((q) => releaseRunCapacitySteps(q, runId, this.now()));
     const answered = await this.store.run((q) => latestRunningAnswerSteps(q, runId));
     if (!answered) return;
-    await enqueueJobOnceAsync(this.store, {
+    await enqueueJobOnce(this.store, {
       queue: JOB_KIND.resume,
       jobKey: `resume:answer:${answered.id}`,
       payload: {
@@ -8096,7 +8096,7 @@ export class Orchestrator {
 
   private async continueAfterRateLimit(item: WorkItemRecord, retryAfterMs: number): Promise<void> {
     const key = `linear-rate-limit:${item.id}:${item.version}`;
-    await enqueueJobOnceAsync(this.store, {
+    await enqueueJobOnce(this.store, {
       queue: item.state === "running" ? JOB_KIND.resume : JOB_KIND.reverify,
       jobKey: key,
       payload: { itemId: item.id, reason: "linear-rate-limit" },

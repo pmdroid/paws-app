@@ -6,7 +6,7 @@ import {
   advanceLinearSessionGenerationSteps,
   auditWorkspaceAccessSteps,
   emitJobReady,
-  enqueueJobOnceAsync,
+  enqueueJobOnce,
   enqueueJobOnceSteps,
   enqueueOutboxOnceSteps,
   ensureLinearSessionSteps,
@@ -873,7 +873,7 @@ export function createWorkspaceAssignments(options: {
         });
       });
       return (async () => {
-        await enqueueJobOnceAsync(store, {
+        await enqueueJobOnce(store, {
           queue: `${QUEUE}.expire`,
           jobKey: `${QUEUE}.expire`,
           recurringEveryMs: 60_000,

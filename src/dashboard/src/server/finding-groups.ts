@@ -5,7 +5,7 @@ import {
   auditWorkspaceAccessSteps,
   claimFindingGroupAction,
   closeFindingGroupSteps,
-  enqueueJobOnceAsync,
+  enqueueJobOnce,
   findingGroupingEnabled,
   firstWorkspaceId,
   reviewFindingsByIdsSteps,
@@ -178,7 +178,7 @@ export async function handleFindingGroupsRequest(
         { error: "Grouping already ran today. The next helper turn is available tomorrow UTC." },
         { status: 409 },
       );
-    await enqueueJobOnceAsync(store, {
+    await enqueueJobOnce(store, {
       queue: "findings.group",
       jobKey: `findings.group.manual:${principal.workspaceId}:${day}`,
       payload: { workspaceId: principal.workspaceId },

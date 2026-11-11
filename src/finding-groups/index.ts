@@ -7,7 +7,6 @@ import {
   deleteUntouchedFindingGroupsSteps,
   dropProcessedFindingGroupMembersSteps,
   enqueueJobOnce,
-  enqueueJobOnceAsync,
   failFindingGroupRunSteps,
   findingGroupRunExistsForDaySteps,
   findingGroupRunIsRunningSteps,
@@ -393,7 +392,7 @@ export async function scopedGroupingSources(
   });
 }
 
-export function registerFindingGrouping(
+export async function registerFindingGrouping(
   jobs: JobLoop,
   options: {
     groupingTime: string;
@@ -413,14 +412,14 @@ export function registerFindingGrouping(
     const iso = new Date(at).toISOString();
     if (iso.slice(11, 16) < options.groupingTime) return;
     for (const workspaceId of await options.workspaces())
-      await enqueueJobOnceAsync(jobs.store, {
+      await enqueueJobOnce(jobs.store, {
         queue: "findings.group",
         jobKey: `findings.group:${workspaceId}:${iso.slice(0, 10)}`,
         payload: { workspaceId },
         now: at,
       });
   });
-  enqueueJobOnce(jobs.db, {
+  await enqueueJobOnce(jobs.store, {
     queue: "findings.group.tick",
     jobKey: "findings.group.tick",
     recurringEveryMs: 60_000,

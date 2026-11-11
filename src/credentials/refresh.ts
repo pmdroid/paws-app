@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   claimNextJobSteps,
   completeJobSteps,
-  enqueueJobOnceAsync,
+  enqueueJobOnce,
   failJobSteps,
   getJobSteps,
   sqliteDb,
@@ -24,7 +24,7 @@ export async function refreshCredential<T extends RotatingCredential>(input: {
   if (original?.refreshToken == null)
     throw new Error("No refresh token is stored. Reconnect the integration.");
   const queue = `oauth.refresh.${digest(input.identity)}.${digest(original.refreshToken)}`;
-  const id = await enqueueJobOnceAsync(store, { queue, jobKey: queue, maxAttempts: 10 });
+  const id = await enqueueJobOnce(store, { queue, jobKey: queue, maxAttempts: 10 });
   const workerId = `oauth:${process.pid}:${randomUUID()}`;
   const leaseMs = input.leaseMs ?? 30_000;
   for (;;) {

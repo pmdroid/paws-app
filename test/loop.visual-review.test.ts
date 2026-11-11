@@ -969,7 +969,7 @@ async function headOf(worktree: string): Promise<string> {
 async function reverifyNow(db: Database, itemId: string, key: string): Promise<void> {
   await applyWorkItemEvent(sqliteDb(db), itemId, "answer_received");
   await applyWorkItemEvent(sqliteDb(db), itemId, "turn_ended");
-  enqueueJobOnce(db, {
+  await enqueueJobOnce(sqliteDb(db), {
     queue: JOB_KIND.reverify,
     jobKey: key,
     payload: { itemId },
@@ -1043,7 +1043,7 @@ test("a rebase that keeps the patch-id carries an accepted visual review to the 
     await rebaseOntoNewMain(f, worktree);
     const rebased = await headOf(worktree);
     gate.decided = ACCEPTED;
-    enqueueJobOnce(f.db, {
+    await enqueueJobOnce(sqliteDb(f.db), {
       queue: JOB_KIND.reverify,
       jobKey: "rebased",
       payload: { itemId: item.id },

@@ -876,11 +876,11 @@ async function admit(
   return result.admitted;
 }
 
-export function registerScheduler(
+export async function registerScheduler(
   jobs: JobLoop,
   tick: () => void | Promise<void>,
   now = Date.now(),
-): void {
+): Promise<void> {
   jobs.register(TICK, tick);
-  enqueueJobOnce(jobs.db, { queue: TICK, jobKey: TICK, recurringEveryMs: 30_000, now });
+  await enqueueJobOnce(jobs.store, { queue: TICK, jobKey: TICK, recurringEveryMs: 30_000, now });
 }

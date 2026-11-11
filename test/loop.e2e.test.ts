@@ -3886,7 +3886,7 @@ test("a reverify after a pushed rebase uses the new main as its base", async () 
       if ((await tickWithRestarts(jobs, orchestrator, db)) === null) await Bun.sleep(25);
     }
     saveCheckpoint(db, before.id, before.checkpoint!);
-    const reverify = enqueueJobOnce(db, {
+    const reverify = await enqueueJobOnce(sqliteDb(db), {
       queue: JOB_KIND.reverify,
       jobKey: "stale-reverify",
       payload: { itemId: before.id },

@@ -214,7 +214,7 @@ test.each(["pending", "rejected"] as const)(
       const writer = insertQueuedItem(f.db, { id: "ENG-2", sessionKey: "writer" });
       await applyWorkItemEvent(sqliteDb(f.db), writer.id, "dispatched");
       await saveTaskMode(sqliteDb(f.db), writer.id, "answer");
-      enqueueJobOnce(f.db, {
+      await enqueueJobOnce(sqliteDb(f.db), {
         queue: JOB_KIND.resume,
         jobKey: "writer",
         payload: { itemId: writer.id },
