@@ -91,7 +91,7 @@ export function createRetroScheduleHttp(options: {
       );
     let catalogs: readonly AgentModelCatalog[] | null;
     try {
-      catalogs = options.catalog(principal);
+      catalogs = await store.run((q) => options.catalog(q, principal));
     } catch (error) {
       journalCaught(error, "retros.schedule.catalog", null);
       catalogs = null;

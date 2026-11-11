@@ -243,10 +243,10 @@ function* retriesSpentSteps(q: Q, retro: Retro): Steps<boolean> {
   );
 }
 
-export type RetroCatalogSource = (principal: {
-  workspaceId: string;
-  userId: string;
-}) => readonly AgentModelCatalog[] | null;
+export type RetroCatalogSource = (
+  q: Q,
+  principal: { workspaceId: string; userId: string },
+) => Steps<readonly AgentModelCatalog[] | null>;
 
 export type RetroRequest =
   | { ok: true; retro: Retro; created: boolean }
@@ -334,7 +334,7 @@ export function createRetroScheduler(options: {
     for (const userId of new Set([author, ...admins])) {
       let catalogs: readonly AgentModelCatalog[] | null;
       try {
-        catalogs = options.catalogs({ workspaceId, userId });
+        catalogs = yield* options.catalogs(q, { workspaceId, userId });
       } catch (error) {
         journalCaught(error, "retros.schedule.catalogs", null);
         continue;

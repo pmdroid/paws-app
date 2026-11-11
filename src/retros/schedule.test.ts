@@ -14,6 +14,7 @@ import {
   saveRetroSettingsRevision,
   startRetroAttempt,
   sqliteDb,
+  syncSteps,
 } from "../db";
 import type { AgentModelCatalog } from "../runner-models";
 import type { WorkspacePrincipal } from "../workspace";
@@ -110,7 +111,7 @@ function world(options: { activity?: boolean; retries?: number; settings?: boole
     createRetroScheduler({
       db: database,
       artifactRoot: root,
-      catalogs: () => catalog.value,
+      catalogs: () => syncSteps(() => catalog.value),
       now: () => clock.now,
     });
   const dispatcher = () =>

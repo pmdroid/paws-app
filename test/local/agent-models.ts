@@ -156,44 +156,43 @@ export async function probeAgentModels(
     observe("background discovery queues one signed member probe", true, { commands: count() });
     await complete();
     await catalog.refresh();
-    assert.equal(catalog.read(principal)[0]!.models.length, 2);
+    assert.equal((await catalog.read(principal))[0]!.models.length, 2);
     assert.deepEqual(
-      catalog.read(principal)[0]!.efforts.map((choice) => choice.id),
+      (await catalog.read(principal))[0]!.efforts.map((choice) => choice.id),
       ["low", "high"],
     );
     observe(
       "ACP models and default effort are cached without prompting",
       true,
-      catalog.read(principal),
+      await catalog.read(principal),
     );
     const specific = latest();
     assert.equal(specific.type === "probe" && specific.profile.model, "model-b");
     await complete();
     await catalog.refresh();
     assert.deepEqual(
-      catalog
-        .read(principal)[0]!
-        .models.find((model) => model.id === "model-b")!
+      (await catalog.read(principal))[0]!.models
+        .find((model) => model.id === "model-b")!
         .efforts!.map((choice) => choice.id),
       ["medium", "xhigh"],
     );
     assert.equal(count(), 2);
-    observe("effort options belong to the selected model", true, catalog.read(principal));
-    const before = catalog.read(principal);
+    observe("effort options belong to the selected model", true, await catalog.read(principal));
+    const before = await catalog.read(principal);
     db.close();
     db = openDatabase(path);
     catalog = createRunnerModels({ db, work: work(), now: () => now });
-    assert.deepEqual(catalog.read(principal), before);
+    assert.deepEqual(await catalog.read(principal), before);
     observe("catalog survives process storage reopen", true, { models: before[0]!.models.length });
-    assert.deepEqual(catalog.read({ workspaceId: workspace, userId: otherUser }), []);
-    assert.deepEqual(catalog.read({ workspaceId: otherWorkspace, userId }), []);
+    assert.deepEqual(await catalog.read({ workspaceId: workspace, userId: otherUser }), []);
+    assert.deepEqual(await catalog.read({ workspaceId: otherWorkspace, userId }), []);
     observe("catalog reads are scoped to workspace and signed-in member", true, {});
     db.run("UPDATE runner SET last_seen_at=0 WHERE id=?", [runnerId]);
     db.run("UPDATE runner_agent_policy SET cooldown_until=? WHERE runner_id=?", [
       now + 60_000,
       runnerId,
     ]);
-    assert.deepEqual(catalog.read(principal), before);
+    assert.deepEqual(await catalog.read(principal), before);
     await catalog.refresh();
     assert.equal(count(), 2);
     observe("offline and cooling hosts retain cached choices", true, {});
@@ -215,13 +214,13 @@ export async function probeAgentModels(
     assert.equal(count(), 3);
     await complete(true);
     await catalog.refresh();
-    assert.deepEqual(catalog.read(principal), before);
+    assert.deepEqual(await catalog.read(principal), before);
     const afterFailure = count();
     await catalog.refresh();
     assert.equal(count(), afterFailure);
     observe("failed refresh preserves last good cache and backs off", true, {});
     db.run("UPDATE runner_agent_policy SET auth_expired=1 WHERE runner_id=?", [runnerId]);
-    assert.deepEqual(catalog.read(principal), []);
+    assert.deepEqual(await catalog.read(principal), []);
     const beforeDisconnected = count();
     await catalog.refresh();
     assert.equal(count(), beforeDisconnected);

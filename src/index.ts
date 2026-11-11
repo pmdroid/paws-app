@@ -954,8 +954,8 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     );
   let runnerStopping = false;
   let retroDispatcher: RetroDispatcher | undefined;
-  const retroCatalog = (principal: { workspaceId: string; userId: string }) =>
-    runner?.models.read(principal) ?? null;
+  const retroCatalog = (q: Q, principal: { workspaceId: string; userId: string }) =>
+    runner ? runner.models.readSteps(q, principal) : syncSteps(() => null);
   const retroScheduler = createRetroScheduler({
     db,
     artifactRoot: join(paths.home, "retros"),
