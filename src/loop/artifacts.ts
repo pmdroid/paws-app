@@ -11,28 +11,28 @@ import type {
   PublishedArtifact,
 } from "../acp";
 import {
-  linearSessionGeneration,
-  beginArtifactAttempt,
-  requestArtifactAttachment,
+  linearSessionGenerationSteps,
+  beginArtifactAttemptSteps,
+  requestArtifactAttachmentSteps,
   artifactAttachmentRequestedSteps,
-  completeArtifactAttempt,
-  enqueueOutboxOnce,
+  completeArtifactAttemptSteps,
   enqueueOutboxOnceSteps,
   getArtifactSteps,
   getEvidenceSteps,
-  immediate,
   latestEvidence,
-  listEvidence,
   listEvidenceSteps,
   markArtifactSteps,
   saveArtifactSteps,
+  settled,
   sqliteDb,
+  type Q,
+  type Steps,
 } from "../db";
 import type { StoredEvidence, WorkItemRecord } from "../db";
 import type { LinearFileTransfer, PreparedLinearUpload } from "../linear";
 import type { PublishedEvidence } from "../closeout";
 import { pawsIssueUrl } from "./open-findings";
-import { rejectedEvidenceIds } from "../questions";
+import { rejectedEvidenceIdsSteps } from "../questions";
 
 export function createLinearArtifactReader(options: { db: Database; secretsDir: string }) {
   const store = sqliteDb(options.db);
@@ -59,8 +59,12 @@ export function createLinearArtifactReader(options: { db: Database; secretsDir: 
 }
 
 export function publishedEvidence(db: Database, itemId: string): PublishedEvidence[] {
-  const rejected = rejectedEvidenceIds(db, itemId);
-  return latestEvidence(listEvidence(db, itemId))
+  return settled(sqliteDb(db).run((q) => publishedEvidenceSteps(q, itemId)));
+}
+
+function* publishedEvidenceSteps(q: Q, itemId: string): Steps<PublishedEvidence[]> {
+  const rejected = yield* rejectedEvidenceIdsSteps(q, itemId);
+  return latestEvidence(yield* listEvidenceSteps(q, itemId))
     .filter((row) => !rejected.has(row.id))
     .map((row) => ({
       id: row.id,
@@ -92,10 +96,10 @@ export const EVIDENCE_INLINE_LIMITS = { image: 10 * MB, video: 50 * MB };
  * The files Closeout counts for each check: the latest per display name, without rejected ones.
  * Pull request screenshots pick their files the same way.
  */
-function evidenceFiles(db: Database, itemId: string): StoredEvidence[] {
-  const rejected = rejectedEvidenceIds(db, itemId);
+function* evidenceFilesSteps(q: Q, itemId: string): Steps<StoredEvidence[]> {
+  const rejected = yield* rejectedEvidenceIdsSteps(q, itemId);
   const latest = new Map<string, StoredEvidence>();
-  for (const row of listEvidence(db, itemId))
+  for (const row of yield* listEvidenceSteps(q, itemId))
     latest.set(JSON.stringify([row.checkId, row.displayName]), row);
   return [...latest.values()].filter((row) => !rejected.has(row.id));
 }
@@ -126,7 +130,7 @@ export function evidenceThoughts(
   db: Database,
   input: { itemId: string; checkIds: readonly string[]; head: string; link: string },
 ): { key: string; body: string }[] {
-  const files = evidenceFiles(db, input.itemId);
+  const files = settled(sqliteDb(db).run((q) => evidenceFilesSteps(q, input.itemId)));
   return input.checkIds.flatMap((checkId) => {
     const rows = files.filter((row) => row.checkId === checkId);
     if (rows.length === 0) return [];
@@ -155,27 +159,31 @@ export function enqueueEvidenceCard(
     now: number;
   },
 ): void {
-  const rows = evidenceFiles(db, input.item.id);
-  if (rows.length === 0) return;
-  enqueueOutboxOnce(db, {
-    target: "linear",
-    op: "linear.attachment",
-    delivery: "ordered",
-    priority: 0,
-    orderingKey: input.sessionId,
-    generation: input.generation,
-    idempotencyKey: `evidence-card:${input.sessionId}:${input.generation}:${input.head}`,
-    payload: {
-      id: randomUUID(),
-      itemId: input.item.id,
-      issueId: input.item.linearIssueId,
-      title: "Closeout evidence",
-      subtitle: `${evidenceCount(rows)} at ${input.head.slice(0, 7)}`,
-      url: input.link,
-      evidence: true,
-    },
-    now: input.now,
-  });
+  settled(
+    sqliteDb(db).transaction(function* (q) {
+      const rows = yield* evidenceFilesSteps(q, input.item.id);
+      if (rows.length === 0) return;
+      yield* enqueueOutboxOnceSteps(q, {
+        target: "linear",
+        op: "linear.attachment",
+        delivery: "ordered",
+        priority: 0,
+        orderingKey: input.sessionId,
+        generation: input.generation,
+        idempotencyKey: `evidence-card:${input.sessionId}:${input.generation}:${input.head}`,
+        payload: {
+          id: randomUUID(),
+          itemId: input.item.id,
+          issueId: input.item.linearIssueId,
+          title: "Closeout evidence",
+          subtitle: `${evidenceCount(rows)} at ${input.head.slice(0, 7)}`,
+          url: input.link,
+          evidence: true,
+        },
+        now: input.now,
+      });
+    }),
+  );
 }
 
 /**
@@ -271,7 +279,7 @@ export function createEvidenceArtifactPublisher(options: {
 }
 
 function sessionGeneration(db: Database, sessionId: string): number {
-  return linearSessionGeneration(db, sessionId);
+  return settled(sqliteDb(db).run((q) => linearSessionGenerationSteps(q, sessionId)));
 }
 
 export function createLinearArtifactPublisher(options: {
@@ -293,15 +301,21 @@ export function createLinearArtifactPublisher(options: {
       const identityHash = publicationIdentity(request);
       if (request.attachToIssue === true && !options.issueId)
         throw new Error("Issue attachment is unavailable");
-      const version = immediate(options.db, () => {
-        const nextVersion = beginArtifactAttempt(options.db, options.itemId, identityHash);
-        if (request.attachToIssue === true)
-          requestArtifactAttachment(options.db, options.itemId, identityHash);
-        return nextVersion;
-      });
+      const version = settled(
+        store.transaction(function* (q) {
+          const nextVersion = yield* beginArtifactAttemptSteps(q, options.itemId, identityHash);
+          if (request.attachToIssue === true)
+            yield* requestArtifactAttachmentSteps(q, options.itemId, identityHash);
+          return nextVersion;
+        }),
+      );
       return {
         complete() {
-          completeArtifactAttempt(options.db, options.itemId, identityHash, version);
+          settled(
+            store.run((q) =>
+              completeArtifactAttemptSteps(q, options.itemId, identityHash, version),
+            ),
+          );
         },
       };
     },
