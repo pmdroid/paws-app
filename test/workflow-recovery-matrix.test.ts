@@ -126,21 +126,25 @@ function live(jobs: Job[]): Job[] {
   return jobs.filter((job) => job.status === "pending" || job.status === "running");
 }
 
-function expectations(w: World, entry: Entry, initial: Map<Fixture, InitialFacts>): void {
+async function expectations(
+  w: World,
+  entry: Entry,
+  initial: Map<Fixture, InitialFacts>,
+): Promise<void> {
   for (const id of UNCHANGED) {
-    const held = (facts: ReturnType<typeof factsOf>) =>
+    const held = (facts: Awaited<ReturnType<typeof factsOf>>) =>
       facts.state === "awaiting_input" ? { ...facts, runStatus: "released" } : facts;
-    expect([id, held(factsOf(w.db, id))]).toEqual([id, held(initial.get(id)!.facts)]);
+    expect([id, held(await factsOf(w.db, id))]).toEqual([id, held(initial.get(id)!.facts)]);
   }
   for (const id of REVERIFIERS) {
     const jobs = live(itemJobs(w, id)).filter((job) => job.status === "pending");
     expect([id, jobs.filter((job) => AGENT_QUEUES.includes(job.queue))]).toEqual([id, []]);
-    expect([id, factsOf(w.db, id).state]).not.toEqual([id, "merge_queue"]);
+    expect([id, (await factsOf(w.db, id)).state]).not.toEqual([id, "merge_queue"]);
   }
-  expect(factsOf(w.db, "verifying_rejected").acceptedHead).toBeNull();
+  expect((await factsOf(w.db, "verifying_rejected")).acceptedHead).toBeNull();
   expect(itemJobs(w, "verifying_rejected").some((job) => job.queue === JOB_KIND.merge)).toBe(false);
   for (const id of KEEP_PLACE) {
-    const facts = factsOf(w.db, id);
+    const facts = await factsOf(w.db, id);
     expect([id, facts.state, facts.mergeCall]).toEqual([
       id,
       "merge_queue",
@@ -156,10 +160,10 @@ function expectations(w: World, entry: Entry, initial: Map<Fixture, InitialFacts
       id,
       initial.get(id)!.jobs.map((job) => [job.id, "pending", job.payload]),
     ]);
-    expect(factsOf(w.db, id).recoveryAttempts).toBe(0);
+    expect((await factsOf(w.db, id)).recoveryAttempts).toBe(0);
   }
-  if (!entry.longGap) expect(factsOf(w.db, "running_leased").recoveryAttempts).toBe(0);
-  const resumed = factsOf(w.db, "running_resumed");
+  if (!entry.longGap) expect((await factsOf(w.db, "running_leased")).recoveryAttempts).toBe(0);
+  const resumed = await factsOf(w.db, "running_resumed");
   if (entry.longGap) {
     expect(resumed.restartHold).toBe(false);
     expect(resumed.liveJobs.filter((job) => job.endsWith(":pending"))).toEqual([
@@ -171,26 +175,26 @@ function expectations(w: World, entry: Entry, initial: Map<Fixture, InitialFacts
   } else expect(resumed.state).toBe("running");
 }
 
-type InitialFacts = { facts: ReturnType<typeof factsOf>; jobs: Job[]; jobIds: number[] };
+type InitialFacts = { facts: Awaited<ReturnType<typeof factsOf>>; jobs: Job[]; jobIds: number[] };
 
 describe("every combined state through every recovery entry", () => {
   for (const [name, entry] of Object.entries(ENTRIES))
     test(name, async () => {
       const w = await new World().seed(FIXTURES);
       try {
-        expect(violations(w.db, w.now)).toEqual([]);
+        expect(await violations(w.db, w.now)).toEqual([]);
         const initial = new Map<Fixture, InitialFacts>();
         for (const id of FIXTURES) {
           const jobs = live(itemJobs(w, id));
           const merge = jobs.filter((job) => job.queue === JOB_KIND.merge).map((job) => job.id);
-          initial.set(id, { facts: factsOf(w.db, id), jobs, jobIds: merge });
+          initial.set(id, { facts: await factsOf(w.db, id), jobs, jobIds: merge });
         }
         await entry.run(w);
-        expect(unexpectedViolations(w.db, w.now)).toEqual([]);
-        expectations(w, entry, initial);
+        expect(await unexpectedViolations(w.db, w.now)).toEqual([]);
+        await expectations(w, entry, initial);
         await w.settle();
-        expect(unexpectedViolations(w.db, w.now)).toEqual([]);
-        expectations(w, entry, initial);
+        expect(await unexpectedViolations(w.db, w.now)).toEqual([]);
+        await expectations(w, entry, initial);
       } finally {
         w.close();
       }
@@ -205,7 +209,7 @@ describe("preserved reproducers for open gaps", () => {
       try {
         w.crash();
         w.start();
-        expect(violations(w.db, w.now)).toEqual([]);
+        expect(await violations(w.db, w.now)).toEqual([]);
       } finally {
         w.close();
       }
@@ -220,7 +224,7 @@ describe("preserved reproducers for open gaps", () => {
         [w.now, JOB_KIND.merge],
       );
       await w.settle();
-      expect(violations(w.db, w.now)).toEqual([]);
+      expect(await violations(w.db, w.now)).toEqual([]);
     } finally {
       w.close();
     }

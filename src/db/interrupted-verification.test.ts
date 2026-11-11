@@ -47,14 +47,14 @@ describe("interrupted verification", () => {
     expect(pending(db).map((job) => job.queue)).toEqual([JOB_KIND.reverify]);
   });
 
-  test("a crash start re-verifies the candidate once and then asks", () => {
+  test("a crash start re-verifies the candidate once and then asks", async () => {
     const { db, item } = verifying();
     expect(recoverOnStartup(db, NOW + 1)).toEqual([{ type: "reverify", resumed: true }]);
     expect(recoverOnStartup(db, NOW + 2)).toEqual([{ type: "ask_restart" }]);
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.resume)).toBe(false);
     const held = getWorkItem(db, item.id)!;
     expect(held.state).toBe("recovering");
-    expect(restartHold(db, held)).not.toBeNull();
+    expect(await restartHold(sqliteDb(db), held)).not.toBeNull();
   });
 
   test("a start leaves a backed-off re-verify of a deferred candidate where it is", async () => {

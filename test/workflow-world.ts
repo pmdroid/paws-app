@@ -433,7 +433,7 @@ function liveRunnerWork(db: Database, item: WorkItemRecord, now: number): boolea
   );
 }
 
-export function factsOf(db: Database, id: string): ItemFacts {
+export async function factsOf(db: Database, id: string): Promise<ItemFacts> {
   const item = getWorkItem(db, id)!;
   return {
     state: item.state,
@@ -447,7 +447,7 @@ export function factsOf(db: Database, id: string): ItemFacts {
       .map((job) => `${job.queue}:${job.status}`)
       .sort(),
     questions: actionableQuestions(db, id),
-    restartHold: restartHold(db, item) !== null,
+    restartHold: (await restartHold(sqliteDb(db), item)) !== null,
     mergeCall: mergeCallInFlight(db, id),
   };
 }
@@ -460,8 +460,12 @@ export const STARTUP_RESUME_DUPLICATE =
 
 export type Checks = { liveness?: boolean };
 
-export function unexpectedViolations(db: Database, now: number, checks: Checks = {}): string[] {
-  return violations(db, now, checks).filter((message) => !message.includes(KNOWN_GAP));
+export async function unexpectedViolations(
+  db: Database,
+  now: number,
+  checks: Checks = {},
+): Promise<string[]> {
+  return (await violations(db, now, checks)).filter((message) => !message.includes(KNOWN_GAP));
 }
 
 const DUMPED_TABLES = [
@@ -504,7 +508,11 @@ export function allowWrites(db: Database): void {
   db.run("DROP TRIGGER IF EXISTS injected_write_failure");
 }
 
-export function violations(db: Database, now: number, { liveness = true }: Checks = {}): string[] {
+export async function violations(
+  db: Database,
+  now: number,
+  { liveness = true }: Checks = {},
+): Promise<string[]> {
   const found: string[] = [];
   for (const item of listWorkItems(db)) {
     const say = (message: string) => found.push(`${item.id} (${item.state}): ${message}`);
@@ -514,7 +522,7 @@ export function violations(db: Database, now: number, { liveness = true }: Check
       EXECUTION_QUEUES.includes(job.queue),
     );
     const questions = actionableQuestions(db, item.id);
-    const hold = restartHold(db, item) !== null;
+    const hold = (await restartHold(sqliteDb(db), item)) !== null;
     const merging = mergeCallInFlight(db, item.id);
 
     for (const queues of [AGENT_QUEUES, [JOB_KIND.reverify], [JOB_KIND.merge]]) {

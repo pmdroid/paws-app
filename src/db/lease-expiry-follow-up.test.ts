@@ -24,6 +24,7 @@ import {
   restartHold,
   saveCheckpoint,
   setCurrentRun,
+  sqliteDb,
 } from "./index";
 
 const START = 1_000_000;
@@ -207,7 +208,7 @@ describe("follow-up after an expired runner lease", () => {
     ]);
   });
 
-  test("repeated expiry spends the retry budget and then asks once", () => {
+  test("repeated expiry spends the retry budget and then asks once", async () => {
     const { db, item, run } = leased();
     let at = START + PAST;
     for (let generation = 1; generation <= MAX_TRANSIENT_RETRIES; generation++) {
@@ -225,7 +226,7 @@ describe("follow-up after an expired runner lease", () => {
     expect(closeExpiredRunnerLeases(db, at)).toEqual([run.id]);
     const held = getWorkItem(db, item.id)!;
     expect(held.state).toBe("recovering");
-    expect(restartHold(db, held)).not.toBeNull();
+    expect(await restartHold(sqliteDb(db), held)).not.toBeNull();
     expect(pending(db).map((job) => job.queue)).toEqual(["item.ask"]);
     expect(recoverOnStartup(db, at + 1)).toEqual([{ type: "ask_restart" }]);
     expect(requeueOrphanedWork(db, at + ORPHAN_GRACE_MS + 1)).toEqual([]);

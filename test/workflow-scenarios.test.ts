@@ -112,7 +112,7 @@ describe("combined recovery scenarios", () => {
       expect(await pendingRestartHandoff(sqliteDb(w.db), id)).toEqual({
         handoff: "second failure",
       });
-      expect(unexpectedViolations(w.db, w.now)).toEqual([]);
+      expect(await unexpectedViolations(w.db, w.now)).toEqual([]);
     } finally {
       w.close();
     }
@@ -138,9 +138,9 @@ describe("combined recovery scenarios", () => {
         await markCloseoutAccepted(sqliteDb(w.db), id, null as unknown as string);
       }
       await w.settle();
-      expect(factsOf(w.db, id).state).not.toBe("merge_queue");
+      expect((await factsOf(w.db, id)).state).not.toBe("merge_queue");
       expect(itemJobs(w, id).some((job) => job.queue === JOB_KIND.merge)).toBe(false);
-      expect(unexpectedViolations(w.db, w.now)).toEqual([]);
+      expect(await unexpectedViolations(w.db, w.now)).toEqual([]);
     } finally {
       w.close();
     }
@@ -168,7 +168,7 @@ describe("combined recovery scenarios", () => {
         else w.stop();
         w.advance(HOUR);
         w.start();
-        const facts = factsOf(w.db, id);
+        const facts = await factsOf(w.db, id);
         expect([facts.state, facts.mergeCall]).toEqual(["merge_queue", true]);
         expect(restart(w.db, getWorkItem(w.db, id)!, { reason: "ci", body: "x", now: w.now })).toBe(
           null,
@@ -187,7 +187,7 @@ describe("combined recovery scenarios", () => {
       expect((await completeMergedItem(sqliteDb(w.db), { itemId: id, now: w.now }))?.state).toBe(
         "merged",
       );
-      const merged = factsOf(w.db, id);
+      const merged = await factsOf(w.db, id);
       expect(merged.mergeCall).toBe(false);
 
       w.crash();
@@ -198,9 +198,9 @@ describe("combined recovery scenarios", () => {
       ).toThrow("illegal_transition");
       expect(await completeMergedItem(sqliteDb(w.db), { itemId: id, now: w.now })).toBeNull();
       await w.settle();
-      expect(factsOf(w.db, id)).toMatchObject({ state: "merged", version: merged.version });
+      expect(await factsOf(w.db, id)).toMatchObject({ state: "merged", version: merged.version });
       expect(liveExecution(w, id)).toEqual([]);
-      expect(unexpectedViolations(w.db, w.now)).toEqual([]);
+      expect(await unexpectedViolations(w.db, w.now)).toEqual([]);
     } finally {
       w.close();
     }
@@ -254,8 +254,8 @@ describe("combined recovery scenarios", () => {
       expect(await reviews()).toEqual([42]);
       expect(jobs()).toEqual(effects);
       expect(liveExecution(w, id).map((job) => job.id)).toEqual(merge);
-      expect(factsOf(w.db, "merge_active_run").state).toBe("verifying");
-      expect(unexpectedViolations(w.db, w.now)).toEqual([]);
+      expect((await factsOf(w.db, "merge_active_run")).state).toBe("verifying");
+      expect(await unexpectedViolations(w.db, w.now)).toEqual([]);
     } finally {
       w.close();
     }
@@ -277,23 +277,23 @@ describe("combined recovery scenarios", () => {
           liveJobs: [`${JOB_KIND.merge}:pending`, `${JOB_KIND.reverify}:pending`],
         },
       } as const;
-      const check = () => {
+      const check = async () => {
         for (const [id, facts] of Object.entries(expected))
-          expect(factsOf(w.db, id)).toMatchObject({
+          expect(await factsOf(w.db, id)).toMatchObject({
             ...facts,
             recoveryAttempts: 0,
             restartHold: false,
             runStatus: "lost",
           });
-        expect(unexpectedViolations(w.db, w.now)).toEqual([]);
+        expect(await unexpectedViolations(w.db, w.now)).toEqual([]);
       };
-      check();
+      await check();
       w.crash();
       w.start();
-      check();
+      await check();
       w.stop();
       w.start();
-      check();
+      await check();
       expect(itemJobs(w, "verifying_leased").some((job) => job.queue === JOB_KIND.resume)).toBe(
         false,
       );
@@ -316,7 +316,7 @@ describe("combined recovery scenarios", () => {
       const claimed = claimNextJob(w.db, { now: w.now, queues: execution });
       expect(claimed?.queue).toBe(JOB_KIND.resume);
       expect(claimNextJob(w.db, { now: w.now, queues: execution })).toBeNull();
-      expect(factsOf(w.db, "running").recoveryAttempts).toBe(1);
+      expect((await factsOf(w.db, "running")).recoveryAttempts).toBe(1);
     } finally {
       w.close();
     }
@@ -433,10 +433,10 @@ describe("runner control across Paws restarts", () => {
       };
       controller().enqueue(cancel);
       const held = async () => {
-        expect(factsOf(w.db, "item")).toMatchObject({ state: "paused", liveJobs: [] });
+        expect(await factsOf(w.db, "item")).toMatchObject({ state: "paused", liveJobs: [] });
         expect(runnerOccupancy(w.db, "box", w.now).occupied).toBe(1);
         expect(await runnerCancelPending(sqliteDb(w.db), "box")).toBe(true);
-        expect(unexpectedViolations(w.db, w.now)).toEqual([]);
+        expect(await unexpectedViolations(w.db, w.now)).toEqual([]);
       };
       await held();
       w.crash();
@@ -472,7 +472,7 @@ describe("runner control across Paws restarts", () => {
       w.crash();
       w.start();
       await w.settle();
-      expect(factsOf(w.db, "item")).toMatchObject({ state: "paused", liveJobs: [] });
+      expect(await factsOf(w.db, "item")).toMatchObject({ state: "paused", liveJobs: [] });
       expect(runnerOccupancy(w.db, "box", w.now).occupied).toBe(0);
     } finally {
       w.close();
@@ -486,7 +486,7 @@ describe("runner control across Paws restarts", () => {
       w.advance(10 * MINUTE + RUNNER_LEASE_GRACE_MS);
       await w.sweep();
       expect(getRun(w.db, run.id)?.status).toBe("lost");
-      expect(factsOf(w.db, "item").state).toBe("recovering");
+      expect((await factsOf(w.db, "item")).state).toBe("recovering");
       for (const restartWith of ["crash", "stop"] as const) {
         if (restartWith === "crash") w.crash();
         else w.stop();
@@ -498,14 +498,14 @@ describe("runner control across Paws restarts", () => {
         await expect(controller().currentAsync(run.id, 1)).rejects.toThrow(RunnerWorkFencedError);
       }
       await w.settle();
-      expect(factsOf(w.db, "item")).toMatchObject({
+      expect(await factsOf(w.db, "item")).toMatchObject({
         state: "recovering",
         restartHold: false,
         recoveryAttempts: 0,
         liveJobs: ["run.resume:pending"],
       });
       expect(liveExecution(w, "item").map((job) => job.status)).toEqual(["pending"]);
-      expect(unexpectedViolations(w.db, w.now)).toEqual([]);
+      expect(await unexpectedViolations(w.db, w.now)).toEqual([]);
     } finally {
       w.close();
     }
