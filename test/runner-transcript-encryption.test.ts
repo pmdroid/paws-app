@@ -94,7 +94,7 @@ describe("encrypting runner transcripts stored before encryption", () => {
       refused: () => {
         throw new Refused();
       },
-      plaintext: () => !runnerTranscriptsEncrypted(db),
+      plaintext: async () => !(await runnerTranscriptsEncrypted(db)),
     });
     const parts: Uint8Array[] = [];
     for await (const part of files.read(
@@ -129,18 +129,18 @@ describe("encrypting runner transcripts stored before encryption", () => {
 
   test("the migration enqueues the job once, and plaintext reads until it is done", async () => {
     expect(jobs(db)).toEqual([{ queue: RUNNER_TRANSCRIPT_ENCRYPT_JOB, status: "pending" }]);
-    expect(runnerTranscriptsEncrypted(db)).toBe(false);
+    expect(await runnerTranscriptsEncrypted(db)).toBe(false);
     expect(await read("run-a")).toEqual(whole);
     finish();
-    expect(runnerTranscriptsEncrypted(db)).toBe(true);
+    expect(await runnerTranscriptsEncrypted(db)).toBe(true);
     await expect(read("run-a")).rejects.toThrow("Runner transcript storage is unavailable");
   });
 
-  test("a database with no plaintext chunks gets no job", () => {
+  test("a database with no plaintext chunks gets no job", async () => {
     const fresh = legacyTempDb();
     try {
       expect(jobs(fresh)).toEqual([]);
-      expect(runnerTranscriptsEncrypted(fresh)).toBe(true);
+      expect(await runnerTranscriptsEncrypted(fresh)).toBe(true);
     } finally {
       fresh.close();
     }
@@ -206,7 +206,7 @@ describe("encrypting runner transcripts stored before encryption", () => {
       refused: () => {
         throw new Refused();
       },
-      plaintext: () => !runnerTranscriptsEncrypted(db),
+      plaintext: async () => !(await runnerTranscriptsEncrypted(db)),
     });
     const reading = files.read(
       { runId: "run-a", generation: 1, prefix: prefix("run-a") },

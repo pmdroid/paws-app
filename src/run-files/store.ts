@@ -40,7 +40,7 @@ export function createRunFileChunks(options: {
   key: Buffer;
   refused: () => never;
   /** Whether a chunk stored before encryption (no key ID) still reads. Defaults to never. */
-  plaintext?: () => boolean;
+  plaintext?: () => Promise<boolean>;
 }) {
   const { kind, objects, key, refused } = options;
   const store = sqliteDb(options.db);
@@ -81,7 +81,7 @@ export function createRunFileChunks(options: {
       before?.();
       // A chunk without a key ID was stored before encryption and is read as is until it is
       // converted. It may be sealed between the row read and the object read, so it opens too.
-      if (chunk.keyId === null) plaintext ??= options.plaintext?.() ?? false;
+      if (chunk.keyId === null) plaintext ??= (await options.plaintext?.()) ?? false;
       if (chunk.offset !== total || (!(chunk.keyId === null && plaintext) && chunk.keyId !== keyId))
         unavailable();
       let bytes: Buffer | null;

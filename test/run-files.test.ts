@@ -46,7 +46,7 @@ describe("run file store", () => {
   afterEach(() => db.close());
 
   const file = (runId: string) => ({ runId, generation: 1, prefix: `paws/test/${runId}` });
-  const store = (storeKey = key, plaintext?: () => boolean) =>
+  const store = (storeKey = key, plaintext?: () => Promise<boolean>) =>
     createRunFileChunks({
       db,
       kind: "transcript",
@@ -141,7 +141,7 @@ describe("run file store", () => {
     db.run("UPDATE runner_transcript_chunk SET key_id=NULL WHERE run_id='run-a'");
     expect(
       await collect(
-        store(key, () => true),
+        store(key, async () => true),
         "run-a",
       ),
     ).toEqual(whole);
