@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join, posix, sep } from "node:path";
 import type { Database } from "bun:sqlite";
+import { sqliteDb } from "../../../db";
 import {
   CHECK_LOG_TAIL_BYTES,
   EVIDENCE_RESOURCE_PATH,
@@ -283,16 +284,16 @@ function liveProvider(options?: {
   };
 }
 
-function artifactResponse(request: Request, options: StatusServerOptions): Response {
+async function artifactResponse(request: Request, options: StatusServerOptions): Promise<Response> {
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers: { ...CORS } });
   if (request.method !== "GET" && request.method !== "HEAD") return text("Method not allowed", 405);
   const home = artifactHome(options);
   if (options.db === undefined || home === null) return text("Not found", 404);
   const url = new URL(request.url);
-  const read = readCloseoutArtifact({
+  const read = await readCloseoutArtifact({
     ...(options.sessionIds === undefined ? {} : { sessionIds: options.sessionIds }),
-    db: options.db,
+    store: options.store ?? sqliteDb(options.db),
     itemId: url.searchParams.get("item") ?? "",
     checkId: url.searchParams.get("check") ?? "",
     kind: url.searchParams.get("kind") ?? "",
