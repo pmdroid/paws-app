@@ -118,7 +118,7 @@ test("an answer from someone who did not delegate and does not lead the project 
     }),
   ).toBe("forbidden");
   expect(getQuestion(db, question.id)?.status).toBe("open");
-  expect(getLinkAsk(db, question.id)?.closedAt).toBeNull();
+  expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
 });
 
@@ -134,7 +134,7 @@ test("the project lead decides on the item page: audit row, decided note, back t
       now: NOW + 100,
     }),
   ).toBe("answered");
-  expect(getLinkAsk(db, question.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     decision: "approve",
     decidedBy: "lead",
     closedReason: "decided",
@@ -189,7 +189,7 @@ test("a Linear reply never resolves an approval kind, whatever it says", async (
       now: NOW + 100,
     }),
   ).toBe(true);
-  const linkAsk = getLinkAsk(db, question.id)!;
+  const linkAsk = (await getLinkAsk(sqliteDb(db), question.id))!;
   expect(linkAsk).toMatchObject({ decision: null, closedReason: "guidance" });
   expect(db.query("SELECT COUNT(*) AS n FROM workspace_access_audit").get()).toEqual({ n: 0 });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
@@ -243,7 +243,10 @@ test("a new head closes the open ask", async () => {
   const { db, question } = await asked();
   expect(await closeLinkAsksOnHead(db, "PAS-633", HEAD, NOW + 50)).toBe(0);
   expect(await closeLinkAsksOnHead(db, "PAS-633", "4b317d5ffff", NOW + 100)).toBe(1);
-  expect(getLinkAsk(db, question.id)).toMatchObject({ closedReason: "head_moved", decision: null });
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+    closedReason: "head_moved",
+    decision: null,
+  });
   expect(getQuestion(db, question.id)?.status).toBe("cancelled");
   expect(findOpenQuestion(db, "ses_1")).toBeNull();
   expect(await remindLinkAsk(db, question.id, NOW + LINK_ASK_REMINDER_MS)).toBe(false);

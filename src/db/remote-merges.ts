@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { JOB_KIND } from "../core";
-import { settled, sqliteDb, type Q } from "./db";
+import { settled, sqliteDb, type Q, type Db } from "./db";
 import { jsonField } from "./json-text";
 
 export type ConfirmedRemoteMerge = {
@@ -99,8 +99,8 @@ export function* endMergeCallSteps(q: Q, itemId: string) {
 }
 
 /** The merge call returned, or its outcome was read from GitHub after a restart. */
-export function endMergeCall(db: Database, itemId: string): void {
-  settled(sqliteDb(db).run((q) => endMergeCallSteps(q, itemId)));
+export async function endMergeCall(store: Db, itemId: string): Promise<void> {
+  await store.run((q) => endMergeCallSteps(q, itemId));
 }
 
 export function* mergeCallInFlightSteps(q: Q, itemId: string) {
@@ -138,6 +138,6 @@ export function* mergeStopRequestedSteps(q: Q, itemId: string) {
 }
 
 /** A durable stop waiting for the lane to settle its call also guards an unsent squash. */
-export function mergeStopRequested(db: Database, itemId: string): boolean {
-  return settled(sqliteDb(db).run((q) => mergeStopRequestedSteps(q, itemId)));
+export async function mergeStopRequested(store: Db, itemId: string): Promise<boolean> {
+  return store.run((q) => mergeStopRequestedSteps(q, itemId));
 }

@@ -132,7 +132,7 @@ async function seed(): Promise<{ db: Database; home: string }> {
       "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES (?, ?, 'ses_7', 'link', 'Closeout needs your decision', ?, ?)",
       [questionId, item.id, status, at],
     );
-    insertLinkAsk(db, {
+    await insertLinkAsk(sqliteDb(db), {
       questionId,
       itemId: item.id,
       kind: "bypass",
@@ -154,7 +154,7 @@ async function seed(): Promise<{ db: Database; home: string }> {
     approvedByName: "Ada Lovelace",
     now: NOW + 4_000,
   });
-  closeLinkAsk(db, "q-bypassed", { reason: "cancelled", now: NOW + 4_000 });
+  await closeLinkAsk(sqliteDb(db), "q-bypassed", { reason: "cancelled", now: NOW + 4_000 });
   await ask("q-waiting", "api-contract", NOW + 5_000, "open");
   return { db, home };
 }

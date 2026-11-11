@@ -1,9 +1,8 @@
-import type { Database } from "bun:sqlite";
 import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { CiRoundCheck } from "./ci-rounds";
-import { settled, sqliteDb, type Q, type Steps } from "./db";
-import { emitJobReady } from "./jobs";
+import { type Q, type Steps, type Db } from "./db";
 import { jsonValue, parsedJson } from "./json-text";
+import { emitJobReady } from "./jobs";
 import { gatherPullFeedbackSteps, type PullFeedbackWait } from "./pull-comments";
 
 export type PullCiOutcome = "restarted" | "asked" | "dropped" | "cleared";
@@ -95,15 +94,15 @@ export function* recordPullCiFailureSteps(
   return { observation: "recorded" as PullCiObservation, enqueued };
 }
 
-export function recordPullCiFailure(
-  db: Database,
+export async function recordPullCiFailure(
+  store: Db,
   failure: Omit<PullCiFailureRecord, "handledAt" | "outcome">,
   wait: PullFeedbackWait,
-): PullCiObservation {
-  const { observation, enqueued } = settled(
-    sqliteDb(db).run((q) => recordPullCiFailureSteps(q, failure, wait)),
+): Promise<PullCiObservation> {
+  const { observation, enqueued } = await store.run((q) =>
+    recordPullCiFailureSteps(q, failure, wait),
   );
-  if (enqueued) emitJobReady(db);
+  if (enqueued) emitJobReady(store);
   return observation;
 }
 
@@ -124,8 +123,13 @@ export function* clearPullCiFailuresSteps(q: Q, itemId: string, head: string, no
   );
 }
 
-export function clearPullCiFailures(db: Database, itemId: string, head: string, now: number): void {
-  settled(sqliteDb(db).run((q) => clearPullCiFailuresSteps(q, itemId, head, now)));
+export async function clearPullCiFailures(
+  store: Db,
+  itemId: string,
+  head: string,
+  now: number,
+): Promise<void> {
+  await store.run((q) => clearPullCiFailuresSteps(q, itemId, head, now));
 }
 
 export function* pendingPullCiFailuresSteps(q: Q, itemId: string) {
@@ -140,8 +144,11 @@ export function* pendingPullCiFailuresSteps(q: Q, itemId: string) {
   return rows.map((row) => mapRow(q, row));
 }
 
-export function pendingPullCiFailures(db: Database, itemId: string): PullCiFailureRecord[] {
-  return settled(sqliteDb(db).run((q) => pendingPullCiFailuresSteps(q, itemId)));
+export async function pendingPullCiFailures(
+  store: Db,
+  itemId: string,
+): Promise<PullCiFailureRecord[]> {
+  return store.run((q) => pendingPullCiFailuresSteps(q, itemId));
 }
 
 export function* getPullCiFailureSteps(q: Q, itemId: string, head: string) {
@@ -149,12 +156,12 @@ export function* getPullCiFailureSteps(q: Q, itemId: string, head: string) {
   return row === undefined ? null : mapRow(q, row);
 }
 
-export function getPullCiFailure(
-  db: Database,
+export async function getPullCiFailure(
+  store: Db,
   itemId: string,
   head: string,
-): PullCiFailureRecord | null {
-  return settled(sqliteDb(db).run((q) => getPullCiFailureSteps(q, itemId, head)));
+): Promise<PullCiFailureRecord | null> {
+  return store.run((q) => getPullCiFailureSteps(q, itemId, head));
 }
 
 export function* settlePullCiFailuresSteps(
@@ -182,13 +189,13 @@ export function* settlePullCiFailuresSteps(
   return settledCount;
 }
 
-export function settlePullCiFailures(
-  db: Database,
+export async function settlePullCiFailures(
+  store: Db,
   failures: readonly Pick<PullCiFailureRecord, "itemId" | "head">[],
   outcome: PullCiOutcome,
   now: number,
-): number {
-  return settled(sqliteDb(db).run((q) => settlePullCiFailuresSteps(q, failures, outcome, now)));
+): Promise<number> {
+  return store.run((q) => settlePullCiFailuresSteps(q, failures, outcome, now));
 }
 
 function* settleOtherHeadsSteps(q: Q, itemId: string, head: string, now: number) {
@@ -258,11 +265,11 @@ export function* laneCiFailureTimeSteps(
   return first;
 }
 
-export function laneCiFailureTime(
-  db: Database,
+export async function laneCiFailureTime(
+  store: Db,
   failure: Omit<PullCiFailureRecord, "handledAt" | "outcome">,
-): number {
-  return settled(sqliteDb(db).run((q) => laneCiFailureTimeSteps(q, failure)));
+): Promise<number> {
+  return store.run((q) => laneCiFailureTimeSteps(q, failure));
 }
 
 /** Observing another head invalidates the old collection window. */
@@ -276,6 +283,10 @@ export function* resetOtherLaneCiFailuresSteps(q: Q, itemId: string, head: strin
   );
 }
 
-export function resetOtherLaneCiFailures(db: Database, itemId: string, head: string): void {
-  settled(sqliteDb(db).run((q) => resetOtherLaneCiFailuresSteps(q, itemId, head)));
+export async function resetOtherLaneCiFailures(
+  store: Db,
+  itemId: string,
+  head: string,
+): Promise<void> {
+  await store.run((q) => resetOtherLaneCiFailuresSteps(q, itemId, head));
 }

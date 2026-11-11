@@ -171,7 +171,7 @@ describe("hook settings", () => {
   });
 
   test("a hook can run a script from a registered skill installed for its agents", async () => {
-    saveSkill(db, {
+    await saveSkill(sqliteDb(db), {
       name: "guard",
       source: { kind: "npm", package: "guard" },
       version: "1.0.0",

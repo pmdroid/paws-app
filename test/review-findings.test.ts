@@ -235,7 +235,7 @@ test("the same finding on another item updates its count and last seen instead o
       last: { itemId: "item-b", head: "d".repeat(40), at: 3000 },
     });
     expect(
-      reviewFindingItems(db, [rows[0]!.id])
+      (await reviewFindingItems(sqliteDb(db), [rows[0]!.id]))
         .get(rows[0]!.id)!
         .map((entry) => entry.itemId),
     ).toEqual(["item-b", "item-a"]);
@@ -324,10 +324,15 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
     });
     const [row] = listReviewFindings(db);
     expect(
-      setReviewFindingStatus(db, { id: row!.id, status: "open", by: "Aisha", now: 1500 }),
+      await setReviewFindingStatus(sqliteDb(db), {
+        id: row!.id,
+        status: "open",
+        by: "Aisha",
+        now: 1500,
+      }),
     ).toBeNull();
     expect(
-      setReviewFindingStatus(db, {
+      await setReviewFindingStatus(sqliteDb(db), {
         id: row!.id,
         status: "dismissed",
         reason: "Legacy module, removed next quarter.",
@@ -350,7 +355,12 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
     });
     expect(listReviewFindings(db)[0]!.status).toBe("dismissed");
     expect(
-      setReviewFindingStatus(db, { id: row!.id, status: "open", by: "Ben", now: 3000 }),
+      await setReviewFindingStatus(sqliteDb(db), {
+        id: row!.id,
+        status: "open",
+        by: "Ben",
+        now: 3000,
+      }),
     ).toMatchObject({
       status: "open",
       statusBy: "Ben",
@@ -364,7 +374,7 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
     });
     expect(key).toBe(row!.key);
     expect(
-      markReviewFindingFiled(db, { key, issue: "PAS-900", by: "Ben", now: 4000 }),
+      await markReviewFindingFiled(sqliteDb(db), { key, issue: "PAS-900", by: "Ben", now: 4000 }),
     ).toMatchObject({
       status: "filed",
       filedIssue: "PAS-900",
@@ -372,7 +382,12 @@ test("dismiss, reopen and filed set the status with who changed it and when", as
       statusAt: 4000,
     });
     expect(
-      markReviewFindingFiled(db, { key: "missing", issue: "PAS-901", by: null, now: 4000 }),
+      await markReviewFindingFiled(sqliteDb(db), {
+        key: "missing",
+        issue: "PAS-901",
+        by: null,
+        now: 4000,
+      }),
     ).toBeNull();
   } finally {
     db.close();

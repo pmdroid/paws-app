@@ -685,7 +685,7 @@ describe("hard caps", () => {
 });
 
 describe("linear commands", () => {
-  test("a stop is applied before the call returns", () => {
+  test("a stop is applied before the call returns", async () => {
     const { db, clock } = harness();
     const seen: string[] = [];
     const bus = new CommandBus();
@@ -735,7 +735,7 @@ describe("linear commands", () => {
     });
     expect(merge).not.toBeNull();
     expect(merge !== null && completeJob(db, merge, clock.now())).toBe(false);
-    expect(getItemPullRequest(db, "eng-2")?.pullNumber).toBe(7);
+    expect((await getItemPullRequest(sqliteDb(db), "eng-2"))?.pullNumber).toBe(7);
     expect(listJobs(db).some((job) => job.queue === JOB_KIND.closeStoppedPull)).toBe(false);
 
     submitCommand(db, bus, {

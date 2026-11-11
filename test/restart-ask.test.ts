@@ -54,7 +54,7 @@ function fixture() {
 }
 
 describe("restart and ask", () => {
-  test("a durable merge marker fences restart until the lane settles the merge call", () => {
+  test("a durable merge marker fences restart until the lane settles the merge call", async () => {
     const { db } = fixture();
     db.run("UPDATE work_item SET state='merge_queue' WHERE id='item'");
     joinMergeQueue(db, { itemId: "item", repository: "owner/repo", now: 2 });
@@ -67,7 +67,7 @@ describe("restart and ask", () => {
     expect(getWorkItem(db, "item")?.state).toBe("merge_queue");
     expect(listJobs(db)).toHaveLength(jobs);
     expect(listMergeQueues(db)).toEqual(queue);
-    endMergeCall(db, "item");
+    await endMergeCall(sqliteDb(db), "item");
     expect(
       restart(db, getWorkItem(db, "item")!, { reason: "review", body: "Fix it.", now: 5 }),
     ).not.toBeNull();

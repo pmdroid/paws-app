@@ -191,9 +191,11 @@ test("criteria reconciliation preserves manual ownership and commits mixed sibli
         ).toBeNull();
       } else expect(getQuestion(db, question.id)!.cancelledAt).toBeNull();
     }
-    expect(openLinkAsks(db, manualId).map((link) => link.kind)).toEqual(["question"]);
+    expect((await openLinkAsks(sqliteDb(db), manualId)).map((link) => link.kind)).toEqual([
+      "question",
+    ]);
     for (const link of links) {
-      const stored = getLinkAsk(db, link.question.id)!;
+      const stored = (await getLinkAsk(sqliteDb(db), link.question.id))!;
       expect(stored.closedAt).toBe(link.linkAsk.kind === "question" ? null : clock.now());
       expect(stored.closedReason).toBe(link.linkAsk.kind === "question" ? null : "cancelled");
       expect(getQuestion(db, link.question.id)!.cancelledAt === null).toBe(
@@ -291,13 +293,13 @@ test.each(["all", "criteria"] as const)(
           throw new Error("rollback cleanup");
         }),
       ).rejects.toThrow("rollback cleanup");
-      expect(openLinkAsks(db, item.id)).toHaveLength(2);
+      expect(await openLinkAsks(sqliteDb(db), item.id)).toHaveLength(2);
       expect(getQuestion(db, open.question.id)!.status).toBe("open");
       expect(listOutbox(db)).toEqual(before);
       await sqliteDb(db).transaction((q) => cancelItemQuestionsSteps(q, item.id, 1003, scope));
-      expect(openLinkAsks(db, item.id)).toEqual([]);
+      expect(await openLinkAsks(sqliteDb(db), item.id)).toEqual([]);
       for (const { question } of [open, queued]) {
-        expect(getLinkAsk(db, question.id)).toMatchObject({
+        expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
           closedReason: "cancelled",
           closedAt: 1003,
         });

@@ -21,6 +21,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import { createFakeGitHub } from "../src/github";
 import { createFakeTracker, type AcceptedLinearEvent } from "../src/linear";
@@ -144,7 +145,7 @@ test("a checks run whose rule breaks asks the rule question before the checks, a
     expect(checksRuns).toEqual([true]);
     expect(existsSync(checkMark)).toBe(false);
     const question = findOpenQuestion(db, "ses_1")!;
-    expect(getLinkAsk(db, question.id)?.kind).toBe("rule");
+    expect((await getLinkAsk(sqliteDb(db), question.id))?.kind).toBe("rule");
     expect(tracker.questions.at(-1)?.body).toContain("Rule api-contract broke");
 
     expect(

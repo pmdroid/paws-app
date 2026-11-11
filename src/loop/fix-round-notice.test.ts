@@ -145,5 +145,7 @@ test("Paws does not read its own working-on-it comment back as a new comment", a
   await comment(6001, github.comments[0]!.body);
   await comment(6002, "And rename the helper.");
 
-  expect(pendingPullComments(db, "eng-1").map((entry) => entry.commentId)).toEqual([6002]);
+  expect(
+    (await pendingPullComments(sqliteDb(db), "eng-1")).map((entry) => entry.commentId),
+  ).toEqual([6002]);
 });

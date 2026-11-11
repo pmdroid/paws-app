@@ -273,7 +273,7 @@ test("a high-risk head is asked with a link: Markdown, no options, the link on t
   expect(await approval(db, heads.s)).toBe("missing");
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect(question.kind).toBe("link");
-  expect(getLinkAsk(db, question.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     kind: "risk",
     headCommit: heads.s,
     link: "https://paws.example/dashboard/issues/ENG-106#risk",
@@ -403,7 +403,10 @@ test("a Linear reply requests changes and never approves, even when it says appr
   ).toBe(true);
   expect(await approval(db, heads.s)).toBe("missing");
   expect(await sqliteDb(db).run((q) => riskApprovalsSteps(q, itemId))).toEqual([]);
-  expect(getLinkAsk(db, question.id)).toMatchObject({ decision: null, closedReason: "guidance" });
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+    decision: null,
+    closedReason: "guidance",
+  });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(resumes(db)).toEqual([
     expect.objectContaining({ reason: "review", handoff: expect.stringContaining("approve") }),
@@ -425,7 +428,7 @@ test("Stop stops the item and leaves the pull request open", async () => {
   });
   expect(outcome).toBe("answered");
   expect(getWorkItem(db, itemId)?.state).toBe("cancelled");
-  expect(getLinkAsk(db, question.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     closedReason: "cancelled",
     decidedBy: "lead",
   });
@@ -451,7 +454,7 @@ test("someone who is neither the delegator nor the lead cannot answer", async ()
     ).toBe("forbidden");
   expect(await approval(db, heads.s)).toBe("missing");
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
-  expect(getLinkAsk(db, question.id)?.closedAt).toBeNull();
+  expect((await getLinkAsk(sqliteDb(db), question.id))?.closedAt).toBeNull();
 });
 
 test("Stop only fits a risk approval", async () => {
@@ -576,13 +579,13 @@ test("a fix that changes a high-risk path asks again and lists only that change"
   ).toBe("asked");
   const ask = findOpenQuestion(db, "ses_1")!;
   const detail = `High-risk paths the fix changed since the approved ${heads.s.slice(0, 7)}: \`src/auth/session.ts\`.`;
-  expect(getLinkAsk(db, ask.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), ask.id)).toMatchObject({
     kind: "risk",
     headCommit: heads.authFix,
     detail,
   });
   // The whole pull request also changes `session.ts`; the ask leaves it out.
-  expect(getLinkAsk(db, ask.id)?.detail).not.toContain("`session.ts`");
+  expect((await getLinkAsk(sqliteDb(db), ask.id))?.detail).not.toContain("`session.ts`");
   const elicitations = listOutbox(db).filter((row) => row.op === "elicitation");
   expect(elicitations).toHaveLength(2);
   expect((elicitations[1]!.payload as { body: string }).body).toContain(detail);
@@ -1012,7 +1015,7 @@ for (const severity of ["P0", "P1", "P2"] as const) {
     f.report("independent-review", severity);
     expect(await f.read()).toBe("missing");
     const finding = listReviewFindings(f.db)[0]!;
-    setReviewFindingStatus(f.db, {
+    await setReviewFindingStatus(sqliteDb(f.db), {
       id: finding.id,
       status: "dismissed",
       reason: "Acknowledged",
@@ -1101,7 +1104,7 @@ test("a new or reopened finding at S revokes automatic eligibility", async () =>
   f.report("security-review", "P2", "Unsafe reuse");
   expect(await f.read()).toBe("missing");
   const finding = listReviewFindings(f.db)[0]!;
-  setReviewFindingStatus(f.db, {
+  await setReviewFindingStatus(sqliteDb(f.db), {
     id: finding.id,
     status: "dismissed",
     reason: "Reviewed",
@@ -1109,7 +1112,12 @@ test("a new or reopened finding at S revokes automatic eligibility", async () =>
     now: NOW,
   });
   expect(await f.read()).toBe("approved");
-  setReviewFindingStatus(f.db, { id: finding.id, status: "open", by: "user-lead", now: NOW + 1 });
+  await setReviewFindingStatus(sqliteDb(f.db), {
+    id: finding.id,
+    status: "open",
+    by: "user-lead",
+    now: NOW + 1,
+  });
   expect(await automaticMerge(f)).toEqual({ ok: false, block: "risk_approval" });
   f.db.close();
 });

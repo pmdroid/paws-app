@@ -104,7 +104,7 @@ test("a broken approve rule is a rule link ask with its summary and the link", a
   const { db, itemId, question } = await held();
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
   expect(question.kind).toBe("link");
-  expect(getLinkAsk(db, question.id)).toMatchObject({
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
     kind: "rule",
     headCommit: HEAD,
     link: LINK,
@@ -253,7 +253,10 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
       now: NOW + 100,
     }),
   ).toBe(true);
-  expect(getLinkAsk(db, question.id)).toMatchObject({ decision: null, closedReason: "guidance" });
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toMatchObject({
+    decision: null,
+    closedReason: "guidance",
+  });
   expect(getWorkItem(db, itemId)?.state).toBe("queued");
   expect(listJobs(db).some((job) => job.queue === JOB_KIND.reverify)).toBe(false);
   const handoff = (
@@ -272,6 +275,6 @@ test("a reply in Linear sends the finding back and approves nothing", async () =
 test("without a public link the rule is a Linear question a reply sends back", async () => {
   const { db, itemId, question } = await held(null);
   expect(question.kind).toBe("closeout-help");
-  expect(getLinkAsk(db, question.id)).toBeNull();
+  expect(await getLinkAsk(sqliteDb(db), question.id)).toBeNull();
   expect(getWorkItem(db, itemId)?.state).toBe("awaiting_input");
 });

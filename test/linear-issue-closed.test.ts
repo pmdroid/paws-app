@@ -17,6 +17,7 @@ import {
   recordConfirmedRemoteMerge,
   recordLinearInstallation,
   setJournalSink,
+  sqliteDb,
 } from "../src/db";
 import { intakeDelegatedIssue } from "../src/intake";
 import {
@@ -400,7 +401,7 @@ for (const exit of ["closed", "undelegated"] as const) {
     expect(
       listJobs(f.db).filter((job) => job.queue === JOB_KIND.command && job.status === "pending"),
     ).toHaveLength(1);
-    endMergeCall(f.db, f.item.id);
+    await endMergeCall(sqliteDb(f.db), f.item.id);
     drainCommands(f.db, new CommandBus(), now + 2_000);
     expect(getWorkItem(f.db, f.item.id)?.state).toBe("cancelled");
   });

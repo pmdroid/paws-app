@@ -752,12 +752,12 @@ describe("skill pins", () => {
     const installed = [
       { name: "fake", version: "1.0.0", sha256: "a", status: "installed" as const },
     ];
-    recordRunnerSkills(db, "runner-1", installed, 2);
-    recordRunnerSkills(db, "runner-2", installed, 2);
+    await recordRunnerSkills(sqliteDb(db), "runner-1", installed, 2);
+    await recordRunnerSkills(sqliteDb(db), "runner-2", installed, 2);
     await removeSkill({ db, now: 5 }, "fake");
-    recordRunnerSkills(db, "runner-1", [], 6);
+    await recordRunnerSkills(sqliteDb(db), "runner-1", [], 6);
     expect((await getSkill(sqliteDb(db), "fake"))?.removedAt).toBe(5);
-    recordRunnerSkills(db, "runner-2", [], 7);
+    await recordRunnerSkills(sqliteDb(db), "runner-2", [], 7);
     expect(await getSkill(sqliteDb(db), "fake")).toBeNull();
   });
 });

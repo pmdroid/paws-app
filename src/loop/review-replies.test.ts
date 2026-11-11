@@ -309,7 +309,7 @@ describe("a review and the comments after it reach the agent together", () => {
     expect(text).toContain("@pascal requested changes on pull request #7.");
     expect(text).toContain("Bug: the cache key ignores the tenant.");
     expect(jobs(db, JOB_KIND.resume)).toHaveLength(1);
-    expect(getPullComment(db, "inline", 9101)?.outcome).toBe("covered");
+    expect((await getPullComment(sqliteDb(db), "inline", 9101))?.outcome).toBe("covered");
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
   });
 });
@@ -527,7 +527,7 @@ describe("Paws replies to every handed-off comment", () => {
   ])("Paws replies from %s never come back as new comments", async (author, body) => {
     const { db, conversation } = setup();
     await conversation({ id: 3002, author, body });
-    expect(getPullComment(db, "conversation", 3002)).toBeNull();
+    expect(await getPullComment(sqliteDb(db), "conversation", 3002)).toBeNull();
   });
 });
 

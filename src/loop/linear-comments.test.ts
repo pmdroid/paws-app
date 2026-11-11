@@ -907,7 +907,7 @@ describe("batching with pull request feedback", () => {
     const f = setup();
     try {
       toMergeQueue(f.db);
-      recordPullComment(f.db, {
+      await recordPullComment(sqliteDb(f.db), {
         source: "conversation",
         commentId: 99,
         itemId: "eng-1",

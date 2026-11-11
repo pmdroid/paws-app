@@ -606,7 +606,7 @@ describe("live status provider", () => {
       "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-bypass', ?, 'ses_1', 'link', 'Closeout needs your decision', 'open', ?)",
       [item.id, now],
     );
-    insertLinkAsk(db, {
+    await insertLinkAsk(sqliteDb(db), {
       questionId: "q-bypass",
       itemId: item.id,
       kind: "bypass",
@@ -653,7 +653,7 @@ describe("live status provider", () => {
       "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'ses_1', 'link', 'High-risk changes', 'open', ?)",
       [item.id, now],
     );
-    insertLinkAsk(db, {
+    await insertLinkAsk(sqliteDb(db), {
       questionId: "q-risk",
       itemId: item.id,
       kind: "risk",
@@ -698,7 +698,7 @@ describe("live status provider", () => {
       "INSERT INTO question (id, item_id, session_id, kind, body, status, created_at) VALUES ('q-risk', ?, 'ses_1', 'link', 'High-risk changes', 'open', ?)",
       [item.id, now],
     );
-    insertLinkAsk(db, {
+    await insertLinkAsk(sqliteDb(db), {
       questionId: "q-risk",
       itemId: item.id,
       kind: "risk",

@@ -24,6 +24,7 @@ import {
   openDatabase,
   putWorkspaceUser,
   syncWorkspaceMember,
+  sqliteDb,
 } from "../src/db";
 import {
   createFakeCloseoutGate,
@@ -914,7 +915,7 @@ test("running out of review attempts asks on the item page instead of failing", 
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     const question = findOpenQuestion(f.db, "ses_1")!;
     expect(question.kind).toBe("link");
-    expect(getLinkAsk(f.db, question.id)).toMatchObject({
+    expect(await getLinkAsk(sqliteDb(f.db), question.id)).toMatchObject({
       kind: "rounds",
       link: "https://paws.example/dashboard/issues/ENG-7#review-rounds",
       rounds: { limit: 4, handoff: "Fix the P1 review finding." },
@@ -1001,7 +1002,7 @@ test("a broken approve rule waits for a person on the item page and uses no fix 
     expect(getWorkItem(f.db, item.id)?.state).toBe("awaiting_input");
     expect(restartReasons(f.db, item.id)).toEqual([]);
     const question = findOpenQuestion(f.db, "ses_1")!;
-    expect(getLinkAsk(f.db, question.id)).toMatchObject({
+    expect(await getLinkAsk(sqliteDb(f.db), question.id)).toMatchObject({
       kind: "rule",
       link: "https://paws.example/dashboard/issues/ENG-7#rule",
     });

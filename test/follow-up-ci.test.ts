@@ -320,7 +320,7 @@ test("CI enrichment with a pending comment batch makes one follow-up handoff and
   const f = await waitingTask({ ci: "failed" });
   try {
     const received = Date.now();
-    recordPullComment(f.db, {
+    await recordPullComment(sqliteDb(f.db), {
       source: "conversation",
       commentId: 501,
       itemId: f.itemId,
@@ -348,7 +348,9 @@ test("CI enrichment with a pending comment batch makes one follow-up handoff and
     expect(listJobs(f.db).some((job) => job.jobKey?.startsWith("ci-failed:"))).toBe(false);
     expect(fixRounds(f.db, f.itemId)).toBe(0);
     expect(gathering()).toEqual(window);
-    expect(pendingPullComments(f.db, f.itemId).map((comment) => comment.commentId)).toEqual([501]);
+    expect(
+      (await pendingPullComments(sqliteDb(f.db), f.itemId)).map((comment) => comment.commentId),
+    ).toEqual([501]);
   } finally {
     await f.close();
   }

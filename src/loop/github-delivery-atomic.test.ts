@@ -129,7 +129,7 @@ for (const [name, point, kind] of failures) {
       expect((await pendingChangeRequests(sqliteDb(db), "first")).map((r) => r.reviewId)).toEqual([
         40,
       ]);
-      expect(pendingPullComments(db, "first")).toEqual([]);
+      expect(await pendingPullComments(sqliteDb(db), "first")).toEqual([]);
       expect(listJobs(db)).toEqual(before);
       db.run("DROP TRIGGER fail_delivery");
       expect(await acceptGitHubDelivery(db, delivery(kind!), 1_000)).toBe(true);
@@ -137,7 +137,9 @@ for (const [name, point, kind] of failures) {
       expect(await pendingChangeRequests(sqliteDb(db), "first")).toHaveLength(
         kind === "review" ? 2 : 1,
       );
-      expect(pendingPullComments(db, "first")).toHaveLength(kind === "comment" ? 1 : 0);
+      expect(await pendingPullComments(sqliteDb(db), "first")).toHaveLength(
+        kind === "comment" ? 1 : 0,
+      );
       const queue =
         kind === "review"
           ? JOB_KIND.pullReview
@@ -220,7 +222,7 @@ for (const kind of ["review", "comment", "main"]) {
         expect(
           (await pendingChangeRequests(sqliteDb(reopened), "first")).map((r) => r.reviewId),
         ).toEqual([40]);
-        expect(pendingPullComments(reopened, "first")).toEqual([]);
+        expect(await pendingPullComments(sqliteDb(reopened), "first")).toEqual([]);
         expect(await acceptGitHubDelivery(reopened, input, 1_000)).toBe(true);
         expect(await acceptGitHubDelivery(reopened, input, 2_000)).toBe(false);
       } finally {

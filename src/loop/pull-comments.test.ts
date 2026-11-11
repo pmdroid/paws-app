@@ -274,7 +274,7 @@ describe("pull request comments restart the item", () => {
       author: "pascal",
       body: "This sorts the wrong way round.",
     });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(2);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(2);
     expect(commentJobs(db)).toHaveLength(1);
     expect(commentJobs(db)[0]?.payload).toEqual({ pullCommentsFor: "eng-1" });
 
@@ -293,8 +293,8 @@ describe("pull request comments restart the item", () => {
     expect(text).not.toContain("cache key");
     expect(text).not.toContain("Done already.");
     expect(text).toContain(`${COMMENT_FIX_INSTRUCTION}\n\nReply list.`);
-    expect(getPullComment(db, "inline", 9001)?.outcome).toBe("restarted");
-    expect(getPullComment(db, "review", 601)?.outcome).toBe("restarted");
+    expect((await getPullComment(sqliteDb(db), "inline", 9001))?.outcome).toBe("restarted");
+    expect((await getPullComment(sqliteDb(db), "review", 601))?.outcome).toBe("restarted");
     // The Linear session wakes and says why the agent is back.
     expect(feedbackThoughts(db)).toEqual([
       "@pascal commented on pull request #7. The agent is working on the comments.",
@@ -307,7 +307,7 @@ describe("pull request comments restart the item", () => {
       author: "pascal",
       body: "This sorts the wrong way round.",
     });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(0);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(resumeJobs(db)).toHaveLength(1);
     expect(feedbackThoughts(db)).toHaveLength(1);
@@ -394,7 +394,7 @@ describe("pull request comments restart the item", () => {
       await conversation({ id: 3001, author: "pascal", body: "Please also fix the README." }),
     ).toBe(true);
     await conversation({ id: 3001, author: "pascal", body: "Please also fix the README." });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(1);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(1);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
     expect(resumeJobs(db)).toHaveLength(1);
     expect(handoff(db)?.handoff).toContain("@pascal in the conversation:");
@@ -451,7 +451,7 @@ describe("comments that do not restart", () => {
     await conversation({ id: 5, author: "cloudflare-workers-and-pages[bot]", body: "Deploying…" });
     await conversation({ id: 6, author: "Linear-Code[bot]", body: "PAS-1" });
     await inline({ id: 7, review: 70, author: "pascal", body: "Edited inline.", action: "edited" });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(0);
     expect(commentJobs(db)).toHaveLength(0);
   });
 
@@ -464,7 +464,7 @@ describe("comments that do not restart", () => {
         body: "<!-- deploy-security-proof -->\n## Deploy security proof\nResult: **PASS**",
       }),
     ).toBe(true);
-    expect(getPullComment(db, "conversation", 11)).toBeNull();
+    expect(await getPullComment(sqliteDb(db), "conversation", 11)).toBeNull();
     expect(commentJobs(db)).toHaveLength(0);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(resumeJobs(db)).toHaveLength(0);
@@ -474,7 +474,9 @@ describe("comments that do not restart", () => {
       author: "github-actions[bot]",
       body: "## Deploy security proof\nResult: **FAIL**: the staging token is readable.",
     });
-    expect(pendingPullComments(db, "eng-1").map((comment) => comment.commentId)).toEqual([12]);
+    expect(
+      (await pendingPullComments(sqliteDb(db), "eng-1")).map((comment) => comment.commentId),
+    ).toEqual([12]);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("restarted");
     expect(handoff(db)?.handoff).toContain("the staging token is readable");
   });
@@ -510,7 +512,7 @@ describe("comments that do not restart", () => {
       body: "Bundle size changed by +2 KB",
       action: "edited",
     });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(0);
     expect(commentJobs(db)).toHaveLength(0);
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
     expect(resumeJobs(db)).toHaveLength(0);
@@ -531,7 +533,7 @@ describe("comments that do not restart", () => {
     });
     db.run("UPDATE work_item SET state='merged' WHERE id='eng-1'");
     await conversation({ id: 4, author: "pascal", body: "Too late." });
-    expect(pendingPullComments(db, "eng-1")).toHaveLength(0);
+    expect(await pendingPullComments(sqliteDb(db), "eng-1")).toHaveLength(0);
   });
 
   test("a comment on an item that ended before its turn is dropped", async () => {
@@ -562,7 +564,7 @@ describe("comments that do not restart", () => {
       pull_request: pull(),
     });
     expect(await handlePullComments(db, "eng-1", caps)).toBe("done");
-    expect(getPullComment(db, "inline", 5001)?.outcome).toBe("covered");
+    expect((await getPullComment(sqliteDb(db), "inline", 5001))?.outcome).toBe("covered");
     expect(await handlePullReview(db, 601, caps)).toBe("restarted");
     expect(resumeJobs(db)).toHaveLength(1);
   });
@@ -621,7 +623,7 @@ describe("timing", () => {
     expect(question?.body).toContain("@pascal commented on pull request #7");
     expect(question?.body).toContain("all 0 fix rounds are spent");
     expect(question?.body).toContain("Rename it.");
-    expect(getPullComment(db, "conversation", 1)?.outcome).toBe("asked");
+    expect((await getPullComment(sqliteDb(db), "conversation", 1))?.outcome).toBe("asked");
   });
 });
 

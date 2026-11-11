@@ -189,8 +189,13 @@ describe("daily finding sources", () => {
     const { db, f } = seed();
     const filed = group(db, [f[0]!, f[1]!], { status: "filed", issue: "PAS-20" });
     for (const x of [f[0]!, f[1]!])
-      markReviewFindingFiled(db, { key: x.key, issue: "PAS-20", by: "Ada", now: 5 });
-    setReviewFindingStatus(db, {
+      await markReviewFindingFiled(sqliteDb(db), {
+        key: x.key,
+        issue: "PAS-20",
+        by: "Ada",
+        now: 5,
+      });
+    await setReviewFindingStatus(sqliteDb(db), {
       id: f[2]!.id,
       status: "dismissed",
       reason: "Noise",
@@ -278,7 +283,7 @@ describe("daily finding sources", () => {
     const id = (await owner(db, f[0]!))!;
     const item = async () =>
       (await listInboxItems(db, { workspaceId: "ws" })).find((i) => i.improvement.id === id)!;
-    setReviewFindingStatus(db, {
+    await setReviewFindingStatus(sqliteDb(db), {
       id: f[0]!.id,
       status: "dismissed",
       reason: "Noise",
@@ -286,14 +291,24 @@ describe("daily finding sources", () => {
       now: 2,
     });
     expect(await item()).toMatchObject({ lifecycle: "needs_review", undecided: [f[1]!.id] });
-    markReviewFindingFiled(db, { key: f[0]!.key, issue: "PAS-30", by: "Ada", now: 3 });
+    await markReviewFindingFiled(sqliteDb(db), {
+      key: f[0]!.key,
+      issue: "PAS-30",
+      by: "Ada",
+      now: 3,
+    });
     expect(await item()).toMatchObject({ lifecycle: "needs_review", undecided: [f[1]!.id] });
     expect((await item()).issue).toMatchObject({ identifier: "PAS-30" });
     expect(reuseChoice(await item(), "open")).toMatchObject({
       kind: "review",
       reason: "scope_changed",
     });
-    markReviewFindingFiled(db, { key: f[1]!.key, issue: "PAS-30", by: "Ada", now: 4 });
+    await markReviewFindingFiled(sqliteDb(db), {
+      key: f[1]!.key,
+      issue: "PAS-30",
+      by: "Ada",
+      now: 4,
+    });
     expect(await item()).toMatchObject({ lifecycle: "linked", undecided: [] });
   });
 
@@ -331,7 +346,12 @@ describe("daily findings and retros share one inbox", () => {
   test("both sources reuse one known issue and keep separate evidence", async () => {
     const { db, f } = seed();
     group(db, [f[0]!], { status: "filed", issue: "PAS-20" });
-    markReviewFindingFiled(db, { key: f[0]!.key, issue: "PAS-20", by: "Ada", now: 5 });
+    await markReviewFindingFiled(sqliteDb(db), {
+      key: f[0]!.key,
+      issue: "PAS-20",
+      by: "Ada",
+      now: 5,
+    });
     await ingestDailyFindings(db, "ws", { now: 6 });
     const { revision } = saveRetroSettingsRevision(db, {
       workspaceId: "ws",

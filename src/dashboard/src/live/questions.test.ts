@@ -7,6 +7,7 @@ import {
   insertQueuedItem,
   migrate,
   openDatabase,
+  sqliteDb,
 } from "../../../db";
 import { parseQuestionDetailResponse, parseQuestionListResponse } from "../contract";
 import { createLiveStatusProvider } from "./provider";
@@ -75,7 +76,7 @@ describe("question resources", () => {
     const db = database();
     asking(db, "ENG-1", "s1", "q-1");
     asking(db, "ENG-2", "s1b", "q-2", "link");
-    insertLinkAsk(db, {
+    await insertLinkAsk(sqliteDb(db), {
       questionId: "q-2",
       itemId: "ENG-2",
       kind: "risk",

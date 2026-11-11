@@ -332,7 +332,9 @@ describe("other reviews", () => {
     await deliver({ id: 777, state: "commented" });
     expect(await getPullReview(sqliteDb(db), 777)).toBeNull();
     expect(reviewJobs(db)).toHaveLength(0);
-    expect(pendingPullComments(db, "eng-1").map((comment) => comment.commentId)).toEqual([777]);
+    expect(
+      (await pendingPullComments(sqliteDb(db), "eng-1")).map((comment) => comment.commentId),
+    ).toEqual([777]);
   });
 
   test("approvals, edits and other branches record nothing", async () => {

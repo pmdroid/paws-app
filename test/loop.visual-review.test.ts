@@ -116,7 +116,7 @@ test("two screenshots published 10 s apart end the turn with one link ask that n
 
     const open = findOpenQuestion(f.db, "ses_1")!;
     expect(open.kind).toBe("link");
-    expect(getLinkAsk(f.db, open.id)).toMatchObject({
+    expect(await getLinkAsk(sqliteDb(f.db), open.id)).toMatchObject({
       kind: "screenshots",
       headCommit: item.checkpoint?.wipCommit,
     });
@@ -303,7 +303,7 @@ test("Accept replied in Linear requests changes and never approves", async () =>
       outcome: "changes_requested",
       feedback: "Accept",
     });
-    expect(getLinkAsk(f.db, open.id)?.closedReason).toBe("guidance");
+    expect((await getLinkAsk(sqliteDb(f.db), open.id))?.closedReason).toBe("guidance");
     await f.until(() => f.notes(VISUAL_REVIEW_REPLY_NOTE) === 1);
     expect(f.github.opened).toHaveLength(0);
   } finally {

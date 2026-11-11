@@ -165,7 +165,7 @@ test("filed groups survive replacement and are not regrouped", async () => {
     const group = (await listFindingGroups(sqliteDb(f.db), "ws"))[0]!;
     f.db.run("UPDATE finding_group SET status='filed' WHERE id=?", [group.id]);
     for (const id of group.memberIds)
-      markReviewFindingFiled(f.db, {
+      await markReviewFindingFiled(sqliteDb(f.db), {
         key: f.sources().find((r) => r.id === id)!.key,
         issue: "PAS-1",
         by: "Ada",
