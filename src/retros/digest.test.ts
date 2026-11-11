@@ -639,7 +639,7 @@ describe("October retro fixture", () => {
     );
     expect(push.evidenceIds.every((id) => id.startsWith("question:"))).toBe(true);
     expect(digest.counts.sessions.workItems).toBe(7);
-    const snapshot = readRetroActivity(db, {
+    const snapshot = await readRetroActivity(sqliteDb(db), {
       workspaceId: "ws",
       repositories: [REPO],
       before: at(28),
