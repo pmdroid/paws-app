@@ -147,7 +147,6 @@ export type HostEnrollment = {
   config: {
     controlPlaneUrl: string;
     runnerApiUrl: string;
-    allowedRepositories: readonly string[];
   } | null;
 };
 
@@ -1603,7 +1602,7 @@ export function createRunners() {
     const expired = enrollment !== null && enrollment.expiresAt <= now;
     const command =
       enrollment?.config && !expired
-        ? `<p>Run this on the Linux runner. It installs the runner, writes its config for this Paws and enrolls with a single-use token. The runner appears here, owned by you.</p><pre class="mono" id="runner-enroll-command">${esc(hostEnrollmentCommand({ ...enrollment, config: enrollment.config }, dockerAccess))}</pre><div class="between"><p class="muted">The token expires at ${esc(new Date(enrollment.expiresAt).toLocaleTimeString())} and works once.</p><button class="btn" data-runner-enroll-copy data-focus="enroll-copy">Copy command</button></div>`
+        ? `<p>Run this on the Linux runner. It installs the runner, writes its config for this Paws and enrolls with a single-use token. The runner appears here, owned by you, and takes work once a workspace admin chooses its repositories on its page.</p><pre class="mono" id="runner-enroll-command">${esc(hostEnrollmentCommand({ ...enrollment, config: enrollment.config }, dockerAccess))}</pre><div class="between"><p class="muted">The token expires at ${esc(new Date(enrollment.expiresAt).toLocaleTimeString())} and works once.</p><button class="btn" data-runner-enroll-copy data-focus="enroll-copy">Copy command</button></div>`
         : enrollment && !expired
           ? '<p role="alert" class="err">Paws has no public HTTPS address for runners. Set PAWS_PUBLIC_URL and restart Paws.</p>'
           : expired

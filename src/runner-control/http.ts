@@ -40,7 +40,6 @@ const agentPath = new RegExp(
 export type RunnerHostConfig = {
   controlPlaneUrl: string;
   runnerApiUrl: string;
-  allowedRepositories: readonly string[];
 };
 
 export function createRunnerHttp(
@@ -107,13 +106,10 @@ export function createRunnerHttp(
         if (path === "/api/runners/enrollments" && request.method === "POST") {
           const input = enrollmentRequest.parse(await readJson(request));
           const config = (await options.hostConfig?.()) ?? null;
-          // An empty list makes the runner refuse every run, so no token is issued for one.
-          if (config?.allowedRepositories.length === 0)
-            return json(
-              { error: "Connect GitHub and add a repository before adding a runner." },
-              409,
-            );
-          return json({ ...(await control.createEnrollment(principal, input)), config });
+          return json({
+            ...(await control.createEnrollment(principal, { ...input, adminRepositories: [] })),
+            config,
+          });
         }
         const match = /^\/api\/runners\/([0-9A-HJKMNP-TV-Z]{26})\/status$/.exec(path);
         if (match && request.method === "POST") {

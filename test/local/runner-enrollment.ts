@@ -9,6 +9,10 @@ import {
   migrate,
   openDatabase,
   putWorkspaceUser,
+  recordRunnerRepositories,
+  runnerAllowsRepository,
+  runnerRepositoryLists,
+  setRunnerAdminRepositories,
   syncWorkspaceMember,
   sqliteDb,
 } from "../../src/db";
@@ -124,12 +128,10 @@ export async function probeRunnerEnrollment(
     disconnect: () => {},
     now: () => now,
   });
-  let catalog: string[] = [];
   const http = createRunnerHttp(control, {
     hostConfig: async () => ({
       controlPlaneUrl: "https://paws.example.invalid",
       runnerApiUrl: "https://paws.example.invalid:8788",
-      allowedRepositories: catalog,
     }),
   });
   const runners = () =>
@@ -145,26 +147,6 @@ export async function probeRunnerEnrollment(
       () => control.createEnrollment(inactive, { name: "inactive-host" }),
       /Active workspace membership/,
     );
-    const refused = await http.browser(
-      post("/api/runners/enrollments", { name: "member-host" }),
-      member,
-      [],
-    );
-    assert.equal(refused?.status, 409);
-    assert.deepEqual(await refused!.json(), {
-      error: "Connect GitHub and add a repository before adding a runner.",
-    });
-    assert.equal(
-      db.query<{ count: number }, []>("SELECT count(*) AS count FROM runner_enrollment").get()!
-        .count,
-      0,
-    );
-    observe("an empty repository catalog answers 409 and creates no token", true, {
-      status: 409,
-      tokens: 0,
-    });
-
-    catalog = ["owner/repo"];
     const minted = await http.browser(
       post("/api/runners/enrollments", { name: "member-host" }),
       member,
@@ -174,11 +156,13 @@ export async function probeRunnerEnrollment(
     const issued = (await minted!.json()) as {
       token: string;
       expiresAt: number;
-      config: { runnerApiUrl: string; allowedRepositories: string[] };
+      config: Record<string, string>;
     };
     assert.equal(issued.expiresAt, now + 10 * 60_000);
-    assert.equal(issued.config.runnerApiUrl, "https://paws.example.invalid:8788");
-    assert.deepEqual(issued.config.allowedRepositories, ["owner/repo"]);
+    assert.deepEqual(issued.config, {
+      controlPlaneUrl: "https://paws.example.invalid",
+      runnerApiUrl: "https://paws.example.invalid:8788",
+    });
     const stored = db
       .query<{ token_hash: string }, []>("SELECT token_hash FROM runner_enrollment")
       .all();
@@ -223,6 +207,38 @@ export async function probeRunnerEnrollment(
       },
     );
 
+    const store = sqliteDb(db);
+    assert.deepEqual(await runnerRepositoryLists(store, identity.runnerId), {
+      admin: [],
+      host: null,
+    });
+    assert.equal(await runnerAllowsRepository(store, identity.runnerId, "owner/repo"), false);
+    await setRunnerAdminRepositories(store, {
+      runnerId: identity.runnerId,
+      workspaceId: workspace.id,
+      userId: member.userId,
+      repositories: ["owner/repo"],
+      now,
+    });
+    assert.equal(await runnerAllowsRepository(store, identity.runnerId, "owner/repo"), true);
+    assert.equal(await runnerAllowsRepository(store, identity.runnerId, "owner/other"), false);
+
+    const vm = await control.createEnrollment(member, { name: "member-vm" });
+    const vmKey = await createRunnerKey(join(root, "vm"));
+    const vmRunner = await control.enroll({ token: vm.token, name: "member-vm", csr: vmKey.csr });
+    assert.deepEqual(await runnerRepositoryLists(store, vmRunner.runnerId), {
+      admin: null,
+      host: null,
+    });
+    await recordRunnerRepositories(store, vmRunner.runnerId, ["owner/repo"], now);
+    assert.equal(await runnerAllowsRepository(store, vmRunner.runnerId, "owner/repo"), true);
+    assert.equal(await runnerAllowsRepository(store, vmRunner.runnerId, "owner/other"), false);
+    observe(
+      "a dashboard enrollment starts with no assigned repositories and a Create VM one with none set",
+      true,
+      { runnerId: identity.runnerId, vmRunnerId: vmRunner.runnerId },
+    );
+
     const replay = await http.hostEnrollment(
       post("/api/runner-enrollments", { token: issued.token, name: "again", csr: host.csr }),
     );
@@ -238,7 +254,7 @@ export async function probeRunnerEnrollment(
       RunnerEnrollmentDenied,
     );
     now = Date.now();
-    assert.equal(runners(), 1);
+    assert.equal(runners(), 2);
     observe("a used, unknown or expired token answers 401 and creates nothing", true, {
       replay: replay.status,
       unknown: unknown.status,
@@ -258,7 +274,7 @@ export async function probeRunnerEnrollment(
       () => control.enroll({ token: leaving.token, name: "leaving", csr: host.csr }),
       RunnerEnrollmentDenied,
     );
-    assert.equal(runners(), 1);
+    assert.equal(runners(), 2);
     observe("a token whose member became inactive before use is refused", true, {
       runners: runners(),
     });
@@ -270,7 +286,10 @@ export async function probeRunnerEnrollment(
       .all(workspace.id);
     assert.deepEqual(
       audit.filter((row) => row.action === "runner.paired"),
-      [{ user_id: member.userId, action: "runner.paired", subject: identity.runnerId }],
+      [
+        { user_id: member.userId, action: "runner.paired", subject: identity.runnerId },
+        { user_id: member.userId, action: "runner.paired", subject: vmRunner.runnerId },
+      ],
     );
     const everything = JSON.stringify(
       db

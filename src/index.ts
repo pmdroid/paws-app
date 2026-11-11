@@ -1000,7 +1000,6 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
             : undefined,
           skillsRoot: paths.skillsDir,
           publicUrl: runtime.publicUrl,
-          repositories: catalogRepositories,
           onError: () => console.error("Paws runner connection failed."),
           retros: () => retroDispatcher?.fetch,
         }).then(async (value) => {

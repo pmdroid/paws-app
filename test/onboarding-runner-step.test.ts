@@ -44,7 +44,6 @@ const CSRF = "csrf-token";
 const HOST_CONFIG = {
   controlPlaneUrl: "https://paws.test",
   runnerApiUrl: "https://paws.test:8443",
-  allowedRepositories: ["acme/app"],
 };
 const roots: string[] = [];
 const windows: Window[] = [];

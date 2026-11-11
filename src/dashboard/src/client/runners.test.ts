@@ -1106,7 +1106,6 @@ describe("hostEnrollmentCommand", () => {
     config: {
       controlPlaneUrl: "https://paws.example.com",
       runnerApiUrl: "https://paws.example.com:8788",
-      allowedRepositories: ["acme/app"],
     },
   };
   const command = hostEnrollmentCommand(enrollment, true);
@@ -1123,7 +1122,7 @@ describe("hostEnrollmentCommand", () => {
       "--name 'Pascal'\\''s box' --token-file /etc/paws-runner/enrollment-token",
     );
     expect(command).toContain('"runnerApiUrl":"https://paws.example.com:8788"');
-    expect(command).toContain('"allowedRepositories":["acme/app"]');
+    expect(command).not.toContain("allowedRepositories");
     expect(command.endsWith("sudo systemctl enable --now paws-runner.service")).toBe(true);
   });
   test("passes the token only through the printf builtin into a root-owned 0600 file", () => {
