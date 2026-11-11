@@ -95,7 +95,6 @@ import {
   getWorkItemSteps,
   getItemRunCommitPolicySteps,
   listRepositoryCandidatesSteps,
-  isLinearAppRevoked,
   journal,
   getWorkItemRepositoryChoiceSteps,
   getWorkItemRepositoryAnswerSteps,
@@ -676,11 +675,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
       await countLinearRequest(sqliteDb(db), itemId, caller),
     budget: linearBudgetStore(sqliteDb(db), runtime.linearClientId ?? "linear"),
     secretsDir: paths.secretsDir,
-    isAuthorized: () =>
-      !isLinearAppRevoked(db, {
-        oauthClientId: runtime.linearClientId,
-        appUserId: runtime.linearViewerId,
-      }),
+    isAuthorized: async () => !(await linearRevoked()),
     beforeEvent: async (event, request) => {
       members?.invalidate(event);
       const userChange = parseLinearUserChange(event);
@@ -1430,7 +1425,7 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
     throw error;
   }
 
-  let running: LinearRunning = linear ? linear.start() : down();
+  let running: LinearRunning = linear ? await linear.start() : down();
   if (linear)
     periodic.push({
       queue: "linear.catch-up",

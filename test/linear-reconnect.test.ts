@@ -241,7 +241,7 @@ test("a refresh started before revocation cannot overwrite the verified host rec
     secretsDir: f.secretsDir,
     clientId: "client",
     clientSecret: "fake-secret",
-    isAuthorized: () => !isLinearAppRevoked(f.db, scope),
+    isAuthorized: async () => !isLinearAppRevoked(f.db, scope),
     fetch: async () => {
       started.resolve();
       return released.promise;

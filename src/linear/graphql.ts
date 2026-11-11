@@ -44,7 +44,7 @@ export function createLinearClient(options: {
       if (held !== null) throw held;
       const run = async (token: string) => {
         current();
-        options.auth.assertAuthorized?.();
+        await options.auth.assertAuthorized?.();
         return fetchImpl(GRAPHQL_URL, {
           method: "POST",
           headers: {

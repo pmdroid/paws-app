@@ -408,7 +408,7 @@ describe("linear intake poll", () => {
       },
     });
     expect((await linear.usage()).lastCatchUpMs).toBeNull();
-    const running = linear.start();
+    const running = await linear.start();
     await running.pollDue();
     await waitFor(async () => (await createInboxStore(sqliteDb(db)).getCursor("linear")) !== null);
     expect(queries.some((body) => body.includes("IntakePoll"))).toBe(true);
@@ -1202,7 +1202,7 @@ test("Linear runtime stop joins interrupted events and rejects new handlers befo
       db.run("UPDATE inbox_event SET handled = 1 WHERE dedupe_key = 'accepted'");
     },
   });
-  const running = linear.start();
+  const running = await linear.start();
   const event: AcceptedLinearEvent = {
     dedupeKey: "accepted",
     deliveryId: null,

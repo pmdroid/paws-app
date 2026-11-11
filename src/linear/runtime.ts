@@ -60,7 +60,7 @@ export type OpenLinear = {
   access: LinearAccessReads | null;
   issueLifecycle: LinearIssueLifecycle | null;
   usage(): Promise<LinearUsage>;
-  start(): LinearRunning;
+  start(): Promise<LinearRunning>;
 };
 
 export function linearTokenPath(secretsDir: string): string {
@@ -75,7 +75,7 @@ export function openLinear(options: {
   secretsDir: string;
   env: EnvSource;
   signal?: AbortSignal;
-  isAuthorized?: () => boolean;
+  isAuthorized?: () => Promise<boolean>;
   followUp?: (
     event: AcceptedLinearEvent,
     tracker: TrackerAdapter | null,
@@ -94,7 +94,7 @@ export function openLinear(options: {
     : stopping.signal;
   const settings = readLinearEnv(options.env);
   const store = createInboxStore(sqliteDb(options.db));
-  const accessAllowed = options.isAuthorized ?? (() => true);
+  const accessAllowed = options.isAuthorized ?? (async () => true);
   const auth = createLinearAuth({
     db: options.db,
     secretsDir: options.secretsDir,
@@ -138,7 +138,7 @@ export function openLinear(options: {
           ledger,
         });
   const onEvent = intake?.onEvent;
-  let running: LinearRunning | null = null;
+  let running: Promise<LinearRunning> | null = null;
   return {
     findingIssues:
       client === null
@@ -175,44 +175,47 @@ export function openLinear(options: {
       lastCatchUpMs: await store.getCursor(CATCH_UP_CURSOR),
     }),
     start() {
-      if (running !== null) return running;
-      const poller = accessAllowed()
-        ? startPoller({
-            auth,
-            onEvent,
-            intake: intake?.queue,
-            store,
-            fetchImpl: options.fetch,
-            ledger,
-            db: options.db,
-            teamId: settings.teamId,
-            appUserId: settings.appUserId,
-            submitCommand:
-              options.submitCommand ??
-              (async (command) => await persistStopCommand(options.db, command)),
-          })
-        : null;
-      if (poller !== null) intake?.queue.wake();
-      running = {
-        async catchUp() {
-          await poller?.pollNow();
-          intake?.queue.wake();
-          await intake?.queue.idle();
-        },
-        async pollDue() {
-          await poller?.pollDue();
-        },
-        async stop() {
-          stopping.abort();
-          const polling = poller?.stop();
-          const queued = intake?.queue.stop();
-          await Promise.all([polling, queued]);
-          await onEvent?.close();
-        },
-      };
+      running ??= startRunning();
       return running;
     },
   };
+
+  async function startRunning(): Promise<LinearRunning> {
+    const poller = (await accessAllowed())
+      ? startPoller({
+          auth,
+          onEvent,
+          intake: intake?.queue,
+          store,
+          fetchImpl: options.fetch,
+          ledger,
+          db: options.db,
+          teamId: settings.teamId,
+          appUserId: settings.appUserId,
+          submitCommand:
+            options.submitCommand ??
+            (async (command) => await persistStopCommand(options.db, command)),
+        })
+      : null;
+    if (poller !== null) intake?.queue.wake();
+    return {
+      async catchUp() {
+        await poller?.pollNow();
+        intake?.queue.wake();
+        await intake?.queue.idle();
+      },
+      async pollDue() {
+        await poller?.pollDue();
+      },
+      async stop() {
+        stopping.abort();
+        const polling = poller?.stop();
+        const queued = intake?.queue.stop();
+        await Promise.all([polling, queued]);
+        await onEvent?.close();
+      },
+    };
+  }
 }
 
 function startPoller(options: {
