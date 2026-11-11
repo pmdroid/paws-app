@@ -32,6 +32,7 @@ import {
   saveVisualReviewMarksSteps,
   setQuestionHandoffVersionSteps,
   setRetryAnswerSteps,
+  commandInstance,
   settled,
   sqliteDb,
   syncSteps,
@@ -57,7 +58,7 @@ import {
 import { RETRY_CLOSEOUT, retriesCloseout } from "./closeout-recovery";
 import { retriesMerge } from "../merge";
 import { worktreeBranch } from "./sources";
-import { answerRunnerRepository } from "./runner-repository";
+import { answerRunnerRepositorySteps } from "./runner-repository";
 import { recordVisualReviewOutcome, visualReviewHandoff } from "./visual-review";
 
 function* consumeTurnSteps(q: Q, question: StoredQuestion): Steps<void> {
@@ -355,12 +356,12 @@ export function questionEffects(
         });
     },
     "time-limit": timeLimit,
-    "runner-repository": (q, question) =>
-      syncSteps(() =>
-        answerRunnerRepository(db, question, input.now, (asked) =>
-          settled(sqliteDb(db).run((reads) => consumeTurn(reads, asked))),
-        ),
-      ),
+    "runner-repository": function* (q, question) {
+      yield* consumeTurn(q, question);
+      yield* answerRunnerRepositorySteps(q, question, input.now, commandInstance(db), {
+        ready: false,
+      });
+    },
     agent: resume,
     clarification: resume,
     repository: resume,
