@@ -50,7 +50,7 @@ export async function startDashboardFixture(
     });
   await sync();
   const evidenceDir = join(home, "evidence");
-  const store = createEvidenceStore({ db, root: evidenceDir });
+  const store = createEvidenceStore({ store: sqliteDb(db), root: evidenceDir });
   const answers: Parameters<QuestionAnswer>[0][] = [];
   const runs: Record<string, string> = {};
   const evidence: Record<string, string> = {};

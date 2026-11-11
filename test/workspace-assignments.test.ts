@@ -296,7 +296,7 @@ async function fixture({
       clientId: "client",
       installedOrganization: { id: "org", name: "Workspace" },
       memberships,
-      onboardingReadiness: createOnboardingReadiness(db),
+      onboardingReadiness: createOnboardingReadiness(sqliteDb(db)),
       ...(createVm === undefined ? {} : { createVmAvailable: async () => createVm }),
       githubAttributionClient: { clientId: "github-client", clientSecret: "github-secret" },
       now: () => clock.now(),

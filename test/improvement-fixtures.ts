@@ -93,7 +93,7 @@ export async function world(extra: Partial<Parameters<typeof createImprovementsH
   let clock = END + 1_000;
   const now = () => ++clock;
   const improvements = createImprovementsHttp({
-    db,
+    store: sqliteDb(db),
     lookup: lookup.lookup,
     retroEvidence: function* (q, principal, sessionIds, retroId) {
       return (
@@ -103,7 +103,7 @@ export async function world(extra: Partial<Parameters<typeof createImprovementsH
     now,
     ...extra,
   });
-  const retros = createRetroReviewHttp({ db, artifactRoot: root, now });
+  const retros = createRetroReviewHttp({ store: sqliteDb(db), artifactRoot: root, now });
   const call = async (
     handler: typeof improvements,
     who: string,
@@ -322,7 +322,7 @@ export async function seedDaily(db: ReturnType<typeof openDatabase>) {
       run,
     ],
   );
-  await ingestDailyFindings(db, "ws", { now: END });
+  await ingestDailyFindings(sqliteDb(db), "ws", { now: END });
   return { groupId, findings };
 }
 

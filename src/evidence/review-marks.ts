@@ -6,11 +6,10 @@ import {
   workspaceMember,
   type StoredEvidence,
   type VisualReviewMark,
-  sqliteDb,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import { createHash } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import { sniffMedia } from "./media";
 import {
   removeEvidenceFile,
@@ -37,7 +36,7 @@ export type VisualReviewChanges = (input: {
 }) => Promise<"answered" | "forbidden" | "rejected">;
 
 export type VisualReviewChangesOptions = {
-  db: Database;
+  store: Db;
   root: string;
   objects?: EvidenceObjects;
   principal: { workspaceId: string; userId: string } | undefined;
@@ -51,7 +50,7 @@ export async function handleVisualReviewChanges(
   options: VisualReviewChangesOptions,
 ): Promise<Response | null> {
   if (new URL(request.url).pathname !== VISUAL_REVIEW_CHANGES_PATH) return null;
-  const { db, principal, sessionIds } = options;
+  const { store, principal, sessionIds } = options;
   if (principal === undefined || sessionIds === undefined)
     return Response.json({ error: "Sign in to Paws." }, { status: 401 });
   if (request.method !== "POST")
@@ -70,11 +69,11 @@ export async function handleVisualReviewChanges(
   const note = form.get("note") ?? "";
   if (typeof questionId !== "string" || typeof note !== "string" || note.length > MAX_NOTE)
     return Response.json({ error: "Send a question and a note." }, { status: 400 });
-  const member = await workspaceMember(sqliteDb(db), principal.workspaceId, principal.userId);
+  const member = await workspaceMember(store, principal.workspaceId, principal.userId);
   if (!workspaceMemberUsable(member) || !member.linearUserId)
     return Response.json({ error: "Your membership can't answer reviews." }, { status: 403 });
-  const review = await openVisualReviewFiles(sqliteDb(db), questionId);
-  const item = review ? await getWorkItem(sqliteDb(db), review.itemId) : null;
+  const review = await openVisualReviewFiles(store, questionId);
+  const item = review ? await getWorkItem(store, review.itemId) : null;
   if (!review || item?.sessionKey == null || !sessionIds.includes(item.sessionKey))
     return Response.json(
       { error: "This review is no longer waiting. Refresh the run." },
@@ -84,7 +83,7 @@ export async function handleVisualReviewChanges(
   for (const [key, value] of form.entries()) {
     if (!key.startsWith("mark:")) continue;
     const evidenceId = key.slice("mark:".length);
-    const evidence = await getEvidence(sqliteDb(db), evidenceId);
+    const evidence = await getEvidence(store, evidenceId);
     if (
       typeof value === "string" ||
       !review.evidenceIds.includes(evidenceId) ||
@@ -108,7 +107,7 @@ export async function handleVisualReviewChanges(
   try {
     for (const file of files) {
       const id = ulid(now);
-      await writeEvidenceFile(sqliteDb(db), options, file.evidence, id, file.bytes, now);
+      await writeEvidenceFile(store, options, file.evidence, id, file.bytes, now);
       marks.push({
         id,
         questionId,
@@ -126,7 +125,7 @@ export async function handleVisualReviewChanges(
       actor: { workspaceId: principal.workspaceId, userId: principal.userId, name: member.name },
     });
     if (result === "answered") return Response.json({ ok: true, marks: marks.length });
-    await removeMarks(db, options, marks);
+    await removeMarks(store, options, marks);
     return result === "forbidden"
       ? Response.json(
           {
@@ -140,15 +139,15 @@ export async function handleVisualReviewChanges(
           { status: 409 },
         );
   } catch (error) {
-    await removeMarks(db, options, marks);
+    await removeMarks(store, options, marks);
     throw error;
   }
 }
 
 async function removeMarks(
-  db: Database,
+  store: Db,
   storage: EvidenceStorage,
   marks: readonly VisualReviewMark[],
 ): Promise<void> {
-  await Promise.all(marks.map((mark) => removeEvidenceFile(sqliteDb(db), storage, mark.id)));
+  await Promise.all(marks.map((mark) => removeEvidenceFile(store, storage, mark.id)));
 }

@@ -59,7 +59,11 @@ function fixture(catalogs: AgentModelCatalog[] | null = CATALOGS) {
     return principal;
   };
   const catalog = createFakeRetroCatalog(catalogs);
-  const handle = createRetroSettingsHttp({ db, catalog: catalog.read, now: () => 5 });
+  const handle = createRetroSettingsHttp({
+    store: sqliteDb(db),
+    catalog: catalog.read,
+    now: () => 5,
+  });
   const audit = () =>
     db
       .query<{ action: string; subject: string }, []>(

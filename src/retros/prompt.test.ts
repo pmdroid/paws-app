@@ -141,7 +141,7 @@ async function saveSettings(
   db: Database,
   change: { prompt?: string; repositories?: string[]; revision?: number } = {},
 ) {
-  const saved = await saveRetroSettings(db, {
+  const saved = await saveRetroSettings(sqliteDb(db), {
     workspaceId: "ws",
     actorId: "admin",
     expectedRevision: change.revision ?? 0,
@@ -348,7 +348,7 @@ describe("frozen run prompts", () => {
     const { db, root } = harness();
     await saveSettings(db);
     const retro = await queuedRetro(db, root, { id: "r1" });
-    const frozen = await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 });
+    const frozen = await freezeRenderedRetroPrompt(sqliteDb(db), root, { retroId: "r1", now: 3 });
     if (!frozen.ok) throw new Error(frozen.reason);
     expect(frozen).toMatchObject({
       retroId: "r1",
@@ -357,7 +357,9 @@ describe("frozen run prompts", () => {
     });
     expect(frozen.prompt).toContain("up to 3 recurring workflow patterns");
     await saveSettings(db, { prompt: "Changed {{digest}}", revision: 1 });
-    expect(await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 9 })).toEqual(frozen);
+    expect(await freezeRenderedRetroPrompt(sqliteDb(db), root, { retroId: "r1", now: 9 })).toEqual(
+      frozen,
+    );
     expect((await getRetro(sqliteDb(db), "r1"))!.prompt).toBe(retro.prompt);
   });
 
@@ -372,14 +374,14 @@ describe("frozen run prompts", () => {
       maxChars: 9_000,
     });
     const admin = await member(db, "admin", "admin");
-    const preview = await previewRetroPrompt(db, root, {
+    const preview = await previewRetroPrompt(sqliteDb(db), root, {
       principal: admin,
       sessionIds: SESSIONS,
       prompt: retro.prompt,
       outputLimits: retro.outputLimits,
       retroId: "r1",
     });
-    const frozen = await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 });
+    const frozen = await freezeRenderedRetroPrompt(sqliteDb(db), root, { retroId: "r1", now: 3 });
     if (!preview.ok || !frozen.ok) throw new Error("expected both to render");
     expect(preview.text).toBe(frozen.prompt);
     expect(preview.sha256).toBe(frozen.sha256);
@@ -396,7 +398,10 @@ describe("frozen run prompts", () => {
     const { db } = harness();
     const custom = "Our own wording.\n{{digest}}";
     await saveSettings(db, { prompt: custom });
-    const view = await readRetroSettings(db, { workspaceId: "ws", accessibleRepositories: [APP] });
+    const view = await readRetroSettings(sqliteDb(db), {
+      workspaceId: "ws",
+      accessibleRepositories: [APP],
+    });
     expect(view.settings.prompt).toBe(custom);
     expect(view.defaultPrompt).toBe(DEFAULT_RETRO_PROMPT);
     expect(view.revision).toBe(1);
@@ -418,12 +423,12 @@ describe("authorized preview", () => {
       await member(db, "reader", "member"),
       await member(db, "gone", "admin", { active: false }),
     ])
-      expect(await previewRetroPrompt(db, root, { principal, ...draft })).toMatchObject({
+      expect(await previewRetroPrompt(sqliteDb(db), root, { principal, ...draft })).toMatchObject({
         ok: false,
         reason: "forbidden",
       });
     expect(
-      await previewRetroPrompt(db, root, {
+      await previewRetroPrompt(sqliteDb(db), root, {
         principal: await member(db, "admin", "admin"),
         sessionIds: SESSIONS,
         prompt: "{{digest}} {{owner}}",
@@ -434,7 +439,7 @@ describe("authorized preview", () => {
 
   test("without a readable saved digest the preview uses the labeled synthetic sample", async () => {
     const { db, root } = harness();
-    const preview = await previewRetroPrompt(db, root, {
+    const preview = await previewRetroPrompt(sqliteDb(db), root, {
       principal: await member(db, "admin", "admin"),
       ...draft,
     });
@@ -452,14 +457,14 @@ describe("authorized preview", () => {
     await queuedRetro(db, root, { id: "r1", digest: digestFor(LANDING) });
     db.run("DELETE FROM workspace_repository WHERE repository = ?", [LANDING]);
     const admin = await member(db, "admin", "admin");
-    const latest = await previewRetroPrompt(db, root, { principal: admin, ...draft });
-    const named = await previewRetroPrompt(db, root, {
+    const latest = await previewRetroPrompt(sqliteDb(db), root, { principal: admin, ...draft });
+    const named = await previewRetroPrompt(sqliteDb(db), root, {
       principal: admin,
       ...draft,
       sessionIds: SESSIONS,
       retroId: "r1",
     });
-    const missing = await previewRetroPrompt(db, root, {
+    const missing = await previewRetroPrompt(sqliteDb(db), root, {
       principal: admin,
       ...draft,
       retroId: "nope",
@@ -473,7 +478,7 @@ describe("authorized preview", () => {
       expect(latest.label).not.toContain(hidden);
     }
     expect(
-      await readRetroRenderedPrompt(db, root, {
+      await readRetroRenderedPrompt(sqliteDb(db), root, {
         principal: admin,
         sessionIds: SESSIONS,
         retroId: "r1",
@@ -488,10 +493,12 @@ describe("authorized preview", () => {
     const { db, root } = harness();
     await saveSettings(db);
     await queuedRetro(db, root, { id: "r1" });
-    expect((await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 })).ok).toBe(true);
+    expect(
+      (await freezeRenderedRetroPrompt(sqliteDb(db), root, { retroId: "r1", now: 3 })).ok,
+    ).toBe(true);
     const outsider = await member(db, "outsider", "admin", { workspaceId: "other" });
     expect(
-      await readRetroRenderedPrompt(db, root, {
+      await readRetroRenderedPrompt(sqliteDb(db), root, {
         principal: outsider,
         sessionIds: SESSIONS,
         retroId: "r1",
@@ -500,7 +507,7 @@ describe("authorized preview", () => {
       ok: false,
       reason: "not_found",
     });
-    const preview = await previewRetroPrompt(db, root, {
+    const preview = await previewRetroPrompt(sqliteDb(db), root, {
       principal: outsider,
       ...draft,
       sessionIds: SESSIONS,
@@ -509,7 +516,7 @@ describe("authorized preview", () => {
     expect(preview.ok && preview.source).toEqual({ kind: "sample" });
     const reader = await member(db, "reader", "member");
     expect(
-      await readRetroRenderedPrompt(db, root, {
+      await readRetroRenderedPrompt(sqliteDb(db), root, {
         principal: reader,
         sessionIds: SESSIONS,
         retroId: "r1",
@@ -524,16 +531,22 @@ describe("authorized preview", () => {
     const { db, root } = harness();
     await saveSettings(db);
     await queuedRetro(db, root, { id: "r1" });
-    expect((await freezeRenderedRetroPrompt(db, root, { retroId: "r1", now: 3 })).ok).toBe(true);
+    expect(
+      (await freezeRenderedRetroPrompt(sqliteDb(db), root, { retroId: "r1", now: 3 })).ok,
+    ).toBe(true);
     const reader = await member(db, "reader", "admin");
     for (const sessionIds of [["session-PAS-1"], []]) {
       expect(
-        await readRetroRenderedPrompt(db, root, { principal: reader, sessionIds, retroId: "r1" }),
+        await readRetroRenderedPrompt(sqliteDb(db), root, {
+          principal: reader,
+          sessionIds,
+          retroId: "r1",
+        }),
       ).toEqual({
         ok: false,
         reason: "not_found",
       });
-      const preview = await previewRetroPrompt(db, root, {
+      const preview = await previewRetroPrompt(sqliteDb(db), root, {
         principal: reader,
         ...draft,
         sessionIds,
@@ -544,7 +557,7 @@ describe("authorized preview", () => {
     }
     db.run("UPDATE work_item SET session_key = NULL WHERE id = 'PAS-2'");
     expect(
-      await readRetroRenderedPrompt(db, root, {
+      await readRetroRenderedPrompt(sqliteDb(db), root, {
         principal: reader,
         sessionIds: SESSIONS,
         retroId: "r1",
@@ -562,7 +575,7 @@ describe("authorized preview", () => {
       files: readdirSync(root).sort(),
       artifacts: db.query("SELECT * FROM retro_artifact ORDER BY kind").all(),
     };
-    const preview = await previewRetroPrompt(db, root, {
+    const preview = await previewRetroPrompt(sqliteDb(db), root, {
       principal: await member(db, "admin", "admin"),
       ...draft,
     });

@@ -542,7 +542,10 @@ test("a frontend change without visual proof gets a fix round, publishes 16 scre
     repositories: [{ owner: "pmdroid", repo: "paws-demo", remoteUrl: layout.bare }],
     evidence: {
       publicUrl: "https://paws.example",
-      store: createEvidenceStore({ db, root: path.join(layout.pawsRoot, "evidence") }),
+      store: createEvidenceStore({
+        store: sqliteDb(db),
+        root: path.join(layout.pawsRoot, "evidence"),
+      }),
     },
     launch(input) {
       prompts.set(input.purpose, input.prompt);

@@ -533,7 +533,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     if (!secrets.db || !secrets.evidenceDir || !secrets.visualReviewChanges)
       return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleVisualReviewChanges(request, {
-      db: secrets.db,
+      store: secrets.store ?? sqliteDb(secrets.db),
       root: secrets.evidenceDir,
       objects: secrets.evidenceObjects,
       principal,
@@ -564,7 +564,7 @@ async function route(request: Request, secrets: Secrets): Promise<Response> {
     if (secrets.db === undefined || secrets.evidenceDir === undefined)
       return Response.json({ error: "Not found." }, { status: 404 });
     return (await handleEvidenceRequest(request, {
-      db: secrets.db,
+      store: secrets.store ?? sqliteDb(secrets.db),
       root: secrets.evidenceDir,
       objects: secrets.evidenceObjects,
       sessionIds,

@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test";
 import { createRetroPreviewHttp, DEFAULT_RETRO_PROMPT } from "../src/retros";
+import { sqliteDb } from "../src/db";
 import { ALL, ONLY_A, world } from "./improvement-fixtures";
 
 async function fixture() {
   const w = await world();
-  const handle = createRetroPreviewHttp({ db: w.db, artifactRoot: w.root, now: () => 9 });
+  const handle = createRetroPreviewHttp({
+    store: sqliteDb(w.db),
+    artifactRoot: w.root,
+    now: () => 9,
+  });
   const call = async (
     who: string,
     path: string,

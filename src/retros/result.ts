@@ -1,16 +1,15 @@
 import { createHash } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   failRetroAttemptSteps,
   getRetroSteps,
   publishRetroSteps,
   readRetroArtifactSteps,
-  sqliteDb,
   type ImprovementActionStep,
   type Q,
   type RetroItemInput,
   type RetroPublication,
   type Steps,
+  type Db,
 } from "../db";
 import type { RetroDigest, RetroDigestRecord } from "./digest";
 import { retroAttemptLimits } from "./settings";
@@ -866,11 +865,10 @@ type SettlementWrite = ((tx: Q) => Steps<RetroSettlement>) | null;
 
 /** Reads outside a transaction, then writes in its own, as the sync wrappers did. */
 export async function settleRetroAttempt(
-  db: Database,
+  store: Db,
   root: string,
   input: AttemptSettlement,
 ): Promise<RetroSettlement> {
-  const store = sqliteDb(db);
   const write = await store.run((q) => settlementSteps(q, root, input));
   return write === null ? { ok: false, reason: "not_found" } : store.transaction(write);
 }

@@ -1,5 +1,4 @@
 import { journalCaught } from "../journal";
-import type { Database } from "bun:sqlite";
 import {
   lastAgentCatalogRefresh,
   markAgentCatalogRefreshed,
@@ -17,9 +16,9 @@ import {
   type AgentVersionStatus,
   type CatalogPackage,
   type NpmVersionMetadata,
-  sqliteDb,
   type Q,
   type Steps,
+  type Db,
 } from "../db";
 import type { NpmRegistry } from "./registry";
 
@@ -66,13 +65,13 @@ export type AgentCatalog = {
 };
 
 export function createAgentCatalog(options: {
-  db: Database;
+  store: Db;
   registry: NpmRegistry;
   agents?: Readonly<Record<string, AgentPackage>>;
   now?: () => number;
   onError?: (error: unknown) => void;
 }): AgentCatalog {
-  const { db, registry } = options;
+  const { store, registry } = options;
   const agents = options.agents ?? AGENT_PACKAGES;
   const now = options.now ?? Date.now;
   const onError = options.onError ?? ((error) => console.error(`agent catalog: ${message(error)}`));
@@ -103,7 +102,7 @@ export function createAgentCatalog(options: {
           continue;
         }
         const rows = await evaluateAgent(agent, spec, versions, load, at);
-        await saveAgentVersions(sqliteDb(db), rows);
+        await saveAgentVersions(store, rows);
       } catch (error) {
         journalCaught(error, "catalog.run.load", null);
         complete = false;
@@ -112,23 +111,23 @@ export function createAgentCatalog(options: {
     }
     // Only a refresh in which every agent was evaluated on fresh npm reads counts as the day's
     // refresh. A failed read, an error or a crash part way leaves it due at the next hourly check.
-    if (complete && staleReads.size === 0) await markAgentCatalogRefreshed(sqliteDb(db), at);
+    if (complete && staleReads.size === 0) await markAgentCatalogRefreshed(store, at);
   }
 
   async function read(name: string, at: number, signal?: AbortSignal): Promise<Versions | null> {
-    const stored = await readNpmPackage(sqliteDb(db), name);
+    const stored = await readNpmPackage(store, name);
     try {
       const result = await registry.fetchPackage(name, stored?.etag ?? null, signal);
       if (result.status === "not-modified" && stored) {
-        await touchNpmPackage(sqliteDb(db), name, at);
+        await touchNpmPackage(store, name, at);
         return stored.versions;
       }
       if (result.status === "ok") {
-        await saveNpmPackage(sqliteDb(db), name, result.etag, result.versions, at);
+        await saveNpmPackage(store, name, result.etag, result.versions, at);
         return result.versions;
       }
       if (result.status === "not-found") {
-        await saveNpmPackage(sqliteDb(db), name, null, {}, at);
+        await saveNpmPackage(store, name, null, {}, at);
         return {};
       }
       staleReads.set(name, stored?.fetchedAt ?? 0);
@@ -153,7 +152,7 @@ export function createAgentCatalog(options: {
     if (staleReads.has(name)) usedStale = true;
     if (versions === null)
       return { status: "ineligible", reason: `Paws could not read ${name} from npm.` };
-    const record = await readNpmIntegrity(sqliteDb(db), name, version);
+    const record = await readNpmIntegrity(store, name, version);
     if (record?.changedIntegrity)
       return {
         status: "refused",
@@ -234,7 +233,7 @@ export function createAgentCatalog(options: {
           { own, load, at },
           { verdict, nativeVersion },
         ));
-      const record = await readNpmIntegrity(sqliteDb(db), spec.package, version);
+      const record = await readNpmIntegrity(store, spec.package, version);
       const integrity = record?.integrity ?? metadata.integrity;
       if (integrity === null) continue;
       rows.push({
@@ -250,7 +249,7 @@ export function createAgentCatalog(options: {
       });
     }
     // A version npm no longer lists keeps its row, but is never offered again.
-    for (const previous of await listAgentVersions(sqliteDb(db), agent))
+    for (const previous of await listAgentVersions(store, agent))
       if (!(previous.version in versions)) {
         const refused = previous.status === "refused";
         rows.push({
@@ -275,7 +274,7 @@ export function createAgentCatalog(options: {
     current: { own: Verdict; load: (name: string) => Promise<Versions | null>; at: number },
     next: { verdict: Verdict; nativeVersion: string | null },
   ): Promise<{ verdict: Verdict; nativeVersion: string | null }> {
-    const previous = await readAgentVersion(sqliteDb(db), agent, version);
+    const previous = await readAgentVersion(store, agent, version);
     if (!previous)
       return {
         verdict: worst([
@@ -376,7 +375,7 @@ export function createAgentCatalog(options: {
   return {
     refresh,
     async refreshIfDue(signal) {
-      const last = await lastAgentCatalogRefresh(sqliteDb(db));
+      const last = await lastAgentCatalogRefresh(store);
       if (last !== null && now() - last < AGENT_CATALOG_REFRESH_MS) return false;
       await refresh(signal);
       return true;

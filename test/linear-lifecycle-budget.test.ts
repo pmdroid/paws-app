@@ -386,7 +386,11 @@ async function runTask(input: {
     tracker: linear.tracker,
     files: linear.files!,
     evidence: {
-      store: createEvidenceStore({ db, root: evidenceRoot, now: () => clock.now() }),
+      store: createEvidenceStore({
+        store: sqliteDb(db),
+        root: evidenceRoot,
+        now: () => clock.now(),
+      }),
       publicUrl: "https://paws.example",
       root: evidenceRoot,
     },

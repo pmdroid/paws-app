@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { Database } from "bun:sqlite";
 import {
   workspaceMemberUsable,
   auditWorkspaceAccess,
@@ -17,10 +16,10 @@ import {
   workspaceMember,
   type RetroArtifactKind,
   type RetroCoverageGap,
-  sqliteDb,
   syncSteps,
   type Q,
   type Steps,
+  type Db,
 } from "../db";
 import { improvementFollowThroughSteps, memberRepositoriesSteps } from "../improvements";
 import { journalCaught } from "../journal";
@@ -54,14 +53,14 @@ const json = (body: unknown, status = 200) =>
   Response.json(body, { status, headers: { "cache-control": "no-store" } });
 
 export function createRetroSettingsHttp(options: {
-  db: Database;
+  store: Db;
   catalog: RetroCatalog;
   now?: () => number;
 }) {
-  const { db } = options;
+  const { store } = options;
   const now = options.now ?? Date.now;
   const audit = (principal: WorkspacePrincipal, action: string, subject: string) =>
-    auditWorkspaceAccess(sqliteDb(db), {
+    auditWorkspaceAccess(store, {
       workspaceId: principal.workspaceId,
       userId: principal.userId,
       action,
@@ -71,17 +70,12 @@ export function createRetroSettingsHttp(options: {
   return async (request: Request, principal: WorkspacePrincipal): Promise<Response | null> => {
     if (new URL(request.url).pathname !== RETRO_SETTINGS_PATH) return null;
     if (
-      !workspaceMemberUsable(
-        await workspaceMember(sqliteDb(db), principal.workspaceId, principal.userId),
-      )
+      !workspaceMemberUsable(await workspaceMember(store, principal.workspaceId, principal.userId))
     )
       return json({ error: "Workspace access is unavailable." }, 403);
-    const accessibleRepositories = await listWorkspaceRepositoryNames(
-      sqliteDb(db),
-      principal.workspaceId,
-    );
+    const accessibleRepositories = await listWorkspaceRepositoryNames(store, principal.workspaceId);
     const view = () =>
-      readRetroSettings(db, { workspaceId: principal.workspaceId, accessibleRepositories });
+      readRetroSettings(store, { workspaceId: principal.workspaceId, accessibleRepositories });
     if (request.method === "GET")
       return json({ ...(await view()), canEdit: isWorkspaceAdmin(principal.role) });
     if (request.method !== "PUT") return json({ error: "Use GET or PUT." }, 405);
@@ -104,12 +98,12 @@ export function createRetroSettingsHttp(options: {
       return json({ error: "Send expectedRevision, the revision this draft started from." }, 400);
     let catalogs: readonly AgentModelCatalog[] | null;
     try {
-      catalogs = await sqliteDb(db).run((q) => options.catalog(q, principal));
+      catalogs = await store.run((q) => options.catalog(q, principal));
     } catch (error) {
       journalCaught(error, "retros.settings.catalog", null);
       catalogs = null;
     }
-    const result = await saveRetroSettings(db, {
+    const result = await saveRetroSettings(store, {
       workspaceId: principal.workspaceId,
       actorId: principal.userId,
       expectedRevision: record.expectedRevision as number,
@@ -392,14 +386,14 @@ function* filteredReportSteps(q: Q, access: RetroReaderAccess) {
 }
 
 export function createRetroReviewHttp(options: {
-  db: Database;
+  store: Db;
   artifactRoot: string;
   now?: () => number;
 }) {
-  const { db, artifactRoot: root } = options;
+  const { store, artifactRoot: root } = options;
   const now = options.now ?? Date.now;
   const audit = (principal: WorkspacePrincipal, action: string, subject: string) =>
-    auditWorkspaceAccess(sqliteDb(db), {
+    auditWorkspaceAccess(store, {
       workspaceId: principal.workspaceId,
       userId: principal.userId,
       action,
@@ -425,9 +419,7 @@ export function createRetroReviewHttp(options: {
     const report = REPORT.exec(url.pathname);
     if (url.pathname !== RETRO_HISTORY_PATH && !report) return null;
     if (
-      !workspaceMemberUsable(
-        await workspaceMember(sqliteDb(db), principal.workspaceId, principal.userId),
-      )
+      !workspaceMemberUsable(await workspaceMember(store, principal.workspaceId, principal.userId))
     ) {
       await audit(principal, "access.denied", url.pathname);
       return json({ error: "Workspace access is unavailable." }, 403);
@@ -439,7 +431,7 @@ export function createRetroReviewHttp(options: {
       if (cursor === undefined || !Number.isInteger(limit) || limit < 1)
         return json({ error: "Check the history page parameters." }, 400);
       const size = Math.min(limit, HISTORY_PAGE.max);
-      const visible = await sqliteDb(db).run(function* (q) {
+      const visible = await store.run(function* (q) {
         const found: RetroReaderAccess[] = [];
         for (const retro of yield* listRetrosSteps(q, principal.workspaceId)) {
           const access = yield* retroReaderAccessSteps(q, root, principal, sessionIds, retro.id);
@@ -465,7 +457,7 @@ export function createRetroReviewHttp(options: {
       const shown = after.slice(0, size);
       const last = shown.at(-1)?.retro;
       return json({
-        retros: await sqliteDb(db).run(function* (q) {
+        retros: await store.run(function* (q) {
           const entries = [];
           for (const access of shown) entries.push(yield* historyEntrySteps(q, root, access));
           return entries;
@@ -476,13 +468,13 @@ export function createRetroReviewHttp(options: {
       });
     }
     const [, retroId, file, itemId] = report;
-    const access = await sqliteDb(db).run((q) =>
+    const access = await store.run((q) =>
       retroReaderAccessSteps(q, root, principal, sessionIds, retroId!),
     );
     if (
       !access ||
       (!access.full &&
-        !(await sqliteDb(db).run((q) => listRetroItemsSteps(q, retroId!))).some((item) =>
+        !(await store.run((q) => listRetroItemsSteps(q, retroId!))).some((item) =>
           visibleItem(access, item.evidenceIds),
         ))
     )
@@ -499,13 +491,13 @@ export function createRetroReviewHttp(options: {
         );
       }
       if (file === "digest") {
-        const stored = await readRetroArtifact(sqliteDb(db), root, retroId!, "digest");
+        const stored = await readRetroArtifact(store, root, retroId!, "digest");
         if (!stored.ok) return missing();
         await audit(principal, "retros.digest.downloaded", retroId!);
         return download(stored.bytes, "application/json", `retro-${retroId}-digest.json`);
       }
       if (file === "prompt") {
-        const prompt = await readRetroRenderedPrompt(db, root, {
+        const prompt = await readRetroRenderedPrompt(store, root, {
           principal,
           sessionIds,
           retroId: retroId!,
@@ -524,16 +516,14 @@ export function createRetroReviewHttp(options: {
       );
     }
     if (itemId !== undefined) {
-      const item = (await listRetroItems(sqliteDb(db), retroId!)).find(
-        (entry) => entry.itemId === itemId,
-      );
+      const item = (await listRetroItems(store, retroId!)).find((entry) => entry.itemId === itemId);
       if (!item || (!access.full && !visibleItem(access, item.evidenceIds)))
         return json(
           { error: "This retro item is not available to you.", reason: "not_found" },
           404,
         );
       const saved = new Map(
-        (await listRetroEvidence(sqliteDb(db), retroId!)).map((entry) => [entry.evidenceId, entry]),
+        (await listRetroEvidence(store, retroId!)).map((entry) => [entry.evidenceId, entry]),
       );
       return json({
         retroId,
@@ -549,7 +539,7 @@ export function createRetroReviewHttp(options: {
     }
     const at = now();
     return json(
-      await sqliteDb(db).run(function* (q) {
+      await store.run(function* (q) {
         const shown = yield* filteredReportSteps(q, access);
         return {
           retro: yield* historyEntrySteps(q, root, access),

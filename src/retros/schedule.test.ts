@@ -109,13 +109,13 @@ async function world(options: { activity?: boolean; retries?: number; settings?:
   const catalog = { value: CATALOGS as AgentModelCatalog[] | null };
   const open = (database: Database = db) =>
     createRetroScheduler({
-      db: database,
+      store: sqliteDb(database),
       artifactRoot: root,
       catalogs: () => syncSteps(() => catalog.value),
       now: () => clock.now,
     });
   const dispatcher = () =>
-    createRetroDispatcher({ db, artifactRoot: root, sign, now: () => clock.now });
+    createRetroDispatcher({ store: sqliteDb(db), artifactRoot: root, sign, now: () => clock.now });
   return { db, path, root, clock, catalog, open, dispatcher };
 }
 
@@ -446,7 +446,7 @@ describe("schedule HTTP", () => {
     const { db, clock, open } = await world();
     clock.now = MONDAY - HOUR;
     const handle = createRetroScheduleHttp({
-      db,
+      store: sqliteDb(db),
       scheduler: open(),
       catalog: createFakeRetroCatalog(CATALOGS).read,
       now: () => clock.now,
@@ -492,7 +492,7 @@ describe("schedule HTTP", () => {
   test("before settings are saved the schedule is a proposal and a run is refused", async () => {
     const { db, clock, open } = await world({ settings: false });
     const handle = createRetroScheduleHttp({
-      db,
+      store: sqliteDb(db),
       scheduler: open(),
       catalog: createFakeRetroCatalog(CATALOGS).read,
       now: () => clock.now,

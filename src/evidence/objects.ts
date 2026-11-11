@@ -1,4 +1,3 @@
-import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,7 +7,6 @@ import {
   localEvidenceFiles,
   saveEvidenceObject,
   type EvidenceObject,
-  sqliteDb,
   type Db,
 } from "../db";
 import { journalCaught } from "../journal";
@@ -158,22 +156,20 @@ export async function readEvidenceBytes(
 }
 
 export async function uploadLocalEvidence(
-  db: Database,
+  store: Db,
   storage: EvidenceStorage,
   now: () => number = Date.now,
 ): Promise<number> {
   const objects = storage.objects?.();
   if (!objects) return 0;
   let uploaded = 0;
-  for (const file of await localEvidenceFiles(sqliteDb(db))) {
+  for (const file of await localEvidenceFiles(store)) {
     const local = Bun.file(join(storage.root, file.id));
     if (!(await local.exists())) continue;
     const prefix = `${evidenceObjectPrefix(file, file.id)}/${randomUUID()}`;
     try {
       const sizeBytes = await writeEvidenceChunks(objects, prefix, local.stream());
-      if (
-        await saveEvidenceObject(sqliteDb(db), { id: file.id, prefix, sizeBytes, storedAt: now() })
-      )
+      if (await saveEvidenceObject(store, { id: file.id, prefix, sizeBytes, storedAt: now() }))
         uploaded++;
       else await removeEvidenceChunks(objects, prefix, sizeBytes);
     } catch (error) {

@@ -35,10 +35,10 @@ function instance(db: ReturnType<typeof openDatabase>, objects: EvidenceObjects)
   const home = mkdtempSync(join(tmpdir(), "paws-evidence-objects-"));
   homes.push(home);
   const root = join(home, "evidence");
-  const store = createEvidenceStore({ db, root, objects });
+  const store = createEvidenceStore({ store: sqliteDb(db), root, objects });
   const get = (id: string, headers: Record<string, string> = {}) =>
     handleEvidenceRequest(new Request(`http://acme.test/api/evidence/${id}`, { headers }), {
-      db,
+      store: sqliteDb(db),
       root,
       objects,
       sessionIds: ["session-acme"],
@@ -120,15 +120,15 @@ describe("evidence in the run file object store", () => {
     const objects = () => (configured ? s3 : null);
     const a = instance(db, objects);
     const saved = await save(a.store, VIDEO);
-    expect(await uploadLocalEvidence(db, { root: a.root, objects })).toBe(0);
+    expect(await uploadLocalEvidence(sqliteDb(db), { root: a.root, objects })).toBe(0);
 
     configured = true;
-    expect(await uploadLocalEvidence(db, { root: a.root, objects }, () => 42)).toBe(1);
+    expect(await uploadLocalEvidence(sqliteDb(db), { root: a.root, objects }, () => 42)).toBe(1);
     expect(await getEvidenceObject(sqliteDb(db), saved.id)).toMatchObject({
       sizeBytes: VIDEO.length,
       storedAt: 42,
     });
-    expect(await uploadLocalEvidence(db, { root: a.root, objects })).toBe(0);
+    expect(await uploadLocalEvidence(sqliteDb(db), { root: a.root, objects })).toBe(0);
     expect(s3.writes.length).toBe(3);
     expect(existsSync(join(a.root, saved.id))).toBe(true);
 
@@ -147,7 +147,7 @@ describe("evidence in the run file object store", () => {
     const a = instance(db, objects);
     const saved = await save(a.store, VIDEO);
     configured = true;
-    expect(await uploadLocalEvidence(db, { root: a.root, objects })).toBe(1);
+    expect(await uploadLocalEvidence(sqliteDb(db), { root: a.root, objects })).toBe(1);
     configured = false;
     const response = await a.get(saved.id);
     expect(response.status).toBe(200);
@@ -170,12 +170,12 @@ describe("evidence in the run file object store", () => {
       },
     };
     const both = await Promise.all([
-      uploadLocalEvidence(db, { root: a.root, objects }),
-      uploadLocalEvidence(db, { root: a.root, objects: () => flaky }),
+      uploadLocalEvidence(sqliteDb(db), { root: a.root, objects }),
+      uploadLocalEvidence(sqliteDb(db), { root: a.root, objects: () => flaky }),
     ]);
     expect(both.reduce((left, right) => left + right)).toBe(1);
     failing = true;
-    expect(await uploadLocalEvidence(db, { root: a.root, objects: () => flaky })).toBe(0);
+    expect(await uploadLocalEvidence(sqliteDb(db), { root: a.root, objects: () => flaky })).toBe(0);
     rmSync(join(a.root, saved.id));
     expect(new Uint8Array(await (await a.get(saved.id)).arrayBuffer())).toEqual(VIDEO);
     const prefix = (await getEvidenceObject(sqliteDb(db), saved.id))!.prefix;

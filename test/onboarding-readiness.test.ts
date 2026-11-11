@@ -60,7 +60,7 @@ async function workspace() {
       teamIds: ["team"],
       now: NOW,
     });
-  const read = createOnboardingReadiness(db);
+  const read = createOnboardingReadiness(sqliteDb(db));
   return {
     db,
     read: (projectLeadIds: string[] = []) =>

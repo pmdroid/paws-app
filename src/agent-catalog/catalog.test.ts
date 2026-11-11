@@ -28,7 +28,7 @@ function setup(agents: Record<string, AgentPackage> = DEMO) {
   let clock = NOW;
   const errors: unknown[] = [];
   const catalog = createAgentCatalog({
-    db,
+    store: sqliteDb(db),
     registry: npm.registry,
     agents,
     now: () => clock,
@@ -205,7 +205,7 @@ describe("agent version catalog", () => {
     // npm pulls the version, but the next read fails, so only the old document is at hand.
     npm.unpublish("demo-agent", "1.0.0");
     const failing = createAgentCatalog({
-      db,
+      store: sqliteDb(db),
       agents: DEMO,
       now: () => NOW + 24 * HOUR,
       registry: {
@@ -238,7 +238,7 @@ describe("agent version catalog", () => {
       optionalDependencies: { "demo-agent-linux-x64": "3.0.0" },
     });
     const flaky = createAgentCatalog({
-      db,
+      store: sqliteDb(db),
       agents: DEMO,
       now: () => NOW + HOUR,
       registry: {
@@ -283,7 +283,7 @@ describe("agent version catalog", () => {
     // its package is now old enough, so only the cached core-cli document still lists 0.5.1.
     npm.unpublish("core-cli", "0.5.1");
     const flaky = createAgentCatalog({
-      db,
+      store: sqliteDb(db),
       agents,
       now: () => NOW + 24 * HOUR,
       registry: {
@@ -326,7 +326,7 @@ describe("agent version catalog", () => {
     // 0.5.1's tarball is replaced while its platform package cannot be read.
     npm.replaceIntegrity("core-cli", "0.5.1", sha(9));
     const flaky = createAgentCatalog({
-      db,
+      store: sqliteDb(db),
       agents,
       now: () => NOW + HOUR,
       registry: {
@@ -343,7 +343,7 @@ describe("agent version catalog", () => {
 
     // With every read fresh again, the adapter moves to the native version that still passes.
     await createAgentCatalog({
-      db,
+      store: sqliteDb(db),
       agents,
       now: () => NOW + 2 * HOUR,
       registry: npm.registry,
@@ -370,7 +370,7 @@ describe("agent version catalog", () => {
     // The adapter's tarball is replaced while the core-cli read fails.
     npm.replaceIntegrity("wrap-acp", "1.0.0", sha(9));
     const flaky = createAgentCatalog({
-      db,
+      store: sqliteDb(db),
       agents,
       now: () => NOW + HOUR,
       registry: {
@@ -405,7 +405,7 @@ describe("agent version catalog", () => {
     // npm pulls 0.5.1, but a day later the core-cli read fails and only the cached document is left.
     npm.unpublish("core-cli", "0.5.1");
     const flaky = createAgentCatalog({
-      db,
+      store: sqliteDb(db),
       agents,
       now: () => NOW + 24 * HOUR,
       registry: {
@@ -424,7 +424,7 @@ describe("agent version catalog", () => {
 
     // A fresh read sees that 0.5.1 is gone, so 0.5.0 stays the native version.
     await createAgentCatalog({
-      db,
+      store: sqliteDb(db),
       agents,
       now: () => NOW + 25 * HOUR,
       registry: npm.registry,
@@ -468,7 +468,7 @@ describe("agent version catalog", () => {
     npm.publish("demo-agent", "1.0.0", { publishedAt: NOW - 72 * HOUR, integrity: sha(1) });
     await catalog.refresh();
     const failing = createAgentCatalog({
-      db,
+      store: sqliteDb(db),
       agents: DEMO,
       now: () => NOW + HOUR,
       registry: {
@@ -497,7 +497,7 @@ describe("agent version catalog", () => {
     let clock = NOW;
     let failSecond = true;
     const catalog = createAgentCatalog({
-      db,
+      store: sqliteDb(db),
       agents,
       now: () => clock,
       registry: {

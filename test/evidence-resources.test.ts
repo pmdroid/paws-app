@@ -88,7 +88,7 @@ async function fixture() {
   const home = mkdtempSync(join(tmpdir(), "paws-evidence-resources-"));
   homes.push(home);
   const evidenceDir = join(home, "evidence");
-  const store = createEvidenceStore({ db, root: evidenceDir });
+  const store = createEvidenceStore({ store: sqliteDb(db), root: evidenceDir });
   const save = (itemId: string, source: Uint8Array, displayName: string, attempt = 1) =>
     store.save({
       itemId,

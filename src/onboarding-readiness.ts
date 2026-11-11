@@ -1,6 +1,10 @@
-import type { Database } from "bun:sqlite";
-import { runnerNameAndOwnerSteps, sqliteDb, workspaceLinearMemberSteps } from "./db";
-import { findMemberVm, memberVmView } from "./member-vm";
+import {
+  memberVmForMemberSteps,
+  runnerNameAndOwnerSteps,
+  workspaceLinearMemberSteps,
+  type Db,
+} from "./db";
+import { memberVmView } from "./member-vm";
 import { eligibleRunnersSteps, type EligibleRunner } from "./runner-placement";
 import type { OnboardingAgent, OnboardingReadinessReader } from "./workspace";
 
@@ -15,8 +19,7 @@ const AGENTS = ["claude", "codex"] as const;
  * only, so reloading the page costs no Linear or GitHub request, and a runner that enrolls or a
  * VM that finishes shows as ready on the next read.
  */
-export function createOnboardingReadiness(db: Database): OnboardingReadinessReader {
-  const store = sqliteDb(db);
+export function createOnboardingReadiness(store: Db): OnboardingReadinessReader {
   const runnerRow = (id: string) => store.run((q) => runnerNameAndOwnerSteps(q, id));
   const ownerName = async (id: string) => (await runnerRow(id))?.ownerName ?? "Your project lead";
   return async ({ workspaceId, userId, teamId, projectLeadIds, now }) => {
@@ -46,7 +49,7 @@ export function createOnboardingReadiness(db: Database): OnboardingReadinessRead
       if (runner?.eligible) return "connected";
       return runner?.reason === "auth-expired" ? "expired" : "waiting";
     };
-    const vm = await findMemberVm(db, { workspaceId, userId });
+    const vm = await store.run((q) => memberVmForMemberSteps(q, workspaceId, userId));
     const memberVm = vm !== null;
     const runners = await check("claude", "prepare");
     // With several usable runners, show the one with the most agents signed in, the member's own

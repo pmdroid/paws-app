@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   annotateImprovementCriterionSteps,
   bindImprovementWorkSteps,
@@ -25,7 +24,6 @@ import {
   recordImprovementOutcomeSteps,
   returnImprovementToReviewSteps,
   settleImprovementDelegationSteps,
-  sqliteDb,
   type ImprovementAction,
   type ImprovementDelegation,
   type ImprovementDelivery,
@@ -35,6 +33,7 @@ import {
   type IssueWork,
   type Q,
   type Steps,
+  type Db,
 } from "../db";
 import { journalCaught } from "../journal";
 import { listInboxItemsSteps, type ImprovementAccess, type InboxItem } from "./inbox";
@@ -481,12 +480,12 @@ export function* improvementFollowThroughSteps(
 }
 
 export function improvementFollowThrough(
-  db: Database,
+  store: Db,
   access: ImprovementAccess,
   improvementId: string,
   now: number,
 ) {
-  return sqliteDb(db).run((q) => improvementFollowThroughSteps(q, access, improvementId, now));
+  return store.run((q) => improvementFollowThroughSteps(q, access, improvementId, now));
 }
 
 const ATTENTION_KIND: Partial<
@@ -539,8 +538,8 @@ const median = (values: number[]) => {
     : Math.round((sorted[middle - 1]! + sorted[middle]!) / 2);
 };
 
-export async function improvementAttention(db: Database, access: ImprovementAccess, now: number) {
-  return sqliteDb(db).run(function* (q) {
+export async function improvementAttention(store: Db, access: ImprovementAccess, now: number) {
+  return store.run(function* (q) {
     return yield* attentionSteps(q, yield* listInboxItemsSteps(q, access), now);
   });
 }
@@ -733,7 +732,7 @@ function* syncFromSteps(
 }
 
 export async function delegateImprovement(
-  db: Database,
+  store: Db,
   input: {
     reviewer: ImprovementReviewer;
     reauthorize?: (q: Q) => Steps<ImprovementReviewer | null>;
@@ -747,7 +746,6 @@ export async function delegateImprovement(
     now: () => number;
   },
 ): Promise<FollowThroughOutcome> {
-  const store = sqliteDb(db);
   const settledAt = input.now();
   const first = await store.transaction((q) =>
     settleSteps(q, input.reviewer, input.improvementId, settledAt),
@@ -957,7 +955,7 @@ export type VerificationRequest = {
 const SHA = /^[0-9a-f]{7,40}$/i;
 
 export function recordVerification(
-  db: Database,
+  store: Db,
   input: {
     access: ImprovementAccess & { userId: string };
     improvementId: string;
@@ -967,7 +965,7 @@ export function recordVerification(
   },
 ): Promise<FollowThroughOutcome> {
   const { request } = input;
-  return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
+  return store.transaction(function* (q): Steps<FollowThroughOutcome> {
     const item = yield* q.transaction((tx) =>
       settleSteps(tx, input.access, input.improvementId, input.now),
     );
@@ -1061,7 +1059,7 @@ export function recordVerification(
 }
 
 export function recordCriterion(
-  db: Database,
+  store: Db,
   input: {
     access: ImprovementAccess & { userId: string };
     improvementId: string;
@@ -1070,7 +1068,7 @@ export function recordCriterion(
     now: number;
   },
 ): Promise<FollowThroughOutcome> {
-  return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
+  return store.transaction(function* (q): Steps<FollowThroughOutcome> {
     const item = yield* q.transaction((tx) =>
       settleSteps(tx, input.access, input.improvementId, input.now),
     );
@@ -1110,7 +1108,7 @@ export function recordCriterion(
 }
 
 export function recoverImprovement(
-  db: Database,
+  store: Db,
   input: {
     access: ImprovementAccess & { userId: string };
     improvementId: string;
@@ -1120,7 +1118,7 @@ export function recoverImprovement(
     now: number;
   },
 ): Promise<FollowThroughOutcome> {
-  return sqliteDb(db).transaction(function* (q): Steps<FollowThroughOutcome> {
+  return store.transaction(function* (q): Steps<FollowThroughOutcome> {
     const item = yield* q.transaction((tx) =>
       settleSteps(tx, input.access, input.improvementId, input.now),
     );
@@ -1191,22 +1189,21 @@ export function recoverImprovement(
 }
 
 export async function reconcileImprovement(
-  db: Database,
+  store: Db,
   improvementId: string,
   workspaceId: string,
   now: number,
 ): Promise<void> {
-  await sqliteDb(db).transaction((q) => settleSteps(q, { workspaceId }, improvementId, now));
+  await store.transaction((q) => settleSteps(q, { workspaceId }, improvementId, now));
 }
 
 export async function syncImprovementOutcomes(options: {
-  db: Database;
+  store: Db;
   linearFor: (workspaceId: string) => Promise<IssueReader | null>;
   now?: () => number;
   limit?: number;
 }): Promise<void> {
-  const { db } = options;
-  const store = sqliteDb(db);
+  const { store } = options;
   const now = options.now ?? Date.now;
   const expiredAt = now();
   for (const delegation of await store.run((q) =>
@@ -1257,7 +1254,7 @@ export async function syncImprovementOutcomes(options: {
       const read = await linear.findIssue(candidate.issueId);
       await store.run((q) => syncFromSteps(q, candidate.id, candidate.issueId, observedAt, read));
     }
-    await reconcileImprovement(db, candidate.id, candidate.workspaceId, now());
+    await reconcileImprovement(store, candidate.id, candidate.workspaceId, now());
   }
 }
 

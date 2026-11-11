@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Database } from "bun:sqlite";
 import {
   claimableImprovementDeliveriesSteps,
   claimImprovementDeliverySteps,
@@ -12,7 +11,6 @@ import {
   markReviewFindingFiledSteps,
   reserveImprovementDeliveryRemoteSteps,
   settleImprovementDeliverySteps,
-  sqliteDb,
   workspaceMemberSteps,
   type Db,
   type Improvement,
@@ -450,7 +448,7 @@ async function deliverOne(
 }
 
 export type ImprovementDeliveryOptions = {
-  db: Database;
+  store: Db;
   owner: string;
   linearFor: (workspaceId: string) => Promise<ImprovementDeliveryLinear | null>;
   sourceUrl: (improvementId: string) => string;
@@ -460,7 +458,7 @@ export type ImprovementDeliveryOptions = {
 
 export async function deliverImprovements(options: ImprovementDeliveryOptions): Promise<void> {
   const ctx: Context = {
-    store: sqliteDb(options.db),
+    store: options.store,
     owner: options.owner,
     now: options.now ?? Date.now,
     sourceUrl: options.sourceUrl,
