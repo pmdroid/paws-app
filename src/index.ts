@@ -128,7 +128,9 @@ import {
   type PostgresConnection,
   readSavedSettings,
   readSetting,
+  readSettingSteps,
   updateSetting,
+  updateSettingSteps,
   CONFIG_SETTINGS_KEY,
   setAsideLegacyDatabase,
   prepareShutdown,
@@ -580,8 +582,14 @@ export async function startPaws(source?: EnvSource, options?: StartOptions): Pro
   }
   const skillUpdates = createSkillUpdates({
     store: {
-      read: () => JSON.parse(readSetting(db, SKILL_UPDATES_KEY) ?? "{}") as Record<string, string>,
-      write: (commits) => updateSetting(db, SKILL_UPDATES_KEY, () => JSON.stringify(commits)),
+      read: async () =>
+        JSON.parse(
+          (await store.run((q) => readSettingSteps(q, SKILL_UPDATES_KEY))) ?? "{}",
+        ) as Record<string, string>,
+      write: (commits) =>
+        store.transaction((q) =>
+          updateSettingSteps(q, SKILL_UPDATES_KEY, () => JSON.stringify(commits)),
+        ),
     },
   });
   periodic.push({

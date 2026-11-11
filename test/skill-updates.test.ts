@@ -42,7 +42,7 @@ describe("skill update check", () => {
     const updates = createSkillUpdates({ latest: git.latest });
     const skills = [gitSkill("review", "main")];
     await updates.check(skills);
-    expect(updates.available(skills)).toEqual({ review: moved });
+    expect(await updates.available(skills)).toEqual({ review: moved });
   });
 
   test("an unchanged ref offers nothing", async () => {
@@ -50,7 +50,7 @@ describe("skill update check", () => {
     const updates = createSkillUpdates({ latest: git.latest });
     const skills = [gitSkill("review")];
     await updates.check(skills);
-    expect(updates.available(skills)).toEqual({});
+    expect(await updates.available(skills)).toEqual({});
   });
 
   test("a skill pinned to a commit is never checked", async () => {
@@ -59,7 +59,7 @@ describe("skill update check", () => {
     const skills = [gitSkill("review", moved.toUpperCase())];
     await updates.check(skills);
     expect(git.calls).toEqual([]);
-    expect(updates.available(skills)).toEqual({});
+    expect(await updates.available(skills)).toEqual({});
   });
 
   test("a failed check shows nothing and is tried again next time", async () => {
@@ -72,10 +72,10 @@ describe("skill update check", () => {
     await updates.check(skills);
     answers["https://github.com/pmdroid/review.git#main"] = new Error("offline");
     await updates.check(skills);
-    expect(updates.available(skills)).toEqual({});
+    expect(await updates.available(skills)).toEqual({});
     answers["https://github.com/pmdroid/review.git#main"] = moved;
     await updates.check(skills);
-    expect(updates.available(skills)).toEqual({ review: moved });
+    expect(await updates.available(skills)).toEqual({ review: moved });
     expect(git.calls).toHaveLength(3);
   });
 
@@ -87,7 +87,7 @@ describe("skill update check", () => {
     const npm: SkillPin = { ...first, name: "npm", source: { kind: "npm", package: "npm" } };
     await updates.check([first, second, npm]);
     expect(git.calls).toEqual(["https://github.com/pmdroid/review.git#main"]);
-    expect(updates.available([first, second, npm])).toEqual({ review: moved });
+    expect(await updates.available([first, second, npm])).toEqual({ review: moved });
   });
 
   test("the remote commit comes from git ls-remote", async () => {
