@@ -117,7 +117,7 @@ export function* readDependencyScopeSteps(
         cancelRequested: sql<number>`i.cancel_requested`,
         mode: sql<TaskMode | null>`t.mode`,
         brief: sql<unknown>`i.brief`,
-        delegationIssueId: sql<string>`${sql.raw(parentIssueIdSql("i"))}`,
+        delegationIssueId: sql<string>`${sql.raw(parentIssueIdSql("i", q.dialect))}`,
         sessionId: sql<string>`s.session_id`,
         organizationId: sql<string>`s.organization_id`,
         clientId: sql<string>`s.oauth_client_id`,
@@ -198,6 +198,10 @@ export async function listPresentDelegationItems(
   return store.run((q) => listPresentDelegationItemsSteps(q, delegationId));
 }
 
+function storedText(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
 export function* readDependencySnapshotSteps(q: Q, itemId: string) {
   const { itemDependencySnapshot } = q.t;
   const row = yield* q.one(
@@ -215,9 +219,9 @@ export function* readDependencySnapshotSteps(q: Q, itemId: string) {
   if (!row) return null;
   return {
     generation: row.generation,
-    scope: jsonText(q, row.scope),
-    linearStates: jsonText(q, row.linearStates),
-    linearIdentifiers: jsonText(q, row.linearIdentifiers),
+    scope: storedText(row.scope),
+    linearStates: storedText(row.linearStates),
+    linearIdentifiers: storedText(row.linearIdentifiers),
     workspaceId: row.workspaceId,
   } satisfies DependencySnapshot;
 }

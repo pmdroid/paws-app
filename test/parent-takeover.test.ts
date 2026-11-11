@@ -230,7 +230,7 @@ test("the migration carries an active parent adoption over from project_approval
       },
     ]);
     expect(
-      db.query(`SELECT ${parentIssueIdSql("work_item")} AS parent FROM work_item`).get(),
+      db.query(`SELECT ${parentIssueIdSql("work_item", "sqlite")} AS parent FROM work_item`).get(),
     ).toEqual({ parent: "parent" });
   } finally {
     db.close();
