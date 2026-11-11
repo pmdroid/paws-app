@@ -12,17 +12,16 @@ import {
   closeRetroSteps,
   deliverableRetroDispatchesSteps,
   failRetroAttemptSteps,
-  getRetro,
-  getRetroDispatch,
   getRetroDispatchSteps,
   getRetroSteps,
-  listRetroAttempts,
+  latestRetroDispatchSteps,
+  retroGenerationSteps,
+  settled as settledValue,
   listRetroAttemptsSteps,
   listWorkspaceMembersSteps,
   liveAccountBindingSteps,
   markRetroDispatchFetchedSteps,
   newRetroCommandId,
-  openRetroDispatch,
   openRetroDispatchSteps,
   pinnedSlotsReservedSteps,
   readRetroArtifactSteps,
@@ -35,9 +34,7 @@ import {
   resignRetroDispatchSteps,
   RETRO_WAIT_DIAGNOSTICS,
   retroArtifactSteps,
-  retroDispatchesNotStarted,
   retroDispatchesNotStartedSteps,
-  retroGeneration,
   runnerHasCapacitySteps,
   runnerOccupancySteps,
   runnerSlotsHeldBetweenCommandsSteps,
@@ -45,9 +42,7 @@ import {
   sqliteDb,
   startRetroAttemptSteps,
   workspaceMemberSteps,
-  latestRetroDispatch,
   previousRetroResultDispatchSteps,
-  retroDispatchReleaseReason,
   retroDispatchReleaseReasonSteps,
   retrosToAdvanceSteps,
   runnerHostVersionSteps,
@@ -160,23 +155,6 @@ export function retroRetryDelayMs(attemptsUsed: number): number {
   );
 }
 
-function budget(db: Database, retro: Retro) {
-  const notStarted = retroDispatchesNotStarted(db, retro.id);
-  const { maxAttempts, activeExecutionMs } = retroAttemptLimits(retro.executionLimits);
-  return { notStarted, maxAttempts, activeExecutionMs, used: retro.attempt - notStarted };
-}
-
-function retryAt(db: Database, retro: Retro): number | null {
-  if (retro.state !== "failed") return null;
-  const { used, maxAttempts } = budget(db, retro);
-  if (used >= maxAttempts) return null;
-  if (openRetroDispatch(db, retro.id) !== null) return null;
-  const last = listRetroAttempts(db, retro.id).at(-1);
-  const notStarted = retroDispatchReleaseReason(db, retro.id, retro.attempt) === "not_started";
-  const finished = last?.finishedAt ?? retro.updatedAt;
-  return finished + retroRetryDelayMs(notStarted ? retroDispatchesNotStarted(db, retro.id) : used);
-}
-
 function* budgetSteps(q: Q, retro: Retro) {
   const notStarted = yield* retroDispatchesNotStartedSteps(q, retro.id);
   const { maxAttempts, activeExecutionMs } = retroAttemptLimits(retro.executionLimits);
@@ -198,13 +176,17 @@ function* retryAtSteps(q: Q, retro: Retro) {
   );
 }
 
-export function retroGenerationView(db: Database, retroId: string): RetroGenerationView | null {
-  const retro = getRetro(db, retroId);
+export function* retroGenerationViewSteps(
+  q: Q,
+  retroId: string,
+): Steps<RetroGenerationView | null> {
+  const retro = yield* getRetroSteps(q, retroId);
   if (retro === null) return null;
-  const row = retroGeneration(db, retroId);
-  const { used, maxAttempts } = budget(db, retro);
-  const dispatch = openRetroDispatch(db, retroId) ?? latestRetroDispatch(db, retroId);
-  const latest = dispatch === null ? null : getRetroDispatch(db, dispatch.commandId);
+  const row = yield* retroGenerationSteps(q, retroId);
+  const { used, maxAttempts } = yield* budgetSteps(q, retro);
+  const dispatch =
+    (yield* openRetroDispatchSteps(q, retroId)) ?? (yield* latestRetroDispatchSteps(q, retroId));
+  const latest = dispatch === null ? null : yield* getRetroDispatchSteps(q, dispatch.commandId);
   const waiting = row !== null && RETRO_WAIT_DIAGNOSTICS.includes(row.diagnostic);
   const state: RetroGenerationState = (() => {
     switch (retro.state) {
@@ -220,7 +202,7 @@ export function retroGenerationView(db: Database, retroId: string): RetroGenerat
         return waiting ? "waiting_for_runner" : "queued";
     }
   })();
-  const at = retryAt(db, retro);
+  const at = yield* retryAtSteps(q, retro);
   return {
     retroId,
     state,
@@ -239,6 +221,10 @@ export function retroGenerationView(db: Database, retroId: string): RetroGenerat
     digestSha256: retro.digestSha256,
     error: retro.error,
   };
+}
+
+export function retroGenerationView(db: Database, retroId: string): RetroGenerationView | null {
+  return settledValue(sqliteDb(db).run((q) => retroGenerationViewSteps(q, retroId)));
 }
 
 type Candidate = EligibleRunner & { occupied: number; capacity: number; free: boolean };

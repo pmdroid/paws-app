@@ -87,7 +87,7 @@ export async function handleFindingGroupsRequest(
   const workspaceId = principal?.workspaceId ?? (await firstWorkspaceId(sqliteDb(db))) ?? undefined;
   const member = principal ? workspaceMember(db, principal.workspaceId, principal.userId) : null;
   if (request.method === "GET") {
-    const enabled = !workspaceId || findingGroupingEnabled(db, workspaceId);
+    const enabled = !workspaceId || (await findingGroupingEnabled(sqliteDb(db), workspaceId));
     const data: FindingGroupsResponse = {
       groups: [],
       lastRun: null,
@@ -95,7 +95,7 @@ export async function handleFindingGroupsRequest(
       enabled,
     };
     if (workspaceId && (!principal || workspaceMemberUsable(member))) {
-      const groups = listFindingGroups(db, workspaceId, 200);
+      const groups = await listFindingGroups(sqliteDb(db), workspaceId, 200);
       const snapshot = {
         rows: new Map(
           reviewFindingsByIds(
@@ -134,7 +134,7 @@ export async function handleFindingGroupsRequest(
           },
         ];
       });
-      data.lastRun = lastFindingGroupRun(db, workspaceId);
+      data.lastRun = await lastFindingGroupRun(sqliteDb(db), workspaceId);
     }
     return Response.json(data, { headers: { "cache-control": "no-store" } });
   }
@@ -163,13 +163,13 @@ export async function handleFindingGroupsRequest(
       return Response.json({ error: "Only admins can run grouping." }, { status: 403 });
     if (!options.services)
       return Response.json({ error: "Finding grouping is unavailable." }, { status: 503 });
-    if (!findingGroupingEnabled(db, principal.workspaceId))
+    if (!(await findingGroupingEnabled(sqliteDb(db), principal.workspaceId)))
       return Response.json(
         { error: "Daily grouping is off. Turn it on in Settings → Findings." },
         { status: 409 },
       );
     const day = new Date(now).toISOString().slice(0, 10);
-    const last = lastFindingGroupRun(db, principal.workspaceId);
+    const last = await lastFindingGroupRun(sqliteDb(db), principal.workspaceId);
     if (last && new Date(last.startedAt).toISOString().slice(0, 10) === day)
       return Response.json(
         { error: "Grouping already ran today. The next helper turn is available tomorrow UTC." },
@@ -183,7 +183,7 @@ export async function handleFindingGroupsRequest(
     });
     return Response.json({ queued: true }, { status: 202 });
   }
-  const group = getFindingGroup(db, principal.workspaceId, action.id);
+  const group = await getFindingGroup(sqliteDb(db), principal.workspaceId, action.id);
   if (!group) return Response.json({ error: "Group not found." }, { status: 404 });
   const accessible = members(db, group, options.sessionIds);
   if (!accessible)
@@ -207,10 +207,12 @@ export async function handleFindingGroupsRequest(
   if (action.action !== "dismiss" && !options.services)
     return Response.json({ error: "Linear is unavailable." }, { status: 503 });
   if (
-    acceptedImprovementsForFindings(
-      db,
-      principal.workspaceId,
-      rows.map((f) => f.id),
+    (
+      await acceptedImprovementsForFindings(
+        sqliteDb(db),
+        principal.workspaceId,
+        rows.map((f) => f.id),
+      )
     ).length
   )
     return Response.json(
@@ -222,8 +224,8 @@ export async function handleFindingGroupsRequest(
   if (activeActions.has(group.id))
     return Response.json({ error: "This group action is still running." }, { status: 409 });
   // Store the chosen action before the network write. Stable Linear ids make retries safe.
-  const claimed = claimFindingGroupAction(
-    db,
+  const claimed = await claimFindingGroupAction(
+    sqliteDb(db),
     group.id,
     action.action,
     rows.map((f) => f.id),
@@ -289,7 +291,7 @@ export async function handleFindingGroupsRequest(
     journalCaught(error, "finding-groups.action", null);
     // The adapter checks the stable Linear id before a definitive refusal, including on retries.
     if (error instanceof Error && "noFindingWrite" in error && error.noFindingWrite === true)
-      releaseFindingGroupAction(db, group.id, action.action);
+      await releaseFindingGroupAction(sqliteDb(db), group.id, action.action);
     if (error instanceof Error && "findingConflict" in error)
       return Response.json({ error: error.message }, { status: 409 });
     return Response.json(

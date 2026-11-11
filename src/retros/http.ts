@@ -5,23 +5,27 @@ import {
   workspaceMemberUsable,
   auditWorkspaceAccess,
   listWorkspaceRepositoryNames,
-  getImprovement,
-  listRetroCoverageGaps,
+  getImprovementSteps,
+  listRetroCoverageGapsSteps,
   listRetroEvidence,
   listRetroItems,
-  listRetros,
+  listRetroItemsSteps,
+  listRetrosSteps,
   readRetroArtifact,
-  retroArtifact,
+  readRetroArtifactSteps,
+  retroArtifactSteps,
   workspaceMember,
   type RetroArtifactKind,
   type RetroCoverageGap,
+  sqliteDb,
+  type Q,
 } from "../db";
-import { improvementFollowThrough, memberRepositories } from "../improvements";
+import { improvementFollowThroughSteps, memberRepositoriesSteps } from "../improvements";
 import { journalCaught } from "../journal";
 import type { AgentModelCatalog } from "../runner-models";
 import { isWorkspaceAdmin, type WorkspacePrincipal } from "../workspace";
-import { retroReaderAccess, type RetroReaderAccess } from "./access";
-import { retroGenerationView } from "./dispatch";
+import { retroReaderAccessSteps, type RetroReaderAccess } from "./access";
+import { retroGenerationViewSteps } from "./dispatch";
 import { readRetroRenderedPrompt } from "./prompt";
 import { renderRetroReport, type RetroReport } from "./result";
 import { readRetroSettings, saveRetroSettings } from "./settings";
@@ -162,8 +166,8 @@ const profileOf = (profile: Record<string, unknown>) => ({
 });
 
 /** `none` when Paws never stored the file, `unavailable` when its record outlived the file. */
-function artifactState(db: Database, root: string, retroId: string, kind: RetroArtifactKind) {
-  const record = retroArtifact(db, retroId, kind);
+function* artifactStateSteps(q: Q, root: string, retroId: string, kind: RetroArtifactKind) {
+  const record = yield* retroArtifactSteps(q, retroId, kind);
   if (record === null) return "none" as const;
   return existsSync(join(root, record.fileName)) ? ("stored" as const) : ("unavailable" as const);
 }
@@ -176,16 +180,22 @@ const evidenceState = (gaps: readonly RetroCoverageGap[]) =>
       ? ("incomplete" as const)
       : ("complete" as const);
 
-function historyEntry(db: Database, root: string, access: RetroReaderAccess) {
+function* historyEntrySteps(q: Q, root: string, access: RetroReaderAccess) {
   const { retro } = access;
-  const items = listRetroItems(db, retro.id).filter((item) =>
+  const items = (yield* listRetroItemsSteps(q, retro.id)).filter((item) =>
     visibleItem(access, item.evidenceIds),
   );
-  const improvements = items.map((item) => ({
-    item,
-    improvement: getImprovement(db, item.improvementId),
-  }));
-  const generation = retroGenerationView(db, retro.id);
+  const improvements = [];
+  for (const item of items)
+    improvements.push({ item, improvement: yield* getImprovementSteps(q, item.improvementId) });
+  const generation = yield* retroGenerationViewSteps(q, retro.id);
+  const full = access.full
+    ? {
+        evidence: evidenceState(yield* listRetroCoverageGapsSteps(q, retro.id)),
+        digest: yield* artifactStateSteps(q, root, retro.id, "digest"),
+        prompt: yield* artifactStateSteps(q, root, retro.id, "prompt"),
+      }
+    : null;
   const result = retro.result as RetroReport | null;
   return {
     id: retro.id,
@@ -217,10 +227,10 @@ function historyEntry(db: Database, root: string, access: RetroReaderAccess) {
           profile: profileOf(retro.agentProfile),
           digest: retro.digestSha256 === null ? null : access.digest,
           patterns: result === null ? null : result.items.length,
-          evidence: evidenceState(listRetroCoverageGaps(db, retro.id)),
+          evidence: full!.evidence,
           artifacts: {
-            digest: artifactState(db, root, retro.id, "digest"),
-            prompt: artifactState(db, root, retro.id, "prompt"),
+            digest: full!.digest,
+            prompt: full!.prompt,
             report: result === null ? ("none" as const) : ("stored" as const),
           },
         }
@@ -252,8 +262,8 @@ type PromptManifest = {
  * What the bounded prompt actually gave the agent, from the manifest frozen with the digest.
  * Null when the manifest is missing, unreadable or predates prompt coverage.
  */
-function promptCoverage(db: Database, root: string, retroId: string) {
-  const stored = readRetroArtifact(db, root, retroId, "manifest");
+function* promptCoverageSteps(q: Q, root: string, retroId: string) {
+  const stored = yield* readRetroArtifactSteps(q, root, retroId, "manifest");
   if (!stored.ok) return null;
   let prompt: PromptManifest | undefined;
   try {
@@ -278,8 +288,8 @@ function promptCoverage(db: Database, root: string, retroId: string) {
 }
 
 /** Each visible item's follow-through as it is now, or null when it is not in the reader's inbox. */
-function currentOutcomes(
-  db: Database,
+function* currentOutcomesSteps(
+  q: Q,
   root: string,
   principal: WorkspacePrincipal,
   sessionIds: readonly string[],
@@ -292,60 +302,61 @@ function currentOutcomes(
   ]);
   const reader = {
     workspaceId: principal.workspaceId,
-    repositories: memberRepositories(db, principal.workspaceId, principal.userId),
+    repositories: yield* memberRepositoriesSteps(q, principal.workspaceId, principal.userId),
     sessionIds,
-    retroEvidence: (retroId: string) => {
+    retroEvidence: function* (reads: Q, retroId: string) {
       if (!evidence.has(retroId))
         evidence.set(
           retroId,
-          retroReaderAccess(db, root, principal, sessionIds, retroId)?.readable ?? null,
+          (yield* retroReaderAccessSteps(reads, root, principal, sessionIds, retroId))?.readable ??
+            null,
         );
       return evidence.get(retroId)!;
     },
   };
-  return Object.fromEntries(
-    itemIds.map(({ itemId, improvementId }) => {
-      const view = improvementFollowThrough(db, reader, improvementId, now)?.followThrough;
-      return [
-        itemId,
-        view
-          ? {
-              improvementId,
-              attention: view.attention,
-              issue: view.issue
-                ? {
-                    identifier: view.issue.identifier,
-                    url: view.issue.url,
-                    confirmedAt: view.issue.confirmedAt,
-                    syncedAt: view.issue.sync?.confirmedAt ?? null,
-                    fresh: view.issue.fresh,
-                  }
-                : null,
-              implementation: { state: view.implementation.state, at: view.implementation.at },
-              verification: { state: view.verification.state, at: view.verification.at },
-            }
-          : null,
-      ];
-    }),
-  );
+  const outcomes: [string, unknown][] = [];
+  for (const { itemId, improvementId } of itemIds) {
+    const view = (yield* improvementFollowThroughSteps(q, reader, improvementId, now))
+      ?.followThrough;
+    outcomes.push([
+      itemId,
+      view
+        ? {
+            improvementId,
+            attention: view.attention,
+            issue: view.issue
+              ? {
+                  identifier: view.issue.identifier,
+                  url: view.issue.url,
+                  confirmedAt: view.issue.confirmedAt,
+                  syncedAt: view.issue.sync?.confirmedAt ?? null,
+                  fresh: view.issue.fresh,
+                }
+              : null,
+            implementation: { state: view.implementation.state, at: view.implementation.at },
+            verification: { state: view.verification.state, at: view.verification.at },
+          }
+        : null,
+    ]);
+  }
+  return Object.fromEntries(outcomes);
 }
 
-function filteredReport(db: Database, access: RetroReaderAccess) {
+function* filteredReportSteps(q: Q, access: RetroReaderAccess) {
   const report = access.retro.result as RetroReport | null;
   if (report === null) return null;
-  const decisions = new Map(
-    listRetroItems(db, access.retro.id).map((item) => {
-      const improvement = getImprovement(db, item.improvementId);
-      return [
-        item.itemId,
-        {
-          improvementId: item.improvementId,
-          version: improvement?.version ?? null,
-          reviewState: improvement?.reviewState ?? null,
-        },
-      ];
-    }),
-  );
+  const decisions = new Map<
+    string,
+    { improvementId: string; version: number | null; reviewState: string | null }
+  >();
+  for (const item of yield* listRetroItemsSteps(q, access.retro.id)) {
+    const improvement = yield* getImprovementSteps(q, item.improvementId);
+    decisions.set(item.itemId, {
+      improvementId: item.improvementId,
+      version: improvement?.version ?? null,
+      reviewState: improvement?.reviewState ?? null,
+    });
+  }
   const items = report.items
     .filter((item) => access.full || visibleItem(access, item.evidenceIds))
     .map((item) => ({
@@ -411,13 +422,20 @@ export function createRetroReviewHttp(options: {
       if (cursor === undefined || !Number.isInteger(limit) || limit < 1)
         return json({ error: "Check the history page parameters." }, 400);
       const size = Math.min(limit, HISTORY_PAGE.max);
-      const visible = listRetros(db, principal.workspaceId).flatMap((retro) => {
-        const access = retroReaderAccess(db, root, principal, sessionIds, retro.id);
-        return access &&
-          (access.full ||
-            listRetroItems(db, retro.id).some((item) => visibleItem(access, item.evidenceIds)))
-          ? [access]
-          : [];
+      const visible = await sqliteDb(db).run(function* (q) {
+        const found: RetroReaderAccess[] = [];
+        for (const retro of yield* listRetrosSteps(q, principal.workspaceId)) {
+          const access = yield* retroReaderAccessSteps(q, root, principal, sessionIds, retro.id);
+          if (
+            access &&
+            (access.full ||
+              (yield* listRetroItemsSteps(q, retro.id)).some((item) =>
+                visibleItem(access, item.evidenceIds),
+              ))
+          )
+            found.push(access);
+        }
+        return found;
       });
       const after =
         cursor === null
@@ -430,18 +448,26 @@ export function createRetroReviewHttp(options: {
       const shown = after.slice(0, size);
       const last = shown.at(-1)?.retro;
       return json({
-        retros: shown.map((access) => historyEntry(db, root, access)),
+        retros: await sqliteDb(db).run(function* (q) {
+          const entries = [];
+          for (const access of shown) entries.push(yield* historyEntrySteps(q, root, access));
+          return entries;
+        }),
         total: visible.length,
         nextCursor:
           last !== undefined && after.length > size ? `${last.windowEnd}.${last.id}` : null,
       });
     }
     const [, retroId, file, itemId] = report;
-    const access = retroReaderAccess(db, root, principal, sessionIds, retroId!);
+    const access = await sqliteDb(db).run((q) =>
+      retroReaderAccessSteps(q, root, principal, sessionIds, retroId!),
+    );
     if (
       !access ||
       (!access.full &&
-        !listRetroItems(db, retroId!).some((item) => visibleItem(access, item.evidenceIds)))
+        !(await sqliteDb(db).run((q) => listRetroItemsSteps(q, retroId!))).some((item) =>
+          visibleItem(access, item.evidenceIds),
+        ))
     )
       return missing();
     if (file !== undefined) {
@@ -462,7 +488,7 @@ export function createRetroReviewHttp(options: {
         return download(stored.bytes, "application/json", `retro-${retroId}-digest.json`);
       }
       if (file === "prompt") {
-        const prompt = readRetroRenderedPrompt(db, root, {
+        const prompt = await readRetroRenderedPrompt(db, root, {
           principal,
           sessionIds,
           retroId: retroId!,
@@ -502,25 +528,30 @@ export function createRetroReviewHttp(options: {
         }),
       });
     }
-    const shown = filteredReport(db, access);
-    return json({
-      retro: historyEntry(db, root, access),
-      report: shown,
-      coverageGaps: access.full ? listRetroCoverageGaps(db, retroId!) : null,
-      promptCoverage: access.full ? promptCoverage(db, root, retroId!) : null,
-      current: currentOutcomes(
-        db,
-        root,
-        principal,
-        sessionIds,
-        access,
-        (shown?.items ?? []).flatMap((item) =>
-          item.improvement
-            ? [{ itemId: item.itemId, improvementId: item.improvement.improvementId }]
-            : [],
-        ),
-        now(),
-      ),
-    });
+    const at = now();
+    return json(
+      await sqliteDb(db).run(function* (q) {
+        const shown = yield* filteredReportSteps(q, access);
+        return {
+          retro: yield* historyEntrySteps(q, root, access),
+          report: shown,
+          coverageGaps: access.full ? yield* listRetroCoverageGapsSteps(q, retroId!) : null,
+          promptCoverage: access.full ? yield* promptCoverageSteps(q, root, retroId!) : null,
+          current: yield* currentOutcomesSteps(
+            q,
+            root,
+            principal,
+            sessionIds,
+            access,
+            (shown?.items ?? []).flatMap((item) =>
+              item.improvement
+                ? [{ itemId: item.itemId, improvementId: item.improvement.improvementId }]
+                : [],
+            ),
+            at,
+          ),
+        };
+      }),
+    );
   };
 }

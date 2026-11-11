@@ -2,9 +2,16 @@ import type { Database } from "bun:sqlite";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { loadSecretKey } from "../credentials";
-import { plaintextRunnerEventsSteps, sealRunnerEventSteps, sqliteDb } from "../db";
+import {
+  incrementalVacuum,
+  jobStatusByKey,
+  plaintextRunnerEventsSteps,
+  sealRunnerEventSteps,
+  sqliteDb,
+  truncateWal,
+  withSecureDelete,
+} from "../db";
 import { RunnerEventSchema, type RunnerEvent } from "../runner-protocol";
-import { incrementalVacuum } from "./prune";
 
 export const RUNNER_EVENT_KEY_FILE = "runner-event.key";
 const KEY_CONTEXT = "paws-runner-event-key\0";
@@ -18,10 +25,8 @@ export function runnerEventKeyId(key: Buffer) {
 }
 
 export function runnerEventsEncrypted(db: Database) {
-  const job = db
-    .query<{ status: string }, [string]>("SELECT status FROM job WHERE job_key=?")
-    .get(RUNNER_EVENT_ENCRYPT_JOB);
-  return !job || job.status === "done";
+  const status = jobStatusByKey(db, RUNNER_EVENT_ENCRYPT_JOB);
+  return status === null || status === "done";
 }
 
 export type StoredRunnerEvent = {
@@ -102,10 +107,7 @@ export async function encryptRunnerEvents(options: {
   let sealed = 0;
   // Zero the plaintext that sealing frees, without rebuilding the file. Bytes left in the slack of
   // pages that split stay until the offline rebuild in the README.
-  const mode = db.query<{ secure_delete: number }, []>("PRAGMA secure_delete").get()?.secure_delete;
-  const secureDelete = mode === 2 ? "FAST" : mode ? "ON" : "OFF";
-  db.run("PRAGMA secure_delete=ON");
-  try {
+  await withSecureDelete(db, async () => {
     for (;;) {
       signal?.throwIfAborted();
       const from = after;
@@ -122,10 +124,7 @@ export async function encryptRunnerEvents(options: {
       await yieldToLoop();
     }
     incrementalVacuum(db);
-    const [checkpoint] = db.query<{ busy: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").all();
-    if (checkpoint?.busy) throw new Error("Runner event WAL checkpoint is busy.");
-  } finally {
-    db.run(`PRAGMA secure_delete=${secureDelete}`);
-  }
+    truncateWal(db);
+  });
   return { sealed };
 }
