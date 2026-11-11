@@ -8,7 +8,7 @@ import {
   type CloseoutRecovery,
 } from "../db";
 import type { CloseoutBypass } from "../closeout";
-import { getQuestion, type StoredQuestion } from "../questions";
+import { getQuestionSteps, type StoredQuestion } from "../questions";
 
 export const RETRY_CLOSEOUT = "Retry Closeout";
 
@@ -46,7 +46,10 @@ export async function recoveryOptions(
     const linkAsk = await store.run((q) => getLinkAskSteps(q, recovery.questionId));
     if (linkAsk === null) {
       // A reply in Linear is guidance, whatever it says. It never bypasses a check.
-      const question = recovery.answer === null ? null : getQuestion(db, recovery.questionId);
+      const question =
+        recovery.answer === null
+          ? null
+          : await store.run((q) => getQuestionSteps(q, recovery.questionId));
       if (recovery.answeredBy !== null && question !== null && !retriesCloseout(question))
         for (const key of recovery.retryBaseline) retryBaseline.add(key);
       continue;
