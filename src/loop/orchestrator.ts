@@ -7292,17 +7292,18 @@ export class Orchestrator {
 
   async pauseItem(
     itemId: string,
-    canAct: () => boolean = () => true,
-    onCommitted?: () => void,
+    canAct?: (q: Q) => Steps<boolean>,
+    onCommitted?: (q: Q) => Steps<void>,
   ): Promise<boolean> {
     const now = () => this.now();
     const paused = await this.store.transaction(function* (q) {
       const item = yield* getWorkItemSteps(q, itemId);
-      if (!canAct() || item?.state !== "running" || item.cancelRequested) return false;
+      if ((canAct && !(yield* canAct(q))) || item?.state !== "running" || item.cancelRequested)
+        return false;
       yield* applyWorkItemEventSteps(q, itemId, "pause");
       yield* cancelOpenJobsSteps(q, { itemId, reason: "Paused by a workspace member", now: now() });
       yield* loseActiveItemRunsSteps(q, itemId, now());
-      onCommitted?.();
+      if (onCommitted) yield* onCommitted(q);
       return true;
     });
     if (!paused) return false;
@@ -7312,8 +7313,8 @@ export class Orchestrator {
 
   async resumeItem(
     itemId: string,
-    canAct: () => boolean = () => true,
-    onCommitted?: () => void,
+    canAct?: (q: Q) => Steps<boolean>,
+    onCommitted?: (q: Q) => Steps<void>,
   ): Promise<boolean> {
     if ((await this.store.run((q) => getWorkItemSteps(q, itemId)))?.state !== "paused")
       return false;
@@ -7328,11 +7329,12 @@ export class Orchestrator {
   private *resumeItemSteps(
     q: Q,
     itemId: string,
-    canAct: () => boolean,
-    onCommitted?: () => void,
+    canAct?: (q: Q) => Steps<boolean>,
+    onCommitted?: (q: Q) => Steps<void>,
   ): Steps<boolean> {
     const item = yield* getWorkItemSteps(q, itemId);
-    if (!canAct() || item?.state !== "paused" || item.cancelRequested) return false;
+    if ((canAct && !(yield* canAct(q))) || item?.state !== "paused" || item.cancelRequested)
+      return false;
     const session = item.sessionKey ? yield* getLinearSessionSteps(q, item.sessionKey) : null;
     if (session?.stoppedAt != null)
       yield* advanceLinearSessionGenerationSteps(q, session.sessionId, { now: this.now() });
@@ -7342,7 +7344,7 @@ export class Orchestrator {
       body: "Continue the task from its branch.",
       now: this.now(),
     });
-    onCommitted?.();
+    if (onCommitted) yield* onCommitted(q);
     return true;
   }
 
@@ -8884,13 +8886,14 @@ export class Orchestrator {
    */
   async clearStuckAgent(
     itemId: string,
-    canAct: () => boolean = () => true,
-    onCommitted?: () => void,
+    canAct?: (q: Q) => Steps<boolean>,
+    onCommitted?: (q: Q) => Steps<void>,
   ): Promise<boolean> {
     if (this.isLive(itemId)) return false;
     const cleared = await this.store.transaction(function* (q) {
-      if (!canAct() || !(yield* getConversationSteps(q, itemId)).blocked) return false;
-      onCommitted?.();
+      if ((canAct && !(yield* canAct(q))) || !(yield* getConversationSteps(q, itemId)).blocked)
+        return false;
+      if (onCommitted) yield* onCommitted(q);
       return yield* clearConversationBlockSteps(q, itemId);
     });
     if (!cleared) return false;

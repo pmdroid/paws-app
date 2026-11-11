@@ -56,7 +56,7 @@ async function fixture(known = true) {
 test("verified host reconnection persists a new credential and restores the same installation across reopen", async () => {
   const f = await fixture();
   const requests: { url: string; init?: RequestInit }[] = [];
-  const reconnect = createLinearReconnect({
+  const reconnect = await createLinearReconnect({
     now: () => 20,
     fetch: async (url, init) => {
       requests.push({ url: String(url), init });
@@ -89,7 +89,7 @@ test("verified host reconnection persists a new credential and restores the same
 test("an unchanged credential cannot restore access or make a verification request", async () => {
   const f = await fixture();
   let requests = 0;
-  const reconnect = createLinearReconnect({
+  const reconnect = await createLinearReconnect({
     now: () => 20,
     fetch: async () => {
       requests++;
@@ -105,7 +105,9 @@ test("an unchanged credential cannot restore access or make a verification reque
 
 test("a claimed OAuth client without a verified app user cannot restore a revoked installation", async () => {
   const f = await fixture(false);
-  const reconnect = createLinearReconnect({ now: () => 20, fetch: async () => verified() })(f.home);
+  const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
+    f.home,
+  );
   await expect(reconnect.complete({ clientId: "client", token: f.next })).rejects.toThrow(
     "verified installation",
   );
@@ -117,7 +119,7 @@ test.each(["human", "other-app", "unauthorized", "errors", "missing"])(
   "unverified new credential %s leaves both credential and revocation unchanged",
   async (kind) => {
     const f = await fixture();
-    const reconnect = createLinearReconnect({
+    const reconnect = await createLinearReconnect({
       now: () => 20,
       fetch: async () => {
         if (kind === "unauthorized") return new Response("denied", { status: 401 });
@@ -146,7 +148,7 @@ test.each(["revocation", "credential"])(
     const f = await fixture();
     const started = Promise.withResolvers<void>();
     const released = Promise.withResolvers<Response>();
-    const reconnect = createLinearReconnect({
+    const reconnect = await createLinearReconnect({
       now: () => 20,
       fetch: async () => {
         started.resolve();
@@ -175,7 +177,7 @@ test.each([20, 25])(
   "a delayed revocation at %s reactivates the fence after verified completion",
   async (createdAtMs) => {
     const f = await fixture();
-    const reconnect = createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
+    const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
       f.home,
     );
     await reconnect.complete({ clientId: "client", token: f.next });
@@ -193,7 +195,9 @@ test.each([20, 25])(
 
 test("historical revocation before the captured grant start stays deduped and cannot cancel the new installation", async () => {
   const f = await fixture();
-  const reconnect = createLinearReconnect({ now: () => 20, fetch: async () => verified() })(f.home);
+  const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
+    f.home,
+  );
   await reconnect.complete({ clientId: "client", token: f.next });
   for (let i = 0; i < 2; i++) {
     expect(
@@ -209,7 +213,9 @@ test("historical revocation before the captured grant start stays deduped and ca
 
 test("a failed restoration write leaves both the credential and fence unchanged", async () => {
   const f = await fixture();
-  const reconnect = createLinearReconnect({ now: () => 20, fetch: async () => verified() })(f.home);
+  const reconnect = await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(
+    f.home,
+  );
   f.db.run(
     "CREATE TRIGGER fail_restore BEFORE UPDATE ON linear_app_revocation BEGIN SELECT RAISE(ABORT, 'restore failed'); END",
   );
@@ -222,7 +228,9 @@ test("a failed restoration write leaves both the credential and fence unchanged"
 
 test("a refresh started before revocation cannot overwrite the verified host reconnect credential", async () => {
   const f = await fixture();
-  await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(f.home).complete({
+  await (
+    await createLinearReconnect({ now: () => 20, fetch: async () => verified() })(f.home)
+  ).complete({
     clientId: "client",
     token: f.next,
   });
@@ -251,7 +259,9 @@ test("a refresh started before revocation cannot overwrite the verified host rec
     accessToken: "fake-reconnected-access",
     refreshToken: "fake-reconnected-refresh",
   };
-  await createLinearReconnect({ now: () => 40, fetch: async () => verified() })(f.home).complete({
+  await (
+    await createLinearReconnect({ now: () => 40, fetch: async () => verified() })(f.home)
+  ).complete({
     clientId: "client",
     token: latest,
   });

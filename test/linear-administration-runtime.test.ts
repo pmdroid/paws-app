@@ -246,7 +246,7 @@ test("signed revocation stops owned work and fences active, queued and delayed r
     idempotencyKey: "late",
     payload: { sessionId: "session", kind: "response", body: "Stale cancellation" },
   });
-  const reconnect = createLinearReconnect({
+  const reconnect = await createLinearReconnect({
     now: () => Date.now() + 1000,
     fetch: async () =>
       Response.json({ data: { viewer: { id: "app", app: true, organization: { id: "org" } } } }),

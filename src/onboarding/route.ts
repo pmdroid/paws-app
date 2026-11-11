@@ -148,7 +148,7 @@ export function createBrowserOnboarding(options: {
           identity: JSON.stringify({
             identity,
             reconnect: options.reconnect
-              ? createLinearReconnect({ fetch: fetchImpl, now })(home).snapshot
+              ? (await createLinearReconnect({ fetch: fetchImpl, now })(home)).snapshot
               : null,
           }),
           expiresAt: now() + 600_000,
@@ -242,8 +242,8 @@ export function createBrowserOnboarding(options: {
         JSON.stringify({ clientId: options.clientId, clientSecret: options.clientSecret }),
       );
       if (reconnect) {
-        const restored = await createLinearReconnect({ fetch: fetchImpl, snapshot: reconnect })(
-          home,
+        const restored = await (
+          await createLinearReconnect({ fetch: fetchImpl, snapshot: reconnect })(home)
         ).complete({ clientId: options.clientId!, token });
         if (!restored) return retry("workspace-mismatch");
       } else if (!writeStoredToken(db, secretsDir, token, true)) return retry("already-connected");

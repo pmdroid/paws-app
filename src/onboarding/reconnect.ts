@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { pawsPaths } from "../config";
 import {
-  immediate,
-  listLinearInstallationRevocations,
+  listLinearInstallationRevocationsSteps,
   migrate,
   openDatabase,
-  restoreLinearInstallation,
+  restoreLinearInstallationSteps,
+  sqliteDb,
   type LinearInstallationRevocation,
 } from "../db";
 import type { Database } from "bun:sqlite";
@@ -20,17 +20,17 @@ export type LinearReconnectSnapshot = {
   grantStartedAtMs: number;
   revocations: LinearInstallationRevocation[];
 };
-type LinearReconnect = (home: string) => {
+type LinearReconnect = (home: string) => Promise<{
   snapshot: LinearReconnectSnapshot;
   complete(input: { clientId: string; token: StoredLinearToken }): Promise<boolean>;
-};
+}>;
 
 export function createLinearReconnect(options?: {
   fetch?: FetchLike;
   now?: () => number;
   snapshot?: LinearReconnectSnapshot;
 }): LinearReconnect {
-  return (home) => {
+  return async (home) => {
     const paths = pawsPaths(home);
     const read = (db: Database) => fingerprint(readStoredToken(db, paths.secretsDir));
     const db = openDatabase(paths.db);
@@ -40,7 +40,7 @@ export function createLinearReconnect(options?: {
       snapshot = options?.snapshot ?? {
         previous: read(db),
         grantStartedAtMs: (options?.now ?? Date.now)(),
-        revocations: listLinearInstallationRevocations(db),
+        revocations: await sqliteDb(db).run((q) => listLinearInstallationRevocationsSteps(q)),
       };
     } finally {
       db.close();
@@ -88,18 +88,18 @@ export function createLinearReconnect(options?: {
         const current = openDatabase(paths.db);
         try {
           migrate(current);
-          immediate(current, () => {
+          await sqliteDb(current).transaction(function* (q) {
             if (read(current) !== previous)
               throw new Error("The stored Linear authorization changed during reconnection.");
             if (
-              !restoreLinearInstallation(current, {
+              !(yield* restoreLinearInstallationSteps(q, {
                 organizationId: revoked.organizationId,
                 oauthClientId: input.clientId,
                 appUserId: viewer.id as string,
                 generation: revoked.generation,
                 grantStartedAtMs,
                 credentialFingerprint: next,
-              })
+              }))
             )
               throw new Error("Linear access changed during reconnection. Reconnect again.");
             writeStoredToken(current, paths.secretsDir, input.token);
