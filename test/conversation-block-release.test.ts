@@ -129,9 +129,9 @@ async function blockedAfterCleanupFailure() {
     itemId,
     runId: run.id,
     /** One runner heartbeat naming the work it still runs, `later` ms from the last. */
-    heartbeat(live: { runId: string; generation: number }[], later = RUNNER_LIVE_GRACE_MS) {
+    async heartbeat(live: { runId: string; generation: number }[], later = RUNNER_LIVE_GRACE_MS) {
       now += later;
-      work.heartbeat("agentbox", 1, {}, undefined, undefined, undefined, undefined, live);
+      await work.heartbeat("agentbox", 1, {}, undefined, undefined, undefined, undefined, live);
     },
     restarts: () =>
       db
@@ -165,7 +165,7 @@ test("a blocked reply waits, then is delivered once after the restarted runner r
     expect(getConversation(f.db, f.itemId).blocked).toBe(true);
 
     // The runner restarted for an update and no longer names the command.
-    f.heartbeat([]);
+    await f.heartbeat([]);
     await f.orchestrator.releaseCleanupBlocks();
     expect(getConversation(f.db, f.itemId).blocked).toBe(false);
     const restarts = f.restarts();
@@ -186,15 +186,15 @@ test("a runner that still reports the command keeps the block", async () => {
   try {
     await f.orchestrator.onLinearEvent(linearEvent("reply-1", "Please continue"));
     const live = [{ runId: f.runId, generation: 1 }];
-    f.heartbeat(live);
-    f.heartbeat(live);
+    await f.heartbeat(live);
+    await f.heartbeat(live);
     await f.orchestrator.releaseCleanupBlocks();
     expect(getConversation(f.db, f.itemId).blocked).toBe(true);
     expect(listPendingLinearTurns(f.db, "session")).toHaveLength(1);
     expect(f.restarts()).toEqual([]);
 
     // Once a later report leaves it out, the old agent is gone.
-    f.heartbeat([]);
+    await f.heartbeat([]);
     await f.orchestrator.releaseCleanupBlocks();
     expect(getConversation(f.db, f.itemId).blocked).toBe(false);
     expect(f.restarts()).toHaveLength(1);

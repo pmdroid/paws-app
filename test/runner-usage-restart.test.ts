@@ -360,7 +360,7 @@ async function usageLimitScenario(
     while (!sim.stopped) {
       if (!sim.paused) {
         const { work, results } = services;
-        work.heartbeat(runnerId);
+        await work.heartbeat(runnerId);
         const pause = db
           .query<{ runId: string; resetsAt: number }, []>(
             "SELECT run_id AS runId,resets_at AS resetsAt FROM usage_pause",

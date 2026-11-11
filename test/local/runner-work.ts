@@ -104,13 +104,22 @@ export async function probeRunnerWork(
     eventKey: Buffer.alloc(32, 7),
     now: () => now,
   });
-  const confirmStopped = (
+  const confirmStopped = async (
     runnerId: string,
     command: { runId: string; generation: number; id: string },
   ) =>
-    work.heartbeat(runnerId, 1, {}, undefined, undefined, undefined, undefined, [], undefined, [
-      { runId: command.runId, generation: command.generation, commandId: command.id },
-    ]);
+    await work.heartbeat(
+      runnerId,
+      1,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      [{ runId: command.runId, generation: command.generation, commandId: command.id }],
+    );
   const item = insertQueuedItem(db, { id: "fixture-item", now, sessionKey: "fixture-session" });
   const { run } = beginImplementRun(db, item.id, now);
   recordLinearInstallation(db, {
@@ -274,7 +283,7 @@ export async function probeRunnerWork(
       sequence: 1,
       event: { type: "progress", text: "Working" },
     });
-    assert.deepEqual(work.heartbeat(firstRunner).fenced, []);
+    assert.deepEqual((await work.heartbeat(firstRunner)).fenced, []);
     // Restore this fixture's delivery deadline for its later normal-expiry assertions.
     db.run("UPDATE runner_command SET expires_at=? WHERE id=?", [command.expiresAt, command.id]);
     now = beforeStall;
@@ -385,7 +394,7 @@ export async function probeRunnerWork(
     );
     applyWorkItemEvent(db, item.id, "blocking_question");
     assert.throws(() => work.authorize(event), /matching open question/);
-    assert.equal(work.heartbeat(firstRunner).leases.length, 1);
+    assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
     const question = openQuestion(db, {
       itemId: item.id,
       runId: run.id,
@@ -394,12 +403,12 @@ export async function probeRunnerWork(
       now,
     });
     assert.equal(work.authorize(event).command.id, command.id);
-    assert.equal(work.heartbeat(firstRunner).leases.length, 1);
+    assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
     answerQuestion(db, question.id, { answer: "Yes", answeredBy: "owner", now: now + 1 });
     assert.equal((await work.event(event)).duplicate, true);
     await assert.rejects(work.event({ ...event, sequence: 2 }), /matching open question/);
     assert.throws(() => work.authorize(event), /matching open question/);
-    assert.equal(work.heartbeat(firstRunner).leases.length, 1);
+    assert.equal((await work.heartbeat(firstRunner)).leases.length, 1);
     applyWorkItemEvent(db, item.id, "answer_received");
     assert.equal(work.authorize(event).command.id, command.id);
     observe(
@@ -408,7 +417,7 @@ export async function probeRunnerWork(
       { matchingQuestionAllowed: true, unrelatedWaitDenied: true, answeredTaskResumed: true },
     );
     now += 90_000;
-    const reattached = work.heartbeat(firstRunner);
+    const reattached = await work.heartbeat(firstRunner);
     assert.deepEqual(reattached.fenced, []);
     assert.equal(reattached.leases[0]!.expiresAt, now + 60_000);
     now += 90_000;
@@ -432,16 +441,16 @@ export async function probeRunnerWork(
       { heartbeatReattached: true, grantRenewedLease: true, eventAccepted: true },
     );
     now += 15_000;
-    const heartbeat = work.heartbeat(firstRunner);
+    const heartbeat = await work.heartbeat(firstRunner);
     assert.equal(heartbeat.leases[0]!.expiresAt, now + 60_000);
     const cap = command.expiresAt - 30_000;
     db.run("UPDATE runner_work SET lease_until=? WHERE run_id=?", [command.expiresAt, run.id]);
     now = cap;
-    assert.equal(work.heartbeat(firstRunner).leases[0]!.expiresAt, command.expiresAt);
+    assert.equal((await work.heartbeat(firstRunner)).leases[0]!.expiresAt, command.expiresAt);
     now = command.expiresAt;
     await assert.rejects(work.issueGrant(grantInput), /command expired/);
     await assert.rejects(work.event({ ...event, sequence: 2 }), /command expired/);
-    const expired = work.heartbeat(firstRunner);
+    const expired = await work.heartbeat(firstRunner);
     assert.deepEqual(expired.leases, []);
     assert.equal(expired.fenced[0]!.generation, 1);
     const secondCommand = {
@@ -452,7 +461,7 @@ export async function probeRunnerWork(
       issuedAt: now,
       expiresAt: now + 5 * 60_000,
     };
-    confirmStopped(firstRunner, command);
+    await confirmStopped(firstRunner, command);
     work.assign(secondCommand);
     await assert.rejects(work.issueGrant(grantInput), /fenced/);
     assert.equal((await work.commands(firstRunner)).length, 0);
@@ -510,7 +519,7 @@ export async function probeRunnerWork(
     });
     const third = { ...secondCommand, id: workspaceId(), generation: 3 };
     await work.acknowledge(secondRunner, previousCancellationId);
-    confirmStopped(secondRunner, secondCommand);
+    await confirmStopped(secondRunner, secondCommand);
     work.assign(third);
     const thirdGrant = await work.issueGrant({ ...current, commandId: third.id, generation: 3 });
     await control.setStatus(principal, secondRunner, "revoked");
@@ -524,7 +533,7 @@ export async function probeRunnerWork(
       }),
       /unavailable/,
     );
-    assert.throws(() => work.heartbeat(secondRunner), /unavailable/);
+    await assert.rejects(work.heartbeat(secondRunner), /unavailable/);
     const replacement = { ...third, id: workspaceId(), runnerId: firstRunner, generation: 4 };
     work.assign(replacement);
     assert.equal(work.current(run.id, 4).command.id, replacement.id);
@@ -730,8 +739,8 @@ export async function probeRunnerWork(
       } finally {
         waitingForTeardown.close();
       }
-      confirmStopped(firstRunner, released);
-      confirmStopped(firstRunner, waiting);
+      await confirmStopped(firstRunner, released);
+      await confirmStopped(firstRunner, waiting);
       work.assign(afterCancel);
       await work.finish(waiting.runId, 2);
       await control.setStatus(principal, firstRunner, "paused");
@@ -743,12 +752,12 @@ export async function probeRunnerWork(
       const helper = helpers.dispatch(helperInput);
       const review = { ...afterCancel, type: "review" as const, id: workspaceId(), generation: 3 };
       assert.throws(() => work.assign(review), /occupied/);
-      work.heartbeat(firstRunner, 2);
+      await work.heartbeat(firstRunner, 2);
       work.assign({ ...released, id: workspaceId(), generation: 3 });
       assert.throws(() => work.assign(review), /occupied/);
       assert.throws(() => helpers.dispatch(helperInput), /busy/);
       await work.finish(released.runId, 3);
-      work.heartbeat(firstRunner, 1);
+      await work.heartbeat(firstRunner, 1);
       helpers.finish(helper.command.id);
       work.assign(review);
       const commandCount = db
@@ -822,7 +831,7 @@ export async function probeRunnerWork(
           /(?:cancellation|free slot)/,
         );
       } finally {
-        confirmStopped(firstRunner, { ...review, id: pendingCancellation.id, generation: 5 });
+        await confirmStopped(firstRunner, { ...review, id: pendingCancellation.id, generation: 5 });
         await Promise.all([cancelTask, repeatedCancelTask, retriedAfterReceipt]);
       }
       assert.equal(cancellationJoined, true);
@@ -858,7 +867,11 @@ export async function probeRunnerWork(
       const replacementCancellation = latestCancel()!;
       assert.notEqual(replacementCancellation.id, expiredCancel.id);
       await work.acknowledge(firstRunner, replacementCancellation.id);
-      confirmStopped(firstRunner, { ...review, id: replacementCancellation.id, generation: 7 });
+      await confirmStopped(firstRunner, {
+        ...review,
+        id: replacementCancellation.id,
+        generation: 7,
+      });
       await retriedCancel;
       assert.equal(
         db

@@ -387,8 +387,8 @@ async function runRemoteFault(fault: Fault) {
     { command: Extract<RunnerCommand, { type: "run" }>; at: number; hung?: boolean }
   >();
   const terminated: { runId: string; generation: number; commandId: string }[] = [];
-  const heartbeat = () =>
-    work.heartbeat(
+  const heartbeat = async () =>
+    await work.heartbeat(
       runnerId,
       1,
       {},
@@ -611,7 +611,7 @@ async function runRemoteFault(fault: Fault) {
         unreachable = undefined;
         runner.stale = false;
         runner.faulty = false;
-        heartbeat();
+        await heartbeat();
         if (command.type === "run") await deliver(command);
       }
       for (const [key, entry] of live)
@@ -628,7 +628,7 @@ async function runRemoteFault(fault: Fault) {
                 )
                 .get()
             : null;
-        const reply = heartbeat();
+        const reply = await heartbeat();
         if (lostBefore && reply.fenced.length)
           runner.lostBeforeLease = lostBefore.leaseUntil > Date.now();
         // A hung agent's lease is no longer renewed although the runner still names its work.
@@ -664,7 +664,7 @@ async function runRemoteFault(fault: Fault) {
             generation: command.generation,
             commandId: command.id,
           });
-          heartbeat();
+          await heartbeat();
           runner.stale = false;
         }
         if (command.type === "login_check")

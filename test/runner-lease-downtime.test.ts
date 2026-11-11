@@ -248,7 +248,7 @@ test("Paws down 20 minutes with a 30-minute budget: the runner still holds the w
     expect(resumes(f.db)).toHaveLength(1);
     expect(resumes(f.db)[0]?.payload).toMatchObject({ reason: "process_restart" });
     expect(getWorkItem(f.db, f.item.id)).toMatchObject({ state: "running", recoveryAttempts: 0 });
-    const beat = f.work.heartbeat(f.runnerId);
+    const beat = await f.work.heartbeat(f.runnerId);
     expect(beat.fenced).toEqual([]);
     expect(beat.offlineBudgetMs).toBe(BUDGET);
     expect(beat.aliveAt).toBe(f.clock.at);
@@ -423,7 +423,9 @@ test("Paws down longer than the budget: the run resumes as today", async () => {
       state: "recovering",
       recoveryAttempts: 1,
     });
-    expect(f.work.heartbeat(f.runnerId).fenced).toEqual([{ runId: f.run.id, generation: 1 }]);
+    expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([
+      { runId: f.run.id, generation: 1 },
+    ]);
   } finally {
     f.close();
   }
@@ -490,7 +492,9 @@ test("a runner silent past the grace while Paws is up is still fenced", async ()
       { type: "resume", freshSession: true, checkpoint: null },
     ]);
     expect(f.leaseUntil()).toBe(before);
-    expect(f.work.heartbeat(f.runnerId).fenced).toEqual([{ runId: f.run.id, generation: 1 }]);
+    expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([
+      { runId: f.run.id, generation: 1 },
+    ]);
   } finally {
     f.close();
   }
@@ -564,9 +568,9 @@ test("leases renewed after an obsolete alive mark receive no downtime credit", a
 test("a runner that parses the level is told it on the heartbeat reply", async () => {
   const f = await fixture();
   f.db.run("UPDATE runner_host_status SET runner_version='0.1.76' WHERE runner_id=?", [f.runnerId]);
-  expect(f.work.heartbeat(f.runnerId).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
+  expect((await f.work.heartbeat(f.runnerId)).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
   f.db.run("DELETE FROM runner_host_status WHERE runner_id=?", [f.runnerId]);
-  expect(f.work.heartbeat(f.runnerId).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
+  expect((await f.work.heartbeat(f.runnerId)).protocolLevel).toBe(CONTROL_PLANE_PROTOCOL_LEVEL);
   f.close();
 });
 
@@ -577,7 +581,7 @@ test("a runner older than the offline lease release is not extended", async () =
     f.db.run("UPDATE runner_host_status SET runner_version='0.1.52' WHERE runner_id=?", [
       f.runnerId,
     ]);
-    const beat = f.work.heartbeat(f.runnerId);
+    const beat = await f.work.heartbeat(f.runnerId);
     expect(beat).not.toHaveProperty("offlineBudgetMs");
     expect(beat).not.toHaveProperty("aliveAt");
     expect(beat).not.toHaveProperty("protocolLevel");

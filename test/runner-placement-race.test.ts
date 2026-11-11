@@ -134,7 +134,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  work.heartbeat(runnerId, 8);
+  await work.heartbeat(runnerId, 8);
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
   const backend = createRemoteAgentRunner({
@@ -191,7 +191,7 @@ async function runItem(wrap: (fixture: Fixture) => RunnerPlacement) {
   const handled = new Set<string>();
   const runner = (async () => {
     while (!sim.stopped) {
-      work.heartbeat(runnerId, 8);
+      await work.heartbeat(runnerId, 8);
       for (const envelope of await work.commands(runnerId)) {
         const command = JSON.parse(
           Buffer.from(envelope.payload, "base64url").toString(),

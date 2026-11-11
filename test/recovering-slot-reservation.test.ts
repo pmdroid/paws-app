@@ -214,7 +214,7 @@ async function runRecovering(input: {
     privateKey: generateKeyPairSync("ed25519").privateKey,
     eventKey: Buffer.alloc(32, 7),
   });
-  work.heartbeat(runnerId, input.capacity);
+  await work.heartbeat(runnerId, input.capacity);
   const results = createRunnerResults({ db, work });
   const health = createRunnerHealth({ db, work });
   const prepared = new Map<string, Set<string>>();
@@ -303,7 +303,7 @@ async function runRecovering(input: {
     while (!sim.stopped) {
       for (const simulatedRunnerId of runnerIds) {
         db.run("UPDATE runner SET last_seen_at=? WHERE id=?", [Date.now(), simulatedRunnerId]);
-        work.heartbeat(simulatedRunnerId, input.capacity);
+        await work.heartbeat(simulatedRunnerId, input.capacity);
         for (const envelope of await work.commands(simulatedRunnerId)) {
           const command = JSON.parse(
             Buffer.from(envelope.payload, "base64url").toString(),

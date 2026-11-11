@@ -148,15 +148,17 @@ test("a heartbeat 70 s late for a run the runner reports, on a full runner, rene
   const f = await fixture();
   try {
     expect(
-      f.work.heartbeat(
-        f.runnerId,
-        1,
-        {},
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        running(f.run.id),
+      (
+        await f.work.heartbeat(
+          f.runnerId,
+          1,
+          {},
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          running(f.run.id),
+        )
       ).fenced,
     ).toEqual([]);
     f.clock.at += 60_000 + 70_000;
@@ -169,7 +171,7 @@ test("a heartbeat 70 s late for a run the runner reports, on a full runner, rene
     });
     expect(renewed.expiresAt).toBeGreaterThan(f.clock.at);
     f.clock.at += 5_000;
-    const reply = f.work.heartbeat(
+    const reply = await f.work.heartbeat(
       f.runnerId,
       1,
       {},
@@ -202,7 +204,7 @@ test("the same late run on a full runner is fenced when the runner does not repo
   const f = await fixture();
   try {
     f.clock.at += 60_000 + 70_000;
-    const reply = f.work.heartbeat(
+    const reply = await f.work.heartbeat(
       f.runnerId,
       1,
       {},
@@ -224,7 +226,7 @@ test("a runner that does not report its work keeps today's rule: a full runner i
   const f = await fixture();
   try {
     f.clock.at += 60_000 + 70_000;
-    const reply = f.work.heartbeat(f.runnerId);
+    const reply = await f.work.heartbeat(f.runnerId);
     expect(reply.fenced).toEqual(running(f.run.id));
     expect(f.grants()).toBe(0);
   } finally {
@@ -235,7 +237,7 @@ test("a runner that does not report its work keeps today's rule: a full runner i
 test("a run reported earlier but left out of the latest report gets no grace on a full runner", async () => {
   const f = await fixture();
   try {
-    f.work.heartbeat(
+    await f.work.heartbeat(
       f.runnerId,
       1,
       {},

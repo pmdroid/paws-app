@@ -166,7 +166,7 @@ async function setup() {
           await work.acknowledge(runnerId, verified.command.id);
           const command = verified.command;
           if (command.type === "cancel")
-            work.heartbeat(
+            await work.heartbeat(
               runnerId,
               1,
               {},
@@ -186,11 +186,11 @@ async function setup() {
     throw new Error("No dispatched runner command");
   }
   let sequence = 0;
-  function item() {
+  async function item() {
     git(["-C", runner, "reset", "-q", "--hard", base]);
     git(["-C", runner, "clean", "-qfd"]);
     db.run("UPDATE run SET status='ended' WHERE status='active'");
-    work.heartbeat(runnerId);
+    await work.heartbeat(runnerId);
     const id = `item-${++sequence}`;
     git(["--git-dir", paws, "update-ref", head(id), base]);
     const sessionKey = `session-${sequence}`;
@@ -376,7 +376,7 @@ afterAll(() => context.cleanup());
 
 test("a fake runner handover leaves its WIP commit on the Paws side as the checkpoint, with its session", async () => {
   const { git, paws, runner } = context;
-  const record = context.item();
+  const record = await context.item();
   let wip = "";
   let outcome: unknown;
   const stop = new AbortController();
@@ -421,7 +421,7 @@ test("a fake runner handover leaves its WIP commit on the Paws side as the check
 });
 
 test("a session waiting on ask_team hands over without losing its question", async () => {
-  const record = context.item();
+  const record = await context.item();
   const asked: { question: string; abortedWhilePosting?: boolean }[] = [];
   let posted!: () => void;
   const posting = new Promise<void>((resolve) => (posted = resolve));
@@ -455,7 +455,7 @@ test("a session waiting on ask_team hands over without losing its question", asy
 });
 
 test("a handover that fails after the interrupt while Paws posts a question keeps the question", async () => {
-  const record = context.item();
+  const record = await context.item();
   const asked: { question: string; abortedWhilePosting?: boolean }[] = [];
   let posted!: () => void;
   const posting = new Promise<void>((resolve) => (posted = resolve));
@@ -494,7 +494,7 @@ test("a handover that fails after the interrupt while Paws posts a question keep
 });
 
 test("a handover the runner cannot finish within 2 minutes is reported and the session stays on the runner", async () => {
-  const record = context.item();
+  const record = await context.item();
   let outcome: unknown;
   const { result, notices } = await context.turn(record, async (command) => {
     const handing = context.backend.handOverItem(record.id);
@@ -517,7 +517,7 @@ test("a handover the runner cannot finish within 2 minutes is reported and the s
 });
 
 test("a handover that fails after the interrupt is reported with its reason, and the run keeps its session here", async () => {
-  const record = context.item();
+  const record = await context.item();
   let outcome: unknown;
   const { result, notices } = await context.turn(record, async (command) => {
     const handing = context.backend.handOverItem(record.id);
@@ -544,7 +544,7 @@ test("an item with no running session has nothing to hand over", async () => {
 });
 
 test("a runner release that cannot hand over is never sent the command", async () => {
-  const record = context.item();
+  const record = await context.item();
   context.release("0.1.43");
   try {
     const { result } = await context.turn(record, async (command) => {
@@ -564,7 +564,7 @@ test("a runner release that cannot hand over is never sent the command", async (
 
 test("a run stopped for the time cap saves its runner's work first, and the restarted turn starts from it", async () => {
   const { db, git, paws, runner } = context;
-  const record = context.item();
+  const record = await context.item();
   context.release("0.1.46");
   try {
     const stop = new AbortController();
@@ -659,7 +659,7 @@ test("a run stopped for the time cap saves its runner's work first, and the rest
 });
 
 test("a runner release that cannot checkpoint is cancelled at once", async () => {
-  const record = context.item();
+  const record = await context.item();
   const stop = new AbortController();
   const { result } = await context.turn(
     record,
@@ -681,7 +681,7 @@ test("a runner release that cannot checkpoint is cancelled at once", async () =>
 
 test("a restarted turn whose saved work cannot be fetched fails instead of starting from an older head", async () => {
   const { db } = context;
-  const record = context.item();
+  const record = await context.item();
   // A checkpoint the runner published that Paws no longer can fetch.
   const lost = "f".repeat(40);
   saveCheckpoint(db, record.id, { phase: "running", baseSha: context.base, wipCommit: lost });
@@ -704,7 +704,7 @@ test("a restarted turn whose saved work cannot be fetched fails instead of start
 
 test("a stop while a handover is under way is cancelled at once, leaving the checkpoint to the handover", async () => {
   const { db } = context;
-  const record = context.item();
+  const record = await context.item();
   context.release("0.1.46");
   try {
     const stop = new AbortController();

@@ -186,7 +186,7 @@ test("an accepted result survives a reopen and lease expiry, and recovery reatta
     f.clock.at += 60_001;
     expect(f.results.read(f.run.id, 1, command.id)).toEqual(result);
     await expect(submit()).rejects.toThrow();
-    expect(f.work.heartbeat(f.runnerId).fenced).toEqual([]);
+    expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([]);
     prepareShutdown(f.db, f.clock.at);
     const decisions = recoverOnStartup(f.db, f.clock.at);
     expect(decisions).toEqual([
@@ -211,7 +211,9 @@ test("an expired execution without an accepted result follows the existing recov
     expect(() => f.results.read(f.run.id, 1, command.id)).toThrow(
       "Runner work is fenced or its lease expired.",
     );
-    expect(f.work.heartbeat(f.runnerId).fenced).toEqual([{ runId: f.run.id, generation: 1 }]);
+    expect((await f.work.heartbeat(f.runnerId)).fenced).toEqual([
+      { runId: f.run.id, generation: 1 },
+    ]);
     expect(recoverOnStartup(f.db, f.clock.at)).toEqual([
       { type: "resume", freshSession: true, checkpoint: null },
     ]);

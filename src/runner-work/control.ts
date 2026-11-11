@@ -681,7 +681,7 @@ export function createRunnerWork(options: {
      * `reported` comes from runners that name the work they still run: only that work is renewed,
      * and acknowledged work without a result that the runner no longer runs is fenced as lost.
      */
-    heartbeat(
+    async heartbeat(
       runnerId: string,
       capacity = 1,
       host: RunnerHostSample = {},
@@ -700,7 +700,7 @@ export function createRunnerWork(options: {
         reported && new Set(reported.map(({ runId, generation }) => `${runId}:${generation}`));
       // The capacity, repository and slot-wait writes that wake jobs say so once they commit.
       let woke = false;
-      const reply = transaction(function* (q) {
+      const reply = await store.transaction(function* (q) {
         yield* runnerSteps(q, runnerId);
         const storedVersion = yield* runnerHostVersionSteps(q, runnerId);
         const version = host.runnerVersion ?? storedVersion;
