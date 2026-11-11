@@ -21,13 +21,13 @@ export const AFTER_PULL_REQUEST_RESPONSE =
 /**
  * Thoughts that may follow the PR response: a change request on the risk approval, from the
  * Risk card or a Linear reply, and a review or comments on the pull request that sent the item
- * back to the agent (`pull-feedback:`), and a conflict with main that sent it back to rebase
+ * back to the agent (`pull-feedback:`) or just arrived (`linear-feedback-seen:`), and a conflict with main that sent it back to rebase
  * (`merge-conflict:`). Each wakes the session, so a person sees the agent work. The
  * acknowledgement of a person's message in the session (`turn:ack:`, and the `fresh-budget:` line
  * of the turn it starts) answers them, so it passes too.
  */
 export const AFTER_PULL_REQUEST_THOUGHT =
-  /^(risk-approval:|pull-feedback:|merge-conflict:|turn:ack:|fresh-budget:)/;
+  /^(risk-approval:|pull-feedback:|linear-feedback-seen:|merge-conflict:|turn:ack:|fresh-budget:)/;
 
 export function* hasPublishedPullRequestSteps(
   q: Q,

@@ -22,6 +22,7 @@ import {
 } from "../db";
 import type { ReviewThread } from "../github";
 import { REBASE_CONFLICT_INSTRUCTION, rebaseBudgetForSteps } from "../merge";
+import { feedbackSeenSteps } from "./feedback-seen";
 import { seenReactionSteps } from "./fix-round-notice";
 import { askSteps } from "./operations";
 import {
@@ -228,14 +229,16 @@ export type CommentReceipt = { recorded: boolean; enqueued: boolean };
 
 const NOT_RECORDED: CommentReceipt = { recorded: false, enqueued: false };
 
-/** Record the comment and, the first time, queue 👀 on it through the GitHub outbox. */
+/** Record the comment and, the first time, queue 👀 on it and tell the Linear session. */
 function* recordAndReactSteps(
   q: Q,
   comment: Parameters<typeof recordPullCommentSteps>[1],
   wait: PullFeedbackWait | undefined,
 ): Steps<CommentReceipt> {
   const receipt = yield* recordPullCommentSteps(q, comment, wait);
-  if (receipt.recorded) yield* seenReactionSteps(q, comment, comment.receivedAt);
+  if (!receipt.recorded) return receipt;
+  yield* seenReactionSteps(q, comment, comment.receivedAt);
+  yield* feedbackSeenSteps(q, comment.itemId, comment.receivedAt);
   return receipt;
 }
 
