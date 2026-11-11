@@ -420,7 +420,7 @@ export function createRemoteSessionAgentRunner(options: {
               attempt,
               async () => {},
               usageLimitWait(
-                { db: options.db, now, mono, interval: options.pollIntervalMs ?? 250 },
+                { store, now, mono, interval: options.pollIntervalMs ?? 250 },
                 () => sessionRun(sessionId),
                 input,
               ),

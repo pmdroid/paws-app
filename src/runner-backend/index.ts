@@ -44,7 +44,6 @@ import {
   fallbackHistory,
   legacyAgentAccountId,
   legacyAgentBindingId,
-  getWorkItem,
   getWorkItemSteps,
   refundLostTurnAsync,
   listHooks,
@@ -2719,9 +2718,9 @@ export function createRemoteAgentRunner(options: {
             moving,
             async () => cancelItem(itemId, input.signal),
             usageLimitWait(
-              { db, now, mono, interval },
-              () => {
-                const current = getWorkItem(db, itemId)?.currentRunId;
+              { store, now, mono, interval },
+              async () => {
+                const current = (await store.run((q) => getWorkItemSteps(q, itemId)))?.currentRunId;
                 return current ? { itemId, runId: current } : null;
               },
               input,
