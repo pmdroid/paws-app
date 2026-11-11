@@ -302,7 +302,7 @@ describe("a comment restart on a conflicting pull request", () => {
     expect(restarted?.handoff.indexOf(REBASE_CONFLICT_INSTRUCTION)).toBe(0);
     expect(restarted?.handoff).toContain(REBASED_LINES_NOTE);
     expect(restarted?.handoff).toContain(BOT_FINDING);
-    expect(listRebaseReturns(h.db, "eng-1", 0)).toEqual([
+    expect(await listRebaseReturns(sqliteDb(h.db), "eng-1", 0)).toEqual([
       expect.objectContaining({ reason: "merge", base: "main-2" }),
     ]);
     expect(await fixRounds(sqliteDb(h.db), "eng-1")).toBe(1);
@@ -313,7 +313,7 @@ describe("a comment restart on a conflicting pull request", () => {
     await h.inline(9701, "cursor[bot]", BOT_FINDING);
     expect(await handlePullComments(sqliteDb(h.db), "eng-1", h.caps)).toBe("restarted");
     expect((await handoffs(h.db))[0]?.handoff).not.toContain(REBASE_CONFLICT_INSTRUCTION);
-    expect(listRebaseReturns(h.db, "eng-1", 0)).toEqual([]);
+    expect(await listRebaseReturns(sqliteDb(h.db), "eng-1", 0)).toEqual([]);
   });
 });
 

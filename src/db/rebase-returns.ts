@@ -97,12 +97,12 @@ export function* listRebaseReturnsSteps(
   }));
 }
 
-export function listRebaseReturns(
-  db: Database,
+export async function listRebaseReturns(
+  store: Db,
   itemId: string,
   sinceActivationId: number,
-): RebaseReturnRecord[] {
-  return settled(sqliteDb(db).run((q) => listRebaseReturnsSteps(q, itemId, sinceActivationId)));
+): Promise<RebaseReturnRecord[]> {
+  return store.run((q) => listRebaseReturnsSteps(q, itemId, sinceActivationId));
 }
 
 export function* rebaseReturnedForSteps(q: Q, itemId: string, candidate: string) {

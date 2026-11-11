@@ -119,7 +119,7 @@ test("Merge at the time limit records one acceptance, no agent turn, and no runn
   expect(ms.awaiting_input).toBe(10 * MINUTE);
   expect(ms.merge_queue).toBe(5 * MINUTE);
 
-  restart(db, (await getWorkItem(sqliteDb(db), itemId))!, {
+  await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), itemId))!, {
     reason: "ci",
     body: "CI failed",
     now: clock.now(),

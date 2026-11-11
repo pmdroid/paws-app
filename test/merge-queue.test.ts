@@ -103,7 +103,7 @@ test("a fix sent back from the merge queue or its re-verify counts as merge-queu
     await applyWorkItemEvent(sqliteDb(db), "conflict", "closeout_accepted");
     await joinMergeQueue(sqliteDb(db), { itemId: "conflict", repository: "acme/app", now: 2 });
     expect(await inMergeQueue(sqliteDb(db), "conflict")).toBe(true);
-    restart(db, (await getWorkItem(sqliteDb(db), "conflict"))!, {
+    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "conflict"))!, {
       reason: "conflict",
       body: "Rebase",
       now: 3,
@@ -115,7 +115,7 @@ test("a fix sent back from the merge queue or its re-verify counts as merge-queu
     await accepted("reverify");
     await applyWorkItemEvent(sqliteDb(db), "reverify", "closeout_accepted");
     await applyWorkItemEvent(sqliteDb(db), "reverify", "reverify_requested");
-    restart(db, (await getWorkItem(sqliteDb(db), "reverify"))!, {
+    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "reverify"))!, {
       reason: "findings",
       body: "Fix",
       now: 4,
@@ -123,7 +123,7 @@ test("a fix sent back from the merge queue or its re-verify counts as merge-queu
     expect(await restartedFromMergeQueue(sqliteDb(db), "reverify")).toBe(true);
 
     await accepted("first");
-    restart(db, (await getWorkItem(sqliteDb(db), "first"))!, {
+    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "first"))!, {
       reason: "findings",
       body: "Fix",
       now: 5,

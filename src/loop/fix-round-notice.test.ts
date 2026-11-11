@@ -66,7 +66,7 @@ async function setup() {
     }),
   );
   const startRestart = async (reason: RestartReason, body: string, jobKey: string) => {
-    restart(db, (await getWorkItem(sqliteDb(db), "eng-1"))!, {
+    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "eng-1"))!, {
       reason,
       body,
       jobKey,

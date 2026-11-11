@@ -330,7 +330,7 @@ describe("receiving ordinary Linear comments", () => {
     try {
       await toMergeQueue(f.db);
       await f.receive(fromWebhook(webhookComment({ id: "c-1", body: "Use the v2 endpoint." })));
-      const before = latestHumanTurn(f.db, "eng-1");
+      const before = await latestHumanTurn(sqliteDb(f.db), "eng-1");
       expect(await f.deliver()).toBe("restarted");
       expect(await f.deliver()).toBe("done");
       expect((await getWorkItem(sqliteDb(f.db), "eng-1"))!.state).toBe("queued");
@@ -347,7 +347,7 @@ describe("receiving ordinary Linear comments", () => {
       expect(handoff).toContain("Use the v2 endpoint.");
       expect(handoff).toContain(LINEAR_COMMENT_INSTRUCTION);
       expect(await f.comment("c-1")).toMatchObject({ state: "delivered", via: "brief" });
-      expect(latestHumanTurn(f.db, "eng-1")).toBe(before);
+      expect(await latestHumanTurn(sqliteDb(f.db), "eng-1")).toBe(before);
       expect(await fixRounds(sqliteDb(f.db), "eng-1")).toBe(0);
       expect(
         await turnBrief(f.db, (await getWorkItem(sqliteDb(f.db), "eng-1"))!, f.caps),
@@ -950,7 +950,12 @@ describe("batching with pull request feedback", () => {
       expect(await f.deliver()).toBe("wait");
       expect(await f.resumeJobs()).toHaveLength(0);
       const item = (await getWorkItem(sqliteDb(f.db), "eng-1"))!;
-      restart(f.db, item, { reason: "review", body: "pull comments", jobKey: "review:x", now: T0 });
+      await restart(sqliteDb(f.db), item, {
+        reason: "review",
+        body: "pull comments",
+        jobKey: "review:x",
+        now: T0,
+      });
       expect(await f.deliver()).toBe("done");
       const brief = await turnBrief(f.db, (await getWorkItem(sqliteDb(f.db), "eng-1"))!, f.caps);
       expect(brief).toContain("And rename it.");

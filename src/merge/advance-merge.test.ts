@@ -291,7 +291,10 @@ describe("advanceMerge on a rebase conflict", () => {
       },
     ] as never);
     expect(
-      listRebaseReturns(h.db, "ENG-1", 0).map((row) => ({ base: row.base, files: row.files })),
+      (await listRebaseReturns(sqliteDb(h.db), "ENG-1", 0)).map((row) => ({
+        base: row.base,
+        files: row.files,
+      })),
     ).toEqual([{ base: main, files: ["ok.txt"] }]);
     expect(h.bodies("thought")).toContain(REBASE_CONFLICT_THOUGHT);
 

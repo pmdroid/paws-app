@@ -414,7 +414,7 @@ test("an automatic CI repair restart keeps adding to the same clock", async () =
   try {
     spent(f.db, f.itemId);
     const before = (await getWorkItem(sqliteDb(f.db), f.itemId))!;
-    restart(f.db, before, {
+    await restart(sqliteDb(f.db), before, {
       reason: "ci",
       body: "CI failed on the pull request.",
       now: Date.now(),

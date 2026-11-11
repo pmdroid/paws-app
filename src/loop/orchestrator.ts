@@ -50,7 +50,7 @@ import {
   recentRepositoryNamesSteps,
   recordAgentCloseoutSteps,
   jobStatusByKey,
-  restartAsync,
+  restart,
   reviewerAlertedSinceSteps,
   saveConversationSteps,
   saveLinearActivitySnapshotSteps,
@@ -3928,7 +3928,7 @@ export class Orchestrator {
       if (executed.run.handoverFailure && !this.askedRuns.has(run.id)) {
         // The handover stopped the agent, then failed: the session stays on its runner, and the
         // next turn loads it there and goes on from the WIP commit.
-        await restartAsync(this.store, finished, {
+        await restart(this.store, finished, {
           reason: "follow_up",
           body: HANDOVER_FAILED_PROMPT,
           now: this.now(),
@@ -10325,7 +10325,7 @@ export class Orchestrator {
         base === head &&
         (await jobStatusByKey(this.store, jobKey)) === null
       ) {
-        await restartAsync(this.store, item, {
+        await restart(this.store, item, {
           reason: "follow_up",
           body: "The earlier implementation run ended before it committed anything. Implement the task from the start.",
           jobKey,
@@ -11141,15 +11141,11 @@ export class Orchestrator {
         !controller.signal.aborted &&
         (await this.store.run((q) => getWorkItemSteps(q, item.id)))?.state === "running"
       )
-        await restartAsync(
-          this.store,
-          (await this.store.run((q) => getWorkItemSteps(q, item.id)))!,
-          {
-            reason: "follow_up",
-            body: "Retry repository selection.",
-            now: this.now(),
-          },
-        );
+        await restart(this.store, (await this.store.run((q) => getWorkItemSteps(q, item.id)))!, {
+          reason: "follow_up",
+          body: "Retry repository selection.",
+          now: this.now(),
+        });
       throw error;
     } finally {
       this.live.delete(liveKey);

@@ -67,7 +67,7 @@ async function respond(db: Database, id: string): Promise<void> {
 }
 
 async function sendBack(db: Database, id: string, reason: "conflict" | "ci"): Promise<void> {
-  restart(db, (await getWorkItem(sqliteDb(db), id))!, {
+  await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), id))!, {
     reason,
     body: "Rebase.",
     jobKey: `${reason}:${id}`,

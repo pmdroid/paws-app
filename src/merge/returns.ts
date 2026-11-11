@@ -11,7 +11,6 @@ import {
   fixRoundsSteps,
   countRebaseReturns,
   countRebaseReturnsSteps,
-  listRebaseReturns,
   listRebaseReturnsSteps,
   getWorkItemSteps,
   recordReviewEscapeSteps,
@@ -35,25 +34,15 @@ export type MergeRestart = (
   handoff: RestartHandoff,
 ) => Steps<{ id: number; armed: boolean } | null>;
 
-export function latestUserTurn(db: Database, itemId: string): number {
-  return latestHumanTurn(db, itemId);
+export async function latestUserTurn(db: Database, itemId: string): Promise<number> {
+  return await latestHumanTurn(sqliteDb(db), itemId);
 }
 
 export async function rebaseReturns(db: Database, itemId: string): Promise<number> {
-  return await countRebaseReturns(sqliteDb(db), itemId, latestUserTurn(db, itemId));
+  return await countRebaseReturns(sqliteDb(db), itemId, await latestUserTurn(db, itemId));
 }
 
 /** Whether a conflict on this main may go back to the agent; see {@link rebaseBudget}. */
-export function rebaseBudgetFor(
-  db: Database,
-  itemId: string,
-  conflict: RebaseConflict,
-  now: number,
-): RebaseBudget {
-  return rebaseBudget(listRebaseReturns(db, itemId, latestUserTurn(db, itemId)), conflict, now);
-}
-
-/** {@link rebaseBudgetFor} as Steps, for a caller that runs them on the store. */
 export function* rebaseBudgetForSteps(
   q: Q,
   itemId: string,

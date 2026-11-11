@@ -161,7 +161,7 @@ test("a conflict fix sent back from the merge queue is admitted before a queued 
     await mergeItem("M", NOW - 120_000);
     // M's owner already runs both busy items; N's owner runs nothing.
     db.run("UPDATE work_item SET owner_user_id='user-1' WHERE id IN ('M','busy-A','busy-B')");
-    restart(db, (await getWorkItem(sqliteDb(db), "M"))!, {
+    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "M"))!, {
       reason: "conflict",
       body: "Resolve conflicts",
       now: NOW,
@@ -179,7 +179,7 @@ test("findings from a merge-queue re-verify send the fix ahead of a queued item 
   try {
     await mergeItem("M", NOW - 120_000);
     await applyWorkItemEvent(sqliteDb(db), "M", "reverify_requested");
-    restart(db, (await getWorkItem(sqliteDb(db), "M"))!, {
+    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "M"))!, {
       reason: "findings",
       body: "Fix findings",
       now: NOW,
@@ -198,7 +198,7 @@ test("a fix sent back by a first Closeout keeps the usual order", async () => {
     await sqliteDb(db).run((q) => saveSchedulingContextSteps(q, { itemId: "F", priority: 4 }));
     await applyWorkItemEvent(sqliteDb(db), "F", "dispatched");
     await applyWorkItemEvent(sqliteDb(db), "F", "turn_ended");
-    restart(db, (await getWorkItem(sqliteDb(db), "F"))!, {
+    await restart(sqliteDb(db), (await getWorkItem(sqliteDb(db), "F"))!, {
       reason: "findings",
       body: "Fix findings",
       now: NOW,

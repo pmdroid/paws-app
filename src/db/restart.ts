@@ -32,22 +32,7 @@ export type RestartHandoff = {
   fixRound?: boolean;
 };
 
-/**
- * One admission path back to the agent. Keeps the run, branch and Linear session. Returns null,
- * like a stale item, while a squash for the item may have reached GitHub: the merge lane owns the
- * item until GitHub confirms that outcome.
- */
-export function restart(
-  db: Database,
-  item: WorkItemRecord,
-  handoff: RestartHandoff,
-): number | null {
-  const result = settled(sqliteDb(db).transaction((q) => restartSteps(q, item, handoff)));
-  if (result?.armed) emitJobReady(db);
-  return result?.id ?? null;
-}
-
-export async function restartAsync(
+export async function restart(
   store: Db,
   item: WorkItemRecord,
   handoff: RestartHandoff,
@@ -204,8 +189,8 @@ export async function restartsSinceHumanTurn(
 }
 
 /** Latest human retry window, ordered by activation rather than reusable row id. */
-export function latestHumanTurn(db: Database, itemId: string): number {
-  return settled(sqliteDb(db).run((q) => latestHumanTurnSteps(q, itemId)));
+export async function latestHumanTurn(store: Db, itemId: string): Promise<number> {
+  return store.run((q) => latestHumanTurnSteps(q, itemId));
 }
 
 export function* fixRoundsSteps(q: Q, itemId: string): Steps<number> {

@@ -783,7 +783,9 @@ describe("advanceMerge while the pull request waits for a review", () => {
     expect((await resumes(h)).map((payload) => [payload.reason, payload.handoff])).toEqual([
       ["conflict", REBASE_CONFLICT_INSTRUCTION],
     ]);
-    expect(listRebaseReturns(h.db, "ENG-1", 0)).toMatchObject([{ base: main, reason: "merge" }]);
+    expect(await listRebaseReturns(sqliteDb(h.db), "ENG-1", 0)).toMatchObject([
+      { base: main, reason: "merge" },
+    ]);
     expect(await rebaseReturnedFor(sqliteDb(h.db), "ENG-1", await h.remoteHead("ENG-1"))).toBe(
       true,
     );

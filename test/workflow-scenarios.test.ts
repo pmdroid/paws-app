@@ -68,12 +68,12 @@ describe("combined recovery scenarios", () => {
     try {
       const id = "merge_queue";
       const jobKey = `ci-failed:${id}:recheck:head`;
-      const first = restart(w.db, (await getWorkItem(sqliteDb(w.db), id))!, {
+      const first = (await restart(sqliteDb(w.db), (await getWorkItem(sqliteDb(w.db), id))!, {
         reason: "ci",
         body: "first failure",
         jobKey,
         now: w.now,
-      })!;
+      }))!;
       expect(await fixRounds(sqliteDb(w.db), id)).toBe(1);
       await workspaceDispatch(w.db, { now: w.now });
       const claimed = await claimNextJob(sqliteDb(w.db), { now: w.now, queues: [JOB_KIND.resume] });
@@ -93,7 +93,7 @@ describe("combined recovery scenarios", () => {
       await markCloseoutAccepted(sqliteDb(w.db), id, "head");
 
       const second = async () =>
-        restart(w.db, (await getWorkItem(sqliteDb(w.db), id))!, {
+        await restart(sqliteDb(w.db), (await getWorkItem(sqliteDb(w.db), id))!, {
           reason: "ci",
           body: "second failure",
           jobKey,
@@ -176,7 +176,7 @@ describe("combined recovery scenarios", () => {
         const facts = await factsOf(w.db, id);
         expect([facts.state, facts.mergeCall]).toEqual(["merge_queue", true]);
         expect(
-          restart(w.db, (await getWorkItem(sqliteDb(w.db), id))!, {
+          await restart(sqliteDb(w.db), (await getWorkItem(sqliteDb(w.db), id))!, {
             reason: "ci",
             body: "x",
             now: w.now,
@@ -205,9 +205,9 @@ describe("combined recovery scenarios", () => {
         (await applyLinearCommand(sqliteDb(w.db), { ...stop, requestedAt: w.now })).applied,
       ).toBe(false);
       const current = (await getWorkItem(sqliteDb(w.db), id))!;
-      expect(() => restart(w.db, current, { reason: "ci", body: "late", now: w.now })).toThrow(
-        "illegal_transition",
-      );
+      await expect(
+        restart(sqliteDb(w.db), current, { reason: "ci", body: "late", now: w.now }),
+      ).rejects.toThrow("illegal_transition");
       expect(await completeMergedItem(sqliteDb(w.db), { itemId: id, now: w.now })).toBeNull();
       await w.settle();
       expect(await factsOf(w.db, id)).toMatchObject({ state: "merged", version: merged.version });
