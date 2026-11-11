@@ -247,9 +247,7 @@ export async function openRunnerCoordinator(options: {
     },
   });
   const timer = setInterval(() => {
-    try {
-      control.expireConnections();
-    } catch (error) {
+    control.expireConnectionsAsync().catch((error: unknown) => {
       journalCaught(error, "runner-coordinator.openRunnerCoordinator.expireConnections", null);
       options.onError(error);
       void listener
@@ -257,7 +255,7 @@ export async function openRunnerCoordinator(options: {
         .catch(
           journalRejection("runner-coordinator.openRunnerCoordinator.stop", options.onError, null),
         );
-    }
+    });
   }, 1000);
   timer.unref();
   const refreshModels = () => {

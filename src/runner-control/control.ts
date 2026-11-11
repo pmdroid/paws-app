@@ -1,7 +1,8 @@
 import { eq } from "drizzle-orm";
 import {
-  certificateRunnerRevoked,
+  certificateRunnerRevokedSteps,
   expiredRunnerCertificates,
+  expiredRunnerCertificatesSteps,
   workspaceMemberUsable,
   agentCatalogSummarySteps,
   auditWorkspaceAccessSteps,
@@ -136,11 +137,16 @@ export function createRunnerControl(options: {
       const fingerprints = expiredRunnerCertificates(db, now());
       for (const fingerprint of fingerprints) options.disconnect(fingerprint);
     },
+    async expireConnectionsAsync() {
+      const at = now();
+      for (const fingerprint of await store.run((q) => expiredRunnerCertificatesSteps(q, at)))
+        options.disconnect(fingerprint);
+    },
     authenticate(peer: RunnerPeer) {
       return authorized(peer);
     },
-    revoked(peer: RunnerPeer): boolean {
-      return certificateRunnerRevoked(db, peer.fingerprint);
+    revoked(peer: RunnerPeer): Promise<boolean> {
+      return store.run((q) => certificateRunnerRevokedSteps(q, peer.fingerprint));
     },
     async list(principal: WorkspacePrincipal, sessionIds: readonly string[]) {
       if (
