@@ -6,6 +6,9 @@ export const RUNNER_WAIT_ASK_MS = 30 * 60_000;
 export const RUNNER_WAIT_POLL_MS = 5_000;
 export const MOVE_TO_ANOTHER_RUNNER = "Move to another runner";
 export const KEEP_WAITING = "Keep waiting";
+export const AGENT_HUNG_REASON = "agent_hung";
+export const AGENT_HUNG_RETRY = "Retry";
+export const AGENT_HUNG_STOP = "Stop";
 
 export function runnerWaitReason(runner: RunnerAvailability | null, now: number): string | null {
   if (runner === null) return null;

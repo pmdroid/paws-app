@@ -382,3 +382,34 @@ export async function latestRunUpdate(
 ): Promise<number | null> {
   return store.run((q) => latestRunUpdateSteps(q, itemIds));
 }
+
+export type ConsecutiveHangs = { count: number; runIds: string[]; runnerId: string | null };
+
+export function* consecutiveHangsSteps(q: Q, itemId: string): Steps<ConsecutiveHangs> {
+  const hung: ConsecutiveHangs = { count: 0, runIds: [], runnerId: null };
+  for (const stored of (yield* listRunsSteps(q, itemId)).toReversed()) {
+    if (stored.checkpoint?.resultBody !== undefined) break;
+    const hangs = stored.checkpoint?.hangs ?? [];
+    if (hangs.length === 0) continue;
+    hung.count += hangs.length;
+    hung.runIds.unshift(stored.id);
+    hung.runnerId ??= hangs.at(-1)!.runnerId;
+  }
+  return hung;
+}
+
+export function* recordRunHangSteps(
+  q: Q,
+  runId: string,
+  runnerId: string,
+  at: number,
+): Steps<ConsecutiveHangs | null> {
+  const stored = yield* getRunSteps(q, runId);
+  if (!stored) return null;
+  const checkpoint = stored.checkpoint ?? { phase: "running" };
+  yield* saveCheckpointSteps(q, runId, {
+    ...checkpoint,
+    hangs: [...(checkpoint.hangs ?? []), { runnerId, at }],
+  });
+  return yield* consecutiveHangsSteps(q, stored.itemId);
+}
