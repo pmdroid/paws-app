@@ -502,7 +502,7 @@ export function* savePinnedSlotsSteps(q: Q, slots: ReadonlyMap<number, PinnedSlo
           payload:
             q.dialect === "sqlite"
               ? sql`json_set(${job.payload},'$.pinnedSlot',json(${text}))`
-              : sql`jsonb_set(${job.payload},'{pinnedSlot}',${text}::jsonb)`,
+              : sql`jsonb_set(${job.payload},'{pinnedSlot}',${text}::text::jsonb)`,
         })
         .where(
           and(
@@ -510,7 +510,7 @@ export function* savePinnedSlotsSteps(q: Q, slots: ReadonlyMap<number, PinnedSlo
             eq(job.status, "pending"),
             q.dialect === "sqlite"
               ? sql`json_extract(${job.payload},'$.pinnedSlot') IS NOT json(${text})`
-              : sql`${job.payload}->'pinnedSlot' IS DISTINCT FROM ${text}::jsonb`,
+              : sql`${job.payload}->'pinnedSlot' IS DISTINCT FROM ${text}::text::jsonb`,
           ),
         ),
     );

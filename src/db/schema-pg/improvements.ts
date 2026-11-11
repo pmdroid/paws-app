@@ -3,14 +3,13 @@ import {
   check,
   index,
   integer,
-  jsonb,
   pgTable,
   primaryKey,
   text,
   unique,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { citext } from "./types";
+import { citext, jsonb } from "./types";
 import { workspace } from "./workspace";
 import { workItem } from "./items";
 
