@@ -82,7 +82,7 @@ export type SchedulerOptions = {
   store?: Db;
   handoffForItem?: (q: Q, itemId: string) => Steps<string | undefined>;
   sessionFor?: (q: Q, itemId: string) => Steps<string | null>;
-  onWaiting?: (itemIds: readonly string[]) => void;
+  onWaiting?: (itemIds: readonly string[]) => unknown;
   /**
    * Whether the item's owner has a runner they may use. False keeps the item out of the slot
    * line: no runner slot would ever be theirs, so it waits for runner setup instead. Null or
@@ -874,7 +874,7 @@ async function admit(
   });
   if (result.armed) emitJobReady(store);
   if (options.log) for (const line of result.changes) options.log(line);
-  options.onWaiting?.(result.waiting);
+  await options.onWaiting?.(result.waiting);
   await options.onRunnerSetup?.(result.setup);
   options.onWaits?.(result.waits);
   options.onRunnerHostRefusals?.(result.hostRefusals, now);

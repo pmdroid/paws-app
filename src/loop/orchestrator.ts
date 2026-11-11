@@ -300,11 +300,9 @@ import {
   enqueueOutboxOnce,
   lastOutboxSequence,
   getOutbox,
-  failWorkItem,
   getQueuePosition,
   clearQueueWait,
   queueWaitSince,
-  settled,
   sqliteDb,
   syncSteps,
   activeRunnerIdsSteps,
@@ -397,7 +395,6 @@ import {
   bumpItemVersionSteps,
   cancelItemPendingJobsSteps,
   clearItemRecoverySteps,
-  hasOpenItemJob,
   itemOwnerUserIdSteps,
   itemParentTaskKey,
   itemSpecificationRevisionSteps,
@@ -7840,42 +7837,46 @@ export class Orchestrator {
     }
   }
 
-  private noteQueued(itemIds: readonly string[]): void {
+  private async noteQueued(itemIds: readonly string[]): Promise<void> {
     const now = this.now();
     const hours = this.queueStartTimeoutHours();
     for (const id of itemIds) {
-      const item = getWorkItem(this.db, id);
+      const item = await this.store.run((q) => getWorkItemSteps(q, id));
       if (!item || item.state !== "queued" || item.cancelRequested) continue;
-      if (hasOpenItemJob(this.db, JOB_KIND.start, item.id)) continue;
+      if (await this.store.run((q) => hasOpenItemJobSteps(q, JOB_KIND.start, item.id))) continue;
       const name = item.linearIdentifier ?? "this issue";
       if (
-        now - settled(queueWaitSince(sqliteDb(this.db), item.id, item.version, now)) >=
+        now - (await queueWaitSince(this.store, item.id, item.version, now)) >=
         hours * 3_600_000
       ) {
-        failWorkItem(
-          this.db,
-          item,
-          "start_timeout",
-          `Paws couldn't start ${name} within ${hours === 1 ? "1 hour" : `${hours} hours`} because every runner slot stayed busy. Delegate it again to retry.`,
-          now,
+        await this.store.transaction((q) =>
+          failWorkItemSteps(
+            q,
+            item,
+            "start_timeout",
+            `Paws couldn't start ${name} within ${hours === 1 ? "1 hour" : `${hours} hours`} because every runner slot stayed busy. Delegate it again to retry.`,
+            now,
+          ),
         );
         continue;
       }
       const sessionId = this.activitySession(item);
       if (sessionId === null) continue;
-      const position = settled(getQueuePosition(sqliteDb(this.db), item.id));
-      enqueueOutboxOnce(this.db, {
-        target: OUTBOX_ACTIVITY.target,
-        op: OUTBOX_ACTIVITY.op,
-        orderingKey: sessionId,
-        idempotencyKey: `queued:${item.id}:${item.version}`,
-        payload: {
-          sessionId,
-          kind: "thought",
-          body: `${position ? queueLine(position) : "Queued: every runner slot is busy."} Paws starts ${name} when a slot frees.`,
-        },
-        now,
-      });
+      const position = await getQueuePosition(this.store, item.id);
+      await this.store.transaction((q) =>
+        enqueueOutboxOnceSteps(q, {
+          target: OUTBOX_ACTIVITY.target,
+          op: OUTBOX_ACTIVITY.op,
+          orderingKey: sessionId,
+          idempotencyKey: `queued:${item.id}:${item.version}`,
+          payload: {
+            sessionId,
+            kind: "thought",
+            body: `${position ? queueLine(position) : "Queued: every runner slot is busy."} Paws starts ${name} when a slot frees.`,
+          },
+          now,
+        }),
+      );
     }
   }
 
