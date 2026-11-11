@@ -178,9 +178,9 @@ function finishFor(generation: number, bytes: Uint8Array): AgentSessionFinish {
   };
 }
 
-async function collect(chunks: AsyncIterable<Uint8Array>) {
+async function collect(chunks: Promise<AsyncIterable<Uint8Array>>) {
   const parts: Uint8Array[] = [];
-  for await (const part of chunks) parts.push(part);
+  for await (const part of await chunks) parts.push(part);
   return Buffer.concat(parts);
 }
 
@@ -263,7 +263,7 @@ describe("agent session snapshots", () => {
     await expect(
       sessions.finish(access, { ...finishFor(1, snapshot), sizeBytes: snapshot.length - 1 }),
     ).rejects.toThrow();
-    expect(sessions.snapshot(run.runId, 1)?.status).toBe("uploading");
+    expect((await sessions.snapshot(run.runId, 1))?.status).toBe("uploading");
 
     const receipt = await sessions.finish(access, finishFor(1, snapshot));
     expect(receipt).toEqual({ generation: 1, sizeBytes: snapshot.length, sha256: sha(snapshot) });
@@ -273,7 +273,7 @@ describe("agent session snapshots", () => {
       sessions.upload(access, chunk(1, 3 * AGENT_SESSION_CHUNK_BYTES, tail)),
     ).rejects.toThrow();
 
-    const row = sessions.snapshot(run.runId, 1)!;
+    const row = (await sessions.snapshot(run.runId, 1))!;
     expect(row).toMatchObject({
       itemId: run.itemId,
       runnerId: runnerA,
@@ -376,12 +376,14 @@ describe("agent session snapshots", () => {
       })
     ).token;
     // The earlier grant was replaced, so it is stale.
-    expect(() => sessions.read({ ...access, generation: 1 }, 1)).toThrow();
+    await expect(sessions.read({ ...access, generation: 1 }, 1)).rejects.toThrow();
     expect(await collect(sessions.read({ ...access, token: fresh, generation: 1 }, 1))).toEqual(
       snapshot,
     );
     // Run two's grant cannot read or write run one.
-    expect(() => sessions.read({ ...secondAccess, runId: run.runId, generation: 1 }, 1)).toThrow();
+    await expect(
+      sessions.read({ ...secondAccess, runId: run.runId, generation: 1 }, 1),
+    ).rejects.toThrow();
     await expect(
       sessions.upload({ ...secondAccess, runId: run.runId }, chunk(1, 0, full)),
     ).rejects.toThrow();
@@ -403,12 +405,16 @@ describe("agent session snapshots", () => {
     const runnerC = await f.enroll("c");
     const moved = await f.assign(run, runnerC, 2);
     expect(await collect(sessions.read({ ...moved, generation: 2 }, 1))).toEqual(snapshot);
-    expect(() => sessions.read({ ...access, generation: 1 }, 1)).toThrow(RunnerWorkFencedError);
-    expect(() => sessions.read({ ...access, generation: 2 }, 1)).toThrow();
-    expect(() => sessions.read({ ...access, token: moved.token, generation: 2 }, 1)).toThrow();
+    await expect(sessions.read({ ...access, generation: 1 }, 1)).rejects.toThrow(
+      RunnerWorkFencedError,
+    );
+    await expect(sessions.read({ ...access, generation: 2 }, 1)).rejects.toThrow();
+    await expect(
+      sessions.read({ ...access, token: moved.token, generation: 2 }, 1),
+    ).rejects.toThrow();
     // A snapshot from a later generation, or one never sealed, is not readable.
-    expect(() => sessions.read({ ...moved, generation: 2 }, 2)).toThrow();
-    expect(() => sessions.read({ ...moved, generation: 2 }, 3)).toThrow();
+    await expect(sessions.read({ ...moved, generation: 2 }, 2)).rejects.toThrow();
+    await expect(sessions.read({ ...moved, generation: 2 }, 3)).rejects.toThrow();
 
     // A runner owned by another member never reads the owner's session.
     db.run("UPDATE agent_session_snapshot SET owner_user_id=? WHERE run_id=?", [
@@ -420,14 +426,14 @@ describe("agent session snapshots", () => {
       }),
       run.runId,
     ]);
-    expect(() => sessions.read({ ...moved, generation: 2 }, 1)).toThrow(
+    await expect(sessions.read({ ...moved, generation: 2 }, 1)).rejects.toThrow(
       "Agent session request is refused",
     );
   });
 
   test("a read stops when the grant moves mid-stream", async () => {
     const { sessions, access, run } = await sealed();
-    const chunks = sessions.read({ ...access, generation: 1 }, 1);
+    const chunks = await sessions.read({ ...access, generation: 1 }, 1);
     expect((await chunks.next()).value).toEqual(full);
     await work.finish(run.runId, 1);
     await expect(chunks.next()).rejects.toThrow(RunnerWorkFencedError);
@@ -517,19 +523,19 @@ describe("agent session snapshots", () => {
     await sessions.upload(next, chunk(2, 0, full));
     // A newer snapshot still uploading does not discard the sealed one.
     await sessions.prune();
-    expect(sessions.snapshot(run.runId, 1)?.status).toBe("sealed");
+    expect((await sessions.snapshot(run.runId, 1))?.status).toBe("sealed");
     await sessions.upload(next, chunk(2, AGENT_SESSION_CHUNK_BYTES, Buffer.concat([tail, MARKER])));
     await sessions.finish(next, finishFor(2, second));
 
-    expect(sessions.snapshot(run.runId, 1)?.status).toBe("discarded");
+    expect((await sessions.snapshot(run.runId, 1))?.status).toBe("discarded");
     expect(chunkRows(run.runId, 1)).toBe(0);
     expect(objectsOf(run.runId, 1)).toEqual([]);
     expect(objects.deletes.filter((name) => name.includes(`/${run.runId}/1/`))).toHaveLength(3);
-    expect(sessions.snapshot(run.runId, 2)?.status).toBe("sealed");
+    expect((await sessions.snapshot(run.runId, 2))?.status).toBe("sealed");
     expect(objectsOf(run.runId, 2)).toHaveLength(2);
     expect(await collect(sessions.read({ ...next, generation: 2 }, 2))).toEqual(second);
     // A discarded generation is never written or read again.
-    expect(() => sessions.read({ ...next, generation: 2 }, 1)).toThrow();
+    await expect(sessions.read({ ...next, generation: 2 }, 1)).rejects.toThrow();
     await expect(sessions.upload(access, chunk(1, 0, full))).rejects.toThrow();
   });
 
@@ -560,13 +566,13 @@ describe("agent session snapshots", () => {
 
     for (const name of ["lost", "replaced", "merged", "failed", "cancelled"] as const) {
       const run = runs[name];
-      expect(sessions.snapshot(run.runId, 1)?.status).toBe("discarded");
+      expect((await sessions.snapshot(run.runId, 1))?.status).toBe("discarded");
       expect(chunkRows(run.runId, 1)).toBe(0);
       expect(objectsOf(run.runId)).toEqual([]);
     }
     // A restart ends the run between turns and keeps it as the item's run, so its latest
     // snapshot stays until the item finishes.
-    expect(sessions.snapshot(runs.between.runId, 1)?.status).toBe("sealed");
+    expect((await sessions.snapshot(runs.between.runId, 1))?.status).toBe("sealed");
     expect(objectsOf(runs.between.runId)).toHaveLength(3);
     db.run("UPDATE work_item SET state='completed' WHERE id=?", [runs.between.itemId]);
     await sessions.prune();
@@ -585,7 +591,7 @@ describe("agent session snapshots", () => {
     await restarted.prune();
     expect(objectsOf(run.runId)).toEqual([]);
     expect(chunkRows(run.runId, 1)).toBe(0);
-    expect(restarted.snapshot(run.runId, 1)?.status).toBe("discarded");
+    expect((await restarted.snapshot(run.runId, 1))?.status).toBe("discarded");
   });
 
   test("an upload that loses the race with a prune deletes its object", async () => {
@@ -604,7 +610,7 @@ describe("agent session snapshots", () => {
     };
     sessions = createAgentSessions({ db, work, objects: racing, key });
     await expect(sessions.upload(access, chunk(1, 0, full))).rejects.toThrow();
-    expect(sessions.snapshot(run.runId, 1)?.status).toBe("discarded");
+    expect((await sessions.snapshot(run.runId, 1))?.status).toBe("discarded");
     expect(objects.objects.size).toBe(0);
   });
 

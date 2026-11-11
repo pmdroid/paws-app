@@ -1,15 +1,18 @@
 import {
   workspaceMemberUsable,
   acceptedImprovementsForFindings,
-  auditWorkspaceAccess,
+  auditWorkspaceAccessSteps,
   findingHasGroupAction,
-  listReviewFindings,
-  reviewFindingItems,
-  setReviewFindingStatus,
+  listReviewFindingsSteps,
+  reviewFindingItemsSteps,
+  setReviewFindingStatusSteps,
   removeFindingFromOpenGroups,
-  workspaceMember,
+  workspaceMemberSteps,
+  type Db,
+  type Q,
   type ReviewFindingItem,
   type ReviewFindingRecord,
+  type Steps,
   sqliteDb,
 } from "../../../db";
 import type { Database } from "bun:sqlite";
@@ -28,6 +31,7 @@ import {
 
 export type FindingsOptions = {
   db: Database;
+  store?: Db;
   /** The signed-in reader. Without one the list is read-only. */
   principal?: { workspaceId: string; userId: string };
   /** The sessions the reader may open. Undefined reads every item. */
@@ -48,30 +52,41 @@ export async function handleFindingsRequest(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== FINDINGS_API_PATH) return null;
-  if (request.method === "GET") return Response.json(list(options, url), { headers: NO_STORE });
+  if (request.method === "GET")
+    return Response.json(await list(options, url), { headers: NO_STORE });
   if (request.method === "POST") return change(request, options);
   return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
 }
 
-function list(options: FindingsOptions, url: URL): FindingsResponse {
+function storeOf(options: FindingsOptions): Db {
+  return options.store ?? sqliteDb(options.db);
+}
+
+async function list(options: FindingsOptions, url: URL): Promise<FindingsResponse> {
   const filter = parseFindingQuery(url.searchParams);
   const pathPrefix = filter.path.replace(/^(\.\/|\/)+/, "");
-  const rows = visible(
-    options,
-    listReviewFindings(options.db, {
-      ...(filter.repository ? { repository: filter.repository } : {}),
-      ...(filter.review ? { review: filter.review } : {}),
-      ...(filter.status === "all" ? {} : { status: filter.status }),
-      ...(pathPrefix ? { pathPrefix } : {}),
-    }),
-  );
+  const { rows, every } = await storeOf(options).run(function* (q) {
+    const matched = yield* visibleSteps(
+      q,
+      options,
+      yield* listReviewFindingsSteps(q, {
+        ...(filter.repository ? { repository: filter.repository } : {}),
+        ...(filter.review ? { review: filter.review } : {}),
+        ...(filter.status === "all" ? {} : { status: filter.status }),
+        ...(pathPrefix ? { pathPrefix } : {}),
+      }),
+    );
+    return {
+      rows: matched,
+      every: yield* visibleSteps(q, options, yield* listReviewFindingsSteps(q)),
+    };
+  });
   const counts = Object.fromEntries(FINDING_SEVERITIES.map((severity) => [severity, 0])) as Record<
     FindingSeverity,
     number
   >;
   for (const { row } of rows) counts[row.severity]++;
   const matching = rows.filter(({ row }) => !filter.severity || row.severity === filter.severity);
-  const every = visible(options, listReviewFindings(options.db));
   return {
     findings: matching.slice(0, FINDINGS_LIMIT).map(({ row, items }) => findingView(row, items)),
     total: matching.length,
@@ -82,12 +97,13 @@ function list(options: FindingsOptions, url: URL): FindingsResponse {
 }
 
 /** The rows the reader can open an item of, each with those items. */
-function visible(
+function* visibleSteps(
+  q: Q,
   options: FindingsOptions,
   rows: ReviewFindingRecord[],
-): { row: ReviewFindingRecord; items: ReviewFindingItem[] }[] {
-  const items = reviewFindingItems(
-    options.db,
+): Steps<{ row: ReviewFindingRecord; items: ReviewFindingItem[] }[]> {
+  const items = yield* reviewFindingItemsSteps(
+    q,
     rows.map((row) => row.id),
   );
   const sessions = options.sessionIds === undefined ? null : new Set(options.sessionIds);
@@ -100,9 +116,12 @@ function visible(
 }
 
 async function change(request: Request, options: FindingsOptions): Promise<Response> {
-  const { db, principal } = options;
+  const { principal } = options;
   if (principal === undefined) return Response.json({ error: "Sign in to Paws." }, { status: 401 });
-  const member = workspaceMember(db, principal.workspaceId, principal.userId);
+  const store = storeOf(options);
+  const member = await store.run((q) =>
+    workspaceMemberSteps(q, principal.workspaceId, principal.userId),
+  );
   if (!workspaceMemberUsable(member))
     return Response.json({ error: "Your membership can't change findings." }, { status: 403 });
   let body: unknown;
@@ -114,19 +133,23 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
   }
   const action = parseAction(body);
   if (typeof action === "string") return Response.json({ error: action }, { status: 400 });
-  const shown = visible(
-    options,
-    listReviewFindings(db).filter((row) => row.id === action.id),
-  );
+  const shown = await store.run(function* (q) {
+    const rows = yield* listReviewFindingsSteps(q);
+    return yield* visibleSteps(
+      q,
+      options,
+      rows.filter((row) => row.id === action.id),
+    );
+  });
   if (shown.length === 0) return Response.json({ error: "Finding not found." }, { status: 404 });
-  if (await findingHasGroupAction(sqliteDb(db), principal.workspaceId, action.id))
+  if (await findingHasGroupAction(store, principal.workspaceId, action.id))
     return Response.json(
       { error: "This finding has a group action in progress. Finish that action first." },
       { status: 409 },
     );
   if (
     action.action === "dismiss" &&
-    (await acceptedImprovementsForFindings(sqliteDb(db), principal.workspaceId, [action.id])).length
+    (await acceptedImprovementsForFindings(store, principal.workspaceId, [action.id])).length
   )
     return Response.json(
       { error: "The improvement inbox already accepted this finding. Its issue delivery stands." },
@@ -134,16 +157,14 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
     );
   const now = (options.now ?? Date.now)();
   const by = member.name || member.email || principal.userId;
-  const changed =
-    action.action === "dismiss"
-      ? setReviewFindingStatus(db, {
-          id: action.id,
-          status: "dismissed",
-          reason: action.reason,
-          by,
-          now,
-        })
-      : setReviewFindingStatus(db, { id: action.id, status: "open", by, now });
+  const changed = await store.run((q) =>
+    setReviewFindingStatusSteps(
+      q,
+      action.action === "dismiss"
+        ? { id: action.id, status: "dismissed", reason: action.reason, by, now }
+        : { id: action.id, status: "open", by, now },
+    ),
+  );
   if (changed === null)
     return Response.json(
       {
@@ -154,14 +175,16 @@ async function change(request: Request, options: FindingsOptions): Promise<Respo
       },
       { status: 409 },
     );
-  await removeFindingFromOpenGroups(sqliteDb(db), principal.workspaceId, action.id);
-  auditWorkspaceAccess(db, {
-    workspaceId: principal.workspaceId,
-    userId: principal.userId,
-    action: `finding.${action.action}`,
-    subject: String(action.id),
-    now,
-  });
+  await removeFindingFromOpenGroups(store, principal.workspaceId, action.id);
+  await store.run((q) =>
+    auditWorkspaceAccessSteps(q, {
+      workspaceId: principal.workspaceId,
+      userId: principal.userId,
+      action: `finding.${action.action}`,
+      subject: String(action.id),
+      now,
+    }),
+  );
   return Response.json({ finding: findingView(changed, shown[0]!.items) }, { headers: NO_STORE });
 }
 

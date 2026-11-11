@@ -1,12 +1,12 @@
 import { journalCaught } from "../journal";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
-import type { Database } from "bun:sqlite";
 import {
-  listCloseoutProgress,
-  listWorkItems,
+  listCloseoutProgressSteps,
+  listWorkItemsSteps,
   type CloseoutProgressRecord,
   type CloseoutStepRecord,
+  type Db,
 } from "../../../db";
 
 export const ARTIFACT_API_PATH = "/api/closeout-artifact";
@@ -30,8 +30,8 @@ const DENY = new Set([
 
 const PREFIXES = ["AWS_", "AZURE_", "CLOUDSDK_", "GH_", "GITHUB_", "GOOGLE_"];
 
-export function readCloseoutArtifact(input: {
-  db: Database;
+export async function readCloseoutArtifact(input: {
+  store: Db;
   sessionIds?: readonly string[];
   itemId: string;
   checkId: string;
@@ -40,12 +40,12 @@ export function readCloseoutArtifact(input: {
   policy: string;
   evidenceRoot: string;
   env?: NodeJS.ProcessEnv;
-}): { status: number; body: string } {
+}): Promise<{ status: number; body: string }> {
   if (input.kind !== "log" && input.kind !== "evidence") return { status: 404, body: "Not found" };
   if (input.itemId.length === 0 || input.checkId.length === 0 || input.head.length === 0) {
     return { status: 404, body: "Not found" };
   }
-  const item = listWorkItems(input.db).find(
+  const item = (await input.store.run(listWorkItemsSteps)).find(
     (record) => publicId(record) === input.itemId || record.id === input.itemId,
   );
   if (item === undefined) return { status: 404, body: "Not found" };
@@ -54,7 +54,7 @@ export function readCloseoutArtifact(input: {
     (item.sessionKey === null || !input.sessionIds.includes(item.sessionKey))
   )
     return { status: 404, body: "Not found" };
-  const rows = listCloseoutProgress(input.db).filter((row) => {
+  const rows = (await input.store.run(listCloseoutProgressSteps)).filter((row) => {
     if (row.itemId !== item.id) return false;
     if (row.head.toLowerCase() !== input.head.toLowerCase()) return false;
     if (row.policyDigest !== input.policy) return false;

@@ -419,7 +419,7 @@ test("a move with an eligible snapshot sends restoreSession and posts the restor
         generation: command.generation,
       });
       const parts: Uint8Array[] = [];
-      for await (const part of context.sessions.read(
+      for await (const part of await context.sessions.read(
         { runnerId, runId: command.runId, token: grant.token, generation: command.generation },
         command.restoreSession!.generation,
       ))
