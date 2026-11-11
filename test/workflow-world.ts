@@ -237,7 +237,7 @@ export async function seedFixture(
       return;
     case "merge_inflight":
       await toMergeQueue();
-      beginMergeCall(db, id, "head", now);
+      await beginMergeCall(sqliteDb(db), id, "head", now);
       return;
     case "merge_active_run":
       await toMergeQueue(false);

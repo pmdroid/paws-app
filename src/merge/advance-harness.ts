@@ -11,8 +11,7 @@ import {
   beginImplementRun,
   enterMergeQueue,
   finishCloseoutProgressSteps,
-  getConfirmedRemoteMerge,
-  getWorkItem,
+  getConfirmedRemoteMergeSteps,
   getWorkItemSteps,
   hasCiRerun,
   insertQueuedItem,
@@ -483,7 +482,7 @@ export async function mergeHarness(
       now: () => clock.now(),
       // Like the orchestrator, a stop that cancelled or paused the item stops the lane as well as the flag.
       stopped: async () => {
-        const current = getWorkItem(db, id);
+        const current = await store.run((q) => getWorkItemSteps(q, id));
         return (
           state.stopped ||
           current === null ||
@@ -513,13 +512,12 @@ export async function mergeHarness(
       },
       readPull: (_, prNumber) => readPull(prNumber),
       mergeLane: async (current) => state.lanes.get(current.id) ?? "",
-      dependencyHold: (_q, itemId) =>
-        syncSteps(() => {
-          const open = (state.blockedBy.get(itemId) ?? []).filter(
-            (blocker) => getConfirmedRemoteMerge(db, blocker) === null,
-          );
-          return open.length ? open : null;
-        }),
+      dependencyHold: function* (q, itemId) {
+        const open: string[] = [];
+        for (const blocker of state.blockedBy.get(itemId) ?? [])
+          if ((yield* getConfirmedRemoteMergeSteps(q, blocker)) === null) open.push(blocker);
+        return open.length ? open : null;
+      },
       voice: {
         thought: (_q, _, body, key) => syncSteps(() => say("thought", body, key)),
         status: (_q, _, body, key) => syncSteps(() => say("status", body, key)),

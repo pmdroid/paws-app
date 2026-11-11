@@ -390,7 +390,7 @@ describe("restart recovery", () => {
                   ?.id,
               ).toBe(mergeId);
             }
-            if (inFlight) beginMergeCall(db, "keep", "abc", clock.now());
+            if (inFlight) await beginMergeCall(sqliteDb(db), "keep", "abc", clock.now());
             const savedJob = getJob(db, mergeId);
             const savedItem = getWorkItem(db, "keep");
             const savedMarker = db.query("SELECT * FROM merge_call WHERE item_id = ?").get("keep");
@@ -459,7 +459,7 @@ describe("restart recovery", () => {
     });
     const leased = claimNextJob(db, { workerId: "merger", now: clock.now() })!;
     completeJob(db, leased, clock.now());
-    beginMergeCall(db, item.id, "abc", clock.now());
+    await beginMergeCall(sqliteDb(db), item.id, "abc", clock.now());
 
     expect(await recoverOnStartup(sqliteDb(db), clock.now())).toEqual([
       { type: "keep_place", mergeCallInFlight: true },

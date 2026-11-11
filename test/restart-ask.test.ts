@@ -60,7 +60,7 @@ describe("restart and ask", () => {
     await joinMergeQueue(sqliteDb(db), { itemId: "item", repository: "owner/repo", now: 2 });
     const jobs = listJobs(db).length;
     const queue = listMergeQueues(db);
-    beginMergeCall(db, "item", "head", 3);
+    await beginMergeCall(sqliteDb(db), "item", "head", 3);
     expect(
       restart(db, getWorkItem(db, "item")!, { reason: "review", body: "Fix it.", now: 4 }),
     ).toBeNull();

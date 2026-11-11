@@ -677,7 +677,9 @@ describe("advanceMerge with the GitHub merge queue order", () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(queue.enqueued).toHaveLength(1);
     expect(h.github.merged).toEqual([]);
-    expect(getConfirmedRemoteMerge(h.db, "ENG-1")?.mergeSha).toBe("queue-merge-sha");
+    expect((await getConfirmedRemoteMerge(sqliteDb(h.db), "ENG-1"))?.mergeSha).toBe(
+      "queue-merge-sha",
+    );
     expect(h.bodies("status")).toEqual([
       `Added https://github.com/acme/app/pull/1 to the GitHub merge queue. ${queuedLine}`,
       movedLine,

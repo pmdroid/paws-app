@@ -74,7 +74,7 @@ test("unknown merge outcomes back off without expiring or spending job attempts"
       expect(parked.payload).toHaveProperty("ciWaitDeadline", 999);
       clock.advance(delay);
     }
-    beginMergeCall(db, "eng-1", "h", clock.now());
+    await beginMergeCall(sqliteDb(db), "eng-1", "h", clock.now());
     const delivery = {
       deliveryId: "uncertain-merge-confirmation",
       event: "pull_request",

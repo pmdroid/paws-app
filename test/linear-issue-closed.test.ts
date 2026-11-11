@@ -371,7 +371,7 @@ for (const exit of ["closed", "undelegated"] as const) {
     applyWorkItemEvent(f.db, f.item.id, "turn_ended");
     applyWorkItemEvent(f.db, f.item.id, "closeout_accepted");
     const now = Date.now() + 1_000;
-    beginMergeCall(f.db, f.item.id, "head", now);
+    await beginMergeCall(sqliteDb(f.db), f.item.id, "head", now);
     let notified = 0;
     const interrupted: string[] = [];
     const options = {

@@ -143,7 +143,7 @@ describe("a Paws restart and the merge queue", () => {
       reason: "merge_outcome",
     });
     expect(h.github.merged).toHaveLength(1);
-    expect(getConfirmedRemoteMerge(h.db, item.id)).toBeNull();
+    expect(await getConfirmedRemoteMerge(sqliteDb(h.db), item.id)).toBeNull();
     expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
 
     await restart(h);
@@ -153,7 +153,7 @@ describe("a Paws restart and the merge queue", () => {
     const payload = openMergeJob(h, item.id);
     expect(payload.mergeCallInFlight).toBe(true);
     expect(await h.pass(item.id, payload)).toEqual({ kind: "merged" });
-    expect(getConfirmedRemoteMerge(h.db, item.id)).toMatchObject({
+    expect(await getConfirmedRemoteMerge(sqliteDb(h.db), item.id)).toMatchObject({
       pullNumber: item.pull,
       mergeSha: `fake-merge-${item.accepted}`,
     });
@@ -188,7 +188,7 @@ describe("a Paws restart and the merge queue", () => {
         });
         expect(await mergeCallInFlight(sqliteDb(h.db), item.id)).toBe(true);
         expect(listMergeQueues(h.db)).toEqual(queue);
-        expect(getConfirmedRemoteMerge(h.db, item.id)).toBeNull();
+        expect(await getConfirmedRemoteMerge(sqliteDb(h.db), item.id)).toBeNull();
         expect(getWorkItem(h.db, item.id)?.state).toBe("merge_queue");
         expect(reverifies(h)).toEqual([]);
         expect(h.published).toHaveLength(published);

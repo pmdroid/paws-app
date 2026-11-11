@@ -86,7 +86,7 @@ describe("advanceMerge and a changes-requested review", () => {
     expect(await h.pass("ENG-1")).toMatchObject({ kind: "wait", reason: "review" });
     expect(recorded).toBe(true);
     expect(h.github.merged).toEqual([]);
-    expect(getConfirmedRemoteMerge(h.db, "ENG-1")).toBeNull();
+    expect(await getConfirmedRemoteMerge(sqliteDb(h.db), "ENG-1")).toBeNull();
     expect(getWorkItem(h.db, "ENG-1")?.state).toBe("merge_queue");
   });
 });
@@ -99,7 +99,7 @@ describe("advanceMerge: the lane only merges mergeable(S)", () => {
     expect(h.github.merged).toEqual([
       { repository: "acme/app", number: 1, expectedHeadSha: item.accepted },
     ]);
-    expect(getConfirmedRemoteMerge(h.db, "ENG-1")).toMatchObject({
+    expect(await getConfirmedRemoteMerge(sqliteDb(h.db), "ENG-1")).toMatchObject({
       pullNumber: 1,
       mergeSha: `fake-merge-${item.accepted}`,
     });
@@ -229,7 +229,7 @@ describe("advanceMerge and a pull request merged outside the lane", () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.published).toEqual([]);
     expect(h.github.merged).toEqual([]);
-    expect(getConfirmedRemoteMerge(h.db, "ENG-1")).toMatchObject({
+    expect(await getConfirmedRemoteMerge(sqliteDb(h.db), "ENG-1")).toMatchObject({
       pullNumber: 1,
       pullUrl: "https://github.com/acme/app/pull/1",
       mergeSha: "hand-merge-sha",
@@ -249,7 +249,9 @@ describe("advanceMerge and a pull request merged outside the lane", () => {
     expect(await h.pass("ENG-1")).toEqual({ kind: "merged" });
     expect(h.published).toEqual(["ENG-1"]);
     expect(h.github.merged).toEqual([]);
-    expect(getConfirmedRemoteMerge(h.db, "ENG-1")?.mergeSha).toBe("hand-merge-sha");
+    expect((await getConfirmedRemoteMerge(sqliteDb(h.db), "ENG-1"))?.mergeSha).toBe(
+      "hand-merge-sha",
+    );
   });
 
   test("a stop after the hand merge is read completes the item and makes the pass obsolete", async () => {
