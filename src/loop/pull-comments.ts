@@ -23,24 +23,30 @@ import {
   type WorkItemRecord,
 } from "../db";
 import type { ReviewThread } from "../github";
-import { REBASE_CONFLICT_INSTRUCTION, rebaseBudgetFor } from "../merge";
-import { ask } from "./operations";
+import { REBASE_CONFLICT_INSTRUCTION, rebaseBudgetForSteps } from "../merge";
+import { askSteps } from "./operations";
 import {
   authors,
-  deliverFeedback,
+  deliverFeedbackSteps,
   feedbackHandoff,
   hasFeedback,
-  pendingFeedback,
-  settleCovered,
+  pendingFeedbackSteps,
+  settleCoveredSteps,
   who,
 } from "./pending-feedback";
-import { currentPullCi, pullCiHead, pullCiAsked, pullCiHandoff, pullCiQuestion } from "./pull-ci";
+import {
+  currentPullCiSteps,
+  pullCiHead,
+  pullCiAskedSteps,
+  pullCiHandoff,
+  pullCiQuestionSteps,
+} from "./pull-ci";
 import { REVIEW_REPLY_MARKER } from "./review-replies";
 import { holdForReviewChecks } from "./review-checks";
 import { REVIEW_FIX_INSTRUCTION } from "./review-instructions";
 import {
   clip,
-  itemForBranch,
+  itemForBranchSteps,
   threadLines,
   type PullReviewCapabilities,
   type PullReviewStep,
@@ -205,7 +211,7 @@ export function prepareCommentDelivery(
     return null;
   const inline = event === "pull_request_review_comment";
   return commitDelivery(db, function* (q) {
-    const item = itemForBranch(db, owner, repo, branch);
+    const item = yield* itemForBranchSteps(q, owner, repo, branch);
     if (item === null) return NOT_RECORDED;
     const opened = yield* getItemPullRequestSteps(q, item.id);
     if (opened !== null && opened.pullNumber !== pullNumber) return NOT_RECORDED;
@@ -275,8 +281,12 @@ export async function handlePullComments(
     await store.run((q) => settlePullCiFailuresSteps(q, failures, "dropped", caps.now()));
     return "dropped";
   }
-  const ci = currentPullCi(db, item, caps.now());
-  if (settleCovered(db, open, caps.now()) === open.length && ci === null) return "done";
+  const ci = await store.run((q) => currentPullCiSteps(q, item, caps.now()));
+  if (
+    (await store.run((q) => settleCoveredSteps(q, open, caps.now()))) === open.length &&
+    ci === null
+  )
+    return "done";
   // A changes-requested review still waiting takes these comments with it.
   if ((await store.run((q) => pendingChangeRequestsSteps(q, itemId))).length > 0) return "wait";
   const pullNumber = open.at(-1)?.pullNumber ?? ci!.pullNumber;
@@ -309,8 +319,8 @@ export async function handlePullComments(
     if (current === null || current.version !== item.version || current.state !== "merge_queue")
       return "wait";
     const now = caps.now();
-    const feedback = pendingFeedback(
-      db,
+    const feedback = yield* pendingFeedbackSteps(
+      q,
       current,
       { pullNumber, threads, findings, head, started },
       now,
@@ -327,7 +337,12 @@ export async function handlePullComments(
       const rebase =
         conflict !== null &&
         !(yield* rebaseReturnedForSteps(q, current.id, conflict.head)) &&
-        rebaseBudgetFor(db, current.id, { ...conflict, files: null, reason: "merge" }, now).allowed
+        (yield* rebaseBudgetForSteps(
+          q,
+          current.id,
+          { ...conflict, files: null, reason: "merge" },
+          now,
+        )).allowed
           ? conflict
           : null;
       const restarted = yield* restartSteps(q, current, {
@@ -348,7 +363,7 @@ export async function handlePullComments(
           files: null,
           recordedAt: now,
         });
-      deliverFeedback(db, current, feedback, {
+      yield* deliverFeedbackSteps(q, current, feedback, {
         jobKey,
         sessionId: caps.session(current),
         limit,
@@ -362,8 +377,8 @@ export async function handlePullComments(
       if (failure !== null) yield* settlePullCiFailuresSteps(q, [failure], "dropped", now);
       return "dropped";
     }
-    ask(
-      db,
+    yield* askSteps(
+      q,
       { itemId: current.id, runId: current.currentRunId, sessionId, version: current.version },
       "ci-help",
       comments.length > 0
@@ -373,11 +388,11 @@ export async function handlePullComments(
           ]
             .filter((part) => part !== "")
             .join("\n\n")
-        : pullCiQuestion(db, failure!, limit),
+        : yield* pullCiQuestionSteps(q, failure!, limit),
       { reason: "budget_spent", now },
     );
     yield* settlePullCommentsSteps(q, comments, "asked", now);
-    if (failure !== null) pullCiAsked(db, { item: current, failure, limit, now });
+    if (failure !== null) yield* pullCiAskedSteps(q, { item: current, failure, limit, now });
     return "asked";
   });
   if (job.ready) emitJobReady(store);
