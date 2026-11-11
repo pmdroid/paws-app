@@ -1,4 +1,5 @@
-import { bigint, check, index, integer, jsonb, pgTable, text, unique } from "drizzle-orm/pg-core";
+import { bigint, check, index, integer, pgTable, text, unique } from "drizzle-orm/pg-core";
+import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
 import { workItem } from "./items";
 import { linearSession } from "./linear";

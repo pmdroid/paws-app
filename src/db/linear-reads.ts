@@ -12,7 +12,7 @@ export function* keepTaskLinearReadSteps(
 ) {
   const { workItemLinearRead } = q.t;
   const text = JSON.stringify(value);
-  const valueJson = q.dialect === "sqlite" ? text : sql`${text}::jsonb`;
+  const valueJson = q.dialect === "sqlite" ? text : sql`${text}::text::jsonb`;
   yield* q.exec(
     q.orm
       .insert(workItemLinearRead)

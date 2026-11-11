@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash, createHmac } from "node:crypto";
@@ -16,6 +16,7 @@ import {
   sqliteDb,
 } from "../src/db";
 import { createWorkspaceAccess, issueWorkspaceSession, WORKSPACE_COOKIE } from "../src/workspace";
+import { setJournalSink } from "../src/journal";
 
 async function fixture(configured = true) {
   const root = mkdtempSync(join(tmpdir(), "paws-attribution-"));
@@ -71,6 +72,11 @@ async function fixture(configured = true) {
   let beforeUser: (() => Promise<void>) | undefined;
   let calls = 0;
   let pkce = "";
+  let clock = 0;
+  let exchangeGrant: Record<string, unknown> = {};
+  const refreshes: string[] = [];
+  let refreshAnswer: (refreshToken: string) => Response = () =>
+    Response.json({ error: "bad_refresh_token" });
   const provider = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -80,9 +86,19 @@ async function fixture(configured = true) {
         const body = new URLSearchParams(await request.text());
         pkce = body.get("code_verifier")!;
         expect(body.get("client_secret")).toBe("fixture-client-secret");
-        return Response.json({ access_token: "ghu_fixtureIdentityOnly", scope: tokenScope });
+        if (body.get("grant_type") === "refresh_token") {
+          refreshes.push(body.get("refresh_token")!);
+          return refreshAnswer(body.get("refresh_token")!);
+        }
+        return Response.json({
+          access_token: "ghu_fixtureIdentityOnly",
+          scope: tokenScope,
+          ...exchangeGrant,
+        });
       }
-      expect(request.headers.get("authorization")).toBe("Bearer ghu_fixtureIdentityOnly");
+      expect(request.headers.get("authorization")).toBe(
+        `Bearer ${String(exchangeGrant["access_token"] ?? "ghu_fixtureIdentityOnly")}`,
+      );
       await beforeUser?.();
       return Response.json({
         id: 12345,
@@ -107,7 +123,8 @@ async function fixture(configured = true) {
       publicUrl: origin,
       clientId: "linear-client",
       installedOrganization: { id: "org", name: "Workspace" },
-      now: () => now,
+      now: () => now + clock,
+      secretsDir: join(root, "secrets"),
       githubAttributionClient: configured
         ? { clientId: "app-client", clientSecret: "fixture-client-secret" }
         : undefined,
@@ -144,8 +161,8 @@ async function fixture(configured = true) {
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-  async function begin() {
-    const response = await request("POST", alice, { consent: true });
+  async function begin(body: Record<string, boolean> = { consent: true }) {
+    const response = await request("POST", alice, body);
     expect(response.status).toBe(200);
     const target = new URL(((await response.json()) as { authorizeUrl: string }).authorizeUrl);
     expect(target.searchParams.has("scope")).toBe(false);
@@ -173,6 +190,19 @@ async function fixture(configured = true) {
     callback,
     get db() {
       return db;
+    },
+    get access() {
+      return access;
+    },
+    refreshes,
+    set clock(value: number) {
+      clock = value;
+    },
+    set exchangeGrant(value: Record<string, unknown>) {
+      exchangeGrant = value;
+    },
+    set refreshAnswer(value: (refreshToken: string) => Response) {
+      refreshAnswer = value;
     },
     get calls() {
       return calls;
@@ -335,6 +365,7 @@ test("missing App credentials keep attribution readable and revocable without st
     expect(await response.json()).toEqual({
       configured: false,
       identity: null,
+      pullRequestsAsMember: { available: false, enabled: false },
     });
     const start = await f.request("POST", f.alice, { consent: true });
     expect(start.status).toBe(503);
@@ -464,3 +495,105 @@ test("the Settings link returns to Settings, and a forged return_path never leav
 function binding(f: Awaited<ReturnType<typeof fixture>>) {
   return { workspaceId: "workspace", userId: "alice", sessionHash: f.alice.session.tokenHash };
 }
+
+const GRANT = {
+  access_token: "ghu_fixtureUserToken",
+  expires_in: 28_800,
+  refresh_token: "ghr_fixtureRefresh",
+  refresh_token_expires_in: 15_897_600,
+};
+
+function grantFiles(root: string): string[] {
+  if (!existsSync(join(root, "secrets"))) return [];
+  return readdirSync(join(root, "secrets")).filter((name) => name.startsWith("github-user-grant-"));
+}
+
+test("opting in seals the user grant, refreshes it near expiry and clears it when GitHub refuses", async () => {
+  const f = await fixture();
+  const lines: string[] = [];
+  const restore = setJournalSink((line) => lines.push(line));
+  try {
+    f.exchangeGrant = GRANT;
+    expect((await f.callback(await f.begin())).status).toBe(303);
+    expect(grantFiles(f.root)).toEqual([]);
+    const pending = await f.begin({ consent: true, pullRequestsAsMember: true });
+    expect((await f.callback(pending)).status).toBe(303);
+    const [name] = grantFiles(f.root);
+    const sealed = readFileSync(join(f.root, "secrets", name!), "utf8");
+    expect(sealed).toStartWith("paws-envelope-v1\n");
+    expect(sealed).not.toMatch(/gh[ur]_/);
+    expect(await (await f.request("GET")).json()).toMatchObject({
+      pullRequestsAsMember: { available: true, enabled: true },
+    });
+    expect(await f.access.githubUserToken("workspace", "alice")).toBe("ghu_fixtureUserToken");
+
+    f.clock = (28_800 - 299) * 1000;
+    f.refreshAnswer = () =>
+      Response.json({ ...GRANT, access_token: "ghu_refreshed", refresh_token: "ghr_rotated" });
+    expect(
+      await Promise.all([
+        f.access.githubUserToken("workspace", "alice"),
+        f.access.githubUserToken("workspace", "alice"),
+      ]),
+    ).toEqual(["ghu_refreshed", "ghu_refreshed"]);
+    await f.restart();
+    expect(await f.access.githubUserToken("workspace", "alice")).toBe("ghu_refreshed");
+
+    f.clock = 2 * 28_800 * 1000;
+    for (const status of [503, 429]) {
+      f.refreshAnswer = () => Response.json({ error: "unavailable" }, { status });
+      expect(await f.access.githubUserToken("workspace", "alice")).toBeNull();
+      expect(grantFiles(f.root)).toHaveLength(1);
+    }
+    f.refreshAnswer = () => Response.json({ error: "bad_refresh_token" });
+    expect(await f.access.githubUserToken("workspace", "alice")).toBeNull();
+    expect(f.refreshes).toEqual(["ghr_fixtureRefresh", ...Array(3).fill("ghr_rotated")]);
+    expect(grantFiles(f.root)).toEqual([]);
+    expect(lines.join("\n")).not.toMatch(/gh[ur]_/);
+  } finally {
+    restore();
+    await f.close();
+  }
+});
+
+test("opting out and revoking delete the grant; re-linking without the opt-in keeps it", async () => {
+  const f = await fixture();
+  try {
+    f.exchangeGrant = GRANT;
+    const optIn = async () => {
+      const pending = await f.begin({ consent: true, pullRequestsAsMember: true });
+      expect((await f.callback(pending)).status).toBe(303);
+      expect(grantFiles(f.root)).toHaveLength(1);
+    };
+    await optIn();
+    expect((await f.request("POST", f.alice, { pullRequestsAsMember: "yes" })).status).toBe(400);
+    expect((await f.request("POST", f.alice, { pullRequestsAsMember: false })).status).toBe(200);
+    expect(grantFiles(f.root)).toEqual([]);
+    expect(await f.access.githubUserToken("workspace", "alice")).toBeNull();
+    expect((await githubAttribution(sqliteDb(f.db), "workspace", "alice"))?.id).toBe(12345);
+
+    await optIn();
+    expect((await f.callback(await f.begin())).status).toBe(303);
+    expect(grantFiles(f.root)).toHaveLength(1);
+
+    for (const damaged of ["not an envelope", "paws-envelope-v1\n{"]) {
+      if (grantFiles(f.root).length === 0) await optIn();
+      writeFileSync(join(f.root, "secrets", grantFiles(f.root)[0]!), damaged);
+      const status = await (await f.request("GET")).json();
+      expect(status).toMatchObject({ pullRequestsAsMember: { enabled: false } });
+      expect(grantFiles(f.root)).toEqual([]);
+    }
+
+    await optIn();
+    expect((await f.request("DELETE")).status).toBe(200);
+    expect(grantFiles(f.root)).toEqual([]);
+
+    f.exchangeGrant = { ...GRANT, refresh_token: "not-a-refresh-token" };
+    const unkept = await f.begin({ consent: true, pullRequestsAsMember: true });
+    expect((await f.callback(unkept)).status).toBe(303);
+    expect(grantFiles(f.root)).toEqual([]);
+    expect((await githubAttribution(sqliteDb(f.db), "workspace", "alice"))?.id).toBe(12345);
+  } finally {
+    await f.close();
+  }
+});

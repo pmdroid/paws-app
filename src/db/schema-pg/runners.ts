@@ -5,12 +5,12 @@ import {
   foreignKey,
   index,
   integer,
-  jsonb,
   pgTable,
   primaryKey,
   text,
   unique,
 } from "drizzle-orm/pg-core";
+import { jsonb } from "./types";
 import { sql } from "drizzle-orm";
 import { workspace, workspaceMember, workspaceUser } from "./workspace";
 import { run, workItem } from "./items";
